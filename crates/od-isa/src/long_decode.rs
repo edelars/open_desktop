@@ -1030,6 +1030,11 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
+    /// CPL3 `F0 [REX] 83 /5 ib` LOCK SUB on a dword in memory.
+    LockSubDwordImm8 {
+        destination: MemoryOperand,
+        immediate: u64,
+    },
     /// S4-38L7ai: `F0 [REX] 01 /r` (LOCK ADD m32, r32, or m64, r64 with REX.W), memory
     /// destination and a general-purpose register source only; the arithmetic is the shared ADD.
     /// Executed only in the CPL0 set; the destination is always written back.
@@ -1106,6 +1111,11 @@ pub enum Operation {
     MovapsStoreMemory {
         destination: MemoryOperand,
         source: u8,
+    },
+    /// Local-only legacy `0F 28 /r` MOVAPS load from an aligned m128 operand.
+    MovapsLoadMemory {
+        destination: u8,
+        source: MemoryOperand,
     },
     /// Exact mandatory-66 `0F 6F /r` MOVDQA XMM-register source form.
     MovdqaRegister {
@@ -1206,6 +1216,11 @@ pub enum Operation {
     PminubRegister {
         destination: u8,
         source: u8,
+    },
+    /// Mandatory-66 PMINUB with a 16-byte-aligned m128 source.
+    PminubMemory {
+        destination: u8,
+        source: MemoryOperand,
     },
     /// Local-only mandatory-66 PMAXSW with signed word-wise maximum.
     PmaxswRegister {
@@ -1704,6 +1719,11 @@ pub enum Operation {
     MulssMemoryRax,
     /// Local-only exact legacy `F2 0F 59 00` scalar binary64 memory multiply.
     MulsdMemoryRax,
+    /// Local-only legacy F2 MULSD with a bounded general m64 source operand.
+    MulsdMemory {
+        destination: u8,
+        source: MemoryOperand,
+    },
     /// Local-only canonical no-prefix MULPS register pair.
     MulpsRegister {
         destination: u8,
@@ -2651,7 +2671,8 @@ impl Instruction {
             Operation::LockAddMem { .. }
             | Operation::LockAddMemReg { .. }
             | Operation::LockSubMemReg { .. }
-            | Operation::LockSubMem { .. } => FlagEffects {
+            | Operation::LockSubMem { .. }
+            | Operation::LockSubDwordImm8 { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -6231,11 +6252,30 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                         source: (modrm & 7) | ((rex & 1) << 3),
                     }
-                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movsd_memory_load {
+                } else if modrm >> 6 != 3 && movsd_memory_load {
                     let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
                     let Operand::Memory(source) = operand else {
                         return Err(self.unsupported(opcode));
                     };
+                    let legacy_rax = modrm >> 6 == 0
+                        && modrm & 7 == 0
+                        && source.base == AddressBase::Register(Register::Rax)
+                        && source.index.is_none()
+                        && source.displacement == 0;
+                    let observed_rbp = modrm >> 6 == 1
+                        && modrm & 7 == 5
+                        && prefixes.rex.is_none()
+                        && source.base == AddressBase::Register(Register::Rbp)
+                        && source.index.is_none()
+                        && source.displacement == -24;
+                    let observed_rip = modrm >> 6 == 0
+                        && modrm & 7 == 5
+                        && prefixes.rex.is_none()
+                        && source.base == AddressBase::NextRip
+                        && source.index.is_none();
+                    if !(legacy_rax || observed_rbp || observed_rip) {
+                        return Err(self.unsupported(opcode));
+                    }
                     Operation::MovsdLoadMemory {
                         destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                         source,
@@ -6251,11 +6291,25 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination: (modrm & 7) | ((rex & 1) << 3),
                         source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     }
-                } else if modrm >> 6 == 0 && modrm & 7 == 0 && movsd_memory_store {
+                } else if modrm >> 6 != 3 && movsd_memory_store {
                     let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
                     let Operand::Memory(destination) = operand else {
                         return Err(self.unsupported(opcode));
                     };
+                    let legacy_rax = modrm >> 6 == 0
+                        && modrm & 7 == 0
+                        && destination.base == AddressBase::Register(Register::Rax)
+                        && destination.index.is_none()
+                        && destination.displacement == 0;
+                    let observed_rbp = modrm >> 6 == 1
+                        && modrm & 7 == 5
+                        && prefixes.rex.is_none()
+                        && destination.base == AddressBase::Register(Register::Rbp)
+                        && destination.index.is_none()
+                        && destination.displacement == -24;
+                    if !(legacy_rax || observed_rbp) {
+                        return Err(self.unsupported(opcode));
+                    }
                     Operation::MovsdStoreMemory {
                         destination,
                         source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
@@ -6751,6 +6805,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if modrm >> 6 != 3 {
                     if modrm == 0 && mulsd_memory_rax {
                         Operation::MulsdMemoryRax
+                    } else if mulsd_memory_rax
+                        && modrm >> 6 == 0
+                        && modrm & 7 == 5
+                        && modrm & 0x38 == 0
+                        && prefixes.rex.is_none()
+                    {
+                        let Operand::Memory(source) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                        else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        if source.base != AddressBase::NextRip || source.index.is_some() {
+                            return Err(self.unsupported(opcode));
+                        }
+                        Operation::MulsdMemory {
+                            destination: 0,
+                            source,
+                        }
                     } else {
                         return Err(self.unsupported(opcode));
                     }
@@ -7531,12 +7603,31 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::PminubRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                if modrm >> 6 == 3 {
+                    Operation::PminubRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
+                    let Operand::Memory(source) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        return Err(self.unsupported(opcode));
+                    };
+                    if modrm >> 6 != 1
+                        || modrm & 7 != 0
+                        || modrm & 0x38 != 0
+                        || prefixes.rex.is_some()
+                        || source.base != AddressBase::Register(Register::Rax)
+                        || source.index.is_some()
+                        || !matches!(source.displacement, 0x10 | 0x20 | 0x30 | 0x50 | 0x60 | 0x70)
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::PminubMemory {
+                        destination: 0,
+                        source,
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0xde) => {
@@ -8301,12 +8392,35 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 } else {
                     let modrm = self.byte()?;
-                    if modrm >> 6 != 3 {
-                        return Err(self.unsupported(opcode));
-                    }
-                    Operation::MovapsRegister {
-                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                        source: (modrm & 7) | ((rex & 1) << 3),
+                    if modrm >> 6 == 3 {
+                        Operation::MovapsRegister {
+                            destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                            source: (modrm & 7) | ((rex & 1) << 3),
+                        }
+                    } else {
+                        let Operand::Memory(source) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                        else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        let observed_rip = modrm >> 6 == 0
+                            && modrm & 7 == 5
+                            && prefixes.rex.is_none()
+                            && source.base == AddressBase::NextRip
+                            && source.index.is_none();
+                        let observed_rdi = modrm >> 6 == 1
+                            && modrm & 7 == 7
+                            && prefixes.rex.is_none()
+                            && source.base == AddressBase::Register(Register::Rdi)
+                            && source.index.is_none()
+                            && matches!(source.displacement, 0x10 | 0x20 | 0x30);
+                        if !(observed_rip || observed_rdi) {
+                            return Err(self.unsupported(opcode));
+                        }
+                        Operation::MovapsLoadMemory {
+                            destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                            source,
+                        }
                     }
                 }
             }
@@ -9659,8 +9773,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         4 => byte == 0x80 || (byte == 0x83 && size == OperandSize::Qword),
                         5 => matches!(
                             (byte, size),
-                            (0x81, OperandSize::Dword | OperandSize::Qword)
-                                | (0x83, OperandSize::Qword)
+                            (0x81 | 0x83, OperandSize::Dword | OperandSize::Qword)
                         ),
                         6 => byte == 0x80,
                         _ => false,
@@ -9846,6 +9959,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             destination,
                             immediate,
                         },
+                        5 if byte == 0x83 && size == OperandSize::Dword => {
+                            Operation::LockSubDwordImm8 {
+                                destination,
+                                immediate,
+                            }
+                        }
                         5 => Operation::LockSubMem {
                             destination,
                             immediate,
@@ -26106,9 +26225,19 @@ mod tests {
                         && value == immediate
             ));
         }
+        let dword_imm8 = Memory::new(&[0xf0, 0x83, 0x6b, 4, 1]).decode().unwrap();
+        assert_eq!(dword_imm8.length, 5);
+        assert_eq!(dword_imm8.flag_effects().defined, crate::ARITHMETIC_FLAGS);
+        assert!(matches!(
+            dword_imm8.operation,
+            Operation::LockSubDwordImm8 { destination, immediate: 1 }
+                if destination.base == AddressBase::Register(Register::Rbx)
+                    && destination.displacement == 4
+                    && destination.size == OperandSize::Dword
+        ));
         for (bytes, opcode_byte) in [
             (&[0xf0, 0x80, 0x6b, 4, 1][..], 0x80),
-            (&[0xf0, 0x83, 0x6b, 4, 1][..], 0x83),
+            (&[0xf0, 0x83, 0xeb, 1][..], 0x83),
             (&[0xf0, 0x48, 0x83, 0xef, 1][..], 0x83),
             (&[0xf0, 0x66, 0x83, 0x2f, 1][..], 0x83),
             (&[0xf0, 0x48, 0x81, 0xeb, 1, 0, 0, 0][..], 0x81),

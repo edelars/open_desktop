@@ -28358,8 +28358,7 @@ pub fn run_with_cpl3_profile_set(
             // iteration so the scheduler can stop and resume them at a quantum boundary.
             // Use the same inner entry's zero-budget path for state admission before any
             // data access. A refused form falls through to the regular allow-list.
-            let stosq = cpl3_is_rep_stosq(&instruction);
-            if (cpl3_is_rep_movsb(&instruction) || stosq)
+            if let Some((size, store)) = cpl3_rep_string_shape(&instruction)
                 && state.rflags & (1 << 10) == 0
                 && run_cpl0_profile_set_inner(
                     state,
@@ -28385,7 +28384,8 @@ pub fn run_with_cpl3_profile_set(
             {
                 let next_rip = state.rip.wrapping_add(instruction.length as u64);
                 if let Some(exit) = cpl3_rep_string(
-                    stosq,
+                    size,
+                    store,
                     state,
                     memory,
                     config.context,
@@ -28493,47 +28493,68 @@ pub fn run_with_cpl3_profile_set(
     }
 }
 
-/// S4-39f20: whether the decoded form is exactly `F3 A4` (REP MOVSB): no REX, no other prefix, two
-/// bytes, 64-bit address size. `F3 A5`, `A4` without REP, REX/66/67/F2/segment forms are not.
-fn cpl3_is_rep_movsb(instruction: &long_decode::Instruction) -> bool {
-    instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0xa4
-        && instruction.operation
-            == (Operation::RepMovs {
+/// Only the traced forward forms with 64-bit addresses enter the budgeted CPL3 path.
+fn cpl3_rep_string_shape(instruction: &long_decode::Instruction) -> Option<(OperandSize, bool)> {
+    if instruction.opcode.map != OpcodeMap::Primary
+        || instruction.address_size != OperandSize::Qword
+    {
+        return None;
+    }
+    let rep = Prefixes {
+        group1: Some(0xf3),
+        ..Prefixes::default()
+    };
+    match (instruction.opcode.byte, instruction.operation) {
+        (
+            0xa4,
+            Operation::RepMovs {
                 size: OperandSize::Byte,
-            })
-        && instruction.length == 2
-        && instruction.address_size == OperandSize::Qword
-        && instruction.prefixes
-            == (Prefixes {
-                group1: Some(0xf3),
-                ..Prefixes::default()
-            })
-}
-
-fn cpl3_is_rep_stosq(instruction: &long_decode::Instruction) -> bool {
-    instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0xab
-        && instruction.operation
-            == (Operation::RepStos {
+            },
+        )
+        | (
+            0xa5,
+            Operation::RepMovs {
+                size: OperandSize::Dword,
+            },
+        ) if instruction.prefixes == rep && instruction.length == 2 => {
+            Some((instruction.operand_size, false))
+        }
+        (
+            0xaa,
+            Operation::RepStos {
+                size: OperandSize::Byte,
+            },
+        )
+        | (
+            0xab,
+            Operation::RepStos {
+                size: OperandSize::Dword,
+            },
+        ) if instruction.prefixes == rep && instruction.length == 2 => {
+            Some((instruction.operand_size, true))
+        }
+        (
+            0xab,
+            Operation::RepStos {
                 size: OperandSize::Qword,
-            })
-        && instruction.length == 3
-        && instruction.address_size == OperandSize::Qword
-        && instruction.prefixes.group1 == Some(0xf3)
-        && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+            },
+        ) if instruction.length == 3
+            && instruction.prefixes.group1 == Some(0xf3)
+            && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) =>
+        {
+            Some((OperandSize::Qword, true))
+        }
+        _ => None,
+    }
 }
-
-/// Executes an admitted forward REP MOVSB or REP STOSQ at CPL3. Returns `None` after RIP advances
-/// and a run exit if execution stops partway. The caller checks DF, the initial budget and STOP
-/// address. A zero count advances RIP and consumes one unit of budget.
-///
-/// MOVSB reads the byte at RSI and STOSQ uses RAX. Both write at RDI in the original CPL3 access
-/// context. A fault preserves the state of the current iteration. Completed iterations advance
-/// RDI, decrement RCX and consume one unit of budget. Only MOVSB also advances RSI. Flags stay
-/// unchanged.
+/// Returns None after RIP advances, or a run exit if the forward string stops partway.
+/// The caller checks DF, entry budget, and the stop address. A zero count consumes one unit.
+/// MOVS reads RSI and STOS uses the accumulator at the encoded width. Both write at RDI.
+/// Completed iterations advance the relevant pointers, decrement RCX, and consume one unit.
+/// A fault leaves the current iteration's pointers, count, and RIP intact. Flags stay unchanged.
 fn cpl3_rep_string(
-    stosq: bool,
+    size: OperandSize,
+    store: bool,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -28561,12 +28582,7 @@ fn cpl3_rep_string(
             }
         }
         first = false;
-        let size = if stosq {
-            OperandSize::Qword
-        } else {
-            OperandSize::Byte
-        };
-        let value = if stosq {
+        let value = if store {
             state.gpr[Register::Rax as usize]
         } else {
             let source = Operand::Memory(MemoryOperand {
@@ -28596,11 +28612,12 @@ fn cpl3_rep_string(
             Err(MemoryError::Architectural(fault)) => return Some(RunExit::Fault(fault)),
             Err(error) => return Some(RunExit::MemoryError(error)),
         }
-        if !stosq {
-            state.gpr[Register::Rsi as usize] = state.gpr[Register::Rsi as usize].wrapping_add(1);
+        let step = size.bytes() as u64;
+        if !store {
+            state.gpr[Register::Rsi as usize] =
+                state.gpr[Register::Rsi as usize].wrapping_add(step);
         }
-        state.gpr[Register::Rdi as usize] =
-            state.gpr[Register::Rdi as usize].wrapping_add(size.bytes() as u64);
+        state.gpr[Register::Rdi as usize] = state.gpr[Register::Rdi as usize].wrapping_add(step);
         state.gpr[Register::Rcx as usize] -= 1;
         *retired += 1;
     }
@@ -28735,7 +28752,7 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 /// The memory and dword forms of `81 /7` stay outside.
 ///
 /// S4-39f20: `F3 A4` (REP MOVSB, `rep movsb` at `0x4001c1` of `/init`) is not matched here (the
-/// prefix check above refuses it): the run loop recognizes it with [`cpl3_is_rep_movsb`] and
+/// prefix check above refuses it): the run loop recognizes it with [`cpl3_rep_string_shape`] and
 /// executes it in [`cpl3_rep_string`], one iteration per unit of the instruction budget, with
 /// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
 ///
@@ -28756,15 +28773,29 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         return true;
     }
     let prefixes = instruction.prefixes;
+    if cpl3_issue576_scalar_form(instruction) {
+        return true;
+    }
     // S6-22: glibc's TLS setup uses a bounded set of FS-relative absolute forms.
     if cpl3_glibc_tls_fs_form(instruction) {
         return true;
     }
-    if cpl3_aligned_atomic_destination(instruction).is_some() {
+    if cpl3_static_scalar_form(instruction) || cpl3_workload_scalar_form(instruction) {
+        return true;
+    }
+    if cpl3_aligned_atomic_destination(instruction).is_some()
+        || cpl3_ordinary_rmw_destination(instruction).is_some()
+    {
         return true;
     }
     if cpl3_notrack_register_jump(instruction) {
         return true;
+    }
+    if cpl3_scalar_fp_form(instruction) {
+        return true;
+    }
+    if !cpl3_s6_22_xmm_memory_form(instruction) {
+        return false;
     }
     // The owned S6-22 workload contains this exact read-only memory TEST form.
     if instruction.opcode.map == OpcodeMap::Primary
@@ -28860,6 +28891,8 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::MovdquLoadMemory { .. }
             | Operation::MovdqaLoadMemory { .. }
             | Operation::MovdqaRegister { .. }
+            | Operation::MovapsRegister { .. }
+            | Operation::MovapsLoadMemory { .. }
             | Operation::MovapsStoreMemory { .. }
             | Operation::PxorRegister { .. }
             | Operation::PaddbRegister { .. }
@@ -28870,6 +28903,13 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             | Operation::PackuswbRegister { .. }
             | Operation::PcmpeqbRegister { .. }
             | Operation::PcmpeqbMemory { .. }
+            | Operation::PcmpgtbRegister { .. }
+            | Operation::PandnRegister { .. }
+            | Operation::PminubRegister { .. }
+            | Operation::PminubMemory { .. }
+            | Operation::XorpsRegister { .. }
+            | Operation::MovsdLoadMemory { .. }
+            | Operation::MovsdStoreMemory { .. }
             | Operation::MovlpdLoadMemory { .. }
             | Operation::MovhpdLoadMemory { .. }
             | Operation::MovhpsLoadMemory { .. }
@@ -28945,33 +28985,6 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 ..
             },
         ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Logic {
-                kind: LogicKind::Or | LogicKind::And,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        )
-        | (
-            OpcodeMap::Primary,
-            0x09,
-            Operation::Logic {
-                kind: LogicKind::Or,
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) if dst.size == OperandSize::Qword => dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x81 | 0x83,
-            Operation::Logic {
-                kind: LogicKind::Or | LogicKind::And,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
             0x81,
@@ -29251,15 +29264,6 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         ) => dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword,
         (
             OpcodeMap::Primary,
-            0x80,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
             0x83,
             Operation::Logic {
                 kind: LogicKind::Xor,
@@ -29378,36 +29382,6 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 kind: ArithmeticKind::Cmp,
                 dst: Operand::Memory(dst),
                 src: Operand::Register(_),
-            },
-        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        )
-        | (
-            OpcodeMap::Primary,
-            0x01,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) => {
-            matches!(dst.size, OperandSize::Dword | OperandSize::Qword)
-                && dst.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Sub,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
             },
         ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
         (
@@ -29971,8 +29945,10 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             },
         ) if prefixes.rex == Some(0x48)
             && instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::Rsi, OperandSize::Qword)
-            && offset == RegisterView::low(Register::Rax, OperandSize::Qword) =>
+            && ((dst == RegisterView::low(Register::Rsi, OperandSize::Qword)
+                && offset == RegisterView::low(Register::Rax, OperandSize::Qword))
+                || (dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                    && offset == RegisterView::low(Register::Rdx, OperandSize::Qword))) =>
         {
             true
         }
@@ -30281,6 +30257,384 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
     }
 }
 
+/// S6-22 ISSUE-576: exact scalar operand families found in the pinned BusyBox and workload
+/// instruction inventories. This intentionally reuses the ordinary decoder/executor semantics;
+/// only the listed widths, prefix classes, register forms, and one read-only BT memory shape join
+/// CPL3 admission here.
+fn cpl3_issue576_scalar_form(instruction: &long_decode::Instruction) -> bool {
+    let prefixes = instruction.prefixes;
+    if prefixes.group1.is_some()
+        || prefixes.segment.is_some()
+        || prefixes.operand_override
+        || prefixes.address_override
+    {
+        return false;
+    }
+    let reg = |register, size| RegisterView::low(register, size);
+    match (
+        instruction.opcode.map,
+        instruction.opcode.byte,
+        instruction.operation,
+    ) {
+        (OpcodeMap::Escape0f, 0xc8..=0xcf, Operation::Bswap { dst }) => {
+            let dword = instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && matches!(dst, r if r == reg(Register::Rcx, OperandSize::Dword)
+                    || r == reg(Register::Rdx, OperandSize::Dword));
+            let qword = instruction.operand_size == OperandSize::Qword
+                && prefixes.rex == Some(0x48)
+                && matches!(dst, r if r == reg(Register::Rax, OperandSize::Qword)
+                    || r == reg(Register::Rcx, OperandSize::Qword));
+            dword || qword
+        }
+        (
+            OpcodeMap::Primary,
+            0xc1,
+            Operation::Shift {
+                kind: kind @ (ShiftKind::Rol | ShiftKind::Ror),
+                dst: Operand::Register(dst),
+                source: None,
+                count: Operand::Immediate(_),
+                ..
+            },
+        ) if instruction.operand_size == OperandSize::Dword && dst.size() == OperandSize::Dword => {
+            (prefixes.rex.is_none()
+                && (dst == reg(Register::Rax, OperandSize::Dword)
+                    || dst == reg(Register::Rdx, OperandSize::Dword)
+                    || (kind == ShiftKind::Ror && dst == reg(Register::Rcx, OperandSize::Dword))))
+                || (prefixes.rex == Some(0x41)
+                    && (dst == reg(Register::R9, OperandSize::Dword)
+                        || dst == reg(Register::R11, OperandSize::Dword)))
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xa3,
+            Operation::Bit {
+                kind: BitKind::Test,
+                dst: Operand::Register(dst),
+                offset: BitOffset::Register(offset),
+            },
+        ) => {
+            (instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && matches!(dst, r if r == reg(Register::Rcx, OperandSize::Dword)
+                    || r == reg(Register::Rdx, OperandSize::Dword))
+                && offset == reg(Register::Rax, OperandSize::Dword))
+                || (instruction.operand_size == OperandSize::Qword
+                    && prefixes.rex == Some(0x48)
+                    && dst == reg(Register::Rcx, OperandSize::Qword)
+                    && offset == reg(Register::Rdx, OperandSize::Qword))
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xba,
+            Operation::Bit {
+                kind: BitKind::Test,
+                dst: Operand::Register(dst),
+                offset: BitOffset::Immediate(_),
+            },
+        ) => {
+            (instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && matches!(dst, r if r == reg(Register::Rax, OperandSize::Dword)
+                    || r == reg(Register::Rbx, OperandSize::Dword)
+                    || r == reg(Register::Rsi, OperandSize::Dword)))
+                || (instruction.operand_size == OperandSize::Dword
+                    && prefixes.rex == Some(0x41)
+                    && matches!(dst, r if r == reg(Register::R12, OperandSize::Dword)
+                        || r == reg(Register::R13, OperandSize::Dword)))
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xba,
+            Operation::Bit {
+                kind: BitKind::Test,
+                dst: Operand::Memory(memory),
+                offset: BitOffset::Immediate(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && memory.size == OperandSize::Dword
+                && memory.address_size == OperandSize::Qword
+                && memory.base == AddressBase::Register(Register::Rbp)
+                && memory.index.is_none()
+                && matches!(memory.displacement, -0xd4 | -0xe0)
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xba,
+            Operation::Bit {
+                kind: BitKind::Reset,
+                dst: Operand::Register(dst),
+                offset: BitOffset::Immediate(_),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && prefixes.rex == Some(0x48)
+                && dst == reg(Register::Rax, OperandSize::Qword)
+        }
+        (
+            OpcodeMap::Escape0f,
+            0xab,
+            Operation::Bit {
+                kind: BitKind::Set,
+                dst: Operand::Register(dst),
+                offset: BitOffset::Register(offset),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && prefixes.rex == Some(0x48)
+                && dst == reg(Register::Rdx, OperandSize::Qword)
+                && offset == reg(Register::Rsi, OperandSize::Qword)
+        }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectCall {
+                operand: Operand::Register(target),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && ((prefixes.rex.is_none() && target == reg(Register::Rdx, OperandSize::Qword))
+                    || (prefixes.rex == Some(0x41)
+                        && matches!(target, r if r == reg(Register::R10, OperandSize::Qword)
+                            || r == reg(Register::R12, OperandSize::Qword)
+                            || r == reg(Register::R13, OperandSize::Qword)
+                            || r == reg(Register::R15, OperandSize::Qword))))
+        }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectJump {
+                operand: Operand::Register(target),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && prefixes.rex.is_none()
+                && target == reg(Register::Rdx, OperandSize::Qword)
+        }
+        (
+            OpcodeMap::Primary,
+            0xff,
+            Operation::IndirectJump {
+                operand: Operand::Memory(memory),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Qword
+                && prefixes.rex.is_none()
+                && memory.size == OperandSize::Qword
+                && memory.address_size == OperandSize::Qword
+                && memory.base == AddressBase::Register(Register::Rax)
+                && memory.index.is_none()
+                && memory.displacement == 0x18
+        }
+        (
+            OpcodeMap::Escape0f,
+            0x44,
+            Operation::ConditionalMove {
+                condition: ConditionCode::Equal,
+                dst,
+                src: Operand::Memory(memory),
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && dst == reg(Register::Rax, OperandSize::Dword)
+                && memory.size == OperandSize::Dword
+                && memory.address_size == OperandSize::Qword
+                && memory.base == AddressBase::Register(Register::Rbp)
+                && memory.index.is_none()
+                && memory.displacement == -0x104
+        }
+        (
+            OpcodeMap::Primary,
+            0x6b,
+            Operation::ImulImmediate {
+                dst,
+                src: Operand::Register(src),
+                immediate: 4,
+            },
+        ) => {
+            instruction.operand_size == OperandSize::Dword
+                && prefixes.rex.is_none()
+                && dst == reg(Register::Rcx, OperandSize::Dword)
+                && src == reg(Register::Rbx, OperandSize::Dword)
+        }
+        _ => false,
+    }
+}
+
+fn cpl3_ordinary_rmw_destination(instruction: &long_decode::Instruction) -> Option<MemoryOperand> {
+    let prefixes = instruction.prefixes;
+    if instruction.opcode.map != OpcodeMap::Primary
+        || prefixes.segment.is_some()
+        || prefixes.address_override
+        || prefixes.group1.is_some()
+        || prefixes.operand_override != (instruction.operand_size == OperandSize::Word)
+    {
+        return None;
+    }
+    let opcode = instruction.opcode.byte;
+    let destination = match instruction.operation {
+        Operation::Arithmetic {
+            kind,
+            dst: Operand::Memory(dst),
+            src,
+        } => matches!(
+            (opcode, kind, dst.size, src),
+            (
+                0x83,
+                ArithmeticKind::Add,
+                OperandSize::Word | OperandSize::Dword | OperandSize::Qword,
+                Operand::Immediate(_),
+            ) | (
+                0x83,
+                ArithmeticKind::Sub,
+                OperandSize::Dword,
+                Operand::Immediate(_)
+            ) | (
+                0x01,
+                ArithmeticKind::Add,
+                OperandSize::Dword | OperandSize::Qword,
+                Operand::Register(_),
+            ) | (
+                0x29,
+                ArithmeticKind::Sub,
+                OperandSize::Dword | OperandSize::Qword,
+                Operand::Register(_),
+            ) | (
+                0xfe,
+                ArithmeticKind::Inc,
+                OperandSize::Byte,
+                Operand::Immediate(1)
+            ) | (
+                0xff,
+                ArithmeticKind::Inc,
+                OperandSize::Dword | OperandSize::Qword,
+                Operand::Immediate(1),
+            ) | (
+                0xff,
+                ArithmeticKind::Dec,
+                OperandSize::Dword,
+                Operand::Immediate(1)
+            )
+        )
+        .then_some(dst),
+        Operation::Logic {
+            kind,
+            dst: Operand::Memory(dst),
+            src,
+        } => matches!(
+            (opcode, kind, dst.size, src),
+            (
+                0x80,
+                LogicKind::And,
+                OperandSize::Byte,
+                Operand::Immediate(_)
+            ) | (
+                0x20,
+                LogicKind::And,
+                OperandSize::Byte,
+                Operand::Register(_)
+            ) | (
+                0x81 | 0x83,
+                LogicKind::Or | LogicKind::And,
+                OperandSize::Dword,
+                Operand::Immediate(_),
+            ) | (
+                0x83,
+                LogicKind::Or | LogicKind::And,
+                OperandSize::Qword,
+                Operand::Immediate(_),
+            ) | (
+                0x81 | 0x83,
+                LogicKind::And,
+                OperandSize::Word,
+                Operand::Immediate(_)
+            ) | (
+                0x81,
+                LogicKind::Xor,
+                OperandSize::Dword,
+                Operand::Immediate(_)
+            ) | (
+                0x09,
+                LogicKind::Or,
+                OperandSize::Qword,
+                Operand::Register(_)
+            )
+        )
+        .then_some(dst),
+        Operation::Shift {
+            kind: ShiftKind::Sar,
+            dst: Operand::Memory(dst),
+            source: None,
+            count: Operand::Immediate(1),
+            ..
+        } if opcode == 0xd0 && dst.size == OperandSize::Byte => Some(dst),
+        _ => None,
+    }?;
+    (destination.address_size == OperandSize::Qword && destination.size == instruction.operand_size)
+        .then_some(destination)
+}
+
+fn cpl3_s6_22_xmm_memory_form(instruction: &long_decode::Instruction) -> bool {
+    let memory = match instruction.operation {
+        Operation::PminubMemory { source, .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xda
+                && instruction.prefixes.operand_override
+                && instruction.prefixes.group1.is_none()
+                && instruction.prefixes.segment.is_none()
+                && !instruction.prefixes.address_override
+                && instruction.prefixes.rex.is_none()
+                && source.address_size == OperandSize::Qword
+                && source.base == AddressBase::Register(Register::Rax)
+                && source.index.is_none()
+        }
+        Operation::MovsdLoadMemory { source, .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x10
+                && instruction.prefixes.group1 == Some(0xf2)
+                && instruction.prefixes.segment.is_none()
+                && instruction.prefixes.rex.is_none()
+                && !instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && source.address_size == OperandSize::Qword
+                && matches!(
+                    source.base,
+                    AddressBase::Register(Register::Rbp) | AddressBase::NextRip
+                )
+                && source.index.is_none()
+        }
+        Operation::MovsdStoreMemory { destination, .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x11
+                && instruction.prefixes.group1 == Some(0xf2)
+                && instruction.prefixes.segment.is_none()
+                && instruction.prefixes.rex.is_none()
+                && !instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && destination.address_size == OperandSize::Qword
+                && destination.base == AddressBase::Register(Register::Rbp)
+                && destination.index.is_none()
+        }
+        Operation::MovapsLoadMemory { source, .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x28
+                && instruction.prefixes == Prefixes::default()
+                && source.address_size == OperandSize::Qword
+                && source.index.is_none()
+                && matches!(
+                    source.base,
+                    AddressBase::NextRip | AddressBase::Register(Register::Rdi)
+                )
+        }
+        _ => return true,
+    };
+    memory
+}
+
 fn cpl3_aligned_atomic_destination(
     instruction: &long_decode::Instruction,
 ) -> Option<MemoryOperand> {
@@ -30294,16 +30648,29 @@ fn cpl3_aligned_atomic_destination(
         instruction.operation,
     ) {
         (OpcodeMap::Primary, 0x83, Operation::LockAddMem { destination, .. })
-            if prefixes.group1 == Some(0xf0) =>
-        {
-            (destination, OperandSize::Qword)
-        }
-        (OpcodeMap::Escape0f, 0xb1, Operation::LockCmpxchgMem { destination, .. })
+        | (OpcodeMap::Escape0f, 0xb1, Operation::LockCmpxchgMem { destination, .. })
+        | (OpcodeMap::Escape0f, 0xc1, Operation::LockXaddMem { destination, .. })
             if prefixes.group1 == Some(0xf0)
                 && matches!(destination.size, OperandSize::Dword | OperandSize::Qword) =>
         {
             (destination, destination.size)
         }
+        (OpcodeMap::Primary, 0x01, Operation::LockAddMemReg { destination, .. })
+            if prefixes.group1 == Some(0xf0) =>
+        {
+            (destination, OperandSize::Qword)
+        }
+        (OpcodeMap::Primary, 0x83, Operation::LockOrMem { destination, .. })
+        | (OpcodeMap::Primary, 0x83, Operation::LockSubDwordImm8 { destination, .. })
+        | (
+            OpcodeMap::Escape0f,
+            0xba,
+            Operation::LockBitMemImm {
+                kind: BitKind::Set,
+                destination,
+                ..
+            },
+        ) if prefixes.group1 == Some(0xf0) => (destination, OperandSize::Dword),
         (OpcodeMap::Primary, 0x87, Operation::XchgMemory { memory, .. })
             if prefixes.group1.is_none()
                 && matches!(memory.size, OperandSize::Dword | OperandSize::Qword) =>
@@ -30329,6 +30696,596 @@ fn cpl3_notrack_register_jump(instruction: &long_decode::Instruction) -> bool {
                 operand: Operand::Register(_)
             }
         )
+}
+
+fn cpl3_plain_scalar_prefixes(instruction: &long_decode::Instruction) -> bool {
+    let prefixes = instruction.prefixes;
+    prefixes.group1.is_none()
+        && prefixes.segment.is_none()
+        && !prefixes.address_override
+        && prefixes.operand_override == (instruction.operand_size == OperandSize::Word)
+}
+
+fn cpl3_static_scalar_form(instruction: &long_decode::Instruction) -> bool {
+    use ArithmeticKind as A;
+    use LogicKind as L;
+    use OpcodeMap::{Escape0f as M0f, Primary as Mp};
+    use Operand as O;
+    if !cpl3_plain_scalar_prefixes(instruction) {
+        return false;
+    }
+    let p = instruction.prefixes;
+    let sete_memory_store = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (M0f, 0x94, Operation::SetCondition { condition: ConditionCode::Equal, dst: O::Memory(dst), .. })
+            if dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && matches!(
+                    (dst.base, dst.displacement),
+                    (AddressBase::Register(Register::Rbx), 0x900)
+                        | (AddressBase::Register(Register::Rbp), -0x4f5)
+                )
+                && p.group1.is_none() && p.segment.is_none()
+                && !p.operand_override && !p.address_override && p.rex.is_none()
+    );
+    let and_dword_registers = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x21, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
+            if instruction.operand_size == OperandSize::Dword
+                && matches!(
+                    (dst, src),
+                    (d, s) if (d == RegisterView::low(Register::R10, OperandSize::Dword)
+                        && s == RegisterView::low(Register::Rcx, OperandSize::Dword))
+                        || (d == RegisterView::low(Register::R11, OperandSize::Dword)
+                            && s == RegisterView::low(Register::Rsi, OperandSize::Dword))
+                        || (d == RegisterView::low(Register::Rax, OperandSize::Dword)
+                            && s == RegisterView::low(Register::R15, OperandSize::Dword))
+                )
+    );
+    let observed = sete_memory_store
+        || and_dword_registers
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (M0f, 0xbc, Operation::BitScan { kind: BitScanKind::Forward, dst, src: O::Register(src) })
+                if p.rex == Some(0x48) && instruction.operand_size == OperandSize::Qword
+                    && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+                    && (src == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                        || src == RegisterView::low(Register::Rax, OperandSize::Qword))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (M0f, 0xbc, Operation::BitScan { kind: BitScanKind::Forward, dst, src: O::Register(src) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                    && src == RegisterView::low(Register::Rax, OperandSize::Dword)
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0xf7, Operation::Arithmetic { kind: A::Neg, dst: O::Register(dst), .. })
+                if instruction.operand_size == OperandSize::Dword && p == Prefixes::default()
+                    && matches!(dst, d if d == RegisterView::low(Register::Rax, OperandSize::Dword)
+                        || d == RegisterView::low(Register::Rbx, OperandSize::Dword)
+                        || d == RegisterView::low(Register::Rdx, OperandSize::Dword))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x0400_0000) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x0c, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x80) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Byte
+                    && dst == RegisterView::low(Register::Rax, OperandSize::Byte)
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x22, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Memory(src) })
+                if src.size == OperandSize::Byte && src.address_size == OperandSize::Qword
+                    && src.base == AddressBase::Register(Register::Rbp) && src.index.is_none()
+                    && ((p.rex.is_none() && src.displacement == -0x4c0
+                        && dst == RegisterView::low(Register::Rax, OperandSize::Byte))
+                        || (p.rex == Some(0x44) && src.displacement == -0x4bc
+                            && dst == RegisterView::low(Register::R13, OperandSize::Byte)))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x81, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(0x100) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && dst == RegisterView::low(Register::Rsi, OperandSize::Dword)
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x89) })
+                if p.rex == Some(0x40) && instruction.operand_size == OperandSize::Byte
+                    && dst == RegisterView::low(Register::Rsi, OperandSize::Byte)
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x80, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(immediate) })
+                if instruction.operand_size == OperandSize::Byte
+                    && ((p.rex == Some(0x40)
+                        && dst == RegisterView::low(Register::Rsi, OperandSize::Byte)
+                        && matches!(immediate, 0x80 | 0x81))
+                        || (p.rex == Some(0x41)
+                            && dst == RegisterView::low(Register::R9, OperandSize::Byte)
+                            && immediate == 0x81))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x68, Operation::PushImmediate { value: 0xca })
+                if p == Prefixes::default() && instruction.length == 5
+                    && instruction.operand_size == OperandSize::Qword
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x19, Operation::Arithmetic { kind: A::Sbb, dst: O::Register(dst), src: O::Register(src) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && dst == src && matches!(dst, d if d == RegisterView::low(Register::Rax, OperandSize::Dword)
+                        || d == RegisterView::low(Register::Rdx, OperandSize::Dword))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(8) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Byte
+                    && dst == RegisterView::high_byte(Register::Rax, false).unwrap()
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Immediate(0x202) })
+                if p.operand_override && p.group1.is_none() && p.segment.is_none()
+                    && !p.address_override && p.rex.is_none() && instruction.length == 5
+                    && instruction.operand_size == OperandSize::Word && dst.size == OperandSize::Word
+                    && dst.address_size == OperandSize::Qword
+                    && dst.base == AddressBase::Register(Register::Rcx)
+                    && dst.index.is_none() && dst.displacement == 0
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x33, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Memory(src) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
+                    && src.base == AddressBase::Register(Register::Rbp) && src.index.is_none()
+                    && src.displacement == -0x28
+                    && (dst == RegisterView::low(Register::Rbx, OperandSize::Dword)
+                        || dst == RegisterView::low(Register::Rax, OperandSize::Dword))
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0x03, Operation::Arithmetic { kind: A::Add, dst: O::Register(dst), src: O::Memory(src) })
+                if p.rex == Some(0x45) && instruction.operand_size == OperandSize::Dword
+                    && dst == RegisterView::low(Register::R11, OperandSize::Dword)
+                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
+                    && src.base == AddressBase::Register(Register::R10) && src.index.is_none()
+                    && src.displacement == 0x10
+        )
+        || matches!(
+            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+            (Mp, 0xf7, Operation::Divide { signed: false, divisor: O::Memory(src) })
+                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
+                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
+                    && src.base == AddressBase::Register(Register::Rdi) && src.index.is_none()
+                    && src.displacement == 8
+        );
+    observed
+}
+
+fn cpl3_workload_scalar_form(instruction: &long_decode::Instruction) -> bool {
+    use ArithmeticKind as A;
+    use BitScanKind as B;
+    use LogicKind as L;
+    use OpcodeMap::{Escape0f as M0f, Primary as Mp};
+    use Operand as O;
+    if !cpl3_plain_scalar_prefixes(instruction) {
+        return false;
+    }
+    let p = instruction.prefixes;
+    let width = instruction.operand_size;
+    let memory = |value: MemoryOperand, size: OperandSize| {
+        value.size == size && value.address_size == OperandSize::Qword
+    };
+    let byte_register = |value: RegisterView| value.size() == OperandSize::Byte;
+    let no_prefix = p == Prefixes::default();
+    let byte_store = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x88, Operation::Mov { dst: O::Memory(dst), src: O::Register(src) })
+            if memory(dst, OperandSize::Byte) && byte_register(src) && !p.operand_override
+                && !p.rex.is_some_and(|rex| rex & 8 != 0)
+    );
+    let word_immediate_store = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xc7, Operation::MovImmediate { dst: O::Memory(dst), value })
+            if p.operand_override && p.rex.is_none()
+                && instruction.operand_size == OperandSize::Word
+                && memory(dst, OperandSize::Word)
+                && dst.index.is_none()
+                && matches!((dst.base, dst.displacement, value),
+                    (AddressBase::Register(Register::Rax), 0x320, 0x3d)
+                        | (AddressBase::Register(Register::Rbx), 0x10, 1)
+                        | (AddressBase::Register(Register::Rbp), -0xb4, 1))
+    );
+    let byte_immediate_register = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xb0..=0xb7, Operation::MovImmediate { dst: O::Register(dst), value })
+            if instruction.operand_size == OperandSize::Byte
+                && byte_register(dst)
+                && matches!((dst, value, p.rex),
+                    (d, 1 | 2 | 3 | 8, None)
+                        if d == RegisterView::low(Register::Rbx, OperandSize::Byte))
+                    || matches!((dst, value, p.rex),
+                        (d, 2 | 3 | 6 | 9 | 10, None)
+                            if d == RegisterView::low(Register::Rax, OperandSize::Byte))
+                    || matches!((dst, value, p.rex),
+                        (d, 2 | 3 | 0x84, None)
+                            if d == RegisterView::low(Register::Rdx, OperandSize::Byte))
+                    || matches!((dst, value, p.rex),
+                        (d, 0x61, None)
+                            if d == RegisterView::low(Register::Rcx, OperandSize::Byte))
+                    || matches!((dst, value, p.rex),
+                        (d, 1 | 0x0a, Some(0x41))
+                            if d == RegisterView::low(Register::R13, OperandSize::Byte))
+                    || matches!((dst, value, p.rex),
+                        (d, 1, Some(0x41))
+                            if d == RegisterView::low(Register::R9, OperandSize::Byte))
+    );
+    let movzx_register = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (M0f, 0xb6, Operation::Extend { signed: false, dst, src: O::Register(src) })
+            if width == OperandSize::Dword && dst.size() == width && byte_register(src)
+    );
+    let movsx = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (M0f, 0xbe, Operation::Extend { signed: true, dst, src })
+            if match (width, dst, src, p.rex) {
+                (OperandSize::Qword, d, O::Memory(m), Some(0x48))
+                    if d == RegisterView::low(Register::Rcx, OperandSize::Qword)
+                        && memory(m, OperandSize::Byte)
+                        && m.base == AddressBase::Register(Register::Rax)
+                        && m.index.is_none() && m.displacement == 0 => true,
+                (OperandSize::Qword, d, O::Memory(m), Some(0x49))
+                    if d == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                        && memory(m, OperandSize::Byte)
+                        && m.base == AddressBase::Register(Register::R14)
+                        && m.index.is_none() && m.displacement == 0 => true,
+                (OperandSize::Qword, d, O::Memory(m), Some(0x48))
+                    if d == RegisterView::low(Register::Rdx, OperandSize::Qword)
+                        && memory(m, OperandSize::Byte)
+                        && m.base == AddressBase::Register(Register::Rdi)
+                        && m.index.is_none() && m.displacement == 0 => true,
+                (OperandSize::Dword, d, O::Memory(m), _)
+                    if d.size() == OperandSize::Dword && memory(m, OperandSize::Byte) => true,
+                (OperandSize::Dword, d, O::Register(r), _)
+                    if d.size() == OperandSize::Dword && byte_register(r) => true,
+                _ => false,
+            }
+    );
+    let movsxd = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x63, Operation::Extend { signed: true, dst, src: O::Memory(src) })
+            if width == OperandSize::Qword
+                && p.rex == Some(0x48)
+                && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+                && memory(src, OperandSize::Dword)
+                && src.base == AddressBase::NextRip && src.index.is_none()
+    );
+    let setcc_store = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (M0f, 0x94 | 0x95, Operation::SetCondition { condition, dst: O::Memory(dst), .. })
+            if p.rex.is_none() && !p.operand_override
+                && dst.size == OperandSize::Byte
+                && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && ((condition == ConditionCode::Equal
+                    && (dst.base == AddressBase::Register(Register::Rbx) && dst.displacement == 0x900
+                        || dst.base == AddressBase::Register(Register::Rbp)
+                            && matches!(dst.displacement, -0x4f5 | -0x83 | -0x111 | -0x99)))
+                    || (condition == ConditionCode::NotEqual
+                        && dst.base == AddressBase::Register(Register::Rbp)
+                        && matches!(dst.displacement, -0x39 | -0x12f | -0xbd)))
+    );
+    let push_immediate = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x68, Operation::PushImmediate { value: 0x101 | 0xe6 | 0xca })
+            if no_prefix && width == OperandSize::Qword
+    );
+    let div_memory = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xf7, Operation::Divide { signed: false, divisor: O::Memory(src) })
+            if no_prefix && width == OperandSize::Dword
+                && memory(src, OperandSize::Dword)
+                && src.base == AddressBase::Register(Register::Rdi)
+                && src.index.is_none() && src.displacement == 8
+    );
+    let register_arithmetic = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x03, Operation::Arithmetic { kind: A::Add, dst: O::Register(dst), src: O::Memory(src) })
+            if width == OperandSize::Dword && dst.size() == width && memory(src, width)
+                && ((dst == RegisterView::low(Register::R11, width)
+                    && src.base == AddressBase::Register(Register::R10) && src.displacement == 0x10)
+                    || (dst == RegisterView::low(Register::Rcx, width)
+                        && src.base == AddressBase::Register(Register::Rdx)
+                        && src.index.is_none() && src.displacement == 0x20)
+                    || (dst == RegisterView::low(Register::Rax, width)
+                        && p.rex == Some(0x42)
+                        && src.base == AddressBase::Register(Register::Rdx)
+                        && src.index == Some(Register::R10)
+                        && src.scale == 8 && src.displacement == 4)
+                    || (dst == RegisterView::low(Register::Rax, width)
+                        && p.rex == Some(0x42)
+                        && src.base == AddressBase::Register(Register::Rbp)
+                        && src.index == Some(Register::R10)
+                        && src.scale == 4 && src.displacement == -0x138))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x2b, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Memory(src) })
+            if width == OperandSize::Dword && dst.size() == width && memory(src, width)
+                && matches!(dst, d if d == RegisterView::low(Register::R12, width)
+                    || d == RegisterView::low(Register::Rbx, width)
+                    || d == RegisterView::low(Register::Rax, width)
+                    || d == RegisterView::low(Register::Rsi, width)
+                    || d == RegisterView::low(Register::Rdx, width))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x28, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Register(src) })
+            if width == OperandSize::Byte
+                && dst == RegisterView::low(Register::Rcx, width)
+                && src == RegisterView::low(Register::Rdx, width)
+                && no_prefix
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x2d, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Immediate(0x88) })
+            if width == OperandSize::Dword && no_prefix
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x83, Operation::Arithmetic { kind: A::Adc, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && ((dst == RegisterView::low(Register::Rax, width) && matches!(value, 0 | u64::MAX))
+                    || (dst == RegisterView::low(Register::Rsi, width) && value == 0))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x19, Operation::Arithmetic { kind: A::Sbb, dst: O::Register(dst), src: O::Register(src) })
+            if width == OperandSize::Dword && dst == src
+                && ((no_prefix && matches!(dst,
+                    r if r == RegisterView::low(Register::Rax, width)
+                        || r == RegisterView::low(Register::Rdx, width)))
+                    || (p.rex == Some(0x45)
+                        && dst == RegisterView::low(Register::R12, width)))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xf7, Operation::Arithmetic { kind: A::Neg, dst: O::Register(dst), .. })
+            if width == OperandSize::Dword
+                && matches!(dst,
+                    r if r == RegisterView::low(Register::Rax, width)
+                        || r == RegisterView::low(Register::Rbx, width)
+                        || r == RegisterView::low(Register::Rcx, width)
+                        || r == RegisterView::low(Register::Rdx, width)
+                        || r == RegisterView::low(Register::R12, width))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xff, Operation::Arithmetic { kind: A::Inc, dst: O::Register(dst), .. })
+            if width == OperandSize::Dword
+                && matches!(dst,
+                    r if r == RegisterView::low(Register::Rax, width)
+                        || r == RegisterView::low(Register::Rdx, width)
+                        || r == RegisterView::low(Register::R9, width)
+                        || r == RegisterView::low(Register::R12, width)
+                        || r == RegisterView::low(Register::R13, width)
+                        || r == RegisterView::low(Register::R14, width)
+                        || r == RegisterView::low(Register::R15, width))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xfe, Operation::Arithmetic { kind: A::Dec, dst: O::Register(dst), .. })
+            if width == OperandSize::Byte
+                && matches!(dst,
+                    r if r == RegisterView::low(Register::Rax, width)
+                        || r == RegisterView::low(Register::Rdx, width)
+                        || r == RegisterView::low(Register::Rbx, width)
+                        || r == RegisterView::low(Register::R9, width))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xff, Operation::Arithmetic { kind: A::Dec, dst: O::Register(dst), .. })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && matches!(dst,
+                    r if r == RegisterView::low(Register::Rax, width)
+                        || r == RegisterView::low(Register::Rbx, width)
+                        || r == RegisterView::low(Register::Rsi, width))
+    );
+    let logic = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x21, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
+            if width == OperandSize::Dword && dst.size() == width && src.size() == width
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x20, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
+            if width == OperandSize::Byte
+                && dst == RegisterView::low(Register::Rax, width)
+                && ((p.rex == Some(0x44) && src == RegisterView::low(Register::R8, width))
+                    || (p.rex == Some(0x40) && src == RegisterView::low(Register::Rsi, width)))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x25, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Immediate(0xfb00) })
+            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x81, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && ((dst == RegisterView::low(Register::Rsi, width) && value == 0xffff_ffff_ffff_f000)
+                    || (dst == RegisterView::low(Register::Rbx, width) && value == 0xffff_ffff_87ff_ffff)
+                    || (dst == RegisterView::low(Register::Rcx, width) && value == 0xffff_ffff_ffff_f000))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x22, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Memory(src) })
+            if width == OperandSize::Byte && memory(src, width)
+                && src.base == AddressBase::Register(Register::Rbp)
+                && src.index.is_none()
+                && ((dst == RegisterView::low(Register::Rax, width) && src.displacement == -0x4c0)
+                    || (dst == RegisterView::low(Register::R13, width) && src.displacement == -0x4bc && p.rex == Some(0x44)))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x08, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Register(src) })
+            if width == OperandSize::Byte && byte_register(dst) && byte_register(src)
+                && ((dst == RegisterView::low(Register::Rdx, width) && src == RegisterView::low(Register::Rcx, width) && no_prefix)
+                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rdx, width) && no_prefix)
+                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rcx, width) && no_prefix)
+                    || (dst == RegisterView::low(Register::Rcx, width) && src == RegisterView::low(Register::R9, width) && p.rex == Some(0x44))
+                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rsi, width) && p.rex == Some(0x40)))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x0c, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x80) })
+            if width == OperandSize::Byte && no_prefix
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Byte && byte_register(dst)
+                && ((dst == RegisterView::low(Register::Rsi, width) && p.rex == Some(0x40) && value == 0x89)
+                    || (dst == RegisterView::low(Register::Rdi, width) && p.rex == Some(0x40) && value == 0x80)
+                    || (dst == RegisterView::high_byte(Register::Rax, false).unwrap() && no_prefix && value == 8)
+                    || (dst == RegisterView::high_byte(Register::Rdx, false).unwrap() && no_prefix && value == 2))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x0400_0000) })
+            if width == OperandSize::Dword && no_prefix
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x401) })
+            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x81, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x100) })
+            if width == OperandSize::Dword && no_prefix
+                && dst == RegisterView::low(Register::Rsi, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x34, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(1) })
+            if width == OperandSize::Byte && no_prefix
+                && dst == RegisterView::low(Register::Rax, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x81, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(0x100) })
+            if width == OperandSize::Dword && no_prefix
+                && dst == RegisterView::low(Register::Rsi, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Dword
+                && ((p.rex.is_none() && dst == RegisterView::low(Register::Rcx, width) && value == 1)
+                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rbx, width) && value == 2)
+                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rax, width) && value == 1)
+                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rsi, width) && value == 0xffff_ffff_ffff_fffe)
+                    || (p.rex == Some(0x41) && dst == RegisterView::low(Register::R12, width) && value == 1))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && dst == RegisterView::low(Register::Rax, width) && value == 1
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x80, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Byte
+                && ((p.rex == Some(0x40) && dst == RegisterView::low(Register::Rsi, width) && matches!(value, 0x80 | 0x81))
+                    || (p.rex == Some(0x41) && dst == RegisterView::low(Register::R9, width) && value == 0x81))
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
+            if width == OperandSize::Dword && p.rex == Some(0x41)
+                && dst == RegisterView::low(Register::R12, width) && value == 1
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Register(dst), src: O::Immediate(0xffff_ffff_ffff_ffc0) })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && dst == RegisterView::low(Register::Rsi, width)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Immediate(0x202) })
+            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
+                && memory(dst, width) && dst.base == AddressBase::Register(Register::Rcx)
+                && dst.index.is_none() && dst.displacement == 0
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x84, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Register(src) })
+            if width == OperandSize::Byte && no_prefix && memory(dst, width)
+                && dst.base == AddressBase::Register(Register::Rbp)
+                && dst.index.is_none() && dst.displacement == -0x111
+                && src == RegisterView::low(Register::Rdx, width)
+    );
+    let compare_source = |dst: RegisterView, src: MemoryOperand| {
+        if width == OperandSize::Qword {
+            dst == RegisterView::low(Register::Rax, width)
+                && src.base == AddressBase::Register(Register::Rdi)
+                && src.index == Some(Register::Rax)
+                && src.scale == 1
+                && src.displacement == 0
+        } else if width == OperandSize::Dword {
+            (dst == RegisterView::low(Register::Rdx, width)
+                && ((src.base == AddressBase::Register(Register::Rax)
+                    && src.index.is_none()
+                    && src.displacement == 0x0c)
+                    || (src.base == AddressBase::Register(Register::Rbx)
+                        && src.index.is_none()
+                        && src.displacement == 0x18)
+                    || (src.base == AddressBase::NextRip && src.index.is_none())
+                    || (src.base == AddressBase::Register(Register::R12)
+                        && src.index == Some(Register::Rax)
+                        && src.scale == 8
+                        && src.displacement == 8)))
+                || (dst == RegisterView::low(Register::Rbx, width)
+                    && ((src.base == AddressBase::NextRip && src.index.is_none())
+                        || (src.base == AddressBase::Register(Register::Rax)
+                            && src.index.is_none()
+                            && src.displacement == 0x20)
+                        || (src.base == AddressBase::Register(Register::R15)
+                            && src.index.is_none()
+                            && src.displacement == 0x0c)
+                        || (src.base == AddressBase::Register(Register::R12)
+                            && src.index == Some(Register::R15)
+                            && src.scale == 8
+                            && src.displacement == 0x10)))
+        } else {
+            false
+        }
+    };
+    let compare = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x3b, Operation::Arithmetic { kind: A::Cmp, dst: O::Register(dst), src: O::Memory(src) })
+            if memory(src, width) && compare_source(dst, src)
+    ) || matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (Mp, 0x3a, Operation::Arithmetic { kind: A::Cmp, dst: O::Register(dst), src: O::Memory(src) })
+            if width == OperandSize::Byte && memory(src, width)
+                && ((dst == RegisterView::low(Register::Rcx, width)
+                    && src.base == AddressBase::Register(Register::Rsi)
+                    && src.index == Some(Register::Rax) && src.scale == 1 && src.displacement == 0)
+                    || (dst == RegisterView::low(Register::Rdx, width)
+                        && src.base == AddressBase::Register(Register::Rbp)
+                        && src.index.is_none() && src.displacement == -0x12e))
+    );
+    let bsf = matches!(
+        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
+        (M0f, 0xbc, Operation::BitScan { kind: B::Forward, dst, src: O::Register(src) })
+            if width == OperandSize::Qword && p.rex == Some(0x48)
+                && dst == RegisterView::low(Register::Rax, width)
+                && matches!(src, s if s == RegisterView::low(Register::Rax, width)
+                    || s == RegisterView::low(Register::Rdx, width))
+    );
+    byte_store
+        || word_immediate_store
+        || byte_immediate_register
+        || movzx_register
+        || movsx
+        || movsxd
+        || setcc_store
+        || push_immediate
+        || div_memory
+        || register_arithmetic
+        || logic
+        || compare
+        || bsf
 }
 
 fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
@@ -30382,7 +31339,7 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
         (0x33, Operation::LogicFsLoad { kind: LogicKind::Xor, dst, src })
-            if observed_rex_w_only
+            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 0x03 == 0)
                 && dst.size() == OperandSize::Qword
                 && absolute(src, OperandSize::Qword)
                 && src.displacement == 0x30
@@ -30417,6 +31374,76 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
         (0x88, Operation::MovFsStore { dst, src })
             if src.size() == OperandSize::Byte
                 && absolute(dst, OperandSize::Byte)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x8b, Operation::MovFsLoadQ { dst, src })
+            if dst.size() == OperandSize::Qword
+                && prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
+                && qword_register_base(src)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x8b, Operation::MovFsLoadD { dst, src })
+            if dst.size() == OperandSize::Dword
+                && src.size == OperandSize::Dword
+                && src.address_size == OperandSize::Qword
+                && src.index.is_none()
+                && src.scale == 1
+                && matches!(src.base, AddressBase::Register(_))
+                && prefixes.rex.is_none_or(|rex| rex & 0x0a == 0)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x89, Operation::MovFsStore { dst, src })
+            if src.size() == OperandSize::Dword
+                && dst.size == OperandSize::Dword
+                && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && dst.scale == 1
+                && matches!(dst.base, AddressBase::Register(_))
+                && prefixes.rex.is_none_or(|rex| rex & 0x0a == 0)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x83, Operation::CmpFsMemImm { dst, .. })
+            if prefixes.rex.is_none()
+                && dst.size == OperandSize::Dword
+                && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && dst.scale == 1
+                && matches!((dst.base, dst.displacement),
+                    (AddressBase::Register(Register::Rcx), 0)
+                        | (AddressBase::None, 0x614))
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0xf6, Operation::TestFsMemByte { src, immediate: 0x80 })
+            if prefixes.rex.is_none()
+                && absolute(src, OperandSize::Byte)
+                && src.displacement == 0x30c
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x39, Operation::CmpFsMem { dst, src })
+            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
+                && dst.size == OperandSize::Qword
+                && src.size() == OperandSize::Qword
+                && absolute(dst, OperandSize::Qword)
+                && dst.displacement == 0x10
+                && src == RegisterView::low(Register::R12, OperandSize::Qword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0xc7, Operation::MovFsMemImm { dst, immediate: 0 })
+            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
+                && dst.size == OperandSize::Qword
+                && dst.address_size == OperandSize::Qword
+                && dst.index.is_none()
+                && dst.scale == 1
+                && dst.displacement == 0
+                && matches!(dst.base,
+                    AddressBase::Register(Register::R13 | Register::Rax))
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
+        (0x3b, Operation::CmpFsLoad { dst, src })
+            if prefixes.rex.is_none()
+                && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
+                && absolute(src, OperandSize::Dword)
+                && src.displacement == 0x2d0
     )
 }
 
@@ -40378,6 +41405,18 @@ fn step_configured(
                     && instruction.prefixes.rex.is_none()
             }
             (
+                ScalarFloatMemoryRaxProfile::Mulsd(_),
+                Operation::MulsdMemory { destination: 0, .. },
+            )
+            | (
+                ScalarFloatMemoryRaxProfile::MulsdUnmasked(_),
+                Operation::MulsdMemory { destination: 0, .. },
+            ) => {
+                context.privilege == PrivilegeLevel::Ring3
+                    && control_policy.is_some()
+                    && cpl3_scalar_fp_form(&instruction)
+            }
+            (
                 ScalarFloatMemoryRaxProfile::Subss(_)
                 | ScalarFloatMemoryRaxProfile::SubssUnmasked(_),
                 Operation::SubssMemoryRax,
@@ -43504,6 +44543,8 @@ fn step_configured(
                 | Operation::MovdquLoadMemory { .. }
                 | Operation::MovdqaLoadMemory { .. }
                 | Operation::MovdqaRegister { .. }
+                | Operation::MovapsRegister { .. }
+                | Operation::MovapsLoadMemory { .. }
                 | Operation::MovapsStoreMemory { .. }
                 | Operation::PxorRegister { .. }
                 | Operation::PaddbRegister { .. }
@@ -43514,6 +44555,13 @@ fn step_configured(
                 | Operation::PackuswbRegister { .. }
                 | Operation::PcmpeqbRegister { .. }
                 | Operation::PcmpeqbMemory { .. }
+                | Operation::PcmpgtbRegister { .. }
+                | Operation::XorpsRegister { .. }
+                | Operation::PandnRegister { .. }
+                | Operation::PminubRegister { .. }
+                | Operation::PminubMemory { .. }
+                | Operation::MovsdLoadMemory { .. }
+                | Operation::MovsdStoreMemory { .. }
                 | Operation::MovlpdLoadMemory { .. }
                 | Operation::MovhpdLoadMemory { .. }
                 | Operation::MovhpsLoadMemory { .. }
@@ -43526,6 +44574,27 @@ fn step_configured(
         )
     {
         return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
+    }
+    if context.privilege == PrivilegeLevel::Ring3
+        && control_policy.is_some()
+        && fp_cpl0.is_some()
+        && cpl3_scalar_fp_form(&instruction)
+    {
+        return step_cpl3_scalar_fp(
+            state,
+            memory,
+            context,
+            rflags_defined,
+            profiles,
+            &instruction,
+            StepRuntime {
+                rdtsc_source,
+                sti_sequence: None,
+                exact_hlt_only,
+                stop_requested,
+            },
+            fp_cpl0.expect("checked above"),
+        );
     }
     // S4-38L9d/E, S4-39f22: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE`, `FXSAVE64`
     // and `FXRSTOR64`; its state lives in the member's cell, so these four never reach the
@@ -45261,6 +46330,7 @@ fn step_configured(
                 Operation::MulssMemoryRax
                     | Operation::DivssMemoryRax
                     | Operation::MulsdMemoryRax
+                    | Operation::MulsdMemory { .. }
                     | Operation::SubssMemoryRax
                     | Operation::SubsdMemoryRax
             )
@@ -46138,6 +47208,13 @@ fn step_configured(
         | Operation::Loop { .. }
         // S4-38L9e: INT3 commits in its own gated path before this point.
         | Operation::Int3 => false,
+        Operation::TestFsMemByte { .. }
+            if context.privilege == PrivilegeLevel::Ring3
+                && control_policy.is_some()
+                && cpl3_glibc_tls_fs_form(&instruction) =>
+        {
+            true
+        }
         Operation::Swapgs => true,
         // S6-22: the small glibc TLS FS subset is also executable from CPL3; the
         // exact operation and addressing form are checked by the helper.
@@ -46147,6 +47224,8 @@ fn step_configured(
         | Operation::MovFsMemImm { .. }
         | Operation::SubFsMem { .. }
         | Operation::CmpFsMemImm { .. }
+        | Operation::CmpFsMem { .. }
+        | Operation::CmpFsLoad { .. }
         | Operation::LogicFsLoad { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
@@ -46163,6 +47242,11 @@ fn step_configured(
         }
         Operation::LockAddMem { .. }
         | Operation::LockCmpxchgMem { .. }
+        | Operation::LockXaddMem { .. }
+        | Operation::LockAddMemReg { .. }
+        | Operation::LockOrMem { .. }
+        | Operation::LockSubDwordImm8 { .. }
+        | Operation::LockBitMemImm { .. }
         | Operation::XchgMemory { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
@@ -46170,6 +47254,7 @@ fn step_configured(
         {
             true
         }
+        Operation::LockSubDwordImm8 { .. } => false,
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
         // S4-38L7i: the same holds for the FS/GS-based qword loads.
@@ -46656,6 +47741,8 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::MulsdMemoryRax => false,
+        Operation::MulsdMemory { .. } if configured_scalar_float_memory_rax_profile.is_some() => state.sse.is_some(),
+        Operation::MulsdMemory { .. } => false,
         Operation::MulpsRegister { .. } if configured_mulps_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -47038,14 +48125,42 @@ fn step_configured(
         | Operation::MaxpsRegisterMasked { .. }
         | Operation::MovsdRegister { .. }
         | Operation::MovsdStoreRegister { .. }
-        | Operation::MovsdLoadMemory { .. }
-        | Operation::MovsdStoreMemory { .. }
         | Operation::MovupsLoadMemory { .. }
         | Operation::MovupdLoadMemory { .. }
         | Operation::MovupdStoreMemory { .. }
         | Operation::MovssLoadMemory { .. }
         | Operation::MovssStoreMemory { .. }
         | Operation::MovupsStoreMemory { .. } => state.x87.is_some() && state.sse.is_some(),
+        Operation::MovsdLoadMemory { source, .. } => {
+            let original_rax_encoding = match instruction.prefixes.rex {
+                None => instruction.length == 4,
+                Some(0x40 | 0x44) => instruction.length == 5,
+                _ => false,
+            };
+            state.x87.is_some()
+                && state.sse.is_some()
+                && instruction.prefixes.group1 == Some(0xf2)
+                && original_rax_encoding
+                && source.address_size == OperandSize::Qword
+                && source.base == AddressBase::Register(Register::Rax)
+                && source.index.is_none()
+                && source.displacement == 0
+        }
+        Operation::MovsdStoreMemory { destination, .. } => {
+            let original_rax_encoding = match instruction.prefixes.rex {
+                None => instruction.length == 4,
+                Some(0x40 | 0x44) => instruction.length == 5,
+                _ => false,
+            };
+            state.x87.is_some()
+                && state.sse.is_some()
+                && instruction.prefixes.group1 == Some(0xf2)
+                && original_rax_encoding
+                && destination.address_size == OperandSize::Qword
+                && destination.base == AddressBase::Register(Register::Rax)
+                && destination.index.is_none()
+                && destination.displacement == 0
+        }
         Operation::XorpdRegister {
             destination: 0,
             source: 1,
@@ -48050,6 +49165,7 @@ fn step_configured(
         Operation::RepneScasWdqAddr32 { .. } => false,
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
+        Operation::MovapsLoadMemory { .. } | Operation::PminubMemory { .. } => false,
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
         | Operation::MovdquLoadMemory { .. }
@@ -54305,6 +55421,7 @@ fn step_configured(
             });
         }
         Operation::MulsdMemoryRax
+        | Operation::MulsdMemory { destination: 0, .. }
             if matches!(
                 configured_scalar_float_memory_rax_profile,
                 Some(
@@ -54313,7 +55430,15 @@ fn step_configured(
                 )
             ) =>
         {
-            let address = state.gpr[Register::Rax as usize];
+            let address = match instruction.operation {
+                Operation::MulsdMemory { source, .. } => {
+                    match source.access_range_address_48(state, next_rip, 8) {
+                        Ok(address) => address,
+                        Err(error) => return report_memory_error(error),
+                    }
+                }
+                _ => state.gpr[Register::Rax as usize],
+            };
             if state.rflags & (1 << 18) != 0 {
                 return Ok(StepOutcome::Unsupported {
                     opcode: instruction.opcode.byte,
@@ -54334,7 +55459,9 @@ fn step_configured(
                 }));
             }
             let mut source = [0u8; 8];
-            memory.read(address, context, &mut source)?;
+            if let Err(error) = memory.read(address, context, &mut source) {
+                return report_memory_error(error);
+            }
             let (destination_xmm, old_mxcsr) = {
                 let sse = state.sse.as_ref().expect("MULSD memory state prevalidated");
                 (sse.xmm[0], sse.mxcsr)
@@ -60433,6 +61560,7 @@ fn step_configured(
         | Operation::LockOrMem { .. }
         | Operation::LockAddMem { .. }
         | Operation::LockSubMem { .. }
+        | Operation::LockSubDwordImm8 { .. }
         | Operation::LockAddMemReg { .. }
         | Operation::LockSubMemReg { .. }
         | Operation::LockXaddMem { .. }
@@ -61739,33 +62867,15 @@ fn step_configured(
         }
         Operation::Arithmetic { kind, dst, src } => {
             let arithmetic = (|| {
-                let lhs = match dst {
-                    Operand::Memory(mem)
-                        if control_policy.is_some()
-                            && context.privilege == PrivilegeLevel::Ring3
-                            && instruction.opcode.map == OpcodeMap::Primary
-                            && mem.address_size == OperandSize::Qword
-                            && matches!(
-                                (instruction.opcode.byte, kind, mem.size, src),
-                                (
-                                    0x83,
-                                    ArithmeticKind::Add,
-                                    OperandSize::Dword | OperandSize::Qword,
-                                    Operand::Immediate(_),
-                                ) | (0x83, ArithmeticKind::Sub, OperandSize::Dword, Operand::Immediate(_))
-                                    | (
-                                        0x01,
-                                        ArithmeticKind::Add,
-                                        OperandSize::Dword | OperandSize::Qword,
-                                        Operand::Register(_),
-                                    )
-                            ) =>
-                    {
-                        let address = mem.access_address_48(state, next_rip)?;
-                        memory.read_integer_for_write(address, context, mem.size)?
-                    }
-                    _ => read_operand(state, memory, context, next_rip, dst)?,
-                };
+                let lhs = read_rmw_destination(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    dst,
+                    &instruction,
+                    control_policy.is_some(),
+                )?;
                 let rhs = read_operand(state, memory, context, next_rip, src)?;
                 let (result, flags) =
                     arithmetic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
@@ -61785,29 +62895,15 @@ fn step_configured(
         }
         Operation::Logic { kind, dst, src } => {
             let logic = (|| {
-                let lhs = match dst {
-                    Operand::Memory(mem)
-                        if control_policy.is_some()
-                            && context.privilege == PrivilegeLevel::Ring3
-                            && instruction.opcode.map == OpcodeMap::Primary
-                            && mem.address_size == OperandSize::Qword
-                            && matches!(
-                                (instruction.opcode.byte, kind, mem.size, src),
-                                (0x80, LogicKind::And, OperandSize::Byte, Operand::Immediate(_))
-                                    | (
-                                        0x83,
-                                        LogicKind::Or | LogicKind::And,
-                                        OperandSize::Qword,
-                                        Operand::Immediate(_),
-                                    )
-                                    | (0x09, LogicKind::Or, OperandSize::Qword, Operand::Register(_))
-                            ) =>
-                    {
-                        let address = mem.access_address_48(state, next_rip)?;
-                        memory.read_integer_for_write(address, context, mem.size)?
-                    }
-                    _ => read_operand(state, memory, context, next_rip, dst)?,
-                };
+                let lhs = read_rmw_destination(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    dst,
+                    &instruction,
+                    control_policy.is_some(),
+                )?;
                 let rhs = read_operand(state, memory, context, next_rip, src)?;
                 let (result, flags) =
                     logic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
@@ -61903,7 +62999,15 @@ fn step_configured(
             let shift = (|| {
                 let raw_count = read_operand(state, memory, context, next_rip, count)? as u8;
                 let count = shift_count(kind, instruction.operand_size, raw_count);
-                let lhs = read_operand(state, memory, context, next_rip, dst)?;
+                let lhs = read_rmw_destination(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    dst,
+                    &instruction,
+                    control_policy.is_some(),
+                )?;
                 let source = match source {
                     Some(source) => read_operand(state, memory, context, next_rip, source)?,
                     None => 0,
@@ -62129,6 +63233,12 @@ fn step_configured(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
+        Operation::MovapsLoadMemory { .. } | Operation::PminubMemory { .. } => {
+            unreachable!("CPL3 vector memory operations commit before dispatch")
+        }
+        Operation::MulsdMemory { .. } => {
+            return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
+        }
         Operation::PshuflwRegister { .. } | Operation::PinsrwMemory { .. } => {
             unreachable!("CPL3 XMM operations commit before general dispatch")
         }
@@ -62136,6 +63246,188 @@ fn step_configured(
     *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+fn step_cpl3_scalar_fp(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    mut profiles: ExecutionProfiles<'_>,
+    instruction: &long_decode::Instruction,
+    runtime: StepRuntime<'_, '_, '_>,
+    fp_cell: &RefCell<GuestFpState>,
+) -> Result<StepOutcome, MemoryError> {
+    let (Some(cr0), Some(cr4), Ok(sse)) = (
+        state.cr0,
+        state.cr4,
+        fp_cell.try_borrow().map(|fp| fp.sse.clone()),
+    ) else {
+        return Ok(StepOutcome::Unsupported { opcode: 0x0f });
+    };
+    let controls = |sse2_available| {
+        (
+            sse2_available,
+            cr0 & (1 << 2) != 0,
+            cr0 & (1 << 3) != 0,
+            cr4 & (1 << 9) != 0,
+            cr4 & (1 << 10) != 0,
+        )
+    };
+    let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr, cr4_osxmmexcpt) = controls(true);
+    let gates = AddsdControls {
+        sse2_available,
+        cr0_em,
+        cr0_ts,
+        cr4_osfxsr,
+        cr4_osxmmexcpt,
+    };
+    profiles.addsd_registers =
+        matches!(instruction.operation, Operation::AddsdRegister { .. }).then_some(gates);
+    profiles.mulsd_registers = matches!(instruction.operation, Operation::MulsdRegister { .. })
+        .then_some(MulsdControls {
+            sse2_available,
+            cr0_em,
+            cr0_ts,
+            cr4_osfxsr,
+            cr4_osxmmexcpt,
+        });
+    profiles.subsd_registers = matches!(instruction.operation, Operation::SubsdRegister { .. })
+        .then_some(SubsdControls {
+            sse2_available,
+            cr0_em,
+            cr0_ts,
+            cr4_osfxsr,
+            cr4_osxmmexcpt,
+        });
+    profiles.comisd_ucomisd_registers = matches!(
+        instruction.operation,
+        Operation::ComissUcomissRegister { .. }
+    )
+    .then_some(ComisdUcomisdControls {
+        sse2_available,
+        cr0_em,
+        cr0_ts,
+        cr4_osfxsr,
+        cr4_osxmmexcpt,
+    });
+    profiles.cvtsi2sd_registers =
+        matches!(instruction.operation, Operation::Cvtsi2sdR64Register { .. }).then_some(
+            Cvtsi2sdRegistersControls {
+                sse2_available,
+                cr0_em,
+                cr0_ts,
+                cr4_osfxsr,
+                cr4_osxmmexcpt,
+            },
+        );
+    profiles.cvttsd2si_registers = matches!(
+        instruction.operation,
+        Operation::Cvttsd2siR64Register { .. }
+    )
+    .then_some(Cvtsd2siRegistersControls {
+        sse2_available,
+        cr0_em,
+        cr0_ts,
+        cr4_osfxsr,
+        cr4_osxmmexcpt,
+    });
+    profiles.scalar_float_memory_rax =
+        matches!(instruction.operation, Operation::MulsdMemory { .. }).then_some(
+            ScalarFloatMemoryRaxProfile::MulsdUnmasked(MulsdMemoryRaxUnmaskedControls {
+                sse2_available,
+                cr0_em,
+                cr0_ts,
+                cr4_osfxsr,
+                cr4_osxmmexcpt,
+            }),
+        );
+    profiles.fp_cpl0 = None;
+    let mut local = state.clone();
+    local.sse = Some(sse);
+    let outcome = step_configured(
+        &mut local,
+        memory,
+        context,
+        rflags_defined,
+        profiles,
+        runtime,
+    )?;
+    match outcome {
+        StepOutcome::Advanced => {
+            let updated_sse = local.sse.take().expect("temporary SSE state stays present");
+            fp_cell
+                .try_borrow_mut()
+                .expect("guest FP state is not borrowed during a CPL3 instruction")
+                .sse = updated_sse;
+            *state = local;
+        }
+        StepOutcome::Fault(_) => {
+            let updated_sse = local.sse.take().expect("temporary SSE state stays present");
+            fp_cell
+                .try_borrow_mut()
+                .expect("guest FP state is not borrowed during a CPL3 instruction")
+                .sse = updated_sse;
+        }
+        _ => {}
+    }
+    Ok(outcome)
+}
+
+fn cpl3_scalar_fp_form(instruction: &long_decode::Instruction) -> bool {
+    let no_rex_scalar_prefix = instruction.prefixes.rex.is_none()
+        && instruction.prefixes.group1 == Some(0xf2)
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override;
+    match instruction.operation {
+        Operation::AddsdRegister { .. }
+        | Operation::MulsdRegister { .. }
+        | Operation::SubsdRegister { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && matches!(instruction.opcode.byte, 0x58 | 0x59 | 0x5c)
+                && no_rex_scalar_prefix
+        }
+        Operation::ComissUcomissRegister { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x2f
+                && instruction.prefixes
+                    == (Prefixes {
+                        operand_override: true,
+                        ..Prefixes::default()
+                    })
+        }
+        Operation::Cvtsi2sdR64Register { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x2a
+                && instruction.prefixes.group1 == Some(0xf2)
+                && instruction.prefixes.rex == Some(0x48)
+                && !instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && instruction.prefixes.segment.is_none()
+        }
+        Operation::Cvttsd2siR64Register { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x2c
+                && instruction.prefixes.group1 == Some(0xf2)
+                && instruction.prefixes.rex == Some(0x48)
+                && !instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && instruction.prefixes.segment.is_none()
+        }
+        Operation::MulsdMemory {
+            destination: 0,
+            source,
+        } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x59
+                && no_rex_scalar_prefix
+                && source.address_size == OperandSize::Qword
+                && source.base == AddressBase::NextRip
+                && source.index.is_none()
+        }
+        _ => false,
+    }
 }
 
 fn operand_width(size: OperandSize) -> u32 {
@@ -65823,6 +67115,16 @@ fn step_cpl3_xmm(
                 *byte &= mask;
             }
         }
+        Operation::PandnRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = !*dst & src;
+            }
+        }
         Operation::PunpcklqdqRegister {
             destination,
             source,
@@ -65850,6 +67152,24 @@ fn step_cpl3_xmm(
             let mut fp = fp.borrow_mut();
             let value = fp.sse.xmm[usize::from(source)];
             fp.sse.xmm[usize::from(destination)] = value;
+        }
+        Operation::MovapsRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let value = fp.sse.xmm[usize::from(source)];
+            fp.sse.xmm[usize::from(destination)] = value;
+        }
+        Operation::XorpsRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst ^= src;
+            }
         }
         Operation::PxorRegister {
             destination,
@@ -65936,6 +67256,53 @@ fn step_cpl3_xmm(
                 *dst = if *dst == src { 0xff } else { 0 };
             }
         }
+        Operation::PcmpgtbRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = if (*dst as i8) > (src as i8) { 0xff } else { 0 };
+            }
+        }
+        Operation::PminubRegister {
+            destination,
+            source,
+        } => {
+            let mut fp = fp.borrow_mut();
+            let rhs = fp.sse.xmm[usize::from(source)];
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = (*dst).min(src);
+            }
+        }
+        Operation::PminubMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if address & 15 != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            if let Err(error) = source.access_range_address_48(state, next_rip, 16) {
+                return report_memory_error(error);
+            };
+            let mut rhs = [0; 16];
+            if let Err(error) = memory.read(address, context, &mut rhs) {
+                return report_memory_error(error);
+            }
+            let mut fp = fp.borrow_mut();
+            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+                *dst = (*dst).min(src);
+            }
+        }
         Operation::PcmpeqbMemory {
             destination,
             source,
@@ -65974,6 +67341,36 @@ fn step_cpl3_xmm(
                 return report_memory_error(error);
             }
             fp.borrow_mut().sse.xmm[usize::from(destination)][..8].copy_from_slice(&low);
+        }
+        Operation::MovsdLoadMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.access_range_address_48(state, next_rip, 8) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let mut raw = [0; 8];
+            if let Err(error) = memory.read(address, context, &mut raw) {
+                return report_memory_error(error);
+            }
+            let mut fp = fp.borrow_mut();
+            let target = &mut fp.sse.xmm[usize::from(destination)];
+            target[..8].copy_from_slice(&raw);
+            target[8..].fill(0);
+        }
+        Operation::MovsdStoreMemory {
+            destination,
+            source,
+        } => {
+            let address = match destination.access_range_address_48(state, next_rip, 8) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let raw = fp.borrow().sse.xmm[usize::from(source)];
+            if let Err(error) = memory.write(address, context, &raw[..8]) {
+                return report_memory_error(error);
+            }
         }
         Operation::MovhpdLoadMemory {
             destination,
@@ -66078,6 +67475,30 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.write(address, context, &value) {
                 return report_memory_error(error);
             }
+        }
+        Operation::MovapsLoadMemory {
+            destination,
+            source,
+        } => {
+            let address = match source.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if address & 15 != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            if let Err(error) = source.access_range_address_48(state, next_rip, 16) {
+                return report_memory_error(error);
+            }
+            let mut value = [0; 16];
+            if let Err(error) = memory.read(address, context, &mut value) {
+                return report_memory_error(error);
+            }
+            fp.borrow_mut().sse.xmm[usize::from(destination)] = value;
         }
         Operation::PshufdRegister {
             destination,
@@ -67505,8 +68926,15 @@ fn transfer(
         | Operation::LockSubMem {
             destination,
             immediate,
+        }
+        | Operation::LockSubDwordImm8 {
+            destination,
+            immediate,
         } => {
-            let kind = if matches!(operation, Operation::LockSubMem { .. }) {
+            let kind = if matches!(
+                operation,
+                Operation::LockSubMem { .. } | Operation::LockSubDwordImm8 { .. }
+            ) {
                 ArithmeticKind::Sub
             } else {
                 ArithmeticKind::Add
@@ -67787,6 +69215,25 @@ fn visible_selector(state: &LongModeState, sreg: u8) -> Option<u16> {
         5 => Some(state.gs_selector),
         _ => None,
     }
+}
+
+fn read_rmw_destination(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: Operand,
+    instruction: &long_decode::Instruction,
+    control_policy: bool,
+) -> Result<u64, MemoryError> {
+    if control_policy
+        && context.privilege == PrivilegeLevel::Ring3
+        && let Some(operand) = cpl3_ordinary_rmw_destination(instruction)
+    {
+        let address = operand.access_address_48(state, next_rip)?;
+        return memory.read_integer_for_write(address, context, operand.size);
+    }
+    read_operand(state, memory, context, next_rip, destination)
 }
 
 fn write_operand(

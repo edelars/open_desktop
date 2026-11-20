@@ -13,6 +13,7 @@ from build_stage4_initramfs import BuildError, pack_cpio, parse_cpio, sha256
 from build_stage6_smp_rootfs_initramfs import (
     FIXTURES,
     PREBUILT_NAME,
+    PREBUILT_BUSYBOX_NAME,
     PREBUILT_SOURCE_SHA256,
     SOURCE_NAME,
     STAGE5_HANDOFF,
@@ -51,13 +52,37 @@ def minimal_amd64_elf() -> bytes:
     return bytes(header)
 
 
-def stage5_base() -> bytes:
+def minimal_static_amd64_elf() -> bytes:
+    elf = bytearray(120)
+    elf[:7] = b"\x7fELF\x02\x01\x01"
+    elf[16:18] = (2).to_bytes(2, "little")
+    elf[18:20] = (62).to_bytes(2, "little")
+    elf[20:24] = (1).to_bytes(4, "little")
+    elf[32:40] = (64).to_bytes(8, "little")
+    elf[52:54] = (64).to_bytes(2, "little")
+    elf[54:56] = (56).to_bytes(2, "little")
+    elf[56:58] = (1).to_bytes(2, "little")
+    elf[64:68] = (1).to_bytes(4, "little")  # PT_LOAD, with no PT_INTERP/PT_DYNAMIC.
+    elf[68:72] = (5).to_bytes(4, "little")
+    elf[72:80] = (0).to_bytes(8, "little")
+    elf[80:88] = (0x400000).to_bytes(8, "little")
+    elf[88:96] = (0x400000).to_bytes(8, "little")
+    elf[96:104] = len(elf).to_bytes(8, "little")
+    elf[104:112] = len(elf).to_bytes(8, "little")
+    elf[112:120] = (0x1000).to_bytes(8, "little")
+    return bytes(elf)
+
+
+def stage5_base(busybox: bytes | None = None) -> bytes:
     init = b"#!/bin/sh\n" + STAGE5_HANDOFF + STAGE5_SWITCH_ROOT
-    return gzip.compress(pack_cpio([("init", 0o100755, init)]), mtime=0)
+    entries = [("init", 0o100755, init)]
+    if busybox is not None:
+        entries.append(("bin/busybox", 0o100755, busybox))
+    return gzip.compress(pack_cpio(entries), mtime=0)
 
 
-def overlay_entries(archive: bytes) -> dict[str, dict[str, object]]:
-    base_length = len(gzip.decompress(stage5_base()))
+def overlay_entries(archive: bytes, base: bytes | None = None) -> dict[str, dict[str, object]]:
+    base_length = len(gzip.decompress(stage5_base() if base is None else base))
     return {entry["name"].removeprefix("./"): entry for entry in parse_cpio(archive[base_length:])}
 
 
@@ -104,6 +129,143 @@ class PrebuiltWorkloadPackageTests(unittest.TestCase):
                 validate_prebuilt_workload(bytes(wrong_arch), (FIXTURES / SOURCE_NAME).read_bytes())
         with self.assertRaises(BuildError):
             validate_prebuilt_workload(elf, b"changed S6-22 source")
+
+    def test_static_prebuilt_requires_static_elf_and_pinned_busybox_for_tmpfs_shell(self):
+        workload = minimal_static_amd64_elf()
+        busybox = minimal_static_amd64_elf()
+        with (
+            patch("build_stage6_smp_rootfs_initramfs.PREBUILT_STATIC_WORKLOAD_SHA256", sha256(workload)),
+            patch("build_stage6_smp_rootfs_initramfs.PREBUILT_BUSYBOX_SHA256", sha256(busybox)),
+        ):
+            self.assertEqual(
+                validate_prebuilt_workload(workload, (FIXTURES / SOURCE_NAME).read_bytes()),
+                "static",
+            )
+            base = stage5_base()
+            archive = gzip.decompress(build_archive(base, workload, busybox))
+        entries = overlay_entries(archive, base)
+        init = entries["s6-smp-init"]["data"]
+        self.assertIn(
+            b"cp /s6-smp/s6_smp_busybox /newroot/run/open-desktop-stage6/busybox",
+            init,
+        )
+        self.assertIn(
+            b"ln -s ../busybox /newroot/run/open-desktop-stage6/bin/sha256sum",
+            init,
+        )
+        self.assertIn(
+            b"ln -s ../busybox /newroot/run/open-desktop-stage6/bin/sleep",
+            init,
+        )
+        self.assertIn(
+            b"switch_root /newroot /run/open-desktop-stage6/busybox sh "
+            b"/run/open-desktop-stage6/s6_smp_workloads.sh --prebuilt "
+            b"/run/open-desktop-stage6/s6_smp_workloads.elf",
+            init,
+        )
+        self.assertEqual(entries[f"s6-smp/{PREBUILT_NAME}"]["data"], workload)
+        packaged_busybox = entries[f"s6-smp/{PREBUILT_BUSYBOX_NAME}"]
+        self.assertEqual(packaged_busybox["mode"] & 0o777, 0o755)
+        self.assertEqual(packaged_busybox["data"], busybox)
+        wrapper = entries[f"s6-smp/{WRAPPER_NAME}"]["data"]
+        self.assertIn(b"PATH=/run/open-desktop-stage6/bin:/usr/sbin:/usr/bin:/sbin:/bin", wrapper)
+        self.assertEqual(
+            wrapper.count(b"PATH=/run/open-desktop-stage6/bin:"),
+            1,
+        )
+        self.assertEqual(
+            entries[f"s6-smp/{SOURCE_NAME}"]["data"],
+            (FIXTURES / SOURCE_NAME).read_bytes(),
+        )
+        with (
+            patch("build_stage6_smp_rootfs_initramfs.PREBUILT_STATIC_WORKLOAD_SHA256", sha256(workload)),
+            patch("build_stage6_smp_rootfs_initramfs.PREBUILT_BUSYBOX_SHA256", sha256(busybox)),
+        ):
+            with self.assertRaisesRegex(BuildError, "requires the pinned static BusyBox"):
+                build_archive(base, workload)
+
+    def test_static_wrapper_uses_its_scoped_multicall_applet_path(self):
+        source = (FIXTURES / SOURCE_NAME).read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / "payload"
+            applet_dir = payload / "bin"
+            applet_dir.mkdir(parents=True)
+            (payload / SOURCE_NAME).write_bytes(source)
+            online_path = root / "online"
+            online_path.write_text("0-1\n")
+            applet_marker = root / "applet-called"
+            multicall = applet_dir / "busybox"
+            multicall.write_text(
+                "#!/usr/bin/env python3\n"
+                "import hashlib, os, pathlib, sys\n"
+                "path = pathlib.Path(sys.argv[1])\n"
+                "pathlib.Path(os.environ['S6_TEST_APPLET_MARKER']).write_text(pathlib.Path(sys.argv[0]).name)\n"
+                "print(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + str(path))\n"
+            )
+            multicall.chmod(0o755)
+            (applet_dir / "sha256sum").symlink_to("busybox")
+            (applet_dir / "sleep").symlink_to("busybox")
+            wrapper = (FIXTURES / WRAPPER_NAME).read_bytes()
+            wrapper = wrapper.replace(b"/run/open-desktop-stage6", os.fsencode(payload))
+            wrapper = wrapper.replace(b"/sys/devices/system/cpu/online", os.fsencode(online_path))
+            wrapper = wrapper.replace(
+                b"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                b"PATH=" + os.fsencode(applet_dir) + b":/usr/sbin:/usr/bin:/sbin:/bin",
+                1,
+            )
+            wrapper_path = root / WRAPPER_NAME
+            wrapper_path.write_bytes(wrapper)
+            workload_path = payload / PREBUILT_NAME
+            workload_path.write_text(
+                "#!/bin/sh\n"
+                "nonce=$1\n"
+                "printf 'OD_S6_22_PASS nonce=%s case=counter cpus=0,1 checked=20000\\n' \"$nonce\"\n"
+                "printf 'OD_S6_22_PASS nonce=%s case=condition cpus=0,1 checked=256\\n' \"$nonce\"\n"
+                "printf 'OD_S6_22_PASS nonce=%s case=exchange cpus=0,1 checked=128\\n' \"$nonce\"\n"
+                "printf 'OD_S6_22_PASS nonce=%s case=mapping cpus=0,1 checked=32\\n' \"$nonce\"\n"
+                "printf 'OD_S6_22_PASS nonce=%s case=processes cpus=0,1 checked=32\\n' \"$nonce\"\n"
+            )
+            workload_path.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/sh", str(wrapper_path), "--prebuilt", str(workload_path), "static-wrapper"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": "/usr/bin:/bin", "S6_TEST_APPLET_MARKER": str(applet_marker)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(applet_marker.read_text(), "sha256sum")
+            self.assertIn("OD_S6_22_COMPLETE nonce=static-wrapper", result.stdout)
+            transcript = "[    1.71] smp: Brought up 1 node, 2 CPUs\r\n" + result.stdout
+            report = root / "report.json"
+            report.write_text(json.dumps({"stop": {"com1_text": transcript}}))
+            self.assertEqual(verify_workloads(report, "static-wrapper", 2)["workload_cpus"], (0, 1))
+
+    def test_static_prebuilt_rejects_dynamic_program_headers_and_changed_digests(self):
+        workload = minimal_static_amd64_elf()
+        for segment_type in (2, 3):  # PT_DYNAMIC and PT_INTERP.
+            non_static = bytearray(workload)
+            non_static[64:68] = segment_type.to_bytes(4, "little")
+            with patch(
+                "build_stage6_smp_rootfs_initramfs.PREBUILT_STATIC_WORKLOAD_SHA256",
+                sha256(non_static),
+            ):
+                with self.assertRaisesRegex(BuildError, "PT_LOAD and no PT_INTERP or PT_DYNAMIC"):
+                    validate_prebuilt_workload(bytes(non_static), (FIXTURES / SOURCE_NAME).read_bytes())
+        modified = bytearray(workload)
+        modified[-1] ^= 1
+        with patch(
+            "build_stage6_smp_rootfs_initramfs.PREBUILT_STATIC_WORKLOAD_SHA256",
+            sha256(workload),
+        ):
+            with self.assertRaisesRegex(BuildError, "SHA-256"):
+                validate_prebuilt_workload(bytes(modified), (FIXTURES / SOURCE_NAME).read_bytes())
+        with (
+            patch("build_stage6_smp_rootfs_initramfs.PREBUILT_STATIC_WORKLOAD_SHA256", sha256(workload)),
+        ):
+            with self.assertRaisesRegex(BuildError, "BusyBox SHA-256"):
+                build_archive(stage5_base(), workload, b"wrong busybox")
 
     def test_shared_wrapper_compile_and_explicit_prebuilt_branches_verify(self):
         source = (FIXTURES / SOURCE_NAME).read_bytes()

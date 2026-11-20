@@ -1,0 +1,1520 @@
+{
+  "profile_base": "c3b416e6259690ffe9f4e16f4de581327ec0d66d",
+  "scope": "S6-22 full system reference with the Stage 5 disk, kernel, and the static workload package",
+  "reference": {
+    "tool": "QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)",
+    "container_image_sha256": "661537d800b322d93af5f260028e4506c92ed200f872ae2d8b2d449cf4ec35b6",
+    "machine": "q35",
+    "accelerator": "tcg,thread=multi",
+    "cpu": "qemu64,vendor=OpenDesktop ",
+    "vcpus": 2,
+    "ram_mib": 128,
+    "seed": 24301,
+    "kernel_cmdline": "console=ttyS0,115200 earlycon=uart8250,io,0x3f8 8250.nr_uarts=1 od.nonce=s6-workloads20261119 nokaslr rdinit=/s6-smp-init",
+    "trace_options": "-d in_asm -dfilter 0x400000..0x640000",
+    "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "stage5_raw_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+    "stage5_initramfs_sha256": "17621413fae2456b911fa99d2949daeca8cc13801c5d5a4951b85030f8d8f4b1",
+    "static_initramfs_sha256": "11dea5a5a1c6ecfdf07d82a6da4e170a02b3951c745f06810aedd69eea963cc8",
+    "through_complete_trace_sha256": "2a67cd73f637b3efc07d8893ef01fdaddd6bb8c74e3579863aef973833561edf",
+    "serial_sha256": "8dfc39c902248dc3c91ced6d8cf3fbb2e9fccd85a4e6d21cd9a174bdd2d8053a",
+    "markers": [
+      "OD_S6_22_SOURCE nonce=s6-workloads20261119 sha256=595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+      "OD_S6_22_PASS nonce=s6-workloads20261119 case=counter cpus=0,1 checked=20000",
+      "OD_S6_22_PASS nonce=s6-workloads20261119 case=condition cpus=0,1 checked=256",
+      "OD_S6_22_PASS nonce=s6-workloads20261119 case=exchange cpus=0,1 checked=128",
+      "OD_S6_22_PASS nonce=s6-workloads20261119 case=mapping cpus=0,1 checked=32",
+      "OD_S6_22_PASS nonce=s6-workloads20261119 case=processes cpus=0,1 checked=32",
+      "OD_S6_22_ONLINE nonce=s6-workloads20261119 cpus=0-1",
+      "OD_S6_22_COMPLETE nonce=s6-workloads20261119"
+    ],
+    "host_timeout_after_guest_complete": 124,
+    "attribution": "Match virtual instruction addresses and bytes to each pinned ELF disassembly. Classify deduplicated pinned instructions with the project decoder and CPL3 admission predicates."
+  },
+  "dynamic_package_control": {
+    "initramfs_sha256": "ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977",
+    "serial_sha256": "56570ff1ccf25f602ea5c5d00d910cff926cec0c557f140ee36604b4bb54aae4",
+    "diagnostics": [
+      "/usr/lib/x86_64-linux-gnu/libc.so.6: CPU ISA level is lower than required",
+      "[    1.929951] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00007f00"
+    ]
+  },
+  "corpora": {
+    "busybox": {
+      "elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+      "matched_instruction_sites": 21892,
+      "before": {
+        "admitted": 21424,
+        "profile": 454,
+        "decode": 14
+      },
+      "before_forms": [
+        {
+          "form": "xor - 33 Logic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x40ba82",
+          "bytes": "33 5d d8",
+          "instruction": "xor ebx, dword ptr [rbp - 0x28]"
+        },
+        {
+          "form": "ror - c1/1:reg Shift Dword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x40ba90",
+          "bytes": "c1 c8 08",
+          "instruction": "ror eax, 0x8"
+        },
+        {
+          "form": "rep f3 aa RepStos Byte",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x51c058",
+          "bytes": "f3 aa",
+          "instruction": "rep stosb byte ptr es:[rdi], al"
+        },
+        {
+          "form": "mov 66 c7/0:mem MovImmediate Word",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x56ddb0",
+          "bytes": "66 c7 80 20 03 00 00 3d 00",
+          "instruction": "mov word ptr [rax + 0x320], 0x3d"
+        },
+        {
+          "form": "mov - b3 MovImmediate Byte",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x55be3c",
+          "bytes": "b3 01",
+          "instruction": "mov bl, 0x1"
+        },
+        {
+          "form": "mov - b0 MovImmediate Byte",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x55bedd",
+          "bytes": "b0 02",
+          "instruction": "mov al, 0x2"
+        },
+        {
+          "form": "mov R 88 Mov Byte",
+          "status": "profile",
+          "sites": 24,
+          "rip": "0x55bf5c",
+          "bytes": "43 88 5c 35 5a",
+          "instruction": "mov byte ptr [r13 + r14 + 0x5a], bl"
+        },
+        {
+          "form": "or - 0d Logic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4c89ae",
+          "bytes": "0d 00 00 00 04",
+          "instruction": "or eax, 0x4000000"
+        },
+        {
+          "form": "mov 64 W 8b MovFsLoadQ Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4c9723",
+          "bytes": "64 4c 8b 08",
+          "instruction": "mov r9, qword ptr fs:[rax]"
+        },
+        {
+          "form": "or - 08 Logic Byte",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x4771d3",
+          "bytes": "08 ca",
+          "instruction": "or dl, cl"
+        },
+        {
+          "form": "movsx W 0fbe Extend Qword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x477204",
+          "bytes": "48 0f be 08",
+          "instruction": "movsx rcx, byte ptr [rax]"
+        },
+        {
+          "form": "movzx R 0fb6 Extend Dword",
+          "status": "profile",
+          "sites": 15,
+          "rip": "0x477295",
+          "bytes": "41 0f b6 c4",
+          "instruction": "movzx eax, r12b"
+        },
+        {
+          "form": "movzx - 0fb6 Extend Dword",
+          "status": "profile",
+          "sites": 12,
+          "rip": "0x477311",
+          "bytes": "0f b6 c2",
+          "instruction": "movzx eax, dl"
+        },
+        {
+          "form": "inc R ff/0:reg Arithmetic Dword",
+          "status": "profile",
+          "sites": 11,
+          "rip": "0x51ab9f",
+          "bytes": "41 ff c1",
+          "instruction": "inc r9d"
+        },
+        {
+          "form": "mov - 88 Mov Byte",
+          "status": "profile",
+          "sites": 42,
+          "rip": "0x51aba5",
+          "bytes": "88 41 ff",
+          "instruction": "mov byte ptr [rcx - 0x1], al"
+        },
+        {
+          "form": "bsf - 0fbc BitScan Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x4d0cd7",
+          "bytes": "0f bc c0",
+          "instruction": "bsf eax, eax"
+        },
+        {
+          "form": "inc - ff/0:mem Arithmetic Dword",
+          "status": "profile",
+          "sites": 38,
+          "rip": "0x55ae9f",
+          "bytes": "ff 42 40",
+          "instruction": "inc dword ptr [rdx + 0x40]"
+        },
+        {
+          "form": "neg - f7/3:reg Arithmetic Dword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x4d455f",
+          "bytes": "f7 d9",
+          "instruction": "neg ecx"
+        },
+        {
+          "form": "or - 81/1:reg Logic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x55aed2",
+          "bytes": "81 ce 00 01 00 00",
+          "instruction": "or esi, 0x100"
+        },
+        {
+          "form": "dec - ff/1:mem Arithmetic Dword",
+          "status": "profile",
+          "sites": 7,
+          "rip": "0x557b50",
+          "bytes": "ff 4a 40",
+          "instruction": "dec dword ptr [rdx + 0x40]"
+        },
+        {
+          "form": "mov 64 8b MovFsLoadD Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x4088eb",
+          "bytes": "64 8b 1f",
+          "instruction": "mov ebx, dword ptr fs:[rdi]"
+        },
+        {
+          "form": "mov 64 89 MovFsStore Dword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x408929",
+          "bytes": "64 89 18",
+          "instruction": "mov dword ptr fs:[rax], ebx"
+        },
+        {
+          "form": "sub W 29 Arithmetic Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x558f59",
+          "bytes": "49 29 5c 24 18",
+          "instruction": "sub qword ptr [r12 + 0x18], rbx"
+        },
+        {
+          "form": "movaps - 0f28 - -",
+          "status": "decode",
+          "sites": 3,
+          "rip": "0x56df26",
+          "bytes": "0f 28 05 43 ff 05 00",
+          "instruction": "movaps xmm0, xmmword ptr [rip + 0x5ff43]"
+        },
+        {
+          "form": "push - 68 PushImmediate Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4e1d13",
+          "bytes": "68 01 01 00 00",
+          "instruction": "push 0x101"
+        },
+        {
+          "form": "movsx - 0fbe Extend Dword",
+          "status": "profile",
+          "sites": 12,
+          "rip": "0x55cb14",
+          "bytes": "0f be 05 79 f6 0b 00",
+          "instruction": "movsx eax, byte ptr [rip + 0xbf679]"
+        },
+        {
+          "form": "dec - fe/1:reg Arithmetic Byte",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x55cb56",
+          "bytes": "fe cb",
+          "instruction": "dec bl"
+        },
+        {
+          "form": "movsx R 0fbe Extend Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x561609",
+          "bytes": "44 0f be 25 81 ab 0b 00",
+          "instruction": "movsx r12d, byte ptr [rip + 0xbab81]"
+        },
+        {
+          "form": "dec W ff/1:reg Arithmetic Qword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x55cf5b",
+          "bytes": "48 ff cb",
+          "instruction": "dec rbx"
+        },
+        {
+          "form": "sar R d0/7:mem Shift Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5628a9",
+          "bytes": "41 d0 7c 24 02",
+          "instruction": "sar byte ptr [r12 + 0x2]"
+        },
+        {
+          "form": "rep f3 ab RepStos Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x5607c7",
+          "bytes": "f3 ab",
+          "instruction": "rep stosd dword ptr es:[rdi], eax"
+        },
+        {
+          "form": "sete - 0f94 SetCondition Byte",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x560806",
+          "bytes": "0f 94 85 7d ff ff ff",
+          "instruction": "sete byte ptr [rbp - 0x83]"
+        },
+        {
+          "form": "bsf W 0fbc BitScan Qword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x4d0df0",
+          "bytes": "48 0f bc c0",
+          "instruction": "bsf rax, rax"
+        },
+        {
+          "form": "imul - 6b ImulImmediate Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5574d9",
+          "bytes": "6b cb 04",
+          "instruction": "imul ecx, ebx, 0x4"
+        },
+        {
+          "form": "mov - b2 MovImmediate Byte",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x560cb0",
+          "bytes": "b2 03",
+          "instruction": "mov dl, 0x3"
+        },
+        {
+          "form": "inc - fe/0:mem Arithmetic Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x561f82",
+          "bytes": "fe 05 07 a2 0b 00",
+          "instruction": "inc byte ptr [rip + 0xba207]"
+        },
+        {
+          "form": "and R 21 Logic Dword",
+          "status": "profile",
+          "sites": 8,
+          "rip": "0x561c3d",
+          "bytes": "41 21 c7",
+          "instruction": "and r15d, eax"
+        },
+        {
+          "form": "sub R 2b Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55d570",
+          "bytes": "44 2b 60 08",
+          "instruction": "sub r12d, dword ptr [rax + 0x8]"
+        },
+        {
+          "form": "or R 08 Logic Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x44e2f0",
+          "bytes": "44 08 c9",
+          "instruction": "or cl, r9b"
+        },
+        {
+          "form": "bt - 0fba/4:mem Bit Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x55d5c8",
+          "bytes": "0f ba a5 2c ff ff ff 0a",
+          "instruction": "bt dword ptr [rbp - 0xd4], 0xa"
+        },
+        {
+          "form": "and - 20 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55d5f1",
+          "bytes": "20 50 ff",
+          "instruction": "and byte ptr [rax - 0x1], dl"
+        },
+        {
+          "form": "test - 84 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55d621",
+          "bytes": "84 95 ef fe ff ff",
+          "instruction": "test byte ptr [rbp - 0x111], dl"
+        },
+        {
+          "form": "inc W ff/0:mem Arithmetic Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55d69c",
+          "bytes": "48 ff 85 10 ff ff ff",
+          "instruction": "inc qword ptr [rbp - 0xf0]"
+        },
+        {
+          "form": "adc W 83/2:reg Arithmetic Qword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x5597f9",
+          "bytes": "48 83 d6 00",
+          "instruction": "adc rsi, 0x0"
+        },
+        {
+          "form": "and - 21 Logic Dword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x562e3d",
+          "bytes": "21 d8",
+          "instruction": "and eax, ebx"
+        },
+        {
+          "form": "bt - 0fa3 Bit Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x561f93",
+          "bytes": "0f a3 c2",
+          "instruction": "bt edx, eax"
+        },
+        {
+          "form": "and 66 25 Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x560a60",
+          "bytes": "66 25 00 fb",
+          "instruction": "and ax, 0xfb00"
+        },
+        {
+          "form": "or 66 0d Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x560a64",
+          "bytes": "66 0d 01 04",
+          "instruction": "or ax, 0x401"
+        },
+        {
+          "form": "mov R b5 MovImmediate Byte",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x560f69",
+          "bytes": "41 b5 01",
+          "instruction": "mov r13b, 0x1"
+        },
+        {
+          "form": "mov R b1 MovImmediate Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x561192",
+          "bytes": "41 b1 01",
+          "instruction": "mov r9b, 0x1"
+        },
+        {
+          "form": "and 66 R 81/4:mem Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x560ab7",
+          "bytes": "66 41 81 24 24 00 fb",
+          "instruction": "and word ptr [r12], 0xfb00"
+        },
+        {
+          "form": "lock f0 0fc1 LockXaddMem Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x48010f",
+          "bytes": "f0 0f c1 03",
+          "instruction": "lock xadd dword ptr [rbx], eax"
+        },
+        {
+          "form": "mov 64 R 8b MovFsLoadD Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x506467",
+          "bytes": "64 45 8b 3c 24",
+          "instruction": "mov r15d, dword ptr fs:[r12]"
+        },
+        {
+          "form": "or R 80/1:reg Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x558fc3",
+          "bytes": "40 80 cf 80",
+          "instruction": "or dil, -0x80"
+        },
+        {
+          "form": "add 66 83/0:mem Arithmetic Word",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x40bd16",
+          "bytes": "66 83 04 71 01",
+          "instruction": "add word ptr [rcx + 2*rsi], 0x1"
+        },
+        {
+          "form": "test W f7/0:reg Logic Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4dd7dd",
+          "bytes": "48 f7 c6 c0 ff ff ff",
+          "instruction": "test rsi, -0x40"
+        },
+        {
+          "form": "bts W 0fab Bit Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4dd863",
+          "bytes": "48 0f ab f2",
+          "instruction": "bts rdx, rsi"
+        },
+        {
+          "form": "and W 81/4:reg Logic Qword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x4c9220",
+          "bytes": "48 81 e6 00 f0 ff ff",
+          "instruction": "and rsi, -0x1000"
+        },
+        {
+          "form": "sub - 28 Arithmetic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4d0957",
+          "bytes": "28 d1",
+          "instruction": "sub cl, dl"
+        },
+        {
+          "form": "cmp - 3b Arithmetic Dword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x51d9ab",
+          "bytes": "3b 53 18",
+          "instruction": "cmp edx, dword ptr [rbx + 0x18]"
+        },
+        {
+          "form": "sub - 2b Arithmetic Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x51dce7",
+          "bytes": "2b 1d 0f 70 0f 00",
+          "instruction": "sub ebx, dword ptr [rip + 0xf700f]"
+        },
+        {
+          "form": "movsxd W 63 Extend Qword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x58b9ed",
+          "bytes": "48 63 05 08 93 08 00",
+          "instruction": "movsxd rax, dword ptr [rip + 0x89308]"
+        },
+        {
+          "form": "xor - 34 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5b38ea",
+          "bytes": "34 01",
+          "instruction": "xor al, 0x1"
+        },
+        {
+          "form": "inc - ff/0:reg Arithmetic Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x51d86a",
+          "bytes": "ff c2",
+          "instruction": "inc edx"
+        },
+        {
+          "form": "setne - 0f95 SetCondition Byte",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x573699",
+          "bytes": "0f 95 45 c7",
+          "instruction": "setne byte ptr [rbp - 0x39]"
+        },
+        {
+          "form": "pcmpgtb 66 R 0f64 PcmpgtbRegister Word",
+          "status": "profile",
+          "sites": 20,
+          "rip": "0x4d7c89",
+          "bytes": "66 44 0f 64 c6",
+          "instruction": "pcmpgtb xmm8, xmm6"
+        },
+        {
+          "form": "pandn 66 R 0fdf PandnRegister Word",
+          "status": "profile",
+          "sites": 20,
+          "rip": "0x4d7c93",
+          "bytes": "66 44 0f df c7",
+          "instruction": "pandn xmm8, xmm7"
+        },
+        {
+          "form": "pminub 66 0fda - -",
+          "status": "decode",
+          "sites": 6,
+          "rip": "0x4d4d75",
+          "bytes": "66 0f da 40 50",
+          "instruction": "pminub xmm0, xmmword ptr [rax + 0x50]"
+        },
+        {
+          "form": "xor - 83/6:reg Logic Dword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x530ed6",
+          "bytes": "83 f1 01",
+          "instruction": "xor ecx, 0x1"
+        },
+        {
+          "form": "cmp - 3a Arithmetic Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x51a868",
+          "bytes": "3a 0c 06",
+          "instruction": "cmp cl, byte ptr [rsi + rax]"
+        },
+        {
+          "form": "xor R 83/6:reg Logic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5979b3",
+          "bytes": "41 83 f4 01",
+          "instruction": "xor r12d, 0x1"
+        },
+        {
+          "form": "cmp R 3b Arithmetic Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x55ed3c",
+          "bytes": "41 3b 54 c4 08",
+          "instruction": "cmp edx, dword ptr [r12 + 8*rax + 0x8]"
+        },
+        {
+          "form": "bt - 0fba/4:reg Bit Dword",
+          "status": "profile",
+          "sites": 8,
+          "rip": "0x58baa7",
+          "bytes": "0f ba e0 13",
+          "instruction": "bt eax, 0x13"
+        },
+        {
+          "form": "bt R 0fba/4:reg Bit Dword",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x58bafd",
+          "bytes": "41 0f ba e4 08",
+          "instruction": "bt r12d, 0x8"
+        },
+        {
+          "form": "neg R f7/3:reg Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5b1463",
+          "bytes": "41 f7 dc",
+          "instruction": "neg r12d"
+        },
+        {
+          "form": "call - ff/2:reg IndirectCall Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x59a6c6",
+          "bytes": "ff d2",
+          "instruction": "call rdx"
+        },
+        {
+          "form": "inc R ff/0:mem Arithmetic Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x56122f",
+          "bytes": "41 ff 44 24 04",
+          "instruction": "inc dword ptr [r12 + 0x4]"
+        },
+        {
+          "form": "or - 80/1:reg Logic Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x55c5f9",
+          "bytes": "80 ce 02",
+          "instruction": "or dh, 0x2"
+        },
+        {
+          "form": "sbb R 19 Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55c602",
+          "bytes": "45 19 e4",
+          "instruction": "sbb r12d, r12d"
+        },
+        {
+          "form": "dec R fe/1:reg Arithmetic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55e408",
+          "bytes": "41 fe c9",
+          "instruction": "dec r9b"
+        },
+        {
+          "form": "bswap W 0fc9 Bswap Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x481190",
+          "bytes": "48 0f c9",
+          "instruction": "bswap rcx"
+        },
+        {
+          "form": "bswap W 0fc8 Bswap Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x481193",
+          "bytes": "48 0f c8",
+          "instruction": "bswap rax"
+        },
+        {
+          "form": "sbb - 19 Arithmetic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x481199",
+          "bytes": "19 c0",
+          "instruction": "sbb eax, eax"
+        },
+        {
+          "form": "xor - 81/6:mem Logic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55d6f6",
+          "bytes": "81 b5 28 ff ff ff 00 01 00 00",
+          "instruction": "xor dword ptr [rbp - 0xd8], 0x100"
+        },
+        {
+          "form": "call R ff/2:reg IndirectCall Qword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x55e209",
+          "bytes": "41 ff d2",
+          "instruction": "call r10"
+        },
+        {
+          "form": "and 66 R 83/4:mem Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55cc18",
+          "bytes": "66 41 83 64 24 4c 00",
+          "instruction": "and word ptr [r12 + 0x4c], 0x0"
+        },
+        {
+          "form": "lock f0 W 0fc1 LockXaddMem Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x408567",
+          "bytes": "f0 48 0f c1 15 80 b1 20 00",
+          "instruction": "lock xadd qword ptr [rip + 0x20b180], rdx"
+        },
+        {
+          "form": "lock f0 83/5:mem - -",
+          "status": "decode",
+          "sites": 1,
+          "rip": "0x407245",
+          "bytes": "f0 83 2d 8f c4 20 00 01",
+          "instruction": "lock sub dword ptr [rip + 0x20c48f], 0x1"
+        },
+        {
+          "form": "lock f0 W 01 LockAddMemReg Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x407253",
+          "bytes": "f0 48 01 05 95 c4 20 00",
+          "instruction": "lock add qword ptr [rip + 0x20c495], rax"
+        },
+        {
+          "form": "cmp W 3b Arithmetic Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x407a5f",
+          "bytes": "48 3b 04 07",
+          "instruction": "cmp rax, qword ptr [rdi + rax]"
+        },
+        {
+          "form": "and - 22 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x43ff02",
+          "bytes": "22 85 40 fb ff ff",
+          "instruction": "and al, byte ptr [rbp - 0x4c0]"
+        },
+        {
+          "form": "and R 22 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x44067b",
+          "bytes": "44 22 ad 44 fb ff ff",
+          "instruction": "and r13b, byte ptr [rbp - 0x4bc]"
+        },
+        {
+          "form": "sub R 29 Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x55a3bd",
+          "bytes": "41 29 1c 24",
+          "instruction": "sub dword ptr [r12], ebx"
+        },
+        {
+          "form": "and R 20 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4871d1",
+          "bytes": "44 20 c0",
+          "instruction": "and al, r8b"
+        },
+        {
+          "form": "rep f3 a5 RepMovs Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5b08a6",
+          "bytes": "f3 a5",
+          "instruction": "rep movsd dword ptr es:[rdi], dword ptr [rsi]"
+        },
+        {
+          "form": "bswap - 0fca Bswap Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5ac750",
+          "bytes": "0f ca",
+          "instruction": "bswap edx"
+        },
+        {
+          "form": "rol R c1/0:reg Shift Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x5ac780",
+          "bytes": "41 c1 c1 0d",
+          "instruction": "rol r9d, 0xd"
+        },
+        {
+          "form": "rol - c1/0:reg Shift Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x5ac784",
+          "bytes": "c1 c0 0f",
+          "instruction": "rol eax, 0xf"
+        },
+        {
+          "form": "add - 03 Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5ac792",
+          "bytes": "03 4a 20",
+          "instruction": "add ecx, dword ptr [rdx + 0x20]"
+        },
+        {
+          "form": "add R 03 Arithmetic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x5ac845",
+          "bytes": "42 03 44 d2 04",
+          "instruction": "add eax, dword ptr [rdx + 8*r10 + 0x4]"
+        },
+        {
+          "form": "ror R c1/1:reg Shift Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5ac871",
+          "bytes": "41 c1 cb 02",
+          "instruction": "ror r11d, 0x2"
+        },
+        {
+          "form": "bswap - 0fc9 Bswap Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5ac974",
+          "bytes": "0f c9",
+          "instruction": "bswap ecx"
+        },
+        {
+          "form": "test 66 f7/0:mem Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x479f00",
+          "bytes": "66 f7 01 02 02",
+          "instruction": "test word ptr [rcx], 0x202"
+        },
+        {
+          "form": "jmp - ff/4:mem IndirectJump Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x47d9c5",
+          "bytes": "ff 60 18",
+          "instruction": "jmp qword ptr [rax + 0x18]"
+        },
+        {
+          "form": "sub - 2d Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4f7a8f",
+          "bytes": "2d 88 00 00 00",
+          "instruction": "sub eax, 0x88"
+        },
+        {
+          "form": "mov - b1 MovImmediate Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5b458d",
+          "bytes": "b1 61",
+          "instruction": "mov cl, 0x61"
+        },
+        {
+          "form": "xor 64 W 33 LogicFsLoad Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x506cb4",
+          "bytes": "64 4c 33 04 25 30 00 00 00",
+          "instruction": "xor r8, qword ptr fs:[0x30]"
+        },
+        {
+          "form": "jmp - ff/4:reg IndirectJump Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x506daa",
+          "bytes": "ff e2",
+          "instruction": "jmp rdx"
+        },
+        {
+          "form": "cmove - 0f44 ConditionalMove Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x56db64",
+          "bytes": "0f 44 85 fc fe ff ff",
+          "instruction": "cmove eax, dword ptr [rbp - 0x104]"
+        },
+        {
+          "form": "xorps - 0f57 XorpsRegister Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x593fd4",
+          "bytes": "0f 57 c9",
+          "instruction": "xorps xmm1, xmm1"
+        },
+        {
+          "form": "movsd f2 0f11 - -",
+          "status": "decode",
+          "sites": 1,
+          "rip": "0x593fde",
+          "bytes": "f2 0f 11 4d e8",
+          "instruction": "movsd qword ptr [rbp - 0x18], xmm1"
+        },
+        {
+          "form": "cvtsi2sd f2 W 0f2a Cvtsi2sdR64Register Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x5afadd",
+          "bytes": "f2 48 0f 2a c0",
+          "instruction": "cvtsi2sd xmm0, rax"
+        },
+        {
+          "form": "movsd f2 0f10 - -",
+          "status": "decode",
+          "sites": 2,
+          "rip": "0x593fe8",
+          "bytes": "f2 0f 10 4d e8",
+          "instruction": "movsd xmm1, qword ptr [rbp - 0x18]"
+        },
+        {
+          "form": "addsd f2 0f58 AddsdRegister Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x593ff0",
+          "bytes": "f2 0f 58 c8",
+          "instruction": "addsd xmm1, xmm0"
+        },
+        {
+          "form": "movaps - 0f28 MovapsRegister Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x593ff9",
+          "bytes": "0f 28 c1",
+          "instruction": "movaps xmm0, xmm1"
+        },
+        {
+          "form": "comisd 66 0f2f ComissUcomissRegister Word",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x5afb43",
+          "bytes": "66 0f 2f c1",
+          "instruction": "comisd xmm0, xmm1"
+        },
+        {
+          "form": "cvttsd2si f2 W 0f2c Cvttsd2siR64Register Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x5afb5b",
+          "bytes": "f2 48 0f 2c c0",
+          "instruction": "cvttsd2si rax, xmm0"
+        },
+        {
+          "form": "subsd f2 0f5c SubsdRegister Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x5afb69",
+          "bytes": "f2 0f 5c c1",
+          "instruction": "subsd xmm0, xmm1"
+        },
+        {
+          "form": "mulsd f2 0f59 - -",
+          "status": "decode",
+          "sites": 1,
+          "rip": "0x5afb6d",
+          "bytes": "f2 0f 59 05 53 41 02 00",
+          "instruction": "mulsd xmm0, qword ptr [rip + 0x24153]"
+        }
+      ],
+      "after": {
+        "admitted": 21892
+      }
+    },
+    "workload": {
+      "elf_sha256": "43f600d65d3fced73cdbfe52c986c0039eeb2956bb318f231da9a34e7aa966be",
+      "matched_instruction_sites": 9960,
+      "before": {
+        "admitted": 9871,
+        "profile": 84,
+        "decode": 5
+      },
+      "before_forms": [
+        {
+          "form": "mov - 88 Mov Byte",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x4338aa",
+          "bytes": "88 1d 90 27 0a 00",
+          "instruction": "mov byte ptr [rip + 0xa2790], bl"
+        },
+        {
+          "form": "xor - 33 Logic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x417fc2",
+          "bytes": "33 5d d8",
+          "instruction": "xor ebx, dword ptr [rbp - 0x28]"
+        },
+        {
+          "form": "ror - c1/1:reg Shift Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x417fd0",
+          "bytes": "c1 c8 08",
+          "instruction": "ror eax, 0x8"
+        },
+        {
+          "form": "movaps - 0f28 - -",
+          "status": "decode",
+          "sites": 4,
+          "rip": "0x4661e7",
+          "bytes": "0f 28 57 10",
+          "instruction": "movaps xmm2, xmmword ptr [rdi + 0x10]"
+        },
+        {
+          "form": "movaps - 0f28 MovapsRegister Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x466228",
+          "bytes": "0f 28 f5",
+          "instruction": "movaps xmm6, xmm5"
+        },
+        {
+          "form": "pminub 66 0fda PminubRegister Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x46622b",
+          "bytes": "66 0f da ec",
+          "instruction": "pminub xmm5, xmm4"
+        },
+        {
+          "form": "movaps R 0f28 MovapsRegister Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x46622f",
+          "bytes": "44 0f 28 cc",
+          "instruction": "movaps xmm9, xmm4"
+        },
+        {
+          "form": "bsf W 0fbc BitScan Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x424e62",
+          "bytes": "48 0f bc c2",
+          "instruction": "bsf rax, rdx"
+        },
+        {
+          "form": "and R 21 Logic Dword",
+          "status": "profile",
+          "sites": 3,
+          "rip": "0x4256e8",
+          "bytes": "41 21 ca",
+          "instruction": "and r10d, ecx"
+        },
+        {
+          "form": "or - 0d Logic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x447b3e",
+          "bytes": "0d 00 00 00 04",
+          "instruction": "or eax, 0x4000000"
+        },
+        {
+          "form": "neg - f7/3:reg Arithmetic Dword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x40ffc8",
+          "bytes": "f7 db",
+          "instruction": "neg ebx"
+        },
+        {
+          "form": "movzx R 0fb6 Extend Dword",
+          "status": "profile",
+          "sites": 5,
+          "rip": "0x40fff8",
+          "bytes": "45 0f b6 ff",
+          "instruction": "movzx r15d, r15b"
+        },
+        {
+          "form": "mov 64 W 8b MovFsLoadQ Qword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x417b27",
+          "bytes": "64 4c 8b 20",
+          "instruction": "mov r12, qword ptr fs:[rax]"
+        },
+        {
+          "form": "sete - 0f94 SetCondition Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x41027a",
+          "bytes": "0f 94 83 00 09 00 00",
+          "instruction": "sete byte ptr [rbx + 0x900]"
+        },
+        {
+          "form": "mov 64 8b MovFsLoadD Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4102c3",
+          "bytes": "64 8b 52 04",
+          "instruction": "mov edx, dword ptr fs:[rdx + 0x4]"
+        },
+        {
+          "form": "or - 0c Logic Byte",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4102cb",
+          "bytes": "0c 80",
+          "instruction": "or al, -0x80"
+        },
+        {
+          "form": "lock f0 83/0:mem LockAddMem Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x410364",
+          "bytes": "f0 83 05 b4 53 0c 00 01",
+          "instruction": "lock add dword ptr [rip + 0xc53b4], 0x1"
+        },
+        {
+          "form": "btr W 0fba/6:reg Bit Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x41062e",
+          "bytes": "48 0f ba f0 1f",
+          "instruction": "btr rax, 0x1f"
+        },
+        {
+          "form": "mov R 88 Mov Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40f697",
+          "bytes": "44 88 a3 18 06 00 00",
+          "instruction": "mov byte ptr [rbx + 0x618], r12b"
+        },
+        {
+          "form": "mov 64 R 8b MovFsLoadD Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x4281dc",
+          "bytes": "64 44 8b 30",
+          "instruction": "mov r14d, dword ptr fs:[rax]"
+        },
+        {
+          "form": "call - ff/2:reg IndirectCall Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x42829a",
+          "bytes": "ff d2",
+          "instruction": "call rdx"
+        },
+        {
+          "form": "cmp 64 W 39 CmpFsMem Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x41115d",
+          "bytes": "64 4c 39 24 25 10 00 00 00",
+          "instruction": "cmp qword ptr fs:[0x10], r12"
+        },
+        {
+          "form": "xor - 81/6:reg Logic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4558d3",
+          "bytes": "81 f6 00 01 00 00",
+          "instruction": "xor esi, 0x100"
+        },
+        {
+          "form": "or R 80/1:reg Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4558e0",
+          "bytes": "40 80 ce 89",
+          "instruction": "or sil, -0x77"
+        },
+        {
+          "form": "push - 68 PushImmediate Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4558e4",
+          "bytes": "68 ca 00 00 00",
+          "instruction": "push 0xca"
+        },
+        {
+          "form": "and - 22 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x44d752",
+          "bytes": "22 85 40 fb ff ff",
+          "instruction": "and al, byte ptr [rbp - 0x4c0]"
+        },
+        {
+          "form": "and R 22 Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x44dd5b",
+          "bytes": "44 22 ad 44 fb ff ff",
+          "instruction": "and r13b, byte ptr [rbp - 0x4bc]"
+        },
+        {
+          "form": "bsf - 0fbc BitScan Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4212e7",
+          "bytes": "0f bc c0",
+          "instruction": "bsf eax, eax"
+        },
+        {
+          "form": "test 64 f6/0:mem TestFsMemByte Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40f9ad",
+          "bytes": "64 f6 04 25 0c 03 00 00 80",
+          "instruction": "test byte ptr fs:[0x30c], -0x80"
+        },
+        {
+          "form": "lock f0 R 0fc1 LockXaddMem Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x40e6a6",
+          "bytes": "f0 45 0f c1 08",
+          "instruction": "lock xadd dword ptr [r8], r9d"
+        },
+        {
+          "form": "xor R 80/6:reg Logic Byte",
+          "status": "profile",
+          "sites": 6,
+          "rip": "0x40e74f",
+          "bytes": "40 80 f6 81",
+          "instruction": "xor sil, -0x7f"
+        },
+        {
+          "form": "lock f0 0fc1 LockXaddMem Dword",
+          "status": "profile",
+          "sites": 4,
+          "rip": "0x40e7b4",
+          "bytes": "f0 0f c1 02",
+          "instruction": "lock xadd dword ptr [rdx], eax"
+        },
+        {
+          "form": "sbb - 19 Arithmetic Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x40e7d2",
+          "bytes": "19 c0",
+          "instruction": "sbb eax, eax"
+        },
+        {
+          "form": "mov 64 W c7/0:mem MovFsMemImm Qword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x46ded1",
+          "bytes": "64 49 c7 45 00 00 00 00 00",
+          "instruction": "mov qword ptr fs:[r13], 0x0"
+        },
+        {
+          "form": "lock f0 83/1:mem LockOrMem Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40fab2",
+          "bytes": "f0 83 88 08 03 00 00 10",
+          "instruction": "lock or dword ptr [rax + 0x308], 0x10"
+        },
+        {
+          "form": "lock f0 83/5:mem - -",
+          "status": "decode",
+          "sites": 1,
+          "rip": "0x40facc",
+          "bytes": "f0 83 2d 4c 5c 0c 00 01",
+          "instruction": "lock sub dword ptr [rip + 0xc5c4c], 0x1"
+        },
+        {
+          "form": "bt W 0fa3 Bit Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x45590a",
+          "bytes": "48 0f a3 d1",
+          "instruction": "bt rcx, rdx"
+        },
+        {
+          "form": "lock f0 0fba/5:mem LockBitMemImm Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x455d04",
+          "bytes": "f0 0f ba af 08 03 00 00 05",
+          "instruction": "lock bts dword ptr [rdi + 0x308], 0x5"
+        },
+        {
+          "form": "div - f7/6:mem Divide Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40e5cd",
+          "bytes": "f7 77 08",
+          "instruction": "div dword ptr [rdi + 0x8]"
+        },
+        {
+          "form": "sub - 2d Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x45022f",
+          "bytes": "2d 88 00 00 00",
+          "instruction": "sub eax, 0x88"
+        },
+        {
+          "form": "or - 80/1:reg Logic Byte",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x408e8b",
+          "bytes": "80 cc 08",
+          "instruction": "or ah, 0x8"
+        },
+        {
+          "form": "movzx - 0fb6 Extend Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x408e41",
+          "bytes": "0f b6 c3",
+          "instruction": "movzx eax, bl"
+        },
+        {
+          "form": "test 66 f7/0:mem Logic Word",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4078e0",
+          "bytes": "66 f7 01 02 02",
+          "instruction": "test word ptr [rcx], 0x202"
+        },
+        {
+          "form": "sub W 29 Arithmetic Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x4100ee",
+          "bytes": "48 29 05 db c2 0c 00",
+          "instruction": "sub qword ptr [rip + 0xcc2db], rax"
+        },
+        {
+          "form": "lock f0 W 0fc1 LockXaddMem Qword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40ede2",
+          "bytes": "f0 4c 0f c1 17",
+          "instruction": "lock xadd qword ptr [rdi], r10"
+        },
+        {
+          "form": "add R 03 Arithmetic Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40e9a2",
+          "bytes": "45 03 5a 10",
+          "instruction": "add r11d, dword ptr [r10 + 0x10]"
+        },
+        {
+          "form": "lock f0 R 83/0:mem LockAddMem Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x40e924",
+          "bytes": "f0 41 83 44 10 20 01",
+          "instruction": "lock add dword ptr [r8 + rdx + 0x20], 0x1"
+        },
+        {
+          "form": "cmp 64 3b CmpFsLoad Dword",
+          "status": "profile",
+          "sites": 2,
+          "rip": "0x456f14",
+          "bytes": "64 3b 04 25 d0 02 00 00",
+          "instruction": "cmp eax, dword ptr fs:[0x2d0]"
+        },
+        {
+          "form": "cmp 64 83/7:mem CmpFsMemImm Dword",
+          "status": "profile",
+          "sites": 1,
+          "rip": "0x426053",
+          "bytes": "64 83 3c 25 14 06 00 00 02",
+          "instruction": "cmp dword ptr fs:[0x614], 0x2"
+        }
+      ],
+      "after": {
+        "admitted": 9960
+      }
+    }
+  },
+  "checked_profile_sources": {
+    "crates/od-isa/src/execute.rs": "7586b0f92896eb32fa1716910410f719b97e5aa33add747b20d93f290cca614e",
+    "crates/od-isa/src/long_decode.rs": "97925f3dcb1a629c01670343e75806892967a96c2926849d822d4aa2f6f3a275"
+  },
+  "linux_direct": {
+    "runner_sha256": "ed711df52d84c6ec8c7b129566b699eba72a7c12eaeef4bcaf5d8346b2d9a1e0",
+    "runner_source_base": "c3b416e6259690ffe9f4e16f4de581327ec0d66d",
+    "runner_source_patch_sha256": "381fc8bce4cc85601fb6371f1b38f1183acbf82cd4a35d76896513ee5afb536d",
+    "raw_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+    "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "initramfs_sha256": "11dea5a5a1c6ecfdf07d82a6da4e170a02b3951c745f06810aedd69eea963cc8",
+    "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+    "cpu_profile": "X8664V1Stage4AApic",
+    "vcpus": 2,
+    "seed": 24301,
+    "nonce": "s6-workloads20261119",
+    "retired": 2480677051,
+    "retired_per_vcpu": [
+      2011303747,
+      469373304
+    ],
+    "terminal_vcpu": 0,
+    "identical_com1_sha256": "b5646319ea4417cb904f3b1a81e5707b81e826f22bc2cfd9c962bce004be0e6b",
+    "repeat_stop": {
+      "exit_kind": "unsupported",
+      "rip": "0xffffffff813b5300",
+      "rip_bytes": "9b 65 48 c7 05 13 bf 06 03 00 00 00 00 66 90 e9",
+      "cpl": 0,
+      "cpl3_retired": 349284,
+      "exit_detail": "Unsupported { opcode: 155 }",
+      "cr0": "0x80050033",
+      "cr4": "0x6b0",
+      "virtual_ns": 3831788051,
+      "kernel_symbol": "fpu__drop+0xe0",
+      "kernel_elf_file_offset": "0x5b5300",
+      "instruction": "FWAIT"
+    },
+    "kernel_activated_two_processors": true,
+    "stage6_init_started": true,
+    "workload_markers": [],
+    "runs": [
+      {
+        "report_sha256": "1476371eedb138c2809cf511d7f90e5a494a8c7fd8538898fd6effcb3aecaf13",
+        "started": "2026-11-20T13:56:05Z",
+        "finished": "2026-11-20T14:15:42Z",
+        "verifier_exit": 1,
+        "verify_error": "expected source, all five workloads, online CPUs and completion"
+      },
+      {
+        "report_sha256": "53ecb2f1a57a014e554a9eff0032d15c4342efba6e710b58c348203f85d2354d",
+        "started": "2026-11-20T13:56:06Z",
+        "finished": "2026-11-20T14:15:44Z",
+        "verifier_exit": 1,
+        "verify_error": "expected source, all five workloads, online CPUs and completion"
+      }
+    ],
+    "accepted": false
+  },
+  "host_verification": {
+    "od-isa": {
+      "log_sha256": "9b93ff1eb13d377ef81b92f30003a79d2b08464530dea4822cf35dd08578558c",
+      "passed": 6130,
+      "failed": 0,
+      "ignored": 0,
+      "groups": 10
+    },
+    "od-machine": {
+      "log_sha256": "2b07045c48055821ee4d366d866f983b53395d4fe41db5c5dbcae19e557afcd6",
+      "passed": 2217,
+      "failed": 0,
+      "ignored": 21,
+      "groups": 34
+    },
+    "workspace": {
+      "log_sha256": "8c234b89494609734506e9d4fa742677aa6d74209f39fac8a587505c2bc18f31",
+      "status": "passed",
+      "groups": 0
+    },
+    "cpl3": 234,
+    "packaging_python_tests": 17,
+    "s4_38_d5": {
+      "worktrees_checked": 129,
+      "overlaps": 0
+    },
+    "format_and_layout": "passed",
+    "graphify_code_update": "completed"
+  },
+  "review_followup": {
+    "change": "Preserve the existing legacy-prefix constraints for the new scalar CPL3 admission predicates. Document the already implemented alignment rule for PMINUB m128.",
+    "profile_sources": {
+      "crates/od-isa/src/execute.rs": "c2121a5cd7b0db46af52e8217d1c2ba1140222b505cc8f46f19ce6c993deae0e",
+      "crates/od-isa/src/long_decode.rs": "7840a2911b68d9a9c2498f2b89b486a901fe78a5e452fb6f862f9f2a946d4577"
+    },
+    "classification": {
+      "busybox": {
+        "admitted": 21892
+      },
+      "workload": {
+        "admitted": 9960
+      }
+    },
+    "cpl3_tests_passed": 235,
+    "archived_linux_direct_runs_used_the_pre_review_profile": true
+  }
+}

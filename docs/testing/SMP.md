@@ -534,6 +534,14 @@ python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
   --out "$overlay"
 ```
 
+Для статического варианта передайте ELF, собранный с `-static` через GCC 15 из принятого RAW, и закреплённый `bin/busybox` из initramfs этапа 5. После `switch_root` этот BusyBox выполняет гостевую обёртку и applet для хеша исходника. [Параметры сборки](../reports/STAGE_6_REPORT.md#s6-22--сквозная-эталонная-трасса-нагрузок).
+
+```sh
+python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
+  --stage5-initramfs "$stage5_initramfs" --prebuilt-workload "$static_workload_elf" \
+  --prebuilt-busybox "$boot_busybox" --out "$overlay"
+```
+
 На macOS arm64 передайте `--rootfs-raw` рабочую копию принятого образа ext4. Runner открывает её на запись с эксклюзивной блокировкой, подключает к PCI/NVMe и добавляет `rdinit=/s6-smp-init`. Для каждого повтора создавайте новую копию образа и указывайте свободный путь отчёта. Установите `kernel`, `overlay` и `accepted_raw` в пути проверенных файлов, а `kernel_sha256` и `overlay_sha256` в ожидаемые хеши ядра и initramfs. Соберите release runner и задайте `budget` по длительности прогона.
 
 ```sh
