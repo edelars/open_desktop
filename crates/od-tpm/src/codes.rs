@@ -346,6 +346,11 @@ pub mod handle {
 /// structure.
 pub const TPM_GENERATED_VALUE: u32 = 0xFF54_4347;
 
+/// The firmware version of this build: `TPM_PT_FIRMWARE_VERSION_1` is the high 32 bits and
+/// `TPM_PT_FIRMWARE_VERSION_2` the low 32 bits, and the same value is the `firmwareVersion` of
+/// every attestation structure (ADR-0009, decision 6: one source for both).
+pub(crate) const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
+
 /// Table 3 (v184): `TPM_SPEC_*`. The project targets v185 (ADR-0009); `REVISION` reports 185.
 /// NOT VERIFIED against TPM 2.0 Library v185: v185 `TPM_SPEC_YEAR`/`TPM_SPEC_DAY_OF_YEAR` and the
 /// exact `TPM_PT_REVISION` encoding (v184 states version number = TPM_SPEC_VERSION from v184 on);

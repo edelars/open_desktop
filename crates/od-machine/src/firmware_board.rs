@@ -6773,6 +6773,16 @@ mod tests {
             load_firmware_image(&image, &broken),
             Err(FirmwareBoardError::Tpm(_))
         ));
+        // A snapshot of a newer build (ADR-0009, decision 6) is refused, not read as empty state.
+        let mut newer = restored.clone();
+        let newer_version = (od_tpm::SNAPSHOT_VERSION + 1).to_be_bytes();
+        newer.tpm.as_mut().unwrap().snapshot.as_mut().unwrap()[8..10]
+            .copy_from_slice(&newer_version);
+        assert!(matches!(
+            load_firmware_image(&image, &newer),
+            Err(FirmwareBoardError::Tpm(od_tpm::StateError::UnsupportedVersion(v)))
+                if v == od_tpm::SNAPSHOT_VERSION + 1
+        ));
     }
 
     #[test]

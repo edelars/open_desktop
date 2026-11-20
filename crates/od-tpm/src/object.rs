@@ -624,7 +624,8 @@ fn check_asymmetric_attributes(
 }
 
 fn check_symmetric(public: &TpmtPublic, symmetric: SymDef) -> Result<(), Rc> {
-    // Only a restricted RSA/ECC decryption key specifies a storage cipher in this profile.
+    // Only a storage key (a restricted decryption RSA, ECC or ML-KEM key, or a restricted
+    // decryption SYMCIPHER object) specifies a storage cipher in this profile; any other key has none.
     if is_storage(public) != (symmetric != SymDef::Null) {
         return Err(Rc::SYMMETRIC.in_param(2));
     }

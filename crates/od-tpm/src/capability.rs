@@ -42,7 +42,7 @@
 //! capacity of this implementation (16), the PTP 1.07 minimum was not checked; the transient
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
-use crate::codes::{alg, cap, curve, handle, pt, spec};
+use crate::codes::{FIRMWARE_VERSION, alg, cap, curve, handle, pt, spec};
 use crate::context::MAX_CONTEXT_SIZE;
 use crate::crypto::supported_rsa_exponent;
 use crate::dispatch::COMMANDS;
@@ -172,8 +172,8 @@ impl Tpm {
             (pt::VENDOR_STRING_3, 0x5450_4D00),
             (pt::VENDOR_STRING_4, 0),
             (pt::VENDOR_TPM_TYPE, 0),
-            (pt::FIRMWARE_VERSION_1, 0x0001_0000),
-            (pt::FIRMWARE_VERSION_2, 0),
+            (pt::FIRMWARE_VERSION_1, (FIRMWARE_VERSION >> 32) as u32),
+            (pt::FIRMWARE_VERSION_2, FIRMWARE_VERSION as u32),
             (pt::INPUT_BUFFER, limits::MAX_2B_BUFFER_SIZE as u32),
             (pt::HR_TRANSIENT_MIN, crate::hash::MAX_SEQUENCES as u32),
             (pt::HR_PERSISTENT_MIN, MAX_PERSISTENT as u32),

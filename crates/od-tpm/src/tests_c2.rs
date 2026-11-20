@@ -4460,6 +4460,48 @@ const QUOTE_S: &str = "04aceeb16951370efbbac748dc8dac2691b30850e4e755a74a7d56547
 const QUOTE_ATTEST: &str = "ff54434780180022000b6619f848a29382a87230dd749a509f02a2b808317654843277c8a533b5c021bf00056e6f6e63650000000000000000000000010000000001000100000000000000000001000b031100000020b5ab2eaee749a8f5fe3e847815d70e8c15332cb6ab8a80491cfe7afc8dd7f8bc";
 
 #[test]
+fn get_capability_and_quote_report_the_same_firmware_version() {
+    let mut t = started();
+    let (_, capability, body, count) = cap_list(&get_cap(
+        &mut t,
+        cap::TPM_PROPERTIES,
+        pt::FIRMWARE_VERSION_1,
+        2,
+    ));
+    assert_eq!((capability, count), (cap::TPM_PROPERTIES, 2));
+    let word = |at: usize| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
+    assert_eq!(
+        (word(0), word(8)),
+        (pt::FIRMWARE_VERSION_1, pt::FIRMWARE_VERSION_2)
+    );
+    let reported = u64::from(word(4)) << 32 | u64::from(word(12));
+    assert_eq!(reported, FIRMWARE);
+    assert_eq!(reported, crate::codes::FIRMWARE_VERSION);
+
+    // The endorsement hierarchy does not obfuscate, so firmwareVersion is the plain value.
+    let e = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &ecc_sign()));
+    let (attest, _) = parse_attestation(&quote(
+        &mut t,
+        e.handle,
+        b"",
+        b"n",
+        &u16b(alg::NULL),
+        &hex("00000000"),
+    ));
+    assert_eq!(
+        attest,
+        attest_bytes(
+            ST_ATTEST_QUOTE,
+            &qualified(ENDORSEMENT, &e.name),
+            b"n",
+            (0, 1, 0),
+            reported,
+            &cat(&[&hex("00000000"), &tpm2b(&hex(SHA256_EMPTY))]),
+        )
+    );
+}
+
+#[test]
 fn attestations_of_storage_hierarchy_keys_are_obfuscated() {
     let mut t = started();
     let k = parse_primary(&create_primary(&mut t, OWNER, b"kpw", &ecc_sign()));

@@ -1116,8 +1116,11 @@ impl Tpm {
         {
             return Ok(());
         }
-        // Currently every hash produces a different digest width. The preceding length check and
-        // the HASHCHECK over those bytes therefore bind the digest to the signing scheme's hash.
+        // SHA-256, SHA-384 and SHA-512 produce digests of different widths (32, 48 and 64 octets),
+        // so for the hash schemes the preceding length check and the HASHCHECK over those bytes
+        // bind the digest to the signing scheme's hash. This does not hold for ML-DSA: its digest
+        // is mu of 64 octets, the width of SHA-512, so the ticket binds the bytes, not the hash
+        // that made them.
         if !self.valid_hashcheck_ticket(digest, ticket) {
             return Err(Rc::TICKET.in_param(3));
         }

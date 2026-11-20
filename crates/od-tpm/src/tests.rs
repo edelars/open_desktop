@@ -291,6 +291,34 @@ fn commands_outside_the_profile_return_command_code_not_success() {
 }
 
 #[test]
+fn field_upgrade_commands_are_absent() {
+    // ADR-0009, decision 6: TPM2_FieldUpgradeStart, TPM2_FieldUpgradeData and TPM2_FirmwareRead
+    // are not implemented, and there is no Field Upgrade mode or TPM_RC_UPGRADE.
+    const ABSENT: [u32; 3] = [0x0000_012F, 0x0000_0141, 0x0000_0179];
+    for startup in [false, true] {
+        let mut t = if startup { started() } else { tpm_new() };
+        for code in ABSENT {
+            err(&run(&mut t, plain(code, &[], &[])), Rc::COMMAND_CODE);
+            let params = u32b(0);
+            err(&run(&mut t, plain(code, &[], &params)), Rc::COMMAND_CODE);
+        }
+    }
+    let mut t = started();
+    let listed = listed_commands(&mut t);
+    for code in ABSENT {
+        assert!(!listed.contains(&(code & 0xFFFF)), "{code:#x} is listed");
+        assert!(COMMANDS.iter().all(|c| c.code != code));
+        // The listing starts at the next implemented command, never at the absent one.
+        let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, code, 1));
+        assert_eq!(count, 1);
+        assert_ne!(
+            u32::from_be_bytes([body[0], body[1], body[2], body[3]]) & 0xFFFF,
+            code
+        );
+    }
+}
+
+#[test]
 fn every_command_before_startup_is_initialize() {
     let mut t = tpm_new();
     for c in COMMANDS.iter().filter(|c| c.code != cc::STARTUP) {

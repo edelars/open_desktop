@@ -25,9 +25,12 @@ use super::tests_obj::{
 };
 use super::*;
 use crate::codes::se;
+use crate::credential::{DUPLICATE_LABEL, make_seed, protect_seed_blob};
+use crate::crypto::HashAlg;
 use crate::ek::{HighRangeEk, LowRangeEk, POLICY_B_SHA384};
 use crate::marshal::{TpmtPublic, Unique};
 use crate::nv::{NV_BUFFER_MAX, attr};
+use crate::random::Drbg;
 
 const EH: u32 = handle::RH_ENDORSEMENT;
 const PROFILES: [HighRangeEk; 3] = [
@@ -428,10 +431,10 @@ fn activate(t: &mut Tpm, activated: &Primary, ek: &Primary, blob: &[u8], secret:
 }
 
 #[test]
-fn ek_high_range_sign_or_decrypt_round_trip() {
-    // A restricted decryption EK neither signs nor decrypts arbitrary data: it opens the secret of
-    // a credential (the seed) with its private key. RSA: OAEP SHA-384; ECC: ECDH and KDFe; ML-KEM:
-    // decapsulation and KDFa (all with SHA-384).
+fn ek_high_range_activate_credential_round_trip() {
+    // A restricted decryption EK opens the secret of a credential (the seed) with its private
+    // key. RSA: OAEP SHA-384; ECC: ECDH and KDFe; ML-KEM: decapsulation and KDFa (all with
+    // SHA-384). It does not decrypt arbitrary data (`ek_high_range_restricted_ek_refuses_...`).
     let vectors = [
         (
             HighRangeEk::Rsa3072,
@@ -535,4 +538,106 @@ fn ek_high_range_sign_or_decrypt_round_trip() {
         ),
         Rc::INTEGRITY.in_param(1),
     );
+}
+
+#[test]
+fn ek_high_range_restricted_ek_refuses_plain_decryption() {
+    // The EK is restricted with decrypt SET: RSA_Decrypt, ECDH_ZGen and Decapsulate are refused
+    // with TPM_RC_ATTRIBUTES for the key handle (Part 3, clauses 14.2, 14.5 and 14.11), valid
+    // parameters notwithstanding. ActivateCredential is the only way to use the private key.
+    let mut t = started();
+
+    let rsa = make_ek(&mut t, HighRangeEk::Rsa3072);
+    let oaep = cat(&[&u16b(alg::OAEP), &u16b(alg::SHA384)]);
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::RSA_DECRYPT,
+                &[rsa.handle],
+                &[b""],
+                &cat(&[&tpm2b(&[1; 384]), &oaep, &tpm2b(b"")]),
+            ),
+        ),
+        Rc::ATTRIBUTES.in_handle(1),
+    );
+
+    let ecc = make_ek(&mut t, HighRangeEk::EccP384);
+    let mut reader = Reader::new(&ecc.public);
+    let Unique::Ecc { x, y } = TpmtPublic::unmarshal(&mut reader).unwrap().unique else {
+        panic!("the P-384 EK has an ECC point");
+    };
+    err(
+        &run(
+            &mut t,
+            with_pw(
+                cc::ECDH_Z_GEN,
+                &[ecc.handle],
+                &[b""],
+                &tpm2b(&cat(&[&tpm2b(&x), &tpm2b(&y)])),
+            ),
+        ),
+        Rc::ATTRIBUTES.in_handle(1),
+    );
+
+    let kem = make_ek(&mut t, HighRangeEk::MlKem768);
+    // Encapsulation is a public operation and works; decapsulation of its ciphertext does not.
+    let encapsulated = run(&mut t, plain(cc::ENCAPSULATE, &[kem.handle], &[]));
+    ok(&encapsulated);
+    let mut reader = Reader::new(params(&encapsulated, 0));
+    reader.tpm2b(32).unwrap();
+    let ciphertext = reader.tpm2b(1088).unwrap().to_vec();
+    err(
+        &run(
+            &mut t,
+            with_pw(cc::DECAPSULATE, &[kem.handle], &[b""], &tpm2b(&ciphertext)),
+        ),
+        Rc::ATTRIBUTES.in_handle(1),
+    );
+}
+
+#[test]
+fn ek_high_range_credential_with_another_label_is_refused() {
+    // The label is part of the seed derivation: OAEP label (RSA), KDFe label (ECC) and KDFa label
+    // (ML-KEM). The credential is made here for the public key of the EK, once with IDENTITY (it
+    // opens) and once with DUPLICATE (it does not), with everything else the same.
+    for profile in PROFILES {
+        let mut t = started();
+        let ek = make_ek(&mut t, profile);
+        let activated = parse_primary(&create_primary(
+            &mut t,
+            handle::RH_OWNER,
+            b"act-pw",
+            &ecc_sign(),
+        ));
+        let mut reader = Reader::new(&ek.public);
+        let public = TpmtPublic::unmarshal(&mut reader).unwrap();
+        let clear = tpm2b(b"labeled credential");
+        let mut rng = Drbg::new(&[5; 48]).unwrap();
+        let mut credential_for = |label: &[u8]| {
+            let (seed, secret) = make_seed(&public, label, &mut rng, HashAlg::Sha384).unwrap();
+            let (symmetric, _) = public.storage_parameters().unwrap();
+            let blob =
+                protect_seed_blob(&seed, symmetric, HashAlg::Sha384, &activated.name, &clear);
+            (blob, secret)
+        };
+
+        let (blob, secret) = credential_for(b"IDENTITY\0");
+        let response = activate(&mut t, &activated, &ek, &blob, &secret);
+        ok(&response);
+        assert_eq!(
+            params(&response, 0),
+            tpm2b(b"labeled credential"),
+            "{profile:?}"
+        );
+
+        let (blob, secret) = credential_for(DUPLICATE_LABEL);
+        let expected = match profile {
+            // OAEP does not open under another label.
+            HighRangeEk::Rsa3072 => Rc::VALUE.in_param(2),
+            // The seed differs, so the integrity value of the wrapper does not match.
+            HighRangeEk::EccP384 | HighRangeEk::MlKem768 => Rc::INTEGRITY.in_param(1),
+        };
+        err(&activate(&mut t, &activated, &ek, &blob, &secret), expected);
+    }
 }

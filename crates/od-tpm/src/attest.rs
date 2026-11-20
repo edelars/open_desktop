@@ -61,7 +61,7 @@
 //! `TPMS_TIME_INFO` is the milliseconds since the TPM was powered (`power_ms`), the same value
 //! `TPM2_ReadClock` reports.
 
-use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
+use crate::codes::{FIRMWARE_VERSION, TPM_GENERATED_VALUE, alg, handle, object_attr, st};
 use crate::crypto::{HashAlg, ecc_sign, hash, kdfa_sha256};
 use crate::dispatch::Invocation;
 use crate::marshal::{
@@ -78,9 +78,6 @@ use crate::state::Tpm;
 
 /// The Qualified Name of `TPM_RH_NULL`: the handle itself (clause 18.1).
 const NULL_QN: [u8; 4] = handle::RH_NULL.to_be_bytes();
-
-/// `TPM_PT_FIRMWARE_VERSION_1 << 32 | TPM_PT_FIRMWARE_VERSION_2` (`capability.rs`).
-const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
 
 /// The checked signing key of an attestation command and its scheme, or `None` for
 /// `TPM_RH_NULL` (the NULL signature).
