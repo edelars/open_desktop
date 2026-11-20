@@ -1,0 +1,483 @@
+{
+  "schema_version": 1,
+  "run_id": "s8-04-20261120T2210",
+  "task": "S8-04",
+  "date_utc": "2026-11-20T23:14:57+00:00",
+  "host": {
+    "model": "Mac15,11",
+    "cpu": "Apple M3 Max",
+    "logical_cpus": 14,
+    "memory_bytes": 38654705664,
+    "page_size": 16384,
+    "macos_product_version": "26.7.1",
+    "macos_build": "25G241",
+    "architecture": "arm64",
+    "python": "3.15.2",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "loadavg_start": [
+      4.45,
+      3.97,
+      4.37
+    ],
+    "loadavg_end": [
+      2.63,
+      6.46,
+      8.12
+    ]
+  },
+  "nice": {
+    "requested": -5,
+    "script_nice": 0,
+    "wrapper": [
+      "nice",
+      "-n",
+      "-5"
+    ],
+    "probe_effective": 0,
+    "probe_stderr": "nice: setpriority: Permission denied",
+    "satisfied": false,
+    "seen_in_runs": [
+      0
+    ],
+    "satisfied_in_runs": false
+  },
+  "build": {
+    "profile": "release",
+    "git_head": "858817a80d67d51705effa0906c64b12fef2946b",
+    "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "dirty_files": 2,
+    "runner_sha256": "59815ccde0c4caba44a3a8616b486e1fae40c7c34b1890dd45c258d2d41f9dc5",
+    "rom_sha256": "ec554e4ac6f32f1e45fffa1597c9008308f710f83f05089667989b9a297898f7",
+    "asset_sha256": {
+      "firmware": "ec554e4ac6f32f1e45fffa1597c9008308f710f83f05089667989b9a297898f7",
+      "efi_app": "44cf4792133f0ee743347d892a7cf5c21e15e6ed792115a17a56136e24140922",
+      "load_image_payload": "a10f0cec85fd5f9da040a34935be055d909e6f45cbc5f598ca6c6bc2c30bb503",
+      "disk": "dab109b55c71aa3a2413fd513057794afef4d5da618ad304f18474550a3f75a9"
+    },
+    "tools": [
+      "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "rust-objcopy: llvm-objcopy, compatible with GNU objcopy"
+    ],
+    "sources_sha256": {
+      "crates/od-machine/src/firmware_board.rs": "9024f5442260ce92f66d4418efe6b282f234e0dc73554056fbeee453393e67d4",
+      "crates/od-machine/src/paged_probe.rs": "dde2c30f5ff28582410be2575e80e5e9d3b27162fec61bf83e6a7f86b5a7ef11",
+      "tools/runner/src/firmware_boot.rs": "3ca201a9b4fdb8f44706bcb8d1f1435f8303dcc8e4b51ff48ce4c9e7307a5655",
+      "tools/bench/windows_boot_bench.py": "121c9aaecf178a029d07f0f124f6b2ca06992b7d9d1c0fc1d10b1db65fbea3f3",
+      "tools/bench/firmware_boot_bench.py": "3b26393b0d915bb58248e614027d1fb9e56a3f3ca55a6a6d76bfa2f7bb27ec11"
+    }
+  },
+  "engine": {
+    "jit_mentions": {
+      "crates/od-machine/src/firmware_board.rs": 0,
+      "crates/od-machine/src/paged_probe.rs": 0,
+      "tools/runner/src/firmware_boot.rs": 0,
+      "crates/od-machine/src/firmware_board/*.rs": 0
+    },
+    "interpreter_call": "crates/od-machine/src/paged_probe.rs:1108",
+    "jit_crate_in_od_isa": false,
+    "engine": "interpreter (od_isa::execute::step_paged_firmware_probe_with_guest_fp)"
+  },
+  "board": {
+    "vcpu_count": 1,
+    "ram_bytes": 134217728,
+    "tpm": "CRB, SHA-256 and SHA-384 banks (--tpm)",
+    "nvme": "fixed controller, in-memory copy of disk.raw",
+    "budget_instructions": 1200000000,
+    "quantum": "remaining global budget, shortened by device events and deadlines (crates/od-machine/src/firmware_board.rs run_boot_with, quantum_budget)"
+  },
+  "vcpu": {
+    "runner_has_vcpu_option": false,
+    "supported_counts": [
+      1
+    ],
+    "two_vcpu": "not measured: boot-firmware has no vCPU option, the board default is vcpu_count = 1 and S6-51 (two vCPUs for stages 7, 8, 11) is not accepted; no code was changed"
+  },
+  "routes": [
+    {
+      "route": "FV",
+      "vcpus": 1,
+      "reference": {
+        "retired": 549802885,
+        "quanta": 36765,
+        "handoff_sha256": "cddaf98b5c030793fcf37faff560db254515ee612644f7bd7f4b4cfc121ad5fe",
+        "budget": 1200000000,
+        "tsc_hz": 1000000000
+      },
+      "stop_rip": "0x20ac21",
+      "sample_rips": [
+        "0x200040",
+        "0x20ac21"
+      ],
+      "warmup": {
+        "retired": 549802885,
+        "quanta": 36765,
+        "wall_ns": 284574525041,
+        "guest_window_ns": 284515983958,
+        "guest_window_retired": 549802884,
+        "guest_window_quanta": 36764,
+        "ips_wall": 1932017.2,
+        "ips_guest_window": 1932414.7,
+        "cpu_user_s": 275.091,
+        "cpu_sys_s": 0.855,
+        "max_rss_bytes": 301023232,
+        "nice_seen": [
+          0
+        ]
+      },
+      "runs": [
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 293655752167,
+          "guest_window_ns": 293593551333,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 1872270.1,
+          "ips_guest_window": 1872666.8,
+          "cpu_user_s": 282.724,
+          "cpu_sys_s": 0.846,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 268903444083,
+          "guest_window_ns": 268839956541,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2044610.8,
+          "ips_guest_window": 2045093.6,
+          "cpu_user_s": 268.078,
+          "cpu_sys_s": 0.955,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 263035877834,
+          "guest_window_ns": 262971744916,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2090220.1,
+          "ips_guest_window": 2090729.9,
+          "cpu_user_s": 262.342,
+          "cpu_sys_s": 0.771,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 284783626459,
+          "guest_window_ns": 284720224708,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 1930598.7,
+          "ips_guest_window": 1931028.6,
+          "cpu_user_s": 275.98,
+          "cpu_sys_s": 0.92,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 272098490459,
+          "guest_window_ns": 272039943750,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2020602.5,
+          "ips_guest_window": 2021037.3,
+          "cpu_user_s": 270.988,
+          "cpu_sys_s": 1.151,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        }
+      ],
+      "summary": {
+        "wall_ns": {
+          "n": 5,
+          "mean": 276495438200.4,
+          "p50": 272098490459,
+          "p95": 293655752167,
+          "min": 263035877834,
+          "max": 293655752167,
+          "spread": 30619874333,
+          "stdev": 12462962422.898
+        },
+        "guest_window_ns": {
+          "n": 5,
+          "mean": 276433084249.6,
+          "p50": 272039943750,
+          "p95": 293593551333,
+          "min": 262971744916,
+          "max": 293593551333,
+          "spread": 30621806417,
+          "stdev": 12463158267.473
+        },
+        "ips_wall": {
+          "n": 5,
+          "mean": 1991660.44,
+          "p50": 2020602.5,
+          "p95": 2090220.1,
+          "min": 1872270.1,
+          "max": 2090220.1,
+          "spread": 217950.0,
+          "stdev": 88512.682
+        },
+        "ips_guest_window": {
+          "n": 5,
+          "mean": 1992111.24,
+          "p50": 2021037.3,
+          "p95": 2090729.9,
+          "min": 1872666.8,
+          "max": 2090729.9,
+          "spread": 218063.09999999986,
+          "stdev": 88554.433
+        },
+        "retired": {
+          "n": 5,
+          "mean": 549802885.0,
+          "p50": 549802885,
+          "p95": 549802885,
+          "min": 549802885,
+          "max": 549802885,
+          "spread": 0,
+          "stdev": 0.0
+        },
+        "quanta": {
+          "n": 5,
+          "mean": 36765.0,
+          "p50": 36765,
+          "p95": 36765,
+          "min": 36765,
+          "max": 36765,
+          "spread": 0,
+          "stdev": 0.0
+        }
+      }
+    },
+    {
+      "route": "ESP",
+      "vcpus": 1,
+      "reference": {
+        "retired": 365245503,
+        "quanta": 3960,
+        "handoff_sha256": "eaab15873b6eee34e5100b352f429456d5803e196d96cabf25756a5adf5ca29b",
+        "budget": 1200000000,
+        "tsc_hz": 1000000000
+      },
+      "stop_rip": "0x20ac21",
+      "sample_rips": [
+        "0x200040",
+        "0x20ac21"
+      ],
+      "warmup": {
+        "retired": 365245503,
+        "quanta": 3960,
+        "wall_ns": 175776814084,
+        "guest_window_ns": 175726063250,
+        "guest_window_retired": 365245502,
+        "guest_window_quanta": 3959,
+        "ips_wall": 2077893.5,
+        "ips_guest_window": 2078493.6,
+        "cpu_user_s": 175.358,
+        "cpu_sys_s": 0.523,
+        "max_rss_bytes": 301023232,
+        "nice_seen": [
+          0
+        ]
+      },
+      "runs": [
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 200669376333,
+          "guest_window_ns": 200617945917,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 1820135.7,
+          "ips_guest_window": 1820602.3,
+          "cpu_user_s": 191.598,
+          "cpu_sys_s": 0.67,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 197090117584,
+          "guest_window_ns": 197035343208,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 1853190.3,
+          "ips_guest_window": 1853705.5,
+          "cpu_user_s": 179.812,
+          "cpu_sys_s": 0.596,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 189807782584,
+          "guest_window_ns": 189756455625,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 1924291.5,
+          "ips_guest_window": 1924812.0,
+          "cpu_user_s": 180.696,
+          "cpu_sys_s": 0.578,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 190395652208,
+          "guest_window_ns": 190343851791,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 1918350.0,
+          "ips_guest_window": 1918872.1,
+          "cpu_user_s": 184.151,
+          "cpu_sys_s": 0.585,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 168254184458,
+          "guest_window_ns": 168204676833,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2170796.0,
+          "ips_guest_window": 2171434.9,
+          "cpu_user_s": 167.634,
+          "cpu_sys_s": 0.738,
+          "max_rss_bytes": 301023232,
+          "nice_seen": [
+            0
+          ]
+        }
+      ],
+      "summary": {
+        "wall_ns": {
+          "n": 5,
+          "mean": 189243422633.4,
+          "p50": 190395652208,
+          "p95": 200669376333,
+          "min": 168254184458,
+          "max": 200669376333,
+          "spread": 32415191875,
+          "stdev": 12592828255.829
+        },
+        "guest_window_ns": {
+          "n": 5,
+          "mean": 189191654674.8,
+          "p50": 190343851791,
+          "p95": 200617945917,
+          "min": 168204676833,
+          "max": 200617945917,
+          "spread": 32413269084,
+          "stdev": 12591498903.998
+        },
+        "ips_wall": {
+          "n": 5,
+          "mean": 1937352.7,
+          "p50": 1918350.0,
+          "p95": 2170796.0,
+          "min": 1820135.7,
+          "max": 2170796.0,
+          "spread": 350660.30000000005,
+          "stdev": 137704.944
+        },
+        "ips_guest_window": {
+          "n": 5,
+          "mean": 1937885.36,
+          "p50": 1918872.1,
+          "p95": 2171434.9,
+          "min": 1820602.3,
+          "max": 2171434.9,
+          "spread": 350832.59999999986,
+          "stdev": 137767.349
+        },
+        "retired": {
+          "n": 5,
+          "mean": 365245503.0,
+          "p50": 365245503,
+          "p95": 365245503,
+          "min": 365245503,
+          "max": 365245503,
+          "spread": 0,
+          "stdev": 0.0
+        },
+        "quanta": {
+          "n": 5,
+          "mean": 3960.0,
+          "p50": 3960,
+          "p95": 3960,
+          "min": 3960,
+          "max": 3960,
+          "spread": 0,
+          "stdev": 0.0
+        }
+      }
+    }
+  ],
+  "install_budget": {
+    "status": "hypothesis",
+    "basis": "No measured install instruction count exists before S8-25. 1e12..1e13 is an order of magnitude for a 10..60 minute native Windows 11 setup on a ~3 GHz core at 1..3 instructions per ns (unsourced hypothesis, to be replaced by the S8-25 count).",
+    "measured_ips_used": 1964507,
+    "limit_hours": 24,
+    "rows": [
+      {
+        "instructions": 1000000000000.0,
+        "required_ips": 11574074,
+        "factor_over_measured": 5.9,
+        "hours_at_measured": 141.4
+      },
+      {
+        "instructions": 10000000000000.0,
+        "required_ips": 115740741,
+        "factor_over_measured": 58.9,
+        "hours_at_measured": 1414.0
+      }
+    ]
+  },
+  "annotations": [
+    "od-runner was built (release, --locked --offline) at the start of the run from HEAD 3693319 plus the uncommitted working tree of other stage 8 tasks; HEAD moved to 858817a (the coordinator committed those changes) before the run ended, so build.git_head and build.source_diff_sha256 describe the end of the run. runner_sha256 and rom_sha256 identify the measured binaries.",
+    "nice -5 was not obtained: setpriority returns Permission denied for an ordinary user and sudo needs a password (access of the owner). All runs executed at nice 0 (nice.seen_in_runs = [0]); the requirement of AGENTS.md is not met and no nice A/B was made.",
+    "Other agents built and tested on the same host during the series (loadavg, 1 min: 4.45 at start, 2.63 at end; 15 min at end: 8.12); spreads include this load.",
+    "Instruction counts differ from the S7-27 series (FV 338906287, ESP 224333702 at cee17ee): retired of FV is 210.9 million higher (549802885 against 338906287) at the same 36765 quanta and the same handoff_sha256. The cause is not established: the retired counting rule may have changed. That 341 commits separate cee17ee from 3693319 is not an explanation (it was not proven). The agreement of the speed with S7-27 (about 2.1 million instructions per second) is therefore a comparison of rates only, with this reservation.",
+    "Two vCPU runs were not made: boot-firmware has no vCPU option, board default vcpu_count = 1, S6-51 is not accepted."
+  ],
+  "errata": [
+    "max_rss_bytes: the value is the maximum of RUSAGE_CHILDREN over all child processes of the script, not the RSS of a run; do not use it.",
+    "jit_crate_in_od_isa: the check was wrong (od-isa is the interpreter); see firmware_path_mentions_jit and od_jit_linked_in_runner in the new version of the script; for this run the conclusion about the firmware board rests on a text search of the execution paths.",
+    "The version of the script that made the measurement cannot be established from the files with full certainty. sources_sha256 in this JSON was recorded for the version of the script before the errata edits; the current windows_boot_bench.py differs (it has no max_rss_bytes and no jit_crate_in_od_isa; it has firmware_path_mentions_jit and od_jit_linked_in_runner). For reproducibility: a rerun with the new version was not made because of its duration (about 70 minutes)."
+  ]
+}
