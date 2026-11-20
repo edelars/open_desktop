@@ -9,6 +9,22 @@ S7-01 определяет проверку формата образа ROM и P
 Запуск из корня проекта с установленными [инструментами сборки прошивки](../../firmware/uefi/README.md#команды).
 
 ```sh
+python3 tests/system/firmware_boot_smoke.py &&
+python3 tests/system/firmware_esp_boot_smoke.py &&
+python3 tests/system/firmware_nvram_smoke.py &&
+python3 tests/system/firmware_failure_smoke.py
+```
+
+Эта последовательность проверяет G1–G3. Каждый скрипт собирает необходимые
+ROM и тестовые EFI-приложения и завершает запуск кодом ошибки при расхождении.
+Штатный запрос `ResetSystem`, который остановил плату аппаратно, возвращает
+`exit=stopped` и `stop_reason=Reset` или `Shutdown`. Для `--fv-app rt`
+успех требует `Shutdown`. Возобновление работы vCPU после аппаратного
+сброса относится к S7-26.
+
+## Базовая загрузка
+
+```sh
 python3 tests/system/firmware_boot_smoke.py
 ```
 

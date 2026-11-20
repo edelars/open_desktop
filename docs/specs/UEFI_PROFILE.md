@@ -623,8 +623,9 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 [UEFI 2.11, §7.5.1](https://uefi.org/specs/UEFI/2.11/07_Services_Boot_Services.html#efi-boot-services-setwatchdogtimer).
 
 Редакция 2.11 задаёт для x64 при вызове EFI-образа `FCW = 0x037f` и
-`MXCSR = 0x1f80`. Загрузка образа с этим состоянием CPU проверяется при
-реализации пути вызова EFI-образа. [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
+`MXCSR = 0x1f80`. Перед вызовом ABI-трамплин выставляет оба значения, а после
+возврата восстанавливает состояние прошивки. Этот путь исполняют гостевые
+сценарии `hello` и `ebs`. [Запуск из FV](../reports/STAGE_7_REPORT.md#s7-06--загрузка-по-device-path-встроенного-fv). [UEFI 2.11, §2.3.4](https://uefi.org/specs/UEFI/2.11/02_Overview.html#x64-platforms).
 
 ## Trusted Computing
 
