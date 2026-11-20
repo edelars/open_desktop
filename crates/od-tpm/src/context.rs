@@ -348,16 +348,17 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
             None => w.u8(0),
         }
     }
-    match &p.hash_restriction {
-        Some(PolicyHashRestriction::CpHash(h)) => {
-            w.u8(1);
-            w.bytes(h);
-        }
-        Some(PolicyHashRestriction::NameHash(h)) => {
-            w.u8(2);
-            w.bytes(h);
-        }
-        None => w.u8(0),
+    if let Some(hash) = &p.hash_restriction {
+        let (kind, digest) = match hash {
+            PolicyHashRestriction::CpHash(digest) => (1, digest),
+            PolicyHashRestriction::NameHash(digest) => (2, digest),
+            PolicyHashRestriction::TemplateHash(digest) => (3, digest),
+            PolicyHashRestriction::ParametersHash(digest) => (4, digest),
+        };
+        w.u8(kind);
+        w.bytes(digest);
+    } else {
+        w.u8(0);
     }
     w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1));
     w.u8(s.symmetric.to_octet());
@@ -403,14 +404,16 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     policy.pcr_update_counter = opt_u32(&mut r)?;
     policy.hash_restriction = match r.u8()? {
         0 => None,
-        tag @ (1 | 2) => {
+        tag @ (1..=4) => {
             let mut h = [0u8; 32];
             h.copy_from_slice(r.bytes(32)?);
-            if tag == 1 {
-                Some(PolicyHashRestriction::CpHash(h))
-            } else {
-                Some(PolicyHashRestriction::NameHash(h))
-            }
+            Some(match tag {
+                1 => PolicyHashRestriction::CpHash(h),
+                2 => PolicyHashRestriction::NameHash(h),
+                3 => PolicyHashRestriction::TemplateHash(h),
+                4 => PolicyHashRestriction::ParametersHash(h),
+                _ => unreachable!(),
+            })
         }
         _ => return Err(Rc::VALUE),
     };

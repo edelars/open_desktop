@@ -56,6 +56,7 @@ use crate::paramenc::{
     first_response_parameter_is_sized,
 };
 use crate::pcr::resolve_pcr_handle;
+use crate::policy::PolicyHashRestriction;
 use crate::policy::PolicyState;
 use crate::response::{Output, Rc, SessionAck, error_response, success_response};
 use crate::session::{
@@ -110,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 76] = [
+pub(crate) static COMMANDS: [CommandSpec; 78] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -187,6 +188,8 @@ pub(crate) static COMMANDS: [CommandSpec; 76] = [
     spec(cc::POLICY_GET_DIGEST, 1, 0, false, false, false),
     spec(cc::TEST_PARMS, 0, 0, false, false, false),
     spec(cc::POLICY_PASSWORD, 1, 0, false, false, false),
+    spec(cc::POLICY_TEMPLATE, 1, 0, false, false, false),
+    spec(cc::POLICY_PARAMETERS, 1, 0, false, false, false),
 ];
 
 pub(crate) type CommandHandles = [u32; 3];
@@ -345,6 +348,26 @@ fn command_names_hash(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -
     let mut h = Sha256::new();
     append_command_names(&mut h, tpm, spec, handles);
     h.finalize().into()
+}
+
+/// pHash covers the command code and the encoded parameters on the wire.
+fn command_parameters_hash(code: u32, parameters: &[u8]) -> [u8; DIGEST] {
+    let mut h = Sha256::new();
+    h.update(code.to_be_bytes());
+    h.update(parameters);
+    h.finalize().into()
+}
+
+fn command_template_hash(code: u32, parameters: &[u8]) -> Option<[u8; DIGEST]> {
+    if !matches!(code, cc::CREATE | cc::CREATE_PRIMARY) {
+        return None;
+    }
+    let mut p = Reader::new(parameters);
+    // inSensitive is first. Parameter encryption preserves its size and leaves
+    // the following inPublic untouched.
+    p.tpm2b(usize::from(u16::MAX)).ok()?;
+    let public = p.tpm2b(usize::from(u16::MAX)).ok()?;
+    Some(Sha256::digest(public).into())
 }
 
 /// rpHash of a response (Part 1, clause 16.8): `H(responseCode || commandCode || parameters)`.
@@ -607,7 +630,18 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     let (need_auth, need_password) = tpm.policy_use_check(
                         pslot,
                         spec.code,
-                        (&cp, || command_names_hash(tpm, spec, &handles)),
+                        |restriction| match restriction {
+                            PolicyHashRestriction::CpHash(expected) => cp == expected,
+                            PolicyHashRestriction::NameHash(expected) => {
+                                command_names_hash(tpm, spec, &handles) == expected
+                            }
+                            PolicyHashRestriction::TemplateHash(expected) => {
+                                command_template_hash(spec.code, parameters) == Some(expected)
+                            }
+                            PolicyHashRestriction::ParametersHash(expected) => {
+                                command_parameters_hash(spec.code, parameters) == expected
+                            }
+                        },
                         &policy,
                         admin,
                         n,
@@ -769,7 +803,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
-        cc::POLICY_NAME_HASH => tpm.cmd_policy_name_hash(&inv, &mut p)?,
+        cc::POLICY_NAME_HASH | cc::POLICY_TEMPLATE | cc::POLICY_PARAMETERS => {
+            tpm.cmd_policy_hash_restriction(&inv, &mut p, spec.code)?
+        }
         cc::POLICY_AUTHORIZE => tpm.cmd_policy_authorize(&inv, &mut p)?,
         cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
         cc::POLICY_SECRET => tpm.cmd_policy_secret(&inv, &mut p)?,
@@ -985,6 +1021,8 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_COMMAND_CODE
         | cc::POLICY_CP_HASH
         | cc::POLICY_NAME_HASH
+        | cc::POLICY_TEMPLATE
+        | cc::POLICY_PARAMETERS
         | cc::POLICY_AUTHORIZE
         | cc::POLICY_LOCALITY
         | cc::POLICY_GET_DIGEST => tpm.check_policy_session(handles[0], 0)?,
@@ -1071,6 +1109,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 76);
+        assert_eq!(COMMANDS.len(), 78);
     }
 }

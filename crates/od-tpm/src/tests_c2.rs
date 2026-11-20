@@ -20,6 +20,7 @@ use super::tests_obj::*;
 use super::*;
 use crate::codes::{object_attr as oa, se, su};
 use crate::marshal::{PublicParams, Scheme, TpmtPublic, Unique};
+use crate::policy::PolicyHashRestriction;
 
 // ------------------------------------------------------------------------------- vectors
 
@@ -472,11 +473,25 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
     assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
     let slot = t.sessions.slot_of(policy.handle).unwrap();
     assert_eq!(
-        t.policy_use_check(slot, cc::SIGN, (&cp_hash, || [0; 32]), &second, false, 1),
+        t.policy_use_check(
+            slot,
+            cc::SIGN,
+            |rule| rule == PolicyHashRestriction::CpHash(cp_hash),
+            &second,
+            false,
+            1
+        ),
         Ok((false, false))
     );
     assert_eq!(
-        t.policy_use_check(slot, cc::SIGN, (&[0x43; 32], || [0; 32]), &second, false, 1),
+        t.policy_use_check(
+            slot,
+            cc::SIGN,
+            |rule| rule == PolicyHashRestriction::CpHash([0x43; 32]),
+            &second,
+            false,
+            1
+        ),
         Err(Rc::POLICY_FAIL.in_session(1))
     );
     ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
@@ -693,6 +708,158 @@ fn policy_authorize_preserves_the_name_hash_across_context_save_and_authorizatio
         params(&pw_cmd(&mut t, cc::UNSEAL, &[key], b"new", &[]), 0),
         tpm2b(b"sealed")
     );
+}
+
+#[test]
+fn policy_template_and_parameters_have_exclusive_hash_slots_and_fixed_digests() {
+    let mut t = started();
+    let digest_bytes = [1u8; 32];
+    let encoded = tpm2b(&digest_bytes);
+    for (code, vector) in [
+        (
+            cc::POLICY_TEMPLATE,
+            "4fd0086d512ac28f5490da713b39cdcbd5264e7cada04cc66f4d6a5515df8d17",
+        ),
+        (
+            cc::POLICY_PARAMETERS,
+            "e6d12291c7ee907e57565318a98e46d1844dff9e60fcbf26629b05e88da88d31",
+        ),
+    ] {
+        let real = policy_session(&mut t, se::POLICY);
+        err(
+            &pol(&mut t, code, &real, &tpm2b(&digest_bytes[..31])),
+            Rc::SIZE.in_param(1),
+        );
+        ok(&pol(&mut t, code, &real, &encoded));
+        assert_eq!(digest(&mut t, &real), hex(vector));
+        for conflicting in [
+            cc::POLICY_TEMPLATE,
+            cc::POLICY_PARAMETERS,
+            cc::POLICY_CP_HASH,
+            cc::POLICY_NAME_HASH,
+        ] {
+            err(&pol(&mut t, conflicting, &real, &encoded), Rc::CPHASH);
+        }
+        if code == cc::POLICY_TEMPLATE {
+            err(
+                &pol(&mut t, code, &real, &tpm2b(&[2; 32])),
+                Rc::VALUE.in_param(1),
+            );
+        } else {
+            err(
+                &pol(&mut t, code, &real, &tpm2b(&digest_bytes[..31])),
+                Rc::CPHASH,
+            );
+        }
+        assert_eq!(digest(&mut t, &real), hex(vector));
+        let trial = policy_session(&mut t, se::TRIAL);
+        ok(&pol(&mut t, code, &trial, &encoded));
+        assert_eq!(digest(&mut t, &trial), hex(vector));
+        ok(&pol(&mut t, code, &trial, &encoded));
+        assert_eq!(
+            digest(&mut t, &trial),
+            h256(&[&hex(vector), &u32b(code), &digest_bytes])
+        );
+        ok(&flush(&mut t, real.handle));
+        ok(&flush(&mut t, trial.handle));
+    }
+}
+
+#[test]
+fn policy_template_restricts_the_creation_template_and_survives_context_save() {
+    let mut t = started();
+    let child = sealed();
+    let hash = h256(&[&child.to_bytes()]);
+    let mut template = ecc_storage();
+    template.auth_policy = h256(&[&[0; 32], &u32b(cc::POLICY_TEMPLATE), &hash]);
+    let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &template));
+    let mut policy = policy_session(&mut t, se::POLICY);
+    ok(&pol(&mut t, cc::POLICY_TEMPLATE, &policy, &tpm2b(&hash)));
+    let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+
+    let mut changed = child.clone();
+    changed.attributes |= oa::NO_DA;
+    let mut command = hc(
+        cc::CREATE,
+        &[parent.handle],
+        creation_params(b"new", b"contents", &changed, b"outside", &NO_PCR),
+        (parent.handle, b"parent"),
+    );
+    command.names = vec![parent.name];
+    err(
+        &use_session(&mut t, &mut policy, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    command.params = vec![0, 0, 0, 2, 0]; // inPublic is truncated.
+    err(
+        &use_session(&mut t, &mut policy, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    command.code = cc::UNSEAL;
+    command.params.clear();
+    err(
+        &use_session(&mut t, &mut policy, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &policy), template.auth_policy);
+
+    command.code = cc::CREATE;
+    command.params = creation_params(b"new", b"contents", &child, b"outside", &NO_PCR);
+    let created = parse_child(&use_session(&mut t, &mut policy, &command, 0, true, false));
+    let (h, _) = parse_loaded(&load(
+        &mut t,
+        parent.handle,
+        b"parent",
+        &created.private,
+        &created.public,
+    ));
+    assert_eq!(
+        params(&pw_cmd(&mut t, cc::UNSEAL, &[h], b"new", &[]), 0),
+        tpm2b(b"contents")
+    );
+}
+
+#[test]
+fn policy_parameters_restricts_code_and_wire_parameters_without_binding_names() {
+    let mut t = started();
+    let child = sealed();
+    let input = creation_params(b"", b"contents", &child, b"outside", &NO_PCR);
+    let hash = h256(&[&u32b(cc::CREATE), &input]);
+    let mut template = ecc_storage();
+    template.auth_policy = h256(&[&[0; 32], &u32b(cc::POLICY_PARAMETERS), &hash]);
+    let owner = parse_primary(&create_primary(&mut t, OWNER, b"", &template));
+    let endorsement = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &template));
+    assert_ne!(owner.name, endorsement.name);
+    for parent in [owner, endorsement] {
+        let mut policy = policy_session(&mut t, se::POLICY);
+        ok(&pol(&mut t, cc::POLICY_PARAMETERS, &policy, &tpm2b(&hash)));
+        let saved = params(&save(&mut t, policy.handle), 0).to_vec();
+        assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
+        let mut command = hc(
+            cc::CREATE,
+            &[parent.handle],
+            input.clone(),
+            (parent.handle, b""),
+        );
+        command.names = vec![parent.name];
+        command.code = cc::HMAC;
+        err(
+            &use_session(&mut t, &mut policy, &command, 0, true, false),
+            Rc::POLICY_FAIL.in_session(1),
+        );
+        command.code = cc::CREATE;
+        command.params = creation_params(b"", b"contents", &child, b"altered", &NO_PCR);
+        err(
+            &use_session(&mut t, &mut policy, &command, 0, true, false),
+            Rc::POLICY_FAIL.in_session(1),
+        );
+        assert_eq!(digest(&mut t, &policy), template.auth_policy);
+
+        command.params = input.clone();
+        ok(&use_session(&mut t, &mut policy, &command, 0, true, false));
+        ok(&flush(&mut t, policy.handle));
+    }
 }
 
 #[test]
@@ -2814,7 +2981,7 @@ fn saved_pcr_assertions_are_stale_after_counted_startup_resets() {
             t.policy_use_check(
                 slot,
                 cc::SIGN,
-                (&[0; 32], || [0; 32]),
+                |rule| rule == PolicyHashRestriction::CpHash([0; 32]),
                 &previous_digest,
                 false,
                 1
