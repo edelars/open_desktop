@@ -1024,9 +1024,9 @@ fn capability_tpm_properties() {
     assert_eq!(get(pt::PCR_SELECT_MIN), Some(3));
     assert_eq!(get(pt::MAX_DIGEST), Some(32));
     assert_eq!(get(pt::PS_REVISION), Some(0x107));
-    // ADR-0009: the buffer limits do not exceed the CRB buffer (0xF80 = 3968).
-    assert!(get(pt::MAX_COMMAND_SIZE).unwrap() <= 3968);
-    assert!(get(pt::MAX_RESPONSE_SIZE).unwrap() <= 3968);
+    // These properties describe complete frames. The physical CRB window holds 3968 bytes.
+    assert_eq!(get(pt::MAX_COMMAND_SIZE), Some(8192));
+    assert_eq!(get(pt::MAX_RESPONSE_SIZE), Some(8192));
     assert_eq!(get(pt::INPUT_BUFFER), Some(1024));
     // Sorted ascending and all inside the fixed group.
     assert!(props.windows(2).all(|w| w[0].0 < w[1].0));

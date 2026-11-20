@@ -70,7 +70,7 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
         || le32(&caps, 8) != 6
         || le32(&caps, 12) != 2
         || caps[16] != 1
-        || caps[18..22] != [0x80, 0x0f, 0x80, 0x0f]
+        || caps[18..22] != [0, 0x20, 0, 0x20]
         || le32(&caps, 28) != 2
         || le32(&caps, 32) != banks
         || banks != 6
@@ -78,6 +78,27 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
         return Err(Status::DEVICE_ERROR);
     }
     line!("OD-UEFI TCG2: SHA-256 and SHA-384 banks");
+    let mut chunked_request = [0x39; 4991];
+    let command_size = chunked_request.len() as u32;
+    chunked_request[..2].copy_from_slice(&0x8001u16.to_be_bytes());
+    chunked_request[2..6].copy_from_slice(&command_size.to_be_bytes());
+    chunked_request[6..10].copy_from_slice(&0x146u32.to_be_bytes()); // TPM2_StirRandom
+    chunked_request[10..12].copy_from_slice(&((command_size - 12) as u16).to_be_bytes());
+    let mut chunked_reply = [0; 10];
+    check(unsafe {
+        (tpm.submit_command)(
+            tpm,
+            command_size,
+            chunked_request.as_ptr(),
+            chunked_reply.len() as u32,
+            chunked_reply.as_mut_ptr(),
+        )
+    })?;
+    // A transport-size error would be COMMAND_SIZE. The assembled frame reaches the TPM2B parser.
+    if !wire_matches(&chunked_reply, &[0x80, 1, 0, 0, 0, 10, 0, 0, 1, 0xd5]) {
+        return Err(Status::DEVICE_ERROR);
+    }
+    line!("OD-UEFI TCG2: chunked 4991-byte command reached TPM parameter validation");
 
     let mut start = 0;
     let mut last = 0;
@@ -168,9 +189,11 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
             reply.as_mut_ptr(),
         )
     })?;
-    if reply[2..10] != [0, 0, 0, 164, 0, 0, 0, 0]
-        || reply[14..28] != [0, 0, 0, 1, 0, 0x0b, 3, 0x33, 0, 0, 0, 0, 0, 4]
-    {
+    let selection_matches = wire_matches(
+        &reply[14..28],
+        &[0, 0, 0, 1, 0, 0x0b, 3, 0x33, 0, 0, 0, 0, 0, 4],
+    );
+    if reply[2..10] != [0, 0, 0, 164, 0, 0, 0, 0] || !selection_matches {
         return Err(Status::DEVICE_ERROR);
     }
     for (bank, value) in reply[28..].chunks_exact(34).zip(replayed) {
@@ -191,7 +214,7 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
             random.as_mut_ptr(),
         )
     })?;
-    if random[2..12] != [0, 0, 0, 28, 0, 0, 0, 0, 0, 16] {
+    if !wire_matches(&random[2..12], &[0, 0, 0, 28, 0, 0, 0, 0, 0, 16]) {
         return Err(Status::DEVICE_ERROR);
     }
     line!("OD-UEFI TPM2_GetRandom: 16 bytes");
@@ -210,7 +233,7 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
             parameters_reply.as_mut_ptr(),
         )
     })?;
-    if parameters_reply != [0x80, 1, 0, 0, 0, 10, 0, 0, 0, 0] {
+    if !wire_matches(&parameters_reply, &[0x80, 1, 0, 0, 0, 10, 0, 0, 0, 0]) {
         return Err(Status::DEVICE_ERROR);
     }
     line!("OD-UEFI TPM2_TestParms: ECDSA-SHA256 P-256");
@@ -328,16 +351,20 @@ unsafe fn verify_exit_events(events: *const u8) -> bool {
     true
 }
 
+fn wire_matches(actual: &[u8], expected: &[u8]) -> bool {
+    // Keep reads byte-sized on the firmware interpreter.
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(byte, &expected)| unsafe { ptr::from_ref(byte).read_volatile() == expected })
+}
+
 fn replay(log: &[u8], last: usize, esp: bool) -> Option<[[u8; 32]; 4]> {
-    // Keep signature reads byte-sized on the firmware interpreter.
-    let signature_matches = log[32..48]
-        .iter()
-        .zip(b"Spec ID Event03\0")
-        .all(|(actual, &expected)| unsafe { ptr::from_ref(actual).read_volatile() == expected });
     if log[..8] != [0, 0, 0, 0, 3, 0, 0, 0]
         || log[8..28] != [0; 20]
         || le32(log, 28) != 37
-        || !signature_matches
+        || !wire_matches(&log[32..48], b"Spec ID Event03\0")
         || log[52..SPEC_ID_BYTES] != [0, 2, 106, 2, 2, 0, 0, 0, 0x0b, 0, 32, 0, 0x0c, 0, 48, 0, 0]
     {
         return None;

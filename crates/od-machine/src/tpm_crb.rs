@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use od_tpm::command::HEADER_SIZE;
 use od_tpm::marshal::limits::{MAX_COMMAND_SIZE, MAX_RESPONSE_SIZE};
+use od_tpm::response::{Rc, error_response};
 use od_tpm::{StateError, Tpm};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -16,7 +17,7 @@ const LOCALITY_LEN: u64 = 0x1000;
 const BUFFER_OFFSET: u64 = 0x80;
 const BUFFER_ADDRESS: u64 = TPM_CRB_BASE + BUFFER_OFFSET;
 const BUFFER_LEN: usize = (LOCALITY_LEN - BUFFER_OFFSET) as usize;
-const _: () = assert!(MAX_COMMAND_SIZE <= BUFFER_LEN && MAX_RESPONSE_SIZE <= BUFFER_LEN);
+const _: () = assert!(BUFFER_LEN >= HEADER_SIZE);
 
 const LOC_STATE: u64 = 0x00;
 const LOC_CTRL: u64 = 0x08;
@@ -25,6 +26,9 @@ const INTF_ID: u64 = 0x30;
 const CTRL_REQ: u64 = 0x40;
 const CTRL_STS: u64 = 0x44;
 const CTRL_START: u64 = 0x4c;
+const START: u64 = 1;
+const RSP_RETRY: u64 = 1 << 1;
+const NEXT_CHUNK: u64 = 1 << 2;
 const CMD_SIZE: u64 = 0x58;
 const CMD_LADDR: u64 = 0x5c;
 const RSP_SIZE: u64 = 0x64;
@@ -38,8 +42,8 @@ const HASH_DATA: u8 = 1 << 1;
 const HASH_END: u8 = 1 << 2;
 const HASH_DATA_END: u8 = HASH_DATA | HASH_END;
 const RESET_ESTABLISHMENT: u8 = 1 << 3;
-// MMIO CRB, interface version 2, 64/32-bit transfers, CRB selected.
-const INTERFACE_ID: u64 = 1 | (2 << 4) | (1 << 11) | (1 << 14) | (1 << 17);
+// MMIO CRB, interface version 3 with chunking (PTP 1.07 Table 24).
+const INTERFACE_ID: u64 = 1 | (3 << 4) | (1 << 10) | (1 << 11) | (1 << 14) | (1 << 17);
 
 /// Seed and optional persistent state supplied by the owning host.
 #[derive(Clone, Eq, PartialEq)]
@@ -105,6 +109,9 @@ impl TpmCrb {
                     granted: false,
                     phase: Phase::Idle,
                     buffer: Zeroizing::new([0; BUFFER_LEN]),
+                    command: CommandChunks::First,
+                    response: Zeroizing::new(Vec::new()),
+                    next_response: 0,
                     #[cfg(test)]
                     fail_startup: false,
                 })),
@@ -208,11 +215,25 @@ enum Phase {
     Complete,
 }
 
+#[derive(Default)]
+enum CommandChunks {
+    #[default]
+    First,
+    More {
+        size: usize,
+        bytes: Zeroizing<Vec<u8>>,
+    },
+    Invalid,
+}
+
 struct State {
     tpm: Tpm,
     granted: bool,
     phase: Phase,
     buffer: Zeroizing<[u8; BUFFER_LEN]>,
+    command: CommandChunks,
+    response: Zeroizing<Vec<u8>>,
+    next_response: usize,
     #[cfg(test)]
     fail_startup: bool,
 }
@@ -285,18 +306,22 @@ impl State {
             CTRL_REQ => match value & 3 {
                 1 if self.phase == Phase::Idle => self.phase = Phase::Ready,
                 1 if matches!(self.phase, Phase::Receiving(_)) => {
-                    self.buffer.zeroize();
+                    self.go_idle();
                     self.phase = Phase::Ready;
                 }
                 2 => self.go_idle(),
                 _ => {}
             },
-            CTRL_START if value & 7 == 1 => {
-                if let Phase::Receiving(written) = self.phase {
+            CTRL_START => match (value & (START | RSP_RETRY | NEXT_CHUNK), self.phase) {
+                (START, Phase::Receiving(written)) => {
                     let now_ms = sample_time()? / 1_000_000;
                     self.execute(written, now_ms);
                 }
-            }
+                (NEXT_CHUNK, Phase::Receiving(written)) => self.receive_chunk(written),
+                (NEXT_CHUNK, Phase::Complete) => self.show_response(self.next_response),
+                (RSP_RETRY, Phase::Complete) => self.show_response(0),
+                _ => {}
+            },
             BUFFER_OFFSET.. => {
                 let start = (offset - BUFFER_OFFSET) as usize;
                 if start == 0 && matches!(self.phase, Phase::Ready | Phase::Receiving(_)) {
@@ -315,6 +340,9 @@ impl State {
 
     fn go_idle(&mut self) {
         self.buffer.zeroize();
+        self.command = CommandChunks::First;
+        self.response = Zeroizing::new(Vec::new());
+        self.next_response = 0;
         self.phase = Phase::Idle;
     }
 
@@ -360,11 +388,54 @@ impl State {
         }
     }
 
+    fn declared_command_size(&self) -> usize {
+        u32::from_be_bytes(self.buffer[2..6].try_into().unwrap()) as usize
+    }
+
+    fn receive_chunk(&mut self, written: usize) {
+        let command = std::mem::take(&mut self.command);
+        self.command = match command {
+            CommandChunks::First if written == BUFFER_LEN => {
+                let size = self.declared_command_size();
+                if (BUFFER_LEN + 1..=MAX_COMMAND_SIZE).contains(&size) {
+                    let mut bytes = Zeroizing::new(Vec::with_capacity(size));
+                    bytes.extend_from_slice(&self.buffer[..]);
+                    CommandChunks::More { size, bytes }
+                } else {
+                    CommandChunks::Invalid
+                }
+            }
+            CommandChunks::More { size, mut bytes }
+                if written == BUFFER_LEN && size - bytes.len() > BUFFER_LEN =>
+            {
+                bytes.extend_from_slice(&self.buffer[..]);
+                CommandChunks::More { size, bytes }
+            }
+            _ => CommandChunks::Invalid,
+        };
+        self.buffer.zeroize();
+        self.phase = Phase::Receiving(0);
+    }
+
     fn execute(&mut self, written: usize, now_ms: u64) {
+        let command = std::mem::take(&mut self.command);
+        let response = match command {
+            CommandChunks::First => self.execute_first_chunk(written, now_ms),
+            CommandChunks::More { size, mut bytes } if size - bytes.len() <= written => {
+                let tail = size - bytes.len();
+                bytes.extend_from_slice(&self.buffer[..tail]);
+                self.tpm.execute(0, &bytes, now_ms)
+            }
+            _ => error_response(Rc::COMMAND_SIZE),
+        };
+        self.complete(response);
+    }
+
+    fn execute_first_chunk(&mut self, written: usize, now_ms: u64) -> Vec<u8> {
         // The TPM validates the tag and declared length. A dword write may contain padding
         // after the end of a well-formed command, but unwritten bytes cannot form a command.
         let received = if written >= HEADER_SIZE {
-            let size = u32::from_be_bytes(self.buffer[2..6].try_into().unwrap()) as usize;
+            let size = self.declared_command_size();
             written.min(size.max(HEADER_SIZE))
         } else {
             written
@@ -373,17 +444,26 @@ impl State {
         if self.fail_startup
             && self.buffer[..received] == [0x80, 1, 0, 0, 0, 12, 0, 0, 1, 0x44, 0, 0]
         {
-            self.complete(&[0x80, 1, 0, 0, 0, 10, 0, 0, 1, 1]);
-            return;
+            return error_response(Rc::FAILURE);
         }
-        let response = Zeroizing::new(self.tpm.execute(0, &self.buffer[..received], now_ms));
-        self.complete(&response);
+        self.tpm.execute(0, &self.buffer[..received], now_ms)
     }
 
-    fn complete(&mut self, response: &[u8]) {
-        self.buffer.zeroize();
-        self.buffer[..response.len()].copy_from_slice(response);
+    fn complete(&mut self, response: Vec<u8>) {
+        debug_assert!(response.len() <= MAX_RESPONSE_SIZE);
+        self.response = Zeroizing::new(response);
+        self.show_response(0);
         self.phase = Phase::Complete;
+    }
+
+    fn show_response(&mut self, offset: usize) {
+        let count = (self.response.len() - offset).min(BUFFER_LEN);
+        if count == 0 {
+            return;
+        }
+        self.buffer.zeroize();
+        self.buffer[..count].copy_from_slice(&self.response[offset..offset + count]);
+        self.next_response = offset + count;
     }
 }
 
@@ -411,7 +491,6 @@ impl BusDevice for TpmCrb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use od_tpm::Rc;
     use std::cell::Cell;
 
     const STARTUP: [u8; 12] = [0x80, 1, 0, 0, 0, 12, 0, 0, 1, 0x44, 0, 0];
@@ -496,7 +575,7 @@ mod tests {
             assert_eq!(
                 crb.read(access(base + INTF_ID, AccessWidth::Qword))
                     .unwrap(),
-                0x0002_4821
+                0x0002_4c31
             );
             assert_eq!(read(&mut crb, base + CMD_SIZE), 0);
             if locality != 0 {
@@ -505,7 +584,7 @@ mod tests {
             }
         }
         write(&mut crb, INTF_ID, 1 << 19);
-        assert_eq!(read(&mut crb, INTF_ID + LOCALITY_LEN), 0x0002_4821);
+        assert_eq!(read(&mut crb, INTF_ID + LOCALITY_LEN), 0x0002_4c31);
 
         write(&mut crb, LOC_CTRL, 1);
         assert_eq!(read(&mut crb, LOC_STATE + 4 * LOCALITY_LEN), 0x83);
@@ -607,6 +686,132 @@ mod tests {
         write(&mut crb, CTRL_START, 1);
         assert_eq!(response_code(&mut crb), Rc::COMMAND_SIZE.0);
         assert_eq!(read(&mut crb, CTRL_STS), 0);
+    }
+
+    #[test]
+    fn crb_assembles_commands_through_the_final_chunk() {
+        let mut crb = fresh();
+        write(&mut crb, LOC_CTRL, 1);
+        write(&mut crb, CTRL_REQ, 1);
+        send(&mut crb, &STARTUP);
+        write(&mut crb, CTRL_START, START);
+        assert_eq!(response_code(&mut crb), Rc::SUCCESS.0);
+
+        let samples = Cell::new(0);
+        let start = access(CTRL_START, AccessWidth::Dword);
+        let sample = || {
+            samples.set(samples.get() + 1);
+            Ok(2_000_000)
+        };
+        for size in [BUFFER_LEN, BUFFER_LEN + 1, 2 * BUFFER_LEN, MAX_COMMAND_SIZE] {
+            let mut command = vec![0x39; size];
+            command[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+            command[2..6].copy_from_slice(&(size as u32).to_be_bytes());
+            command[6..10].copy_from_slice(&od_tpm::codes::cc::STIR_RANDOM.to_be_bytes());
+            command[10..12].copy_from_slice(&((size - 12) as u16).to_be_bytes());
+            write(&mut crb, CTRL_REQ, 2);
+            write(&mut crb, CTRL_REQ, 1);
+            let before = samples.get();
+            let mut chunks = command.chunks(BUFFER_LEN).peekable();
+            while let Some(chunk) = chunks.next() {
+                send(&mut crb, chunk);
+                if chunks.peek().is_some() {
+                    crb.write_at_time(start, START | NEXT_CHUNK, &sample)
+                        .unwrap();
+                    crb.write_at_time(start, NEXT_CHUNK, &sample).unwrap();
+                    assert_eq!(samples.get(), before);
+                    assert_eq!(read(&mut crb, CTRL_START), 0);
+                }
+            }
+            crb.write_at_time(start, START, &sample).unwrap();
+            // The dispatcher saw the complete frame and rejected TPM2B_SENSITIVE_DATA.
+            assert_eq!(response_code(&mut crb), Rc::SIZE.in_param(1).0);
+            assert_eq!(samples.get(), before + 1);
+            crb.write_at_time(start, START, &sample).unwrap();
+            crb.write_at_time(start, RSP_RETRY, &sample).unwrap();
+            assert_eq!(response_code(&mut crb), Rc::SIZE.in_param(1).0);
+            assert_eq!(samples.get(), before + 1);
+        }
+    }
+
+    #[test]
+    fn crb_discards_incomplete_and_oversized_chunk_sequences() {
+        let mut crb = fresh();
+        write(&mut crb, LOC_CTRL, 1);
+        let mut command = [0; BUFFER_LEN];
+        command[..STARTUP.len()].copy_from_slice(&STARTUP);
+        for (size, bytes, extra_chunk) in [
+            (BUFFER_LEN + 8, BUFFER_LEN - 1, false),
+            (BUFFER_LEN + 8, BUFFER_LEN, false),
+            (BUFFER_LEN + 8, BUFFER_LEN, true),
+            (MAX_COMMAND_SIZE + 1, BUFFER_LEN, false),
+            (BUFFER_LEN, BUFFER_LEN, false),
+        ] {
+            write(&mut crb, CTRL_REQ, 2);
+            write(&mut crb, CTRL_REQ, 1);
+            command[2..6].copy_from_slice(&(size as u32).to_be_bytes());
+            send(&mut crb, &command[..bytes]);
+            write(&mut crb, CTRL_START, NEXT_CHUNK);
+            if extra_chunk {
+                send(&mut crb, &command);
+                write(&mut crb, CTRL_START, NEXT_CHUNK);
+            }
+            write(&mut crb, CTRL_START, START);
+            assert_eq!(response_code(&mut crb), Rc::COMMAND_SIZE.0);
+        }
+        write(&mut crb, CTRL_REQ, 2);
+        write(&mut crb, CTRL_REQ, 1);
+        command[2..6].copy_from_slice(&((BUFFER_LEN + 8) as u32).to_be_bytes());
+        send(&mut crb, &command);
+        write(&mut crb, CTRL_START, NEXT_CHUNK);
+        write(&mut crb, LOC_CTRL, 2);
+        write(&mut crb, LOC_CTRL, 1);
+        write(&mut crb, CTRL_REQ, 1);
+        send(&mut crb, &STARTUP);
+        write(&mut crb, CTRL_START, START);
+        assert_eq!(response_code(&mut crb), Rc::SUCCESS.0);
+    }
+
+    #[test]
+    fn crb_pages_responses_and_replays_from_the_first_byte() {
+        let mut crb = fresh();
+        write(&mut crb, LOC_CTRL, 1);
+        for size in [
+            BUFFER_LEN,
+            BUFFER_LEN + 1,
+            4031,
+            4991,
+            2 * BUFFER_LEN,
+            MAX_RESPONSE_SIZE,
+        ] {
+            // Transport fixtures for frames requiring two or three response pages.
+            let mut response: Vec<u8> = (0..size)
+                .map(|offset| ((offset / BUFFER_LEN + offset % 251) & 255) as u8)
+                .collect();
+            response[..2].copy_from_slice(&0x8002u16.to_be_bytes());
+            response[2..6].copy_from_slice(&(size as u32).to_be_bytes());
+            response[6..10].fill(0);
+            lock(&crb.handle.state).complete(response.clone());
+            for _ in 0..2 {
+                for (index, chunk) in response.chunks(BUFFER_LEN).enumerate() {
+                    if index > 0 {
+                        write(&mut crb, CTRL_START, NEXT_CHUNK);
+                    }
+                    assert_eq!(read(&mut crb, CTRL_START), 0);
+                    for offset in 0..BUFFER_LEN {
+                        let got = crb
+                            .read(access(BUFFER_OFFSET + offset as u64, AccessWidth::Byte))
+                            .unwrap() as u8;
+                        assert_eq!(got, chunk.get(offset).copied().unwrap_or_default());
+                    }
+                }
+                write(&mut crb, CTRL_START, RSP_RETRY);
+            }
+            write(&mut crb, LOC_CTRL, 2);
+            write(&mut crb, LOC_CTRL, 1);
+            write(&mut crb, CTRL_START, RSP_RETRY);
+            assert_eq!(read(&mut crb, BUFFER_OFFSET), 0);
+        }
     }
 
     #[test]

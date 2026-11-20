@@ -14,6 +14,7 @@ DISK_BUILDER = ROOT / "tools" / "build" / "make_test_disk.py"
 EXPECTED = (
     b"OD-UEFI TPM2: CRB method=7 control=0xfed40040",
     b"OD-UEFI TCG2: SHA-256 and SHA-384 banks",
+    b"OD-UEFI TCG2: chunked 4991-byte command reached TPM parameter validation",
     b"OD-UEFI TCG2: Spec ID Event03",
     b"OD-UEFI TCG2: final events verified",
     b"OD-UEFI PCR0/1/4/5 log replay: match",

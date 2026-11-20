@@ -31,10 +31,10 @@ pub mod limits {
     pub const MAX_STIR_SIZE: usize = 128;
     /// `TPML_DIGEST` limit (Part 2, Table 123).
     pub const MAX_DIGEST_LIST: usize = 8;
-    /// Largest command and response (ADR-0009, decision 4: CRB buffer of 0xF80 bytes).
-    pub const MAX_COMMAND_SIZE: usize = 3968;
+    /// Largest assembled command. The CRB transport divides it into MMIO-sized chunks.
+    pub const MAX_COMMAND_SIZE: usize = 8192;
     /// Largest response (see [`MAX_COMMAND_SIZE`]).
-    pub const MAX_RESPONSE_SIZE: usize = 3968;
+    pub const MAX_RESPONSE_SIZE: usize = 8192;
     /// Sessions in one command (`TPM_RC_AUTHSIZE` above it).
     pub const MAX_AUTH_SESSIONS: usize = 3;
 }

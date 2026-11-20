@@ -130,7 +130,7 @@ python3 tests/system/firmware_tpm_smoke.py --runner target/release/od-runner \
   --app work/stage7/tpm-target/test-apps/x86_64-unknown-uefi/release/tpm.efi
 ```
 
-Проба проверяет TPM2 в XSDT и активные банки SHA-256 и SHA-384 через TCG2. Она проверяет разметку записей обоих банков, воспроизводит SHA-256 для PCR0/1/4/5 и сравнивает с TPM2_PCR_Read. Для GetRandom выводит длину ответа. В прогоне с ESP дополнительно проверяет BootOrder, Boot0000, действие выбора и GPT_EVENT2. После GetEventLog проверяет отдельную запись EV_NO_ACTION, а затем вызывает EBS с устаревшим и актуальным MapKey и читает retained final events из физической памяти. Для сохранения артефактов диагностики передать `--work`. [Контракт TPM](../specs/VTPM.md#event-log).
+Проба проверяет TPM2 в XSDT и активные банки SHA-256 и SHA-384 через TCG2. Она проверяет разметку записей обоих банков, воспроизводит SHA-256 для PCR0/1/4/5 и сравнивает с TPM2_PCR_Read. Для GetRandom выводит длину ответа. Проба проверяет объявленные пределы TCG2 в 8192 байта и передаёт кадр в 4991 байт через SubmitCommand. Код TPM подтверждает достижение проверки параметра собранной команды. В прогоне с ESP дополнительно проверяет BootOrder, Boot0000, действие выбора и GPT_EVENT2. После GetEventLog проверяет отдельную запись EV_NO_ACTION, а затем вызывает EBS с устаревшим и актуальным MapKey и читает retained final events из физической памяти. Для сохранения артефактов диагностики передать `--work`. [Контракт TPM](../specs/VTPM.md#event-log).
 
 ## Уровни доказательств
 

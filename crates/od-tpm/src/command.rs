@@ -33,7 +33,7 @@ pub const HEADER_SIZE: usize = 10;
 /// Validates the header against the whole command buffer.
 ///
 /// - fewer than 10 octets, or `commandSize` different from the buffer length, or a buffer above
-///   the CRB limit: `TPM_RC_COMMAND_SIZE`;
+///   the maximum assembled command size: `TPM_RC_COMMAND_SIZE`;
 /// - a `tag` other than `TPM_ST_NO_SESSIONS`/`TPM_ST_SESSIONS`: `TPM_RC_TAG` (Part 2, clause 6.6.1,
 ///   for a TPM without TPM 1.2 compatibility).
 pub fn parse_header(cmd: &[u8]) -> Result<Header, Rc> {
