@@ -509,9 +509,50 @@ fn self_test_and_get_test_result() {
 }
 
 #[test]
+fn incremental_self_test_reports_completion_and_validates_the_algorithm_list() {
+    let mut t = tpm_new();
+    let command = |params: &[u8]| plain(cc::INCREMENTAL_SELF_TEST, &[], params);
+    err(&run(&mut t, command(&u32b(0))), Rc::INITIALIZE);
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
+    let mut all = u32b(13).to_vec();
+    for algorithm in [
+        0x01, 0x05, 0x06, 0x08, 0x0a, 0x0b, 0x14, 0x15, 0x17, 0x18, 0x19, 0x23, 0x43,
+    ] {
+        all.extend_from_slice(&u16b(algorithm));
+    }
+    let mut duplicate = u32b(64).to_vec();
+    for _ in 0..64 {
+        duplicate.extend_from_slice(&u16b(alg::SHA256));
+    }
+    for valid in [u32b(0).to_vec(), all, duplicate] {
+        let response = run(&mut t, command(&valid));
+        ok(&response);
+        assert_eq!(params(&response, 0), [0; 4]);
+    }
+    for (bad, error) in [
+        (u32b(65).to_vec(), Rc::SIZE.in_param(1)),
+        (cat(&[&u32b(1), &[0xff, 0xff]]), Rc::VALUE.in_param(1)),
+        (
+            cat(&[&u32b(2), &u16b(alg::SHA256)]),
+            Rc::INSUFFICIENT.in_param(1),
+        ),
+        (cat(&[&u32b(0), &[0]]), Rc::SIZE),
+    ] {
+        err(&run(&mut t, command(&bad)), error);
+    }
+    ok(&run(&mut t, plain(cc::SELF_TEST, &[], &[1])));
+    let random = plain(cc::GET_RANDOM, &[], &[0, 16]);
+    assert_eq!(run(&mut t, random.clone()), run(&mut started(), random));
+}
+
+#[test]
 fn failure_mode_answers_only_get_test_result_and_get_capability() {
     let mut t = started();
     t.force_failure_mode();
+    err(
+        &run(&mut t, plain(cc::INCREMENTAL_SELF_TEST, &[], &u32b(0))),
+        Rc::FAILURE,
+    );
     err(
         &run(&mut t, plain(cc::GET_RANDOM, &[], &[0, 4])),
         Rc::FAILURE,
@@ -626,11 +667,11 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
         0x134, 0x135, 0x136, 0x14C, // PTP 1.07 expansion.
         0x128, 0x147, 0x14A, 0x14D, 0x150, 0x15B, 0x163, 0x168, 0x16A, 0x16E, 0x16F, 0x170, 0x178,
         0x184, 0x18A, 0x18C, 0x190, 0x19C, 0x12E, 0x16D, 0x149, 0x18F, 0x192, 0x13B, 0x130, 0x172,
-        0x160,
+        0x160, 0x142,
     ];
     let mut expected = expected;
     expected.sort_unstable();
-    assert_eq!(expected.len(), 88);
+    assert_eq!(expected.len(), 89);
     assert_eq!(listed_commands(&mut t), expected);
     let table: Vec<u32> = COMMANDS.iter().map(|c| c.code).collect();
     assert_eq!(listed_commands(&mut t), table);
@@ -690,13 +731,15 @@ fn capability_commands_lists_exactly_the_implemented_commands() {
     assert_eq!(body, 0x0240_013Bu32.to_be_bytes());
     let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x130, 1));
     assert_eq!(body, 0x0200_0130u32.to_be_bytes());
+    let (_, _, body, _) = cap_list(&get_cap(&mut t, cap::COMMANDS, 0x142, 1));
+    assert_eq!(body, 0x0040_0142u32.to_be_bytes());
     // TPM_PT_TOTAL_COMMANDS agrees with the list.
     let (_, _, props, count) =
         cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, pt::TOTAL_COMMANDS, 1));
     assert_eq!(count, 1);
     assert_eq!(
         props,
-        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(88)[..]].concat()
+        [&u32b(pt::TOTAL_COMMANDS)[..], &u32b(89)[..]].concat()
     );
 }
 

@@ -45,6 +45,7 @@ pub mod pcr;
 mod policy;
 pub mod random;
 pub mod response;
+mod self_test;
 pub mod session;
 mod snapshot;
 pub mod startup;

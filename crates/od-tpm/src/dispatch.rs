@@ -111,7 +111,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 88] = [
+pub(crate) static COMMANDS: [CommandSpec; 89] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -135,6 +135,7 @@ pub(crate) static COMMANDS: [CommandSpec; 88] = [
     spec(cc::PCR_EVENT, 1, 1, false, true, false),
     spec(cc::PCR_RESET, 1, 1, false, true, false),
     spec(cc::SEQUENCE_COMPLETE, 1, 1, false, false, true),
+    spec(cc::INCREMENTAL_SELF_TEST, 0, 0, false, true, false),
     spec(cc::SELF_TEST, 0, 0, false, true, false),
     spec(cc::STARTUP, 0, 0, false, true, false),
     spec(cc::SHUTDOWN, 0, 0, false, true, false),
@@ -762,6 +763,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::STARTUP => tpm.cmd_startup(&mut p)?,
         cc::SHUTDOWN => tpm.cmd_shutdown(&mut p)?,
         cc::SELF_TEST => tpm.cmd_self_test(&mut p)?,
+        cc::INCREMENTAL_SELF_TEST => tpm.cmd_incremental_self_test(&mut p)?,
         cc::GET_TEST_RESULT => tpm.cmd_get_test_result(&mut p)?,
         cc::GET_CAPABILITY => tpm.cmd_get_capability(&mut p)?,
         cc::TEST_PARMS => Tpm::cmd_test_parms(&mut p)?,
@@ -1155,6 +1157,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 88);
+        assert_eq!(COMMANDS.len(), 89);
     }
 }

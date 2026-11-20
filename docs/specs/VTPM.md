@@ -24,8 +24,8 @@ measured boot и журнала событий относится к S7-22. Гр
 | §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Сейчас фиксирован SHA-256. Проверить команды с несколькими банками, порядок активации и snapshot, затем одинаковый replay прошивки и host по каждому банку. |
-| §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Сверить переходы с `GetTestResult` для частичного и полного прогона, ошибки и проверки для каждого обязательного алгоритма. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 88 кодов из списка, 13 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 89 кодов из списка, 12 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,7 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| Инициализация и PCR | `IncrementalSelfTest`, `PCR_Allocate` |
+| PCR | `PCR_Allocate` |
 | Объекты | `Duplicate`, `Import` |
 | PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `SignSequenceStart`, `VerifySequenceComplete`, `VerifyDigestSignature`, `SignSequenceComplete`, `SignDigest` |
 | Политики | `PolicyDuplicationSelect` |
@@ -506,15 +506,33 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 `Debug` у `Tpm`, DRBG и пароля сессии не печатает состояние; seeds, состояние DRBG и authValue sequence-объектов (`AuthValue`) стираются при уничтожении (`zeroize`); при проверке пароля `handle_auth` возвращает клон `AuthValue` (буфер фиксированного размера, стирается при `Drop`), копии в обычный `Vec` нет; пароль из команды (`TPM2B_AUTH` в области авторизации) — срез входного буфера команды, им владеет вызывающий, `od-tpm` его не стирает.
 
+## Самопроверка TPM
+
+Успешный `Startup` завершает проверки текущего набора алгоритмов. `SelfTest(YES)`
+повторяет их, а `SelfTest(NO)` сразу возвращает успех. Несовпадение с эталоном
+переводит экземпляр TPM в режим отказа, который виден через `GetTestResult`.
+`IncrementalSelfTest` проверяет входной список по тем же идентификаторам, что
+перечисляет `TPM_CAP_ALGS`. У прошедшего `Startup` TPM список `toDoList` пуст.
+
+Самопроверка использует известные открытые значения для SHA-256, HMAC, HMAC_DRBG,
+KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяются
+подписи и их верификация, обе операции RSAES/OAEP и оба направления защиты
+параметров. Случайные входы тестов берутся из отдельных детерминированных
+генераторов. Отдельно остаются проверки источника энтропии, генерации ключей,
+операции RSA без padding и ветвей отказа для неправильного padding.
+[TPM Library v185, Part 3 §10](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
+[RFC 6979 A.2.5](https://www.rfc-editor.org/rfc/rfc6979.html#appendix-A.2.5).
+
 ## Команды фазы A
 
-Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 72 реализованных кода. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
+Команды фазы A, фазы B и последующего расширения PTP входят в таблицу `crates/od-tpm/src/dispatch.rs`. `TPM2_GetCapability(TPM_CAP_COMMANDS)` перечисляет 89 реализованных кодов. Тест сверяет их с независимым перечнем и проверяет ответ `TPM_RC_COMMAND_CODE` на остальные коды диапазона 0x11F–0x1A1.
 
 | Команда | Код | Авторизация | Границы фазы A |
 |---|---|---|---|
-| `TPM2_Startup` | `0x144` | — | `CLEAR`, `STATE`; повторная — `TPM_RC_INITIALIZE`; `STATE` без `Shutdown(STATE)` — `TPM_RC_VALUE` (параметр 1: `0x1C4`); на каждом `Startup` выполняются known-answer тесты SHA-256 и HMAC-SHA-256 |
+| `TPM2_Startup` | `0x144` | — | `CLEAR`, `STATE`; повторная — `TPM_RC_INITIALIZE`; `STATE` без `Shutdown(STATE)` — `TPM_RC_VALUE` (параметр 1: `0x1C4`); выполняет самопроверки текущего набора алгоритмов |
 | `TPM2_Shutdown` | `0x145` | — | `CLEAR`, `STATE`; `STATE` сохраняет PCR с `TPM_PT_PCR_SAVE` (0–15) и `pcrUpdateCounter`; изменение PCR после `Shutdown(STATE)` обесценивает сохранённое (Part 3, 9.4.1) |
 | `TPM2_SelfTest` | `0x143` | — | `fullTest` YES повторяет тесты, NO — нечего проверять (всё проверено на `Startup`); `TPM_RC_TESTING` не возвращается |
+| `TPM2_IncrementalSelfTest` | `0x142` | — | `TPML_ALG` из 0–64 идентификаторов, повторы разрешены. Успех возвращает пустой `toDoList`. Необъявленный алгоритм даёт `VALUE.p1`, превышение лимита `SIZE.p1`. Поддерживается аудит сессии. |
 | `TPM2_GetTestResult` | `0x17C` | — | `outData` пуст, `testResult` `TPM_RC_SUCCESS` или `TPM_RC_FAILURE` (режим отказа) |
 | `TPM2_GetCapability` | `0x17A` | — | `TPM_CAP_ALGS` (SHA-256), `TPM_CAP_HANDLES` (PCR 0–23, загруженные sequence-объекты; остальные определённые типы — пустой список), `TPM_CAP_COMMANDS`, `TPM_CAP_PP_COMMANDS` и `TPM_CAP_AUDIT_COMMANDS` (пустые), `TPM_CAP_PCRS`, `TPM_CAP_TPM_PROPERTIES`; прочие — `TPM_RC_VALUE` (параметр 1). Данные одного ответа не больше 1024 октетов, `moreData` по `propertyCount` |
 | `TPM2_GetRandom` | `0x17B` | — | не более одного дайджеста (32 октета) за вызов, больший запрос — без ошибки, 32 октета (Part 3, 16.1) |

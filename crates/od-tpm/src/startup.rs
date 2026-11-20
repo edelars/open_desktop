@@ -6,11 +6,8 @@
 //! `Startup(STATE)` after `Shutdown(STATE)` (`restartCount` + 1, PCR with `TPM_PT_PCR_SAVE`
 //! restored). `Startup(STATE)` without a preceding `Shutdown(STATE)` is `TPM_RC_VALUE`.
 //!
-//! Self-test: phase A has two testable functions, SHA-256 and HMAC-SHA-256 (DRBG). Their
-//! known-answer tests run at `Startup` and at `TPM2_SelfTest`; a failure puts the TPM in failure
-//! mode (`TPM_RC_FAILURE` for everything except `GetTestResult` and `GetCapability`).
-//! `TPM_RC_TESTING` is never returned because the tests complete inside the command (allowed by
-//! Part 3, clause 10.2.1, "perform the tests and return the test result").
+//! The current algorithm profile has synchronous known-answer tests at `Startup` and
+//! `TPM2_SelfTest(YES)`. A failed test latches failure mode until `_TPM_Init`.
 //!
 //! Hierarchy and NV effects (Part 3, clause 9.3.1; text of v184): on any `Startup` `phEnable` is
 //! SET and sessions and sequences are flushed. Reset: `platformAuth` Empty, a new Null seed,
@@ -20,33 +17,19 @@
 //! NOT VERIFIED against TPM 2.0 Library v185: the manufacturer-specific `outData` of
 //! `GetTestResult` is empty here.
 
+use crate::capability::ALGORITHMS;
 use crate::codes::su;
 use crate::context::ContextState;
 use crate::hierarchy::HierarchyVolatile;
 use crate::marshal::{Reader, Writer};
-use crate::pcr::{self, Pcrs};
-use crate::random;
+use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::state::{SavedState, Tpm};
-
-/// SHA-256 known-answer test: SHA-256("abc") (FIPS 180-4 example).
-fn sha256_kat() -> bool {
-    const EXPECT: [u8; 32] = [
-        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22,
-        0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00,
-        0x15, 0xad,
-    ];
-    pcr::sha256(b"abc") == EXPECT
-}
-
-fn run_self_tests() -> bool {
-    sha256_kat() && random::self_test()
-}
 
 impl Tpm {
     /// Runs the known-answer tests; failure mode on a failed test.
     fn self_test_now(&mut self) -> Result<(), Rc> {
-        if run_self_tests() {
+        if crate::self_test::known_answers() {
             Ok(())
         } else {
             self.failed = true;
@@ -54,7 +37,7 @@ impl Tpm {
         }
     }
 
-    /// Forces failure mode (tests only: no production path can fail the known-answer tests).
+    /// Enters failure mode deterministically for command-dispatch tests.
     #[cfg(test)]
     pub(crate) fn force_failure_mode(&mut self) {
         self.failed = true;
@@ -173,6 +156,34 @@ impl Tpm {
         Ok(Output::default())
     }
 
+    /// `TPM2_IncrementalSelfTest` (Part 3 v185, §10.3). Startup finishes the tests for the
+    /// advertised algorithms, so no supported request requires another test.
+    pub(crate) fn cmd_incremental_self_test(&self, p: &mut Reader<'_>) -> Result<Output, Rc> {
+        const MAX_ALG_LIST_SIZE: u32 = 64;
+        p.set_param(1);
+        let count = p.u32()?;
+        if count > MAX_ALG_LIST_SIZE {
+            return Err(Rc::SIZE.in_param(1));
+        }
+        let algorithms = p.bytes(count as usize * 2)?;
+        p.finish()?;
+        for entry in algorithms.chunks_exact(2) {
+            let algorithm = u16::from_be_bytes([entry[0], entry[1]]);
+            if !ALGORITHMS
+                .iter()
+                .any(|(supported, _)| *supported == algorithm)
+            {
+                return Err(Rc::VALUE.in_param(1));
+            }
+        }
+        let mut w = Writer::new();
+        w.u32(0);
+        Ok(Output {
+            handles: Vec::new(),
+            params: w.finish(),
+        })
+    }
+
     /// `TPM2_GetTestResult` (Part 3, clause 10.4): empty `outData` and the test result.
     pub(crate) fn cmd_get_test_result(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.finish()?;
@@ -192,12 +203,8 @@ impl Tpm {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn known_answer_tests_pass() {
-        assert!(sha256_kat());
-        assert!(random::self_test());
-        assert!(run_self_tests());
+        assert!(crate::self_test::known_answers());
     }
 }

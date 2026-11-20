@@ -73,6 +73,7 @@ pub mod cc {
     pub const PCR_EVENT: u32 = 0x0000_013C;
     pub const PCR_RESET: u32 = 0x0000_013D;
     pub const SEQUENCE_COMPLETE: u32 = 0x0000_013E;
+    pub const INCREMENTAL_SELF_TEST: u32 = 0x0000_0142;
     pub const SELF_TEST: u32 = 0x0000_0143;
     pub const STARTUP: u32 = 0x0000_0144;
     pub const SHUTDOWN: u32 = 0x0000_0145;

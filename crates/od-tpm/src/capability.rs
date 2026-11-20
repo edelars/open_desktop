@@ -84,6 +84,43 @@ impl Entries {
     }
 }
 
+// Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
+// KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
+// (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
+// algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
+// the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
+// are our reading of the "S O" and "E" types.
+pub(crate) const ALGORITHMS: [(u16, u32); 13] = [
+    (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
+    (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
+    (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_XOR` (0x000A, "H S" in Table 11): XOR parameter encryption of a session
+    // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
+    (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
+    (alg::SHA256, TPMA_ALGORITHM_HASH),
+    (
+        alg::RSASSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
+    ),
+    (
+        alg::RSAES,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
+    ),
+    (
+        alg::OAEP,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING | TPMA_ALGORITHM_HASH,
+    ),
+    (
+        alg::ECDSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
+    ),
+    (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
+    (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
+];
+
 impl Tpm {
     fn active_sessions(&self) -> usize {
         self.sessions.loaded() + self.context.saved_count()
@@ -187,43 +224,10 @@ impl Tpm {
         match capability {
             cap::ALGS => {
                 entry_size = 6;
-                // Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
-                // KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
-                // (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
-                // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
-                // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
-                // are our reading of the "S O" and "E" types.
-                let algs: [(u16, u32); 13] = [
-                    (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
-                    (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
-                    (alg::AES, TPMA_ALGORITHM_SYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    (alg::KEYEDHASH, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_OBJECT),
-                    // `TPM_ALG_XOR` (0x000A, "H S" in Table 11): XOR parameter encryption of a session
-                    // (slice C3); NOT VERIFIED: the bits are our reading of the type column.
-                    (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
-                    (alg::SHA256, TPMA_ALGORITHM_HASH),
-                    (
-                        alg::RSASSA,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
-                    ),
-                    (
-                        alg::RSAES,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
-                    ),
-                    (
-                        alg::OAEP,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING | TPMA_ALGORITHM_HASH,
-                    ),
-                    (
-                        alg::ECDSA,
-                        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
-                    ),
-                    (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
-                    (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
-                    (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
-                ];
-                for (a, properties) in algs.into_iter().filter(|(a, _)| u32::from(*a) >= property) {
+                for (a, properties) in ALGORITHMS
+                    .into_iter()
+                    .filter(|(a, _)| u32::from(*a) >= property)
+                {
                     entries.push(|w| TpmsAlgProperty { alg: a, properties }.marshal(w));
                 }
             }
