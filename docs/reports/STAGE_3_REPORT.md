@@ -1529,6 +1529,13 @@ A separate native test on both hosts verified pending flags through
 JZ/JNZ after register reuse and continuation past STOP-RIP.
 [S3-30d signed preflight](STAGE_3_S3-30d_2026-11-20.md)
 
+S3-30e accepted 60 compile pairs and 60 warm direct-entry pairs on M1 Pro.
+Strict reuse took 0.982805 of fixed-home warm direct-entry time by the
+paired median and 0.953405 on the pressure fixture. The paired compile
+ratio was 1.005805. The production choice still needs the paired
+ordinary FIFO16 dispatcher comparison.
+[S3-30e M1 Pro timings](STAGE_3_S3-30e_2026-11-20.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.

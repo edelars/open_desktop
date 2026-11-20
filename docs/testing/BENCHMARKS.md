@@ -637,6 +637,16 @@ common. Mac mini checks remain deferred until the end of Stage 3. See the
 [S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md) and
 [suite manifest with checksums and raw-derived summaries](../reports/data/stage3/s3-30b/suite-manifest.json).
 
+### S3-30e. Strict register-home reuse on M1 Pro
+
+Compare fixed homes and strict reuse with eager flags on the five S3-36l
+fixtures. Run signed `allocator-compare-s3-30` in the separate `compile`
+and `warm-direct-entry` profiles. Each mode uses three independent process
+rounds of 20 alternating pairs. Calibrate a common count per side and
+verify actual nice −5, load coverage, full guest state and the 200 ms
+side floor. The warm mode times calls into code published before the
+window. [Procedure, measured bounds and archive](../reports/STAGE_3_S3-30e_2026-11-20.md)
+
 ### S3-35a: cold first full-corpus execution
 
 `od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark
