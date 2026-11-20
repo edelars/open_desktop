@@ -18,10 +18,10 @@
 //! need one session in the authorization area, a password session (`TPM_RS_PW`) or an HMAC
 //! session started by `TPM2_StartAuthSession`. An HMAC authorization is checked against the
 //! cpHash of the command and answered with a response HMAC over the rpHash (`session.rs`).
-//! No other sessions (audit, encrypt-only) are accepted: more sessions than authorized handles is
-//! `TPM_RC_AUTHSIZE`. Slice C3: the `decrypt` and `encrypt` attributes of an authorization session
-//! (`paramenc.rs`): the first command parameter is decrypted after the authorization (the cpHash
-//! covers the encrypted bytes), the first response parameter is encrypted before the rpHash. `TPM2_FlushContext` takes no session at all (`TPM_RC_AUTH_CONTEXT`).
+//! Additional sessions can protect parameters without authorizing a handle (Part 3 v185 §5.5).
+//! The first command parameter is decrypted after checking the HMAC over the ciphertext.
+//! The first response parameter is encrypted before computing the rpHash (`paramenc.rs`).
+//! Session auditing remains unsupported. `TPM2_FlushContext` takes no sessions.
 //! NOT VERIFIED against TPM 2.0 Library v185/v184: the Name of a sequence object in a cpHash is
 //! the Empty Buffer (Part 1, Table 6, note 1), and a response HMAC for an entity that the command
 //! deleted or flushed uses the Empty Buffer as authValue (the text says so for
@@ -341,13 +341,14 @@ enum SessionUse {
 /// Format checks of the sessions (before any authValue is looked at).
 fn classify_sessions(
     tpm: &Tpm,
-    code: u32,
+    spec: &CommandSpec,
     sessions: &[TpmsAuthCommand],
 ) -> Result<Vec<SessionUse>, Rc> {
     let mut uses: Vec<SessionUse> = Vec::with_capacity(sessions.len());
     let (mut decrypting, mut encrypting) = (false, false);
     for (i, s) in sessions.iter().enumerate() {
         let n = i + 1;
+        let additional = i >= usize::from(spec.auth);
         let hmac_handle = s.session_handle != handle::RS_PW
             && matches!(
                 handle::handle_type(s.session_handle),
@@ -356,6 +357,9 @@ fn classify_sessions(
         if !hmac_handle {
             // Password session, or a handle that names no session at all.
             check_password_session(s, n)?;
+            if additional {
+                return Err(Rc::ATTRIBUTES.in_session(n as u8));
+            }
             uses.push(SessionUse::Password);
             continue;
         }
@@ -382,19 +386,25 @@ fn classify_sessions(
         // command a sized first parameter (response parameter), and only one session of the
         // command may decrypt and one encrypt.
         let num = n as u8;
+        if additional
+            && (s.attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) == 0
+                || session.kind == SessionKind::Trial)
+        {
+            return Err(Rc::ATTRIBUTES.in_session(num));
+        }
         if s.attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) != 0
             && session.symmetric == SessionSym::Null
         {
             return Err(Rc::SYMMETRIC.in_session(num));
         }
         if s.attributes & session_attr::DECRYPT != 0 {
-            if !first_parameter_is_sized(code) || decrypting {
+            if !first_parameter_is_sized(spec.code) || decrypting {
                 return Err(Rc::ATTRIBUTES.in_session(num));
             }
             decrypting = true;
         }
         if s.attributes & session_attr::ENCRYPT != 0 {
-            if !first_response_parameter_is_sized(code) || encrypting {
+            if !first_response_parameter_is_sized(spec.code) || encrypting {
                 return Err(Rc::ATTRIBUTES.in_session(num));
             }
             encrypting = true;
@@ -434,12 +444,12 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     }
     check_handles(tpm, spec, &handles)?;
 
-    // `TPM2_FlushContext` allows no session of any type (Part 3, clause 28.4.1).
+    // The command tables for Startup and context management specify TPM_ST_NO_SESSIONS.
     let with_sessions = header.tag == st::SESSIONS;
     if with_sessions
         && matches!(
             spec.code,
-            cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
+            cc::STARTUP | cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
         )
     {
         return Err(Rc::AUTH_CONTEXT);
@@ -451,17 +461,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     } else {
         Vec::new()
     };
-    // NOT VERIFIED against TPM 2.0 Library v185/v184: TPM_RC_AUTHSIZE при authorizationSize < 9
-    // для SESSIONS. With `TPM_ST_SESSIONS` and `authorizationSize = 0` a command that needs no
-    // authorization (e.g. GetRandom) is served; the behaviour is kept, the spec text was not checked.
     let needed = usize::from(spec.auth);
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);
     }
-    if sessions.len() > needed {
-        return Err(Rc::AUTHSIZE);
-    }
-    let mut uses = classify_sessions(tpm, spec.code, &sessions)?;
+    let mut uses = classify_sessions(tpm, spec, &sessions)?;
     let mut binding_slots = [None; 2];
     for (s, usage) in sessions.iter().zip(&uses).skip(1) {
         let SessionUse::Hmac { slot, .. } = *usage else {
@@ -484,21 +488,30 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
+        let authorizes = i < needed;
         let admin = admin_role(spec.code, i);
         let policy_slot = match &uses[i] {
             SessionUse::Hmac { slot, .. } => tpm
                 .sessions
                 .get(*slot)
-                .filter(|x| x.kind.is_policy())
+                .filter(|x| authorizes && x.kind.is_policy())
                 .map(|_| *slot),
             SessionUse::Password => None,
         };
-        let auth = handle_auth(tpm, spec.code, &handles, i, admin, policy_slot.is_some())?;
+        let auth = if authorizes {
+            handle_auth(tpm, spec.code, &handles, i, admin, policy_slot.is_some())?
+        } else {
+            AuthValue::empty()
+        };
         entity_auths.push(Zeroizing::new(auth.as_slice().to_vec()));
         // Dictionary attack protection (`da.rs`): the lockout check comes before the authValue
         // check (Part 3, clause 5.6); a wrong authValue of a DA-protected entity is
         // `TPM_RC_AUTH_FAIL` and counts, of any other `TPM_RC_BAD_AUTH` (Part 1, clause 17.6.8).
-        let class = da_class(tpm, spec.code, &handles, i);
+        let class = if authorizes {
+            da_class(tpm, spec.code, &handles, i)
+        } else {
+            DaClass::Exempt
+        };
         match &mut uses[i] {
             SessionUse::Password => {
                 tpm.da_check(class)?;
@@ -518,7 +531,21 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 };
                 let cp = *cp_hash
                     .get_or_insert_with(|| command_parameter_hash(tpm, spec, &handles, parameters));
-                if let Some(pslot) = policy_slot {
+                if !authorizes {
+                    let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
+                    if !verify_command_hmac(
+                        session,
+                        session.key.as_slice(),
+                        &cp,
+                        &s.nonce,
+                        parameter_nonces,
+                        s.attributes,
+                        &s.hmac,
+                    ) {
+                        return Err(Rc::BAD_AUTH.in_session(n));
+                    }
+                    *used_auth = false;
+                } else if let Some(pslot) = policy_slot {
                     // A policy session: the policy is validated before any HMAC (Part 1, clause
                     // 17.8.3), a policy failure never touches the DA counters.
                     let policy = handle_auth_policy(tpm, &handles, i);
@@ -703,9 +730,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
             // authorization entity returns no parameters, so the order cannot show in a result).
             // NOT VERIFIED: the text of Part 1, 19.1 does not say at which moment the authValue is
             // taken for the encryption of a response (VTPM.md, item 59).
-            let now = response_auth(tpm, spec.code, &handles, i);
             let mut value = Zeroizing::new(session.key.as_slice().to_vec());
-            value.extend_from_slice(now.as_slice());
+            if i < needed {
+                let now = response_auth(tpm, spec.code, &handles, i);
+                value.extend_from_slice(now.as_slice());
+            }
             apply_param_encryption(
                 session.symmetric,
                 &value,
@@ -724,13 +753,13 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         match &uses[i] {
             SessionUse::Password => acks.push(SessionAck::password(s.attributes)),
             SessionUse::Hmac { slot, used_auth } => {
-                let now = response_auth(tpm, spec.code, &handles, i);
                 let nonce = core::mem::take(&mut new_nonces[i]);
                 let hmac = match tpm.sessions.get(*slot) {
                     // An empty command HMAC is answered with an empty one (clause 17.6.15).
                     Some(session) if !s.hmac.is_empty() => {
                         let mut key = session.key.as_slice().to_vec();
                         if *used_auth {
+                            let now = response_auth(tpm, spec.code, &handles, i);
                             key.extend_from_slice(now.as_slice());
                         }
                         let tag =
@@ -744,10 +773,9 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     tpm.sessions.release(*slot);
                 } else if let Some(session) = tpm.sessions.get_mut(*slot) {
                     session.nonce_tpm = nonce.clone();
-                    // All sessions in this area authorize handles. A continuing policy session
-                    // starts a fresh policy after its response has been protected (Part 1 v185,
-                    // 16.7.1 and 16.7.8).
-                    if session.kind == SessionKind::Policy {
+                    // An authorizing policy session starts a fresh policy after its response is
+                    // protected (Part 1 v185 §16.7). Encryption alone preserves the policy.
+                    if i < needed && session.kind == SessionKind::Policy {
                         session.policy = PolicyState::new();
                     }
                 }

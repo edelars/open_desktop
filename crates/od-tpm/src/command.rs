@@ -54,14 +54,11 @@ pub fn parse_header(cmd: &[u8]) -> Result<Header, Rc> {
 }
 
 /// Parses the authorization area that follows the handle area of a `TPM_ST_SESSIONS` command.
-/// `TPM_RC_AUTHSIZE` if `authorizationSize` exceeds the rest of the command, the area holds
-/// more than [`limits::MAX_AUTH_SESSIONS`] sessions or a session is cut off by the area's end.
-// NOT VERIFIED against TPM 2.0 Library v185/v184: TPM_RC_AUTHSIZE при authorizationSize < 9
-// для SESSIONS. `authorizationSize = 0` yields an empty session list here (not an error), so a
-// command without authorizable handles passes; the behaviour is kept, the spec text was not checked.
+/// Per Part 3 v185 §5.5, the size must cover at least one session header (nine
+/// octets), and the area must contain at most [`limits::MAX_AUTH_SESSIONS`] complete sessions.
 pub fn parse_auth_area(r: &mut Reader<'_>) -> Result<Vec<TpmsAuthCommand>, Rc> {
     let size = r.u32().map_err(|_| Rc::AUTHSIZE)? as usize;
-    if size > r.remaining() {
+    if !(9..=r.remaining()).contains(&size) {
         return Err(Rc::AUTHSIZE);
     }
     let mut area = Reader::new(r.bytes(size)?);
@@ -169,13 +166,14 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].hmac, b"x");
         r.finish().unwrap();
-        // Empty area.
-        let mut r = Reader::new(&[0, 0, 0, 0]);
-        assert!(parse_auth_area(&mut r).unwrap().is_empty());
     }
 
     #[test]
     fn auth_area_errors() {
+        assert_eq!(
+            parse_auth_area(&mut Reader::new(&[0, 0, 0, 0])),
+            Err(Rc::AUTHSIZE)
+        );
         // authorizationSize beyond the buffer.
         assert_eq!(
             parse_auth_area(&mut Reader::new(&[0, 0, 0, 9, 1])),

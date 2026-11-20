@@ -352,6 +352,10 @@ fn startup_clear_succeeds_once() {
 #[test]
 fn startup_errors() {
     let mut t = tpm_new();
+    err(
+        &run(&mut t, with_pw(cc::STARTUP, &[], &[b""], &[0, 0])),
+        Rc::AUTH_CONTEXT,
+    );
     // Unknown startupType: TPM_RC_VALUE with parameter 1 (0x1C4, Part 2 clause 6.6.2 example).
     err(&run(&mut t, plain(cc::STARTUP, &[], &[0, 2])), Rc(0x1C4));
     // STATE without a preceding Shutdown(STATE).
@@ -719,7 +723,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
     err(&run(&mut t, plain(0x18A, &[], &trailing)), Rc::SIZE);
     err(
         &run(&mut t, with_pw(0x18A, &[], &[b""], &hex("00080010"))),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     assert_eq!(t.persistent_snapshot(), before);
 }
@@ -934,7 +938,7 @@ fn get_random_errors() {
     // A password session on a command without authorization handles is not accepted.
     err(
         &run(&mut t, with_pw(cc::GET_RANDOM, &[], &[b""], &[0, 1])),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
 }
 
@@ -1150,18 +1154,18 @@ fn pcr_extend_authorization_errors() {
         &mut t,
         with_pw(cc::PCR_EXTEND, &[3], &[&[0, 0]], &sha256_ha(&d)),
     ));
-    // Two sessions for one authorization handle: TPM_RC_AUTHSIZE.
+    // The extra password session protects neither parameters nor audit.
     err(
         &run(
             &mut t,
             with_pw(cc::PCR_EXTEND, &[3], &[b"", b""], &sha256_ha(&d)),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(2),
     );
-    // Session tag with an empty authorization area counts as missing.
+    // A session tag requires at least one complete authorization entry.
     err(
         &run(&mut t, with_pw(cc::PCR_EXTEND, &[3], &[], &sha256_ha(&d))),
-        Rc::AUTH_MISSING,
+        Rc::AUTHSIZE,
     );
     // An HMAC session handle that is not loaded: TPM_RC_REFERENCE_S0.
     let mut hmac_session = Vec::new();

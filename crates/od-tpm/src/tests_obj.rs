@@ -1312,7 +1312,7 @@ fn sign_and_verify_errors() {
                 &cat(&[&tpm2b(&DIGEST), &sig]),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
 }
 
@@ -1526,7 +1526,7 @@ fn load_external_errors() {
             &mut t,
             with_pw(cc::LOAD_EXTERNAL, &[], &[b""], &long[..long.len() - 1]),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     assert_eq!(t.objects.free_slots(), MAX_OBJECTS);
 }

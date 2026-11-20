@@ -491,7 +491,7 @@ fn hierarchy_change_auth_errors() {
                 &tpm2b(b"a"),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(2),
     );
     let area = {
         let mut a = Vec::new();
@@ -1073,7 +1073,7 @@ fn start_auth_session_refuses_what_slice_a_does_not_do() {
                 &good,
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     // No session was created by any of the failures.
     assert!(handles_of(&mut t, 0x0200_0000).is_empty());

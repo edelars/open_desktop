@@ -514,7 +514,7 @@ fn rsa_encryption_command_errors() {
                 &cat(&[&tpm2b(msg), &oaep(), &tpm2b(b"")]),
             ),
         ),
-        Rc::AUTHSIZE,
+        Rc::ATTRIBUTES.in_session(1),
     );
     err(
         &run(

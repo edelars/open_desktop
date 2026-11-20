@@ -110,6 +110,7 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::NV_WRITE
             | cc::NV_EXTEND
             | cc::HIERARCHY_CHANGE_AUTH
+            | cc::START_AUTH_SESSION
             | cc::CREATE_PRIMARY
             | cc::CREATE
             | cc::LOAD
@@ -134,11 +135,14 @@ pub(crate) fn first_response_parameter_is_sized(code: u32) -> bool {
     matches!(
         code,
         cc::GET_RANDOM
+            | cc::GET_TEST_RESULT
+            | cc::START_AUTH_SESSION
             | cc::HASH
             | cc::SEQUENCE_COMPLETE
             | cc::UNSEAL
             | cc::RSA_ENCRYPT
             | cc::RSA_DECRYPT
+            | cc::ECDH_KEY_GEN
             | cc::ECDH_Z_GEN
             | cc::HMAC
             | cc::NV_READ

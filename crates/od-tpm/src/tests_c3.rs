@@ -24,7 +24,7 @@ use super::tests_obj::*;
 use super::*;
 use crate::StateError;
 use crate::codes::{object_attr as oa, se, session_attr};
-use crate::marshal::Unique;
+use crate::marshal::{SymDef, Unique};
 use crate::nv::attr;
 
 const NV0: u32 = 0x0100_0000;
@@ -1700,25 +1700,249 @@ fn first_certify_hmac_binds_other_parameter_encryption_sessions() {
 }
 
 #[test]
-fn a_session_without_an_authorized_handle_is_still_refused() {
-    // An encryption-only session (no handle that it authorizes) is not implemented: more sessions
-    // than authorized handles is TPM_RC_AUTHSIZE.
+fn additional_session_encrypts_only_the_shared_ecdh_point() {
+    for sym in [&AES_SYM[..], &XOR_SYM[..]] {
+        let mut t = started();
+        ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+        let mut session = start_sym(&mut t, OWNER, OWNER_PW, sym);
+        let mut public = ecc(oa::SIGN, SymDef::Null, ECDSA);
+        // With the generator as the input public key, zPoint == pubPoint.
+        public.unique = Unique::Ecc {
+            x: hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"),
+            y: hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"),
+        };
+        let (key, name) = parse_loaded(&load_external(&mut t, &public, NULL));
+        let before = t.persistent_snapshot();
+
+        let mut command = hc(cc::ECDH_KEY_GEN, &[key], Vec::new(), (NULL, b""));
+        command.attrs |= session_attr::ENCRYPT;
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::BAD_AUTH.in_session(1), // A handle number is not the Name of the object.
+        );
+        command.names = vec![name];
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, true)),
+            Rc::BAD_AUTH.in_session(1),
+        );
+
+        command.attrs |= session_attr::DECRYPT;
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::ATTRIBUTES.in_session(1),
+        );
+        command.attrs = session_attr::ENCRYPT; // A failing command did not roll the nonce.
+        let response = run_hmac(&mut t, &mut session, &command);
+        let mut reader = Reader::new(params(&response, 0));
+        let shared = reader.tpm2b(68).unwrap();
+        let public = reader.tpm2b(68).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(public.len(), 68);
+        assert_ne!(shared, public);
+        assert_eq!(
+            crypt(
+                sym,
+                &session,
+                b"",
+                &session.nonce_tpm,
+                &command.nonce_caller,
+                shared,
+                false
+            ),
+            public
+        );
+        err(
+            &run(&mut t, hmac_command(&session, &command, false, false)),
+            Rc::reference_session(0),
+        );
+        assert_eq!(t.persistent_snapshot(), before); // Extra HMACs do not touch DA.
+    }
+}
+
+#[test]
+fn additional_policy_session_keeps_its_assertions_and_trial_cannot_encrypt() {
     let mut t = started();
-    let s = start_sym(&mut t, NULL, b"", &AES_SYM);
-    let mut area = Vec::new();
-    area.extend_from_slice(&s.handle.to_be_bytes());
-    area.extend_from_slice(&tpm2b(&[0x33; 16]));
-    area.push(session_attr::ENCRYPT);
-    area.extend_from_slice(&tpm2b(&[]));
-    let mut auth = (area.len() as u32).to_be_bytes().to_vec();
-    auth.extend_from_slice(&area);
-    err(
-        &run(
-            &mut t,
-            frame(st::SESSIONS, cc::GET_RANDOM, &[], &auth, &u16b(8)),
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut policy = start_sym_kind(&mut t, OWNER, OWNER_PW, &AES_SYM, se::POLICY);
+    let digest = plain(cc::POLICY_GET_DIGEST, &[policy.handle], &[]);
+    ok(&run(
+        &mut t,
+        plain(
+            cc::POLICY_COMMAND_CODE,
+            &[policy.handle],
+            &u32b(cc::CERTIFY),
         ),
-        Rc::AUTHSIZE,
+    ));
+    let before = run(&mut t, digest.clone());
+    let mut command = hc(cc::GET_RANDOM, &[], u16b(8).to_vec(), (NULL, b""));
+    command.attrs |= session_attr::ENCRYPT;
+    ok(&run_hmac(&mut t, &mut policy, &command));
+    assert_eq!(run(&mut t, digest), before);
+
+    let trial = start_sym_kind(&mut t, OWNER, OWNER_PW, &AES_SYM, se::TRIAL);
+    err(
+        &run(&mut t, hmac_command(&trial, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
     );
+    command.attrs = session_attr::CONTINUE_SESSION;
+    err(
+        &run(&mut t, hmac_command(&policy, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
+    );
+}
+
+#[test]
+fn third_session_encrypts_a_response_after_two_authorizations() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let object = parse_primary(&create_primary(&mut t, PLATFORM, b"object", &ecc_sign()));
+    let key = parse_primary(&create_primary(&mut t, PLATFORM, b"key", &ecc_sign()));
+    let mut first = start_sym(&mut t, NULL, b"", &XOR_SYM);
+    let mut extra = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::CERTIFY,
+        &[object.handle, key.handle],
+        cat(&[&tpm2b(b"qualified"), &u16b(alg::NULL)]),
+        (object.handle, b"object"),
+    );
+    command.names = vec![object.name, key.name];
+    let mut encrypt = hc(
+        command.code,
+        &command.handles,
+        command.params.clone(),
+        (NULL, b""),
+    );
+    encrypt.names = command.names.clone();
+    encrypt.attrs |= session_attr::ENCRYPT;
+    encrypt.nonce_caller.fill(0x55);
+    let first_auth = hmac_auth_entry(&first, &command, &[&extra.nonce_tpm], false, false);
+    let password = auth_area(&[b"key"]);
+    let extra_auth = hmac_auth_entry(&extra, &encrypt, &[], false, false);
+    let request = |with_extra: bool| {
+        let mut area = cat(&[&first_auth, &password[4..]]);
+        if with_extra {
+            area.extend_from_slice(&extra_auth);
+        }
+        let prefix = u32b(area.len() as u32);
+        frame(
+            st::SESSIONS,
+            command.code,
+            &command.handles,
+            &cat(&[&prefix, &area]),
+            &command.params,
+        )
+    };
+    // The first HMAC commits to the extra session nonce.
+    err(&run(&mut t, request(false)), Rc::BAD_AUTH.in_session(1));
+    let response = run(&mut t, request(true));
+    let (parameters, acks) = split_response(&response, 0);
+    assert_eq!(acks.len(), 3);
+    check_hmac_ack(&mut first, &command, &parameters, &acks[0]);
+    assert!(acks[1].0.is_empty() && acks[1].2.is_empty());
+    check_hmac_ack(&mut extra, &encrypt, &parameters, &acks[2]);
+    let ciphertext = Reader::new(&parameters).tpm2b(1024).unwrap();
+    let attest = crypt(
+        &AES_SYM,
+        &extra,
+        b"",
+        &extra.nonce_tpm,
+        &encrypt.nonce_caller,
+        ciphertext,
+        false,
+    );
+    assert_eq!(&attest[..4], &0xff54_4347u32.to_be_bytes());
+}
+
+#[test]
+fn additional_session_decrypts_the_command_and_encrypts_the_response() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut session = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(cc::HASH, &[], Vec::new(), (NULL, b""));
+    command.attrs |= session_attr::DECRYPT | session_attr::ENCRYPT;
+    let input = crypt(
+        &AES_SYM,
+        &session,
+        b"",
+        &command.nonce_caller,
+        &session.nonce_tpm,
+        PLAIN,
+        true,
+    );
+    command.params = cat(&[&tpm2b(&input), &u16b(alg::SHA256), &u32b(NULL)]);
+    let response = run_hmac(&mut t, &mut session, &command);
+    let digest = Reader::new(params(&response, 0)).tpm2b(32).unwrap();
+    assert_eq!(
+        crypt(
+            &AES_SYM,
+            &session,
+            b"",
+            &session.nonce_tpm,
+            &command.nonce_caller,
+            digest,
+            false
+        ),
+        h256(&[PLAIN])
+    );
+}
+
+#[test]
+fn additional_session_protects_start_auth_session_nonces() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_PW));
+    let mut protection = start_sym(&mut t, OWNER, OWNER_PW, &AES_SYM);
+    let mut command = hc(
+        cc::START_AUTH_SESSION,
+        &[NULL, NULL],
+        Vec::new(),
+        (NULL, b""),
+    );
+    command.attrs |= session_attr::DECRYPT | session_attr::ENCRYPT;
+    let nonce_caller = [0x63; 16];
+    let nonce_ciphertext = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &command.nonce_caller,
+        &protection.nonce_tpm,
+        &nonce_caller,
+        true,
+    );
+    command.params = start_params(&nonce_ciphertext, b"", se::HMAC, &XOR_SYM, alg::SHA256);
+    let response = run(&mut t, hmac_command(&protection, &command, false, false));
+    let handle = u32::from_be_bytes(response[10..14].try_into().unwrap());
+    assert_ne!(handle, protection.handle);
+    let (parameters, acks) = split_response(&response, 1);
+    assert_eq!(acks.len(), 1);
+    check_hmac_ack(&mut protection, &command, &parameters, &acks[0]);
+    let ciphertext = Reader::new(&parameters).tpm2b(16).unwrap();
+    let new_nonce = crypt(
+        &AES_SYM,
+        &protection,
+        b"",
+        &protection.nonce_tpm,
+        &command.nonce_caller,
+        ciphertext,
+        false,
+    );
+    let slot = t.sessions.slot_of(handle).unwrap();
+    assert_eq!(t.sessions.get(slot).unwrap().nonce_tpm, new_nonce);
+}
+
+#[test]
+fn get_test_result_allows_encrypt_and_rejects_decrypt() {
+    let mut t = started();
+    let mut session = start_sym(&mut t, NULL, b"", &AES_SYM);
+    let mut command = hc(cc::GET_TEST_RESULT, &[], Vec::new(), (NULL, b""));
+    command.attrs |= session_attr::DECRYPT;
+    err(
+        &run(&mut t, hmac_command(&session, &command, false, false)),
+        Rc::ATTRIBUTES.in_session(1),
+    );
+    command.attrs = session_attr::CONTINUE_SESSION | session_attr::ENCRYPT;
+    let response = run_hmac(&mut t, &mut session, &command);
+    // An empty TPM2B outData still has a clear size. The following result stays clear too.
+    assert_eq!(params(&response, 0), [0; 6]);
 }
 
 #[test]
