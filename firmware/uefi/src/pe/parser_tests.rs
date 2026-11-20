@@ -98,7 +98,7 @@ fn classifies_invalid_and_unsupported_signatures_and_fields() {
         (OPTIONAL_START, 0x10b, Error::UnsupportedFormat),
         (OPTIONAL_START + 68, 3, Error::UnsupportedSubsystem),
     ] {
-        let original = read_u16(&file, offset);
+        let original = u16::from_le_bytes(file[offset..][..2].try_into().unwrap());
         put_u16(&mut file, offset, value);
         assert_eq!(PeImage::parse(&file).unwrap_err(), expected, "{offset:#x}");
         put_u16(&mut file, offset, original);
@@ -154,7 +154,7 @@ fn rejects_inconsistent_offsets_overlaps_and_alignment() {
             Error::InvalidBaseRelocationDirectory,
         ),
     ] {
-        let original = read_u32(&file, offset);
+        let original = u32::from_le_bytes(file[offset..][..4].try_into().unwrap());
         put_u32(&mut file, offset, value);
         assert_eq!(PeImage::parse(&file).unwrap_err(), expected, "{offset:#x}");
         put_u32(&mut file, offset, original);

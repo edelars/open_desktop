@@ -57,11 +57,17 @@ Loaded Image Device Path содержит собственную копию вс
 
 ### Формат образов PE32+
 
-Парсер S7-06 принимает PE32+ для COFF machine `0x8664` и подсистем
+Общий парсер `od-uefi-security::pe` принимает PE32+ для COFF machine `0x8664` и подсистем
 EFI Application (10), Boot Service Driver (11) и Runtime Driver (12).
 Профиль ограничен 96 секциями и размером отображённого образа до 2 ГиБ.
 Размер optional header определяет начало таблицы секций, а число
 каталогов ограничено доступными записями внутри этого заголовка.
+
+Прошивка использует этот парсер для загрузки и вычисления Authenticode SHA-256.
+Декодер `WIN_CERTIFICATE` ограничивает каждую запись объявленным диапазоном,
+проверяет выравнивание следующих записей и нули за объявленной длиной.
+Нули, включённые в `dwLength`, остаются частью поля данных для проверки границы DER.
+[Microsoft PE Format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-attribute-certificate-table-image-only).
 
 Файловый диапазон секции отделён от отображаемого. Область секции в
 образе покрывает максимум из VirtualSize и SizeOfRawData. BSS задаёт

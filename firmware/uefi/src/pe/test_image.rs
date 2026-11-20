@@ -2,10 +2,13 @@
 
 pub(super) const PE_START: usize = 0x80;
 pub(super) const OPTIONAL_START: usize = PE_START + 24;
-pub(super) const OPTIONAL_BYTES: usize = 112 + 16 * 8;
+pub(super) const OPTIONAL_PREFIX_BYTES: usize = 112;
+pub(super) const DIRECTORY_BYTES: usize = 8;
+pub(super) const SECTION_HEADER_BYTES: usize = 40;
+pub(super) const OPTIONAL_BYTES: usize = OPTIONAL_PREFIX_BYTES + 16 * DIRECTORY_BYTES;
 pub(super) const SECTIONS: usize = OPTIONAL_START + OPTIONAL_BYTES;
-pub(super) const RELOCATIONS: usize = OPTIONAL_START + 112 + 5 * 8;
-pub(super) const SECURITY: usize = OPTIONAL_START + 112 + 4 * 8;
+pub(super) const RELOCATIONS: usize = OPTIONAL_START + OPTIONAL_PREFIX_BYTES + 5 * DIRECTORY_BYTES;
+pub(super) const SECURITY: usize = OPTIONAL_START + OPTIONAL_PREFIX_BYTES + 4 * DIRECTORY_BYTES;
 
 pub(super) fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..][..2].copy_from_slice(&value.to_le_bytes());

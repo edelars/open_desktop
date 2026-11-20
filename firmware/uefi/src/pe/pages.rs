@@ -1,8 +1,8 @@
 //! Hardware page boundaries for a validated PE image.
 
-use super::parser::MAX_SECTIONS;
 use super::{PeImage, Section};
 use crate::paging::PAGE_BYTES;
+use od_uefi_security::pe::MAX_SECTIONS;
 
 const SECTION_EXECUTE: u32 = 0x2000_0000;
 const SECTION_WRITE: u32 = 0x8000_0000;

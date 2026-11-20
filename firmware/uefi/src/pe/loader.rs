@@ -1,7 +1,7 @@
 //! Materialize a parsed image in caller-provided memory.
 
 use super::{
-    parser::{PeImage, Subsystem},
+    PeImage, Subsystem,
     reloc::{RelocationError, RuntimeFixup, for_each_dir64},
 };
 use crate::{bs::misc::MEMORY_CHUNK, paging::PAGE_BYTES};

@@ -8,7 +8,8 @@ const PE_HEADER_BYTES: usize = 24;
 const OPTIONAL_PREFIX_BYTES: usize = 112;
 const SECTION_HEADER_BYTES: usize = 40;
 const DIRECTORY_BYTES: usize = 8;
-pub(super) const MAX_SECTIONS: usize = 96;
+/// Maximum number of section headers accepted by the x64 UEFI profile.
+pub const MAX_SECTIONS: usize = 96;
 const COFF_AMD64: u16 = 0x8664;
 const COFF_EXECUTABLE_IMAGE: u16 = 0x0002;
 const COFF_RELOCATIONS_STRIPPED: u16 = 0x0001;
@@ -238,7 +239,8 @@ impl<'a> PeImage<'a> {
         self.relocations_stripped
     }
 
-    pub(super) fn relocation_data(&self) -> Option<(u32, &'a [u8])> {
+    /// Returns the validated base-relocation directory and its virtual address.
+    pub fn relocation_data(&self) -> Option<(u32, &'a [u8])> {
         let range = self.base_relocations.as_ref()?;
         let length = (range.end - range.start) as usize;
         let bytes = self
@@ -406,7 +408,3 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..][..8].try_into().unwrap())
 }
-
-#[cfg(test)]
-#[path = "parser_tests.rs"]
-mod tests;

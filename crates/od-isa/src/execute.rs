@@ -21224,6 +21224,43 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
             };
         }
+        // The EFI loader merges PE section permissions in a stack slot.
+        Operation::Logic {
+            kind: LogicKind::Or,
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if firmware_boot_profile
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x09
+            && instruction.length == 7
+            && instruction.prefixes == Prefixes::default()
+            && destination.address_size == OperandSize::Qword
+            && destination.size == OperandSize::Dword
+            && destination.base == AddressBase::Register(Register::Rsp)
+            && destination.index.is_none()
+            && destination.scale == 1
+            && destination.displacement == 0xb8
+            && source == RegisterView::low(Register::Rax, OperandSize::Dword) =>
+        {
+            let rhs = state.read(source);
+            let updated =
+                update_memory_operand(state, memory, context, next_rip, destination, |lhs| {
+                    logic_result(OperandSize::Dword, LogicKind::Or, lhs, rhs, state.rflags)
+                });
+            state.rflags = match updated {
+                Ok(flags) => flags,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.rip = next_rip;
+            return PagedProbeResult {
+                exit: PagedProbeExit::Retired,
+                instructions_executed: 1,
+                rflags_defined: instruction.flag_effects().apply(initial_rflags_defined),
+            };
+        }
         // Firmware CMP with one memory operand and ADD from memory to a register.
         Operation::Arithmetic { kind, dst, src }
             if firmware_boot_profile
@@ -23527,7 +23564,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
                 || (firmware_boot_profile
                     && instruction.length == 7
-                    && matches!(destination.displacement, 0x14c | 0x15c)
+                    && matches!(destination.displacement, 0x87 | 0x14c | 0x15c)
                     && instruction.prefixes == Prefixes::default()
                     && source == RegisterView::low(Register::Rax, OperandSize::Byte))) =>
         {

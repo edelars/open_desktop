@@ -68,7 +68,3 @@ pub fn authenticode_digest(
 
     Ok(hash.finalize().into())
 }
-
-#[cfg(test)]
-#[path = "authenticode_tests.rs"]
-mod tests;

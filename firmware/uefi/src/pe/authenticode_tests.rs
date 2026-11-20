@@ -1,9 +1,11 @@
 use super::*;
-use crate::pe::test_image::{OPTIONAL_START, SECTIONS, SECURITY, fixture, put_u16, put_u32};
+use crate::pe::test_image::{
+    OPTIONAL_START, SECTION_HEADER_BYTES, SECTIONS, SECURITY, fixture, put_u16, put_u32,
+};
+use sha2::{Digest, Sha256};
 
 const CHECKSUM: usize = OPTIONAL_START + 64;
 const HEADERS_END: usize = 0x200;
-const SECTION_HEADER_BYTES: usize = 40;
 
 fn digest(file: &[u8]) -> Result<[u8; 32], DigestError> {
     authenticode_digest(&PeImage::parse(file).unwrap(), DigestAlgorithm::Sha256)
