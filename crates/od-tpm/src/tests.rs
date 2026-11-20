@@ -25,6 +25,8 @@ mod tests_ek;
 mod tests_obj;
 #[path = "tests_session_audit.rs"]
 mod tests_session_audit;
+#[path = "tests_sha2.rs"]
+mod tests_sha2;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
@@ -895,7 +897,7 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
         ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
         ("000100100016000b080000000000", Rc::VALUE), // RSAPSS.
-        ("000100100014000c080000000000", Rc::HASH), // SHA-384.
+        ("0001001000140027080000000000", Rc::HASH), // SHA3-256 is not implemented.
         ("000100100014000b0c0000000000", Rc::VALUE), // RSA-3072.
         ("000100100014000b080000000003", Rc::RANGE), // Unsupported exponent.
         ("002300100018000b00040010", Rc::CURVE), // NIST P-384.
@@ -922,8 +924,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 15);
-    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 16);
+    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -939,6 +941,7 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x0A, 0, 0, 0, 6],
             &[0x00, 0x0B, 0, 0, 0, 4],
             &[0x00, 0x0C, 0, 0, 0, 4],
+            &[0x00, 0x0D, 0, 0, 0, 4],
             &[0x00, 0x14, 0, 0, 1, 1],
             &[0x00, 0x15, 0, 0, 2, 1],
             &[0x00, 0x17, 0, 0, 2, 5],
@@ -951,7 +954,7 @@ fn capability_algs_pcrs_and_handles() {
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 9);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 10);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 2);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);
@@ -1022,7 +1025,7 @@ fn capability_tpm_properties() {
     assert_eq!(get(pt::FAMILY_INDICATOR), Some(0x322E_3000));
     assert_eq!(get(pt::PCR_COUNT), Some(24));
     assert_eq!(get(pt::PCR_SELECT_MIN), Some(3));
-    assert_eq!(get(pt::MAX_DIGEST), Some(32));
+    assert_eq!(get(pt::MAX_DIGEST), Some(64));
     assert_eq!(get(pt::PS_REVISION), Some(0x107));
     // These properties describe complete frames. The physical CRB window holds 3968 bytes.
     assert_eq!(get(pt::MAX_COMMAND_SIZE), Some(8192));
@@ -1110,8 +1113,8 @@ fn get_random_returns_requested_octets_up_to_one_digest() {
     assert_eq!(get(&mut t, 0).len(), 0);
     assert_eq!(get(&mut t, 16).len(), 16);
     assert_eq!(get(&mut t, 32).len(), 32);
-    // More than a TPM2B_DIGEST holds: no error, 32 octets (Part 3 clause 16.1).
-    assert_eq!(get(&mut t, 4096).len(), 32);
+    // More than a TPM2B_DIGEST holds: no error, 64 octets (Part 3 clause 16.1).
+    assert_eq!(get(&mut t, 4096).len(), 64);
     let a = get(&mut t, 32);
     let b = get(&mut t, 32);
     assert_ne!(a, b);
@@ -1989,7 +1992,7 @@ fn hash_sequence_start_errors_and_slot_limit() {
         Rc::SIZE.in_param(1),
     );
     err(&start_seq(&mut t, b"", 0x0004), Rc::HASH.in_param(2));
-    err(&start_seq(&mut t, b"", 0x000D), Rc::HASH.in_param(2));
+    err(&start_seq(&mut t, b"", 0x0027), Rc::HASH.in_param(2));
     err(
         &run(&mut t, plain(cc::HASH_SEQUENCE_START, &[], &tpm2b(b""))),
         Rc::INSUFFICIENT.in_param(2),

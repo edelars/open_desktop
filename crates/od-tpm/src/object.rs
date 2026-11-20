@@ -63,9 +63,10 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
-    EccPrivate, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public, ecc_scalar,
-    ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_one_prime, rsa_from_primes,
-    rsa_generate, rsa_modulus, rsa_primes, rsa_verify, supported_rsa_exponent,
+    EccPrivate, HashAlg, RsaPrivate, ecc_from_scalar, ecc_generate, ecc_point_valid, ecc_public,
+    ecc_scalar, ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_from_one_prime,
+    rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes, rsa_verify_hash,
+    supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::kem::{self, KemPrivate};
@@ -147,9 +148,23 @@ pub(crate) fn qualified_name_of(parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
 
 impl Object {
     /// Verifies a digest with the public key. Each command checks its own usage and scheme rules.
+    /// The hash named by the signature selects the RSASSA padding, and the digest must have
+    /// exactly that hash's width (for ECDSA as well, so the label and the length cannot diverge).
     pub(crate) fn verify_signature(&self, digest: &[u8], signature: &TpmtSignature) -> bool {
+        let (TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. }) = signature
+        else {
+            return false;
+        };
+        let Some(hash) = HashAlg::from_alg(*hash) else {
+            return false;
+        };
+        if digest.len() != hash.size() {
+            return false;
+        }
         match (&self.public.unique, signature) {
-            (Unique::Rsa(n), TpmtSignature::Rsassa { sig, .. }) => rsa_verify(n, digest, sig),
+            (Unique::Rsa(n), TpmtSignature::Rsassa { sig, .. }) => {
+                rsa_verify_hash(n, hash, digest, sig)
+            }
             (Unique::Ecc { x, y }, TpmtSignature::Ecdsa { r, s, .. }) => {
                 ecc_verify(x, y, digest, r, s)
             }

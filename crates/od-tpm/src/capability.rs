@@ -91,7 +91,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 15] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -102,6 +102,7 @@ pub(crate) const ALGORITHMS: [(u16, u32); 15] = [
     (alg::XOR, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SYMMETRIC),
     (alg::SHA256, TPMA_ALGORITHM_HASH),
     (alg::SHA384, TPMA_ALGORITHM_HASH),
+    (alg::SHA512, TPMA_ALGORITHM_HASH),
     (
         alg::RSASSA,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
@@ -158,7 +159,7 @@ impl Tpm {
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
             (pt::MAX_COMMAND_SIZE, limits::MAX_COMMAND_SIZE as u32),
             (pt::MAX_RESPONSE_SIZE, limits::MAX_RESPONSE_SIZE as u32),
-            (pt::MAX_DIGEST, limits::MAX_DIGEST_SIZE as u32),
+            (pt::MAX_DIGEST, limits::MAX_HASH_SIZE as u32),
             // Platform-specific family: PC Client, level 0, revision 1.07 (PTP 1.07, Table 2).
             (pt::PS_FAMILY_INDICATOR, 1),
             (pt::PS_LEVEL, 0),

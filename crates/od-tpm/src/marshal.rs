@@ -19,9 +19,14 @@ pub mod limits {
     pub const PCR_SELECT_SIZE: usize = 3;
     /// `HASH_COUNT`: implemented hash algorithms.
     pub const HASH_COUNT: usize = 2;
-    /// Digest limit for the current SHA-256 authorization and object profile.
+    /// Digest limit for the current SHA-256 authorization, session, policy and object profile
+    /// (`crypto::DIGEST`). Those parts do not take part in the SHA-384/SHA-512 hash agility yet;
+    /// the largest digest of any implemented hash is [`MAX_HASH_SIZE`].
     pub const MAX_DIGEST_SIZE: usize = 32;
-    /// Largest implemented PCR digest (SHA-384).
+    /// `sizeof(TPMU_HA)`: the largest digest of any implemented hash (SHA-512), reported as
+    /// `TPM_PT_MAX_DIGEST`.
+    pub const MAX_HASH_SIZE: usize = 64;
+    /// Largest implemented PCR digest (SHA-384): there is no SHA-512 PCR bank.
     pub const MAX_PCR_DIGEST_SIZE: usize = 48;
     /// `MAX_2B_BUFFER_SIZE` for `TPM2B_MAX_BUFFER` (Part 2, clause 10.4.8: at least 1024).
     pub const MAX_2B_BUFFER_SIZE: usize = 1024;
@@ -171,7 +176,17 @@ impl Writer {
 pub fn digest_size(hash: u16) -> Option<usize> {
     match hash {
         alg::SHA256 => Some(32),
-        alg::SHA384 => Some(limits::MAX_PCR_DIGEST_SIZE),
+        alg::SHA384 => Some(48),
+        alg::SHA512 => Some(limits::MAX_HASH_SIZE),
+        _ => None,
+    }
+}
+
+/// [`digest_size`] of the hashes that have a PCR bank (SHA-256 and SHA-384); `None` for every
+/// other algorithm, SHA-512 included. `TPMS_PCR_SELECTION` and `TPMT_HA` use it.
+pub fn pcr_digest_size(hash: u16) -> Option<usize> {
+    match hash {
+        alg::SHA256 | alg::SHA384 => digest_size(hash),
         _ => None,
     }
 }
@@ -193,7 +208,7 @@ impl TpmsPcrSelection {
     /// `TPM_RC_HASH` for an unimplemented algorithm, `TPM_RC_VALUE` if `sizeofSelect` is not 3.
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let hash = r.u16()?;
-        if digest_size(hash).is_none() {
+        if pcr_digest_size(hash).is_none() {
             return Err(r.err(Rc::HASH));
         }
         let n = usize::from(r.u8()?);
@@ -257,7 +272,7 @@ impl TpmtHa {
     /// `TPM_RC_HASH` if the algorithm is not implemented (Part 3, clause 22.2).
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let hash = r.u16()?;
-        let Some(n) = digest_size(hash) else {
+        let Some(n) = pcr_digest_size(hash) else {
             return Err(r.err(Rc::HASH));
         };
         Ok(TpmtHa {
@@ -670,6 +685,11 @@ impl SymDef {
     }
 }
 
+/// The hashes of an RSASSA or ECDSA scheme and of a signature (Part 2, Table 78 restricted to the
+/// implemented algorithms). Keys whose scheme names SHA-384/SHA-512 are declared for step 2: a
+/// signature with such a key is `TPM_RC_SCHEME` until support for those hashes appears.
+pub(crate) const SIGNING_HASHES: [u16; 3] = [alg::SHA256, alg::SHA384, alg::SHA512];
+
 /// A signing or asymmetric scheme with its hash (`TPMT_SIG_SCHEME`, `TPMT_RSA_SCHEME`,
 /// `TPMT_ECC_SCHEME`): `alg` is `TPM_ALG_NULL` (hash then `TPM_ALG_NULL`), `TPM_ALG_RSASSA`,
 /// `TPM_ALG_ECDSA`, `TPM_ALG_OAEP` or `TPM_ALG_ECDH` (these with a hash) or `TPM_ALG_RSAES`
@@ -701,11 +721,40 @@ impl Scheme {
         Self::unmarshal_with_hashes(r, allowed, bad, &[alg::SHA256])
     }
 
+    /// Like [`Scheme::unmarshal`] for the scheme of a public area: RSASSA and ECDSA accept
+    /// [`SIGNING_HASHES`], every other scheme (OAEP, ECDH) SHA-256 only (`TPM_RC_HASH`).
+    ///
+    /// RSASSA/ECDSA with SHA-384 or SHA-512 are declared for step 2 only: `TPM2_TestParms` and
+    /// `TPM2_Create` accept such keys, but signing with them is `TPM_RC_SCHEME` until the
+    /// signing commands support those hashes.
+    pub(crate) fn unmarshal_public(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+    ) -> Result<Self, Rc> {
+        Self::unmarshal_by(r, allowed, bad, |a| {
+            if matches!(a, alg::RSASSA | alg::ECDSA) {
+                &SIGNING_HASHES
+            } else {
+                &[alg::SHA256]
+            }
+        })
+    }
+
     pub(crate) fn unmarshal_with_hashes(
         r: &mut Reader<'_>,
         allowed: &[u16],
         bad: Rc,
         hashes: &[u16],
+    ) -> Result<Self, Rc> {
+        Self::unmarshal_by(r, allowed, bad, |_| hashes)
+    }
+
+    fn unmarshal_by<'h>(
+        r: &mut Reader<'_>,
+        allowed: &[u16],
+        bad: Rc,
+        hashes_of: impl Fn(u16) -> &'h [u16],
     ) -> Result<Self, Rc> {
         let a = r.u16()?;
         if a == alg::NULL {
@@ -721,7 +770,7 @@ impl Scheme {
             });
         }
         let hash = r.u16()?;
-        if !hashes.contains(&hash) {
+        if !hashes_of(a).contains(&hash) {
             return Err(r.err(Rc::HASH));
         }
         Ok(Scheme { alg: a, hash })
@@ -769,7 +818,7 @@ impl PublicParams {
             alg::RSA => {
                 let symmetric = SymDef::unmarshal(r)?;
                 let scheme =
-                    Scheme::unmarshal(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
+                    Scheme::unmarshal_public(r, &[alg::RSASSA, alg::RSAES, alg::OAEP], Rc::VALUE)?;
                 let key_bits = r.u16()?;
                 if key_bits != 2048 {
                     return Err(r.err(Rc::VALUE));
@@ -783,7 +832,7 @@ impl PublicParams {
             }
             alg::ECC => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
+                let scheme = Scheme::unmarshal_public(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
                 let curve = r.u16()?;
                 if curve != curve::NIST_P256 {
                     return Err(r.err(Rc::CURVE));
@@ -912,6 +961,7 @@ impl TpmtPublic {
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let type_alg = PublicParams::unmarshal_type(r)?;
         let name_alg = r.u16()?;
+        // nameAlg SHA-384/SHA-512 belong to a later step (object Names with other hashes).
         if name_alg != alg::SHA256 && name_alg != alg::NULL {
             return Err(r.err(Rc::HASH));
         }
@@ -1034,7 +1084,7 @@ impl TpmtSignature {
     }
 
     /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA and ECDSA, including `TPM_ALG_NULL`
-    /// (Table 84), `TPM_RC_HASH` for a hash other than SHA-256.
+    /// (Table 84), `TPM_RC_HASH` for a hash outside [`SIGNING_HASHES`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         Self::unmarshal_inner(r, false)
     }
@@ -1052,7 +1102,7 @@ impl TpmtSignature {
             return Err(r.err(Rc::SCHEME));
         }
         let hash = r.u16()?;
-        if hash != alg::SHA256 {
+        if !SIGNING_HASHES.contains(&hash) {
             return Err(r.err(Rc::HASH));
         }
         if a == alg::RSASSA {

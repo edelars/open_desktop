@@ -60,7 +60,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
-use crate::crypto::{ecc_sign, kdfa_sha256, rsa_sign};
+use crate::crypto::{HashAlg, ecc_sign, kdfa_sha256, rsa_sign};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsClockInfo, TpmtSignature, Writer,
@@ -131,7 +131,13 @@ fn sign_digest(
     match &sensitive.secret {
         Secret::Rsa(key) => Ok(TpmtSignature::Rsassa {
             hash: scheme.hash,
-            sig: rsa_sign(key, digest, drbg).ok_or(Rc::FAILURE)?,
+            sig: rsa_sign(
+                key,
+                HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?,
+                digest,
+                drbg,
+            )
+            .ok_or(Rc::FAILURE)?,
         }),
         Secret::Ecc(key) => {
             let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;

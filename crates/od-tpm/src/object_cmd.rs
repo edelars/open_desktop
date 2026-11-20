@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr, st};
 use crate::crypto::{
-    ecc_sign, hmac_sha256, hmac_sha256_state, hmac_sha256_verify, kdfa_sha256, rsa_sign,
+    HashAlg, ecc_sign, hmac_sha256, hmac_sha256_state, hmac_sha256_verify, kdfa_sha256, rsa_sign,
 };
 use crate::da::DaProtection;
 use crate::dispatch::{AuthRole, Invocation};
@@ -68,9 +68,26 @@ pub(crate) fn fixed_digest_scheme(object: &Object, handle_no: u8) -> Result<Sche
         return Err(Rc::KEY.in_handle(handle_no));
     }
     match object.public.params {
-        PublicParams::Rsa { scheme, .. } if scheme.alg == alg::RSASSA => Ok(scheme),
-        PublicParams::Ecc { scheme, .. } if scheme.alg == alg::ECDSA => Ok(scheme),
+        // The digest commands and sequences are implemented for SHA-256 only.
+        PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. }
+            if matches!(scheme.alg, alg::RSASSA | alg::ECDSA) && scheme.hash == alg::SHA256 =>
+        {
+            Ok(scheme)
+        }
         _ => Err(Rc::SCHEME.in_handle(handle_no)),
+    }
+}
+
+/// `TPM_RC_HASH` (parameter `param`) for a signature over a hash other than SHA-256: the verify
+/// commands are implemented for SHA-256 only, although `TPMT_SIGNATURE` accepts the other hashes.
+pub(crate) fn require_sha256_signature(signature: &TpmtSignature, param: u8) -> Result<(), Rc> {
+    match signature {
+        TpmtSignature::Rsassa { hash, .. } | TpmtSignature::Ecdsa { hash, .. }
+            if *hash != alg::SHA256 =>
+        {
+            Err(Rc::HASH.in_param(param))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -100,7 +117,13 @@ pub(crate) fn sign_digest_output(
     let signature = match &sensitive.secret {
         Secret::Rsa(key) => TpmtSignature::Rsassa {
             hash: scheme.hash,
-            sig: rsa_sign(key, digest, drbg).ok_or(Rc::FAILURE)?,
+            sig: rsa_sign(
+                key,
+                HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?,
+                digest,
+                drbg,
+            )
+            .ok_or(Rc::FAILURE)?,
         },
         Secret::Ecc(key) => {
             let (r, s) = ecc_sign(key, digest).ok_or(Rc::FAILURE)?;
@@ -882,7 +905,7 @@ impl Tpm {
             (&o.public.params, scheme.alg),
             (PublicParams::Rsa { .. }, alg::RSASSA) | (PublicParams::Ecc { .. }, alg::ECDSA)
         );
-        if !type_ok {
+        if !type_ok || scheme.hash != alg::SHA256 {
             return Err(Rc::SCHEME.in_param(2));
         }
         if digest.len() != limits::MAX_DIGEST_SIZE {
@@ -953,6 +976,7 @@ impl Tpm {
         let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
         p.set_param(2);
         let signature = TpmtSignature::unmarshal(p)?;
+        require_sha256_signature(&signature, 2)?;
         p.finish()?;
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
         if !o.has(object_attr::SIGN) {
@@ -988,6 +1012,7 @@ impl Tpm {
         let digest = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
         p.set_param(3);
         let signature = TpmtSignature::unmarshal(p)?;
+        require_sha256_signature(&signature, 3)?;
         p.finish()?;
 
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;

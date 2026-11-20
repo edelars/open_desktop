@@ -5,8 +5,9 @@ use sha2::{Digest, Sha384};
 
 use crate::credential;
 use crate::crypto::{
-    RsaPadding, ecc_ecdh, ecc_from_scalar, ecc_public, ecc_sign, ecc_verify, kdfa_sha256,
-    rsa_decrypt_private, rsa_encrypt_public, rsa_from_primes, rsa_sign, rsa_verify,
+    HashAlg, RsaPadding, ecc_ecdh, ecc_from_scalar, ecc_public, ecc_sign, ecc_verify, hash, hmac,
+    kdfa, kdfa_sha256, rsa_decrypt_private, rsa_encrypt_public, rsa_from_primes, rsa_sign,
+    rsa_verify, rsa_verify_hash,
 };
 use crate::paramenc::{self, SessionSym};
 use crate::pcr::sha256;
@@ -18,6 +19,7 @@ pub(crate) fn known_answers() -> bool {
     );
     sha256(b"abc") == hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         && Sha384::digest(b"abc")[..] == SHA384_ABC
+        && sha2_known_answers()
         && random::self_test()
         && drbg_known_answers().is_some()
         && transport_known_answers()
@@ -25,6 +27,66 @@ pub(crate) fn known_answers() -> bool {
         && ecc_known_answers().is_some()
         && rsa_known_answers().is_some()
         && mlkem_known_answers().is_some()
+}
+
+// SHA-512, KDFa and HMAC over SHA-384/SHA-512 and the ECDSA verification of SHA-384/SHA-512
+// digests. All values are computed outside this crate with Python hashlib/hmac (the KDFa label,
+// contexts and key are those of `transport_known_answers`), except the published ECDSA
+// signatures of RFC 6979 Appendix A.2.5 (P-256, message "sample"), which a Python verifier
+// checked against the published public key.
+fn sha2_known_answers() -> bool {
+    const SHA512_ABC: [u8; 64] = hex(
+        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+    );
+    const KDFA_384_600: [u8; 75] = hex(
+        "f02fc2fb91bd9da254b6703aca4d714443769d927e9b05d7d3d6cad38839a45775aff5c7827de8d6b6e64a9b535d29a0f5054b58b5fc1fd305f7abb7a27122cedc40f29c3c7e1947d56042",
+    );
+    const KDFA_512_600: [u8; 75] = hex(
+        "e67bb9db2b69a2714b3aab6bf7fe077b66aac683099af2c74c8f6db8c95ee2184bb7bdaeb52d472a7ea96f5a813bb12a60667fe13d9d5699ca3193212e3b4e7105d0399b2b0dc2ff3e6127",
+    );
+    // RFC 4231 test case 2.
+    const HMAC_384: [u8; 48] = hex(
+        "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
+    );
+    const HMAC_512: [u8; 64] = hex(
+        "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+    );
+    const X: [u8; 32] = hex("60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6");
+    const Y: [u8; 32] = hex("7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299");
+    const R_384: [u8; 32] = hex("0eafea039b20e9b42309fb1d89e213057cbf973dc0cfc8f129edddc800ef7719");
+    const S_384: [u8; 32] = hex("4861f0491e6998b9455193e34e7b0d284ddd7149a74b95b9261f13abde940954");
+    const R_512: [u8; 32] = hex("8496a60b5e9b47c825488827e0495b0e3fa109ec4568fd3f8d1097678eb97f00");
+    const S_512: [u8; 32] = hex("2362ab1adbe2b8adf9cb9edab740ea6049c028114f2460f96554f61fae3302fe");
+    // The algorithm table agrees with itself.
+    for h in [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512] {
+        if HashAlg::from_alg(h.alg()) != Some(h) || hash(h, &[b"abc"]).as_slice().len() != h.size()
+        {
+            return false;
+        }
+    }
+    let (key, context_u, context_v) = ([1u8; 32], [2u8; 16], [3u8; 16]);
+    let (data_a, data_b) = (&b"what do ya want "[..], &b"for nothing?"[..]);
+    hash(HashAlg::Sha512, &[b"abc"]).as_slice() == SHA512_ABC
+        && kdfa(HashAlg::Sha384, &key, b"ATH", &context_u, &context_v, 600).as_slice()
+            == KDFA_384_600
+        && kdfa(HashAlg::Sha512, &key, b"ATH", &context_u, &context_v, 600).as_slice()
+            == KDFA_512_600
+        && hmac(HashAlg::Sha384, b"Jefe", &[data_a, data_b]).as_slice() == HMAC_384
+        && hmac(HashAlg::Sha512, b"Jefe", &[data_a, data_b]).as_slice() == HMAC_512
+        && ecc_verify(
+            &X,
+            &Y,
+            hash(HashAlg::Sha384, &[b"sample"]).as_slice(),
+            &R_384,
+            &S_384,
+        )
+        && ecc_verify(
+            &X,
+            &Y,
+            hash(HashAlg::Sha512, &[b"sample"]).as_slice(),
+            &R_512,
+            &S_512,
+        )
 }
 
 // NIST ACVP ML-KEM-encapDecap-FIPS203-tr1, revision 975de31eb83d87039ec88934fdc47d8c312b892d.
@@ -171,6 +233,27 @@ const RSA_SIGNATURE: [u8; 256] = hex(concat!(
     "57d7952631676d4b5c1181c7215fad232041a0b72f91fbc1510c49f357cba751",
     "137f04b3d808d2cfa0b7667a01e64412a6129c00beeaa6a62368537fe5717ebe",
 ));
+const RSA_SHA2_MESSAGE: &[u8] = b"Open Desktop SHA-2 agility";
+const RSA_SIGNATURE_384: [u8; 256] = hex(concat!(
+    "3f87909d7fa6ad591c25e711ca7914318f82c45ddac87e06ca5966c0eb5603a3",
+    "8168cf8a37e764b778ef351dd43ed6a154be958ddabfc173fe2bdfb26e772baa",
+    "eb173093d0c02266d3019e9bb3f95ac4037cb50e47bc8bf459d55d599db7a0c8",
+    "57e02301fbc28d2d9e375f5ffba6571770c81d524fac5f29bd4eebd582f36c11",
+    "a69fc7900c2d9ef0aac5d468d88ba6d06ff9276da065c3c09498f1fbc59f1b0d",
+    "03e6bf0f9595a24228842fe72ca8aadb6b92fdc5c6c598aecc2e54389240276e",
+    "4c7cdfb802dd8ecd54df538f574ecf761231297c7158b9878ce7960377e64559",
+    "e0efe893fc52c683c84b249e155826d246d4bf4b6d747b6087153467f9bf5620",
+));
+const RSA_SIGNATURE_512: [u8; 256] = hex(concat!(
+    "79762a7568771c314eb7223d8a0c38c77af2b52dd7d08abf9596499fc5176c97",
+    "f9cf07c785bbca09f5ee903aa4c75ab68a9f2be6aa36c1486a71ede89005aa19",
+    "743bab518bdc14192a56be5fad71dd1d5e89c2788627d9fe5101ce0552c8adb2",
+    "64d5ec9fa691af12eb7de97ad1c557514c573141f69bffd4e87a44948f9c8658",
+    "579669306ad6c2d38f3145ec568ece8380e7e10a6d6496c65e1b416c2eae1a75",
+    "651de73afcd37e920305939258feaaf3c0bf4d5deae3601642a3160f14c97baa",
+    "3bf91bf8346b0ce9546d3cc732a133691195c80067a9816bbee028065223579c",
+    "03554b7df820a7529604b74d9c0e4925a5d241048e233e9f794d66cc66ee9c53",
+));
 const RSAES_CIPHER: [u8; 256] = hex(concat!(
     "a56933e19a6d11d0100449a58a2bc04ac19d5d486d2f69a5e04443f94f23b4db",
     "3078dbe2068f8108853178903dc0c7f8a2178fc454f93ee6101a837347257bc9",
@@ -201,9 +284,23 @@ fn rsa_known_answers() -> Option<()> {
     primes[128..].copy_from_slice(&Q);
     let key = rsa_from_primes(&primes, &N)?;
     let mut rng = Drbg::new(&[5; 48])?;
-    let signature = rsa_sign(&key, &RSA_MESSAGE_HASH, &mut rng)?;
+    let signature = rsa_sign(&key, HashAlg::Sha256, &RSA_MESSAGE_HASH, &mut rng)?;
     if signature.as_slice() != RSA_SIGNATURE || !rsa_verify(&N, &RSA_MESSAGE_HASH, &RSA_SIGNATURE) {
         return None;
+    }
+    // RSASSA-PKCS1-v1_5 with SHA-384 and SHA-512 (the EM and pow(EM, d, n) computed in Python).
+    for (hash_alg, expected) in [
+        (HashAlg::Sha384, &RSA_SIGNATURE_384),
+        (HashAlg::Sha512, &RSA_SIGNATURE_512),
+    ] {
+        let digest = hash(hash_alg, &[RSA_SHA2_MESSAGE]);
+        let signature = rsa_sign(&key, hash_alg, digest.as_slice(), &mut rng)?;
+        if signature.as_slice() != expected
+            || !rsa_verify_hash(&N, hash_alg, digest.as_slice(), expected)
+            || rsa_verify_hash(&N, HashAlg::Sha256, digest.as_slice(), expected)
+        {
+            return None;
+        }
     }
     let message = b"Open Desktop TPM self-test";
     for (padding, label, ciphertext) in [

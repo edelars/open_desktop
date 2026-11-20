@@ -134,13 +134,14 @@ pub(crate) fn self_test() -> bool {
 }
 
 impl Tpm {
-    /// `TPM2_GetRandom` (Part 3, clause 16.1): `bytesRequested` octets, at most one digest.
+    /// `TPM2_GetRandom` (Part 3, clause 16.1): `bytesRequested` octets, at most the largest digest
+    /// (64 octets, `TPM_PT_MAX_DIGEST`).
     pub(crate) fn cmd_get_random(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
         let requested = usize::from(p.u16()?);
         p.finish()?;
         // The result is a TPM2B_DIGEST: no error when more is requested, only what fits.
-        let n = requested.min(limits::MAX_DIGEST_SIZE);
+        let n = requested.min(limits::MAX_HASH_SIZE);
         let mut buf = vec![0u8; n];
         self.drbg.generate(&mut buf).ok_or(Rc::FAILURE)?;
         let mut w = Writer::new();

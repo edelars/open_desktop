@@ -47,7 +47,7 @@ use crate::marshal::{
 };
 use crate::nv::{NvIndex, attr as nv_attr};
 use crate::object::is_object_hierarchy;
-use crate::object_cmd::VerifiedTicket;
+use crate::object_cmd::{VerifiedTicket, require_sha256_signature};
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::{Session, SessionKind};
@@ -759,6 +759,8 @@ impl Tpm {
         let parameters = AuthorizationParameters::unmarshal(p)?;
         p.set_param(5);
         let signature = TpmtSignature::unmarshal_optional(p)?;
+        // The signed message is a SHA-256 digest: a signature over another hash is TPM_RC_HASH.
+        require_sha256_signature(&signature, 5)?;
         p.finish()?;
 
         let slot = self.policy_slot(inv.handles[1])?;
@@ -786,7 +788,8 @@ impl Tpm {
             if !key.has(object_attr::SIGN) || (fixed != Scheme::NULL && fixed != supplied) {
                 return Err(Rc::POLICY_FAIL);
             }
-            // All accepted signature schemes use SHA-256; the message uses no TPM2B lengths.
+            // The authorization message is hashed with SHA-256 (the guard above rejects signatures
+            // labelled with another hash); the message uses no TPM2B lengths.
             let mut h = Sha256::new();
             h.update(parameters.nonce);
             h.update(parameters.expiration.to_be_bytes());

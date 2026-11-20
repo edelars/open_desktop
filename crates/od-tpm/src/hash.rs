@@ -1,4 +1,4 @@
-//! SHA-256 and SHA-384 hashing, SHA-256 HMAC, and their sequences.
+//! SHA-256, SHA-384 and SHA-512 hashing, SHA-256 HMAC, and their sequences.
 //!
 //! Sequence objects are transient objects (handle type `TPM_HT_TRANSIENT`), at most
 //! [`MAX_SEQUENCES`] at a time; `TPM_RC_OBJECT_MEMORY` when no slot is free.
@@ -22,19 +22,19 @@
 //!   protection (a wrong password is answered `TPM_RC_BAD_AUTH`, there is no DA in phase A).
 
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256, Sha384};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use zeroize::Zeroize;
 
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
-use crate::crypto::{hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
+use crate::crypto::{DIGEST, HashAlg, hash, hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
 use crate::dispatch::Invocation;
 use crate::marshal::{
     PublicParams, Reader, Scheme, TpmtSignature, TpmtTkHashcheck, Writer, digest_size, limits,
 };
 use crate::object::{Secret, find_object};
 use crate::object_cmd::{
-    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, sign_digest_output,
-    verified_ticket_mac,
+    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, require_sha256_signature,
+    sign_digest_output, verified_ticket_mac,
 };
 use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
@@ -62,23 +62,30 @@ fn hashcheck_parts(digest: &[u8]) -> [&[u8]; 2] {
     [&TAG, digest]
 }
 
-/// Authorization value of a sequence object (at most one digest long); wiped on drop.
+/// Authorization value (at most one SHA-256 digest long, [`DIGEST`]; a hash sequence of SHA-384 or
+/// SHA-512 may carry one digest of its own hash, see [`AuthValue::from_slice_up_to`]); wiped on
+/// drop. The storage fits the largest digest ([`limits::MAX_HASH_SIZE`]).
 #[derive(Clone)]
 pub(crate) struct AuthValue {
     len: usize,
-    bytes: [u8; limits::MAX_DIGEST_SIZE],
+    bytes: [u8; limits::MAX_HASH_SIZE],
 }
 
 impl AuthValue {
     pub(crate) fn empty() -> AuthValue {
         AuthValue {
             len: 0,
-            bytes: [0; limits::MAX_DIGEST_SIZE],
+            bytes: [0; limits::MAX_HASH_SIZE],
         }
     }
 
     pub(crate) fn from_slice(v: &[u8]) -> Option<AuthValue> {
-        if v.len() > limits::MAX_DIGEST_SIZE {
+        AuthValue::from_slice_up_to(v, DIGEST)
+    }
+
+    /// [`AuthValue::from_slice`] with the size limit `max` (at most [`limits::MAX_HASH_SIZE`]).
+    pub(crate) fn from_slice_up_to(v: &[u8], max: usize) -> Option<AuthValue> {
+        if v.len() > max.min(limits::MAX_HASH_SIZE) {
             return None;
         }
         let mut a = AuthValue::empty();
@@ -91,7 +98,7 @@ impl AuthValue {
     /// removed from an authValue before it is used in an authorization computation" (Part 1 v184,
     /// clause 17.6.5). The size limit applies to the value as given.
     pub(crate) fn from_slice_trimmed(v: &[u8]) -> Option<AuthValue> {
-        if v.len() > limits::MAX_DIGEST_SIZE {
+        if v.len() > DIGEST {
             return None;
         }
         AuthValue::from_slice(trim(v))
@@ -120,7 +127,7 @@ pub(crate) fn trim(v: &[u8]) -> &[u8] {
 pub(crate) fn password_matches(given: &[u8], auth: &[u8]) -> bool {
     let (g, a) = (trim(given), trim(auth));
     let mut diff = (g.len() ^ a.len()) as u32;
-    for i in 0..limits::MAX_DIGEST_SIZE {
+    for i in 0..limits::MAX_HASH_SIZE {
         let x = g.get(i).copied().unwrap_or(0);
         let y = a.get(i).copied().unwrap_or(0);
         diff |= u32::from(x ^ y);
@@ -161,7 +168,7 @@ const VERIFIED_HIERARCHIES: [u32; 3] = [
 ];
 
 struct MessageTicketState {
-    proof_id: [u8; limits::MAX_DIGEST_SIZE],
+    proof_id: [u8; DIGEST],
     mac: Hmac<Sha256>,
 }
 
@@ -177,6 +184,8 @@ pub(crate) enum SequenceKind {
     Hash(Sha256),
     /// Hash sequence of one algorithm (SHA-384).
     Hash384(Sha384),
+    /// Hash sequence of one algorithm (SHA-512).
+    Hash512(Sha512),
     /// Incremental HMAC-SHA-256 state, independent of the original key handle.
     Hmac(Hmac<Sha256>),
     /// Event sequence with both PCR bank algorithms.
@@ -330,10 +339,10 @@ impl Tpm {
         let data = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
         p.set_param(2);
         let hash_alg = p.u16()?;
-        if digest_size(hash_alg).is_none() {
+        let Some(algorithm) = HashAlg::from_alg(hash_alg) else {
             // NULL is not allowed for TPM2_Hash and is answered like any unimplemented hash.
             return Err(p.err(Rc::HASH));
-        }
+        };
         p.set_param(3);
         let hierarchy = p.u32()?;
         check_hierarchy(p, hierarchy)?;
@@ -343,12 +352,7 @@ impl Tpm {
         } else {
             handle::RH_NULL
         };
-        let result = match hash_alg {
-            alg::SHA256 => self.hash_result(&Sha256::digest(data), hierarchy),
-            alg::SHA384 => self.hash_result(&Sha384::digest(data), hierarchy),
-            _ => unreachable!("hash algorithm has already been checked"),
-        };
-        Ok(result)
+        Ok(self.hash_result(hash(algorithm, &[data]).as_slice(), hierarchy))
     }
 
     /// The digest and its optional HASHCHECK in the common Hash/SequenceComplete wire format.
@@ -382,13 +386,18 @@ impl Tpm {
     /// `TPM2_HashSequenceStart` (Part 3, clause 17.4): `hashAlg` NULL starts an event sequence.
     pub(crate) fn cmd_hash_sequence_start(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
-        let auth_bytes = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        let auth = AuthValue::from_slice(auth_bytes).ok_or_else(|| p.err(Rc::SIZE))?;
+        let auth_bytes = p.tpm2b(limits::MAX_HASH_SIZE)?;
         p.set_param(2);
         let hash_alg = p.u16()?;
+        // A hash sequence takes an authValue of the size of its hash; the event sequence (NULL)
+        // and an unimplemented algorithm one SHA-256 digest.
+        let auth_limit = digest_size(hash_alg).unwrap_or(DIGEST);
+        let auth =
+            AuthValue::from_slice_up_to(auth_bytes, auth_limit).ok_or(Rc::SIZE.in_param(1))?;
         let kind = match hash_alg {
             alg::SHA256 => SequenceKind::Hash(Sha256::new()),
             alg::SHA384 => SequenceKind::Hash384(Sha384::new()),
+            alg::SHA512 => SequenceKind::Hash512(Sha512::new()),
             alg::NULL => SequenceKind::Event(EventHash::default()),
             _ => return Err(p.err(Rc::HASH)),
         };
@@ -539,7 +548,7 @@ impl Tpm {
         if let Some(sequence) = self.sequences.slots[slot].as_mut() {
             if matches!(
                 sequence.kind,
-                SequenceKind::Hash(_) | SequenceKind::Hash384(_)
+                SequenceKind::Hash(_) | SequenceKind::Hash384(_) | SequenceKind::Hash512(_)
             ) {
                 sequence
                     .first_buffer_safe
@@ -548,6 +557,7 @@ impl Tpm {
             match &mut sequence.kind {
                 SequenceKind::Hash(hash) => hash.update(data),
                 SequenceKind::Hash384(hash) => hash.update(data),
+                SequenceKind::Hash512(hash) => hash.update(data),
                 SequenceKind::Event(hash) => hash.update(data),
                 SequenceKind::Hmac(mac) => mac.update(data),
                 SequenceKind::Sign(sign) => {
@@ -597,6 +607,10 @@ impl Tpm {
                 self.hash_result(&hash.finalize(), hierarchy)
             }
             SequenceKind::Hash384(mut hash) => {
+                hash.update(data);
+                self.hash_result(&hash.finalize(), hierarchy)
+            }
+            SequenceKind::Hash512(mut hash) => {
                 hash.update(data);
                 self.hash_result(&hash.finalize(), hierarchy)
             }
@@ -658,6 +672,7 @@ impl Tpm {
         let slot = self.seq_slot(inv.handles[0], 0)?;
         p.set_param(1);
         let signature = TpmtSignature::unmarshal(p)?;
+        require_sha256_signature(&signature, 1)?;
         p.finish()?;
         let Some(Sequence {
             kind: SequenceKind::Verify(verify),
@@ -684,7 +699,7 @@ impl Tpm {
                 .position(|h| *h == key.hierarchy)
                 .ok_or(mismatch)?;
             let proof = self.proof(key.hierarchy).ok_or(mismatch)?;
-            let current_id: [u8; limits::MAX_DIGEST_SIZE] = Sha256::digest(&proof[..]).into();
+            let current_id: [u8; DIGEST] = Sha256::digest(&proof[..]).into();
             let ticket = &verify.tickets[index];
             if ticket.proof_id != current_id {
                 // A changed proof cannot authenticate the prefix accumulated before rotation.
