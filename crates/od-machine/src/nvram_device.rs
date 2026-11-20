@@ -785,6 +785,15 @@ mod tests {
                         expected
                     },
                 );
+                assert_eq!(
+                    device.read(access(LEN, AccessWidth::Dword)).unwrap(),
+                    if !interrupt && !disabled {
+                        od_uefi_security::image_execution::RejectedImageAction::PolicyFailed as u64
+                    } else {
+                        0
+                    }
+                );
+                assert!(device.read(access(0, AccessWidth::Byte)).is_err());
                 assert_eq!(device.nvram_snapshot(), snapshot);
             }
         }

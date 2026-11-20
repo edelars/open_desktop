@@ -6417,4 +6417,4 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата и компонент.** 2026-11-19, UEFI image services и Secure Boot.
 - **Основание.** При отклонении внешнего PE текущий `LoadImage` возвращает `EFI_SECURITY_VIOLATION` и публикует выгружаемый handle. В firmware пока отсутствуют `EFI_IMAGE_EXECUTION_INFO_TABLE` и `EFI_PKCS7_VERIFY_PROTOCOL`. UEFI 2.11 §7.4.1 требует запись об отказе в таблице, §2.6.2 включает PKCS7 Verify Protocol в требования к реализации Secure Boot. [UEFI 2.11](https://uefi.org/sites/default/files/resources/UEFI_Spec_Final_2.11.pdf).
-- **Статус и следующий шаг.** Открыто. Добавить диагностическую запись причины отказа и пути в таблицу GUID, реализовать доступный приложениям PKCS7 Verify Protocol и проверить оба через UEFI services.
+- **Статус и следующий шаг.** Открыто. NVRAM возвращает классифицированное действие отказа по §32.4 вместе со статусом `POLICY_REJECTED`. Сохранять это действие и путь в таблице UEFI, реализовать PKCS7 Verify Protocol и проверить оба через UEFI services. [Контракт NVRAM](specs/NVRAM_DEVICE.md#проверка-pe-образа).

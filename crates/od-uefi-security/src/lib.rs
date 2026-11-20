@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod authvar;
 #[cfg(feature = "protected-nvram")]
 pub mod crc32;
+pub mod image_execution;
 pub mod pe;
 pub mod pkcs7;
 #[cfg(feature = "protected-nvram")]

@@ -4,7 +4,11 @@ use super::{
     IMAGE_BEGIN, IMAGE_CHUNK, IMAGE_VERIFY, Image, NVRAM_STORE_BYTES, State, Status, Transfer,
 };
 use crate::bus::DeviceError;
-use od_uefi_security::{protected::PolicyVariable, verify::authorize_image};
+use od_uefi_security::{
+    image_execution::RejectedImageAction,
+    protected::PolicyVariable,
+    verify::{ImageAuthority, authorize_image},
+};
 
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -79,26 +83,13 @@ impl State {
     }
 
     fn verify_image(&mut self, bytes: &[u8]) -> Status {
-        let Ok(image) = Image::new(self.banks.current().data()) else {
-            return Status::PolicyRejected;
-        };
-        let (mut pk, mut db, mut dbx) = (false, &[][..], &[][..]);
-        for decoded in image.records() {
-            let Ok((record, _)) = decoded else {
+        let authority = match self.image_authority(bytes) {
+            Ok(Some(authority)) => authority,
+            Ok(None) => return Status::ImagePolicyDisabled,
+            Err(action) => {
+                self.length = action as u32;
                 return Status::PolicyRejected;
-            };
-            match record.policy_variable() {
-                Some(PolicyVariable::Pk) => pk = !record.value.is_empty(),
-                Some(PolicyVariable::Db) => db = record.value,
-                Some(PolicyVariable::Dbx) => dbx = record.value,
-                _ => {}
             }
-        }
-        if image.flags.secure_boot_disabled || !pk {
-            return Status::ImagePolicyDisabled;
-        }
-        let Ok(authority) = authorize_image(bytes, db, dbx) else {
-            return Status::PolicyRejected;
         };
         let signature = authority.signature.bytes();
         let mut result = Vec::new();
@@ -109,5 +100,29 @@ impl State {
         self.length = result.len() as u32;
         self.transfer = Transfer::ImageAuthority(result);
         Status::ImageAuthorized
+    }
+
+    fn image_authority(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<ImageAuthority<'_>>, RejectedImageAction> {
+        let image = Image::new(self.banks.current().data())
+            .map_err(|_| RejectedImageAction::PolicyFailed)?;
+        let (mut pk, mut db, mut dbx) = (false, &[][..], &[][..]);
+        for decoded in image.records() {
+            let (record, _) = decoded.map_err(|_| RejectedImageAction::PolicyFailed)?;
+            match record.policy_variable() {
+                Some(PolicyVariable::Pk) => pk = !record.value.is_empty(),
+                Some(PolicyVariable::Db) => db = record.value,
+                Some(PolicyVariable::Dbx) => dbx = record.value,
+                _ => {}
+            }
+        }
+        if image.flags.secure_boot_disabled || !pk {
+            return Ok(None);
+        }
+        authorize_image(bytes, db, dbx)
+            .map(Some)
+            .map_err(|error| error.execution_action())
     }
 }

@@ -5,6 +5,7 @@ use der::Decode;
 use x509_cert::Certificate;
 
 use crate::{
+    image_execution::RejectedImageAction,
     pe::{DigestAlgorithm, PeImage, authenticode_digest},
     pkcs7::AuthenticodeSignedData,
     siglist::{Signature, SignatureType, signature_lists},
@@ -20,8 +21,28 @@ pub enum ImagePolicyError {
     InvalidImage,
     InvalidDatabase,
     IncompleteSignatureInventory,
-    Revoked,
+    RevokedImage { signed: bool },
+    RevokedCertificate,
+    InvalidSignature,
+    Unsigned,
     Untrusted,
+}
+
+impl ImagePolicyError {
+    /// Preserve the result of the authorization attempt for the UEFI execution table.
+    pub fn execution_action(self) -> RejectedImageAction {
+        match self {
+            Self::Unsigned | Self::RevokedImage { signed: false } => RejectedImageAction::Untested,
+            Self::InvalidSignature | Self::RevokedCertificate => {
+                RejectedImageAction::SignatureFailed
+            }
+            Self::Untrusted => RejectedImageAction::SignatureNotFound,
+            Self::RevokedImage { signed: true } => RejectedImageAction::SignatureFound,
+            Self::InvalidImage | Self::InvalidDatabase | Self::IncompleteSignatureInventory => {
+                RejectedImageAction::PolicyFailed
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,8 +67,16 @@ pub fn authorize_image<'db>(
         .map_err(|_| ImagePolicyError::InvalidImage)?;
     let revocations = Revocations::read(dbx, &digest)?;
     let mut policy = ImagePolicy::read(db, &digest, &revocations)?;
+    let signed = image.certificate_file_range().is_some();
     if revocations.image {
-        return Err(ImagePolicyError::Revoked);
+        // An execution record reports a found signature only after validating
+        // the WIN_CERTIFICATE framing. The image hash still vetoes execution.
+        for (index, entry) in image.win_certificates().enumerate() {
+            if index == MAX_SIGNATURES || entry.is_err() {
+                return Err(ImagePolicyError::IncompleteSignatureInventory);
+            }
+        }
+        return Err(ImagePolicyError::RevokedImage { signed });
     }
     for entry in image.win_certificates() {
         let entry = entry.map_err(|_| ImagePolicyError::IncompleteSignatureInventory)?;
@@ -56,7 +85,7 @@ pub fn authorize_image<'db>(
         }
         policy.scan_signature(entry.data, 0)?;
     }
-    policy.authority.ok_or(ImagePolicyError::Untrusted)
+    policy.authority.ok_or_else(|| policy.rejection(signed))
 }
 
 struct RevokedCertificate<'a> {
@@ -136,10 +165,21 @@ struct ImagePolicy<'db, 'check> {
     certificates: Vec<TrustedCertificate<'db>>,
     unsupported_issuers: Vec<Certificate>,
     authority: Option<ImageAuthority<'db>>,
+    failed_signature: bool,
     remaining_signatures: usize,
 }
 
 impl<'db, 'check> ImagePolicy<'db, 'check> {
+    fn rejection(&self, signed: bool) -> ImagePolicyError {
+        if !signed {
+            ImagePolicyError::Unsigned
+        } else if self.failed_signature {
+            ImagePolicyError::InvalidSignature
+        } else {
+            ImagePolicyError::Untrusted
+        }
+    }
+
     fn read(
         db: &'db [u8],
         digest: &'check [u8; 32],
@@ -151,6 +191,7 @@ impl<'db, 'check> ImagePolicy<'db, 'check> {
             certificates: Vec::new(),
             unsupported_issuers: Vec::new(),
             authority: None,
+            failed_signature: false,
             remaining_signatures: MAX_SIGNATURES,
         };
         for list in signature_lists(db) {
@@ -226,27 +267,30 @@ impl<'db, 'check> ImagePolicy<'db, 'check> {
                 None
             });
         if revoked.is_some() {
-            return Err(ImagePolicyError::Revoked);
+            return Err(ImagePolicyError::RevokedCertificate);
         }
         if incomplete_issuer {
             return Err(incomplete);
         }
-        if self.authority.is_none()
-            && signed.image_digest() == self.digest
-            && chain
-                .check_signature(signer.signature, signed.signature_digest())
-                .is_ok()
-        {
-            self.authority =
-                chain.find_with_issuers(enrolled, IssuerPath::CodeSigning, |candidate, _| {
-                    self.certificates
-                        .iter()
-                        .find(|trusted| trusted.certificate.der == candidate.der)
-                        .map(|trusted| ImageAuthority {
-                            kind: SignatureType::X509,
-                            signature: trusted.signature,
-                        })
-                });
+        if self.authority.is_none() {
+            if signed.image_digest() != self.digest
+                || chain
+                    .check_signature(signer.signature, signed.signature_digest())
+                    .is_err()
+            {
+                self.failed_signature = true;
+            } else {
+                self.authority =
+                    chain.find_with_issuers(enrolled, IssuerPath::CodeSigning, |candidate, _| {
+                        self.certificates
+                            .iter()
+                            .find(|trusted| trusted.certificate.der == candidate.der)
+                            .map(|trusted| ImageAuthority {
+                                kind: SignatureType::X509,
+                                signature: trusted.signature,
+                            })
+                    });
+            }
         }
         for nested in signed.nested_signatures().map_err(|_| incomplete)? {
             self.scan_signature(nested.map_err(|_| incomplete)?, depth + 1)?;
@@ -301,7 +345,7 @@ mod tests {
             assert!(policy.authority.is_some());
             assert_eq!(
                 policy.scan_signature(TEST_AUTHENTICODE, 0),
-                Err(ImagePolicyError::Revoked),
+                Err(ImagePolicyError::RevokedCertificate),
             );
         }
     }
@@ -318,7 +362,7 @@ mod tests {
         assert!(nested.next().is_none());
         assert_eq!(
             policy.scan_signature(NESTED, 0),
-            Err(ImagePolicyError::Revoked)
+            Err(ImagePolicyError::RevokedCertificate)
         );
         let primary_authority = policy.authority.unwrap();
         assert_eq!(primary_authority.kind, SignatureType::X509);
@@ -332,7 +376,7 @@ mod tests {
         assert_eq!(policy.authority.unwrap().signature.bytes(), &allowed[28..]);
         assert_eq!(
             policy.scan_signature(NESTED, 0),
-            Err(ImagePolicyError::Revoked)
+            Err(ImagePolicyError::RevokedCertificate)
         );
     }
 
@@ -351,7 +395,7 @@ mod tests {
         let mut policy = ImagePolicy::read(&allowed, &TEST_IMAGE_DIGEST, &revoked).unwrap();
         assert_eq!(
             policy.scan_signature(&corrupt, 0),
-            Err(ImagePolicyError::Revoked)
+            Err(ImagePolicyError::RevokedCertificate)
         );
         assert_eq!(
             policy.scan_signature(&TEST_AUTHENTICODE[..20], 0),
@@ -359,6 +403,18 @@ mod tests {
         );
 
         let revoked = Revocations::read(&[], &TEST_IMAGE_DIGEST).unwrap();
+        let mut untrusted = ImagePolicy::read(&[], &TEST_IMAGE_DIGEST, &revoked).unwrap();
+        assert_eq!(untrusted.rejection(false), ImagePolicyError::Unsigned);
+        assert_eq!(untrusted.scan_signature(TEST_AUTHENTICODE, 0), Ok(()));
+        assert!(untrusted.authority.is_none());
+        assert_eq!(untrusted.rejection(true), ImagePolicyError::Untrusted);
+        assert_eq!(untrusted.scan_signature(&corrupt, 0), Ok(()));
+        assert!(untrusted.authority.is_none());
+        assert_eq!(
+            untrusted.rejection(true),
+            ImagePolicyError::InvalidSignature
+        );
+
         let mut policy = ImagePolicy::read(&allowed, &TEST_IMAGE_DIGEST, &revoked).unwrap();
         assert_eq!(policy.scan_signature(&corrupt, 0), Ok(()));
         assert_eq!(
@@ -447,7 +503,7 @@ mod tests {
         let mut policy = ImagePolicy::read(&allowed, &TEST_IMAGE_DIGEST, &revocations).unwrap();
         assert_eq!(
             policy.scan_signature(TEST_AUTHENTICODE, 0),
-            Err(ImagePolicyError::Revoked)
+            Err(ImagePolicyError::RevokedCertificate)
         );
 
         let revocations = Revocations::read(&[], &TEST_IMAGE_DIGEST).unwrap();
