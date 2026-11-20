@@ -27,10 +27,12 @@ pub mod cc {
     pub const QUOTE: u32 = 0x0000_0158;
     pub const CONTEXT_LOAD: u32 = 0x0000_0161;
     pub const CONTEXT_SAVE: u32 = 0x0000_0162;
+    pub const POLICY_AUTHORIZE: u32 = 0x0000_016A;
     pub const POLICY_AUTH_VALUE: u32 = 0x0000_016B;
     pub const POLICY_COMMAND_CODE: u32 = 0x0000_016C;
     pub const POLICY_CP_HASH: u32 = 0x0000_016E;
     pub const POLICY_LOCALITY: u32 = 0x0000_016F;
+    pub const POLICY_NAME_HASH: u32 = 0x0000_0170;
     pub const POLICY_OR: u32 = 0x0000_0171;
     pub const POLICY_PCR: u32 = 0x0000_017F;
     pub const POLICY_RESTART: u32 = 0x0000_0180;

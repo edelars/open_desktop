@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 74] = [
+pub(crate) static COMMANDS: [CommandSpec; 76] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -160,10 +160,12 @@ pub(crate) static COMMANDS: [CommandSpec; 74] = [
     spec(cc::LOAD_EXTERNAL, 0, 0, true, false, false),
     spec(cc::MAKE_CREDENTIAL, 1, 0, false, false, false),
     spec(cc::NV_READ_PUBLIC, 1, 0, false, false, false),
+    spec(cc::POLICY_AUTHORIZE, 1, 0, false, false, false),
     spec(cc::POLICY_AUTH_VALUE, 1, 0, false, false, false),
     spec(cc::POLICY_COMMAND_CODE, 1, 0, false, false, false),
     spec(cc::POLICY_CP_HASH, 1, 0, false, false, false),
     spec(cc::POLICY_LOCALITY, 1, 0, false, false, false),
+    spec(cc::POLICY_NAME_HASH, 1, 0, false, false, false),
     spec(cc::POLICY_OR, 1, 0, false, false, false),
     spec(cc::READ_PUBLIC, 1, 0, false, false, false),
     spec(cc::RSA_ENCRYPT, 1, 0, false, false, false),
@@ -328,10 +330,20 @@ fn command_parameter_hash(
 ) -> [u8; DIGEST] {
     let mut h = Sha256::new();
     h.update(spec.code.to_be_bytes());
+    append_command_names(&mut h, tpm, spec, handles);
+    h.update(parameters);
+    h.finalize().into()
+}
+
+fn append_command_names(h: &mut Sha256, tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) {
     for handle in handles.iter().take(usize::from(spec.handles)) {
         h.update(handle_name(tpm, *handle));
     }
-    h.update(parameters);
+}
+
+fn command_names_hash(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> [u8; DIGEST] {
+    let mut h = Sha256::new();
+    append_command_names(&mut h, tpm, spec, handles);
     h.finalize().into()
 }
 
@@ -592,8 +604,14 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     // A policy session: the policy is validated before any HMAC (Part 1, clause
                     // 17.8.3), a policy failure never touches the DA counters.
                     let policy = handle_auth_policy(tpm, &handles, i);
-                    let (need_auth, need_password) =
-                        tpm.policy_use_check(pslot, spec.code, &cp, &policy, admin, n)?;
+                    let (need_auth, need_password) = tpm.policy_use_check(
+                        pslot,
+                        spec.code,
+                        (&cp, || command_names_hash(tpm, spec, &handles)),
+                        &policy,
+                        admin,
+                        n,
+                    )?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     if need_password {
                         if !password_matches(&s.hmac, auth.as_slice()) {
@@ -751,6 +769,8 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         }
         cc::POLICY_COMMAND_CODE => tpm.cmd_policy_command_code(&inv, &mut p)?,
         cc::POLICY_CP_HASH => tpm.cmd_policy_cp_hash(&inv, &mut p)?,
+        cc::POLICY_NAME_HASH => tpm.cmd_policy_name_hash(&inv, &mut p)?,
+        cc::POLICY_AUTHORIZE => tpm.cmd_policy_authorize(&inv, &mut p)?,
         cc::POLICY_LOCALITY => tpm.cmd_policy_locality(&inv, &mut p)?,
         cc::POLICY_SECRET => tpm.cmd_policy_secret(&inv, &mut p)?,
         cc::POLICY_GET_DIGEST => tpm.cmd_policy_get_digest(&inv, &mut p)?,
@@ -964,6 +984,8 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::POLICY_PASSWORD
         | cc::POLICY_COMMAND_CODE
         | cc::POLICY_CP_HASH
+        | cc::POLICY_NAME_HASH
+        | cc::POLICY_AUTHORIZE
         | cc::POLICY_LOCALITY
         | cc::POLICY_GET_DIGEST => tpm.check_policy_session(handles[0], 0)?,
         cc::POLICY_SECRET => tpm.check_policy_session(handles[1], 1)?,
@@ -1049,6 +1071,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 74);
+        assert_eq!(COMMANDS.len(), 76);
     }
 }

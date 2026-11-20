@@ -68,7 +68,7 @@ use crate::object::{
     Object, Sensitive, aes128_cfb, name_of, sensitive_from_bytes, sensitive_to_bytes,
 };
 use crate::paramenc::SessionSym;
-use crate::policy::PolicyState;
+use crate::policy::{PolicyHashRestriction, PolicyState};
 use crate::response::{Output, Rc};
 use crate::session::{BoundEntity, Session, SessionKind, session_handle};
 use crate::state::Tpm;
@@ -348,9 +348,13 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
             None => w.u8(0),
         }
     }
-    match &p.cp_hash {
-        Some(h) => {
+    match &p.hash_restriction {
+        Some(PolicyHashRestriction::CpHash(h)) => {
             w.u8(1);
+            w.bytes(h);
+        }
+        Some(PolicyHashRestriction::NameHash(h)) => {
+            w.u8(2);
             w.bytes(h);
         }
         None => w.u8(0),
@@ -397,12 +401,16 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     };
     policy.command_code = opt_u32(&mut r)?;
     policy.pcr_update_counter = opt_u32(&mut r)?;
-    policy.cp_hash = match r.u8()? {
+    policy.hash_restriction = match r.u8()? {
         0 => None,
-        1 => {
+        tag @ (1 | 2) => {
             let mut h = [0u8; 32];
             h.copy_from_slice(r.bytes(32)?);
-            Some(h)
+            if tag == 1 {
+                Some(PolicyHashRestriction::CpHash(h))
+            } else {
+                Some(PolicyHashRestriction::NameHash(h))
+            }
         }
         _ => return Err(Rc::VALUE),
     };

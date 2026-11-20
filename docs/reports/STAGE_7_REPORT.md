@@ -9301,6 +9301,28 @@ lockout и сверил коды для пароля, HMAC, обеих поли�
 остаётся в ISSUE-529.
 [TPM Library v185, Part 3 §5.6](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=32), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
 
+## S7-23 — PolicyNameHash и PolicyAuthorize
+
+Нативный CRB-клиент загрузил публичный P-256 ключ в иерархию Owner,
+подписал одобряемую политику с помощью OpenSSL и получил билет
+`VerifySignature`. После выгрузки ключа TPM принял подлинный билет.
+Изменённый билет, другой `policyRef`, NULL-билет для реальной сессии
+и несовпадающий `approvedPolicy` отклонены. Фиксированные векторы
+проверили дайджест с пустым и непустым `policyRef`, а также обработку trial.
+
+Сессия авторизовала `ObjectChangeAuth` после `ContextSave` и `ContextLoad`.
+Замена второго handle на другой Storage key дала `TPM_RC_POLICY_FAIL`.
+Подстановка persistent alias с тем же Name и разные значения `newAuth`
+прошли проверку. Оба выходных контейнера загрузились, и новая авторизация
+прочитала исходное запечатанное значение. Клиент также сверил XOR
+первых параметров обеих команд и HMAC ответов дополнительной сессии.
+
+После замечания Sol High проверка занятого слота NameHash предшествует
+проверке точной длины после разбора wire-формата. Повторное ревью
+подтвердило исправление. Прошли 310 тестов TPM и проверка Rust workspace.
+Объявлены 76 из 101 обязательного кода.
+[Контракт](../specs/VTPM.md#имена-команды-и-подписанная-авторизация-политики).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

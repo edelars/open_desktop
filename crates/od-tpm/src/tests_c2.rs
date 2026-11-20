@@ -472,11 +472,11 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
     assert_eq!(loaded(&load_ctx(&mut t, &saved)), policy.handle);
     let slot = t.sessions.slot_of(policy.handle).unwrap();
     assert_eq!(
-        t.policy_use_check(slot, cc::SIGN, &cp_hash, &second, false, 1),
+        t.policy_use_check(slot, cc::SIGN, (&cp_hash, || [0; 32]), &second, false, 1),
         Ok((false, false))
     );
     assert_eq!(
-        t.policy_use_check(slot, cc::SIGN, &[0x43; 32], &second, false, 1),
+        t.policy_use_check(slot, cc::SIGN, (&[0x43; 32], || [0; 32]), &second, false, 1),
         Err(Rc::POLICY_FAIL.in_session(1))
     );
     ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));
@@ -490,6 +490,209 @@ fn policy_cp_hash_pins_a_command_across_context_save_and_load() {
     let trial = policy_session(&mut t, se::TRIAL);
     ok(&pol(&mut t, cc::POLICY_CP_HASH, &trial, &encoded));
     assert_eq!(digest(&mut t, &trial), first);
+}
+
+#[test]
+fn policy_name_hash_has_one_shared_restriction_and_a_fixed_digest() {
+    let mut t = started();
+    let real = policy_session(&mut t, se::POLICY);
+    let name_hash = [1; 32];
+    let encoded = tpm2b(&name_hash);
+    let expected = hex("6201f0688e9638e4730cb773be7e8ab89e9af7c2851d3aa563c1254d892028b5");
+    err(
+        &pol(
+            &mut t,
+            cc::POLICY_NAME_HASH,
+            &real,
+            &tpm2b(&name_hash[..31]),
+        ),
+        Rc::SIZE.in_param(1),
+    );
+    ok(&pol(&mut t, cc::POLICY_NAME_HASH, &real, &encoded));
+    assert_eq!(digest(&mut t, &real), expected);
+    for code in [cc::POLICY_NAME_HASH, cc::POLICY_CP_HASH] {
+        err(&pol(&mut t, code, &real, &encoded), Rc::CPHASH);
+    }
+    err(
+        &pol(
+            &mut t,
+            cc::POLICY_NAME_HASH,
+            &real,
+            &tpm2b(&name_hash[..31]),
+        ),
+        Rc::CPHASH,
+    );
+    err(
+        &pol(&mut t, cc::POLICY_NAME_HASH, &real, &tpm2b(&[0; 33])),
+        Rc::SIZE.in_param(1),
+    );
+    err(
+        &secret_pw(
+            &mut t,
+            OWNER,
+            b"",
+            &real,
+            &secret_params(b"", &name_hash, b"", 0),
+        ),
+        Rc::CPHASH,
+    );
+    assert_eq!(digest(&mut t, &real), expected);
+    ok(&secret_pw(
+        &mut t,
+        OWNER,
+        b"",
+        &real,
+        &secret_params(b"", b"", b"", 0),
+    ));
+    err(
+        &pol(&mut t, cc::POLICY_CP_HASH, &real, &encoded),
+        Rc::CPHASH,
+    );
+    ok(&pol(&mut t, cc::POLICY_RESTART, &real, &[]));
+    ok(&pol(&mut t, cc::POLICY_CP_HASH, &real, &encoded));
+    err(
+        &pol(&mut t, cc::POLICY_NAME_HASH, &real, &encoded),
+        Rc::CPHASH,
+    );
+
+    let trial = policy_session(&mut t, se::TRIAL);
+    ok(&pol(&mut t, cc::POLICY_NAME_HASH, &trial, &encoded));
+    assert_eq!(digest(&mut t, &trial), expected);
+    ok(&pol(&mut t, cc::POLICY_NAME_HASH, &trial, &encoded));
+    assert_eq!(
+        digest(&mut t, &trial),
+        h256(&[&expected, &[0, 0, 1, 0x70], &name_hash])
+    );
+    let key_name = cat(&[&u16b(alg::SHA256), &[1; 32]]);
+    let ticket = cat(&[&u16b(st::VERIFIED), &u32b(NULL), &tpm2b(b"")]);
+    for (reference, vector) in [
+        (
+            b"".as_slice(),
+            "90c719491286d75a4a8bbc92afece1ec35d71f597e06fcd6aeed14fd0ac004af",
+        ),
+        (
+            b"test-ref".as_slice(),
+            "33c94480a43f05904e915ecb9d5ea4bef1ec6ce12f5146f45dc5854ffcf23177",
+        ),
+    ] {
+        let parameters = cat(&[&tpm2b(b""), &tpm2b(reference), &tpm2b(&key_name), &ticket]);
+        ok(&pol(&mut t, cc::POLICY_AUTHORIZE, &trial, &parameters));
+        assert_eq!(digest(&mut t, &trial), hex(vector));
+    }
+}
+
+#[test]
+fn policy_authorize_preserves_the_name_hash_across_context_save_and_authorization() {
+    let (mut t, parent) = with_ecc_parent();
+    let parent_name = unmarshal_name(&mut t, parent);
+    let alias = 0x8100_0001;
+    ok(&evict(&mut t, OWNER, b"", parent, alias));
+    let authority = parse_primary(&create_primary(&mut t, OWNER, b"authority", &ecc_sign()));
+    let policy_ref = b"approved name list";
+    let authorize_args = |approved: &[u8], reference: &[u8], name: &[u8], ticket: &[u8]| {
+        cat(&[&tpm2b(approved), &tpm2b(reference), &tpm2b(name), ticket])
+    };
+    let null_ticket = cat(&[&u16b(st::VERIFIED), &u32b(NULL), &tpm2b(b"")]);
+    let trial = policy_session(&mut t, se::TRIAL);
+    ok(&pol(
+        &mut t,
+        cc::POLICY_AUTHORIZE,
+        &trial,
+        &authorize_args(b"", policy_ref, &authority.name, &null_ticket),
+    ));
+    ok(&pol_cc(&mut t, &trial, cc::OBJECT_CHANGE_AUTH));
+    let mut child = sealed();
+    child.auth_policy = digest(&mut t, &trial);
+    child.attributes |= oa::ADMIN_WITH_POLICY;
+    ok(&flush(&mut t, trial.handle));
+    let (key, key_name, public) = make_child(&mut t, parent, &child, b"old", b"sealed");
+    let mut real = policy_session(&mut t, se::POLICY);
+    ok(&pol(&mut t, cc::POLICY_LOCALITY, &real, &[1]));
+    ok(&pol(
+        &mut t,
+        cc::POLICY_NAME_HASH,
+        &real,
+        &tpm2b(&h256(&[&key_name, &parent_name])),
+    ));
+    let approved = digest(&mut t, &real);
+    let signed = h256(&[&approved, policy_ref]);
+    let signature = params(
+        &sign(
+            &mut t,
+            authority.handle,
+            b"authority",
+            &signed,
+            &ecc_sig_scheme(),
+        ),
+        0,
+    )
+    .to_vec();
+    let ticket = params(&verify(&mut t, authority.handle, &signed, &signature), 0).to_vec();
+    ok(&flush(&mut t, authority.handle));
+    let other = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &ecc_storage()));
+    for (parameters, expected) in [
+        (
+            authorize_args(b"", policy_ref, &authority.name, &ticket),
+            Rc::VALUE.in_param(1),
+        ),
+        (
+            authorize_args(&approved, b"altered", &authority.name, &ticket),
+            Rc::POLICY,
+        ),
+        (
+            authorize_args(&approved, policy_ref, &authority.name, &null_ticket),
+            Rc::POLICY,
+        ),
+        (
+            authorize_args(&approved, policy_ref, &[0, 0x10], &ticket),
+            Rc::HASH.in_param(3),
+        ),
+        (
+            authorize_args(&approved, policy_ref, &authority.name[..33], &ticket),
+            Rc::SIZE.in_param(3),
+        ),
+    ] {
+        err(
+            &pol(&mut t, cc::POLICY_AUTHORIZE, &real, &parameters),
+            expected,
+        );
+        assert_eq!(digest(&mut t, &real), approved);
+    }
+    ok(&pol(
+        &mut t,
+        cc::POLICY_AUTHORIZE,
+        &real,
+        &authorize_args(&approved, policy_ref, &authority.name, &ticket),
+    ));
+    ok(&pol_cc(&mut t, &real, cc::OBJECT_CHANGE_AUTH));
+    assert_eq!(digest(&mut t, &real), child.auth_policy);
+    let saved = params(&save(&mut t, real.handle), 0).to_vec();
+    assert_eq!(loaded(&load_ctx(&mut t, &saved)), real.handle);
+    let slot = t.sessions.slot_of(real.handle).unwrap();
+    assert_eq!(t.sessions.get(slot).unwrap().policy.command_locality, 1);
+
+    let mut command = hc(
+        cc::OBJECT_CHANGE_AUTH,
+        &[key, other.handle],
+        tpm2b(b"new"),
+        (key, b"old"),
+    );
+    command.names = vec![key_name, other.name];
+    err(
+        &use_session(&mut t, &mut real, &command, 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    assert_eq!(digest(&mut t, &real), child.auth_policy);
+    command.handles[1] = alias;
+    command.names[1] = parent_name;
+    let result = use_session(&mut t, &mut real, &command, 0, true, false);
+    let private = Reader::new(params(&result, 0)).tpm2b(1024).unwrap();
+    ok(&flush(&mut t, key));
+    let (key, _) = parse_loaded(&load(&mut t, alias, b"parent-pw", private, &public));
+    assert_eq!(
+        params(&pw_cmd(&mut t, cc::UNSEAL, &[key], b"new", &[]), 0),
+        tpm2b(b"sealed")
+    );
 }
 
 #[test]
@@ -2608,7 +2811,14 @@ fn saved_pcr_assertions_are_stale_after_counted_startup_resets() {
         err(&pol_pcr(&mut t, &policy, &[], &sel04()), Rc::PCR_CHANGED);
         let slot = t.sessions.slot_of(policy.handle).unwrap();
         assert_eq!(
-            t.policy_use_check(slot, cc::SIGN, &[0; 32], &previous_digest, false, 1),
+            t.policy_use_check(
+                slot,
+                cc::SIGN,
+                (&[0; 32], || [0; 32]),
+                &previous_digest,
+                false,
+                1
+            ),
             Err(Rc::PCR_CHANGED)
         );
         ok(&pol(&mut t, cc::POLICY_RESTART, &policy, &[]));

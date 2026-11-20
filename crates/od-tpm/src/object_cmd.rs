@@ -55,9 +55,14 @@ use crate::state::Tpm;
 /// `TPMA_LOCALITY` of locality 0 (Part 2, Table 41, bit 0).
 const LOCALITY_ZERO: u8 = 1;
 const CREATION_TAG: [u8; 2] = st::CREATION.to_be_bytes();
+const VERIFIED_TAG: [u8; 2] = st::VERIFIED.to_be_bytes();
 
 fn creation_ticket_parts<'a>(name: &'a [u8], creation_hash: &'a [u8]) -> [&'a [u8]; 3] {
     [&CREATION_TAG, name, creation_hash]
+}
+
+fn verified_ticket_parts<'a>(signed_hash: &'a [u8], key_name: &'a [u8]) -> [&'a [u8]; 3] {
+    [&VERIFIED_TAG, signed_hash, key_name]
 }
 
 /// What a child needs from its parent, copied so that the parent is not borrowed while the TPM
@@ -208,6 +213,22 @@ impl Tpm {
     ) -> bool {
         self.creation_proof(hierarchy).is_some_and(|proof| {
             hmac_sha256_verify(&proof, &creation_ticket_parts(name, creation_hash), digest)
+        })
+    }
+
+    pub(crate) fn valid_verified_ticket(
+        &self,
+        key_name: &[u8],
+        signed_hash: &[u8],
+        hierarchy: u32,
+        digest: &[u8],
+    ) -> bool {
+        self.proof(hierarchy).is_some_and(|proof| {
+            hmac_sha256_verify(
+                &proof,
+                &verified_ticket_parts(signed_hash, key_name),
+                digest,
+            )
         })
     }
 
@@ -732,7 +753,7 @@ impl Tpm {
         let ticket = self.ticket(
             st::VERIFIED,
             o.hierarchy,
-            &[&st::VERIFIED.to_be_bytes(), digest, &o.name],
+            &verified_ticket_parts(digest, &o.name),
         );
         let mut w = Writer::new();
         ticket.marshal(&mut w);

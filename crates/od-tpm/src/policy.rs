@@ -56,10 +56,11 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::codes::{cc, handle, st};
+use crate::codes::{alg, cc, handle, st};
 use crate::crypto::DIGEST;
 use crate::dispatch::{COMMANDS, Invocation, handle_name};
-use crate::marshal::{Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
+use crate::marshal::{MAX_DATA, Reader, TpmlDigest, TpmlPcrSelection, TpmtTicket, Writer, limits};
+use crate::object::is_object_hierarchy;
 use crate::pcr::Pcrs;
 use crate::response::{Output, Rc};
 use crate::session::SessionKind;
@@ -70,12 +71,19 @@ use crate::state::Tpm;
 pub(crate) struct PolicyState {
     pub digest: [u8; DIGEST],
     pub command_code: Option<u32>,
-    pub cp_hash: Option<[u8; DIGEST]>,
+    pub hash_restriction: Option<PolicyHashRestriction>,
     /// Zero for unrestricted, 1..=31 for the locality mask, 32..=255 for an extended locality.
     pub command_locality: u8,
     pub pcr_update_counter: Option<u32>,
     pub auth_value_needed: bool,
     pub password_needed: bool,
+}
+
+/// Deferred hash restrictions share a single TPM policy-session field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PolicyHashRestriction {
+    CpHash([u8; DIGEST]),
+    NameHash([u8; DIGEST]),
 }
 
 impl PolicyState {
@@ -84,7 +92,7 @@ impl PolicyState {
         PolicyState {
             digest: [0; DIGEST],
             command_code: None,
-            cp_hash: None,
+            hash_restriction: None,
             command_locality: 0,
             pcr_update_counter: None,
             auth_value_needed: false,
@@ -100,6 +108,15 @@ impl PolicyState {
             h.update(p);
         }
         self.digest = h.finalize().into();
+    }
+
+    fn restrict_cp_hash(&mut self, hash: [u8; DIGEST]) -> Result<(), Rc> {
+        let restriction = PolicyHashRestriction::CpHash(hash);
+        if self.hash_restriction.is_some_and(|old| old != restriction) {
+            return Err(Rc::CPHASH);
+        }
+        self.hash_restriction = Some(restriction);
+        Ok(())
     }
 }
 
@@ -272,12 +289,31 @@ impl Tpm {
         let slot = self.policy_slot(inv.handles[0])?;
         let (state, kind) = self.policy_mut(slot)?;
         if kind == SessionKind::Policy {
-            if state.cp_hash.is_some_and(|old| old != cp_hash) {
-                return Err(Rc::CPHASH);
-            }
-            state.cp_hash = Some(cp_hash);
+            state.restrict_cp_hash(cp_hash)?;
         }
         state.extend(&[&cc::POLICY_CP_HASH.to_be_bytes(), &cp_hash]);
+        Ok(Output::default())
+    }
+
+    /// `TPM2_PolicyNameHash` (Part 3, clause 23.14).
+    pub(crate) fn cmd_policy_name_hash(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let name_hash = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+        let slot = self.policy_slot(inv.handles[0])?;
+        let (state, kind) = self.policy_mut(slot)?;
+        if kind == SessionKind::Policy && state.hash_restriction.is_some() {
+            return Err(Rc::CPHASH);
+        }
+        let name_hash: [u8; DIGEST] = name_hash.try_into().map_err(|_| Rc::SIZE.in_param(1))?;
+        if kind == SessionKind::Policy {
+            state.hash_restriction = Some(PolicyHashRestriction::NameHash(name_hash));
+        }
+        state.extend(&[&cc::POLICY_NAME_HASH.to_be_bytes(), &name_hash]);
         Ok(Output::default())
     }
 
@@ -359,14 +395,9 @@ impl Tpm {
         } else {
             Some(cp_hash_a.try_into().map_err(|_| Rc::SIZE.in_param(2))?)
         };
-        if let (Some(a), Some(b)) = (cp, session.policy.cp_hash)
-            && a != b
-        {
-            return Err(Rc::CPHASH);
-        }
         let (state, _) = self.policy_mut(slot)?;
-        if cp.is_some() {
-            state.cp_hash = cp;
+        if let Some(hash) = cp {
+            state.restrict_cp_hash(hash)?;
         }
         // PolicyUpdate: two extensions (clause 23.2.3).
         state.extend(&[&cc::POLICY_SECRET.to_be_bytes(), &name]);
@@ -385,14 +416,66 @@ impl Tpm {
         })
     }
 
+    /// `TPM2_PolicyAuthorize` with a legacy VerifySignature ticket (Part 3 §23.16).
+    pub(crate) fn cmd_policy_authorize(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let approved = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(2);
+        let policy_ref = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.set_param(3);
+        let key_name = p.tpm2b(MAX_DATA)?;
+        p.set_param(4);
+        if p.u16()? != st::VERIFIED {
+            return Err(p.err(Rc::TAG));
+        }
+        let hierarchy = p.u32()?;
+        if !is_object_hierarchy(hierarchy) {
+            return Err(p.err(Rc::VALUE));
+        }
+        let ticket = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        p.finish()?;
+
+        let (name_alg, name_digest) = key_name.split_at_checked(2).ok_or(Rc::SIZE.in_param(3))?;
+        if name_alg != alg::SHA256.to_be_bytes() {
+            return Err(Rc::HASH.in_param(3));
+        }
+        if name_digest.len() != DIGEST {
+            return Err(Rc::SIZE.in_param(3));
+        }
+
+        let slot = self.policy_slot(inv.handles[0])?;
+        let session = self.sessions.get(slot).ok_or(Rc::reference_handle(0))?;
+        if session.kind == SessionKind::Policy {
+            if approved != session.policy.digest {
+                return Err(Rc::VALUE.in_param(1));
+            }
+            let mut signed = Sha256::new();
+            signed.update(approved);
+            signed.update(policy_ref);
+            if !self.valid_verified_ticket(key_name, &signed.finalize(), hierarchy, ticket) {
+                return Err(Rc::POLICY);
+            }
+        }
+        let (state, _) = self.policy_mut(slot)?;
+        state.digest = [0; DIGEST];
+        state.extend(&[&cc::POLICY_AUTHORIZE.to_be_bytes(), key_name]);
+        state.extend(&[policy_ref]);
+        Ok(Output::default())
+    }
+
     /// The checks of Part 3, clause 5.6, step 8, for a policy session in `slot` that authorizes
-    /// command `code` (cpHash `cp_hash`) an entity with `auth_policy`. `admin` is the ADMIN role,
+    /// command `code` on an entity with `auth_policy`. `command_names_hash` is calculated only
+    /// when the policy restricts the command's Names. `admin` is the ADMIN role,
     /// `n` the one-based session number. Returns `(isAuthValueNeeded, isPasswordNeeded)`.
     pub(crate) fn policy_use_check(
         &self,
         slot: usize,
         code: u32,
-        cp_hash: &[u8; DIGEST],
+        (cp_hash, command_names_hash): (&[u8; DIGEST], impl FnOnce() -> [u8; DIGEST]),
         auth_policy: &[u8],
         admin: bool,
         n: u8,
@@ -406,9 +489,12 @@ impl Tpm {
         if admin && st.command_code.is_none() {
             return Err(Rc::POLICY_FAIL.in_session(n));
         }
-        if let Some(c) = &st.cp_hash
-            && c != cp_hash
-        {
+        let hash_matches = match st.hash_restriction {
+            Some(PolicyHashRestriction::CpHash(expected)) => expected == *cp_hash,
+            Some(PolicyHashRestriction::NameHash(expected)) => expected == command_names_hash(),
+            None => true,
+        };
+        if !hash_matches {
             return Err(Rc::POLICY_FAIL.in_session(n));
         }
         if let Some(c) = st.command_code

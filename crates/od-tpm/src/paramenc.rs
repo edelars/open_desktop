@@ -134,6 +134,8 @@ pub(crate) fn first_parameter_is_sized(code: u32) -> bool {
             | cc::POLICY_PCR
             | cc::POLICY_SECRET
             | cc::POLICY_CP_HASH
+            | cc::POLICY_NAME_HASH
+            | cc::POLICY_AUTHORIZE
     )
 }
 
