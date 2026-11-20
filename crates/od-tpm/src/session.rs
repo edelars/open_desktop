@@ -12,7 +12,8 @@
 //!   (Part 1, clause 17.6.10, Equation 20);
 //! - `authHash` SHA-256; `symmetric` = `TPM_ALG_NULL`, AES-128-CFB or XOR(SHA-256) (slice C3,
 //!   `paramenc.rs`: the attributes `decrypt`/`encrypt` need a symmetric algorithm, otherwise
-//!   `TPM_RC_SYMMETRIC`); no audit.
+//!   `TPM_RC_SYMMETRIC`).
+//! - An additional HMAC session may audit successful commands (Part 1 v185, clause 17).
 //!
 //! Authorization HMAC (clause 17.6.5, Equation 17): `authHMAC = HMAC(sessionKey || authValue,
 //! pHash || nonceNewer || nonceOlder || sessionAttributes)` with `pHash` = cpHash for a command
@@ -44,6 +45,7 @@
 //! 17.6.5 says so for authorization computations); that a session handle `0x02nnnnnn` and
 //! `0x03nnnnnn` name the same slot when flushing ("the upper byte is ignored", clause 28.4).
 
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, se, session_attr};
@@ -106,17 +108,22 @@ pub(crate) struct Session {
     pub policy: PolicyState,
     /// `symmetric` of `TPM2_StartAuthSession`: how the session encrypts parameters.
     pub symmetric: SessionSym,
+    /// Set on the first successful command audited by this session.
+    pub audit_digest: Option<[u8; DIGEST]>,
 }
 
 /// Session slots; the handle of slot `n` is `0x02000000 + n` (`HMAC_SESSION_FIRST + n`).
 pub(crate) struct Sessions {
     slots: Vec<Option<Session>>,
+    /// The slot remains reserved while this session is context-saved.
+    pub exclusive_audit: Option<usize>,
 }
 
 impl Default for Sessions {
     fn default() -> Self {
         Sessions {
             slots: (0..MAX_SESSIONS).map(|_| None).collect(),
+            exclusive_audit: None,
         }
     }
 }
@@ -131,6 +138,7 @@ impl Sessions {
         for s in &mut self.slots {
             *s = None;
         }
+        self.exclusive_audit = None;
     }
 
     /// Slot of a loaded session named by a handle: type `0x02` names an HMAC session, `0x03` a
@@ -155,8 +163,45 @@ impl Sessions {
     }
 
     pub(crate) fn release(&mut self, slot: usize) {
+        self.park(slot);
+        if self.exclusive_audit == Some(slot) {
+            self.exclusive_audit = None;
+        }
+    }
+    /// Temporarily removes a session whose slot ContextSave will reserve.
+    pub(crate) fn park(&mut self, slot: usize) {
         if let Some(s) = self.slots.get_mut(slot) {
             *s = None;
+        }
+    }
+    pub(crate) fn extend_audit(
+        &mut self,
+        slot: usize,
+        reset: bool,
+        cp_hash: &[u8; DIGEST],
+        rp_hash: &[u8; DIGEST],
+    ) {
+        let session = self
+            .get_mut(slot)
+            .expect("validated audit session stays loaded");
+        let first = session.audit_digest.is_none();
+        let base = if reset {
+            [0; DIGEST]
+        } else {
+            session.audit_digest.unwrap_or([0; DIGEST])
+        };
+        let mut hash = Sha256::new();
+        hash.update(base);
+        hash.update(cp_hash);
+        hash.update(rp_hash);
+        session.audit_digest = Some(hash.finalize().into());
+        if first {
+            session.bound = None;
+        }
+        if first || reset {
+            self.exclusive_audit = Some(slot);
+        } else if self.exclusive_audit != Some(slot) {
+            self.exclusive_audit = None;
         }
     }
 
@@ -257,11 +302,8 @@ pub(crate) fn check_hmac_session_attributes(attributes: u8, n: usize) -> Result<
     if attributes & session_attr::RESERVED != 0 {
         return Err(Rc::ATTRIBUTES.in_session(num));
     }
-    // `auditExclusive`/`auditReset` are only legal together with `audit`; audit itself needs the
-    // session digest, which slice A does not keep.
-    if attributes
-        & (session_attr::AUDIT | session_attr::AUDIT_EXCLUSIVE | session_attr::AUDIT_RESET)
-        != 0
+    if attributes & session_attr::AUDIT == 0
+        && attributes & (session_attr::AUDIT_EXCLUSIVE | session_attr::AUDIT_RESET) != 0
     {
         return Err(Rc::ATTRIBUTES.in_session(num));
     }
@@ -340,6 +382,7 @@ impl Tpm {
                     kind,
                     policy: PolicyState::new(),
                     symmetric,
+                    audit_digest: None,
                 },
                 &reserved,
             )
@@ -370,10 +413,11 @@ impl Tpm {
                 }
                 if self.sessions.is_loaded(slot) {
                     self.sessions.release(slot);
-                } else if !self.context.forget_saved_session(slot) {
-                    // Neither loaded nor saved (a saved session is flushed too: Part 1, clause
-                    // 28.6).
-                    return Err(Rc::HANDLE.in_param(1));
+                } else {
+                    if !self.context.forget_saved_session(slot) {
+                        return Err(Rc::HANDLE.in_param(1));
+                    }
+                    self.sessions.release(slot);
                 }
             }
             handle::HT_TRANSIENT => match self.seq_slot(h, 0) {

@@ -70,7 +70,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle as h};
-use crate::dispatch::Invocation;
+use crate::dispatch::{CommandHandles, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, Writer, limits};
 use crate::response::{Output, Rc};
@@ -351,7 +351,7 @@ impl Tpm {
     }
 
     /// The handle checks of the NV commands, before authorization (see the module comment).
-    pub(crate) fn check_nv_handles(&self, code: u32, handles: &[u32; 2]) -> Result<(), Rc> {
+    pub(crate) fn check_nv_handles(&self, code: u32, handles: &CommandHandles) -> Result<(), Rc> {
         match code {
             crate::codes::cc::NV_DEFINE_SPACE => {
                 provision_handle(handles[0])?;
@@ -388,7 +388,11 @@ impl Tpm {
     }
 
     /// Validates `authHandle` (`TPMI_RH_NV_AUTH`), `nvIndex` and the role the attributes allow.
-    fn check_nv_authorization(&self, handles: &[u32; 2], access: Access) -> Result<&NvIndex, Rc> {
+    fn check_nv_authorization(
+        &self,
+        handles: &CommandHandles,
+        access: Access,
+    ) -> Result<&NvIndex, Rc> {
         let auth = handles[0];
         if auth != h::RH_PLATFORM && auth != h::RH_OWNER && !is_nv_handle(auth) {
             return Err(Rc::VALUE.in_handle(1));

@@ -60,7 +60,7 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{handle, object_attr};
-use crate::crypto::{hmac_sha256, hmac_sha256_verify, kdfa_sha256};
+use crate::crypto::{DIGEST, hmac_sha256, hmac_sha256_verify, kdfa_sha256};
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, TpmtPublic, Writer, limits};
@@ -357,6 +357,10 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
     }
     w.u8(u8::from(p.auth_value_needed) | (u8::from(p.password_needed) << 1));
     w.u8(s.symmetric.to_octet());
+    if let Some(digest) = s.audit_digest {
+        w.u8(1); // Version of the optional audit tail.
+        w.bytes(&digest);
+    }
     Zeroizing::new(w.buf)
 }
 
@@ -406,6 +410,14 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
     policy.auth_value_needed = flags & 1 != 0;
     policy.password_needed = flags & 2 != 0;
     let symmetric = SessionSym::from_octet(r.u8()?).ok_or(Rc::VALUE)?;
+    let audit_digest = if r.remaining() == 0 {
+        None
+    } else {
+        if r.u8()? != 1 || kind != SessionKind::Hmac || bound.is_some() {
+            return Err(Rc::VALUE);
+        }
+        Some(r.bytes(DIGEST)?.try_into().map_err(|_| Rc::SIZE)?)
+    };
     r.finish()?;
     Ok(Session {
         nonce_tpm,
@@ -414,6 +426,7 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         kind,
         policy,
         symmetric,
+        audit_digest,
     })
 }
 
@@ -465,7 +478,7 @@ impl Tpm {
                 let body = encode_session(self.sessions.get(slot).ok_or(Rc::HANDLE.in_handle(1))?);
                 self.context.session_counter = self.context.session_counter.wrapping_add(1);
                 let sequence = self.context.session_counter;
-                self.sessions.release(slot);
+                self.sessions.park(slot);
                 self.context.saved_sessions.push((slot, sequence));
                 (h, handle::RH_NULL, sequence, body, false)
             }

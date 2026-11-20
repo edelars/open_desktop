@@ -281,6 +281,39 @@ impl Tpm {
         );
         self.attest_response(inv.handles[1], signing.map(|(_, s)| s), attest)
     }
+    /// `TPM2_GetSessionAuditDigest` (Part 3 v185, clause 18.5). A command that
+    /// audits its own retrieval extends the digest only after this response is built.
+    pub(crate) fn cmd_get_session_audit_digest(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let qualifying = p.tpm2b(MAX_DATA)?;
+        p.set_param(2);
+        let in_scheme = Scheme::unmarshal(p, &[alg::RSASSA, alg::ECDSA], Rc::SCHEME)?;
+        p.finish()?;
+        let slot = self
+            .sessions
+            .slot_of(inv.handles[2])
+            .ok_or_else(|| Rc::reference_handle(2))?;
+        let digest = self
+            .sessions
+            .get(slot)
+            .and_then(|session| session.audit_digest)
+            .ok_or(Rc::TYPE.in_handle(3))?;
+        let signing = self.attest_signer(inv.handles[1], in_scheme, 2)?;
+        let mut attested = Writer::new();
+        attested.u8(u8::from(self.sessions.exclusive_audit == Some(slot)));
+        attested.tpm2b(&digest);
+        let attest = self.attest_bytes(
+            signing.map(|(object, _)| object),
+            st::ATTEST_SESSION_AUDIT,
+            qualifying,
+            &attested.buf,
+        );
+        self.attest_response(inv.handles[1], signing.map(|(_, scheme)| scheme), attest)
+    }
 
     /// `TPM2_GetTime` (Part 3, clause 18.7): `privacyAdminHandle` (endorsement, checked by the
     /// dispatcher), `signHandle`, `qualifyingData`, `inScheme`.

@@ -16,6 +16,7 @@ pub mod cc {
     /// checked against the v184 text 2026-11-07).
     pub const CERTIFY: u32 = 0x0000_0148;
     pub const GET_TIME: u32 = 0x0000_014C;
+    pub const GET_SESSION_AUDIT_DIGEST: u32 = 0x0000_014D;
     pub const NV_INCREMENT: u32 = 0x0000_0134;
     pub const NV_SET_BITS: u32 = 0x0000_0135;
     pub const NV_EXTEND: u32 = 0x0000_0136;
@@ -88,7 +89,8 @@ pub mod st {
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
     pub const HASHCHECK: u16 = 0x8024;
-    /// Attestation structure tags (Table 23): `TPM2_Certify`, `TPM2_Quote` and `TPM2_GetTime`.
+    /// Attestation structure tags (Table 23).
+    pub const ATTEST_SESSION_AUDIT: u16 = 0x8016;
     pub const ATTEST_CERTIFY: u16 = 0x8017;
     pub const ATTEST_QUOTE: u16 = 0x8018;
     /// `TPM2_GetTime` (Table 23).

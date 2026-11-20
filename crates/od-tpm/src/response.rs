@@ -24,6 +24,7 @@ impl Rc {
     pub const PCR_CHANGED: Rc = Rc(RC_VER1 + 0x028);
     pub const CPHASH: Rc = Rc(RC_VER1 + 0x051);
     pub const DISABLED: Rc = Rc(RC_VER1 + 0x020);
+    pub const EXCLUSIVE: Rc = Rc(RC_VER1 + 0x021);
     pub const AUTH_TYPE: Rc = Rc(RC_VER1 + 0x024);
     pub const AUTH_MISSING: Rc = Rc(RC_VER1 + 0x025);
     pub const AUTH_UNAVAILABLE: Rc = Rc(RC_VER1 + 0x02F);

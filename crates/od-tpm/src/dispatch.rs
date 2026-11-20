@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of Part 3 v184 (checked
 /// 2026-11-07).
-pub(crate) static COMMANDS: [CommandSpec; 63] = [
+pub(crate) static COMMANDS: [CommandSpec; 64] = [
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
     spec(cc::NV_UNDEFINE_SPACE, 2, 1, false, true, false),
@@ -135,6 +135,7 @@ pub(crate) static COMMANDS: [CommandSpec; 63] = [
     spec(cc::STIR_RANDOM, 0, 0, false, true, false),
     spec(cc::CERTIFY, 2, 2, false, false, false),
     spec(cc::GET_TIME, 2, 2, false, false, false),
+    spec(cc::GET_SESSION_AUDIT_DIGEST, 3, 2, false, false, false),
     spec(cc::NV_READ, 2, 1, false, false, false),
     spec(cc::NV_READ_LOCK, 2, 1, false, true, false),
     spec(cc::POLICY_SECRET, 2, 1, false, false, false),
@@ -176,9 +177,11 @@ pub(crate) static COMMANDS: [CommandSpec; 63] = [
     spec(cc::TEST_PARMS, 0, 0, false, false, false),
 ];
 
+pub(crate) type CommandHandles = [u32; 3];
+
 /// What a handler needs besides the parameter reader.
 pub(crate) struct Invocation {
-    pub handles: [u32; 2],
+    pub handles: CommandHandles,
 }
 
 fn lookup(code: u32) -> Option<&'static CommandSpec> {
@@ -207,7 +210,7 @@ fn is_pcr_position(code: u32, i: usize) -> bool {
 fn handle_auth(
     tpm: &Tpm,
     code: u32,
-    handles: &[u32; 2],
+    handles: &CommandHandles,
     i: usize,
     admin: bool,
     policy: bool,
@@ -255,7 +258,7 @@ fn admin_role(code: u32, i: usize) -> bool {
 
 /// The `authPolicy` of the entity behind handle number `i`: that of an object, the Empty Buffer
 /// for everything else (hierarchies have no `authPolicy` without `TPM2_SetPrimaryPolicy`).
-fn handle_auth_policy(tpm: &Tpm, handles: &[u32; 2], i: usize) -> Vec<u8> {
+fn handle_auth_policy(tpm: &Tpm, handles: &CommandHandles, i: usize) -> Vec<u8> {
     tpm.object(handles[i])
         .map(|o| o.public.auth_policy.clone())
         .unwrap_or_default()
@@ -263,7 +266,7 @@ fn handle_auth_policy(tpm: &Tpm, handles: &[u32; 2], i: usize) -> Vec<u8> {
 
 /// DA class of the authorization of handle number `i` of the command (`da.rs`): a PCR and
 /// `TPM_RH_NULL` are exempt.
-fn da_class(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> DaClass {
+fn da_class(tpm: &Tpm, code: u32, handles: &CommandHandles, i: usize) -> DaClass {
     let h = handles[i];
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return DaClass::Exempt;
@@ -273,7 +276,7 @@ fn da_class(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> DaClass {
 
 /// The authorization value for a response HMAC, read after the command ran: the current value
 /// regardless of the enables, the Empty Buffer for an entity that no longer exists.
-fn response_auth(tpm: &Tpm, code: u32, handles: &[u32; 2], i: usize) -> AuthValue {
+fn response_auth(tpm: &Tpm, code: u32, handles: &CommandHandles, i: usize) -> AuthValue {
     let h = handles[i];
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return AuthValue::empty();
@@ -306,7 +309,7 @@ pub(crate) fn handle_name(tpm: &Tpm, h: u32) -> Vec<u8> {
 fn command_parameter_hash(
     tpm: &Tpm,
     spec: &CommandSpec,
-    handles: &[u32; 2],
+    handles: &CommandHandles,
     parameters: &[u8],
 ) -> [u8; DIGEST] {
     let mut h = Sha256::new();
@@ -343,9 +346,10 @@ fn classify_sessions(
     tpm: &Tpm,
     spec: &CommandSpec,
     sessions: &[TpmsAuthCommand],
-) -> Result<Vec<SessionUse>, Rc> {
+) -> Result<(Vec<SessionUse>, Option<usize>), Rc> {
     let mut uses: Vec<SessionUse> = Vec::with_capacity(sessions.len());
     let (mut decrypting, mut encrypting) = (false, false);
+    let mut audit_index = None;
     for (i, s) in sessions.iter().enumerate() {
         let n = i + 1;
         let additional = i >= usize::from(spec.auth);
@@ -386,8 +390,22 @@ fn classify_sessions(
         // command a sized first parameter (response parameter), and only one session of the
         // command may decrypt and one encrypt.
         let num = n as u8;
+        let auditing = s.attributes & session_attr::AUDIT != 0;
+        if auditing {
+            if !additional || session.kind != SessionKind::Hmac || audit_index.is_some() {
+                return Err(Rc::ATTRIBUTES.in_session(num));
+            }
+            if s.attributes & session_attr::AUDIT_EXCLUSIVE != 0
+                && tpm.sessions.exclusive_audit != Some(slot)
+            {
+                return Err(Rc::EXCLUSIVE);
+            }
+            audit_index = Some(i);
+        }
         if additional
-            && (s.attributes & (session_attr::DECRYPT | session_attr::ENCRYPT) == 0
+            && (s.attributes
+                & (session_attr::AUDIT | session_attr::DECRYPT | session_attr::ENCRYPT)
+                == 0
                 || session.kind == SessionKind::Trial)
         {
             return Err(Rc::ATTRIBUTES.in_session(num));
@@ -414,7 +432,7 @@ fn classify_sessions(
             used_auth: true,
         });
     }
-    Ok(uses)
+    Ok((uses, audit_index))
 }
 
 fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
@@ -438,7 +456,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     }
 
     let mut r = Reader::new(&command[HEADER_SIZE..]);
-    let mut handles = [0u32; 2];
+    let mut handles = CommandHandles::default();
     for slot in handles.iter_mut().take(usize::from(spec.handles)) {
         *slot = r.u32()?;
     }
@@ -446,12 +464,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
 
     // The command tables for Startup and context management specify TPM_ST_NO_SESSIONS.
     let with_sessions = header.tag == st::SESSIONS;
-    if with_sessions
-        && matches!(
-            spec.code,
-            cc::STARTUP | cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
-        )
-    {
+    let sessions_allowed = !matches!(
+        spec.code,
+        cc::STARTUP | cc::FLUSH_CONTEXT | cc::CONTEXT_SAVE | cc::CONTEXT_LOAD
+    );
+    if with_sessions && !sessions_allowed {
         return Err(Rc::AUTH_CONTEXT);
     }
 
@@ -465,7 +482,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);
     }
-    let mut uses = classify_sessions(tpm, spec, &sessions)?;
+    let (mut uses, audit_index) = classify_sessions(tpm, spec, &sessions)?;
     let mut binding_slots = [None; 2];
     for (s, usage) in sessions.iter().zip(&uses).skip(1) {
         let SessionUse::Hmac { slot, .. } = *usage else {
@@ -710,6 +727,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::QUOTE => tpm.cmd_quote(&inv, &mut p)?,
         cc::CERTIFY => tpm.cmd_certify(&inv, &mut p)?,
         cc::GET_TIME => tpm.cmd_get_time(&inv, &mut p)?,
+        cc::GET_SESSION_AUDIT_DIGEST => tpm.cmd_get_session_audit_digest(&inv, &mut p)?,
         cc::NV_INCREMENT => tpm.cmd_nv_increment(&inv, &mut p)?,
         cc::NV_EXTEND => tpm.cmd_nv_extend(&inv, &mut p)?,
         cc::NV_SET_BITS => tpm.cmd_nv_set_bits(&inv, &mut p)?,
@@ -748,12 +766,30 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
 
     // Acknowledgements roll the nonce and release sessions that do not continue.
     let rp_hash = response_parameter_hash(spec.code, &out.params);
+    if let Some(index) = audit_index {
+        let SessionUse::Hmac { slot, .. } = uses[index] else {
+            unreachable!("the dispatcher accepts only HMAC audit sessions");
+        };
+        tpm.sessions.extend_audit(
+            slot,
+            sessions[index].attributes & session_attr::AUDIT_RESET != 0,
+            &cp_hash.expect("an audit session computes cpHash"),
+            &rp_hash,
+        );
+    } else if sessions_allowed {
+        tpm.sessions.exclusive_audit = None;
+    }
     let mut acks: Vec<SessionAck> = Vec::with_capacity(sessions.len());
     for (i, s) in sessions.iter().enumerate() {
         match &uses[i] {
             SessionUse::Password => acks.push(SessionAck::password(s.attributes)),
             SessionUse::Hmac { slot, used_auth } => {
                 let nonce = core::mem::take(&mut new_nonces[i]);
+                let mut attributes =
+                    s.attributes & !(session_attr::AUDIT_EXCLUSIVE | session_attr::AUDIT_RESET);
+                if audit_index == Some(i) && tpm.sessions.exclusive_audit == Some(*slot) {
+                    attributes |= session_attr::AUDIT_EXCLUSIVE;
+                }
                 let hmac = match tpm.sessions.get(*slot) {
                     // An empty command HMAC is answered with an empty one (clause 17.6.15).
                     Some(session) if !s.hmac.is_empty() => {
@@ -763,7 +799,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                             key.extend_from_slice(now.as_slice());
                         }
                         let tag =
-                            response_hmac(&key, &rp_hash, &nonce, &s.nonce, s.attributes).to_vec();
+                            response_hmac(&key, &rp_hash, &nonce, &s.nonce, attributes).to_vec();
                         zeroize::Zeroize::zeroize(&mut key);
                         tag
                     }
@@ -781,7 +817,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 }
                 acks.push(SessionAck {
                     nonce,
-                    attributes: s.attributes,
+                    attributes,
                     hmac,
                 });
             }
@@ -791,7 +827,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
 }
 
 /// Handle validity (type, loaded) and access control before authorization (Part 1, clause 9.2).
-fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<(), Rc> {
+fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Result<(), Rc> {
     match spec.code {
         cc::PCR_EXTEND | cc::PCR_EVENT => {
             resolve_pcr_handle(handles[0], true, 1)?;
@@ -851,12 +887,20 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &[u32; 2]) -> Result<()
             tpm.check_object_handle(handles[0], 0, false)?;
             check_sign_handle(tpm, handles[1], 1)?;
         }
-        cc::GET_TIME => {
+        cc::GET_TIME | cc::GET_SESSION_AUDIT_DIGEST => {
             // `TPMI_RH_ENDORSEMENT` (Part 3, Table 99): `TPM_RH_ENDORSEMENT` only.
             if handles[0] != handle::RH_ENDORSEMENT {
                 return Err(Rc::VALUE.in_handle(1));
             }
             check_sign_handle(tpm, handles[1], 1)?;
+            if spec.code == cc::GET_SESSION_AUDIT_DIGEST {
+                if handle::handle_type(handles[2]) != handle::HT_HMAC_SESSION {
+                    return Err(Rc::VALUE.in_handle(3));
+                }
+                tpm.sessions
+                    .slot_of(handles[2])
+                    .ok_or_else(|| Rc::reference_handle(2))?;
+            }
         }
         cc::POLICY_RESTART
         | cc::POLICY_PCR
@@ -908,7 +952,7 @@ fn check_sign_handle(tpm: &Tpm, h: u32, idx: usize) -> Result<(), Rc> {
 /// hierarchy authorization handle (binding to an object is not implemented).
 /// NOT VERIFIED against TPM 2.0 Library v185/v184: the code `TPM_RC_VALUE` for an object handle
 /// that the TPM could use but this implementation does not.
-fn check_start_auth_session_handles(tpm: &Tpm, handles: &[u32; 2]) -> Result<(), Rc> {
+fn check_start_auth_session_handles(tpm: &Tpm, handles: &CommandHandles) -> Result<(), Rc> {
     let key = handles[0];
     if key != handle::RH_NULL {
         return Err(match handle::handle_type(key) {
@@ -947,6 +991,6 @@ mod tests {
         for code in [0x12Bu32, 0x12C, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 63);
+        assert_eq!(COMMANDS.len(), 64);
     }
 }
