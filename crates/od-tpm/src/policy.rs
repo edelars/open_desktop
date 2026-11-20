@@ -47,8 +47,7 @@
 //! order of the digest comparison and the `pcrUpdateCounter` check in `TPM2_PolicyPCR`
 //! (the text gives the comparison first); `TPM_RC_AUTH_FAIL`/`TPM_RC_BAD_AUTH` for an empty HMAC
 //! of a session that needs the authValue; the response HMAC of a policy session with
-//! `isPasswordNeeded` (keyed with `sessionKey`); `TPM_RC_AUTH_UNAVAILABLE` for a policy session
-//! on an NV index (the index attributes `POLICYREAD`/`POLICYWRITE` are refused at definition).
+//! `isPasswordNeeded` (keyed with `sessionKey`).
 
 use sha2::{Digest, Sha256};
 

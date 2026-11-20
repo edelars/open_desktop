@@ -337,7 +337,7 @@ fn nv_increment_checks_handles_authorization_locks_and_parameters() {
     );
     err(
         &nv_cmd(&mut t, cc::NV_INCREMENT, idx, idx, b"", &[]),
-        Rc::AUTH_TYPE,
+        Rc::AUTH_UNAVAILABLE,
     );
     // A trailing octet.
     err(

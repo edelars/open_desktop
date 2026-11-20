@@ -13,9 +13,9 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, LOCKOUT, NV0, define, define_raw, hc, hmac_command, nv_public, nv_read_public,
-    nv_write, pw_cmd, run_hmac, set_auth, shutdown, split_response, start_hmac, start_session,
-    startup,
+    Hc, Hs, LOCKOUT, NV0, define, define_raw, hc, hierarchy_control, hmac_command, nv_public,
+    nv_read, nv_read_data, nv_read_public, nv_write, pw_cmd, run_hmac, set_auth, shutdown,
+    split_response, start_hmac, start_session, startup,
 };
 use super::tests_obj::*;
 use super::*;
@@ -1543,6 +1543,106 @@ fn policy_nv_checks_typed_values_and_does_not_recheck_nv_at_authorization() {
 }
 
 #[test]
+fn nv_policy_access_selects_the_session_mode_and_survives_snapshot_restore() {
+    let mut t = started();
+    let attrs = nv_attr::POLICYREAD | nv_attr::POLICYWRITE;
+    let secret = b"index-password";
+    for (index, flags, policy) in [
+        (NV0, attrs, &[0; 32][..]),
+        (NV0 + 1, attrs, &[][..]),
+        (
+            NV0 + 2,
+            attrs | nv_attr::AUTHREAD | nv_attr::AUTHWRITE,
+            &[0; 32][..],
+        ),
+    ] {
+        ok(&define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            secret,
+            &nv_public(index, alg::SHA256, flags, policy, 3),
+        ));
+    }
+    let mut real = policy_session(&mut t, se::POLICY);
+    let write = |index| {
+        hc(
+            cc::NV_WRITE,
+            &[index, index],
+            cat(&[&tpm2b(b"abc"), &u16b(0)]),
+            (index, b""),
+        )
+    };
+    let read = |index| {
+        hc(
+            cc::NV_READ,
+            &[index, index],
+            cat(&[&u16b(3), &u16b(0)]),
+            (index, secret),
+        )
+    };
+    err(
+        &nv_write(&mut t, NV0, NV0, secret, b"abc", 0),
+        Rc::AUTH_UNAVAILABLE,
+    );
+    err(
+        &use_session(&mut t, &mut real, &write(NV0 + 1), 0, true, false),
+        Rc::POLICY_FAIL.in_session(1),
+    );
+    ok(&use_session(&mut t, &mut real, &write(NV0), 0, true, false));
+    err(
+        &nv_read(&mut t, NV0, NV0, secret, 3, 0),
+        Rc::AUTH_UNAVAILABLE,
+    );
+    assert_eq!(t.persistent.da.failed_tries, 0);
+    assert_eq!(
+        nv_read_data(&use_session(&mut t, &mut real, &read(NV0), 0, true, false)),
+        b"abc"
+    );
+
+    let both = NV0 + 2;
+    ok(&nv_write(&mut t, both, both, secret, b"abc", 0));
+    let mut hmac = start_hmac(&mut t, NULL, b"", &[0x51; 16]);
+    let mut both_read = read(both);
+    let (_, name_both) = nv_read_public(&mut t, both);
+    both_read.names = vec![name_both.clone(), name_both];
+    assert_eq!(
+        nv_read_data(&run_hmac(&mut t, &mut hmac, &both_read)),
+        b"abc"
+    );
+    assert_eq!(
+        nv_read_data(&use_session(&mut t, &mut real, &both_read, 0, true, false)),
+        b"abc"
+    );
+
+    let (_, name) = nv_read_public(&mut t, NV0);
+    shutdown(&mut t, su::CLEAR);
+    let mut restored = Tpm::restore(&t.persistent_snapshot(), &[7; 48]).unwrap();
+    startup(&mut restored, su::CLEAR);
+    assert_eq!(nv_read_public(&mut restored, NV0).1, name);
+    let mut real = policy_session(&mut restored, se::POLICY);
+    ok(&use_session(
+        &mut restored,
+        &mut real,
+        &write(NV0),
+        0,
+        true,
+        false,
+    ));
+    assert_eq!(
+        nv_read_data(&use_session(
+            &mut restored,
+            &mut real,
+            &read(NV0),
+            0,
+            true,
+            false
+        )),
+        b"abc"
+    );
+}
+
+#[test]
 fn policy_restart_resets_everything_but_the_nonce() {
     let mut t = started();
     let mut s = policy_session(&mut t, se::POLICY);
@@ -2111,7 +2211,7 @@ fn policy_secret_requires_index_read_authorization() {
     let parameters = secret_params(&[], &[], b"ref", 0);
     err(
         &secret_pw(&mut t, denied, b"nv-secret", &target, &parameters),
-        Rc::AUTH_TYPE,
+        Rc::AUTH_UNAVAILABLE,
     );
     assert_eq!(digest(&mut t, &target), [0; 32]);
     ok(&secret_pw(
@@ -2122,6 +2222,75 @@ fn policy_secret_requires_index_read_authorization() {
         &parameters,
     ));
     assert_ne!(digest(&mut t, &target), [0; 32]);
+}
+
+#[test]
+fn nv_policy_secret_requires_authread_and_proof_even_on_an_unwritten_index() {
+    let mut t = started();
+    let target = policy_session(&mut t, se::POLICY);
+    let mut authorizer = policy_session(&mut t, se::POLICY);
+    let secret = b"nv-secret";
+    let policy_only = NV0;
+    let auth_read = NV0 + 1;
+    let no_proof = NV0 + 2;
+    let with_auth = hex(V_AUTH_VALUE);
+    for (index, read, policy) in [
+        (policy_only, nv_attr::POLICYREAD, with_auth.as_slice()),
+        (auth_read, nv_attr::AUTHREAD, with_auth.as_slice()),
+        (no_proof, nv_attr::AUTHREAD, &[0; 32]),
+    ] {
+        ok(&define_raw(
+            &mut t,
+            OWNER,
+            b"",
+            secret,
+            &nv_public(index, alg::SHA256, nv_attr::OWNERWRITE | read, policy, 1),
+        ));
+    }
+    let parameters = secret_params(&[], &[], b"index reference", 0);
+    let mut command = hc(
+        cc::POLICY_SECRET,
+        &[no_proof, target.handle],
+        parameters,
+        (no_proof, secret),
+    );
+    err(
+        &use_session(&mut t, &mut authorizer, &command, 0, true, false),
+        Rc::MODE.in_session(1),
+    );
+    ok(&pol(&mut t, cc::POLICY_AUTH_VALUE, &authorizer, &[]));
+    command.handles[0] = policy_only;
+    err(
+        &use_session(&mut t, &mut authorizer, &command, 0, false, false),
+        Rc::AUTH_UNAVAILABLE,
+    );
+    command.handles[0] = auth_read;
+    command.entity.0 = auth_read;
+    let (_, name) = nv_read_public(&mut t, auth_read);
+    command.names = vec![name.clone(), u32b(target.handle).to_vec()];
+    err(
+        &use_session(&mut t, &mut authorizer, &command, 0, false, true),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    ok(&use_session(
+        &mut t,
+        &mut authorizer,
+        &command,
+        0,
+        false,
+        false,
+    ));
+    let update = h256(&[&[0; 32], &u32b(0x151), &name]);
+    assert_eq!(
+        digest(&mut t, &target),
+        h256(&[&update, b"index reference"])
+    );
+
+    ok(&hierarchy_control(&mut t, PLATFORM, b"", OWNER, 0));
+    err(
+        &secret_pw(&mut t, auth_read, secret, &target, &command.params),
+        Rc::HANDLE.in_handle(1),
+    );
 }
 
 fn unmarshal_name(t: &mut Tpm, h: u32) -> Vec<u8> {

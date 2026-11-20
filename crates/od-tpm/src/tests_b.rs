@@ -1691,8 +1691,6 @@ fn nv_define_space_errors() {
         OWNER_RW | 0x80,                 // TPM_NT_PIN_FAIL
         OWNER_RW | 0x90,                 // TPM_NT_PIN_PASS
         OWNER_RW | 0x30,                 // reserved TPM_NT
-        OWNER_RW | attr::POLICYREAD,
-        OWNER_RW | attr::POLICYWRITE,
         OWNER_RW | attr::POLICY_DELETE,
         OWNER_RW | attr::GLOBALLOCK,
         OWNER_RW | attr::ORDERLY,
@@ -1928,7 +1926,10 @@ fn nv_read_write_errors() {
     );
     err(&nv_read(&mut t, PLATFORM, idx, b"", 1, 0), Rc::AUTH_TYPE);
     // The index as its own authorization needs AUTHWRITE/AUTHREAD.
-    err(&nv_write(&mut t, idx, idx, b"", &[1], 0), Rc::AUTH_TYPE);
+    err(
+        &nv_write(&mut t, idx, idx, b"", &[1], 0),
+        Rc::AUTH_UNAVAILABLE,
+    );
     // Another index as authorization handle: TPM_RC_NV_AUTHORIZATION.
     ok(&define(
         &mut t,

@@ -49,7 +49,7 @@ use crate::da::{DaClass, DaProtection};
 use crate::hash::{AuthValue, password_matches};
 use crate::hierarchy::is_authorization_handle;
 use crate::marshal::{Reader, TpmsAuthCommand, limits};
-use crate::nv::attr as nv_attr;
+use crate::nv::is_nv_handle;
 use crate::object::is_object_hierarchy;
 use crate::paramenc::{
     SessionSym, apply as apply_param_encryption, first_parameter_is_sized,
@@ -251,16 +251,7 @@ fn handle_auth(
             }
             tpm.permanent_auth(h).ok_or(Rc::VALUE.in_handle(n))
         }
-        // A policy session on an NV index: the indices have no policy access (`POLICYREAD` and
-        // `POLICYWRITE` are refused at definition, Part 3, clause 5.6, step 7).
-        handle::HT_NV_INDEX if policy => Err(Rc::AUTH_UNAVAILABLE),
-        handle::HT_NV_INDEX => {
-            let index = tpm.persistent.nv.get(h).ok_or(Rc::HANDLE.in_handle(n))?;
-            if code == cc::POLICY_SECRET && index.attributes & nv_attr::AUTHREAD == 0 {
-                return Err(Rc::AUTH_TYPE);
-            }
-            Ok(index.auth.clone())
-        }
+        handle::HT_NV_INDEX => tpm.nv_index_auth(code, h, n, policy),
         _ => {
             let slot = tpm.seq_slot(h, i)?;
             // `AuthValue` is a fixed buffer wiped on drop: no un-wiped copy in a plain `Vec`.
@@ -278,10 +269,13 @@ fn admin_role(code: u32, i: usize) -> bool {
         )
 }
 
-/// The `authPolicy` installed on an object or hierarchy, or the empty policy.
+/// The `authPolicy` installed on the entity, or the empty policy.
 fn handle_auth_policy(tpm: &Tpm, handle: u32) -> &[u8] {
     if let Some(policy) = tpm.permanent_auth_policy(handle) {
         return policy;
+    }
+    if let Some(index) = tpm.persistent.nv.get(handle) {
+        return &index.auth_policy;
     }
     tpm.object(handle)
         .map_or(&[], |object| &object.public.auth_policy)
@@ -1048,6 +1042,9 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
             tpm.check_policy_session(handles[0], 0)?;
         }
         cc::POLICY_SECRET => {
+            if is_nv_handle(handles[0]) {
+                tpm.nv_index_at(handles[0], 1)?;
+            }
             tpm.check_policy_session(handles[1], 1)?;
         }
         cc::DICTIONARY_ATTACK_LOCK_RESET | cc::DICTIONARY_ATTACK_PARAMETERS => {

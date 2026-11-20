@@ -219,8 +219,8 @@ nonce. Формат persistent snapshot v4 сохраняется.
 `TPM2_PolicyNV` (`0x149`) принимает Owner, Platform или тот же индекс
 для авторизации чтения и отдельный handle целевой policy-сессии.
 Действуют `OWNERREAD`, `PPREAD` и `AUTHREAD`. Иерархии могут
-авторизовать через свою политику. Индексы с `POLICYREAD`
-пока отклоняются при определении.
+авторизовать через свою политику. Собственная policy-сессия индекса
+требует `POLICYREAD`. [Политики NV-индексов](#политики-nv-индексов).
 
 Целевая сессия сравнивает октеты обычного индекса, счётчика, битового
 поля или extend-дайджеста по смещению. Для всех типов учитывается
@@ -238,6 +238,32 @@ nonce. Формат persistent snapshot v4 сохраняется.
 мешает использовать уже сформированную политику. Первый параметр
 допускает шифрование, а контекст сессии хранит итоговый дайджест.
 [TPM Library v185 Part 3 §§23.9 и 31.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=230).
+
+### Политики NV-индексов
+
+`NV_DefineSpace` принимает `POLICYREAD` и `POLICYWRITE` вместе
+с любыми разрешёнными режимами авторизации чтения и записи. Достаточно
+одного разрешённого режима в каждом направлении. Пустой `authPolicy`
+допустим при определении, но не совпадает с дайджестом сессии. Явный
+SHA-256 из 32 нулей соответствует исходному состоянию policy-сессии.
+Атрибуты и дайджест хранятся в существующих полях snapshot v4.
+
+Для индекса, авторизующего доступ к собственным данным, пароль и HMAC
+требуют `AUTHREAD` или `AUTHWRITE`. Policy-сессия требует
+`POLICYREAD` или `POLICYWRITE`, даже когда политика включает
+`PolicyAuthValue` или `PolicyPassword`. Отсутствующий режим возвращает
+`TPM_RC_AUTH_UNAVAILABLE` после применимых проверок DA. Owner и
+Platform используют свои флаги доступа. Правило применяется к
+чтению и записи, блокировкам, счётчику, битовому полю и extend,
+а также к читающей авторизации в `PolicyNV` и `NV_Certify`.
+
+`PolicySecret` с поддерживаемым NV-индексом требует `AUTHREAD` и
+доказательства знания `authValue`. Policy-сессия доказывает знание
+через флаг `PolicyAuthValue` или `PolicyPassword`. Индекс может
+оставаться незаписанным. Отключение иерархии, создавшей индекс,
+возвращает ошибку handle. `POLICY_DELETE` по-прежнему отклоняется при
+определении индекса.
+[TPM Library v185 Part 3 §§5.6, 23.4, 31.1 и 31.3](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Политики иерархий
 
@@ -500,7 +526,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 | `TPM2_Quote` | `0x158` | handle 1: ключ подписи (USER) | см. «Аттестация» |
 | `TPM2_Certify` | `0x148` | handle 1: сертифицируемый объект (**ADMIN**), handle 2: ключ подписи (USER) | см. «Аттестация» |
 
-**Policy-сессии.** `TPM2_StartAuthSession` теперь принимает `TPM_SE_POLICY` и `TPM_SE_TRIAL` (без salt, `symmetric` NULL, `authHash` SHA-256, как у HMAC-сессий; `bind` для policy-сессии только вычисляет `sessionKey`, привязки нет: Part 3, 11.1.1). Handle policy-сессии — `0x03nnnnnn`, HMAC — `0x02nnnnnn`, общие 64 слота. Начальный `policyDigest` — нулевой (32 октета). Trial-сессия обновляет digest без проверок (кроме разбора параметров и авторизации `PolicySecret`) и **не авторизует** (`TPM_RC_ATTRIBUTES`, сессия n). Digest считается по Part 3, 23.x: `H(old ‖ commandCode ‖ данные)`; векторы проверены Python (`hashlib`). **Использование policy-сессии в авторизации** (Part 3, 5.6, шаг 8; Part 1, 17.7): `cpHash` установленный должен совпасть (`TPM_RC_POLICY_FAIL`), `commandCode` установленный — совпасть (`TPM_RC_POLICY_CC`), `policyDigest` — равен `authPolicy` сущности (`TPM_RC_POLICY_FAIL`; у иерархий `authPolicy` нет — policy-сессия не годится), `pcrUpdateCounter` установленный — равен текущему (`TPM_RC_PCR_CHANGED`); при `isAuthValueNeeded` ключ HMAC — `sessionKey ‖ authValue`, пустой HMAC — отказ, иначе ключ — `sessionKey` (пустой ключ допускает пустой HMAC, Part 1, 17.7.6); policy-отказ не считается попыткой DA (Part 1, 17.8.3); ошибка HMAC при нужном authValue — `TPM_RC_AUTH_FAIL` (DA-защищённая сущность). ADMIN-роль с policy-сессией требует `PolicyCommandCode` (шаг 6, `TPM_RC_POLICY_FAIL`). Роли (шаги 5, 7): для USER-роли объекта при `userWithAuth` CLEAR пароль и HMAC — `TPM_RC_POLICY_FAIL` (было `TPM_RC_AUTH_UNAVAILABLE` в срезе B; шаг 1 по-прежнему даёт `TPM_RC_AUTH_UNAVAILABLE` объекту без приватной части); для ADMIN-роли (`objectHandle` `TPM2_Certify`) при `adminWithPolicy` SET пароль и HMAC — `TPM_RC_AUTH_TYPE`. Policy-сессия на NV-индексе — `TPM_RC_AUTH_UNAVAILABLE` (`POLICYREAD`/`POLICYWRITE` при определении отказываются). Доступные команды и недостающие обязательные варианты перечислены в [целевом профиле PTP](#целевой-профиль-pc-client-ptp-107). Авторизация `authHandle` в `PolicySecret` — обычная авторизация handle (DA, `phEnable` и т. п. как у любой другой команды); отключённая иерархия — `TPM_RC_HIERARCHY`. Если `PolicySecret` авторизуется policy-сессией, для неё требуется `isAuthValueNeeded` или `isPasswordNeeded` (`TPM_RC_MODE` при отсутствии обоих флагов, Part 3, §23.4.1).
+**Policy-сессии.** `TPM2_StartAuthSession` теперь принимает `TPM_SE_POLICY` и `TPM_SE_TRIAL` (без salt, `symmetric` NULL, `authHash` SHA-256, как у HMAC-сессий; `bind` для policy-сессии только вычисляет `sessionKey`, привязки нет: Part 3, 11.1.1). Handle policy-сессии — `0x03nnnnnn`, HMAC — `0x02nnnnnn`, общие 64 слота. Начальный `policyDigest` — нулевой (32 октета). Trial-сессия обновляет digest без проверок (кроме разбора параметров и авторизации `PolicySecret`) и **не авторизует** (`TPM_RC_ATTRIBUTES`, сессия n). Digest считается по Part 3, 23.x: `H(old ‖ commandCode ‖ данные)`; векторы проверены Python (`hashlib`). **Использование policy-сессии в авторизации** (Part 3, 5.6, шаг 8; Part 1, 17.7): `cpHash` установленный должен совпасть (`TPM_RC_POLICY_FAIL`), `commandCode` установленный — совпасть (`TPM_RC_POLICY_CC`), `policyDigest` — равен `authPolicy` сущности (`TPM_RC_POLICY_FAIL`; у иерархий `authPolicy` нет — policy-сессия не годится), `pcrUpdateCounter` установленный — равен текущему (`TPM_RC_PCR_CHANGED`); при `isAuthValueNeeded` ключ HMAC — `sessionKey ‖ authValue`, пустой HMAC — отказ, иначе ключ — `sessionKey` (пустой ключ допускает пустой HMAC, Part 1, 17.7.6); policy-отказ не считается попыткой DA (Part 1, 17.8.3); ошибка HMAC при нужном authValue — `TPM_RC_AUTH_FAIL` (DA-защищённая сущность). ADMIN-роль с policy-сессией требует `PolicyCommandCode` (шаг 6, `TPM_RC_POLICY_FAIL`). Роли (шаги 5, 7): для USER-роли объекта при `userWithAuth` CLEAR пароль и HMAC — `TPM_RC_POLICY_FAIL` (было `TPM_RC_AUTH_UNAVAILABLE` в срезе B; шаг 1 по-прежнему даёт `TPM_RC_AUTH_UNAVAILABLE` объекту без приватной части); для ADMIN-роли (`objectHandle` `TPM2_Certify`) при `adminWithPolicy` SET пароль и HMAC — `TPM_RC_AUTH_TYPE`. [Политики NV-индексов](#политики-nv-индексов) расширяют исходные правила среза. Доступные команды и недостающие обязательные варианты перечислены в [целевом профиле PTP](#целевой-профиль-pc-client-ptp-107). Авторизация `authHandle` в `PolicySecret` — обычная авторизация handle (DA, `phEnable` и т. п. как у любой другой команды); отключённая иерархия — `TPM_RC_HIERARCHY`. Если `PolicySecret` авторизуется policy-сессией, для неё требуется `isAuthValueNeeded` или `isPasswordNeeded` (`TPM_RC_MODE` при отсутствии обоих флагов, Part 3, §23.4.1).
 
 `PolicyPassword` и `PolicyAuthValue` обновляют digest одним кодом `0x16B`. Последнее из двух утверждений выбирает проверку пароля или HMAC. При активном `isPasswordNeeded` policy-сессия передаёт `authValue` в поле `hmac`. Состояние политики проверяется до пароля, неверный пароль учитывается DA для защищённой сущности. Для непустого поля TPM возвращает HMAC по `rpHash` с ключом `sessionKey`, для пустого оставляет поле ответа пустым. При `ContextSave/Load` используется существующий флаг. [TPM Library v185 Part 1, §§16.4, 16.6.16](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf#page=129), [Part 3, §23.18](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=252).
 

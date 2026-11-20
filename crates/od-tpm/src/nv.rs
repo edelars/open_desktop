@@ -11,10 +11,9 @@
 //! clause 31.3.1: "if the implementation does not support ... the TPM shall return
 //! TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
 //! Attributes that need machinery the implementation lacks are refused the same way:
-//! `TPMA_NV_POLICYREAD`/`POLICYWRITE` (no `PolicyNV`-style NV policy access), `POLICY_DELETE`
-//! (`TPM2_NV_UndefineSpaceSpecial`), `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`), `ORDERLY`,
-//! `CLEAR_STCLEAR` (PTP 1.07, Table 12: not required). `TPMA_NV_NO_DA` is stored (there is no
-//! dictionary-attack logic to bypass).
+//! `POLICY_DELETE` (`TPM2_NV_UndefineSpaceSpecial`), `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`),
+//! `ORDERLY` and `CLEAR_STCLEAR` (PTP 1.07, Table 12). `TPMA_NV_NO_DA` exempts the index's
+//! authorization value from dictionary-attack protection.
 //!
 //! **Sizes by type** (Part 3, clause 31.3.1): a counter or bit field has `dataSize` 8, an extend
 //! index the digest size of its `nameAlg` (only SHA-256 is supported: 32); any other size is
@@ -43,7 +42,8 @@
 //! only while `shEnable` is SET (`TPM_RC_HANDLE` otherwise, Table 43); the platform cannot define
 //! an index while `phEnableNV` is CLEAR (`TPM_RC_HIERARCHY`, Table 43). Authorization comes from
 //! `TPM_RH_PLATFORM` (`PPREAD`/`PPWRITE`), `TPM_RH_OWNER` (`OWNERREAD`/`OWNERWRITE`) or the index
-//! itself (`AUTHREAD`/`AUTHWRITE`); an index handle other than `nvIndex` is `TPM_RC_NV_AUTHORIZATION`.
+//! itself (`AUTHREAD`/`AUTHWRITE` for password/HMAC and `POLICYREAD`/`POLICYWRITE` for policy).
+//! An index handle other than `nvIndex` is `TPM_RC_NV_AUTHORIZATION`.
 //! The Name of an index is `nameAlg || H(TPMS_NV_PUBLIC)` and changes when `WRITTEN`/locks change
 //! (Part 1, clause 14).
 //!
@@ -57,7 +57,7 @@
 //! maximum does); the order of the type check and the lock check in `TPM2_NV_Write` (lock first,
 //! as the clause lists them) versus `Increment`/`Extend`/`SetBits` (type first); the strict
 //! restore-time consistency rules of the snapshot (no index with data while `WRITTEN` is CLEAR);
-//! `TPM_RC_AUTH_TYPE` when the authorization handle's role is not enabled by the index attributes;
+//! `TPM_RC_AUTH_TYPE` when Owner or Platform access is not enabled by the index attributes;
 //! `TPM_RC_RESERVED_BITS` for reserved `TPMA_NV` bits in `TPM2_NV_DefineSpace`; `TPM_RC_ATTRIBUTES`
 //! for the unsupported attributes and index types listed above; `TPM_RC_SIZE` for a `publicInfo`
 //! whose `size` differs from the marshaled structure and for a non-empty `authPolicy` that is not
@@ -69,7 +69,7 @@
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::codes::{alg, handle as h};
+use crate::codes::{alg, cc, handle as h};
 use crate::dispatch::{CommandHandles, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, Writer, limits};
@@ -132,12 +132,10 @@ pub(crate) const EXTEND_SIZE: usize = 32;
 
 /// Highest `TPMA_NV` attribute bits that this implementation can honour, as a mask of those it
 /// refuses.
-const UNSUPPORTED: u32 = attr::POLICYREAD
-    | attr::POLICYWRITE
-    | attr::POLICY_DELETE
-    | attr::GLOBALLOCK
-    | attr::ORDERLY
-    | attr::CLEAR_STCLEAR;
+const UNSUPPORTED: u32 =
+    attr::POLICY_DELETE | attr::GLOBALLOCK | attr::ORDERLY | attr::CLEAR_STCLEAR;
+const READ_ACCESS: u32 = attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD | attr::POLICYREAD;
+const WRITE_ACCESS: u32 = attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE | attr::POLICYWRITE;
 
 /// One defined index.
 pub(crate) struct NvIndex {
@@ -179,8 +177,8 @@ impl NvIndex {
                 nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
             )
             && size_ok
-            && a & (attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD) != 0
-            && a & (attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE) != 0
+            && a & READ_ACCESS != 0
+            && a & WRITE_ACCESS != 0
             && (a & attr::WRITTEN != 0 || self.data.iter().all(|b| *b == 0))
     }
 
@@ -329,6 +327,29 @@ enum Access {
     Write,
 }
 
+impl Access {
+    fn for_command(code: u32) -> Option<Self> {
+        match code {
+            cc::NV_READ | cc::NV_READ_LOCK | cc::NV_CERTIFY | cc::POLICY_NV => Some(Self::Read),
+            cc::NV_WRITE
+            | cc::NV_WRITE_LOCK
+            | cc::NV_INCREMENT
+            | cc::NV_EXTEND
+            | cc::NV_SET_BITS => Some(Self::Write),
+            _ => None,
+        }
+    }
+
+    fn index_attribute(self, policy: bool) -> u32 {
+        match (self, policy) {
+            (Self::Read, false) => attr::AUTHREAD,
+            (Self::Read, true) => attr::POLICYREAD,
+            (Self::Write, false) => attr::AUTHWRITE,
+            (Self::Write, true) => attr::POLICYWRITE,
+        }
+    }
+}
+
 impl Tpm {
     /// Whether the index may be accessed with the hierarchy enables as they are now (Part 2,
     /// Table 43).
@@ -341,7 +362,7 @@ impl Tpm {
     }
 
     /// An existing, accessible index at handle position `n` (one-based) of the command.
-    fn nv_index_at(&self, handle: u32, n: u8) -> Result<&NvIndex, Rc> {
+    pub(crate) fn nv_index_at(&self, handle: u32, n: u8) -> Result<&NvIndex, Rc> {
         if !is_nv_handle(handle) {
             return Err(Rc::VALUE.in_handle(n));
         }
@@ -354,36 +375,30 @@ impl Tpm {
     /// The handle checks of the NV commands, before authorization (see the module comment).
     pub(crate) fn check_nv_handles(&self, code: u32, handles: &CommandHandles) -> Result<(), Rc> {
         match code {
-            crate::codes::cc::NV_DEFINE_SPACE => {
+            cc::NV_DEFINE_SPACE => {
                 provision_handle(handles[0])?;
                 // The platform cannot define an index while `phEnableNV` is CLEAR (Table 43).
                 if handles[0] == h::RH_PLATFORM && !self.hv.ph_enable_nv {
                     return Err(Rc::HIERARCHY.in_handle(1));
                 }
             }
-            crate::codes::cc::NV_UNDEFINE_SPACE => {
+            cc::NV_UNDEFINE_SPACE => {
                 provision_handle(handles[0])?;
                 self.nv_index_at(handles[1], 2)?;
             }
-            crate::codes::cc::NV_READ_PUBLIC => {
+            cc::NV_READ_PUBLIC => {
                 self.nv_index_at(handles[0], 1)?;
             }
-            crate::codes::cc::NV_WRITE
-            | crate::codes::cc::NV_WRITE_LOCK
-            | crate::codes::cc::NV_INCREMENT
-            | crate::codes::cc::NV_EXTEND
-            | crate::codes::cc::NV_SET_BITS => {
-                self.check_nv_authorization(handles[0], handles[1], 1, Access::Write)?;
-            }
-            crate::codes::cc::NV_READ | crate::codes::cc::NV_READ_LOCK => {
-                let index = self.check_nv_authorization(handles[0], handles[1], 1, Access::Read)?;
-                // A read of an index that was never written fails before the authValue check
-                // (clause 31.1); a read lock does not need data (clause 31.14.1).
-                if code == crate::codes::cc::NV_READ && index.attributes & attr::WRITTEN == 0 {
-                    return Err(Rc::NV_UNINITIALIZED);
+            _ => {
+                if let Some(access) = Access::for_command(code) {
+                    let index = self.check_nv_authorization(handles[0], handles[1], 1, access)?;
+                    // A read of an index that was never written fails before the authValue check
+                    // (clause 31.1); a read lock does not need data (clause 31.14.1).
+                    if code == cc::NV_READ && index.attributes & attr::WRITTEN == 0 {
+                        return Err(Rc::NV_UNINITIALIZED);
+                    }
                 }
             }
-            _ => {}
         }
         Ok(())
     }
@@ -407,7 +422,8 @@ impl Tpm {
         Ok(())
     }
 
-    /// Validates `authHandle` (`TPMI_RH_NV_AUTH`), `nvIndex` and the role the attributes allow.
+    /// Validates both handles and hierarchy access. The index's own access depends
+    /// on the authorization session and is checked later by `nv_index_auth`.
     fn check_nv_authorization(
         &self,
         auth: u32,
@@ -426,19 +442,40 @@ impl Tpm {
         if is_nv_handle(auth) && auth != index_handle {
             return Err(Rc::NV_AUTHORIZATION);
         }
-        let (platform, owner, own) = match access {
-            Access::Read => (attr::PPREAD, attr::OWNERREAD, attr::AUTHREAD),
-            Access::Write => (attr::PPWRITE, attr::OWNERWRITE, attr::AUTHWRITE),
-        };
-        let needed = match auth {
-            h::RH_PLATFORM => platform,
-            h::RH_OWNER => owner,
-            _ => own,
+        let needed = match (auth, access) {
+            (h::RH_PLATFORM, Access::Read) => attr::PPREAD,
+            (h::RH_OWNER, Access::Read) => attr::OWNERREAD,
+            (h::RH_PLATFORM, Access::Write) => attr::PPWRITE,
+            (h::RH_OWNER, Access::Write) => attr::OWNERWRITE,
+            _ => return Ok(index),
         };
         if index.attributes & needed == 0 {
             return Err(Rc::AUTH_TYPE);
         }
         Ok(index)
+    }
+    /// Authorization value for an index acting as its own authorizer. The selected
+    /// mode must be enabled for the command's access (Part 3 v185, §5.6 step 7).
+    pub(crate) fn nv_index_auth(
+        &self,
+        code: u32,
+        handle: u32,
+        position: u8,
+        policy: bool,
+    ) -> Result<AuthValue, Rc> {
+        let index = self.nv_index_at(handle, position)?;
+        let needed = if code == cc::POLICY_SECRET {
+            // PolicySecret proves the index's authValue even with a policy session (§23.4).
+            attr::AUTHREAD
+        } else {
+            Access::for_command(code)
+                .ok_or(Rc::AUTH_UNAVAILABLE)?
+                .index_attribute(policy)
+        };
+        if index.attributes & needed == 0 {
+            return Err(Rc::AUTH_UNAVAILABLE);
+        }
+        Ok(index.auth.clone())
     }
 
     /// `authValue` of an NV index used as authorization handle.
@@ -488,15 +525,13 @@ impl Tpm {
             return Err(Rc::NV_DEFINED);
         }
         let platform = inv.handles[0] == h::RH_PLATFORM;
-        let read = attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD;
-        let write = attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE;
         if !matches!(
             (attributes & attr::NT_MASK) >> 4,
             nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
         ) || attributes & (attr::WRITTEN | attr::READLOCKED | attr::WRITELOCKED) != 0
             || attributes & UNSUPPORTED != 0
-            || attributes & read == 0
-            || attributes & write == 0
+            || attributes & READ_ACCESS == 0
+            || attributes & WRITE_ACCESS == 0
             // `PLATFORMCREATE` must say who defined the index (clause 31.3.1).
             || (attributes & attr::PLATFORMCREATE != 0) != platform
         {
