@@ -2873,6 +2873,16 @@ Candidate code was 28.2–57.5% larger. This is narrow profile evidence only;
 S3-29 remains open for broader strategy selection and the Stage 3 performance
 gate.
 
+#### S3-29h. Проверить флаги на составном корпусе и в resident FIFO16
+
+Штатная release-сборка на M1 Pro прошла untimed preflight всех 1 200
+случаев и 2 400 сравнений с интерпретатором. На локальном ARM64 прошли
+preflight двух экспериментальных измерителей, включая полное совпадение
+составных cache baselines и повторный проход по четырём случаям
+resident FIFO16 с одними попаданиями. Четыре попытки замеров на M1 Pro
+отклонены из-за загрузки. S3-29 остаётся открыт до валидных замеров
+задержки. [S3-29h и raw preflights](../reports/STAGE_3_S3-29h_2026-11-19.md)
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

@@ -1485,6 +1485,12 @@ with a high water of 16 entries. All nine process RSS snapshots were
 available. The post-drop observation fell by 32 KiB in each process.
 [S3-37j cache counts and process RSS](STAGE_3_S3-37j_2026-11-19.md)
 
+S3-29h validated both flags strategies against the interpreter on all
+1,200 composed inputs on M1 Pro. Signed local ARM64 preflights matched
+the stock per-case counters and verified a four-case resident FIFO16
+profile. All four M1 timing attempts were rejected by the load gate.
+[S3-29h preflight results](STAGE_3_S3-29h_2026-11-19.md)
+
 On the M1 Pro, the exact S3-32a aliased ADD candidate lowered median paired
 compile and warm times by 1.4–2.1%. The same signed binary showed 6.2–6.3%
 higher times through the first native return, including fresh publication.
