@@ -6,7 +6,7 @@
 //!
 //! Supported index types: `TPM_NT_ORDINARY` (opaque data written by `TPM2_NV_Write`) and, since
 //! slice C3, `TPM_NT_COUNTER` (8 octets, `TPM2_NV_Increment`), `TPM_NT_BITS` (8 octets,
-//! `TPM2_NV_SetBits`) and `TPM_NT_EXTEND` (a SHA-256 digest, `TPM2_NV_Extend`). PIN indices
+//! `TPM2_NV_SetBits`) and `TPM_NT_EXTEND` (a digest of the `nameAlg`, `TPM2_NV_Extend`). PIN indices
 //! (`TPM_NT_PIN_FAIL`, `TPM_NT_PIN_PASS`) and reserved types are `TPM_RC_ATTRIBUTES` (Part 3,
 //! clause 31.3.1: "if the implementation does not support ... the TPM shall return
 //! TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
@@ -16,9 +16,16 @@
 //! authorization value from dictionary-attack protection.
 //!
 //! **Sizes by type** (Part 3, clause 31.3.1): a counter or bit field has `dataSize` 8, an extend
-//! index the digest size of its `nameAlg` (only SHA-256 is supported: 32); any other size is
-//! `TPM_RC_SIZE`. `TPM2_NV_Write` of a counter, bit field or extend index is `TPM_RC_ATTRIBUTES`
+//! index the digest size of its `nameAlg` (32, 48 or 64 octets for SHA-256, SHA-384 or SHA-512); any
+//! other size is `TPM_RC_SIZE`. `TPM2_NV_Write` of a counter, bit field or extend index is `TPM_RC_ATTRIBUTES`
 //! (clause 31.7.1); `TPM2_NV_Read` reads any type.
+//!
+//! **`nameAlg`** (hash agility): SHA-256, SHA-384 or SHA-512 (`TPM_RC_HASH` for another). The Name is
+//! `nameAlg || H(TPMS_NV_PUBLIC)` with that hash; `authValue` and `authPolicy` are at most (`authPolicy`
+//! exactly or empty) one digest of it (`TPM_RC_SIZE`), and so is a password given for the index;
+//! `TPM2_NV_Extend` hashes with it. The hash of a session is the hash of its digests, not the
+//! `nameAlg` of an index: `PolicyNV` and `PolicyAuthorizeNV` hash with the session and put the Name of
+//! the index in, and `TPM2_NV_Certify` hashes the whole index with the hash of the signing scheme.
 //!
 //! **Counters** (clause 31.2): the first increment of a counter starts from the largest value
 //! any counter has had (kept in [`NvStore`], persistent: snapshot v3) and adds one, so a counter
@@ -66,11 +73,10 @@
 //! named in clauses 31.7.1 and 31.13.1); `TPM_RC_HANDLE` with the handle number for an undefined
 //! or inaccessible index (named in clause 31.4.1 and Table 43; the index modifier is ours).
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::codes::{alg, cc, handle as h};
-use crate::crypto::HashAlg;
+use crate::codes::{cc, handle as h};
+use crate::crypto::{HashAlg, hash};
 use crate::dispatch::{CommandHandles, Invocation};
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, Writer, limits};
@@ -128,8 +134,6 @@ pub(crate) mod nt {
 
 /// Size of a counter and of a bit field (Part 3, clause 31.3.1).
 pub(crate) const COUNTER_SIZE: usize = 8;
-/// Size of an extend index with `nameAlg` SHA-256.
-pub(crate) const EXTEND_SIZE: usize = 32;
 
 /// Highest `TPMA_NV` attribute bits that this implementation can honour, as a mask of those it
 /// refuses.
@@ -148,26 +152,43 @@ pub(crate) struct NvIndex {
 }
 
 impl NvIndex {
+    /// The hash of the `nameAlg` of the index: SHA-256, SHA-384 or SHA-512 for every index that
+    /// exists (`TPM2_NV_DefineSpace` and `NvIndex::is_consistent` admit no other).
+    pub(crate) fn hash_alg(&self) -> HashAlg {
+        HashAlg::from_alg(self.name_alg)
+            .expect("an NV index has a SHA-256, SHA-384 or SHA-512 nameAlg")
+    }
+
     /// `TPM_NT` of the index (bits 7:4 of the attributes).
     pub(crate) fn nt(&self) -> u32 {
         (self.attributes & attr::NT_MASK) >> 4
     }
 
-    /// The data size an index of this type must have (`None`: any size, an ordinary index).
-    fn required_size(attributes: u32) -> Option<usize> {
+    /// The data size an index of this type must have (`None`: any size, an ordinary index): 8 octets
+    /// for a counter and a bit field, one digest of the `nameAlg` for an extend index.
+    fn required_size(attributes: u32, name_hash: HashAlg) -> Option<usize> {
         match (attributes & attr::NT_MASK) >> 4 {
             nt::COUNTER | nt::BITS => Some(COUNTER_SIZE),
-            nt::EXTEND => Some(EXTEND_SIZE),
+            nt::EXTEND => Some(name_hash.size()),
             _ => None,
         }
     }
 
-    /// `true` if a restored index is consistent: no reserved bit, a supported type, no feature
-    /// the implementation refuses at definition, the size of its type, the data zero while
-    /// `WRITTEN` is CLEAR, and (for the commands that need it) both read and write access.
+    /// `true` if a restored index is consistent: a `nameAlg` that is a hash, an `authPolicy` that is
+    /// empty or one digest of it, an `authValue` of at most one digest, no reserved bit, a supported
+    /// type, no feature the implementation refuses at definition, the size of its type, the data zero
+    /// while `WRITTEN` is CLEAR, and (for the commands that need it) both read and write access.
     pub(crate) fn is_consistent(&self) -> bool {
+        let Some(name_hash) = HashAlg::from_alg(self.name_alg) else {
+            return false;
+        };
+        if !(self.auth_policy.is_empty() || self.auth_policy.len() == name_hash.size())
+            || self.auth.as_slice().len() > name_hash.size()
+        {
+            return false;
+        }
         let a = self.attributes;
-        let size_ok = match Self::required_size(a) {
+        let size_ok = match Self::required_size(a, name_hash) {
             Some(n) => self.data.len() == n,
             None => true,
         };
@@ -200,10 +221,10 @@ impl NvIndex {
         w.finish()
     }
 
-    /// `nameAlg || H(TPMS_NV_PUBLIC)` (Part 1, Table 6).
+    /// `nameAlg || H(TPMS_NV_PUBLIC)` (Part 1, Table 6), hashed with the `nameAlg` of the index.
     pub(crate) fn name(&self) -> Vec<u8> {
         let mut n = self.name_alg.to_be_bytes().to_vec();
-        n.extend_from_slice(&Sha256::digest(self.public()));
+        n.extend_from_slice(hash(self.hash_alg(), &[&self.public()]).as_slice());
         n
     }
 }
@@ -515,15 +536,13 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        // The limit is one digest of the `nameAlg` of the index (step D). Only a SHA-256 index can be
-        // defined for now (`TPM2_NV_DefineSpace` refuses another `nameAlg` with `TPM_RC_HASH`), so the
-        // limit is 32 octets; an index with another `nameAlg` is left to the NV hash agility.
+        // The limit is one digest of the `nameAlg` of the index (the dispatcher has checked that the
+        // index exists).
         let limit = self
             .persistent
             .nv
             .get(inv.handles[0])
-            .and_then(|index| HashAlg::from_alg(index.name_alg))
-            .map_or(limits::MAX_DIGEST_SIZE, HashAlg::size);
+            .map_or(limits::MAX_DIGEST_SIZE, |index| index.hash_alg().size());
         let new_auth = p.tpm2b(limit)?;
         p.finish()?;
         let auth =
@@ -543,34 +562,46 @@ impl Tpm {
         inv: &Invocation,
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
+        // `authValue` and `authPolicy` are `TPM2B_DIGEST`s of up to one SHA-512 digest; the limit of the
+        // `nameAlg` of the index is applied below, as soon as it is known.
         p.set_param(1);
-        let auth_bytes = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
-        let auth = AuthValue::from_slice_trimmed(auth_bytes).ok_or(Rc::SIZE.in_param(1))?;
+        let auth_bytes = p.tpm2b(limits::MAX_HASH_SIZE)?;
         p.set_param(2);
         let public_size = usize::from(p.u16()?);
         let before = p.remaining();
         let nv_index = p.u32()?;
         let name_alg = p.u16()?;
         let attributes = p.u32()?;
-        let auth_policy = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let auth_policy = p.tpm2b(limits::MAX_HASH_SIZE)?;
         let data_size = usize::from(p.u16()?);
         if before - p.remaining() != public_size {
             return Err(p.err(Rc::SIZE));
         }
         p.finish()?;
+        // The size limits of `authValue` and `authPolicy` are one digest of `nameAlg` (Part 3,
+        // clause 31.3.1: `TPM_RC_SIZE`); an unknown `nameAlg` is refused as `TPM_RC_HASH` below.
+        let name_hash = HashAlg::from_alg(name_alg);
+        if let Some(name_hash) = name_hash {
+            if auth_bytes.len() > name_hash.size() {
+                return Err(Rc::SIZE.in_param(1));
+            }
+            if auth_policy.len() > name_hash.size() {
+                return Err(Rc::SIZE.in_param(2));
+            }
+        }
         if !is_nv_handle(nv_index) {
             return Err(Rc::VALUE.in_param(2));
         }
-        if name_alg != alg::SHA256 {
-            return Err(Rc::HASH.in_param(2));
-        }
+        let name_hash = name_hash.ok_or(Rc::HASH.in_param(2))?;
         if attributes & (attr::RESERVED_LOW | attr::RESERVED_HIGH) != 0 {
             return Err(Rc::RESERVED_BITS.in_param(2));
         }
-        // `authPolicy` is one digest of `nameAlg`, SHA-256 here (the check above).
-        if !auth_policy.is_empty() && auth_policy.len() != limits::MAX_DIGEST_SIZE {
+        // `authPolicy` is empty or one digest of `nameAlg`.
+        if !auth_policy.is_empty() && auth_policy.len() != name_hash.size() {
             return Err(Rc::SIZE.in_param(2));
         }
+        let auth = AuthValue::from_slice_trimmed_up_to(auth_bytes, name_hash.size())
+            .ok_or(Rc::SIZE.in_param(1))?;
         if self.persistent.nv.get(nv_index).is_some() {
             return Err(Rc::NV_DEFINED);
         }
@@ -590,7 +621,7 @@ impl Tpm {
         }
         // A counter and a bit field are 8 octets, an extend index a digest of its `nameAlg`
         // (clause 31.3.1: `TPM_RC_SIZE`).
-        if let Some(n) = NvIndex::required_size(attributes)
+        if let Some(n) = NvIndex::required_size(attributes, name_hash)
             && data_size != n
         {
             return Err(Rc::SIZE.in_param(2));
@@ -753,9 +784,9 @@ impl Tpm {
         Ok(Output::default())
     }
 
-    /// `TPM2_NV_Extend` (clause 31.9): `data_new = SHA-256(data_old || data)`, the old value
-    /// being the zero digest while `WRITTEN` is CLEAR (the data area starts as zeros). `data`
-    /// may be any size up to `TPM2B_MAX_NV_BUFFER`. Sets `WRITTEN`.
+    /// `TPM2_NV_Extend` (clause 31.9): `data_new = H(data_old || data)` with the `nameAlg` of the
+    /// index, the old value being the zero digest while `WRITTEN` is CLEAR (the data area starts as
+    /// zeros). `data` may be any size up to `TPM2B_MAX_NV_BUFFER`. Sets `WRITTEN`.
     pub(crate) fn cmd_nv_extend(
         &mut self,
         inv: &Invocation,
@@ -765,11 +796,8 @@ impl Tpm {
         let data = p.tpm2b(NV_BUFFER_MAX)?;
         p.finish()?;
         let index = self.nv_typed_index(inv.handles[1], nt::EXTEND)?;
-        let digest = Sha256::new()
-            .chain_update(&index.data[..])
-            .chain_update(data)
-            .finalize();
-        index.data.copy_from_slice(&digest);
+        let digest = hash(index.hash_alg(), &[&index.data[..], data]);
+        index.data.copy_from_slice(digest.as_slice());
         index.attributes |= attr::WRITTEN;
         Ok(Output::default())
     }
@@ -878,6 +906,8 @@ fn provision_handle(handle: u32) -> Result<(), Rc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codes::alg;
+    use sha2::{Digest, Sha256};
 
     fn index(handle: u32, attributes: u32, size: usize) -> NvIndex {
         NvIndex {
@@ -905,6 +935,59 @@ mod tests {
         assert_eq!(name.len(), 34);
         assert_eq!(&name[..2], &[0x00, 0x0B]);
         assert_eq!(&name[2..], &Sha256::digest(&expect)[..]);
+    }
+
+    #[test]
+    fn name_and_consistency_follow_the_name_alg() {
+        use sha2::{Sha384, Sha512};
+        let mut i = index(0x0100_0001, attr::OWNERWRITE | attr::OWNERREAD, 4);
+        let public = i.public();
+        i.name_alg = alg::SHA384;
+        let name = i.name();
+        assert_eq!((name.len(), &name[..2]), (50, &[0x00, 0x0C][..]));
+        assert_eq!(&name[2..], &Sha384::digest(i.public())[..]);
+        i.name_alg = alg::SHA512;
+        let name = i.name();
+        assert_eq!((name.len(), &name[..2]), (66, &[0x00, 0x0D][..]));
+        assert_eq!(&name[2..], &Sha512::digest(i.public())[..]);
+        // The public area itself does not depend on the hash (only its nameAlg field does).
+        assert_eq!(i.public()[6..], public[6..]);
+
+        // An extend index is one digest of its nameAlg; authPolicy and authValue are at most one.
+        let extend = attr::OWNERWRITE | attr::OWNERREAD | (nt::EXTEND << 4);
+        for (name_alg, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
+            let mut e = index(0x0100_0002, extend, size);
+            e.name_alg = name_alg;
+            assert!(e.is_consistent(), "{name_alg:#x}");
+            e.auth_policy = vec![1; size];
+            e.auth = AuthValue::from_slice_up_to(&vec![2; size], size).unwrap();
+            assert!(e.is_consistent(), "{name_alg:#x}");
+            for wrong in [size - 16, size + 16] {
+                let mut bad = index(0x0100_0002, extend, wrong);
+                bad.name_alg = name_alg;
+                assert!(
+                    !bad.is_consistent(),
+                    "{name_alg:#x}: extend of {wrong} octets"
+                );
+            }
+            let mut bad = index(0x0100_0002, extend, size);
+            bad.name_alg = name_alg;
+            bad.auth_policy = vec![1; 20];
+            assert!(
+                !bad.is_consistent(),
+                "{name_alg:#x}: authPolicy of 20 octets"
+            );
+        }
+        let mut narrow = index(0x0100_0003, attr::OWNERWRITE | attr::OWNERREAD, 4);
+        narrow.auth = AuthValue::from_slice_up_to(&[3; 33], 33).unwrap();
+        assert!(
+            !narrow.is_consistent(),
+            "33 octets of authValue with SHA-256"
+        );
+        narrow.name_alg = alg::SHA384;
+        assert!(narrow.is_consistent());
+        narrow.name_alg = 0x0004;
+        assert!(!narrow.is_consistent(), "SHA-1 is no nameAlg");
     }
 
     #[test]

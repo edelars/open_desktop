@@ -542,12 +542,14 @@ impl Tpm {
         selection: &TpmlPcrSelection,
         outside_info: &[u8],
         parent: (u16, &[u8], &[u8]),
-    ) -> (Vec<u8>, Vec<u8>, TpmtTicket) {
+    ) -> Result<(Vec<u8>, Vec<u8>, TpmtTicket), Rc> {
         let mut selection = selection.clone();
         self.pcrs.filter_selection(&mut selection);
         // The creation hash and the PCR digest use the hash of the new object's nameAlg; the ticket
         // is an HMAC-SHA-256 under the hierarchy proof, like every ticket of this TPM.
-        let name_hash = name_hash_alg(obj.public.name_alg).unwrap_or(HashAlg::Sha256);
+        // A created object always has a hash `nameAlg` (`check_public` refuses NULL): `inPublic` is
+        // parameter 2 of `Create` and `CreatePrimary`.
+        let name_hash = name_hash_alg(obj.public.name_alg).map_err(|rc| rc.in_param(2))?;
         let pcr_digest = creation_pcr_digest(&self.pcrs, &selection, name_hash);
         let data = TpmsCreationData {
             pcr_select: selection,
@@ -572,7 +574,7 @@ impl Tpm {
             hierarchy: obj.hierarchy,
             digest: hmac_sha256(&proof, &creation_ticket_parts(&obj.name, &hash)).to_vec(),
         };
-        (bytes, hash, ticket)
+        Ok((bytes, hash, ticket))
     }
 
     /// `TPM2_CreatePrimary` (Part 3, clause 24.1): creates and loads a primary object.
@@ -607,7 +609,7 @@ impl Tpm {
             &selection,
             outside,
             (alg::NULL, &hierarchy_handle, &hierarchy_handle),
-        );
+        )?;
         let mut params = Writer::new();
         obj.public.marshal_sized(&mut params);
         params.tpm2b(&creation);
@@ -676,7 +678,7 @@ impl Tpm {
             &selection,
             outside,
             (parent.name_alg, &parent.name, &parent.qualified_name),
-        );
+        )?;
         let mut params = Writer::new();
         params.tpm2b(&blob);
         obj.public.marshal_sized(&mut params);

@@ -37,7 +37,7 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle as h};
-use crate::crypto::DIGEST;
+use crate::crypto::{DIGEST, HashAlg, TpmDigest};
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{Reader, limits};
@@ -48,14 +48,38 @@ pub(crate) const LEGACY_SEED_BYTES: usize = 32;
 pub(crate) const PRIMARY_SEED_BYTES: usize = 64;
 pub(crate) type PrimarySeed = Zeroizing<[u8; PRIMARY_SEED_BYTES]>;
 
+/// The `authPolicy` of a hierarchy: a digest and the hash that made it (`TPM2_SetPrimaryPolicy`,
+/// Part 3, clause 24.3: the digest is as long as a digest of `hashAlg`). A session authorizes the
+/// hierarchy when its `policyDigest` equals the digest, so the hash of the session is the hash of the
+/// policy: a SHA-384 policy is met by a SHA-384 session only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct PrimaryPolicy {
+    pub alg: HashAlg,
+    digest: TpmDigest,
+}
+
+impl PrimaryPolicy {
+    /// The policy `digest` of `alg`; `None` when the digest is not one digest long.
+    pub(crate) fn new(alg: HashAlg, digest: &[u8]) -> Option<PrimaryPolicy> {
+        Some(PrimaryPolicy {
+            alg,
+            digest: TpmDigest::exact(digest, alg.size())?,
+        })
+    }
+
+    pub(crate) fn digest(&self) -> &[u8] {
+        self.digest.as_slice()
+    }
+}
+
 /// Persistent part of the hierarchy state (survives power cycles).
 pub(crate) struct HierarchyPersistent {
     pub owner_auth: AuthValue,
     pub endorsement_auth: AuthValue,
     pub lockout_auth: AuthValue,
-    pub owner_policy: Option<[u8; DIGEST]>,
-    pub endorsement_policy: Option<[u8; DIGEST]>,
-    pub lockout_policy: Option<[u8; DIGEST]>,
+    pub owner_policy: Option<PrimaryPolicy>,
+    pub endorsement_policy: Option<PrimaryPolicy>,
+    pub lockout_policy: Option<PrimaryPolicy>,
     /// `TPMA_PERMANENT.ownerAuthSet`: `TPM2_HierarchyChangeAuth` ran since the last `TPM2_Clear`.
     pub owner_auth_set: bool,
     pub endorsement_auth_set: bool,
@@ -85,7 +109,7 @@ impl Default for HierarchyPersistent {
 #[derive(Clone)]
 pub(crate) struct HierarchyVolatile {
     pub platform_auth: AuthValue,
-    pub platform_policy: Option<[u8; DIGEST]>,
+    pub platform_policy: Option<PrimaryPolicy>,
     pub ph_enable: bool,
     pub ph_enable_nv: bool,
     pub sh_enable: bool,
@@ -145,7 +169,12 @@ pub(crate) fn is_authorization_handle(handle: u32) -> bool {
 
 impl Tpm {
     /// An explicitly installed primary policy. The empty policy matches no session.
-    pub(crate) fn permanent_auth_policy(&self, handle: u32) -> Option<&[u8; DIGEST]> {
+    pub(crate) fn permanent_auth_policy(&self, handle: u32) -> Option<&[u8]> {
+        self.permanent_policy(handle).map(PrimaryPolicy::digest)
+    }
+
+    /// The installed primary policy with its hash.
+    pub(crate) fn permanent_policy(&self, handle: u32) -> Option<&PrimaryPolicy> {
         match handle {
             h::RH_PLATFORM => self.hv.platform_policy.as_ref(),
             h::RH_OWNER => self.persistent.hier.owner_policy.as_ref(),
@@ -311,15 +340,20 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.set_param(1);
-        let digest = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        // `TPM2B_DIGEST`: up to one SHA-512 digest; it has to be one digest of `hashAlg` (below).
+        let digest = p.tpm2b(limits::MAX_HASH_SIZE)?;
         p.set_param(2);
         let hash = p.u16()?;
         p.finish()?;
+        // Any hash of the TPM names a policy (Part 3, clause 24.3): `TPM_RC_SIZE` for a digest of
+        // another size, `TPM_RC_HASH` for an algorithm that is no implemented hash; NULL clears it.
         let policy = match hash {
             alg::NULL if digest.is_empty() => None,
             alg::NULL => return Err(Rc::SIZE.in_param(1)),
-            alg::SHA256 => Some(digest.try_into().map_err(|_| Rc::SIZE.in_param(1))?),
-            _ => return Err(Rc::HASH.in_param(2)),
+            other => {
+                let alg = HashAlg::from_alg(other).ok_or(Rc::HASH.in_param(2))?;
+                Some(PrimaryPolicy::new(alg, digest).ok_or(Rc::SIZE.in_param(1))?)
+            }
         };
         match inv.handles[0] {
             h::RH_PLATFORM => self.hv.platform_policy = policy,

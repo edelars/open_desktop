@@ -19,10 +19,11 @@ pub mod limits {
     pub const PCR_SELECT_SIZE: usize = 3;
     /// `HASH_COUNT`: implemented hash algorithms.
     pub const HASH_COUNT: usize = 2;
-    /// Digest limit for the SHA-256 profile (`crypto::DIGEST`): passwords, hierarchy and policy digests.
-    /// Sessions follow their `authHash` since step D and the policy digests will in step E; objects use the
-    /// digest size of their `nameAlg`. The largest digest of any
-    /// implemented hash is [`MAX_HASH_SIZE`].
+    /// Digest limit for the SHA-256 profile (`crypto::DIGEST`): hierarchy and sequence passwords and the
+    /// bound authValue of a session. Sessions follow their `authHash`, policy digests the hash of their
+    /// session, objects and NV indices the digest size of their `nameAlg` (a password too), and a
+    /// hierarchy policy the hash it names. The largest digest of any implemented hash is
+    /// [`MAX_HASH_SIZE`].
     pub const MAX_DIGEST_SIZE: usize = 32;
     /// `sizeof(TPMU_HA)`: the largest digest of any implemented hash (SHA-512), reported as
     /// `TPM_PT_MAX_DIGEST`.
@@ -632,8 +633,12 @@ pub(crate) const MAX_MLKEM_PUBLIC_BYTES: usize = 1184;
 /// Largest `TPM2B_SENSITIVE_DATA` payload of a sealed object (`MAX_SYM_DATA`; Part 3, 12.7.2 limits
 /// `outData` of `TPM2_Unseal` to 128 octets).
 pub const MAX_SYM_DATA: usize = 128;
-/// Largest `TPM2B_DATA` (`sizeof(TPMT_HA)` for SHA-256 = 2 + 32).
-pub const MAX_DATA: usize = 34;
+/// Largest `TPM2B_DATA` (`sizeof(TPMT_HA)`: a `TPM_ALG_ID` and a SHA-512 digest, 2 + 64 octets, since
+/// SHA-512 is implemented; it was 34 while SHA-256 was the only hash). `qualifyingData`,
+/// `outsideInfo`, an OAEP label and the symmetric key of `Duplicate` and `Import` have this type.
+pub const MAX_DATA: usize = 2 + limits::MAX_HASH_SIZE;
+/// Largest `TPM2B_NAME` (`sizeof(TPMU_NAME)`, the larger of `TPMT_HA` and a handle): 2 + 64 octets.
+pub const MAX_NAME: usize = 2 + limits::MAX_HASH_SIZE;
 
 impl<'a> Reader<'a> {
     /// A reader over the next `n` octets, with the same parameter number; `TPM_RC_INSUFFICIENT`

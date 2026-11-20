@@ -848,13 +848,14 @@ fn create_primary_framing_errors() {
         &create_primary_raw(&mut t, OWNER, b"", &good[..good.len() - 4]),
         Rc::INSUFFICIENT.in_param(4),
     );
-    // outsideInfo above sizeof(TPMT_HA).
+    // outsideInfo above sizeof(TPMT_HA): 2 + 64 octets, since SHA-512 is implemented (35 octets
+    // were above it while SHA-256 was the only hash).
     err(
         &create_primary_raw(
             &mut t,
             OWNER,
             b"",
-            &creation_params(b"", b"", &ecc_sign(), &[0u8; 35], &NO_PCR),
+            &creation_params(b"", b"", &ecc_sign(), &[0u8; 67], &NO_PCR),
         ),
         Rc::SIZE.in_param(3),
     );

@@ -662,7 +662,7 @@ mod tests {
         assert_eq!(restored.persistent.total_reset_count, 4);
         assert_eq!(
             restored.permanent_auth_policy(crate::codes::handle::RH_OWNER),
-            Some(&[0x55; 32])
+            Some(&[0x55; 32][..])
         );
         assert_eq!(
             Tpm::restore(&wrap(5, &payload), &[9; 48]).unwrap_err(),

@@ -1232,7 +1232,7 @@ fn get_time_errors() {
     );
     // Parameters: qualifyingData too long, trailing octet.
     err(
-        &get_time(&mut t, key, b"kpw", &[1u8; 35], &u16b(alg::NULL)),
+        &get_time(&mut t, key, b"kpw", &[1u8; 67], &u16b(alg::NULL)),
         Rc::SIZE.in_param(1),
     );
     err(
@@ -1435,7 +1435,7 @@ fn a_null_sign_handle_returns_the_attestation_with_the_null_signature() {
         Rc::AUTH_MISSING,
     );
     err(
-        &quote(&mut t, NULL, b"", &[1u8; 35], &u16b(alg::NULL), &sel),
+        &quote(&mut t, NULL, b"", &[1u8; 67], &u16b(alg::NULL), &sel),
         Rc::SIZE.in_param(1),
     );
 }
@@ -2255,7 +2255,7 @@ fn encrypted_set_primary_policy_stores_the_plaintext_digest() {
     assert_ne!(ciphertext, digest);
     command.params = cat(&[&tpm2b(&ciphertext), &u16b(alg::SHA256)]);
     ok(&run_hmac(&mut t, &mut session, &command));
-    assert_eq!(t.permanent_auth_policy(OWNER), Some(&digest));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&digest[..]));
 }
 
 #[test]

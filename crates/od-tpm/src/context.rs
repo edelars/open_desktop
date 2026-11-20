@@ -77,7 +77,7 @@ use crate::object::{
 use crate::paramenc::SessionSym;
 use crate::policy::{PolicyHashRestriction, PolicyState};
 use crate::response::{Output, Rc};
-use crate::session::{BoundEntity, Session, SessionKind, session_handle};
+use crate::session::{BoundEntity, MIN_NONCE, Session, SessionKind, session_handle};
 use crate::state::{TimePoint, Tpm};
 
 /// Largest `contextBlob` accepted by `TPM2_ContextLoad` (an RSA object context is under 1 KiB).
@@ -436,7 +436,13 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         _ => return Err(Rc::VALUE),
     };
     let size = auth_hash.size();
+    // The size of the session nonce is that of the first `nonceCaller`: at least 16 octets and at
+    // most one digest of `authHash` (`StartAuthSession`). `tpm2b` bounds it above; the lower bound
+    // keeps a body with a shorter (or empty) nonce from loading as a session.
     let nonce_tpm = r.tpm2b(size)?.to_vec();
+    if nonce_tpm.len() < MIN_NONCE {
+        return Err(Rc::SIZE);
+    }
     let key = AuthValue::from_slice_up_to(r.tpm2b(size)?, size).ok_or(Rc::SIZE)?;
     let bound = match r.u8()? {
         0 => None,
@@ -836,6 +842,46 @@ mod tests {
                 "{head:#04x}"
             );
         }
+    }
+
+    /// The body of a session with a nonce of `nonce_len` octets and a key of `size` octets.
+    fn session_body_with_nonce(head: u8, nonce_len: usize, size: usize) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(head);
+        w.tpm2b(&vec![1; nonce_len]);
+        w.tpm2b(&vec![2; size]);
+        w.u8(0);
+        w.bytes(&vec![0; if head & 0x0f == 0 { 32 } else { size }]);
+        w.bytes(&[0, 0, 0, 0, SessionSym::Null.to_octet()]);
+        w.finish()
+    }
+
+    /// The nonce of a session is as long as the first `nonceCaller` of `StartAuthSession`: at least 16
+    /// octets and at most one digest of `authHash` (Part 1, clause 17.6.3.2; Part 3, clause 11.1 gives
+    /// `TPM_RC_SIZE` for a `nonceCaller` outside that range). `decode_session` bounded it above
+    /// only; a body with a shorter nonce (down to none) is refused as well. A nonce of 32
+    /// octets in a SHA-384 session is a valid session (a client may send a 32-octet `nonceCaller`
+    /// whatever the hash), so only the range is checked, not the digest size.
+    #[test]
+    fn decode_session_rejects_short_nonce_for_sha384() {
+        for (head, size) in [(0x10, 48), (0x11, 48), (0x12, 48), (0x20, 64), (0x00, 32)] {
+            for nonce_len in [0, 1, 15, 16, 17, 32, size - 1, size, size + 1] {
+                let result = decode_session(&session_body_with_nonce(head, nonce_len, size));
+                if (16..=size).contains(&nonce_len) {
+                    let session =
+                        result.unwrap_or_else(|rc| panic!("{head:#04x}/{nonce_len}: {rc:?}"));
+                    assert_eq!(session.nonce_tpm.len(), nonce_len);
+                } else {
+                    assert!(
+                        matches!(result, Err(Rc::SIZE)),
+                        "{head:#04x}/{nonce_len} must be TPM_RC_SIZE"
+                    );
+                }
+            }
+        }
+        // The nonce of the saved session survives the round trip of ContextSave with its own size.
+        let body = session_body_with_nonce(0x10, 32, 48);
+        assert_eq!(&encode_session(&decode_session(&body).unwrap())[..], body);
     }
 
     #[test]

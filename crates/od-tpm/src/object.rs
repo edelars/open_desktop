@@ -138,19 +138,28 @@ pub(crate) fn name_hash_alg(name_alg: u16) -> Result<HashAlg, Rc> {
     HashAlg::from_alg(name_alg).ok_or(Rc::HASH)
 }
 
-/// `nameAlg || H(TPMT_PUBLIC)` (Part 1, clause 14), with the hash of the object's own `nameAlg`. A
-/// `nameAlg` that is no hash (a corrupt context body; no object has one) is named as SHA-256.
+/// `nameAlg || H(TPMT_PUBLIC)` (Part 1, clause 14), with the hash of the object's own `nameAlg`. An
+/// object whose `nameAlg` is `TPM_ALG_NULL` has no Name: the Empty Buffer. `TpmtPublic::unmarshal`
+/// admits no `nameAlg` but a hash or NULL, so every object that exists has one of the two.
 pub(crate) fn name_of(public: &TpmtPublic) -> Vec<u8> {
-    let name_hash = name_hash_alg(public.name_alg).unwrap_or(HashAlg::Sha256);
+    if public.name_alg == alg::NULL {
+        return Vec::new();
+    }
+    let name_hash = name_hash_alg(public.name_alg)
+        .expect("TpmtPublic::unmarshal admits only a hash or NULL as nameAlg");
     let mut n = name_hash.alg().to_be_bytes().to_vec();
     n.extend_from_slice(hash(name_hash, &[&public.to_bytes()]).as_slice());
     n
 }
 
 /// `nameAlg || H(parentQN || Name)` (Part 1, clause 24.5), with the `nameAlg` of the object whose
-/// Qualified Name it is (the same hash as in its Name).
+/// Qualified Name it is (the same hash as in its Name; the Empty Buffer for `TPM_ALG_NULL`).
 pub(crate) fn qualified_name_of(name_alg: u16, parent_qn: &[u8], name: &[u8]) -> Vec<u8> {
-    let name_hash = name_hash_alg(name_alg).unwrap_or(HashAlg::Sha256);
+    if name_alg == alg::NULL {
+        return Vec::new();
+    }
+    let name_hash = name_hash_alg(name_alg)
+        .expect("TpmtPublic::unmarshal admits only a hash or NULL as nameAlg");
     let mut qn = name_hash.alg().to_be_bytes().to_vec();
     qn.extend_from_slice(hash(name_hash, &[parent_qn, name]).as_slice());
     qn
@@ -1104,6 +1113,30 @@ mod tests {
         assert_eq!(object_slot(0x8000_0000), None);
         assert_eq!(object_slot(object_handle(MAX_OBJECTS)), None);
         assert_eq!(object_slot(0x8100_0000), None);
+    }
+
+    #[test]
+    fn a_null_name_alg_has_the_empty_name_and_qualified_name() {
+        // An object without nameAlg has no Name and no Qualified Name (the Empty Buffer), and the
+        // functions do not panic on it; check_public and LoadExternal refuse such an object.
+        let mut public = ecc_sign_template();
+        public.name_alg = alg::NULL;
+        assert_eq!(name_of(&public), Vec::<u8>::new());
+        assert_eq!(
+            qualified_name_of(alg::NULL, &[0x00, 0x0b, 1, 2, 3], &[0x00, 0x0b, 4]),
+            Vec::<u8>::new()
+        );
+        assert_eq!(qualified_name_of(alg::NULL, &[], &[]), Vec::<u8>::new());
+        // With a hash, the Name is nameAlg || digest and the Qualified Name the same width.
+        for (name_alg, size) in [(alg::SHA256, 32), (alg::SHA384, 48), (alg::SHA512, 64)] {
+            public.name_alg = name_alg;
+            let name = name_of(&public);
+            assert_eq!(name[..2], name_alg.to_be_bytes());
+            assert_eq!(name.len(), 2 + size);
+            let qn = qualified_name_of(name_alg, &name, &name);
+            assert_eq!(qn[..2], name_alg.to_be_bytes());
+            assert_eq!(qn.len(), 2 + size);
+        }
     }
 
     #[test]

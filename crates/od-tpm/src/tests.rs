@@ -27,6 +27,8 @@ mod tests_obj;
 mod tests_session_audit;
 #[path = "tests_sha2.rs"]
 mod tests_sha2;
+#[path = "tests_sha2_nv.rs"]
+mod tests_sha2_nv;
 #[path = "tests_sha2_policy.rs"]
 mod tests_sha2_policy;
 #[path = "tests_sha2_sessions.rs"]

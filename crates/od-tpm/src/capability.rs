@@ -35,7 +35,7 @@
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
 use crate::codes::{alg, cap, curve, handle, pt, spec};
-use crate::crypto::{DIGEST, supported_rsa_exponent};
+use crate::crypto::supported_rsa_exponent;
 use crate::dispatch::COMMANDS;
 use crate::marshal::{
     PublicParams, Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING,
@@ -358,7 +358,8 @@ impl Tpm {
                 if handle::handle_type(property) != handle::HT_PERMANENT {
                     return Err(Rc::VALUE.in_param(2));
                 }
-                entry_size = 4 + 2 + DIGEST;
+                // A hierarchy policy is a digest of any implemented hash (at most SHA-512).
+                entry_size = 4 + 2 + limits::MAX_HASH_SIZE;
                 for hierarchy in [
                     handle::RH_OWNER,
                     handle::RH_LOCKOUT,
@@ -370,9 +371,9 @@ impl Tpm {
                 {
                     entries.push(|w| {
                         w.u32(hierarchy);
-                        if let Some(digest) = self.permanent_auth_policy(hierarchy) {
-                            w.u16(alg::SHA256);
-                            w.bytes(digest);
+                        if let Some(policy) = self.permanent_policy(hierarchy) {
+                            w.u16(policy.alg.alg());
+                            w.bytes(policy.digest());
                         } else {
                             w.u16(alg::NULL);
                         }

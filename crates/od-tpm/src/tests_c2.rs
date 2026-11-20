@@ -157,13 +157,13 @@ fn primary_policy_uses_current_authorization_and_reports_explicit_zero() {
     );
 
     ok(&use_session(&mut t, &mut zero, &set, 0, true, false));
-    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32][..]));
     err(
         &use_session(&mut t, &mut zero, &set, 0, true, false),
         Rc::POLICY_FAIL.in_session(1),
     );
     ok(&set_auth(&mut t, OWNER, b"", b"new owner"));
-    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32][..]));
     err(
         &set_primary_policy(&mut t, OWNER, b"", b"", alg::NULL),
         Rc::BAD_AUTH.in_session(1),
@@ -177,14 +177,20 @@ fn primary_policy_uses_current_authorization_and_reports_explicit_zero() {
         Rc::SIZE.in_param(1),
     );
     err(
-        &set_primary_policy(&mut t, OWNER, b"new owner", b"", 0x000c),
+        &set_primary_policy(&mut t, OWNER, b"new owner", b"", 0x0004),
         Rc::HASH.in_param(2),
+    );
+    // SHA-384 is an implemented hash: a policy of it is accepted (see the 48-octet digests in
+    // `tests_sha2_nv.rs`), but an empty digest is not one digest long.
+    err(
+        &set_primary_policy(&mut t, OWNER, b"new owner", b"", alg::SHA384),
+        Rc::SIZE.in_param(1),
     );
     err(
         &set_primary_policy(&mut t, NULL, b"", b"", alg::NULL),
         Rc::VALUE.in_handle(1),
     );
-    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32]));
+    assert_eq!(t.permanent_auth_policy(OWNER), Some(&[4; 32][..]));
     ok(&set_primary_policy(
         &mut t,
         OWNER,
@@ -239,7 +245,7 @@ fn hierarchy_policies_follow_reset_resume_clear_and_snapshot() {
     }
     let restored = Tpm::restore(&t.persistent_snapshot(), &ENTROPY).unwrap();
     for (hierarchy, policy) in policies.into_iter().take(3) {
-        assert_eq!(restored.permanent_auth_policy(hierarchy), Some(&policy));
+        assert_eq!(restored.permanent_auth_policy(hierarchy), Some(&policy[..]));
     }
     assert_eq!(restored.permanent_auth_policy(PLATFORM), None);
 
@@ -247,14 +253,14 @@ fn hierarchy_policies_follow_reset_resume_clear_and_snapshot() {
     t.init();
     startup(&mut t, su::STATE);
     for (hierarchy, policy) in policies {
-        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy));
+        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy[..]));
     }
     shutdown(&mut t, su::STATE);
     t.init();
     startup(&mut t, su::CLEAR);
     assert_eq!(t.permanent_auth_policy(PLATFORM), None);
     for (hierarchy, policy) in policies.into_iter().take(3) {
-        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy));
+        assert_eq!(t.permanent_auth_policy(hierarchy), Some(&policy[..]));
     }
     ok(&set_primary_policy(
         &mut t,
@@ -267,7 +273,7 @@ fn hierarchy_policies_follow_reset_resume_clear_and_snapshot() {
     for (hierarchy, _) in policies.into_iter().take(3) {
         assert_eq!(t.permanent_auth_policy(hierarchy), None);
     }
-    assert_eq!(t.permanent_auth_policy(PLATFORM), Some(&[4; 32]));
+    assert_eq!(t.permanent_auth_policy(PLATFORM), Some(&[4; 32][..]));
     t.init();
     startup(&mut t, su::CLEAR);
     assert_eq!(t.permanent_auth_policy(PLATFORM), None);
@@ -4577,7 +4583,7 @@ fn quote_errors() {
     ok(&q(&mut t, nk, b"nk", &ecc_sig_scheme(), &sel04()));
     // Parameters: qualifyingData above TPM2B_DATA, trailing octets, a malformed selection.
     err(
-        &quote(&mut t, key, b"kpw", &[1u8; 35], &u16b(alg::NULL), &sel04()),
+        &quote(&mut t, key, b"kpw", &[1u8; 67], &u16b(alg::NULL), &sel04()),
         Rc::SIZE.in_param(1),
     );
     err(
@@ -4671,7 +4677,7 @@ fn certify_rsa_attestation_verifies_externally() {
             obj.handle,
             rsa_key.handle,
             [b"opw", b"rpw"],
-            &[1u8; 35],
+            &[1u8; 67],
             &u16b(alg::NULL),
         ),
         Rc::SIZE.in_param(1),

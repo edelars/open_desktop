@@ -11,8 +11,8 @@ use super::*;
 use crate::codes::{object_attr as oa, se};
 use crate::crypto::{HashAlg, hash, hmac_sha256, kdfa_sha256};
 use crate::marshal::{
-    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Unique, Writer,
-    digest_size, pcr_digest_size,
+    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Writer, digest_size,
+    pcr_digest_size,
 };
 
 const SHA384_FOX: &str = "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1";
@@ -1181,99 +1181,5 @@ fn sha384_object_creation_hash_and_pcr_digest_use_the_name_alg() {
     assert_eq!(
         sha256_child.hash,
         hash(HashAlg::Sha256, &[&sha256_child.creation]).as_slice()
-    );
-}
-
-#[test]
-fn duplicate_import_and_credentials_refuse_a_sha384_name_alg_with_hash() {
-    use super::tests_obj::{ecc_storage, sealed};
-    use crate::dispatch::Invocation;
-    use crate::response::Output;
-    let (mut t, parent) = super::tests_obj::with_ecc_parent();
-    // The handlers are called without their authorization: a SHA-384 object cannot be authorized by
-    // a SHA-256 policy session yet (step D), and Duplicate needs one.
-    type Handler = fn(&mut Tpm, &Invocation, &mut Reader<'_>) -> Result<Output, Rc>;
-    let invoke = |t: &mut Tpm, handles: [u32; 3], f: Handler, params: &[u8]| {
-        f(t, &Invocation { handles }, &mut Reader::new(params)).map(|_| ())
-    };
-    let duplicate: Handler = |t, inv, r| t.cmd_duplicate(inv, r);
-    let activate: Handler = |t, inv, r| t.cmd_activate_credential(inv, r);
-    let mut movable = sealed();
-    movable.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
-    let (plain_object, ..) = child_of(&mut t, parent, &movable, b"c", b"data");
-    let (sha384_object, ..) = child_of(&mut t, parent, &named(movable, alg::SHA384), b"c", b"data");
-    let to_null = cat(&[&tpm2b(b""), &u16b(alg::NULL)]);
-    // TPM2_Duplicate: the object (handle 1) and the new parent (handle 2).
-    assert_eq!(
-        invoke(&mut t, [plain_object, NULL, 0], duplicate, &to_null),
-        Ok(())
-    );
-    assert_eq!(
-        invoke(&mut t, [sha384_object, NULL, 0], duplicate, &to_null),
-        Err(Rc::HASH.in_handle(1))
-    );
-    let storage384 = parse_primary(&create_primary(
-        &mut t,
-        OWNER,
-        b"sp",
-        &named(ecc_storage(), alg::SHA384),
-    ))
-    .handle;
-    assert_eq!(
-        invoke(&mut t, [plain_object, storage384, 0], duplicate, &to_null),
-        Err(Rc::HASH.in_handle(2))
-    );
-    // TPM2_Import: the parent (handle 1) and the public area (parameter 2).
-    let import = |public: &TpmtPublic| {
-        cat(&[
-            &tpm2b(b""),
-            &tpm2b(&public.to_bytes()),
-            &tpm2b(&tpm2b(b"")),
-            &tpm2b(b""),
-            &u16b(alg::NULL),
-        ])
-    };
-    let mut foreign = named(sealed(), alg::SHA384);
-    foreign.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
-    foreign.unique = Unique::Digest(vec![0; 48]);
-    err(
-        &run(
-            &mut t,
-            with_pw(cc::IMPORT, &[parent], &[b"parent-pw"], &import(&foreign)),
-        ),
-        Rc::HASH.in_param(2),
-    );
-    let mut native = foreign.clone();
-    native.name_alg = alg::SHA256;
-    native.unique = Unique::Digest(vec![0; 32]);
-    err(
-        &run(
-            &mut t,
-            with_pw(cc::IMPORT, &[storage384], &[b"sp"], &import(&native)),
-        ),
-        Rc::HASH.in_handle(1),
-    );
-    // TPM2_MakeCredential: the storage key (handle 1).
-    let make = |t: &mut Tpm, key: u32| {
-        run(
-            t,
-            plain(
-                cc::MAKE_CREDENTIAL,
-                &[key],
-                &cat(&[&tpm2b(&[7; 32]), &tpm2b(&[8; 34])]),
-            ),
-        )
-    };
-    err(&make(&mut t, storage384), Rc::HASH.in_handle(1));
-    ok(&make(&mut t, parent));
-    // TPM2_ActivateCredential: the activated object (handle 1) and the key (handle 2).
-    let blob = cat(&[&tpm2b(&[0; 40]), &tpm2b(b"")]);
-    assert_eq!(
-        invoke(&mut t, [sha384_object, parent, 0], activate, &blob),
-        Err(Rc::HASH.in_handle(1))
-    );
-    assert_eq!(
-        invoke(&mut t, [plain_object, storage384, 0], activate, &blob),
-        Err(Rc::HASH.in_handle(2))
     );
 }

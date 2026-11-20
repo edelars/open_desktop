@@ -21,6 +21,7 @@ use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use rsa::rand_core::{TryCryptoRng, TryRng};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BoxedUint, Oaep, Pkcs1v15Encrypt, Pkcs1v15Sign};
+use sha2::digest::FixedOutputReset;
 use sha2::digest::block_api::EagerHash;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use zeroize::Zeroizing;
@@ -435,12 +436,34 @@ pub(crate) fn rsa_verify_hash(n: &[u8], hash: HashAlg, digest: &[u8], sig: &[u8]
 
 /// The padding of `TPM2_RSA_Encrypt` and `TPM2_RSA_Decrypt` (Part 3, Table 42): none (the
 /// message is an integer, raw RSA), RSAES-PKCS1-v1_5 and RSAES-OAEP (SHA-256 for the label and for
-/// MGF1, the only mask generation the text allows).
+/// MGF1, the only mask generation the text allows). `OaepWith` names another hash for the label
+/// and for MGF1 (the seed of a credential or a duplicate uses the `nameAlg` of the storage key,
+/// Part 1, clauses 24.4 and 24.5); `Oaep` is `OaepWith(Sha256)`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RsaPadding {
     None,
     Rsaes,
     Oaep,
+    OaepWith(HashAlg),
+}
+
+impl RsaPadding {
+    /// The hash of an OAEP padding, `None` for the other paddings.
+    fn oaep_hash(self) -> Option<HashAlg> {
+        match self {
+            RsaPadding::Oaep => Some(HashAlg::Sha256),
+            RsaPadding::OaepWith(hash) => Some(hash),
+            RsaPadding::None | RsaPadding::Rsaes => None,
+        }
+    }
+}
+
+fn oaep_scheme<D: Digest + FixedOutputReset>(label: &[u8]) -> Oaep<D> {
+    if label.is_empty() {
+        Oaep::<D>::new()
+    } else {
+        Oaep::<D>::new_with_label(label)
+    }
 }
 
 /// `TPM2_RSA_Encrypt` primitive with the public key `(n, 65537)`: `None` when the message does not
@@ -466,13 +489,14 @@ pub(crate) fn rsa_encrypt_public(
         RsaPadding::Rsaes => key
             .encrypt(&mut DrbgRng(rng), Pkcs1v15Encrypt, message)
             .ok(),
-        RsaPadding::Oaep => {
-            let scheme = if label.is_empty() {
-                Oaep::<Sha256>::new()
-            } else {
-                Oaep::<Sha256>::new_with_label(label)
-            };
-            key.encrypt(&mut DrbgRng(rng), scheme, message).ok()
+        RsaPadding::Oaep | RsaPadding::OaepWith(_) => {
+            let rng = &mut DrbgRng(rng);
+            match padding.oaep_hash()? {
+                HashAlg::Sha256 => key.encrypt(rng, oaep_scheme::<Sha256>(label), message),
+                HashAlg::Sha384 => key.encrypt(rng, oaep_scheme::<Sha384>(label), message),
+                HashAlg::Sha512 => key.encrypt(rng, oaep_scheme::<Sha512>(label), message),
+            }
+            .ok()
         }
     }
 }
@@ -499,16 +523,20 @@ pub(crate) fn rsa_decrypt_private(
             key.decrypt_blinded(&mut DrbgRng(rng), Pkcs1v15Encrypt, ciphertext)
                 .ok()?,
         ),
-        RsaPadding::Oaep => {
-            let scheme = if label.is_empty() {
-                Oaep::<Sha256>::new()
-            } else {
-                Oaep::<Sha256>::new_with_label(label)
+        RsaPadding::Oaep | RsaPadding::OaepWith(_) => {
+            let rng = &mut DrbgRng(rng);
+            let plain = match padding.oaep_hash()? {
+                HashAlg::Sha256 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha256>(label), ciphertext)
+                }
+                HashAlg::Sha384 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha384>(label), ciphertext)
+                }
+                HashAlg::Sha512 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha512>(label), ciphertext)
+                }
             };
-            Zeroizing::new(
-                key.decrypt_blinded(&mut DrbgRng(rng), scheme, ciphertext)
-                    .ok()?,
-            )
+            Zeroizing::new(plain.ok()?)
         }
     };
     Some(out)

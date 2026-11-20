@@ -28,10 +28,10 @@
 //! | `ownerAuth`, `endorsementAuth`, `lockoutAuth` (`lv8`, at most 32 octets each) | variable |
 //! | hierarchy flags (u8: bit 0 `ownerAuthSet`, 1 `endorsementAuthSet`, 2 `lockoutAuthSet`, 3 `disableClear`; others zero) | 1 |
 //! | DA: `failedTries`, `maxTries`, `recoveryTime`, `lockoutRecovery` (u32 each), `lockoutAuth` enabled (u8: 0/1) | 17 |
-//! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16), attributes (u32; bits 7:4 are `TPM_NT`: ordinary, counter, bit field or extend), `authPolicy` (`lv8`), `authValue` (`lv8`), data (`lv16`) | variable |
+//! | NV: count (u16, at most 128), then per index: handle (u32), `nameAlg` (u16: SHA-256, SHA-384 or SHA-512), attributes (u32; bits 7:4 are `TPM_NT`: ordinary, counter, bit field or extend), `authPolicy` (`lv8`, empty or one digest of `nameAlg`), `authValue` (`lv8`, at most one digest of `nameAlg`), data (`lv16`) | variable |
 //! | NV counter maximum: the largest value any counter has had (u64, slice C3) | 8 |
 //! | persistent objects: count (u8, at most 16), then per object: handle (u32), hierarchy (u32), `TPMT_PUBLIC` (`lv16`), Qualified Name (`lv8`), marshaled `TPM2B_SENSITIVE` (`lv16`) | variable |
-//! | v4 onward: Owner, Endorsement, Lockout policy. Each is `hashAlg` (u16), then 32 octets for SHA-256. NULL has no digest. | 6–102 |
+//! | v4 onward: Owner, Endorsement, Lockout policy. Each is `hashAlg` (u16: SHA-256, SHA-384, SHA-512 or NULL), then one digest of that hash (32, 48 or 64 octets). NULL has no digest. | 6–198 |
 //! | v5 onward: `totalResetCount` | 8 |
 //! | v6 onward: desired PCR bank mask (SHA-256 bit 0, SHA-384 bit 1) | 1 |
 //!
@@ -39,22 +39,32 @@
 //! (a length above its limit, a duplicate or foreign handle, a handle outside the range of its
 //! hierarchy, a public area that does not unmarshal, a private part that does not belong to the
 //! public area, trailing octets); a truncated payload is `StateError::BadLength`. An NV index must
-//! be consistent with its type (`TPM_NT` supported, size 8 for a counter or bit field and 32 for an
-//! extend index, no reserved or unsupported attribute, data zero while `WRITTEN` is CLEAR) and a
+//! be consistent with its type and its `nameAlg` (`TPM_NT` supported, size 8 for a counter or bit
+//! field and one digest of `nameAlg` for an extend index, no reserved or unsupported attribute, data
+//! zero while `WRITTEN` is CLEAR) and a
 //! written counter may not exceed the stored maximum (`NvStore::from_indices`).
 //!
 //! **Version history.** Version 2 (slice C1) had no counter maximum and only ordinary indices; it
 //! is refused as `UnsupportedVersion(2)` and never restored with silently empty state. The refusal
 //! is a choice, not a necessity: version 2 held no counters, so `counter_max` = 0 would have been
 //! exact; refusing was chosen so that an old format is not read implicitly.
+//!
+//! **Hash agility (slice 1c) did not change the version.** The NV record already carried `nameAlg`,
+//! `authPolicy` and `authValue` as length-prefixed fields, and a primary policy already carried its
+//! `hashAlg`; only what the decoder accepts widened (SHA-384 and SHA-512 where only SHA-256 was
+//! allowed). A snapshot with SHA-256 only is byte-identical to the one of the earlier commit (golden
+//! test `sha256_nv_golden_unchanged`), and an older decoder refuses a snapshot with a SHA-384 or
+//! SHA-512 NV index or policy as a bad field instead of misreading it.
 
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle as h};
-use crate::crypto::DIGEST;
+use crate::crypto::HashAlg;
 use crate::da::DaPersistent;
 use crate::hash::AuthValue;
-use crate::hierarchy::{HierarchyPersistent, LEGACY_SEED_BYTES, PRIMARY_SEED_BYTES, PrimarySeed};
+use crate::hierarchy::{
+    HierarchyPersistent, LEGACY_SEED_BYTES, PRIMARY_SEED_BYTES, PrimaryPolicy, PrimarySeed,
+};
 use crate::marshal::{Reader, TpmtPublic, limits};
 use crate::nv::{MAX_NV_INDEX_SIZE, NvIndex, NvStore};
 use crate::object::{
@@ -239,9 +249,9 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         e.lv16(&bytes);
     }
     for policy in [&hp.owner_policy, &hp.endorsement_policy, &hp.lockout_policy] {
-        if let Some(digest) = policy {
-            e.u16(alg::SHA256);
-            e.raw(digest);
+        if let Some(policy) = policy {
+            e.u16(policy.alg.alg());
+            e.raw(policy.digest());
         } else {
             e.u16(alg::NULL);
         }
@@ -321,12 +331,13 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         let name_alg = c.u16().ok_or(Bad::Short)?;
         let attributes = c.u32().ok_or(Bad::Short)?;
         let policy = c.lv8().ok_or(Bad::Short)?;
-        let index_auth = auth(&mut c)?;
+        // The `authValue` of an index is at most one digest of its `nameAlg` (checked, with the
+        // `nameAlg` itself and the `authPolicy`, by `NvIndex::is_consistent`).
+        let index_auth =
+            AuthValue::from_slice_trimmed_up_to(c.lv8().ok_or(Bad::Short)?, limits::MAX_HASH_SIZE)
+                .ok_or(Bad::Field)?;
         let data = c.lv16().ok_or(Bad::Short)?;
-        if name_alg != alg::SHA256
-            || !(policy.is_empty() || policy.len() == limits::MAX_DIGEST_SIZE)
-            || data.len() > MAX_NV_INDEX_SIZE
-        {
+        if data.len() > MAX_NV_INDEX_SIZE {
             return Err(Bad::Field);
         }
         indices.push(NvIndex {
@@ -382,13 +393,11 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         ] {
             *policy = match c.u16().ok_or(Bad::Short)? {
                 alg::NULL => None,
-                alg::SHA256 => Some(
-                    c.take(DIGEST)
-                        .ok_or(Bad::Short)?
-                        .try_into()
-                        .map_err(|_| Bad::Short)?,
-                ),
-                _ => return Err(Bad::Field),
+                other => {
+                    let policy_alg = HashAlg::from_alg(other).ok_or(Bad::Field)?;
+                    let digest = c.take(policy_alg.size()).ok_or(Bad::Short)?;
+                    Some(PrimaryPolicy::new(policy_alg, digest).ok_or(Bad::Field)?)
+                }
             };
         }
     }

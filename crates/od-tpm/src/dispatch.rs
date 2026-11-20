@@ -425,21 +425,48 @@ fn response_parameter_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDig
 }
 
 /// `parse_auth_area` takes up to one SHA-512 digest of nonce and HMAC in every session; the limit
-/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`, whose password
-/// stays at 32 octets) and a handle that names no loaded session keep the SHA-256 limit of before
-/// hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
-fn check_auth_sizes(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<(), Rc> {
-    for s in sessions {
+/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`) carries the
+/// `authValue` of the entity that the session authorizes, so its limit is one digest of the
+/// `nameAlg` of an object or an NV index (48 or 64 octets for SHA-384 and SHA-512) and 32 octets
+/// for any other entity (a hierarchy, a sequence). A handle that names no loaded session keeps the
+/// SHA-256 limit of before hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
+fn check_auth_sizes(
+    tpm: &Tpm,
+    spec: &CommandSpec,
+    handles: &CommandHandles,
+    sessions: &[TpmsAuthCommand],
+) -> Result<(), Rc> {
+    for (i, s) in sessions.iter().enumerate() {
         let limit = tpm
             .sessions
             .slot_of(s.session_handle)
             .and_then(|slot| tpm.sessions.get(slot))
-            .map_or(DIGEST, |session| session.auth_hash.size());
+            .map_or_else(
+                || {
+                    if s.session_handle == handle::RS_PW && i < usize::from(spec.auth) {
+                        entity_auth_limit(tpm, handles[i])
+                    } else {
+                        DIGEST
+                    }
+                },
+                |session| session.auth_hash.size(),
+            );
         if s.nonce.len() > limit || s.hmac.len() > limit {
             return Err(Rc::AUTHSIZE);
         }
     }
     Ok(())
+}
+
+/// The largest `authValue` of the entity behind `handle`: one digest of the `nameAlg` of an object or
+/// an NV index, 32 octets for the others.
+fn entity_auth_limit(tpm: &Tpm, handle: u32) -> usize {
+    if let Some(index) = tpm.persistent.nv.get(handle) {
+        return index.hash_alg().size();
+    }
+    tpm.object(handle)
+        .and_then(|object| HashAlg::from_alg(object.public.name_alg))
+        .map_or(DIGEST, HashAlg::size)
 }
 
 /// How a session of the authorization area is used.
@@ -611,7 +638,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     } else {
         Vec::new()
     };
-    check_auth_sizes(tpm, &sessions)?;
+    check_auth_sizes(tpm, spec, &handles, &sessions)?;
     let needed = usize::from(spec.auth);
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);

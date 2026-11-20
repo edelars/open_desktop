@@ -68,8 +68,9 @@ use crate::state::{TimePoint, Tpm};
 /// PTP 1.07, Table 2: at least 3 loaded and 64 active).
 pub const MAX_SESSIONS: usize = 64;
 
-/// Smallest `nonceCaller` of `TPM2_StartAuthSession` (Part 1, clause 17.6.3.2).
-const MIN_NONCE: usize = 16;
+/// Smallest `nonceCaller` of `TPM2_StartAuthSession` (Part 1, clause 17.6.3.2; a shorter one is
+/// `TPM_RC_SIZE`, Part 3, clause 11.1).
+pub(crate) const MIN_NONCE: usize = 16;
 
 /// The entity a bound session was started with.
 #[derive(Clone)]
