@@ -1396,6 +1396,54 @@ fn rsassa_signature(sig: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn verify_sequence_tickets_authenticate_the_raw_message_after_a_failed_completion() {
+    let mut t = started();
+    let key = parse_primary(&create_primary(&mut t, OWNER, b"owner key", &ecc_sign()));
+    let input = b"verify through\0two buffers";
+    let digest = Sha256::digest(input);
+    let signature_reply = sign(&mut t, key.handle, b"owner key", &digest, &null_scheme());
+    let signature = params(&signature_reply, 0);
+    let auth = b"verify sequence";
+    let sequence = seq_handle(&run(
+        &mut t,
+        plain(
+            cc::VERIFY_SEQUENCE_START,
+            &[key.handle],
+            &cat(&[&tpm2b(auth), &tpm2b(&[]), &tpm2b(&[])]),
+        ),
+    ));
+    ok(&seq_update(&mut t, sequence, auth, &input[..14]));
+    let complete = |t: &mut Tpm, signature: &[u8]| {
+        run(
+            t,
+            with_pw(
+                cc::VERIFY_SEQUENCE_COMPLETE,
+                &[sequence, key.handle],
+                &[auth],
+                signature,
+            ),
+        )
+    };
+    err(&complete(&mut t, signature), Rc::SIGNATURE);
+    ok(&seq_update(&mut t, sequence, auth, &input[14..]));
+    let reply = complete(&mut t, signature);
+    let proof = crate::crypto::kdfa_sha256(
+        &t.persistent.owner_seed[..],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
+    let tag = u16b(st::MESSAGE_VERIFIED);
+    let expected = crate::crypto::hmac_sha256(&proof, &[&tag, input, &key.name]);
+    assert_eq!(
+        params(&reply, 0),
+        cat(&[&tag, &u32b(OWNER), &tpm2b(&expected)])
+    );
+    err(&complete(&mut t, signature), Rc::reference_handle(0));
+}
+
+#[test]
 fn restricted_sign_sequence_rejects_a_generated_prefix_without_consuming_the_final_buffer() {
     let mut t = started();
     let restricted = ecc(base() | oa::RESTRICTED | oa::SIGN, SymDef::Null, ECDSA);

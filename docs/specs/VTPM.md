@@ -25,7 +25,7 @@ measured boot и журнала событий относится к S7-22. Гр
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. Текущие SHA-256, AES-128-CFB, RSA-2048 и P-256 поддерживают только часть цели. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
-| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 97 кодов из списка, 4 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
+| §5.2, таблица 16 | 101 команда `TPM2_*` категорий `M`/`MD` и 4 платформенных сигнала `M` | Объявлены 99 кодов из списка, 2 отсутствуют. Для объявленных команд проверить обязательные варианты объектов, алгоритмов, схем, сессий и отказов. `_TPM_INIT` и `_TPM_Hash_Start/Data/End` сверить с проверенным платформенным путём, включая PCR17 и establishment. |
 | §6, CRB | Locality 0 допустима при `CapLocality=0`. Размеры команды/ответа и транспорт должны покрывать весь реализуемый профиль | MMIO-буфер текущей страницы ограничен 3968 байтами. Для сохранения MMIO и поддержки PQC-кадров нужны CRB revision 3 и chunking. Буфер большего размера возможен при отдельном выборе RAM-CRB и соответствующего ACPI StartMethod. При `CapLocality=1` применяются требования к арбитражу дополнительных software localities и Seize. |
 | §4.10, обновление TPM | Механизм firmware upgrade обязателен. При Library-defined варианте обязательна пара `FieldUpgradeStart`/`FieldUpgradeData` | Определить и проверить host upgrade, совместимость persistent state и отказ при неподдерживаемой миграции. |
 | §4.6.3, EK | При vendor preprovisioning нужен комплект RSA-3072 или P-384 вместе с ML-KEM в установленном профилем сочетании | Legacy L-1/L-2 и хранение DER проверены. Issuer и production provisioning остаются в ISSUE-528. |
@@ -34,7 +34,7 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Срез | Команды |
 |---|---|
-| PQC и новые подписи | `Encapsulate`, `Decapsulate`, `VerifySequenceStart`, `VerifySequenceComplete` |
+| KEM | `Encapsulate`, `Decapsulate` |
 
 Errata 1.1 уточняет применимость ECC для `Encapsulate`/`Decapsulate`, рекомендацию о трёх наборах ML-DSA и опциональность external μ. Обязательные коды остаются в инвентаре. Результат приёмки требует host-векторов, проверки ошибок и capability, подтверждения сохранения при reset/restore и гостевого CRB/TCG2 прогона на целевом профиле. [Errata 1.1, §§2.1–2.3 и 3.2](https://medias.cdn.trustedcomputinggroup.org/production/TCG_Errata_v1_1_for_PTP_1_07_pub_f1aca71996.pdf).
 
@@ -203,19 +203,19 @@ Name всех handle команды в порядке на проводе. В х
 отклоняет `PolicyNameHash` с `TPM_RC_CPHASH`, включая повтор того же
 значения. Trial обновляет только дайджест политики.
 
-`TPM2_PolicyAuthorize` (`0x16A`) принимает билеты `TPMT_TK_VERIFIED`
-от `VerifySignature` и `VerifyDigestSignature`. TPM сверяет `approvedPolicy`
-с текущим дайджестом и проверяет билет по защищённому значению иерархии
-и хешу `approvedPolicy || policyRef`. Алгоритм хеша определяется по Name
-подписанта для legacy-билета и по метаданным для `DIGEST_VERIFIED`.
-Проверка поддерживает SHA-256 и SHA-384. Выдача билетов ограничена
-текущими схемами SHA-256. Ключ подписанта может быть выгружен.
+`TPM2_PolicyAuthorize` (`0x16A`) принимает билеты `VERIFIED`,
+`DIGEST_VERIFIED` и `MESSAGE_VERIFIED`. TPM сверяет `approvedPolicy`
+с текущим дайджестом и проверяет билет по защищённому значению иерархии.
+В проверку `MESSAGE_VERIFIED` входит исходное `approvedPolicy || policyRef`.
+Для билетов подписи дайджеста вычисляется хеш этих двух полей. Алгоритм
+берётся из Name подписанта для `VERIFIED` и из метаданных для `DIGEST_VERIFIED`.
+Проверка поддерживает SHA-256 и SHA-384. Текущие схемы выдачи билетов
+используют SHA-256 для подписи. Ключ подписанта может быть выгружен.
 Билет используется, пока связанная с ним иерархия включена.
 Успех заменяет дайджест политики значением, полученным из нулевого
 дайджеста, Name ключа и `policyRef`. Условия сессии, включая NameHash
 и locality, сохраняются. Trial принимает структурно корректный NULL
-билет и вычисляет итоговый дайджест. `MESSAGE_VERIFIED` остаётся в срезе
-проверки потоковых подписей.
+билет и вычисляет итоговый дайджест.
 
 Обе команды допускают шифрование первого входного параметра.
 При сохранении сессии код `1` общего слота сохраняет прежнее значение
@@ -284,6 +284,26 @@ RSA-2048, P-256, SHA-256 и пустым контекстом. Авториза�
 хеш и префикс остаются доступны для повторной попытки.
 [TPM Library v185 Part 3 §§17.5, 17.7 и 20.6](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
 [Errata 1 §2.2](https://medias.cdn.trustedcomputinggroup.org/production/Eratta_Trusted_Platform_Module_2_0_Library_Version_185_pub_17260f83c0.pdf).
+
+### Потоковая проверка подписи
+
+`VerifySequenceStart` (`0x1A9`) открывает последовательность для
+публичного ключа с фиксированной RSASSA или ECDSA и SHA-256. Поля `hint`
+и `context` пусты. `SequenceUpdate` добавляет порции сообщения.
+`VerifySequenceComplete` (`0x1A3`) авторизует последовательность и
+проверяет подпись по ключу с тем же Name. Успех освобождает слот.
+При ошибке текущий поток сохраняется для повторной попытки.
+
+`MESSAGE_VERIFIED` несёт тег `0x8026`, handle иерархии и `TPM2B_DIGEST`
+с HMAC от тега, исходного сообщения и Name. Для NULL-иерархии HMAC пуст.
+Три инкрементальных HMAC состояния дают возможность завершить поток с
+тем же Name под Owner, Platform или Endorsement. Размер состояния
+фиксирован. Если proof выбранной иерархии сменился между Start и Complete,
+реализация возвращает `SIGN_CONTEXT_KEY` второго handle. Предел связан
+с версией proof в накопленном HMAC. Для неизменной иерархии тот же поток
+можно завершить с тем же Name и действительным билетом.
+[TPM Library v185 Part 2 §10.6.5](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
+[Part 3 §§17.6, 20.3 и 23.16](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Ограничения шаблона и параметров команды
 

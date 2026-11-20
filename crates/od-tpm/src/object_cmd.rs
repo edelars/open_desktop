@@ -29,11 +29,14 @@
 //! object into a disabled hierarchy; the response order of `TPM2_CreatePrimary` (Part 3, Table
 //! 175) is as in the open text.
 
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr, st};
-use crate::crypto::{ecc_sign, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign};
+use crate::crypto::{
+    ecc_sign, hmac_sha256, hmac_sha256_state, hmac_sha256_verify, kdfa_sha256, rsa_sign,
+};
 use crate::da::DaProtection;
 use crate::dispatch::{AuthRole, Invocation};
 use crate::hash::AuthValue;
@@ -70,6 +73,22 @@ pub(crate) fn fixed_digest_scheme(object: &Object, handle_no: u8) -> Result<Sche
     }
 }
 
+pub(crate) fn check_signature_scheme(
+    signature: &TpmtSignature,
+    scheme: Scheme,
+    param: u8,
+) -> Result<(), Rc> {
+    let sig_scheme = match signature {
+        TpmtSignature::Rsassa { hash, .. } => (alg::RSASSA, *hash),
+        TpmtSignature::Ecdsa { hash, .. } => (alg::ECDSA, *hash),
+        TpmtSignature::Null => return Err(Rc::SCHEME.in_param(param)),
+    };
+    if sig_scheme != (scheme.alg, scheme.hash) {
+        return Err(Rc::SCHEME.in_param(param));
+    }
+    Ok(())
+}
+
 pub(crate) fn sign_digest_output(
     object: &Object,
     digest: &[u8],
@@ -104,6 +123,7 @@ pub(crate) fn sign_digest_output(
 #[derive(Clone, Copy)]
 enum VerifiedKind {
     Legacy,
+    Message,
     Digest { hash: u16 },
 }
 
@@ -111,16 +131,23 @@ impl VerifiedKind {
     fn tag(self) -> u16 {
         match self {
             Self::Legacy => st::VERIFIED,
+            Self::Message => st::MESSAGE_VERIFIED,
             Self::Digest { .. } => st::DIGEST_VERIFIED,
         }
     }
 
     fn metadata(self) -> Option<[u8; 2]> {
         match self {
-            Self::Legacy => None,
+            Self::Legacy | Self::Message => None,
             Self::Digest { hash } => Some(hash.to_be_bytes()),
         }
     }
+}
+
+pub(crate) fn verified_ticket_mac(proof: &[u8], tag: u16) -> Hmac<Sha256> {
+    let mut mac = hmac_sha256_state(proof);
+    mac.update(&tag.to_be_bytes());
+    mac
 }
 
 pub(crate) struct VerifiedTicket<'a> {
@@ -130,30 +157,36 @@ pub(crate) struct VerifiedTicket<'a> {
 }
 
 impl<'a> VerifiedTicket<'a> {
-    pub(crate) fn signed_hash_alg(&self, key_name_alg: u16) -> u16 {
+    pub(crate) fn signed_hash_alg(&self, key_name_alg: u16) -> Option<u16> {
         match self.kind {
-            VerifiedKind::Legacy => key_name_alg,
-            VerifiedKind::Digest { hash } => hash,
+            VerifiedKind::Legacy => Some(key_name_alg),
+            VerifiedKind::Message => None,
+            VerifiedKind::Digest { hash } => Some(hash),
         }
     }
 
     pub(crate) fn unmarshal(p: &mut Reader<'a>) -> Result<Self, Rc> {
         let tag = p.u16()?;
-        if !matches!(tag, st::VERIFIED | st::DIGEST_VERIFIED) {
+        if !matches!(
+            tag,
+            st::VERIFIED | st::MESSAGE_VERIFIED | st::DIGEST_VERIFIED
+        ) {
             return Err(p.err(Rc::TAG));
         }
         let hierarchy = p.u32()?;
         if !is_object_hierarchy(hierarchy) {
             return Err(p.err(Rc::VALUE));
         }
-        let kind = if tag == st::DIGEST_VERIFIED {
-            let hash = p.u16()?;
-            if digest_size(hash).is_none() {
-                return Err(p.err(Rc::HASH));
+        let kind = match tag {
+            st::MESSAGE_VERIFIED => VerifiedKind::Message,
+            st::DIGEST_VERIFIED => {
+                let hash = p.u16()?;
+                if digest_size(hash).is_none() {
+                    return Err(p.err(Rc::HASH));
+                }
+                VerifiedKind::Digest { hash }
             }
-            VerifiedKind::Digest { hash }
-        } else {
-            VerifiedKind::Legacy
+            _ => VerifiedKind::Legacy,
         };
         let hmac = p.tpm2b(limits::MAX_PCR_DIGEST_SIZE)?;
         Ok(Self {
@@ -163,13 +196,27 @@ impl<'a> VerifiedTicket<'a> {
         })
     }
 
-    fn marshal(&self, w: &mut Writer) {
+    pub(crate) fn message_output(hierarchy: u32, hmac: &'a [u8]) -> Output {
+        Self {
+            kind: VerifiedKind::Message,
+            hierarchy,
+            hmac,
+        }
+        .output()
+    }
+
+    fn output(&self) -> Output {
+        let mut w = Writer::new();
         w.u16(self.kind.tag());
         w.u32(self.hierarchy);
         if let Some(meta) = self.kind.metadata() {
             w.bytes(&meta);
         }
         w.tpm2b(self.hmac);
+        Output {
+            handles: Vec::new(),
+            params: w.finish(),
+        }
     }
 }
 
@@ -330,25 +377,22 @@ impl Tpm {
     pub(crate) fn valid_verified_ticket(
         &self,
         key_name: &[u8],
-        signed_hash: &[u8],
+        signed_value: &[&[u8]],
         ticket: &VerifiedTicket<'_>,
     ) -> bool {
         if !self.permanent_enabled(ticket.hierarchy) {
             return false;
         }
-        let tag = ticket.kind.tag().to_be_bytes();
-        let metadata = ticket.kind.metadata();
         self.proof(ticket.hierarchy).is_some_and(|proof| {
-            hmac_sha256_verify(
-                &proof,
-                &[
-                    &tag,
-                    signed_hash,
-                    key_name,
-                    metadata.as_slice().as_flattened(),
-                ],
-                ticket.hmac,
-            )
+            let mut mac = verified_ticket_mac(&proof, ticket.kind.tag());
+            for part in signed_value {
+                mac.update(part);
+            }
+            mac.update(key_name);
+            if let Some(metadata) = ticket.kind.metadata() {
+                mac.update(&metadata);
+            }
+            mac.verify_slice(ticket.hmac).is_ok()
         })
     }
 
@@ -905,14 +949,7 @@ impl Tpm {
 
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
         let key_scheme = fixed_digest_scheme(o, 1)?;
-        let sig_scheme = match &signature {
-            TpmtSignature::Rsassa { hash, .. } => (alg::RSASSA, *hash),
-            TpmtSignature::Ecdsa { hash, .. } => (alg::ECDSA, *hash),
-            TpmtSignature::Null => return Err(Rc::SCHEME.in_param(3)),
-        };
-        if sig_scheme != (key_scheme.alg, key_scheme.hash) {
-            return Err(Rc::SCHEME.in_param(3));
-        }
+        check_signature_scheme(&signature, key_scheme, 3)?;
         if digest_size(key_scheme.hash) != Some(digest.len()) {
             return Err(Rc::SIZE.in_param(2));
         }
@@ -936,16 +973,11 @@ impl Tpm {
             o.hierarchy,
             &[&tag, digest, &o.name, metadata.as_slice().as_flattened()],
         );
-        let mut w = Writer::new();
         VerifiedTicket {
             kind,
             hierarchy: ticket.hierarchy,
             hmac: &ticket.digest,
         }
-        .marshal(&mut w);
-        Output {
-            handles: Vec::new(),
-            params: w.finish(),
-        }
+        .output()
     }
 }

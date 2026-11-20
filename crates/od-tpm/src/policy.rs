@@ -1051,19 +1051,20 @@ impl Tpm {
                 return Err(Rc::VALUE.in_param(1));
             }
             let valid = match ticket.signed_hash_alg(name_alg) {
-                alg::SHA256 => {
+                None => self.valid_verified_ticket(key_name, &[approved, policy_ref], &ticket),
+                Some(alg::SHA256) => {
                     let signed = Sha256::new()
                         .chain_update(approved)
                         .chain_update(policy_ref)
                         .finalize();
-                    self.valid_verified_ticket(key_name, &signed, &ticket)
+                    self.valid_verified_ticket(key_name, &[&signed], &ticket)
                 }
-                alg::SHA384 => {
+                Some(alg::SHA384) => {
                     let signed = Sha384::new()
                         .chain_update(approved)
                         .chain_update(policy_ref)
                         .finalize();
-                    self.valid_verified_ticket(key_name, &signed, &ticket)
+                    self.valid_verified_ticket(key_name, &[&signed], &ticket)
                 }
                 _ => return Err(Rc::HASH.in_param(4)),
             };

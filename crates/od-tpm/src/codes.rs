@@ -101,7 +101,9 @@ pub mod cc {
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const START_AUTH_SESSION: u32 = 0x0000_0176;
     pub const VERIFY_SIGNATURE: u32 = 0x0000_0177;
+    pub const VERIFY_SEQUENCE_COMPLETE: u32 = 0x0000_01A3;
     pub const VERIFY_DIGEST_SIGNATURE: u32 = 0x0000_01A5;
+    pub const VERIFY_SEQUENCE_START: u32 = 0x0000_01A9;
     pub const GET_CAPABILITY: u32 = 0x0000_017A;
     pub const GET_RANDOM: u32 = 0x0000_017B;
     pub const GET_TEST_RESULT: u32 = 0x0000_017C;
@@ -121,6 +123,7 @@ pub mod st {
     /// Tickets (Part 2 v185, Table 23).
     pub const CREATION: u16 = 0x8021;
     pub const VERIFIED: u16 = 0x8022;
+    pub const MESSAGE_VERIFIED: u16 = 0x8026;
     pub const DIGEST_VERIFIED: u16 = 0x8027;
     pub const HASHCHECK: u16 = 0x8024;
     /// Attestation structure tags (Table 23).

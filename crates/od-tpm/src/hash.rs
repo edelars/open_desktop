@@ -28,9 +28,14 @@ use zeroize::Zeroize;
 use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
 use crate::crypto::{hmac_sha256, hmac_sha256_state, hmac_sha256_verify};
 use crate::dispatch::Invocation;
-use crate::marshal::{PublicParams, Reader, Scheme, TpmtTkHashcheck, Writer, digest_size, limits};
+use crate::marshal::{
+    PublicParams, Reader, Scheme, TpmtSignature, TpmtTkHashcheck, Writer, digest_size, limits,
+};
 use crate::object::{Secret, find_object};
-use crate::object_cmd::{fixed_digest_scheme, sign_digest_output};
+use crate::object_cmd::{
+    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, sign_digest_output,
+    verified_ticket_mac,
+};
 use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
@@ -148,6 +153,25 @@ pub(crate) struct SignSequence {
     prefix: MessagePrefix,
 }
 
+// A public key with the same Name may be reloaded under any of these hierarchies.
+const VERIFIED_HIERARCHIES: [u32; 3] = [
+    handle::RH_PLATFORM,
+    handle::RH_OWNER,
+    handle::RH_ENDORSEMENT,
+];
+
+struct MessageTicketState {
+    proof_id: [u8; limits::MAX_DIGEST_SIZE],
+    mac: Hmac<Sha256>,
+}
+
+pub(crate) struct VerifySequence {
+    key_name: Vec<u8>,
+    scheme: Scheme,
+    digest: Sha256,
+    tickets: [MessageTicketState; VERIFIED_HIERARCHIES.len()],
+}
+
 pub(crate) enum SequenceKind {
     /// Hash sequence of one algorithm (SHA-256).
     Hash(Sha256),
@@ -158,6 +182,7 @@ pub(crate) enum SequenceKind {
     /// Event sequence with both PCR bank algorithms.
     Event(EventHash),
     Sign(SignSequence),
+    Verify(VerifySequence),
 }
 
 pub(crate) struct Sequence {
@@ -347,6 +372,45 @@ impl Tpm {
         self.sequences.start(kind, auth)
     }
 
+    /// `TPM2_VerifySequenceStart` with the public key's fixed scheme (Part 3 v185 §17.6).
+    pub(crate) fn cmd_verify_sequence_start(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        p.set_param(1);
+        let auth = p.tpm2b(limits::MAX_DIGEST_SIZE)?;
+        let auth = AuthValue::from_slice(auth).ok_or_else(|| p.err(Rc::SIZE))?;
+        p.set_param(2);
+        p.tpm2b(0)?; // Only EdDSA signing schemes take a hint.
+        p.set_param(3);
+        p.tpm2b(0)?;
+        p.finish()?;
+        let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        let scheme = fixed_digest_scheme(key, 1)?;
+        if scheme.hash != alg::SHA256 {
+            return Err(Rc::SCHEME.in_handle(1));
+        }
+        // Parallel accumulators preserve the raw-message transcript across key reloads. Their
+        // size is independent of the number of SequenceUpdate calls and message length.
+        let tickets = VERIFIED_HIERARCHIES.map(|hierarchy| {
+            let proof = self
+                .proof(hierarchy)
+                .expect("a ticket hierarchy always has a proof");
+            MessageTicketState {
+                proof_id: Sha256::digest(&proof[..]).into(),
+                mac: verified_ticket_mac(&proof, st::MESSAGE_VERIFIED),
+            }
+        });
+        let kind = SequenceKind::Verify(VerifySequence {
+            key_name: key.name.clone(),
+            scheme,
+            digest: Sha256::new(),
+            tickets,
+        });
+        self.sequences.start(kind, auth)
+    }
+
     /// The key and hash selection rules shared by HMAC and HMAC_Start (Part 3, Tables 75 and 79).
     fn hmac_key_for_hash(&self, handle: u32, hash_alg: u16) -> Result<&[u8], Rc> {
         let object = self.object(handle).ok_or(Rc::reference_handle(0))?;
@@ -437,6 +501,12 @@ impl Tpm {
                     sign.digest.update(data);
                     sign.prefix.append(data);
                 }
+                SequenceKind::Verify(verify) => {
+                    verify.digest.update(data);
+                    for ticket in &mut verify.tickets {
+                        ticket.mac.update(data);
+                    }
+                }
             }
         }
         Ok(Output::default())
@@ -480,7 +550,7 @@ impl Tpm {
                 mac.update(data);
                 self.hash_result(&mac.finalize().into_bytes(), handle::RH_NULL)
             }
-            SequenceKind::Event(_) | SequenceKind::Sign(_) => {
+            SequenceKind::Event(_) | SequenceKind::Sign(_) | SequenceKind::Verify(_) => {
                 self.sequences.slots[slot] = Some(sequence);
                 return Err(Rc::MODE.in_handle(1));
             }
@@ -518,6 +588,55 @@ impl Tpm {
         }
         let digest = sign.digest.clone().chain_update(data).finalize();
         let result = sign_digest_output(key, &digest, sign.scheme, &mut self.drbg)?;
+        self.sequences.release(slot);
+        Ok(result)
+    }
+
+    /// `TPM2_VerifySequenceComplete` verifies the streamed message (Part 3 v185 §20.3).
+    pub(crate) fn cmd_verify_sequence_complete(
+        &mut self,
+        inv: &Invocation,
+        p: &mut Reader<'_>,
+    ) -> Result<Output, Rc> {
+        let slot = self.seq_slot(inv.handles[0], 0)?;
+        p.set_param(1);
+        let signature = TpmtSignature::unmarshal(p)?;
+        p.finish()?;
+        let Some(Sequence {
+            kind: SequenceKind::Verify(verify),
+            ..
+        }) = self.sequences.slots[slot].as_ref()
+        else {
+            return Err(Rc::MODE.in_handle(1));
+        };
+        let key = self.object(inv.handles[1]).ok_or(Rc::reference_handle(1))?;
+        if key.name != verify.key_name {
+            return Err(Rc::SIGN_CONTEXT_KEY.in_handle(2));
+        }
+        check_signature_scheme(&signature, verify.scheme, 1)?;
+        let digest = verify.digest.clone().finalize();
+        if !key.verify_signature(&digest, &signature) {
+            return Err(Rc::SIGNATURE);
+        }
+        let result = if key.hierarchy == handle::RH_NULL {
+            VerifiedTicket::message_output(handle::RH_NULL, &[])
+        } else {
+            let mismatch = Rc::SIGN_CONTEXT_KEY.in_handle(2);
+            let index = VERIFIED_HIERARCHIES
+                .iter()
+                .position(|h| *h == key.hierarchy)
+                .ok_or(mismatch)?;
+            let proof = self.proof(key.hierarchy).ok_or(mismatch)?;
+            let current_id: [u8; limits::MAX_DIGEST_SIZE] = Sha256::digest(&proof[..]).into();
+            let ticket = &verify.tickets[index];
+            if ticket.proof_id != current_id {
+                // A changed proof cannot authenticate the prefix accumulated before rotation.
+                return Err(mismatch);
+            }
+            let mut mac = ticket.mac.clone();
+            mac.update(&key.name);
+            VerifiedTicket::message_output(key.hierarchy, &mac.finalize().into_bytes())
+        };
         self.sequences.release(slot);
         Ok(result)
     }

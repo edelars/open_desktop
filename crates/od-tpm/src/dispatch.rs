@@ -110,7 +110,7 @@ const fn ext(mut s: CommandSpec) -> CommandSpec {
 
 /// Implemented commands in ascending command-index order. Attributes (`nv`, `flushed`,
 /// `extensive`, `cHandles`, `rHandle`) are from the command tables of TPM Library Part 3.
-pub(crate) static COMMANDS: [CommandSpec; 97] = [
+pub(crate) static COMMANDS: [CommandSpec; 99] = [
     spec(cc::NV_UNDEFINE_SPACE_SPECIAL, 2, 2, false, true, false),
     spec(cc::EVICT_CONTROL, 2, 1, false, true, false),
     ext(spec(cc::HIERARCHY_CONTROL, 1, 1, false, true, false)),
@@ -204,9 +204,11 @@ pub(crate) static COMMANDS: [CommandSpec; 97] = [
     spec(cc::POLICY_TEMPLATE, 1, 0, false, false, false),
     spec(cc::POLICY_AUTHORIZE_NV, 3, 1, false, false, false),
     spec(cc::POLICY_PARAMETERS, 1, 0, false, false, false),
+    spec(cc::VERIFY_SEQUENCE_COMPLETE, 2, 1, false, false, true),
     spec(cc::SIGN_SEQUENCE_COMPLETE, 2, 2, false, false, true),
     spec(cc::VERIFY_DIGEST_SIGNATURE, 1, 0, false, false, false),
     spec(cc::SIGN_DIGEST, 1, 1, false, false, false),
+    spec(cc::VERIFY_SEQUENCE_START, 1, 0, true, false, false),
     spec(cc::SIGN_SEQUENCE_START, 1, 0, true, false, false),
 ];
 
@@ -784,9 +786,11 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         cc::PCR_RESET => tpm.cmd_pcr_reset(&inv, &mut p)?,
         cc::HASH => tpm.cmd_hash(&mut p)?,
         cc::HASH_SEQUENCE_START => tpm.cmd_hash_sequence_start(&mut p)?,
+        cc::VERIFY_SEQUENCE_START => tpm.cmd_verify_sequence_start(&inv, &mut p)?,
         cc::SIGN_SEQUENCE_START => tpm.cmd_sign_sequence_start(&inv, &mut p)?,
         cc::SEQUENCE_UPDATE => tpm.cmd_sequence_update(&inv, &mut p)?,
         cc::SEQUENCE_COMPLETE => tpm.cmd_sequence_complete(&inv, &mut p)?,
+        cc::VERIFY_SEQUENCE_COMPLETE => tpm.cmd_verify_sequence_complete(&inv, &mut p)?,
         cc::SIGN_SEQUENCE_COMPLETE => tpm.cmd_sign_sequence_complete(&inv, &mut p)?,
         cc::EVENT_SEQUENCE_COMPLETE => tpm.cmd_event_sequence_complete(&inv, &mut p)?,
         cc::READ_CLOCK => tpm.cmd_read_clock(&mut p)?,
@@ -982,7 +986,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         cc::SEQUENCE_UPDATE | cc::SEQUENCE_COMPLETE => {
             tpm.seq_slot(handles[0], 0)?;
         }
-        cc::SIGN_SEQUENCE_COMPLETE => {
+        cc::SIGN_SEQUENCE_COMPLETE | cc::VERIFY_SEQUENCE_COMPLETE => {
             tpm.seq_slot(handles[0], 0)?;
             tpm.check_object_handle(handles[1], 1, false)?;
         }
@@ -1032,6 +1036,7 @@ fn check_handles(tpm: &Tpm, spec: &CommandSpec, handles: &CommandHandles) -> Res
         | cc::SIGN
         | cc::SIGN_DIGEST
         | cc::SIGN_SEQUENCE_START
+        | cc::VERIFY_SEQUENCE_START
         | cc::VERIFY_SIGNATURE
         | cc::VERIFY_DIGEST_SIGNATURE
         | cc::RSA_ENCRYPT
@@ -1193,6 +1198,6 @@ mod tests {
         for code in [0x12Cu32, 0x183] {
             assert!(lookup(code).is_none());
         }
-        assert_eq!(COMMANDS.len(), 97);
+        assert_eq!(COMMANDS.len(), 99);
     }
 }
