@@ -866,6 +866,10 @@ struct CacheChurnReport {
     schema: u32,
     process_run: u8,
     case_list_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    case_list_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    historical_case_list_sha256: Option<&'static str>,
     trace_sha256: String,
     capture_host: HostMetadata,
     measure_host: HostMetadata,
@@ -2553,6 +2557,35 @@ pub fn run_cache_churn(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_cache_churn_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::Frozen,
+    )
+}
+
+/// Record the same FIFO16 churn with alternate paths for the exact historical
+/// S3-17 fixtures.
+pub fn run_relocated_s3_17_cache_churn(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_cache_churn_profile(
+        case_list,
+        trace_path,
+        process_run,
+        ColdCaseListPaths::RelocatedS3_17,
+    )
+}
+
+fn run_cache_churn_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    paths: ColdCaseListPaths,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cache-churn measurement requires a release build"));
     }
@@ -2562,20 +2595,16 @@ pub fn run_cache_churn(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
-    {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
-    }
+    let case_list_sha256 = od_testkit::sha256_hex(&list);
+    let trace_sha256 = od_testkit::sha256_hex(&trace_raw);
+    validate_s3_17_corpus_digests(&case_list_sha256, &trace_sha256, paths)?;
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+    if trace.visits.len() != S3_17_VISITS || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
         return Err(err("frozen trace visit count mismatch"));
     }
     let cases = prepare_cases(&list, &trace, started)?;
-    if cases.len() != MAX_INPUTS {
+    if cases.len() != S3_17_INPUTS {
         return Err(err("cache-churn requires the complete frozen corpus"));
     }
 
@@ -2667,11 +2696,14 @@ pub fn run_cache_churn(
     drop(engine);
     let process_rss_after_runtime_drop = process_rss_snapshot();
 
+    let relocated = paths == ColdCaseListPaths::RelocatedS3_17;
     let report = CacheChurnReport {
         schema: 2,
         process_run,
-        case_list_sha256: od_testkit::sha256_hex(&list),
-        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        case_list_sha256,
+        case_list_mode: relocated.then_some(RELOCATED_S3_17_CASE_LIST_MODE),
+        historical_case_list_sha256: relocated.then_some(FROZEN_CASE_LIST_SHA256),
+        trace_sha256,
         capture_host: trace.capture_host.clone(),
         measure_host: HostMetadata::current(),
         inputs: trace.inputs.len(),

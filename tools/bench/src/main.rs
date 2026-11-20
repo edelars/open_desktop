@@ -317,8 +317,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("cache-churn requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let value =
-                    od_bench::dispatch_cache::run_cache_churn(&case_list, &trace, process_run)?;
+                let value = if relocated_s3_17_paths {
+                    od_bench::dispatch_cache::run_relocated_s3_17_cache_churn(
+                        &case_list,
+                        &trace,
+                        process_run,
+                    )?
+                } else {
+                    od_bench::dispatch_cache::run_cache_churn(&case_list, &trace, process_run)?
+                };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -845,7 +852,7 @@ fn print_usage() {
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
-  od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json [--relocated-s3-17-paths]\n\
   od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle-stress-calibrate --case-list PATH --trace PATH --output calibration.json\n\
   od-bench cache-lifecycle-stress --case-list PATH --trace PATH --calibration calibration.json --epochs N --process-run 1..3 --output report.json\n\
@@ -896,8 +903,10 @@ fn validate_mode_flags(
 }
 
 fn validate_relocated_s3_17_paths(mode: &str, relocated: bool) -> Result<(), &'static str> {
-    if relocated && !matches!(mode, "cold-first-run" | "cold-phases") {
-        return Err("--relocated-s3-17-paths is only valid for cold-first-run or cold-phases");
+    if relocated && !matches!(mode, "cold-first-run" | "cold-phases" | "cache-churn") {
+        return Err(
+            "--relocated-s3-17-paths is only valid for cold-first-run, cold-phases, or cache-churn",
+        );
     }
     Ok(())
 }
@@ -921,6 +930,7 @@ mod tests {
             "record",
             "synthetic",
             "cold-phases",
+            "cache-churn",
             "warm-dispatch-phases",
             "unknown",
         ] {
@@ -930,14 +940,16 @@ mod tests {
     }
 
     #[test]
-    fn relocated_s3_17_paths_are_limited_to_s3_17_cold_commands() {
-        for mode in ["cold-first-run", "cold-phases"] {
+    fn relocated_s3_17_paths_are_limited_to_supported_commands() {
+        for mode in ["cold-first-run", "cold-phases", "cache-churn"] {
             assert!(validate_relocated_s3_17_paths(mode, true).is_ok());
             assert!(validate_relocated_s3_17_paths(mode, false).is_ok());
         }
         for mode in [
             "warm-first-run",
             "warm-dispatch-phases",
+            "cache-lifecycle",
+            "cache-lifecycle-stress",
             "record",
             "unknown",
         ] {

@@ -1843,13 +1843,14 @@ first-dispatch series. Keep both raw archives and replay commands.
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
-accepts only the frozen S3-17 case-list and trace, admits all 1,010 cases, and
-runs 128 complete corpus sweeps on one retained production FIFO16 runtime,
-cache, and arena. Each sweep records timed dispatch-call duration, input calls,
-native block executions, retirements, counter deltas, resident high-water,
-arena reservation, and a derived unoccupied-slot value (capacity minus
-resident-entry high-water, not an allocator counter). The report also records cumulative hit, miss,
-compile, publication, and eviction totals. The existing 30-minute process
+requires the original S3-17 case-list and trace by default. Each run admits
+all 1,010 cases and completes 128 corpus sweeps on one retained production
+FIFO16 runtime, cache, and arena. Each sweep records timed dispatch-call
+duration, input calls, native block executions, retirements, counter deltas,
+resident high-water, arena reservation, and a derived unoccupied-slot value
+(capacity minus resident-entry high-water). The report also records cumulative hit, miss,
+compile, publication, and eviction totals from the production FIFO counter
+deltas before and after each sweep. The existing 30-minute process
 limit applies; runs fail unless the full work count and bounded FIFO
 eviction/recompile invariants are observed.
 
@@ -1865,6 +1866,29 @@ Resident high-water was 16 entries, 21,640 code bytes, and 50,124 logical
 metadata bytes. This is bounded capacity-churn evidence, not a long leak-free
 stress result. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
+Use `--relocated-s3-17-paths` to run the same workload with recovered
+fixtures. The historical trace hash, 1,322 visits, and 1,010 ordered fixture
+identities and raw hashes remain binding. Schema 2 records the supplied list's
+SHA-256 in `case_list_sha256` and includes `historical_case_list_sha256` and
+`case_list_mode` when the option is used.
+[S3-17 recovery bundle and hashes](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md#exact-input-recovery-2026-11-19)
+
+From the repository root, use the signed release binary as `OD_BENCH` and
+the launcher setup documented for the recovered S3-17 comparison. Verify
+the benchmark process's ordinary UID and effective nice −5. Repeat for
+process runs 2 and 3 with fresh output paths.
+[Signing and priority setup](#s3-56-cold-comparison-on-the-recovered-s3-17-corpus)
+
+```sh
+input_dir=work/tmp/s3-17-exact-recovery/verified
+benchmark_uid=$(/usr/bin/id -u)
+/usr/bin/sudo -n /usr/bin/nice -n -5 /usr/bin/sudo -n -u "#$benchmark_uid" -- \
+  "$OD_BENCH" cache-churn --relocated-s3-17-paths \
+  --case-list "$input_dir/relocated-cases.txt" \
+  --trace "$input_dir/dispatch-trace.json" \
+  --process-run 1 --output work/tmp/s3-37-cache-churn-1.json
+```
 
 ### S3-37b: process-wide RSS snapshots
 
@@ -1884,6 +1908,10 @@ pre-drop sample and remained 688–912 KiB above that process's pre-runtime
 baseline. This is process-wide RSS observation only; it does not prove memory
 was released or retained by the cache itself. See the
 [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).
+
+For a new host's resource comparison, retain the three raw reports and verify
+that each contains a value for all three RSS snapshots. Preserve the recorded
+method and the per-sweep FIFO counters with the RSS observations.
 
 ### S3-37c: deterministic FIFO16 invalidation and runtime lifecycle
 

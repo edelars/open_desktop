@@ -4276,6 +4276,14 @@ not establish cache attribution, leak-free behavior, or per-runtime release.
 See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md) and
 [benchmark protocol](../testing/BENCHMARKS.md#s3-37b-process-wide-rss-snapshots).
 
+`cache-churn --relocated-s3-17-paths` принимает восстановленный список
+путей при точной исторической трассе. Проверки связывают порядок и байты
+1 010 фикстур с 1 322 посещениями. Прогон по-прежнему использует один FIFO16
+на 128 проходов и три снимка RSS. Локально прошли семь тестов CLI, два теста
+привязки корпуса и `cargo check` для целей `od-bench`. Замер на M1 Pro
+остаётся впереди.
+[Запуск на восстановленном корпусе](../testing/BENCHMARKS.md#s3-37a-bounded-production-fifo16-corpus-churn-observation)
+
 #### S3-37c: deterministic invalidation and arena lifecycle path
 
 Added opt-in `od-bench cache-lifecycle` over 17 admitted one-entry fixtures
