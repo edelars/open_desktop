@@ -1867,6 +1867,19 @@ two release libraries and run the dedicated shared calibration and
 first-dispatch series. Keep both raw archives and replay commands.
 [Report and reproduction](../reports/STAGE_3_S3-31l_2026-11-19.md)
 
+### S3-31m. Current-memo attribution on M1 Pro
+
+Use the source patch pinned in the S3-31m archive with
+`warm-dispatch-phases --profile current-memo-attribution --process-run N --output FILE`,
+where `N` is 1, 2 or 3. The four register fixtures use warmed FIFO16.
+Each process measures
+20 ordinary/observed pairs per fixture with a shared sweep count.
+Warm work and cache deltas must match on both sides. Report phase
+shares from the same observed side and ordinary call time separately.
+The archive README replays the automatic selection and the user's
+explicit 79.0% idle exception without altering either receipt.
+[Report and replay commands](../reports/STAGE_3_S3-31m_2026-11-20.md)
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

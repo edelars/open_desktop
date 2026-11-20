@@ -1877,6 +1877,17 @@ session creation. Both alternating-RIP profiles favoured the current
 dispatcher in both modes. ISSUE-520 remains open.
 [Warm and first-dispatch evidence](STAGE_3_S3-31l_2026-11-19.md)
 
+S3-31m profiled the current dispatcher on four signed M1 Pro register
+fixtures, with 60 pairs each. The one-RIP case used one key lookup
+over 4,096 native blocks. The two-RIP cases used two lookups per call.
+The three-RIP control used 190 lookups in 190 native blocks, with key
+snapshot and lookup accounting for 40.75% of the observed call time.
+Keep the dispatcher, memo and explicit hit arguments for this scope.
+The user-selected third round includes a 79.0% idle exception, and
+the separate series that passed the automatic floor supports the same
+choice. ISSUE-520 remains open.
+[Attribution, selection records and archive](STAGE_3_S3-31m_2026-11-20.md)
+
 Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-044 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in
