@@ -1048,6 +1048,67 @@ mod tests {
         assert_eq!(HashAlg::from_alg(0x0010), None);
     }
 
+    /// FIPS 186-5 A.2.1 (Part 1 v185 §44.6): d = (c mod (n - 1)) + 1 for c of length(n) + 64 bits. The
+    /// reduction here is done bit by bit on octet strings, apart from the `bigint` code that the
+    /// implementation uses; the orders are those of FIPS 186-5 (D.1.2.3 and D.1.2.4) minus one.
+    #[test]
+    fn ecc_extra_random_bits_follow_fips_186_5_a_2_1() {
+        fn reduce_plus_one(c: &[u8], modulus: &[u8]) -> Vec<u8> {
+            let m: Vec<u8> = std::iter::once(0).chain(modulus.iter().copied()).collect();
+            let mut r = vec![0u8; m.len()];
+            for bit in 0..c.len() * 8 {
+                let mut carry = u16::from((c[bit / 8] >> (7 - bit % 8)) & 1);
+                for byte in r.iter_mut().rev() {
+                    let v = u16::from(*byte) * 2 + carry;
+                    *byte = v as u8;
+                    carry = v >> 8;
+                }
+                if r >= m {
+                    let mut borrow = 0i16;
+                    for (byte, sub) in r.iter_mut().zip(&m).rev() {
+                        let v = i16::from(*byte) - i16::from(*sub) - borrow;
+                        *byte = v.rem_euclid(256) as u8;
+                        borrow = i16::from(v < 0);
+                    }
+                }
+            }
+            for byte in r.iter_mut().rev() {
+                let (v, overflow) = byte.overflowing_add(1);
+                *byte = v;
+                if !overflow {
+                    break;
+                }
+            }
+            assert_eq!(r[0], 0);
+            r[1..].to_vec()
+        }
+        for (curve_id, extra, n_minus_one) in [
+            (
+                curve::NIST_P256,
+                40,
+                "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550",
+            ),
+            (
+                curve::NIST_P384,
+                56,
+                "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52972",
+            ),
+        ] {
+            for seed in [[9u8; 48], [0x5a; 48], [0xff; 48]] {
+                let mut rng = Drbg::new(&seed).unwrap();
+                let mut same_state = Drbg::new(&seed).unwrap();
+                let mut c = vec![0u8; extra];
+                same_state.generate(&mut c).unwrap();
+                let key = ecc_generate_extra_random_bits(&mut rng, curve_id).unwrap();
+                assert_eq!(
+                    ecc_scalar(&key).to_vec(),
+                    reduce_plus_one(&c, &hex(n_minus_one)),
+                    "curve {curve_id:#x}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn sha512_matches_the_published_abc_vector() {
         assert_eq!(

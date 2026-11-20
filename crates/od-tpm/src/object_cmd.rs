@@ -672,12 +672,13 @@ impl Tpm {
         // A primary's parent is the hierarchy: fixedTPM, not encryptedDuplication.
         check_public(&template, true, false)?;
         check_creation(&template, &sens)?;
-        if !self.objects.accepts(&template.params) {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let seed = self.hierarchy_seed(hierarchy, &template.params);
         let mut drbg = primary_drbg(seed, &template, &sens.data)?;
-        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut drbg)?;
+        // A Primary keeps the rejection sampling: its entropy is a vendor option (Part 1 §25.6.3).
+        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut drbg, false)?;
         let hierarchy_handle = hierarchy.to_be_bytes();
         let obj = Object::new(d.public, Some(d.sensitive), hierarchy, &hierarchy_handle);
         let (creation, creation_hash, ticket) = self.creation_artifacts(
@@ -731,7 +732,8 @@ impl Tpm {
                 return Err(Rc::SYMMETRIC.in_param(2));
             }
         }
-        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut self.drbg)?;
+        // An ordinary ECC key uses extra random bits (Part 1 v185 §44.6).
+        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut self.drbg, true)?;
         let mut iv = [0u8; 16];
         self.drbg.generate(&mut iv).ok_or(Rc::FAILURE)?;
         let obj = Object::new(
@@ -780,7 +782,7 @@ impl Tpm {
         let public = TpmtPublic::unmarshal_sized(p)?;
         p.finish()?;
         check_public(&public, parent.fixed_tpm, parent.enc_dup)?;
-        if !self.objects.accepts(&public.params) {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let sensitive = open_private(&public, parent.key(), blob)?;
@@ -878,7 +880,7 @@ impl Tpm {
         if !self.permanent_enabled(hierarchy) {
             return Err(Rc::HIERARCHY.in_param(3));
         }
-        if !self.objects.accepts(&public.params) {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let obj = Object::new(public, None, hierarchy, &[]);

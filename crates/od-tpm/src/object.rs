@@ -27,8 +27,8 @@
 //!
 //! **Slice 7.** An ML-DSA-65 object (`TPM_ALG_MLDSA`, `mldsa.rs`) is a signing key only: no seed value, no
 //! storage role, and the private value is the 32-octet seed xi of FIPS 204 (Part 2 v185, Table 211).
-//! `Objects::accepts` limits the loaded transient ML-DSA objects to [`MAX_LOADED_MLDSA`] (two), and
-//! `verify_mldsa_message` and `verify_mldsa_mu` check message and external-mu signatures.
+//! ML-DSA objects take the common transient slots ([`MAX_OBJECTS`]); the profile asks for at least
+//! two of them (PTP 1.07 Table 2), so there is no limit of their own. `verify_mldsa_message` and `verify_mldsa_mu` check message and external-mu signatures.
 //!
 //! **Primary derivation** (Part 1 v184, clauses 25.6.3 and 25.7: "choice of the entropy generation
 //! for Primary Objects is a vendor option"). Our choice: `material = KDFa(SHA-256, seed, "ODTPM-
@@ -84,9 +84,9 @@ use zeroize::Zeroizing;
 use crate::codes::{alg, handle, object_attr};
 use crate::crypto::{
     EccPrivate, HashAlg, RsaPrivate, ecc_coordinate_bytes, ecc_from_scalar, ecc_generate,
-    ecc_point_valid, ecc_public, ecc_scalar, ecc_verify, hash, hmac, hmac_verify, kdfa,
-    kdfa_sha256, rsa_from_one_prime, rsa_from_primes, rsa_generate, rsa_modulus, rsa_primes,
-    rsa_verify_hash, rsa_verify_pss, supported_rsa_exponent,
+    ecc_generate_extra_random_bits, ecc_point_valid, ecc_public, ecc_scalar, ecc_verify, hash,
+    hmac, hmac_verify, kdfa, kdfa_sha256, rsa_from_one_prime, rsa_from_primes, rsa_generate,
+    rsa_modulus, rsa_primes, rsa_verify_hash, rsa_verify_pss, supported_rsa_exponent,
 };
 use crate::hash::{AuthValue, MAX_SEQUENCES};
 use crate::kem::{self, KemPrivate};
@@ -101,11 +101,6 @@ use crate::response::Rc;
 
 /// Transient objects held at once (other than sequence objects, which have their own slots).
 pub const MAX_OBJECTS: usize = 8;
-/// Loaded transient ML-DSA objects at one time. The profile requires at least two ML-DSA objects of the
-/// largest supported parameter set (Part 1 Table 2 as quoted in `VTPM.md`); a third `CreatePrimary`,
-/// `Load`, `LoadExternal` or `ContextLoad` is `TPM_RC_OBJECT_MEMORY` until one is flushed. Persistent
-/// objects do not count: they occupy no transient slot.
-pub const MAX_LOADED_MLDSA: usize = 2;
 /// Persistent objects held at once.
 pub const MAX_PERSISTENT: usize = 16;
 /// Largest `TPM2B_PRIVATE` accepted by `TPM2_Load`: an RSA-3072 storage key with a SHA-512 `nameAlg`
@@ -330,18 +325,10 @@ impl Objects {
         self.slots.iter().filter(|s| s.is_none()).count()
     }
 
-    /// Whether an object with the parameters `params` can be loaded now: a free slot and, for an
-    /// ML-DSA key, fewer than [`MAX_LOADED_MLDSA`] ML-DSA objects loaded.
-    pub(crate) fn accepts(&self, params: &PublicParams) -> bool {
+    /// Whether an object of any type can be loaded now: a transient slot is free. An ML-DSA key
+    /// has no slot pool of its own (PTP 1.07 Table 2 asks for at least two, not exactly two).
+    pub(crate) fn accepts(&self) -> bool {
         self.free_slots() > 0
-            && (!matches!(params, PublicParams::MlDsa { .. })
-                || self
-                    .slots
-                    .iter()
-                    .flatten()
-                    .filter(|o| matches!(o.public.params, PublicParams::MlDsa { .. }))
-                    .count()
-                    < MAX_LOADED_MLDSA)
     }
 
     pub(crate) fn loaded_handles(&self) -> Vec<u32> {
@@ -357,7 +344,7 @@ impl Objects {
 
     /// Stores `o` in the lowest free slot and returns its handle; `None` when all slots are used.
     pub(crate) fn insert(&mut self, o: Object) -> Option<u32> {
-        if !self.accepts(&o.public.params) {
+        if !self.accepts() {
             return None;
         }
         let slot = self.slots.iter().position(Option::is_none)?;
@@ -696,11 +683,17 @@ fn new_seed(rng: &mut Drbg, size: usize) -> Result<Zeroizing<Vec<u8>>, Rc> {
 
 /// Creates the private and public values of a template from `rng` (the TPM DRBG for an ordinary
 /// object, a derivation DRBG for a primary). The seed value comes first, then the key.
+///
+/// `extra_random_bits` selects the generation of an ECC key. Part 1 v185 §44.6 uses FIPS 186-5
+/// Annex A.2.1 (extra random bits) for ECC keys, so `TPM2_Create` passes `true`. A Primary
+/// passes `false`: how its entropy is obtained is a vendor option (Part 1 §25.6.3), and the
+/// rejection sampling of `ecc_generate` keeps the EK and SRK of existing snapshots and fixtures.
 pub(crate) fn derive_object(
     template: &TpmtPublic,
     user_auth: &[u8],
     data: &[u8],
     rng: &mut Drbg,
+    extra_random_bits: bool,
 ) -> Result<Derived, Rc> {
     let mut public = template.clone();
     let name_hash = name_hash_alg(template.name_alg)?;
@@ -724,7 +717,12 @@ pub(crate) fn derive_object(
             } else {
                 Zeroizing::new(Vec::new())
             };
-            let key = ecc_generate(rng, *curve).ok_or(Rc::FAILURE)?;
+            let key = if extra_random_bits {
+                ecc_generate_extra_random_bits(rng, *curve)
+            } else {
+                ecc_generate(rng, *curve)
+            }
+            .ok_or(Rc::FAILURE)?;
             let (x, y) = ecc_public(&key).ok_or(Rc::FAILURE)?;
             (Secret::Ecc(key), Unique::Ecc { x, y }, seed)
         }

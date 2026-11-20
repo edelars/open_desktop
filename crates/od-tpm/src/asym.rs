@@ -31,8 +31,8 @@
 
 use crate::codes::{alg, curve, object_attr};
 use crate::crypto::{
-    HashAlg, RsaPadding, ecc_coordinate_bytes, ecc_ecdh, ecc_generate, ecc_kdf_hash, ecc_public,
-    rsa_decrypt_private, rsa_encrypt_public,
+    HashAlg, RsaPadding, ecc_coordinate_bytes, ecc_ecdh, ecc_generate_extra_random_bits,
+    ecc_kdf_hash, ecc_public, rsa_decrypt_private, rsa_encrypt_public,
 };
 use crate::dispatch::Invocation;
 use crate::marshal::{
@@ -275,7 +275,8 @@ impl Tpm {
             return Err(Rc::KEY.in_handle(1));
         };
         let curve = *curve;
-        let ephemeral = ecc_generate(&mut self.drbg, curve).ok_or(Rc::FAILURE)?;
+        // The ephemeral key is generated with extra random bits (Part 1 v185 §44.6).
+        let ephemeral = ecc_generate_extra_random_bits(&mut self.drbg, curve).ok_or(Rc::FAILURE)?;
         let (zx, zy) = ecc_ecdh(&ephemeral, x, y).ok_or(Rc::KEY.in_handle(1))?;
         let (qx, qy) = ecc_public(&ephemeral).ok_or(Rc::FAILURE)?;
         let mut w = Writer {

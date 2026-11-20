@@ -852,4 +852,260 @@ mod tests {
         new_clock.advance_standalone(3_000_000).unwrap();
         assert_eq!(read_clock(&mut restored), 20);
     }
+
+    // ML-DSA-65 through the CRB window (ADR-0009, decision 7, item 1). The commands are marshaled
+    // here by hand, so the device is tested with frames that no helper of `od-tpm` shaped.
+
+    const SAMPLE_NS: u64 = 2_000_000;
+    const SAMPLE_MS: u64 = SAMPLE_NS / 1_000_000;
+    const NV_INDEX: u32 = 0x0100_0001;
+
+    fn tpm2b(data: &[u8]) -> Vec<u8> {
+        [&(data.len() as u16).to_be_bytes()[..], data].concat()
+    }
+
+    /// A command frame; `passwords` are the password sessions of the authorization area (`None`
+    /// for a command without sessions).
+    fn command(code: u32, handles: &[u32], passwords: Option<&[&[u8]]>, params: &[u8]) -> Vec<u8> {
+        use od_tpm::codes::{handle::RS_PW, st};
+        let mut body = Vec::new();
+        for handle in handles {
+            body.extend_from_slice(&handle.to_be_bytes());
+        }
+        if let Some(passwords) = passwords {
+            let mut area = Vec::new();
+            for password in passwords {
+                area.extend_from_slice(&RS_PW.to_be_bytes());
+                area.extend_from_slice(&0u16.to_be_bytes());
+                area.push(1);
+                area.extend_from_slice(&tpm2b(password));
+            }
+            body.extend_from_slice(&(area.len() as u32).to_be_bytes());
+            body.extend_from_slice(&area);
+        }
+        body.extend_from_slice(params);
+        let tag = if passwords.is_some() {
+            st::SESSIONS
+        } else {
+            st::NO_SESSIONS
+        };
+        let mut frame = tag.to_be_bytes().to_vec();
+        frame.extend_from_slice(&((10 + body.len()) as u32).to_be_bytes());
+        frame.extend_from_slice(&code.to_be_bytes());
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    fn read_page(crb: &mut TpmCrb) -> Vec<u8> {
+        let mut page = Vec::with_capacity(BUFFER_LEN);
+        for offset in (0..BUFFER_LEN).step_by(4) {
+            let word = read(crb, BUFFER_OFFSET + offset as u64) as u32;
+            page.extend_from_slice(&word.to_le_bytes());
+        }
+        page
+    }
+
+    /// One command through the CRB as a driver does it: the command in windows (`NEXT_CHUNK` after
+    /// each full window), `START`, then the response in pages (`NEXT_CHUNK` for each next page).
+    /// Returns the response and the number of pages it took.
+    fn transact(crb: &mut TpmCrb, command: &[u8]) -> (Vec<u8>, usize) {
+        let start = access(CTRL_START, AccessWidth::Dword);
+        let sample = || Ok(SAMPLE_NS);
+        write(crb, LOC_CTRL, 1);
+        write(crb, CTRL_REQ, 2);
+        write(crb, CTRL_REQ, 1);
+        let mut windows = command.chunks(BUFFER_LEN).peekable();
+        while let Some(window) = windows.next() {
+            for (index, word) in window.chunks(4).enumerate() {
+                let mut bytes = [0; 4];
+                bytes[..word.len()].copy_from_slice(word);
+                let value = u64::from(u32::from_le_bytes(bytes));
+                write(crb, BUFFER_OFFSET + 4 * index as u64, value);
+            }
+            if windows.peek().is_some() {
+                crb.write_at_time(start, NEXT_CHUNK, &sample).unwrap();
+            }
+        }
+        crb.write_at_time(start, START, &sample).unwrap();
+        assert_eq!(read(crb, CTRL_START), 0, "the command was executed");
+        let mut response = read_page(crb);
+        let size = u32::from_be_bytes(response[2..6].try_into().unwrap()) as usize;
+        let mut pages = 1;
+        while response.len() < size {
+            write(crb, CTRL_START, NEXT_CHUNK);
+            response.extend_from_slice(&read_page(crb));
+            pages += 1;
+        }
+        response.truncate(size);
+        (response, pages)
+    }
+
+    fn rc_of(response: &[u8]) -> u32 {
+        u32::from_be_bytes(response[6..10].try_into().unwrap())
+    }
+
+    /// The exchange of the decision: an ML-DSA-65 key signs the NV_Certify attestation of a 512-octet
+    /// index (the response is larger than the window), and `VerifySequenceComplete` checks the
+    /// 3309-octet signature, first a damaged one (`TPM_RC_SIGNATURE`), then the good one (a
+    /// `TPM_ST_MESSAGE_VERIFIED` ticket). Every command goes through `exchange`; the responses are returned in
+    /// order: Startup, CreatePrimary, NV_DefineSpace, NV_Write, NV_Certify, VerifySequenceStart,
+    /// SequenceUpdate, damaged and good VerifySequenceComplete.
+    fn mldsa_exchange(mut exchange: impl FnMut(&[u8]) -> Vec<u8>) -> (Vec<Vec<u8>>, Vec<usize>) {
+        use od_tpm::codes::{alg, cc, handle::RH_OWNER};
+        use od_tpm::nv::attr;
+        let mut log = Vec::new();
+        let mut sizes = Vec::new();
+        let mut step = |frame: Vec<u8>| {
+            sizes.push(frame.len());
+            let response = exchange(&frame);
+            log.push(response.clone());
+            response
+        };
+        step(STARTUP.to_vec());
+        // CreatePrimary: Owner (empty password), userAuth "pw", ML-DSA-65 with allowExternalMu.
+        let template = [
+            &0x00a1u16.to_be_bytes()[..],
+            &alg::SHA256.to_be_bytes(),
+            &0x0004_0072u32.to_be_bytes(),
+            &tpm2b(b""),
+            &2u16.to_be_bytes(),
+            &[1],
+            &tpm2b(b""),
+        ]
+        .concat();
+        let params = [
+            tpm2b(&[tpm2b(b"pw"), tpm2b(b"")].concat()),
+            tpm2b(&template),
+            tpm2b(b""),
+            0u32.to_be_bytes().to_vec(),
+        ]
+        .concat();
+        let created = step(command(
+            cc::CREATE_PRIMARY,
+            &[RH_OWNER],
+            Some(&[b""]),
+            &params,
+        ));
+        let key = u32::from_be_bytes(created[10..14].try_into().unwrap());
+        // A 512-octet NV index, owner read and write, filled with a pattern.
+        let nv_public = [
+            &NV_INDEX.to_be_bytes()[..],
+            &alg::SHA256.to_be_bytes(),
+            &(attr::OWNERWRITE | attr::OWNERREAD).to_be_bytes(),
+            &tpm2b(b""),
+            &512u16.to_be_bytes(),
+        ]
+        .concat();
+        step(command(
+            cc::NV_DEFINE_SPACE,
+            &[RH_OWNER],
+            Some(&[b""]),
+            &[tpm2b(b""), tpm2b(&nv_public)].concat(),
+        ));
+        let data: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
+        step(command(
+            cc::NV_WRITE,
+            &[RH_OWNER, NV_INDEX],
+            Some(&[b""]),
+            &[tpm2b(&data), 0u16.to_be_bytes().to_vec()].concat(),
+        ));
+        // NV_Certify of the whole index: qualifying data, scheme NULL, size 512, offset 0.
+        let certified = step(command(
+            cc::NV_CERTIFY,
+            &[key, RH_OWNER, NV_INDEX],
+            Some(&[b"pw", b""]),
+            &[
+                tpm2b(&[0x5a; 64]),
+                alg::NULL.to_be_bytes().to_vec(),
+                512u16.to_be_bytes().to_vec(),
+                0u16.to_be_bytes().to_vec(),
+            ]
+            .concat(),
+        ));
+        assert_eq!(rc_of(&certified), 0);
+        // responseParameterSize, then TPM2B_ATTEST and TPMT_SIGNATURE (TPM_ALG_MLDSA, 3309 octets).
+        let parameters = u32::from_be_bytes(certified[10..14].try_into().unwrap()) as usize;
+        let parameters = &certified[14..14 + parameters];
+        let attest_size = usize::from(u16::from_be_bytes(parameters[..2].try_into().unwrap()));
+        let attest = parameters[2..2 + attest_size].to_vec();
+        let signature = parameters[2 + attest_size..].to_vec();
+        assert_eq!(signature[..4], [0x00, 0xa1, 0x0c, 0xed]);
+        assert_eq!(signature.len(), 4 + 3309);
+        // Verify the attestation with the same key: a verify sequence over the attestation.
+        let started = step(command(
+            cc::VERIFY_SEQUENCE_START,
+            &[key],
+            None,
+            &[tpm2b(b"vseq"), tpm2b(b""), tpm2b(b"")].concat(),
+        ));
+        let sequence = u32::from_be_bytes(started[10..14].try_into().unwrap());
+        step(command(
+            cc::SEQUENCE_UPDATE,
+            &[sequence],
+            Some(&[b"vseq"]),
+            &tpm2b(&attest),
+        ));
+        let mut damaged = signature.clone();
+        damaged[1500] ^= 1;
+        for signature in [damaged, signature] {
+            step(command(
+                cc::VERIFY_SEQUENCE_COMPLETE,
+                &[sequence, key],
+                Some(&[b"vseq"]),
+                &signature,
+            ));
+        }
+        drop(step);
+        (log, sizes)
+    }
+
+    #[test]
+    fn crb_carries_mldsa_certify_response_in_pages_and_the_3309_octet_signature_in_a_command() {
+        let crb_pages = std::cell::RefCell::new(Vec::new());
+        let mut crb = fresh();
+        let (via_crb, command_sizes) = mldsa_exchange(|frame| {
+            let (response, pages) = transact(&mut crb, frame);
+            crb_pages.borrow_mut().push(pages);
+            response
+        });
+        let mut tpm = Tpm::new(&[1; 48]).unwrap();
+        let (direct, _) = mldsa_exchange(|frame| tpm.execute(0, frame, SAMPLE_MS));
+        // The device passes the bytes through: every response equals the direct call of `od-tpm`
+        // (same entropy, same key, same input, same time).
+        assert_eq!(via_crb, direct);
+        for (index, response) in via_crb.iter().enumerate() {
+            let expected = match index {
+                7 => Rc::SIGNATURE.0,
+                _ => 0,
+            };
+            assert_eq!(rc_of(response), expected, "response {index}");
+        }
+        // NV_Certify (index 4): more than the 3968 octets of the window, so two pages; the size field
+        // covers the whole frame; every other response fits one page.
+        let certified = &via_crb[4];
+        assert!(certified.len() > BUFFER_LEN && certified.len() <= MAX_RESPONSE_SIZE);
+        assert_eq!(
+            u32::from_be_bytes(certified[2..6].try_into().unwrap()) as usize,
+            certified.len()
+        );
+        assert_eq!(
+            *crb_pages.borrow(),
+            [1, 1, 1, 1, 2, 1, 1, 1, 1],
+            "pages of each response"
+        );
+        // VerifySequenceComplete (index 7 damaged, 8 good) carries the 3313-octet TPMT_SIGNATURE
+        // (3348 octets in all, below the window, so it goes in one write of the window). A damaged
+        // signature is TPM_RC_SIGNATURE and keeps the sequence; the good one gives the
+        // TPM_ST_MESSAGE_VERIFIED ticket (0x8026).
+        assert!(
+            (3313..=BUFFER_LEN).contains(&command_sizes[8]),
+            "{}",
+            command_sizes[8]
+        );
+        assert_eq!(via_crb[7].len(), 10);
+        let good = &via_crb[8];
+        let parameters = u32::from_be_bytes(good[10..14].try_into().unwrap()) as usize;
+        assert_eq!(good[14..16], [0x80, 0x26], "TPM_ST_MESSAGE_VERIFIED");
+        assert!(parameters >= 6);
+    }
 }

@@ -237,7 +237,403 @@ unsafe fn verify(handle: Handle, system: *mut SystemTable) -> Result<(), Status>
         return Err(Status::DEVICE_ERROR);
     }
     line!("OD-UEFI TPM2_TestParms: ECDSA-SHA256 P-256");
+    unsafe { check_capabilities(tpm) }?;
+    line!("OD-UEFI TPM2: 101 commands, MLDSA, MLKEM, P-256, P-384, SHA-256, SHA-384");
+    let proof = unsafe { mldsa_exchange(tpm) }?;
+    unsafe {
+        report(
+            system,
+            b"OD-UEFI TPM2: NV_Certify ML-DSA-65 response bytes 0x",
+            proof.certify,
+        )
+    }?;
+    unsafe {
+        report(
+            system,
+            b"OD-UEFI TPM2: ML-DSA-65 signature bytes 0x",
+            proof.signature,
+        )
+    }?;
+    unsafe {
+        report(
+            system,
+            b"OD-UEFI TPM2: VerifySequenceComplete command bytes 0x",
+            proof.command,
+        )
+    }?;
+    unsafe {
+        report(
+            system,
+            b"OD-UEFI TPM2: damaged signature response code 0x",
+            proof.damaged,
+        )
+    }?;
+    unsafe {
+        report(
+            system,
+            b"OD-UEFI TPM2: message verified ticket 0x",
+            proof.ticket,
+        )
+    }?;
     unsafe { exit_and_verify_final_events(handle, system, final_events.cast_const()) }
+}
+
+const TPM_ST_NO_SESSIONS: u16 = 0x8001;
+const TPM_ST_SESSIONS: u16 = 0x8002;
+const TPM_ST_MESSAGE_VERIFIED: u32 = 0x8026;
+const TPM_RC_SIGNATURE: u32 = 0x9b;
+const TPM_RS_PW: u32 = 0x4000_0009;
+const TPM_RH_OWNER: u32 = 0x4000_0001;
+const NV_INDEX: u32 = 0x0100_0001;
+const NV_SIZE: usize = 512;
+const CC_GET_CAPABILITY: u32 = 0x17a;
+const CC_CREATE_PRIMARY: u32 = 0x131;
+const CC_NV_DEFINE_SPACE: u32 = 0x12a;
+const CC_NV_WRITE: u32 = 0x137;
+const CC_NV_CERTIFY: u32 = 0x184;
+const CC_VERIFY_SEQUENCE_START: u32 = 0x1a9;
+const CC_SEQUENCE_UPDATE: u32 = 0x15c;
+const CC_VERIFY_SEQUENCE_COMPLETE: u32 = 0x1a3;
+/// `TPM_ALG_MLDSA` 0x00A1: the signature is its `sigAlg`, a size of 3309 and the octets.
+const MLDSA_SIGNATURE: usize = 4 + 3309;
+const MLDSA_SIGNATURE_HEADER: [u8; 4] = [0x00, 0xa1, 0x0c, 0xed];
+
+/// What the ML-DSA-65 exchange measured; `main` prints these sizes and codes and nothing else.
+struct Proof {
+    certify: u32,
+    signature: u32,
+    command: u32,
+    damaged: u32,
+    ticket: u32,
+}
+
+/// A TPM command under construction in a caller's buffer.
+struct Frame<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+
+impl<'a> Frame<'a> {
+    fn new(bytes: &'a mut [u8], tag: u16, code: u32) -> Self {
+        let mut frame = Frame { bytes, len: 0 };
+        frame.u16(tag);
+        frame.u32(0);
+        frame.u32(code);
+        frame
+    }
+
+    fn raw(&mut self, data: &[u8]) {
+        self.bytes[self.len..self.len + data.len()].copy_from_slice(data);
+        self.len += data.len();
+    }
+
+    fn u16(&mut self, value: u16) {
+        // Two byte stores: LLVM would merge them into a 16-bit byte swap (`rol r16, 8`), which the
+        // firmware interpreter does not run.
+        let value = u32::from(value);
+        unsafe {
+            ptr::write_volatile(&mut self.bytes[self.len], (value >> 8) as u8);
+            ptr::write_volatile(&mut self.bytes[self.len + 1], value as u8);
+        }
+        self.len += 2;
+    }
+
+    fn u32(&mut self, value: u32) {
+        self.raw(&value.to_be_bytes());
+    }
+
+    fn tpm2b(&mut self, data: &[u8]) {
+        self.u16(data.len() as u16);
+        self.raw(data);
+    }
+
+    /// The authorization area: one password session per entry.
+    fn passwords(&mut self, passwords: &[&[u8]]) {
+        let mut area = 0;
+        for password in passwords {
+            area += 9 + password.len() as u32;
+        }
+        self.u32(area);
+        for password in passwords {
+            self.u32(TPM_RS_PW);
+            self.u16(0);
+            self.raw(&[1]);
+            self.tpm2b(password);
+        }
+    }
+
+    fn finish(self) -> usize {
+        let len = self.len;
+        self.bytes[2..6].copy_from_slice(&(len as u32).to_be_bytes());
+        len
+    }
+}
+
+/// Byte-sized reads again (see `wire_matches`): a big-endian 16-bit load is a `rol r16, 8`, which the
+/// firmware interpreter does not run.
+fn be16(bytes: &[u8], at: usize) -> u16 {
+    let high = unsafe { ptr::from_ref(&bytes[at]).read_volatile() };
+    let low = unsafe { ptr::from_ref(&bytes[at + 1]).read_volatile() };
+    ((u32::from(high) << 8) | u32::from(low)) as u16
+}
+
+fn be32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+/// One command through `EFI_TCG2_PROTOCOL.SubmitCommand`; the size of the response.
+unsafe fn exchange(tpm: &Tcg2Protocol, command: &[u8], reply: &mut [u8]) -> Result<usize, Status> {
+    check(unsafe {
+        (tpm.submit_command)(
+            tpm,
+            command.len() as u32,
+            command.as_ptr(),
+            reply.len() as u32,
+            reply.as_mut_ptr(),
+        )
+    })?;
+    let size = be32(reply, 2) as usize;
+    if !(10..=reply.len()).contains(&size) {
+        return Err(Status::DEVICE_ERROR);
+    }
+    Ok(size)
+}
+
+/// A command that must answer `TPM_RC_SUCCESS`; the size of the response.
+unsafe fn succeeds(tpm: &Tcg2Protocol, command: &[u8], reply: &mut [u8]) -> Result<usize, Status> {
+    let size = unsafe { exchange(tpm, command, reply) }?;
+    if be32(reply, 6) != 0 {
+        return Err(Status::DEVICE_ERROR);
+    }
+    Ok(size)
+}
+
+unsafe fn capability(
+    tpm: &Tcg2Protocol,
+    capability: u32,
+    count: u32,
+    reply: &mut [u8],
+) -> Result<usize, Status> {
+    let mut command = [0u8; 22];
+    let mut frame = Frame::new(&mut command, TPM_ST_NO_SESSIONS, CC_GET_CAPABILITY);
+    frame.u32(capability);
+    frame.u32(0);
+    frame.u32(count);
+    let len = frame.finish();
+    let size = unsafe { succeeds(tpm, &command[..len], reply) }?;
+    // moreData is NO and the answer names the capability asked for.
+    if reply[10] != 0 || be32(reply, 11) != capability || size < 19 {
+        return Err(Status::DEVICE_ERROR);
+    }
+    Ok(size)
+}
+
+/// `GetCapability`: 101 commands, ML-DSA and ML-KEM, P-256 and P-384, SHA-256 and SHA-384 banks.
+unsafe fn check_capabilities(tpm: &Tcg2Protocol) -> Result<(), Status> {
+    let mut reply = [0u8; 1024];
+    // TPM_CAP_COMMANDS, from command code 0.
+    let size = unsafe { capability(tpm, 2, 256, &mut reply) }?;
+    if be32(&reply, 15) != 101 || size != 19 + 4 * 101 {
+        return Err(Status::DEVICE_ERROR);
+    }
+    // TPM_CAP_ALGS: TPM_ALG_MLKEM (0x00A0) and TPM_ALG_MLDSA (0x00A1), six octets each.
+    let size = unsafe { capability(tpm, 0, 128, &mut reply) }?;
+    let count = be32(&reply, 15) as usize;
+    if count == 0 || size != 19 + 6 * count {
+        return Err(Status::DEVICE_ERROR);
+    }
+    let (mut mlkem, mut mldsa) = (false, false);
+    for index in 0..count {
+        match be16(&reply, 19 + 6 * index) {
+            0x00a0 => mlkem = true,
+            0x00a1 => mldsa = true,
+            _ => (),
+        }
+    }
+    // TPM_CAP_ECC_CURVES: TPM_ECC_NIST_P256 (3) and TPM_ECC_NIST_P384 (4).
+    let size = unsafe { capability(tpm, 8, 16, &mut reply) }?;
+    let count = be32(&reply, 15) as usize;
+    if count == 0 || size != 19 + 2 * count {
+        return Err(Status::DEVICE_ERROR);
+    }
+    let (mut p256, mut p384) = (false, false);
+    for index in 0..count {
+        match be16(&reply, 19 + 2 * index) {
+            3 => p256 = true,
+            4 => p384 = true,
+            _ => (),
+        }
+    }
+    // TPM_CAP_PCRS: the allocated banks, SHA-256 (0x000B) and SHA-384 (0x000C).
+    let size = unsafe { capability(tpm, 5, 1, &mut reply) }?;
+    let count = be32(&reply, 15) as usize;
+    let (mut sha256, mut sha384) = (false, false);
+    let mut at = 19;
+    for _ in 0..count {
+        if at + 3 > size {
+            return Err(Status::DEVICE_ERROR);
+        }
+        match be16(&reply, at) {
+            0x000b => sha256 = true,
+            0x000c => sha384 = true,
+            _ => (),
+        }
+        at += 3 + usize::from(reply[at + 2]);
+    }
+    if !(mlkem && mldsa && p256 && p384 && sha256 && sha384) || at != size {
+        return Err(Status::DEVICE_ERROR);
+    }
+    Ok(())
+}
+
+/// An ML-DSA-65 key signs an `NV_Certify` attestation of a 512-octet index: the answer is larger
+/// than the 3968-octet CRB window. `VerifySequenceComplete` carries the 3313-octet signature in a
+/// command: a damaged one is `TPM_RC_SIGNATURE`, the good one gives a `TPM_ST_MESSAGE_VERIFIED` ticket.
+unsafe fn mldsa_exchange(tpm: &Tcg2Protocol) -> Result<Proof, Status> {
+    let mut command = [0u8; 1024];
+    let mut reply = [0u8; 5000];
+
+    // CreatePrimary under the owner: ML-DSA-65 (parameter set 2), allowExternalMu, userAuth "pw".
+    let mut frame = Frame::new(&mut command, TPM_ST_SESSIONS, CC_CREATE_PRIMARY);
+    frame.u32(TPM_RH_OWNER);
+    frame.passwords(&[b""]);
+    frame.tpm2b(&[0, 2, b'p', b'w', 0, 0]);
+    frame.tpm2b(&[
+        0x00, 0xa1, 0x00, 0x0b, 0x00, 0x04, 0x00, 0x72, 0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00,
+    ]);
+    frame.tpm2b(b"");
+    frame.u32(0);
+    let len = frame.finish();
+    unsafe { succeeds(tpm, &command[..len], &mut reply) }?;
+    let key = be32(&reply, 10);
+
+    // A 512-octet index with owner read and write.
+    let mut frame = Frame::new(&mut command, TPM_ST_SESSIONS, CC_NV_DEFINE_SPACE);
+    frame.u32(TPM_RH_OWNER);
+    frame.passwords(&[b""]);
+    frame.tpm2b(b"");
+    frame.tpm2b(&[
+        0x01, 0x00, 0x00, 0x01, 0x00, 0x0b, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00, 0x02, 0x00,
+    ]);
+    let len = frame.finish();
+    unsafe { succeeds(tpm, &command[..len], &mut reply) }?;
+    let mut data = [0u8; NV_SIZE];
+    for (index, byte) in data.iter_mut().enumerate() {
+        *byte = index as u8;
+    }
+    let mut frame = Frame::new(&mut command, TPM_ST_SESSIONS, CC_NV_WRITE);
+    frame.u32(TPM_RH_OWNER);
+    frame.u32(NV_INDEX);
+    frame.passwords(&[b""]);
+    frame.tpm2b(&data);
+    frame.u16(0);
+    let len = frame.finish();
+    unsafe { succeeds(tpm, &command[..len], &mut reply) }?;
+
+    // NV_Certify of the whole index: qualifying data, scheme NULL, size 512, offset 0.
+    let mut frame = Frame::new(&mut command, TPM_ST_SESSIONS, CC_NV_CERTIFY);
+    frame.u32(key);
+    frame.u32(TPM_RH_OWNER);
+    frame.u32(NV_INDEX);
+    frame.passwords(&[b"pw", b""]);
+    frame.tpm2b(&[0x5a; 64]);
+    frame.u16(0x0010);
+    frame.u16(NV_SIZE as u16);
+    frame.u16(0);
+    let len = frame.finish();
+    let certify = unsafe { succeeds(tpm, &command[..len], &mut reply) }?;
+    // The answer needs the second CRB page (the window holds 3968 octets).
+    if certify <= 3968 {
+        return Err(Status::DEVICE_ERROR);
+    }
+    // responseParameterSize, TPM2B_ATTEST, then TPMT_SIGNATURE.
+    let attest_len = usize::from(be16(&reply, 14));
+    let signature_at = 16 + attest_len;
+    if be32(&reply, 10) as usize != 2 + attest_len + MLDSA_SIGNATURE
+        || attest_len == 0
+        || attest_len > 1024
+        || certify < signature_at + MLDSA_SIGNATURE
+        || !wire_matches(
+            &reply[signature_at..signature_at + 4],
+            &MLDSA_SIGNATURE_HEADER,
+        )
+    {
+        return Err(Status::DEVICE_ERROR);
+    }
+
+    // A verify sequence over the attestation with the key that signed it.
+    let mut frame = Frame::new(&mut command, TPM_ST_NO_SESSIONS, CC_VERIFY_SEQUENCE_START);
+    frame.u32(key);
+    frame.tpm2b(b"vseq");
+    frame.tpm2b(b"");
+    frame.tpm2b(b"");
+    let len = frame.finish();
+    let mut started = [0u8; 16];
+    unsafe { succeeds(tpm, &command[..len], &mut started) }?;
+    let sequence = be32(&started, 10);
+    let mut update = [0u8; 1100];
+    let mut frame = Frame::new(&mut update, TPM_ST_SESSIONS, CC_SEQUENCE_UPDATE);
+    frame.u32(sequence);
+    frame.passwords(&[b"vseq"]);
+    frame.tpm2b(&reply[16..16 + attest_len]);
+    let len = frame.finish();
+    let mut updated = [0u8; 64];
+    unsafe { succeeds(tpm, &update[..len], &mut updated) }?;
+
+    // VerifySequenceComplete with the signature (3348 octets in all, one window of the CRB).
+    let mut complete = [0u8; 3600];
+    let mut frame = Frame::new(&mut complete, TPM_ST_SESSIONS, CC_VERIFY_SEQUENCE_COMPLETE);
+    frame.u32(sequence);
+    frame.u32(key);
+    frame.passwords(&[b"vseq"]);
+    let signature_start = frame.len;
+    frame.raw(&reply[signature_at..signature_at + MLDSA_SIGNATURE]);
+    let command_len = frame.finish();
+    let mut verdict = [0u8; 128];
+    // One damaged octet (a byte-wide read-modify-write is a form the firmware interpreter lacks).
+    let original = complete[signature_start + 1500];
+    complete[signature_start + 1500] = (u32::from(original) + 1) as u8;
+    let damaged = unsafe { exchange(tpm, &complete[..command_len], &mut verdict) }?;
+    let damaged_code = be32(&verdict, 6);
+    if damaged != 10 || damaged_code != TPM_RC_SIGNATURE {
+        return Err(Status::DEVICE_ERROR);
+    }
+    // A failed completion keeps the sequence: the undamaged signature completes it.
+    complete[signature_start + 1500] = original;
+    let size = unsafe { succeeds(tpm, &complete[..command_len], &mut verdict) }?;
+    let ticket = u32::from(be16(&verdict, 14));
+    if size < 16 || ticket != TPM_ST_MESSAGE_VERIFIED {
+        return Err(Status::DEVICE_ERROR);
+    }
+    Ok(Proof {
+        certify: certify as u32,
+        signature: MLDSA_SIGNATURE as u32,
+        command: command_len as u32,
+        damaged: damaged_code,
+        ticket,
+    })
+}
+
+/// A line of COM1 made of a fixed text and one 32-bit value in hexadecimal: sizes and codes only.
+unsafe fn report(system: *mut SystemTable, text: &[u8], value: u32) -> Result<(), Status> {
+    let mut line = [0u16; 96];
+    let mut at = 0;
+    for &character in text {
+        line[at] = u16::from(character);
+        at += 1;
+    }
+    for shift in (0..8).rev() {
+        let digit = ((value >> (shift * 4)) & 0xf) as u8;
+        line[at] = u16::from(if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' - 10 + digit
+        });
+        at += 1;
+    }
+    line[at] = 13;
+    line[at + 1] = 10;
+    check(unsafe { output(system, line.as_ptr()) })
 }
 
 unsafe fn exit_and_verify_final_events(

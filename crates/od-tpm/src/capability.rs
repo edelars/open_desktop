@@ -164,7 +164,7 @@ impl Tpm {
             (pt::FAMILY_INDICATOR, spec::FAMILY),
             (pt::LEVEL, spec::LEVEL),
             (pt::REVISION, spec::REVISION),
-            (pt::DAY_OF_YEAR, spec::DAY_OF_YEAR),
+            (pt::ERRATA, spec::ERRATA),
             (pt::YEAR, spec::YEAR),
             (pt::MANUFACTURER, VENDOR_ID),
             (pt::VENDOR_STRING_1, 0x4F70_656E),
@@ -185,6 +185,11 @@ impl Tpm {
             (pt::CONTEXT_GAP_MAX, crate::context::CONTEXT_GAP_MAX),
             (pt::NV_COUNTERS_MAX, MAX_NV_COUNTERS as u32),
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
+            // TPMA_MEMORY (Part 2 v185, Table 42): all three bits CLEAR. Sessions, transient objects
+            // (and sequences) have separate pools (sharedRAM), persistent objects and NV indices
+            // have separate stores (sharedNV), and a persistent object is used in place, without a
+            // transient slot (objectCopiedToRam).
+            (pt::MEMORY, 0),
             // `Clock` reaches NV only with the snapshot, which the host writes: no interval (0).
             (pt::CLOCK_UPDATE, 0),
             // Contexts are AES-128-CFB under a SHA-256 integrity HMAC (`context.rs`).
@@ -212,6 +217,9 @@ impl Tpm {
             // `TPMA_MODES`: not FIPS 140 evaluated.
             (pt::MODES, 0),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
+            // No SVN-limited hierarchies (`TPM_RH_SVN_*`) and no firmware update: SVN 0, no future SVN.
+            (pt::FIRMWARE_SVN, 0),
+            (pt::FIRMWARE_MAX_SVN, 0),
             // TPMA_ML_PARAMETER_SET: mlKem_768 (bit 1), mlDsa_65 (bit 4) and extMu (bit 6).
             (pt::ML_PARAMETER_SETS, (1 << 1) | (1 << 4) | (1 << 6)),
             (pt::PERMANENT, self.permanent_attributes()),
@@ -228,9 +236,11 @@ impl Tpm {
                 pt::HR_ACTIVE_AVAIL,
                 (MAX_SESSIONS - self.active_sessions()) as u32,
             ),
+            // Not more than the free slots of either pool: a value of at least 1 means that an
+            // object of any type (key, sealed data, sequence) can be loaded (Part 2 v185, TPM_PT).
             (
                 pt::HR_TRANSIENT_AVAIL,
-                (self.sequences.free_slots() + self.objects.free_slots()) as u32,
+                self.sequences.free_slots().min(self.objects.free_slots()) as u32,
             ),
             (pt::HR_PERSISTENT, self.persistent.objects.len() as u32),
             (
@@ -242,6 +252,8 @@ impl Tpm {
                 pt::NV_COUNTERS_AVAIL,
                 self.persistent.nv.counters_avail() as u32,
             ),
+            // No algorithm set is selected (`TPM2_SetAlgorithmSet` is not implemented): 0.
+            (pt::ALGORITHM_SET, 0),
             // NIST P-256 and NIST P-384, the curves of `TPM_CAP_ECC_CURVES`.
             (pt::LOADED_CURVES, ECC_CURVES.len() as u32),
             // Dictionary attack (slice C1, `da.rs`).

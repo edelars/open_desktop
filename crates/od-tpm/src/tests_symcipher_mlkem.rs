@@ -189,12 +189,14 @@ fn golden_transcript() -> Vec<u8> {
     log
 }
 
+// Re-pinned when ECC keys of `TPM2_Create` began to use extra random bits (Part 1 v185 §44.6): the
+// transcript holds a `Create` of an ECC key and replies that follow it.
 #[test]
 fn sha256_golden_unchanged() {
     let digest = Sha256::digest(golden_transcript());
     let hexed: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        hexed, "7852ab0a624f648fc1cf91bc5182c7610ffc5440b2d4cb8e4213109f88e78d3d",
+        hexed, "705f74c54f95520063f3bd71ff468c55c795383aa0ee03701c5d51a299ebbee9",
         "golden transcript digest"
     );
 }

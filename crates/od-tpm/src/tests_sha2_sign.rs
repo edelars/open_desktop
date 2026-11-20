@@ -274,6 +274,9 @@ const ECDSA_SHA256: Scheme = Scheme {
     hash: alg::SHA256,
 };
 
+// Row 28 (the `TPM2_CertifyCreation` response, which names a key made by `TPM2_Create`) was re-pinned
+// when ECC keys of `TPM2_Create` began to use extra random bits (Part 1 v185 §44.6); rows 0-27 are as
+// recorded.
 const GOLDEN: [&str; 29] = [
     "29e2e3f0909910c6d2d376156a7ade399dfe34a3dbfc71b30191466b2db7d182",
     "5ff8a6f6d9dd196b1d85a1989a8a5d2a31bf61e591be407b910af389d5af5e73",
@@ -303,7 +306,7 @@ const GOLDEN: [&str; 29] = [
     "846494ad2ad9428e05e3b26c54493144058d359d359c0a89d57f7c6791b7bce3",
     "6ab4ecc4d95767ef045fe106d367afc940f7fae6668ba34f5c8e169fa878766f",
     "051f03e187f9a77d06b73ecacca6081820587ce58c9819cf1305e99289af92f0",
-    "eb420116611dab4e19ccf02dea74fc509cce16cab4cbe9cbc3b4639b9103c12e",
+    "6dc62f450d3aba9bc744687e1c93ef47fe7f5d6d588a8914be886e5cc3877dc7",
 ];
 
 #[test]

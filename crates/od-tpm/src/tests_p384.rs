@@ -1208,7 +1208,10 @@ fn ecc_p256_sha256_flow() -> Vec<String> {
 
 #[test]
 fn sha256_p256_golden_unchanged() {
-    // Taken on commit abf5923, before the ECC P-384 changes.
+    // Taken on commit abf5923, before the ECC P-384 changes. Rows 6 and 8-12 were re-pinned when
+    // `TPM2_Create` and `TPM2_ECDH_KeyGen` began to generate ECC keys with extra random bits (Part 1
+    // v185 §44.6): they carry a key from `Create` or the DRBG output after it; the other rows are as
+    // they were.
     const GOLDEN: [&str; 19] = [
         "29e2e3f0909910c6d2d376156a7ade399dfe34a3dbfc71b30191466b2db7d182",
         "0d4448ee099bd563985c7dfae0aac5e3e10d4f5231b63b1427372d23aeab6542",
@@ -1216,13 +1219,13 @@ fn sha256_p256_golden_unchanged() {
         "933a7c7f177c3f2e227c17a07a5f354262eef8b5e5a1ec443aeff14b0b873d10",
         "7ca1ac48fa25bec1a8f724932f642c2a31875aae0c5a17e2eb2b1e2331f7bf16",
         "3cf5594ed38c0ca38f5a914a7cfacd66adbaf0f4e3cf11a6d9a03a06ed11d6cd",
-        "f639bbbb867a91f4a0c72dbf5672c6e495b94f1179173dfd74c881fd0933ce1b",
+        "5cb3564f12b029e9811d598c71f7d0f7e34e52fee7881b1c30d2219942a88bf8",
         "38ecf2837bf0c7ffdfabafbeb765898230031c6bf3f7fe2f4c632fcdc993ad51",
-        "4e54e5a89b27760c17325cd9694c47ec04cc4f3a5e0f0950b4c310b44260109e",
-        "a542cb7eb6249ef314f2cbd44484e281a023f24ce461d02d518acc02734490ca",
-        "0e098cf5b14e09b5b126d8f97866edeb32d83c1752baec148b9201cad06dd4be",
-        "fbb39c627c5be4fcdf8b43e5fa86cf0bbcd3ebabb007e1d61fc48556c99dd45a",
-        "4fe3fbd46714873881d49a88de5d82044761cc7bfafbd8fb9e5b2d08671ecab8",
+        "f3d1658e22650a283451d938fec0a765d23f12940b6018aa59697bbfb4654182",
+        "84df619238acee9b2574bb7eca3602b6c886a2608719319801173dcb5761d7eb",
+        "a85e21e836b3ed3bb2792fcc33affb406fc7066f663d3ed5bb0e36a81856c8a1",
+        "d26ca13c365bc29c37e9f822ee9786e7c3d864f8cfa5734c06f58d413face51a",
+        "69f4d4cdda4c397388cd0a3f414998220cbed771eb2af6ac2e7f045e0ccf15d3",
         "5b2896e614c8b5077c7bea543c34c66431aa403bd731a18d35b9d5e07cd08613",
         "be5c3c48c5672e23bd299e7369f4c7b6682014e70daf63af7b1617784dcf1256",
         "5b2896e614c8b5077c7bea543c34c66431aa403bd731a18d35b9d5e07cd08613",
@@ -1231,4 +1234,65 @@ fn sha256_p256_golden_unchanged() {
         "7faac055939fac1ccc6764b79e7788d93f4ba6d53cb5b3eee6f036f00b4d9470",
     ];
     assert_eq!(ecc_p256_sha256_flow(), GOLDEN);
+}
+
+/// Part 1 v185 §44.6: an ECC key is generated with extra random bits (FIPS 186-5 A.2.1). `TPM2_Create`
+/// and `TPM2_ECDH_KeyGen` draw the key that `ecc_generate_extra_random_bits` makes from the TPM
+/// DRBG (the same state in a second TPM shows it); a Primary keeps the rejection sampling (its
+/// entropy is a vendor option, Part 1 §25.6.3, and the EK and SRK must not change: the golden tests
+/// above pin the Primary of the P-256 flows).
+#[test]
+fn create_and_ecdh_key_gen_use_extra_random_bits() {
+    use crate::crypto::{ecc_generate, ecc_generate_extra_random_bits, ecc_public, ecc_scalar};
+
+    for (curve_id, parent_template, child_template) in [
+        (curve::NIST_P256, ecc_storage(), ecc_sign()),
+        (
+            curve::NIST_P384,
+            storage(alg::SHA256),
+            signing(alg::SHA256, HashAlg::Sha256),
+        ),
+    ] {
+        let setup = || {
+            let mut t = started();
+            let parent = created(&create_primary(&mut t, OWNER, b"pw", &parent_template)).0;
+            (t, parent)
+        };
+        // Create: the scalar of the child is the extra-random-bits key of the DRBG state before it.
+        let (mut t, parent) = setup();
+        let child = parse_child(&create_child(
+            &mut t,
+            parent,
+            b"pw",
+            b"cpw",
+            b"",
+            &child_template,
+        ));
+        let (handle, _) = parse_loaded(&load(&mut t, parent, b"pw", &child.private, &child.public));
+        let scalar = secret_of(&t, handle);
+        let (mut same_state, _) = setup();
+        let expected = ecc_generate_extra_random_bits(&mut same_state.drbg, curve_id).unwrap();
+        assert_eq!(
+            scalar,
+            ecc_scalar(&expected).to_vec(),
+            "curve {curve_id:#x}"
+        );
+        assert_eq!(point_of(&child.public), ecc_public(&expected).unwrap());
+        // It is not the key that rejection sampling would give from that state.
+        let (mut other_state, _) = setup();
+        let rejection = ecc_generate(&mut other_state.drbg, curve_id).unwrap();
+        assert_ne!(scalar, ecc_scalar(&rejection).to_vec());
+        // ECDH_KeyGen: the ephemeral point is the public point of the extra-random-bits key.
+        let (mut t, parent) = setup();
+        let reply = run(&mut t, plain(cc::ECDH_KEY_GEN, &[parent], &[]));
+        ok(&reply);
+        let (mut same_state, _) = setup();
+        let expected = ecc_generate_extra_random_bits(&mut same_state.drbg, curve_id).unwrap();
+        let (x, y) = ecc_public(&expected).unwrap();
+        let point = ecc_point(&x, &y);
+        assert!(
+            reply.windows(point.len() - 2).any(|w| w == &point[2..]),
+            "curve {curve_id:#x}"
+        );
+    }
 }

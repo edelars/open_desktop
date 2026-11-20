@@ -10076,3 +10076,31 @@ Windows Setup остаётся критерием S7-32.
 Firmware-профиль допускает точные байты `69 C0 80 96 98 00` и использует существующий знаковый `IMUL` с усечением в EAX. Sol High сверил сохранение старых форм, отсутствие расширения базового профиля, CF/OF и отказ на ошибке выборки. Прошли 125 тестов firmware-профиля ISA.
 
 Системная проверка повторно загрузила stock ROM с обычным выходом импортера и с его копией, где у `BOOTX64.EFI` заполнено FAT-время создания 1980-01-01 00:00:00,270. В обоих случаях приложение выполнилось через NVMe. С временной меткой runner сообщил 4 415 208 инструкций и 3 305 квантов. [ISSUE-533](../KNOWN_ISSUES.md#issue-533).
+
+## S7-23 — приёмка по решению 7 ADR-0009 (2026-11-20)
+
+Проверено на Apple M3 Max, ветка `codex2`, без коммита. Независимое ревью не выполнялось: отметка чекбокса S7-23 остаётся за ним.
+
+**Host-тест устройства CRB** (`tpm_crb::tests::crb_carries_mldsa_certify_response_in_pages_and_the_3309_octet_signature_in_a_command`). Команды собраны вручную байтами, обмен идёт регистрами CRB (окно 3968 октетов): Startup, `CreatePrimary` ML-DSA-65, `NV_DefineSpace`, `NV_Write` на 512 октетов, `NV_Certify`, `VerifySequenceStart`, `SequenceUpdate`, `VerifySequenceComplete` с искажённой и верной подписью. Ответ `NV_Certify` — 4024 октета, две страницы (`NEXT_CHUNK`). Подпись `TPMT_SIGNATURE` — 3313 октетов (3309 октетов подписи). Все девять ответов побайтно равны прямому вызову `Tpm::execute` с той же энтропией, тем же ключом, входом и временем. Искажённая подпись даёт `TPM_RC_SIGNATURE`, верная — билет `TPM_ST_MESSAGE_VERIFIED` (0x8026). Команда `VerifySequenceComplete` занимает 3348 октетов и меньше окна, поэтому уходит одним окном: разбить её на чанки нельзя, ведь чанк начинается с полного окна. Чанки команд больше окна проверяет `crb_assembles_commands_through_the_final_chunk` (до 8192 октетов).
+
+**Гостевая проба** (`firmware/uefi/tests/apps/tpm/main.rs`): те же шаги через `EFI_TCG2_PROTOCOL.SubmitCommand` и `GetCapability` (101 команда, `TPM_ALG_MLKEM` и `TPM_ALG_MLDSA`, кривые P-256 и P-384, банки SHA-256 и SHA-384). COM1 получает только размеры и коды.
+
+```text
+cargo build --release -p od-runner --offline
+python3 tools/build/build_firmware.py --with-test-apps --target-dir <dir> --out <rom>
+python3 tests/system/firmware_tpm_smoke.py --runner target/release/od-runner --rom <rom> --app <dir>/test-apps/x86_64-unknown-uefi/release/tpm.efi
+tpm-fv: 367381532 instructions, 4049 quanta
+tpm-esp: 368347918 instructions, 4733 quanta
+```
+
+Строки COM1 новой части (одинаковы для FV и ESP): `101 commands, MLDSA, MLKEM, P-256, P-384, SHA-256, SHA-384`, `NV_Certify ML-DSA-65 response bytes 0x00000fb8`, `ML-DSA-65 signature bytes 0x00000cf1`, `VerifySequenceComplete command bytes 0x00000d14`, `damaged signature response code 0x0000009b`, `message verified ticket 0x00008026`.
+
+Интерпретатор прошивки отклонил две формы, и проба их обходит: `rol r16, 8` (16-битный разворот байтов; `Unsupported { opcode: 193 }`) и `xor byte ptr [mem], imm8` (`Unsupported { opcode: 128 }`). Строки консоли не длиннее 79 столбцов: длинную консоль переносит. Новый ISSUE для декодера не заведён: формы обойдены в самой пробе, как в ISSUE-534.
+
+**firmware_boot_smoke.py: NOT VERIFIED (падает на чистом HEAD).** Скрипт останавливается на первом сценарии `boot_core`: COM1 расходится с `tests/fixtures/firmware/boot_core_com1.txt` (карта памяти: регион кода 0x4F страниц в эталоне, 0x55 в сборке; CRC таблиц). Тот же результат даёт прошивка без моих изменений: `git archive HEAD`, сборка `build_firmware.py` и `boot-firmware --budget 6000000` расходятся с эталоном на строке 15. Изменялись только тестовое приложение и `firmware_tpm_smoke.py`, образ без `--with-test-apps` они не затрагивают. Остальные сценарии скрипта не запускались. Эталон устарел относительно ядра прошивки; обновление эталона не входило в задачу.
+
+**Сверки.** Part 1 v185 §44.6 говорит «is used»: ключ ECC генерируется методом FIPS 186-5 A.2.1 с дополнительными случайными битами. `Create`, `ECDH_KeyGen` (а `MakeCredential` уже) переведены на `ecc_generate_extra_random_bits`, Primary не менялся (vendor option, §25.6.3). Golden-тесты, чьи транскрипты содержат `Create` ECC-ключа, перепривязаны: `golden_sha256_primary_and_private_blob_are_byte_identical` (строки 1–7; строка 0 — Primary — не изменилась), `sha256_p256_golden_unchanged` (строки 6, 8–12), `sha256_sign_golden_unchanged` (строка 28), `tests_symcipher_mlkem::sha256_golden_unchanged`, а также пины публичных ключей, Name и подписей в `sha384_object_create_load_sign_verify_snapshot_restore` и `sha512_object_name_is_nameAlg_000d`. Новые Name сверены `hashlib`. Новый тест `ecc_extra_random_bits_follow_fips_186_5_a_2_1` пересчитывает `d = (c mod (n - 1)) + 1` побитно без `bigint`, а `create_and_ecdh_key_gen_use_extra_random_bits` сверяет скаляр `Create` и точку `ECDH_KeyGen` с тем же состоянием DRBG. §11.5 (размер proof) — рекомендация («should»): принято отклонение, запись в [VTPM](../specs/VTPM.md#отклонения-от-ptp-107-и-плана-записаны-не-скрыты). Заодно `TPM_PT_YEAR` и `TPM_PT_ERRATA` приведены к v185 (0 и 0 вместо заглушек 2025 и 79).
+
+**Свойства и слоты.** `TPM_PT_MEMORY` = 0, `TPM_PT_ALGORITHM_SET` = 0, `TPM_PT_FIRMWARE_SVN` и `TPM_PT_FIRMWARE_MAX_SVN` = 0 (последние два в таблице v185 есть, решение 7 их не упоминало). Тест `get_capability_lists_every_tpm_pt_of_part2_v185` сверяет 70 свойств. `MAX_LOADED_MLDSA` удалён, `HR_TRANSIENT_AVAIL` — меньшее из свободных слотов объектов и sequence (тест `mldsa65_objects_take_the_common_slots_and_transient_avail_is_a_safe_estimate`: восемь ML-DSA-объектов подряд, значение не меньше 1 означает загрузку объекта любого типа).
+
+**Проверки.** `cargo fmt --all -- --check` — чисто. `cargo clippy -p od-tpm --all-targets -- -D warnings` — чисто. `cargo clippy -p od-machine` не проходит на чистом HEAD из-за чужих замечаний (в том числе `tpm_crb.rs:189` и `:646`, существовавших раньше); не исправлялось. `cargo test -p od-tpm --offline` — 544 passed, 0 failed. `cargo test -p od-machine --offline --lib tpm_crb` — 9 passed.

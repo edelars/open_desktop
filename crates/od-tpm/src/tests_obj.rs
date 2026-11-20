@@ -2469,14 +2469,15 @@ fn capability_lists_algorithms_curves_and_object_handles() {
     assert_eq!(count, 2);
     assert_eq!(body, [&u32b(0x8000_0000)[..], &u32b(k)].concat());
     // The handles of the loaded objects are in the command table's response of GetCapability and
-    // free transient slots shrink (3 sequence + 8 object slots).
+    // free transient slots shrink (3 sequence and 8 object slots; the estimate is the smaller pool:
+    // 2 free sequence slots after one sequence, 7 free object slots after one key).
     let (_, _, v, _) = cap_list(&get_cap(
         &mut t,
         cap::TPM_PROPERTIES,
         pt::HR_TRANSIENT_AVAIL,
         1,
     ));
-    assert_eq!(&v[4..8], &u32b(11 - 2)[..]);
+    assert_eq!(&v[4..8], &u32b(2)[..]);
 }
 
 // ========================================================================= robustness

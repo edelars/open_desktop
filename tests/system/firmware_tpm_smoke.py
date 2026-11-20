@@ -20,6 +20,16 @@ EXPECTED = (
     b"OD-UEFI PCR0/1/4/5 log replay: match",
     b"OD-UEFI TPM2_GetRandom: 16 bytes",
     b"OD-UEFI TPM2_TestParms: ECDSA-SHA256 P-256",
+    # ADR-0009 decision 7: GetCapability, then an ML-DSA-65 exchange over SubmitCommand. The numbers are sizes
+    # and codes: the NV_Certify response (4024 octets, two CRB pages), the 3313-octet TPMT_SIGNATURE, the 3348-octet
+    # VerifySequenceComplete command, TPM_RC_SIGNATURE for the damaged signature and the TPM_ST_MESSAGE_VERIFIED
+    # ticket. Console lines are at most 79 columns: the console wraps longer lines.
+    b"OD-UEFI TPM2: 101 commands, MLDSA, MLKEM, P-256, P-384, SHA-256, SHA-384",
+    b"OD-UEFI TPM2: NV_Certify ML-DSA-65 response bytes 0x00000fb8",
+    b"OD-UEFI TPM2: ML-DSA-65 signature bytes 0x00000cf1",
+    b"OD-UEFI TPM2: VerifySequenceComplete command bytes 0x00000d14",
+    b"OD-UEFI TPM2: damaged signature response code 0x0000009b",
+    b"OD-UEFI TPM2: message verified ticket 0x00008026",
     b"OD-UEFI TCG2: final events retained after EBS",
 )
 

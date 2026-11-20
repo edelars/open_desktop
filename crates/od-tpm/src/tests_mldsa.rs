@@ -1,7 +1,7 @@
 //! ML-DSA-65 (FIPS 204; S7-23, slice 7): TPMT_PUBLIC of type ML_DSA, SignDigest and
 //! VerifyDigestSignature over an external mu, the sign and verify sequences, attestation and
-//! PolicySigned with message signing, the limit of two loaded ML-DSA objects, contexts and
-//! snapshots, and a CRB frame with a 3309-octet signature.
+//! PolicySigned with message signing, ML-DSA objects in the common transient slots (no limit of
+//! their own), contexts and snapshots, and a CRB frame with a 3309-octet signature.
 //!
 //! `sha256_golden_unchanged` was recorded at HEAD 8ac583b, before this slice changed any code: the
 //! TPM is deterministic (fixed entropy), so the SHA-256 of one transcript of the existing RSA and
@@ -22,6 +22,7 @@ use crate::codes::{object_attr as oa, se};
 use crate::hash::MAX_SEQUENCES;
 use crate::marshal::{PublicParams, TpmtPublic, Unique, limits};
 use crate::nv::attr as nv_attr;
+use crate::object::MAX_OBJECTS;
 
 const NULL: u32 = handle::RH_NULL;
 
@@ -749,7 +750,7 @@ fn mldsa65_quote_or_certify_verifies() {
             Rc::SCHEME.in_param(2),
         );
     }
-    // Only two ML-DSA objects stay loaded: the certified one makes room for the verification key.
+    // The certified key is no longer needed: flush it before the verification key is loaded.
     ok(&flush(&mut t, certified.handle));
     let signer_public = &signer.public[signer.public.len() - 1952..];
     let (external, _) = parse_loaded(&load_external(
@@ -898,83 +899,63 @@ fn mldsa65_policy_signed_accepts_valid_signature() {
 }
 
 #[test]
-fn mldsa65_two_loaded_objects_limit_and_third_refused() {
+fn mldsa65_objects_take_the_common_slots_and_transient_avail_is_a_safe_estimate() {
+    // PTP 1.07 Table 2 asks for at least two ML-DSA objects: they have no limit of their own, only
+    // the MAX_OBJECTS transient slots shared with every other object type.
     let mut t = started();
-    // The limit is on loaded transient ML-DSA objects (MAX_LOADED_MLDSA = 2).
-    let first = parse_primary(&create_primary(
-        &mut t,
-        OWNER,
-        b"pw",
-        &mldsa_template(false, true, alg::SHA256),
-    ));
-    let second = parse_primary(&create_primary(
-        &mut t,
-        OWNER,
-        b"pw",
-        &mldsa_template(true, false, alg::SHA256),
-    ));
-    let third_template = mldsa_template(false, false, alg::SHA256);
+    let mut templates = Vec::new();
+    for name_alg in [alg::SHA256, alg::SHA384, alg::SHA512] {
+        templates.push(mldsa_template(false, true, name_alg));
+        templates.push(mldsa_template(false, false, name_alg));
+    }
+    templates.push(mldsa_template(true, false, alg::SHA256));
+    templates.push(mldsa_template(true, false, alg::SHA384));
+    assert_eq!(templates.len(), MAX_OBJECTS);
+    let mut loaded = Vec::new();
+    for (taken, template) in templates.iter().enumerate() {
+        // The estimate is the smaller of the two free pools (sequences and objects).
+        let free_objects = (MAX_OBJECTS - taken) as u32;
+        let avail = transient_avail(&mut t);
+        assert_eq!(avail, free_objects.min(MAX_SEQUENCES as u32));
+        // A value of at least 1: an object of any type loads, a sequence as well as a key.
+        assert!(avail >= 1);
+        let sequence = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+        ok(&flush(&mut t, sequence));
+        // (`parse_primary` reads a Name of at most 64 octets; a SHA-512 Name has 66.)
+        loaded.push(handle_of(&create_primary(&mut t, OWNER, b"pw", template)));
+    }
+    // Eight ML-DSA objects are loaded and sign; the pool is empty for every type.
+    assert_eq!(transient_avail(&mut t), 0);
+    let extra = mldsa_template(true, false, alg::SHA512);
     err(
-        &create_primary(&mut t, OWNER, b"pw", &third_template),
+        &create_primary(&mut t, OWNER, b"pw", &extra),
         Rc::OBJECT_MEMORY,
     );
-    // LoadExternal of a third ML-DSA key is refused too, and ContextLoad of a saved one.
+    err(
+        &create_primary(&mut t, OWNER, b"pw", &ecc_sign()),
+        Rc::OBJECT_MEMORY,
+    );
     err(
         &load_external(&mut t, &external_public(true), NULL),
         Rc::OBJECT_MEMORY,
     );
-    let saved = run(&mut t, plain(cc::CONTEXT_SAVE, &[first.handle], &[]));
+    ok(&sign_message(&mut t, loaded[0], b"pw", b"", &[b"first"]));
+    ok(&sign_message(&mut t, loaded[7], b"pw", b"", &[b"last"]));
+    // A saved context needs a slot again: ContextLoad is refused until one is flushed.
+    let saved = run(&mut t, plain(cc::CONTEXT_SAVE, &[loaded[3]], &[]));
     ok(&saved);
-    // Objects of the other types still load: the ML-DSA limit is not the slot limit.
-    let ecc_key = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_sign()));
-    let storage = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_storage()));
-    // The capability lists the loaded objects and the free slots as before.
-    let handles = |t: &mut Tpm| {
-        let (_, _, body, count) = cap_list(&get_cap(
-            t,
-            cap::HANDLES,
-            0x8000_0000 + MAX_SEQUENCES as u32,
-            100,
-        ));
-        (count, body)
-    };
-    assert_eq!(handles(&mut t).0, 4);
-    // Flushing one ML-DSA object makes room for exactly one: the saved one is the third again.
-    ok(&flush(&mut t, first.handle));
-    let third = parse_primary(&create_primary(&mut t, OWNER, b"pw", &third_template));
-    err(
-        &run(&mut t, plain(cc::CONTEXT_LOAD, &[], params(&saved, 0))),
-        Rc::OBJECT_MEMORY,
-    );
-    ok(&flush(&mut t, third.handle));
+    ok(&flush(&mut t, loaded[3]));
+    assert_eq!(transient_avail(&mut t), 1);
     let reloaded = handle_of(&run(
         &mut t,
         plain(cc::CONTEXT_LOAD, &[], params(&saved, 0)),
     ));
-    let signed = sign_message(&mut t, reloaded, b"pw", b"", &[MESSAGE]);
-    assert_eq!(sha256_hex(&sig_octets(&signed)), SIG_SHA256);
-    assert_eq!(handles(&mut t).0, 4);
-    // A persistent ML-DSA object takes no transient slot: evict the restricted key, flush it, and
-    // two other ML-DSA objects load beside it.
-    ok(&evict(&mut t, OWNER, b"", second.handle, 0x8100_0001));
-    ok(&flush(&mut t, second.handle));
+    assert_eq!(transient_avail(&mut t), 0);
     ok(&flush(&mut t, reloaded));
-    let a = parse_primary(&create_primary(&mut t, OWNER, b"pw", &third_template));
-    let b = parse_primary(&create_primary(
-        &mut t,
-        OWNER,
-        b"pw",
-        &mldsa_template(false, true, alg::SHA384),
-    ));
-    err(
-        &create_primary(
-            &mut t,
-            OWNER,
-            b"pw",
-            &mldsa_template(false, true, alg::SHA512),
-        ),
-        Rc::OBJECT_MEMORY,
-    );
+    // A persistent ML-DSA object takes no transient slot.
+    ok(&evict(&mut t, OWNER, b"", loaded[0], 0x8100_0001));
+    ok(&flush(&mut t, loaded[0]));
+    assert_eq!(transient_avail(&mut t), 2);
     ok(&sign_message(
         &mut t,
         0x8100_0001,
@@ -982,12 +963,30 @@ fn mldsa65_two_loaded_objects_limit_and_third_refused() {
         b"",
         &[b"persistent"],
     ));
-    ok(&sign_message(&mut t, a.handle, b"pw", b"", &[b"transient"]));
-    ok(&flush(&mut t, a.handle));
-    ok(&flush(&mut t, b.handle));
-    // Other keys were never limited.
-    ok(&flush(&mut t, ecc_key.handle));
-    ok(&flush(&mut t, storage.handle));
+    for handle in &loaded[1..] {
+        if *handle != loaded[3] {
+            ok(&flush(&mut t, *handle));
+        }
+    }
+    // The sequence pool is the scarcer one: with two of three sequences running the estimate is
+    // 1 although eight object slots are free, and both a key and a third sequence still load.
+    let first = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+    let second = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+    assert_eq!(transient_avail(&mut t), 1);
+    let key = handle_of(&create_primary(&mut t, OWNER, b"pw", &templates[0]));
+    let third = seq_handle(&start_seq(&mut t, b"", alg::SHA256));
+    // No free sequence slot: the estimate is 0, never more than either pool.
+    assert_eq!(transient_avail(&mut t), 0);
+    for handle in [first, second, third, key] {
+        ok(&flush(&mut t, handle));
+    }
+    assert_eq!(transient_avail(&mut t), MAX_SEQUENCES as u32);
+}
+
+fn transient_avail(t: &mut Tpm) -> u32 {
+    let (_, _, body, _) = cap_list(&get_cap(t, cap::TPM_PROPERTIES, pt::HR_TRANSIENT_AVAIL, 1));
+    assert_eq!(body[..4], u32b(pt::HR_TRANSIENT_AVAIL)[..]);
+    u32::from_be_bytes(body[4..8].try_into().unwrap())
 }
 
 #[test]

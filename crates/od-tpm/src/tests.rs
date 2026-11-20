@@ -1119,8 +1119,8 @@ fn capability_tpm_properties() {
     assert_eq!(var.len(), count as usize);
     assert!(var.windows(2).all(|w| w[0].0 < w[1].0));
     let v = |tag: u32| var.iter().find(|p| p.0 == tag).map(|p| p.1);
-    // Three sequence slots plus eight object slots (slice B).
-    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(11));
+    // The smaller of the two pools: three sequence slots and eight object slots (slice B).
+    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(3));
     assert_eq!(v(pt::HR_PERSISTENT), Some(0));
     assert_eq!(v(pt::HR_PERSISTENT_AVAIL), Some(16));
     assert_eq!(v(pt::HR_NV_INDEX), Some(0));
@@ -1136,6 +1136,53 @@ fn capability_tpm_properties() {
         cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x300, 100)).3,
         0
     );
+}
+
+#[test]
+fn get_capability_lists_every_tpm_pt_of_part2_v185() {
+    // The TPM_PT table of Part 2 v185 (PTP 1.07 clause 4.2 asks for every defined property):
+    // PT_FIXED + 0..=20 and 22..=49 (+21 is reserved), PT_VAR + 0..=20.
+    let expected: Vec<u32> = (0..=20)
+        .chain(22..=49)
+        .map(|n| pt::FIXED + n)
+        .chain((0..=20).map(|n| pt::VAR + n))
+        .collect();
+    assert_eq!(expected.len(), 49 + 21);
+    let mut t = started();
+    let mut listed = Vec::new();
+    let mut values = std::collections::HashMap::new();
+    for group in [pt::FIXED, pt::VAR] {
+        let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, group, 1000));
+        assert!(!more && c == cap::TPM_PROPERTIES);
+        assert_eq!(body.len(), 8 * count as usize);
+        for entry in body.chunks(8) {
+            let tag = u32::from_be_bytes(entry[..4].try_into().unwrap());
+            listed.push(tag);
+            values.insert(tag, u32::from_be_bytes(entry[4..].try_into().unwrap()));
+        }
+    }
+    assert_eq!(
+        listed, expected,
+        "TPM_PT of the response against Part 2 v185"
+    );
+    // The values that are zero because the TPM has no such feature, not because they are stubs.
+    for tag in [
+        pt::MEMORY,
+        pt::ALGORITHM_SET,
+        pt::SPLIT_MAX,
+        pt::MODES,
+        pt::NV_WRITE_RECOVERY,
+        pt::AUDIT_COUNTER_0,
+        pt::AUDIT_COUNTER_1,
+        pt::CLOCK_UPDATE,
+        pt::ERRATA,
+        pt::YEAR,
+        pt::FIRMWARE_SVN,
+        pt::FIRMWARE_MAX_SVN,
+    ] {
+        assert_eq!(values[&tag], 0, "{tag:#x}");
+    }
+    assert_eq!(values[&pt::REVISION], 185);
 }
 
 #[test]
