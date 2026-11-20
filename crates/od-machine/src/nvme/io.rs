@@ -9,7 +9,8 @@
 //! `nvme.h` too. Everything else is `NOT VERIFIED against NVMe Base 2.4`:
 //! the Read/Write dword layout used here (`CDW10/11` = SLBA, `CDW12[15:0]` =
 //! NLB 0's based; `CDW12[31:16]` and `CDW13` hold the control, protection and
-//! data-set-management fields, all rejected as `Invalid Field`), the DNR
+//! data-set-management fields: LR `CDW12[31]` and the DSM hints `CDW13[7:0]`
+//! are ignored, the rest is rejected as `Invalid Field`), the DNR
 //! values and the conditions under which the statuses are used, and the order
 //! of the checks below. Contract: `docs/specs/NVME_DEVICE.md`, "Slice B".
 
@@ -65,6 +66,11 @@ fn check_common(state: &NvmeState, command: &Command) -> Result<(), Status> {
     Ok(())
 }
 
+/// Limited Retry bit of Read/Write (CDW12[31]): a hint, ignored.
+const CDW12_LR: u32 = 1 << 31;
+/// Dataset management hints of Read/Write (CDW13[7:0]): hints, ignored.
+const CDW13_DSM_MASK: u32 = 0xFF;
+
 /// A validated Read/Write range: first sector and number of sectors.
 struct Transfer {
     lba: u64,
@@ -80,9 +86,12 @@ impl Transfer {
 /// Decodes and validates `SLBA`/`NLB` of `Read` and `Write`.
 fn check_transfer(state: &NvmeState, command: &Command) -> Result<Transfer, Status> {
     check_common(state, command)?;
-    // FUA, LR, PRINFO, DTYPE, STC and the like (CDW12[31:16]) and the dataset
-    // management hints (CDW13) are not supported (ONCS declares neither).
-    if command.cdw12 >> 16 != 0 || command.cdw13 != 0 {
+    // LR (CDW12[31]) and the dataset management hints (CDW13[7:0]) are only
+    // hints: there are no retries and no access classes here, so they are
+    // silently ignored (Linux sets them for REQ_FAILFAST_DEV | REQ_RAHEAD).
+    // FUA, PRINFO, STC, DTYPE (the rest of CDW12[30:16]) and CDW13[31:8]
+    // (DSPEC and reserved bits) are not supported: Invalid Field.
+    if (command.cdw12 & !CDW12_LR) >> 16 != 0 || command.cdw13 & !CDW13_DSM_MASK != 0 {
         return Err(Status::INVALID_FIELD);
     }
     let sectors = u64::from(command.cdw12 & 0xFFFF) + 1;

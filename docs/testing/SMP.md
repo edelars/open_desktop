@@ -542,7 +542,7 @@ python3 tools/build/build_stage6_smp_rootfs_initramfs.py \
   --prebuilt-busybox "$boot_busybox" --out "$overlay"
 ```
 
-На macOS arm64 передайте `--rootfs-raw` рабочую копию принятого образа ext4. Runner открывает её на запись с эксклюзивной блокировкой, подключает к PCI/NVMe и добавляет `rdinit=/s6-smp-init`. Для каждого повтора создавайте новую копию образа и указывайте свободный путь отчёта. Установите `kernel`, `overlay` и `accepted_raw` в пути проверенных файлов, а `kernel_sha256` и `overlay_sha256` в ожидаемые хеши ядра и initramfs. Соберите release runner и задайте `budget` по длительности прогона.
+На macOS arm64 передайте `--rootfs-raw` рабочую копию принятого образа ext4. Runner открывает её на запись с эксклюзивной блокировкой, подключает к PCI/NVMe и добавляет `rdinit=/s6-smp-init`. Для каждого повтора создавайте новую копию образа и указывайте свободный путь отчёта. Установите `kernel`, `overlay` и `accepted_raw` в пути проверенных файлов, а `kernel_sha256` и `overlay_sha256` в ожидаемые хеши ядра и initramfs. Соберите release runner и задайте `budget` по длительности прогона. Для статического пакета на 2 vCPU ядро тратит около 2,4·10⁹ инструкций до старта PID 1, поэтому используйте `--budget 6000000000` (около 50 минут на macOS arm64).
 
 ```sh
 mkdir -p work/stage6/s6-22-rootfs

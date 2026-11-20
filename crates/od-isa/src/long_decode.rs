@@ -1058,6 +1058,12 @@ pub enum Operation {
         destination: MemoryOperand,
         immediate: u64,
     },
+    /// S6-22: `LOCK AND m64, r64` or `LOCK XOR m8, r8` in the CPL0 set.
+    LockLogicMemReg {
+        kind: LogicKind,
+        destination: MemoryOperand,
+        source: RegisterView,
+    },
     /// S4-38L7n/S4-38L7t: `F0 REX.W 0F AB /r` (LOCK BTS m64, r64, `kind` = `BitKind::Set`) and
     /// `F0 REX.W 0F B3 /r` (LOCK BTR m64, r64, `kind` = `BitKind::Reset`), memory operand only. The
     /// register is a signed bit offset into a bit string that starts at the memory operand;
@@ -1090,8 +1096,14 @@ pub enum Operation {
     FxsaveRipRelative(MemoryOperand),
     /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
     Fxsave64RaxDisp8(MemoryOperand),
+    /// Exact Linux `49 0F AE 04 24` FXSAVE64 `[R12]` form.
+    Fxsave64R12(MemoryOperand),
     /// Exact S2-39e Long64 `48 0F AE 4B 40` FXRSTOR64 `[RBX+0x40]` form.
     Fxrstor64RbxDisp8(MemoryOperand),
+    /// Exact Linux `48 0F AE 0D disp32` FXRSTOR64 RIP-relative form.
+    Fxrstor64RipRelative(MemoryOperand),
+    /// Exact Linux `48 0F AE 0F` FXRSTOR64 `[RDI]` form.
+    Fxrstor64Rdi(MemoryOperand),
     /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
     MovupsRegister {
         destination: u8,
@@ -2053,6 +2065,8 @@ pub enum Operation {
     },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
+    /// Bare `9B` WAIT/FWAIT in the bounded CPL0 FP-state profile.
+    Fwait,
     /// Exact `0F 20 C0` MOV RAX, CR0 for the bounded S2-25a profile.
     ReadCr0,
     /// Exact `0F 22 C0` MOV CR0, RAX for the bounded S2-25a profile.
@@ -2748,7 +2762,8 @@ impl Instruction {
             | Operation::OrGsMem { .. }
             | Operation::LockOrMem { .. }
             | Operation::LockXorMem { .. }
-            | Operation::LockAndMem { .. } => FlagEffects {
+            | Operation::LockAndMem { .. }
+            | Operation::LockLogicMemReg { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS & !crate::AF,
                 undefined: crate::AF,
             },
@@ -3605,7 +3620,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
                 | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
@@ -3620,6 +3635,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // require the specific instruction semantics.
         let locked_qword_memory_xadd_candidate = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xc1
+            && prefixes.group1 == Some(0xf0);
+        let locked_fwait_candidate = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0x9b
             && prefixes.group1 == Some(0xf0);
         // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
         // it only in the CPL0 set.
@@ -3641,6 +3659,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_memory_arithmetic_reg_candidate = opcode.map == OpcodeMap::Primary
             && prefixes.group1 == Some(0xf0)
             && matches!(opcode.byte, 0x01 | 0x29);
+        let locked_memory_logic_reg_candidate = opcode.map == OpcodeMap::Primary
+            && prefixes.group1 == Some(0xf0)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && matches!(
+                (opcode.byte, prefixes.rex, self.length),
+                (0x21, Some(0x48..=0x4f), 3) | (0x30, None, 2)
+            );
         // S4-38L7n/S4-38L7t: and for the qword memory BTS/BTR (`F0 REX.W 0F AB|B3 /r`); the
         // executor admits them only in the CPL0 set. The plain (no LOCK) `0F A3/AB/B3/BB` and
         // `0F BA` forms are unchanged.
@@ -6099,12 +6126,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_qword_memory_cmpxchg_candidate
                 && !locked_memory_inc_candidate
                 && !locked_memory_or_candidate
+                && !locked_memory_logic_reg_candidate
                 && !locked_memory_arithmetic_reg_candidate
                 && !locked_qword_memory_bts_candidate
                 && !locked_memory_bts_imm_candidate
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
-                && !locked_hlt)
+                && !locked_hlt
+                && !locked_fwait_candidate)
         {
             return Err(self.unsupported(opcode));
         }
@@ -8792,6 +8821,69 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         return Err(self.unsupported(opcode));
                     }
                     Operation::Fxrstor64RbxDisp8(area)
+                } else if prefixes
+                    == (Prefixes {
+                        rex: Some(0x49),
+                        ..Prefixes::default()
+                    })
+                    && prefix_count == 1
+                    && prefix_bytes[0] == 0x49
+                    && modrm == 0x04
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("ModRM 04 is a memory operand");
+                    };
+                    if area.base != AddressBase::Register(Register::R12)
+                        || area.index.is_some()
+                        || area.displacement != 0
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::Fxsave64R12(area)
+                } else if prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                    && prefix_count == 1
+                    && prefix_bytes[0] == 0x48
+                    && modrm == 0x0d
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("ModRM 0d is a memory operand");
+                    };
+                    if area.base != AddressBase::NextRip
+                        || area.index.is_some()
+                        || area.displacement != 0x01ca_c498
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::Fxrstor64RipRelative(area)
+                } else if prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                    && prefix_count == 1
+                    && prefix_bytes[0] == 0x48
+                    && modrm == 0x0f
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("ModRM 0f is a memory operand");
+                    };
+                    if area.base != AddressBase::Register(Register::Rdi)
+                        || area.index.is_some()
+                        || area.displacement != 0
+                    {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::Fxrstor64Rdi(area)
                 } else {
                     return Err(self.unsupported(opcode));
                 }
@@ -9701,6 +9793,20 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                 source: src,
                             },
                         }
+                    } else if locked_memory_logic_reg_candidate {
+                        let (Operand::Memory(destination), Operand::Register(source)) = (dst, src)
+                        else {
+                            return Err(self.unsupported(opcode));
+                        };
+                        Operation::LockLogicMemReg {
+                            kind: if byte == 0x21 {
+                                LogicKind::And
+                            } else {
+                                LogicKind::Xor
+                            },
+                            destination,
+                            source,
+                        }
                     } else if locked_memory_arithmetic_reg_candidate {
                         // LOCK ADD or SUB m32/m64 with a register source.
                         let stale_rex = prefix_bytes[..prefix_count]
@@ -10482,6 +10588,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }
                     }
                     _ => return Err(self.unsupported(opcode)),
+                }
+            }
+            (OpcodeMap::Primary, 0x9b) => {
+                // WAIT/FWAIT is a no-operand instruction. Keep its bounded spelling bare;
+                // LOCK is retained only so the executor can report the architectural #UD.
+                if duplicate {
+                    return Err(self.unsupported(opcode));
+                }
+                if prefixes == Prefixes::default()
+                    || prefixes
+                        == (Prefixes {
+                            group1: Some(0xf0),
+                            ..Prefixes::default()
+                        })
+                {
+                    Operation::Fwait
+                } else {
+                    return Err(self.unsupported(opcode));
                 }
             }
             (OpcodeMap::Primary, byte @ 0x90..=0x97) => {
@@ -18935,7 +19059,7 @@ mod tests {
         }
 
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -18965,7 +19089,6 @@ mod tests {
             &[0x67, 0xdb, 0xe3][..],
             &[0x40, 0xdb, 0xe3][..],
             &[0x48, 0xdb, 0xe3][..],
-            &[0x9b, 0xdb, 0xe3][..],
         ] {
             let decoded = Memory::new(bytes).decode();
             if bytes == [0xf0, 0xdb, 0xe3] {
@@ -18981,7 +19104,7 @@ mod tests {
             }
         }
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -18998,7 +19121,7 @@ mod tests {
         assert_eq!(m64.operation, Operation::FildM64IntRax);
         assert_eq!(m64.length, 2);
         assert_eq!(m64.prefixes, Prefixes::default());
-        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x40, 0x48, 0x9b] {
+        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x40, 0x48] {
             let bytes = [prefix, 0xd9, 0xe4];
             assert!(
                 matches!(
@@ -19009,7 +19132,7 @@ mod tests {
             );
         }
         for bytes in [
-            &[0x9b, 0xdb, 0xe2][..],
+            &[0x64, 0xdb, 0xe2][..],
             &[0x66, 0xdb, 0xe2][..],
             &[0x67, 0xdb, 0xe2][..],
             &[0x26, 0xdb, 0xe2][..],
@@ -19123,7 +19246,6 @@ mod tests {
             &[0x67, 0xdf, 0x00],
             &[0x40, 0xdf, 0x00],
             &[0x48, 0xdf, 0x00],
-            &[0x9b, 0xdf, 0x00],
             &[0xf0, 0xdf, 0xe0],
             &[0xf2, 0xdf, 0xe0],
             &[0xf3, 0xdf, 0xe0],
@@ -19137,7 +19259,6 @@ mod tests {
             &[0x67, 0xdf, 0xe0],
             &[0x40, 0xdf, 0xe0],
             &[0x48, 0xdf, 0xe0],
-            &[0x9b, 0xdf, 0xe0],
         ] {
             assert!(
                 matches!(
@@ -19198,7 +19319,7 @@ mod tests {
         }
 
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -19244,7 +19365,7 @@ mod tests {
         assert_eq!(qword.length, 2);
         assert_eq!(qword.prefixes, Prefixes::default());
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -19326,7 +19447,7 @@ mod tests {
             })
             .collect();
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -19430,9 +19551,9 @@ mod tests {
         }
 
         for bytes in [
-            &[0x9b, 0xdd, 0x38][..],
-            &[0x9b, 0xdd, 0x10][..],
-            &[0x9b, 0xdd, 0x18][..],
+            &[0x64, 0xdd, 0x38][..],
+            &[0x64, 0xdd, 0x10][..],
+            &[0x64, 0xdd, 0x18][..],
             &[0xf0, 0xdd, 0x38],
             &[0xf0, 0xdd, 0x10],
             &[0xf0, 0xdd, 0x18],
@@ -19452,7 +19573,6 @@ mod tests {
             &[0x67, 0xdd, 0xd9],
             &[0x40, 0xdd, 0xd9],
             &[0x48, 0xdd, 0xd9],
-            &[0x9b, 0xdd, 0xd9],
             &[0xf1, 0xdd, 0x18],
             &[0xf2, 0xdd, 0x18],
             &[0xf3, 0xdd, 0x18],
@@ -19563,7 +19683,7 @@ mod tests {
         }
 
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -19600,7 +19720,6 @@ mod tests {
             &[0x67, 0xd9, 0xe0],
             &[0x40, 0xd9, 0xe0],
             &[0x48, 0xd9, 0xe0],
-            &[0x9b, 0xd9, 0xe0],
             &[0xf0, 0xd9, 0xe1],
             &[0xf2, 0xd9, 0xe1],
             &[0xf3, 0xd9, 0xe1],
@@ -19610,7 +19729,6 @@ mod tests {
             &[0x67, 0xd9, 0xe1],
             &[0x40, 0xd9, 0xe1],
             &[0x48, 0xd9, 0xe1],
-            &[0x9b, 0xd9, 0xe1],
         ] {
             assert!(
                 matches!(
@@ -19622,7 +19740,7 @@ mod tests {
         }
 
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x40, 0x48, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x40, 0x48,
         ] {
             assert!(
                 matches!(
@@ -19754,6 +19872,53 @@ mod tests {
     }
 
     #[test]
+    fn fwait_decodes_bare_and_locked_spellings_only() {
+        let bare = Memory::new(&[0x9b]).decode().unwrap();
+        assert_eq!(bare.operation, Operation::Fwait);
+        assert_eq!(bare.length, 1);
+        assert_eq!(bare.prefixes, Prefixes::default());
+
+        let locked = Memory::new(&[0xf0, 0x9b]).decode().unwrap();
+        assert_eq!(locked.operation, Operation::Fwait);
+        assert_eq!(locked.length, 2);
+        assert_eq!(locked.prefixes.group1, Some(0xf0));
+
+        for bytes in [
+            &[0xf2, 0x9b][..],
+            &[0xf3, 0x9b],
+            &[0x66, 0x9b],
+            &[0x67, 0x9b],
+            &[0x48, 0x9b],
+            &[0x2e, 0x9b],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fwait_before_db_e3_is_one_byte_and_next_decode_is_fninit() {
+        // 9B DB E3 is the classic FINIT spelling (FWAIT + FNINIT): FWAIT consumes only its own
+        // byte, and a decode of the same buffer at offset 1 yields the bare FNINIT.
+        let mut memory = Memory::new(&[0x9b, 0xdb, 0xe3]);
+        let base = memory.base;
+        let first = decode(&mut memory, base, AccessContext::default()).unwrap();
+        assert_eq!(first.operation, Operation::Fwait);
+        assert_eq!(first.length, 1);
+        assert_eq!(first.prefixes, Prefixes::default());
+
+        let second = decode(&mut memory, base + 1, AccessContext::default()).unwrap();
+        assert_eq!(second.operation, Operation::Fninit);
+        assert_eq!(second.length, 2);
+        assert_eq!(second.prefixes, Prefixes::default());
+    }
+
+    #[test]
     fn d9_d0_fnop_decodes_only_exact_bare_form() {
         let instruction = Memory::new(&[0xd9, 0xd0]).decode().unwrap();
         assert_eq!(instruction.operation, Operation::Fnop);
@@ -19772,7 +19937,6 @@ mod tests {
             &[0x67, 0xd9, 0xd0],
             &[0x40, 0xd9, 0xd0],
             &[0x48, 0xd9, 0xd0],
-            &[0x9b, 0xd9, 0xd0],
             &[0xd9, 0xd1],
             &[0xd9, 0xd2],
             &[0xd9, 0xd3],
@@ -19784,7 +19948,7 @@ mod tests {
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
-        assert!(Memory::new(&[0x9b, 0xd9, 0xd0]).decode().is_err());
+        assert!(Memory::new(&[0x64, 0xd9, 0xd0]).decode().is_err());
         // Neighboring, already-supported D9 forms keep their existing decode.
         for (bytes, operation) in [
             (&[0xd9, 0xc0][..], Operation::FldSti { source: 0 }),
@@ -19806,7 +19970,7 @@ mod tests {
         for bytes in [
             &[0x66, 0xd9, 0xf8][..],
             &[0xf3, 0xd9, 0xf8][..],
-            &[0x9b, 0xd9, 0xf8][..],
+            &[0x64, 0xd9, 0xf8][..],
             &[0xd9][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
@@ -19826,7 +19990,7 @@ mod tests {
             &[0x2e, 0xd9, 0xf8][..],
             &[0x67, 0xd9, 0xf8][..],
             &[0x48, 0xd9, 0xf8][..],
-            &[0x9b, 0xd9, 0xf8][..],
+            &[0x64, 0xd9, 0xf8][..],
             &[0xd9][..],
             &[0xd9, 0xf9][..],
         ] {
@@ -19854,7 +20018,7 @@ mod tests {
             &[0x2e, 0xd9, 0xf5][..],
             &[0x67, 0xd9, 0xf5][..],
             &[0x48, 0xd9, 0xf5][..],
-            &[0x9b, 0xd9, 0xf5][..],
+            &[0x64, 0xd9, 0xf5][..],
             &[0xd9][..],
             &[0xd9, 0xf4][..],
         ] {
@@ -19919,7 +20083,6 @@ mod tests {
             &[0x67, 0xd8, 0xc1][..],
             &[0x40, 0xd8, 0xc1][..],
             &[0x48, 0xd8, 0xc1][..],
-            &[0x9b, 0xd8, 0xc1][..],
         ] {
             assert!(
                 matches!(
@@ -19939,7 +20102,7 @@ mod tests {
         for source in 0u8..=7 {
             let instruction = [0xd8, 0xc0 | source];
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -19964,7 +20127,7 @@ mod tests {
                 }) if decoded == source
             ));
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -19996,10 +20159,10 @@ mod tests {
                 Err(DecodeError::Unsupported { .. })
             ));
         }
-        assert!(matches!(
-            Memory::new(&[0x9b]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0x9b]).decode().unwrap().operation,
+            Operation::Fwait
+        );
     }
 
     #[test]
@@ -20014,7 +20177,7 @@ mod tests {
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
 
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20038,7 +20201,7 @@ mod tests {
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
         }
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -20081,7 +20244,7 @@ mod tests {
             assert_eq!(instruction.prefixes, Prefixes::default());
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20097,7 +20260,7 @@ mod tests {
             Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
         ));
         assert!(matches!(
-            Memory::new(&[0x9b, 0xde, 0xe1]).decode(),
+            Memory::new(&[0x64, 0xde, 0xe1]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
 
@@ -20127,7 +20290,7 @@ mod tests {
         }
         for source in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20145,10 +20308,10 @@ mod tests {
                 access: AccessKind::Fetch,
             }))
         ));
-        assert!(matches!(
-            Memory::new(&[0x9b]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0x9b]).decode().unwrap().operation,
+            Operation::Fwait
+        );
         assert_eq!(
             Memory::new(&[0xdc, 0xf0]).decode().unwrap().operation,
             Operation::FdivrStSt0 { destination: 0 }
@@ -20169,7 +20332,7 @@ mod tests {
             assert_eq!(instruction.prefixes, Prefixes::default());
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20212,12 +20375,12 @@ mod tests {
             }))
         ));
         assert!(matches!(
-            Memory::new(&[0x9b, 0xd8, 0xf1]).decode(),
+            Memory::new(&[0x64, 0xd8, 0xf1]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
         for source in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20267,7 +20430,7 @@ mod tests {
         }
         for source in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20354,7 +20517,7 @@ mod tests {
         }
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20373,10 +20536,10 @@ mod tests {
             Memory::new(&[0xdc]).decode(),
             Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
         ));
-        assert!(matches!(
-            Memory::new(&[0x9b]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0x9b]).decode().unwrap().operation,
+            Operation::Fwait
+        );
     }
 
     #[test]
@@ -20427,7 +20590,7 @@ mod tests {
 
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20492,7 +20655,7 @@ mod tests {
 
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20528,7 +20691,7 @@ mod tests {
             assert_eq!(instruction.prefixes, Prefixes::default());
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20576,7 +20739,7 @@ mod tests {
         }
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20650,7 +20813,7 @@ mod tests {
         }
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20715,7 +20878,7 @@ mod tests {
                 "DE {modrm:02x}"
             );
         }
-        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67, 0x9b]
+        for prefix in [0xf0, 0xf2, 0xf3, 0x2e, 0x64, 0x66, 0x67]
             .into_iter()
             .chain(0x40..=0x4f)
         {
@@ -20732,7 +20895,7 @@ mod tests {
             }))
         ));
         assert!(matches!(
-            Memory::new(&[0x9b, 0xde, 0xd9]).decode(),
+            Memory::new(&[0x64, 0xde, 0xd9]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
     }
@@ -20779,7 +20942,7 @@ mod tests {
             );
         }
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -20805,10 +20968,10 @@ mod tests {
             }))
         ));
         assert!(matches!(
-            Memory::new(&[0x9b, 0xda, 0xe9]).decode(),
+            Memory::new(&[0x64, 0xda, 0xe9]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
-        for prefix in [0x66, 0x48, 0x9b] {
+        for prefix in [0x66, 0x48, 0x64] {
             assert!(Memory::new(&[prefix, 0xda, 0xc9]).decode().is_err());
             assert!(Memory::new(&[prefix, 0xda, 0xd1]).decode().is_err());
         }
@@ -20833,7 +20996,7 @@ mod tests {
             }
         }
         for modrm in 0xc0..=0xc7 {
-            for prefix in [0x66, 0x48, 0x9b] {
+            for prefix in [0x66, 0x48, 0x64] {
                 assert!(Memory::new(&[prefix, 0xdb, modrm]).decode().is_err());
             }
         }
@@ -20860,7 +21023,7 @@ mod tests {
                 );
             }
         }
-        for prefix in [0x66, 0x48, 0x9b] {
+        for prefix in [0x66, 0x48, 0x64] {
             for modrm in 0xc8..=0xcf {
                 assert!(Memory::new(&[prefix, 0xdb, modrm]).decode().is_err());
             }
@@ -20888,7 +21051,7 @@ mod tests {
         }
         for modrm in 0xd0..=0xd7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -20925,7 +21088,7 @@ mod tests {
             }
         }
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -20963,7 +21126,7 @@ mod tests {
             }
         }
         for prefix in [
-            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
         ]
         .into_iter()
         .chain(0x40..=0x4f)
@@ -21025,7 +21188,7 @@ mod tests {
         }
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -21040,10 +21203,10 @@ mod tests {
             Memory::new(&[0xde]).decode(),
             Err(DecodeError::Memory(_))
         ));
-        assert!(matches!(
-            Memory::new(&[0x9b]).decode(),
-            Err(DecodeError::Unsupported { .. })
-        ));
+        assert_eq!(
+            Memory::new(&[0x9b]).decode().unwrap().operation,
+            Operation::Fwait
+        );
     }
 
     #[test]
@@ -21058,7 +21221,7 @@ mod tests {
         }
         for destination in 0u8..=7 {
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -21123,7 +21286,7 @@ mod tests {
             assert_eq!(instruction.prefixes, Prefixes::default());
             assert_eq!(memory.fetched, [0xfff, 0x1000]);
             for prefix in [
-                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
+                0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
             ]
             .into_iter()
             .chain(0x40..=0x4f)
@@ -21139,7 +21302,7 @@ mod tests {
             Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
         ));
         assert!(matches!(
-            Memory::new(&[0x9b, 0xde, 0xf1]).decode(),
+            Memory::new(&[0x64, 0xde, 0xf1]).decode(),
             Err(DecodeError::Unsupported { .. })
         ));
     }
@@ -22513,6 +22676,81 @@ mod tests {
             &[0x67, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
             &[0xf3, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
             &[0x64, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(invalid).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{invalid:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_fpu_context_save_restore_decode_only_the_observed_memory_shapes() {
+        let fxsave = [0x49, 0x0f, 0xae, 0x04, 0x24];
+        let instruction = Memory::new(&fxsave).decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(
+            instruction.operation,
+            Operation::Fxsave64R12(MemoryOperand {
+                base: AddressBase::Register(Register::R12),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+
+        let fxrstor_rip = [0x48, 0x0f, 0xae, 0x0d, 0x98, 0xc4, 0xca, 0x01];
+        let instruction = Memory::new(&fxrstor_rip).decode().unwrap();
+        assert_eq!(instruction.length, 8);
+        assert_eq!(
+            instruction.operation,
+            Operation::Fxrstor64RipRelative(MemoryOperand {
+                base: AddressBase::NextRip,
+                index: None,
+                scale: 1,
+                displacement: 0x01ca_c498,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+
+        let fxrstor_rdi = [0x48, 0x0f, 0xae, 0x0f];
+        let instruction = Memory::new(&fxrstor_rdi).decode().unwrap();
+        assert_eq!(instruction.length, 4);
+        assert_eq!(
+            instruction.operation,
+            Operation::Fxrstor64Rdi(MemoryOperand {
+                base: AddressBase::Register(Register::Rdi),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+
+        for invalid in [
+            &[0x48, 0x0f, 0xae, 0x04, 0x24][..],       // wrong REX for [R12]
+            &[0x49, 0x0f, 0xae, 0x04, 0x0c][..],       // indexed SIB
+            &[0x49, 0x0f, 0xae, 0x44, 0x24, 0x00][..], // displacement form
+            &[0x66, 0x49, 0x0f, 0xae, 0x04, 0x24][..],
+            &[0x67, 0x49, 0x0f, 0xae, 0x04, 0x24][..],
+            &[0xf3, 0x49, 0x0f, 0xae, 0x04, 0x24][..],
+            &[0x64, 0x49, 0x0f, 0xae, 0x04, 0x24][..],
+            &[0x48, 0x0f, 0xae, 0x0d, 0x00, 0, 0, 0][..], // unobserved RIP displacement
+            &[0x49, 0x0f, 0xae, 0x0d, 0x98, 0xc4, 0xca, 0x01][..],
+            &[0x48, 0x0f, 0xae, 0x17][..], // REX.W LDMXCSR [RDI] (ModRM /2, not FXRSTOR64 /1)
+            &[0x48, 0x0f, 0xae, 0x0c, 0x24][..], // FXRSTOR [RSP]
+            &[0xf0, 0x48, 0x0f, 0xae, 0x0f][..],
+            &[0x66, 0x48, 0x0f, 0xae, 0x0f][..],
+            &[0x67, 0x48, 0x0f, 0xae, 0x0f][..],
+            &[0xf2, 0x48, 0x0f, 0xae, 0x0f][..],
+            &[0x65, 0x48, 0x0f, 0xae, 0x0f][..],
         ] {
             assert!(
                 matches!(
@@ -30981,7 +31219,7 @@ mod tests {
             &[0xf3, 0xdd, 0xc7],
             &[0xdd, 0xc8],
             &[0xdd, 0x01],
-            &[0x9b, 0xdd, 0xc0],
+            &[0x64, 0xdd, 0xc0],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

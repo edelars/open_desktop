@@ -6711,7 +6711,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запустил `/s6-smp-init`. Гость остановился в CPL3 на BusyBox `0x40ba82`, байты `33 5d d8` (`XOR EBX, dword ptr [RBP-0x28]`). Верификатор завершился со статусом 1, маркеры нагрузок отсутствовали. [Данные LinuxDirect](reports/data/stage6/s6-22-busybox-reference-admission.json).
 
-Статус: исправлено. Два повтора LinuxDirect прошли прежний RIP BusyBox и одинаково остановились в ядре на `FWAIT`. Профиль CPL3 принимает 31 852 участка сквозной эталонной трассы BusyBox и ELF нагрузок. Приёмку S6-22 блокирует ISSUE-578. [Результаты двух повторов](reports/data/stage6/s6-22-static-workload-form-inventory.json).
+Статус: исправлено. Два повтора LinuxDirect прошли прежний RIP BusyBox и одинаково остановились в ядре на `FWAIT`. Профиль CPL3 принимает 31 852 участка сквозной эталонной трассы BusyBox и ELF нагрузок. Приёмку S6-22 блокировал ISSUE-578 (исправлен, см. ниже). [Результаты двух повторов](reports/data/stage6/s6-22-static-workload-form-inventory.json).
 
 ### ISSUE-577 — S6-22: динамический загрузчик принятого RAW отвергает идентификатор CPU Open Desktop
 
@@ -6723,4 +6723,23 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 
 Оба запуска LinuxDirect с принятым RAW, статическим пакетом и seed `24301` подняли два vCPU и начали `/s6-smp-init`. При обработке `fpu__drop+0xe0` vCPU 0 остановился в CPL0 на RIP `0xffffffff813b5300`, байт `9b`. Оба повтора дали одинаковые счётчики процессоров и COM1. Маркеры нагрузок отсутствовали.
 
-Статус: открыто. Подключить `FWAIT` к живому x87-состоянию набора CPL0 и проверить ближайшие формы сохранения и восстановления FP-состояния закреплённого ядра. Затем повторить гостевую проверку. [Данные LinuxDirect](reports/data/stage6/s6-22-static-workload-form-inventory.json).
+Статус: исправлено. `9B` декодируется как `FWAIT` и выполняется по SDM в живом x87-состоянии набора CPL0: `CR0.MP && CR0.TS` → #NM, неподавленное исключение при `NE=1` → #MF, LOCK → #UD. Гостевой прогон с принятым RAW, статическим пакетом и seed `24301` прошёл `fpu__drop` и запустил `/s6-smp-init`. Проверки: `fwait` 4 passed, `cpl0_profile_set` 1622 passed. [Результаты](reports/STAGE_6_REPORT.md#s6-22--приёмка-гостевых-нагрузок-на-linuxdirect). [Данные LinuxDirect](reports/data/stage6/s6-22-static-workload-form-inventory.json).
+
+
+### ISSUE-579 — S6-22: NVMe Read с RAHEAD отвергается как Invalid Field
+
+Гостевой прогон на принятом RAW с двумя vCPU прошёл все пять проверок и смонтировал ext4 с `nvme0n1`, но ядро логировало `I/O Error (sct 0x0 / sc 0x2) DNR` на чтениях с `REQ_RAHEAD` (`op 0x0:(READ) flags 0x880700`). Эталон QEMU таких строк не даёт. Linux 7.0 при `REQ_RAHEAD` ставит в команду `CDW12` бит 31 (LR) и `CDW13 = 7` (dsmgmt `FREQ_PREFETCH`); эмулятор отвергал оба. Данные: [прогон до исправления](reports/data/stage6/s6-22-linuxdirect-prefix-nvme-read-errors.json).
+
+Статус: исправлено. LR и подсказки `CDW13[7:0]` для Read и Write принимаются и игнорируются; `CDW12[30:16]` и `CDW13[31:8]` по-прежнему дают `Invalid Field`. Тесты: `nvme` 92 passed, новый `limited_retry_and_dsm_hints_are_accepted_and_ignored`. Спецификация: [NVME_DEVICE](specs/NVME_DEVICE.md). Прогоны после исправления: [A](reports/data/stage6/s6-22-linuxdirect-final-run-a.json), [B](reports/data/stage6/s6-22-linuxdirect-final-run-b.json); строк `I/O Error` в них нет.
+
+### ISSUE-580 — S6-22: трасса LinuxDirect не побитово воспроизводима при одинаковом seed
+
+Два прогона с одинаковыми RAW, ядром, initramfs, ACPI-блобом и seed `24301` дают одинаковый результат (пять PASS, ONLINE 0-1, COMPLETE, ext4), но трасса расходится: таймстампы ядра отличаются с 0.355 с (SLUB: 0.355894 против 0.355876), а у vCPU0 различаются `retired`, `quanta`, `virtual_ns` и `rip` в момент остановки после бюджета. Оба прогона шли одновременно на одном хосте; причина не установлена. Проверены `Instant::now` в `threaded.rs`, `parallel_run.rs` и `vm_snapshot.rs`; в интерливном пути таких вызовов не найдено. Данные: [A](reports/data/stage6/s6-22-linuxdirect-final-run-a.json), [B](reports/data/stage6/s6-22-linuxdirect-final-run-b.json).
+
+Статус: открыто. Проверить последовательным повтором без параллельной нагрузки. Если расхождение остаётся, найти источник времени, не связанный с числом исполненных инструкций.
+
+### ISSUE-581 — S6-22: ES в FSW не пересчитывается при FXRSTOR64
+
+`apply_fxrstor64_fields` загружает FSW как есть, ES не пересчитывается из неподавленных исключений. Если образ содержит неподавленный флаг при ES=0, FWAIT не даст #MF. Образы Linux получаются через FXSAVE и согласованы, поэтому риск низкий. Тест `missing_summary` закрепляет текущее поведение.
+
+Статус: открыто. Сверить с SDM и поведением эталона, затем решить, нужен ли пересчёт ES при восстановлении.

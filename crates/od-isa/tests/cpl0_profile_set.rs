@@ -42550,6 +42550,100 @@ impl GuestMemory for FpMemory {
     }
 }
 
+struct FxRipMemory {
+    code: Vec<u8>,
+    area_base: u64,
+    area: [u8; 512],
+    mapped: bool,
+    reads: Vec<(u64, usize)>,
+}
+
+impl FxRipMemory {
+    fn new(code: &[u8], image: [u8; 512]) -> Self {
+        Self {
+            code: code.to_vec(),
+            area_base: FXRSTOR64_RIP_AREA,
+            area: image,
+            mapped: true,
+            reads: Vec::new(),
+        }
+    }
+}
+
+impl GuestMemory for FxRipMemory {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+        self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Fetch,
+        })
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        _: AccessContext,
+        output: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        let offset = address.checked_sub(self.area_base).unwrap_or(u64::MAX) as usize;
+        if !self.mapped
+            || offset
+                .checked_add(output.len())
+                .is_none_or(|end| end > self.area.len())
+        {
+            return Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            });
+        }
+        output.copy_from_slice(&self.area[offset..offset + output.len()]);
+        self.reads.push((address, output.len()));
+        Ok(())
+    }
+
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Write,
+        })
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        unreachable!()
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        unreachable!()
+    }
+}
+
 fn run_fp(
     state: &mut LongModeState,
     memory: &mut FpMemory,
@@ -43006,14 +43100,12 @@ fn the_fp_member_admission_requires_declared_fpu_and_fxsr_and_known_selectors() 
 
 #[test]
 fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member() {
-    let rip_forms: [(&str, &[u8], u8); 18] = [
+    let rip_forms: [(&str, &[u8], u8); 16] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
         ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
         ("fnclex", &[0xdb, 0xe2], 0xdb),
         ("fld1", &[0xd9, 0xe8], 0xd9),
-        ("fwait", &[0x9b], 0x9b),
-        ("finit (wait form)", &[0x9b, 0xdb, 0xe3], 0x9b),
         ("fxsave [rax]", &[0x0f, 0xae, 0x00], 0xae),
         ("fxrstor [rip+0]", &[0x0f, 0xae, 0x0d, 0, 0, 0, 0], 0xae),
         ("ldmxcsr [rip+0]", &[0x0f, 0xae, 0x15, 0, 0, 0, 0], 0xae),
@@ -43071,6 +43163,29 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
             "{code:02x?}"
         );
     }
+}
+
+#[test]
+fn fwait_is_owned_by_the_cpl0_fp_state_member() {
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let set = fp_set(&cell);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let before = state.clone();
+    let mut memory = FpMemory::new(&[0x9b]);
+
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{result:?}"
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 1);
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(state.rflags, before.rflags);
+    assert!(memory.writes.is_empty());
+    assert_eq!(*cell.borrow(), before_cell);
 }
 
 #[test]
@@ -53977,6 +54092,10 @@ fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
 // range. The CPU state changes only by the RIP; the FP cell is not changed.
 
 const FXSAVE64_RAX_DISP8: [u8; 5] = [0x48, 0x0f, 0xae, 0x40, 0x40];
+const FXSAVE64_R12: [u8; 5] = [0x49, 0x0f, 0xae, 0x04, 0x24];
+const FXRSTOR64_RIP: [u8; 8] = [0x48, 0x0f, 0xae, 0x0d, 0x98, 0xc4, 0xca, 0x01];
+const FXRSTOR64_RDI: [u8; 4] = [0x48, 0x0f, 0xae, 0x0f];
+const FXRSTOR64_RIP_AREA: u64 = RIP + FXRSTOR64_RIP.len() as u64 + 0x01ca_c498;
 
 fn run_fxsave64_at(
     cell: &RefCell<GuestFpState>,
@@ -53988,6 +54107,22 @@ fn run_fxsave64_at(
     let set = fp_set(cell);
     let mut state = fp_state(cr0, cr4);
     state.gpr[Register::Rax as usize] = fp_rbx_for(area); // `0x40(%rax)` is `area`
+    let before = state.clone();
+    let mut memory = FpMemory::new(code);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    (before, state, memory, result)
+}
+
+fn run_fxsave64_r12_at(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+    code: &[u8],
+    area: u64,
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = fp_state(cr0, cr4);
+    state.gpr[Register::R12 as usize] = area;
     let before = state.clone();
     let mut memory = FpMemory::new(code);
     let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
@@ -54126,6 +54261,219 @@ fn fxsave64_then_fxrstor64_round_trips_the_fp_state() {
     assert_eq!(state.rip, RIP + 5);
     assert!(memory.writes.is_empty());
     assert_eq!(*restored.borrow(), saved);
+}
+
+#[test]
+fn kernel_fxsave64_r12_uses_the_board_fp_cell_and_existing_image_contract() {
+    let source = fxsave64_source_state();
+    let cell = RefCell::new(source.clone());
+    let (_, _, expected_memory, expected_result) =
+        run_fxsave64_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(expected_result.instructions_executed, 1);
+
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) =
+        run_fxsave64_r12_at(&cell, CR0_BASE, CR4_FP, &FXSAVE64_R12, FP_AREA);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(memory.area(FP_AREA), expected_memory.area(FP_AREA));
+    assert_eq!(memory.writes, expected_memory.writes);
+    assert!(memory.reads.is_empty());
+    let mut expected_state = before;
+    expected_state.rip += FXSAVE64_R12.len() as u64;
+    assert_eq!(state, expected_state);
+    assert_eq!(*cell.borrow(), before_cell);
+
+    // Alignment is preflighted before any image store; CR0.TS still raises #NM before memory.
+    for (area, cr0, expected_exit) in [
+        (FP_AREA + 1, CR0_BASE, gp0()),
+        (
+            FP_AREA,
+            CR0_BASE | CR0_TS,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+    ] {
+        let cell = RefCell::new(source.clone());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            run_fxsave64_r12_at(&cell, cr0, CR4_FP, &FXSAVE64_R12, area);
+        assert_eq!(exit(&result), &expected_exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+}
+
+#[test]
+fn kernel_fxrstor64_rdi_round_trips_and_preflights_alignment_and_reads() {
+    let saved = round_trip_fp_state();
+    let source_cell = RefCell::new(saved.clone());
+    let (_, _, saved_memory, result) =
+        run_fxsave64_at(&source_cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    let image: [u8; 512] = saved_memory.area(FP_AREA).try_into().unwrap();
+
+    let restored = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&restored);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rdi as usize] = FP_AREA;
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXRSTOR64_RDI);
+    write_image(&mut memory, FP_AREA, &image);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected_state = before;
+    expected_state.rip += FXRSTOR64_RDI.len() as u64;
+    assert_eq!(state, expected_state);
+    assert_eq!(*restored.borrow(), saved);
+    assert!(memory.writes.is_empty());
+    assert_eq!(
+        memory.reads,
+        (0..64).map(|i| (FP_AREA + 8 * i, 8)).collect::<Vec<_>>()
+    );
+
+    for (cr0, expected_exit) in [
+        (
+            CR0_BASE | CR0_TS,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+        (
+            CR0_BASE | CR0_EM,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+    ] {
+        let restored = RefCell::new(GuestFpState::initial());
+        let set = fp_set(&restored);
+        let mut state = fp_state(cr0, CR4_FP);
+        state.gpr[Register::Rdi as usize] = FP_AREA;
+        let before = state.clone();
+        let mut memory = FpMemory::new(&FXRSTOR64_RDI);
+        write_image(&mut memory, FP_AREA, &image);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &expected_exit);
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.reads.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*restored.borrow(), GuestFpState::initial());
+    }
+
+    let restored = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&restored);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rdi as usize] = FP_AREA + 1;
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXRSTOR64_RDI);
+    write_image(&mut memory, FP_AREA + 1, &image);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert_eq!(exit(&result), &gp0());
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*restored.borrow(), GuestFpState::initial());
+
+    let restored = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&restored);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    state.gpr[Register::Rdi as usize] = FP_BUFFER_END - 16;
+    let before = state.clone();
+    let mut memory = FpMemory::new(&FXRSTOR64_RDI);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    assert!(matches!(
+        exit(&result),
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Read,
+            ..
+        })
+    ));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(
+        memory.reads,
+        [(FP_BUFFER_END - 16, 8), (FP_BUFFER_END - 8, 8)]
+    );
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*restored.borrow(), GuestFpState::initial());
+}
+
+#[test]
+fn kernel_fxrstor64_rip_relative_uses_full_long64_area_and_fault_atomic_commit() {
+    assert_eq!(FXRSTOR64_RIP_AREA & 0xf, 0);
+    let saved = round_trip_fp_state();
+    let source_cell = RefCell::new(saved.clone());
+    let (_, _, saved_memory, result) =
+        run_fxsave64_at(&source_cell, CR0_BASE, CR4_FP, &FXSAVE64_RAX_DISP8, FP_AREA);
+    assert_eq!(result.instructions_executed, 1);
+    let image: [u8; 512] = saved_memory.area(FP_AREA).try_into().unwrap();
+
+    let restored = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&restored);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let before = state.clone();
+    let mut memory = FxRipMemory::new(&FXRSTOR64_RIP, image);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + FXRSTOR64_RIP.len() as u64);
+    let mut expected_state = before;
+    expected_state.rip += FXRSTOR64_RIP.len() as u64;
+    assert_eq!(state, expected_state);
+    assert_eq!(*restored.borrow(), saved);
+    assert_eq!(
+        memory.reads,
+        (0..64)
+            .map(|i| (FXRSTOR64_RIP_AREA + 8 * i, 8))
+            .collect::<Vec<_>>()
+    );
+
+    let restored = RefCell::new(GuestFpState::initial());
+    let set = fp_set(&restored);
+    let mut state = fp_state(CR0_BASE, CR4_FP);
+    let before = state.clone();
+    let mut memory = FxRipMemory::new(&FXRSTOR64_RIP, image);
+    memory.mapped = false;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+    .unwrap();
+    assert!(matches!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::MemoryError(MemoryError::Unmapped {
+            address: FXRSTOR64_RIP_AREA,
+            access: AccessKind::Read,
+        }))
+    ));
+    assert_eq!(result.instructions_executed, 0);
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*restored.borrow(), GuestFpState::initial());
 }
 
 #[test]

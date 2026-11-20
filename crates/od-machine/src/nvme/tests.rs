@@ -1778,13 +1778,12 @@ fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
     let base = || Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(5, 0);
     let rejected = [
         ("FUA", base().cdw12_bits(1 << 30)),
-        ("LR", base().cdw12_bits(1 << 31)),
         ("PRCHK", base().cdw12_bits(1 << 26)),
         ("PRACT", base().cdw12_bits(1 << 29)),
         ("DTYPE", base().cdw12_bits(1 << 20)),
         ("CDW12 bit 16", base().cdw12_bits(1 << 16)),
-        ("DSM", base().cdw13(1)),
-        ("DSM incompressible", base().cdw13(1 << 7)),
+        ("CDW13 bit 8", base().cdw13(1 << 8)),
+        ("DSPEC", base().cdw13(1 << 16)),
         ("SGL", base().psdt(1)),
         ("fused", base().fuse(2)),
     ];
@@ -1800,6 +1799,45 @@ fn unsupported_fields_and_sgl_are_invalid_field_and_change_nothing() {
     // The same command without the field is accepted.
     assert_eq!(rig.io(base()).status(), (0, 0));
     assert_eq!(disk.bytes(5, 1), vec![0xEE; 512]);
+}
+
+#[test]
+fn limited_retry_and_dsm_hints_are_accepted_and_ignored() {
+    let (mut rig, disk) = Rig::with_disk();
+    let first = pattern(8 * 512, 11);
+    rig.mem_write(BUF_A, &first);
+    let write = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(8, 7));
+    assert_eq!(write.status(), (0, 0));
+    assert_eq!(disk.bytes(8, 8), first);
+    // Read with LR and a DSM hint (Linux REQ_FAILFAST_DEV | REQ_RAHEAD), then
+    // with other DSM hint values: all succeed and return the data.
+    for (name, bits, dsm) in [
+        ("LR + FREQ_PREFETCH", 1u32 << 31, 7u32),
+        ("DSM 0xFF", 0, 0xFF),
+        ("DSM bit 7", 0, 1 << 7),
+    ] {
+        rig.mem_write(BUF_B, &[0; 8 * 512]);
+        let read = rig.io(Sqe::new(OPC_READ)
+            .nsid(1)
+            .prp(BUF_B, 0)
+            .rw(8, 7)
+            .cdw12_bits(bits)
+            .cdw13(dsm));
+        assert_eq!(read.status(), (0, 0), "{name}");
+        assert_eq!(rig.mem_read(BUF_B, 8 * 512), first, "{name}");
+        assert_eq!(disk.bytes(8, 8), first, "{name}");
+    }
+    // Write with LR and a DSM hint stores the new data.
+    let second = pattern(8 * 512, 99);
+    rig.mem_write(BUF_C, &second);
+    let write = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_C, 0)
+        .rw(8, 7)
+        .cdw12_bits(1 << 31)
+        .cdw13(7));
+    assert_eq!(write.status(), (0, 0));
+    assert_eq!(disk.bytes(8, 8), second);
 }
 
 #[test]

@@ -44596,17 +44596,21 @@ fn step_configured(
             fp_cpl0.expect("checked above"),
         );
     }
-    // S4-38L9d/E, S4-39f22: the FP member of the CPL0 set owns `FNINIT`, the plain `FXSAVE`, `FXSAVE64`
-    // and `FXRSTOR64`; its state lives in the member's cell, so these four never reach the
-    // `state.x87`/`state.sse` paths below.
+    // S4-38L9d/E, S4-39f22 and S6-22 ISSUE-578: the FP member of the CPL0 set owns `FNINIT`, the
+    // plain `FXSAVE` and the exact `FXSAVE64`/`FXRSTOR64` kernel forms; its state lives in the
+    // member's cell, so these operations never reach the `state.x87`/`state.sse` paths below.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
         && matches!(
             instruction.operation,
             Operation::Fninit
+                | Operation::Fwait
                 | Operation::FxsaveRipRelative(_)
                 | Operation::Fxsave64RaxDisp8(_)
+                | Operation::Fxsave64R12(_)
                 | Operation::Fxrstor64RbxDisp8(_)
+                | Operation::Fxrstor64RipRelative(_)
+                | Operation::Fxrstor64Rdi(_)
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -47207,7 +47211,9 @@ fn step_configured(
         // S6-08 currently admits LOOP for corpus boundary validation only.
         | Operation::Loop { .. }
         // S4-38L9e: INT3 commits in its own gated path before this point.
-        | Operation::Int3 => false,
+        | Operation::Int3
+        // ISSUE-578: FWAIT is owned only by the CPL0 FP-state member.
+        | Operation::Fwait => false,
         Operation::TestFsMemByte { .. }
             if context.privilege == PrivilegeLevel::Ring3
                 && control_policy.is_some()
@@ -47350,6 +47356,8 @@ fn step_configured(
         | Operation::LockAndMem { .. }
         // S6-21: LOCK XOR m8, imm8.
         | Operation::LockXorMem { .. }
+        // S6-22: register-source LOCK AND qword and XOR byte.
+        | Operation::LockLogicMemReg { .. }
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. }
         // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
@@ -49171,7 +49179,10 @@ fn step_configured(
         | Operation::MovdquLoadMemory { .. }
         | Operation::MovdqaLoadMemory { .. }
         | Operation::PshuflwRegister { .. }
-        | Operation::PinsrwMemory { .. } => false,
+        | Operation::PinsrwMemory { .. }
+        | Operation::Fxsave64R12(_)
+        | Operation::Fxrstor64RipRelative(_)
+        | Operation::Fxrstor64Rdi(_) => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -49977,7 +49988,13 @@ fn step_configured(
         Operation::Fxsave64RaxDisp8(_) => {
             unreachable!("FXSAVE64 commits in its prevalidated field-store path")
         }
+        Operation::Fxsave64R12(_) => {
+            unreachable!("FXSAVE64 commits in its prevalidated field-store path")
+        }
         Operation::Fxrstor64RbxDisp8(_) => {
+            unreachable!("FXRSTOR64 commits in its prevalidated field-load path")
+        }
+        Operation::Fxrstor64RipRelative(_) | Operation::Fxrstor64Rdi(_) => {
             unreachable!("FXRSTOR64 commits in its prevalidated field-load path")
         }
         Operation::ReadMsr | Operation::WriteMsr => {
@@ -49985,6 +50002,11 @@ fn step_configured(
         }
         Operation::Sysenter | Operation::Sysexit => {
             unreachable!("SEP policy resolves before state commit")
+        }
+        Operation::Fwait => {
+            // FWAIT does not execute through the shared path: it is refused above (`executable`
+            // is false) and only runs in `step_cpl0_fp`.
+            unreachable!("FWAIT is owned by step_cpl0_fp and never commits here")
         }
         Operation::ClearDirectionFlag => {
             state.rflags &= !crate::DF;
@@ -61568,6 +61590,7 @@ fn step_configured(
         | Operation::XaddDsMem { .. }
         | Operation::LockAndMem { .. }
         | Operation::LockXorMem { .. }
+        | Operation::LockLogicMemReg { .. }
         | Operation::LockBitMem { .. }
         | Operation::LockBitMemImm { .. }
         | Operation::MovSregStore { .. }
@@ -67590,12 +67613,14 @@ fn step_cpl3_xmm(
     Ok(StepOutcome::Advanced)
 }
 
-/// S4-38L9d: `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
+/// S4-38L9d/ISSUE-578: `FNINIT` (`DB E3`), `FWAIT` (`9B`), and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
 /// set under `with_fp_state`. The caller guarantees the operation, a control-register policy and
 /// the admitted CR0/CR4 (both modeled). Order of the checks: exact encoding (else `Unsupported`
-/// with the opcode byte), then for `FXSAVE` CR4.OSFXSR = 0 (`Unsupported`, the S2-39 convention:
-/// the architecture leaves it implementation-dependent), then CR0.EM or CR0.TS (`#NM`, the S2-39
-/// convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
+/// with the opcode byte); `FWAIT` raises #UD for LOCK, #NM only for CR0.MP && CR0.TS, then #MF for
+/// a pending unmasked x87 exception when CR0.NE is set. With NE clear, the required FERR#/IRQ13
+/// path has no model here and remains Unsupported. For `FXSAVE`, CR4.OSFXSR = 0 (`Unsupported`,
+/// the S2-39 convention: the architecture leaves it implementation-dependent), then CR0.EM or
+/// CR0.TS (`#NM`, the S2-39 convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
 /// `#GP(0)`, a page fault is the memory's own fault) before anything commits. The FP cell is
 /// changed only by `FNINIT` and (S4-38L9E, same gates, the image read as the last step before the
 /// commit) `FXRSTOR64`; the CPU state changes only by the RIP.
@@ -67619,6 +67644,55 @@ fn step_cpl0_fp(
         linear_address: None,
     }));
     match instruction.operation {
+        Operation::Fwait => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0x9b
+                || instruction.length != 1
+                || instruction.prefixes != Prefixes::default()
+            {
+                if instruction.opcode.map == OpcodeMap::Primary
+                    && instruction.opcode.byte == 0x9b
+                    && instruction.prefixes
+                        == (Prefixes {
+                            group1: Some(0xf0),
+                            ..Prefixes::default()
+                        })
+                    && instruction.length == 2
+                {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                return unsupported;
+            }
+            // Intel SDM Vol. 2D WAIT/FWAIT: #NM is conditional on MP && TS (EM is
+            // deliberately irrelevant), before pending-x87 exception synchronization.
+            if cr0 & (1 << 1) != 0 && cr0 & (1 << 3) != 0 {
+                return device_not_available;
+            }
+            let fp = cell.borrow();
+            let x87 = &fp.x87;
+            let pending_unmasked = x87.status_word & (1 << 7) != 0
+                && x87.status_word & 0x003f & !x87.control_word != 0;
+            if pending_unmasked {
+                // NE=1 routes a pending x87 exception through #MF (Vol. 1 §8.7.1).
+                // With NE=0 the architecture signals FERR#/IRQ13 externally; this bounded
+                // CPU profile has no x87 error-line input, so fail closed without retirement.
+                if cr0 & (1 << 5) == 0 {
+                    return unsupported;
+                }
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 16,
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            drop(fp);
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
         Operation::Fninit => {
             if instruction.opcode.map != OpcodeMap::Primary
                 || instruction.opcode.byte != 0xdb
@@ -67722,6 +67796,43 @@ fn step_cpl0_fp(
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }
+        Operation::Fxsave64R12(area) => {
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 5
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x49),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::Register(Register::R12)
+                || area.index.is_some()
+                || area.displacement != 0
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            let fp = cell.borrow();
+            if let Err(error) = fxsave(
+                &fp.x87,
+                &fp.sse,
+                memory,
+                context,
+                address,
+                FxsaveLayout::Long64,
+                true,
+            ) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
         Operation::Fxrstor64RbxDisp8(area) => {
             // S4-38L9E: `48 0F AE 4B 40` (`fxrstor64 0x40(%rbx)`, the kernel's
             // `restore_fpregs_from_fpstate`). The same encoding checks and CR4/CR0 gates as the
@@ -67738,6 +67849,62 @@ fn step_cpl0_fp(
                 || area.base != AddressBase::Register(Register::Rbx)
                 || area.index.is_some()
                 || area.displacement != 0x40
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::Fxrstor64RipRelative(area) => {
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 8
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::NextRip
+                || area.index.is_some()
+                || area.displacement != 0x01ca_c498
+                || area.size != OperandSize::Qword
+                || cr4 & (1 << 9) == 0
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let address = area.effective_address(state, next_rip);
+            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
+                return report_memory_error(error);
+            }
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::Fxrstor64Rdi(area) => {
+            if instruction.opcode.map != OpcodeMap::Escape0f
+                || instruction.opcode.byte != 0xae
+                || instruction.length != 4
+                || instruction.prefixes
+                    != (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                || instruction.address_size != OperandSize::Qword
+                || area.base != AddressBase::Register(Register::Rdi)
+                || area.index.is_some()
+                || area.displacement != 0
                 || area.size != OperandSize::Qword
                 || cr4 & (1 << 9) == 0
             {
@@ -68141,7 +68308,13 @@ fn transfer(
         Operation::Fxsave64RaxDisp8(_) => {
             unreachable!("FXSAVE64 commits before generic transfer dispatch")
         }
+        Operation::Fxsave64R12(_) => {
+            unreachable!("FXSAVE64 commits before generic transfer dispatch")
+        }
         Operation::Fxrstor64RbxDisp8(_) => {
+            unreachable!("FXRSTOR64 commits before generic transfer dispatch")
+        }
+        Operation::Fxrstor64RipRelative(_) | Operation::Fxrstor64Rdi(_) => {
             unreachable!("FXRSTOR64 commits before generic transfer dispatch")
         }
         Operation::MovImmediate { dst, value } => {
@@ -69008,26 +69181,22 @@ fn transfer(
             state.write(source, old);
             state.rflags = flags;
         }
-        Operation::LockAndMem {
-            destination,
-            immediate,
-        }
-        | Operation::LockXorMem {
-            destination,
-            immediate,
-        } => {
-            let kind = if matches!(operation, Operation::LockXorMem { .. }) {
-                LogicKind::Xor
-            } else {
-                LogicKind::And
+        Operation::LockAndMem { destination, .. }
+        | Operation::LockXorMem { destination, .. }
+        | Operation::LockLogicMemReg { destination, .. } => {
+            let (kind, source) = match operation {
+                Operation::LockAndMem { immediate, .. } => (LogicKind::And, immediate),
+                Operation::LockXorMem { immediate, .. } => (LogicKind::Xor, immediate),
+                Operation::LockLogicMemReg { kind, source, .. } => (kind, state.read(source)),
+                _ => unreachable!(),
             };
             let address = destination.access_address_48(state, next_rip)?;
             let rflags = state.rflags;
             let old = memory.atomic_rmw_integer(address, context, destination.size, &mut |old| {
-                logic_result(destination.size, kind, old, immediate, rflags).0
+                logic_result(destination.size, kind, old, source, rflags).0
             })?;
             // Derive flags from the value the atomic update replaced.
-            let (_, flags) = logic_result(destination.size, kind, old, immediate, rflags);
+            let (_, flags) = logic_result(destination.size, kind, old, source, rflags);
             state.rflags = flags;
         }
         Operation::LockBitMem { kind, base, source } => {
@@ -80937,6 +81106,113 @@ mod tests {
         assert_eq!(state, initial);
         assert_eq!(memory.bytes, before_ram);
         assert_eq!(memory.atomic_rmws, [(0x1000, OperandSize::Byte)]);
+    }
+
+    #[test]
+    fn linux_lock_logical_register_forms_are_atomic_at_the_encoded_width() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        };
+        let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+        let address = 0x1000;
+        let run = |state: &mut LongModeState, memory: &mut Memory| {
+            run_with_cpl0_profile_set(
+                state,
+                memory,
+                config,
+                crate::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            )
+            .unwrap()
+        };
+        for (bytes, size, base, source, rhs, old, result, flags) in [
+            (
+                &[0xf0, 0x49, 0x21, 0x07][..],
+                OperandSize::Qword,
+                Register::R15,
+                Register::Rax,
+                0x8000_0000_0000_0f00u64,
+                0xffff_ffff_ffff_00ffu64,
+                0x8000_0000_0000_0000u64,
+                crate::SF | crate::PF,
+            ),
+            (
+                &[0xf0, 0x4c, 0x21, 0x08][..],
+                OperandSize::Qword,
+                Register::Rax,
+                Register::R9,
+                0x00ff_0000_0000_0000,
+                0x8000_0000_0000_00ff,
+                0,
+                crate::ZF | crate::PF,
+            ),
+            (
+                &[0xf0, 0x30, 0x07][..],
+                OperandSize::Byte,
+                Register::Rdi,
+                Register::Rax,
+                0xcafe_0000_0000_0001,
+                0xfe,
+                0xff,
+                crate::SF | crate::PF,
+            ),
+        ] {
+            let mut initial = LongModeState {
+                cr0: Some(Cr0Profile::BASE),
+                cr4: Some(Cr4Profile::BASE),
+                sti_shadow: Some(crate::StiShadow::Clear),
+                activity: Some(crate::CpuActivity::Running),
+                rflags: 0x0cd7,
+                ..LongModeState::default()
+            };
+            initial.gpr[base as usize] = address;
+            initial.gpr[source as usize] = rhs;
+            let mut memory = Memory::new(bytes);
+            memory.bytes[..size.bytes()].copy_from_slice(&old.to_le_bytes()[..size.bytes()]);
+            let before_ram = memory.bytes.clone();
+            let mut state = initial.clone();
+            let executed = run(&mut state, &mut memory);
+            assert_eq!(
+                executed.exit,
+                Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+            );
+            assert_eq!(executed.instructions_executed, 1);
+            assert_eq!(state.rip, bytes.len() as u64);
+            assert_eq!(state.gpr, initial.gpr);
+            assert_eq!(state.rflags, 0x0402 | crate::AF | flags);
+            assert_eq!(executed.rflags_defined, crate::INTEGER_FLAGS & !crate::AF);
+            let mut expected_ram = before_ram.clone();
+            expected_ram[..size.bytes()].copy_from_slice(&result.to_le_bytes()[..size.bytes()]);
+            assert_eq!(memory.bytes, expected_ram);
+            assert_eq!(memory.atomic_rmws, [(address, size)]);
+
+            let fault = ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(address),
+            };
+            let mut fault_memory = Memory::new(bytes);
+            fault_memory.bytes = before_ram.clone();
+            fault_memory.atomic_error = Some(MemoryError::Architectural(fault.clone()));
+            let mut fault_state = initial.clone();
+            let executed = run(&mut fault_state, &mut fault_memory);
+            assert_eq!(
+                executed.exit,
+                Cpl0ProfileSetExit::Run(RunExit::Fault(fault))
+            );
+            assert_eq!(executed.instructions_executed, 0);
+            assert_eq!(fault_state, initial);
+            assert_eq!(fault_memory.bytes, before_ram);
+            assert_eq!(fault_memory.atomic_rmws, [(address, size)]);
+        }
     }
 
     #[test]
@@ -178489,6 +178765,182 @@ mod swapgs_profile_tests {
             }
             assert!(fninit_memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn cpl0_fwait_checks_mp_ts_then_routes_pending_unmasked_x87_exception() {
+        const RIP: u64 = 0x1000;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut memory = Memory::at(&[0x9b], RIP);
+        let instruction = long_decode::decode(&mut memory, RIP, context).unwrap();
+        assert_eq!(instruction.operation, Operation::Fwait);
+
+        let mut state = LongModeState {
+            rip: RIP,
+            cr0: Some(0),
+            cr4: Some(0),
+            rflags: 0x8d7,
+            ..LongModeState::default()
+        };
+        let mut fp = GuestFpState::initial();
+        fp.x87.status_word = 1 << 7 | 1;
+        fp.x87.control_word &= !1;
+        let before_fp = fp.clone();
+
+        // MP && TS takes #NM priority over an already-pending x87 error.
+        state.cr0 = Some((1 << 1) | (1 << 3) | (1 << 5));
+        let before = state.clone();
+        assert_eq!(
+            step_cpl0_fp(
+                &mut state,
+                &mut memory,
+                context,
+                &instruction,
+                RIP + 1,
+                &RefCell::new(fp.clone())
+            )
+            .unwrap(),
+            StepOutcome::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+
+        // TS alone (and EM alone) does not raise #NM for WAIT/FWAIT.
+        for cr0 in [1 << 3, 1 << 2, (1 << 3) | (1 << 5)] {
+            state = LongModeState {
+                rip: RIP,
+                cr0: Some(cr0 | (1 << 5)),
+                cr4: Some(0),
+                rflags: 0x8d7,
+                ..LongModeState::default()
+            };
+            let result = step_cpl0_fp(
+                &mut state,
+                &mut memory,
+                context,
+                &instruction,
+                RIP + 1,
+                &RefCell::new(fp.clone()),
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 16,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(state.rip, RIP);
+        }
+
+        // An exception flag masked in FCW is not pending, even if its raw flag is set.
+        let mut masked = GuestFpState::initial();
+        masked.x87.status_word = (1 << 7) | 1;
+        let masked_result = step_cpl0_fp(
+            &mut state,
+            &mut memory,
+            context,
+            &instruction,
+            RIP + 1,
+            &RefCell::new(masked),
+        )
+        .unwrap();
+        assert_eq!(masked_result, StepOutcome::Advanced);
+        assert_eq!(state.rip, RIP + 1);
+
+        // The exception-summary bit is required as well as an unmasked exception flag.
+        let mut missing_summary = GuestFpState::initial();
+        missing_summary.x87.status_word = 1;
+        missing_summary.x87.control_word &= !1;
+        state.rip = RIP;
+        let result = step_cpl0_fp(
+            &mut state,
+            &mut memory,
+            context,
+            &instruction,
+            RIP + 1,
+            &RefCell::new(missing_summary),
+        )
+        .unwrap();
+        assert_eq!(result, StepOutcome::Advanced);
+        assert_eq!(state.rip, RIP + 1);
+
+        // NE=0 requests the external FERR#/IRQ13 path, which this profile cannot represent.
+        state.rip = RIP;
+        state.cr0 = Some(0);
+        let result = step_cpl0_fp(
+            &mut state,
+            &mut memory,
+            context,
+            &instruction,
+            RIP + 1,
+            &RefCell::new(fp.clone()),
+        )
+        .unwrap();
+        assert_eq!(result, StepOutcome::Unsupported { opcode: 0x9b });
+        assert_eq!(state.rip, RIP);
+        assert_eq!(fp, before_fp);
+
+        // With no pending unmasked exception, FWAIT only retires RIP and preserves CPU/FP state.
+        let clear = GuestFpState::initial();
+        state.cr0 = Some(1 << 5);
+        let before = state.clone();
+        let result = step_cpl0_fp(
+            &mut state,
+            &mut memory,
+            context,
+            &instruction,
+            RIP + 1,
+            &RefCell::new(clear.clone()),
+        )
+        .unwrap();
+        assert_eq!(result, StepOutcome::Advanced);
+        assert_eq!(state.rip, RIP + 1);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(clear, GuestFpState::initial());
+    }
+
+    #[test]
+    fn cpl0_fwait_locked_form_raises_ud_without_retirement() {
+        const RIP: u64 = 0x2000;
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut memory = Memory::at(&[0xf0, 0x9b], RIP);
+        let instruction = long_decode::decode(&mut memory, RIP, context).unwrap();
+        let mut state = LongModeState {
+            rip: RIP,
+            cr0: Some((1 << 1) | (1 << 3)),
+            cr4: Some(0),
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        assert_eq!(
+            step_cpl0_fp(
+                &mut state,
+                &mut memory,
+                context,
+                &instruction,
+                RIP + 2,
+                &RefCell::new(GuestFpState::initial()),
+            )
+            .unwrap(),
+            StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
     }
 
     #[test]

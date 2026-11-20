@@ -273,13 +273,13 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | `PRP1`, `PRP2` | данные; правила PRP — раздел 6 |
 | `CDW10`, `CDW11` | `SLBA` (младшие, старшие 32 бита) |
 | `CDW12[15:0]` | `NLB`, 0-based: 1…2048 секторов (512 байт … 1 MiB, `MDTS = 8`) |
-| `CDW12[31:16]` | `FUA` (бит 30), `LR` (31), `PRINFO` (26–29), `DTYPE` (20–23) и прочее — не поддержаны: любое ненулевое значение — `Invalid Field` |
-| `CDW13` | подсказки Dataset Management (`DSM`) — не поддержаны: ненулевое — `Invalid Field` |
+| `CDW12[31:16]` | `LR` (бит 31) — подсказка, принимается и игнорируется (Linux ставит её при `REQ_FAILFAST_DEV`/`REQ_RAHEAD`). `FUA` (бит 30), `PRINFO` (26–29), `DTYPE` (20–23) и прочее — не поддержаны: любое ненулевое значение — `Invalid Field` |
+| `CDW13[7:0]` | подсказки Dataset Management (`DSM`: частота доступа, задержка, incompressible) — принимаются и игнорируются (Linux ставит `FREQ_PREFETCH` при `REQ_RAHEAD`); `CDW13[31:8]` (включая `DSPEC`) — `Invalid Field` |
 | `CDW14`, `CDW15`, `MPTR` | игнорируются: защиты данных (`PRINFO = 0`) и метаданных (`MS = 0`) нет |
 
 `Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
 
-**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) `CDW12[31:16]`/`CDW13 ≠ 0` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
+**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) `CDW12[30:16]` ≠ 0 или `CDW13[31:8]` ≠ 0 (`Invalid Field`); `LR` и `CDW13[7:0]` игнорируются → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → передача.
 
 **Передача.** `Read`: чтение из backend, затем запись в память гостя по PRP. `Write`: сначала весь буфер читается из памяти гостя по PRP, потом пишется в backend; при ошибке PRP диск не меняется. Память гостя — только RAM (раздел 3).
 
@@ -312,8 +312,8 @@ Opcode `Flush = 0x00`, `Write = 0x01`, `Read = 0x02` сверены с Linux `in
 | Что | Статус |
 |---|---|
 | LBA 4 KiB, несколько форматов LBA, Format NVM | не поддержаны (решение выше) |
-| `Dataset Management` (команда и подсказки `CDW13`), `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode` / `Invalid Field`; `ONCS = 0` |
-| `FUA`, `LR`, `PRINFO` (защита данных), метаданные | `Invalid Field`; не объявлены |
+| `Dataset Management` (команда), `Write Zeroes`, `Compare`, `Write Uncorrectable`, `Verify`, `Copy` | `Invalid Command Opcode` / `Invalid Field`; `ONCS = 0` |
+| `FUA`, `PRINFO` (защита данных), метаданные | `Invalid Field`; не объявлены. `LR` и подсказки `CDW13[7:0]` принимаются и игнорируются |
 | Namespace Management, несколько NS, широковещательный `NSID = 0xFFFF_FFFF` | вне scope; Flush на `0xFFFF_FFFF` отвергается |
 | SGL | `PSDT ≠ 0` — `Invalid Field`, `SGLS = 0` |
 | Файловый/CoW backend | вне `od-machine` (`od-storage`) |
