@@ -28918,6 +28918,32 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
                 src: Operand::Immediate(_),
             },
         ) => instruction.operand_size == OperandSize::Qword,
+        (
+            OpcodeMap::Escape0f,
+            0x40..=0x4f,
+            Operation::ConditionalMove {
+                src: Operand::Memory(src),
+                ..
+            },
+        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x39,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                dst: Operand::Memory(dst),
+                src: Operand::Register(_),
+            },
+        ) => dst.size == OperandSize::Qword && dst.address_size == OperandSize::Qword,
+        (
+            OpcodeMap::Primary,
+            0x01,
+            Operation::Arithmetic {
+                kind: ArithmeticKind::Add,
+                dst: Operand::Register(_),
+                src: Operand::Register(_),
+            },
+        ) => instruction.operand_size == OperandSize::Qword,
         (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0xc9, Operation::Leave)
         | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
@@ -28925,7 +28951,7 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
         }
         (
             OpcodeMap::Escape0f,
-            0x42 | 0x43 | 0x44 | 0x46 | 0x49,
+            0x40..=0x4f,
             Operation::ConditionalMove {
                 src: Operand::Register(_),
                 ..

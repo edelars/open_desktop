@@ -586,12 +586,12 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("cs-hint jne rel8", &[0x2e, 0x75, 0x00], 0x75),
         ("ds-hint je rel8", &[0x3e, 0x74, 0x00], 0x74),
         ("lock je rel8", &[0xf0, 0x74, 0x00], 0x74),
-        // S4-39f7: CMP r/m64, r64 is allowed only as `[REX.W] 39 /r` with mod = 11 and no prefix.
+        // CPL3 `REX.W 39 /r` requires the default address size and no legacy prefix.
         ("cmp ebx, r13d (REX.R 39 /r)", &[0x44, 0x39, 0xeb], 0x39),
         ("cmp ebx, ecx (39 /r)", &[0x39, 0xcb], 0x39),
         (
-            "cmp [rbx], rcx (REX.W 39 /r memory)",
-            &[0x48, 0x39, 0x0b],
+            "addr32 cmp [ebx], rcx (67 REX.W 39 /r)",
+            &[0x67, 0x48, 0x39, 0x0b],
             0x39,
         ),
         ("cmp [rbx], ecx (39 /r memory)", &[0x39, 0x0b], 0x39),
@@ -3836,7 +3836,11 @@ fn neighbouring_compare_opcodes_stay_outside_after_cmpb() {
             0x83,
         ),
         ("39 03 cmpl %eax, (%rbx)", &[0x39, 0x03], 0x39),
-        ("48 39 03 cmpq %rax, (%rbx)", &[0x48, 0x39, 0x03], 0x39),
+        (
+            "67 48 39 03 cmpq %rax, (%ebx)",
+            &[0x67, 0x48, 0x39, 0x03],
+            0x39,
+        ),
     ];
     for (name, bytes, opcode) in forms {
         let mut state = mov_byte_state();
@@ -7054,4 +7058,59 @@ fn cpl3_glibc_xmm_keeps_neighbouring_encodings_refused() {
         assert_eq!(memory.reads, 0);
         assert!(memory.writes.is_empty());
     }
+}
+
+#[test]
+fn cpl3_cmove_qword_reads_memory_for_both_condition_results() {
+    let code = [0x48, 0x0f, 0x44, 0x95, 0x78, 0xff, 0xff, 0xff];
+    let value = 0xfedc_ba98_7654_3210u64;
+    for taken in [false, true] {
+        let mut state = user_state();
+        state.gpr[Register::Rbp as usize] = DATA + 0x88;
+        state.gpr[Register::Rdx as usize] = 0x1122_3344_5566_7788;
+        state.rflags = (state.rflags & !ZF) | if taken { ZF } else { 0 };
+        let mut expected = state.clone();
+        expected.rip += code.len() as u64;
+        if taken {
+            expected.gpr[Register::Rdx as usize] = value;
+        }
+        let mut memory = DataMemory::new(&code);
+        for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+            memory = memory.with_user(DATA + offset as u64, byte);
+        }
+
+        let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(state, expected);
+        assert_eq!(memory.reads, 1);
+        assert!(memory.writes.is_empty());
+    }
+}
+
+#[test]
+fn cpl3_cmove_false_condition_still_checks_user_page_permissions() {
+    let mut state = user_state();
+    state.gpr[Register::Rbp as usize] = DATA + 0x88;
+    state.gpr[Register::Rdx as usize] = 0x1122_3344_5566_7788;
+    state.rflags &= !ZF;
+    let expected = state.clone();
+    let mut memory = DataMemory::new(&[0x48, 0x0f, 0x44, 0x95, 0x78, 0xff, 0xff, 0xff]);
+    for offset in 0..8 {
+        memory = memory.with_supervisor(DATA + offset, 0x55);
+    }
+
+    let result = run3_data(&mut state, &mut memory, 1).unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(5),
+            linear_address: Some(DATA),
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, expected);
+    assert!(memory.writes.is_empty());
 }

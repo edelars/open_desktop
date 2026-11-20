@@ -1,0 +1,89 @@
+{
+  "base_commit": "4cf45be5859e394c904e5f488db84c9a0dcbbe8a",
+  "previous_run_evidence": "s6-22-busybox-sse-replay.json",
+  "runner_production_patch_sha256": "4421158296e24fb47ea8650283a75b35dc69ae16b6233d91bf7d5422e7882b01",
+  "run_execute_rs_sha256": "8c3a7b7b8d96b8f73270911c2667a65908e5414ee15d06dee553eb0f639c903d",
+  "main_execute_rs_sha256": "48f79c740a1403b925ac2c0ce0bd8083940b7e95d2e221566d686f156aca57ea",
+  "execute_rs_parity": "Only comments and blank lines may differ.",
+  "run_long_decode_rs_sha256": "5acbc85f1de84cd24a7cabd1ce797ebf4c9db020d577289cfcae0f9cd154bf38",
+  "main_long_decode_rs_sha256": "5acbc85f1de84cd24a7cabd1ce797ebf4c9db020d577289cfcae0f9cd154bf38",
+  "long_decode_rs_parity": "Only comments and blank lines may differ.",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "8f516d86d8b5e257a2d1232d4c64f3565be08ca66504b99bdcbd9608d632ea0b",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "raw_namespace_sectors": 4194304,
+  "ram_mib": 128,
+  "seed": 24301,
+  "vcpus": 2,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "guest_kernel_markers": [
+    "[    1.745883] smpboot: Total of 2 processors activated (4002.55 BogoMIPS)",
+    "[    2.535573] Run /s6-smp-init as init process"
+  ],
+  "before": {
+    "report_sha256": "5c68a77187ce8c678ff429c2f3982ebce090b4c2a5a66013aba3f72bbc4ebeb7",
+    "runner_sha256": "b974c15240e3f86fd65bdb8b2611bf4728b2bf4ae84905bda02a43f16a5790c5",
+    "retired": 2400086308,
+    "retired_by_vcpu": [
+      1998568608,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 1152,
+    "rip": "0x475340",
+    "rip_gpa": "0x7963340",
+    "rip_bytes": "48 0f 44 95 78 ff ff ff f6 05 07 50 1a 00 02 4d",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 68 }",
+    "busybox_elf_file_offset": "0x75340"
+  },
+  "after": {
+    "report_sha256": "f5e33b1ad766abbf3a431589d84431a09ec14b6acd734a261ed7dacb21841fdc",
+    "runner_sha256": "45e684579343c3e0bf005d337553d1683ecc55cb410b6f8350df547fb71e4724",
+    "retired": 2400093061,
+    "retired_by_vcpu": [
+      1998575361,
+      401517700
+    ],
+    "terminal_vcpu": 0,
+    "com1_sha256": "cd6cdf76e8d1bdf4330de9dae449576f603bdbcf736e775c35377e4290363bbd",
+    "cpl": 3,
+    "cpl3_retired": 1642,
+    "rip": "0x4755cd",
+    "rip_gpa": "0x79635cd",
+    "rip_bytes": "f3 0f 7e 05 73 4c 1a 00 31 d2 f3 0f 7e 0d 11 e6",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 126 }",
+    "busybox_elf_file_offset": "0x755cd"
+  },
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "diagnostic_cmov": {
+    "report_sha256": "27b38d65b7017a891befd6a5a0e9a566ef2bf8e62e22723eefa24bff1eccacb1",
+    "first_rip": "0x476295",
+    "next_rip": "0x4755cd",
+    "retired": 1488,
+    "exit_detail": "Unsupported { opcode: 126 }",
+    "scope": "Pinned ELF and read-only data with recorded registers, reconstructed stack, synthetic HOME, TERM and auxiliary vector, and the same CPUID profile and guest CR0/CR4 with initial FP state."
+  },
+  "diagnostic_batched_admission": {
+    "scope": "Pinned Linux and RAW under a qualification build for selected ordinary scalar forms, with the same Ring3 execution context.",
+    "report_sha256": "61dc69e54f2e6af6e6ae91df90809acdd7d028d486e660da3128c3efd7f9ad04",
+    "observed_encodings": [
+      "rip=0x475340 encoding=Escape0f:0x44:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(72) }",
+      "rip=0x4753a6 encoding=Escape0f:0x42:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(76) }",
+      "rip=0x4753b9 encoding=Primary:0x39:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(76) }",
+      "rip=0x4753c5 encoding=Escape0f:0x43:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(76) }",
+      "rip=0x491e2d encoding=Primary:0x01:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(76) }",
+      "rip=0x491e6c encoding=Escape0f:0x47:Qword:Prefixes { group1: None, segment: None, operand_override: false, address_override: false, rex: Some(72) }"
+    ],
+    "next_rip": "0x4755cd",
+    "cpl3_retired": 1642
+  }
+}
