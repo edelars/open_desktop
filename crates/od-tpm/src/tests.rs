@@ -429,6 +429,80 @@ fn shutdown_state_then_startup_state_resumes_saved_pcr() {
 }
 
 #[test]
+fn platform_hcrtm_preserves_startup_provenance_and_discards_an_interrupted_measurement() {
+    let clear = plain(cc::STARTUP, &[], &[0, 0]);
+    let resume = plain(cc::STARTUP, &[], &[0, 1]);
+    let save = plain(cc::SHUTDOWN, &[], &[0, 1]);
+    let mut t = Tpm::new(&[0x21; 48]).unwrap();
+    t.platform_hash_start();
+    t.platform_hash_data(b"ab");
+    t.platform_hash_data(b"c");
+    t.platform_hash_end(0);
+    ok(&run(&mut t, clear.clone()));
+    let measured = hex("15703cc929081671c587dad9b09606521a35aa6bf4741df448d22c4b307acc71");
+    assert_eq!(read_pcr(&mut t, 0), measured);
+    assert!(!t.platform_established());
+    ok(&run(&mut t, save.clone()));
+    t.init();
+    err(&run(&mut t, resume.clone()), Rc::LOCALITY);
+    // The repeated H-CRTM satisfies provenance. Resume restores PCR0 from Shutdown(STATE).
+    t.platform_hash_start();
+    t.platform_hash_data(b"other measurement");
+    t.platform_hash_end(0);
+    ok(&run(&mut t, resume));
+    assert_eq!(read_pcr(&mut t, 0), measured);
+
+    t.init();
+    t.platform_hash_start();
+    t.platform_hash_data(b"uncommitted");
+    ok(&run(&mut t, clear));
+    t.platform_hash_end(0);
+    assert_eq!(read_pcr(&mut t, 0), vec![0; 32]);
+    assert_eq!(read_pcr(&mut t, 17), vec![0xff; 32]);
+    assert!(!t.platform_hash_active());
+}
+
+#[test]
+fn platform_hcrtm_reserves_a_sequence_slot_and_persists_establishment() {
+    let mut t = started();
+    let sequence_handles: Vec<u32> = (0..3)
+        .map(|_| seq_handle(&start_seq(&mut t, b"", alg::SHA256)))
+        .collect();
+    assert_eq!(t.sequences.loaded_handles(), sequence_handles);
+    let counter = pcr_counter(&mut t);
+    let restart_count = clock(&mut t, 0).clock_info.restart_count;
+    ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 1])));
+    t.platform_hash_start();
+    assert_eq!(t.sequences.loaded_handles(), sequence_handles[..2]);
+    assert_eq!(t.sequences.free_slots(), 0);
+    t.platform_hash_data(b"abc");
+    t.platform_hash_end(0);
+    let measured = hex("589f9ffed4c477966bfb8d41f37895b08c69047df8f911d6f3b57fbe08faee8d");
+    assert_eq!(read_pcr(&mut t, 17), measured);
+    for pcr in 18..=22 {
+        assert_eq!(read_pcr(&mut t, pcr), vec![0; 32]);
+        assert_eq!(read_pcr_bank(&mut t, pcr, alg::SHA384), vec![0; 48]);
+    }
+    assert_eq!(pcr_counter(&mut t), counter + 1);
+    assert_eq!(clock(&mut t, 0).clock_info.restart_count, restart_count + 1);
+    assert!(t.platform_established());
+    let persisted = t.persistent_snapshot();
+    let mut restored = Tpm::restore(&persisted, &[0x22; 48]).unwrap();
+    assert!(restored.platform_established());
+    restored.init();
+    assert!(restored.platform_established());
+    restored.platform_reset_establishment();
+    assert!(!restored.platform_established());
+    assert_eq!(t.sequences.free_slots(), 1);
+    t.init();
+    assert!(t.platform_established());
+    err(
+        &run(&mut t, plain(cc::STARTUP, &[], &[0, 1])),
+        Rc::VALUE.in_param(1),
+    );
+}
+
+#[test]
 fn shutdown_state_then_startup_clear_is_restart() {
     let mut t = started();
     ok(&run(
@@ -1114,8 +1188,8 @@ fn pcr_allocate_activates_the_desired_banks_only_after_init_or_restore() {
     );
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(0))));
     let snapshot = t.persistent_snapshot();
-    assert_eq!(&snapshot[8..10], &u16b(6));
-    assert_eq!(snapshot[snapshot.len() - 33], 2);
+    assert_eq!(&snapshot[8..10], &u16b(crate::SNAPSHOT_VERSION));
+    assert_eq!(snapshot[snapshot.len() - 34], 2);
 
     t.init();
     err(

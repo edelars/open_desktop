@@ -209,6 +209,14 @@ impl Pcrs {
         if index >= limits::PCR_COUNT {
             return false;
         }
+        let modified = self.extend_banks(index, digests);
+        if !pcr_attr(index).no_increment {
+            self.update_counter = self.update_counter.wrapping_add(modified.count_ones());
+        }
+        modified != 0
+    }
+
+    fn extend_banks(&mut self, index: usize, digests: &[TpmtHa]) -> u32 {
         let mut modified = 0u32;
         for value in digests {
             if !self.active.contains(value.hash) {
@@ -226,10 +234,23 @@ impl Pcrs {
                 _ => unreachable!("only decoded PCR digest algorithms reach an extend"),
             }
         }
-        if !pcr_attr(index).no_increment {
-            self.update_counter = self.update_counter.wrapping_add(modified.count_ones());
-        }
-        modified != 0
+        modified
+    }
+
+    pub(crate) fn measure_static_hcrtm(&mut self, digests: &TpmlDigestValues) {
+        self.sha256[0] = [0; 32];
+        self.sha384[0] = [0; 48];
+        self.sha256[0][31] = 4;
+        self.sha384[0][47] = 4;
+        self.extend_banks(0, &digests.digests);
+    }
+
+    pub(crate) fn measure_dynamic_hcrtm(&mut self, digests: &TpmlDigestValues) {
+        // PTP 1.07 Tables 14–15: D-RTM resets PCR17–22 to zero in each bank before extending PCR17.
+        self.sha256[17..=22].fill([0; 32]);
+        self.sha384[17..=22].fill([0; 48]);
+        self.extend_banks(17, &digests.digests);
+        self.increment_update_counter();
     }
 
     /// Resets one PCR across both banks, accounting for the reset once (§22.1).

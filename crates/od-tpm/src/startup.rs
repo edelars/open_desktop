@@ -48,11 +48,15 @@ impl Tpm {
         p.set_param(1);
         let startup_type = p.u16()?;
         p.finish()?;
+        let startup_hcrtm = self.pre_startup_hcrtm.is_some();
         let restart = match startup_type {
             su::CLEAR => self.saved.is_some(),
             su::STATE => {
-                if self.saved.is_none() {
-                    return Err(Rc::VALUE.in_param(1));
+                let saved = self.saved.as_ref().ok_or(Rc::VALUE.in_param(1))?;
+                // Part 1 v185 §31.3: Resume must match the preceding CLEAR's H-CRTM provenance.
+                // The currently implemented command locality is always zero.
+                if saved.startup_hcrtm != startup_hcrtm {
+                    return Err(Rc::LOCALITY);
                 }
                 false
             }
@@ -107,6 +111,12 @@ impl Tpm {
                 }
             }
         }
+        if let Some(digests) = self.pre_startup_hcrtm.take() {
+            if startup_type == su::CLEAR {
+                self.pcrs.measure_static_hcrtm(&digests);
+            }
+        }
+        self.startup_hcrtm = startup_hcrtm;
         // `safe`: no Clock value above the current one was reported earlier, which holds only
         // after an orderly shutdown (or for a fresh TPM). The flag is cleared until the next
         // `Shutdown`.
@@ -135,6 +145,7 @@ impl Tpm {
                     pcrs: self.pcrs.save(),
                     hier: self.hv.clone(),
                     ctx: self.context.clone(),
+                    startup_hcrtm: self.startup_hcrtm,
                 })
             }
             _ => return Err(Rc::VALUE.in_param(1)),

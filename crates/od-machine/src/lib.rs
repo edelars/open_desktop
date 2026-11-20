@@ -128,7 +128,7 @@ pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
     RtcCmosError,
 };
-pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig};
+pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmPlatformPort};
 
 pub use console_output_context::{
     ConsoleContextFrame, ConsoleContextTrigger, ConsoleOutputContextSnapshot, FrameChainEnd,

@@ -183,6 +183,8 @@ pub(crate) enum SequenceKind {
     Event(EventHash),
     Sign(SignSequence),
     Verify(VerifySequence),
+    /// Reserved for platform indications. It has no guest handle.
+    Hcrtm(EventHash),
 }
 
 pub(crate) struct Sequence {
@@ -205,13 +207,64 @@ impl Sequences {
 
     pub(crate) fn loaded_handles(&self) -> Vec<u32> {
         (0..MAX_SEQUENCES)
-            .filter(|i| self.slots[*i].is_some())
+            .filter(|i| self.is_guest_sequence(*i))
             .map(seq_handle)
             .collect()
     }
 
     pub(crate) fn free_slots(&self) -> usize {
         self.slots.iter().filter(|s| s.is_none()).count()
+    }
+
+    fn is_guest_sequence(&self, slot: usize) -> bool {
+        self.slots.get(slot).is_some_and(|sequence| {
+            sequence
+                .as_ref()
+                .is_some_and(|s| !matches!(s.kind, SequenceKind::Hcrtm(_)))
+        })
+    }
+
+    fn hcrtm_slot(&self) -> Option<usize> {
+        self.slots.iter().position(|s| {
+            s.as_ref()
+                .is_some_and(|s| matches!(s.kind, SequenceKind::Hcrtm(_)))
+        })
+    }
+
+    pub(crate) fn hcrtm_active(&self) -> bool {
+        self.hcrtm_slot().is_some()
+    }
+
+    pub(crate) fn start_hcrtm(&mut self) {
+        // The platform indication must succeed. At exhaustion replace the last sequence slot.
+        let slot = self
+            .hcrtm_slot()
+            .or_else(|| self.slots.iter().position(Option::is_none))
+            .unwrap_or(MAX_SEQUENCES - 1);
+        self.slots[slot] = Some(Sequence {
+            kind: SequenceKind::Hcrtm(EventHash::default()),
+            auth: AuthValue::empty(),
+            first_buffer_safe: None,
+        });
+    }
+
+    pub(crate) fn update_hcrtm(&mut self, data: &[u8]) {
+        if let Some(slot) = self.hcrtm_slot()
+            && let Some(Sequence {
+                kind: SequenceKind::Hcrtm(hash),
+                ..
+            }) = &mut self.slots[slot]
+        {
+            hash.update(data);
+        }
+    }
+
+    pub(crate) fn take_hcrtm(&mut self) -> Option<EventHash> {
+        let slot = self.hcrtm_slot()?;
+        match self.slots[slot].take()?.kind {
+            SequenceKind::Hcrtm(hash) => Some(hash),
+            _ => None,
+        }
     }
 
     /// Flushes the sequence in `slot` (`TPM2_FlushContext`).
@@ -253,7 +306,7 @@ impl Tpm {
         match handle::handle_type(h) {
             handle::HT_TRANSIENT => {
                 let slot = (h & 0x00FF_FFFF) as usize;
-                if slot < MAX_SEQUENCES && self.sequences.slots[slot].is_some() {
+                if self.sequences.is_guest_sequence(slot) {
                     Ok(slot)
                 } else {
                     Err(Rc::reference_handle(handle_idx))
@@ -507,6 +560,7 @@ impl Tpm {
                         ticket.mac.update(data);
                     }
                 }
+                SequenceKind::Hcrtm(_) => return Err(Rc::reference_handle(0)),
             }
         }
         Ok(Output::default())
@@ -550,7 +604,10 @@ impl Tpm {
                 mac.update(data);
                 self.hash_result(&mac.finalize().into_bytes(), handle::RH_NULL)
             }
-            SequenceKind::Event(_) | SequenceKind::Sign(_) | SequenceKind::Verify(_) => {
+            SequenceKind::Event(_)
+            | SequenceKind::Sign(_)
+            | SequenceKind::Verify(_)
+            | SequenceKind::Hcrtm(_) => {
                 self.sequences.slots[slot] = Some(sequence);
                 return Err(Rc::MODE.in_handle(1));
             }

@@ -38,7 +38,7 @@ use crate::paged_memory_adapter::{
 use crate::paged_probe::{FirmwareMmio, run_paged_firmware_probe, run_paged_probe_2m_ram};
 use crate::pit_ioapic_irq_source::PitIoapicIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
-use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmCrb, TpmCrbHandle};
+use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmCrb, TpmCrbHandle, TpmPlatformPort};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
 use crate::vcpu::{
@@ -1979,6 +1979,11 @@ impl LoadedFirmwareBoard {
         self.tpm
             .as_ref()
             .map(|handle| handle.persistent_snapshot(self.clock().now_ns()))
+    }
+
+    /// Trusted platform locality controls for the board's optional CRB TPM.
+    pub fn tpm_platform_port(&self) -> Option<TpmPlatformPort<'_>> {
+        self.tpm.as_ref().map(|tpm| tpm.platform_port(&self.clock))
     }
 
     /// Replaces the board's interrupt source (S4-38L8b). Only tests call it; production code

@@ -30,8 +30,14 @@ const CMD_LADDR: u64 = 0x5c;
 const RSP_SIZE: u64 = 0x64;
 const RSP_ADDR: u64 = 0x68;
 
-const REG_VALID_AND_UNESTABLISHED: u64 = (1 << 7) | 1;
+const REG_VALID: u64 = 1 << 7;
 const LOC_ASSIGNED: u64 = 1 << 1;
+const HASH_LOCALITY: u8 = 4;
+const HASH_START: u8 = 1 << 0;
+const HASH_DATA: u8 = 1 << 1;
+const HASH_END: u8 = 1 << 2;
+const HASH_DATA_END: u8 = HASH_DATA | HASH_END;
+const RESET_ESTABLISHMENT: u8 = 1 << 3;
 // MMIO CRB, interface version 2, 64/32-bit transfers, CRB selected.
 const INTERFACE_ID: u64 = 1 | (2 << 4) | (1 << 11) | (1 << 14) | (1 << 17);
 
@@ -67,6 +73,21 @@ pub(crate) struct TpmCrbHandle {
     state: Arc<Mutex<State>>,
 }
 
+/// Trusted platform access to the H-CRTM and establishment fields of CRB `TPM_LOC_CTRL`.
+pub struct TpmPlatformPort<'a> {
+    device: &'a TpmCrbHandle,
+    clock: &'a VirtualClockHandle,
+}
+
+impl TpmPlatformPort<'_> {
+    /// Delivers a platform locality control write. `buffer` begins with the big-endian length
+    /// for `HASH_DATA`, followed by that many octets in the locality 4 command window.
+    pub fn write_control(&self, locality: u8, bits: u8, buffer: &[u8]) {
+        let now_ms = self.clock.snapshot().now_ns() / 1_000_000;
+        lock(&self.device.state).platform_control(locality, bits, buffer, now_ms);
+    }
+}
+
 impl TpmCrb {
     pub(crate) fn new(
         entropy: &[u8],
@@ -98,6 +119,16 @@ impl TpmCrb {
 }
 
 impl TpmCrbHandle {
+    pub(crate) fn platform_port<'a>(
+        &'a self,
+        clock: &'a VirtualClockHandle,
+    ) -> TpmPlatformPort<'a> {
+        TpmPlatformPort {
+            device: self,
+            clock,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_startup(&self) {
         lock(&self.state).fail_startup = true;
@@ -133,7 +164,7 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 }
 
 struct Access {
-    locality_zero: bool,
+    locality: u8,
     offset: u64,
     width: usize,
     shift: u32,
@@ -161,7 +192,7 @@ impl Access {
             _ => at & !3,
         };
         Ok(Self {
-            locality_zero: access.offset < LOCALITY_LEN,
+            locality: (access.offset / LOCALITY_LEN) as u8,
             offset,
             width: width as usize,
             shift: ((at - offset) * 8) as u32,
@@ -189,19 +220,24 @@ struct State {
 impl State {
     fn read(&self, access: Access) -> u64 {
         let offset = access.offset;
-        let active = access.locality_zero && self.granted;
+        let platform_active = self.tpm.platform_hash_active();
+        let active = access.locality == 0 && self.granted;
+        let active_locality = if platform_active {
+            LOC_ASSIGNED | u64::from(HASH_LOCALITY) << 2
+        } else if self.granted {
+            LOC_ASSIGNED
+        } else {
+            0
+        };
         let value = match offset {
-            LOC_STATE => REG_VALID_AND_UNESTABLISHED | if self.granted { LOC_ASSIGNED } else { 0 },
-            LOC_STS => u64::from(active),
+            LOC_STATE => REG_VALID | active_locality | u64::from(!self.tpm.platform_established()),
+            LOC_STS => u64::from(active || platform_active && access.locality == HASH_LOCALITY),
             INTF_ID => INTERFACE_ID,
             0x10 | 0x14 => u64::from(u32::MAX),
             _ if active => match offset {
                 CTRL_STS => {
-                    if self.phase == Phase::Idle {
-                        2
-                    } else {
-                        0
-                    }
+                    u64::from(self.tpm.in_failure_mode())
+                        | u64::from(self.phase == Phase::Idle) << 1
                 }
                 CMD_SIZE | RSP_SIZE => BUFFER_LEN as u64,
                 CMD_LADDR | RSP_ADDR => BUFFER_ADDRESS,
@@ -227,7 +263,7 @@ impl State {
     ) -> Result<(), DeviceError> {
         let offset = access.offset;
         let value = value << access.shift;
-        if !access.locality_zero {
+        if access.locality != 0 || self.tpm.platform_hash_active() {
             return Ok(());
         }
         if offset == LOC_CTRL {
@@ -280,6 +316,48 @@ impl State {
     fn go_idle(&mut self) {
         self.buffer.zeroize();
         self.phase = Phase::Idle;
+    }
+
+    fn platform_control(&mut self, locality: u8, bits: u8, buffer: &[u8], now_ms: u64) {
+        let active = self.tpm.platform_hash_active();
+        if bits == RESET_ESTABLISHMENT
+            && matches!(locality, 3 | HASH_LOCALITY)
+            && !active
+            && matches!(self.phase, Phase::Ready | Phase::Idle)
+        {
+            self.tpm.platform_reset_establishment();
+            return;
+        }
+        if locality != HASH_LOCALITY || self.granted {
+            return;
+        }
+        if bits == HASH_START {
+            self.tpm.platform_hash_start();
+            return;
+        }
+        if !active || !matches!(bits, HASH_DATA | HASH_END | HASH_DATA_END) {
+            return;
+        }
+        if bits & HASH_DATA != 0 {
+            let data = buffer.split_first_chunk::<2>().and_then(|(length, bytes)| {
+                let length = usize::from(u16::from_be_bytes(*length));
+                if length <= BUFFER_LEN - 2 {
+                    bytes.get(..length)
+                } else {
+                    None
+                }
+            });
+            let Some(data) = data else {
+                self.tpm.platform_hash_failure();
+                self.go_idle();
+                return;
+            };
+            self.tpm.platform_hash_data(data);
+        }
+        if bits & HASH_END != 0 {
+            self.tpm.platform_hash_end(now_ms);
+            self.go_idle();
+        }
     }
 
     fn execute(&mut self, written: usize, now_ms: u64) {
@@ -354,6 +432,31 @@ mod tests {
     fn write(crb: &mut TpmCrb, offset: u64, value: u64) {
         crb.write(access(offset, AccessWidth::Dword), value)
             .unwrap();
+    }
+
+    #[test]
+    fn hcrtm_controls_require_platform_access_and_malformed_data_is_fatal() {
+        let mut crb = fresh();
+        let trust = crb.handle();
+        let clock = crb.clock.clone();
+        let platform = trust.platform_port(&clock);
+        let locality_four = u64::from(HASH_LOCALITY) * LOCALITY_LEN;
+        write(&mut crb, locality_four + LOC_CTRL, u64::from(HASH_START));
+        assert_eq!(read(&mut crb, LOC_STATE), 0x81);
+        platform.write_control(HASH_LOCALITY, HASH_START, &[]);
+        assert_eq!(read(&mut crb, LOC_STATE), 0x93);
+        write(&mut crb, LOC_CTRL, 1);
+        write(&mut crb, locality_four + LOC_CTRL, u64::from(HASH_END));
+        assert_eq!(read(&mut crb, locality_four + LOC_STS), 1);
+        assert_eq!(read(&mut crb, LOC_STS), 0);
+        platform.write_control(HASH_LOCALITY, HASH_DATA_END, &[0, 2, 0xff]);
+        assert_eq!(read(&mut crb, LOC_STATE), 0x81);
+        write(&mut crb, LOC_CTRL, 1);
+        assert_eq!(read(&mut crb, CTRL_STS) & 1, 1);
+        write(&mut crb, CTRL_REQ, 1);
+        send(&mut crb, &RANDOM);
+        write(&mut crb, CTRL_START, 1);
+        assert_eq!(response_code(&mut crb), Rc::FAILURE.0);
     }
 
     fn send(crb: &mut TpmCrb, command: &[u8]) {

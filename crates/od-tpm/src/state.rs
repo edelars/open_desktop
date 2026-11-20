@@ -16,12 +16,12 @@
 //! protects them. They must not be logged or stored unprotected. Seeds and DRBG state are wiped on
 //! drop and never reach `Debug`.
 //!
-//! Format `ODTPMSTA` version 6 (all integers big-endian):
+//! Format `ODTPMSTA` version 7 (all integers big-endian):
 //!
 //! | offset | size | field |
 //! |---|---|---|
 //! | 0 | 8 | magic `ODTPMSTA` |
-//! | 8 | 2 | format version (6) |
+//! | 8 | 2 | format version (7) |
 //! | 10 | 2 | flags (0; non-zero is rejected) |
 //! | 12 | 4 | payload length `L` (at most 1 MiB) |
 //! | 16 | `L` | payload (layout in `snapshot.rs`) |
@@ -36,6 +36,7 @@
 //! Version 3 is accepted with all hierarchy policies empty. Versions 3 and 4 initialize
 //! `totalResetCount` from the saved `resetCount`, its available lower bound.
 //! Versions 3 through 5 use the default allocation of both PCR banks.
+//! Versions 3 through 6 restore with no established dynamic RTM.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -45,7 +46,7 @@ use crate::da::{DaPersistent, DaVolatile};
 use crate::dispatch;
 use crate::hash::Sequences;
 use crate::hierarchy::{HierarchyPersistent, HierarchyVolatile};
-use crate::marshal::{TpmsClockInfo, TpmsTimeInfo, Writer};
+use crate::marshal::{TpmlDigestValues, TpmsClockInfo, TpmsTimeInfo, Writer};
 use crate::nv::NvStore;
 use crate::object::{Objects, PersistentObjects};
 use crate::pcr::{PcrAllocation, Pcrs, SavedPcrs};
@@ -56,7 +57,7 @@ use crate::snapshot;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written by the TPM.
-pub const SNAPSHOT_VERSION: u16 = 6;
+pub const SNAPSHOT_VERSION: u16 = 7;
 const MIN_SNAPSHOT_VERSION: u16 = 3;
 /// Header size: magic, version, flags, payload length.
 const HEADER_LEN: usize = 16;
@@ -112,6 +113,8 @@ pub(crate) struct Persistent {
     pub total_reset_count: u64,
     /// Allocation to activate at the next `_TPM_Init`.
     pub(crate) pcr_allocation: PcrAllocation,
+    /// Whether a dynamic RTM has been established since the last privileged reset of this bit.
+    pub(crate) established: bool,
     /// Set by `Shutdown`, cleared by `Startup`; a snapshot taken without `Shutdown` is disorderly.
     pub orderly: bool,
     /// Authorization values and flags of the hierarchies.
@@ -131,6 +134,7 @@ pub(crate) struct SavedState {
     pub hier: HierarchyVolatile,
     /// The context protection state: saved contexts stay loadable across Restart and Resume.
     pub ctx: ContextState,
+    pub startup_hcrtm: bool,
 }
 
 /// The vTPM command processor. Created with owner entropy; commands go through
@@ -148,6 +152,9 @@ pub struct Tpm {
     pub(crate) pcrs: Pcrs,
     /// A successful PCR_Allocate forbids Shutdown(STATE) until init, even for a no-op.
     pub(crate) pcr_allocation_pending: bool,
+    /// Completed S-HCRTM measurement, staged until Startup so initial PCR setup preserves it.
+    pub(crate) pre_startup_hcrtm: Option<TpmlDigestValues>,
+    pub(crate) startup_hcrtm: bool,
     pub(crate) sequences: Sequences,
     /// Loaded authorization sessions (HMAC, policy, trial).
     pub(crate) sessions: Sessions,
@@ -201,6 +208,7 @@ impl Tpm {
             restart_count: 0,
             total_reset_count: 0,
             pcr_allocation: PcrAllocation::default(),
+            established: false,
             orderly: true,
             hier: HierarchyPersistent::default(),
             da: DaPersistent::default(),
@@ -220,6 +228,8 @@ impl Tpm {
             saved: None,
             pcrs,
             pcr_allocation_pending: false,
+            pre_startup_hcrtm: None,
+            startup_hcrtm: false,
             sequences: Sequences::default(),
             sessions: Sessions::default(),
             context: ContextState::default(),
@@ -253,6 +263,8 @@ impl Tpm {
         self.failed = false;
         self.pcrs = Pcrs::with_allocation(self.persistent.pcr_allocation);
         self.pcr_allocation_pending = false;
+        self.pre_startup_hcrtm = None;
+        self.startup_hcrtm = false;
         self.sequences.clear();
         self.sessions.clear();
         self.context = ContextState::default();
@@ -267,8 +279,61 @@ impl Tpm {
     /// `_TPM_Init` (non-decreasing; a smaller value is ignored). Returns the complete response.
     /// Every error of the guest command is a response with a `TPM_RC`, never a host error.
     pub fn execute(&mut self, locality: u8, command: &[u8], now_ms: u64) -> Vec<u8> {
+        drop(self.sequences.take_hcrtm());
         self.advance_power_time(now_ms);
         dispatch::execute(self, locality, command)
+    }
+
+    /// `_TPM_Hash_Start`, delivered by the owning platform (Part 3 v185 §22.9).
+    pub fn platform_hash_start(&mut self) {
+        if !self.failed {
+            self.sequences.start_hcrtm();
+            self.sessions.exclusive_audit = None;
+        }
+    }
+
+    /// `_TPM_Hash_Data`, delivered by the owning platform (Part 3 v185 §22.10).
+    pub fn platform_hash_data(&mut self, data: &[u8]) {
+        self.sequences.update_hcrtm(data);
+    }
+
+    /// `_TPM_Hash_End`, delivered by the owning platform (Part 3 v185 §22.11).
+    pub fn platform_hash_end(&mut self, now_ms: u64) {
+        let Some(hash) = self.sequences.take_hcrtm() else {
+            return;
+        };
+        self.advance_power_time(now_ms);
+        let digests = hash.finish();
+        if self.started {
+            self.persistent.established = true;
+            self.persistent.restart_count = self.persistent.restart_count.wrapping_add(1);
+            self.pcrs.measure_dynamic_hcrtm(&digests);
+            self.saved = None;
+        } else {
+            self.pre_startup_hcrtm = Some(digests);
+        }
+    }
+
+    pub fn platform_hash_active(&self) -> bool {
+        self.sequences.hcrtm_active()
+    }
+
+    pub fn platform_established(&self) -> bool {
+        self.persistent.established
+    }
+
+    pub fn platform_reset_establishment(&mut self) {
+        self.persistent.established = false;
+    }
+
+    /// A malformed active platform indication terminates the measurement and enters failure mode.
+    pub fn platform_hash_failure(&mut self) {
+        drop(self.sequences.take_hcrtm());
+        self.failed = true;
+    }
+
+    pub fn in_failure_mode(&self) -> bool {
+        self.failed
     }
 
     /// Updates the absolute time on this power cycle, including powered idle
@@ -298,7 +363,7 @@ impl Tpm {
         out
     }
 
-    /// Restores a TPM from version 3, 4 or 5 snapshot bytes. An unsupported version,
+    /// Restores a TPM from a version 3 through 7 snapshot. An unsupported version,
     /// a damaged snapshot or too little entropy is an error: there is no silent
     /// fallback to an empty TPM. `entropy` reseeds the DRBG (the DRBG state is not part of the
     /// snapshot). The TPM is in the state after `_TPM_Init`.
@@ -477,10 +542,10 @@ mod tests {
         let bytes = t.persistent_snapshot();
         // 113 octets of seeds and counters, 3 empty auth values (3), hierarchy flags (1), DA (17),
         // NV count (2), NV counter maximum (8), object count (1) and three NULL primary
-        // policies (6), total reset count (8) and PCR allocation (1): 160 octets for an empty TPM.
-        assert_eq!(bytes.len(), HEADER_LEN + 160 + 32);
+        // policies (6), total reset count (8), PCR allocation (1) and establishment (1).
+        assert_eq!(bytes.len(), HEADER_LEN + 161 + 32);
         assert_eq!(&bytes[..8], b"ODTPMSTA");
-        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 6);
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 7);
         let r = Tpm::restore(&bytes, &[9u8; 48]).unwrap();
         assert_eq!(r.persistent.clock_base_ms, 1500);
         assert_eq!(r.persistent.reset_count, 4);
@@ -538,13 +603,15 @@ mod tests {
         ] {
             assert_eq!(t.permanent_auth_policy(handle), None);
         }
-        let v6 = t.persistent_snapshot();
-        assert_eq!(&v6[8..10], &6u16.to_be_bytes());
-        assert_eq!(&v6[16..16 + payload.len()], &payload);
+        let v7 = t.persistent_snapshot();
+        assert_eq!(&v7[8..10], &7u16.to_be_bytes());
+        assert_eq!(&v7[16..16 + payload.len()], &payload);
         assert_eq!(
-            &v6[16 + payload.len()..v6.len() - 32],
-            &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4, 3]
+            &v7[16 + payload.len()..v7.len() - 32],
+            &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4, 3, 0]
         );
+        let v6 = wrap(6, &v7[16..v7.len() - 33]);
+        assert!(!Tpm::restore(&v6, &[9; 48]).unwrap().platform_established());
 
         let old_length = payload.len();
         payload.extend_from_slice(&[0, 0x0b, 0x22]);
@@ -612,12 +679,12 @@ mod tests {
         b[0] ^= 1;
         assert_eq!(Tpm::restore(&b, &e).unwrap_err(), StateError::BadMagic);
         // The former version 1 and a future version are refused, whatever the rest looks like.
-        for v in [1u8, 2, 7] {
+        for v in [1, 2, SNAPSHOT_VERSION + 1] {
             let mut b = bytes.clone();
-            b[9] = v;
+            b[8..10].copy_from_slice(&v.to_be_bytes());
             assert_eq!(
                 Tpm::restore(&b, &e).unwrap_err(),
-                StateError::UnsupportedVersion(u16::from(v))
+                StateError::UnsupportedVersion(v)
             );
         }
         let mut b = bytes.clone();

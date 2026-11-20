@@ -1,6 +1,6 @@
-//! The payload codec of `ODTPMSTA` versions 3 through 6. Version 4 adds the
+//! The payload codec of `ODTPMSTA` versions 3 through 7. Version 4 adds the
 //! primary policies of Owner, Endorsement and Lockout. Version 5 adds `totalResetCount`.
-//! Version 6 adds the desired PCR allocation mask.
+//! Version 6 adds the desired PCR allocation mask. Version 7 adds D-RTM establishment.
 //! The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
@@ -246,6 +246,7 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
     }
     e.u64(p.total_reset_count);
     e.u8(p.pcr_allocation.bits());
+    e.u8(u8::from(p.established));
     Some(())
 }
 
@@ -399,6 +400,7 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
     } else {
         PcrAllocation::default()
     };
+    let established = version >= 7 && flag(c.u8().ok_or(Bad::Short)?)?;
     if !c.buf.is_empty() {
         return Err(Bad::Field);
     }
@@ -411,6 +413,7 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         restart_count,
         total_reset_count,
         pcr_allocation,
+        established,
         orderly,
         hier,
         da,
