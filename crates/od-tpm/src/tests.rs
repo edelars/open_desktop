@@ -23,6 +23,8 @@ mod tests_c3;
 mod tests_context_seq;
 #[path = "tests_ek.rs"]
 mod tests_ek;
+#[path = "tests_ek_high.rs"]
+mod tests_ek_high;
 #[path = "tests_mldsa.rs"]
 mod tests_mldsa;
 #[path = "tests_nv_props.rs"]
