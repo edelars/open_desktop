@@ -29450,6 +29450,11 @@ fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
                 && absolute(src, OperandSize::Qword)
     ) || matches!(
         (instruction.opcode.byte, instruction.operation),
+        (0x8b, Operation::MovFsLoadD { dst, src })
+            if dst.size() == OperandSize::Dword
+                && absolute(src, OperandSize::Dword)
+    ) || matches!(
+        (instruction.opcode.byte, instruction.operation),
         (0x89, Operation::MovFsStore { dst, src })
             if src.size() == OperandSize::Qword
                 && absolute(dst, OperandSize::Qword)
@@ -45167,6 +45172,7 @@ fn step_configured(
         // S6-22: the small glibc TLS FS subset is also executable from CPL3; the
         // exact operation and addressing form are checked by the helper.
         Operation::MovFsLoadQ { .. }
+        | Operation::MovFsLoadD { .. }
         | Operation::MovFsStore { .. }
         | Operation::MovFsMemImm { .. }
             if context.privilege == PrivilegeLevel::Ring3

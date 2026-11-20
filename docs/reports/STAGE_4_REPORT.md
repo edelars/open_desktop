@@ -791,6 +791,7 @@ the [S4-34b report](STAGE_4_S4-34B_2026-11-14.md) and
 - **Уточнение S6-22.** По D5 допущены регистровые dword ADD и SHR и прямые обращения CPL3 через FS. Два vCPU с RAW дошли до ADD через FS после `set_robust_list`. [ISSUE-567 и проверки](STAGE_6_REPORT.md#s6-22--настройка-fs-в-glibc).
 - **Уточнение S6-22.** По D5 допущены ADD с прямым qword-источником через FS, dword-запись imm32 через FS с регистром базы и операции SSE2 подготовки rseq. Два vCPU с RAW получили штатный возврат из `rseq`. [ISSUE-568 и проверки](STAGE_6_REPORT.md#s6-22--подготовка-rseq-в-glibc).
 - **Уточнение S6-22.** По D5 допущен dword CMP с EAX и imm32 для проверки результата `rseq`. Два vCPU с RAW и подготовленным ELF дошли до прямого dword-чтения через FS. [ISSUE-569 и проверки](STAGE_6_REPORT.md#s6-22--проверка-результата-rseq-в-glibc).
+- **Уточнение S6-22.** По D5 допущено прямое dword-чтение через FS для TID. Два vCPU с RAW и подготовленным ELF дошли до dword CMP с операндом памяти. [ISSUE-570 и проверки](STAGE_6_REPORT.md#s6-22--чтение-tid-через-fs).
 
 - **Уточнение S6-21.** По D5 добавлена форма `LOCK AND m64, imm8` для остановки в `copy_process`. Она использует общий атомарный AND профиля CPL0. [ISSUE-550 и проверки](STAGE_6_REPORT.md#s6-21--lock-and-qword-с-imm8).
 

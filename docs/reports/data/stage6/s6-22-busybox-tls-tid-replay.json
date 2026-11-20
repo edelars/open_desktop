@@ -1,0 +1,150 @@
+{
+  "seed": 24301,
+  "vcpus": 2,
+  "ram_mib": 128,
+  "budget": 3000000000,
+  "nonce": "s6-workloads20261119",
+  "raw_template_sha256": "c2b2c94665ea256c6fa19c7eeebfc8451589028df3da00b2e1e05c7473dd2895",
+  "raw_namespace_sectors": 4194304,
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "ba599c4249b5dab60428d71ff6fedcf07e717275af5ec60bb46225abd5919977",
+  "acpi_blob_sha256": "82ce5bda17d5c982eee1c53c342a551191539a4df067e368f40500f5e3e8f72f",
+  "acpi_manifest_sha256": "a15686d043b7ce44650d6e847d1c965fdc5e5a38d8938a9c1eda120d5dfe81af",
+  "busybox_elf_sha256": "df12634c17fcdca839ae5dc47d7627b7558511f7645de7c99ccf097a0f28ed5b",
+  "workload_source_sha256": "595616f267caa64561a8d836a4d7c3b2ac7ed68fcdccc5c4209b4b6faeff7f9a",
+  "guest_kernel_markers": [
+    "smpboot: Total of 2 processors activated",
+    "Run /s6-smp-init as init process"
+  ],
+  "base_commit": "86ca2714f35387a9b1dece5884ebee0c39458d44",
+  "previous_run_evidence": "s6-22-busybox-rseq-cmp-replay.json",
+  "guest_verifier": "expected source, all five workloads, online CPUs and completion",
+  "before": {
+    "report_sha256": "67ac9f632ba0e0a4e1029d07f89ab1bd9948e500aa020b0bb7604fa32ba5e6c4",
+    "runner_sha256": "142610f7addaa5786a0e4658826b6e2fc08a722fa634ba7f8130eaff5ed3f3a6",
+    "retired": 2401360892,
+    "retired_by_vcpu": [
+      1971201057,
+      430159835
+    ],
+    "terminal_vcpu": 1,
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "cpl": 3,
+    "cpl3_retired": 3233,
+    "rip": "0x4f9faf",
+    "rip_gpa": "0x7d9bfaf",
+    "rip_bytes": "64 8b 04 25 d0 02 00 00 39 47 08 75 3f 8b 47 04",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 139 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x1b08e000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x1b08ed80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "busybox_elf_file_offset": "0xf9faf"
+  },
+  "after": {
+    "report_sha256": "0a11054f1bf39fdf3357b514d70f2f53a85edeb528b54fad3f94adf4c8eaab53",
+    "runner_sha256": "de690cc04df7c752b06fe91c7aaf26de374e1dea3808dd3e7e428c83155f0228",
+    "retired": 2401360893,
+    "retired_by_vcpu": [
+      1971201057,
+      430159836
+    ],
+    "terminal_vcpu": 1,
+    "com1_sha256": "78847a6df7514223521a4a0ea77ac061c54c1ea7debb187febf684a7f99b7bb0",
+    "cpl": 3,
+    "cpl3_retired": 3234,
+    "rip": "0x4f9fb7",
+    "rip_gpa": "0x7d9bfb7",
+    "rip_bytes": "39 47 08 75 3f 8b 47 04 83 f8 ff 0f 84 c9 00 00",
+    "exit_kind": "user_mode_unsupported",
+    "exit_detail": "Unsupported { opcode: 57 }",
+    "syscall_journal": {
+      "capacity": 32,
+      "entered": 6,
+      "entries": [
+        {
+          "nr": 12,
+          "rax_return": "0x1b08e000",
+          "rip": "0x4f4129"
+        },
+        {
+          "nr": 12,
+          "rax_return": "0x1b08ed80",
+          "rip": "0x4f4137"
+        },
+        {
+          "nr": 158,
+          "rax_return": "0x0",
+          "rip": "0x4c858e"
+        },
+        {
+          "nr": 218,
+          "rax_return": "0x1",
+          "rip": "0x4f3aa1"
+        },
+        {
+          "nr": 273,
+          "rax_return": "0x0",
+          "rip": "0x4f3b00"
+        },
+        {
+          "nr": 334,
+          "rax_return": "0x0",
+          "rip": "0x4f3b96"
+        }
+      ],
+      "returned": 6
+    },
+    "busybox_elf_file_offset": "0xf9fb7"
+  },
+  "same_com1": true,
+  "comparison_cpu": 0,
+  "same_comparison_cpu": true,
+  "candidate_patch_sha256": "4470c6d75d347533aa51cb38bc76009cddd9ab1a7e6650633a042cf322a83320",
+  "sources_sha256": {
+    "crates/od-isa/src/execute.rs": "38f42fd8c8db63601da678de2fd2520a4805ef23d80329d7794e94185b679586",
+    "crates/od-isa/src/long_decode.rs": "1f9075728fa2ec54ae2bf9a2f903ad633210d4718c1bbc9f5361753db40d548d",
+    "crates/od-isa/tests/cpl3_profile_set.rs": "262fff93df866923a11f41c012f5ac40f3d1b30e44c390a8f2707faae9627274",
+    "crates/od-machine/src/paged_memory_adapter.rs": "552984f8a26c95fdbdcf4272b0e9e1085b406ce2e8bc68265c9fef1431a5c78d",
+    "crates/od-machine/src/page_walk.rs": "908b2e6dfa10a72a6c4be146a923ef8fd482d90298d6fc92a447c0f382bbf6a5"
+  },
+  "tid_after_fs_load": "0x1",
+  "state_after_fs_load": {
+    "rax": "0x1",
+    "rdi": "0x613fe0"
+  }
+}
