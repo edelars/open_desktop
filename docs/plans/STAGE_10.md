@@ -180,7 +180,7 @@
 | S10-17 | S10-10 | Решение по IOSurface по замерам |
 | S10-18 | S10-02, S10-03, S10-12; blocked до этапа 7 | GOP этапа 7 поверх нашего устройства |
 | S10-19 | S10-18; blocked до этапа 5 | Linux на framebuffer/GOP |
-| S10-20 | S10-18, S10-16; blocked до этапа 8 | Windows Setup и рабочий стол на GOP framebuffer |
+| S10-20 | S10-18, S10-16; blocked до S8-24 этапа 8 | Windows Setup и рабочий стол на GOP framebuffer |
 | S10-21 | S10-12, S10-13, S10-19 | Linux display-only путь |
 | S10-22 | S10-12, S10-13, S10-20 | Windows display-only WDDM-драйвер |
 | S10-23 | S10-22, S10-14, S10-15 | Динамическое разрешение, курсор и несколько экранов в Windows |
@@ -425,7 +425,7 @@
 
 ### S10-20. Windows Setup и рабочий стол на GOP framebuffer
 
-- [ ] Принято после ревью. **Blocked до этапа 8** и S10-18.
+- [ ] Принято после ревью. **Blocked до S8-24 этапа 8** ([план этапа 8](STAGE_8.md)) и S10-18.
 - **Где:** `tests/compat/`, отчёт, `SUPPORT_MATRIX.md`.
 - **Сделать:** Windows использует inbox Basic Display на GOP framebuffer; записать разрешение, которое выбрал Setup; базовый ввод через S10-16.
 - **Проверить:** экран Setup и рабочий стол видны; скриншоты; записать, что это не WDDM 2.0 соответствие.
