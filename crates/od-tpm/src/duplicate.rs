@@ -1,13 +1,12 @@
 //! TPM duplication wrappers (TPM Library v185 Part 1 §20.3.2, Part 3 §§13.1 and 13.3).
 
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::codes::{alg, handle, object_attr};
 use crate::credential::{
     DUPLICATE_LABEL, check_storage_key, make_seed, open_seed_blob, protect_seed_blob, recover_seed,
 };
-use crate::crypto::DIGEST;
+use crate::crypto::{HashAlg, TpmDigest, hash};
 use crate::dispatch::Invocation;
 use crate::marshal::{MAX_DATA, MAX_RSA_BYTES, Reader, SymDef, TpmtPublic, Writer};
 use crate::object::{
@@ -17,26 +16,28 @@ use crate::object::{
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
-fn integrity_and_body(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+/// Splits an integrity value of at most `digest` octets (one digest of the hash of the wrapper) from
+/// the rest of the bytes.
+fn integrity_and_body(bytes: &[u8], digest: usize) -> Option<(&[u8], &[u8])> {
     let mut reader = Reader::new(bytes);
-    let integrity = reader.tpm2b(DIGEST).ok()?;
+    let integrity = reader.tpm2b(digest).ok()?;
     let body = reader.bytes(reader.remaining()).ok()?;
     (!body.is_empty()).then_some((integrity, body))
 }
 
-fn inner_integrity(sensitive: &[u8], name: &[u8]) -> [u8; DIGEST] {
-    let mut hash = Sha256::new();
-    hash.update(sensitive);
-    hash.update(name);
-    hash.finalize().into()
+/// `innerIntegrity = H(sensitive || name)` with the `nameAlg` of the duplicated object (Part 1,
+/// clause 24.5).
+fn inner_integrity(sensitive: &[u8], name: &[u8], name_hash: HashAlg) -> TpmDigest {
+    hash(name_hash, &[sensitive, name])
 }
 
-fn inner_integrity_matches(tag: &[u8], sensitive: &[u8], name: &[u8]) -> bool {
-    if tag.len() != DIGEST {
+fn inner_integrity_matches(tag: &[u8], sensitive: &[u8], name: &[u8], name_hash: HashAlg) -> bool {
+    let expected = inner_integrity(sensitive, name, name_hash);
+    if tag.len() != expected.len {
         return false;
     }
     tag.iter()
-        .zip(inner_integrity(sensitive, name))
+        .zip(expected.as_slice())
         .fold(0u8, |diff, (actual, expected)| diff | (actual ^ expected))
         == 0
 }
@@ -61,18 +62,16 @@ impl Tpm {
         if object.public.name_alg == alg::NULL {
             return Err(Rc::TYPE.in_handle(1));
         }
-        // The inner integrity and the wrappers of this implementation use SHA-256 only.
-        if object.public.name_alg != alg::SHA256 {
-            return Err(Rc::HASH.in_handle(1));
-        }
+        // The inner integrity is a digest of the `nameAlg` of the object.
+        let object_hash = HashAlg::from_alg(object.public.name_alg).ok_or(Rc::HASH.in_handle(1))?;
         let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
         let new_parent = if inv.handles[1] == handle::RH_NULL {
             None
         } else {
             let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[1])
                 .ok_or(Rc::reference_handle(1))?;
-            let symmetric = check_storage_key(parent, 2)?;
-            Some((parent, symmetric))
+            let (symmetric, parent_hash) = check_storage_key(parent, 2)?;
+            Some((parent, symmetric, parent_hash))
         };
         if object.has(object_attr::ENCRYPTED_DUPLICATION) {
             if symmetric == SymDef::Null {
@@ -103,9 +102,10 @@ impl Tpm {
                 key_in
             };
             // Reserve the full length so a reallocation cannot leave a copy of the sensitive area.
-            let mut clear = Zeroizing::new(Vec::with_capacity(2 + DIGEST + canonical.len()));
-            clear.extend_from_slice(&(DIGEST as u16).to_be_bytes());
-            clear.extend_from_slice(&inner_integrity(&canonical, &object.name));
+            let integrity = inner_integrity(&canonical, &object.name, object_hash);
+            let mut clear = Zeroizing::new(Vec::with_capacity(2 + integrity.len + canonical.len()));
+            clear.extend_from_slice(&(integrity.len as u16).to_be_bytes());
+            clear.extend_from_slice(integrity.as_slice());
             clear.extend_from_slice(&canonical);
             inner = aes_cfb(key, &[0; 16], &clear, true);
             &inner[..]
@@ -114,17 +114,22 @@ impl Tpm {
         };
         let encrypted;
         let enc_seed;
-        let (duplicate, secret): (&[u8], &[u8]) = if let Some((new_parent, outer_sym)) = new_parent
-        {
-            let (seed, secret) =
-                make_seed(&new_parent.public.unique, DUPLICATE_LABEL, &mut self.drbg)
-                    .ok_or(Rc::FAILURE)?;
-            enc_seed = secret;
-            encrypted = protect_seed_blob(&seed[..], outer_sym, &object.name, wrapped);
-            (&encrypted, &enc_seed)
-        } else {
-            (wrapped, &[])
-        };
+        let (duplicate, secret): (&[u8], &[u8]) =
+            if let Some((new_parent, outer_sym, parent_hash)) = new_parent {
+                let (seed, secret) = make_seed(
+                    &new_parent.public.unique,
+                    DUPLICATE_LABEL,
+                    &mut self.drbg,
+                    parent_hash,
+                )
+                .ok_or(Rc::FAILURE)?;
+                enc_seed = secret;
+                encrypted =
+                    protect_seed_blob(&seed[..], outer_sym, parent_hash, &object.name, wrapped);
+                (&encrypted, &enc_seed)
+            } else {
+                (wrapped, &[])
+            };
         let mut params = Writer {
             buf: Vec::with_capacity(6 + key_out.len() + duplicate.len() + secret.len()),
         };
@@ -144,7 +149,7 @@ impl Tpm {
     ) -> Result<Output, Rc> {
         let parent = find_object(&self.objects, &self.persistent.objects, inv.handles[0])
             .ok_or(Rc::reference_handle(0))?;
-        let parent_symmetric = check_storage_key(parent, 1)?;
+        let (parent_symmetric, parent_hash) = check_storage_key(parent, 1)?;
         let parent_sensitive = parent.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
 
         reader.set_param(1);
@@ -172,10 +177,8 @@ impl Tpm {
             parent.has(object_attr::FIXED_TPM),
             parent.has(encrypted_duplication),
         )?;
-        // The inner integrity and the wrappers of this implementation use SHA-256 only.
-        if public.name_alg != alg::SHA256 {
-            return Err(Rc::HASH.in_param(2));
-        }
+        // The inner integrity is a digest of the `nameAlg` of the imported object.
+        let object_hash = HashAlg::from_alg(public.name_alg).ok_or(Rc::HASH.in_param(2))?;
         let required_key_size = usize::from(symmetric.key_bits() / 8);
         if key.len() != required_key_size {
             return Err(Rc::SIZE.in_param(1));
@@ -186,18 +189,26 @@ impl Tpm {
         let wrapped = if encrypted_seed.is_empty() {
             duplicate
         } else {
-            let seed = recover_seed(parent, encrypted_seed, DUPLICATE_LABEL, &mut self.drbg)
-                .map_err(|error| error.response(1, 4))?;
-            let (tag, ciphertext) = integrity_and_body(duplicate).ok_or(Rc::SIZE.in_param(3))?;
-            outer = open_seed_blob(&seed, parent_symmetric, &name, tag, ciphertext)
+            let seed = recover_seed(
+                parent,
+                encrypted_seed,
+                DUPLICATE_LABEL,
+                &mut self.drbg,
+                parent_hash,
+            )
+            .map_err(|error| error.response(1, 4))?;
+            let (tag, ciphertext) =
+                integrity_and_body(duplicate, parent_hash.size()).ok_or(Rc::SIZE.in_param(3))?;
+            outer = open_seed_blob(&seed, parent_symmetric, parent_hash, &name, tag, ciphertext)
                 .ok_or(Rc::INTEGRITY.in_param(3))?;
             &outer[..]
         };
         let inner;
         let canonical = if required_key_size != 0 {
             inner = aes_cfb(key, &[0; 16], wrapped, false);
-            let (tag, sensitive) = integrity_and_body(&inner).ok_or(Rc::INTEGRITY.in_param(3))?;
-            if !inner_integrity_matches(tag, sensitive, &name) {
+            let (tag, sensitive) =
+                integrity_and_body(&inner, object_hash.size()).ok_or(Rc::INTEGRITY.in_param(3))?;
+            if !inner_integrity_matches(tag, sensitive, &name, object_hash) {
                 return Err(Rc::INTEGRITY.in_param(3));
             }
             sensitive

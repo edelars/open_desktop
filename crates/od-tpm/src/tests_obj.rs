@@ -848,13 +848,14 @@ fn create_primary_framing_errors() {
         &create_primary_raw(&mut t, OWNER, b"", &good[..good.len() - 4]),
         Rc::INSUFFICIENT.in_param(4),
     );
-    // outsideInfo above sizeof(TPMT_HA).
+    // outsideInfo above sizeof(TPMT_HA): 2 + 64 octets, since SHA-512 is implemented (35 octets
+    // were above it while SHA-256 was the only hash).
     err(
         &create_primary_raw(
             &mut t,
             OWNER,
             b"",
-            &creation_params(b"", b"", &ecc_sign(), &[0u8; 35], &NO_PCR),
+            &creation_params(b"", b"", &ecc_sign(), &[0u8; 67], &NO_PCR),
         ),
         Rc::SIZE.in_param(3),
     );
@@ -1270,7 +1271,8 @@ fn sign_and_verify_errors() {
     ));
     let good = sign(&mut t, key, b"c", &DIGEST, &ecc_sig_scheme());
     let sig = params(&good, 0).to_vec();
-    // Digest of the wrong size; a scheme with another hash; RSASSA for an ECC key.
+    // Digest of the wrong size; a scheme with another hash (slice 1b: SHA-384 parses, and differs
+    // from the key's SHA-256 scheme, so it is TPM_RC_SCHEME for inScheme); RSASSA for an ECC key.
     err(
         &sign(&mut t, key, b"c", &DIGEST[..31], &ecc_sig_scheme()),
         Rc::SIZE.in_param(1),
@@ -1282,6 +1284,17 @@ fn sign_and_verify_errors() {
             b"c",
             &DIGEST,
             &cat(&[&u16b(alg::ECDSA), &u16b(0x000C)]),
+        ),
+        Rc::SCHEME.in_param(2),
+    );
+    // A hash that is no signing hash (SHA3-256) stays TPM_RC_HASH.
+    err(
+        &sign(
+            &mut t,
+            key,
+            b"c",
+            &DIGEST,
+            &cat(&[&u16b(alg::ECDSA), &u16b(0x0027)]),
         ),
         Rc::HASH.in_param(2),
     );

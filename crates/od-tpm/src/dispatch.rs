@@ -425,21 +425,48 @@ fn response_parameter_hash(code: u32, parameters: &[u8], alg: HashAlg) -> TpmDig
 }
 
 /// `parse_auth_area` takes up to one SHA-512 digest of nonce and HMAC in every session; the limit
-/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`, whose password
-/// stays at 32 octets) and a handle that names no loaded session keep the SHA-256 limit of before
-/// hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
-fn check_auth_sizes(tpm: &Tpm, sessions: &[TpmsAuthCommand]) -> Result<(), Rc> {
-    for s in sessions {
+/// of a session is one digest of its `authHash`. A password session (`TPM_RS_PW`) carries the
+/// `authValue` of the entity that the session authorizes, so its limit is one digest of the
+/// `nameAlg` of an object or an NV index (48 or 64 octets for SHA-384 and SHA-512) and 32 octets
+/// for any other entity (a hierarchy, a sequence). A handle that names no loaded session keeps the
+/// SHA-256 limit of before hash agility. `TPM_RC_AUTHSIZE` as for any malformed authorization area.
+fn check_auth_sizes(
+    tpm: &Tpm,
+    spec: &CommandSpec,
+    handles: &CommandHandles,
+    sessions: &[TpmsAuthCommand],
+) -> Result<(), Rc> {
+    for (i, s) in sessions.iter().enumerate() {
         let limit = tpm
             .sessions
             .slot_of(s.session_handle)
             .and_then(|slot| tpm.sessions.get(slot))
-            .map_or(DIGEST, |session| session.auth_hash.size());
+            .map_or_else(
+                || {
+                    if s.session_handle == handle::RS_PW && i < usize::from(spec.auth) {
+                        entity_auth_limit(tpm, handles[i])
+                    } else {
+                        DIGEST
+                    }
+                },
+                |session| session.auth_hash.size(),
+            );
         if s.nonce.len() > limit || s.hmac.len() > limit {
             return Err(Rc::AUTHSIZE);
         }
     }
     Ok(())
+}
+
+/// The largest `authValue` of the entity behind `handle`: one digest of the `nameAlg` of an object or
+/// an NV index, 32 octets for the others.
+fn entity_auth_limit(tpm: &Tpm, handle: u32) -> usize {
+    if let Some(index) = tpm.persistent.nv.get(handle) {
+        return index.hash_alg().size();
+    }
+    tpm.object(handle)
+        .and_then(|object| HashAlg::from_alg(object.public.name_alg))
+        .map_or(DIGEST, HashAlg::size)
 }
 
 /// How a session of the authorization area is used.
@@ -611,7 +638,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     } else {
         Vec::new()
     };
-    check_auth_sizes(tpm, &sessions)?;
+    check_auth_sizes(tpm, spec, &handles, &sessions)?;
     let needed = usize::from(spec.auth);
     if sessions.len() < needed {
         return Err(Rc::AUTH_MISSING);
@@ -637,6 +664,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     let mut cp_hash: [Option<TpmDigest>; 3] = [None; 3];
     // `authValue` of the entity of each session, for `sessionValue` of parameter encryption.
     let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
+    let mut pins_proven: Vec<u32> = Vec::new();
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
         let authorizes = i < needed;
@@ -651,17 +679,25 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         // Part 3 §5.6 checks DA lockout before role and policy validation for
         // sessions proving an authValue. A policy without either assertion
         // does not prove the target's authValue.
-        let target = if authorizes
+        let proves_auth = authorizes
             && policy.is_none_or(|(_, session)| {
                 session.kind == SessionKind::Policy
                     && (session.policy.auth_value_needed || session.policy.password_needed)
-            }) {
+            });
+        let target = if proves_auth {
             da_class(tpm, spec.code, &handles, i)
         } else {
             DaClass::Exempt
         };
+        // The authValue of a written PIN index (`nv.rs`): its count follows the proof.
+        let pin = if proves_auth && !is_pcr_position(spec.code, i) {
+            tpm.pin_index_of(handles[i])
+        } else {
+            None
+        };
         let da = DaProtection {
             target,
+            pin,
             bind: loaded
                 .filter(|(_, session)| session.kind != SessionKind::Trial)
                 .map_or(DaClass::Exempt, |(_, session)| session.bind_da),
@@ -779,7 +815,13 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                     }
                 } else {
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
-                    let (key, with_auth) = authorization_key(session, handles[i], &auth);
+                    // The Name matters only to a bound session (it changes with an NV index's first write).
+                    let name = if session.bound.is_some() {
+                        handle_name(tpm, handles[i])
+                    } else {
+                        Vec::new()
+                    };
+                    let (key, with_auth) = authorization_key(session, &name, &auth);
                     if !verify_command_hmac(
                         session,
                         &key,
@@ -795,6 +837,10 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 }
             }
         }
+        pins_proven.extend(da.pin);
+    }
+    for pin in pins_proven {
+        tpm.pin_auth_succeeded(pin);
     }
 
     // The fallible preparation of the response goes before the command's action.
@@ -1247,31 +1293,34 @@ fn check_sign_handle(tpm: &Tpm, h: u32, idx: usize) -> Result<(), Rc> {
     }
 }
 
-/// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` (salted sessions
-/// are not implemented: a loaded object as `tpmKey` is `TPM_RC_VALUE`, an unloaded transient
-/// handle "not loaded", a missing persistent one `TPM_RC_HANDLE`), `bind` is `TPM_RH_NULL` or a
-/// hierarchy authorization handle (binding to an object is not implemented).
-/// NOT VERIFIED against TPM 2.0 Library v185/v184: the code `TPM_RC_VALUE` for an object handle
-/// that the TPM could use but this implementation does not.
+/// `tpmKey` and `bind` of `TPM2_StartAuthSession`: `tpmKey` is `TPM_RH_NULL` or a loaded object
+/// (a salted session; its type, attributes and the salt are checked by the command: `TPM_RC_KEY`
+/// and `TPM_RC_VALUE` for the parameter), an unloaded transient handle is "not loaded", a missing
+/// persistent one `TPM_RC_HANDLE`, any other handle `TPM_RC_VALUE`. `bind` is `TPM_RH_NULL`, a
+/// hierarchy authorization handle, a loaded object or a defined NV index (the authValue of the
+/// entity joins the session key, see `session.rs`); a PCR and the other handles are
+/// `TPM_RC_VALUE`.
+/// NOT VERIFIED against TPM 2.0 Library v185/v184: the codes for a `tpmKey` or `bind` that is not
+/// loaded (they follow the neighbouring commands) and `TPM_RC_VALUE` for an undefined NV index
+/// and for a PCR as `bind` (a PCR is not supported as a bind entity here).
 fn check_start_auth_session_handles(tpm: &Tpm, handles: &CommandHandles) -> Result<(), Rc> {
     let key = handles[0];
-    if key != handle::RH_NULL {
+    if key != handle::RH_NULL && tpm.object(key).is_none() {
         return Err(match handle::handle_type(key) {
-            _ if tpm.object(key).is_some() => Rc::VALUE.in_handle(1),
             handle::HT_TRANSIENT => Rc::reference_handle(0),
             handle::HT_PERSISTENT => Rc::HANDLE.in_handle(1),
             _ => Rc::VALUE.in_handle(1),
         });
     }
     let bind = handles[1];
-    if bind == handle::RH_NULL || is_authorization_handle(bind) {
+    if bind == handle::RH_NULL || is_authorization_handle(bind) || tpm.object(bind).is_some() {
         return Ok(());
     }
     Err(match handle::handle_type(bind) {
-        _ if tpm.object(bind).is_some() => Rc::VALUE.in_handle(2),
         handle::HT_TRANSIENT => Rc::reference_handle(1),
         handle::HT_PERSISTENT => Rc::HANDLE.in_handle(2),
-        // NV indices, PCR, ...: not bindable in slice A.
+        handle::HT_NV_INDEX if tpm.nv_index_at(bind, 2).is_ok() => return Ok(()),
+        // An undefined or inaccessible NV index, a PCR, ...
         _ => Rc::VALUE.in_handle(2),
     })
 }

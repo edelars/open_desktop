@@ -21,7 +21,7 @@ measured boot и журнала событий относится к S7-22. Гр
 
 | Область | Что требуется | Состояние и необходимые проверки |
 |---|---|---|
-| §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. В текущей версии `ORDERLY` и PIN-индексы отклоняются. |
+| §4.2, таблица 2, и §4.6.4 | Свойства `TPM_PT`, как минимум два одновременно загруженных ML-DSA-объекта максимального поддерживаемого набора, минимум шесть NV-счётчиков (два с `ORDERLY`) и два PIN-индекса | Сверить свойства и доступные ресурсы на предельных размерах. Срез 3: `ORDERLY` у счётчиков, PIN-индексы и недостающие свойства Table 2 реализованы (см. «Фаза B, срез 3»). |
 | Таблицы 3 и 4 | Обязательные хеши SHA-256/384/512, RSA-3072, RSASSA/PSS/OAEP, ECDSA/ECDH NIST P-256 и P-384, AES-128/256-CFB, SYMCIPHER, ML-KEM-768 или 1024, ML-DSA-65 или 87 и остальные `M`. SHA-1 — `N` | Проверить каждый заявленный алгоритм в поддерживаемых контекстах команд, включая размер ключа и схемы, `TestParms`, capabilities, восстановление существующих ключей и воспроизводимые внешние векторы. AES-128/256-CFB проверены для сессий, Storage keys, дублирования и credential. Самостоятельные объекты SYMCIPHER остаются открытыми. |
 | §4.7, PCR и firmware event log | Два банка по умолчанию SHA-256 и SHA-384. По 24 PCR на банк с `PCR_Allocate` и переназначением при старте | Оба банка включены по умолчанию. `PCR_Allocate` принимает целые банки и применяет выделение при следующем `_TPM_Init`. |
 | §4.9, self-tests | `SelfTest(NO)` возвращает `TPM_RC_TESTING` при оставшихся проверках с продолжением тестирования. `SelfTest(YES)` возвращает результат полного прогона | Текущий профиль завершает проверки на `Startup`, поэтому работоспособный TPM возвращает успех на `SelfTest(NO)` и пустой список на `IncrementalSelfTest`. Проверки нужно расширять вместе с алгоритмами и схемами профиля. |
@@ -113,7 +113,7 @@ ML-KEM Storage parent, labeled KEM для salt и credential, выпуск
 
 ### AES-256-CFB для Storage keys
 
-RSA-2048 и P-256 Storage keys с `nameAlg=SHA-256` принимают
+RSA-2048, RSA-3072 и P-256 Storage keys с `nameAlg=SHA-256` принимают
 `TPMT_SYM_DEF_OBJECT` с AES-128/256-CFB. Storage key определяет
 алгоритм при создании и загрузке `outPrivate`, при `ObjectChangeAuth`,
 для внешней части дубликата и для credential. Длина результата
@@ -176,18 +176,18 @@ RSA-2048 и P-256 Storage keys с `nameAlg=SHA-256` принимают
 
 `TPM2_NV_Certify` (`0x184`) авторизует ключ подписи и проверяет право чтения индекса. `nvIndex` идёт третьим handle. Для диапазона возвращаются Name, смещение и до 512 байт данных. `size=0, offset=0` даёт Name и SHA-256 всего индекса, включая индексы больше 512 байт. Незаписанный или заблокированный для чтения индекс возвращает ошибку. Аттестация не меняет NV.
 
-С поддерживаемым RSA-2048 или P-256 возвращается подпись над `TPMS_ATTEST`. При `TPM_RH_NULL` подпись пуста, а полный digest требует явной схемы подписи с SHA-256 в `inScheme`. Без схемы или при NULL hash возвращается `TPM_RC_SCHEME`. Дополнительная сессия может защитить `qualifyingData` и `certifyInfo`. [TPM Library v185 Part 3, §31.16](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=371).
+С поддерживаемым RSA-2048, RSA-3072 или P-256 возвращается подпись над `TPMS_ATTEST`. При `TPM_RH_NULL` подпись пуста, а полный digest требует явной схемы подписи с SHA-256 в `inScheme`. Без схемы или при NULL hash возвращается `TPM_RC_SCHEME`. Дополнительная сессия может защитить `qualifyingData` и `certifyInfo`. [TPM Library v185 Part 3, §31.16](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=371).
 
 ### Подготовка credential
 
 `TPM2_MakeCredential` (`0x168`) выполняется с публичным Storage key
-RSA-2048 или P-256 с SHA-256 и AES-128/256-CFB. Параметры ключа проверяются
+RSA-2048, RSA-3072 или P-256 с SHA-256 и AES-128/256-CFB. Параметры ключа проверяются
 до генерации seed. Публичный ключ, загруженный через `LoadExternal`,
 достаточен для вызова. Команда принимает до 32 байт credential и Name
 до 34 байт. Дополнительная сессия может аудировать команду и защищать
 входной credential и выходной `credentialBlob`.
 
-RSA защищает свежий seed через OAEP-SHA-256 с меткой `IDENTITY` и
+RSA защищает свежий seed через OAEP (хеш метки и MGF1 — `nameAlg` Storage key: SHA-256, SHA-384 или SHA-512) с меткой `IDENTITY` и
 завершающим нулём. ECC генерирует временный P-256 ключ из 320 случайных
 битов по Part 1 §44.6 и выводит seed через KDFe. В `TPM2B_ID_OBJECT`
 внутренний размер credential шифруется вместе с его байтами. HMAC
@@ -195,7 +195,7 @@ RSA защищает свежий seed через OAEP-SHA-256 с меткой `
 
 `TPM2_ActivateCredential` (`0x147`) требует закрытые части двух загруженных
 объектов и авторизацию ADMIN для `activateHandle` и USER для Storage key.
-Для RSA-2048 seed восстанавливается через OAEP-SHA-256 с той же меткой.
+Для RSA-2048 и RSA-3072 seed восстанавливается через OAEP с хешем `nameAlg` Storage key и той же меткой.
 Допустим seed длиной до 32 байт. Профиль возвращает `TPM_RC_VALUE` для
 некорректного RSA-секрета. Для P-256 команда проверяет две 32-байтовые
 координаты временной точки, вычисляет ECDH и применяет тот же KDFe.
@@ -229,13 +229,13 @@ TPM проверяет HMAC от шифротекста и Name загружен
 ### Импорт дубликата
 
 `TPM2_Import` (`0x156`) авторизует новый Storage key как USER.
-Команда принимает RSA-2048, P-256 и KEYEDHASH с `nameAlg=SHA-256`.
+Команда принимает RSA-2048, RSA-3072, P-256 и KEYEDHASH с `nameAlg=SHA-256`.
 У импортируемого объекта сброшены `fixedTPM` и `fixedParent`.
 `encryptedDuplication` требует внутреннюю и внешнюю защиту.
 Открытый дубликат, каждая обёртка отдельно и их сочетание допустимы
 в пределах атрибутов объекта и родителя.
 
-Внешний seed восстанавливается RSA-OAEP/SHA-256 или P-256 ECDH/KDFe
+Внешний seed восстанавливается RSA-OAEP (хеш — `nameAlg` нового родителя) или P-256 ECDH/KDFe
 с меткой `DUPLICATE\0`. Внешний HMAC проверяется над шифротекстом
 и Name до AES-CFB с нулевым IV и размером ключа нового родителя.
 Внутренний AES-CFB использует предоставленный 16- или 32-байтовый
@@ -328,7 +328,7 @@ CpHash, а код `2` представляет NameHash. Контекст с Nam
 
 `TPM2_VerifyDigestSignature` (`0x1A5`) принимает пустой контекст и
 32-байтовый SHA-256 дайджест. Он проверяет готовый дайджест по открытой
-части ключа с фиксированной схемой RSASSA или ECDSA. Тип подписи и
+части ключа с фиксированной схемой RSASSA, RSAPSS или ECDSA. Тип подписи и
 хеш должны совпадать со схемой ключа. Сессия может аудировать вызов
 и защищать поле контекста. Авторизация ключа не требуется.
 
@@ -336,15 +336,15 @@ CpHash, а код `2` представляет NameHash. Контекст с Nam
 алгоритм подписанного хеша и `TPM2B_DIGEST` с HMAC. HMAC вычисляется
 от тега, подписанного дайджеста, Name ключа и алгоритма без полей
 размера. При NULL-иерархии поле HMAC пусто. Формат `VERIFIED` от
-legacy `VerifySignature` сохраняется.
+legacy `VerifySignature` сохраняется; `VerifySignature` сверяет алгоритм схемы ключа, а не хеш (прежнее поведение). Проверка RSAPSS принимает любую длину соли, как эталон (см. «Фаза B, срез 2а»).
 [TPM Library v185 Part 2 §§10.6.4–10.6.5, 11.3.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf),
 [Part 3 §20.4](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 ### Подпись дайджеста и HASHCHECK
 
-`TPM2_SignDigest` (`0x1A6`) авторизует ключ с ролью USER. Для RSA-2048
+`TPM2_SignDigest` (`0x1A6`) авторизует ключ с ролью USER. Для RSA-2048, RSA-3072
 и P-256 команда принимает пустой контекст и 32-байтовый SHA-256 дайджест.
-Подпись использует фиксированную схему RSASSA или ECDSA из параметров
+Подпись использует фиксированную схему RSASSA, RSAPSS или ECDSA из параметров
 ключа. Сессия может защищать первый входной параметр.
 
 Restricted-ключ требует действительный `HASHCHECK` от включённой
@@ -368,8 +368,8 @@ Unrestricted-ключ принимает канонический NULL-биле�
 
 `SignSequenceStart` (`0x1AA`) резервирует один из общих слотов
 последовательностей, задаёт его `authValue` и сохраняет Name и схему
-ключа. Текущий профиль поддерживает фиксированные RSASSA и ECDSA с
-RSA-2048, P-256, SHA-256 и пустым контекстом. Авторизация ключа происходит в
+ключа. Текущий профиль поддерживает фиксированные RSASSA, RSAPSS и ECDSA с
+RSA-2048, RSA-3072, P-256, SHA-256 и пустым контекстом. Авторизация ключа происходит в
 `SignSequenceComplete` (`0x1A4`). Эта команда авторизует сначала
 последовательность, затем ключ, оба в роли USER. Защита параметров
 доступна для `auth` при старте и последней порции при завершении.
@@ -389,7 +389,7 @@ RSA-2048, P-256, SHA-256 и пустым контекстом. Авториза�
 ### Потоковая проверка подписи
 
 `VerifySequenceStart` (`0x1A9`) открывает последовательность для
-публичного ключа с фиксированной RSASSA или ECDSA и SHA-256. Поля `hint`
+публичного ключа с фиксированной RSASSA, RSAPSS или ECDSA и SHA-256. Поля `hint`
 и `context` пусты. `SequenceUpdate` добавляет порции сообщения.
 `VerifySequenceComplete` (`0x1A3`) авторизует последовательность и
 проверяет подпись по ключу с тем же Name. Успех освобождает слот.
@@ -510,7 +510,7 @@ proof своей иерархии. Для Lockout это Owner proof. Для NV 
 ### Подписанное утверждение политики
 
 `TPM2_PolicySigned` (`0x160`) принимает загруженный публичный
-объект и целевую policy-сессию. Доступны RSA-2048/RSASSA/SHA-256
+объект и целевую policy-сессию. Доступны RSA-2048 и RSA-3072 с RSASSA или RSAPSS и SHA-256
 и NIST P-256/ECDSA/SHA-256. Ключ должен допускать подпись.
 Фиксированная схема ключа должна совпадать со схемой подписи.
 Для схемы ключа `NULL` подходит поддержанная схема его семейства.
@@ -765,7 +765,7 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 перечисляет `TPM_CAP_ALGS`. У прошедшего `Startup` TPM список `toDoList` пуст.
 
 Самопроверка использует известные открытые значения для SHA-256, SHA-384, SHA-512, HMAC, HMAC_DRBG,
-KDFa, KDFe, XOR, AES-CFB, RSASSA, RSAES, OAEP, ECDSA и ECDH. Проверяются
+KDFa, KDFe, XOR, AES-CFB, RSASSA и RSAPSS (RSA-2048 и RSA-3072), RSAES, OAEP (SHA-256), ECDSA и ECDH. Проверяются
 подписи и их верификация, обе операции RSAES/OAEP и оба направления защиты
 параметров. Случайные входы тестов берутся из отдельных детерминированных
 генераторов. Отдельно остаются проверки источника энтропии, генерации ключей,
@@ -910,15 +910,15 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 
 | Команда | Код | Авторизация | Границы среза B |
 |---|---|---|---|
-| `TPM2_CreatePrimary` | `0x131` | handle 1: owner, platform, endorsement или `TPM_RH_NULL` (роль USER; пароль или HMAC) | шаблон RSA-2048/ECC P-256/sealed data, nameAlg SHA-256; `inSensitive` (`userAuth` до 32, `data`), `outsideInfo` до 34, `creationPCR` (один банк SHA-256); ответ: handle объекта, `outPublic`, `creationData`, `creationHash`, `creationTicket`, `name`; `TPM_RC_OBJECT_MEMORY` без свободного слота; platform без проверки physical presence |
+| `TPM2_CreatePrimary` | `0x131` | handle 1: owner, platform, endorsement или `TPM_RH_NULL` (роль USER; пароль или HMAC) | шаблон RSA (`keyBits` 2048 или 3072)/ECC P-256/sealed data, nameAlg SHA-256; `inSensitive` (`userAuth` до 32, `data`), `outsideInfo` до 34, `creationPCR` (один банк SHA-256); ответ: handle объекта, `outPublic`, `creationData`, `creationHash`, `creationTicket`, `name`; `TPM_RC_OBJECT_MEMORY` без свободного слота; platform без проверки physical presence |
 | `TPM2_Create` | `0x153` | handle 1: родитель, USER | родитель — storage key (`restricted`+`decrypt`, без `sign`, асимметричный) с обеими частями (иначе `TPM_RC_TYPE`, handle 1); ключ из DRBG; ответ: `outPrivate`, `outPublic`, `creationData`, `creationHash`, `creationTicket`; слота не занимает |
 | `TPM2_Load` | `0x157` | handle 1: родитель, USER | integrity проверяется до расшифровки (`TPM_RC_INTEGRITY`), затем приватная часть сверяется с публичной (`TPM_RC_BINDING`/`TPM_RC_KEY_SIZE`); ответ: handle, `name` |
-| `TPM2_LoadExternal` | `0x167` | нет | только публичная часть: `inPrivate` должен быть пуст (иначе `TPM_RC_VALUE`, параметр 1); точка ECC на кривой (`TPM_RC_ECC_POINT`), модуль RSA 2048 бит и нечётный (`TPM_RC_KEY`), экспонента 65537 (`TPM_RC_RANGE`); `hierarchy` ∈ owner/platform/endorsement/NULL; Qualified Name = Name; ответ: handle, `name` |
+| `TPM2_LoadExternal` | `0x167` | нет | только публичная часть: `inPrivate` должен быть пуст (иначе `TPM_RC_VALUE`, параметр 1); точка ECC на кривой (`TPM_RC_ECC_POINT`), модуль RSA 2048 или 3072 бит и нечётный (`TPM_RC_KEY`), экспонента 65537 (`TPM_RC_RANGE`); `hierarchy` ∈ owner/platform/endorsement/NULL; Qualified Name = Name; ответ: handle, `name` |
 | `TPM2_ReadPublic` | `0x173` | нет | `outPublic`, `name`, `qualifiedName` для transient и persistent; sequence-объект — `TPM_RC_SEQUENCE`; приватная часть и `seedValue` в ответ не попадают |
 | `TPM2_Unseal` | `0x15E` | handle 1: объект, USER | keyed-hash объект без `sign`/`decrypt`/`restricted` (иначе `TPM_RC_ATTRIBUTES`; другой тип — `TPM_RC_TYPE`); `outData` до 128 октетов |
 | `TPM2_EvictControl` | `0x120` | handle 1: owner или platform (USER); handle 2 — объект без авторизации | transient → persistent и evict по Part 3, 28.5.1 (`TPM_RC_ATTRIBUTES`: Null hierarchy, только публичная часть, `stClear`; `TPM_RC_HIERARCHY`; `TPM_RC_RANGE`: owner `0x81000000–0x817FFFFF`, platform `0x81800000–0x81FFFFFF`; `TPM_RC_NV_DEFINED`; `TPM_RC_NV_SPACE`); значение вне persistent-типа — `TPM_RC_VALUE` (Table 52); persistent-состояние **только в памяти** (срез C). `{NV}` |
-| `TPM2_Sign` | `0x15D` | handle 1: ключ, USER | RSASSA-PKCS1-v1_5 и ECDSA над дайджестом SHA-256 (32 октета); схема ключа главнее, `inScheme` её повторяет или NULL, ключ со схемой NULL берёт `inScheme`; `TPM_RC_KEY` без `sign`, `TPM_RC_ATTRIBUTES` при `x509sign`; `validation` — [HASHCHECK для restricted-ключа](#подпись-дайджеста-и-hashcheck) |
-| `TPM2_VerifySignature` | `0x177` | нет | публичной части достаточно; неверная подпись — `TPM_RC_SIGNATURE`; успех — `TPMT_TK_VERIFIED` (HMAC под proof иерархии ключа, для Null hierarchy — NULL-тикет) |
+| `TPM2_Sign` | `0x15D` | handle 1: ключ, USER | RSASSA-PKCS1-v1_5, RSAPSS (соль — длина дайджеста, из DRBG) и ECDSA над дайджестом SHA-256 (32 октета); схема ключа главнее, `inScheme` её повторяет или NULL, ключ со схемой NULL берёт `inScheme`; `TPM_RC_KEY` без `sign`, `TPM_RC_ATTRIBUTES` при `x509sign`; `validation` — [HASHCHECK для restricted-ключа](#подпись-дайджеста-и-hashcheck) |
+| `TPM2_VerifySignature` | `0x177` | нет | публичной части достаточно; неверная подпись — `TPM_RC_SIGNATURE` (RSAPSS: любая длина соли принимается; проверяется алгоритм схемы ключа, не хеш); успех — `TPMT_TK_VERIFIED` (HMAC под proof иерархии ключа, для Null hierarchy — NULL-тикет) |
 
 **Объекты.** *Primary* (`CreatePrimary`, из seed иерархии и шаблона), *child* (`Create`, случайный ключ из DRBG фазы A), *external* (`LoadExternal`, без приватной части и без `authValue`: любая попытка авторизации — `TPM_RC_AUTH_UNAVAILABLE`). Типы: RSA-2048 (экспонента 65537, схема RSASSA или NULL), ECC NIST P-256 (схема ECDSA или NULL; kdf всегда NULL), keyed-hash как sealed data (схема NULL; HMAC- и XOR-ключи не реализованы: `sign`/`decrypt` у keyed hash — `TPM_RC_ATTRIBUTES`); `nameAlg` и хеш подписи — SHA-256. Правила атрибутов `TPMA_OBJECT` — Part 2, 8.3.3 и Part 3, 12.1.1 (`fixedTPM`/`fixedParent`/`encryptedDuplication` относительно родителя, `restricted` вместе с `sign`+`decrypt`, `sensitiveDataOrigin` ⇔ пустые `inSensitive.data`, `x509sign` только с `sign`; `firmwareLimited`/`svnLimited` не поддержаны — `TPM_RC_ATTRIBUTES`). Коды разбора публичной области — по интерфейсным типам Part 2 (Table 211 `TPM_RC_TYPE`, Table 78 `TPM_RC_HASH`, Table 81 `TPM_RC_SYMMETRIC`, Table 82 `TPM_RC_MODE`, Table 83 `TPM_RC_KDF`, Table 189 `TPM_RC_VALUE` для схемы RSA, Table 199 `TPM_RC_SCHEME` для схемы ECC, Table 194 `TPM_RC_VALUE` для размера ключа RSA, Table 200 `TPM_RC_CURVE`). Авторизация объекта — только роль USER: пароль или HMAC-сессия по `authValue`; при `userWithAuth` CLEAR пароль и HMAC не годятся (`TPM_RC_AUTH_UNAVAILABLE` в срезе B; со срезом C2 — `TPM_RC_POLICY_FAIL`, авторизует policy-сессия, см. «Фаза B, срез C2»). Name = `nameAlg ‖ SHA-256(TPMT_PUBLIC)`; Qualified Name = `nameAlg ‖ SHA-256(QN родителя ‖ Name)`, для primary родитель — handle иерархии (Part 1, 24.5). Handle transient-объекта `0x80000003 + слот`, 8 слотов (sequence-объекты занимают `0x80000000–0x80000002`); persistent — до 16. `FlushContext` освобождает transient-объект; `Startup` и `_TPM_Init` сбрасывают все transient-объекты; `TPM_PT_HR_TRANSIENT_AVAIL` — свободные слоты обоих видов (11 при старте), `TPM_PT_HR_PERSISTENT`, `_AVAIL`, `_MIN` — persistent.
 
@@ -938,15 +938,15 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 
 | Команда | Код | Авторизация | Границы среза C1 |
 |---|---|---|---|
-| `TPM2_RSA_Encrypt` | `0x174` | нет (нужна только публичная часть) | RSA-2048, 65537; `inScheme` (`TPMT_RSA_DECRYPT`): NULL, `TPM_ALG_RSAES`, `TPM_ALG_OAEP`+SHA-256; выбор padding — Part 3, Table 42 (схема ключа и `inScheme`); NULL+NULL — «сырой» RSA (`m^e mod n`, `m < n`); `label` — пусто или оканчивается нулевым октетом (нуль входит в метку OAEP); `message` ≤ 190 (OAEP), ≤ 245 (RSAES) октетов. Атрибуты ключа не проверяются (Part 3, 14.2.1) |
-| `TPM2_RSA_Decrypt` | `0x159` | handle 1: ключ, USER | RSA-ключ (`TPM_RC_KEY`) с `restricted` CLEAR и `decrypt` SET (`TPM_RC_ATTRIBUTES`); тот же выбор padding и те же схемы; результат — `message`; «сырой» RSA возвращает 256 октетов (с ведущими нулями) |
+| `TPM2_RSA_Encrypt` | `0x174` | нет (нужна только публичная часть) | RSA-2048 или RSA-3072, 65537; `inScheme` (`TPMT_RSA_DECRYPT`): NULL, `TPM_ALG_RSAES`, `TPM_ALG_OAEP`+SHA-256/SHA-384/SHA-512 (хеш ключа и `inScheme` совпадают, иначе `TPM_RC_SCHEME`, параметр 2); выбор padding — Part 3, Table 42 (схема ключа и `inScheme`); NULL+NULL — «сырой» RSA (`m^e mod n`, `m < n`); `label` — пусто или оканчивается нулевым октетом (нуль входит в метку OAEP); `message` ≤ 190/158/126 (OAEP SHA-256/384/512, RSA-2048) или 318/286/254 (RSA-3072), ≤ 245 (RSA-2048) или ≤ 373 (RSA-3072) октетов (RSAES); длиннее модуля — `TPM_RC_SIZE` (NOT VERIFIED, пункт 61). Атрибуты ключа не проверяются (Part 3, 14.2.1) |
+| `TPM2_RSA_Decrypt` | `0x159` | handle 1: ключ, USER | RSA-ключ (`TPM_RC_KEY`) с `restricted` CLEAR и `decrypt` SET (`TPM_RC_ATTRIBUTES`); тот же выбор padding и те же схемы; результат — `message`; «сырой» RSA возвращает 256 (RSA-2048) или 384 (RSA-3072) октетов (с ведущими нулями) |
 | `TPM2_ECDH_ZGen` | `0x154` | handle 1: ключ, USER | ECC P-256 (`TPM_RC_KEY`), `restricted` CLEAR и `decrypt` SET (`TPM_RC_ATTRIBUTES`), схема ключа ECDH или NULL (`TPM_RC_SCHEME`); `inPoint` (`TPM2B_ECC_POINT`) должна лежать на кривой (`TPM_RC_ECC_POINT`); ответ `outPoint` = **обе координаты** `Z = [d]Q` (Part 3, Table 51; план S7-23 говорил об одном `x`: `x` — первая координата, KDF/хеш — забота вызывающего); кофактор 1 |
 | `TPM2_DictionaryAttackLockReset` | `0x139` | handle 1: `TPM_RH_LOCKOUT` (`TPM_RC_VALUE` для другого handle) | `failedTries` = 0 и `lockoutAuth` снова включён; выполняется и в lockout (DA-счётчика), пока `lockoutAuth` не заблокирован. `{NV}` |
 | `TPM2_DictionaryAttackParameters` | `0x13A` | handle 1: `TPM_RH_LOCKOUT` | `newMaxTries`, `newRecoveryTime`, `lockoutRecovery` (UINT32, секунды); `failedTries` не меняется. `{NV}` |
 
-**Схемы ключей.** Шаблон RSA-ключа: unrestricted decrypt — схема NULL, `TPM_ALG_RSAES` (без hash на проводе, `TPMS_EMPTY`) или `TPM_ALG_OAEP`+SHA-256 (Part 2, Table 215); restricted decrypt и sign+decrypt — NULL. Шаблон ECC-ключа: unrestricted decrypt — NULL или `TPM_ALG_ECDH`+SHA-256 (Table 216). Это расширило `TPMT_PUBLIC` (`marshal.rs`) и проверку шаблона (`object.rs`); `LoadExternal` принимает те же схемы. `TPM_CAP_ALGS` перечисляет ещё RSAES, OAEP, ECDH.
+**Схемы ключей.** Шаблон RSA-ключа: unrestricted decrypt — схема NULL, `TPM_ALG_RSAES` (без hash на проводе, `TPMS_EMPTY`) или `TPM_ALG_OAEP`+SHA-256/SHA-384/SHA-512 (Part 2, Table 215); restricted decrypt и sign+decrypt — NULL. Шаблон ECC-ключа: unrestricted decrypt — NULL или `TPM_ALG_ECDH`+SHA-256 (Table 216). Это расширило `TPMT_PUBLIC` (`marshal.rs`) и проверку шаблона (`object.rs`); `LoadExternal` принимает те же схемы. `TPM_CAP_ALGS` перечисляет ещё RSAES, OAEP, ECDH.
 
-**Отклонения RSA.** (1) RSAES: крейт `rsa` реализует *implicit rejection* — неверный padding не даёт ошибки, а даёт детерминированное синтетическое сообщение (защита от padding-oracle); Part 3, 14.3.1 требует `TPM_RC_VALUE`. Оставлено как более безопасное отклонение (тест `rsaes_decryption_rejects_invalid_padding_implicitly`). OAEP-неудача и выход за диапазон — `TPM_RC_VALUE` (параметр 1). (2) MGF1 и хеш метки — только SHA-256 (хеш OAEP другой, чем SHA-256, — `TPM_RC_HASH`). (3) «Сырой» RSA (NULL) включён: feature `hazmat` крейта `rsa` (`rsa_encrypt`, `rsa_decrypt_and_check` с blinding от DRBG); приватная операция — та же, что у `Sign` ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) — **теперь достижима и через `RSA_Decrypt`**; host stable migration and independent review are complete; ISSUE-064 is resolved).
+**Отклонения RSA.** (1) RSAES: крейт `rsa` реализует *implicit rejection* — неверный padding не даёт ошибки, а даёт детерминированное синтетическое сообщение (защита от padding-oracle); Part 3, 14.3.1 требует `TPM_RC_VALUE`. Оставлено как более безопасное отклонение (тест `rsaes_decryption_rejects_invalid_padding_implicitly`). OAEP-неудача и выход за диапазон — `TPM_RC_VALUE` (параметр 1). (2) MGF1 и хеш метки — один хеш, SHA-256, SHA-384 или SHA-512 (хеш OAEP из другого набора — `TPM_RC_HASH`; у ключа со схемой OAEP хеш ключа и `inScheme` совпадают, иначе `TPM_RC_SCHEME`, параметр 2). (3) «Сырой» RSA (NULL) включён: feature `hazmat` крейта `rsa` (`rsa_encrypt`, `rsa_decrypt_and_check` с blinding от DRBG); приватная операция — та же, что у `Sign` ([ISSUE-064](../KNOWN_ISSUES.md#issue-064-s7-rsa-private-ops-not-constant-time) — **теперь достижима и через `RSA_Decrypt`**; host stable migration and independent review are complete; ISSUE-064 is resolved).
 
 **ECDH.** `crates/od-tpm/src/crypto.rs`, `ecc_ecdh`: умножение точки `p256` (`arithmetic`, уже включён `ecdsa`), результат — аффинные координаты. Feature `ecdh` крейта `p256` (ADR-0009: `arithmetic`, `ecdsa`, `ecdh`) **не включён**: `ecdh::diffie_hellman` отдаёт только `x`, а `TPM2_ECDH_ZGen` возвращает точку; feature тянул бы `hkdf` без пользы (KDFe появится вместе с командами, которым она нужна). Постоянное время — заявление поставщика (`crypto-bigint`), нами не проверялось.
 
@@ -1068,6 +1068,23 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 
 **Тесты среза C3** (`src/tests_c3.rs` и unit-тесты `paramenc.rs`; `cargo test -p od-tpm --offline`): NV — счётчик (рост, запрет `Write`/`Extend`/`SetBits`, чтение, частичное чтение, Name следует `WRITTEN`), счётчик не идёт назад после удаления, повторного определения и `TPM2_Clear`, ошибки `Increment`/`Extend`/`SetBits` (handle, авторизация, роль, `WRITELOCKED`, параметры), HMAC-авторизованный `Increment`, `Extend` (векторы `hashlib`: `SHA-256(0^32 ‖ "abc")`, затем `‖ "def"`, затем пустой буфер; предельный буфер), `SetBits` (OR, 64 бита, `WRITTEN` без изменения битов), размеры и типы в `DefineSpace`, platform-счётчик переживает `Clear`; snapshot — round-trip всех типов и максимума, идентичность байтов, отказ при повреждении (тип, размер, reserved и неподдержанные атрибуты, данные без `WRITTEN`, счётчик выше максимума, нет максимума, версия 2, усечение, бит под digest); переполнение счётчика (`TPM_RC_NV_RANGE`) на восстановленном snapshot; `GetTime` (структура, подпись, внешняя проверка Python, обфускация внешних копий, RSA-ключ, все ошибки, HMAC-сессия); `signHandle` NULL у `GetTime`, `Quote`, `Certify` (структура, NULL-подпись, схемы, пароль, HMAC-сессия); шифрование — векторы XOR и AES-128-CFB (Python `hmac` + `openssl enc -aes-128-cfb`), decrypt `NV_Write` и encrypt `NV_Read` с клиентом из формул Part 1, привязанная сессия, cpHash по шифртексту, открытый текст с флагом `decrypt` расшифровывается в мусор, отказы по атрибутам, symmetric сессии в `ContextSave/Load`; `GetCapability` (60 команд, `TPMA_CC`, 13 алгоритмов); «обрезанные» команды не вызывают panic.
 
+## Фаза B, срез 2а: RSA-3072, RSAPSS и OAEP с SHA-384/SHA-512 (S7-23)
+
+- **Размеры ключа.** RSA-ключ — `keyBits` 2048 или 3072 (экспонента 65537); `LoadExternal` принимает модуль 2048 или 3072 бит (иначе `TPM_RC_KEY`). Самопроверка `self_test.rs` содержит фиксированный ключ RSA-3072.
+- **Схемы подписи.** RSASSA и RSAPSS с SHA-256, SHA-384 и SHA-512 (MGF1 того же хеша). Подпись RSAPSS: соль — длина дайджеста (Part 1, Annex B.7), случайные байты из DRBG. **Отклонение (выбор проекта):** проверка принимает любую допустимую длину соли, как эталонный TPM (`PssDecode` в `CryptRsa.c`: разделитель `0x01` после нулевого заполнения, остаток блока — соль), а не только соль длиной в дайджест; подписи `openssl` с солью 0, 20 и максимальной принимаются, испорченная подпись и неверный дайджест отвергаются (`TPM_RC_SIGNATURE`).
+- **OAEP.** Хеш OAEP (метка и MGF1 — один и тот же хеш) — SHA-256, SHA-384 или SHA-512. У ключа со схемой OAEP хеш ключа и `inScheme` совпадают, иначе `TPM_RC_SCHEME` (параметр 2); другой хеш — `TPM_RC_HASH`. Seed credential и дубликата защищается OAEP с хешем `nameAlg` Storage key.
+- **`TPM2_VerifySignature`** сверяет с фиксированной схемой ключа алгоритм схемы, не хеш (прежнее поведение, не менялось).
+- **`MAX_PRIVATE` = 768** (было 512). Размер контейнера `TPM2B_PRIVATE` (integrity, IV и зашифрованный `TPM2B_SENSITIVE`) для RSA-3072 с SHA-512 равен 606 октетам (`sizeof(_PRIVATE)` эталона больше): 768 — наш нижний предел разбора. Дубликат RSA-3072 с SHA-512 занимает около 470 октетов.
+- **Не сверено.** `TPM2_RSA_Encrypt` с сообщением длиннее модуля: `TPM_RC_SIZE`, у эталона `TPM_RC_VALUE` (NOT VERIFIED, пункт 61 списка выше).
+- Тесты: `crates/od-tpm/src/tests_rsa3072.rs`; внешние эталоны (`openssl`) отмечены в заголовке файла.
+
+## Фаза B, срез 3: ORDERLY-счётчики, PIN_FAIL/PIN_PASS и свойства TPM_PT таблицы 2 (S7-23)
+
+- **ORDERLY.** `TPMA_NV_ORDERLY` допустим только у `TPM_NT_COUNTER`; у индекса другого типа `DefineSpace` отвечает `TPM_RC_ATTRIBUTES`. Текущее значение живёт в данных индекса (RAM), в NV (`NvIndex::saved`) оно попадает при первом приращении (переход в `WRITTEN`), при каждом 255-м приращении (`MAX_ORDERLY_COUNT`), при `Shutdown(CLEAR)`/`Shutdown(STATE)` и при каждом приращении после `Shutdown` до следующего `Startup` (сквозная запись, аналог `g_clearOrderly` эталона: такой снимок `Startup` читает как упорядоченный и 255 не прибавляет, поэтому значение только в RAM откатило бы счётчик к значению `Shutdown`). Snapshot хранит значение NV. Снимок без `Shutdown` (путь без `Shutdown`) откатывает счётчик к значению NV, а `Startup` после такого неупорядоченного завершения прибавляет к восстановленному значению 255 и поднимает наибольшее значение счётчиков (`counter_max`), так что счётчик не повторяет сообщённое значение. После `Shutdown` восстановленное значение не меньше последнего сообщённого. `Startup(CLEAR)` ORDERLY-счётчик не сбрасывает; упорядоченное `Shutdown` и `Startup` значение сохраняют. Версия snapshot не меняется (v8): ORDERLY и PIN — биты уже хранимых атрибутов, данные ORDERLY-счётчика — значение NV; снимок v8 прежних сборок читается как раньше (ни ORDERLY, ни PIN нет), снимок с ORDERLY или PIN прежние сборки отклоняют (`BadField`).
+- **PIN.** `TPM_NT_PIN_FAIL` (0x8) и `TPM_NT_PIN_PASS` (0x9): 8 октетов, `pinCount` (PIN_FAIL) или `passCount` (PIN_PASS) и `pinLimit`, оба u32 big-endian. `TPM2_NV_Write` пишет все 8 октетов целиком (частичная запись — `TPM_RC_NV_RANGE`). PIN_FAIL требует `TPMA_NV_NO_DA` (иначе `TPM_RC_ATTRIBUTES`), чтобы неверный PIN не считался ещё и в блокировке DA. Пока индекс записан (`WRITTEN`), авторизация, доказывающая `authValue` индекса (пароль, HMAC или политика с `PolicyAuthValue`/`PolicyPassword`: `NV_Read`, `NV_Write`, `PolicyNV` и др.), при счётчике, достигшем лимита, отклоняется `TPM_RC_LOCKOUT` (до проверки значения); неверное доказательство прибавляет 1 к `pinCount`, верное обнуляет его; верное доказательство прибавляет 1 к `passCount`. У PIN-индекса нет `TPMA_NV_AUTHWRITE` и `TPMA_NV_WRITEDEFINE`: `DefineSpace` (и загрузка snapshot) отклоняет их (`TPM_RC_ATTRIBUTES`), иначе тот, кто доказал PIN, переписал бы `passCount`/`pinCount` и лимит через `NV_Write`. Владелец (OWNER, PLATFORM или политика) может записать индекс заново и снять блокировку.
+- **Свойства Table 2.** Реальные значения: `NV_COUNTERS_MAX` = 128 (любой индекс может быть счётчиком, лимит — число индексов), `NV_COUNTERS` (число счётчиков), `NV_COUNTERS_AVAIL` (сколько счётчиков ещё можно определить: остаток слотов индексов и пула данных, уменьшается при `DefineSpace` счётчика), `ORDERLY_COUNT` = 255, `CONTEXT_HASH` = SHA-256, `CONTEXT_SYM` = AES, `CONTEXT_SYM_SIZE` = 128, `MAX_OBJECT_CONTEXT` = `MAX_SESSION_CONTEXT` = 2066 (наибольший `TPMS_CONTEXT`, который принимает `ContextLoad`: 8 + 4 + 4 + 2 + 2048), `LOADED_CURVES` = 1 (P-256, как в `TPM_CAP_ECC_CURVES`). Нулевые значения (отклонения, записаны): `CONTEXT_GAP_MAX` — контекстный пробел не отслеживается, `TPM_RC_CONTEXT_GAP` не существует (`context.rs`); `CLOCK_UPDATE` — `Clock` попадает в NV только со snapshot, который пишет host, интервала на стороне TPM нет (сверка интервала — открыта, ISSUE-529); `SPLIT_MAX` — нет `TPM2_Commit`; `MODES` — нет режима FIPS; `NV_WRITE_RECOVERY` — износ NV не моделируется, восстановления записи нет; `AUDIT_COUNTER_0`/`AUDIT_COUNTER_1` — нет `TPM2_SetCommandCodeAuditStatus`, команды не аудируются. `TPM_PT_MEMORY` и `TPM_PT_ALGORITHM_SET` не добавлены (не входили в срез).
+- Тесты: `crates/od-tpm/src/tests_nv_props.rs` (включая `sha256_golden_unchanged`: хеш ответов и двух snapshot фиксированного сценария без новых возможностей снят на коммите fbb4f38 до правок). Изменены ожидания трёх прежних тестов: PIN_PASS и ORDERLY у счётчика больше не отклоняются (`tests_b`, `tests_c3`), число переменных свойств после `LOCKOUT_COUNTER` выросло (`tests_c1`).
+
 ## Endorsement Key (S7-23)
 
 `od_tpm::ek::LowRangeEk` задаёт стандартные legacy-шаблоны L-1 (RSA-2048) и L-2 (ECC NIST P-256). Клиент передаёт полный `TPMT_PUBLIC` в `TPM2_CreatePrimary` для `TPM_RH_ENDORSEMENT` с пустым `inSensitive.data`. Оба EK — restricted decrypt, SHA-256 и AES-128-CFB. Поле `unique` во входном шаблоне заполнено нулями по таблицам L-1/L-2. Для использования созданного ключа как storage parent авторизующая сессия выполняет `PolicySecret(TPM_RH_ENDORSEMENT)` с пустым `policyRef` и `expiration = 0`, получая PolicyA. `TPM2_Clear` и смена авторизации Endorsement сохраняют EPS, поэтому тот же входной шаблон даёт тот же ключ, в том числе после восстановления снимка. [TCG EK Credential Profile 2.7 от 2026-03-16, §§2.2.2.4 и 5.3, таблицы 4 и 5](https://medias.cdn.trustedcomputinggroup.org/production/TCG_EK_Credential_Profile_for_TPM_Family_2_0_Level_0_Version_2_7_Pub_cafa3d55b0.pdf).
@@ -1131,7 +1148,7 @@ EFI TCG2 определяет поддержку по `CapCRBChunk` и объя�
 
 Фаза A держала каркас persistent state. Срез C1 ввёл snapshot v2, C3 добавил v3 с NV-счётчиками, а v4 хранит политики постоянных иерархий. Действует разделение persistent и volatile state из ADR-0009, решение 5.
 
-- **Persistent (в snapshot v4):** три seed'а иерархий (platform, owner/storage, endorsement; по 32 октета, генерируются DRBG от энтропии владельца), база `Clock` (мс), `resetCount`, `restartCount`, флаг «последнее завершение работы упорядоченное», `ownerAuth`, `endorsementAuth`, `lockoutAuth`, политики Owner, Endorsement и Lockout, флаги `AuthSet` и `disableClear`, состояние DA, NV-индексы (ordinary, counter, bit field, extend) и наибольшее значение NV-счётчика (срез C3), persistent-объекты (срез C1).
+- **Persistent (в snapshot v4):** три seed'а иерархий (platform, owner/storage, endorsement; по 32 октета, генерируются DRBG от энтропии владельца), база `Clock` (мс), `resetCount`, `restartCount`, флаг «последнее завершение работы упорядоченное», `ownerAuth`, `endorsementAuth`, `lockoutAuth`, политики Owner, Endorsement и Lockout, флаги `AuthSet` и `disableClear`, состояние DA, NV-индексы (ordinary, counter, bit field, extend, PIN_FAIL, PIN_PASS; у ORDERLY-счётчика — значение NV, срез 3) и наибольшее значение NV-счётчика (срез C3), persistent-объекты (срез C1).
 - **Volatile:** значения PCR и `pcrUpdateCounter`, sequence-объекты, transient-объекты (срез B; сбрасываются `Startup`, `_TPM_Init`, `FlushContext`), HMAC-сессии, `platformAuth` и `platformPolicy`, enables иерархий, Null seed, признаки `started`/`failed`, состояние `Shutdown(STATE)` (PCR с `TPM_PT_PCR_SAVE` и volatile-блок иерархий), DRBG, `Time`.
 - **Volatile и не в snapshot, хотя похоже на постоянное:** `platformAuth` (Part 3, 9.3.1: на TPM Reset — Empty Buffer), таймеры DA (непрерывное питание). После `restore` TPM в состоянии после `_TPM_Init`: первая команда — `Startup`.
 - **`Startup`/`Shutdown` (Part 3, 9.3.1):** *Reset* — `Startup(CLEAR)` после `Shutdown(CLEAR)` или без `Shutdown` (`resetCount` + 1, `restartCount` = 0); *Restart* — `Startup(CLEAR)` после `Shutdown(STATE)` (`restartCount` + 1, PCR в начальных значениях); *Resume* — `Startup(STATE)` после `Shutdown(STATE)` (`restartCount` + 1, PCR 0–15 восстановлены, остальные в начальных значениях). Все transient-объекты (здесь — sequence) сбрасываются на любом `Startup`. Сохранённое `Shutdown(STATE)` состояние живёт в объекте `Tpm` и **в snapshot не входит**; после перезапуска процесса `Startup(STATE)` вернёт `TPM_RC_VALUE`.
@@ -1266,9 +1283,9 @@ host через отдельный HMAC_DRBG с собственной стро�
 23. `TPM_RC_AUTH_UNAVAILABLE` для авторизации объекта без приватной части (external) и для объекта с `userWithAuth` CLEAR: код есть в Table 20 (Part 3 использует его для `ActivateCredential`), применение к `Sign`/`Unseal`/`Create` — выбор реализации.
 24. `TPM_RC_VALUE` (параметр 1) для непустого `inPrivate` в `LoadExternal`: загрузка sensitive-области не реализована; `TPM_RC_TYPE` для `LoadExternal` объекта keyed hash; `TPM_RC_HIERARCHY` (параметр 3) при `LoadExternal` в выключенную иерархию; `TPM_RC_HASH` для `nameAlg` NULL в `LoadExternal` (текст допускает такой объект без Name; не поддержано).
 25. Qualified Name: вход хеша `nameAlg ‖ H(QN родителя ‖ Name)`, обе величины с префиксом `nameAlg` (формула Part 1, 24.5 не говорит, включается ли префикс); для primary родитель — четыре октета handle иерархии (так сказано), Qualified Name внешнего объекта — его Name (так сказано).
-26. Входы хешей: `creationHash` — SHA-256 по маршалированной `TPMS_CREATION_DATA` без размера; Name в тикете — буфер Name без размера (Part 2, 10.7.3: «name»); `pcrDigest` — SHA-256 по значениям выбранных PCR в порядке индексов (пустой при пустом выборе; Part 1, 25.4 говорит только «hashed according to the creation data algorithm»).
+26. Входы хешей: `creationHash` — SHA-256 по маршалированной `TPMS_CREATION_DATA` без размера; Name в тикете — буфер Name без размера (Part 2, 10.7.3: «name»); `pcrDigest` — хеш `nameAlg` создаваемого объекта по значениям выбранных PCR в порядке индексов (пустой при пустом выборе; Part 1, 25.4 говорит только «hashed according to the creation data algorithm»).
 27. Вывод proof-значений из seeds (Part 3, 24.6 разрешает; соответствие «второму HMAC с EPS» формулировки проверено только по смыслу), а также вывод primary-ключей (Part 1, 25.6.3: «vendor option»): наши метки KDFa `ODTPM-PRIMARY`, `ODTPM-PHPROOF`, `ODTPM-SHPROOF`, `ODTPM-EHPROOF` не стандартные.
-28. `outPrivate`: формат контейнера по формулам Part 1, 20.3–20.5, шифр — AES-128-CFB (п. 33; см. «Фаза B, срез B»); `TPM_RC_SIZE` для контейнера, не разбираемого до integrity; размер `TPM2B_PRIVATE` ≤ 512 октетов — предел реализации.
+28. `outPrivate`: формат контейнера по формулам Part 1, 20.3–20.5, шифр — AES-128-CFB (п. 33; см. «Фаза B, срез B»); `TPM_RC_SIZE` для контейнера, не разбираемого до integrity; размер `TPM2B_PRIVATE` ≤ 768 октетов (`MAX_PRIVATE`, поднят с 512 в срезе 2а) — предел реализации.
 29. `Sign`: `TPM_RC_SIZE` (параметр 1) для дайджеста не 32 октета (текст: размер должен совпадать с хешем схемы; код не назван); `TPM_RC_KEY` для не-signing ключа (так сказано); `TPM_RC_SCHEME` (параметр 2) для схемы ECC-подписи NULL при ключе без схемы.
 30. `VerifySignature`: `TPM_RC_SCHEME` для подписи другого типа, чем ключ (в т. ч. `sigAlg` NULL), `TPM_RC_KEY` для ключа без `sign`, `TPM_RC_SIZE` для неверного размера дайджеста; `TPM_RC_SIGNATURE` без номера параметра (так сказано).
 31. `EvictControl`: номера handle/параметра в `TPM_RC_ATTRIBUTES`, `TPM_RC_HIERARCHY`, `TPM_RC_RANGE`, `TPM_RC_HANDLE` (сами коды и порядок — Part 3, 28.5.1); `TPM_RC_NV_SPACE` при заполнении 16 persistent-слотов (ёмкость — выбор реализации); отсутствие проверки stClear у предков (проверяется только сам объект).
@@ -1278,7 +1295,7 @@ host через отдельный HMAC_DRBG с собственной стро�
 
 Срез C1 фазы B (S7-23), пометки `NOT VERIFIED` в `asym.rs`, `da.rs`, `snapshot.rs`, `crypto.rs`, `capability.rs`, `dispatch.rs`:
 
-35. Коды ответа `RSA_Encrypt`/`RSA_Decrypt`/`ECDH_ZGen`, которых нет в открытом тексте Part 2/3 v184 (Part 4 недоступна): номера параметров и handle у `TPM_RC_VALUE` (параметр 1 — сообщение/шифртекст, 2 — неизвестный селектор `inScheme`, 3 — метка без нулевого октета), `TPM_RC_SCHEME` (параметр 2; handle 1 для схемы ключа ECDH), `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` (handle 1), `TPM_RC_ECC_POINT` (параметр 1), `TPM_RC_SIZE`/`TPM_RC_INSUFFICIENT` для искажённой `TPM2B_ECC_POINT`; `TPM_RC_HASH` (параметр 2) для OAEP с хешем не SHA-256, включая NULL (текст: «may not be TPM_ALG_NULL», код не назван); `TPM_RC_SCHEME` для RSA-ключа со схемой подписи (таблица 42 такого случая не описывает); `TPM_RC_VALUE` для любого отказа приватной операции, включая невозможность получить случайные байты.
+35. Коды ответа `RSA_Encrypt`/`RSA_Decrypt`/`ECDH_ZGen`, которых нет в открытом тексте Part 2/3 v184 (Part 4 недоступна): номера параметров и handle у `TPM_RC_VALUE` (параметр 1 — сообщение/шифртекст, 2 — неизвестный селектор `inScheme`, 3 — метка без нулевого октета), `TPM_RC_SCHEME` (параметр 2; handle 1 для схемы ключа ECDH), `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` (handle 1), `TPM_RC_ECC_POINT` (параметр 1), `TPM_RC_SIZE`/`TPM_RC_INSUFFICIENT` для искажённой `TPM2B_ECC_POINT`; `TPM_RC_HASH` (параметр 2) для OAEP с хешем не из SHA-256, SHA-384, SHA-512, включая NULL (текст: «may not be TPM_ALG_NULL», код не назван); `TPM_RC_SCHEME` для RSA-ключа со схемой подписи (таблица 42 такого случая не описывает); `TPM_RC_VALUE` для любого отказа приватной операции, включая невозможность получить случайные байты.
 36. RSAES-расшифровка использует implicit rejection `rsa` (отклонение от Part 3, 14.3.1; см. «Фаза B, срез C1»).
 37. Биты `TPMA_ALGORITHM` для RSAES («A E»), OAEP («A E H»), ECDH («A M») — по колонке типов Part 2, Table 11; сами таблицы битов не сверялись с v185.
 38. DA: объекты платформенной иерархии и индексы `PLATFORMCREATE` исключены целиком, включая подсчёт неудач (Part 3, 25.1 говорит о блокировке; о счёте — только Part 1, 11.7 «generally not applied»).
@@ -1300,7 +1317,7 @@ host через отдельный HMAC_DRBG с собственной стро�
 48. Контексты: собственные метки `ODTPM-NULLPROOF`, `ODTPM-CTXRESET` и `ODTPM-CTXENC`; раскладка тела контекста объекта и сессии и порядок полей — наши (текст оставляет вендору); AES-128-CFB и SHA-256 как «vendor» алгоритмы (`TPM_PT_CONTEXT_HASH` и `TPM_PT_CONTEXT_SYM*` в `GetCapability` не перечисляются); `sequence` в KDFa и HMAC — 8 октетов big-endian, `handle` — 4; `clearCount` — отдельный счётчик (растёт на Restart, не на Resume), его хранение в `ContextState` и обнуление на Reset — наша раскладка (текст требует лишь «incremented on each TPM Restart» и потерю `stClear`-контекстов при `Startup(CLEAR)`; точный текст Part 1 v184 здесь не открывался заново — NOT VERIFIED); коды `TPM_RC_VALUE` (handle 1) для handle, который нельзя сохранить, `TPM_RC_HANDLE` (handle 1) для незагруженной сессии, `TPM_RC_HANDLE` (параметр 1) для не сохранённой, устаревшей или уже загруженной сессии (текст называет только `TPM_RC_INTEGRITY` и `TPM_RC_HIERARCHY`), `TPM_RC_VALUE` (параметр 1) для неизвестных `savedHandle` и `hierarchy` и для `sequence` объекта больше выданных, `TPM_RC_SIZE` (параметр 1) для блоба без ciphertext, `TPM_RC_OBJECT_MEMORY` вместо `TPM_RC_MEMORY`; `TPM_RC_FAILURE` и `failed` при несовпадении внутреннего sequence и разбора тела после верной integrity; сохранённая сессия занимает слот, поэтому `TPM_RC_SESSION_HANDLES` наступает от суммы загруженных и сохранённых.
 49. Время жизни состояния контекстов: счётчики и записи сохранённых сессий сбрасываются на TPM Reset и `_TPM_Init` без `Shutdown(STATE)`, сохраняются Restart и Resume (в состоянии `Shutdown(STATE)`), в snapshot не входят; `resetValue` и `nullProof` выводятся из Null seed (он новый на каждый Reset, п. 18).
 50. `TPM2_HMAC` и keyed-hash: коды `TPM_RC_KEY`/`TPM_RC_TYPE`/`TPM_RC_ATTRIBUTES` (порядок и номер handle), `TPM_RC_HASH` (параметр 2) для неподдерживаемого `hashAlg`, `TPM_RC_VALUE` (параметр 2) для выбора хеша (Table 75); `TPM_RC_ATTRIBUTES`/`TPM_RC_SCHEME` для шаблонов keyed hash (XOR, restricted, схема у sealed data); размер сгенерированного ключа (32 октета) и предел ключа от вызывающего (128); `TPMA_ALGORITHM` для `TPM_ALG_HMAC` (hash + signing по колонке «H K X» Part 2, Table 11; значение `K` не расшифровано).
-51. Аттестация: коды `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` (handle n) для не-signing и `x509sign` ключей, `TPM_RC_SCHEME` (параметр 2) для схем, не подходящих к ключу, `TPM_RC_SIZE` для `qualifyingData` выше `TPM2B_DATA`; `firmwareVersion` = `TPM_PT_FIRMWARE_VERSION_1 << 32 | _2`; раскладка обфускации (октеты 0–7, 8–11, 12–15) и обрезка 128 бит; `pcrDigest` пустого выбора (SHA-256 пустой строки); `qualifiedSigner` — Qualified Name ключа (для ключа с анонимной схемой текст требует без него: анонимные схемы не реализованы).
+51. Аттестация: коды `TPM_RC_KEY`/`TPM_RC_ATTRIBUTES` (handle n) для не-signing и `x509sign` ключей, `TPM_RC_SCHEME` (параметр 2) для схем, не подходящих к ключу, `TPM_RC_SIZE` для `qualifyingData` выше `TPM2B_DATA`; `firmwareVersion` = `TPM_PT_FIRMWARE_VERSION_1 << 32 | _2`; раскладка обфускации (октеты 0–7, 8–11, 12–15) и обрезка 128 бит; `pcrDigest` квоты — хеш схемы подписи ключа (Part 3, 18.4.1; эталон `Quote.c`: `PCRComputeCurrentDigest` с `hashAlg` схемы после `CryptSelectSignScheme`: SHA-256, SHA-384 или SHA-512; для `TPM_RH_NULL` — хеш `inScheme`, при NULL-схеме SHA-256), для пустого выбора — дайджест пустой строки тем же хешем (эталон хеширует и пустой набор); `qualifiedSigner` — Qualified Name ключа (для ключа с анонимной схемой текст требует без него: анонимные схемы не реализованы). Для `RH_NULL` с inScheme `pcrDigest` берётся по хешу inScheme — выбор проекта; поведение эталона при NULL-схеме не сверено (NOT VERIFIED).
 52. `TPM_CAP_HANDLES` для сессий: загруженные политические сессии под типом `0x03`, сохранённые под типом `0x02` (Part 3, 30.2); `TPM_PT_HR_LOADED`/`HR_LOADED_AVAIL` учитывают сохранённые сессии как занятые слоты (`HR_ACTIVE` — тоже).
 
 Срез C3 фазы B (S7-23), пометки `NOT VERIFIED` в `nv.rs`, `attest.rs`, `paramenc.rs`, `dispatch.rs`, `capability.rs`, `policy.rs`, `snapshot.rs`:
@@ -1312,6 +1329,11 @@ host через отдельный HMAC_DRBG с собственной стро�
 57. Шифрование параметров: `TPM_RC_ATTRIBUTES` (номер сессии) для `decrypt`/`encrypt` у команды без размерного первого параметра (ответа) и для второй сессии с тем же атрибутом (текст даёт правила, не код); списки команд `decrypt`/`encrypt` — выведены из таблиц команд Part 3 (первый параметр — `TPM2B_*`), `TPM2_StartAuthSession` исключена; `TPM_RC_KEY_SIZE` (AES не 128) и `TPM_RC_HASH` (хеш XOR не SHA-256) у `StartAuthSession`, `TPM_RC_MODE` для режима не CFB — по Part 3, 11.1.1; в `sessionValue` `authValue` без хвостовых нулей; атрибуты в ответе сессии повторяют присланные (в том числе `decrypt` и `encrypt`); `sessionValue` для policy-сессии включает `authValue` без `PolicyAuthValue` (Part 1, 19.1); TPM_ALG_XOR в `TPM_CAP_ALGS` с битами hash+symmetric (по колонке типов Table 11).
 58. `PolicySecret` с `expiration` ≠ 0 не реализован (`TPM_RC_VALUE`, параметр 4): значения `timeout`, `timeEpoch`, `resetCount` в тексте implementation-specific, ticket без `PolicyTicket` не используется.
 59. Шифрование ответа: `sessionValue` берёт `authValue` сущности, как он есть ПОСЛЕ выполнения команды (так же, как HMAC ответа); текст Part 1, 19.1 момент снятия `authValue` для ответа не называет (NOT VERIFIED). Команды, меняющие auth авторизующего handle (`HierarchyChangeAuth`, `NV_ChangeAuth`), параметров ответа не возвращают, а `ObjectChangeAuth` не меняет auth загруженного объекта (меняется только возвращаемый `outPrivate`), поэтому порядок в результате не проявляется; теста нет.
+60. Срез 2а (RSA-3072, RSAPSS, OAEP с SHA-384/SHA-512), пометки в `crypto.rs`, `asym.rs`, `object.rs`: подпись RSAPSS делается с солью длиной в дайджест (Part 1, Annex B.7; генерация), а проверка принимает любую допустимую длину соли — как эталон (`PssDecode` в `CryptRsa.c` ms-tpm-20-ref находит разделитель `0x01` после нулевого заполнения и берёт остаток блока за соль). Это выбор проекта и отклонение от строгого чтения спецификации; текст Annex B.7 недоступен, проверка сверена по коду эталона; подписи, сделанные `openssl` с солью 0, 20 и максимальной (350 октетов для RSA-3072/SHA-256), принимаются (`rsapss_verify_accepts_any_salt_length_but_refuses_corrupted_sig`).
+61. `TPM2_RSA_Encrypt` для сообщения длиннее модуля ключа: у нас `TPM_RC_SIZE` (параметр 1), у эталонной реализации `TPM_RC_VALUE`; код по тексту Part 3/4 не сверен.
+62. ORDERLY (срез 3): значение 255 у `TPM_PT_ORDERLY_COUNT`, правило «записать в NV при первом и каждом 255-м приращении, при неупорядоченном `Startup` прибавить 255» и ограничение `ORDERLY` типом counter — выбор реализации; по тексту Part 2/3 не сверены (VTPM.md текста об ORDERLY не содержал).
+63. PIN_FAIL и PIN_PASS (срез 3): расположение полей, требование `NO_DA` у PIN_FAIL, обнуление `pinCount` при успехе, прирост `passCount`, `TPM_RC_LOCKOUT` у лимита и целая запись 8 октетов — минимум плана среза, по Part 3 (31.3.1, 31.7) и Part 2 (Table 231) не сверены.
+64. Нулевые значения означают «не поддерживается/не отслеживается», а не «всегда актуально»: `CONTEXT_GAP_MAX` = 0 (разрыв контекстов не отслеживается), `CLOCK_UPDATE` = 0 (интервал фиксации NV не моделируется). Значения `TPM_PT_CLOCK_UPDATE`, `CONTEXT_GAP_MAX`, `SPLIT_MAX`, `MODES`, `NV_WRITE_RECOVERY`, `AUDIT_COUNTER_0/1` (все 0), `MAX_OBJECT_CONTEXT`/`MAX_SESSION_CONTEXT` (2066) и `NV_COUNTERS_MAX` (128) — по факту реализации, смысл и допустимые значения по Part 2 (Table 23) и PTP Table 2 не сверены.
 
 ### Отклонения от PTP 1.07 и плана (записаны, не скрыты)
 
@@ -1321,6 +1343,7 @@ host через отдельный HMAC_DRBG с собственной стро�
 - `TPM_CAP_TPM_PROPERTIES` перечисляет только свойства реализованных возможностей (PTP 4.2, п. 2 требует все определённые); свойства сессий, NV, контекстов, DA, audit, persistent-объектов и атрибутов иерархий появятся с фазой B. `TPM_PT_HR_TRANSIENT_MIN` = 3 — это число sequence-слотов.
 - `TPM_PT_MAX_COMMAND_SIZE` = `TPM_PT_MAX_RESPONSE_SIZE` = 8192 (размер целого кадра, ADR-0009, решение 4), `TPM_PT_INPUT_BUFFER` = 1024, `TPM_PT_MAX_DIGEST` = 64 (с hash agility, шаги A–B), `TPM_PT_MAX_CAP_BUFFER` = 1024. Расхождение до шага C: `TPM_PT_MAX_DIGEST` = 64, а `TPM2B_DIGEST` в остальных командах (auth, `HashSequenceStart`, `PolicyPCR`, `Sign`/`VerifySignature` и др.) по-прежнему ограничен 32 октетами; единая граница 64 — шаг C.
 - Минимальные значения PTP Table 2 для сессий, persistent-объектов, NV (`TPM_PT_HR_*_MIN`, `TPM_PT_NV_*`) в фазе A не заявляются: этих возможностей нет.
+- Срез 3: перечислены `NV_COUNTERS_MAX`, `NV_COUNTERS`, `NV_COUNTERS_AVAIL`, `ORDERLY_COUNT`, `CONTEXT_*`, `MAX_OBJECT_CONTEXT`, `MAX_SESSION_CONTEXT`, `LOADED_CURVES`. Со значением 0 как отклонение: `CONTEXT_GAP_MAX` (контекстный пробел не отслеживается), `CLOCK_UPDATE`, `SPLIT_MAX`, `MODES`, `NV_WRITE_RECOVERY`, `AUDIT_COUNTER_0/1`. Не перечислены `TPM_PT_MEMORY` и `TPM_PT_ALGORITHM_SET`.
 - Криптозависимости: обязательство S7-21 выполнено в срезе A S7-23 — HMAC-SHA-256 для DRBG теперь крейт `hmac =0.13.0` (`crypto.rs`; версии не было в офлайн-кеше, получена `cargo fetch`), самописный HMAC удалён, векторы RFC 4231 (случаи 1, 2, 6) и DRBG проходят с прежними значениями; записано в [DEPENDENCIES.md](../policies/DEPENDENCIES.md). `zeroize =1.9.1` (транзитивный по ADR) подключён напрямую для стирания секретов, со срезом A — с feature `alloc` (стирание `Vec<u8>`).
 - Срез A: `TPM2_NV_WriteLock` и `TPM2_NV_ReadLock` реализованы сверх списка плана (иначе `WRITELOCKED`/`READLOCKED` недостижимы); в `TPM_CAP_TPM_PROPERTIES` по-прежнему нет свойств контекстов, DA, audit, persistent-объектов и NV-счётчиков; PTP 1.07 Table 12 допускает неподдержку `GLOBALLOCK`, `ORDERLY`, `CLEAR_STCLEAR`, `READ_STCLEAR`: первые три refused (`TPM_RC_ATTRIBUTES`), `READ_STCLEAR` поддержан; `TPM2_PCR_Allocate` по-прежнему отказ.
 

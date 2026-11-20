@@ -1,7 +1,8 @@
 //! Primitives of the vTPM over the RustCrypto crates `hmac`, `sha2`, `rsa` and `p256` (ADR-0009,
 //! decision 2): SHA-256/384/512 digests, HMAC and KDFa over them ([`HashAlg`]), a constant-time
-//! HMAC check, and (slice B of phase B) RSA-2048 PKCS#1 v1.5 (any of the three hashes) and ECC
-//! P-256 ECDSA key generation, signing and verification.
+//! HMAC check, and (slice B of phase B) RSA-2048 and RSA-3072 (PKCS#1 v1.5 and PSS signatures with any
+//! of the three hashes, OAEP with any of the three) and ECC P-256 ECDSA key generation, signing and
+//! verification.
 //!
 //! The protocol-level constructions (KDFa, session HMACs, the DRBG that uses them) stay in this
 //! crate; only the primitives come from the libraries. No function here logs or prints a key.
@@ -21,6 +22,7 @@ use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use rsa::rand_core::{TryCryptoRng, TryRng};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BoxedUint, Oaep, Pkcs1v15Encrypt, Pkcs1v15Sign};
+use sha2::digest::FixedOutputReset;
 use sha2::digest::block_api::EagerHash;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use zeroize::Zeroizing;
@@ -307,15 +309,20 @@ impl TryRng for DrbgRng<'_> {
 
 impl TryCryptoRng for DrbgRng<'_> {}
 
-/// An RSA-2048 private key (two primes, exponent 65537).
+/// An RSA private key of 2048 or 3072 bits (two primes, exponent 65537).
 pub(crate) type RsaPrivate = rsa::PrivateKey;
 /// An ECC P-256 private key.
 pub(crate) type EccPrivate = p256::ecdsa::SigningKey;
 
 /// Bytes of an RSA-2048 modulus.
-const RSA_BYTES: usize = 256;
-/// Bytes of one RSA prime.
-const PRIME_BYTES: usize = RSA_BYTES / 2;
+const RSA_2048_BYTES: usize = 256;
+/// Bytes of an RSA-3072 modulus (the largest key of the profile, `MAX_RSA_KEY_BYTES`).
+const RSA_3072_BYTES: usize = 384;
+
+/// `true` for a modulus size of the profile: 2048 or 3072 bits.
+pub(crate) fn supported_rsa_key_bits(bits: u16) -> bool {
+    matches!(bits, 2048 | 3072)
+}
 /// Public exponent of RSA keys supported by the virtual TPM.
 pub(crate) const RSA_EXPONENT: u32 = 65_537;
 
@@ -323,32 +330,38 @@ pub(crate) fn supported_rsa_exponent(encoded: u32) -> bool {
     matches!(encoded, 0 | RSA_EXPONENT)
 }
 
-/// Generates an RSA-2048 key (public exponent 65537) from `rng`. The result is a function of the
-/// bytes the generator yields, so a generator seeded identically gives the same key (primary
-/// objects); the prime search is that of `rsa`/`crypto-primes` at the pinned versions.
-pub(crate) fn rsa_generate(rng: &mut Drbg) -> Option<RsaPrivate> {
-    RsaPrivate::new(&mut DrbgRng(rng), 2048).ok()
+/// Generates an RSA key of `bits` (2048 or 3072; public exponent 65537) from `rng`. The result is a
+/// function of the bytes the generator yields, so a generator seeded identically gives the same key
+/// (primary objects); the prime search is that of `rsa`/`crypto-primes` at the pinned versions.
+pub(crate) fn rsa_generate(rng: &mut Drbg, bits: u16) -> Option<RsaPrivate> {
+    if !supported_rsa_key_bits(bits) {
+        return None;
+    }
+    RsaPrivate::new(&mut DrbgRng(rng), usize::from(bits)).ok()
 }
 
-/// `n` as 256 big-endian octets.
+/// `n` as big-endian octets (256 for RSA-2048, 384 for RSA-3072).
 pub(crate) fn rsa_modulus(key: &RsaPrivate) -> Vec<u8> {
     key.n_bytes().to_vec()
 }
 
-/// The two primes of the key, `p || q`, 128 octets each; wiped on drop.
+/// The two primes of the key, `p || q`, half the modulus size each (128 octets for RSA-2048, 192 for
+/// RSA-3072); wiped on drop.
 pub(crate) fn rsa_primes(key: &RsaPrivate) -> Option<Zeroizing<Vec<u8>>> {
     let primes = key.primes();
     if primes.len() != 2 {
         return None;
     }
-    let mut out = Zeroizing::new(Vec::with_capacity(RSA_BYTES));
+    let modulus_bytes = key.n_bytes().len();
+    let prime_bytes = modulus_bytes / 2;
+    let mut out = Zeroizing::new(Vec::with_capacity(modulus_bytes));
     for p in primes {
         let b = p.to_be_bytes();
-        // Left-pad to the fixed width (both primes have 1024 bits, so no padding occurs).
-        if b.len() > PRIME_BYTES {
+        // Left-pad to the fixed width (both primes have half the modulus bits, so no padding occurs).
+        if b.len() > prime_bytes {
             return None;
         }
-        let pad = out.len() + PRIME_BYTES - b.len();
+        let pad = out.len() + prime_bytes - b.len();
         out.resize(pad, 0);
         out.extend_from_slice(&b);
     }
@@ -358,11 +371,13 @@ pub(crate) fn rsa_primes(key: &RsaPrivate) -> Option<Zeroizing<Vec<u8>>> {
 /// Rebuilds the key for the profile's fixed exponent from `p || q` and checks the public
 /// modulus `n`. The caller must validate the encoded public exponent separately.
 pub(crate) fn rsa_from_primes(pq: &[u8], n: &[u8]) -> Option<RsaPrivate> {
-    if pq.len() != RSA_BYTES || n.len() != RSA_BYTES {
+    if !matches!(n.len(), RSA_2048_BYTES | RSA_3072_BYTES) || pq.len() != n.len() {
         return None;
     }
-    let p = BoxedUint::from_be_slice(&pq[..PRIME_BYTES], 1024).ok()?;
-    let q = BoxedUint::from_be_slice(&pq[PRIME_BYTES..], 1024).ok()?;
+    let prime_bytes = n.len() / 2;
+    let prime_bits = (prime_bytes * 8) as u32;
+    let p = BoxedUint::from_be_slice(&pq[..prime_bytes], prime_bits).ok()?;
+    let q = BoxedUint::from_be_slice(&pq[prime_bytes..], prime_bits).ok()?;
     let key = RsaPrivate::from_p_q(p, q, BoxedUint::from(u64::from(RSA_EXPONENT))).ok()?;
     (key.n_bytes().as_ref() == n).then_some(key)
 }
@@ -370,25 +385,31 @@ pub(crate) fn rsa_from_primes(pq: &[u8], n: &[u8]) -> Option<RsaPrivate> {
 /// TPM duplication carries a single RSA prime. Derive the other from the public
 /// modulus and validate the factors before handing them to the private-key codec.
 pub(crate) fn rsa_from_one_prime(prime: &[u8], modulus: &[u8]) -> Option<RsaPrivate> {
-    if prime.len() != PRIME_BYTES || modulus.len() != RSA_BYTES || modulus[0] & 0x80 == 0 {
+    if !matches!(modulus.len(), RSA_2048_BYTES | RSA_3072_BYTES)
+        || prime.len() != modulus.len() / 2
+        || modulus[0] & 0x80 == 0
+    {
         return None;
     }
-    let modulus_value = BoxedUint::from_be_slice(modulus, 2048).ok()?;
-    let prime_value = Zeroizing::new(BoxedUint::from_be_slice(prime, 2048).ok()?);
+    let modulus_bits = (modulus.len() * 8) as u32;
+    let prime_bits = modulus_bits / 2;
+    let modulus_value = BoxedUint::from_be_slice(modulus, modulus_bits).ok()?;
+    let prime_value = Zeroizing::new(BoxedUint::from_be_slice(prime, modulus_bits).ok()?);
     let other = Zeroizing::new(modulus_value.checked_div(&*prime_value).into_option()?);
     // Both factors must have squares with the same bit length as the modulus
-    // (TPM Library v185 Part 1 §43.1). Both 1024-bit inputs fit the 2048-bit square.
+    // (TPM Library v185 Part 1 §43.1). Both half-size inputs fit the full-size square.
     // rsa_from_primes also checks the exact product.
-    if other.bit_width() != 1024
-        || Zeroizing::new(prime_value.wrapping_square()).bit_width() != 2048
-        || Zeroizing::new(other.wrapping_square()).bit_width() != 2048
+    if other.bit_width() != prime_bits
+        || Zeroizing::new(prime_value.wrapping_square()).bit_width() != modulus_bits
+        || Zeroizing::new(other.wrapping_square()).bit_width() != modulus_bits
     {
         return None;
     }
     let tail = Zeroizing::new(other.to_be_bytes());
-    let mut pair = Zeroizing::new(Vec::with_capacity(RSA_BYTES));
+    let prime_bytes = prime.len();
+    let mut pair = Zeroizing::new(Vec::with_capacity(modulus.len()));
     pair.extend_from_slice(prime);
-    pair.extend_from_slice(&tail[tail.len() - PRIME_BYTES..]);
+    pair.extend_from_slice(&tail[tail.len() - prime_bytes..]);
     rsa_from_primes(&pair, modulus)
 }
 
@@ -405,6 +426,25 @@ pub(crate) fn rsa_sign(
         HashAlg::Sha256 => key.pkcs1v15_sign_prehash_with_rng::<Sha256, _>(rng, digest),
         HashAlg::Sha384 => key.pkcs1v15_sign_prehash_with_rng::<Sha384, _>(rng, digest),
         HashAlg::Sha512 => key.pkcs1v15_sign_prehash_with_rng::<Sha512, _>(rng, digest),
+    }
+    .ok()
+}
+
+/// RSASSA-PSS (RFC 8017, 8.1.1) with `hash` and MGF1 of the same hash over `digest` (already a
+/// digest of that hash; `None` for another length). The salt is as long as the digest (Part 1,
+/// Annex B.7) and comes, with the blinding values, from the TPM DRBG. Private operation: see the
+/// ISSUE-064 note at the top of this module.
+pub(crate) fn rsa_sign_pss(
+    key: &RsaPrivate,
+    hash: HashAlg,
+    digest: &[u8],
+    rng: &mut Drbg,
+) -> Option<Vec<u8>> {
+    let rng = &mut DrbgRng(rng);
+    match hash {
+        HashAlg::Sha256 => key.pss_sign_prehash_with_rng::<Sha256, _>(rng, digest),
+        HashAlg::Sha384 => key.pss_sign_prehash_with_rng::<Sha384, _>(rng, digest),
+        HashAlg::Sha512 => key.pss_sign_prehash_with_rng::<Sha512, _>(rng, digest),
     }
     .ok()
 }
@@ -433,14 +473,59 @@ pub(crate) fn rsa_verify_hash(n: &[u8], hash: HashAlg, digest: &[u8], sig: &[u8]
     key.verify(scheme, digest, sig).is_ok()
 }
 
+/// Verifies an RSASSA-PSS signature over a `hash` digest with the public key `(n, 65537)`. The salt
+/// length is detected, not fixed: any salt length the encoding allows is accepted (0 up to the
+/// largest that fits), like the reference TPM, whose `PssDecode` (CryptRsa.c) finds the 0x01
+/// separator after the zero padding and takes the rest of the data block as the salt. Signing
+/// (`rsa_sign_pss`) still uses a salt as long as the digest (Part 1, Annex B.7).
+pub(crate) fn rsa_verify_pss(n: &[u8], hash: HashAlg, digest: &[u8], sig: &[u8]) -> bool {
+    let Some(key) = rsa_public_key(n) else {
+        return false;
+    };
+    let Ok(sig) = rsa::pss::Signature::try_from(sig) else {
+        return false;
+    };
+    match hash {
+        HashAlg::Sha256 => rsa::pss::VerifyingKey::<Sha256>::new_with_auto_salt_len(key)
+            .verify_prehash(digest, &sig),
+        HashAlg::Sha384 => rsa::pss::VerifyingKey::<Sha384>::new_with_auto_salt_len(key)
+            .verify_prehash(digest, &sig),
+        HashAlg::Sha512 => rsa::pss::VerifyingKey::<Sha512>::new_with_auto_salt_len(key)
+            .verify_prehash(digest, &sig),
+    }
+    .is_ok()
+}
+
 /// The padding of `TPM2_RSA_Encrypt` and `TPM2_RSA_Decrypt` (Part 3, Table 42): none (the
 /// message is an integer, raw RSA), RSAES-PKCS1-v1_5 and RSAES-OAEP (SHA-256 for the label and for
-/// MGF1, the only mask generation the text allows).
+/// MGF1, the only mask generation the text allows). `OaepWith` names another hash for the label
+/// and for MGF1 (the seed of a credential or a duplicate uses the `nameAlg` of the storage key,
+/// Part 1, clauses 24.4 and 24.5); `Oaep` is `OaepWith(Sha256)`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RsaPadding {
     None,
     Rsaes,
     Oaep,
+    OaepWith(HashAlg),
+}
+
+impl RsaPadding {
+    /// The hash of an OAEP padding, `None` for the other paddings.
+    fn oaep_hash(self) -> Option<HashAlg> {
+        match self {
+            RsaPadding::Oaep => Some(HashAlg::Sha256),
+            RsaPadding::OaepWith(hash) => Some(hash),
+            RsaPadding::None | RsaPadding::Rsaes => None,
+        }
+    }
+}
+
+fn oaep_scheme<D: Digest + FixedOutputReset>(label: &[u8]) -> Oaep<D> {
+    if label.is_empty() {
+        Oaep::<D>::new()
+    } else {
+        Oaep::<D>::new_with_label(label)
+    }
 }
 
 /// `TPM2_RSA_Encrypt` primitive with the public key `(n, 65537)`: `None` when the message does not
@@ -466,13 +551,14 @@ pub(crate) fn rsa_encrypt_public(
         RsaPadding::Rsaes => key
             .encrypt(&mut DrbgRng(rng), Pkcs1v15Encrypt, message)
             .ok(),
-        RsaPadding::Oaep => {
-            let scheme = if label.is_empty() {
-                Oaep::<Sha256>::new()
-            } else {
-                Oaep::<Sha256>::new_with_label(label)
-            };
-            key.encrypt(&mut DrbgRng(rng), scheme, message).ok()
+        RsaPadding::Oaep | RsaPadding::OaepWith(_) => {
+            let rng = &mut DrbgRng(rng);
+            match padding.oaep_hash()? {
+                HashAlg::Sha256 => key.encrypt(rng, oaep_scheme::<Sha256>(label), message),
+                HashAlg::Sha384 => key.encrypt(rng, oaep_scheme::<Sha384>(label), message),
+                HashAlg::Sha512 => key.encrypt(rng, oaep_scheme::<Sha512>(label), message),
+            }
+            .ok()
         }
     }
 }
@@ -491,7 +577,7 @@ pub(crate) fn rsa_decrypt_private(
 ) -> Option<Zeroizing<Vec<u8>>> {
     let out = match padding {
         RsaPadding::None => {
-            let c = BoxedUint::from_be_slice(ciphertext, RSA_BYTES as u32 * 8).ok()?;
+            let c = BoxedUint::from_be_slice(ciphertext, (key.n_bytes().len() * 8) as u32).ok()?;
             let m = rsa::hazmat::rsa_decrypt_and_check(key, Some(&mut DrbgRng(rng)), &c).ok()?;
             Zeroizing::new(Zeroizing::new(m).to_be_bytes().to_vec())
         }
@@ -499,16 +585,20 @@ pub(crate) fn rsa_decrypt_private(
             key.decrypt_blinded(&mut DrbgRng(rng), Pkcs1v15Encrypt, ciphertext)
                 .ok()?,
         ),
-        RsaPadding::Oaep => {
-            let scheme = if label.is_empty() {
-                Oaep::<Sha256>::new()
-            } else {
-                Oaep::<Sha256>::new_with_label(label)
+        RsaPadding::Oaep | RsaPadding::OaepWith(_) => {
+            let rng = &mut DrbgRng(rng);
+            let plain = match padding.oaep_hash()? {
+                HashAlg::Sha256 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha256>(label), ciphertext)
+                }
+                HashAlg::Sha384 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha384>(label), ciphertext)
+                }
+                HashAlg::Sha512 => {
+                    key.decrypt_blinded(rng, oaep_scheme::<Sha512>(label), ciphertext)
+                }
             };
-            Zeroizing::new(
-                key.decrypt_blinded(&mut DrbgRng(rng), scheme, ciphertext)
-                    .ok()?,
-            )
+            Zeroizing::new(plain.ok()?)
         }
     };
     Some(out)

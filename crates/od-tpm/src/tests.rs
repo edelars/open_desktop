@@ -21,16 +21,26 @@ mod tests_c2;
 mod tests_c3;
 #[path = "tests_ek.rs"]
 mod tests_ek;
+#[path = "tests_nv_props.rs"]
+mod tests_nv_props;
 #[path = "tests_obj.rs"]
 mod tests_obj;
+#[path = "tests_rsa3072.rs"]
+mod tests_rsa3072;
+#[path = "tests_salted.rs"]
+mod tests_salted;
 #[path = "tests_session_audit.rs"]
 mod tests_session_audit;
 #[path = "tests_sha2.rs"]
 mod tests_sha2;
+#[path = "tests_sha2_nv.rs"]
+mod tests_sha2_nv;
 #[path = "tests_sha2_policy.rs"]
 mod tests_sha2_policy;
 #[path = "tests_sha2_sessions.rs"]
 mod tests_sha2_sessions;
+#[path = "tests_sha2_sign.rs"]
+mod tests_sha2_sign;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
@@ -879,6 +889,10 @@ fn test_parms_accepts_supported_public_parameters_without_state_changes() {
         "0023000601000043001000030010",     // P-256 storage, AES-256-CFB.
         "000100100014000b080000010001",     // RSA-2048 RSASSA-SHA256, explicit exponent.
         "000100100017000b080000000000",     // RSA-2048 OAEP-SHA256.
+        "000100100014000b0c0000000000",     // RSA-3072 RSASSA-SHA256.
+        "000100100016000c0c0000000000",     // RSA-3072 RSAPSS-SHA384.
+        "000100100016000d080000000000",     // RSA-2048 RSAPSS-SHA512.
+        "000100100017000d0c0000000000",     // RSA-3072 OAEP-SHA512.
         "002300100018000b00030010",         // ECDSA-SHA256, NIST P-256, null KDF.
         "002300100019000b00030010",         // ECDH-SHA256, NIST P-256, null KDF.
         "00080005000b",                     // KEYEDHASH HMAC-SHA256.
@@ -900,9 +914,10 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
         ("0025", Rc::TYPE), // SYMCIPHER is outside the implemented profile.
         ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
-        ("000100100016000b080000000000", Rc::VALUE), // RSAPSS.
         ("0001001000140027080000000000", Rc::HASH), // SHA3-256 is not implemented.
-        ("000100100014000b0c0000000000", Rc::VALUE), // RSA-3072.
+        ("000100100014000b100000000000", Rc::VALUE), // RSA-4096.
+        ("000100100014000b040000000000", Rc::VALUE), // RSA-1024.
+        ("000100100014000b0c0100000000", Rc::VALUE), // 3073 key bits.
         ("000100100014000b080000000003", Rc::RANGE), // Unsupported exponent.
         ("002300100018000b00040010", Rc::CURVE), // NIST P-384.
         ("002300100018000b00030021", Rc::KDF), // Non-null KDF.
@@ -928,8 +943,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 16);
-    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 17);
+    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -948,6 +963,8 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x0D, 0, 0, 0, 4],
             &[0x00, 0x14, 0, 0, 1, 1],
             &[0x00, 0x15, 0, 0, 2, 1],
+            // RSAPSS "A X" (RSA-3072 slice).
+            &[0x00, 0x16, 0, 0, 1, 1],
             &[0x00, 0x17, 0, 0, 2, 5],
             &[0x00, 0x18, 0, 0, 1, 1],
             &[0x00, 0x19, 0, 0, 4, 1],
@@ -958,7 +975,7 @@ fn capability_algs_pcrs_and_handles() {
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 10);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 11);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 2);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
     assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);

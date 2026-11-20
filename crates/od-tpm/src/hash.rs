@@ -33,8 +33,8 @@ use crate::marshal::{
 };
 use crate::object::{Secret, find_object};
 use crate::object_cmd::{
-    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, require_sha256_signature,
-    sign_digest_output, verified_ticket_mac,
+    VerifiedTicket, check_signature_scheme, fixed_digest_scheme, sign_digest_output,
+    verified_ticket_mac,
 };
 use crate::pcr::{EventHash, resolve_pcr_handle};
 use crate::response::{Output, Rc};
@@ -159,10 +159,50 @@ impl MessagePrefix {
     }
 }
 
+/// The running hash of a sign or verify sequence: the hash of the signing scheme of the key
+/// (SHA-256, SHA-384 or SHA-512).
+#[derive(Clone)]
+enum SchemeDigest {
+    Sha256(Sha256),
+    Sha384(Sha384),
+    Sha512(Sha512),
+}
+
+impl SchemeDigest {
+    /// `None` for a hash that is not a signing hash.
+    fn new(hash: u16) -> Option<SchemeDigest> {
+        match hash {
+            alg::SHA256 => Some(Self::Sha256(Sha256::new())),
+            alg::SHA384 => Some(Self::Sha384(Sha384::new())),
+            alg::SHA512 => Some(Self::Sha512(Sha512::new())),
+            _ => None,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            Self::Sha256(hash) => hash.update(data),
+            Self::Sha384(hash) => hash.update(data),
+            Self::Sha512(hash) => hash.update(data),
+        }
+    }
+
+    /// The digest of everything so far and `data`, leaving the running state as it is.
+    fn finalize_with(&self, data: &[u8]) -> Vec<u8> {
+        let mut state = self.clone();
+        state.update(data);
+        match state {
+            Self::Sha256(hash) => hash.finalize().to_vec(),
+            Self::Sha384(hash) => hash.finalize().to_vec(),
+            Self::Sha512(hash) => hash.finalize().to_vec(),
+        }
+    }
+}
+
 pub(crate) struct SignSequence {
     key_name: Vec<u8>,
     scheme: Scheme,
-    digest: Sha256,
+    digest: SchemeDigest,
     prefix: MessagePrefix,
 }
 
@@ -181,7 +221,7 @@ struct MessageTicketState {
 pub(crate) struct VerifySequence {
     key_name: Vec<u8>,
     scheme: Scheme,
-    digest: Sha256,
+    digest: SchemeDigest,
     tickets: [MessageTicketState; VERIFIED_HIERARCHIES.len()],
 }
 
@@ -428,13 +468,11 @@ impl Tpm {
             return Err(Rc::ATTRIBUTES.in_handle(1));
         }
         let scheme = fixed_digest_scheme(key, 1)?;
-        if scheme.hash != alg::SHA256 {
-            return Err(Rc::SCHEME.in_handle(1));
-        }
+        let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
         let kind = SequenceKind::Sign(SignSequence {
             key_name: key.name.clone(),
             scheme,
-            digest: Sha256::new(),
+            digest,
             prefix: MessagePrefix::default(),
         });
         self.sequences.start(kind, auth)
@@ -456,9 +494,7 @@ impl Tpm {
         p.finish()?;
         let key = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
         let scheme = fixed_digest_scheme(key, 1)?;
-        if scheme.hash != alg::SHA256 {
-            return Err(Rc::SCHEME.in_handle(1));
-        }
+        let digest = SchemeDigest::new(scheme.hash).ok_or(Rc::SCHEME.in_handle(1))?;
         // Parallel accumulators preserve the raw-message transcript across key reloads. Their
         // size is independent of the number of SequenceUpdate calls and message length.
         let tickets = VERIFIED_HIERARCHIES.map(|hierarchy| {
@@ -473,7 +509,7 @@ impl Tpm {
         let kind = SequenceKind::Verify(Box::new(VerifySequence {
             key_name: key.name.clone(),
             scheme,
-            digest: Sha256::new(),
+            digest,
             tickets,
         }));
         self.sequences.start(kind, auth)
@@ -663,7 +699,7 @@ impl Tpm {
         if key.has(object_attr::RESTRICTED) && prefix.is_generated() {
             return Err(Rc::VALUE.in_param(1));
         }
-        let digest = sign.digest.clone().chain_update(data).finalize();
+        let digest = sign.digest.finalize_with(data);
         let result = sign_digest_output(key, &digest, sign.scheme, &mut self.drbg)?;
         self.sequences.release(slot);
         Ok(result)
@@ -677,8 +713,8 @@ impl Tpm {
     ) -> Result<Output, Rc> {
         let slot = self.seq_slot(inv.handles[0], 0)?;
         p.set_param(1);
+        // A hash outside SHA-256, SHA-384 and SHA-512 is `TPM_RC_HASH` for the signature here.
         let signature = TpmtSignature::unmarshal(p)?;
-        require_sha256_signature(&signature, 1)?;
         p.finish()?;
         let Some(Sequence {
             kind: SequenceKind::Verify(verify),
@@ -692,7 +728,7 @@ impl Tpm {
             return Err(Rc::SIGN_CONTEXT_KEY.in_handle(2));
         }
         check_signature_scheme(&signature, verify.scheme, 1)?;
-        let digest = verify.digest.clone().finalize();
+        let digest = verify.digest.finalize_with(&[]);
         if !key.verify_signature(&digest, &signature) {
             return Err(Rc::SIGNATURE);
         }

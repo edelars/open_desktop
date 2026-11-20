@@ -330,16 +330,10 @@ impl Pcrs {
         }
     }
 
-    /// SHA-256 over concatenated PCR values in selector order and PCR index order.
-    /// No values produces an absent creation digest.
-    pub(crate) fn selection_digest(&self, selection: &TpmlPcrSelection) -> Option<[u8; 32]> {
-        self.selection_digest_with(HashAlg::Sha256, selection)
-            .and_then(|digest| digest.as_slice().try_into().ok())
-    }
-
     /// The digest of the selected PCR values with the hash `alg` (the `authHash` of a policy
-    /// session for `TPM2_PolicyPCR`), in the same order as [`Pcrs::selection_digest`]. The values
-    /// come from the banks of the selection (SHA-256 or SHA-384), whatever `alg` is.
+    /// session for `TPM2_PolicyPCR`, the hash of the scheme for `TPM2_Quote`), over the values in
+    /// selector order and PCR index order; `None` when nothing is selected. The values come from
+    /// the banks of the selection (SHA-256 or SHA-384), whatever `alg` is.
     pub(crate) fn selection_digest_with(
         &self,
         alg: HashAlg,

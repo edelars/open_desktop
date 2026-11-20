@@ -125,13 +125,15 @@ impl Tpm {
         self.clock_safe = was_orderly;
         self.persistent.orderly = false;
         self.da_startup(was_orderly);
+        self.persistent.nv.orderly_startup(was_orderly);
         self.started = true;
         Ok(Output::default())
     }
 
     /// `TPM2_Shutdown` (Part 3, clause 9.4): `STATE` saves the PCR with `TPM_PT_PCR_SAVE` and the
     /// update counter; `CLEAR` discards any saved state. Both save the clock (the owner takes it
-    /// with `persistent_snapshot`) and mark the shutdown orderly.
+    /// with `persistent_snapshot`), write the ORDERLY NV counters (`nv.rs`) and mark the shutdown
+    /// orderly.
     pub(crate) fn cmd_shutdown(&mut self, p: &mut Reader<'_>) -> Result<Output, Rc> {
         p.set_param(1);
         let shutdown_type = p.u16()?;
@@ -151,6 +153,7 @@ impl Tpm {
             }
             _ => return Err(Rc::VALUE.in_param(1)),
         }
+        self.persistent.nv.orderly_shutdown();
         self.persistent.orderly = true;
         Ok(Output::default())
     }

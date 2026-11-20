@@ -670,7 +670,8 @@ fn make_credential_accepts_a_public_only_storage_key_and_opaque_name() {
         Rc::SIZE.in_param(1),
     );
     err(
-        &invoke(&mut t, external, b"", &[0; 35]),
+        // objectName above sizeof(TPMU_NAME): 2 + 64 octets (a SHA-512 Name); 35 octets fit.
+        &invoke(&mut t, external, b"", &[0; 67]),
         Rc::SIZE.in_param(2),
     );
     err(
@@ -1502,7 +1503,7 @@ fn capability_reports_the_da_parameters_and_the_new_commands() {
         &mut t,
         cap::TPM_PROPERTIES,
         pt::LOCKOUT_COUNTER,
-        8,
+        4,
     ));
     assert_eq!(count, 4);
     let values: Vec<(u32, u32)> = body

@@ -11,8 +11,8 @@ use super::*;
 use crate::codes::{object_attr as oa, se};
 use crate::crypto::{HashAlg, hash, hmac_sha256, kdfa_sha256};
 use crate::marshal::{
-    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Unique, Writer,
-    digest_size, pcr_digest_size,
+    Scheme, SymDef, TpmsPcrSelection, TpmtHa, TpmtPublic, TpmtSignature, Writer, digest_size,
+    pcr_digest_size,
 };
 
 const SHA384_FOX: &str = "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1";
@@ -61,7 +61,7 @@ fn hash_sequence_start_error_order_for_an_oversized_auth_and_unknown_hash_is_pro
 fn capability_reports_sha512_and_max_digest_64() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 16);
+    assert!(!more && c == cap::ALGS && count == 17);
     let entries: Vec<(u16, u32)> = body
         .chunks(6)
         .map(|e| {
@@ -71,7 +71,7 @@ fn capability_reports_sha512_and_max_digest_64() {
             )
         })
         .collect();
-    assert_eq!(entries.len(), 16);
+    assert_eq!(entries.len(), 17);
     assert!(entries.windows(2).all(|w| w[0].0 < w[1].0));
     for (id, name) in [
         (0x000B, "SHA-256"),
@@ -279,27 +279,32 @@ fn sha512_is_a_hash_but_not_a_pcr_bank() {
 }
 
 #[test]
-fn signing_schemes_accept_sha2_hashes_and_encryption_schemes_do_not() {
+fn signing_schemes_accept_sha2_hashes_and_ecdh_does_not() {
     let mut t = started();
-    // TPM2_TestParms decodes TPMT_PUBLIC_PARMS: RSASSA and ECDSA with SHA-256/384/512 ...
+    // TPM2_TestParms decodes TPMT_PUBLIC_PARMS: RSASSA, RSAPSS, OAEP and ECDSA with SHA-256/384/512
+    // (OAEP and RSAPSS with SHA-384/512 since the RSA-3072 slice; they were TPM_RC_HASH before) ...
     for hash in ["000b", "000c", "000d"] {
-        ok(&run(
-            &mut t,
-            plain(0x18A, &[], &hex(&format!("000100100014{hash}080000000000"))),
-        ));
+        for scheme in ["0014", "0016", "0017"] {
+            ok(&run(
+                &mut t,
+                plain(
+                    0x18A,
+                    &[],
+                    &hex(&format!("0001001000{}{hash}080000000000", &scheme[2..])),
+                ),
+            ));
+        }
         ok(&run(
             &mut t,
             plain(0x18A, &[], &hex(&format!("002300100018{hash}00030010"))),
         ));
     }
-    // ... but not OAEP, ECDH or a SHA-3 hash.
+    // ... but not ECDH or a SHA-3 hash.
     for (encoded, error) in [
-        ("000100100017000c080000000000", Rc::HASH), // OAEP with SHA-384.
-        ("000100100017000d080000000000", Rc::HASH), // OAEP with SHA-512.
-        ("002300100019000c00030010", Rc::HASH),     // ECDH with SHA-384.
-        ("002300100019000d00030010", Rc::HASH),     // ECDH with SHA-512.
+        ("002300100019000c00030010", Rc::HASH), // ECDH with SHA-384.
+        ("002300100019000d00030010", Rc::HASH), // ECDH with SHA-512.
         ("0001001000140027080000000000", Rc::HASH), // RSASSA with SHA3-256.
-        ("002300100018002700030010", Rc::HASH),     // ECDSA with SHA3-256.
+        ("002300100018002700030010", Rc::HASH), // ECDSA with SHA3-256.
         ("00080005000c", Rc::HASH), // The HMAC scheme of a keyed-hash key stays SHA-256.
     ] {
         err(
@@ -359,7 +364,7 @@ fn signing_schemes_accept_sha2_hashes_and_encryption_schemes_do_not() {
     }
 }
 
-// ------------------------------------------------- SHA-384 signatures stay refused (negative)
+// ---------------------------------------- SHA-384 signatures: size and scheme rules of the refusals
 
 const NULL_VALIDATION: [u8; 8] = [0x80, 0x24, 0x40, 0, 0, 7, 0, 0];
 const ECDSA_SHA384: Scheme = Scheme {
@@ -439,7 +444,7 @@ fn policy_signed_refuses_a_sha384_signature_with_hash_for_parameter_5() {
 }
 
 #[test]
-fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
+fn signing_commands_size_the_digest_by_the_sha384_scheme_of_the_key() {
     let mut t = started();
     let key = parse_primary(&create_primary(
         &mut t,
@@ -448,34 +453,31 @@ fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
         &ecc(base() | oa::SIGN, SymDef::Null, ECDSA_SHA384),
     ))
     .handle;
-    // TPM2_Sign: the key's scheme wins, so SHA-384 is TPM_RC_SCHEME for inScheme (parameter 2).
+    // Slice 1b: the key's scheme (SHA-384) now signs, so a SHA-256 digest of 32 octets is the wrong
+    // size (TPM2_Sign: digest is parameter 1; TPM2_SignDigest: digest is parameter 2) ...
     err(
         &sign(&mut t, key, b"pw", &[0x11; 32], &u16b(alg::NULL)),
-        Rc::SCHEME.in_param(2),
+        Rc::SIZE.in_param(1),
     );
-    // TPM2_SignDigest: the key scheme is rejected for handle 1 before the digest is looked at.
-    for digest in [vec![0x11; 32], vec![0x11; 48]] {
-        let params = cat(&[&tpm2b(b""), &tpm2b(&digest), &NULL_VALIDATION]);
-        err(
-            &run(&mut t, with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &params)),
-            Rc::SCHEME.in_handle(1),
-        );
-    }
-    // An attestation command (TPM2_GetTime, signHandle 2, inScheme parameter 2).
+    let params = cat(&[&tpm2b(b""), &tpm2b(&[0x11; 32]), &NULL_VALIDATION]);
     err(
-        &run(
-            &mut t,
-            with_pw(
-                cc::GET_TIME,
-                &[ENDORSEMENT, key],
-                &[b"", b"pw"],
-                &cat(&[&tpm2b(b"q"), &u16b(alg::NULL)]),
-            ),
-        ),
-        Rc::SCHEME.in_param(2),
+        &run(&mut t, with_pw(cc::SIGN_DIGEST, &[key], &[b"pw"], &params)),
+        Rc::SIZE.in_param(2),
     );
-    // A key with a NULL scheme cannot be pushed to SHA-384 through inScheme either: the scheme
-    // structure of a signing command accepts SHA-256 only (TPM_RC_HASH).
+    // ... and a 48-octet digest is signed.
+    ok(&sign(&mut t, key, b"pw", &[0x11; 48], &u16b(alg::NULL)));
+    // An attestation command (TPM2_GetTime) signs with the key's SHA-384 scheme.
+    ok(&run(
+        &mut t,
+        with_pw(
+            cc::GET_TIME,
+            &[ENDORSEMENT, key],
+            &[b"", b"pw"],
+            &cat(&[&tpm2b(b"q"), &u16b(alg::NULL)]),
+        ),
+    ));
+    // A key with a NULL scheme takes SHA-384 from inScheme (slice 1b): a 32-octet digest is then
+    // the wrong size.
     let open = parse_primary(&create_primary(
         &mut t,
         OWNER,
@@ -491,26 +493,29 @@ fn signing_commands_refuse_a_key_whose_scheme_hash_is_sha384_with_scheme() {
             &[0x11; 32],
             &cat(&[&u16b(alg::RSASSA), &u16b(alg::SHA384)]),
         ),
-        Rc::HASH.in_param(2),
+        Rc::SIZE.in_param(1),
     );
 }
 
 #[test]
-fn verify_commands_refuse_a_sha384_signature_label_with_hash() {
+fn verify_commands_size_the_digest_by_a_sha384_signature_label() {
     let mut t = started();
     let key = parse_primary(&create_primary(&mut t, OWNER, b"pw", &ecc_sign())).handle;
     let signature = labelled_signature(false, alg::SHA384);
-    // TPM2_VerifySignature: signature is parameter 2.
+    // Slice 1b. TPM2_VerifySignature accepts the label (digest is parameter 1): a 32-octet digest
+    // is the wrong size, a 48-octet one reaches the check and the dummy signature fails it.
     err(
         &verify(&mut t, key, &[0x11; 32], &signature),
-        Rc::HASH.in_param(2),
+        Rc::SIZE.in_param(1),
     );
-    // TPM2_VerifyDigestSignature: signature is parameter 3.
+    err(&verify(&mut t, key, &[0x11; 48], &signature), Rc::SIGNATURE);
+    // TPM2_VerifyDigestSignature uses the fixed scheme of the key (ECDSA with SHA-256), so the
+    // SHA-384 label is a scheme mismatch (signature is parameter 3).
     for digest in [vec![0x11; 32], vec![0x11; 48]] {
         let params = cat(&[&tpm2b(b""), &tpm2b(&digest), &signature]);
         err(
             &run(&mut t, plain(cc::VERIFY_DIGEST_SIGNATURE, &[key], &params)),
-            Rc::HASH.in_param(3),
+            Rc::SCHEME.in_param(3),
         );
     }
 }
@@ -1181,99 +1186,5 @@ fn sha384_object_creation_hash_and_pcr_digest_use_the_name_alg() {
     assert_eq!(
         sha256_child.hash,
         hash(HashAlg::Sha256, &[&sha256_child.creation]).as_slice()
-    );
-}
-
-#[test]
-fn duplicate_import_and_credentials_refuse_a_sha384_name_alg_with_hash() {
-    use super::tests_obj::{ecc_storage, sealed};
-    use crate::dispatch::Invocation;
-    use crate::response::Output;
-    let (mut t, parent) = super::tests_obj::with_ecc_parent();
-    // The handlers are called without their authorization: a SHA-384 object cannot be authorized by
-    // a SHA-256 policy session yet (step D), and Duplicate needs one.
-    type Handler = fn(&mut Tpm, &Invocation, &mut Reader<'_>) -> Result<Output, Rc>;
-    let invoke = |t: &mut Tpm, handles: [u32; 3], f: Handler, params: &[u8]| {
-        f(t, &Invocation { handles }, &mut Reader::new(params)).map(|_| ())
-    };
-    let duplicate: Handler = |t, inv, r| t.cmd_duplicate(inv, r);
-    let activate: Handler = |t, inv, r| t.cmd_activate_credential(inv, r);
-    let mut movable = sealed();
-    movable.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
-    let (plain_object, ..) = child_of(&mut t, parent, &movable, b"c", b"data");
-    let (sha384_object, ..) = child_of(&mut t, parent, &named(movable, alg::SHA384), b"c", b"data");
-    let to_null = cat(&[&tpm2b(b""), &u16b(alg::NULL)]);
-    // TPM2_Duplicate: the object (handle 1) and the new parent (handle 2).
-    assert_eq!(
-        invoke(&mut t, [plain_object, NULL, 0], duplicate, &to_null),
-        Ok(())
-    );
-    assert_eq!(
-        invoke(&mut t, [sha384_object, NULL, 0], duplicate, &to_null),
-        Err(Rc::HASH.in_handle(1))
-    );
-    let storage384 = parse_primary(&create_primary(
-        &mut t,
-        OWNER,
-        b"sp",
-        &named(ecc_storage(), alg::SHA384),
-    ))
-    .handle;
-    assert_eq!(
-        invoke(&mut t, [plain_object, storage384, 0], duplicate, &to_null),
-        Err(Rc::HASH.in_handle(2))
-    );
-    // TPM2_Import: the parent (handle 1) and the public area (parameter 2).
-    let import = |public: &TpmtPublic| {
-        cat(&[
-            &tpm2b(b""),
-            &tpm2b(&public.to_bytes()),
-            &tpm2b(&tpm2b(b"")),
-            &tpm2b(b""),
-            &u16b(alg::NULL),
-        ])
-    };
-    let mut foreign = named(sealed(), alg::SHA384);
-    foreign.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
-    foreign.unique = Unique::Digest(vec![0; 48]);
-    err(
-        &run(
-            &mut t,
-            with_pw(cc::IMPORT, &[parent], &[b"parent-pw"], &import(&foreign)),
-        ),
-        Rc::HASH.in_param(2),
-    );
-    let mut native = foreign.clone();
-    native.name_alg = alg::SHA256;
-    native.unique = Unique::Digest(vec![0; 32]);
-    err(
-        &run(
-            &mut t,
-            with_pw(cc::IMPORT, &[storage384], &[b"sp"], &import(&native)),
-        ),
-        Rc::HASH.in_handle(1),
-    );
-    // TPM2_MakeCredential: the storage key (handle 1).
-    let make = |t: &mut Tpm, key: u32| {
-        run(
-            t,
-            plain(
-                cc::MAKE_CREDENTIAL,
-                &[key],
-                &cat(&[&tpm2b(&[7; 32]), &tpm2b(&[8; 34])]),
-            ),
-        )
-    };
-    err(&make(&mut t, storage384), Rc::HASH.in_handle(1));
-    ok(&make(&mut t, parent));
-    // TPM2_ActivateCredential: the activated object (handle 1) and the key (handle 2).
-    let blob = cat(&[&tpm2b(&[0; 40]), &tpm2b(b"")]);
-    assert_eq!(
-        invoke(&mut t, [sha384_object, parent, 0], activate, &blob),
-        Err(Rc::HASH.in_handle(1))
-    );
-    assert_eq!(
-        invoke(&mut t, [plain_object, storage384, 0], activate, &blob),
-        Err(Rc::HASH.in_handle(2))
     );
 }

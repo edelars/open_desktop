@@ -7,14 +7,22 @@
 //!
 //! `TPM_CAP_COMMANDS` lists exactly the commands of the dispatch table.
 //!
-//! Properties report only what is implemented. Properties of features that do not exist yet
-//! (contexts, dictionary attack, audit, NV counters) are not listed instead of
-//! being reported as zero; PTP 1.07, clause 4.2 item 2 asks for all defined properties, so this
-//! is a recorded deviation until S7-23 is complete. Slice A of phase B adds the session and NV
-//! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`.
+//! Properties report what the implementation does. Slice A of phase B adds the session and NV
+//! limits and counts, `TPM_PT_PERMANENT` and `TPM_PT_STARTUP_CLEAR`. Slice 3 of S7-23 adds the rest
+//! of PTP 1.07, Table 2, that has a meaning here: `TPM_PT_NV_COUNTERS_MAX`, `NV_COUNTERS`,
+//! `NV_COUNTERS_AVAIL` (counters that can still be defined, limited by the index slots and the data
+//! pool), `ORDERLY_COUNT` (`nv.rs`: `MAX_ORDERLY_COUNT`), `CONTEXT_HASH` (SHA-256), `CONTEXT_SYM` (AES)
+//! and `CONTEXT_SYM_SIZE` (128), `MAX_OBJECT_CONTEXT` and `MAX_SESSION_CONTEXT` (the largest context
+//! `TPM2_ContextLoad` takes), `LOADED_CURVES` (1: NIST P-256). Reported as 0 because the feature is
+//! absent or has no TPM-side interval (recorded deviations): `CONTEXT_GAP_MAX` (no context gap is
+//! tracked, `TPM_RC_CONTEXT_GAP` does not exist), `CLOCK_UPDATE` (`Clock` reaches NV only with the
+//! snapshot the host writes), `SPLIT_MAX` (no `TPM2_Commit`), `MODES` (no FIPS mode),
+//! `NV_WRITE_RECOVERY` (no NV wear model) and `AUDIT_COUNTER_0/1` (no
+//! `TPM2_SetCommandCodeAuditStatus`: no command audit). NOT VERIFIED against Part 2, Table 23 and
+//! PTP Table 2: the meaning of these tags and the values reported.
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
-//! ECC, with slice C1 also RSAES, OAEP and ECDH, with slice C2 HMAC, with slice C3 XOR (the
+//! ECC, with slice C1 also RSAES, OAEP and ECDH, with the RSA-3072 slice RSAPSS, with slice C2 HMAC, with slice C3 XOR (the
 //! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
@@ -35,14 +43,15 @@
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
 use crate::codes::{alg, cap, curve, handle, pt, spec};
-use crate::crypto::{DIGEST, supported_rsa_exponent};
+use crate::context::MAX_CONTEXT_SIZE;
+use crate::crypto::supported_rsa_exponent;
 use crate::dispatch::COMMANDS;
 use crate::marshal::{
     PublicParams, Reader, TPMA_ALGORITHM_ASYMMETRIC, TPMA_ALGORITHM_ENCRYPTING,
     TPMA_ALGORITHM_HASH, TPMA_ALGORITHM_METHOD, TPMA_ALGORITHM_OBJECT, TPMA_ALGORITHM_SIGNING,
     TPMA_ALGORITHM_SYMMETRIC, TpmaCc, TpmsAlgProperty, TpmsTaggedProperty, Writer, limits,
 };
-use crate::nv::{MAX_NV_INDEX_SIZE, NV_BUFFER_MAX};
+use crate::nv::{MAX_NV_COUNTERS, MAX_NV_INDEX_SIZE, MAX_ORDERLY_COUNT, NV_BUFFER_MAX};
 use crate::object::MAX_PERSISTENT;
 use crate::pcr::{PcrAttr, pcr_attr};
 use crate::response::{Output, Rc};
@@ -86,12 +95,12 @@ impl Entries {
 }
 
 // Ascending by algorithm ID (Part 2, Table 11 types: RSA and ECC are "A O",
-// KEYEDHASH "H O", RSASSA and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
+// KEYEDHASH "H O", RSASSA, RSAPSS and ECDSA "A X"). AES (0x0006, symmetric, object) and CFB
 // (0x0043, encrypting mode) protect `outPrivate` and are the storage key template's
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -110,6 +119,10 @@ pub(crate) const ALGORITHMS: [(u16, u32); 16] = [
     (
         alg::RSAES,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_ENCRYPTING,
+    ),
+    (
+        alg::RSAPSS,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_SIGNING,
     ),
     (
         alg::OAEP,
@@ -156,20 +169,36 @@ impl Tpm {
             (pt::ACTIVE_SESSIONS_MAX, MAX_SESSIONS as u32),
             (pt::PCR_COUNT, limits::PCR_COUNT as u32),
             (pt::PCR_SELECT_MIN, limits::PCR_SELECT_SIZE as u32),
+            // No context gap is tracked (`context.rs`): 0, a recorded deviation.
+            (pt::CONTEXT_GAP_MAX, 0),
+            (pt::NV_COUNTERS_MAX, MAX_NV_COUNTERS as u32),
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
+            // `Clock` reaches NV only with the snapshot, which the host writes: no interval (0).
+            (pt::CLOCK_UPDATE, 0),
+            // Contexts are AES-128-CFB under a SHA-256 integrity HMAC (`context.rs`).
+            (pt::CONTEXT_HASH, u32::from(alg::SHA256)),
+            (pt::CONTEXT_SYM, u32::from(alg::AES)),
+            (pt::CONTEXT_SYM_SIZE, 128),
+            (pt::ORDERLY_COUNT, MAX_ORDERLY_COUNT),
             (pt::MAX_COMMAND_SIZE, limits::MAX_COMMAND_SIZE as u32),
             (pt::MAX_RESPONSE_SIZE, limits::MAX_RESPONSE_SIZE as u32),
             (pt::MAX_DIGEST, limits::MAX_HASH_SIZE as u32),
+            (pt::MAX_OBJECT_CONTEXT, MAX_CONTEXT_SIZE as u32),
+            (pt::MAX_SESSION_CONTEXT, MAX_CONTEXT_SIZE as u32),
             // Platform-specific family: PC Client, level 0, revision 1.07 (PTP 1.07, Table 2).
             (pt::PS_FAMILY_INDICATOR, 1),
             (pt::PS_LEVEL, 0),
             (pt::PS_REVISION, 0x0000_0107),
             (pt::PS_DAY_OF_YEAR, 0),
             (pt::PS_YEAR, 0),
+            // No `TPM2_Commit`: no split signing.
+            (pt::SPLIT_MAX, 0),
             (pt::TOTAL_COMMANDS, total),
             (pt::LIBRARY_COMMANDS, total),
             (pt::VENDOR_COMMANDS, 0),
             (pt::NV_BUFFER_MAX, NV_BUFFER_MAX as u32),
+            // `TPMA_MODES`: not FIPS 140 evaluated.
+            (pt::MODES, 0),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
             (pt::ML_PARAMETER_SETS, 1 << 1), // TPMA_ML_PARAMETER_SET.mlKem_768.
             (pt::PERMANENT, self.permanent_attributes()),
@@ -195,11 +224,23 @@ impl Tpm {
                 pt::HR_PERSISTENT_AVAIL,
                 (MAX_PERSISTENT - self.persistent.objects.len()) as u32,
             ),
+            (pt::NV_COUNTERS, self.persistent.nv.counters() as u32),
+            (
+                pt::NV_COUNTERS_AVAIL,
+                self.persistent.nv.counters_avail() as u32,
+            ),
+            // NIST P-256, the one curve of `TPM_CAP_ECC_CURVES`.
+            (pt::LOADED_CURVES, 1),
             // Dictionary attack (slice C1, `da.rs`).
             (pt::LOCKOUT_COUNTER, self.persistent.da.failed_tries),
             (pt::MAX_AUTH_FAIL, self.persistent.da.max_tries),
             (pt::LOCKOUT_INTERVAL, self.persistent.da.recovery_time),
             (pt::LOCKOUT_RECOVERY, self.persistent.da.lockout_recovery),
+            // NV writes need no recovery time here (no NV wear is modelled).
+            (pt::NV_WRITE_RECOVERY, 0),
+            // No `TPM2_SetCommandCodeAuditStatus`: no command is audited, the counter stays 0.
+            (pt::AUDIT_COUNTER_0, 0),
+            (pt::AUDIT_COUNTER_1, 0),
         ]
     }
 
@@ -358,7 +399,8 @@ impl Tpm {
                 if handle::handle_type(property) != handle::HT_PERMANENT {
                     return Err(Rc::VALUE.in_param(2));
                 }
-                entry_size = 4 + 2 + DIGEST;
+                // A hierarchy policy is a digest of any implemented hash (at most SHA-512).
+                entry_size = 4 + 2 + limits::MAX_HASH_SIZE;
                 for hierarchy in [
                     handle::RH_OWNER,
                     handle::RH_LOCKOUT,
@@ -370,9 +412,9 @@ impl Tpm {
                 {
                     entries.push(|w| {
                         w.u32(hierarchy);
-                        if let Some(digest) = self.permanent_auth_policy(hierarchy) {
-                            w.u16(alg::SHA256);
-                            w.bytes(digest);
+                        if let Some(policy) = self.permanent_policy(hierarchy) {
+                            w.u16(policy.alg.alg());
+                            w.bytes(policy.digest());
                         } else {
                             w.u16(alg::NULL);
                         }

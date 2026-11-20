@@ -77,11 +77,16 @@ use crate::object::{
 use crate::paramenc::SessionSym;
 use crate::policy::{PolicyHashRestriction, PolicyState};
 use crate::response::{Output, Rc};
-use crate::session::{BoundEntity, Session, SessionKind, session_handle};
+use crate::session::{BoundEntity, MIN_NONCE, Session, SessionKind, session_handle};
 use crate::state::{TimePoint, Tpm};
 
 /// Largest `contextBlob` accepted by `TPM2_ContextLoad` (an RSA object context is under 1 KiB).
 const MAX_CONTEXT_BLOB: usize = 2048;
+
+/// The largest `TPMS_CONTEXT` that `TPM2_ContextLoad` takes: `sequence` (8), `savedHandle` (4),
+/// `hierarchy` (4) and the `TPM2B` `contextBlob` (2 + [`MAX_CONTEXT_BLOB`]). Reported as
+/// `TPM_PT_MAX_OBJECT_CONTEXT` and `TPM_PT_MAX_SESSION_CONTEXT`.
+pub(crate) const MAX_CONTEXT_SIZE: usize = 8 + 4 + 4 + 2 + MAX_CONTEXT_BLOB;
 
 /// `savedHandle` of an object with `stClear` (Part 2, Table 245).
 const SAVED_ST_CLEAR: u32 = 0x8000_0002;
@@ -351,10 +356,21 @@ fn encode_session(s: &Session) -> Zeroizing<Vec<u8>> {
         });
     w.tpm2b(&s.nonce_tpm);
     w.tpm2b(s.key.as_slice());
+    // The bound entity: tag 1 is the original body (handle, authValue) and its Name is the handle
+    // itself, which is the case of every hierarchy, so a session bound to a hierarchy (every
+    // context saved before the Name was recorded, and the SHA-256 golden bodies) keeps its bytes.
+    // Tag 2 adds the Name between the handle and the authValue for an entity whose Name is not its
+    // handle (an object, an NV index). A tag 1 body read back is bound by its handle as a Name.
     match &s.bound {
-        Some(b) => {
+        Some(b) if b.name == b.handle.to_be_bytes() => {
             w.u8(1);
             w.u32(b.handle);
+            w.tpm2b(b.auth.as_slice());
+        }
+        Some(b) => {
+            w.u8(2);
+            w.u32(b.handle);
+            w.tpm2b(&b.name);
             w.tpm2b(b.auth.as_slice());
         }
         None => w.u8(0),
@@ -436,14 +452,38 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
         _ => return Err(Rc::VALUE),
     };
     let size = auth_hash.size();
+    // The size of the session nonce is that of the first `nonceCaller`: at least 16 octets and at
+    // most one digest of `authHash` (`StartAuthSession`). `tpm2b` bounds it above; the lower bound
+    // keeps a body with a shorter (or empty) nonce from loading as a session.
     let nonce_tpm = r.tpm2b(size)?.to_vec();
+    if nonce_tpm.len() < MIN_NONCE {
+        return Err(Rc::SIZE);
+    }
     let key = AuthValue::from_slice_up_to(r.tpm2b(size)?, size).ok_or(Rc::SIZE)?;
     let bound = match r.u8()? {
         0 => None,
         1 => {
             let h = r.u32()?;
             let auth = AuthValue::from_slice(r.tpm2b(limits::MAX_DIGEST_SIZE)?).ok_or(Rc::SIZE)?;
-            Some(BoundEntity { handle: h, auth })
+            Some(BoundEntity {
+                handle: h,
+                name: h.to_be_bytes().to_vec(),
+                auth,
+            })
+        }
+        2 => {
+            let h = r.u32()?;
+            // A Name is `nameAlg` and one digest; the authValue of an object or an NV index is at
+            // most one digest of its `nameAlg`.
+            let name = r.tpm2b(2 + limits::MAX_HASH_SIZE)?.to_vec();
+            let auth =
+                AuthValue::from_slice_up_to(r.tpm2b(limits::MAX_HASH_SIZE)?, limits::MAX_HASH_SIZE)
+                    .ok_or(Rc::SIZE)?;
+            Some(BoundEntity {
+                handle: h,
+                name,
+                auth,
+            })
         }
         _ => return Err(Rc::VALUE),
     };
@@ -836,6 +876,46 @@ mod tests {
                 "{head:#04x}"
             );
         }
+    }
+
+    /// The body of a session with a nonce of `nonce_len` octets and a key of `size` octets.
+    fn session_body_with_nonce(head: u8, nonce_len: usize, size: usize) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(head);
+        w.tpm2b(&vec![1; nonce_len]);
+        w.tpm2b(&vec![2; size]);
+        w.u8(0);
+        w.bytes(&vec![0; if head & 0x0f == 0 { 32 } else { size }]);
+        w.bytes(&[0, 0, 0, 0, SessionSym::Null.to_octet()]);
+        w.finish()
+    }
+
+    /// The nonce of a session is as long as the first `nonceCaller` of `StartAuthSession`: at least 16
+    /// octets and at most one digest of `authHash` (Part 1, clause 17.6.3.2; Part 3, clause 11.1 gives
+    /// `TPM_RC_SIZE` for a `nonceCaller` outside that range). `decode_session` bounded it above
+    /// only; a body with a shorter nonce (down to none) is refused as well. A nonce of 32
+    /// octets in a SHA-384 session is a valid session (a client may send a 32-octet `nonceCaller`
+    /// whatever the hash), so only the range is checked, not the digest size.
+    #[test]
+    fn decode_session_rejects_short_nonce_for_sha384() {
+        for (head, size) in [(0x10, 48), (0x11, 48), (0x12, 48), (0x20, 64), (0x00, 32)] {
+            for nonce_len in [0, 1, 15, 16, 17, 32, size - 1, size, size + 1] {
+                let result = decode_session(&session_body_with_nonce(head, nonce_len, size));
+                if (16..=size).contains(&nonce_len) {
+                    let session =
+                        result.unwrap_or_else(|rc| panic!("{head:#04x}/{nonce_len}: {rc:?}"));
+                    assert_eq!(session.nonce_tpm.len(), nonce_len);
+                } else {
+                    assert!(
+                        matches!(result, Err(Rc::SIZE)),
+                        "{head:#04x}/{nonce_len} must be TPM_RC_SIZE"
+                    );
+                }
+            }
+        }
+        // The nonce of the saved session survives the round trip of ContextSave with its own size.
+        let body = session_body_with_nonce(0x10, 32, 48);
+        assert_eq!(&encode_session(&decode_session(&body).unwrap())[..], body);
     }
 
     #[test]

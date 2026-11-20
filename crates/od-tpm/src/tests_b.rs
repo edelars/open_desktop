@@ -1685,8 +1685,8 @@ fn nv_define_space_errors() {
         attr::OWNERREAD,                 // no write access
         0,                               // neither
         OWNER_RW | attr::PLATFORMCREATE, // owner-defined with PLATFORMCREATE SET
-        OWNER_RW | 0x80,                 // TPM_NT_PIN_FAIL
-        OWNER_RW | 0x90,                 // TPM_NT_PIN_PASS
+        OWNER_RW | 0x80,                 // TPM_NT_PIN_FAIL without NO_DA
+        OWNER_RW | 0xA0,                 // reserved TPM_NT
         OWNER_RW | 0x30,                 // reserved TPM_NT
         OWNER_RW | attr::POLICY_DELETE,
         OWNER_RW | attr::GLOBALLOCK,
