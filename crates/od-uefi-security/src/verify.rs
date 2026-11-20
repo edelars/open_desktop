@@ -11,7 +11,8 @@ use x509_cert::{
 };
 
 use crate::pkcs7::{
-    DetachedSignedData, MAX_CERTIFICATES, RSA_2048_SIGNATURE_BYTES, raw_sequence, sequence,
+    AuthenticodeSignedData, DetachedSignedData, MAX_CERTIFICATES, RSA_2048_SIGNATURE_BYTES, Signer,
+    raw_sequence, sequence,
 };
 
 const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
@@ -169,40 +170,8 @@ pub fn detached(
     digest: &[u8; 32],
     anchors: &[TrustAnchor<'_>],
 ) -> Result<(), Error> {
-    let candidates = signed
-        .certificates()
-        .map(Candidate::parse)
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut signer = None;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let tbs = candidate.certificate.tbs_certificate();
-        if tbs.serial_number().as_bytes() == signed.signer.serial
-            && tbs
-                .issuer()
-                .to_der()
-                .map_err(|_| Error::InvalidCertificate)?
-                == signed.signer.issuer_der
-        {
-            if signer.replace(index).is_some() {
-                return Err(Error::AmbiguousSigner);
-            }
-        }
-    }
-    let signer = signer.ok_or(Error::UntrustedSigner)?;
-    let leaf = &candidates[signer];
-    if !leaf.digital_signature
-        || leaf
-            .key
-            .verify(
-                Pkcs1v15Sign::new::<Sha256>(),
-                digest,
-                signed.signer.signature,
-            )
-            .is_err()
-    {
-        return Err(Error::InvalidSignature);
-    }
-
+    let verified = verify_signer(signed.signer, signed.certificates(), digest)?;
+    let leaf = &verified.certificates[verified.signer];
     for anchor in anchors {
         if let TrustAnchor::PlatformKey(bytes) = anchor {
             let certificate =
@@ -213,38 +182,130 @@ pub fn detached(
             }
         }
     }
+    verified
+        .find_authority(|child, _| {
+            anchors
+                .iter()
+                .any(|anchor| matches!(anchor, TrustAnchor::ExchangeKey(bytes) if *bytes == child.der))
+                .then_some(())
+        })
+        .ok_or(Error::UntrustedSigner)
+}
 
-    // Visit each reachable certificate once, preferring the path with the fewest
-    // non-self-issued intermediate CAs. This bounds work even if names collide.
-    let mut path_len = [u8::MAX; MAX_CERTIFICATES];
-    let mut visited = [false; MAX_CERTIFICATES];
-    path_len[signer] = 0;
-    while let Some(index) = (0..candidates.len())
-        .filter(|&index| !visited[index] && path_len[index] != u8::MAX)
-        .min_by_key(|&index| path_len[index])
-    {
-        visited[index] = true;
-        let child = &candidates[index];
-        if anchors
-            .iter()
-            .any(|anchor| matches!(anchor, TrustAnchor::ExchangeKey(bytes) if *bytes == child.der))
+/// Verifies an Authenticode signature and returns the index of the matching enrolled X.509
+/// certificate. The image digest must be computed from the same PE bytes used by the loader.
+/// An enrolled CA can complete a chain even when the PE does not embed the CA itself.
+pub fn authenticode_signature(
+    signed: &AuthenticodeSignedData<'_>,
+    image_digest: &[u8; 32],
+    enrolled_certificates: &[&[u8]],
+) -> Result<usize, Error> {
+    if signed.image_digest() != image_digest {
+        return Err(Error::InvalidSignature);
+    }
+    let verified = verify_signer(
+        signed.signer(),
+        signed.certificates(),
+        signed.signature_digest(),
+    )?;
+    let anchors = enrolled_certificates
+        .iter()
+        .map(|bytes| Candidate::parse(bytes).ok())
+        .collect::<Vec<_>>();
+    verified
+        .find_authority(|child, intermediates| {
+            anchors.iter().position(|anchor| {
+                anchor.as_ref().is_some_and(|anchor| {
+                    child.der == anchor.der
+                        || (anchor
+                            .issuer_max_path
+                            .is_some_and(|limit| intermediates <= limit)
+                            && child.is_signed_by(anchor))
+                })
+            })
+        })
+        .ok_or(Error::UntrustedSigner)
+}
+
+struct VerifiedSigner<'a> {
+    certificates: Vec<Candidate<'a>>,
+    signer: usize,
+}
+
+fn verify_signer<'a>(
+    signed: Signer<'a>,
+    certificates: impl Iterator<Item = &'a [u8]>,
+    digest: &[u8; 32],
+) -> Result<VerifiedSigner<'a>, Error> {
+    let certificates = certificates
+        .map(Candidate::parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut signer = None;
+    for (index, candidate) in certificates.iter().enumerate() {
+        let tbs = candidate.certificate.tbs_certificate();
+        if tbs.serial_number().as_bytes() == signed.serial
+            && tbs
+                .issuer()
+                .to_der()
+                .map_err(|_| Error::InvalidCertificate)?
+                == signed.issuer_der
         {
-            return Ok(());
-        }
-        let intermediates = path_len[index] + u8::from(index != signer && !child.is_self_issued());
-        for (parent_index, parent) in candidates.iter().enumerate() {
-            if !visited[parent_index]
-                && intermediates < path_len[parent_index]
-                && parent
-                    .issuer_max_path
-                    .is_some_and(|limit| intermediates <= limit)
-                && child.is_signed_by(parent)
-            {
-                path_len[parent_index] = intermediates;
+            if signer.replace(index).is_some() {
+                return Err(Error::AmbiguousSigner);
             }
         }
     }
-    Err(Error::UntrustedSigner)
+    let signer = signer.ok_or(Error::UntrustedSigner)?;
+    let leaf = &certificates[signer];
+    if !leaf.digital_signature
+        || leaf
+            .key
+            .verify(Pkcs1v15Sign::new::<Sha256>(), digest, signed.signature)
+            .is_err()
+    {
+        return Err(Error::InvalidSignature);
+    }
+    Ok(VerifiedSigner {
+        certificates,
+        signer,
+    })
+}
+
+impl VerifiedSigner<'_> {
+    fn find_authority<T>(
+        &self,
+        mut authorize: impl FnMut(&Candidate<'_>, u8) -> Option<T>,
+    ) -> Option<T> {
+        // Prefer the shortest path in non-self-issued intermediate CAs, even
+        // when multiple embedded certificates have the same subject.
+        let mut path_len = [u8::MAX; MAX_CERTIFICATES];
+        let mut visited = [false; MAX_CERTIFICATES];
+        path_len[self.signer] = 0;
+        while let Some(index) = (0..self.certificates.len())
+            .filter(|&index| !visited[index] && path_len[index] != u8::MAX)
+            .min_by_key(|&index| path_len[index])
+        {
+            visited[index] = true;
+            let child = &self.certificates[index];
+            let intermediates =
+                path_len[index] + u8::from(index != self.signer && !child.is_self_issued());
+            if let Some(authority) = authorize(child, intermediates) {
+                return Some(authority);
+            }
+            for (parent_index, parent) in self.certificates.iter().enumerate() {
+                if !visited[parent_index]
+                    && intermediates < path_len[parent_index]
+                    && parent
+                        .issuer_max_path
+                        .is_some_and(|limit| intermediates <= limit)
+                    && child.is_signed_by(parent)
+                {
+                    path_len[parent_index] = intermediates;
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -259,12 +320,59 @@ mod tests {
         include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2023.der");
     const KEK_2011: &[u8] =
         include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2011.der");
+    const TEST_AUTHENTICODE: &[u8] =
+        include_bytes!("../../../tests/fixtures/firmware/certs/authenticode-test-hello-sha256.p7b");
+    const TEST_IMAGE_CA: &[u8] =
+        include_bytes!("../../../tests/fixtures/firmware/certs/authenticode-test-ca.der");
+    const TEST_IMAGE_DIGEST: [u8; 32] = [
+        0xca, 0x85, 0x1c, 0x2a, 0xcc, 0x75, 0x3a, 0xd7, 0x77, 0x2f, 0x5a, 0x36, 0x6f, 0xaa, 0xac,
+        0xad, 0xf7, 0x39, 0x9a, 0x1e, 0xa7, 0x36, 0x4a, 0xc4, 0x31, 0x1a, 0x56, 0x25, 0xf4, 0x87,
+        0xda, 0x39,
+    ];
     // SHA-256 of the byte string verified independently by OpenSSL CMS.
     const DIGEST: [u8; 32] = [
         0x90, 0x8f, 0x44, 0x81, 0x06, 0x2a, 0xb2, 0xee, 0x42, 0x0f, 0x2d, 0xa7, 0x90, 0xb7, 0x3e,
         0xaa, 0x75, 0xfc, 0xac, 0x58, 0x96, 0x54, 0x02, 0x91, 0xc7, 0xdd, 0xc0, 0x5d, 0x54, 0x2d,
         0x66, 0x03,
     ];
+
+    #[test]
+    fn verifies_authenticode_with_enrolled_leaf_or_external_ca() {
+        let signed = AuthenticodeSignedData::decode(TEST_AUTHENTICODE).unwrap();
+        let leaf = signed.certificates().next().unwrap();
+        assert_eq!(signed.certificates().count(), 1);
+        assert_ne!(leaf, TEST_IMAGE_CA);
+        assert_eq!(
+            authenticode_signature(&signed, &TEST_IMAGE_DIGEST, &[leaf]),
+            Ok(0)
+        );
+        assert_eq!(
+            authenticode_signature(&signed, &TEST_IMAGE_DIGEST, &[KEK_2011, TEST_IMAGE_CA]),
+            Ok(1)
+        );
+        assert_eq!(
+            authenticode_signature(&signed, &TEST_IMAGE_DIGEST, &[KEK_2011]),
+            Err(Error::UntrustedSigner)
+        );
+        let mut wrong_image = TEST_IMAGE_DIGEST;
+        wrong_image[0] ^= 1;
+        assert_eq!(
+            authenticode_signature(&signed, &wrong_image, &[TEST_IMAGE_CA]),
+            Err(Error::InvalidSignature)
+        );
+        let mut corrupt = TEST_AUTHENTICODE.to_vec();
+        let signature = signed.signer().signature;
+        let offset = corrupt
+            .windows(signature.len())
+            .position(|bytes| bytes == signature)
+            .unwrap();
+        corrupt[offset] ^= 1;
+        let signed = AuthenticodeSignedData::decode(&corrupt).unwrap();
+        assert_eq!(
+            authenticode_signature(&signed, &TEST_IMAGE_DIGEST, &[TEST_IMAGE_CA]),
+            Err(Error::InvalidSignature)
+        );
+    }
 
     #[test]
     fn verifies_microsoft_update_against_enrolled_2023_kek() {

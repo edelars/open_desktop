@@ -630,6 +630,8 @@ reset-регистр ACPI из handoff. Машина фиксирует запр
 
 На S7-24 реализованы декодеры `EFI_SIGNATURE_LIST`, Auth2 и detached PKCS#7. С общим верификатором подтверждена проверка RSA-2048/SHA-256 Microsoft `dbx` update до зачисленного KEK 2023, а также отказы для чужого ключа и испорченной подписи. Защищённые переменные подключены через handoff v1.14 в отладочном профиле с явно отключённой политикой образов. Проверка образов и измерение PCR7 остаются в работе. [ADR-0011](../decisions/ADR-0011-secure-boot-keys.md), [план S7-24](../plans/STAGE_7.md#s7-24-реализовать-secure-boot).
 
+Слой Authenticode проверяет `SpcIndirectDataContent`, связывает его SHA-256 с обязательными подписанными атрибутами и проверяет RSA-2048/PKCS#1 v1.5 на DER SET OF этих атрибутов. Верификатор сверяет вычисленный PE-дайджест и возвращает индекс зачисленного сертификата, который завершил цепочку. Даты действия сертификатов обрабатываются по ADR-0011. Вызов политики `db`/`dbx` из `LoadImage` и `StartImage` остаётся в работе. [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315#section-9.3), [UEFI 2.11 §32.5](https://uefi.org/specs/UEFI/2.11/32_Secure_Boot_and_Driver_Signing.html#uefi-image-validation).
+
 ## Переменные
 
 S7-09 заполняет четыре слота Runtime Services `GetVariable`, `GetNextVariableName`, `SetVariable` и `QueryVariableInfo`. Приложение `vars` проверяет их до `ExitBootServices`, а `rt` обслуживает проверку физического и виртуального режимов после выхода. Таблица и данные переменных находятся в `EfiRuntimeServicesData`. В runtime видимы записи с `EFI_VARIABLE_RUNTIME_ACCESS`.

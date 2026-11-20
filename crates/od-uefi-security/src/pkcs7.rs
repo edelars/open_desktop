@@ -1,9 +1,12 @@
-//! Detached RSA/SHA-256 SignedData for UEFI Auth2 updates.
+//! RSA/SHA-256 PKCS#7 SignedData for Auth2 updates and PE image signatures.
 
 use der::{
     Decode, Reader, SliceReader, Tag, TagNumber, Tagged,
     asn1::{AnyRef, ObjectIdentifier, UintRef},
 };
+
+mod authenticode;
+pub use authenticode::AuthenticodeSignedData;
 
 const ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const ID_SIGNED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
@@ -56,64 +59,15 @@ impl<'a> DetachedSignedData<'a> {
         if bytes.len() > MAX_SIGNED_DATA_BYTES {
             return Err(Error::TooLarge);
         }
-        let mut fields = sequence(bytes)?;
-        if Tag::peek(&fields)? == Tag::ObjectIdentifier {
-            let content_type: ObjectIdentifier = fields.decode()?;
-            if content_type != ID_SIGNED_DATA {
-                return Err(Error::UnsupportedProfile);
-            }
-            let signed_data = require_tag(&mut fields, CONTEXT_ZERO)?;
-            fields.finish()?;
-            fields = sequence(signed_data)?;
-        }
-
-        if fields.decode::<u8>()? != 1 {
-            return Err(Error::UnsupportedProfile);
-        }
-        let mut digests = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
-        if algorithm(&mut digests)? != SHA256 {
-            return Err(Error::UnsupportedProfile);
-        }
-        digests.finish()?;
-
+        let mut fields = signed_data_header(bytes, false)?;
         let mut contents = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
         if contents.decode::<ObjectIdentifier>()? != ID_DATA || !contents.is_finished() {
             return Err(Error::UnsupportedProfile);
         }
-
-        let mut certificates = [None; MAX_CERTIFICATES];
-        let mut entries = SliceReader::new(require_tag(&mut fields, CONTEXT_ZERO)?)?;
-        if entries.is_finished() {
-            return Err(Error::Malformed);
-        }
-        let mut previous = None;
-        for slot in &mut certificates {
-            if entries.is_finished() {
-                break;
-            }
-            *slot = Some(ordered_sequence(&mut entries, &mut previous)?);
-        }
-        if !entries.is_finished() {
-            return Err(Error::TooLarge);
-        }
-
-        if Tag::peek(&fields)? == CONTEXT_ONE {
-            // Optional CRLs are not authorities. UEFI image revocation uses dbx.
-            let mut crls = SliceReader::new(require_tag(&mut fields, CONTEXT_ONE)?)?;
-            let mut previous = None;
-            while !crls.is_finished() {
-                ordered_sequence(&mut crls, &mut previous)?;
-            }
-        }
-        let mut signer_set = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
-        let signer = signer_set.sequence(parse_signer)?;
-        if !signer_set.is_finished() {
-            return Err(Error::UnsupportedProfile);
-        }
-        fields.finish()?;
+        let signed = signed_data_tail(fields, None)?;
         Ok(Self {
-            signer,
-            certificates,
+            signer: signed.signer,
+            certificates: signed.certificates,
         })
     }
 
@@ -122,7 +76,81 @@ impl<'a> DetachedSignedData<'a> {
     }
 }
 
-fn parse_signer<'a>(fields: &mut SliceReader<'a>) -> Result<Signer<'a>, Error> {
+fn signed_data_header(bytes: &[u8], require_content_info: bool) -> Result<SliceReader<'_>, Error> {
+    let mut fields = sequence(bytes)?;
+    if Tag::peek(&fields)? == Tag::ObjectIdentifier {
+        let content_type: ObjectIdentifier = fields.decode()?;
+        if content_type != ID_SIGNED_DATA {
+            return Err(Error::UnsupportedProfile);
+        }
+        let signed_data = require_tag(&mut fields, CONTEXT_ZERO)?;
+        fields.finish()?;
+        fields = sequence(signed_data)?;
+    } else if require_content_info {
+        return Err(Error::UnsupportedProfile);
+    }
+    if fields.decode::<u8>()? != 1 {
+        return Err(Error::UnsupportedProfile);
+    }
+    let mut digests = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
+    if algorithm(&mut digests)? != SHA256 {
+        return Err(Error::UnsupportedProfile);
+    }
+    digests.finish()?;
+    Ok(fields)
+}
+
+struct SignedDataTail<'a> {
+    signer: Signer<'a>,
+    certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
+    signature_digest: Option<[u8; 32]>,
+}
+
+fn signed_data_tail<'a>(
+    mut fields: SliceReader<'a>,
+    content_digest: Option<&[u8; 32]>,
+) -> Result<SignedDataTail<'a>, Error> {
+    let mut certificates = [None; MAX_CERTIFICATES];
+    let mut entries = SliceReader::new(require_tag(&mut fields, CONTEXT_ZERO)?)?;
+    if entries.is_finished() {
+        return Err(Error::Malformed);
+    }
+    let mut previous = None;
+    for slot in &mut certificates {
+        if entries.is_finished() {
+            break;
+        }
+        *slot = Some(ordered_sequence(&mut entries, &mut previous)?);
+    }
+    if !entries.is_finished() {
+        return Err(Error::TooLarge);
+    }
+    if Tag::peek(&fields)? == CONTEXT_ONE {
+        // Optional CRLs are not authorities. UEFI image revocation uses dbx.
+        let mut crls = SliceReader::new(require_tag(&mut fields, CONTEXT_ONE)?)?;
+        let mut previous = None;
+        while !crls.is_finished() {
+            ordered_sequence(&mut crls, &mut previous)?;
+        }
+    }
+    let mut signer_set = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
+    let (signer, signature_digest) =
+        signer_set.sequence(|info| parse_signer(info, content_digest))?;
+    if !signer_set.is_finished() {
+        return Err(Error::UnsupportedProfile);
+    }
+    fields.finish()?;
+    Ok(SignedDataTail {
+        signer,
+        certificates,
+        signature_digest,
+    })
+}
+
+fn parse_signer<'a>(
+    fields: &mut SliceReader<'a>,
+    content_digest: Option<&[u8; 32]>,
+) -> Result<(Signer<'a>, Option<[u8; 32]>), Error> {
     if fields.decode::<u8>()? != 1 {
         return Err(Error::UnsupportedProfile);
     }
@@ -130,9 +158,14 @@ fn parse_signer<'a>(fields: &mut SliceReader<'a>) -> Result<Signer<'a>, Error> {
     let issuer_der = raw_sequence(&mut id)?;
     let serial = id.decode::<UintRef<'a>>()?.as_bytes();
     id.finish()?;
-    if algorithm(fields)? != SHA256 || Tag::peek(fields)? == CONTEXT_ZERO {
+    if algorithm(fields)? != SHA256 {
         return Err(Error::UnsupportedProfile);
     }
+    let signature_digest = match content_digest {
+        Some(digest) => Some(authenticode::authenticated_attributes(fields, digest)?),
+        None if Tag::peek(fields)? == CONTEXT_ZERO => return Err(Error::UnsupportedProfile),
+        None => None,
+    };
     let oid = algorithm(fields)?;
     if oid != RSA_ENCRYPTION && oid != SHA256_WITH_RSA {
         return Err(Error::UnsupportedProfile);
@@ -140,14 +173,20 @@ fn parse_signer<'a>(fields: &mut SliceReader<'a>) -> Result<Signer<'a>, Error> {
     let signature = require_tag(fields, Tag::OctetString)?
         .try_into()
         .map_err(|_| Error::UnsupportedProfile)?;
+    if !fields.is_finished() && content_digest.is_some() {
+        authenticode::unauthenticated_attributes(fields)?;
+    }
     if !fields.is_finished() {
         return Err(Error::UnsupportedProfile);
     }
-    Ok(Signer {
-        issuer_der,
-        serial,
-        signature,
-    })
+    Ok((
+        Signer {
+            issuer_der,
+            serial,
+            signature,
+        },
+        signature_digest,
+    ))
 }
 
 fn algorithm(fields: &mut SliceReader<'_>) -> Result<ObjectIdentifier, Error> {
