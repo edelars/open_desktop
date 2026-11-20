@@ -25,7 +25,9 @@ impl Status {
     pub const NO_MAPPING: Self = Self(Self::ERROR_BIT | 17);
     pub const TIMEOUT: Self = Self(Self::ERROR_BIT | 18);
     pub const ALREADY_STARTED: Self = Self(Self::ERROR_BIT | 20);
+    pub const ABORTED: Self = Self(Self::ERROR_BIT | 21);
     pub const SECURITY_VIOLATION: Self = Self(Self::ERROR_BIT | 26);
+    pub const COMPROMISED_DATA: Self = Self(Self::ERROR_BIT | 33);
 
     const ERROR_BIT: usize = 1 << (usize::BITS - 1);
 

@@ -30,7 +30,8 @@ const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const HANDOFF_MINOR_TPM: u16 = 13;
 const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
 const HANDOFF_MINOR_SECURE_BOOT: u16 = 15;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_SECURE_BOOT;
+const HANDOFF_MINOR_PKCS7: u16 = od_uefi_security::pkcs7::transport::HANDOFF_MINOR;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_PKCS7;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
@@ -691,7 +692,8 @@ impl<'a> Handoff<'a> {
             | HANDOFF_MINOR_FV_APP_ACPI
             | HANDOFF_MINOR_FV_APP_GOP
             | HANDOFF_MINOR_PROTECTED_NVRAM
-            | HANDOFF_MINOR_SECURE_BOOT => device_count >= 7 && device_count <= 10,
+            | HANDOFF_MINOR_SECURE_BOOT
+            | HANDOFF_MINOR_PKCS7 => device_count >= 7 && device_count <= 10,
             HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS | HANDOFF_MINOR_TPM => {
                 device_count >= 8 && device_count <= 10
             }
@@ -858,6 +860,10 @@ impl<'a> Handoff<'a> {
 
     pub fn enforces_secure_boot(&self) -> bool {
         self.version_minor >= HANDOFF_MINOR_SECURE_BOOT
+    }
+
+    pub fn supports_pkcs7_verify(&self) -> bool {
+        self.version_minor >= HANDOFF_MINOR_PKCS7
     }
 
     fn nvram_owner(&self) -> Option<u32> {

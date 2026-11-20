@@ -2,6 +2,7 @@
 
 pub mod guid;
 pub mod loaded_image;
+pub mod pkcs7;
 pub mod runtime;
 pub mod status;
 pub mod system_table;

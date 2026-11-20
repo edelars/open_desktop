@@ -6,10 +6,21 @@ publish = false
 
 [workspace]
 
+[features]
+pkcs7-probe = []
+
 [dependencies]
 od-firmware = { path = "../.." }
 
 [lib]
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "pkcs7-probe"
+path = "pkcs7-probe/main.rs"
+required-features = ["pkcs7-probe"]
 test = false
 bench = false
 doc = false

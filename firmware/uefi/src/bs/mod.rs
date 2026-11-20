@@ -6,6 +6,8 @@ pub mod exit;
 pub mod image;
 pub mod memory;
 pub mod misc;
+#[cfg(target_os = "none")]
+pub mod pkcs7;
 pub mod protocol;
 mod state;
 

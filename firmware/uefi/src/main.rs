@@ -322,6 +322,13 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
             stop(STOP_BOOT_SERVICES, status.raw() as u64);
         }
     }
+    if handoff.supports_pkcs7_verify() {
+        // The handoff parser requires a protected NVRAM aperture at this version.
+        let status = unsafe { od_firmware::bs::pkcs7::install(handoff.nvram_base().unwrap()) };
+        if status != Status::SUCCESS {
+            stop(STOP_BOOT_SERVICES, status.raw() as u64);
+        }
+    }
     if unsafe { od_firmware::console::install() } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 74);
     }

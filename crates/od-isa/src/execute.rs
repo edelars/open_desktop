@@ -21767,6 +21767,25 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined | (POPFQ_CPL0_FLAGS & crate::INTEGER_FLAGS),
             };
         }
+        // S7-24: the firmware PKCS#7 call passes absent and SHA-256 stack arguments.
+        Operation::PushImmediate {
+            value: value @ (0 | 0x20),
+        } if firmware_boot_profile
+            && instruction.length == 2
+            && instruction.opcode.map == OpcodeMap::Primary
+            && instruction.opcode.byte == 0x6a
+            && instruction.prefixes == Prefixes::default()
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
         Operation::StackRegister {
             push: true,
             register,
@@ -166562,6 +166581,101 @@ mod tests {
         state.activity = Some(crate::CpuActivity::Running);
         state.sti_shadow = Some(crate::StiShadow::Clear);
         state
+    }
+
+    #[test]
+    fn firmware_pkcs7_pushes_only_the_observed_qword_immediates() {
+        struct NoPortIo;
+        impl crate::PortIo for NoPortIo {
+            type Error = ();
+            fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+                Err(())
+            }
+            fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+                Err(())
+            }
+        }
+
+        let stack_state = || {
+            let mut state = paged_lgdt_state(0);
+            state.cr3 = None;
+            state.gpr[Register::Rsp as usize] = 0x1010;
+            state
+        };
+        const DEFINED: u64 = crate::INTEGER_FLAGS & !crate::ZF;
+        for immediate in [0, 0x20] {
+            let mut state = stack_state();
+            let mut expected = state.clone();
+            expected.rip += 2;
+            expected.gpr[Register::Rsp as usize] = 0x1008;
+            let mut memory = Memory::at(&[0x6a, immediate], state.rip);
+            let result = step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut NoPortIo,
+                lgdt_ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, DEFINED);
+            assert_eq!(state, expected);
+            assert_eq!(memory.accesses, [(AccessKind::Write, 0x1008, 8)]);
+            assert_eq!(&memory.bytes[8..16], &u64::from(immediate).to_le_bytes());
+        }
+        for code in [&[0x6a, 0xff][..], &[0x66, 0x6a, 0][..], &[0x6a, 0x21][..]] {
+            let mut state = stack_state();
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut NoPortIo,
+                lgdt_ring0(),
+                DEFINED,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x6a });
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = stack_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x6a, 0], state.rip);
+        let result = step_paged_probe(
+            PagedCpl0ProbeV1,
+            &mut state,
+            &mut memory,
+            &mut NoPortIo,
+            lgdt_ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x6a });
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = stack_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x6a, 0], state.rip);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(2),
+            linear_address: Some(0x1008),
+        };
+        memory.error = Some(MemoryError::Architectural(fault.clone()));
+        memory.error_kind = Some(AccessKind::Write);
+        let result = step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut state,
+            &mut memory,
+            &mut NoPortIo,
+            lgdt_ring0(),
+            DEFINED,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 
     #[test]

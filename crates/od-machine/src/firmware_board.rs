@@ -185,6 +185,7 @@ const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const HANDOFF_MINOR_TPM: u16 = 13;
 const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
 const HANDOFF_MINOR_SECURE_BOOT: u16 = 15;
+const HANDOFF_MINOR_PKCS7: u16 = od_uefi_security::pkcs7::transport::HANDOFF_MINOR;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -3557,7 +3558,10 @@ struct FirmwareLayout {
 }
 
 impl FirmwareLayout {
-    fn for_config(config: &FirmwareBoardConfig) -> Result<Self, FirmwareBoardError> {
+    fn for_config(
+        config: &FirmwareBoardConfig,
+        secure_boot_minor: u16,
+    ) -> Result<Self, FirmwareBoardError> {
         validate_config(config)?;
         let devices = configured_board_devices(config);
         let map = board_map(config, &devices)?;
@@ -3587,7 +3591,7 @@ impl FirmwareLayout {
             .as_ref()
             .is_some_and(|device| device.has_protected_store() && !device.secure_boot_disabled())
         {
-            HANDOFF_MINOR_SECURE_BOOT
+            secure_boot_minor
         } else {
             handoff_minor(config, &devices)
         };
@@ -3603,9 +3607,10 @@ impl FirmwareLayout {
     }
 }
 
-/// Serialize the exact handoff configured for a firmware board without allocating a VM.
+/// Serialize the board's handoff without a ROM. Use the baseline Secure Boot version
+/// until a specific ROM advertises the optional PKCS#7 transport.
 pub fn firmware_handoff_block(config: &FirmwareBoardConfig) -> Result<Vec<u8>, FirmwareBoardError> {
-    Ok(FirmwareLayout::for_config(config)?.handoff)
+    Ok(FirmwareLayout::for_config(config, HANDOFF_MINOR_SECURE_BOOT)?.handoff)
 }
 
 /// Assemble the board without touching guest memory (S4-37L4): validate the
@@ -3622,7 +3627,7 @@ pub(crate) fn assemble_board(
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
-    let layout = FirmwareLayout::for_config(config)?;
+    let layout = FirmwareLayout::for_config(config, HANDOFF_MINOR_SECURE_BOOT)?;
     if layout.minor == HANDOFF_MINOR_SECURE_BOOT {
         return Err(FirmwareBoardError::Nvram(
             NvramContentsError::ProtectionRequiresFirmware,
@@ -4109,8 +4114,14 @@ fn load_firmware_image_inner(
             "nvme_pci needs Linux direct boot",
         ));
     }
-    let layout = FirmwareLayout::for_config(config)?;
-    if layout.minor == HANDOFF_MINOR_SECURE_BOOT && le_u16(image, 0x2A)? < layout.minor {
+    let advertised = le_u16(image, 0x2A)?;
+    let secure_boot_minor = if advertised >= HANDOFF_MINOR_PKCS7 {
+        HANDOFF_MINOR_PKCS7
+    } else {
+        HANDOFF_MINOR_SECURE_BOOT
+    };
+    let layout = FirmwareLayout::for_config(config, secure_boot_minor)?;
+    if layout.minor >= HANDOFF_MINOR_SECURE_BOOT && advertised < layout.minor {
         return Err(FirmwareBoardError::Nvram(
             NvramContentsError::ProtectionRequiresFirmware,
         ));
@@ -6816,6 +6827,12 @@ mod tests {
         assert_eq!(
             firmware_handoff_block(&config).unwrap(),
             board.handoff_block()
+        );
+        let pkcs7_rom = test_image(&[0xf4], &[(0x2A, &HANDOFF_MINOR_PKCS7.to_le_bytes())]);
+        let board = load_firmware_image(&pkcs7_rom, &config).unwrap();
+        assert_eq!(
+            le_u16(board.handoff_block(), 0x0A).unwrap(),
+            HANDOFF_MINOR_PKCS7
         );
         assert!(matches!(
             assemble_board(&config, PciEcam::new(), None, None),

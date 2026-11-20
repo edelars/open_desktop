@@ -5,6 +5,8 @@ use crate::uefi::status::Status;
 use core::ptr;
 #[cfg(target_os = "none")]
 use od_uefi_security::image_execution::{RejectedImage, RejectedImageAction};
+#[cfg(target_os = "none")]
+use od_uefi_security::pkcs7::transport as pkcs7;
 
 const ADDR: usize = MAX_STORE_BYTES;
 const LEN: usize = MAX_STORE_BYTES + 4;
@@ -131,7 +133,7 @@ impl Nvram {
                     let out = authority
                         .get_mut(..length)
                         .ok_or(Status::BUFFER_TOO_SMALL)?;
-                    self.read_image_reply(out);
+                    self.read_transfer_reply(out);
                 }
                 Ok(ImageCheck::Authorized(length))
             }
@@ -143,7 +145,7 @@ impl Nvram {
                     0 => None,
                     32 => {
                         let mut digest = [0; 32];
-                        self.read_image_reply(&mut digest);
+                        self.read_transfer_reply(&mut digest);
                         Some(digest)
                     }
                     _ => return Err(Status::DEVICE_ERROR),
@@ -156,7 +158,7 @@ impl Nvram {
     }
 
     #[cfg(target_os = "none")]
-    fn read_image_reply(self, out: &mut [u8]) {
+    fn read_transfer_reply(self, out: &mut [u8]) {
         for (offset, byte) in out.iter_mut().enumerate() {
             *byte =
                 unsafe { ptr::with_exposed_provenance::<u8>(self.base + offset).read_volatile() };
@@ -176,13 +178,45 @@ impl Nvram {
             return Err(Status::DEVICE_ERROR);
         }
         self.begin_transfer(2, 2, image.len())?;
+        self.write_staged(0, image);
+        Ok(())
+    }
+
+    fn write_staged(self, offset: usize, image: &[u8]) {
         for (index, &byte) in image.iter().enumerate() {
             // SAFETY: WRITE accepted this range and bytes are submitted in order.
             unsafe {
-                ptr::with_exposed_provenance_mut::<u8>(self.base + index).write_volatile(byte)
+                ptr::with_exposed_provenance_mut::<u8>(self.base + offset + index)
+                    .write_volatile(byte)
             };
         }
-        Ok(())
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn verify_pkcs7<'a>(
+        self,
+        header: &[u8; pkcs7::HEADER_BYTES],
+        total: usize,
+        parts: impl Iterator<Item = &'a [u8]>,
+    ) -> Result<pkcs7::Reply, Status> {
+        self.begin_transfer(2, 2, total)?;
+        self.write_staged(0, header);
+        let mut offset = header.len();
+        for part in parts {
+            let end = offset.checked_add(part.len()).ok_or(Status::DEVICE_ERROR)?;
+            if end > total {
+                return Err(Status::DEVICE_ERROR);
+            }
+            self.write_staged(offset, part);
+            offset = end;
+        }
+        if offset != total || self.image_command(pkcs7::VERIFY_COMMAND, 0, 0) != pkcs7::REPLY_READY
+        {
+            return Err(Status::DEVICE_ERROR);
+        }
+        let mut reply = [0; pkcs7::REPLY_BYTES];
+        self.read_transfer_reply(&mut reply);
+        pkcs7::Reply::decode(&reply).map_err(|_| Status::DEVICE_ERROR)
     }
 
     fn begin_transfer(self, command: u32, expected: u32, length: usize) -> Result<(), Status> {
