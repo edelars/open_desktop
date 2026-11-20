@@ -15,6 +15,8 @@ const SPC_INDIRECT_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.
 const SPC_PE_IMAGE_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.15");
 const CONTENT_TYPE: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.3");
 const MESSAGE_DIGEST: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4");
+const SPC_NESTED_SIGNATURE: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.4.1");
 const MAX_IMAGE_SIGNATURE_BYTES: usize = 64 * 1024;
 const MAX_DER_DEPTH: usize = 32;
 const DER_SET_TAG: u8 = 0x31;
@@ -25,6 +27,7 @@ pub struct AuthenticodeSignedData<'a> {
     image_digest: [u8; 32],
     signature_digest: [u8; 32],
     certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
+    nested_signatures: Option<&'a [u8]>,
 }
 
 impl<'a> AuthenticodeSignedData<'a> {
@@ -53,10 +56,11 @@ impl<'a> AuthenticodeSignedData<'a> {
         let (image_digest, content_digest) = indirect_data(indirect)?;
         let signed = signed_data_tail(fields, Some(&content_digest))?;
         Ok(Self {
-            signer: signed.signer,
+            signer: signed.info.signer,
             image_digest,
-            signature_digest: signed.signature_digest.ok_or(Error::Malformed)?,
+            signature_digest: signed.info.signature_digest.ok_or(Error::Malformed)?,
             certificates: signed.certificates,
+            nested_signatures: signed.info.nested_signatures,
         })
     }
 
@@ -76,6 +80,20 @@ impl<'a> AuthenticodeSignedData<'a> {
 
     pub fn certificates(&self) -> impl Iterator<Item = &'a [u8]> {
         self.certificates.into_iter().flatten()
+    }
+
+    /// Exact DER ContentInfo values of nested PE signatures.
+    pub fn nested_signatures(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<&'a [u8], Error>>, Error> {
+        let mut entries = SliceReader::new(self.nested_signatures.unwrap_or(&[]))?;
+        Ok(core::iter::from_fn(move || {
+            if entries.is_finished() {
+                None
+            } else {
+                Some(raw_sequence(&mut entries))
+            }
+        }))
     }
 }
 
@@ -129,7 +147,8 @@ pub(super) fn authenticated_attributes(
     let mut have_digest = false;
     while !attributes.is_finished() {
         let encoded_attr = ordered_sequence(&mut attributes, &mut previous)?;
-        let (oid, mut values) = attribute(encoded_attr)?;
+        let (oid, values) = attribute(encoded_attr)?;
+        let mut values = SliceReader::new(values)?;
         match oid {
             CONTENT_TYPE if !have_content_type => {
                 if values.decode::<ObjectIdentifier>()? != SPC_INDIRECT_DATA {
@@ -160,23 +179,36 @@ pub(super) fn authenticated_attributes(
         .into())
 }
 
-pub(super) fn unauthenticated_attributes(fields: &mut SliceReader<'_>) -> Result<(), Error> {
+pub(super) fn unauthenticated_attributes<'a>(
+    fields: &mut SliceReader<'a>,
+) -> Result<Option<&'a [u8]>, Error> {
     let mut entries = SliceReader::new(require_tag(fields, CONTEXT_ONE)?)?;
     if entries.is_finished() {
         return Err(Error::Malformed);
     }
     let mut previous = None;
+    let mut nested = None;
     while !entries.is_finished() {
-        let (_, mut values) = attribute(ordered_sequence(&mut entries, &mut previous)?)?;
+        let (oid, data) = attribute(ordered_sequence(&mut entries, &mut previous)?)?;
+        let mut values = SliceReader::new(data)?;
         validate_attribute_values(&mut values)?;
+        if oid == SPC_NESTED_SIGNATURE {
+            if nested.replace(data).is_some() {
+                return Err(Error::Malformed);
+            }
+            let mut nested_values = SliceReader::new(data)?;
+            while !nested_values.is_finished() {
+                raw_sequence(&mut nested_values)?;
+            }
+        }
     }
-    Ok(())
+    Ok(nested)
 }
 
-fn attribute(encoded: &[u8]) -> Result<(ObjectIdentifier, SliceReader<'_>), Error> {
+fn attribute(encoded: &[u8]) -> Result<(ObjectIdentifier, &[u8]), Error> {
     let mut fields = sequence(encoded)?;
     let oid = fields.decode()?;
-    let values = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
+    let values = require_tag(&mut fields, Tag::Set)?;
     fields.finish()?;
     Ok((oid, values))
 }

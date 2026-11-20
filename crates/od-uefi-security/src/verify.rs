@@ -1,6 +1,6 @@
 //! Verification of detached Auth2 signatures with the enrolled platform and exchange keys.
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use der::{Decode, Encode, asn1::ObjectIdentifier, oid::AssociatedOid};
 use rsa::{Pkcs1v15Sign, PublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
@@ -14,6 +14,9 @@ use crate::pkcs7::{
     AuthenticodeSignedData, DetachedSignedData, MAX_CERTIFICATES, RSA_2048_SIGNATURE_BYTES, Signer,
     raw_sequence, sequence,
 };
+
+mod image_policy;
+pub use image_policy::{ImageAuthority, ImagePolicyError, authorize_image};
 
 const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");
@@ -74,7 +77,7 @@ struct Candidate<'a> {
     certificate: Certificate,
     key: PublicKey,
     digital_signature: bool,
-    issuer_max_path: Option<u8>,
+    issuer_max_path: Option<usize>,
 }
 
 impl<'a> Candidate<'a> {
@@ -104,15 +107,16 @@ impl<'a> Candidate<'a> {
             .filter(|(_, constraints)| {
                 constraints.ca && code_signing && usage.is_none_or(|usage| usage.key_cert_sign())
             })
-            .map(|(_, constraints)| constraints.path_len_constraint.unwrap_or(u8::MAX));
+            .map(|(_, constraints)| {
+                constraints
+                    .path_len_constraint
+                    .map_or(usize::MAX, usize::from)
+            });
 
         let key = public_key(&certificate)?;
-        let tbs_der = sequence(der)
-            .and_then(|mut fields| raw_sequence(&mut fields))
-            .map_err(|_| Error::InvalidCertificate)?;
         Ok(Self {
             der,
-            tbs_hash: Sha256::digest(tbs_der).into(),
+            tbs_hash: certificate_tbs_hash(der)?,
             certificate,
             key,
             digital_signature: code_signing && usage.is_none_or(|usage| usage.digital_signature()),
@@ -120,7 +124,7 @@ impl<'a> Candidate<'a> {
         })
     }
 
-    fn is_signed_by(&self, issuer: &Self) -> bool {
+    fn certificate_signature_supported(&self) -> bool {
         let algorithm = self.certificate.signature_algorithm();
         let tbs = self.certificate.tbs_certificate();
         algorithm.oid == SHA256_WITH_RSA
@@ -129,7 +133,12 @@ impl<'a> Candidate<'a> {
                 .as_ref()
                 .is_none_or(|param| param.is_null())
             && tbs.signature() == algorithm
-            && tbs.issuer() == issuer.certificate.tbs_certificate().subject()
+    }
+
+    fn is_signed_by(&self, issuer: &Self) -> bool {
+        self.certificate_signature_supported()
+            && self.certificate.tbs_certificate().issuer()
+                == issuer.certificate.tbs_certificate().subject()
             && self
                 .certificate
                 .signature()
@@ -142,10 +151,23 @@ impl<'a> Candidate<'a> {
                 })
     }
 
+    fn can_issue(&self, child: &Self, intermediates: usize) -> bool {
+        self.issuer_max_path
+            .is_some_and(|limit| intermediates <= limit)
+            && child.is_signed_by(self)
+    }
+
     fn is_self_issued(&self) -> bool {
         let tbs = self.certificate.tbs_certificate();
         tbs.issuer() == tbs.subject()
     }
+}
+
+fn certificate_tbs_hash(der: &[u8]) -> Result<[u8; 32], Error> {
+    let tbs = sequence(der)
+        .and_then(|mut fields| raw_sequence(&mut fields))
+        .map_err(|_| Error::InvalidCertificate)?;
+    Ok(Sha256::digest(tbs).into())
 }
 
 fn public_key(certificate: &Certificate) -> Result<PublicKey, Error> {
@@ -216,18 +238,14 @@ pub fn authenticode_signature(
         .find_authority(|child, intermediates| {
             anchors.iter().position(|anchor| {
                 anchor.as_ref().is_some_and(|anchor| {
-                    child.der == anchor.der
-                        || (anchor
-                            .issuer_max_path
-                            .is_some_and(|limit| intermediates <= limit)
-                            && child.is_signed_by(anchor))
+                    child.der == anchor.der || anchor.can_issue(child, intermediates)
                 })
             })
         })
         .ok_or(Error::UntrustedSigner)
 }
 
-struct VerifiedSigner<'a> {
+struct SignerChain<'a> {
     certificates: Vec<Candidate<'a>>,
     signer: usize,
 }
@@ -236,7 +254,16 @@ fn verify_signer<'a>(
     signed: Signer<'a>,
     certificates: impl Iterator<Item = &'a [u8]>,
     digest: &[u8; 32],
-) -> Result<VerifiedSigner<'a>, Error> {
+) -> Result<SignerChain<'a>, Error> {
+    let chain = identify_signer(signed, certificates)?;
+    chain.check_signature(signed.signature, digest)?;
+    Ok(chain)
+}
+
+fn identify_signer<'a>(
+    signed: Signer<'a>,
+    certificates: impl Iterator<Item = &'a [u8]>,
+) -> Result<SignerChain<'a>, Error> {
     let certificates = certificates
         .map(Candidate::parse)
         .collect::<Result<Vec<_>, _>>()?;
@@ -256,49 +283,70 @@ fn verify_signer<'a>(
         }
     }
     let signer = signer.ok_or(Error::UntrustedSigner)?;
-    let leaf = &certificates[signer];
-    if !leaf.digital_signature
-        || leaf
-            .key
-            .verify(Pkcs1v15Sign::new::<Sha256>(), digest, signed.signature)
-            .is_err()
-    {
-        return Err(Error::InvalidSignature);
-    }
-    Ok(VerifiedSigner {
+    Ok(SignerChain {
         certificates,
         signer,
     })
 }
 
-impl VerifiedSigner<'_> {
+#[derive(Clone, Copy)]
+enum IssuerPath {
+    CodeSigning,
+    Revocation,
+}
+
+impl SignerChain<'_> {
+    fn check_signature(&self, signature: &[u8], digest: &[u8; 32]) -> Result<(), Error> {
+        let leaf = &self.certificates[self.signer];
+        if leaf.digital_signature
+            && leaf
+                .key
+                .verify(Pkcs1v15Sign::new::<Sha256>(), digest, signature)
+                .is_ok()
+        {
+            Ok(())
+        } else {
+            Err(Error::InvalidSignature)
+        }
+    }
+
     fn find_authority<T>(
         &self,
-        mut authorize: impl FnMut(&Candidate<'_>, u8) -> Option<T>,
+        authorize: impl FnMut(&Candidate<'_>, usize) -> Option<T>,
     ) -> Option<T> {
-        // Prefer the shortest path in non-self-issued intermediate CAs, even
-        // when multiple embedded certificates have the same subject.
-        let mut path_len = [u8::MAX; MAX_CERTIFICATES];
-        let mut visited = [false; MAX_CERTIFICATES];
+        self.find_with_issuers(core::iter::empty(), IssuerPath::CodeSigning, authorize)
+    }
+
+    fn find_with_issuers<'a, T>(
+        &'a self,
+        external: impl Iterator<Item = &'a Candidate<'a>>,
+        path: IssuerPath,
+        mut authorize: impl FnMut(&Candidate<'_>, usize) -> Option<T>,
+    ) -> Option<T> {
+        // A certificate's shortest path minimizes the number of non-self-issued
+        // intermediate CAs. Longer paths cannot satisfy a stricter pathLen.
+        let certificates = self.certificates.iter().chain(external).collect::<Vec<_>>();
+        let mut path_len = vec![usize::MAX; certificates.len()];
+        let mut visited = vec![false; certificates.len()];
         path_len[self.signer] = 0;
-        while let Some(index) = (0..self.certificates.len())
-            .filter(|&index| !visited[index] && path_len[index] != u8::MAX)
+        while let Some(index) = (0..certificates.len())
+            .filter(|&index| !visited[index] && path_len[index] != usize::MAX)
             .min_by_key(|&index| path_len[index])
         {
             visited[index] = true;
-            let child = &self.certificates[index];
+            let child = certificates[index];
             let intermediates =
-                path_len[index] + u8::from(index != self.signer && !child.is_self_issued());
+                path_len[index] + usize::from(index != self.signer && !child.is_self_issued());
             if let Some(authority) = authorize(child, intermediates) {
                 return Some(authority);
             }
-            for (parent_index, parent) in self.certificates.iter().enumerate() {
+            for (parent_index, parent) in certificates.iter().enumerate() {
                 if !visited[parent_index]
                     && intermediates < path_len[parent_index]
-                    && parent
-                        .issuer_max_path
-                        .is_some_and(|limit| intermediates <= limit)
-                    && child.is_signed_by(parent)
+                    && match path {
+                        IssuerPath::CodeSigning => parent.can_issue(child, intermediates),
+                        IssuerPath::Revocation => child.is_signed_by(parent),
+                    }
                 {
                     path_len[parent_index] = intermediates;
                 }
@@ -320,11 +368,11 @@ mod tests {
         include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2023.der");
     const KEK_2011: &[u8] =
         include_bytes!("../../../tests/fixtures/firmware/certs/microsoft-kek-ca-2011.der");
-    const TEST_AUTHENTICODE: &[u8] =
+    pub(super) const TEST_AUTHENTICODE: &[u8] =
         include_bytes!("../../../tests/fixtures/firmware/certs/authenticode-test-hello-sha256.p7b");
-    const TEST_IMAGE_CA: &[u8] =
+    pub(super) const TEST_IMAGE_CA: &[u8] =
         include_bytes!("../../../tests/fixtures/firmware/certs/authenticode-test-ca.der");
-    const TEST_IMAGE_DIGEST: [u8; 32] = [
+    pub(super) const TEST_IMAGE_DIGEST: [u8; 32] = [
         0xca, 0x85, 0x1c, 0x2a, 0xcc, 0x75, 0x3a, 0xd7, 0x77, 0x2f, 0x5a, 0x36, 0x6f, 0xaa, 0xac,
         0xad, 0xf7, 0x39, 0x9a, 0x1e, 0xa7, 0x36, 0x4a, 0xc4, 0x31, 0x1a, 0x56, 0x25, 0xf4, 0x87,
         0xda, 0x39,

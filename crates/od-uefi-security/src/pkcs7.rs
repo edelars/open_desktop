@@ -66,7 +66,7 @@ impl<'a> DetachedSignedData<'a> {
         }
         let signed = signed_data_tail(fields, None)?;
         Ok(Self {
-            signer: signed.signer,
+            signer: signed.info.signer,
             certificates: signed.certificates,
         })
     }
@@ -101,9 +101,14 @@ fn signed_data_header(bytes: &[u8], require_content_info: bool) -> Result<SliceR
 }
 
 struct SignedDataTail<'a> {
-    signer: Signer<'a>,
+    info: SignerInfo<'a>,
     certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
+}
+
+struct SignerInfo<'a> {
+    signer: Signer<'a>,
     signature_digest: Option<[u8; 32]>,
+    nested_signatures: Option<&'a [u8]>,
 }
 
 fn signed_data_tail<'a>(
@@ -134,23 +139,18 @@ fn signed_data_tail<'a>(
         }
     }
     let mut signer_set = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
-    let (signer, signature_digest) =
-        signer_set.sequence(|info| parse_signer(info, content_digest))?;
+    let info = signer_set.sequence(|info| parse_signer(info, content_digest))?;
     if !signer_set.is_finished() {
         return Err(Error::UnsupportedProfile);
     }
     fields.finish()?;
-    Ok(SignedDataTail {
-        signer,
-        certificates,
-        signature_digest,
-    })
+    Ok(SignedDataTail { info, certificates })
 }
 
 fn parse_signer<'a>(
     fields: &mut SliceReader<'a>,
     content_digest: Option<&[u8; 32]>,
-) -> Result<(Signer<'a>, Option<[u8; 32]>), Error> {
+) -> Result<SignerInfo<'a>, Error> {
     if fields.decode::<u8>()? != 1 {
         return Err(Error::UnsupportedProfile);
     }
@@ -173,20 +173,23 @@ fn parse_signer<'a>(
     let signature = require_tag(fields, Tag::OctetString)?
         .try_into()
         .map_err(|_| Error::UnsupportedProfile)?;
-    if !fields.is_finished() && content_digest.is_some() {
-        authenticode::unauthenticated_attributes(fields)?;
-    }
+    let nested_signatures = if !fields.is_finished() && content_digest.is_some() {
+        authenticode::unauthenticated_attributes(fields)?
+    } else {
+        None
+    };
     if !fields.is_finished() {
         return Err(Error::UnsupportedProfile);
     }
-    Ok((
-        Signer {
+    Ok(SignerInfo {
+        signer: Signer {
             issuer_der,
             serial,
             signature,
         },
         signature_digest,
-    ))
+        nested_signatures,
+    })
 }
 
 fn algorithm(fields: &mut SliceReader<'_>) -> Result<ObjectIdentifier, Error> {
