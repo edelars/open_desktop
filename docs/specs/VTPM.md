@@ -123,6 +123,13 @@ RSA-2048 и P-256 Storage keys с `nameAlg=SHA-256` принимают
 предшествует дешифрованию. Форматы AES-128, контекста и snapshot v8
 сохраняются.
 
+При `TPM2_Create` дочерний Storage key с установленным `fixedParent`
+должен совпадать с родителем по `nameAlg` и симметричным параметрам.
+`Create` возвращает `TPM_RC_HASH` или `TPM_RC_SYMMETRIC` для
+`inPublic` при несовпадении. `Load` продолжает проверять целостность
+и соответствие закрытой части опубликованному ключу.
+[TPM Library v185 Part 3 §§12.1–12.2](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
+
 Алгоритм внутренней обёртки Duplicate/Import задаётся отдельно.
 Ключ AES имеет длину 16 или 32 байта. Duplicate генерирует ключ
 выбранной длины при пустом `encryptionKeyIn` и возвращает его через

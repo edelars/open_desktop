@@ -1127,6 +1127,43 @@ fn create_errors() {
 }
 
 #[test]
+fn create_requires_fixed_storage_children_to_match_the_parent_cipher() {
+    let storage = |symmetric| {
+        ecc(
+            base() | oa::RESTRICTED | oa::DECRYPT,
+            symmetric,
+            Scheme::NULL,
+        )
+    };
+    for (parent_cipher, other_cipher) in [
+        (SymDef::Aes128Cfb, SymDef::Aes256Cfb),
+        (SymDef::Aes256Cfb, SymDef::Aes128Cfb),
+    ] {
+        let mut t = started();
+        let template = storage(parent_cipher);
+        let parent = parse_primary(&create_primary(&mut t, OWNER, b"parent", &template)).handle;
+        ok(&create_child(
+            &mut t, parent, b"parent", b"", b"", &template,
+        ));
+
+        let mut mismatched = storage(other_cipher);
+        err(
+            &create_child(&mut t, parent, b"parent", b"", b"", &mismatched),
+            Rc::SYMMETRIC.in_param(2),
+        );
+        mismatched.attributes &= !(oa::FIXED_TPM | oa::FIXED_PARENT);
+        ok(&create_child(
+            &mut t,
+            parent,
+            b"parent",
+            b"",
+            b"",
+            &mismatched,
+        ));
+    }
+}
+
+#[test]
 fn load_errors() {
     let (mut t, parent) = with_ecc_parent();
     let child = parse_child(&create_child(

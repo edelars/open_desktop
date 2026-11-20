@@ -226,6 +226,7 @@ impl<'a> VerifiedTicket<'a> {
 struct ParentCtx {
     seed: Zeroizing<Vec<u8>>,
     symmetric: SymDef,
+    name_alg: u16,
     name: Vec<u8>,
     qualified_name: Vec<u8>,
     hierarchy: u32,
@@ -441,12 +442,14 @@ impl Tpm {
         // The parent must be a storage key with both parts loaded.
         let s = o.sensitive.as_ref().ok_or(Rc::TYPE.in_handle(1))?;
         let (symmetric, _) = o
+            .public
             .storage_parameters()
             .filter(|(symmetric, _)| *symmetric != SymDef::Null)
             .ok_or(Rc::TYPE.in_handle(1))?;
         Ok(ParentCtx {
             seed: s.seed.clone(),
             symmetric,
+            name_alg: o.public.name_alg,
             name: o.name.clone(),
             qualified_name: o.qualified_name.clone(),
             hierarchy: o.hierarchy,
@@ -558,6 +561,17 @@ impl Tpm {
         p.finish()?;
         check_public(&template, parent.fixed_tpm, parent.enc_dup)?;
         check_creation(&template, &sens)?;
+        // Library v185 Part 3 §12.1.1 requires this match when creating a fixed Storage child.
+        if template.attributes & object_attr::FIXED_PARENT != 0
+            && let Some((symmetric, _)) = template.storage_parameters()
+        {
+            if template.name_alg != parent.name_alg {
+                return Err(Rc::HASH.in_param(2));
+            }
+            if symmetric != parent.symmetric {
+                return Err(Rc::SYMMETRIC.in_param(2));
+            }
+        }
         let d = derive_object(&template, &sens.user_auth, &sens.data, &mut self.drbg)?;
         let mut iv = [0u8; 16];
         self.drbg.generate(&mut iv).ok_or(Rc::FAILURE)?;
@@ -581,7 +595,7 @@ impl Tpm {
             &obj,
             &selection,
             outside,
-            (alg::SHA256, &parent.name, &parent.qualified_name),
+            (parent.name_alg, &parent.name, &parent.qualified_name),
         );
         let mut params = Writer::new();
         params.tpm2b(&blob);
@@ -648,6 +662,7 @@ impl Tpm {
             .ok_or(Rc::reference_handle(1))?;
         let parent_sensitive = parent.sensitive.as_ref().ok_or(Rc::TYPE.in_handle(2))?;
         let (parent_symmetric, _) = parent
+            .public
             .storage_parameters()
             .filter(|(symmetric, _)| *symmetric != SymDef::Null)
             .ok_or(Rc::TYPE.in_handle(2))?;

@@ -183,26 +183,23 @@ impl Object {
     pub(crate) fn has(&self, bit: u32) -> bool {
         self.public.attributes & bit != 0
     }
+}
 
-    /// A storage key: an asymmetric `restricted` `decrypt` key that is not a signing key (Part 2,
-    /// clause 8.3.3.13); only such a key can be a parent.
-    pub(crate) fn is_storage(&self) -> bool {
-        is_storage(&self.public)
-    }
-
+impl TpmtPublic {
     pub(crate) fn storage_parameters(&self) -> Option<(SymDef, Scheme)> {
-        match self.public.params {
+        match self.params {
             PublicParams::Rsa {
                 symmetric, scheme, ..
             }
             | PublicParams::Ecc {
                 symmetric, scheme, ..
-            } if self.is_storage() => Some((symmetric, scheme)),
+            } if is_storage(self) => Some((symmetric, scheme)),
             _ => None,
         }
     }
 }
 
+/// A storage key in this profile is a restricted asymmetric decryption key.
 fn is_storage(public: &TpmtPublic) -> bool {
     let a = public.attributes;
     matches!(

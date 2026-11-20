@@ -104,6 +104,7 @@ impl Tpm {
 
 pub(crate) fn check_storage_key(key: &Object, position: u8) -> Result<SymDef, Rc> {
     let (symmetric, scheme) = key
+        .public
         .storage_parameters()
         .ok_or(Rc::TYPE.in_handle(position))?;
     // LoadExternal admits public keys for several uses. A Storage key
