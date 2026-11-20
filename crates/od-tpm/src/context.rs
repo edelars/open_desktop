@@ -523,7 +523,13 @@ fn decode_session(body: &[u8]) -> Result<Session, Rc> {
 impl Tpm {
     /// Reset-bound material for the encryption root and the context integrity tag.
     fn context_reset_value(&self) -> Zeroizing<Vec<u8>> {
-        kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-CTXRESET", &[], &[], 256)
+        kdfa_sha256(
+            &self.hv.null_seed[..crate::hierarchy::LEGACY_SEED_BYTES],
+            b"ODTPM-CTXRESET",
+            &[],
+            &[],
+            256,
+        )
     }
 
     /// The proof of the context's hierarchy. Null objects and sessions use a `nullProof`

@@ -778,8 +778,8 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
         "data without WRITTEN",
     );
     // The counter maximum precedes the object count, policies, total reset count, bank mask
-    // and establishment bit.
-    let max_at = snap.len() - 32 - 1 - 1 - 8 - 6 - 1 - 8;
+    // and establishment bit, followed by the three seed extensions.
+    let max_at = snap.len() - 32 - 96 - 1 - 1 - 8 - 6 - 1 - 8;
     assert_eq!(&snap[max_at..max_at + 8], &9u64.to_be_bytes());
     let mut b = snap.clone();
     b[max_at..max_at + 8].copy_from_slice(&2u64.to_be_bytes());
@@ -2464,8 +2464,8 @@ fn increment_overflow_is_nv_range_and_changes_nothing() {
         .map(|p| at + p + 2)
         .expect("counter data");
     snap[data_at..data_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-    // Empty policies, reset count, bank mask and establishment bit follow the empty object table.
-    let max_at = snap.len() - 32 - 1 - 1 - 8 - 6 - 1 - 8;
+    // Empty policies, reset count, bank mask, establishment and seed extensions follow the table.
+    let max_at = snap.len() - 32 - 96 - 1 - 1 - 8 - 6 - 1 - 8;
     snap[max_at..max_at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     refix(&mut snap);
     let mut r = Tpm::restore(&snap, &[9; 48]).unwrap();

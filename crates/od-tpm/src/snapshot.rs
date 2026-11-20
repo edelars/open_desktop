@@ -1,6 +1,7 @@
-//! The payload codec of `ODTPMSTA` versions 3 through 7. Version 4 adds the
+//! The payload codec of `ODTPMSTA` versions 3 through 8. Version 4 adds the
 //! primary policies of Owner, Endorsement and Lockout. Version 5 adds `totalResetCount`.
 //! Version 6 adds the desired PCR allocation mask. Version 7 adds D-RTM establishment.
+//! Version 8 appends the remaining 32 octets of each persistent Primary Seed.
 //! The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
 //!
@@ -53,7 +54,7 @@ use crate::codes::{alg, handle as h};
 use crate::crypto::DIGEST;
 use crate::da::DaPersistent;
 use crate::hash::AuthValue;
-use crate::hierarchy::HierarchyPersistent;
+use crate::hierarchy::{HierarchyPersistent, LEGACY_SEED_BYTES, PRIMARY_SEED_BYTES, PrimarySeed};
 use crate::marshal::{Reader, TpmtPublic, limits};
 use crate::nv::{MAX_NV_INDEX_SIZE, NvIndex, NvStore};
 use crate::object::{
@@ -190,9 +191,10 @@ pub(crate) fn encode(p: &Persistent, clock_ms: u64) -> Option<Zeroizing<Vec<u8>>
 }
 
 fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
-    e.raw(&p.platform_seed[..]);
-    e.raw(&p.owner_seed[..]);
-    e.raw(&p.endorsement_seed[..]);
+    let seeds = [&p.platform_seed, &p.owner_seed, &p.endorsement_seed];
+    for seed in seeds {
+        e.raw(&seed[..LEGACY_SEED_BYTES]);
+    }
     e.u64(clock_ms);
     e.u32(p.reset_count);
     e.u32(p.restart_count);
@@ -247,6 +249,9 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
     e.u64(p.total_reset_count);
     e.u8(p.pcr_allocation.bits());
     e.u8(u8::from(p.established));
+    for seed in seeds {
+        e.raw(&seed[LEGACY_SEED_BYTES..]);
+    }
     Some(())
 }
 
@@ -258,15 +263,15 @@ pub(crate) fn decode(payload: &[u8], version: u16) -> Result<Persistent, StateEr
 
 fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
     let mut c = Cur { buf: payload };
-    let seed = |c: &mut Cur<'_>| -> Result<Zeroizing<[u8; 32]>, Bad> {
-        let b = c.take(32).ok_or(Bad::Short)?;
-        let mut s = Zeroizing::new([0u8; 32]);
-        s.copy_from_slice(b);
+    let seed = |c: &mut Cur<'_>| -> Result<PrimarySeed, Bad> {
+        let b = c.take(LEGACY_SEED_BYTES).ok_or(Bad::Short)?;
+        let mut s = Zeroizing::new([0u8; PRIMARY_SEED_BYTES]);
+        s[..LEGACY_SEED_BYTES].copy_from_slice(b);
         Ok(s)
     };
-    let platform_seed = seed(&mut c)?;
-    let owner_seed = seed(&mut c)?;
-    let endorsement_seed = seed(&mut c)?;
+    let mut platform_seed = seed(&mut c)?;
+    let mut owner_seed = seed(&mut c)?;
+    let mut endorsement_seed = seed(&mut c)?;
     let clock_base_ms = c.u64().ok_or(Bad::Short)?;
     let reset_count = c.u32().ok_or(Bad::Short)?;
     let restart_count = c.u32().ok_or(Bad::Short)?;
@@ -401,6 +406,12 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
         PcrAllocation::default()
     };
     let established = version >= 7 && flag(c.u8().ok_or(Bad::Short)?)?;
+    if version >= 8 {
+        for seed in [&mut platform_seed, &mut owner_seed, &mut endorsement_seed] {
+            let tail = &mut seed[LEGACY_SEED_BYTES..];
+            tail.copy_from_slice(c.take(tail.len()).ok_or(Bad::Short)?);
+        }
+    }
     if !c.buf.is_empty() {
         return Err(Bad::Field);
     }

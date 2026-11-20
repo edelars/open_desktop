@@ -673,15 +673,20 @@ fn creation_ticket_is_an_hmac_under_the_hierarchy_proof() {
     let pr = parse_primary(&create_primary(&mut t, OWNER, b"", &ecc_sign()));
     // Part 2, Equation (4): HMAC(proof, TPM_ST_CREATION || name || H(creationData)); the proof is
     // derived from the storage seed (`object_cmd.rs`).
-    let seed = t.persistent.owner_seed.to_vec();
-    let proof = kdfa_sha256(&seed, b"ODTPM-SHPROOF", &[], &[], 256);
+    let proof = kdfa_sha256(
+        &t.persistent.owner_seed[..32],
+        b"ODTPM-SHPROOF",
+        &[],
+        &[],
+        256,
+    );
     let expect = hmac_sha256(&proof, &[&u16b(0x8021), &pr.name, &pr.hash]);
     assert_eq!(pr.ticket.2, expect.to_vec());
     // Another hierarchy has another proof.
     let pl = parse_primary(&create_primary(&mut t, PLATFORM, b"", &ecc_sign()));
     assert_eq!(pl.ticket.1, PLATFORM);
     let pproof = kdfa_sha256(
-        &t.persistent.platform_seed[..],
+        &t.persistent.platform_seed[..32],
         b"ODTPM-PHPROOF",
         &[],
         &[],
@@ -929,7 +934,7 @@ fn create_load_sign_verify_ecc() {
     assert_eq!(ticket.2.len(), 32);
     // Verified ticket (Part 2, clause 10.7.4): HMAC(proof, TPM_ST_VERIFIED || digest || keyName).
     let proof = crate::crypto::kdfa_sha256(
-        &t.persistent.owner_seed[..],
+        &t.persistent.owner_seed[..32],
         b"ODTPM-SHPROOF",
         &[],
         &[],
@@ -1428,7 +1433,7 @@ fn verify_sequence_tickets_authenticate_the_raw_message_after_a_failed_completio
     ok(&seq_update(&mut t, sequence, auth, &input[14..]));
     let reply = complete(&mut t, signature);
     let proof = crate::crypto::kdfa_sha256(
-        &t.persistent.owner_seed[..],
+        &t.persistent.owner_seed[..32],
         b"ODTPM-SHPROOF",
         &[],
         &[],
@@ -1537,7 +1542,7 @@ fn verify_digest_signature_uses_the_fixed_scheme_and_encodes_hash_metadata() {
     let (ecc, name) = parse_loaded(&load_external(&mut t, &ext_ecc_public(), OWNER));
     let reply = verify(&mut t, ecc, &[], &digest, &ecc_sig);
     let proof = crate::crypto::kdfa_sha256(
-        &t.persistent.owner_seed[..],
+        &t.persistent.owner_seed[..32],
         b"ODTPM-SHPROOF",
         &[],
         &[],

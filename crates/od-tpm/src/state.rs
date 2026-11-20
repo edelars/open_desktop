@@ -16,12 +16,12 @@
 //! protects them. They must not be logged or stored unprotected. Seeds and DRBG state are wiped on
 //! drop and never reach `Debug`.
 //!
-//! Format `ODTPMSTA` version 7 (all integers big-endian):
+//! Format `ODTPMSTA` version 8 (all integers big-endian):
 //!
 //! | offset | size | field |
 //! |---|---|---|
 //! | 0 | 8 | magic `ODTPMSTA` |
-//! | 8 | 2 | format version (7) |
+//! | 8 | 2 | format version (8) |
 //! | 10 | 2 | flags (0; non-zero is rejected) |
 //! | 12 | 4 | payload length `L` (at most 1 MiB) |
 //! | 16 | `L` | payload (layout in `snapshot.rs`) |
@@ -37,6 +37,7 @@
 //! `totalResetCount` from the saved `resetCount`, its available lower bound.
 //! Versions 3 through 5 use the default allocation of both PCR banks.
 //! Versions 3 through 6 restore with no established dynamic RTM.
+//! Versions 3 through 7 extend the original primary seeds using fresh host entropy.
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -45,7 +46,9 @@ use crate::context::ContextState;
 use crate::da::{DaPersistent, DaVolatile};
 use crate::dispatch;
 use crate::hash::Sequences;
-use crate::hierarchy::{HierarchyPersistent, HierarchyVolatile};
+use crate::hierarchy::{
+    HierarchyPersistent, HierarchyVolatile, LEGACY_SEED_BYTES, PRIMARY_SEED_BYTES, PrimarySeed,
+};
 use crate::marshal::{TpmlDigestValues, TpmsClockInfo, TpmsTimeInfo, Writer};
 use crate::nv::NvStore;
 use crate::object::{Objects, PersistentObjects};
@@ -57,7 +60,7 @@ use crate::snapshot;
 
 const MAGIC: &[u8; 8] = b"ODTPMSTA";
 /// Snapshot format version written by the TPM.
-pub const SNAPSHOT_VERSION: u16 = 7;
+pub const SNAPSHOT_VERSION: u16 = 8;
 const MIN_SNAPSHOT_VERSION: u16 = 3;
 /// Header size: magic, version, flags, payload length.
 const HEADER_LEN: usize = 16;
@@ -102,9 +105,9 @@ impl core::fmt::Display for StateError {
 impl std::error::Error for StateError {}
 
 pub(crate) struct Persistent {
-    pub(crate) platform_seed: Zeroizing<[u8; 32]>,
-    pub(crate) owner_seed: Zeroizing<[u8; 32]>,
-    pub(crate) endorsement_seed: Zeroizing<[u8; 32]>,
+    pub(crate) platform_seed: PrimarySeed,
+    pub(crate) owner_seed: PrimarySeed,
+    pub(crate) endorsement_seed: PrimarySeed,
     /// `Clock` accumulated over earlier power cycles, milliseconds.
     pub clock_base_ms: u64,
     pub reset_count: u32,
@@ -142,6 +145,7 @@ pub(crate) struct SavedState {
 pub struct Tpm {
     pub(crate) persistent: Persistent,
     pub(crate) drbg: Drbg,
+    pub(crate) seed_extension_drbg: Drbg,
     /// `TPM2_Startup` completed since `_TPM_Init`.
     pub(crate) started: bool,
     /// Failure mode (self-test failed).
@@ -188,17 +192,23 @@ impl core::fmt::Debug for Tpm {
     }
 }
 
+fn generate_primary_seed(drbg: &mut Drbg, extension: &mut Drbg) -> Option<PrimarySeed> {
+    let mut seed = Zeroizing::new([0; PRIMARY_SEED_BYTES]);
+    drbg.generate(&mut seed[..LEGACY_SEED_BYTES])?;
+    extension.generate(&mut seed[LEGACY_SEED_BYTES..])?;
+    Some(seed)
+}
+
 impl Tpm {
     /// Creates a fresh TPM. `entropy` (at least 48 octets of host entropy) seeds the DRBG, which
     /// in turn generates the hierarchy seeds. The TPM is in the state after `_TPM_Init`: the
     /// first command must be `TPM2_Startup`.
     pub fn new(entropy: &[u8]) -> Result<Tpm, StateError> {
         let mut drbg = Drbg::new(entropy).ok_or(StateError::InsufficientEntropy)?;
-        let mut seed = || {
-            drbg.generate_array()
-                .map(Zeroizing::new)
-                .ok_or(StateError::BadField)
-        };
+        let mut extension =
+            Drbg::for_seed_extensions(entropy).ok_or(StateError::InsufficientEntropy)?;
+        let mut seed =
+            || generate_primary_seed(&mut drbg, &mut extension).ok_or(StateError::BadField);
         let persistent = Persistent {
             platform_seed: seed()?,
             owner_seed: seed()?,
@@ -215,14 +225,15 @@ impl Tpm {
             nv: NvStore::default(),
             objects: PersistentObjects::default(),
         };
-        Ok(Tpm::assemble(persistent, drbg))
+        Ok(Tpm::assemble(persistent, drbg, extension))
     }
 
-    fn assemble(persistent: Persistent, drbg: Drbg) -> Tpm {
+    fn assemble(persistent: Persistent, drbg: Drbg, seed_extension_drbg: Drbg) -> Tpm {
         let pcrs = Pcrs::with_allocation(persistent.pcr_allocation);
         Tpm {
             persistent,
             drbg,
+            seed_extension_drbg,
             started: false,
             failed: false,
             saved: None,
@@ -242,6 +253,10 @@ impl Tpm {
             clock_epoch_ms: 0,
             da_v: DaVolatile::default(),
         }
+    }
+
+    pub(crate) fn fresh_primary_seed(&mut self) -> Result<PrimarySeed, Rc> {
+        generate_primary_seed(&mut self.drbg, &mut self.seed_extension_drbg).ok_or(Rc::FAILURE)
     }
 
     /// `Clock` in milliseconds: the persistent base plus elapsed power-on time since it was set.
@@ -363,7 +378,7 @@ impl Tpm {
         out
     }
 
-    /// Restores a TPM from a version 3 through 7 snapshot. An unsupported version,
+    /// Restores a TPM from a version 3 through 8 snapshot. An unsupported version,
     /// a damaged snapshot or too little entropy is an error: there is no silent
     /// fallback to an empty TPM. `entropy` reseeds the DRBG (the DRBG state is not part of the
     /// snapshot). The TPM is in the state after `_TPM_Init`.
@@ -394,9 +409,22 @@ impl Tpm {
         if Sha256::digest(payload)[..] != snapshot[HEADER_LEN + len..] {
             return Err(StateError::BadDigest);
         }
-        let persistent = snapshot::decode(payload, version)?;
+        let mut persistent = snapshot::decode(payload, version)?;
         let drbg = Drbg::new(entropy).ok_or(StateError::InsufficientEntropy)?;
-        Ok(Tpm::assemble(persistent, drbg))
+        let mut extension =
+            Drbg::for_seed_extensions(entropy).ok_or(StateError::InsufficientEntropy)?;
+        if version < 8 {
+            for seed in [
+                &mut persistent.platform_seed,
+                &mut persistent.owner_seed,
+                &mut persistent.endorsement_seed,
+            ] {
+                extension
+                    .generate(&mut seed[LEGACY_SEED_BYTES..])
+                    .ok_or(StateError::BadField)?;
+            }
+        }
+        Ok(Tpm::assemble(persistent, drbg, extension))
     }
 
     /// `Clock` and `Time` for `TPMS_TIME_INFO`.
@@ -542,10 +570,10 @@ mod tests {
         let bytes = t.persistent_snapshot();
         // 113 octets of seeds and counters, 3 empty auth values (3), hierarchy flags (1), DA (17),
         // NV count (2), NV counter maximum (8), object count (1) and three NULL primary
-        // policies (6), total reset count (8), PCR allocation (1) and establishment (1).
-        assert_eq!(bytes.len(), HEADER_LEN + 161 + 32);
+        // policies (6), reset count (8), PCR allocation (1), establishment (1) and seed tails (96).
+        assert_eq!(bytes.len(), HEADER_LEN + 257 + 32);
         assert_eq!(&bytes[..8], b"ODTPMSTA");
-        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 7);
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 8);
         let r = Tpm::restore(&bytes, &[9u8; 48]).unwrap();
         assert_eq!(r.persistent.clock_base_ms, 1500);
         assert_eq!(r.persistent.reset_count, 4);
@@ -603,14 +631,15 @@ mod tests {
         ] {
             assert_eq!(t.permanent_auth_policy(handle), None);
         }
-        let v7 = t.persistent_snapshot();
-        assert_eq!(&v7[8..10], &7u16.to_be_bytes());
-        assert_eq!(&v7[16..16 + payload.len()], &payload);
+        let v8 = t.persistent_snapshot();
+        let legacy_end = v8.len() - 32 - 96;
+        assert_eq!(&v8[8..10], &8u16.to_be_bytes());
+        assert_eq!(&v8[16..16 + payload.len()], &payload);
         assert_eq!(
-            &v7[16 + payload.len()..v7.len() - 32],
+            &v8[16 + payload.len()..legacy_end],
             &[0, 0x10, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 4, 3, 0]
         );
-        let v6 = wrap(6, &v7[16..v7.len() - 33]);
+        let v6 = wrap(6, &v8[16..legacy_end - 1]);
         assert!(!Tpm::restore(&v6, &[9; 48]).unwrap().platform_established());
 
         let old_length = payload.len();

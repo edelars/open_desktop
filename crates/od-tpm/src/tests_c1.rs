@@ -1843,7 +1843,8 @@ fn snapshot_holds_secrets_in_clear_text_and_says_so() {
             String::from_utf8_lossy(secret)
         );
     }
-    assert!(contains(&snap, &rich.t.persistent.owner_seed[..]));
+    assert!(contains(&snap, &rich.t.persistent.owner_seed[..32]));
+    assert!(contains(&snap, &rich.t.persistent.owner_seed[32..]));
     // `platformAuth` is volatile and does not go into the snapshot.
     assert!(!contains(&snap, b"platformpw"));
     // The Debug output of the TPM and of the errors reveals nothing of it.

@@ -503,6 +503,23 @@ fn platform_hcrtm_reserves_a_sequence_slot_and_persists_establishment() {
 }
 
 #[test]
+fn both_halves_of_the_null_seed_follow_reset_restart_and_resume() {
+    let mut t = started();
+    let initial = t.hv.null_seed.clone();
+    assert_ne!(&initial[..32], &initial[32..]);
+    for startup in [1, 0] {
+        ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &[0, 1])));
+        t.init();
+        ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, startup])));
+        assert_eq!(&t.hv.null_seed[..], &initial[..]);
+    }
+    t.init();
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
+    assert_ne!(&t.hv.null_seed[..32], &initial[..32]);
+    assert_ne!(&t.hv.null_seed[32..], &initial[32..]);
+}
+
+#[test]
 fn shutdown_state_then_startup_clear_is_restart() {
     let mut t = started();
     ok(&run(
@@ -1189,7 +1206,7 @@ fn pcr_allocate_activates_the_desired_banks_only_after_init_or_restore() {
     ok(&run(&mut t, plain(cc::SHUTDOWN, &[], &u16b(0))));
     let snapshot = t.persistent_snapshot();
     assert_eq!(&snapshot[8..10], &u16b(crate::SNAPSHOT_VERSION));
-    assert_eq!(snapshot[snapshot.len() - 34], 2);
+    assert_eq!(snapshot[snapshot.len() - 34 - 96], 2);
 
     t.init();
     err(

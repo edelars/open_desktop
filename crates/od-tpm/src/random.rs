@@ -27,6 +27,7 @@ pub const MIN_ENTROPY_LEN: usize = 48;
 /// `reseed_interval`: 2^48 generate calls (SP 800-90A, table 2).
 const RESEED_INTERVAL: u64 = 1 << 48;
 const PERSONALIZATION: &[u8] = b"open-desktop od-tpm hmac-drbg-sha256 v1";
+const SEED_EXTENSION_PERSONALIZATION: &[u8] = b"open-desktop od-tpm primary-seed extension v8";
 
 /// HMAC_DRBG with SHA-256.
 pub struct Drbg {
@@ -51,6 +52,14 @@ impl Drop for Drbg {
 impl Drbg {
     /// Instantiates from at least [`MIN_ENTROPY_LEN`] octets of owner-supplied entropy.
     pub fn new(entropy: &[u8]) -> Option<Drbg> {
+        Self::instantiate(entropy, PERSONALIZATION)
+    }
+
+    pub(crate) fn for_seed_extensions(entropy: &[u8]) -> Option<Drbg> {
+        Self::instantiate(entropy, SEED_EXTENSION_PERSONALIZATION)
+    }
+
+    fn instantiate(entropy: &[u8], personalization: &[u8]) -> Option<Drbg> {
         if entropy.len() < MIN_ENTROPY_LEN {
             return None;
         }
@@ -59,7 +68,7 @@ impl Drbg {
             v: [0x01; OUT],
             reseed_counter: 1,
         };
-        d.update(&[entropy, PERSONALIZATION]);
+        d.update(&[entropy, personalization]);
         Some(d)
     }
 
@@ -106,7 +115,7 @@ impl Drbg {
         Some(())
     }
 
-    /// 32 random octets (a hierarchy seed).
+    /// 32 random octets.
     pub fn generate_array(&mut self) -> Option<[u8; OUT]> {
         let mut a = [0u8; OUT];
         self.generate(&mut a)?;
@@ -149,6 +158,7 @@ impl Tpm {
         let data = p.tpm2b(limits::MAX_STIR_SIZE)?;
         p.finish()?;
         self.drbg.stir(data);
+        self.seed_extension_drbg.stir(data);
         Ok(Output::default())
     }
 }

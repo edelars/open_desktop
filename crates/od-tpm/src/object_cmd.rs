@@ -40,6 +40,7 @@ use crate::crypto::{
 use crate::da::DaProtection;
 use crate::dispatch::{AuthRole, Invocation};
 use crate::hash::AuthValue;
+use crate::hierarchy::LEGACY_SEED_BYTES;
 use crate::marshal::{
     MAX_DATA, PublicParams, Reader, Scheme, TpmlPcrSelection, TpmsCreationData,
     TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer,
@@ -313,7 +314,7 @@ impl Tpm {
             .and_then(|o| o.sensitive.as_ref().map(|s| s.auth.clone()))
     }
 
-    /// The seed of a hierarchy (Primary Seed).
+    /// The original seed portion for the legacy primary derivation.
     fn hierarchy_seed(&self, hierarchy: u32) -> Zeroizing<Vec<u8>> {
         let seed: &[u8] = match hierarchy {
             handle::RH_PLATFORM => &self.persistent.platform_seed[..],
@@ -321,7 +322,7 @@ impl Tpm {
             handle::RH_ENDORSEMENT => &self.persistent.endorsement_seed[..],
             _ => &self.hv.null_seed[..],
         };
-        Zeroizing::new(seed.to_vec())
+        Zeroizing::new(seed[..LEGACY_SEED_BYTES].to_vec())
     }
 
     /// The proof value of a permanent object hierarchy. Part 3, clause 24.6 allows deriving
@@ -335,14 +336,24 @@ impl Tpm {
     pub(crate) fn proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {
         let p = &self.persistent;
         Some(match hierarchy {
-            handle::RH_PLATFORM => {
-                kdfa_sha256(&p.platform_seed[..], b"ODTPM-PHPROOF", &[], &[], 256)
-            }
-            handle::RH_OWNER => kdfa_sha256(&p.owner_seed[..], b"ODTPM-SHPROOF", &[], &[], 256),
+            handle::RH_PLATFORM => kdfa_sha256(
+                &p.platform_seed[..LEGACY_SEED_BYTES],
+                b"ODTPM-PHPROOF",
+                &[],
+                &[],
+                256,
+            ),
+            handle::RH_OWNER => kdfa_sha256(
+                &p.owner_seed[..LEGACY_SEED_BYTES],
+                b"ODTPM-SHPROOF",
+                &[],
+                &[],
+                256,
+            ),
             handle::RH_ENDORSEMENT => kdfa_sha256(
-                &p.endorsement_seed[..],
+                &p.endorsement_seed[..LEGACY_SEED_BYTES],
                 b"ODTPM-EHPROOF",
-                &p.owner_seed[..],
+                &p.owner_seed[..LEGACY_SEED_BYTES],
                 &[],
                 256,
             ),
@@ -351,7 +362,13 @@ impl Tpm {
     }
     /// Proof for temporary objects and session contexts, changed by each TPM Reset.
     pub(crate) fn null_proof(&self) -> Zeroizing<Vec<u8>> {
-        kdfa_sha256(&self.hv.null_seed[..], b"ODTPM-NULLPROOF", &[], &[], 256)
+        kdfa_sha256(
+            &self.hv.null_seed[..LEGACY_SEED_BYTES],
+            b"ODTPM-NULLPROOF",
+            &[],
+            &[],
+            256,
+        )
     }
 
     pub(crate) fn hierarchy_proof(&self, hierarchy: u32) -> Option<Zeroizing<Vec<u8>>> {

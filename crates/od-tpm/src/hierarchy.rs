@@ -44,6 +44,10 @@ use crate::marshal::{Reader, limits};
 use crate::response::{Output, Rc};
 use crate::state::Tpm;
 
+pub(crate) const LEGACY_SEED_BYTES: usize = 32;
+pub(crate) const PRIMARY_SEED_BYTES: usize = 64;
+pub(crate) type PrimarySeed = Zeroizing<[u8; PRIMARY_SEED_BYTES]>;
+
 /// Persistent part of the hierarchy state (survives power cycles).
 pub(crate) struct HierarchyPersistent {
     pub owner_auth: AuthValue,
@@ -88,7 +92,7 @@ pub(crate) struct HierarchyVolatile {
     pub eh_enable: bool,
     /// Null seed: random on every TPM Reset (Part 1, clause 12.4.5); all zero before the first
     /// `Startup`, when no command can use it yet.
-    pub null_seed: Zeroizing<[u8; 32]>,
+    pub null_seed: PrimarySeed,
 }
 
 impl Default for HierarchyVolatile {
@@ -100,16 +104,16 @@ impl Default for HierarchyVolatile {
             ph_enable_nv: true,
             sh_enable: true,
             eh_enable: true,
-            null_seed: Zeroizing::new([0u8; 32]),
+            null_seed: Zeroizing::new([0; PRIMARY_SEED_BYTES]),
         }
     }
 }
 
 impl HierarchyVolatile {
     /// State after a TPM Reset: everything at its default, a fresh Null seed.
-    pub(crate) fn after_reset(null_seed: [u8; 32]) -> HierarchyVolatile {
+    pub(crate) fn after_reset(null_seed: PrimarySeed) -> HierarchyVolatile {
         HierarchyVolatile {
-            null_seed: Zeroizing::new(null_seed),
+            null_seed,
             ..HierarchyVolatile::default()
         }
     }
@@ -330,8 +334,7 @@ impl Tpm {
             return Err(Rc::DISABLED);
         }
         // The only fallible step goes first so that a failure leaves the TPM unchanged.
-        let new_seed = self.drbg.generate_array().ok_or(Rc::FAILURE)?;
-        self.persistent.owner_seed = Zeroizing::new(new_seed);
+        self.persistent.owner_seed = self.fresh_primary_seed()?;
         self.hv.sh_enable = true;
         self.hv.eh_enable = true;
         let hp = &mut self.persistent.hier;

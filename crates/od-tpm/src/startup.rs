@@ -65,7 +65,7 @@ impl Tpm {
         self.self_test_now()?;
         // Generate all startup nonces before installing the new state.
         let null_seed = if startup_type == su::CLEAR && !restart {
-            Some(self.drbg.generate_array().ok_or(Rc::FAILURE)?)
+            Some(self.fresh_primary_seed()?)
         } else {
             None
         };
@@ -97,17 +97,18 @@ impl Tpm {
                         self.persistent.restart_count =
                             self.persistent.restart_count.wrapping_add(1);
                     }
-                    (None, seed) => {
+                    (None, Some(seed)) => {
                         // TPM Reset.
                         self.pcrs.set_initial();
                         self.pcrs.clear_counter();
-                        self.hv = HierarchyVolatile::after_reset(seed.unwrap_or_default());
+                        self.hv = HierarchyVolatile::after_reset(seed);
                         self.context = ContextState::default();
                         self.persistent.reset_count = self.persistent.reset_count.wrapping_add(1);
                         self.persistent.total_reset_count =
                             self.persistent.total_reset_count.saturating_add(1);
                         self.persistent.restart_count = 0;
                     }
+                    (None, None) => unreachable!("TPM Reset always generates a Null seed"),
                 }
             }
         }
