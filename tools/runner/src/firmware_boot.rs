@@ -17,11 +17,16 @@ use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::Instant;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
                     [--nvram-in <file>] [--nvram-out <file>] \
-                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>]";
+                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
+                    [--sample-rip <hex> ...]";
+// Match the milestones in the given order. Repeated RIPs consume separate
+// visits, and later milestones remain pending until the next expected RIP.
+const MAX_RIP_SAMPLES: usize = 64;
 const DUMP_USAGE: &str =
     "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm]";
 const PREPARE_NVRAM_USAGE: &str =
@@ -39,6 +44,7 @@ struct Options {
     framebuffer_out: Option<String>,
     nvme_image: Option<String>,
     tpm: bool,
+    sample_rips: Vec<u64>,
 }
 
 fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
@@ -199,6 +205,7 @@ pub fn run(args: &[String]) -> ExitCode {
         options.budget,
         &options.com1_out,
         nvme_image,
+        &options.sample_rips,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -330,7 +337,14 @@ pub fn run(args: &[String]) -> ExitCode {
         tpm,
         ..config
     };
-    let second = match boot(&image, &restored, options.budget, &reboot_out, nvme_image) {
+    let second = match boot(
+        &image,
+        &restored,
+        options.budget,
+        &reboot_out,
+        nvme_image,
+        &[],
+    ) {
         Ok(run) => run,
         Err((mut value, code)) => {
             value["initial_boot"] = first_report;
@@ -645,6 +659,7 @@ fn boot(
     budget: u64,
     com1_out: &str,
     nvme_image: Option<&str>,
+    sample_rips: &[u64],
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -670,7 +685,18 @@ fn boot(
     }
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
-    let report = match board.run_boot(budget) {
+    let mut samples = Vec::with_capacity(sample_rips.len());
+    let run = if sample_rips.is_empty() {
+        board.run_boot(budget)
+    } else {
+        let start = Instant::now();
+        board.run_boot_observed(budget, |rip, retired, quanta| {
+            if sample_rips.get(samples.len()) == Some(&rip) {
+                samples.push((rip, start.elapsed().as_nanos(), retired, quanta));
+            }
+        })
+    };
+    let report = match run {
         Ok(report) => report,
         Err(error) => {
             // Keep the bytes the guest already wrote (even an empty transcript).
@@ -746,6 +772,19 @@ fn boot(
             MachineStopReason::Shutdown => "Shutdown",
         }));
     }
+    if !sample_rips.is_empty() {
+        result["rip_samples"] = json!(
+            samples
+                .into_iter()
+                .map(|(rip, host_ns, retired, quanta)| json!({
+                    "rip": format!("0x{rip:016x}"),
+                    "host_ns": host_ns,
+                    "retired": retired,
+                    "quanta": quanta,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
     Ok(BootRun {
         board,
         report: result,
@@ -764,6 +803,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut framebuffer_out = None;
     let mut nvme_image = None;
     let mut tpm = false;
+    let mut sample_rips = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -798,6 +838,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
             }
+            "--sample-rip" if sample_rips.len() < MAX_RIP_SAMPLES => {
+                let hex = value.strip_prefix("0x").unwrap_or(value);
+                let rip = u64::from_str_radix(hex, 16)
+                    .map_err(|_| format!("invalid --sample-rip '{value}'"))?;
+                sample_rips.push(rip);
+            }
             other => {
                 return Err(format!(
                     "unexpected or duplicate option {other}; usage: {USAGE}"
@@ -825,6 +871,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
     if let Some(reboot_out) = &nvram_reboot_out {
+        if !sample_rips.is_empty() {
+            return Err("--sample-rip requires a single boot".to_owned());
+        }
         if fv_app != Some(FirmwareFvApp::Vars) {
             return Err("--nvram-reboot-out requires --fv-app vars".to_owned());
         }
@@ -844,6 +893,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         framebuffer_out,
         nvme_image,
         tpm,
+        sample_rips,
     })
 }
 
@@ -886,6 +936,53 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn firmware_boot_samples_allow_ordered_repeats_in_one_boot_only() {
+        let required = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "boot.com1",
+            "--budget",
+            "4",
+        ]);
+        let mut requested = required.clone();
+        for _ in 0..MAX_RIP_SAMPLES {
+            requested.extend(args(&["--sample-rip", "0x200040"]));
+        }
+        assert_eq!(
+            parse(&requested).unwrap().sample_rips,
+            [0x200040; MAX_RIP_SAMPLES]
+        );
+        requested.extend(args(&["--sample-rip", "200041"]));
+        assert!(parse(&requested).is_err());
+
+        let mut invalid = required.clone();
+        invalid.extend(args(&["--sample-rip", "not-hex"]));
+        assert!(
+            parse(&invalid)
+                .err()
+                .unwrap()
+                .contains("invalid --sample-rip")
+        );
+
+        let mut reboot = required;
+        reboot.extend(args(&[
+            "--sample-rip",
+            "200040",
+            "--fv-app",
+            "vars",
+            "--nvram-reboot-out",
+            "second.com1",
+        ]));
+        assert!(
+            parse(&reboot)
+                .err()
+                .unwrap()
+                .contains("requires a single boot")
+        );
     }
 
     #[test]

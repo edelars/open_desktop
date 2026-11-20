@@ -151,6 +151,7 @@ fn step_with_fp(
         || false,
         |_| {},
         None,
+        |_, _| {},
     )
 }
 

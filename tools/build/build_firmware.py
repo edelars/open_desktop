@@ -262,6 +262,7 @@ def inspect_pe(pe: bytes, expected_subsystem: int = PE_SUBSYSTEM_EFI_APPLICATION
         "machine": machine,
         "magic": magic,
         "subsystem": subsystem,
+        "entry_rva": struct.unpack_from("<I", pe, optional + 16)[0],
         "sections": section_count,
         "reloc_rva": reloc_rva,
         "reloc_size": reloc_size,

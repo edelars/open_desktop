@@ -2594,7 +2594,14 @@ impl LoadedFirmwareBoard {
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
     ) -> PagedProbeQuantumReport {
-        self.run_quantum(false, false, instruction_budget, stop, committed_write)
+        self.run_quantum(
+            false,
+            false,
+            instruction_budget,
+            stop,
+            committed_write,
+            |_, _| {},
+        )
     }
 
     /// [`Self::run`] with the 4 KiB walker (`large_ram = false`) or with the 2 MiB walk of the
@@ -2607,6 +2614,7 @@ impl LoadedFirmwareBoard {
         instruction_budget: u64,
         stop: impl FnMut() -> bool,
         committed_write: impl FnMut(GuestPhysicalRange),
+        observe: impl FnMut(u64, u64),
     ) -> PagedProbeQuantumReport {
         let context = AccessContext {
             mode: InstructionMode::Long64,
@@ -2657,6 +2665,7 @@ impl LoadedFirmwareBoard {
                 stop,
                 committed_write,
                 Some(clock),
+                observe,
             );
             if let Some(cr3) = vcpu.state.cr3 {
                 self.page_table_root = cr3;
@@ -2764,7 +2773,25 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, FirmwareBoardError> {
-        self.run_boot_with(false, instruction_budget)
+        self.run_boot_with(false, instruction_budget, |_, _, _| {})
+            .map_err(|failure| failure.error)
+    }
+
+    /// Run the firmware interpreter and observe each instruction before fetch.
+    /// The observer receives RIP, the total retired instructions (including
+    /// this quantum), and the completed quanta since this call began.
+    /// Observing an instruction does not imply that it will retire.
+    pub fn run_boot_observed(
+        &mut self,
+        instruction_budget: u64,
+        observe: impl FnMut(u64, u64, u64),
+    ) -> Result<FirmwareRunReport, FirmwareBoardError> {
+        if self.has_linux_profile() {
+            return Err(FirmwareBoardError::Config(
+                "firmware boot observer requires the firmware profile",
+            ));
+        }
+        self.run_boot_with(false, instruction_budget, observe)
             .map_err(|failure| failure.error)
     }
 
@@ -2777,7 +2804,7 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
-        self.run_boot_with(true, instruction_budget)
+        self.run_boot_with(true, instruction_budget, |_, _, _| {})
     }
 
     /// The Linux direct boot through the CPL0 profile set instead of the base probe profile
@@ -3373,6 +3400,7 @@ impl LoadedFirmwareBoard {
         &mut self,
         large_ram: bool,
         instruction_budget: u64,
+        mut observe: impl FnMut(u64, u64, u64),
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
         let firmware_boot_profile = !large_ram && !self.has_linux_profile();
         let mut remaining = instruction_budget;
@@ -3424,6 +3452,7 @@ impl LoadedFirmwareBoard {
                             .is_some_and(|flag| flag.load(Ordering::Relaxed))
                 },
                 |_| {},
+                |rip, retired_in_quantum| observe(rip, retired + retired_in_quantum, quanta),
             );
             quanta += 1;
             // Doorbell writes only record queue pointers: execute the submitted
@@ -4700,6 +4729,39 @@ mod tests {
         assert_eq!(report.virtual_ns, 5, "retired * 1 ns");
         assert_eq!(report.tsc_hz, 1_000_000_000);
         assert_eq!(board.clock().now_ns(), 5);
+    }
+
+    #[test]
+    fn boot_observer_counts_before_fetch_across_quantum_boundaries() {
+        let image = out_byte_image(FIRMWARE_COM1_PORT, b'X');
+        let mut board = load(&image);
+        let entry = board.state().rip;
+        let mut samples = Vec::new();
+        let observed = board
+            .run_boot_observed(4, |rip, retired, quanta| {
+                samples.push((rip, retired, quanta))
+            })
+            .unwrap();
+        assert_eq!(
+            samples,
+            [
+                (entry, 0, 0),
+                (entry + 2, 1, 0),
+                (entry + 6, 2, 0),
+                (entry + 7, 3, 1),
+            ]
+        );
+        assert_eq!(observed.com1, b"X");
+        assert_eq!(observed, load(&image).run_boot(4).unwrap());
+
+        let mut board = load(&image);
+        assert_eq!(
+            board
+                .run_boot_observed(0, |_, _, _| panic!("zero budget"))
+                .unwrap()
+                .retired,
+            0
+        );
     }
 
     #[test]
@@ -8424,7 +8486,7 @@ mod tests {
                 .bus_mut()
                 .write_port(PortAddress::new(CMOS_INDEX_PORT), AccessWidth::Byte, 0x0b)
                 .unwrap();
-            let report = board.run_quantum(false, true, 8, || false, |_| {});
+            let report = board.run_quantum(false, true, 8, || false, |_| {}, |_, _| {});
             assert!(matches!(
                 report.exit,
                 PagedProbeExit::PortIo(BusAccessError::Device {

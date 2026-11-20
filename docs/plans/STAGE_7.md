@@ -679,7 +679,7 @@
 
 ### S7-27. Измерить путь загрузки
 
-- [ ] Принято после ревью.
+- [x] Принято 2026-11-20 после независимого Sol High. Завершены обе серии по десять измерений после прогрева. [Отчёт](../reports/STAGE_7_REPORT.md#s7-27--измерения-пути-загрузки), [сырые данные](../reports/data/stage7/s7-27-m3-max-release-2026-11-20.json).
 - **Где:** `tools/bench/firmware_boot_bench.py` (новый), `docs/reports/data/stage7/`, раздел в `STAGE_7_REPORT.md`, сводка в `docs/testing/FIRMWARE.md`.
 - **Сделать:** измерить по разделу 5: handoff → вход приложения (FV и ESP), загрузка PE 1 MiB, чтение 64 MiB через Block I/O (в квантах машины и host-времени), `PCR_Extend` 1 MiB через `HashLogExtendEvent`; ≥10 повторов, отбросить первый, среднее/p50/p95/разброс, fingerprint (Mac, macOS build, режим сборки, интерпретатор/JIT, бюджет кванта).
 - **Проверить:** JSON сырых значений в `docs/reports/data/stage7/` ≤ 100 KiB; выводы не заявляют ускорение без A/B.

@@ -148,6 +148,7 @@ pub fn run_paged_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -182,6 +183,7 @@ pub fn run_paged_probe_with_rdtsc(
         stop,
         committed_write,
         Some(ProbeInputs::External(source)),
+        |_, _| {},
     )
 }
 
@@ -297,6 +299,7 @@ pub(crate) fn run_paged_firmware_probe(
     stop: impl FnMut() -> bool,
     committed_write: impl FnMut(GuestPhysicalRange),
     clock: Option<VirtualClock>,
+    observe: impl FnMut(u64, u64),
 ) -> PagedProbeQuantumReport {
     run_paged_probe_inner(
         false,
@@ -314,6 +317,7 @@ pub(crate) fn run_paged_firmware_probe(
         stop,
         committed_write,
         Some(ProbeInputs::Firmware { clock, fp, mmio }),
+        observe,
     )
 }
 
@@ -347,6 +351,7 @@ pub fn run_paged_stack_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -380,6 +385,7 @@ pub fn run_paged_cr3_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -417,6 +423,7 @@ pub fn run_paged_cr3_probe_2m_ram(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -454,6 +461,7 @@ pub(crate) fn run_paged_probe_2m_ram(
         stop,
         committed_write,
         rdtsc.map(ProbeInputs::External),
+        |_, _| {},
     )
 }
 
@@ -486,6 +494,7 @@ pub fn run_paged_cr0_wp_probe(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -531,6 +540,7 @@ pub fn run_paged_probe_shared(
         stop,
         committed_write,
         None,
+        |_, _| {},
     )
 }
 
@@ -559,6 +569,7 @@ fn run_paged_probe_inner(
     mut stop: impl FnMut() -> bool,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     mut inputs: Option<ProbeInputs<'_>>,
+    mut observe: impl FnMut(u64, u64),
 ) -> PagedProbeQuantumReport {
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
@@ -724,6 +735,7 @@ fn run_paged_probe_inner(
             }
         };
         let instruction_rip = state.rip;
+        observe(instruction_rip, instructions_executed);
         let step = ProbeStep {
             stack_profile,
             cpu_cr3_profile,

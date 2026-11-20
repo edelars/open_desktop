@@ -8,6 +8,7 @@ publish = false
 
 [features]
 pkcs7-probe = []
+firmware-bench = []
 
 [dependencies]
 od-firmware = { path = "../.." }
@@ -28,6 +29,14 @@ doc = false
 [[bin]]
 name = "acpi"
 path = "acpi/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "firmware-bench"
+path = "bench/main.rs"
+required-features = ["firmware-bench"]
 test = false
 bench = false
 doc = false
