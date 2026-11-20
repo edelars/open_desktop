@@ -13,8 +13,8 @@
 use sha2::{Digest, Sha256};
 
 use super::tests_b::{
-    Hc, Hs, hc, hmac_command, run_hmac, set_auth, shutdown, split_response, start_hmac,
-    start_session, startup,
+    Hc, Hs, LOCKOUT, hc, hmac_command, pw_cmd, run_hmac, set_auth, shutdown, split_response,
+    start_hmac, start_session, startup,
 };
 use super::tests_obj::*;
 use super::*;
@@ -1128,6 +1128,94 @@ fn unmarshal_name(t: &mut Tpm, h: u32) -> Vec<u8> {
     let mut rd = Reader::new(params(&r, 0));
     let _public = rd.tpm2b(1024).unwrap();
     rd.tpm2b(64).unwrap().to_vec()
+}
+
+#[test]
+fn da_lockout_precedes_role_and_flagged_policy_checks() {
+    let (mut t, parent) = with_ecc_parent();
+    let mut template = ecc_sign();
+    template.attributes |= oa::ADMIN_WITH_POLICY;
+    template.auth_policy = h256(&[
+        &[0; 32],
+        &u32b(cc::POLICY_COMMAND_CODE),
+        &u32b(cc::OBJECT_CHANGE_AUTH),
+    ]);
+    let (key, name, public) = make_child(&mut t, parent, &template, b"old", b"");
+    let parent_name = unmarshal_name(&mut t, parent);
+    let mut change = hc(
+        cc::OBJECT_CHANGE_AUTH,
+        &[key, parent],
+        tpm2b(b"new"),
+        (key, b"old"),
+    );
+    change.names = vec![name, parent_name];
+    let change_pw = |t: &mut Tpm, target| {
+        pw_cmd(
+            t,
+            cc::OBJECT_CHANGE_AUTH,
+            &[target, parent],
+            b"old",
+            &change.params,
+        )
+    };
+    err(&change_pw(&mut t, key), Rc::AUTH_TYPE);
+    ok(&pw_cmd(
+        &mut t,
+        cc::DICTIONARY_ATTACK_PARAMETERS,
+        &[LOCKOUT],
+        b"",
+        &cat(&[&u32b(1), &u32b(600), &u32b(86_400)]),
+    ));
+    err(
+        &sign(&mut t, key, b"wrong", &[0; 32], &ecc_sig_scheme()),
+        Rc::AUTH_FAIL.in_session(1),
+    );
+    assert!(t.da_in_lockout());
+    let persistent = t.persistent.da;
+    let timer = t.da_v;
+
+    err(&change_pw(&mut t, key), Rc::LOCKOUT);
+    let mut hmac = start_hmac(&mut t, NULL, b"", &[0x55; 16]);
+    err(
+        &use_session(&mut t, &mut hmac, &change, 0, false, false),
+        Rc::LOCKOUT,
+    );
+    ok(&flush(&mut t, hmac.handle));
+    for (kind, assertion, expected) in [
+        (se::POLICY, Some(cc::POLICY_AUTH_VALUE), Rc::LOCKOUT),
+        (se::POLICY, Some(cc::POLICY_PASSWORD), Rc::LOCKOUT),
+        (se::POLICY, None, Rc::POLICY_FAIL.in_session(1)),
+        (
+            se::TRIAL,
+            Some(cc::POLICY_PASSWORD),
+            Rc::ATTRIBUTES.in_session(1),
+        ),
+    ] {
+        let mut session = policy_session(&mut t, kind);
+        if let Some(code) = assertion {
+            ok(&pol(&mut t, code, &session, &[]));
+        }
+        let before = digest(&mut t, &session);
+        err(
+            &use_session(&mut t, &mut session, &change, 0, true, false),
+            expected,
+        );
+        assert_eq!(digest(&mut t, &session), before);
+        let slot = t.sessions.slot_of(session.handle).unwrap();
+        assert_eq!(t.sessions.get(slot).unwrap().nonce_tpm, session.nonce_tpm);
+        ok(&flush(&mut t, session.handle));
+    }
+    let mut pure = policy_session(&mut t, se::POLICY);
+    ok(&pol_cc(&mut t, &pure, cc::OBJECT_CHANGE_AUTH));
+    ok(&use_session(&mut t, &mut pure, &change, 0, true, false));
+
+    let mut external = unmarshal_public(&public);
+    external.attributes = oa::SIGN;
+    let (external, _) = parse_loaded(&load_external(&mut t, &external, NULL));
+    err(&change_pw(&mut t, external), Rc::AUTH_UNAVAILABLE);
+    assert_eq!(t.persistent.da, persistent);
+    assert_eq!(t.da_v.heal_epoch_ms, timer.heal_epoch_ms);
+    assert_eq!(t.da_v.lockout_fail_ms, timer.lockout_fail_ms);
 }
 
 #[test]

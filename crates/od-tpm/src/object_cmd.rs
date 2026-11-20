@@ -36,6 +36,7 @@ use crate::codes::{alg, handle, object_attr, st};
 use crate::crypto::{
     ecc_sign, ecc_verify, hmac_sha256, hmac_sha256_verify, kdfa_sha256, rsa_sign, rsa_verify,
 };
+use crate::da::DaClass;
 use crate::dispatch::Invocation;
 use crate::hash::AuthValue;
 use crate::marshal::{
@@ -110,26 +111,28 @@ impl Tpm {
     }
 
     /// The authValue of an object used as an authorization handle (Part 3, clause 5.6, steps 1,
-    /// 5 and 7): `TPM_RC_AUTH_UNAVAILABLE` if the object has no private part; for a password or
+    /// 3, 5 and 7): `TPM_RC_AUTH_UNAVAILABLE` if the object has no private part, then DA lockout is
+    /// checked for sessions that require its authValue. For a password or
     /// HMAC session (`policy` false) `TPM_RC_POLICY_FAIL` when the USER role needs a policy
     /// (`userWithAuth` CLEAR) and `TPM_RC_AUTH_TYPE` when the ADMIN role does (`adminWithPolicy`
     /// SET); a policy session passes here and is checked against the `authPolicy` by the
     /// dispatcher.
     pub(crate) fn object_auth(
         &self,
-        h: u32,
+        object: &Object,
         idx: usize,
         admin: bool,
         policy: bool,
+        da: DaClass,
     ) -> Result<AuthValue, Rc> {
-        let o = self.object(h).ok_or(Rc::reference_handle(idx))?;
-        let s = o.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+        let s = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+        self.da_check(da)?;
         if !policy {
             if admin {
-                if o.has(object_attr::ADMIN_WITH_POLICY) {
+                if object.has(object_attr::ADMIN_WITH_POLICY) {
                     return Err(Rc::AUTH_TYPE);
                 }
-            } else if !o.has(object_attr::USER_WITH_AUTH) {
+            } else if !object.has(object_attr::USER_WITH_AUTH) {
                 return Err(Rc::POLICY_FAIL.in_session((idx + 1) as u8));
             }
         }

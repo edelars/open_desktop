@@ -9283,6 +9283,24 @@ Sol High одобрил срез и независимо прогнал три �
 74 из 101 обязательного кода.
 [Контракт](../specs/VTPM.md#смена-авторизации-загруженного-объекта).
 
+## S7-23 — порядок проверки DA lockout
+
+После проверки доступности закрытой части TPM проверяет DA lockout перед
+ролью ADMIN или USER и перед проверкой условий политики. Это применяется
+к сессиям с паролем, HMAC, `PolicyAuthValue` и `PolicyPassword`.
+Политика без доказательства `authValue` может авторизовать вызов в lockout.
+Проверка наличия закрытой части сохраняет приоритет.
+
+Нативный CRB-прогон установил порог в одну неуспешную попытку, вызвал
+lockout и сверил коды для пароля, HMAC, обеих политик с доказательством
+`authValue`, trial и чистой политики. Счётчик отказов и дайджесты
+отклонённых сессий сохранились. После сброса lockout новый контейнер
+загрузился и исходные данные были доступны с новой авторизацией. Прошли
+308 тестов TPM и проверка Rust workspace. Sol High одобрил срез.
+Отдельная защита, унаследованная от привязки сессии,
+остаётся в ISSUE-529.
+[TPM Library v185, Part 3 §5.6](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf#page=32), [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
+
 ## S7-24 — разбор подписанных сообщений PKCS#7
 
 `MessageSignedData` разбирает DER для одного подписанта RSA-2048/SHA-256. Detached допускает `SignedData` и `ContentInfo`. Embedded требует `ContentInfo` и возвращает подписанные октеты значения. При наличии signed attributes проверяются тип контента и соответствие `messageDigest` входному хешу. В транскрипте RSA используется универсальный тег DER SET. Ограничения Auth2 и Authenticode сохранены. [UEFI 2.11 §37.4](https://uefi.org/specs/UEFI/2.11/37_Secure_Technologies.html#pkcs7-verify-protocol), [RFC 2315 §9.3](https://www.rfc-editor.org/rfc/rfc2315.html#section-9.3).

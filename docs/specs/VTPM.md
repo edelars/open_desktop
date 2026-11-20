@@ -311,7 +311,12 @@ Crate не знает про шину, потоки, файлы, ОС-часы �
 
 **DA (Part 1, 17.8; Part 3, 5.6 и 25; `da.rs`).** Под защитой DA: authValue объекта с `noDA` CLEAR, NV-индекса с `TPMA_NV_NO_DA` CLEAR, `lockoutAuth`. Не защищены: `ownerAuth`, `endorsementAuth`, `platformAuth`, Null, PCR, sequence-объекты (Part 1, 17.8.1: «permanent entity, other than TPM_RH_LOCKOUT»; это уже, чем «auth всех иерархий»), а также объекты иерархии platform и индексы `PLATFORMCREATE` (Part 3, 25.1: «never locked out»). Поведение:
 
-- Использование защищённого authValue (пароль, HMAC, ключ bound-сессии) при `failedTries >= maxTries` — `TPM_RC_LOCKOUT` **до** проверки значения; `TPM_RC_LOCKOUT` — и для заблокированного `lockoutAuth`.
+- После проверки наличия закрытой части TPM проверяет DA lockout до роли,
+  условий политики и доказательства `authValue`. Это относится к паролю,
+  HMAC, `PolicyAuthValue` и `PolicyPassword`. Политика без этих двух
+  утверждений при проверке целевой сущности освобождена от DA. Для
+  заблокированного `lockoutAuth` также возвращается `TPM_RC_LOCKOUT`.
+  Унаследованная от привязки сессии DA-защита остаётся в ISSUE-529.
 - Неверный authValue защищённой сущности — `TPM_RC_AUTH_FAIL` (с номером сессии) и `failedTries` + 1; незащищённой — прежний `TPM_RC_BAD_AUTH`, без последствий. `recoveryTime` = 0 — DA выключена: `TPM_RC_BAD_AUTH`, счётчик не растёт, lockout нет; `maxTries` = 0 при включённой DA — lockout всегда.
 - Неверный `lockoutAuth` — `TPM_RC_AUTH_FAIL` и отдельное состояние (Part 1, 17.8.5): `lockoutAuth` недоступен (`TPM_RC_LOCKOUT`) пока не пройдёт `lockoutRecovery` секунд `Time` (если 0 — до следующего `Startup`) или не выполнится `DictionaryAttackLockReset` (оно тоже требует доступного `lockoutAuth`, поэтому на практике ждут). `failedTries` при этом не растёт.
 - Самовосстановление: через каждые `recoveryTime` секунд `Time` без новых неудач `failedTries` уменьшается на 1, не ниже 0; каждая неудача перезапускает отсчёт. Таймеры volatile (непрерывное питание; после `_TPM_Init` отсчёт начинается заново).
@@ -549,7 +554,9 @@ PTP требует вместить поддерживаемый максима�
 38. DA: объекты платформенной иерархии и индексы `PLATFORMCREATE` исключены целиком, включая подсчёт неудач (Part 3, 25.1 говорит о блокировке; о счёте — только Part 1, 11.7 «generally not applied»).
 39. DA: неверный `lockoutAuth` не увеличивает `failedTries` (текст: особое состояние наступает «regardless of» `failedTries`/`maxTries`; увеличивает ли оно счётчик, не сказано).
 40. DA: `recoveryTime` = 0 даёт `TPM_RC_BAD_AUTH` (а не `TPM_RC_AUTH_FAIL`), `maxTries` = 0 при включённой DA — вечный lockout; приоритет «DA выключена» над «`failedTries >= maxTries`» — наше прочтение Part 3, 25.3.1.
-41. DA: индекс сессии у `TPM_RC_AUTH_FAIL` (формат 1 — допускает); `TPM_RC_LOCKOUT` (warning) его не несёт; порядок «lockout до проверки значения, после `TPM_RC_HIERARCHY`/`TPM_RC_AUTH_UNAVAILABLE`» (Part 3, 5.6: шаг 3) по отношению к прочим проверкам handle; учёт неудачи bound-сессии как неудачи сущности, к которой она привязана (Part 1, 17.8.1).
+41. DA: порядок проверки целевой сущности сверён с Part 3 v185 §5.6 и
+    проверен через CRB. Открыт учёт DA-защиты сущности, к которой привязана
+    сессия (Part 1 v185 §16.8.7). [ISSUE-529](../KNOWN_ISSUES.md#issue-529).
 42. DA: значения по умолчанию (32 / 600 с / 86400 с); `TPM2_Clear` как «установка нового владельца» (сброс `failedTries` и параметров, включение `lockoutAuth`); время выключенного питания не засчитывается ни в самовосстановление, ни в `lockoutRecovery` (Part 1, 17.8.2 это допускает, но не требует); для `lockoutRecovery` > 0 заблокированный `lockoutAuth` после перезапуска ждёт заново.
 43. DA: `lockoutAuth enabled` хранится в snapshot (в эталонной реализации — NV; текст на это не указывает); `TPMA_PERMANENT.inLockout` = DA включена и `failedTries >= maxTries`.
 44. Snapshot v2: раскладка, пределы и набор полей — наш выбор (формат TCG не определяет); то, что Part 3, 9.3.1 называет volatile (`platformAuth`, Null seed, enables), в snapshot не входит — по тексту v184; совместимость с другими TPM не заявляется.

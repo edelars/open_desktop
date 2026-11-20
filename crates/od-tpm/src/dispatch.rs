@@ -224,11 +224,17 @@ fn handle_auth(
     i: usize,
     admin: bool,
     policy: bool,
+    da: DaClass,
 ) -> Result<AuthValue, Rc> {
     let h = handles[i];
     if is_pcr_position(code, i) || h == handle::RH_NULL {
         return Ok(AuthValue::empty());
     }
+    if let Some(object) = tpm.object(h) {
+        // PolicySecret requires userWithAuth even for policy-based authorization.
+        return tpm.object_auth(object, i, admin, policy && code != cc::POLICY_SECRET, da);
+    }
+    tpm.da_check(da)?;
     let n = (i + 1) as u8;
     match handle::handle_type(h) {
         handle::HT_PERMANENT => {
@@ -246,11 +252,6 @@ fn handle_auth(
                 return Err(Rc::AUTH_TYPE);
             }
             Ok(index.auth.clone())
-        }
-        // Transient (not a sequence) and persistent objects (slice B).
-        handle::HT_TRANSIENT | handle::HT_PERSISTENT if tpm.object(h).is_some() => {
-            // PolicySecret requires userWithAuth even for policy-based authorization.
-            tpm.object_auth(h, i, admin, policy && code != cc::POLICY_SECRET)
         }
         _ => {
             let slot = tpm.seq_slot(h, i)?;
@@ -520,31 +521,43 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         let n = (i + 1) as u8;
         let authorizes = i < needed;
         let admin = admin_role(spec.code, i);
-        let policy_slot = match &uses[i] {
+        let policy = match &uses[i] {
             SessionUse::Hmac { slot, .. } => tpm
                 .sessions
                 .get(*slot)
                 .filter(|x| authorizes && x.kind.is_policy())
-                .map(|_| *slot),
+                .map(|session| (*slot, session)),
             SessionUse::Password => None,
         };
-        let auth = if authorizes {
-            handle_auth(tpm, spec.code, &handles, i, admin, policy_slot.is_some())?
-        } else {
-            AuthValue::empty()
-        };
-        entity_auths.push(Zeroizing::new(auth.as_slice().to_vec()));
-        // Dictionary attack protection (`da.rs`): the lockout check comes before the authValue
-        // check (Part 3, clause 5.6); a wrong authValue of a DA-protected entity is
-        // `TPM_RC_AUTH_FAIL` and counts, of any other `TPM_RC_BAD_AUTH` (Part 1, clause 17.6.8).
-        let class = if authorizes {
+        // Part 3 §5.6 checks DA lockout before role and policy validation for
+        // sessions proving an authValue. A policy without either assertion
+        // does not prove the target's authValue.
+        let class = if authorizes
+            && policy.is_none_or(|(_, session)| {
+                session.kind == SessionKind::Policy
+                    && (session.policy.auth_value_needed || session.policy.password_needed)
+            }) {
             da_class(tpm, spec.code, &handles, i)
         } else {
             DaClass::Exempt
         };
+        let policy_slot = policy.map(|(slot, _)| slot);
+        let auth = if authorizes {
+            handle_auth(
+                tpm,
+                spec.code,
+                &handles,
+                i,
+                admin,
+                policy_slot.is_some(),
+                class,
+            )?
+        } else {
+            AuthValue::empty()
+        };
+        entity_auths.push(Zeroizing::new(auth.as_slice().to_vec()));
         match &mut uses[i] {
             SessionUse::Password => {
-                tpm.da_check(class)?;
                 if !password_matches(&s.hmac, auth.as_slice()) {
                     return Err(tpm.da_auth_failed(class, n));
                 }
@@ -583,7 +596,6 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         tpm.policy_use_check(pslot, spec.code, &cp, &policy, admin, n)?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     if need_password {
-                        tpm.da_check(class)?;
                         if !password_matches(&s.hmac, auth.as_slice()) {
                             return Err(tpm.da_auth_failed(class, n));
                         }
@@ -591,7 +603,6 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         // still receives an HMAC, keyed by sessionKey alone (§16.6.16).
                         *used_auth = false;
                     } else if need_auth {
-                        tpm.da_check(class)?;
                         let mut key = Zeroizing::new(session.key.as_slice().to_vec());
                         key.extend_from_slice(auth.as_slice());
                         if s.hmac.is_empty()
@@ -625,7 +636,6 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                         *used_auth = false;
                     }
                 } else {
-                    tpm.da_check(class)?;
                     let session = tpm.sessions.get(*slot).ok_or(Rc::reference_session(i))?;
                     let (key, with_auth) = authorization_key(session, handles[i], &auth);
                     if !verify_command_hmac(
