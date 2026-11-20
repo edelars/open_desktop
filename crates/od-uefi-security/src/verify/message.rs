@@ -13,13 +13,12 @@ use super::{
 use crate::{
     authvar::Timestamp,
     pkcs7::{
-        MessageSignedData, SPC_INDIRECT_DATA,
+        MAX_DATABASE_BYTES, MessageSignedData, SPC_INDIRECT_DATA,
         timestamp::{self, CertificateHash, TimestampToken},
     },
     siglist::{ListError, SignatureType, signature_lists_with},
 };
 
-const MAX_DATABASE_BYTES: usize = 64 * 1024;
 const MAX_CERTIFICATES: usize = 32;
 const OWNER_BYTES: usize = 16;
 const TIME_BYTES: usize = 16;

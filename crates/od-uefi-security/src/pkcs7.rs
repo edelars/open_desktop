@@ -8,6 +8,8 @@ use der::{
 mod authenticode;
 #[cfg(feature = "verify")]
 pub(crate) mod timestamp;
+#[cfg(feature = "protected-nvram")]
+pub mod transport;
 pub use authenticode::AuthenticodeSignedData;
 #[cfg(feature = "verify")]
 pub(crate) use authenticode::SPC_INDIRECT_DATA;
@@ -27,7 +29,8 @@ const CONTEXT_ONE: Tag = Tag::ContextSpecific {
 };
 
 pub const MAX_SIGNED_DATA_BYTES: usize = 16 * 1024;
-const MAX_MESSAGE_SIGNATURE_BYTES: usize = 64 * 1024;
+pub const MAX_MESSAGE_SIGNATURE_BYTES: usize = 64 * 1024;
+pub const MAX_DATABASE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_CERTIFICATES: usize = 8;
 pub(crate) const RSA_2048_SIGNATURE_BYTES: usize = 256;
 

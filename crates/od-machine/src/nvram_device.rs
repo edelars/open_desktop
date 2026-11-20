@@ -2,6 +2,7 @@
 
 use crate::bus::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace};
 use crate::crc32::crc32_ieee;
+use od_uefi_security::pkcs7::transport as pkcs7;
 use od_uefi_security::protected::{IMAGE_CAPACITY, Image};
 use std::collections::HashSet;
 use std::fmt;
@@ -247,6 +248,7 @@ enum Status {
     ImageCollecting = 4,
     ImageAuthorized = 5,
     ImagePolicyDisabled = 6,
+    SignatureChecked = pkcs7::REPLY_READY,
     InvalidRange = 0x8000_0001,
     Incomplete = 0x8000_0002,
     InvalidCommand = 0x8000_0003,
@@ -263,6 +265,7 @@ enum Transfer {
     ImageUpload(image::Upload),
     ImageAuthority(Vec<u8>),
     RejectedImageDigest([u8; 32]),
+    SignatureReply([u8; pkcs7::REPLY_BYTES]),
 }
 
 struct State {
@@ -284,6 +287,7 @@ impl State {
                 Transfer::Read { start, end } => (self.banks.current().data(), *start, *end),
                 Transfer::ImageAuthority(bytes) => (&bytes[..], 0, bytes.len()),
                 Transfer::RejectedImageDigest(bytes) => (&bytes[..], 0, bytes.len()),
+                Transfer::SignatureReply(bytes) => (&bytes[..], 0, bytes.len()),
                 _ => return Err(DeviceError::Busy),
             };
             let offset = offset as usize;
@@ -380,11 +384,34 @@ impl State {
                 }
                 _ => Status::Incomplete,
             },
+            pkcs7::VERIFY_COMMAND if self.staging.is_some() => match previous {
+                Transfer::Write { length, written } if written == length => {
+                    if start != 0 || self.length != 0 {
+                        Status::InvalidRange
+                    } else {
+                        self.verify_signature_request(length)
+                    }
+                }
+                _ => Status::Incomplete,
+            },
             IMAGE_BEGIN | IMAGE_CHUNK | IMAGE_VERIFY if self.staging.is_some() => {
                 self.image_command(code, previous)
             }
             _ => Status::InvalidCommand,
         };
+    }
+
+    fn verify_signature_request(&mut self, length: usize) -> Status {
+        let Some(staging) = &self.staging else {
+            return Status::InvalidCommand;
+        };
+        match pkcs7::Request::decode(&staging[..length]).and_then(|request| request.verify()) {
+            Ok(reply) => {
+                self.transfer = Transfer::SignatureReply(reply.encode());
+                Status::SignatureChecked
+            }
+            Err(_) => Status::InvalidRange,
+        }
     }
 
     fn flush(&mut self, length: usize) -> Status {
@@ -819,6 +846,78 @@ mod tests {
         }
         let mut legacy = NvramDevice::new();
         start(&mut legacy, IMAGE_BEGIN, 0, 1);
+        status(&mut legacy, Status::InvalidCommand);
+    }
+
+    #[test]
+    fn pkcs7_verification_uses_only_the_request_and_never_commits_a_bank() {
+        use od_uefi_security::siglist::SignatureType;
+
+        let signed = include_bytes!(
+            "../../../tests/fixtures/firmware/certs/authenticode-test-hello-sha256.p7b"
+        );
+        let allowed = esl(
+            SignatureType::X509,
+            include_bytes!("../../../tests/fixtures/firmware/certs/authenticode-test-ca.der"),
+        );
+        let make_request = |allowed: &[u8]| {
+            let (header, _) = pkcs7::header(
+                pkcs7::Mode::Embedded,
+                [signed.len(), 0, allowed.len(), 0, 0],
+            )
+            .unwrap();
+            [header.as_slice(), signed, allowed].concat()
+        };
+        for disabled in [false, true] {
+            let flags = Flags {
+                secure_boot_disabled: disabled,
+                ..DEFAULT_FLAGS
+            };
+            let mut device =
+                NvramDevice::with_protected_store(&protected_image(flags, &[])).unwrap();
+            let snapshot = device.nvram_snapshot();
+            for (database, expected) in [
+                (allowed.as_slice(), pkcs7::Outcome::Success),
+                (&[][..], pkcs7::Outcome::SecurityViolation),
+                (&[1, 2, 3][..], pkcs7::Outcome::Aborted),
+            ] {
+                stage(&mut device, &make_request(database));
+                start(&mut device, pkcs7::VERIFY_COMMAND, 0, 0);
+                status(&mut device, Status::SignatureChecked);
+                let encoded = std::array::from_fn(|index| {
+                    device
+                        .read(access(index as u64, AccessWidth::Byte))
+                        .unwrap() as u8
+                });
+                let reply = pkcs7::Reply::decode(&encoded).unwrap();
+                assert_eq!(reply.outcome, expected);
+                if expected == pkcs7::Outcome::Success {
+                    let content = od_uefi_security::pkcs7::MessageSignedData::decode(signed)
+                        .unwrap()
+                        .embedded()
+                        .unwrap();
+                    let offset = reply.content_offset as usize;
+                    let length = reply.content_length as usize;
+                    assert_eq!(content, &signed[offset..offset + length]);
+                }
+                assert_eq!(device.nvram_snapshot(), snapshot);
+                assert_eq!(reg(&mut device, POLICY_EPOCH_LOW), 0);
+                start(&mut device, pkcs7::VERIFY_COMMAND, 0, 0);
+                status(&mut device, Status::Incomplete);
+                assert!(device.read(access(0, AccessWidth::Byte)).is_err());
+            }
+            start(&mut device, WRITE, 0, signed.len());
+            device.write(access(0, AccessWidth::Byte), 0).unwrap();
+            start(&mut device, pkcs7::VERIFY_COMMAND, 0, 0);
+            status(&mut device, Status::Incomplete);
+            stage(&mut device, &[0; pkcs7::HEADER_BYTES]);
+            start(&mut device, pkcs7::VERIFY_COMMAND, 0, 0);
+            status(&mut device, Status::InvalidRange);
+            assert_eq!(device.nvram_snapshot(), snapshot);
+            assert_eq!(reg(&mut device, POLICY_EPOCH_HIGH), 0);
+        }
+        let mut legacy = NvramDevice::new();
+        start(&mut legacy, pkcs7::VERIFY_COMMAND, 0, 0);
         status(&mut legacy, Status::InvalidCommand);
     }
 
