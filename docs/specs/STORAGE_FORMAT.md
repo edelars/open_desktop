@@ -1,6 +1,6 @@
 # Контракт persistent форматов хранения
 
-Статус: **S9-00 принято с оговорками по архитектурному ревью; формат CoW v1 принят владельцем проекта как нормативный 2026-11-06 (решение пользователя; см. §9)**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативные bytes CoW v1 — в §9 (root slot, карта, лимиты, протокол коммита, create). Слой snapshot-метаданных (ODSNAP) нормативно не описан и не входит в принятие; RAW — без header по §1. Реализованы (коммиты `a59338a`, `ba77773`, `4fcd5c4`, `69e0b02`): контракт [`io.rs`](../../crates/od-storage/src/io.rs) (`StorageBackend`, `CheckedStorage`), [`raw.rs`](../../crates/od-storage/src/raw.rs) (`RawImage`), host backend с `flock` и flush данных файла в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs). Есть прототип CoW (S9-08…12; коммиты `000c1da`, `17c9ce6`, `61a99e0`, `7d23bf9`, `01ef35d`): [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs) с тестами на fault backend ([`testing/fault.rs`](../../crates/od-storage/src/testing/fault.rs), `a7874b8`); CoW v1 нормативен (§9); S9-40 не завершён (commit-latency: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md); throughput: [S9_40_THROUGHPUT.md](../testing/S9_40_THROUGHPUT.md)); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`). Snapshot metadata и full-VM container — в S9-14 и S9-23 (не начаты). Namespace durability не реализована, power-loss не проверен.
+Статус: **S9-00 принято с оговорками по архитектурному ревью; формат CoW v1 принят владельцем проекта как нормативный 2026-11-06 (решение пользователя; см. §9)**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативные bytes CoW v1 — в §9 (root slot, карта, лимиты, протокол коммита, create). Слой snapshot-метаданных (ODSNAP) нормативно не описан и не входит в принятие; RAW — без header по §1. Реализованы (коммиты `a59338a`, `ba77773`, `4fcd5c4`, `69e0b02`): контракт [`io.rs`](../../crates/od-storage/src/io.rs) (`StorageBackend`, `CheckedStorage`), [`raw.rs`](../../crates/od-storage/src/raw.rs) (`RawImage`), host backend с `flock` и flush данных файла в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs). Есть прототип CoW (S9-08…12; коммиты `000c1da`, `17c9ce6`, `61a99e0`, `7d23bf9`, `01ef35d`): [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs) с тестами на fault backend ([`testing/fault.rs`](../../crates/od-storage/src/testing/fault.rs), `a7874b8`); CoW v1 нормативен (§9); S9-40 не завершён (commit-latency: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md); throughput: [S9_40_THROUGHPUT.md](../testing/S9_40_THROUGHPUT.md)); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`). Snapshot metadata — прототип S9-14. Full-VM container — кодек S9-23 реализован локально (§13), без данных участников, не принят. Namespace durability не реализована, power-loss не проверен.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [этап 9 roadmap](../ROADMAP.md#этап-9-надёжность-данных-и-управление-состоянием), [архитектура §7](../ARCHITECTURE.md#7-диски-конфигурация-и-снимки), [виртуальная плата](VIRTUAL_BOARD.md), [матрица поддержки](SUPPORT_MATRIX.md), [состояние VM и операции](VM_STATE.md), [методика recovery](../testing/STORAGE_RECOVERY.md).
 
@@ -13,7 +13,7 @@
 | RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализован `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs), `4fcd5c4`), ревью S9-05 пройдено, power-loss не проверен |
 | Собственный CoW disk image | `crates/od-storage/src/` | **CoW v1 — нормативен (принято владельцем 2026-11-06)**: layout и правила — §9; реализация [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); S9-40 (throughput, чтение, WA, recovery, память) остаётся незавершённым и не отменяется этим решением |
 | Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен (§9.8), в отличие от CoW v1; resolver цепочки только в офлайн-CLI image-tool (`PathResolver`, `1590c9e`), VMHost цепочку не открывает |
-| Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
+| Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | Кодек контейнера реализован локально (S9-23, не нормативен, без данных участников): §13; список участников по профилям — [VM_STATE.md §5](VM_STATE.md#5-участники-контейнера-по-профилям-s9-23) |
 | UEFI variable store artifact | семантика — `firmware/uefi/src/`, банковый снимок — `od-machine`, persistence — `od-storage` | Доступен `ODNVBANK` v1/v2. Контейнер и запись в bundle относятся к S9-26. [Контракт NVRAM](NVRAM_DEVICE.md#host-api) |
 | vTPM persistent state | состояние и кодек — `od-tpm`, доступ к байтам платы — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | Доступен `ODTPMSTA` v6 с чтением v3–v5 для текущего профиля. Защищённый контейнер относится к S9-27. [Контракт TPM](VTPM.md#host-api-и-persistence) |
 
@@ -244,3 +244,86 @@ Storage API возвращает типизированные результат
 | LBA size guest device | S9-13 | NVMe-контроллер S7-16 ([NVME_DEVICE.md §13.3](NVME_DEVICE.md#133-backend-и-namespace)) — 512 B; подтвердить при подключении образа этапа 9 гостю (S9-13) |
 | CoW block size, map layout, checksum алгоритм | Решено: формат v1 принят как нормативный владельцем 2026-11-06 (§9). Остаётся открытым только влияние на производительность | Измерено (S9-40): commit-latency ≈4 мс на барьер ([S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)), throughput/WA/чтение/open/память против RAW ([S9_40_THROUGHPUT.md](../testing/S9_40_THROUGHPUT.md)), цепочки, export и compaction ([S9_40_CHAIN_EXPORT_COMPACT.md](../testing/S9_40_CHAIN_EXPORT_COMPACT.md)); решение по данным — структуры v1 не меняются, WA commit по расчёту линейна по размеру карты (известный предел), open цепочки определяется объёмом проверяемых данных, а не глубиной; checkpoint/restore не измерены (S9-29…31) |
 | Модель накопителя/контроллера внутреннего SSD | S9-39 claim | Зафиксировать при подготовке стенда |
+
+
+## 13. Контейнер VM v1 (S9-23)
+
+Статус: **реализован локальный кодек, формат не принят как нормативный** (нет ревью и нет настоящих участников). Код: [`vm_container.rs`](../../crates/od-storage/src/vm_container.rs), тесты [`vm_container_tests.rs`](../../crates/od-storage/src/vm_container_tests.rs); модуль собирается при `cfg(any(test, feature = "test-support"))`, как CoW-модули. Контейнер — чисто байтовый кодек: он не создаёт данные участников и не знает семантики секций. CPU, RAM, устройства, UEFI и vTPM приходят от вызывающего как непрозрачные байты (inline) или как ссылки на отдельные файлы (reference). Состав обязательных секций задаёт вызывающий по профилю ([VM_STATE.md §5](VM_STATE.md#5-участники-контейнера-по-профилям-s9-23)).
+
+### 13.1 Раскладка (little endian)
+
+Файл: header (128 Б) → таблица секций (`count × 64` Б) → payload всех секций подряд, без дыр и без хвоста. Писатель пишет записи таблицы и payload в каноническом порядке `(kind, instance)`, поэтому один и тот же набор секций даёт одни и те же байты при любом порядке входа. Читатель принимает записи таблицы в любом порядке и payload в любом порядке без дыр и пересечений (offset каждой записи берётся из таблицы); результат чтения всегда отсортирован по `(kind, instance)`.
+
+| Header, байты | Поле |
+|---|---|
+| 0..8 | magic `ODVMCK\0\x01` |
+| 8..12 | version u32 = 1 |
+| 12..16 | header_len u32 = 128 |
+| 16..24 | mandatory feature bits u64: в v1 обязаны быть 0 |
+| 24..32 | optional feature bits u64: в v1 игнорируются |
+| 32..48 | vm_identity (16 Б) |
+| 48..56 | checkpoint_id u64 |
+| 56..64 | epoch u64, не 0 и не `u64::MAX` |
+| 64..68 | profile u32 |
+| 68..72 | section_count u32 |
+| 72..80 | total_len u64 (длина всего файла) |
+| 80..84 | CRC-32 таблицы секций |
+| 84..124 | reserved, нули |
+| 124..128 | CRC-32 байт 0..124 |
+
+| Запись таблицы, байты | Поле |
+|---|---|
+| 0..4 | kind u32 |
+| 4..8 | flags u32: бит 0 mandatory, бит 1 reference (иначе inline); остальные биты — reserved, нули |
+| 8..12 | instance u32 |
+| 12..16 | schema_id u32 |
+| 16..20 | schema_version u32 |
+| 20..28 | offset u64 (от начала файла) |
+| 28..36 | len u64 (не 0) |
+| 36..44 | epoch u64, равен epoch header |
+| 44..48 | CRC-32 payload |
+| 48..64 | reserved, нули |
+
+Reference payload — ровно 40 Б: file_uid (16 Б), generation u64, byte_len u64 (не 0), CRC-32 байтов, на которые указывает ссылка, u32, 4 Б нулей. Путей, host handles и указателей нет; file_uid из одних нулей отвергается. Кодек не открывает файлы по ссылке и их содержимое не проверяет — это делает участник при restore.
+
+### 13.2 Лимиты
+
+`MAX_SECTIONS = 256`, `MAX_SECTION_BYTES = 1 << 26` (64 MiB), `MAX_TOTAL_BYTES = 1 << 28` (256 MiB). Значения из файла (section_count, total_len, len записи) сверяются с лимитами до использования таблицы и payload; читатель заимствует payload из входного буфера и выделяет только структуры размером не более `MAX_SECTIONS`; писатель проверяет лимиты до заполнения выходного буфера. Числа — стартовые параметры, не результат замеров (см. §13.5).
+
+### 13.3 Правила и ошибки
+
+Порядок проверок читателя: magic → version → header_len → CRC header → reserved и feature bits header → epoch → лимиты header → identity/checkpoint_id/profile → `total_len` равен длине файла → граница таблицы → CRC таблицы → каждая запись (reserved и флаги, `MAX_SECTION_BYTES`, len ≠ 0, `offset + len` без переполнения и в пределах файла, epoch) → дубликаты → отсутствие пересечений и дыр → CRC payload и форма reference → unknown kinds → обязательные секции.
+
+| Ошибка | Условие |
+|---|---|
+| `BadMagic`, `BadVersion`, `BadHeaderLen` | Неверные magic, version или header_len |
+| `HeaderCrc`, `TableCrc`, `SectionCrc` | Несовпадение CRC-32 header, таблицы, payload секции |
+| `ReservedNonZero`, `UnsupportedHeaderFlags` | Ненулевые reserved-байты, неизвестные биты flags записи, ненулевые mandatory bits header |
+| `BadEpoch`, `EpochMismatch` | Epoch header равен 0 или `u64::MAX`; epoch секции ≠ epoch header |
+| `IdentityMismatch` | vm_identity, checkpoint_id или profile не совпали с ожидаемыми |
+| `MissingRequiredSection` | Нет обязательной (kind, instance); проверяется и при записи, и при чтении |
+| `RequiredNotMandatory` | Только при записи: обязательная по профилю (kind, instance) передана с mandatory = false |
+| `DuplicateSection` | Повтор (kind, instance) |
+| `UnknownMandatory` | Секция с неизвестным вызывающему kind и флагом mandatory. Неизвестная optional секция пропускается (перечисляется в `skipped_optional`), но проходит все проверки структуры и CRC |
+| `Overlap`, `Gap`, `OutOfBounds`, `Overflow` | Пересечение с другой секцией или с таблицей; байты, которые не покрыты ни одной секцией; выход за `total_len`, длина файла ≠ `total_len`; переполнение `offset + len` |
+| `LimitExceeded` | Превышены `MAX_SECTIONS`, `MAX_SECTION_BYTES`, `MAX_TOTAL_BYTES` |
+| `EmptySection`, `BadReferenceLen`, `BadReference` | Payload нулевой длины; reference не 40 Б; reference с нулевым file_uid или byte_len |
+
+Писатель не подставляет нули и не создаёт placeholder: отсутствующий обязательный участник, обязательный участник с mandatory = false (иначе читатель, не знающий kind, пропустил бы его), пустой inline payload и нулевая ссылка — ошибки записи. Читатель требует обязательные секции и не пропускает неизвестное mandatory-состояние. Ни одна ошибка не превращается в успешное чтение с заменой данных.
+
+### 13.4 Что контейнер не гарантирует
+
+CRC-32 обнаруживает случайные повреждения; он не аутентифицирует контейнер, не защищает от намеренной подмены (подмену с пересчётом CRC обнаружить нельзя) и не доказывает целостность файлов, на которые указывают reference-секции. Секреты vTPM и защита ключей — S9-27 (§10). Атомарная публикация (все artifacts durable → manifest durable → ack, [VM_STATE.md §3.3](VM_STATE.md#33-таблица-a--prerequisites-consistency-durability)), права доступа к файлу и привязка к host — вне кодека. Совпадение epoch между контейнером и самими reference-файлами проверяет участник по `generation`.
+
+### 13.5 Открытые вопросы S9-23
+
+| Вопрос | Решение в коде / рекомендация |
+|---|---|
+| CRC-32 таблицы секций | Утверждённый дизайн задавал CRC только header и payload; поля записи (kind, flags, instance, schema, epoch) тогда не защищены. Добавлено поле «CRC-32 таблицы» в header (байты 80..84, ранее резерв). Рекомендация: подтвердить при ревью |
+| Лимиты 256 / 64 MiB / 256 MiB | Выбраны без замеров. Рекомендация: уточнить после S9-24/25, когда известен реальный размер inline-секций CPU/устройств |
+| Нулевая длина payload и нулевой file_uid | Отвергаются как возможный placeholder. Рекомендация: подтвердить; если участнику нужно «пусто», он должен выражать это своей схемой в непустом payload |
+| Режим секции (inline или reference) для данного kind | Кодек возвращает режим, но не требует конкретный режим от вызывающего; проверка режима для required kind — на стороне участника. Рекомендация: добавить в `Expect` при появлении первого участника |
+| Число instance для required-kind (например число vCPU) | Кодек проверяет только присутствие перечисленных в `required` пар (kind, instance); полноту набора instance он не знает. Участник обязан сверить число instance с фактическим (например число vCPU по конфигурации VM) при записи и при restore: лишний или недостающий instance, не попавший в `required`, кодек не обнаружит. Рекомендация: подтвердить при ревью |
+| Какие kind и schema у участников | Не задаются кодеком; назначаются вместе с S9-24…27 |
+| Привязка к операции (operation ID, [VM_STATE.md §3.2](VM_STATE.md#32-operation-id)) и формат operation record | Не входят в контейнер; формат record — S9-33 |
+| Нормативный статус | Требуется архитектурное ревью и принятие владельцем; до этого раздел не нормативен |

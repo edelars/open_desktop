@@ -1,6 +1,6 @@
 # Состояние VM, lifecycle и операции сохранения
 
-Статус: **S9-02 принято с оговорками по архитектурному ревью; S9-01 принято (сверка §2 с кодом HEAD `4dedff2` выполнена; ISSUE-057 в CoW закрыт, `01ef35d`; следующий срез — см. §2.5)**. Инвентаризация выполнена по фактическому коду на 2026-11-05 (ветка `feat/s9-stage`). Операции VM из §3 не реализованы (нет lifecycle, checkpoint, restore и clone); реализованы только offline storage-компоненты §2.1 (RAW, CoW v1 write transaction и recovery, snapshot-слой, export/import и salvage на уровне `od-storage`/`image-tool`), которые операциями VM не являются. Versioned full-VM container — TBD S9-23.
+Статус: **S9-02 принято с оговорками по архитектурному ревью; S9-01 принято (сверка §2 с кодом HEAD `4dedff2` выполнена; ISSUE-057 в CoW закрыт, `01ef35d`; следующий срез — см. §2.5)**. Инвентаризация выполнена по фактическому коду на 2026-11-05 (ветка `feat/s9-stage`). Операции VM из §3 не реализованы (нет lifecycle, checkpoint, restore и clone); реализованы только offline storage-компоненты §2.1 (RAW, CoW v1 write transaction и recovery, snapshot-слой, export/import и salvage на уровне `od-storage`/`image-tool`), которые операциями VM не являются. Кодек versioned full-VM container реализован локально (S9-23, [STORAGE_FORMAT.md §13](STORAGE_FORMAT.md#13-контейнер-vm-v1-s9-23)) без данных участников; состав по профилям — §5.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [STORAGE_FORMAT.md](STORAGE_FORMAT.md) (уровни подтверждения записи, модель отказов), [архитектура §7](../ARCHITECTURE.md#снимки), [виртуальная плата](VIRTUAL_BOARD.md), [контракт машины](MACHINE_CONTRACT.md), [методика recovery](../testing/STORAGE_RECOVERY.md).
 
@@ -163,9 +163,37 @@
 
 | Вопрос | Задача |
 |---|---|
-| Формат operation record и manifest | S9-23 |
+| Формат operation record | S9-33 (формат контейнера и manifest — S9-23, [§5](#5-участники-контейнера-по-профилям-s9-23)) |
 | Политика virtual time при pause/suspend/resume | S9-25, архитектура §5 |
 | Политика `EventGeneration` после restore | S9-25 |
 | Единый owner полного CPU state | S9-24, ISSUE-056 |
 | Межпроцессный identity lease primitive | S9-30 |
 | Guest shutdown path (ACPI/agent) | Этапы 4/7, S9-31 |
+
+
+## 5. Участники контейнера по профилям (S9-23)
+
+Формат контейнера — [STORAGE_FORMAT.md §13](STORAGE_FORMAT.md#13-контейнер-vm-v1-s9-23). Кодек [`vm_container.rs`](../../crates/od-storage/src/vm_container.rs) не имеет собственных данных участников и не знает, что лежит в секциях: обязательный набор `(kind, instance)` задаёт вызывающий по профилю, и отсутствие участника — ошибка записи и чтения (не нулевой placeholder). **Числовые `kind` и `schema_id` пока не назначены**: их назначает владелец каждого участника вместе с задачами S9-24…27; ниже — роли. Статус «blocker» означает: до его снятия настоящий checkpoint профиля собрать нельзя, а контейнер проверяется только на непрозрачных байтах (локальные тесты S9-23 настоящих участников не используют).
+
+Общие правила: всё состояние одного checkpoint несёт один `epoch` ([§1](#1-участники-полного-состояния-vm)); derived state (JIT cache, TLB, native pointers, host handles) в контейнер не входит; пути и handles в reference-секциях запрещены.
+
+| Участник | Секция (kind назначается позже) | Режим | `restricted-vm` | `full-windows-vm` | Владелец задачи | Статус и blocker |
+|---|---|---|---|---|---|---|
+| CPU, по одной секции на vCPU (`instance` = номер vCPU; число vCPU и features — в самой схеме) | cpu | inline | обязательна | обязательна | S9-24 | **Blocker.** Нет единого версионированного владельца полного состояния CPU ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); `VmSnapshot` (S6-24/S6-35) — значение в памяти без формата и без RAM/устройств. Нельзя терять неподдержанное состояние (CR2, CR3, EFER, MSR, XSAVE и т. д., §2.2) |
+| Local APIC, IOAPIC, таймеры и прочие устройства платы, по одной секции на устройство | device | inline | обязательна для каждого устройства профиля | обязательна для каждого устройства профиля | S9-25 | **Blocker.** У `BusDevice` нет save/validate/load; недренируемое устройство блокирует профиль (план S9-25). Состояние APIC/IOAPIC есть только как `VmSnapshot` в памяти |
+| Время и ввод-вывод: virtual clock/TSC, `EventQueue` и generation, очереди внешнего ввода-вывода | time_io | inline | обязательна | обязательна | S9-25 | **Blocker.** Нет кодека; политика времени при pause/suspend/resume и `EventGeneration` после restore не заданы (§4); семантика reconnect внешних ресурсов не определена |
+| Guest RAM | ram | reference или inline по решению S9-24 | обязательна | обязательна | S9-24 | **Blocker.** Владелец есть (`PhysicalMemory`), кодека нет. Для первой версии — копия остановленной RAM (sparse-диапазоны в схеме секции); размер выше `MAX_SECTION_BYTES` требует reference |
+| Диски: корень каждого диска (`instance` = номер диска) | disk_root | reference | обязательна для каждого подключённого диска | обязательна для каждого подключённого диска | S9-13, S9-29 | Корни RAW и CoW v1 существуют на уровне `od-storage`, но VMHost диски гостю не подключает (S9-13 заблокирован устройством). Источник стабильной 16-байтовой identity файла образа не определён (§5.1) |
+| UEFI variable store | uefi | reference | не входит (профиль без UEFI) | обязательна | S9-26 | Формат банков `ODNVBANK` v1/v2 и API есть ([NVRAM_DEVICE.md](NVRAM_DEVICE.md#host-api)); **blocker:** persistence, согласованный захват generation и политика отката — S9-26 |
+| vTPM persistent state | vtpm | reference | не входит | обязательна | S9-27 | Формат `ODTPMSTA` v6 и API есть ([VTPM.md](VTPM.md#host-api-и-persistence)); **blocker:** шифрование и хранение секретов, согласованный захват, политика отката и anti-rollback — S9-27. CRC контейнера защиты не даёт |
+| Identity policy (политика клонирования и lease) | — | — | не входит | входит в manifest профиля через `vm_identity` и `profile` header | S9-30, S9-32 | Межпроцессный identity lease не реализован (§4). Контейнер хранит только `vm_identity` |
+
+Состав `restricted-vm` и `full-windows-vm` взят из [профилей](STORAGE_FORMAT.md#2-профили). Полнота списка для `full-windows-vm` относительно §1: vCPU, RAM, device/DMA writers, interrupts, virtual time, pending/completed I/O, persistent generations дисков, UEFI, vTPM — каждому пункту соответствует строка таблицы (interrupts и DMA входят в состояние устройств и APIC, не в отдельную секцию). Если участник профиля в таблице отсутствует или не может быть сохранён целиком (например, недренируемое устройство), собирать checkpoint нельзя: записать неполный набор и считать его полным контейнер не позволяет при полном списке required профиля (кодек проверяет только перечисленные в нём пары; полноту списка обеспечивает вызывающий).
+
+### 5.1. Открытые вопросы S9-23 по участникам
+
+| Вопрос | Рекомендация |
+|---|---|
+| Источник стабильной 16-байтовой `file_uid` для reference-секций. В формате CoW v1 и RAW постоянного идентификатора файла нет; `file_uid: u64` в resolver snapshot-слоя — host-side значение и persistent быть не должно | Решить вместе с S9-13/S9-29: либо добавить идентификатор в формат образа (миграция v1), либо генерировать UID объекта в bundle manifest и хранить рядом с файлом |
+| Нужен ли отдельный manifest-слой над контейнером (список файлов bundle, operation ID) | Контейнер уже связывает все секции одним epoch и CRC; operation record — S9-33; не усложнять контейнер до появления потребителя |
+| Включение reference-файлов в проверку при restore (длина, CRC-32, generation) | Обязанность restore (S9-30); кодек только хранит ожидаемые значения |
