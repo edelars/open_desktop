@@ -213,13 +213,19 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
             Ok(address) => ptr::with_exposed_provenance_mut::<[u8; BYTES]>(address as usize),
             Err(_) => stop(STOP_BOOT_SERVICES, 60),
         };
-        // SAFETY: the two pools are distinct retained data. The parsed v1.14 handoff owns NVRAM.
+        // SAFETY: the two pools are distinct retained data. The parsed handoff owns NVRAM.
         unsafe {
             RuntimeVariables::initialize_protected(
                 variables,
                 scratch,
                 &od_firmware::console::COM1_DEVICE_PATH,
                 handoff.nvram_base().unwrap(),
+                handoff.enforces_secure_boot(),
+                if handoff.enforces_secure_boot() && handoff.tpm_crb_base().is_some() {
+                    Some(od_firmware::tpm::secure_boot::variables_updated)
+                } else {
+                    None
+                },
             )
         }
         .map(|_| None)
@@ -264,6 +270,11 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     // borrowing the allocator. All ensuing accesses go through Boot Services.
     unsafe {
         od_firmware::bs::initialize(allocator, handoff.tsc_hz(), read_tsc);
+        od_firmware::bs::attach_image_policy(if handoff.enforces_secure_boot() {
+            handoff.nvram_base()
+        } else {
+            None
+        });
         od_firmware::bs::attach_image_paging(&paging);
     }
     if let Some(pm) = fixed_hardware {
@@ -309,8 +320,15 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     }
     if let Some(base) = handoff.tpm_crb_base()
         && let Err(status) = unsafe {
-            od_firmware::tpm::install(base)
+            od_firmware::tpm::install(base, handoff.enforces_secure_boot())
                 .and_then(|()| od_firmware::tpm::measure::platform(&handoff))
+                .and_then(|()| {
+                    if handoff.enforces_secure_boot() {
+                        od_firmware::tpm::secure_boot::initialize()
+                    } else {
+                        Ok(())
+                    }
+                })
         }
     {
         stop(STOP_BOOT_SERVICES, status.raw() as u64);

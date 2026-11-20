@@ -29,7 +29,8 @@ const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
 const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const HANDOFF_MINOR_TPM: u16 = 13;
 const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
-pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_PROTECTED_NVRAM;
+const HANDOFF_MINOR_SECURE_BOOT: u16 = 15;
+pub const HANDOFF_MINOR_MAX: u16 = HANDOFF_MINOR_SECURE_BOOT;
 const DEVICE_NVRAM: u32 = 5;
 const NVRAM_BASE: u64 = 0xff00_0000;
 const NVRAM_BYTES: u64 = 0x0004_1000;
@@ -689,7 +690,8 @@ impl<'a> Handoff<'a> {
             | HANDOFF_MINOR_FV_APP_RT
             | HANDOFF_MINOR_FV_APP_ACPI
             | HANDOFF_MINOR_FV_APP_GOP
-            | HANDOFF_MINOR_PROTECTED_NVRAM => device_count >= 7 && device_count <= 10,
+            | HANDOFF_MINOR_PROTECTED_NVRAM
+            | HANDOFF_MINOR_SECURE_BOOT => device_count >= 7 && device_count <= 10,
             HANDOFF_MINOR_FV_APP_BLK | HANDOFF_MINOR_FV_APP_FS | HANDOFF_MINOR_TPM => {
                 device_count >= 8 && device_count <= 10
             }
@@ -813,7 +815,7 @@ impl<'a> Handoff<'a> {
         if minor >= HANDOFF_MINOR_NVRAM {
             handoff.validate_nvram_region()?;
         }
-        if minor == HANDOFF_MINOR_PROTECTED_NVRAM && !handoff.protected_nvram() {
+        if minor >= HANDOFF_MINOR_PROTECTED_NVRAM && !handoff.protected_nvram() {
             return Err(HandoffError::InvalidBootReservation {
                 kind: region_kind::NVRAM,
             });
@@ -852,6 +854,10 @@ impl<'a> Handoff<'a> {
             let at = self.device_table_offset + index as usize * self.device_entry_size;
             u64_at(self.bytes, at + 0x20) == 2
         })
+    }
+
+    pub fn enforces_secure_boot(&self) -> bool {
+        self.version_minor >= HANDOFF_MINOR_SECURE_BOOT
     }
 
     fn nvram_owner(&self) -> Option<u32> {
@@ -1583,6 +1589,7 @@ mod tests {
         let handoff = Handoff::parse(&bytes, 14).unwrap();
         assert_eq!(handoff.nvram_base(), Some(NVRAM_BASE));
         assert!(handoff.protected_nvram());
+        assert!(!handoff.enforces_secure_boot());
         assert_eq!(handoff.tpm_crb_base(), None);
         assert_eq!(
             Handoff::parse(&bytes, 13),
@@ -1592,10 +1599,23 @@ mod tests {
             })
         );
 
+        bytes[0x0A] = 15;
+        seal(&mut bytes);
+        let handoff = Handoff::parse(&bytes, 15).unwrap();
+        assert_eq!(handoff.nvram_base(), Some(NVRAM_BASE));
+        assert!(handoff.enforces_secure_boot());
+        assert_eq!(
+            Handoff::parse(&bytes, 14),
+            Err(HandoffError::UnsupportedVersion {
+                major: 1,
+                minor: 15
+            })
+        );
+
         bytes[nvram_device + 0x20] = 0;
         seal(&mut bytes);
         assert_eq!(
-            Handoff::parse(&bytes, 14),
+            Handoff::parse(&bytes, 15),
             Err(HandoffError::InvalidBootReservation {
                 kind: region_kind::NVRAM
             })

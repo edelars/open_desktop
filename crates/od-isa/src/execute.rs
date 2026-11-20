@@ -20594,8 +20594,13 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                             == RegisterView::low(Register::R10, OperandSize::Word))
                             }
                             (Some(0x45), Operand::Register(src)) => {
-                                destination == RegisterView::low(Register::R15, OperandSize::Word)
-                                    && src == RegisterView::low(Register::R14, OperandSize::Word)
+                                (destination == RegisterView::low(Register::R15, OperandSize::Word)
+                                    && src == RegisterView::low(Register::R14, OperandSize::Word))
+                                    || (instruction.length == 4
+                                        && destination
+                                            == RegisterView::low(Register::R12, OperandSize::Word)
+                                        && src
+                                            == RegisterView::low(Register::R15, OperandSize::Word))
                             }
                             _ => false,
                         })
@@ -20957,7 +20962,11 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                         && operand.base == AddressBase::Register(Register::Rsp)
                         && operand.index.is_none()
                         && operand.scale == 1
-                        && operand.displacement == 0x78
+                        && (operand.displacement == 0x78
+                            || matches!(
+                                (instruction.length, operand.displacement),
+                                (5, 0x68) | (8, 0xa0)
+                            ))
                 }
                 _ => false,
             }
@@ -21232,14 +21241,16 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x09
-            && instruction.length == 7
+            && matches!(
+                (instruction.length, destination.displacement),
+                (4, 0x78) | (7, 0xb8 | 0xd8)
+            )
             && instruction.prefixes == Prefixes::default()
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Dword
             && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
-            && destination.displacement == 0xb8
             && source == RegisterView::low(Register::Rax, OperandSize::Dword) =>
         {
             let rhs = state.read(source);
@@ -23548,25 +23559,38 @@ fn step_paged_probe_mode<P: crate::PortIo>(
         } if instruction.opcode.map == OpcodeMap::Primary
             && instruction.opcode.byte == 0x84
             && instruction.operand_size == OperandSize::Byte
-            && destination.base == AddressBase::Register(Register::Rsp)
             && destination.index.is_none()
             && destination.scale == 1
             && destination.address_size == OperandSize::Qword
             && destination.size == OperandSize::Byte
-            && ((base_profile
-                && instruction.length == 5
-                && destination.displacement == 7
-                && instruction.prefixes
-                    == (Prefixes {
-                        rex: Some(0x40),
-                        ..Prefixes::default()
-                    })
-                && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
+            && ((destination.base == AddressBase::Register(Register::Rsp)
+                && ((base_profile
+                    && instruction.length == 5
+                    && destination.displacement == 7
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x40),
+                            ..Prefixes::default()
+                        })
+                    && source == RegisterView::low(Register::Rbp, OperandSize::Byte))
+                    || (firmware_boot_profile
+                        && instruction.length == 7
+                        && matches!(
+                            destination.displacement,
+                            0x87 | 0xa8 | 0xd4 | 0x14c | 0x15c
+                        )
+                        && instruction.prefixes == Prefixes::default()
+                        && source == RegisterView::low(Register::Rax, OperandSize::Byte))))
                 || (firmware_boot_profile
                     && instruction.length == 7
-                    && matches!(destination.displacement, 0x87 | 0x14c | 0x15c)
-                    && instruction.prefixes == Prefixes::default()
-                    && source == RegisterView::low(Register::Rax, OperandSize::Byte))) =>
+                    && destination.base == AddressBase::Register(Register::Rsi)
+                    && destination.displacement == 0x40018
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x44),
+                            ..Prefixes::default()
+                        })
+                    && source == RegisterView::low(Register::R12, OperandSize::Byte))) =>
         {
             let lhs = match read_operand(
                 state,

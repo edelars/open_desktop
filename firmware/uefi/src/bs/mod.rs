@@ -9,6 +9,10 @@ pub mod misc;
 pub mod protocol;
 mod state;
 
+#[cfg(target_os = "none")]
+pub use state::attach_image_policy;
+#[cfg(target_os = "none")]
+pub(crate) use state::image_policy_mmio;
 pub use state::{attach_image_paging, attach_system_tables, attach_watchdog, initialize};
 
 /// The caller is the BSP. Use before dereferencing a Boot Services protocol's private state.

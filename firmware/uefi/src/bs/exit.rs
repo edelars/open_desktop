@@ -162,6 +162,12 @@ pub unsafe extern "efiapi" fn exit_boot_services(image: Handle, map_key: usize) 
             let Some(mut system) = state.system_table else {
                 return Status::INVALID_PARAMETER;
             };
+            // The final callbacks may have updated the user policy without changing the map.
+            #[cfg(target_os = "none")]
+            if let Err(status) = crate::tpm::secure_boot::refresh() {
+                let _ = action(5, b"Exit Boot Services Returned with Failure");
+                return status;
+            }
             // Once exit callbacks have run, complete the irreversible transition.
             let _ = action(5, b"Exit Boot Services Returned with Success");
             system.as_mut().clear_boot_services();

@@ -22,6 +22,8 @@ struct BspServices {
     configuration: UnsafeCell<ConfigurationTables>,
     system_table: Cell<Option<NonNull<SystemTable>>>,
     runtime_services: Cell<Option<NonNull<RuntimeServicesStorage>>>,
+    #[cfg(target_os = "none")]
+    image_policy_mmio: Cell<Option<u64>>,
     exit: UnsafeCell<BootExit>,
 }
 
@@ -40,6 +42,8 @@ static BOOT_SERVICES: BspServices = BspServices {
     configuration: UnsafeCell::new(ConfigurationTables::new()),
     system_table: Cell::new(None),
     runtime_services: Cell::new(None),
+    #[cfg(target_os = "none")]
+    image_policy_mmio: Cell::new(None),
     exit: UnsafeCell::new(BootExit::new()),
 };
 
@@ -100,6 +104,19 @@ pub unsafe fn attach_system_tables(system: *mut SystemTable, runtime: *mut Runti
     if !runtime.is_null() {
         unsafe { core::ptr::addr_of_mut!((*runtime).system).write(system) };
     }
+}
+
+/// # Safety
+/// Call once on the BSP before publishing Boot Services. The validated board handoff
+/// guarantees that a present aperture supports complete-file authorization.
+#[cfg(target_os = "none")]
+pub unsafe fn attach_image_policy(mmio: Option<u64>) {
+    BOOT_SERVICES.image_policy_mmio.set(mmio);
+}
+
+#[cfg(target_os = "none")]
+pub(crate) fn image_policy_mmio() -> Option<u64> {
+    BOOT_SERVICES.image_policy_mmio.get()
 }
 
 /// # Safety

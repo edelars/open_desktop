@@ -9,6 +9,12 @@ const LEN: usize = MAX_STORE_BYTES + 4;
 const CMD: usize = MAX_STORE_BYTES + 8;
 const STATUS: usize = MAX_STORE_BYTES + 12;
 const ACTIVE_LEN: usize = MAX_STORE_BYTES + 16;
+#[cfg(target_os = "none")]
+const POLICY_EPOCH_LOW: usize = MAX_STORE_BYTES + 20;
+#[cfg(target_os = "none")]
+const POLICY_EPOCH_HIGH: usize = MAX_STORE_BYTES + 24;
+#[cfg(target_os = "none")]
+pub(crate) const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Nvram {
@@ -63,6 +69,77 @@ impl Nvram {
             .get(error_index)
             .copied()
             .unwrap_or(Status::DEVICE_ERROR))
+    }
+
+    #[cfg(target_os = "none")]
+    pub(crate) fn policy_epoch(self) -> Result<u64, Status> {
+        let high = self.read_register(POLICY_EPOCH_HIGH);
+        let low = self.read_register(POLICY_EPOCH_LOW);
+        if high != self.read_register(POLICY_EPOCH_HIGH) {
+            return Err(Status::DEVICE_ERROR);
+        }
+        Ok(u64::from(high) << 32 | u64::from(low))
+    }
+
+    /// Submits one complete file. `None` means the active protected store is in SetupMode
+    /// or the host disabled Secure Boot. If provided, `authority` receives the enrolled
+    /// EFI_SIGNATURE_DATA before another MMIO command can replace the reply.
+    #[cfg(target_os = "none")]
+    pub(crate) fn authorize_image(
+        self,
+        file: &[u8],
+        authority: Option<&mut [u8]>,
+    ) -> Result<Option<usize>, Status> {
+        if !(1..=MAX_IMAGE_BYTES).contains(&file.len()) {
+            return Err(Status::ACCESS_DENIED);
+        }
+        match self.image_command(5, 0, file.len()) {
+            4 => {}
+            0x8000_0007 => return Err(Status::OUT_OF_RESOURCES),
+            _ => return Err(Status::DEVICE_ERROR),
+        }
+        for (index, chunk) in file.chunks(MAX_STORE_BYTES).enumerate() {
+            if self.image_command(6, index * MAX_STORE_BYTES, chunk.len()) != 2 {
+                return Err(Status::DEVICE_ERROR);
+            }
+            for (offset, &byte) in chunk.iter().enumerate() {
+                // The image chunk command accepted this ordered range.
+                unsafe {
+                    ptr::with_exposed_provenance_mut::<u8>(self.base + offset).write_volatile(byte)
+                };
+            }
+        }
+        match self.image_command(7, 0, 0) {
+            5 => {
+                let length = self.read_register(LEN) as usize;
+                if !(17..=od_uefi_security::protected::PROTECTED_VALUE_LIMIT).contains(&length) {
+                    return Err(Status::DEVICE_ERROR);
+                }
+                if let Some(authority) = authority {
+                    let out = authority
+                        .get_mut(..length)
+                        .ok_or(Status::BUFFER_TOO_SMALL)?;
+                    for (offset, byte) in out.iter_mut().enumerate() {
+                        *byte = unsafe {
+                            ptr::with_exposed_provenance::<u8>(self.base + offset).read_volatile()
+                        };
+                    }
+                }
+                Ok(Some(length))
+            }
+            6 => Ok(None),
+            0x8000_0005 => Err(Status::SECURITY_VIOLATION),
+            0x8000_0007 => Err(Status::OUT_OF_RESOURCES),
+            _ => Err(Status::DEVICE_ERROR),
+        }
+    }
+
+    #[cfg(target_os = "none")]
+    fn image_command(self, command: u32, address: usize, length: usize) -> u32 {
+        self.write_register(ADDR, address as u32);
+        self.write_register(LEN, length as u32);
+        self.write_register(CMD, command);
+        self.read_register(STATUS)
     }
 
     fn stage(self, image: &[u8]) -> Result<(), Status> {

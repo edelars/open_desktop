@@ -184,6 +184,7 @@ const HANDOFF_MINOR_FV_APP_BLK: u16 = 11;
 const HANDOFF_MINOR_FV_APP_FS: u16 = 12;
 const HANDOFF_MINOR_TPM: u16 = 13;
 const HANDOFF_MINOR_PROTECTED_NVRAM: u16 = 14;
+const HANDOFF_MINOR_SECURE_BOOT: u16 = 15;
 const MAX_RTC_BASE_UNIX_SECONDS: u64 = 253_402_300_799;
 /// Handoff minor version emitted when the NVMe entry is present.
 const HANDOFF_MINOR_NVME: u16 = 1;
@@ -997,8 +998,8 @@ fn build_handoff(
     config: &FirmwareBoardConfig,
     devices: &[DeviceEntry],
     regions: &[HandoffRegion],
+    minor: u16,
 ) -> Vec<u8> {
-    let minor = handoff_minor(config, devices);
     let header_size = if minor >= HANDOFF_MINOR_FV_APP_ACPI {
         ACPI_HANDOFF_HEADER_BYTES
     } else if minor >= HANDOFF_MINOR_FV_APP {
@@ -3550,7 +3551,9 @@ struct FirmwareLayout {
     devices: Vec<DeviceEntry>,
     map: MachineMemoryMap,
     table_pages: u64,
+    minor: u16,
     handoff: Vec<u8>,
+    nvram: Option<NvramDevice>,
 }
 
 impl FirmwareLayout {
@@ -3573,12 +3576,29 @@ impl FirmwareLayout {
         if regions.len() > MAX_REGIONS {
             return Err(FirmwareBoardError::TooManyRegions(regions.len()));
         }
-        let handoff = build_handoff(config, &devices, &regions);
+        let nvram = match config.nvram.as_ref() {
+            None => None,
+            Some(NvramConfig::Empty) => Some(NvramDevice::new()),
+            Some(NvramConfig::Snapshot(bytes)) => {
+                Some(NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?)
+            }
+        };
+        let minor = if nvram
+            .as_ref()
+            .is_some_and(|device| device.has_protected_store() && !device.secure_boot_disabled())
+        {
+            HANDOFF_MINOR_SECURE_BOOT
+        } else {
+            handoff_minor(config, &devices)
+        };
+        let handoff = build_handoff(config, &devices, &regions, minor);
         Ok(Self {
             devices,
             map,
             table_pages,
+            minor,
             handoff,
+            nvram,
         })
     }
 }
@@ -3598,16 +3618,34 @@ pub fn firmware_handoff_block(config: &FirmwareBoardConfig) -> Result<Vec<u8>, F
 /// `apic_timer_clock` does the same for the Linux-profile LAPIC timer (S4-37a4).
 pub(crate) fn assemble_board(
     config: &FirmwareBoardConfig,
+    pci: PciEcam,
+    pit_clock: Option<VirtualClockHandle>,
+    apic_timer_clock: Option<VirtualClockHandle>,
+) -> Result<AssembledBoard, FirmwareBoardError> {
+    let layout = FirmwareLayout::for_config(config)?;
+    if layout.minor == HANDOFF_MINOR_SECURE_BOOT {
+        return Err(FirmwareBoardError::Nvram(
+            NvramContentsError::ProtectionRequiresFirmware,
+        ));
+    }
+    assemble_board_with_layout(config, pci, pit_clock, apic_timer_clock, layout)
+}
+
+fn assemble_board_with_layout(
+    config: &FirmwareBoardConfig,
     mut pci: PciEcam,
     pit_clock: Option<VirtualClockHandle>,
     apic_timer_clock: Option<VirtualClockHandle>,
+    layout: FirmwareLayout,
 ) -> Result<AssembledBoard, FirmwareBoardError> {
     let FirmwareLayout {
         devices,
         map,
         table_pages,
         handoff,
-    } = FirmwareLayout::for_config(config)?;
+        nvram,
+        ..
+    } = layout;
     let foreign_timer_clock = pit_clock.is_some() || apic_timer_clock.is_some();
     let page_table_bytes = table_pages * PAGE;
     let page_table_root = FIRMWARE_BOOT_PAGE_TABLES_GPA;
@@ -3661,18 +3699,7 @@ pub(crate) fn assemble_board(
             device_index: DEV_DISPLAY,
         });
     }
-    let nvram = if let Some(initial) = &config.nvram {
-        let device = match initial {
-            NvramConfig::Empty => NvramDevice::new(),
-            NvramConfig::Snapshot(bytes) => {
-                NvramDevice::with_contents(bytes).map_err(FirmwareBoardError::Nvram)?
-            }
-        };
-        if device.has_protected_store() && !device.secure_boot_disabled() {
-            return Err(FirmwareBoardError::Nvram(
-                NvramContentsError::ProtectionRequiresFirmware,
-            ));
-        }
+    let nvram = if let Some(device) = nvram {
         let handle = device.handle();
         mmio.push(MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[DEV_NVRAM].base),
@@ -4082,7 +4109,14 @@ fn load_firmware_image_inner(
             "nvme_pci needs Linux direct boot",
         ));
     }
-    assemble_board(config, pci, pit_clock, apic_timer_clock)?.load_firmware(image, entry_offset)
+    let layout = FirmwareLayout::for_config(config)?;
+    if layout.minor == HANDOFF_MINOR_SECURE_BOOT && le_u16(image, 0x2A)? < layout.minor {
+        return Err(FirmwareBoardError::Nvram(
+            NvramContentsError::ProtectionRequiresFirmware,
+        ));
+    }
+    assemble_board_with_layout(config, pci, pit_clock, apic_timer_clock, layout)?
+        .load_firmware(image, entry_offset)
 }
 
 #[cfg(test)]
@@ -6694,6 +6728,23 @@ mod tests {
         );
         assert!(matches!(
             load_firmware_image(&firmware, &config),
+            Err(FirmwareBoardError::Nvram(
+                NvramContentsError::ProtectionRequiresFirmware
+            ))
+        ));
+        let enforcing_rom =
+            test_image(&[0xf4], &[(0x2A, &HANDOFF_MINOR_SECURE_BOOT.to_le_bytes())]);
+        let board = load_firmware_image(&enforcing_rom, &config).unwrap();
+        assert_eq!(
+            le_u16(board.handoff_block(), 0x0A).unwrap(),
+            HANDOFF_MINOR_SECURE_BOOT
+        );
+        assert_eq!(
+            firmware_handoff_block(&config).unwrap(),
+            board.handoff_block()
+        );
+        assert!(matches!(
+            assemble_board(&config, PciEcam::new(), None, None),
             Err(FirmwareBoardError::Nvram(
                 NvramContentsError::ProtectionRequiresFirmware
             ))

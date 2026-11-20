@@ -31,6 +31,8 @@ pub struct RuntimeVariables {
     nvram_base: usize,
     nv_length: usize,
     protected_scratch: *mut [u8; MAX_STORE_BYTES],
+    policy_changed: Option<unsafe extern "efiapi" fn()>,
+    enforces_secure_boot: bool,
     nv_image: [u8; MAX_STORE_BYTES],
 }
 
@@ -81,6 +83,7 @@ impl RuntimeVariables {
     }
 
     pub(crate) fn enter_runtime(&mut self) {
+        self.policy_changed = None;
         self.store.enter_runtime();
     }
 

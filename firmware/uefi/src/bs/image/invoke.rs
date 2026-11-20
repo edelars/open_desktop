@@ -167,6 +167,9 @@ unsafe fn prepare_start(image: Handle, frame: *mut Frame) -> Result<StartPlan, S
             let Some(system) = state.system_table else {
                 return Err(Status::NOT_READY);
             };
+            if let Some(source) = &record.external_source {
+                source.reauthorize()?;
+            }
             let entry = record.mapped.entry_address;
             let stack_top = allocate_stack(&mut state, index)?;
             state.images.records[index].as_mut().unwrap().phase = Phase::Running;

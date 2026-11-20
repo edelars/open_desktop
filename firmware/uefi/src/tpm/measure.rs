@@ -86,6 +86,7 @@ fn separate() -> Result<(), Status> {
 /// Call on the boot BSP without a Boot Services state borrow.
 #[cfg(target_os = "none")]
 pub unsafe fn ready_to_boot() -> Result<(), Status> {
+    super::secure_boot::refresh()?;
     separate()?;
     let status = unsafe { crate::bs::event::signal_ready_to_boot() };
     if status != Status::SUCCESS {

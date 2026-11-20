@@ -3,6 +3,8 @@
 mod crb_driver;
 mod event_log;
 pub mod measure;
+#[cfg(target_os = "none")]
+pub mod secure_boot;
 mod tcg2;
 
 pub use tcg2::{

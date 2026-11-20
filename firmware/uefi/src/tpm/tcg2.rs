@@ -9,7 +9,7 @@ use crate::pe::{DigestAlgorithm, PeImage, authenticode_digest};
 use crate::uefi::{guid::Guid, status::Status};
 
 use super::crb_driver::Crb;
-use super::event_log::{CAPACITY, EV_NO_ACTION, EventLog};
+use super::event_log::{CAPACITY, EV_NO_ACTION, EventLog, SECURE_BOOT_CAPACITY};
 
 pub const TCG2_PROTOCOL_GUID: Guid = Guid {
     data1: 0x607f766c,
@@ -74,21 +74,26 @@ pub fn active() -> bool {
 ///
 /// # Safety
 /// Boot Services are initialized and the aperture is mapped as device memory.
-pub unsafe fn install(base: u64) -> Result<(), Status> {
+pub unsafe fn install(base: u64, secure_boot_capable: bool) -> Result<(), Status> {
     if active() {
         return Err(Status::ALREADY_STARTED);
     }
     let crb = unsafe { Crb::open(base)? };
     let manufacturer = initialize_tpm(crb)?;
-    let main_log = allocate_log(MemoryType::BOOT_SERVICES_DATA)?;
-    let final_events = match allocate_log(MemoryType::RUNTIME_SERVICES_DATA) {
+    let capacity = if secure_boot_capable {
+        SECURE_BOOT_CAPACITY
+    } else {
+        CAPACITY
+    };
+    let main_log = allocate_log(MemoryType::BOOT_SERVICES_DATA, capacity)?;
+    let final_events = match allocate_log(MemoryType::RUNTIME_SERVICES_DATA, capacity) {
         Ok(log) => log,
         Err(status) => {
             unsafe { bs::memory::free_pool(main_log.cast()) };
             return Err(status);
         }
     };
-    let log = unsafe { EventLog::new(main_log, final_events) };
+    let log = unsafe { EventLog::new(main_log, final_events, capacity) };
     let status = unsafe {
         bs::config_table::install_configuration_table(&FINAL_EVENTS_GUID, final_events.cast())
     };
@@ -132,9 +137,9 @@ pub unsafe fn install(base: u64) -> Result<(), Status> {
     Err(status)
 }
 
-fn allocate_log(ty: MemoryType) -> Result<*mut u8, Status> {
+fn allocate_log(ty: MemoryType, capacity: usize) -> Result<*mut u8, Status> {
     let mut buffer: *mut c_void = ptr::null_mut();
-    let status = unsafe { bs::memory::allocate_pool(ty, CAPACITY, &mut buffer) };
+    let status = unsafe { bs::memory::allocate_pool(ty, capacity, &mut buffer) };
     if status != Status::SUCCESS {
         return Err(status);
     }

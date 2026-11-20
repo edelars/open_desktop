@@ -22,6 +22,7 @@ const AUTH_REQUEST_HEADER_BYTES: usize = 24;
 const MAX_AUTH_DATA_BYTES: usize = 40 + MAX_SIGNED_DATA_BYTES + PROTECTED_VALUE_LIMIT;
 
 const SETUP_MODE: &[u8] = b"S\0e\0t\0u\0p\0M\0o\0d\0e\0";
+const SECURE_BOOT: &[u8] = b"S\0e\0c\0u\0r\0e\0B\0o\0o\0t\0";
 const VENDOR_KEYS: &[u8] = b"V\0e\0n\0d\0o\0r\0K\0e\0y\0s\0";
 const SIGNATURE_SUPPORT: [u8; 48] = {
     let kinds = [
@@ -46,12 +47,17 @@ const SIGNATURE_SUPPORT: [u8; 48] = {
 impl RuntimeVariables {
     /// # Safety
     /// Both allocations are retained writable runtime data and do not overlap. `nvram_base`
-    /// is a validated protected NVRAM aperture published by the board in handoff v1.14.
+    /// is a validated protected NVRAM aperture published by the board in handoff v1.14+.
+    /// `enforces_secure_boot` is set only for the image verifier capability in v1.15.
+    /// A present callback must be callable on the BSP during boot and must not borrow
+    /// these variables or call runtime services.
     pub unsafe fn initialize_protected(
         storage: *mut Self,
         scratch: *mut [u8; MAX_STORE_BYTES],
         console_path: &[u8],
         nvram_base: u64,
+        enforces_secure_boot: bool,
+        policy_changed: Option<unsafe extern "efiapi" fn()>,
     ) -> Result<(), Status> {
         if console_path.is_empty() || storage.is_null() || scratch.is_null() || nvram_base == 0 {
             return Err(Status::INVALID_PARAMETER);
@@ -63,6 +69,8 @@ impl RuntimeVariables {
         let state = unsafe { &mut *storage };
         state.nvram_base = nvram_base as usize;
         state.protected_scratch = scratch;
+        state.enforces_secure_boot = enforces_secure_boot;
+        state.policy_changed = policy_changed;
         if seed_defaults(&mut state.store, console_path, BootDefaults::Volatile) != 0 {
             return Err(Status::OUT_OF_RESOURCES);
         }
@@ -112,7 +120,7 @@ impl RuntimeVariables {
                 return Ok(length);
             }
             let image = Image::new(&scratch[..length]).map_err(|_| Status::DEVICE_ERROR)?;
-            if !image.flags.secure_boot_disabled {
+            if !self.enforces_secure_boot && !image.flags.secure_boot_disabled {
                 return Err(Status::SECURITY_VIOLATION);
             }
             self.store.import_protected_nv(&image)?;
@@ -189,6 +197,11 @@ impl RuntimeVariables {
             scratch[AUTH_REQUEST_HEADER_BYTES..end].copy_from_slice(name.as_bytes());
             copy_nv_bytes(&mut scratch[end..length], value);
             unsafe { Nvram::at(self.nvram_base) }.authenticated_update(&scratch[..length])?;
+            if let Some(notify) = self.policy_changed {
+                // The update is committed. Boot measurement records the new policy or latches
+                // its failure. The pointer is cleared before the runtime phase.
+                unsafe { notify() };
+            }
             return self.refresh_protected();
         }
         if protected_mode_variable(guid, name) {
@@ -222,8 +235,8 @@ impl RuntimeVariables {
             return Ok(self.store.get(guid, name));
         }
         let policy = PolicyVariable::from_key(guid, name);
-        let mode_value =
-            guid == GLOBAL_VARIABLE && matches!(name.as_bytes(), SETUP_MODE | VENDOR_KEYS);
+        let mode_value = guid == GLOBAL_VARIABLE
+            && matches!(name.as_bytes(), SETUP_MODE | SECURE_BOOT | VENDOR_KEYS);
         if policy.is_none() && !mode_value {
             return Ok(self.store.get(guid, name));
         }
@@ -232,12 +245,17 @@ impl RuntimeVariables {
             let enabled = if name.as_bytes() == VENDOR_KEYS {
                 !image.flags.vendor_keys_modified
             } else {
-                !image.records().any(|record| {
+                let has_pk = image.records().any(|record| {
                     record.is_ok_and(|(record, _)| {
                         record.policy_variable() == Some(PolicyVariable::Pk)
                             && !record.value.is_empty()
                     })
-                })
+                });
+                if name.as_bytes() == SETUP_MODE {
+                    !has_pk
+                } else {
+                    has_pk && self.enforces_secure_boot && !image.flags.secure_boot_disabled
+                }
             };
             return Ok(Some(Record {
                 guid,

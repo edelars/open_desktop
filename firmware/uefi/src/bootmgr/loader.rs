@@ -58,6 +58,9 @@ unsafe fn load_and_start(
     let mut image = ptr::null_mut();
     let status = unsafe { load_boot_option(path.as_ptr().cast(), &mut image) };
     if status != Status::SUCCESS {
+        if status == Status::SECURITY_VIOLATION && !image.is_null() {
+            unsafe { (boot.unload_image)(image) };
+        }
         return None;
     }
     let entered = unsafe { start_application(boot, image, options) };

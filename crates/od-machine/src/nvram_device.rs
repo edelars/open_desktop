@@ -20,6 +20,8 @@ const LEN: u64 = REGISTERS + 4;
 const CMD: u64 = REGISTERS + 8;
 const STATUS: u64 = REGISTERS + 12;
 const ACTIVE_LEN: u64 = REGISTERS + 16;
+const POLICY_EPOCH_LOW: u64 = REGISTERS + 20;
+const POLICY_EPOCH_HIGH: u64 = REGISTERS + 24;
 
 const READ: u32 = 1;
 const WRITE: u32 = 2;
@@ -175,6 +177,7 @@ impl NvramDevice {
                 length: 0,
                 status: Status::Idle,
                 transfer: Transfer::Idle,
+                policy_epoch: 0,
             })),
         }
     }
@@ -250,6 +253,7 @@ struct State {
     length: u32,
     status: Status,
     transfer: Transfer,
+    policy_epoch: u64,
 }
 
 impl State {
@@ -277,6 +281,8 @@ impl State {
             CMD => Err(DeviceError::WriteOnly),
             STATUS => Ok(u64::from(self.status as u32)),
             ACTIVE_LEN => Ok(self.banks.current().length as u64),
+            POLICY_EPOCH_LOW if self.staging.is_some() => Ok(u64::from(self.policy_epoch as u32)),
+            POLICY_EPOCH_HIGH if self.staging.is_some() => Ok(self.policy_epoch >> 32),
             _ => Err(DeviceError::UnknownOffset),
         }
     }
@@ -312,6 +318,9 @@ impl State {
             LEN => self.length = value as u32,
             CMD => self.command(value as u32),
             STATUS | ACTIVE_LEN => return Err(DeviceError::ReadOnly),
+            POLICY_EPOCH_LOW | POLICY_EPOCH_HIGH if self.staging.is_some() => {
+                return Err(DeviceError::ReadOnly);
+            }
             _ => return Err(DeviceError::UnknownOffset),
         }
         Ok(())
@@ -382,6 +391,8 @@ impl State {
                 self.banks.inactive().data[..image.len()].copy_from_slice(&image);
                 let committed = self.banks.flush(image.len());
                 debug_assert!(committed);
+                // Each epoch also advances the generation, so it cannot wrap before it.
+                self.policy_epoch += 1;
                 Status::Committed
             }
             Ok(Some(_)) => Status::Exhausted,
@@ -957,6 +968,39 @@ mod tests {
         stage(device, request);
         write_reg(device, CMD, AUTH_UPDATE);
         status(device, expected);
+    }
+
+    #[test]
+    fn policy_epoch_detects_direct_auth2_commits_even_when_the_value_returns() {
+        use od_uefi_security::siglist::SignatureType;
+
+        let start_image = protected_image(DEFAULT_FLAGS, &[]);
+        let mut device = NvramDevice::with_protected_store(&start_image).unwrap();
+        assert_eq!(reg(&mut device, POLICY_EPOCH_LOW), 0);
+        assert_eq!(reg(&mut device, POLICY_EPOCH_HIGH), 0);
+        assert!(matches!(
+            device.write(access(POLICY_EPOCH_LOW, AccessWidth::Dword), 1),
+            Err(DeviceError::ReadOnly)
+        ));
+        let digest_a = esl(SignatureType::Sha256, &[0xa1; 32]);
+        let digest_b = esl(SignatureType::Sha256, &[0xb1; 32]);
+        for (index, value) in [&digest_a, &digest_b, &digest_a].into_iter().enumerate() {
+            let auth = unsigned_auth2(index as u8 + 1, value);
+            let request = auth_request(IMAGE_SECURITY_DATABASE, b"d\0b\0x\0", false, &auth);
+            submit_auth(&mut device, &request, Status::Committed);
+            assert_eq!(reg(&mut device, POLICY_EPOCH_LOW), index as u64 + 1);
+        }
+        submit_auth(&mut device, &[0], Status::InvalidRange);
+        let active = read_active(&mut device);
+        replace(&mut device, &active);
+        assert_eq!(reg(&mut device, POLICY_EPOCH_LOW), 3);
+        let mut reopened = NvramDevice::with_contents(&device.nvram_snapshot()).unwrap();
+        assert_eq!(reg(&mut reopened, POLICY_EPOCH_LOW), 0);
+        assert_eq!(read_active(&mut reopened), active);
+        assert!(matches!(
+            NvramDevice::new().read(access(POLICY_EPOCH_LOW, AccessWidth::Dword)),
+            Err(DeviceError::UnknownOffset)
+        ));
     }
 
     #[test]

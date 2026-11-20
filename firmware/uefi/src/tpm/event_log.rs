@@ -3,6 +3,7 @@
 use core::ptr;
 
 pub(super) const CAPACITY: usize = 32 * 1024;
+pub(super) const SECURE_BOOT_CAPACITY: usize = 256 * 1024;
 pub(super) const EV_NO_ACTION: u32 = 3;
 const SHA256: u16 = 0x000b;
 const EVENT2_HEADER: usize = 50;
@@ -28,6 +29,7 @@ const SPEC_ID: [u8; 65] = {
 };
 
 pub(super) struct EventLog {
+    capacity: usize,
     primary: *mut u8,
     primary_used: usize,
     last: usize,
@@ -40,14 +42,15 @@ pub(super) struct EventLog {
 }
 
 impl EventLog {
-    /// Buffer pointers are distinct firmware allocations of CAPACITY bytes and remain live.
-    pub(super) unsafe fn new(primary: *mut u8, final_events: *mut u8) -> Self {
+    /// Both buffers are distinct live allocations of `capacity` bytes, at least SPEC_ID.len().
+    pub(super) unsafe fn new(primary: *mut u8, final_events: *mut u8, capacity: usize) -> Self {
         unsafe {
             ptr::copy_nonoverlapping(SPEC_ID.as_ptr(), primary, SPEC_ID.len());
             final_events.cast::<u64>().write(1);
             final_events.add(8).cast::<u64>().write(0);
         }
         Self {
+            capacity,
             primary,
             primary_used: SPEC_ID.len(),
             last: 0,
@@ -88,7 +91,7 @@ impl EventLog {
             self.final_full |= self.final_active;
             return false;
         };
-        if !self.truncated && len <= CAPACITY - self.primary_used {
+        if !self.truncated && len <= self.capacity - self.primary_used {
             self.last = self.primary_used;
             // SAFETY: the count bounds this entire entry within the exclusive log buffer.
             unsafe { entry_at(self.primary.add(self.last), len, pcr, kind, digest, data) };
@@ -97,7 +100,7 @@ impl EventLog {
             self.truncated = true;
         }
         if self.final_active {
-            if !self.final_full && len <= CAPACITY - self.final_used {
+            if !self.final_full && len <= self.capacity - self.final_used {
                 unsafe {
                     entry_at(
                         self.final_events.add(self.final_used),
@@ -164,7 +167,7 @@ mod tests {
         let mut tail = [0u64; CAPACITY / 8];
         let main_ptr = main.as_mut_ptr().cast::<u8>();
         let tail_ptr = tail.as_mut_ptr().cast::<u8>();
-        let mut log = unsafe { EventLog::new(main_ptr, tail_ptr) };
+        let mut log = unsafe { EventLog::new(main_ptr, tail_ptr, CAPACITY) };
         assert_eq!(
             unsafe { slice::from_raw_parts(main_ptr.add(32), 16) },
             b"Spec ID Event03\0"

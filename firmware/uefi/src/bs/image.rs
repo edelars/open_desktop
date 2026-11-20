@@ -41,6 +41,34 @@ struct ImageRecord {
     phase: invoke::Phase,
     #[cfg(target_os = "none")]
     stack_base: Option<u64>,
+    #[cfg(target_os = "none")]
+    external_source: Option<ExternalSource>,
+}
+
+#[cfg(target_os = "none")]
+struct ExternalSource {
+    base: u64,
+    length: usize,
+    denied: bool,
+}
+
+#[cfg(target_os = "none")]
+impl ExternalSource {
+    /// The BSP owns the record and still maps this read-only tail of the image allocation.
+    unsafe fn reauthorize(&self) -> Result<(), Status> {
+        if self.denied {
+            return Err(Status::SECURITY_VIOLATION);
+        }
+        let mmio = state::image_policy_mmio().ok_or(Status::DEVICE_ERROR)?;
+        let bytes = unsafe {
+            slice::from_raw_parts(
+                ptr::with_exposed_provenance(self.base as usize),
+                self.length,
+            )
+        };
+        let nvram = unsafe { crate::var::nvram::Nvram::at(mmio as usize) };
+        crate::tpm::secure_boot::authorize(nvram, bytes)
+    }
 }
 
 // Published interfaces can be held by an EFI caller across service calls.
@@ -161,6 +189,31 @@ unsafe fn load(
         None
     };
 
+    // A caller's SourceBuffer never supplies firmware-volume provenance. Take an owned
+    // copy before parsing or loading it when the board provides image policy.
+    #[cfg(target_os = "none")]
+    let policy = state::image_policy_mmio();
+    #[cfg(target_os = "none")]
+    let caller_copy = if let (Some(_), Some(bytes)) = (policy, buffer) {
+        if bytes.len() > crate::var::nvram::MAX_IMAGE_BYTES {
+            unsafe { image.write(ptr::null_mut()) };
+            return Status::ACCESS_DENIED;
+        }
+        let copy = match unsafe { super::memory::BootPool::allocate(bytes.len()) } {
+            Ok(copy) => copy,
+            Err(status) => return status,
+        };
+        unsafe { copy_mem(copy.as_ptr().cast(), bytes.as_ptr().cast(), bytes.len()) };
+        Some(copy)
+    } else {
+        None
+    };
+    #[cfg(target_os = "none")]
+    let buffer = caller_copy
+        .as_ref()
+        .map(|copy| unsafe { slice::from_raw_parts(copy.as_ptr(), copy.len()) })
+        .or(buffer);
+
     unsafe {
         let status = state::with_map_mutation(|state| {
             if !firmware_parent && !state.protocols.known_handle(parent) {
@@ -184,6 +237,19 @@ unsafe fn load(
                 #[cfg(not(target_os = "none"))]
                 return Status::UNSUPPORTED;
             };
+            #[cfg(target_os = "none")]
+            let embedded = matches!(
+                file_source.as_ref(),
+                Some((path::PathSource::FirmwareVolume(_), _))
+            );
+            #[cfg(not(target_os = "none"))]
+            let embedded = false;
+            #[cfg(target_os = "none")]
+            let active_policy = policy.filter(|_| !embedded);
+            #[cfg(target_os = "none")]
+            if active_policy.is_some() && bytes.len() > crate::var::nvram::MAX_IMAGE_BYTES {
+                return Status::ACCESS_DENIED;
+            }
             let pe = match PeImage::parse(bytes) {
                 Ok(pe) => pe,
                 Err(
@@ -224,7 +290,7 @@ unsafe fn load(
                 pages: 0,
                 memory_type: data,
             };
-            let mut regions = [default; pe::MAX_REGIONS + 2];
+            let mut regions = [default; pe::MAX_REGIONS + 3];
             let run_count = layout.runs().len();
             for (region, run) in regions[..run_count].iter_mut().zip(layout.runs()) {
                 *region = ImageMemoryRange {
@@ -239,12 +305,24 @@ unsafe fn load(
             let metadata_pages = location
                 .as_ref()
                 .map_or(0, |path| (path.storage_len() as u64).div_ceil(PAGE_BYTES));
+            #[cfg(target_os = "none")]
+            let source_pages =
+                active_policy.map_or(0, |_| (bytes.len() as u64).div_ceil(PAGE_BYTES));
+            #[cfg(not(target_os = "none"))]
+            let source_pages = 0;
             let mut region_count = run_count;
             for pages in [fixup_pages, metadata_pages] {
                 if pages != 0 {
                     regions[region_count].pages = pages;
                     region_count += 1;
                 }
+            }
+            if source_pages != 0 {
+                regions[region_count] = ImageMemoryRange {
+                    pages: source_pages,
+                    memory_type: MemoryType::BOOT_SERVICES_DATA,
+                };
+                region_count += 1;
             }
 
             let (Some(system), Some(tables)) = (state.system_table, state.active_tables) else {
@@ -290,7 +368,8 @@ unsafe fn load(
             for chunk in destination[mapped.size as usize..].chunks_mut(MEMORY_CHUNK) {
                 chunk.fill(0);
             }
-            let metadata_base = span.end - metadata_pages * PAGE_BYTES;
+            let raw_base = span.end - source_pages * PAGE_BYTES;
+            let metadata_base = raw_base - metadata_pages * PAGE_BYTES;
             let fixup_base = metadata_base - fixup_pages * PAGE_BYTES;
             if fixup_count != 0 {
                 let (bytes, tail) = destination.split_at_mut((fixup_base - span.start) as usize);
@@ -325,12 +404,33 @@ unsafe fn load(
                 None => (ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
             };
             #[cfg(target_os = "none")]
-            let embedded = matches!(
-                file_source.as_ref(),
-                Some((path::PathSource::FirmwareVolume(_), _))
-            );
+            let external_source = if let Some(mmio) = active_policy {
+                let nvram = crate::var::nvram::Nvram::at(mmio as usize);
+                let denied = match crate::tpm::secure_boot::authorize(nvram, bytes) {
+                    Ok(()) => false,
+                    Err(Status::SECURITY_VIOLATION) => true,
+                    Err(status) => return status,
+                };
+                copy_mem(
+                    destination
+                        .as_mut_ptr()
+                        .add((raw_base - span.start) as usize)
+                        .cast(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                );
+                Some(ExternalSource {
+                    base: raw_base,
+                    length: bytes.len(),
+                    denied,
+                })
+            } else {
+                None
+            };
+            #[cfg(target_os = "none")]
+            let denied = external_source.as_ref().is_some_and(|source| source.denied);
             #[cfg(not(target_os = "none"))]
-            let embedded = false;
+            let denied = false;
             if let Err(status) = crate::tpm::measure::image(
                 &pe,
                 mapped.base,
@@ -380,9 +480,11 @@ unsafe fn load(
                 phase: invoke::Phase::Loaded,
                 #[cfg(target_os = "none")]
                 stack_base: None,
+                #[cfg(target_os = "none")]
+                external_source,
             });
 
-            if let Some(runtime) = runtime {
+            if let Some(runtime) = runtime.filter(|_| !denied) {
                 (*ptr::addr_of_mut!((*runtime.as_ptr()).images)).0[index] = RuntimeImage {
                     base: mapped.base,
                     size: u64::from(mapped.size),
@@ -397,11 +499,14 @@ unsafe fn load(
                 tables.set(
                     start..end,
                     run.permissions.writable(),
-                    run.permissions.executable(),
+                    run.permissions.executable() && !denied,
                 );
             }
-            if fixup_base != span.end {
-                tables.set(fixup_base..span.end, false, false);
+            if fixup_base != raw_base {
+                tables.set(fixup_base..raw_base, false, false);
+            }
+            if raw_base != span.end {
+                tables.set(raw_base..span.end, false, false);
             }
             tables.flush();
 
@@ -409,11 +514,26 @@ unsafe fn load(
             state.protocols.signal_installations(state.events, |guid| {
                 guid == LOADED_IMAGE_PROTOCOL_GUID || guid == LOADED_IMAGE_DEVICE_PATH_PROTOCOL_GUID
             });
-            Status::SUCCESS
+            if denied {
+                Status::SECURITY_VIOLATION
+            } else {
+                Status::SUCCESS
+            }
         });
         #[cfg(target_os = "none")]
-        drop(file_source);
-        protocol::dispatch_after_install(status)
+        {
+            drop(file_source);
+            drop(caller_copy);
+        }
+        if status == Status::SECURITY_VIOLATION {
+            super::event::dispatch_pending();
+            status
+        } else {
+            if status == Status::ACCESS_DENIED {
+                image.write(ptr::null_mut());
+            }
+            protocol::dispatch_after_install(status)
+        }
     }
 }
 
