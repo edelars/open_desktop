@@ -4,6 +4,10 @@
 //! Version 8 appends the remaining 32 octets of each persistent Primary Seed.
 //! The header, the SHA-256 check and the
 //! public entry points are in `state.rs`; the layout of the whole snapshot is documented there.
+//! Slice 3 of S7-23 (ORDERLY counters, `TPM_NT_PIN_FAIL` and `TPM_NT_PIN_PASS`) changes no layout and
+//! no version: ORDERLY and the PIN types are bits of the `TPMA_NV` attributes already stored, and
+//! the data of an ORDERLY counter is the value that NV holds (`NvIndex::nv_image`), so a snapshot
+//! taken without `Shutdown` is rolled back to it; a v8 snapshot of earlier builds reads as before.
 //!
 //! **Sensitive data.** The payload holds the hierarchy seeds, the authorization values of the
 //! owner, the endorsement and the lockout hierarchies, the authorization values and the data of the
@@ -233,7 +237,7 @@ fn write_payload(p: &Persistent, clock_ms: u64, e: &mut Enc) -> Option<()> {
         e.u32(i.attributes);
         e.lv8(&i.auth_policy);
         e.lv8(i.auth.as_slice());
-        e.lv16(&i.data);
+        e.lv16(&i.nv_image());
     }
     e.u64(p.nv.counter_max());
 
@@ -347,6 +351,7 @@ fn decode_inner(payload: &[u8], version: u16) -> Result<Persistent, Bad> {
             auth_policy: policy.to_vec(),
             auth: index_auth,
             data: Zeroizing::new(data.to_vec()),
+            saved: 0,
         });
     }
     let counter_max = c.u64().ok_or(Bad::Short)?;

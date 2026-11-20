@@ -1503,7 +1503,7 @@ fn capability_reports_the_da_parameters_and_the_new_commands() {
         &mut t,
         cap::TPM_PROPERTIES,
         pt::LOCKOUT_COUNTER,
-        8,
+        4,
     ));
     assert_eq!(count, 4);
     let values: Vec<(u32, u32)> = body

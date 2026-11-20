@@ -598,10 +598,9 @@ fn nv_define_space_checks_the_size_of_the_type() {
     let (public, _) = nv_read_public(&mut t, NV0 + 1);
     assert_eq!(&public[10..12], &[0, 0], "authPolicy is empty");
     assert_eq!(&public[12..14], &[0, 8], "dataSize");
-    // PIN indices, reserved types and CLEAR_STCLEAR stay TPM_RC_ATTRIBUTES.
+    // PIN_FAIL without NO_DA, reserved types and CLEAR_STCLEAR stay TPM_RC_ATTRIBUTES.
     for a in [
         OWNER_RW | 0x80,
-        OWNER_RW | 0x90,
         OWNER_RW | 0x30,
         OWNER_RW | 0x50,
         OWNER_RW | 0x70,
@@ -761,11 +760,16 @@ fn a_damaged_nv_snapshot_is_refused_never_reset() {
         StateError::BadField,
         "size of the type",
     );
-    // Reserved type, PIN type, unsupported attribute, reserved bit.
+    // Reserved type, PIN_FAIL without NO_DA, unsupported attribute, ORDERLY on a bit field,
+    // reserved bit.
     for (v, what) in [
         ((attrs & !0xF0) | 0x30, "reserved type"),
-        ((attrs & !0xF0) | 0x80, "PIN type"),
-        (attrs | attr::ORDERLY, "unsupported attribute"),
+        ((attrs & !0xF0) | 0x80, "PIN_FAIL without NO_DA"),
+        (attrs | attr::GLOBALLOCK, "unsupported attribute"),
+        (
+            (attrs & !0xF0) | NT_BITS | attr::ORDERLY,
+            "ORDERLY on a bit field",
+        ),
         (attrs | 0x100, "reserved bit"),
         (attrs & !(attr::OWNERREAD), "no read access"),
     ] {

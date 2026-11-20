@@ -83,6 +83,11 @@ use crate::state::{TimePoint, Tpm};
 /// Largest `contextBlob` accepted by `TPM2_ContextLoad` (an RSA object context is under 1 KiB).
 const MAX_CONTEXT_BLOB: usize = 2048;
 
+/// The largest `TPMS_CONTEXT` that `TPM2_ContextLoad` takes: `sequence` (8), `savedHandle` (4),
+/// `hierarchy` (4) and the `TPM2B` `contextBlob` (2 + [`MAX_CONTEXT_BLOB`]). Reported as
+/// `TPM_PT_MAX_OBJECT_CONTEXT` and `TPM_PT_MAX_SESSION_CONTEXT`.
+pub(crate) const MAX_CONTEXT_SIZE: usize = 8 + 4 + 4 + 2 + MAX_CONTEXT_BLOB;
+
 /// `savedHandle` of an object with `stClear` (Part 2, Table 245).
 const SAVED_ST_CLEAR: u32 = 0x8000_0002;
 /// `savedHandle` of an ordinary transient object.

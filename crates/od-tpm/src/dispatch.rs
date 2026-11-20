@@ -664,6 +664,7 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
     let mut cp_hash: [Option<TpmDigest>; 3] = [None; 3];
     // `authValue` of the entity of each session, for `sessionValue` of parameter encryption.
     let mut entity_auths: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(sessions.len());
+    let mut pins_proven: Vec<u32> = Vec::new();
     for (i, s) in sessions.iter().enumerate() {
         let n = (i + 1) as u8;
         let authorizes = i < needed;
@@ -678,17 +679,25 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
         // Part 3 §5.6 checks DA lockout before role and policy validation for
         // sessions proving an authValue. A policy without either assertion
         // does not prove the target's authValue.
-        let target = if authorizes
+        let proves_auth = authorizes
             && policy.is_none_or(|(_, session)| {
                 session.kind == SessionKind::Policy
                     && (session.policy.auth_value_needed || session.policy.password_needed)
-            }) {
+            });
+        let target = if proves_auth {
             da_class(tpm, spec.code, &handles, i)
         } else {
             DaClass::Exempt
         };
+        // The authValue of a written PIN index (`nv.rs`): its count follows the proof.
+        let pin = if proves_auth && !is_pcr_position(spec.code, i) {
+            tpm.pin_index_of(handles[i])
+        } else {
+            None
+        };
         let da = DaProtection {
             target,
+            pin,
             bind: loaded
                 .filter(|(_, session)| session.kind != SessionKind::Trial)
                 .map_or(DaClass::Exempt, |(_, session)| session.bind_da),
@@ -822,6 +831,10 @@ fn run(tpm: &mut Tpm, locality: u8, command: &[u8]) -> Result<Vec<u8>, Rc> {
                 }
             }
         }
+        pins_proven.extend(da.pin);
+    }
+    for pin in pins_proven {
+        tpm.pin_auth_succeeded(pin);
     }
 
     // The fallible preparation of the response goes before the command's action.

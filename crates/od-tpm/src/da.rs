@@ -107,6 +107,8 @@ pub(crate) enum DaClass {
 pub(crate) struct DaProtection {
     pub target: DaClass,
     pub bind: DaClass,
+    /// A written PIN index whose authValue the authorization proves (`nv.rs`, module comment).
+    pub pin: Option<u32>,
 }
 
 impl Tpm {
@@ -209,6 +211,9 @@ impl Tpm {
     /// The lockout check that precedes an authorization (Part 3, clause 5.6, step 3): a
     /// DA-protected authValue is `TPM_RC_LOCKOUT` in lockout; `lockoutAuth` while disabled too.
     pub(crate) fn da_check(&self, protection: DaProtection) -> Result<(), Rc> {
+        if protection.pin.is_some_and(|pin| self.pin_locked(pin)) {
+            return Err(Rc::LOCKOUT);
+        }
         let classes = [protection.target, protection.bind];
         if (classes.contains(&DaClass::Protected) && self.da_in_lockout())
             || (classes.contains(&DaClass::Lockout) && !self.persistent.da.lockout_auth_enabled)
@@ -222,6 +227,9 @@ impl Tpm {
     /// Records a failed proof and returns the response code for the one-based
     /// session number. LockoutAuth protection has priority when involved.
     pub(crate) fn da_auth_failed(&mut self, protection: DaProtection, session: u8) -> Rc {
+        if let Some(pin) = protection.pin {
+            self.pin_auth_failed(pin);
+        }
         let now = self.power_ms;
         match (protection.target, protection.bind) {
             (DaClass::Lockout, _) | (_, DaClass::Lockout) => {

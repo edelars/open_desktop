@@ -180,6 +180,17 @@ pub mod pt {
     pub const ACTIVE_SESSIONS_MAX: u32 = FIXED + 17;
     pub const PCR_COUNT: u32 = FIXED + 18;
     pub const PCR_SELECT_MIN: u32 = FIXED + 19;
+    pub const CONTEXT_GAP_MAX: u32 = FIXED + 20;
+    pub const NV_COUNTERS_MAX: u32 = FIXED + 22;
+    pub const CLOCK_UPDATE: u32 = FIXED + 25;
+    pub const CONTEXT_HASH: u32 = FIXED + 26;
+    pub const CONTEXT_SYM: u32 = FIXED + 27;
+    pub const CONTEXT_SYM_SIZE: u32 = FIXED + 28;
+    pub const ORDERLY_COUNT: u32 = FIXED + 29;
+    pub const MAX_OBJECT_CONTEXT: u32 = FIXED + 33;
+    pub const MAX_SESSION_CONTEXT: u32 = FIXED + 34;
+    pub const SPLIT_MAX: u32 = FIXED + 40;
+    pub const MODES: u32 = FIXED + 45;
     pub const MAX_COMMAND_SIZE: u32 = FIXED + 30;
     pub const MAX_RESPONSE_SIZE: u32 = FIXED + 31;
     pub const MAX_DIGEST: u32 = FIXED + 32;
@@ -205,6 +216,9 @@ pub mod pt {
     pub const HR_TRANSIENT_AVAIL: u32 = VAR + 7;
     pub const HR_PERSISTENT: u32 = VAR + 8;
     pub const HR_PERSISTENT_AVAIL: u32 = VAR + 9;
+    pub const NV_COUNTERS: u32 = VAR + 10;
+    pub const NV_COUNTERS_AVAIL: u32 = VAR + 11;
+    pub const LOADED_CURVES: u32 = VAR + 13;
     pub const HR_PERSISTENT_MIN: u32 = FIXED + 15;
     /// Dictionary attack properties (Part 2 v184, Table 30): `failedTries`, `maxTries`,
     /// `recoveryTime` (seconds), `lockoutRecovery` (seconds).
@@ -212,6 +226,9 @@ pub mod pt {
     pub const MAX_AUTH_FAIL: u32 = VAR + 15;
     pub const LOCKOUT_INTERVAL: u32 = VAR + 16;
     pub const LOCKOUT_RECOVERY: u32 = VAR + 17;
+    pub const NV_WRITE_RECOVERY: u32 = VAR + 18;
+    pub const AUDIT_COUNTER_0: u32 = VAR + 19;
+    pub const AUDIT_COUNTER_1: u32 = VAR + 20;
 }
 
 /// Table 8 (v184): `TPM_ALG_ID` values used in phase A.

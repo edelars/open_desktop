@@ -6,16 +6,43 @@
 //!
 //! Supported index types: `TPM_NT_ORDINARY` (opaque data written by `TPM2_NV_Write`) and, since
 //! slice C3, `TPM_NT_COUNTER` (8 octets, `TPM2_NV_Increment`), `TPM_NT_BITS` (8 octets,
-//! `TPM2_NV_SetBits`) and `TPM_NT_EXTEND` (a digest of the `nameAlg`, `TPM2_NV_Extend`). PIN indices
-//! (`TPM_NT_PIN_FAIL`, `TPM_NT_PIN_PASS`) and reserved types are `TPM_RC_ATTRIBUTES` (Part 3,
-//! clause 31.3.1: "if the implementation does not support ... the TPM shall return
-//! TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
+//! `TPM2_NV_SetBits`) and `TPM_NT_EXTEND` (a digest of the `nameAlg`, `TPM2_NV_Extend`). Slice 3 adds
+//! `TPM_NT_PIN_FAIL` and `TPM_NT_PIN_PASS` (below) and `TPMA_NV_ORDERLY` on a counter. Reserved types
+//! are `TPM_RC_ATTRIBUTES` (Part 3, clause 31.3.1: "if the implementation does not support ... the TPM
+//! shall return TPM_RC_ATTRIBUTES"; Part 2, clause 13.2: reserved `TPM_NT` is `TPM_RC_ATTRIBUTES`).
 //! Attributes that need machinery the implementation lacks are refused the same way:
-//! `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`), `ORDERLY` and `CLEAR_STCLEAR` (PTP 1.07, Table 12).
-//! `TPMA_NV_NO_DA` exempts the index's
-//! authorization value from dictionary-attack protection.
+//! `GLOBALLOCK` (`TPM2_NV_GlobalWriteLock`) and `CLEAR_STCLEAR` (PTP 1.07, Table 12), and `ORDERLY` on
+//! an index that is not a counter.
 //!
-//! **Sizes by type** (Part 3, clause 31.3.1): a counter or bit field has `dataSize` 8, an extend
+//! **ORDERLY counters** (slice 3; PTP 1.07 clause 4.6.4 asks for six counters, two of them ORDERLY).
+//! An ORDERLY counter keeps its running value in RAM and writes it to NV (`NvIndex::saved`) only at
+//! the first increment (the move to `WRITTEN`), at every [`MAX_ORDERLY_COUNT`]-th increment and at
+//! `Shutdown` (either type). The snapshot holds the NV value (`NvIndex::saved`), so a snapshot taken
+//! without `Shutdown` is rolled back to it; `Startup` after such a disorderly shutdown adds
+//! [`MAX_ORDERLY_COUNT`] to the restored value so that the counter never repeats a value it has
+//! reported (the value is also the new floor of `counter_max`). `Startup(CLEAR)` does not reset an
+//! ORDERLY counter. `TPM_PT_ORDERLY_COUNT` reports [`MAX_ORDERLY_COUNT`]. NOT VERIFIED against Part 3
+//! clause 31.2 and Part 2 (the value 255, the roll-forward rule and the restriction of `ORDERLY` to
+//! counters are this implementation's choice; `docs/specs/VTPM.md` has no text on them).
+//!
+//! **PIN indices** (slice 3). `TPM_NT_PIN_FAIL` (0x8) and `TPM_NT_PIN_PASS` (0x9) are 8 octets:
+//! `pinCount` (PIN_FAIL) or `passCount` (PIN_PASS), then `pinLimit`, both u32 big-endian.
+//! `TPM2_NV_Write` of the whole 8 octets sets them (partial writes are `TPM_RC_NV_RANGE`). Once the
+//! index is `WRITTEN`, an authorization that proves the authValue of the index (password, HMAC or a
+//! policy with `PolicyAuthValue`/`PolicyPassword`, e.g. `NV_Read`, `NV_Write`, `PolicyNV`) is
+//! `TPM_RC_LOCKOUT` while the count has reached the limit; a failed proof adds one to a PIN_FAIL
+//! `pinCount`, a successful one sets it to 0; a successful proof adds one to a PIN_PASS
+//! `passCount`. PIN_FAIL requires `TPMA_NV_NO_DA` (so a failed PIN does not also count in the
+//! dictionary-attack lockout). A PIN index has neither `TPMA_NV_AUTHWRITE` nor
+//! `TPMA_NV_WRITEDEFINE` (`TPM_RC_ATTRIBUTES` at definition, also for a restored index): with
+//! `AUTHWRITE` whoever proves the PIN could rewrite `passCount`/`pinCount` and the limit with
+//! `NV_Write`; the count and the limit are set through OWNER, PLATFORM or a policy. NOT VERIFIED against Part 3 clauses 31.3.1, 31.7 and Part 2
+//! Table 231: `docs/specs/VTPM.md` has no text on PIN indices; the rules above are the minimum
+//! the slice plan names.
+//!
+//! `TPMA_NV_NO_DA` exempts the index's authorization value from dictionary-attack protection.
+//!
+//! **Sizes by type** (Part 3, clause 31.3.1): a counter, a bit field or a PIN index has `dataSize` 8, an extend
 //! index the digest size of its `nameAlg` (32, 48 or 64 octets for SHA-256, SHA-384 or SHA-512); any
 //! other size is `TPM_RC_SIZE`. `TPM2_NV_Write` of a counter, bit field or extend index is `TPM_RC_ATTRIBUTES`
 //! (clause 31.7.1); `TPM2_NV_Read` reads any type.
@@ -130,14 +157,25 @@ pub(crate) mod nt {
     pub const COUNTER: u32 = 0x1;
     pub const BITS: u32 = 0x2;
     pub const EXTEND: u32 = 0x4;
+    pub const PIN_FAIL: u32 = 0x8;
+    pub const PIN_PASS: u32 = 0x9;
 }
+
+/// Largest number of updates of an ORDERLY counter that are held only in RAM (`TPM_PT_ORDERLY_COUNT`):
+/// every this many increments the value is written to NV, and a disorderly `Startup` advances the
+/// restored value by it. NOT VERIFIED (module comment).
+pub(crate) const MAX_ORDERLY_COUNT: u32 = 255;
+
+/// Counters that may exist (`TPM_PT_NV_COUNTERS_MAX`): any index may be a counter, so the limit of
+/// the index count.
+pub(crate) const MAX_NV_COUNTERS: usize = MAX_NV_INDICES;
 
 /// Size of a counter and of a bit field (Part 3, clause 31.3.1).
 pub(crate) const COUNTER_SIZE: usize = 8;
 
 /// Highest `TPMA_NV` attribute bits that this implementation can honour, as a mask of those it
 /// refuses.
-const UNSUPPORTED: u32 = attr::GLOBALLOCK | attr::ORDERLY | attr::CLEAR_STCLEAR;
+const UNSUPPORTED: u32 = attr::GLOBALLOCK | attr::CLEAR_STCLEAR;
 const READ_ACCESS: u32 = attr::PPREAD | attr::OWNERREAD | attr::AUTHREAD | attr::POLICYREAD;
 const WRITE_ACCESS: u32 = attr::PPWRITE | attr::OWNERWRITE | attr::AUTHWRITE | attr::POLICYWRITE;
 
@@ -149,9 +187,50 @@ pub(crate) struct NvIndex {
     pub auth_policy: Vec<u8>,
     pub auth: AuthValue,
     pub data: Zeroizing<Vec<u8>>,
+    /// The value of an ORDERLY counter that is in NV (the snapshot holds this one, not `data`);
+    /// 0 for every other index and for an ORDERLY counter that was never incremented.
+    pub saved: u64,
 }
 
 impl NvIndex {
+    /// `true` for a counter with `TPMA_NV_ORDERLY`.
+    pub(crate) fn is_orderly_counter(&self) -> bool {
+        self.nt() == nt::COUNTER && self.attributes & attr::ORDERLY != 0
+    }
+
+    /// The type rules of the attributes: `ORDERLY` only on a counter, `TPM_NT_PIN_FAIL` only with
+    /// `NO_DA`, and no `AUTHWRITE` or `WRITEDEFINE` on a PIN index (module comment).
+    fn type_attributes_ok(attributes: u32) -> bool {
+        let nt = (attributes & attr::NT_MASK) >> 4;
+        let pin = matches!(nt, nt::PIN_FAIL | nt::PIN_PASS);
+        (attributes & attr::ORDERLY == 0 || nt == nt::COUNTER)
+            && (nt != nt::PIN_FAIL || attributes & attr::NO_DA != 0)
+            && (!pin || attributes & (attr::AUTHWRITE | attr::WRITEDEFINE) == 0)
+    }
+
+    /// `(count, limit)` of a PIN index whose data was written (module comment): `None` for another
+    /// type and while `WRITTEN` is CLEAR.
+    fn pin_counts(&self) -> Option<(u32, u32)> {
+        if !matches!(self.nt(), nt::PIN_FAIL | nt::PIN_PASS) || self.attributes & attr::WRITTEN == 0
+        {
+            return None;
+        }
+        let d = self.data.as_slice();
+        Some((
+            u32::from_be_bytes(d.get(..4)?.try_into().ok()?),
+            u32::from_be_bytes(d.get(4..8)?.try_into().ok()?),
+        ))
+    }
+
+    /// The data as NV holds it, for the snapshot.
+    pub(crate) fn nv_image(&self) -> std::borrow::Cow<'_, [u8]> {
+        if self.is_orderly_counter() {
+            std::borrow::Cow::Owned(self.saved.to_be_bytes().to_vec())
+        } else {
+            std::borrow::Cow::Borrowed(self.data.as_slice())
+        }
+    }
+
     /// The hash of the `nameAlg` of the index: SHA-256, SHA-384 or SHA-512 for every index that
     /// exists (`TPM2_NV_DefineSpace` and `NvIndex::is_consistent` admit no other).
     pub(crate) fn hash_alg(&self) -> HashAlg {
@@ -168,7 +247,7 @@ impl NvIndex {
     /// for a counter and a bit field, one digest of the `nameAlg` for an extend index.
     fn required_size(attributes: u32, name_hash: HashAlg) -> Option<usize> {
         match (attributes & attr::NT_MASK) >> 4 {
-            nt::COUNTER | nt::BITS => Some(COUNTER_SIZE),
+            nt::COUNTER | nt::BITS | nt::PIN_FAIL | nt::PIN_PASS => Some(COUNTER_SIZE),
             nt::EXTEND => Some(name_hash.size()),
             _ => None,
         }
@@ -195,8 +274,9 @@ impl NvIndex {
         a & (attr::RESERVED_LOW | attr::RESERVED_HIGH | UNSUPPORTED) == 0
             && matches!(
                 self.nt(),
-                nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
+                nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND | nt::PIN_FAIL | nt::PIN_PASS
             )
+            && Self::type_attributes_ok(a)
             && size_ok
             && a & READ_ACCESS != 0
             && a & WRITE_ACCESS != 0
@@ -288,10 +368,66 @@ impl NvStore {
         if indices.windows(2).any(|w| w[0].handle == w[1].handle) {
             return None;
         }
+        // The snapshot holds the NV value of an ORDERLY counter.
+        for i in &mut indices {
+            if i.is_orderly_counter() {
+                i.saved = i.value_u64().unwrap_or(0);
+            }
+        }
         Some(NvStore {
             indices,
             counter_max,
         })
+    }
+
+    /// Number of counters (`TPM_PT_NV_COUNTERS`).
+    pub(crate) fn counters(&self) -> usize {
+        self.indices
+            .iter()
+            .filter(|i| i.nt() == nt::COUNTER)
+            .count()
+    }
+
+    /// Counters that can still be defined (`TPM_PT_NV_COUNTERS_AVAIL`): what is left of
+    /// [`MAX_NV_COUNTERS`], of the index slots and of the data pool (8 octets each).
+    pub(crate) fn counters_avail(&self) -> usize {
+        (MAX_NV_COUNTERS - self.counters())
+            .min(MAX_NV_INDICES - self.count())
+            .min((NV_POOL_SIZE - self.used()) / COUNTER_SIZE)
+    }
+
+    /// `Shutdown`: every ORDERLY counter is written to NV.
+    pub(crate) fn orderly_shutdown(&mut self) {
+        for i in &mut self.indices {
+            if i.is_orderly_counter() {
+                i.saved = i.value_u64().unwrap_or(0);
+            }
+        }
+    }
+
+    /// `Startup`: an ORDERLY counter is restored from NV; after a disorderly shutdown (no
+    /// `Shutdown` before the state was saved) a written counter is advanced by
+    /// [`MAX_ORDERLY_COUNT`], which is at least what RAM may have held beyond NV, so it never
+    /// repeats a value; `counter_max` follows (module comment).
+    pub(crate) fn orderly_startup(&mut self, was_orderly: bool) {
+        let mut floor = self.counter_max;
+        for i in &mut self.indices {
+            if !i.is_orderly_counter() {
+                continue;
+            }
+            let mut value = if was_orderly {
+                i.value_u64().unwrap_or(0).max(i.saved)
+            } else {
+                i.saved
+            };
+            if !was_orderly && i.attributes & attr::WRITTEN != 0 {
+                value = value.saturating_add(u64::from(MAX_ORDERLY_COUNT));
+            }
+            i.data.copy_from_slice(&value.to_be_bytes());
+            i.saved = value;
+            floor = floor.max(value);
+        }
+        self.counter_max = floor;
     }
 
     /// Data octets in use.
@@ -525,6 +661,45 @@ impl Tpm {
         self.persistent.nv.get(handle).map(|i| i.auth.clone())
     }
 
+    /// The written PIN index (module comment) that the authorization of `handle` proves the
+    /// authValue of, if `handle` is one.
+    pub(crate) fn pin_index_of(&self, handle: u32) -> Option<u32> {
+        if !is_nv_handle(handle) {
+            return None;
+        }
+        self.persistent.nv.get(handle)?.pin_counts().map(|_| handle)
+    }
+
+    /// `true` when the count of a PIN index has reached its limit.
+    pub(crate) fn pin_locked(&self, handle: u32) -> bool {
+        self.persistent
+            .nv
+            .get(handle)
+            .and_then(NvIndex::pin_counts)
+            .is_some_and(|(count, limit)| count >= limit)
+    }
+
+    /// A failed proof of the authValue of a PIN index: one more failure on a PIN_FAIL index.
+    pub(crate) fn pin_auth_failed(&mut self, handle: u32) {
+        self.pin_update(handle, nt::PIN_FAIL, |count| count.saturating_add(1));
+    }
+
+    /// A successful proof: the failures of a PIN_FAIL index are forgotten, a PIN_PASS index
+    /// counts one more pass.
+    pub(crate) fn pin_auth_succeeded(&mut self, handle: u32) {
+        self.pin_update(handle, nt::PIN_FAIL, |_| 0);
+        self.pin_update(handle, nt::PIN_PASS, |count| count.saturating_add(1));
+    }
+
+    fn pin_update(&mut self, handle: u32, kind: u32, change: impl FnOnce(u32) -> u32) {
+        if let Some(index) = self.persistent.nv.get_mut(handle)
+            && index.nt() == kind
+            && let Some((count, _)) = index.pin_counts()
+        {
+            index.data[..4].copy_from_slice(&change(count).to_be_bytes());
+        }
+    }
+
     /// Name of an NV index (`nameAlg || H(public)`), `None` if it is not defined.
     pub(crate) fn nv_name(&self, handle: u32) -> Option<Vec<u8>> {
         self.persistent.nv.get(handle).map(NvIndex::name)
@@ -608,8 +783,9 @@ impl Tpm {
         let platform = inv.handles[0] == h::RH_PLATFORM;
         if !matches!(
             (attributes & attr::NT_MASK) >> 4,
-            nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND
-        ) || attributes & (attr::WRITTEN | attr::READLOCKED | attr::WRITELOCKED) != 0
+            nt::ORDINARY | nt::COUNTER | nt::BITS | nt::EXTEND | nt::PIN_FAIL | nt::PIN_PASS
+        ) || !NvIndex::type_attributes_ok(attributes)
+            || attributes & (attr::WRITTEN | attr::READLOCKED | attr::WRITELOCKED) != 0
             || attributes & UNSUPPORTED != 0
             || attributes & READ_ACCESS == 0
             || attributes & WRITE_ACCESS == 0
@@ -642,6 +818,7 @@ impl Tpm {
             auth_policy: auth_policy.to_vec(),
             auth,
             data: Zeroizing::new(vec![0u8; data_size]),
+            saved: 0,
         });
         Ok(Output::default())
     }
@@ -726,9 +903,14 @@ impl Tpm {
         if index.attributes & attr::WRITELOCKED != 0 {
             return Err(Rc::NV_LOCKED);
         }
-        // A counter, a bit field and an extend index change only by their own commands.
-        if index.nt() != nt::ORDINARY {
+        // A counter, a bit field and an extend index change only by their own commands; a PIN index
+        // is written whole.
+        let pin = matches!(index.nt(), nt::PIN_FAIL | nt::PIN_PASS);
+        if index.nt() != nt::ORDINARY && !pin {
             return Err(Rc::ATTRIBUTES);
+        }
+        if pin && (offset != 0 || data.len() != COUNTER_SIZE) {
+            return Err(Rc::NV_RANGE);
         }
         if index.attributes & attr::WRITEALL != 0 && data.len() != index.data.len() {
             return Err(Rc::NV_RANGE);
@@ -769,6 +951,8 @@ impl Tpm {
         p: &mut Reader<'_>,
     ) -> Result<Output, Rc> {
         p.finish()?;
+        // `Shutdown` has been received and `Startup` has not cleared it yet.
+        let after_shutdown = self.persistent.orderly;
         let max = self.persistent.nv.counter_max;
         let index = self.nv_typed_index(inv.handles[1], nt::COUNTER)?;
         let current = if index.attributes & attr::WRITTEN != 0 {
@@ -779,6 +963,20 @@ impl Tpm {
         let next = current.checked_add(1).ok_or(Rc::NV_RANGE)?;
         index.data.copy_from_slice(&next.to_be_bytes());
         index.attributes |= attr::WRITTEN;
+        // An ORDERLY counter reaches NV at its first increment and then every
+        // `MAX_ORDERLY_COUNT` increments. After `Shutdown` the counter is written to NV at every
+        // increment (as the reference clears its orderly state, `g_clearOrderly`, and writes NV
+        // before the next ORDERLY update): the snapshot taken then is the one `Startup` reads as
+        // orderly (no `+MAX_ORDERLY_COUNT`), so a value held only in RAM would roll the counter
+        // back to the value of `Shutdown`. Write-through keeps the restored value at least the
+        // last one reported; the path without `Shutdown` is unchanged.
+        if index.is_orderly_counter()
+            && (after_shutdown
+                || index.saved == 0
+                || next.saturating_sub(index.saved) >= u64::from(MAX_ORDERLY_COUNT))
+        {
+            index.saved = next;
+        }
         let store = &mut self.persistent.nv;
         store.counter_max = store.counter_max.max(next);
         Ok(Output::default())
@@ -917,6 +1115,7 @@ mod tests {
             auth_policy: Vec::new(),
             auth: AuthValue::empty(),
             data: Zeroizing::new(vec![0u8; size]),
+            saved: 0,
         }
     }
 

@@ -21,6 +21,8 @@ mod tests_c2;
 mod tests_c3;
 #[path = "tests_ek.rs"]
 mod tests_ek;
+#[path = "tests_nv_props.rs"]
+mod tests_nv_props;
 #[path = "tests_obj.rs"]
 mod tests_obj;
 #[path = "tests_rsa3072.rs"]
