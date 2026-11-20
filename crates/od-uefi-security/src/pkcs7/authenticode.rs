@@ -2,13 +2,18 @@
 
 use der::{
     Decode, Reader, SliceReader, Tag, Tagged,
-    asn1::{AnyRef, ObjectIdentifier},
+    asn1::{
+        AnyRef, BitStringRef, GeneralStringRef, GeneralizedTime, Ia5StringRef, IntRef, Null,
+        ObjectIdentifier, PrintableStringRef, TeletexStringRef, UtcTime, Utf8StringRef,
+        VideotexStringRef,
+    },
 };
 use sha2::{Digest, Sha256};
 
 use super::{
-    CONTEXT_ONE, CONTEXT_ZERO, Error, MAX_CERTIFICATES, SHA256, Signer, algorithm,
-    ordered_sequence, raw_sequence, require_tag, sequence, signed_data_header, signed_data_tail,
+    Attributes, AuthenticatedAttributes, CONTEXT_ONE, CONTEXT_ZERO, Error, MAX_CERTIFICATES,
+    SHA256, Signer, algorithm, ordered_sequence, raw_sequence, require_tag, sequence,
+    signed_data_header, signed_data_tail,
 };
 
 const SPC_INDIRECT_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.4");
@@ -46,7 +51,10 @@ impl<'a> AuthenticodeSignedData<'a> {
             return Err(Error::Malformed);
         }
 
-        let mut fields = signed_data_header(encoded, true)?;
+        let (mut fields, wrapped) = signed_data_header(encoded)?;
+        if !wrapped {
+            return Err(Error::UnsupportedProfile);
+        }
         let mut content = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
         if content.decode::<ObjectIdentifier>()? != SPC_INDIRECT_DATA {
             return Err(Error::UnsupportedProfile);
@@ -54,11 +62,15 @@ impl<'a> AuthenticodeSignedData<'a> {
         let indirect = require_tag(&mut content, CONTEXT_ZERO)?;
         content.finish()?;
         let (image_digest, content_digest) = indirect_data(indirect)?;
-        let signed = signed_data_tail(fields, Some(&content_digest))?;
+        let signed = signed_data_tail(fields, Attributes::Authenticode(SPC_INDIRECT_DATA))?;
+        let attributes = signed.info.authenticated.ok_or(Error::Malformed)?;
+        if attributes.content_digest != content_digest {
+            return Err(Error::Malformed);
+        }
         Ok(Self {
             signer: signed.info.signer,
             image_digest,
-            signature_digest: signed.info.signature_digest.ok_or(Error::Malformed)?,
+            signature_digest: attributes.signature_digest,
             certificates: signed.certificates,
             nested_signatures: signed.info.nested_signatures,
         })
@@ -134,8 +146,9 @@ fn indirect_data(encoded: &[u8]) -> Result<([u8; 32], [u8; 32]), Error> {
 
 pub(super) fn authenticated_attributes(
     fields: &mut SliceReader<'_>,
-    content_digest: &[u8; 32],
-) -> Result<[u8; 32], Error> {
+    content_type: ObjectIdentifier,
+    check_primitives: bool,
+) -> Result<AuthenticatedAttributes, Error> {
     let encoded = fields.tlv_bytes()?;
     let attributes = AnyRef::from_der(encoded)?;
     if attributes.tag() != CONTEXT_ZERO {
@@ -144,43 +157,49 @@ pub(super) fn authenticated_attributes(
     let mut attributes = SliceReader::new(attributes.value())?;
     let mut previous = None;
     let mut have_content_type = false;
-    let mut have_digest = false;
+    let mut content_digest = None;
     while !attributes.is_finished() {
         let encoded_attr = ordered_sequence(&mut attributes, &mut previous)?;
         let (oid, values) = attribute(encoded_attr)?;
         let mut values = SliceReader::new(values)?;
         match oid {
             CONTENT_TYPE if !have_content_type => {
-                if values.decode::<ObjectIdentifier>()? != SPC_INDIRECT_DATA {
+                if values.decode::<ObjectIdentifier>()? != content_type {
                     return Err(Error::Malformed);
                 }
                 values.finish()?;
                 have_content_type = true;
             }
-            MESSAGE_DIGEST if !have_digest => {
-                if require_tag(&mut values, Tag::OctetString)? != content_digest {
-                    return Err(Error::Malformed);
-                }
+            MESSAGE_DIGEST if content_digest.is_none() => {
+                content_digest = Some(
+                    require_tag(&mut values, Tag::OctetString)?
+                        .try_into()
+                        .map_err(|_| Error::Malformed)?,
+                );
                 values.finish()?;
-                have_digest = true;
             }
             CONTENT_TYPE | MESSAGE_DIGEST => return Err(Error::Malformed),
-            _ => validate_attribute_values(&mut values)?,
+            _ => validate_attribute_values(&mut values, check_primitives)?,
         }
     }
-    if !have_content_type || !have_digest {
+    if !have_content_type {
         return Err(Error::Malformed);
     }
     // PKCS#7 uses the original DER length and content under the universal SET OF tag.
-    Ok(Sha256::new()
+    let signature_digest = Sha256::new()
         .chain_update([DER_SET_TAG])
         .chain_update(&encoded[1..])
         .finalize()
-        .into())
+        .into();
+    Ok(AuthenticatedAttributes {
+        content_digest: content_digest.ok_or(Error::Malformed)?,
+        signature_digest,
+    })
 }
 
 pub(super) fn unauthenticated_attributes<'a>(
     fields: &mut SliceReader<'a>,
+    read_nested: bool,
 ) -> Result<Option<&'a [u8]>, Error> {
     let mut entries = SliceReader::new(require_tag(fields, CONTEXT_ONE)?)?;
     if entries.is_finished() {
@@ -191,8 +210,8 @@ pub(super) fn unauthenticated_attributes<'a>(
     while !entries.is_finished() {
         let (oid, data) = attribute(ordered_sequence(&mut entries, &mut previous)?)?;
         let mut values = SliceReader::new(data)?;
-        validate_attribute_values(&mut values)?;
-        if oid == SPC_NESTED_SIGNATURE {
+        validate_attribute_values(&mut values, !read_nested)?;
+        if read_nested && oid == SPC_NESTED_SIGNATURE {
             if nested.replace(data).is_some() {
                 return Err(Error::Malformed);
             }
@@ -213,7 +232,10 @@ fn attribute(encoded: &[u8]) -> Result<(ObjectIdentifier, &[u8]), Error> {
     Ok((oid, values))
 }
 
-fn validate_attribute_values(values: &mut SliceReader<'_>) -> Result<(), Error> {
+fn validate_attribute_values(
+    values: &mut SliceReader<'_>,
+    check_primitives: bool,
+) -> Result<(), Error> {
     if values.is_finished() {
         return Err(Error::Malformed);
     }
@@ -226,14 +248,25 @@ fn validate_attribute_values(values: &mut SliceReader<'_>) -> Result<(), Error> 
         {
             return Err(Error::Malformed);
         }
-        validate_constructed(AnyRef::from_der(encoded)?, 0)?;
+        validate_value(AnyRef::from_der(encoded)?, 0, check_primitives)?;
     }
     Ok(())
 }
 
 fn validate_constructed(value: AnyRef<'_>, depth: usize) -> Result<(), Error> {
+    validate_value(value, depth, false)
+}
+
+pub(super) fn validate_message_value(value: AnyRef<'_>) -> Result<(), Error> {
+    validate_value(value, 0, true)
+}
+
+fn validate_value(value: AnyRef<'_>, depth: usize, check_primitives: bool) -> Result<(), Error> {
     let tag = value.tag();
     if !tag.is_constructed() {
+        if check_primitives {
+            validate_primitive(value)?;
+        }
         return Ok(());
     }
     if depth >= MAX_DER_DEPTH {
@@ -250,7 +283,58 @@ fn validate_constructed(value: AnyRef<'_>, depth: usize) -> Result<(), Error> {
         {
             return Err(Error::Malformed);
         }
-        validate_constructed(AnyRef::from_der(encoded)?, depth + 1)?;
+        validate_value(AnyRef::from_der(encoded)?, depth + 1, check_primitives)?;
+    }
+    Ok(())
+}
+
+fn validate_primitive(value: AnyRef<'_>) -> Result<(), Error> {
+    let bytes = value.value();
+    match value.tag() {
+        Tag::Boolean => value.decode_as::<bool>().map(|_| ())?,
+        Tag::Integer => value.decode_as::<IntRef<'_>>().map(|_| ())?,
+        Tag::Enumerated => AnyRef::new(Tag::Integer, bytes)?
+            .decode_as::<IntRef<'_>>()
+            .map(|_| ())?,
+        Tag::BitString => {
+            let bits = value.decode_as::<BitStringRef<'_>>()?;
+            if bits
+                .raw_bytes()
+                .last()
+                .is_some_and(|last| last & ((1u8 << bits.unused_bits()) - 1) != 0)
+            {
+                return Err(Error::Malformed);
+            }
+        }
+        Tag::Null => value.decode_as::<Null>().map(|_| ())?,
+        Tag::ObjectIdentifier => value.decode_as::<ObjectIdentifier>().map(|_| ())?,
+        Tag::Utf8String => value.decode_as::<Utf8StringRef<'_>>().map(|_| ())?,
+        Tag::PrintableString => value.decode_as::<PrintableStringRef<'_>>().map(|_| ())?,
+        Tag::TeletexString => value.decode_as::<TeletexStringRef<'_>>().map(|_| ())?,
+        Tag::VideotexString => value.decode_as::<VideotexStringRef<'_>>().map(|_| ())?,
+        Tag::Ia5String => value.decode_as::<Ia5StringRef<'_>>().map(|_| ())?,
+        Tag::UtcTime => value.decode_as::<UtcTime>().map(|_| ())?,
+        Tag::GeneralizedTime => value.decode_as::<GeneralizedTime>().map(|_| ())?,
+        Tag::GeneralString => value.decode_as::<GeneralStringRef<'_>>().map(|_| ())?,
+        Tag::NumericString
+            if bytes
+                .iter()
+                .all(|byte| *byte == b' ' || byte.is_ascii_digit()) => {}
+        Tag::VisibleString if bytes.iter().all(|byte| (b' '..=b'~').contains(byte)) => {}
+        Tag::BmpString
+            if bytes.len().is_multiple_of(2)
+                && bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .all(|pair| !(0xd800..=0xdfff).contains(&u16::from_be_bytes(*pair))) => {}
+        // These tags may carry values whose ASN.1 type depends on the content schema.
+        Tag::OctetString
+        | Tag::Application { .. }
+        | Tag::ContextSpecific { .. }
+        | Tag::Private { .. } => {}
+        Tag::NumericString | Tag::VisibleString | Tag::BmpString => return Err(Error::Malformed),
+        _ => return Err(Error::UnsupportedProfile),
     }
     Ok(())
 }
@@ -258,7 +342,9 @@ fn validate_constructed(value: AnyRef<'_>, depth: usize) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkcs7::{ID_SIGNED_DATA, RSA_ENCRYPTION};
+    use crate::pkcs7::{
+        DetachedSignedData, ID_DATA, ID_SIGNED_DATA, MessageSignedData, RSA_ENCRYPTION,
+    };
 
     fn tlv(tag: u8, bytes: &[u8]) -> Vec<u8> {
         let mut out = vec![tag];
@@ -302,6 +388,19 @@ mod tests {
     }
 
     fn signed_data(indirect: &[u8], attributes: &[Vec<u8>], unsigned: &[u8]) -> Vec<u8> {
+        let content = tlv(
+            0x30,
+            &[oid(SPC_INDIRECT_DATA), tlv(0xa0, &tlv(0x30, indirect))].concat(),
+        );
+        envelope(content, Some(attributes), unsigned, true)
+    }
+
+    fn envelope(
+        content: Vec<u8>,
+        attributes: Option<&[Vec<u8>]>,
+        unsigned: &[u8],
+        wrapped: bool,
+    ) -> Vec<u8> {
         let version = vec![2, 1, 1];
         let issuer_and_serial = vec![0x30, 5, 0x30, 0, 2, 1, 7];
         let signer = tlv(
@@ -310,16 +409,12 @@ mod tests {
                 version.clone(),
                 issuer_and_serial,
                 algorithm_id(SHA256),
-                tlv(0xa0, &attributes.concat()),
+                attributes.map_or_else(Vec::new, |attributes| tlv(0xa0, &attributes.concat())),
                 algorithm_id(RSA_ENCRYPTION),
                 tlv(4, &[0x78; 256]),
                 unsigned.to_vec(),
             ]
             .concat(),
-        );
-        let content = tlv(
-            0x30,
-            &[oid(SPC_INDIRECT_DATA), tlv(0xa0, &tlv(0x30, indirect))].concat(),
         );
         let inner = tlv(
             0x30,
@@ -332,7 +427,99 @@ mod tests {
             ]
             .concat(),
         );
-        tlv(0x30, &[oid(ID_SIGNED_DATA), tlv(0xa0, &inner)].concat())
+        if wrapped {
+            tlv(0x30, &[oid(ID_SIGNED_DATA), tlv(0xa0, &inner)].concat())
+        } else {
+            inner
+        }
+    }
+
+    #[test]
+    fn message_signatures_distinguish_absent_and_empty_embedded_data() {
+        for wrapped in [false, true] {
+            let detached = envelope(tlv(0x30, &oid(ID_DATA)), None, &[], wrapped);
+            let parsed = MessageSignedData::decode(&detached).unwrap();
+            assert_eq!(parsed.embedded(), None);
+            assert_eq!(parsed.signature_digest([8; 32]), Some([8; 32]));
+            assert!(DetachedSignedData::decode(&detached).is_ok());
+        }
+        for message in [&b""[..], &b"signed message"[..]] {
+            let content = tlv(0x30, &[oid(ID_DATA), tlv(0xa0, &tlv(4, message))].concat());
+            let wrapped = envelope(content.clone(), None, &[], true);
+            assert_eq!(
+                MessageSignedData::decode(&wrapped).unwrap().embedded(),
+                Some(message)
+            );
+            assert!(DetachedSignedData::decode(&wrapped).is_err());
+            let bare = envelope(content, None, &[], false);
+            assert_eq!(
+                MessageSignedData::decode(&bare).unwrap_err(),
+                Error::UnsupportedProfile
+            );
+        }
+        let wrong_tag = tlv(0x30, &[oid(ID_DATA), tlv(0xa0, &tlv(0x30, &[]))].concat());
+        assert_eq!(
+            MessageSignedData::decode(&envelope(wrong_tag, None, &[], true)).unwrap_err(),
+            Error::Malformed
+        );
+    }
+
+    #[test]
+    fn message_signatures_bind_the_generic_content_type_and_digest() {
+        let content_type = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.999");
+        let value = tlv(0x02, &[17]);
+        let digest: [u8; 32] = Sha256::digest(&value).into();
+        let content = tlv(
+            0x30,
+            &[oid(content_type), tlv(0xa0, &tlv(0x30, &value))].concat(),
+        );
+        let mut attributes = vec![
+            encoded_attribute(CONTENT_TYPE, oid(content_type)),
+            encoded_attribute(MESSAGE_DIGEST, tlv(4, &digest)),
+        ];
+        attributes.sort();
+        let signed = envelope(content.clone(), Some(&attributes), &[], true);
+        let parsed = MessageSignedData::decode(&signed).unwrap();
+        assert_eq!(parsed.embedded(), Some(value.as_slice()));
+        assert_eq!(
+            parsed.signature_digest(digest),
+            Some(Sha256::digest(tlv(DER_SET_TAG, &attributes.concat())).into())
+        );
+        assert_eq!(parsed.signature_digest([0; 32]), None);
+        let no_attributes = envelope(content.clone(), None, &[], true);
+        assert_eq!(
+            MessageSignedData::decode(&no_attributes).unwrap_err(),
+            Error::UnsupportedProfile
+        );
+        let mut wrong_type = vec![
+            encoded_attribute(CONTENT_TYPE, oid(ID_DATA)),
+            encoded_attribute(MESSAGE_DIGEST, tlv(4, &digest)),
+        ];
+        wrong_type.sort();
+        assert_eq!(
+            MessageSignedData::decode(&envelope(content, Some(&wrong_type), &[], true))
+                .unwrap_err(),
+            Error::Malformed
+        );
+    }
+
+    #[test]
+    fn message_signatures_reject_non_der_primitive_values() {
+        let content_type = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.1.999");
+        for primitive in [
+            &b"\x01\x01\x01"[..],
+            &b"\x02\x02\x00\x01"[..],
+            &b"\x05\x01\x01"[..],
+            &b"\x03\x02\x02\x03"[..],
+        ] {
+            for value in [primitive.to_vec(), tlv(0x30, primitive)] {
+                let content = tlv(0x30, &[oid(content_type), tlv(0xa0, &value)].concat());
+                assert_eq!(
+                    MessageSignedData::decode(&envelope(content, None, &[], true)).unwrap_err(),
+                    Error::Malformed
+                );
+            }
+        }
     }
 
     #[test]

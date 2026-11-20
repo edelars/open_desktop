@@ -1,4 +1,4 @@
-//! RSA/SHA-256 PKCS#7 SignedData for Auth2 updates and PE image signatures.
+//! RSA/SHA-256 PKCS#7 SignedData for Auth2, PE images and generic signed messages.
 
 use der::{
     Decode, Reader, SliceReader, Tag, TagNumber, Tagged,
@@ -23,6 +23,7 @@ const CONTEXT_ONE: Tag = Tag::ContextSpecific {
 };
 
 pub const MAX_SIGNED_DATA_BYTES: usize = 16 * 1024;
+const MAX_MESSAGE_SIGNATURE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_CERTIFICATES: usize = 8;
 pub(crate) const RSA_2048_SIGNATURE_BYTES: usize = 256;
 
@@ -59,12 +60,12 @@ impl<'a> DetachedSignedData<'a> {
         if bytes.len() > MAX_SIGNED_DATA_BYTES {
             return Err(Error::TooLarge);
         }
-        let mut fields = signed_data_header(bytes, false)?;
+        let (mut fields, _) = signed_data_header(bytes)?;
         let mut contents = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
         if contents.decode::<ObjectIdentifier>()? != ID_DATA || !contents.is_finished() {
             return Err(Error::UnsupportedProfile);
         }
-        let signed = signed_data_tail(fields, None)?;
+        let signed = signed_data_tail(fields, Attributes::Forbidden)?;
         Ok(Self {
             signer: signed.info.signer,
             certificates: signed.certificates,
@@ -76,9 +77,74 @@ impl<'a> DetachedSignedData<'a> {
     }
 }
 
-fn signed_data_header(bytes: &[u8], require_content_info: bool) -> Result<SliceReader<'_>, Error> {
+/// A general PKCS#7 §9 message with an optional embedded value.
+#[derive(Debug)]
+pub struct MessageSignedData<'a> {
+    signer: Signer<'a>,
+    embedded: Option<&'a [u8]>,
+    certificates: [Option<&'a [u8]>; MAX_CERTIFICATES],
+    authenticated: Option<AuthenticatedAttributes>,
+}
+
+impl<'a> MessageSignedData<'a> {
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_MESSAGE_SIGNATURE_BYTES {
+            return Err(Error::TooLarge);
+        }
+        let (mut fields, wrapped) = signed_data_header(bytes)?;
+        let mut content = SliceReader::new(require_tag(&mut fields, Tag::Sequence)?)?;
+        let content_type = content.decode::<ObjectIdentifier>()?;
+        let embedded = if content.is_finished() {
+            None
+        } else {
+            if !wrapped {
+                return Err(Error::UnsupportedProfile);
+            }
+            let value = AnyRef::from_der(require_tag(&mut content, CONTEXT_ZERO)?)?;
+            if content_type == ID_DATA && value.tag() != Tag::OctetString {
+                return Err(Error::Malformed);
+            }
+            authenticode::validate_message_value(value)?;
+            // RFC 2315 §9.3 signs the DER value octets, without the tag and length.
+            Some(value.value())
+        };
+        content.finish()?;
+        let signed = signed_data_tail(fields, Attributes::Message(content_type))?;
+        Ok(Self {
+            signer: signed.info.signer,
+            embedded,
+            certificates: signed.certificates,
+            authenticated: signed.info.authenticated,
+        })
+    }
+
+    pub fn certificates(&self) -> impl Iterator<Item = &'a [u8]> {
+        self.certificates.into_iter().flatten()
+    }
+
+    pub fn signer(&self) -> Signer<'a> {
+        self.signer
+    }
+
+    pub fn embedded(&self) -> Option<&'a [u8]> {
+        self.embedded
+    }
+
+    /// Returns the digest used by the RSA signature if it covers the supplied message hash.
+    pub fn signature_digest(&self, content_digest: [u8; 32]) -> Option<[u8; 32]> {
+        match &self.authenticated {
+            Some(attributes) => {
+                (attributes.content_digest == content_digest).then_some(attributes.signature_digest)
+            }
+            None => Some(content_digest),
+        }
+    }
+}
+
+fn signed_data_header(bytes: &[u8]) -> Result<(SliceReader<'_>, bool), Error> {
     let mut fields = sequence(bytes)?;
-    if Tag::peek(&fields)? == Tag::ObjectIdentifier {
+    let wrapped = Tag::peek(&fields)? == Tag::ObjectIdentifier;
+    if wrapped {
         let content_type: ObjectIdentifier = fields.decode()?;
         if content_type != ID_SIGNED_DATA {
             return Err(Error::UnsupportedProfile);
@@ -86,8 +152,6 @@ fn signed_data_header(bytes: &[u8], require_content_info: bool) -> Result<SliceR
         let signed_data = require_tag(&mut fields, CONTEXT_ZERO)?;
         fields.finish()?;
         fields = sequence(signed_data)?;
-    } else if require_content_info {
-        return Err(Error::UnsupportedProfile);
     }
     if fields.decode::<u8>()? != 1 {
         return Err(Error::UnsupportedProfile);
@@ -97,7 +161,7 @@ fn signed_data_header(bytes: &[u8], require_content_info: bool) -> Result<SliceR
         return Err(Error::UnsupportedProfile);
     }
     digests.finish()?;
-    Ok(fields)
+    Ok((fields, wrapped))
 }
 
 struct SignedDataTail<'a> {
@@ -107,13 +171,26 @@ struct SignedDataTail<'a> {
 
 struct SignerInfo<'a> {
     signer: Signer<'a>,
-    signature_digest: Option<[u8; 32]>,
+    authenticated: Option<AuthenticatedAttributes>,
     nested_signatures: Option<&'a [u8]>,
+}
+
+#[derive(Debug)]
+struct AuthenticatedAttributes {
+    content_digest: [u8; 32],
+    signature_digest: [u8; 32],
+}
+
+#[derive(Clone, Copy)]
+enum Attributes {
+    Forbidden,
+    Authenticode(ObjectIdentifier),
+    Message(ObjectIdentifier),
 }
 
 fn signed_data_tail<'a>(
     mut fields: SliceReader<'a>,
-    content_digest: Option<&[u8; 32]>,
+    attributes: Attributes,
 ) -> Result<SignedDataTail<'a>, Error> {
     let mut certificates = [None; MAX_CERTIFICATES];
     let mut entries = SliceReader::new(require_tag(&mut fields, CONTEXT_ZERO)?)?;
@@ -139,7 +216,7 @@ fn signed_data_tail<'a>(
         }
     }
     let mut signer_set = SliceReader::new(require_tag(&mut fields, Tag::Set)?)?;
-    let info = signer_set.sequence(|info| parse_signer(info, content_digest))?;
+    let info = signer_set.sequence(|info| parse_signer(info, attributes))?;
     if !signer_set.is_finished() {
         return Err(Error::UnsupportedProfile);
     }
@@ -149,7 +226,7 @@ fn signed_data_tail<'a>(
 
 fn parse_signer<'a>(
     fields: &mut SliceReader<'a>,
-    content_digest: Option<&[u8; 32]>,
+    attributes: Attributes,
 ) -> Result<SignerInfo<'a>, Error> {
     if fields.decode::<u8>()? != 1 {
         return Err(Error::UnsupportedProfile);
@@ -161,10 +238,18 @@ fn parse_signer<'a>(
     if algorithm(fields)? != SHA256 {
         return Err(Error::UnsupportedProfile);
     }
-    let signature_digest = match content_digest {
-        Some(digest) => Some(authenticode::authenticated_attributes(fields, digest)?),
-        None if Tag::peek(fields)? == CONTEXT_ZERO => return Err(Error::UnsupportedProfile),
-        None => None,
+    let authenticated = match attributes {
+        Attributes::Authenticode(content_type) => Some(authenticode::authenticated_attributes(
+            fields,
+            content_type,
+            false,
+        )?),
+        Attributes::Message(content_type) if Tag::peek(fields)? == CONTEXT_ZERO => Some(
+            authenticode::authenticated_attributes(fields, content_type, true)?,
+        ),
+        Attributes::Message(ID_DATA) => None,
+        Attributes::Forbidden if Tag::peek(fields)? != CONTEXT_ZERO => None,
+        _ => return Err(Error::UnsupportedProfile),
     };
     let oid = algorithm(fields)?;
     if oid != RSA_ENCRYPTION && oid != SHA256_WITH_RSA {
@@ -173,8 +258,12 @@ fn parse_signer<'a>(
     let signature = require_tag(fields, Tag::OctetString)?
         .try_into()
         .map_err(|_| Error::UnsupportedProfile)?;
-    let nested_signatures = if !fields.is_finished() && content_digest.is_some() {
-        authenticode::unauthenticated_attributes(fields)?
+    let nested_signatures = if !fields.is_finished() && !matches!(attributes, Attributes::Forbidden)
+    {
+        authenticode::unauthenticated_attributes(
+            fields,
+            matches!(attributes, Attributes::Authenticode(_)),
+        )?
     } else {
         None
     };
@@ -187,7 +276,7 @@ fn parse_signer<'a>(
             serial,
             signature,
         },
-        signature_digest,
+        authenticated,
         nested_signatures,
     })
 }
