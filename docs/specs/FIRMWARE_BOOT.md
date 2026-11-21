@@ -113,7 +113,7 @@ Boot reservations в нижней RAM (архитектурные констан
 неотображённая страница 4 KiB и стек 256 KiB. Структура сохраняет identity
 mapping областей handoff, пропускает `RESERVED` и guard. В новой карте
 страницы кода shadow имеют `P`, `.rodata`, подлинный ROM и handoff имеют
-`P|NX`, а writable shadow, RAM и окна устройств имеют `P|RW|NX`.
+`P|NX`, а writable shadow, RAM и окна устройств имеют `P|RW|NX`. **Исключение (S7-31f):** `AllocatePages` с типом `EfiLoaderCode` или `EfiBootServicesCode` делает страницы выделения исполняемыми (`P|RW`, XD сброшен) в этих же таблицах; данные остаются `P|RW|NX`, `FreePages` возвращает `P|RW|NX`. Основание — типы памяти UEFI 2.11: код выделяется как код; иначе загрузчик ОС, исполняющий выделенные страницы после `ExitBootServices`, получает `#PF` по XD (ISSUE-632). Правило и тесты: `firmware/uefi/src/bs/memory.rs`.
 Промежуточные записи используют `P|RW`, начальные A/D равны нулю.
 После подготовки прошивка переключает CR3 гостевым `MOV CR3`, заменяет
 RSP и вызывает продолжение на собственном стеке. Paged firmware-квант

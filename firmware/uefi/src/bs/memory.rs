@@ -3,6 +3,7 @@
 use super::{misc, state};
 use crate::mem::map::{DESCRIPTOR_VERSION, MemoryDescriptor, MemoryType};
 use crate::mem::pages::{AllocateAt, PageAllocator, PageError, PoolError, PoolHeader, PoolMemory};
+use crate::paging::{ActivePageTables, PAGE_BYTES};
 use crate::uefi::status::Status;
 use core::ffi::c_void;
 use core::ptr;
@@ -92,6 +93,20 @@ pub unsafe extern "efiapi" fn allocate_pages(
                 .allocate_pages(placement, memory_type, pages as u64)
             {
                 Ok(base) => {
+                    if let Some(tables) = state.active_tables
+                        // SAFETY: BSP guard held; the tables are the firmware's active ones.
+                        && !unsafe {
+                            publish_allocation(
+                                &tables,
+                                state.allocator,
+                                base,
+                                pages as u64,
+                                memory_type,
+                            )
+                        }
+                    {
+                        return Status::DEVICE_ERROR;
+                    }
                     address.write(base);
                     Status::SUCCESS
                 }
@@ -109,7 +124,15 @@ pub unsafe extern "efiapi" fn free_pages(address: u64, pages: usize) -> Status {
     unsafe {
         state::with_map_mutation(
             |state| match state.allocator.free_pages(address, pages as u64) {
-                Ok(()) => Status::SUCCESS,
+                Ok(()) => {
+                    // S7-31f: freed pages return to conventional memory, which is data (NX),
+                    // whatever the allocation was.
+                    if let Some(tables) = state.active_tables {
+                        // SAFETY: BSP guard held; the span was owned by AllocatePages.
+                        unsafe { publish_free(&tables, address, pages as u64) };
+                    }
+                    Status::SUCCESS
+                }
                 Err(PageError::NotFound) => Status::NOT_FOUND,
                 Err(error) => allocate_page_error(error),
             },
@@ -219,6 +242,59 @@ pub unsafe extern "efiapi" fn free_pool(buffer: *mut c_void) -> Status {
     }
 }
 
+/// UEFI 2.11, memory types: code is allocated as `EfiLoaderCode` or `EfiBootServicesCode`; every
+/// other type holds data. The firmware's identity tables map RAM as data (NX); AllocatePages
+/// makes the pages of a code allocation executable (S7-31f).
+pub(crate) const fn is_code_type(memory_type: MemoryType) -> bool {
+    matches!(
+        memory_type,
+        MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE
+    )
+}
+
+/// Publish the permissions of a fresh AllocatePages allocation in the active tables (S7-31f):
+/// the pages of a code allocation become executable and stay writable, so the loader can fill
+/// them; data types keep the NX mapping the boot tables gave all RAM. Returns `false` (after
+/// giving the pages back) when a page has no present identity leaf.
+///
+/// # Safety
+/// BSP guard held; `tables` are the active tables; the span was just allocated.
+pub(crate) unsafe fn publish_allocation(
+    tables: &ActivePageTables,
+    allocator: &mut PageAllocator<'_, '_>,
+    base: u64,
+    pages: u64,
+    memory_type: MemoryType,
+) -> bool {
+    if !is_code_type(memory_type) {
+        return true;
+    }
+    let span = base..base + pages * PAGE_BYTES;
+    if !unsafe { tables.verify(span.clone(), false) } {
+        let _ = allocator.free_pages(base, pages);
+        return false;
+    }
+    unsafe {
+        tables.set(span, true, true);
+        tables.flush();
+    }
+    true
+}
+
+/// Freed pages return to conventional memory, which is data (NX), whatever the allocation was.
+///
+/// # Safety
+/// BSP guard held; `tables` are the active tables; the span was just freed.
+pub(crate) unsafe fn publish_free(tables: &ActivePageTables, address: u64, pages: u64) {
+    let span = address..address + pages * PAGE_BYTES;
+    if unsafe { tables.verify(span.clone(), false) } {
+        unsafe {
+            tables.set(span, true, false);
+            tables.flush();
+        }
+    }
+}
+
 fn allocate_page_error(error: PageError) -> Status {
     match error {
         PageError::InvalidAddress | PageError::InvalidPageCount | PageError::InvalidType => {
@@ -235,6 +311,98 @@ mod tests {
     use super::*;
     use crate::mem::map::MemoryMap;
     use crate::mem::pages::{PageAllocator, PageOwner};
+
+    const PRESENT: u64 = 1;
+    const WRITABLE: u64 = 1 << 1;
+    const NO_EXECUTE: u64 = 1 << 63;
+
+    #[test]
+    fn code_types_are_exactly_loader_code_and_boot_services_code() {
+        for raw in 0..=15u32 {
+            assert_eq!(
+                is_code_type(MemoryType::from_raw(raw)),
+                matches!(raw, 1 | 3),
+                "memory type {raw}"
+            );
+        }
+        // Vendor types are data.
+        assert!(!is_code_type(MemoryType::from_raw(0x7000_fead)));
+    }
+
+    /// S7-31f: AllocatePages of a code type makes its pages executable in the active tables;
+    /// data types stay NX; freeing returns the pages to NX; other mappings are untouched.
+    #[test]
+    fn code_allocations_are_executable_and_data_allocations_are_not() {
+        const ENTRIES: usize = 512;
+        #[repr(align(4096))]
+        struct Arena([u64; ENTRIES * 4]);
+        let mut arena = Arena([0; ENTRIES * 4]);
+        let root = arena.0.as_mut_ptr().expose_provenance() as u64;
+        let tables = ActivePageTables::new(root, 4 * PAGE_BYTES);
+        for table in 0..3 {
+            arena.0[table * ENTRIES] = root + (table as u64 + 1) * PAGE_BYTES | PRESENT | WRITABLE;
+        }
+        // Identity leaves for the 16 pages [0x100000, 0x110000), mapped as data like boot RAM.
+        let leaf_of = |page: u64| ENTRIES * 3 + ((page >> 12) as usize & (ENTRIES - 1));
+        for page in (0x100000u64..0x110000).step_by(PAGE_BYTES as usize) {
+            arena.0[leaf_of(page)] = page | PRESENT | WRITABLE | NO_EXECUTE;
+        }
+        let flags = |arena: &Arena, page: u64| arena.0[leaf_of(page)] & !0x000f_ffff_ffff_f000;
+        let mut map = [MemoryDescriptor::EMPTY; 16];
+        let mut owners = [PageOwner::Initial; 16];
+        let map = MemoryMap::test_conventional(&mut map, 0x100000, 0x110000);
+        let mut allocator = PageAllocator::new(map, &mut owners).unwrap();
+        let allocate = |allocator: &mut PageAllocator<'_, '_>, memory_type, pages| {
+            let base = allocator
+                .allocate_pages(AllocateAt::Any, memory_type, pages)
+                .unwrap();
+            assert!(unsafe { publish_allocation(&tables, allocator, base, pages, memory_type) });
+            base
+        };
+        let code = allocate(&mut allocator, MemoryType::LOADER_CODE, 2);
+        let data = allocate(&mut allocator, MemoryType::LOADER_DATA, 1);
+        let boot_code = allocate(&mut allocator, MemoryType::BOOT_SERVICES_CODE, 1);
+        let boot_data = allocate(&mut allocator, MemoryType::BOOT_SERVICES_DATA, 1);
+        // Code: present, writable, executable (XD clear). Data: unchanged, NX.
+        let executable = PRESENT | WRITABLE;
+        let data_flags = PRESENT | WRITABLE | NO_EXECUTE;
+        for page in [code, code + PAGE_BYTES, boot_code] {
+            assert_eq!(flags(&arena, page), executable, "page {page:#x}");
+        }
+        for page in [data, boot_data] {
+            assert_eq!(flags(&arena, page), data_flags, "page {page:#x}");
+        }
+        // Pages nobody allocated keep the boot mapping.
+        let untouched = (0x100000u64..0x110000)
+            .step_by(PAGE_BYTES as usize)
+            .filter(|page| ![code, code + PAGE_BYTES, data, boot_code, boot_data].contains(page));
+        for page in untouched {
+            assert_eq!(flags(&arena, page), data_flags, "page {page:#x}");
+        }
+        // Freeing a code allocation returns its pages to NX.
+        allocator.free_pages(code, 2).unwrap();
+        unsafe { publish_free(&tables, code, 2) };
+        for page in [code, code + PAGE_BYTES] {
+            assert_eq!(flags(&arena, page), data_flags, "page {page:#x}");
+        }
+        assert_eq!(flags(&arena, boot_code), executable);
+        // A code allocation over a page with no present leaf is refused and given back.
+        arena.0[leaf_of(0x10f000)] = 0;
+        let base = allocator
+            .allocate_pages(AllocateAt::Address(0x10f000), MemoryType::LOADER_CODE, 1)
+            .unwrap();
+        assert!(!unsafe {
+            publish_allocation(&tables, &mut allocator, base, 1, MemoryType::LOADER_CODE)
+        });
+        assert!(
+            allocator
+                .map()
+                .descriptors()
+                .iter()
+                .all(|descriptor| !(descriptor.physical_start == 0x10f000
+                    && descriptor.memory_type == MemoryType::LOADER_CODE.raw()))
+        );
+    }
 
     #[test]
     fn efi_memory_map_sizes_and_keys_follow_the_live_allocator() {
