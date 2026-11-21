@@ -4,6 +4,10 @@
 //! numbering, chapter 4 in older ones): [`load_pdptes`] and [`translate_pae`], below. Model only: there
 //! is no hardware oracle for it in this repository.
 //!
+//! S2-25 adds 32-bit paging (`CR0.PG = 1`, `CR4.PAE = 0`; SDM Vol. 3A §5.3 and §5.10 in the Rev. 093
+//! numbering): [`translate32`], 4-byte entries, 4 KiB pages and, with `CR4.PSE`, 4 MiB pages. Model
+//! only: no hardware oracle (a user-space oracle cannot write `CR0`/`CR4`).
+//!
 //! Scope: linear addresses below 4 GiB (compatibility mode and the identity subset of the
 //! trampoline), `CR3` -> PML4 -> PDPT -> PD -> PT (4 KiB pages) or PD (2 MiB pages, `PS = 1`).
 //! 1 GiB pages are not declared by the `OdX8664V1Neutral` CPUID profile (`0x80000001:EDX` bit 26
@@ -58,6 +62,10 @@ const ADDR_2M: u64 = 0x000F_FFFF_FFE0_0000;
 const BEYOND_MAXPHYADDR: u64 = 0x000F_FFFF_FFFF_FFFF & !((1u64 << MAXPHYADDR_BITS) - 1);
 /// Bits 20:13 of a 2 MiB PDE (must be zero: the page is 2 MiB aligned; bit 12 is PAT).
 const PDE_2M_RESERVED: u64 = 0x1F_E000;
+/// Bits 21:13 of a 4 MiB PDE of 32-bit paging (SDM Vol. 3A §5.3, Rev. 093): reserved because the
+/// PSE-36 mechanism is not declared (`CPUID.01H:EDX[17]` is clear in every profile), so a 4 MiB page
+/// has no physical-address bits 39:32 and its frame is bits 31:22 only (bit 12 is PAT).
+const PDE_4M_RESERVED: u64 = 0x3F_E000;
 
 /// Kind of memory access that walks the tables.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +113,8 @@ pub enum PageRefusal {
 pub enum PageSize {
     Size4K,
     Size2M,
+    /// 32-bit paging with `CR4.PSE = 1` and `PDE.PS = 1` (S2-25).
+    Size4M,
 }
 
 /// A successful walk.
@@ -118,17 +128,34 @@ pub struct Translation {
     pub touches: Vec<Touch>,
 }
 
+/// Where the entry of a [`Touch`] lies in the 8-byte cell the walk read and compare-replaces. The
+/// entries of PAE and 4-level paging are 8 bytes (`Quad`); the entries of 32-bit paging are 4 bytes,
+/// so two of them share one 8-aligned cell (S2-25: the cell is the unit of the atomic replace of
+/// `RealModeMemory::compare_replace_entry`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntryCell {
+    /// The entry is the whole cell.
+    Quad,
+    /// A 4-byte entry at the low address of the cell (bits 31:0).
+    LowDword,
+    /// A 4-byte entry at the high address of the cell (bits 63:32).
+    HighDword,
+}
+
 /// One accessed/dirty update of a walk (S6-31b): the entry, the value of it the walk read and the
 /// bits to set. [`commit_touches`] replaces `read` with `read | mask` only if the entry still holds
 /// `read` (compare-and-replace), so a concurrent change of the entry is never overwritten.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Touch {
-    /// Address of the entry (8-aligned).
+    /// Address of the 8-byte cell (8-aligned): the entry itself, or the cell that holds a 4-byte
+    /// entry of 32-bit paging (see [`EntryCell`]).
     pub at: u32,
-    /// The 8 bytes of the entry as the walk read them.
+    /// The 8 bytes of the cell as the walk read them.
     pub read: u64,
-    /// Bits to OR into the low byte (`A` and, for the final entry of a write, `D`).
+    /// Bits to OR into the low byte of the entry (`A` and, for the final entry of a write, `D`).
     pub mask: u8,
+    /// Which part of the cell the entry is.
+    pub cell: EntryCell,
 }
 
 /// S6-31b: one 8-byte read of the entry (it was eight `read_u8` before).
@@ -244,6 +271,8 @@ fn finish_walk<M: RealModeMemory>(mem: &M, end: WalkEnd<'_>) -> Result<Translati
     let phys64 = match size {
         PageSize::Size2M => (entry & ADDR_2M) | (l & 0x1F_FFFF),
         PageSize::Size4K => (entry & ADDR_4K) | (l & 0xFFF),
+        // 32-bit paging has its own walk end (4-byte entries, no XD): see `translate32`.
+        PageSize::Size4M => unreachable!("4 MiB pages come from translate32 only"),
     };
     let Ok(phys) = u32::try_from(phys64) else {
         return Err(PageRefusal::PhysicalBeyond4GiB { phys: phys64 });
@@ -263,6 +292,7 @@ fn finish_walk<M: RealModeMemory>(mem: &M, end: WalkEnd<'_>) -> Result<Translati
                 at: entry_phys,
                 read: e,
                 mask: want as u8,
+                cell: EntryCell::Quad,
             });
         }
     }
@@ -392,6 +422,129 @@ pub fn translate_pae<M: RealModeMemory>(
     )
 }
 
+/// Paging control state of a 32-bit paging walk (S2-25): `CR0.PG = 1`, `CR4.PAE = 0` (so `EFER.LMA = 0`).
+/// There is no `XD` bit in 32-bit paging: `EFER.NXE` has no effect on it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Paging32Params {
+    /// `CR3`: the page directory is at `cr3 & 0xFFFF_F000` (SDM Vol. 3A Table 5-3).
+    pub cr3: u32,
+    /// `CR0.WP`.
+    pub wp: bool,
+    /// `CR4.PSE`: a PDE with `PS = 1` maps a 4 MiB page; with `PSE = 0` the `PS` bit is ignored.
+    pub pse: bool,
+}
+
+/// One 4-byte entry of 32-bit paging at `phys` (4-aligned): the whole 8-byte cell it lies in (the
+/// unit of `RealModeMemory::read_u64` and of the atomic accessed/dirty replace) and the entry.
+fn read_entry32<M: RealModeMemory>(mem: &M, phys: u32) -> Result<(u64, u32), PageRefusal> {
+    let cell = mem
+        .read_u64(phys & !7)
+        .ok_or(PageRefusal::EntryUnreadable { phys })?;
+    let entry = if phys & 4 != 0 {
+        (cell >> 32) as u32
+    } else {
+        cell as u32
+    };
+    Ok((cell, entry))
+}
+
+/// Walks the 32-bit paging tables (page directory, page table; SDM Vol. 3A §5.3, Rev. 093 numbering)
+/// for the 32-bit `linear` address: 10 + 10 + 12 bits for a 4 KiB page, 10 + 22 bits for a 4 MiB
+/// page (`CR4.PSE = 1` and `PDE.PS = 1`). Entries are 4 bytes. Rules:
+/// - `P = 0` is not present at any level; with `PSE = 0` no bit is reserved;
+/// - with `PSE = 1` a PDE with `PS = 1` has bits 21:13 reserved (PSE-36 is not declared, so bits
+///   39:32 of the frame do not exist), bit 12 is PAT, the frame is bits 31:22;
+/// - supervisor write: a clear `R/W` in the PDE or the PTE refuses the write when `CR0.WP = 1`;
+///   `U/S` is not looked at (CPL 0), there is no `XD`, so a fetch is never refused by the tables;
+/// - accessed/dirty as in [`translate`]: `A` in the PDE (and the PTE), `D` in the final entry of a
+///   write (the PDE of a 4 MiB page), returned as touches ([`EntryCell::LowDword`] or
+///   [`EntryCell::HighDword`]).
+pub fn translate32<M: RealModeMemory>(
+    mem: &M,
+    params: Paging32Params,
+    linear: u32,
+    kind: AccessKind,
+) -> Result<Translation, PageRefusal> {
+    // (address of the entry, its 8-byte cell, the entry)
+    let mut used: Vec<(u32, u64, u32)> = Vec::with_capacity(2);
+    let pde_at = (params.cr3 & 0xFFFF_F000) | ((linear >> 22) << 2);
+    let (cell, pde) = read_entry32(mem, pde_at)?;
+    if u64::from(pde) & P == 0 {
+        return Err(PageRefusal::NotPresent {
+            level: 2,
+            entry: u64::from(pde),
+        });
+    }
+    used.push((pde_at, cell, pde));
+    let mut rw_all = u64::from(pde) & RW != 0;
+    let (size, phys, leaf) = if params.pse && u64::from(pde) & PS != 0 {
+        if u64::from(pde) & PDE_4M_RESERVED != 0 {
+            return Err(PageRefusal::ReservedBits {
+                level: 2,
+                entry: u64::from(pde),
+            });
+        }
+        (
+            PageSize::Size4M,
+            (pde & 0xFFC0_0000) | (linear & 0x3F_FFFF),
+            pde,
+        )
+    } else {
+        let pte_at = (pde & 0xFFFF_F000) | (((linear >> 12) & 0x3FF) << 2);
+        let (cell, pte) = read_entry32(mem, pte_at)?;
+        if u64::from(pte) & P == 0 {
+            return Err(PageRefusal::NotPresent {
+                level: 1,
+                entry: u64::from(pte),
+            });
+        }
+        used.push((pte_at, cell, pte));
+        rw_all &= u64::from(pte) & RW != 0;
+        (
+            PageSize::Size4K,
+            (pte & 0xFFFF_F000) | (linear & 0xFFF),
+            pte,
+        )
+    };
+    if kind == AccessKind::Write && params.wp && !rw_all {
+        return Err(PageRefusal::WriteProtected {
+            entry: u64::from(leaf),
+        });
+    }
+    let mut touches = Vec::new();
+    for (i, &(entry_at, cell, e)) in used.iter().enumerate() {
+        let last = i + 1 == used.len();
+        let mut want = if u64::from(e) & ACCESSED == 0 {
+            ACCESSED
+        } else {
+            0
+        };
+        if last && kind == AccessKind::Write && u64::from(e) & DIRTY == 0 {
+            want |= DIRTY;
+        }
+        if want != 0 {
+            if !mem.can_write(entry_at) {
+                return Err(PageRefusal::EntryUnwritable { phys: entry_at });
+            }
+            touches.push(Touch {
+                at: entry_at & !7,
+                read: cell,
+                mask: want as u8,
+                cell: if entry_at & 4 != 0 {
+                    EntryCell::HighDword
+                } else {
+                    EntryCell::LowDword
+                },
+            });
+        }
+    }
+    Ok(Translation {
+        phys,
+        size,
+        touches,
+    })
+}
+
 /// Bits that take no part in the translation: `A`, `D`, 9..=11 and 52..=62 (the profile has no
 /// protection keys). Same set as `IGNORED` and `AD` in `commit_leaf_dirty` of `od-machine`.
 const NOT_TRANSLATION: u64 = ACCESSED | DIRTY | (0b111 << 9) | (0x7FF << 52);
@@ -426,10 +579,26 @@ const TOUCH_RETRY_LIMIT: u32 = 16;
 pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[Touch]) -> usize {
     let mut discarded = 0;
     for touch in touches {
+        // A 4-byte entry of 32-bit paging is one half of the cell: its mask is shifted into place
+        // and only its own dword is compared on the translation bits (the other half belongs to
+        // another entry, which may change freely).
+        let (shift, narrow) = match touch.cell {
+            EntryCell::Quad => (0, false),
+            EntryCell::LowDword => (0, true),
+            EntryCell::HighDword => (32, true),
+        };
+        let bits = u64::from(touch.mask) << shift;
+        let translation = |value: u64| {
+            if narrow {
+                (value >> shift) & 0xFFFF_FFFF & !NOT_TRANSLATION
+            } else {
+                value & !NOT_TRANSLATION
+            }
+        };
         let mut expected = touch.read;
         let mut failed = 0;
         loop {
-            let replacement = expected | u64::from(touch.mask);
+            let replacement = expected | bits;
             if replacement == expected {
                 // The observed value already has the bits (another writer set them).
                 break;
@@ -441,7 +610,7 @@ pub fn commit_touches<M: RealModeMemory>(mem: &mut M, touches: &[Touch]) -> usiz
                 Ok(()) => break,
                 Err(observed) => {
                     failed += 1;
-                    if observed & !NOT_TRANSLATION != touch.read & !NOT_TRANSLATION
+                    if translation(observed) != translation(touch.read)
                         || failed > TOUCH_RETRY_LIMIT
                     {
                         discarded += 1;
@@ -497,6 +666,7 @@ mod tests {
             at: at as u32,
             read: entry(ram, at),
             mask,
+            cell: EntryCell::Quad,
         }
     }
 
@@ -1252,6 +1422,7 @@ mod tests {
             at: PT as u32,
             read: entry(&churn.bytes, PT),
             mask: 0x20,
+            cell: EntryCell::Quad,
         };
         assert_eq!(commit_touches(&mut churn, &[touch]), 1);
         assert_eq!(churn.calls, TOUCH_RETRY_LIMIT + 1);
