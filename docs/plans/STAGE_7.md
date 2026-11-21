@@ -747,7 +747,7 @@
 
 ### S7-34. USB HID клавиатура прошивки для `ConIn`
 
-- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI 1.2 + USB HID; задачи модели нет ни в одном плане — завести её в плане этапа 5 или 11 решением владельца) и до S4-30 (xHCI — PCI-устройство).
+- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI 1.2 + USB HID; модель — этап 8, S8-41…S8-43, решение по рекомендации Opus high 2026-11-21, подтверждение владельца проекта ожидается; контракт-потребитель — раздел 15 [XHCI_DEVICE.md](../specs/XHCI_DEVICE.md), ожидает ревью Opus) и до S4-30 (xHCI — PCI-устройство).
 - **Где:** `firmware/uefi/src/usb/{xhci,hub,hid_keyboard}.rs`, `firmware/uefi/src/console/text_in.rs` (ConIn с несколькими источниками: COM1 и USB), `docs/specs/UEFI_PROFILE.md` (раздел «Консоль»).
 - **Сделать:** собственный pre-boot стек xHCI 1.2 (один контроллер, control/interrupt transfers, перечисление корневого хаба и устройств), USB HID 1.11 boot protocol keyboard → `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`/`EX`; передача состояния устройства ОС при `ExitBootServices` (остановка контроллера по UEFI 2.11 раздел «USB Host Controller Protocol» и xHCI); `ConIn` — объединение источников.
 - **Проверить:** runner подаёт HID-отчёты через модель xHCI; приложение `echo` печатает клавиши; после EBS контроллер остановлен (регистры модели).
