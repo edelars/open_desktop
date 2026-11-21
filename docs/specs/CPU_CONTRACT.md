@@ -15983,6 +15983,33 @@ Open limits of S2-25f (paths that still do not follow a changed NXE, or were not
   EFER the caller passes; the board does not feed them a changed NXE, and this path was not run.
   The NMI delivery (`deliver_pending_nmi`) reads the vCPU's `guest_efer` and was not run with a cleared NXE.
 
+## S2-25g — PAE paging, CR4.PAE policy and PDPTE rules (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 (Figure 5-1, paging mode transitions), §5.4.1
+(Tables 5-7, 5-8, PDPTE loading, p. 5-14), §5.4.2 (PAE translation and reserved bits, pp. 5-15–5-17)
+and §12.8.5 (IA-32e initialization and the 64-bit mode consistency checks); the task's older numbering
+is §4.1, §4.4, §9.8. Text read from the local `pdftotext` of the SDM, not from silicon.
+
+| State / write | Rule implemented |
+|---|---|
+| PAE paging in use | CR0.PG=1, CR4.PAE=1, EFER.LMA=0 (`ProtectedCpu::pae_paging`) |
+| `MOV CR0` PG 0->1, LME=0, PAE=1 | load PDPTE0..3 from `CR3 & 0xFFFF_FFE0`; CR0 := value|ET; LMA stays 0 |
+| same, LME=0, PAE=0 | 32-bit paging: `PagingNotModelled` (unchanged) |
+| same, LME=1, PAE=0 | #GP(0) (`LongModePagingWithoutPae`, unchanged); LME=1, PAE=1 enters IA-32e (unchanged) |
+| `MOV CR3` under PAE paging | load PDPTEs from the new value, then store CR3; reserved bit with P=1 -> #GP(0), CR3 unchanged |
+| `MOV CR4` under PAE paging | PAE/PGE/PSE changed -> reload PDPTEs from CR3 (same #GP(0)); other bits no reload |
+| `MOV CR4` clears PAE, PG=1, LMA=1 | #GP(0) (`Cr4PaeClearInLongMode`; Long64 CPL0 `MOV CR4, RAX` too) |
+| `MOV CR4` clears PAE, PG=1, LMA=0 | `Cr4WriteUnmodelled` (would select 32-bit paging) |
+| PG=0 | PAE/CR3 stored, no PDPTE read |
+| PDPTE reserved bits | 2:1, 8:5, 63:36 when P=1 (P=0 entries are not checked; the SDM notes some CPUs check them) |
+| PDE/PTE (PAE) | P=0 -> not present; bits 62:36 reserved (the 4-level walk ignores 62:52); XD reserved with NXE=0; PDE PS: bits 20:13 reserved; no R/W, U/S, XD or A bit in a PDPTE |
+
+Memory is addressed with 32 bits (entries above 4 GiB refused as in the 4-level walk); no TLB: every
+access walks and `MOV CR3` takes effect at once. A refused `MOV` changes no state or memory. `into_long_mode`
+still requires LMA=1, so PAE paging is not handed to the Long64 interpreter. Not covered: hardware,
+KVM/silicon oracle, JIT/native admission, CPUID PAE declaration, the `od-machine` page walker
+(4-level only).
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
