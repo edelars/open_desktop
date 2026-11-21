@@ -90,8 +90,8 @@ const WINDOWS_LEAF1_EAX: u32 = 0x0009_06C0;
 /// VMX [5], AES [25], XSAVE [26], OSXSAVE [27], AVX [28], the hypervisor bit [31] and every other
 /// bit (ADR-0013, decisions 3 and 4).
 const WINDOWS_LEAF1_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
-/// CPUID.01H:EDX of the Windows profile: PAE [6] and APIC [9] (S2-58; bit numbers from the Intel SDM,
-/// Vol. 2A, "Feature Information Returned in the EDX Register"). Declared before the owner accepted
+/// CPUID.01H:EDX of the Windows profile: PAE [6] and APIC [9] (S2-58; bit numbers from the Intel SDM
+/// rev. 093, Vol. 1, Table 21-10, leaf 01H EDX). Declared before the owner accepted
 /// S2-25 (PAE paging beyond IA-32e is a model without a hardware oracle), S4-10 and S4-38L8d
 /// (deviation of S2-58, awaiting the owner's confirmation). FPU, TSC, MSR, CX8, CMOV, MMX, FXSR, SSE
 /// and SSE2 wait for their tasks (`CPU_CONTRACT.md`, S2-57); PSE, PGE and PAT have no task.
@@ -100,7 +100,7 @@ const WINDOWS_LEAF1_EDX: u32 = (1 << 6) | LEAF1_EDX_APIC;
 /// [8] (S2-53), from the Intel SDM (Vol. 1, "Leaf 80000001H"). LZCNT [5] is not declared.
 const WINDOWS_EXT1_ECX: u32 = (1 << 0) | (1 << 8);
 /// CPUID.80000001H:EDX of the Windows profile: NX (Execute Disable) [20] (S2-58; bit number from the
-/// Intel SDM, Vol. 2A, "Extended Function CPUID Information"), declared before the owner accepted
+/// Intel SDM rev. 093, Vol. 1, Table 21-90, leaf 80000001H EDX), declared before the owner accepted
 /// S2-25 and S4-10 (S2-58 deviation, awaiting the owner's confirmation). SYSCALL [11] and LM [29]
 /// wait for S2-27 and S2-24/S2-25; Page1GB [26] is never declared.
 const WINDOWS_EXT1_EDX: u32 = 1 << 20;

@@ -1,7 +1,7 @@
 //! S2-58: PAE, APIC and NX in the Windows CPUID profile (`CpuidProfile::OdX8664V2Windows`).
 //!
-//! Every expected value is written by hand from the Intel SDM (Vol. 2A, leaf 01H EDX and leaf
-//! 80000001H EDX; Vol. 3A, sections 5.1.4, 5.4.1, 5.4.2, 12.8.5 and Table 5-7), never from the
+//! Every expected value is written by hand from the Intel SDM rev. 093 (Vol. 1, Table 21-10 leaf 01H
+//! EDX and Table 21-90 leaf 80000001H EDX; Vol. 3A, sections 5.1.4, 5.4.1, 5.4.2, 12.8.5 and Table 5-7), never from the
 //! implementation under test. The bits are declared before the owner accepted S2-25, S4-10 and
 //! S4-38L8d (deviation of S2-58, awaiting the owner's confirmation; `CPU_CONTRACT.md`).
 //!
