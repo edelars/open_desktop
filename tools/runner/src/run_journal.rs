@@ -146,7 +146,8 @@ pub struct RunJournal {
 
 impl RunJournal {
     pub fn new(config: JournalConfig) -> Result<Self, String> {
-        let frames = config.frames.map(FrameDumper::new).transpose()?;
+        // The phase log comes first: if it cannot be created, no dump directory is left behind.
+        // If the dump directory is then refused, the phase log just created is removed again.
         let phase_log = config
             .phase_log
             .map(|path| {
@@ -155,6 +156,16 @@ impl RunJournal {
                     .map_err(|error| format!("{}: {error}", path.display()))
             })
             .transpose()?;
+        let frames = match config.frames.map(FrameDumper::new).transpose() {
+            Ok(frames) => frames,
+            Err(error) => {
+                if let Some((file, path)) = phase_log {
+                    drop(file);
+                    let _ = fs::remove_file(path);
+                }
+                return Err(error);
+            }
+        };
         Ok(Self {
             started: Instant::now(),
             phase_log,
@@ -607,6 +618,36 @@ mod tests {
         dumper.poll(&board, 0, true);
         assert!(dumps(&dir.0).is_empty());
         assert_eq!(dumper.summary()["skipped_by_limit"], 1);
+    }
+
+    #[test]
+    fn a_failed_phase_log_leaves_no_dump_directory_and_a_refused_dump_directory_no_phase_log() {
+        let dir = TempDir::new("od-journal-order");
+        let frames_config = |path: PathBuf| FrameDumpConfig {
+            dir: path,
+            every_ns: 1_000_000,
+            max_files: 10,
+            max_bytes: 1 << 20,
+        };
+        // The phase log's parent is missing: the dump directory must not have been created.
+        let dumps = dir.0.join("dumps");
+        let result = RunJournal::new(JournalConfig {
+            phase_log: Some(dir.0.join("missing-parent").join("phases.jsonl")),
+            frames: Some(frames_config(dumps.clone())),
+        });
+        assert!(result.is_err());
+        assert!(!dumps.exists());
+        // The dump directory is not empty: the phase log created before it is removed again.
+        let busy = dir.0.join("busy");
+        fs::create_dir(&busy).unwrap();
+        fs::write(busy.join("old.raw"), b"x").unwrap();
+        let log = dir.0.join("phases.jsonl");
+        let result = RunJournal::new(JournalConfig {
+            phase_log: Some(log.clone()),
+            frames: Some(frames_config(busy)),
+        });
+        assert!(result.is_err());
+        assert!(!log.exists());
     }
 
     #[test]
