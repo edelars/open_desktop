@@ -371,6 +371,9 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   страницы RIP. MMIO, 1 GiB, полная матрица прав и системная приёмка остаются открытыми;
   CPU-owned CR3 со смешанными картами — S4-12e.
   [Отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
+- S4-10d (без чекбокса, ревью не проводилось): матрица прав, XD (NXE=0/1) и reserved bits 2 MiB leaf в
+  IA-32e против reference-модели и 4 KiB leaf, тесты `page_walk_2m_matrix_tests`, код walker не менялся.
+  [Отчёт](../reports/STAGE_4_S4-10D_2026-11-21.md).
 - Полный S4-10 остаётся открытым до S4-00 manifest: 2 MiB/1 GiB leaves,
   необходимые modes, alignment/reserved/permissions/A-D matrix и Linux boot
   prerequisites не приняты. См. [machine contract](../specs/MACHINE_CONTRACT.md#huge-page-и-mode-admission-boundary).
