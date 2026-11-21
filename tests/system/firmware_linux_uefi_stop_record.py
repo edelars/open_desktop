@@ -221,7 +221,7 @@ def main() -> None:
         option = esp_smoke.load_option(esp_smoke.file_node("BOOTX64.EFI"), (CMDLINE + "\0").encode("utf-16le"))
         nvram.write_bytes(esp_smoke.encode_snapshot([("Boot0001", option), ("BootOrder", struct.pack("<H", 1))]))
         record = {
-            "schema": "od-s7-31a-stop-record-v1" if args.cpu_loop == "firmware" else "od-s7-31f-stop-record-v1",
+            "schema": "od-s7-31a-stop-record-v1" if args.cpu_loop == "firmware" else "od-s7-31g-stop-record-v1",
             "inputs": {
                 "vmlinuz_sha256": sha256(kernel_path),
                 "initramfs_sha256": sha256(initrd_path),

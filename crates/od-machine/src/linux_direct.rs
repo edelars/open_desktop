@@ -1791,6 +1791,8 @@ pub struct FirmwareUnifiedRun {
     /// CR2 and the error code of the first `#PF` delivered to the guest, recorded only with a
     /// marker (S7-31e).
     pub first_page_fault: Option<FirmwareUnifiedPageFault>,
+    /// The CPU state the run stopped in (S7-31g, diagnostics).
+    pub final_state: FirmwareUnifiedState,
     /// The RIP that was asked to be marked (S7-31d), if any.
     pub marker_rip: Option<u64>,
     /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
@@ -1799,6 +1801,24 @@ pub struct FirmwareUnifiedRun {
     /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
     /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
     pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+}
+
+/// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
+/// admits the next instruction (`MOV SS` needs IF = 0, a clear interrupt shadow and modeled
+/// SS state).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedState {
+    pub rflags: u64,
+    pub rax: u64,
+    pub rsp: u64,
+    /// GDTR as (base, limit).
+    pub gdtr: Option<(u64, u16)>,
+    pub cs_selector: Option<u16>,
+    pub ss_selector: Option<u16>,
+    /// `Debug` text of the SS hidden cache.
+    pub ss_cache: Option<String>,
+    /// `Debug` text of the interrupt shadow.
+    pub sti_shadow: Option<String>,
 }
 
 /// One raw paging-structure entry of the walk of the final RIP (S7-31e).
@@ -1973,6 +1993,19 @@ pub fn run_firmware_unified_marked(
         .collect();
     let report = result.map_err(|failure| failure.error)?;
     let rip = board.state().rip;
+    let final_state = {
+        let state = board.state();
+        FirmwareUnifiedState {
+            rflags: state.rflags,
+            rax: state.gpr[Register::Rax as usize],
+            rsp: state.gpr[Register::Rsp as usize],
+            gdtr: state.gdtr.map(|gdtr| (gdtr.base, gdtr.limit)),
+            cs_selector: state.cs_selector,
+            ss_selector: state.ss_selector,
+            ss_cache: state.ss_cache.map(|cache| format!("{cache:?}")),
+            sti_shadow: state.sti_shadow.map(|shadow| format!("{shadow:?}")),
+        }
+    };
     let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
     let rip_walk = board
         .raw_page_walk(rip)
@@ -1997,6 +2030,7 @@ pub fn run_firmware_unified_marked(
         rip_fetch_error,
         rip_walk,
         first_page_fault,
+        final_state,
         marker_rip,
         marker,
         checkpoints,

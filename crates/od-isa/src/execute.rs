@@ -33767,13 +33767,13 @@ fn run_cpl0_profile_set_inner(
     match state.sti_shadow {
         None => return Err(Error::StiShadowMissing),
         Some(crate::StiShadow::Clear) => {}
-        // A MOV SS shadow can outlive a one-instruction run only with IF = 0, where it is
-        // not observable through maskable interrupts. With IF = 1 the shadow can only come
-        // from STI, which exists in the set only under `with_sti` (S4-38L7bp; ISSUE-069 is
-        // about delivery, which the set does not model): such a run may end right after a
-        // retired `STI`, so `Blocking` with IF = 1 is carried into the next run.
-        Some(crate::StiShadow::Blocking) if state.rflags & (1 << 9) == 0 || set.sti.is_some() => {}
-        Some(crate::StiShadow::Blocking) => return Err(Error::StiShadowActive),
+        // A shadow can outlive a one-instruction run: the one a retired `MOV SS` opens (with IF
+        // = 0 or 1, S7-31g) or, under `with_sti`, the one of `STI`. It ends after the next
+        // retired instruction (Intel SDM Vol. 3A, "Interrupt shadow": MOV SS and STI inhibit
+        // interrupts until after the next instruction), so `Blocking` is carried into the next
+        // run whatever IF is; a maskable request meanwhile is not delivered (the board's
+        // interrupt hook refuses while the shadow is not clear).
+        Some(crate::StiShadow::Blocking) => {}
     }
     // RFLAGS.VM and bit 1 are checked for every set: IA-32e has no virtual-8086
     // mode and RFLAGS[1] always reads 1 (SDM Vol. 1, 3.4.3).
@@ -34218,12 +34218,14 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
             rflags_defined,
         };
     }
-    // Under the CPL0 set a shadow may be carried across run boundaries: a MOV SS shadow
-    // with IF = 0, and, under `with_sti` (`sti_cpl0`), the shadow of a retired STI with
-    // IF = 1 (see the matching entry admission).
+    // Under the CPL0 set a shadow may be carried across run boundaries: the shadow of a
+    // retired MOV SS (IF = 0 or 1, S7-31g) or STI (see the matching entry admission).
     if sti_profile.is_none()
         && state.sti_shadow == Some(crate::StiShadow::Blocking)
-        && !(control_policy.is_some() && (state.rflags & (1 << 9) == 0 || profiles.sti_cpl0))
+        && !(control_policy.is_some()
+            && (config.context.privilege == PrivilegeLevel::Ring0
+                || state.rflags & (1 << 9) == 0
+                || profiles.sti_cpl0))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0xfb },
@@ -41119,9 +41121,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     if state.activity == Some(crate::CpuActivity::Halted) {
         return Ok(StepOutcome::Halted);
     }
-    // S2-46: the CPL0 profile set carries a MOV SS shadow with IF = 0.
-    // S4-38L7bp: under `with_sti` the shadow of a retired `STI` (IF = 1) is carried as well.
-    let mov_ss_shadow = control_policy.is_some() && (state.rflags & (1 << 9) == 0 || sti_cpl0);
+    // S2-46: the CPL0 profile set carries a MOV SS shadow; S7-31g: at CPL0 with IF = 0 or 1. The
+    // shadow of a retired `STI` (IF = 1, `with_sti`) is carried the same way. At CPL3 the
+    // earlier rule stays (IF = 0, or `with_sti`): MOV SS is a CPL0 instruction here, and a
+    // shadow with IF = 1 found at CPL3 is not a state the set produces.
+    let mov_ss_shadow = control_policy.is_some()
+        && (context.privilege == PrivilegeLevel::Ring0 || state.rflags & (1 << 9) == 0 || sti_cpl0);
     if state.sti_shadow == Some(crate::StiShadow::Blocking)
         && sti_profile.is_none()
         && halt_profile.is_none()
@@ -47854,10 +47859,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     if matches!(instruction.operation, Operation::LoadNullSsSelector) {
         // S2-46: MOV SS, AX with AX = 0 is legal at CPL0 (RPL 0) in Long64. It is admitted
-        // only under the CPL0 profile set, over a loaded SS cache, with the interrupt
-        // shadow clear and IF = 0 so that the one-instruction shadow it opens is not
-        // observable through maskable interrupts. S4-38L6c: a nonzero GDT selector (TI = 0,
-        // present GDTR) is admitted too and checked by `load_sreg_cpl0`.
+        // only under the CPL0 profile set, over a loaded SS cache, with the interrupt shadow
+        // clear (a MOV SS under an active shadow stays Unsupported) and TF = 0 (a single-step
+        // trap is not modeled: with TF = 1 the instruction stays Unsupported). S7-31g: IF may be
+        // 0 or 1; the one-instruction shadow it opens is modeled (`StiShadow::Blocking`, ended
+        // after the next retired instruction), and the interrupt hook of the board delivers no
+        // maskable interrupt while it lasts. S4-38L6c: a nonzero GDT selector (TI = 0, present
+        // GDTR) is admitted too and checked by `load_sreg_cpl0`.
         let selector = state.gpr[Register::Rax as usize] as u16;
         let admitted = control_policy.is_some()
             && context.privilege == PrivilegeLevel::Ring0
@@ -47865,7 +47873,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             && state.ss_cache.is_some()
             && state.ss_selector.is_some()
             && state.sti_shadow == Some(crate::StiShadow::Clear)
-            && state.rflags & (1 << 9) == 0;
+            && state.rflags & (1 << 8) == 0;
         if !admitted {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -50572,7 +50580,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                             && state.ss_cache.is_some()
                             && state.ss_selector.is_some()
                             && state.sti_shadow == Some(crate::StiShadow::Clear)
-                            && state.rflags & (1 << 9) == 0
+                            && state.rflags & (1 << 8) == 0
                     }
                     _ => false,
                 }

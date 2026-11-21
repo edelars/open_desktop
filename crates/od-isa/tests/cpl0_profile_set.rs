@@ -336,11 +336,8 @@ fn admission_rejects_before_any_fetch_and_without_mutation() {
             |s| s.sti_shadow = None,
             Cpl0ProfileSetInputError::StiShadowMissing,
         ),
-        (
-            "shadow active",
-            |s| s.sti_shadow = Some(StiShadow::Blocking),
-            Cpl0ProfileSetInputError::StiShadowActive,
-        ),
+        // (A carried `Blocking` shadow is admitted by every set since S7-31g: see
+        // `a_carried_shadow_is_admitted_by_every_set`.)
     ];
     for (name, mutate, expected) in cases {
         let mut state = board_state();
@@ -3713,10 +3710,10 @@ fn nonzero_selectors_over_loaded_caches_without_a_gdt_are_exact_refusals() {
 }
 
 #[test]
-fn mov_ss_stays_closed_with_interrupts_enabled_or_under_a_shadow() {
-    // IF = 1: refused without mutation (the shadow would be observable).
+fn mov_ss_stays_closed_under_a_shadow_or_with_tf() {
+    // TF = 1: a single-step trap is not modeled, refused without mutation.
     let mut state = loaded_state();
-    state.rflags |= IF;
+    state.rflags |= 1 << 8;
     let before = state.clone();
     let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0]);
     let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
@@ -3724,6 +3721,15 @@ fn mov_ss_stays_closed_with_interrupts_enabled_or_under_a_shadow() {
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.ss_selector, before.ss_selector);
     assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    // IF = 1 and a shadow already open (S7-31g): the second MOV SS is refused too.
+    let mut state = loaded_state();
+    state.rflags |= IF;
+    let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0, 0x8e, 0xd0]);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 8).unwrap();
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.rflags & IF, IF);
     // MOV SS directly after MOV SS: the second one is refused under the shadow.
     let mut state = loaded_state();
     let mut memory = Memory::code(&[0x31, 0xc0, 0x8e, 0xd0, 0x8e, 0xd0]);
@@ -3735,16 +3741,64 @@ fn mov_ss_stays_closed_with_interrupts_enabled_or_under_a_shadow() {
 }
 
 #[test]
-fn blocking_shadow_with_interrupts_enabled_is_still_rejected_at_entry() {
+fn blocking_shadow_with_interrupts_enabled_is_carried_at_entry_and_ends_after_one_instruction() {
+    // S7-31g: the shadow of a MOV SS (or STI) can end a one-instruction run with IF = 1; the
+    // next run takes it and one retired instruction ends it.
     let mut state = loaded_state();
     state.rflags |= IF;
     state.sti_shadow = Some(StiShadow::Blocking);
     let mut memory = Memory::code(&[0x90]);
-    assert_eq!(
-        run_set(&mut state, &mut memory, &cli_set(), 1),
-        Err(Cpl0ProfileSetInputError::StiShadowActive)
-    );
-    assert_eq!(memory.fetches, 0);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rflags & IF, IF);
+}
+
+#[test]
+fn mov_ss_with_interrupts_enabled_opens_a_shadow_carried_across_single_instruction_runs() {
+    // xor eax,eax; mov ss,eax; nop with IF = 1 (S7-31g).
+    let code = [0x31, 0xc0, 0x8e, 0xd0, 0x90];
+    // One run: the shadow opens at MOV SS and is gone after the NOP.
+    let mut state = loaded_state();
+    state.rflags |= IF;
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &cli_set(), 3).unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 3);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rflags & IF, IF, "MOV SS does not touch IF");
+    assert_eq!(state.ss_selector, Some(0));
+    // One instruction per call (the machine's loop): after MOV SS the call ends with the shadow
+    // Blocking and IF = 1 (an interrupt hook that asks `sti_shadow == Clear` refuses a maskable
+    // request here); the next call is accepted at entry and its one retired instruction clears
+    // the shadow, so the request can be delivered after exactly one instruction.
+    let mut stepped = loaded_state();
+    stepped.rflags |= IF;
+    let mut defined = od_isa::INTEGER_FLAGS;
+    for index in 0..3 {
+        let mut memory = Memory::code(&code);
+        let result = run_with_cpl0_profile_set(
+            &mut stepped,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            defined,
+            &cli_set(),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result.instructions_executed, 1, "step {index}");
+        defined = result.rflags_defined;
+        let expected = if index == 1 {
+            Some(StiShadow::Blocking)
+        } else {
+            Some(StiShadow::Clear)
+        };
+        assert_eq!(stepped.sti_shadow, expected, "step {index}");
+        assert_eq!(stepped.rflags & IF, IF, "step {index}");
+    }
+    assert_eq!(stepped, state);
 }
 
 #[test]
@@ -12019,15 +12073,24 @@ fn mov_sreg_nonnull_without_a_gdtr_or_cache_is_unsupported_without_mutation() {
 }
 
 #[test]
-fn mov_ss_nonnull_keeps_the_if_gate() {
-    // IF = 1: refused without mutation, descriptor not read.
+fn mov_ss_nonnull_keeps_the_tf_gate_and_runs_with_if_set() {
+    // TF = 1: refused without mutation, descriptor not read.
     let (mut state, mut memory) = sreg_state(0x18);
-    state.rflags |= IF;
+    state.rflags |= 1 << 8;
     let before = state.clone();
     let result = run_sreg(&mut state, &mut memory, SS_MODRM);
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8e });
     assert_eq!(state, before);
     assert!(memory.reads.is_empty() && memory.writes == 0);
+    // IF = 1 (S7-31g): the load retires and opens the shadow, IF stays.
+    let (mut state, mut memory) = sreg_state(0x18);
+    state.rflags |= IF;
+    let result = run_sreg(&mut state, &mut memory, SS_MODRM);
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.rflags & IF, IF);
+    assert_eq!(state.ss_selector, Some(0x18));
 }
 
 #[test]
@@ -41553,27 +41616,23 @@ fn sti_shadow_is_cleared_by_a_branch_inside_the_shadow() {
 }
 
 #[test]
-fn a_carried_shadow_is_admitted_only_under_with_sti() {
+fn a_carried_shadow_is_admitted_by_every_set() {
+    // S7-31g: a shadow with IF = 1 (from MOV SS or STI) is carried into the next run by every
+    // CPL0 set, not only under `with_sti`.
     let mut carried = if_clear_state(IF);
     carried.sti_shadow = Some(StiShadow::Blocking);
     for set in [
         Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1),
         Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cli(&STI_CLI),
+        sti_set(),
     ] {
         let mut state = carried.clone();
         let mut memory = Memory::code(&[0x90]);
-        assert_eq!(
-            run_set(&mut state, &mut memory, &set, 1).unwrap_err(),
-            Cpl0ProfileSetInputError::StiShadowActive
-        );
-        assert_eq!(memory.fetches, 0);
-        assert_eq!(state, carried);
+        let result = run_set(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+        assert_eq!(state.rip, RIP + 1);
     }
-    let mut state = carried.clone();
-    let mut memory = Memory::code(&[0x90]);
-    let result = run_set(&mut state, &mut memory, &sti_set(), 1).unwrap();
-    assert_eq!(result.instructions_executed, 1);
-    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
 }
 
 #[test]
@@ -53534,7 +53593,7 @@ fn mov_ss_register_form_with_a_non_null_selector_or_a_non_zero_rpl_is_refused() 
 fn mov_ss_register_form_keeps_the_s2_46_admission() {
     let code = [0x8e, 0xd2]; // mov %edx, %ss with EDX = 0
     let cases: [(&str, fn(&mut LongModeState)); 4] = [
-        ("IF = 1", |state| state.rflags |= IF),
+        ("TF = 1", |state| state.rflags |= 1 << 8),
         ("shadow blocking", |state| {
             state.sti_shadow = Some(StiShadow::Blocking)
         }),
@@ -53555,6 +53614,14 @@ fn mov_ss_register_form_keeps_the_s2_46_admission() {
         assert_eq!(result.instructions_executed, 0, "{label}");
         assert_eq!(state, before, "{label}");
     }
+    // IF = 1 (S7-31g): the register form retires and opens the shadow, IF unchanged.
+    let mut state = gs9d_state();
+    state.gpr[Register::Rdx as usize] = 0;
+    state.rflags |= IF;
+    let result = run_gs9b(&code, &mut state);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.rflags & IF, IF);
 }
 
 #[test]

@@ -105,7 +105,13 @@ pub unsafe extern "efiapi" fn allocate_pages(
                             )
                         }
                     {
-                        return Status::DEVICE_ERROR;
+                        // The pages were given back. UEFI 2.11 lists no device error for
+                        // AllocatePages: the span could not be used as asked.
+                        return if matches!(placement, AllocateAt::Address(_)) {
+                            Status::NOT_FOUND
+                        } else {
+                            Status::OUT_OF_RESOURCES
+                        };
                     }
                     address.write(base);
                     Status::SUCCESS
@@ -242,13 +248,18 @@ pub unsafe extern "efiapi" fn free_pool(buffer: *mut c_void) -> Status {
     }
 }
 
-/// UEFI 2.11, memory types: code is allocated as `EfiLoaderCode` or `EfiBootServicesCode`; every
-/// other type holds data. The firmware's identity tables map RAM as data (NX); AllocatePages
-/// makes the pages of a code allocation executable (S7-31f).
+/// UEFI 2.11 names three code types: `EfiLoaderCode`, `EfiBootServicesCode` and
+/// `EfiRuntimeServicesCode`; every other type holds data. The firmware's identity tables map RAM
+/// as data (NX); AllocatePages makes the pages of a code allocation executable (S7-31f). The
+/// specification does not oblige firmware to grant execute rights; this is the project's rule
+/// (see UEFI_PROFILE.md), chosen because OS loaders put code in pages allocated as code. The
+/// pages are RWX: the loader writes them and the kernel executes them (known limitation).
 pub(crate) const fn is_code_type(memory_type: MemoryType) -> bool {
     matches!(
         memory_type,
-        MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE
+        MemoryType::LOADER_CODE
+            | MemoryType::BOOT_SERVICES_CODE
+            | MemoryType::RUNTIME_SERVICES_CODE
     )
 }
 
@@ -271,7 +282,10 @@ pub(crate) unsafe fn publish_allocation(
     }
     let span = base..base + pages * PAGE_BYTES;
     if !unsafe { tables.verify(span.clone(), false) } {
-        let _ = allocator.free_pages(base, pages);
+        // Giving back the span just allocated cannot fail: it is one descriptor owned by
+        // AllocatePages, with the same base and length.
+        let freed = allocator.free_pages(base, pages);
+        debug_assert!(freed.is_ok(), "the allocation just made must be freeable");
         return false;
     }
     unsafe {
@@ -317,11 +331,11 @@ mod tests {
     const NO_EXECUTE: u64 = 1 << 63;
 
     #[test]
-    fn code_types_are_exactly_loader_code_and_boot_services_code() {
+    fn code_types_are_exactly_the_three_uefi_code_types() {
         for raw in 0..=15u32 {
             assert_eq!(
                 is_code_type(MemoryType::from_raw(raw)),
-                matches!(raw, 1 | 3),
+                matches!(raw, 1 | 3 | 5),
                 "memory type {raw}"
             );
         }
@@ -561,6 +575,74 @@ mod tests {
             assert_eq!(snapshot[2].memory_type, MemoryType::CONVENTIONAL.raw());
             assert_eq!(free_pages(conventional, 1), Status::SUCCESS);
             assert_eq!(free_pages(port_space, 1), Status::SUCCESS);
+
+            // S7-31f through the EFI entry points, with active tables bound: the status codes
+            // are those of AllocatePages, an address is written only on success, and the
+            // permissions follow the type.
+            const ENTRIES: usize = 512;
+            #[repr(align(4096))]
+            struct Arena([u64; ENTRIES * 4]);
+            let mut arena = Arena([0; ENTRIES * 4]);
+            let root = arena.0.as_mut_ptr().expose_provenance() as u64;
+            for table in 0..3 {
+                arena.0[table * ENTRIES] =
+                    root + (table as u64 + 1) * PAGE_BYTES | PRESENT | WRITABLE;
+            }
+            let leaf_of = |page: u64| ENTRIES * 3 + ((page >> 12) as usize & (ENTRIES - 1));
+            for page in (0x100000u64..0x110000).step_by(PAGE_BYTES as usize) {
+                arena.0[leaf_of(page)] = page | PRESENT | WRITABLE | NO_EXECUTE;
+            }
+            // The last page has no leaf: nothing there can be made executable.
+            arena.0[leaf_of(0x10f000)] = 0;
+            state::set_active_tables_for_test(Some(ActivePageTables::new(root, 4 * PAGE_BYTES)));
+            let flags = |arena: &Arena, page: u64| arena.0[leaf_of(page)] >> 63;
+            let mut out = 0xdead_beef;
+            // AnyPages picks the highest fit, 0x10f000: refused, given back, out untouched.
+            assert_eq!(
+                allocate_pages(0, MemoryType::LOADER_CODE, 1, &mut out),
+                Status::OUT_OF_RESOURCES
+            );
+            assert_eq!(out, 0xdead_beef);
+            // AllocateAddress at the same page: EFI_NOT_FOUND; MaxAddress: out of resources.
+            out = 0x10f000;
+            assert_eq!(
+                allocate_pages(2, MemoryType::LOADER_CODE, 1, &mut out),
+                Status::NOT_FOUND
+            );
+            assert_eq!(out, 0x10f000);
+            out = 0x10f000;
+            assert_eq!(
+                allocate_pages(1, MemoryType::RUNTIME_SERVICES_CODE, 1, &mut out),
+                Status::SUCCESS
+            );
+            assert_eq!(out, 0x10e000, "MaxAddress falls back to the page below");
+            assert_eq!(
+                flags(&arena, 0x10e000),
+                0,
+                "EfiRuntimeServicesCode is executable"
+            );
+            // The refused page is free again: a data allocation takes it.
+            let mut data = 0x10f000;
+            assert_eq!(
+                allocate_pages(2, MemoryType::LOADER_DATA, 1, &mut data),
+                Status::SUCCESS
+            );
+            assert_eq!(
+                flags(&arena, 0x10f000),
+                0,
+                "no leaf: not touched (still zero)"
+            );
+            let mut boot_data = 0x10d000;
+            assert_eq!(
+                allocate_pages(2, MemoryType::BOOT_SERVICES_DATA, 1, &mut boot_data),
+                Status::SUCCESS
+            );
+            assert_eq!(flags(&arena, 0x10d000), 1, "data stays NX");
+            assert_eq!(free_pages(out, 1), Status::SUCCESS);
+            assert_eq!(flags(&arena, 0x10e000), 1, "freed pages are NX again");
+            assert_eq!(free_pages(data, 1), Status::SUCCESS);
+            assert_eq!(free_pages(boot_data, 1), Status::SUCCESS);
+            state::set_active_tables_for_test(None);
         }
     }
 }
