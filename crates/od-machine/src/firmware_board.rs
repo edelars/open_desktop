@@ -110,6 +110,50 @@ pub const FIRMWARE_ACPI_FACS_BYTES: u64 = 0x1000;
 
 pub(crate) const FIRMWARE_CR0: u64 = 0x8001_0033;
 pub(crate) const FIRMWARE_CR4: u64 = 0x20;
+
+/// GDTR modeled for the unified loop (S7-31c): base 0, limit 0xFFFF, the value after reset
+/// (Intel SDM Vol. 3A, 10.1.1, Table 10-1).
+pub(crate) const UNIFIED_ENTRY_GDTR_BASE: u64 = 0;
+pub(crate) const UNIFIED_ENTRY_GDTR_LIMIT: u16 = 0xffff;
+/// Hidden segment caches modeled for the unified loop: limit 0xFFFF_FFFF, access 0x93 (present,
+/// writable data), flags 0xC (D/B and G). These are NOT reset values (a reset gives limit
+/// 0xFFFF); they are the flat values of the Linux entry state. In 64-bit mode base and limit of
+/// SS/DS/ES/FS/GS are not used, so they affect nothing the guest can observe.
+pub(crate) const UNIFIED_ENTRY_SEGMENT_LIMIT: u32 = 0xffff_ffff;
+pub(crate) const UNIFIED_ENTRY_SEGMENT_ACCESS: u8 = 0x93;
+pub(crate) const UNIFIED_ENTRY_SEGMENT_FLAGS: u8 = 0xc;
+
+/// The descriptor-table and segment-cache state the unified loop (S7-31c) gives a ROM entry
+/// state, which leaves all of it unmodeled (`LongModeState::default()`, FIRMWARE_BOOT.md, entry
+/// contract). The CPL0 set refuses `LGDT` without a modeled GDTR and loads a selector into
+/// SS/DS/ES/FS/GS only over a modeled cache. Each field is set only when it is unmodeled, so a
+/// second call changes nothing. The ROM replaces all of it with its own GDT in
+/// `od_fw_install_gdt`, its first function.
+pub(crate) fn model_unified_entry_descriptors(state: &mut LongModeState) {
+    let data = od_isa::DataSegmentDescriptorCache {
+        base: 0,
+        limit: UNIFIED_ENTRY_SEGMENT_LIMIT,
+        access: UNIFIED_ENTRY_SEGMENT_ACCESS,
+        flags: UNIFIED_ENTRY_SEGMENT_FLAGS,
+    };
+    let flat = od_isa::FsDescriptorCache {
+        limit: UNIFIED_ENTRY_SEGMENT_LIMIT,
+        access: UNIFIED_ENTRY_SEGMENT_ACCESS,
+        flags: UNIFIED_ENTRY_SEGMENT_FLAGS,
+    };
+    state.gdtr.get_or_insert(od_isa::state::Gdtr {
+        base: UNIFIED_ENTRY_GDTR_BASE,
+        limit: UNIFIED_ENTRY_GDTR_LIMIT,
+    });
+    if state.ss_cache.is_none() {
+        state.ss_cache = Some(data);
+        state.ss_selector.get_or_insert(0);
+    }
+    state.ds_cache.get_or_insert(data);
+    state.es_cache.get_or_insert(data);
+    state.fs_cache.get_or_insert(flat);
+    state.gs_cache.get_or_insert(flat);
+}
 pub(crate) const FIRMWARE_LOW_RAM_LIMIT: u64 = 0xF400_0000;
 pub(crate) const FIRMWARE_HIGH_RAM_BASE: u64 = 0x1_0000_0000;
 const PAGE: u64 = 0x1000;
@@ -8076,6 +8120,95 @@ mod tests {
 
     fn linux_board() -> LoadedFirmwareBoard {
         load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap()
+    }
+
+    #[test]
+    fn unified_entry_descriptors_have_the_documented_values_and_a_second_call_changes_nothing() {
+        let mut state = LongModeState::default();
+        model_unified_entry_descriptors(&mut state);
+        // GDTR: the value after reset (SDM Vol. 3A, Table 10-1).
+        assert_eq!(
+            state.gdtr,
+            Some(od_isa::state::Gdtr {
+                base: 0,
+                limit: 0xffff
+            })
+        );
+        // Flat caches: not reset values (reset gives limit 0xFFFF), the Linux entry values.
+        let data = od_isa::DataSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        assert_eq!(state.ss_cache, Some(data));
+        assert_eq!(state.ds_cache, Some(data));
+        assert_eq!(state.es_cache, Some(data));
+        assert_eq!(state.ss_selector, Some(0));
+        let flat = od_isa::FsDescriptorCache {
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        assert_eq!((state.fs_cache, state.gs_cache), (Some(flat), Some(flat)));
+        // Nothing else of the entry state changes.
+        let mut expected = LongModeState::default();
+        (expected.gdtr, expected.ss_cache, expected.ss_selector) =
+            (state.gdtr, state.ss_cache, state.ss_selector);
+        (expected.ds_cache, expected.es_cache) = (state.ds_cache, state.es_cache);
+        (expected.fs_cache, expected.gs_cache) = (state.fs_cache, state.gs_cache);
+        assert_eq!(state, expected);
+        let once = state.clone();
+        model_unified_entry_descriptors(&mut state);
+        assert_eq!(state, once);
+        // A modeled value is never overwritten.
+        let mut modeled = LongModeState::default();
+        modeled.gdtr = Some(od_isa::state::Gdtr {
+            base: 0x1000,
+            limit: 0x17,
+        });
+        modeled.ss_selector = Some(0x10);
+        model_unified_entry_descriptors(&mut modeled);
+        assert_eq!(modeled.gdtr.map(|gdtr| gdtr.base), Some(0x1000));
+        assert_eq!(modeled.ss_selector, Some(0x10));
+    }
+
+    #[test]
+    fn run_firmware_unified_refuses_boards_it_cannot_run_and_leaves_them_untouched() {
+        const NEEDS_LINUX_PROFILE: &str =
+            "run_firmware_unified needs a firmware board with the Linux profile";
+        // A firmware board without the Linux profile.
+        let mut firmware =
+            load_firmware_image(&minor2_image(&[0xf4]), &tables_config_with_ecam()).unwrap();
+        // A Linux board (Linux profile, no firmware entry).
+        let mut linux = assemble_board(&linux_config(), PciEcam::new(), None, None)
+            .unwrap()
+            .into_linux_board(0x1000, 0x1000)
+            .unwrap();
+        // A firmware board with the Linux profile and two vCPUs.
+        let mut two_cpus = load_firmware_image(
+            &minor2_image(&[0xf4]),
+            &FirmwareBoardConfig {
+                vcpu_count: 2,
+                ..linux_config()
+            },
+        )
+        .unwrap();
+        for (board, expected) in [
+            (&mut firmware, NEEDS_LINUX_PROFILE),
+            (&mut linux, NEEDS_LINUX_PROFILE),
+            (&mut two_cpus, "run_firmware_unified runs one vCPU"),
+        ] {
+            let before = board.state().clone();
+            for _ in 0..2 {
+                assert_eq!(
+                    crate::run_firmware_unified(board, 10).unwrap_err(),
+                    FirmwareBoardError::Config(expected)
+                );
+                // A refusal models nothing and runs nothing.
+                assert_eq!(board.state(), &before);
+            }
+        }
     }
 
     fn inb(board: &mut LoadedFirmwareBoard, port: u16) -> Result<u32, BusAccessError> {

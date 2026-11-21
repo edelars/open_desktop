@@ -1809,42 +1809,9 @@ pub fn run_firmware_unified(
             "run_firmware_unified runs one vCPU",
         ));
     }
-    // The ROM entry state models no descriptor tables, and the set refuses `LGDT` over a state
-    // without a modeled GDTR. The architectural value after reset (Intel SDM Vol. 3A, 10.1.1,
-    // Table 10-1) is base 0, limit 0xFFFF; the ROM replaces it with its own GDT at once
-    // (`od_fw_install_gdt`).
-    {
-        let state = board.state_mut();
-        if state.gdtr.is_none() {
-            state.gdtr = Some(od_isa::state::Gdtr {
-                base: 0,
-                limit: 0xffff,
-            });
-        }
-        // The set loads a selector into SS/DS/ES/FS/GS only over a modeled hidden cache (the
-        // entry contract leaves them unmodeled, `LongModeState::default()`). Long mode ignores
-        // base and limit of these registers (FS/GS bases are MSR state); the flat 64-bit data
-        // cache of the Linux entry state is the value the ROM's own selector loads replace.
-        let data = od_isa::DataSegmentDescriptorCache {
-            base: 0,
-            limit: 0xffff_ffff,
-            access: 0x93,
-            flags: 0xc,
-        };
-        let flat = od_isa::FsDescriptorCache {
-            limit: 0xffff_ffff,
-            access: 0x93,
-            flags: 0xc,
-        };
-        if state.ss_cache.is_none() {
-            state.ss_cache = Some(data);
-            state.ss_selector.get_or_insert(0);
-        }
-        state.ds_cache.get_or_insert(data);
-        state.es_cache.get_or_insert(data);
-        state.fs_cache.get_or_insert(flat);
-        state.gs_cache.get_or_insert(flat);
-    }
+    // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
+    crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
+
     let members = LinuxCpl0SetMembers {
         cpuid_profile: CpuidProfile::X8664V1Stage4A,
         msr_tdx_keyid_partitioning_read: true,

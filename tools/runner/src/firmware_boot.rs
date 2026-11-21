@@ -993,7 +993,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
-    let mut unified = false;
+    let mut cpu_loop: Option<bool> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1048,9 +1048,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
             }
-            "--cpu-loop" => match value.as_str() {
-                "unified" => unified = true,
-                "firmware" => unified = false,
+            "--cpu-loop" if cpu_loop.is_none() => match value.as_str() {
+                "unified" => cpu_loop = Some(true),
+                "firmware" => cpu_loop = Some(false),
                 _ => {
                     return Err(format!(
                         "invalid --cpu-loop '{value}'; expected firmware or unified"
@@ -1070,6 +1070,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
         }
         index += 2;
+    }
+    let unified = cpu_loop == Some(true);
+    if unified {
+        // The unified loop has no per-instruction RIP observer, and the reboot paths run the
+        // firmware profile loop; refuse rather than run another loop or ignore the option.
+        if !sample_rips.is_empty() {
+            return Err("--cpu-loop unified does not support --sample-rip".to_owned());
+        }
+        if reboot_cycles.is_some() || nvram_reboot_out.is_some() {
+            return Err(
+                "--cpu-loop unified does not combine with --reboot-cycles or --nvram-reboot-out"
+                    .to_owned(),
+            );
+        }
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -1200,6 +1214,53 @@ mod tests {
                 .unwrap()
                 .contains("invalid --cpu-loop")
         );
+    }
+
+    #[test]
+    fn cpu_loop_is_refused_where_it_would_be_ignored_or_run_another_loop() {
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "out.com1",
+                "--budget",
+                "10",
+            ]);
+            values.extend(args(extra));
+            values
+        };
+        // A repeated option is refused, as for the other options.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--cpu-loop", "firmware"]))
+                .err()
+                .unwrap()
+                .contains("unexpected or duplicate option --cpu-loop")
+        );
+        // RIP samples need the observer of the firmware profile loop.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--sample-rip", "200040"]))
+                .err()
+                .unwrap()
+                .contains("does not support --sample-rip")
+        );
+        // The reboot paths run the firmware profile loop.
+        for extra in [
+            &["--fv-app", "reboot", "--reboot-cycles", "2"][..],
+            &["--fv-app", "vars", "--nvram-reboot-out", "second.com1"][..],
+        ] {
+            let mut values = base(&["--cpu-loop", "unified"]);
+            values.extend(args(extra));
+            assert!(
+                parse(&values)
+                    .err()
+                    .unwrap()
+                    .contains("does not combine with --reboot-cycles"),
+                "{extra:?}"
+            );
+        }
+        // The firmware loop with the same options stays accepted.
+        assert!(parse(&base(&["--cpu-loop", "firmware", "--sample-rip", "200040"])).is_ok());
     }
 
     #[test]
