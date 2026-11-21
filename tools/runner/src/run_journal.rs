@@ -184,9 +184,18 @@ impl RunJournal {
                 return Err(error);
             }
         };
+        // Only a regular file of an earlier run is truncated: a FIFO or a character device
+        // (`/dev/stdout`, `/dev/null`) is written to as it is, and `set_len` on it would fail.
         if !created && let Some((file, path)) = &phase_log {
-            file.set_len(0)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let is_regular = file
+                .metadata()
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .file_type()
+                .is_file();
+            if is_regular {
+                file.set_len(0)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
         }
         Ok(Self {
             started: Instant::now(),
@@ -678,7 +687,8 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!dumps.exists());
-        // The dump directory is not empty: the phase log created before it is removed again.
+        // The dump directory is not empty: `check_existing` refuses it before the phase log is
+        // opened, so no phase log is created at all.
         let busy = dir.0.join("busy");
         fs::create_dir(&busy).unwrap();
         fs::write(busy.join("old.raw"), b"x").unwrap();
@@ -689,6 +699,18 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!log.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_character_device_phase_log_is_accepted_without_truncation() {
+        // `/dev/null` exists and is not a regular file: opening it must succeed and `set_len`
+        // (which fails with EINVAL on Linux for such files) must not be called.
+        let journal = RunJournal::new(JournalConfig {
+            phase_log: Some(PathBuf::from("/dev/null")),
+            frames: None,
+        });
+        assert!(journal.is_ok(), "{:?}", journal.err());
     }
 
     #[test]
