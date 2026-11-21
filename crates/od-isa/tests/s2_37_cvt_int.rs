@@ -18,10 +18,10 @@
 //! rounded by MXCSR.RC for the inexact cases, the bits above the element kept; SIMD exception precision; Type 3);
 //! Vol. 1 sections 4.9.1/4.9.2, 10.2.3 and 11.5.2/11.5.3 (MXCSR, masked and unmasked SIMD floating-point exceptions).
 //!
-//! The GOLDEN table is hardware results (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; MXCSR loaded with LDMXCSR per
-//! case), selected from 99 971 cases in work/stage8/s2_37_conv2_oracle/ (gen_cases.py, oracle.c, pick_golden.py), not
-//! model output: 700 register-form vectors, one per bucket of (instruction, REX.W, rounding control, DAZ, FTZ, masks,
-//! outcome, flags). The hardware also settles what the SDM leaves open for these forms: the conversions report no
+//! The GOLDEN and GOLDEN_MMX tables are hardware results (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; MXCSR loaded with
+//! LDMXCSR per case), selected from 116 801 cases in work/stage8/s2_37_conv2_oracle/ (gen_cases.py, oracle.c,
+//! pick_golden.py, pick_golden_mmx.py), not model output: 700 and 200 register-form vectors, one per bucket of
+//! (instruction, REX.W, rounding control, DAZ, FTZ, masks, outcome, flags). The hardware also settles what the SDM leaves open for these forms: the conversions report no
 //! denormal-operand exception (DAZ turns a denormal source into a zero), the destination register (the XMM element or
 //! the general register) is not written when an unmasked exception faults, and the invalid result of the packed
 //! forms is the indefinite value per lane.
