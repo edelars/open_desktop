@@ -384,6 +384,14 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lldt ax", &[0x0f, 0x00, 0xd0], 0x00),
         ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
         ("int3", &[0xcc], 0xcc),
+        // S2-51: CMPXCHG16B executes in the bare run and in the CPL0 set at Ring0 only; the CPL3
+        // profile (the Linux live profile) does not list it, and CPUID declares no CX16 until S2-57.
+        ("cmpxchg16b [rdi]", &[0x48, 0x0f, 0xc7, 0x0f], 0xc7),
+        (
+            "lock cmpxchg16b [rdi]",
+            &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+            0xc7,
+        ),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.

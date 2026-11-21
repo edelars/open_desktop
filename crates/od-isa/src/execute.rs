@@ -19022,6 +19022,14 @@ impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     ) -> Result<u64, MemoryError> {
         self.inner.atomic_rmw_integer(a, c, z, update)
     }
+    fn atomic_rmw_u128(
+        &mut self,
+        a: u64,
+        c: AccessContext,
+        update: &mut dyn FnMut(u128) -> u128,
+    ) -> Result<u128, MemoryError> {
+        self.inner.atomic_rmw_u128(a, c, update)
+    }
     fn mfence(&mut self, c: AccessContext) -> Result<(), MemoryError> {
         self.inner.mfence(c)
     }
@@ -50615,6 +50623,25 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     && cpu_owned_cr3.is_none()
             }
         }
+        // S2-51: CMPXCHG16B (`[F0] REX.W 0F C7 /1 m128`; the decoder has already validated the
+        // prefixes and refuses the register form as #UD). It reaches memory through one
+        // `GuestMemory::atomic_rmw_u128` call, as `transfer` documents. Admitted in the CPL0 set at
+        // Ring0 and in the bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the
+        // Linux live profile (CPUID does not declare CX16 until S2-57, and `cpl3_allows` does not
+        // list it).
+        Operation::Cmpxchg16b { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xc7
+                && instruction.operand_size == OperandSize::Qword
+                && if control_policy.is_some() {
+                    context.privilege == PrivilegeLevel::Ring0
+                } else {
+                    cr0_profile.is_none()
+                        && cr4_profile.is_none()
+                        && mov_cr3_profile.is_none()
+                        && cpu_owned_cr3.is_none()
+                }
+        }
         Operation::XchgMemory { memory, .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x87
@@ -63770,6 +63797,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::PushFsMem { .. }
         | Operation::PushGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
+        | Operation::Cmpxchg16b { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockDecMem { .. }
         | Operation::LockOrMem { .. }
@@ -71255,6 +71283,42 @@ fn transfer(
                 state.write(accumulator, observed);
             }
             state.rflags = flags;
+        }
+        // S2-51: CMPXCHG16B m128 (SDM Vol. 2A, 3-196..3-198). Order of the checks, as for the other
+        // aligned 16-byte operands (MOVDQA): a non-canonical address is #GP(0) (#SS(0) for an
+        // RSP/RBP based operand), then a misaligned operand is #GP(0) before any memory access, then
+        // the memory's own faults (#PF, unmapped). The compare of RDX:RAX with the operand and the
+        // store of RCX:RBX are one `atomic_rmw_u128` call; the destination is written on both
+        // branches (a read-only page faults on a failed compare too). Only after that call
+        // succeeded the CPU state commits: ZF = 1 on equality (RAX/RDX untouched), otherwise ZF = 0
+        // and RDX:RAX = the old memory value; CF, PF, AF, SF and OF are unaffected. A fault leaves
+        // memory, registers and flags unchanged. LOCK is optional and has no further effect here.
+        Operation::Cmpxchg16b { destination } => {
+            let address = destination
+                .linear_address_48(state, next_rip)
+                .map_err(MemoryError::Architectural)?;
+            if address & 15 != 0 {
+                return Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let rax = state.gpr[Register::Rax as usize];
+            let rdx = state.gpr[Register::Rdx as usize];
+            let expected = (u128::from(rdx) << 64) | u128::from(rax);
+            let replacement = (u128::from(state.gpr[Register::Rcx as usize]) << 64)
+                | u128::from(state.gpr[Register::Rbx as usize]);
+            let observed = memory.atomic_rmw_u128(address, context, &mut |old| {
+                if old == expected { replacement } else { old }
+            })?;
+            if observed == expected {
+                state.rflags |= crate::ZF;
+            } else {
+                state.rflags &= !crate::ZF;
+                state.gpr[Register::Rax as usize] = observed as u64;
+                state.gpr[Register::Rdx as usize] = (observed >> 64) as u64;
+            }
         }
         Operation::LockIncMem { destination } => {
             // S4-38L7l: one `atomic_rmw_integer` call (S6-20; the atomicity is defined by the

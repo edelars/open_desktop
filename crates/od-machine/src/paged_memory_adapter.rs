@@ -5879,6 +5879,35 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         })
     }
 
+    /// S2-51: `CMPXCHG16B`. There is no host 128-bit compare-exchange behind this adapter, so the
+    /// parallel mode refuses the operation before any walk (nothing is written, no accessed or
+    /// dirty bit, no notification), as it refuses a split `LOCK` without the stop-all gate
+    /// (S6-34): the serial read and write pair of the trait default is not atomic across host
+    /// threads. The interleaving mode keeps the serial pair of the trait default (the scheduler
+    /// switches vCPUs only on instruction boundaries); this adapter's `read` does not serve a
+    /// 16-byte operand yet, so that pair ends in the "read width" refusal before any effect.
+    /// CX16 is not declared until S2-57.
+    fn atomic_rmw_u128(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        update: &mut dyn FnMut(u128) -> u128,
+    ) -> Result<u128, MemoryError> {
+        if self.bus.locked_memory().execution_mode() == crate::ExecutionMode::Parallel {
+            return Err(MemoryError::Backend(format!(
+                "CMPXCHG16B at {address:#x} is refused in the parallel mode: there is no host \
+                 128-bit compare-exchange, and the serial read and write pair is not atomic \
+                 across vCPU threads (S2-51; CX16 is not declared until S2-57)"
+            )));
+        }
+        let mut bytes = [0u8; 16];
+        self.read(address, context, &mut bytes)?;
+        let old = u128::from_le_bytes(bytes);
+        let new = update(old);
+        self.write(address, context, &new.to_le_bytes())?;
+        Ok(old)
+    }
+
     fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
         Err(Self::unsupported("MFENCE"))
     }
@@ -9644,6 +9673,44 @@ mod tests {
             .atomic_fetch_add_integer(DATA_LINEAR + 0x40, context(), Dword, 1)
             .unwrap();
         assert_eq!(memory.split_lock_refusals(), 3);
+    }
+
+    /// S2-51: `atomic_rmw_u128` (CMPXCHG16B) has no host 128-bit primitive, so the parallel mode
+    /// refuses it before any walk: memory, tables and notifications stay untouched and the
+    /// update closure is never called. The interleaving mode keeps the trait's serial pair, which
+    /// this adapter's `read` does not serve for 16 bytes: a refusal before any effect too.
+    #[test]
+    fn a_locked_u128_operation_is_refused_in_the_parallel_mode_and_changes_nothing() {
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
+        let before = split_state(&memory);
+        let mut log = Vec::new();
+        {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let mut called = false;
+            let result = adapter.atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| {
+                called = true;
+                old
+            });
+            assert!(
+                matches!(&result, Err(MemoryError::Backend(m)) if m.contains("parallel mode")),
+                "{result:?}"
+            );
+            assert!(!called);
+        }
+        assert_eq!(split_state(&memory), before);
+        assert!(log.is_empty());
+
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Interleaved);
+        let before = split_state(&memory);
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        let result = adapter.atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| !old);
+        assert!(
+            matches!(&result, Err(MemoryError::Backend(m)) if m.contains("read")),
+            "{result:?}"
+        );
+        assert_eq!(split_state(&memory), before);
     }
 
     #[test]

@@ -998,6 +998,15 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S2-51: `[F0] REX.W 0F C7 /1` (CMPXCHG16B m128), memory destination only (SDM Vol. 2A,
+    /// CMPXCHG8B/CMPXCHG16B, pp. 3-196..3-198). The 128-bit compare of RDX:RAX with the operand
+    /// and the conditional store of RCX:RBX are one `GuestMemory::atomic_rmw_u128` call; the
+    /// destination is written on both branches. The operand's `size` is a placeholder
+    /// (`Qword`): the executor accesses 16 bytes. LOCK is optional (the SDM allows it); the
+    /// register form is #UD and is reported as `DecodeError::Invalid`.
+    Cmpxchg16b {
+        destination: MemoryOperand,
+    },
     /// S4-38L7l: `F0 [REX] FF /0` (LOCK INC m32, and with REX.W m64), memory destination only.
     /// Executed only in the CPL0 set; the destination is always written back.
     LockIncMem {
@@ -2713,6 +2722,12 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
+            // S2-51: CMPXCHG16B defines ZF only; CF, PF, AF, SF and OF are unaffected (SDM, "Flags
+            // Affected"), so none of them is marked defined or undefined.
+            Operation::Cmpxchg16b { .. } => FlagEffects {
+                defined: crate::ZF,
+                undefined: 0,
+            },
             // S4-38L7bg: as the plain CMPXCHG: all six flags defined (CMP of AL with the destination).
             Operation::CmpxchgMemory { .. }
             | Operation::LockCmpxchgMem { .. }
@@ -3660,7 +3675,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -3677,6 +3692,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.group1 == Some(0xf0);
         let locked_fwait_candidate = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0x9b
+            && prefixes.group1 == Some(0xf0);
+        // S2-51: and for CMPXCHG16B (`F0 REX.W 0F C7 /1`); the opcode arm below refuses every other
+        // LOCK + 0F C7 form.
+        let locked_cmpxchg16b_candidate = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xc7
             && prefixes.group1 == Some(0xf0);
         // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
         // it only in the CPL0 set.
@@ -6172,7 +6192,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
                 && !locked_hlt
-                && !locked_fwait_candidate)
+                && !locked_fwait_candidate
+                && !locked_cmpxchg16b_candidate)
         {
             return Err(self.unsupported(opcode));
         }
@@ -9090,6 +9111,42 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         source,
                     }
                 }
+            }
+            // S2-51: CMPXCHG16B (SDM Vol. 2A, 3-196..3-198). Only `[F0] REX.W 0F C7 /1 m128` decodes: the
+            // REX byte must sit directly before the opcode (a stale REX would silently decode as
+            // CMPXCHG8B, which is not modeled), and 66/67/segment/REP prefixes and the other /r
+            // members of `0F C7` stay `Unsupported`. The register form (mod = 3) is #UD ("If the
+            // destination operand is not a memory location"), reported as `DecodeError::Invalid`.
+            (OpcodeMap::Escape0f, 0xc7) => {
+                let rex_w = prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if !rex_w
+                    || stale_rex
+                    || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
+                    || prefixes.segment.is_some()
+                    || prefixes.operand_override
+                    || prefixes.address_override
+                {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 1 {
+                    return Err(self.unsupported(opcode));
+                }
+                if modrm >> 6 == 3 {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                size = OperandSize::Qword;
+                let Operand::Memory(destination) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                Operation::Cmpxchg16b { destination }
             }
             (OpcodeMap::Escape0f, 0xb1) if matches!(prefixes.segment, Some(0x64 | 0x65)) => {
                 // S4-38L7bo: `[64|65] [REX] 0F B1 /r` with a memory destination (CMPXCHG m32, r32;

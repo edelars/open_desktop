@@ -373,6 +373,41 @@ pub trait GuestMemory {
         Ok(old)
     }
 
+    /// S2-51: the 128-bit read-modify-write of `CMPXCHG16B` (CPU_CONTRACT.md, S2-51). It reads the
+    /// 16 bytes at `address` (little endian: the low qword is at `address`), passes the old value
+    /// to `update`, writes the returned value back (always, even when it equals the old value:
+    /// SDM, the destination of CMPXCHG8B/CMPXCHG16B receives a write cycle without regard to the
+    /// comparison, so a read-only page faults on a failed compare too) and returns the old value.
+    ///
+    /// The caller has already checked that `address` is 16-byte aligned (the SDM raises #GP(0)
+    /// for a misaligned CMPXCHG16B operand but gives no order against the page checks; the order
+    /// "alignment first, no memory access" is confirmed by the hardware oracle of S2-51, case
+    /// unaligned_and_prot_none: #GP(0), not #PF), so the operand never crosses a page and the one
+    /// 16-byte write is validated as a whole: on every error memory is unchanged.
+    /// `update` is a pure function of the old value (an implementation that retries may call it
+    /// more than once).
+    ///
+    /// The default implementation is the serial one (one ordinary read, one ordinary write): it
+    /// gives single-processor atomicity because the vCPU never switches inside an instruction in
+    /// the interleaving mode. It is NOT atomic across host threads: a backend that shares RAM
+    /// between host threads (`od-machine`'s paged adapter in the parallel mode) must override it:
+    /// that adapter refuses the operation in the parallel mode until a host 128-bit
+    /// compare-exchange exists, which must come before CX16 is declared to a multiprocessor guest;
+    /// SMP ordering of this form is stage 6, not S2-51.
+    fn atomic_rmw_u128(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        update: &mut dyn FnMut(u128) -> u128,
+    ) -> Result<u128, MemoryError> {
+        let mut bytes = [0u8; 16];
+        self.read(address, context, &mut bytes)?;
+        let old = u128::from_le_bytes(bytes);
+        let new = update(old);
+        self.write(address, context, &new.to_le_bytes())?;
+        Ok(old)
+    }
+
     /// Completes preceding guest loads/stores before subsequent guest loads/stores begin.
     ///
     /// `Ok(())` promises that earlier reads have returned their values and

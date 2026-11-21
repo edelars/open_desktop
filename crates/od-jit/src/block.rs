@@ -4210,6 +4210,48 @@ mod tests {
     }
 
     #[test]
+    fn cmpxchg16b_is_refused_by_the_block_builder_and_the_register_form_is_an_invalid_boundary() {
+        // S2-51: the interpreter executes `[F0] REX.W 0F C7 /1 m128`; the JIT admits no 16-byte
+        // atomic form, so the block is not built (the entry instruction is left to the interpreter,
+        // no state is touched: the builder only reads the code bytes).
+        const ENTRY: u64 = 0x4d00;
+        for bytes in [
+            &[0x48, 0x0f, 0xc7, 0x0f][..],
+            &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            assert!(
+                matches!(
+                    refused.stop_reason,
+                    BlockStopReason::UnsupportedDecoded {
+                        guest_rip: ENTRY,
+                        decoded: Instruction {
+                            operation: Operation::Cmpxchg16b { .. },
+                            ..
+                        },
+                    }
+                ),
+                "{bytes:02x?}: {:?}",
+                refused.stop_reason
+            );
+        }
+        // The register form is #UD: a decode boundary, never a block.
+        let invalid = no_block(
+            build(
+                &[0x48, 0x0f, 0xc7, 0xcf],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert!(matches!(boundary.error, DecodeError::Invalid { .. }));
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);
