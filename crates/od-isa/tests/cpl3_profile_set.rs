@@ -350,6 +350,35 @@ fn cpl0_entry_still_refuses_a_ring3_context() {
     assert_eq!(memory.fetches, 0);
 }
 
+/// S7-31g: a `Blocking` shadow with IF = 1 at CPL3 is carried only under `with_sti`; without it
+/// the step refuses (after the fetch, before any effect) with `Unsupported { opcode: 0xfb }`,
+/// nothing retired, state untouched. (The entry check no longer returns `StiShadowActive`.)
+#[test]
+fn cpl3_blocking_shadow_with_if_set_is_refused_without_with_sti_and_carried_with_it() {
+    let mut carried = user_state();
+    carried.rflags |= 1 << 9;
+    carried.sti_shadow = Some(StiShadow::Blocking);
+    // `xor eax, eax` is admitted at CPL3.
+    let code = [0x31, 0xc0];
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = carried.clone();
+    let mut memory = Memory::code(&code);
+    let result =
+        run3(&mut state, &mut memory, &plain, 1).expect("the entry check accepts the state");
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfb });
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, carried);
+    // With `with_sti` the shadow is carried: the instruction retires and ends it.
+    let sti = StiProfile::NonPviLong64V1;
+    let with_sti = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_sti(&sti);
+    let mut state = carried.clone();
+    let mut memory = Memory::code(&code);
+    let result = run3(&mut state, &mut memory, &with_sti, 1).unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
+    assert_eq!(state.rip, RIP + 2);
+}
+
 #[test]
 fn forbidden_forms_stop_as_unsupported_without_change() {
     let cli = CliProfile::NonPviLong64V1;

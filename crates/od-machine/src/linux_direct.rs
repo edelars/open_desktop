@@ -1804,8 +1804,8 @@ pub struct FirmwareUnifiedRun {
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
-/// admits the next instruction (`MOV SS` needs IF = 0, a clear interrupt shadow and modeled
-/// SS state).
+/// admits the next instruction (`MOV SS` needs a clear interrupt shadow, TF = 0 and
+/// modeled SS state; since S7-31g IF may be 0 or 1).
 #[derive(Debug, Eq, PartialEq)]
 pub struct FirmwareUnifiedState {
     pub rflags: u64,

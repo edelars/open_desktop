@@ -1157,7 +1157,8 @@ fn fault_shadow_admitted(state: &LongModeState, from_cpl3: bool, firmware: bool)
         // Boot firmware keeps IF clear and opens a shadow only via MOV SS.
         // A synchronous event ends that shadow on successful entry.
         Some(crate::StiShadow::Blocking) if firmware && state.rflags & (1 << 9) == 0 => true,
-        // In this CPL0 profile, a blocking shadow with IF set can only come from STI.
+        // In this CPL0 profile, a blocking shadow with IF set comes from STI or, since S7-31g,
+        // from MOV SS (both inhibit interrupts for one instruction).
         // Intel SDM Vol. 2B, STI: successful exception delivery ends that inhibition.
         Some(crate::StiShadow::Blocking) => !from_cpl3 && state.rflags & (1 << 9) != 0,
         None => false,

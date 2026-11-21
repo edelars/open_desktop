@@ -2516,6 +2516,10 @@ pub enum Cpl0ProfileSetInputError {
     ActivityMissing,
     NotRunning,
     StiShadowMissing,
+    /// Reserved: no longer returned (S7-31g). A `Blocking` shadow (from `MOV SS` or `STI`, IF = 0
+    /// or 1) is accepted at entry by every set. At CPL3 a shadow with IF = 1 and no `with_sti`
+    /// is refused later, by the step, as `Unsupported { opcode: 0xfb }` with nothing retired
+    /// (CPU_CONTRACT.md, section S7-31g).
     StiShadowActive,
     CliPreconditionFailed,
     /// RFLAGS.VM is set. Virtual-8086 mode does not exist in IA-32e mode, so
@@ -50556,9 +50560,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // The decoder accepts REX.B only (length 3, no other prefix). ES/DS take 0..=3 (any RPL).
         // SS takes exactly 0: a null SS selector with RPL != CPL is #GP on hardware (SDM, from
         // memory), so RPL 1..=3 is refused, not modeled. SS keeps the S2-46 admission: a loaded SS
-        // cache, a clear interrupt shadow and IF = 0 (the one-instruction MOV SS shadow stays
-        // unobservable). A non-null selector (GDT read, descriptor checks) is refused with the
-        // opcode and nothing mutated.
+        // cache, a clear interrupt shadow and TF = 0; IF may be 0 or 1 since S7-31g (the shadow
+        // the instruction opens is modeled). A non-null selector (GDT read, descriptor checks)
+        // is refused with the opcode and nothing mutated.
         Operation::LoadSegmentSelectorReg { sreg, source } => {
             let rex_b = instruction.prefixes
                 == Prefixes {

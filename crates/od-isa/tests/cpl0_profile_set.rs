@@ -12072,6 +12072,51 @@ fn mov_sreg_nonnull_without_a_gdtr_or_cache_is_unsupported_without_mutation() {
     }
 }
 
+/// S7-31g: with IF = 1 the refusals of `MOV SS` that IF = 0 had stay refusals, with nothing
+/// mutated: a null selector with RPL 1..=3, TI = 1, REX.W and LOCK forms, TF = 1.
+#[test]
+fn mov_ss_refusals_hold_with_if_set() {
+    let run = |state: &mut LongModeState, memory: &mut LretqMemory, code: &[u8]| {
+        memory.code = code.to_vec();
+        run_with_cpl0_profile_set(
+            state,
+            memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap()
+    };
+    // (label, selector in EAX, code, extra RFLAGS)
+    let cases: [(&str, u16, &[u8], u64); 9] = [
+        ("null selector RPL 1", 0x1, &[0x8e, SS_MODRM], IF),
+        ("null selector RPL 3", 0x3, &[0x8e, SS_MODRM], IF),
+        ("TI = 1", 0x1c, &[0x8e, SS_MODRM], IF),
+        ("TI = 1, selector 4", 0x4, &[0x8e, SS_MODRM], IF),
+        ("REX.W", 0x18, &[0x48, 0x8e, SS_MODRM], IF),
+        ("LOCK", 0x18, &[0xf0, 0x8e, SS_MODRM], IF),
+        ("TF = 1 non-null", 0x18, &[0x8e, SS_MODRM], IF | (1 << 8)),
+        ("TF = 1 null", 0x0, &[0x8e, SS_MODRM], IF | (1 << 8)),
+        ("TF = 1 without IF", 0x18, &[0x8e, SS_MODRM], 1 << 8),
+    ];
+    for (label, selector, code, extra) in cases {
+        let (mut state, mut memory) = sreg_state(selector);
+        state.rflags |= extra;
+        let before = state.clone();
+        let result = run(&mut state, &mut memory, code);
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{label}: {:?}",
+            exit(&result)
+        );
+        assert_eq!(result.instructions_executed, 0, "{label}");
+        assert_eq!(state, before, "{label}");
+        assert_eq!(memory.writes, 0, "{label}");
+    }
+}
+
 #[test]
 fn mov_ss_nonnull_keeps_the_tf_gate_and_runs_with_if_set() {
     // TF = 1: refused without mutation, descriptor not read.
