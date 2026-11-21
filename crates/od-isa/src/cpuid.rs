@@ -74,8 +74,9 @@ const LEAF1_EDX_TSC: u32 = 1 << 4;
 /// member (the kernel's `fpu__init_system` gives up without this bit). From the Intel SDM, from memory.
 const LEAF1_EDX_FPU: u32 = 1 << 0;
 /// CPUID.01H:EDX bit 24 (FXSR), declared since S4-38L9d: the plain `FXSAVE` is implemented in the
-/// same member. SSE (25) and SSE2 (26) are NOT declared: no SSE instruction is implemented. From the
-/// Intel SDM, from memory.
+/// same member. SSE (25) and SSE2 (26) are NOT declared by the profiles up to `X8664V1Stage4AExt1`;
+/// `X8664V1Stage4AExt2` declares them (S7-31i, the `LDMXCSR` of the FP member). From the Intel SDM,
+/// from memory.
 const LEAF1_EDX_FXSR: u32 = 1 << 24;
 /// CPUID.01H:EDX bit 25 (SSE) and bit 26 (SSE2), declared by `X8664V1Stage4AExt2` (S7-31i); the
 /// positions are those of the target table's `0x0781A379`. From the Intel SDM, from memory.

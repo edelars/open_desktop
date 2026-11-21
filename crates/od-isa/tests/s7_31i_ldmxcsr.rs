@@ -428,3 +428,33 @@ fn ldmxcsr_page_fault_on_the_read_leaves_the_state_alone() {
     assert_eq!(state, before);
     assert_eq!(cell.borrow().sse.mxcsr, 0x1f80);
 }
+
+/// S7-31k: the contract says the FP member runs at CPL0 only; the step has no privilege check of
+/// its own, so the CPL0 set must refuse the access context of ring 3 before reaching it. LDMXCSR is
+/// not privileged in the SDM (it is valid at CPL3 under the CR0/CR4 conditions), so this refusal
+/// is the set's scope, not an architectural rule.
+#[test]
+fn ldmxcsr_in_the_cpl0_set_does_not_run_under_a_ring3_context() {
+    let cell = mxcsr_cell(0x1f80);
+    let (mut state, mut memory) = setup(0x1fa0);
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cpuid(&CpuidProfile::X8664V1Stage4AExt2)
+        .with_fp_state(&cell);
+    let mut ring3 = config(1);
+    ring3.context.privilege = PrivilegeLevel::Ring3;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        ring3,
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    );
+    let error = result.err().expect("the CPL0 set refuses a ring 3 context");
+    assert_eq!(format!("{error:?}"), "WrongPrivilege");
+    // Nothing ran: no retirement, RIP, MXCSR and memory untouched.
+    assert_eq!(state.rip, CODE);
+    assert_eq!(cell.borrow().sse.mxcsr, 0x1f80);
+    assert!(memory.writes.is_empty());
+}

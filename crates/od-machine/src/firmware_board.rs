@@ -8586,6 +8586,19 @@ mod tests {
         assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr));
     }
 
+    /// S7-31k: without the Linux profile the absent UARTs are not bound: COM2..COM4 stay traps.
+    #[test]
+    fn absent_uarts_are_not_bound_without_the_linux_profile() {
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        for port in [0x2f8u16, 0x2f9, 0x3e8, 0x2e8] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+    }
+
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----
 
     /// `MOV DX,port; IN AL,DX x count` for each step, then `HLT`. The paged probe
