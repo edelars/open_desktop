@@ -158,8 +158,19 @@ def steps():
     ]
 
 
-KEY_PATTERNS = (r"test result:", r"^OK\b", r"^Ran \d+ tests?", r"sha256", r"\bboot cycles\b")
-FAILURE_PATTERNS = (r"^error", r"\bFAILED\b", r"\bpanicked\b", r"Error:", r"Traceback", r"^FAIL")
+KEY_PATTERNS = (r"^OK\b", r"^Ran \d+ tests?", r"sha256:", r"\bboot cycles\b")
+FAILURE_PATTERNS = (r"Unsupported \{", r"panicked", r"differs from", r"RuntimeError", r"smoke:", r"exited \d+",
+                    r"^error", r"\bFAILED\b", r"Traceback", r"^FAIL")
+CARGO_RESULT = re.compile(r"test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored")
+
+
+def shorten(line):
+    """A runner JSON report dumped into an exception message becomes its exit detail and rip."""
+    detail = re.search(r"exit_detail['\"]?: ?['\"]([^'\"]+)['\"]", line)
+    if detail is None or len(line) <= 160:
+        return line[:160]
+    rip = re.search(r"rip['\"]?: ?['\"](0x[0-9a-fA-F]+)['\"]", line)
+    return f"{line[:50]} ... exit_detail={detail.group(1)}" + (f" rip={rip.group(1)}" if rip else "")
 
 
 def key_line(text, failed):
@@ -170,12 +181,17 @@ def key_line(text, failed):
     marker = [line for line in lines if line.startswith("STEP FAILED")]
     if failed:
         lines = [line for line in lines if not line.startswith("STEP FAILED")] or lines
+    results = [CARGO_RESULT.search(line) for line in lines]
+    results = [match for match in results if match]
+    if results and not failed:
+        total = [sum(int(match.group(i)) for match in results) for i in (2, 3, 4)]
+        return f"cargo test: {total[0]} passed; {total[1]} failed; {total[2]} ignored ({len(results)} result lines)"
     patterns = FAILURE_PATTERNS if failed else KEY_PATTERNS
     for pattern in patterns:
         for line in reversed(lines):
-            if re.search(pattern, line, re.IGNORECASE if not failed else 0):
-                return line[:160]
-    return (marker or lines)[-1][:160] if failed else lines[-1][:160]
+            if re.search(pattern, line, 0 if failed else re.IGNORECASE):
+                return shorten(line)
+    return shorten((marker or lines)[-1] if failed else lines[-1])
 
 
 def table(rows):

@@ -23,8 +23,12 @@ class FirmwareCheckAllTest(unittest.TestCase):
         self.assertEqual(len(seen), len(check_all.steps()))
 
     def test_key_line_prefers_cargo_summary_and_failure_marker(self):
-        log = "running 1 test\ntest result: ok. 1 passed; 0 failed\n\nDoc-tests x\n"
-        self.assertEqual(check_all.key_line(log, False), "test result: ok. 1 passed; 0 failed")
+        log = ("test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured\n"
+               "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured\n")
+        self.assertEqual(check_all.key_line(log, False),
+                         "cargo test: 5 passed; 0 failed; 1 ignored (2 result lines)")
+        report = "RuntimeError: x: {'exit_detail': 'Unsupported { opcode: 148 }', 'rip': '0x227cae', " + "p" * 200 + "}"
+        self.assertIn("exit_detail=Unsupported { opcode: 148 } rip=0x227cae", check_all.key_line(report, True))
         failing = "step\nthread 'x' panicked at y\nSTEP FAILED: exit 101\n"
         self.assertEqual(check_all.key_line(failing, True), "thread 'x' panicked at y")
         self.assertEqual(check_all.key_line("a\nlast\n", False), "last")
