@@ -518,7 +518,7 @@
 
 ### S8-41. Описать контракт xHCI и USB HID
 
-- [ ] Принято после архитектурного ревью. Начинать только после записанного в S8-01 решения, что модель xHCI/USB HID принадлежит этапу 8; при другом решении задача переносится в план владельца.
+- [x] Принято 2026-11-21 после архитектурного ревью Opus high (ревью 6b05be0 и b2f3e00: HCIVERSION 0x0100; отступления v1 подтверждены владельцем проекта; сверка со спецификациями xHCI, USB 2.0, HID — по разделам 14). Начинать только после записанного в S8-01 решения, что модель xHCI/USB HID принадлежит этапу 8; при другом решении задача переносится в план владельца.
 - **Где:** `docs/specs/XHCI_DEVICE.md` (новый), `docs/specs/VIRTUAL_BOARD.md` (строка «Ввод»: ссылка на контракт).
 - **Сделать:**
   1. Объём v1 по xHCI (интерфейс 1.0, HCIVERSION 0x0100; сверка по тексту 1.2) и USB 2.0/HID 1.11 (записать редакции и источники): один контроллер PCI class `0C0330`; регистры capability/operational/runtime/doorbell; один Interrupter; MSI-X или MSI (что требует `usbxhci` Windows и прошивка S7-34 — по документации Microsoft; без источника — записать и проверить на S8-44); command ring, event ring, transfer rings; Enable Slot, Address Device, Configure Endpoint, Evaluate Context, Reset Endpoint, Stop Endpoint, Set TR Dequeue Pointer, No Op; control и interrupt IN transfers; корневой хаб с 2 портами USB 2.0, без внешних хабов.
