@@ -1820,6 +1820,10 @@ const fn efer_write_decision(current: u64, value: u64, nx_declared: bool) -> Efe
     if value & !EFER_WRITABLE_KNOWN != 0 || (value & !current & EFER_NXE != 0 && !nx_declared) {
         EferWrite::Reserved
     } else if value & EFER_FEATURE_BITS != 0 || (value ^ current) & EFER_LME_LMA != 0 {
+        // This is narrower than "any change except SCE" (the S4-38L7f form), and it is safe: the
+        // value of the EFER cell is restricted to {0x500, 0x501, 0xd00, 0xd01}
+        // (`MsrProfile::accepts_efer_value`, msr.rs), so a value that differs from the current one
+        // in a bit other than LME/LMA can differ only in SCE or NXE, which are accepted above.
         EferWrite::Unsupported
     } else {
         EferWrite::Accept

@@ -1567,6 +1567,84 @@ mod tests {
     }
 
     #[test]
+    fn the_boards_own_walkers_take_nxe_from_the_guest_efer_after_a_wrmsr_cleared_it() {
+        // S2-25f review: `firmware_board.rs` builds walkers of its own (`run_quantum`, the fetch
+        // view, `efer()`). They must follow the guest NXE, not the constant `FIRMWARE_EFER`.
+        // The code page (linear 0x40_0000) has XD (bit 63) set in its entry. With NXE set an
+        // instruction fetch from it is a #PF with P | I/D (17); a WRMSR of the CPL0 set clears
+        // NXE (no CPUID bit needed to clear it), then bit 63 is reserved: P | RSVD (9; the I/D
+        // bit is defined only with NXE = 1, SDM Vol. 3A 4.7). A walker that kept NXE = 1 would
+        // report 17 again.
+        const XD: u64 = 1 << 63;
+        let mut board = board(1);
+        let cr3 = tables(&mut board, TABLES_0, 0x60_0000, XD);
+        board.page_table_root = cr3;
+        let mut clear = wrmsr_efer(0x501);
+        clear.push(0xF4);
+        patch(&mut board, CODE_0, &clear);
+        patch(&mut board, 0x60_0000, &[0xF4]); // hlt on the XD page
+        install(
+            &mut board,
+            0,
+            long_state(CODE_0, STACK_0, cr3, false),
+            0xD01,
+        );
+        assert_eq!(board.efer(), 0xD00, "NXE is set at the start");
+        let run = |board: &mut LoadedFirmwareBoard| {
+            let mut state = long_state(0x40_0000, STACK_0, cr3, false);
+            state.cr3 = None; // the paged probe takes the board CR3
+            board.vcpu_mut(0).unwrap().state = state;
+            board.run_quantum(true, false, 10, || false, |_| {}, |_, _| {})
+        };
+        let fault_code = |report: &crate::PagedProbeQuantumReport| {
+            format!(
+                "{:?}",
+                report
+                    .page_fault
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{report:?}"))
+            )
+        };
+        let (_, _, error) = board.fetch_view_2m(0x40_0000, 1);
+        let nx_error = error.expect("NX fault");
+        let nx_report = run(&mut board);
+        assert!(
+            fault_code(&nx_report).contains("error_code: Some(17)"),
+            "{nx_report:?}"
+        );
+
+        // The WRMSR through the CPL0 set retires and stores NXE = 0; the vCPU takes the cell.
+        let mut state = long_state(CODE_0, STACK_0, cr3, false);
+        state.cr3 = Some(cr3);
+        board.vcpu_mut(0).unwrap().state = state;
+        let cell = std::cell::Cell::new(0xD01);
+        quantum_with_efer_cell(&mut board, 0, 20, &cell, None).unwrap();
+        assert_eq!(cell.get(), 0x501, "the WRMSR retired and stored");
+        board.vcpu_mut(0).unwrap().guest_efer = cell.get();
+        assert_eq!(board.efer(), 0x500, "NXE is clear, LME|LMA stay");
+
+        let report = run(&mut board);
+        assert!(
+            fault_code(&report).contains("error_code: Some(9)"),
+            "{report:?}"
+        );
+        let (_, _, error) = board.fetch_view_2m(0x40_0000, 1);
+        let rsvd_error = error.expect("RSVD fault");
+        assert_ne!(rsvd_error, nx_error, "the fetch view sees the cleared NXE");
+
+        // NXE is set again: the same entry is an NX fault again.
+        board.vcpu_mut(0).unwrap().guest_efer = 0xD01;
+        assert_eq!(board.efer(), 0xD00);
+        let report = run(&mut board);
+        assert!(
+            fault_code(&report).contains("error_code: Some(17)"),
+            "{report:?}"
+        );
+        let (_, _, error) = board.fetch_view_2m(0x40_0000, 1);
+        assert_eq!(error.expect("NX fault"), nx_error);
+    }
+
+    #[test]
     fn a_wrmsr_that_sets_nxe_with_nx_declared_makes_the_xd_entry_valid_in_the_same_quantum() {
         use od_isa::cpuid::CpuidProfile;
         const XD: u64 = 1 << 63;

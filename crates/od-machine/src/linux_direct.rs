@@ -8459,6 +8459,36 @@ mod tests {
         assert_eq!(boot.board.guest_efer(), 0xD00);
     }
 
+    #[test]
+    fn wrmsr_efer_that_clears_nxe_reaches_the_stop_record_and_the_board_walker_efer() {
+        // S2-25f review. MOV ECX,0xC0000080; MOV EAX,0x501; XOR EDX,EDX; WRMSR; HLT. Clearing NXE
+        // needs no CPUID bit; the record and `board.efer()` carry the walker EFER (NXE clear), the
+        // guest EFER is the stored value.
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x05, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.efer(), 0xD00);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_efer, 0x501);
+        assert_eq!(boot.board.guest_efer(), 0x501);
+        assert_eq!(
+            record.efer, 0x500,
+            "the stop record carries the walker EFER"
+        );
+        assert_eq!(boot.board.efer(), 0x500);
+    }
+
     // ---- S4-38L7ao: WRMSR IA32_STAR through the board facade (write-only) ----
 
     #[test]

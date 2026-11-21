@@ -105,6 +105,8 @@ pub const FIRMWARE_MIN_RAM_BYTES: u64 = 128 << 20;
 pub const FIRMWARE_MAX_RAM_BYTES: u64 = 0xF_F400_0000;
 pub const FIRMWARE_COM1_PORT: u16 = 0x03f8;
 pub const FIRMWARE_EFER: u64 = 0x0d00;
+/// `IA32_EFER.NXE` (bit 11).
+const EFER_NXE: u64 = 1 << 11;
 /// ACPI table area (S4-31c, `acpi_tables`): `[0xE_0000, 0xE_F000)`, an E820 ACPI
 /// reclaim range in S4-37; the RSDP will sit at its first byte.
 pub const FIRMWARE_ACPI_TABLES_BASE: u64 = 0x000E_0000;
@@ -2090,7 +2092,7 @@ impl LoadedFirmwareBoard {
             self.state().cr0.unwrap_or(CR0_LONG_PAGING),
             cr3,
             self.state().cr4.unwrap_or(CR4_PAE),
-            FIRMWARE_EFER,
+            self.efer(),
         );
         let (frames, ended) = match paging {
             Ok(paging) => capture_frame_chain(rbp, |frame_pointer| {
@@ -2127,7 +2129,7 @@ impl LoadedFirmwareBoard {
             self.state().cr0.unwrap_or(CR0_LONG_PAGING),
             cr3,
             self.state().cr4.unwrap_or(CR4_PAE),
-            FIRMWARE_EFER,
+            self.efer(),
         );
         match paging {
             Ok(paging) => crate::console_output_context::capture_frame_chain_with_limit(
@@ -2672,9 +2674,14 @@ impl LoadedFirmwareBoard {
         self.page_table_root
     }
 
-    /// The EFER of the translation walkers (LME|LMA|NXE); the guest's `SCE` is not part of it.
-    pub const fn efer(&self) -> u64 {
-        FIRMWARE_EFER
+    /// The EFER of the translation walkers of the boot processor: `FIRMWARE_EFER` (LME|LMA) with
+    /// the NXE bit of the guest EFER (S2-25f). NXE starts set (`FIRMWARE_EFER`) and a guest
+    /// `WRMSR IA32_EFER` through the CPL0 set may clear it (or set it again when the CPU profile
+    /// declares NX), so every walker this board builds (the quantum runs, the fetch view, the
+    /// frame-chain captures, the stop record) takes it from here instead of the constant. LME and
+    /// LMA never change in the set; the guest's `SCE` is not part of it.
+    pub fn efer(&self) -> u64 {
+        (FIRMWARE_EFER & !EFER_NXE) | (self.vcpus[BOOT_VCPU_INDEX].guest_efer & EFER_NXE)
     }
 
     /// The guest-visible `IA32_EFER`: the walker EFER, plus `SCE` once the guest wrote it
@@ -2894,6 +2901,8 @@ impl LoadedFirmwareBoard {
         committed_write: impl FnMut(GuestPhysicalRange),
         observe: impl FnMut(u64, u64),
     ) -> PagedProbeQuantumReport {
+        // S2-25f: the walker EFER is the guest's current NXE, not the constant.
+        let efer = self.efer();
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -2911,7 +2920,7 @@ impl LoadedFirmwareBoard {
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -2936,7 +2945,7 @@ impl LoadedFirmwareBoard {
                     tpm: self.tpm.as_ref(),
                 },
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -2960,7 +2969,7 @@ impl LoadedFirmwareBoard {
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -2973,7 +2982,7 @@ impl LoadedFirmwareBoard {
             &mut self.vcpus[BOOT_VCPU_INDEX].state,
             &mut self.bus,
             self.page_table_root,
-            FIRMWARE_EFER,
+            efer,
             context,
             instruction_budget,
             INTEGER_FLAGS,
@@ -2991,7 +3000,8 @@ impl LoadedFirmwareBoard {
         rip: u64,
         len: usize,
     ) -> (Option<u64>, Vec<u8>, Option<String>) {
-        self.fetch_view_2m_with_privilege(rip, len, PrivilegeLevel::Ring0, FIRMWARE_EFER)
+        let efer = self.efer();
+        self.fetch_view_2m_with_privilege(rip, len, PrivilegeLevel::Ring0, efer)
     }
 
     pub(crate) fn fetch_view_2m_with_privilege(
@@ -3336,12 +3346,10 @@ impl LoadedFirmwareBoard {
             .map(|configs| std::rc::Rc::new(FetchCacheSweep::new(configs)));
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
-        // S2-25 NXE slice: the walker's EFER is the board's `FIRMWARE_EFER` with the NXE bit of the
-        // guest EFER (a guest `WRMSR IA32_EFER` that cleared NXE in an earlier run keeps it clear);
-        // a retired NXE write of a quantum reaches the next one through `report.efer`.
-        const EFER_NXE: u64 = 1 << 11;
-        let mut walker_efer =
-            (FIRMWARE_EFER & !EFER_NXE) | (self.vcpus[BOOT_VCPU_INDEX].guest_efer & EFER_NXE);
+        // S2-25 NXE slice: the walker's EFER is the board's `efer()` (the NXE bit of the guest EFER;
+        // a guest `WRMSR IA32_EFER` that cleared NXE in an earlier run keeps it clear); a retired
+        // NXE write of a quantum reaches the next one through `report.efer`.
+        let mut walker_efer = self.efer();
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
         // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
         // entry), the CR2 the guest left is kept in `guest_cr2` and fed back on entry,
