@@ -2730,13 +2730,11 @@ impl LoadedFirmwareBoard {
     }
 
     /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pic_master(&self) -> Option<Pic8259Handle> {
         self.pic_master.clone()
     }
 
     /// The installed PIT -> 8259 source (a second handle on it), if any.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pit_pic_source(&self) -> Option<PitPicIrqSource> {
         self.pit_pic_source.clone()
     }
@@ -3198,6 +3196,11 @@ impl LoadedFirmwareBoard {
         self.pit
             .as_ref()
             .map(|pit| [pit.port_b_reads(), pit.counter_port_reads()])
+    }
+
+    /// PIT channel 0 as the guest left it (S7-31m); `None` without the Linux profile.
+    pub(crate) fn pit_channel0_snapshot(&self) -> Option<crate::PitChannelSnapshot> {
+        self.pit.as_ref().map(|pit| pit.snapshot().channel0)
     }
 
     pub(crate) fn irq0_edges(&self) -> u64 {
@@ -8242,6 +8245,28 @@ mod tests {
         assert_eq!(with.run.retired, 40);
         assert_eq!(with.run.exit, PagedProbeExit::Unsupported { opcode: 0xf4 });
         assert_eq!(marked.state(), plain.state());
+        // S7-31m: the interrupt state of the stop is reported and observes only. This board stops
+        // at an unsupported HLT: IF is clear, the PIC is as reset (all masked, nothing requested),
+        // channel 0 is unprogrammed, no source is installed, nothing is delivered, and the
+        // CPUID profile declares no APIC.
+        assert_eq!(with.interrupts, without.interrupts);
+        let interrupts = &with.interrupts;
+        assert!(!interrupts.interrupt_flag);
+        assert_eq!(interrupts.source, "none");
+        assert_eq!(
+            (interrupts.pic_imr, interrupts.pic_irr, interrupts.pic_isr),
+            (Some(0xff), Some(0), Some(0))
+        );
+        assert_eq!(interrupts.pit_channel0_programmed, Some(false));
+        assert!(!interrupts.apic_declared);
+        assert_eq!(
+            (
+                interrupts.irqs_delivered,
+                interrupts.irq0_edges,
+                interrupts.halt_wakes
+            ),
+            (0, 0, 0)
+        );
         // The final RIP is reported with its raw paging-structure entries (S7-31e): the PML4E
         // first, present, at the board CR3.
         assert_eq!(with.rip_walk[0].level, "PML4E");

@@ -1793,6 +1793,8 @@ pub struct FirmwareUnifiedRun {
     pub first_page_fault: Option<FirmwareUnifiedPageFault>,
     /// The CPU state the run stopped in (S7-31g, diagnostics).
     pub final_state: FirmwareUnifiedState,
+    /// The interrupt state the run stopped in (S7-31m).
+    pub interrupts: FirmwareUnifiedInterrupts,
     /// The RIP that was asked to be marked (S7-31d), if any.
     pub marker_rip: Option<u64>,
     /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
@@ -1819,6 +1821,47 @@ pub struct FirmwareUnifiedState {
     pub ss_cache: Option<String>,
     /// `Debug` text of the interrupt shadow.
     pub sti_shadow: Option<String>,
+}
+
+/// The interrupt state a unified run stopped in (S7-31m, ISSUE-640): whether the guest can still
+/// be woken at the stop, and what the board did with interrupts during the run. Read after the
+/// run; it only observes.
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedInterrupts {
+    /// RFLAGS.IF at the stop.
+    pub interrupt_flag: bool,
+    /// `Debug` text of the vCPU activity state (`Running`, `Halted`, ...).
+    pub activity: Option<String>,
+    /// The board interrupt source of the run: `none` (no source, the run delivers nothing) or
+    /// `pit_pic` (PIT channel 0 -> 8259 master IR0, UART THRE -> IR4).
+    pub source: &'static str,
+    /// 8259 master: interrupt mask, request and in-service registers; `None` without the Linux
+    /// profile. The vector base is the accepted ICW2.
+    pub pic_imr: Option<u8>,
+    pub pic_irr: Option<u8>,
+    pub pic_isr: Option<u8>,
+    pub pic_icw2: Option<u8>,
+    /// `Debug` text of the whole 8259 master snapshot.
+    pub pic: Option<String>,
+    /// `Debug` text of the PIT channel 0 snapshot (mode, access, reload, loaded-by-reset).
+    pub pit_channel0: Option<String>,
+    /// Whether a control word programmed PIT channel 0 since reset (the unified run starts from reset).
+    pub pit_channel0_programmed: Option<bool>,
+    /// `CPUID.1:EDX.APIC` as the run's CPUID profile declares it: without it the guest has no
+    /// Local APIC timer to use.
+    pub apic_declared: bool,
+    /// External interrupts delivered through the guest IDT.
+    pub irqs_delivered: u64,
+    /// IRQ 0 edges the source reported.
+    pub irq0_edges: u64,
+    /// Boundaries at which a pending vector was held back by IF = 0.
+    pub irq_refused_masked: u64,
+    /// The same because of the one-instruction STI shadow.
+    pub irq_refused_shadow: u64,
+    /// Times a halted CPU was woken from the source's wake time.
+    pub halt_wakes: u64,
+    /// Virtual nanoseconds the clock skipped while the CPU was halted.
+    pub halt_idle_ns: u64,
 }
 
 /// One raw paging-structure entry of the walk of the final RIP (S7-31e).
@@ -2010,6 +2053,36 @@ pub fn run_firmware_unified_marked(
             sti_shadow: state.sti_shadow.map(|shadow| format!("{shadow:?}")),
         }
     };
+    let interrupts = {
+        let pic = board.pic_master().map(|pic| pic.snapshot());
+        let pit_channel0 = board.pit_channel0_snapshot();
+        FirmwareUnifiedInterrupts {
+            interrupt_flag: final_state.rflags & (1 << 9) != 0,
+            activity: board
+                .state()
+                .activity
+                .map(|activity| format!("{activity:?}")),
+            source: if board.pit_pic_source().is_some() {
+                "pit_pic"
+            } else {
+                "none"
+            },
+            pic_imr: pic.map(|pic| pic.imr),
+            pic_irr: pic.map(|pic| pic.irr),
+            pic_isr: pic.map(|pic| pic.isr),
+            pic_icw2: pic.and_then(|pic| pic.icw2),
+            pic: pic.map(|pic| format!("{pic:?}")),
+            pit_channel0: pit_channel0.map(|channel| format!("{channel:?}")),
+            pit_channel0_programmed: pit_channel0.map(|channel| !channel.loaded_by_reset),
+            apic_declared: members.cpuid_profile.query(1, 0).edx & (1 << 9) != 0,
+            irqs_delivered: report.irq.irqs_delivered,
+            irq0_edges: report.irq.irq0_edges,
+            irq_refused_masked: report.irq.irq_refused_masked,
+            irq_refused_shadow: report.irq.irq_refused_shadow,
+            halt_wakes: report.irq.halt_wakes,
+            halt_idle_ns: report.irq.halt_idle_ns,
+        }
+    };
     let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
     let rip_walk = board
         .raw_page_walk(rip)
@@ -2035,6 +2108,7 @@ pub fn run_firmware_unified_marked(
         rip_walk,
         first_page_fault,
         final_state,
+        interrupts,
         marker_rip,
         marker,
         checkpoints,
