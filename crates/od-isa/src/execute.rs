@@ -51711,11 +51711,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, xmm, operand, immediate),
+            instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0),
             instruction.opcode.byte,
             next_rip,
         )?;
-        // The shared tail below is bypassed, so the definedness of the flags is updated here: PTEST
-        // defines all six arithmetic flags, the other SSE4.1 forms none (`flag_effects` is empty).
+        // The shared tail below is bypassed, so the definedness of the flags is updated here: PTEST and the
+        // string compares define all six arithmetic flags, the other SSE4.1 forms none (`flag_effects` is
+        // empty).
         if matches!(outcome, StepOutcome::Advanced) {
             *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
         }
@@ -70036,6 +70038,10 @@ fn sse41_vector_result(
         }
         Sse41Kind::Movntdqa => src,
         Sse41Kind::Ptest
+        | Sse41Kind::Pcmpestrm
+        | Sse41Kind::Pcmpestri
+        | Sse41Kind::Pcmpistrm
+        | Sse41Kind::Pcmpistri
         | Sse41Kind::Pextrb
         | Sse41Kind::Pextrw
         | Sse41Kind::Pextrd
@@ -70047,8 +70053,10 @@ fn sse41_vector_result(
 }
 
 /// S2-55 slice A: the integer SSE4.1 forms on the local SSE state (Intel SDM Vol. 2B, see [`Sse41Kind`]).
-/// No MXCSR bit is read or written and no SIMD floating-point exception exists; only PTEST changes RFLAGS
-/// (ZF, CF from the SDM operation; AF, OF, PF, SF cleared). Bits above 127 do not exist here (legacy SSE
+/// No MXCSR bit is read or written and no SIMD floating-point exception exists; only PTEST and (S2-56 slice B)
+/// the string compares PCMPxSTRx change RFLAGS (PTEST: ZF, CF from the SDM operation; AF, OF, PF, SF cleared;
+/// PCMPxSTRx: see [`pcmp_string`]; the string compares write ECX or XMM0 as well and their 16-byte memory
+/// operand needs no alignment, SDM Table 2-21 note 1). Bits above 127 do not exist here (legacy SSE
 /// leaves them unchanged). PEXTR* to a register zero-extends to 64 bits (SDM: the default operand size of
 /// the register destination is 64 bits in 64-bit mode); PINSRB takes the low byte of the register source.
 ///
@@ -70070,6 +70078,7 @@ fn step_sse41(
     memory: &mut impl GuestMemory,
     context: AccessContext,
     (kind, xmm, operand, immediate): (Sse41Kind, u8, Sse41Operand, u8),
+    rex_w: bool,
     opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
@@ -70167,6 +70176,45 @@ fn step_sse41(
                 return report_memory_error(error);
             }
         }
+    }
+    if kind.is_string_compare() {
+        // S2-56 slice B: the operands are complete (a memory fault left the state untouched above), so the
+        // result, the index or mask and the flags are committed together.
+        let first = state
+            .sse
+            .as_ref()
+            .expect("SSE4.2 state was prevalidated")
+            .xmm[usize::from(xmm)];
+        let lengths = kind.has_explicit_lengths().then(|| {
+            let register = |register: Register| state.gpr[register as usize];
+            if rex_w {
+                (
+                    register(Register::Rax) as i64,
+                    register(Register::Rdx) as i64,
+                )
+            } else {
+                (
+                    i64::from(register(Register::Rax) as u32 as i32),
+                    i64::from(register(Register::Rdx) as u32 as i32),
+                )
+            }
+        });
+        let result = pcmp_string(first, raw, immediate, lengths);
+        match kind {
+            Sse41Kind::Pcmpestri | Sse41Kind::Pcmpistri => {
+                state.gpr[Register::Rcx as usize] = u64::from(result.index);
+            }
+            _ => {
+                state
+                    .sse
+                    .as_mut()
+                    .expect("SSE4.2 state was prevalidated")
+                    .xmm[0] = result.mask;
+            }
+        }
+        state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS) | result.flags;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
     }
     let sse = state.sse.as_mut().expect("SSE4.1 state was prevalidated");
     let dest = sse.xmm[usize::from(xmm)];
@@ -70429,6 +70477,155 @@ fn fault_general_protection() -> Result<StepOutcome, MemoryError> {
         error_code: Some(0),
         linear_address: None,
     }))
+}
+
+/// The outcome of one PCMPxSTRx: the index for the `I` forms, the mask for the `M` forms, the RFLAGS bits.
+struct PcmpString {
+    index: u32,
+    mask: [u8; 16],
+    flags: u64,
+}
+
+/// S2-56 slice B: PCMPESTRI, PCMPESTRM, PCMPISTRI and PCMPISTRM (Intel SDM Vol. 2B pp. 4-254..4-257 and
+/// 4-267..4-270, with the imm8 control byte of Section 4.1, Tables 4-1..4-8, pp. 4-1..4-4). `first` is xmm1
+/// (the "reg" string), `second` is xmm2/m128 (the "reg/mem" string). `lengths` is `Some((EAX or RAX, EDX or
+/// RDX))` as signed values for the explicit forms and `None` for the implicit forms.
+///
+/// 1. Format (imm8[1:0]): bytes or words (n = 16 or 8 elements), unsigned or signed.
+/// 2. Validity: explicit, element i is valid if i < |length| saturated to n (SDM: "The absolute-value
+///    computation saturates to 16 (for bytes) and 8 (for words)"); implicit, i is lower than the index of the
+///    least significant null element. The valid counts also give the flags: ZF = (count of xmm2/m128 < n),
+///    SF = (count of xmm1 < n), which is "absolute-value of EDX < 16 (8)" and "any byte/word of xmm2/mem128 is
+///    null" respectively.
+/// 3. BoolRes[j, i] compares reg/mem[j] with reg[i] ("equal", or for Ranges ">=" with the even and "<=" with
+///    the odd reg elements) and is overridden by Table 4-7 for invalid elements.
+/// 4. Aggregation (imm8[3:2], Table 4-3), polarity (imm8[5:4], Table 4-4) and the output selection (imm8[6],
+///    Tables 4-5 and 4-6): the least or most significant set bit of IntRes2, or n if it is zero, for the
+///    index; IntRes2 as a bit mask or expanded to a byte/word mask for XMM0.
+/// 5. CF = IntRes2 != 0, ZF and SF as above, OF = IntRes2[0], AF and PF are reset.
+fn pcmp_string(
+    first: [u8; 16],
+    second: [u8; 16],
+    imm8: u8,
+    lengths: Option<(i64, i64)>,
+) -> PcmpString {
+    let words = imm8 & 1 != 0;
+    let signed = imm8 & 2 != 0;
+    let n: usize = if words { 8 } else { 16 };
+    let element = |bytes: &[u8; 16], index: usize| -> i32 {
+        if words {
+            let raw = u16::from_le_bytes([bytes[2 * index], bytes[2 * index + 1]]);
+            if signed {
+                i32::from(raw as i16)
+            } else {
+                i32::from(raw)
+            }
+        } else {
+            let raw = bytes[index];
+            if signed {
+                i32::from(raw as i8)
+            } else {
+                i32::from(raw)
+            }
+        }
+    };
+    let is_null = |bytes: &[u8; 16], index: usize| {
+        if words {
+            bytes[2 * index] | bytes[2 * index + 1] == 0
+        } else {
+            bytes[index] == 0
+        }
+    };
+    let valid_count = |value: i64, bytes: &[u8; 16]| -> usize {
+        match lengths {
+            Some(_) => usize::try_from(value.unsigned_abs().min(n as u64)).expect("at most 16"),
+            None => (0..n).find(|&index| is_null(bytes, index)).unwrap_or(n),
+        }
+    };
+    let (length_first, length_second) = lengths.unwrap_or((0, 0));
+    let count_first = valid_count(length_first, &first);
+    let count_second = valid_count(length_second, &second);
+    let mode = (imm8 >> 2) & 3;
+    // BoolRes[j, i] after Table 4-7: `j` indexes xmm2/m128, `i` indexes xmm1.
+    let bool_res = |j: usize, i: usize| -> bool {
+        match (i < count_first, j < count_second) {
+            (true, true) => {
+                let (b, a) = (element(&second, j), element(&first, i));
+                if mode == 1 {
+                    if i % 2 == 0 { b >= a } else { b <= a }
+                } else {
+                    b == a
+                }
+            }
+            (false, false) => mode >= 2,
+            (false, true) => mode == 3,
+            (true, false) => false,
+        }
+    };
+    let all_ones: u32 = (1 << n) - 1;
+    let mut int_res1: u32 = 0;
+    match mode {
+        0 => {
+            for j in 0..n {
+                if (0..n).any(|i| bool_res(j, i)) {
+                    int_res1 |= 1 << j;
+                }
+            }
+        }
+        1 => {
+            for j in 0..n {
+                if (0..n)
+                    .step_by(2)
+                    .any(|i| bool_res(j, i) && bool_res(j, i + 1))
+                {
+                    int_res1 |= 1 << j;
+                }
+            }
+        }
+        2 => {
+            for i in 0..n {
+                if bool_res(i, i) {
+                    int_res1 |= 1 << i;
+                }
+            }
+        }
+        _ => {
+            for j in 0..n {
+                if (j..n).all(|k| bool_res(k, k - j)) {
+                    int_res1 |= 1 << j;
+                }
+            }
+        }
+    }
+    let valid_second_mask: u32 = (1 << count_second) - 1;
+    let int_res2 = match (imm8 >> 4) & 3 {
+        1 => !int_res1 & all_ones,
+        3 => (int_res1 ^ valid_second_mask) & all_ones,
+        _ => int_res1,
+    };
+    let index = if int_res2 == 0 {
+        n as u32
+    } else if imm8 & 0x40 != 0 {
+        31 - int_res2.leading_zeros()
+    } else {
+        int_res2.trailing_zeros()
+    };
+    let mut mask = [0u8; 16];
+    if imm8 & 0x40 == 0 {
+        mask[..4].copy_from_slice(&int_res2.to_le_bytes());
+    } else {
+        let width = if words { 2 } else { 1 };
+        for position in 0..n {
+            if int_res2 >> position & 1 != 0 {
+                mask[width * position..width * (position + 1)].fill(0xff);
+            }
+        }
+    }
+    let flags = if int_res2 != 0 { crate::CF } else { 0 }
+        | if count_second < n { crate::ZF } else { 0 }
+        | if count_first < n { crate::SF } else { 0 }
+        | if int_res2 & 1 != 0 { crate::OF } else { 0 };
+    PcmpString { index, mask, flags }
 }
 
 /// CRC-32C accumulation (Intel SDM Vol. 2A CRC32 "Operation", p. 3-205): the polynomial 11EDC6F41H with

@@ -264,6 +264,15 @@ pub enum Sse41Kind {
     Pinsrq,
     /// `66 0F 3A 42 /r ib`
     Mpsadbw,
+    /// `66 [REX.W] 0F 3A 60 /r ib` (SSE4.2, S2-56 slice B): PCMPESTRM, explicit lengths in EAX/EDX (RAX/RDX
+    /// with REX.W), the mask goes to XMM0.
+    Pcmpestrm,
+    /// `66 [REX.W] 0F 3A 61 /r ib`: PCMPESTRI, explicit lengths, the index goes to ECX.
+    Pcmpestri,
+    /// `66 0F 3A 62 /r ib`: PCMPISTRM, implicit (null-terminated) lengths, the mask goes to XMM0.
+    Pcmpistrm,
+    /// `66 0F 3A 63 /r ib`: PCMPISTRI, implicit lengths, the index goes to ECX.
+    Pcmpistri,
 }
 
 impl Sse41Kind {
@@ -319,11 +328,15 @@ impl Sse41Kind {
                 }
             }
             (OpcodeMap::Escape0f3a, 0x42) => Self::Mpsadbw,
+            (OpcodeMap::Escape0f3a, 0x60) => Self::Pcmpestrm,
+            (OpcodeMap::Escape0f3a, 0x61) => Self::Pcmpestri,
+            (OpcodeMap::Escape0f3a, 0x62) => Self::Pcmpistrm,
+            (OpcodeMap::Escape0f3a, 0x63) => Self::Pcmpistri,
             _ => return None,
         })
     }
 
-    /// PBLENDW, PEXTR*, PINSR* and MPSADBW carry an `imm8`.
+    /// PBLENDW, PEXTR*, PINSR*, MPSADBW and the four string compares carry an `imm8`.
     pub const fn has_immediate(self) -> bool {
         matches!(
             self,
@@ -336,7 +349,25 @@ impl Sse41Kind {
                 | Self::Pinsrd
                 | Self::Pinsrq
                 | Self::Mpsadbw
+                | Self::Pcmpestrm
+                | Self::Pcmpestri
+                | Self::Pcmpistrm
+                | Self::Pcmpistri
         )
+    }
+
+    /// PCMPESTRI, PCMPESTRM, PCMPISTRI and PCMPISTRM (SSE4.2): the string compares, which write ECX or XMM0
+    /// and RFLAGS and never the ModRM.reg register.
+    pub const fn is_string_compare(self) -> bool {
+        matches!(
+            self,
+            Self::Pcmpestrm | Self::Pcmpestri | Self::Pcmpistrm | Self::Pcmpistri
+        )
+    }
+
+    /// PCMPESTRI and PCMPESTRM take explicit lengths from EAX/EDX (RAX/RDX with REX.W).
+    pub const fn has_explicit_lengths(self) -> bool {
+        matches!(self, Self::Pcmpestrm | Self::Pcmpestri)
     }
 
     /// PEXTR* and PINSR* take a general register (or memory) as the `r/m` operand.
@@ -377,9 +408,10 @@ impl Sse41Kind {
     }
 
     /// A 128-bit memory operand must be 16-byte aligned (`#GP(0)` otherwise): Table 2-21 note 1 exempts
-    /// only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms, and MOVNTDQA is Type 1 (Table 2-18).
+    /// only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms (note 1, repeated by the four instruction pages),
+    /// and MOVNTDQA is Type 1 (Table 2-18).
     pub const fn requires_alignment(self) -> bool {
-        self.memory_bytes() == 16
+        self.memory_bytes() == 16 && !self.is_string_compare()
     }
 }
 
@@ -3279,11 +3311,17 @@ impl Instruction {
                 undefined: crate::PF | crate::AF | crate::SF | crate::OF,
             },
             // PTEST: ZF and CF come from the operands, AF, OF, PF and SF are cleared (SDM), so all six
-            // arithmetic flags are defined afterwards.
+            // arithmetic flags are defined afterwards. PCMPxSTRx (S2-56 slice B) writes CF, ZF, SF, OF and
+            // resets AF and PF: all six are defined as well.
             Operation::BitScan { .. }
             | Operation::Popcnt { .. }
             | Operation::Sse41 {
-                kind: Sse41Kind::Ptest,
+                kind:
+                    Sse41Kind::Ptest
+                    | Sse41Kind::Pcmpestrm
+                    | Sse41Kind::Pcmpestri
+                    | Sse41Kind::Pcmpistrm
+                    | Sse41Kind::Pcmpistri,
                 ..
             } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
