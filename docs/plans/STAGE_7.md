@@ -747,9 +747,9 @@
 
 ### S7-34. USB HID клавиатура прошивки для `ConIn`
 
-- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI 1.2 + USB HID; модель — этап 8, S8-41…S8-43, решение по рекомендации Opus high 2026-11-21, подтверждение владельца проекта ожидается; контракт-потребитель — раздел 15 [XHCI_DEVICE.md](../specs/XHCI_DEVICE.md), ожидает ревью Opus) и до S4-30 (xHCI — PCI-устройство).
+- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI (интерфейс 1.0, HCIVERSION 0x0100; сверка по тексту 1.2) + USB HID; модель — этап 8, S8-41…S8-43, решение по рекомендации Opus high 2026-11-21, подтверждено владельцем проекта 2026-11-21; контракт-потребитель — раздел 15 [XHCI_DEVICE.md](../specs/XHCI_DEVICE.md), ожидает приёмки) и до S4-30 (xHCI — PCI-устройство).
 - **Где:** `firmware/uefi/src/usb/{xhci,hub,hid_keyboard}.rs`, `firmware/uefi/src/console/text_in.rs` (ConIn с несколькими источниками: COM1 и USB), `docs/specs/UEFI_PROFILE.md` (раздел «Консоль»).
-- **Сделать:** собственный pre-boot стек xHCI 1.2 (один контроллер, control/interrupt transfers, перечисление корневого хаба и устройств), USB HID 1.11 boot protocol keyboard → `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`/`EX`; передача состояния устройства ОС при `ExitBootServices` (остановка контроллера по UEFI 2.11 раздел «USB Host Controller Protocol» и xHCI); `ConIn` — объединение источников.
+- **Сделать:** собственный pre-boot стек xHCI (интерфейс 1.0, HCIVERSION 0x0100; сверка по тексту 1.2) (один контроллер, control/interrupt transfers, перечисление корневого хаба и устройств), USB HID 1.11 boot protocol keyboard → `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`/`EX`; передача состояния устройства ОС при `ExitBootServices` (остановка контроллера по UEFI 2.11 раздел «USB Host Controller Protocol» и xHCI); `ConIn` — объединение источников.
 - **Проверить:** runner подаёт HID-отчёты через модель xHCI; приложение `echo` печатает клавиши; после EBS контроллер остановлен (регистры модели).
 - **Готово:** клавиатура работает в прошивке и в приложениях до загрузки ОС; ограничение «ввод только COM1» снято из `UEFI_PROFILE.md`.
 - **Не делать:** не реализовывать mass storage, хабы глубже одного уровня, USB 3 streams; не копировать чужие USB-стеки.
