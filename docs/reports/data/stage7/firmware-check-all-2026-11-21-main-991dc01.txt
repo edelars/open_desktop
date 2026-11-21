@@ -1,0 +1,20 @@
+step                          exit  seconds  key line
+build-runner                  0     91       Finished `release` profile [optimized] target(s) in 1m 30s
+build-rom-stock               0     11       sha256: 16e71614b75d02d6fcad91846dd0ba3e616663fa73456b74f64c5efed8a20e6a
+build-rom-test-apps           0     16       sha256: 041fe9cdb49dbf1ce37c112709eb666c1d379e2634ba0495bf1cf51c44a52a1e
+firmware_boot_smoke           0     193      sha256: 640786919725fe3f8188fb58083b4188a0c9bca348be7ec64b1faf8a9c1d1f01
+firmware_esp_boot_smoke       0     27       sha256: 16e71614b75d02d6fcad91846dd0ba3e616663fa73456b74f64c5efed8a20e6a
+firmware_nvram_smoke          0     29       sha256: 041fe9cdb49dbf1ce37c112709eb666c1d379e2634ba0495bf1cf51c44a52a1e
+firmware_failure_smoke        0     198      cargo test: 3 passed; 0 failed; 0 ignored (3 result lines)
+firmware_install_media_smoke  0     65       sha256: 16e71614b75d02d6fcad91846dd0ba3e616663fa73456b74f64c5efed8a20e6a
+firmware_pkcs7_smoke          0     11       pkcs7: 5253701 instructions, 3448 quanta
+firmware_secure_boot_smoke    0     129      sha256: 16e71614b75d02d6fcad91846dd0ba3e616663fa73456b74f64c5efed8a20e6a
+firmware_tpm_smoke            0     337      tpm-esp: 368364188 instructions, 4733 quanta
+firmware_reset_smoke          0     822      sha256: 8ecf48d5a1af16e966a168332ea73170262ca75c7ef03693386729d1d5dc83ad
+host-tests-firmware-uefi      0     6        cargo test: 344 passed; 0 failed; 0 ignored (2 result lines)
+ignored-tpm-startup-failure   0     8        cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+ignored-secure-boot-pcr7      0     208      cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+python-selftests              0     78       OK
+
+total 2229 s; 16 of 16 steps passed
+logs: /Users/senya/projects/open_desktop/.claude/worktrees/agent-ab72e3fc80acd6fac/work/stage7/fca-run/logs
