@@ -1850,6 +1850,13 @@ pub struct FirmwareUnifiedInterrupts {
     /// `CPUID.1:EDX.APIC` as the run's CPUID profile declares it: without it the guest has no
     /// Local APIC timer to use.
     pub apic_declared: bool,
+    /// Why a halted CPU was not resumed (SDM: `HLT` waits for an interrupt, NMI, SMI or reset), or
+    /// `None` when the CPU is not halted: `if_clear` (IF = 0: no maskable interrupt can wake it;
+    /// the wait is forever), `no_wake_time` (IF = 1, but the source reports no edge to wait for:
+    /// its line is masked or in service, or the timer has no further edge), or
+    /// `run_ended_with_a_wake_pending` (IF = 1 and the source has an edge to wait for: the run
+    /// ended for another reason, the budget or a stop request).
+    pub halt_stop: Option<&'static str>,
     /// External interrupts delivered through the guest IDT.
     pub irqs_delivered: u64,
     /// IRQ 0 edges the source reported.
@@ -1951,6 +1958,11 @@ pub fn run_firmware_unified_marked(
             "run_firmware_unified runs one vCPU",
         ));
     }
+    if !board.pit_pic_irq_available() {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified needs the Linux-profile PIT and 8259",
+        ));
+    }
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
     crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
 
@@ -1962,6 +1974,7 @@ pub fn run_firmware_unified_marked(
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,
+        halt: true,
         ..LinuxCpl0SetMembers::linux_default()
     };
     let profile = LinuxCpl0Profile::new(members, true, board.efer());
@@ -1990,8 +2003,18 @@ pub fn run_firmware_unified_marked(
             })
             .map_err(|_| crate::FirmwareBoardError::Config("run_firmware_unified: bad marker"))?;
     }
+    // S7-31m (ISSUE-640): the kernel programs the PIT (channel 0, mode 2) and unmasks IR0 of the
+    // 8259, then idles in `sti; hlt` until the timer interrupt (the S7-31m measurement). The
+    // board source is the one of the user-mode Linux run (S4-39g, S4-39i): PIT channel 0 -> IR0
+    // and the UART THRE line -> IR4 through the 8259. With `halt` and the interrupt hook a
+    // `HLT` at IF = 1 is woken at the next timer edge; `HLT` at IF = 0 ends the run as halted.
+    // `pit_pic_irq_available` was checked with the refusals at the top, so both installs succeed.
+    assert!(
+        board.enable_pit_pic_irq() && board.enable_uart_irq4(),
+        "the PIT -> 8259 source was checked available"
+    );
     let result =
-        board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, false);
+        board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
     cpu_cells.commit(
         board
             .vcpu_mut(BOOT_VCPU_INDEX)
@@ -2054,6 +2077,17 @@ pub fn run_firmware_unified_marked(
         }
     };
     let interrupts = {
+        // Asked first: `irq_wake_ns` brings the sources up to the clock, so the snapshots below
+        // are taken after it.
+        let halt_stop = (board.state().activity == Some(od_isa::CpuActivity::Halted)).then(|| {
+            if final_state.rflags & (1 << 9) == 0 {
+                "if_clear"
+            } else if board.irq_wake_ns().is_none() {
+                "no_wake_time"
+            } else {
+                "run_ended_with_a_wake_pending"
+            }
+        });
         let pic = board.pic_master().map(|pic| pic.snapshot());
         let pit_channel0 = board.pit_channel0_snapshot();
         FirmwareUnifiedInterrupts {
@@ -2074,6 +2108,7 @@ pub fn run_firmware_unified_marked(
             pic: pic.map(|pic| format!("{pic:?}")),
             pit_channel0: pit_channel0.map(|channel| format!("{channel:?}")),
             pit_channel0_programmed: pit_channel0.map(|channel| !channel.loaded_by_reset),
+            halt_stop,
             apic_declared: members.cpuid_profile.query(1, 0).edx & (1 << 9) != 0,
             irqs_delivered: report.irq.irqs_delivered,
             irq0_edges: report.irq.irq0_edges,

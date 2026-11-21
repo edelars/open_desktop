@@ -906,6 +906,7 @@ fn boot(
                     "pic": run.interrupts.pic,
                     "pit_channel0": run.interrupts.pit_channel0,
                     "pit_channel0_programmed": run.interrupts.pit_channel0_programmed,
+                    "halt_stop": run.interrupts.halt_stop,
                     "apic_declared": run.interrupts.apic_declared,
                     "irqs_delivered": run.interrupts.irqs_delivered,
                     "irq0_edges": run.interrupts.irq0_edges,

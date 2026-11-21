@@ -2294,6 +2294,13 @@ impl LoadedFirmwareBoard {
         true
     }
 
+    /// S7-31m: whether [`Self::enable_pit_pic_irq`] would succeed (a pure check): the Linux-profile
+    /// PIT and 8259 exist and the IOAPIC source is not installed.
+    pub(crate) fn pit_pic_irq_available(&self) -> bool {
+        self.pit_pic_source.is_some()
+            || (self.pit.is_some() && self.pic_master.is_some() && self.pit_ioapic_source.is_none())
+    }
+
     /// S4-38L8d: whether [`Self::enable_pit_ioapic_irq`] would succeed (a pure check): the
     /// Linux-profile PIT exists and the 8259 source is not installed.
     pub(crate) fn pit_ioapic_irq_available(&self) -> bool {
@@ -8225,7 +8232,7 @@ mod tests {
 
     #[test]
     fn a_marker_only_observes_the_unified_run() {
-        // 40 NOPs, then HLT (the set has no halt member: the run ends Unsupported there).
+        // 40 NOPs, then HLT at IF = 0 (S7-31m: the set has the halt member; nothing can wake it).
         let mut code = vec![0x90u8; 40];
         code.push(0xf4);
         let image = minor2_image(&code);
@@ -8242,17 +8249,20 @@ mod tests {
         // Retired, quanta, time, exit and the final state are those of the run without it.
         assert_eq!(with.run, without.run);
         assert_eq!(with.set_exit_detail, without.set_exit_detail);
-        assert_eq!(with.run.retired, 40);
-        assert_eq!(with.run.exit, PagedProbeExit::Unsupported { opcode: 0xf4 });
+        // The HLT retires, then the CPU stays halted: IF = 0 (SDM: only NMI, SMI or reset wake it).
+        assert_eq!(with.run.retired, 41);
+        assert_eq!(with.run.exit, PagedProbeExit::Halted);
         assert_eq!(marked.state(), plain.state());
-        // S7-31m: the interrupt state of the stop is reported and observes only. This board stops
-        // at an unsupported HLT: IF is clear, the PIC is as reset (all masked, nothing requested),
-        // channel 0 is unprogrammed, no source is installed, nothing is delivered, and the
-        // CPUID profile declares no APIC.
+        // S7-31m: the interrupt state of the stop is reported and observes only. The CPU is
+        // halted with IF clear (the reason is recorded), the PIC is as reset (all masked, nothing
+        // requested), channel 0 is unprogrammed, the PIT -> 8259 source is installed but has
+        // nothing to deliver, and the CPUID profile declares no APIC.
         assert_eq!(with.interrupts, without.interrupts);
         let interrupts = &with.interrupts;
         assert!(!interrupts.interrupt_flag);
-        assert_eq!(interrupts.source, "none");
+        assert_eq!(interrupts.activity.as_deref(), Some("Halted"));
+        assert_eq!(interrupts.halt_stop, Some("if_clear"));
+        assert_eq!(interrupts.source, "pit_pic");
         assert_eq!(
             (interrupts.pic_imr, interrupts.pic_irr, interrupts.pic_isr),
             (Some(0xff), Some(0), Some(0))
@@ -8280,6 +8290,97 @@ mod tests {
         assert_eq!(never.run, without.run);
     }
 
+    /// S7-31m (ISSUE-640): the kernel's idle loop in miniature. The code programs the 8259
+    /// (vector base 0x30, IR0 unmasked) and PIT channel 0 (mode 2, reload 1193), then runs
+    /// `sti; hlt`. The unified loop wakes the halted CPU at the timer edge and delivers vector
+    /// 0x30 through the guest IDT; the handler's own `hlt` runs at IF = 0 (an interrupt gate
+    /// clears IF), so the run ends halted with the reason `if_clear`.
+    #[test]
+    fn unified_hlt_at_if_set_is_woken_by_the_pit_and_hlt_at_if_clear_ends_the_run() {
+        const IDT: u64 = 0x2000;
+        const HANDLER_OFFSET: usize = 0x80;
+        // `mov al, imm8; out imm8, al` pairs: ICW1..ICW4 and OCW1 of the master 8259, then the
+        // PIT control word (channel 0, LSB+MSB, mode 2) and the reload 0x04A9 (1193).
+        let mut code = Vec::new();
+        for (port, value) in [
+            (0x20u8, 0x11u8),
+            (0x21, 0x30),
+            (0x21, 0x04),
+            (0x21, 0x01),
+            (0x21, 0xFE),
+            (0x43, 0x34),
+            (0x40, 0xA9),
+            (0x40, 0x04),
+        ] {
+            code.extend_from_slice(&[0xB0, value, 0xE6, port]);
+        }
+        code.extend_from_slice(&[0xFB, 0xF4]); // sti; hlt
+        let wake_rip_offset = code.len();
+        code.resize(HANDLER_OFFSET, 0x90);
+        // Handler: EOI to the master (`mov al, 0x20; out 0x20, al`), so IR0 can fire again, then
+        // `hlt` at IF = 0: the source has the next edge, yet an interrupt gate cleared IF.
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let mut board = load_firmware_image(&minor2_image(&code), &linux_config()).unwrap();
+        let entry = board.state().rip;
+        let handler = entry + HANDLER_OFFSET as u64;
+        let mut write = |address: u64, bytes: &[u8]| {
+            for (index, byte) in bytes.iter().enumerate() {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address + index as u64),
+                        AccessWidth::Byte,
+                        u64::from(*byte),
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+        };
+        // GDT entry 1: a 64-bit ring-0 code segment; IDT gate 0x30: an interrupt gate to it.
+        write(8, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&8u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        write(IDT + 0x30 * 16, &gate);
+        let state = board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: IDT,
+            limit: 0xFFF,
+        });
+        // The ROM loads CS from its own GDT; this entry state models the same segment.
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9B,
+            flags: 0xA,
+        });
+        let run = crate::run_firmware_unified(&mut board, 100_000).unwrap();
+        let interrupts = &run.interrupts;
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(
+            board.state().rip,
+            handler + 5,
+            "stopped after the handler's hlt"
+        );
+        assert!(wake_rip_offset < HANDLER_OFFSET);
+        assert_eq!(interrupts.irqs_delivered, 1);
+        assert_eq!(interrupts.halt_wakes, 1);
+        assert!(interrupts.irq0_edges >= 1);
+        assert!(!interrupts.interrupt_flag, "the interrupt gate cleared IF");
+        assert_eq!(interrupts.halt_stop, Some("if_clear"));
+        assert_eq!(interrupts.source, "pit_pic");
+        assert_eq!(interrupts.pit_channel0_programmed, Some(true));
+        // The handler's EOI cleared the in-service bit; the timer has a next edge (a wake is
+        // available) and the run still ends: IF = 0 gives no delivery and no second wake.
+        assert_eq!(interrupts.pic_isr, Some(0));
+        assert!(board.irq_wake_ns().is_some());
+        assert_eq!(interrupts.pic_icw2, Some(0x30));
+    }
+
     #[test]
     fn run_firmware_unified_refuses_boards_it_cannot_run_and_leaves_them_untouched() {
         const NEEDS_LINUX_PROFILE: &str =
@@ -8301,10 +8402,18 @@ mod tests {
             },
         )
         .unwrap();
+        // A firmware board with the Linux profile whose timer source is the IOAPIC one: the 8259
+        // source cannot be installed (S7-31m).
+        let mut ioapic = load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap();
+        assert!(ioapic.enable_pit_ioapic_irq());
         for (board, expected) in [
             (&mut firmware, NEEDS_LINUX_PROFILE),
             (&mut linux, NEEDS_LINUX_PROFILE),
             (&mut two_cpus, "run_firmware_unified runs one vCPU"),
+            (
+                &mut ioapic,
+                "run_firmware_unified needs the Linux-profile PIT and 8259",
+            ),
         ] {
             let before = board.state().clone();
             for _ in 0..2 {
