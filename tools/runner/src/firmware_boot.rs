@@ -24,7 +24,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
-                    [--sample-rip <hex> ...]";
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...]";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -49,6 +49,11 @@ struct Options {
     reboot_cycles: Option<u64>,
     reboot_kind: PlatformResetKind,
     sample_rips: Vec<u64>,
+    /// S7-31c: `--cpu-loop unified` runs the ROM and the guest it starts in the CPL0 profile set
+    /// loop on a board with the Linux profile (ADR-0013 variant (b)).
+    unified: bool,
+    /// S7-31d: `--mark-rip` (unified loop only): record the first boundary at this RIP.
+    mark_rip: Option<u64>,
 }
 
 fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
@@ -195,6 +200,13 @@ pub fn run(args: &[String]) -> ExitCode {
         None
     };
     let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some(), tpm);
+    if options.unified {
+        // The Linux profile needs the PM block, the ACPI tables and the ECAM window.
+        config.linux_profile = true;
+        config.acpi_pm = true;
+        config.acpi_tables = true;
+        config.pci_ecam = true;
+    }
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
     }
@@ -220,6 +232,8 @@ pub fn run(args: &[String]) -> ExitCode {
         &options.com1_out,
         nvme_image,
         &options.sample_rips,
+        options.unified,
+        options.mark_rip,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -358,6 +372,8 @@ pub fn run(args: &[String]) -> ExitCode {
         &reboot_out,
         nvme_image,
         &[],
+        false,
+        None,
     ) {
         Ok(run) => run,
         Err((mut value, code)) => {
@@ -823,6 +839,8 @@ fn boot(
     com1_out: &str,
     nvme_image: Option<&str>,
     sample_rips: &[u64],
+    unified: bool,
+    mark_rip: Option<u64>,
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -849,7 +867,57 @@ fn boot(
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let mut samples = Vec::with_capacity(sample_rips.len());
-    let run = if sample_rips.is_empty() {
+    let mut unified_run = None;
+    let run = if unified {
+        // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
+        od_machine::run_firmware_unified_marked(&mut board, budget, mark_rip).map(|run| {
+            let report = run.run;
+            unified_run = Some(json!({
+                "set_exit_detail": run.set_exit_detail,
+                "members": run.members,
+                "exceptions_delivered": run.exceptions_delivered,
+                "page_faults_delivered": run.page_faults_delivered,
+                "cr3_changes": run.cr3_changes,
+                "cpl3_retired": run.cpl3_retired,
+                "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
+                "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
+                "rip_fetch_error": run.rip_fetch_error,
+                "rip_walk": run.rip_walk.iter().map(|entry| json!({
+                    "level": entry.level,
+                    "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                    "raw": format!("0x{:016x}", entry.raw),
+                })).collect::<Vec<_>>(),
+                "first_page_fault": run.first_page_fault.as_ref().map(|fault| json!({
+                    "cr2": format!("0x{:x}", fault.cr2),
+                    "error_code": format!("0x{:x}", fault.error_code),
+                    "translation_error": fault.translation_error,
+                    "walk": fault.walk.iter().map(|entry| json!({
+                        "level": entry.level,
+                        "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                        "raw": format!("0x{:016x}", entry.raw),
+                    })).collect::<Vec<_>>(),
+                })),
+                "marker_rip": run.marker_rip.map(|rip| format!("0x{rip:x}")),
+                "checkpoints": run.checkpoints.iter().map(|record| json!({
+                    "id": record.id,
+                    "name": record.name,
+                    "kind": record.kind,
+                    "rip": format!("0x{:x}", record.rip),
+                    "retired": record.retired,
+                    "quanta": record.quanta,
+                    "virtual_ns": record.virtual_ns,
+                    "cpl": record.cpl,
+                })).collect::<Vec<_>>(),
+                "marker": run.marker.map(|marker| json!({
+                    "retired": marker.retired,
+                    "quanta": marker.quanta,
+                    "virtual_ns": marker.virtual_ns,
+                })),
+                "rip_bytes": run.rip_bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            }));
+            report
+        })
+    } else if sample_rips.is_empty() {
         board.run_boot(budget)
     } else {
         let start = Instant::now();
@@ -924,6 +992,10 @@ fn boot(
             MachineStopReason::Shutdown => "Shutdown",
         }));
     }
+    if let Some(unified_run) = unified_run {
+        result["cpu_loop"] = json!("unified");
+        result["unified"] = unified_run;
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -958,6 +1030,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
+    let mut cpu_loop: Option<bool> = None;
+    let mut mark_rip: Option<u64> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1012,6 +1086,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
             }
+            "--cpu-loop" if cpu_loop.is_none() => match value.as_str() {
+                "unified" => cpu_loop = Some(true),
+                "firmware" => cpu_loop = Some(false),
+                _ => {
+                    return Err(format!(
+                        "invalid --cpu-loop '{value}'; expected firmware or unified"
+                    ));
+                }
+            },
+            "--mark-rip" if mark_rip.is_none() => {
+                let hex = value.strip_prefix("0x").unwrap_or(value);
+                mark_rip = Some(
+                    u64::from_str_radix(hex, 16)
+                        .map_err(|_| format!("invalid --mark-rip '{value}'"))?,
+                );
+            }
             "--sample-rip" if sample_rips.len() < MAX_RIP_SAMPLES => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 let rip = u64::from_str_radix(hex, 16)
@@ -1025,6 +1115,23 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
         }
         index += 2;
+    }
+    let unified = cpu_loop == Some(true);
+    if unified {
+        // The unified loop has no per-instruction RIP observer, and the reboot paths run the
+        // firmware profile loop; refuse rather than run another loop or ignore the option.
+        if !sample_rips.is_empty() {
+            return Err("--cpu-loop unified does not support --sample-rip".to_owned());
+        }
+        if reboot_cycles.is_some() || nvram_reboot_out.is_some() {
+            return Err(
+                "--cpu-loop unified does not combine with --reboot-cycles or --nvram-reboot-out"
+                    .to_owned(),
+            );
+        }
+    }
+    if mark_rip.is_some() && !unified {
+        return Err("--mark-rip requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -1086,6 +1193,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         reboot_cycles,
         reboot_kind,
         sample_rips,
+        unified,
+        mark_rip,
     })
 }
 
@@ -1128,6 +1237,109 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn cpu_loop_selects_the_unified_loop_and_defaults_to_the_firmware_profile() {
+        let required = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        assert!(!parse(&required).unwrap().unified);
+        for (value, unified) in [("unified", true), ("firmware", false)] {
+            let mut given = required.clone();
+            given.extend(args(&["--cpu-loop", value]));
+            assert_eq!(parse(&given).unwrap().unified, unified);
+        }
+        let mut invalid = required;
+        invalid.extend(args(&["--cpu-loop", "kvm"]));
+        assert!(
+            parse(&invalid)
+                .err()
+                .unwrap()
+                .contains("invalid --cpu-loop")
+        );
+    }
+
+    #[test]
+    fn cpu_loop_is_refused_where_it_would_be_ignored_or_run_another_loop() {
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "out.com1",
+                "--budget",
+                "10",
+            ]);
+            values.extend(args(extra));
+            values
+        };
+        // A repeated option is refused, as for the other options.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--cpu-loop", "firmware"]))
+                .err()
+                .unwrap()
+                .contains("unexpected or duplicate option --cpu-loop")
+        );
+        // RIP samples need the observer of the firmware profile loop.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--sample-rip", "200040"]))
+                .err()
+                .unwrap()
+                .contains("does not support --sample-rip")
+        );
+        // The reboot paths run the firmware profile loop.
+        for extra in [
+            &["--fv-app", "reboot", "--reboot-cycles", "2"][..],
+            &["--fv-app", "vars", "--nvram-reboot-out", "second.com1"][..],
+        ] {
+            let mut values = base(&["--cpu-loop", "unified"]);
+            values.extend(args(extra));
+            assert!(
+                parse(&values)
+                    .err()
+                    .unwrap()
+                    .contains("does not combine with --reboot-cycles"),
+                "{extra:?}"
+            );
+        }
+        // A marker belongs to the unified loop, and is taken once.
+        assert!(
+            parse(&base(&["--mark-rip", "200040"]))
+                .err()
+                .unwrap()
+                .contains("--mark-rip requires --cpu-loop unified")
+        );
+        assert_eq!(
+            parse(&base(&["--cpu-loop", "unified", "--mark-rip", "0x200040"]))
+                .unwrap()
+                .mark_rip,
+            Some(0x200040)
+        );
+        assert!(
+            parse(&base(&[
+                "--cpu-loop",
+                "unified",
+                "--mark-rip",
+                "200040",
+                "--mark-rip",
+                "200041"
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--mark-rip", "zz"]))
+                .err()
+                .unwrap()
+                .contains("invalid --mark-rip")
+        );
+        // The firmware loop with the same options stays accepted.
+        assert!(parse(&base(&["--cpu-loop", "firmware", "--sample-rip", "200040"])).is_ok());
     }
 
     #[test]

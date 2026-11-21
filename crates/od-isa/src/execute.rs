@@ -46783,6 +46783,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | Operation::Fxrstor64RbxDisp8(_)
                 | Operation::Fxrstor64RipRelative(_)
                 | Operation::Fxrstor64Rdi(_)
+                | Operation::FnstswM16 { .. }
+                | Operation::FnstcwM16 { .. }
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -47694,7 +47696,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             opcode: instruction.opcode.byte,
         });
     }
-    if matches!(instruction.operation, Operation::RepCmps { .. })
+    // S7-31c: the CPL0 profile set runs `REPE CMPS` from any arithmetic-flag state (the stub of
+    // the Ubuntu kernel runs `F3 A6` after arbitrary code, and a zero count leaves the flags
+    // as they are); every other path keeps the exact entry gate PF|ZF, all six defined.
+    if control_policy.is_none()
+        && matches!(instruction.operation, Operation::RepCmps { .. })
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
             || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
     {
@@ -50891,8 +50897,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::IndirectJump {
             operand: Operand::Register(_),
         } if instruction.prefixes.segment == Some(0x3e) => {
+            // S7-31c: `3E FF /4` (NOTRACK JMP r64). The set models no CET indirect-branch
+            // tracking, so NOTRACK has no effect and the instruction is `JMP r64`; the EFI stub
+            // of the Ubuntu kernel runs it at CPL0 (`3E FF E0`).
             control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring3
+                && matches!(
+                    context.privilege,
+                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+                )
                 && cpl3_notrack_register_jump(&instruction)
         }
         Operation::IndirectJump { .. } => {
@@ -51358,7 +51370,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::PinsrwMemory { .. }
         | Operation::Fxsave64R12(_)
         | Operation::Fxrstor64RipRelative(_)
-        | Operation::Fxrstor64Rdi(_) => false,
+        | Operation::Fxrstor64Rdi(_)
+        // S7-31d: FNSTSW/FNSTCW with any memory operand run only in the FP member of the set.
+        | Operation::FnstswM16 { .. }
+        | Operation::FnstcwM16 { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -52173,6 +52188,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::Fxrstor64RipRelative(_) | Operation::Fxrstor64Rdi(_) => {
             unreachable!("FXRSTOR64 commits in its prevalidated field-load path")
+        }
+        Operation::FnstswM16 { .. } | Operation::FnstcwM16 { .. } => {
+            unreachable!("FNSTSW/FNSTCW m2byte run in the FP member of the set")
         }
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before state commit")
@@ -64637,6 +64655,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 let (_, flags) =
                     arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
                 state.rflags = flags;
+                // S7-31c: after one comparison the six arithmetic flags are those of the
+                // compare (Intel SDM, CMPS: the flags are set as CMP sets them); with a zero
+                // count nothing runs and RFLAGS and its definedness stay as they were.
+                *rflags_defined |= crate::ARITHMETIC_FLAGS;
                 let step = if state.rflags & (1 << 10) == 0 {
                     size.bytes() as u64
                 } else {
@@ -69876,6 +69898,44 @@ fn step_cpl0_fp(
                 }));
             }
             drop(fp);
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::FnstswM16 { destination } | Operation::FnstcwM16 { destination } => {
+            // S7-31d. Intel SDM Vol. 2A, FNSTSW/FNSTCW (stores without checking for pending
+            // unmasked x87 exceptions, so there is no FWAIT): the status word (`DD /7`) or the
+            // control word (`D9 /7`) goes to the 16-bit memory operand; no flag and no other
+            // register changes. #NM when CR0.EM or CR0.TS is 1; the memory faults are the
+            // ordinary ones. They are control instructions: the x87 instruction and data
+            // pointers and the opcode register are not updated (Vol. 1, 8.1.8).
+            let control = matches!(instruction.operation, Operation::FnstcwM16 { .. });
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != if control { 0xd9 } else { 0xdd }
+                || instruction.prefixes != Prefixes::default()
+                || destination.size != OperandSize::Word
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let value = {
+                let fp = cell.borrow();
+                if control {
+                    fp.x87.control_word
+                } else {
+                    fp.x87.status_word
+                }
+            };
+            let address = match destination.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            if let Err(error) =
+                memory.write_integer(address, context, OperandSize::Word, u64::from(value))
+            {
+                return report_memory_error(error);
+            }
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }

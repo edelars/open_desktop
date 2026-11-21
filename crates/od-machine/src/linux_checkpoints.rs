@@ -173,6 +173,8 @@ pub(crate) struct CheckpointRecorder {
     idtr_at_start: Option<(u64, u16)>,
     pending_cr3_write: bool,
     pending_page_fault: bool,
+    /// CR2 and the error code of the first delivered `#PF` (S7-31e, diagnostics only).
+    first_page_fault: Option<(u64, u32)>,
     retired_before_call: u64,
     quanta_of_call: u64,
     ns_at_call_start: u64,
@@ -189,6 +191,7 @@ impl CheckpointRecorder {
             idtr_at_start: None,
             pending_cr3_write: false,
             pending_page_fault: false,
+            first_page_fault: None,
             retired_before_call: 0,
             quanta_of_call: 0,
             ns_at_call_start: 0,
@@ -211,6 +214,16 @@ impl CheckpointRecorder {
     /// A `#PF` was delivered through the guest IDT.
     pub(crate) fn note_page_fault_delivered(&mut self) {
         self.pending_page_fault = true;
+    }
+
+    /// CR2 and the error code of a delivered `#PF`; only the first is kept (S7-31e).
+    pub(crate) fn note_page_fault_detail(&mut self, cr2: u64, error_code: u32) {
+        self.first_page_fault.get_or_insert((cr2, error_code));
+    }
+
+    /// CR2 and the error code of the first delivered `#PF`, if one was.
+    pub(crate) fn first_page_fault(&self) -> Option<(u64, u32)> {
+        self.first_page_fault
     }
 
     /// Whether checkpoint `id` has been recorded (S4-13b: the phase rule of the fetch cache
