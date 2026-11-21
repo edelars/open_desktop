@@ -7310,4 +7310,21 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Компонент:** набор `Cpl0ProfileSet` (`crates/od-isa`, FP-член), единая плата «UEFI + Linux».
 - **Суть:** в едином цикле ([запись](reports/data/stage7/s7-31h-linux-uefi-stop-record.json), бюджет 6·10⁹, три варианта, два одинаковых прогона) прогон останавливается: `Unsupported { opcode: 174 }` (0xae), байты `0F AE 55 EC` — `ldmxcsr dword ptr [rbp-0x14]`, за ними `83 E3 01 75 46 48 8B 45 F0 65 48 2B …`. RIP `0xffffffff8afb4957` (stock, 1 662 148 713 инструкций), `0xffffffff963b4957` (rebased, 1 661 136 793), `0xffffffffa67b4957` (rebased-hdr, 1 662 038 937). Последняя строка журнала: `x86/fpu: x87 FPU will use FXSAVE` (`[ 1.458694]` у stock, `[ 1.457491]` у rebased, `[ 1.458412]` у rebased-hdr). RFLAGS `0x202`, `sti_shadow` Clear; доставлено 7 `#PF` (ядро их обработало).
 - **Разбор по исходникам ядра (диагноз ревью Opus, не измерение):** строку `x86/fpu: x87 FPU will use FXSAVE` печатает `fpu__init_system`; дальше `start_kernel` → `efi_enter_virtual_mode` → `efi_set_virtual_address_map` → `efi_fpu_begin`/`kernel_fpu_begin` → `kernel_fpu_begin_mask`: при `kfpu_mask & KFPU_MXCSR` и `boot_cpu_has(X86_FEATURE_XMM)` ядро выполняет `ldmxcsr(MXCSR_DEFAULT)`; XMM входит в `REQUIRED_MASK`, поэтому условие CPUID не проверяет и инструкция исполняется при необъявленных SSE/SSE2. Это Runtime Services: ядро добралось до них только после S7-31h (до того ISSUE-634 отключал их).
-- **Статус:** открыто. Следующий шаг: по SDM определить, исполняется ли `LDMXCSR` на CPU без SSE (по SDM — `#UD` без CPUID.01H:EDX.SSE; не проверено в этом срезе), и либо объявить SSE и реализовать форму, либо выяснить, почему ядро выбрало этот путь.
+- **Статус:** закрыто в срезе S7-31i (2026-11-21) по факту прохождения. Решение: профиль CPUID `X8664V1Stage4AExt2` (Ext1 плюс SSE и SSE2 в листе 1) и форма `LDMXCSR m32` в FP-члене набора (CPU_CONTRACT.md, S7-31i; `s7_31i_ldmxcsr.rs`). В едином цикле (три варианта, по два одинаковых прогона, бюджет 6·10⁹, [запись](reports/data/stage7/s7-31i-linux-uefi-stop-record.json)) `0F AE 55 EC` проходит; ядро вызывает `SetVirtualAddressMap`: ISSUE-637; следующая остановка — ISSUE-638.
+
+<a id="issue-637"></a>
+
+### ISSUE-637. S7-31i: `SetVirtualAddressMap` возвращает `EFI_NOT_FOUND`, ядро печатает `efi: Unable to switch EFI into virtual mode (status=800000000000000e)!`
+
+- **Компонент:** Runtime Services прошивки (`SetVirtualAddressMap`, `firmware/uefi/src/rt`), карта памяти и дескрипторы, переданные ядром.
+- **Суть:** после прохождения `LDMXCSR` (ISSUE-636) ядро доходит до `efi_set_virtual_address_map`; во всех трёх вариантах журнал содержит `[ 1.458113] efi: Unable to switch EFI into virtual mode (status=800000000000000e)!` (stock; `1.459517` rebased, `1.457665` rebased-hdr). Код `0x800000000000000e` — `EFI_ERROR | 14`, то есть `EFI_NOT_FOUND` (значение кода по UEFI 2.11 не сверялось по спецификации в этом срезе). Ядро после этого работает без Runtime Services.
+- **Причина не установлена.** Не проверено: какие дескрипторы передало ядро и какой из них прошивка не нашла в своей карте (`NOT_FOUND` у прошивки возвращают, судя по коду, ветки несовпадения областей; точная ветка не разобрана).
+- **Статус:** открыто. Следующий шаг: вывести в отчёт единого цикла аргументы вызова `SetVirtualAddressMap` и ветку возврата прошивки.
+
+<a id="issue-638"></a>
+
+### ISSUE-638. S7-31i: ядро обращается к порту `0x2F9`, которого нет на плате: `PortIo(UnmappedPort(761))`
+
+- **Компонент:** плата «UEFI + Linux» (порты ввода-вывода `linux_profile`, поглотители отсутствующих портов).
+- **Суть:** в едином цикле ([запись](reports/data/stage7/s7-31i-linux-uefi-stop-record.json)) все три варианта (два одинаковых прогона) останавливаются ошибкой ввода-вывода, а не CPU: `PortIo(UnmappedPort(PortAddress(761)))` на инструкции `EC` (`in al, dx`), RIP `0xffffffff8bbee6eb` (stock, 2 320 423 449 инструкций), `0xffffffff96fee6eb` (rebased, 2 322 198 372), `0xffffffffa73ee6eb` (rebased-hdr, 2 320 445 556). Порт 761 = `0x2F9` (второй последовательный порт, регистр IER; предположение о драйвере 8250 по номеру порта, не проверено). Последняя строка журнала: `rcu: Max phase no-delay instances is 400.` (`[ 1.458718]` у stock). RFLAGS `0x6`, `/init` не достигнут.
+- **Статус:** открыто. Следующий шаг: определить, какие порты ядро зондирует (COM2–COM4 и другие), и решить, что отвечает плата (по образцу уже работающих поглотителей отсутствующих портов).
