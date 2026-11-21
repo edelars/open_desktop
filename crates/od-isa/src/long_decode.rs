@@ -69,6 +69,64 @@ pub enum Sse3Source {
     Memory(MemoryOperand),
 }
 
+/// S2-38 (logic and permute remainder): the bitwise and lane-permuting packed SSE forms that signal no SIMD
+/// floating-point exception and neither read nor write MXCSR. The `PS` and `PD` spellings of the four bitwise
+/// operations share one kind (the `66` prefix, recorded in [`Instruction::prefixes`], is the only difference and
+/// the operation is bit-for-bit the same); the shuffles and unpacks differ by element width and are separate kinds.
+/// Intel SDM Vol. 2A ANDNPD/ANDNPS pp. 3-63..3-68, ANDPD/ANDPS pp. 3-69..3-74; Vol. 2B ORPD/ORPS pp. 4-165..4-170,
+/// SHUFPD pp. 4-646..4-650, SHUFPS pp. 4-651..4-654, UNPCKHPD pp. 4-744..4-747, UNPCKHPS pp. 4-748..4-751,
+/// UNPCKLPD pp. 4-752..4-755, UNPCKLPS pp. 4-756..4-759; Vol. 2D XORPD pp. 6-42..6-44, XORPS pp. 6-45..6-47 (all
+/// Exceptions Type 4, Table 2-21 p. 2-29).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseLogicPermuteKind {
+    /// `0F 54` ANDPS / `66 0F 54` ANDPD: DEST := DEST AND SRC.
+    And,
+    /// `0F 55` ANDNPS / `66 0F 55` ANDNPD: DEST := (NOT DEST) AND SRC.
+    Andn,
+    /// `0F 56` ORPS / `66 0F 56` ORPD: DEST := DEST OR SRC.
+    Or,
+    /// `0F 57` XORPS / `66 0F 57` XORPD: DEST := DEST XOR SRC.
+    Xor,
+    /// `0F C6 /r ib` SHUFPS: DEST[31:0] and DEST[63:32] select a dword of DEST by imm8[1:0] and imm8[3:2], DEST[95:64]
+    /// and DEST[127:96] a dword of SRC by imm8[5:4] and imm8[7:6].
+    Shufps,
+    /// `66 0F C6 /r ib` SHUFPD: DEST[63:0] := imm8[0] ? DEST[127:64] : DEST[63:0]; DEST[127:64] := imm8[1] ?
+    /// SRC[127:64] : SRC[63:0]; imm8[7:2] are ignored by the legacy encoding.
+    Shufpd,
+    /// `0F 14` UNPCKLPS: DEST := DEST[31:0], SRC[31:0], DEST[63:32], SRC[63:32] (low element first).
+    Unpcklps,
+    /// `0F 15` UNPCKHPS: DEST := DEST[95:64], SRC[95:64], DEST[127:96], SRC[127:96].
+    Unpckhps,
+    /// `66 0F 14` UNPCKLPD: DEST := DEST[63:0], SRC[63:0].
+    Unpcklpd,
+    /// `66 0F 15` UNPCKHPD: DEST := DEST[127:64], SRC[127:64].
+    Unpckhpd,
+}
+
+impl SseLogicPermuteKind {
+    /// The shuffles carry an imm8; the other kinds do not.
+    pub const fn has_immediate(self) -> bool {
+        matches!(self, Self::Shufps | Self::Shufpd)
+    }
+
+    /// The form that the opcode byte and the `66` prefix select, `None` for an opcode that is not in this group.
+    pub const fn from_opcode(byte: u8, double: bool) -> Option<Self> {
+        Some(match (byte, double) {
+            (0x54, _) => Self::And,
+            (0x55, _) => Self::Andn,
+            (0x56, _) => Self::Or,
+            (0x57, _) => Self::Xor,
+            (0xc6, false) => Self::Shufps,
+            (0xc6, true) => Self::Shufpd,
+            (0x14, false) => Self::Unpcklps,
+            (0x14, true) => Self::Unpcklpd,
+            (0x15, false) => Self::Unpckhps,
+            (0x15, true) => Self::Unpckhpd,
+            _ => return None,
+        })
+    }
+}
+
 /// The four arithmetic operations of the general SSE floating-point core (S2-37): Intel SDM Vol. 2A ADDPD
 /// pp. 3-16..3-18, ADDPS pp. 3-19..3-21, ADDSD pp. 3-22..3-23, ADDSS pp. 3-24..3-25, DIVPD pp. 3-267..3-269,
 /// DIVPS pp. 3-270..3-272, DIVSD pp. 3-273..3-274, DIVSS pp. 3-275..3-276; Vol. 2B MULPD pp. 4-142..4-144,
@@ -2782,6 +2840,27 @@ pub enum Operation {
         xmm: u8,
         operand: Sse41Operand,
         immediate: u8,
+    },
+    /// S2-38 (logic and permute remainder): ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD, SHUFPS/SHUFPD and
+    /// UNPCKLPS/UNPCKHPS/UNPCKLPD/UNPCKHPD (`0F 14/15/54..57/C6`, `66` selects the double forms) with an XMM or a
+    /// 128-bit memory source of any ModR/M, SIB, displacement or RIP-relative form. `immediate` is the imm8 of the
+    /// shuffles and zero elsewhere. Decoded only as the fallback of [`decode`] when the profile decoder is
+    /// `Unsupported` for the opcode (the narrow register profiles of the bitwise forms keep their own decode);
+    /// executed through `step_sse_logic_permute`.
+    SseLogicPermute {
+        kind: SseLogicPermuteKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-38 (logic and permute remainder): `0F 50 /r` MOVMSKPS and `66 0F 50 /r` MOVMSKPD, register form only
+    /// (`ModRM.mod != 3` is #UD): the sign bits of the four (two) elements of XMM `source` go to the low bits of
+    /// general register `destination` (REX.R extended), the remaining bits of the 64-bit register are zero.
+    /// Decoded only as the fallback of [`decode`]; executed through `step_sse_movmsk`.
+    SseMovmsk {
+        double: bool,
+        destination: u8,
+        source: u8,
     },
     /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
     /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
@@ -13078,6 +13157,85 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// S2-38 (logic and permute remainder): `0F 14/15/54..57/C6` (and `66` for the double forms) and
+    /// `[66] 0F 50`, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode.
+    /// LOCK is #UD (SDM Vol. 2A Table 2-21 and Vol. 2B Table 2-24, "If preceded by a LOCK prefix (F0H)"); MOVMSKPS and
+    /// MOVMSKPD with `ModRM.mod != 3` are #UD too (SDM MOVMSKPS operand-encoding note: ModRM.MOD = 011B required).
+    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model), `F2`/`F3`
+    /// (no defined form of these opcodes) and the VEX/EVEX encodings. REX.W is ignored (the result does not depend
+    /// on it; MOVMSKPS/PD always zero-extend the mask to 64 bits).
+    fn decode_sse_logic_permute(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let movmsk = opcode.byte == 0x50;
+        let kind = SseLogicPermuteKind::from_opcode(opcode.byte, prefixes.operand_override);
+        if (!movmsk && kind.is_none())
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (movmsk && !register_form) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let operation = if let Some(kind) = kind {
+            let source = if register_form {
+                Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            let immediate = if kind.has_immediate() {
+                self.byte()?
+            } else {
+                0
+            };
+            Operation::SseLogicPermute {
+                kind,
+                destination: reg,
+                source,
+                immediate,
+            }
+        } else {
+            Operation::SseMovmsk {
+                double: prefixes.operand_override,
+                destination: reg,
+                source: (modrm & 7) | ((rex & 1) << 3),
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation,
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -13152,6 +13310,10 @@ pub fn decode(
         ) => fetch.decode_sse_fp_arith(),
         (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b | 0x5a | 0x52 | 0x53) => {
             fetch.decode_sse_fp_misc()
+        }
+        // S2-38 (logic and permute remainder): the bitwise, shuffle and unpack forms and MOVMSKPS/MOVMSKPD.
+        (OpcodeMap::Escape0f, 0x14 | 0x15 | 0x50 | 0x54..=0x57 | 0xc6) => {
+            fetch.decode_sse_logic_permute()
         }
         _ => return profile,
     };

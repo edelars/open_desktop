@@ -9,7 +9,7 @@ use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
     Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind,
-    SseFpMiscKind, SseFpShape, Ssse3IntKind, canonical, general_protection,
+    SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41415,6 +41415,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         _ => instruction,
     };
+    // S2-38 (logic and permute remainder): under the FP-init CR0/CR4 pair the general forms are gated by CR0.EM/CR0.TS/
+    // CR4.OSFXSR, so the narrow register forms of the eight bitwise operations run through the general core there (the
+    // pair admits no narrow profile operation of them and answered `Unsupported`). The composite FP-init profiles and
+    // every other configuration keep the narrow operations.
+    let instruction = match sse_logic_from_narrow(instruction.operation) {
+        Some(general)
+            if control_policy.is_none()
+                && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
+                && cr4_profile == Some(Cr4Profile::FpInitLong64V1) =>
+        {
+            long_decode::Instruction {
+                operation: general,
+                ..instruction
+            }
+        }
+        _ => instruction,
+    };
     let minss_invalid_controls = if cr4_profile
         == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
         && matches!(instruction.operation, Operation::MinssRegisterMasked { .. })
@@ -41590,6 +41607,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                                 | Operation::Emms
                                 | Operation::Sse41 { .. }
                                 | Operation::Sse41Fp { .. }
+                                | Operation::SseLogicPermute { .. }
+                                | Operation::SseMovmsk { .. }
                                 | Operation::FisttpMemory { .. }
                         )
                         || matches!(
@@ -50874,7 +50893,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
         | Operation::Sse41 { .. }
-        | Operation::Sse41Fp { .. } => state.sse.is_some(),
+        | Operation::Sse41Fp { .. }
+        // S2-38 (logic and permute remainder): the same local SSE state; CPL3 keeps its own profile list.
+        | Operation::SseLogicPermute { .. }
+        | Operation::SseMovmsk { .. } => state.sse.is_some(),
         // A configured narrow profile of the sixteen arithmetic forms is a closed set: every other encoding
         // of them stays `Unsupported` while it is active.
         Operation::SseFpArith { .. } | Operation::SseFpMisc { .. } => {
@@ -51904,6 +51926,30 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
         }
         return Ok(outcome);
+    }
+    // S2-38 (logic and permute remainder): the bitwise, shuffle and unpack forms and MOVMSKPS/MOVMSKPD commit here.
+    if let Operation::SseLogicPermute {
+        kind,
+        destination,
+        source,
+        immediate,
+    } = instruction.operation
+    {
+        return step_sse_logic_permute(
+            state,
+            memory,
+            context,
+            (kind, destination, source, immediate),
+            next_rip,
+        );
+    }
+    if let Operation::SseMovmsk {
+        double,
+        destination,
+        source,
+    } = instruction.operation
+    {
+        return step_sse_movmsk(state, double, destination, source, next_rip);
     }
     // S2-55 slice B: the floating-point SSE4.1 forms commit here as well.
     if let Operation::Sse41Fp {
@@ -63291,11 +63337,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Sse41Fp { .. }
         | Operation::SseFpArith { .. }
         | Operation::SseFpMisc { .. }
+        | Operation::SseLogicPermute { .. }
+        | Operation::SseMovmsk { .. }
         | Operation::Popcnt { .. }
         | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
             unreachable!(
-                "S2-33, S2-54 slice C and D, S2-55 slice A and B, S2-56 slice A and S2-37 forms commit before dispatch"
+                "S2-33, S2-54 slice C and D, S2-55 slice A and B, S2-56 slice A, S2-37 and S2-38 forms commit before dispatch"
             )
         }
         Operation::MoveIntegerToXmm { .. }
@@ -71294,6 +71342,232 @@ fn step_popcnt_crc32(
         state.rflags =
             (state.rflags & !crate::ARITHMETIC_FLAGS) | if masked == 0 { crate::ZF } else { 0 };
     }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// The general form of a narrow register profile operation of ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD or XORPS/XORPD.
+fn sse_logic_from_narrow(operation: Operation) -> Option<Operation> {
+    let (kind, destination, source) = match operation {
+        Operation::AndpsRegister {
+            destination,
+            source,
+        }
+        | Operation::AndpdRegister {
+            destination,
+            source,
+        } => (SseLogicPermuteKind::And, destination, source),
+        Operation::AndnpsRegister {
+            destination,
+            source,
+        }
+        | Operation::AndnpdRegister {
+            destination,
+            source,
+        } => (SseLogicPermuteKind::Andn, destination, source),
+        Operation::OrpsRegister {
+            destination,
+            source,
+        }
+        | Operation::OrpdRegister {
+            destination,
+            source,
+        } => (SseLogicPermuteKind::Or, destination, source),
+        Operation::XorpsRegister {
+            destination,
+            source,
+        }
+        | Operation::XorpdRegister {
+            destination,
+            source,
+        } => (SseLogicPermuteKind::Xor, destination, source),
+        _ => return None,
+    };
+    Some(Operation::SseLogicPermute {
+        kind,
+        destination,
+        source: Sse3Source::Register(source),
+        immediate: 0,
+    })
+}
+
+/// S2-38 (logic and permute remainder): ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD, SHUFPS/SHUFPD and
+/// UNPCKLPS/UNPCKHPS/UNPCKLPD/UNPCKHPD on the local SSE state (Intel SDM, see [`SseLogicPermuteKind`]; Exceptions
+/// Type 4, Vol. 2A Table 2-21 p. 2-29). The operations are bit-for-bit lane copies or bitwise functions: no MXCSR
+/// bit is read or written (a reserved MXCSR value is irrelevant), no flag changes, no SIMD floating-point exception
+/// exists (a signaling NaN is copied unchanged) and bits above 127 do not exist here (legacy SSE leaves them).
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries that control
+///    register). The CPUID feature gate is not modeled (S2-57); LOCK is a decoder `#UD`.
+/// 2. A memory source: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base); an address that is not
+///    16-byte aligned is `#GP(0)` (Table 2-21: "Legacy SSE: Memory operand is not 16-byte aligned", and note 1 does not
+///    exempt these forms); the whole 16-byte range must be canonical; then one `read` (a memory fault, `#PF`
+///    included, is the backend's result and leaves the CPU state untouched).
+///
+/// `#AC` does not arise: Type 4 lists no alignment-check condition, an unaligned operand is the `#GP(0)` above
+/// whatever CPL and RFLAGS.AC are.
+fn step_sse_logic_permute(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, destination, source, immediate): (SseLogicPermuteKind, u8, Sse3Source, u8),
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let mut raw = [0u8; 16];
+    match source {
+        Sse3Source::Register(index) => {
+            raw = state
+                .sse
+                .as_ref()
+                .expect("SSE logic and permute state was prevalidated")
+                .xmm[usize::from(index)];
+        }
+        Sse3Source::Memory(operand) => {
+            let address = match operand.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if address & 15 != 0 {
+                return fault_general_protection();
+            }
+            if let Err(error) = operand.access_range_address_48(state, next_rip, 16) {
+                return report_memory_error(error);
+            }
+            if let Err(error) = memory.read(address, context, &mut raw) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let first = state
+        .sse
+        .as_ref()
+        .expect("SSE logic and permute state was prevalidated")
+        .xmm[usize::from(destination)];
+    let dword = |bytes: &[u8; 16], lane: usize| -> [u8; 4] {
+        bytes[lane * 4..lane * 4 + 4]
+            .try_into()
+            .expect("four bytes")
+    };
+    let qword = |bytes: &[u8; 16], lane: usize| -> [u8; 8] {
+        bytes[lane * 8..lane * 8 + 8]
+            .try_into()
+            .expect("eight bytes")
+    };
+    let mut result = [0u8; 16];
+    match kind {
+        SseLogicPermuteKind::And => {
+            result = core::array::from_fn(|index| first[index] & raw[index]);
+        }
+        SseLogicPermuteKind::Andn => {
+            result = core::array::from_fn(|index| !first[index] & raw[index]);
+        }
+        SseLogicPermuteKind::Or => {
+            result = core::array::from_fn(|index| first[index] | raw[index]);
+        }
+        SseLogicPermuteKind::Xor => {
+            result = core::array::from_fn(|index| first[index] ^ raw[index]);
+        }
+        SseLogicPermuteKind::Shufps => {
+            for lane in 0..4 {
+                let select = usize::from((immediate >> (2 * lane)) & 3);
+                let from = if lane < 2 { &first } else { &raw };
+                result[lane * 4..lane * 4 + 4].copy_from_slice(&dword(from, select));
+            }
+        }
+        SseLogicPermuteKind::Shufpd => {
+            result[..8].copy_from_slice(&qword(&first, usize::from(immediate & 1)));
+            result[8..].copy_from_slice(&qword(&raw, usize::from((immediate >> 1) & 1)));
+        }
+        SseLogicPermuteKind::Unpcklps | SseLogicPermuteKind::Unpckhps => {
+            let base = usize::from(kind == SseLogicPermuteKind::Unpckhps) * 2;
+            result[0..4].copy_from_slice(&dword(&first, base));
+            result[4..8].copy_from_slice(&dword(&raw, base));
+            result[8..12].copy_from_slice(&dword(&first, base + 1));
+            result[12..16].copy_from_slice(&dword(&raw, base + 1));
+        }
+        SseLogicPermuteKind::Unpcklpd | SseLogicPermuteKind::Unpckhpd => {
+            let lane = usize::from(kind == SseLogicPermuteKind::Unpckhpd);
+            result[..8].copy_from_slice(&qword(&first, lane));
+            result[8..].copy_from_slice(&qword(&raw, lane));
+        }
+    }
+    state
+        .sse
+        .as_mut()
+        .expect("SSE logic and permute state was prevalidated")
+        .xmm[usize::from(destination)] = result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-38 (logic and permute remainder): MOVMSKPS and MOVMSKPD (register form) on the local SSE state (Intel SDM
+/// Vol. 2B MOVMSKPD pp. 4-84..4-85, MOVMSKPS pp. 4-86..4-87; Exceptions Type 7, Vol. 2B Table 2-24). The sign bits of
+/// the elements form the mask (bit i is the sign of element i), stored zero-extended in the whole 64-bit
+/// destination register whatever the operand size (a 32-bit destination zero-extends to 64 bits in 64-bit mode).
+/// No SIMD floating-point exception exists, MXCSR and the flags are neither read nor written.
+///
+/// Check order: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries that
+/// control register); LOCK and a memory operand are decoder `#UD`. There is no memory operand, so no address fault.
+fn step_sse_movmsk(
+    state: &mut LongModeState,
+    double: bool,
+    destination: u8,
+    source: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let raw = state
+        .sse
+        .as_ref()
+        .expect("MOVMSK state was prevalidated")
+        .xmm[usize::from(source)];
+    let mask: u64 = if double {
+        u64::from(raw[7] >> 7) | (u64::from(raw[15] >> 7) << 1)
+    } else {
+        u64::from(raw[3] >> 7)
+            | (u64::from(raw[7] >> 7) << 1)
+            | (u64::from(raw[11] >> 7) << 2)
+            | (u64::from(raw[15] >> 7) << 3)
+    };
+    state.gpr
+        [Register::from_encoding(destination).expect("a REX-extended register number") as usize] =
+        mask;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }

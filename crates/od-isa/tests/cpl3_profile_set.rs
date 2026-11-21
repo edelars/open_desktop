@@ -423,6 +423,20 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("fisttp word [rdi]", &[0xdf, 0x0f], 0xdf),
         ("fisttp dword [rdi]", &[0xdb, 0x0f], 0xdb),
         ("fisttp qword [rdi]", &[0xdd, 0x0f], 0xdd),
+        // S2-38 (logic and permute remainder): the general bitwise, shuffle and unpack forms and MOVMSKPS/MOVMSKPD are
+        // not in the live profile (its bitwise register forms are the narrow profile forms above).
+        ("andps xmm0,[rdi]", &[0x0f, 0x54, 0x07], 0x54),
+        ("andpd xmm0,[rdi]", &[0x66, 0x0f, 0x54, 0x07], 0x54),
+        ("andnps xmm0,[rdi]", &[0x0f, 0x55, 0x07], 0x55),
+        ("orps xmm0,[rdi]", &[0x0f, 0x56, 0x07], 0x56),
+        ("xorps xmm0,[rdi]", &[0x0f, 0x57, 0x07], 0x57),
+        ("xorpd xmm0,[rdi]", &[0x66, 0x0f, 0x57, 0x07], 0x57),
+        ("shufps xmm0,xmm1,0x1b", &[0x0f, 0xc6, 0xc1, 0x1b], 0xc6),
+        ("shufpd xmm0,[rdi],1", &[0x66, 0x0f, 0xc6, 0x07, 0x01], 0xc6),
+        ("unpcklps xmm0,xmm1", &[0x0f, 0x14, 0xc1], 0x14),
+        ("unpckhpd xmm0,[rdi]", &[0x66, 0x0f, 0x15, 0x07], 0x15),
+        ("movmskps eax,xmm1", &[0x0f, 0x50, 0xc1], 0x50),
+        ("movmskpd eax,xmm1", &[0x66, 0x0f, 0x50, 0xc1], 0x50),
         // S2-54 slice D: SSSE3 is not declared either (S2-57); the integer SSSE3 forms are refused at CPL3.
         ("pshufb xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x00, 0x07], 0x00),
         ("pshufb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x00, 0xc1], 0x00),
@@ -1268,6 +1282,11 @@ fn lock_before_an_sse3_form_or_fisttp_is_invalid_opcode_without_change() {
     // #UD (SDM); the decoder reports `Invalid` before the CPL3 allow-list is consulted.
     let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     for bytes in [
+        &[0xf0, 0x0f, 0x54, 0x07][..],       // lock andps xmm0, [rdi] (S2-38)
+        &[0xf0, 0x66, 0x0f, 0x57, 0xc1][..], // lock xorpd xmm0, xmm1 (S2-38)
+        &[0xf0, 0x0f, 0xc6, 0x07, 0x01][..], // lock shufps xmm0, [rdi], 1 (S2-38)
+        &[0x0f, 0x50, 0x07][..],             // movmskps with a memory operand (S2-38)
+        &[0xf0, 0x0f, 0x50, 0xc1][..],       // lock movmskps eax, xmm1 (S2-38)
         &[0xf0, 0xf3, 0x0f, 0x16, 0x07][..], // lock movshdup xmm0, [rdi]
         &[0xf3, 0xf0, 0x0f, 0x12, 0x07][..], // movsldup with LOCK after the prefix
         &[0xf0, 0xf2, 0x0f, 0x12, 0xc1][..], // lock movddup xmm0, xmm1
