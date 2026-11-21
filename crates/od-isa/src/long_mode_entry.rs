@@ -187,6 +187,7 @@ mod tests {
             cr4: 0x0000_00A0,
             efer: 0x0000_0D01,
             pdptes: [0; 4],
+            pse36: false,
             cs: seg(0x10, 0, 0xFFFF_FFFF, 0x9B, 0xA),
             ds: seg(0x18, 0x1000, 0xFFFF_FFFF, 0x93, 0xC),
             es: seg(0x18, 0x2000, 0xFFFF_FFFF, 0x93, 0xC),

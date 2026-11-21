@@ -43,8 +43,8 @@
 //! refusal [`ProtectedRefusal::PageFault`] (the `#PF`, never delivered). `PG = 1` without `PAE`,
 //! without `PE`, with `CS.L = 1`, or with reserved `CR0` bits and `NW` without `CD` are refusals
 //! (`#GP` in hardware). `PG = 1` with `LME = 0` and `PAE = 0` is 32-bit paging and with `PAE = 1` PAE
-//! paging (S2-25, below); a `CR0` write with `PG` clear before and after is
-//! [`ProtectedRefusal::Cr0WriteUnmodelled`]. While paging is on, `WRMSR` may not change `LME` and
+//! paging (S2-25, below); a `CR0` write with `PG` clear before and after that keeps `PE` is
+//! [`ProtectedRefusal::Cr0WriteUnmodelled`] (clearing `PE` is the return to real mode, S2-25j below). While paging is on, `WRMSR` may not change `LME` and
 //! `MOV CR4` may not clear `PAE` in IA-32e mode (`#GP`, [`ProtectedRefusal::Cr4PaeClearInLongMode`]).
 //! The far jump `JMP ptr16:32` (CPL 0) follows the SDM Vol. 3A direct far jump rules, by memory:
 //! the descriptor must be a present code segment with
@@ -54,7 +54,7 @@
 //! limit); outside IA-32e mode `L = 1` is a model refusal. The model does not execute in 64-bit
 //! mode beyond block 8 (S6-14n, below). `MOV CR3, EAX` stores the value (no TLB; the PDPTEs of PAE
 //! paging are loaded while it is in use, see S2-25 below); `MOV CR4, EAX`
-//! stores a value whose bits above bit 10 are clear and refuses any other as
+//! stores a value whose bits above bit 10 are clear (except `SMEP`, bit 20, S2-25j) and refuses any other as
 //! [`ProtectedRefusal::Cr4WriteUnmodelled`] (a model refusal, not a hardware effect: per the SDM,
 //! from memory, a reserved or unsupported CR4 bit is `#GP(0)`, bits 11.. name features
 //! (`UMIP`, `LA57`, `VMXE`, `PCIDE`, `OSXSAVE`, ...) that the profile does not enable, and the
@@ -106,6 +106,23 @@
 //! [`ProtectedRefusal::Unsupported`]; a `RIP` above 4 GiB that was not reached by this jump is
 //! [`ProtectedRefusal::Mode64NotModelled`].
 //!
+//! S2-25j (model only, no hardware oracle; none of the CPUID bits is declared, S2-57). *PSE-36*:
+//! [`ProtectedCpu::pse36`] (default `false`) selects [`crate::paging::translate32_with`] with the PSE-36
+//! layout of a 4 MiB PDE (bits 16:13 are physical-address bits 35:32, bits 21:17 reserved at
+//! `MAXPHYADDR` 36); a frame above 4 GiB is the model limit `PhysicalBeyond4GiB` of the 32-bit memory.
+//! *SMEP*: `CR4.SMEP` (bit 20, settable by `MOV CR4`, not gated by CPUID) makes an instruction fetch of
+//! the CPL 0 model through a user-mode address (`U/S = 1` in every entry of the walk) a `#PF`
+//! ([`PageRefusal::SmepFetch`], error code `P | I/D` from [`ProtectedCpu::page_fault_error_code`]);
+//! data accesses are not affected (no SMAP); changing `SMEP` reloads the PDPTEs of PAE paging.
+//! *IA-32e deactivation* (SDM Vol. 3A §12.8.5.4): `MOV CR0` clearing `PG` with `LMA = 1` in compatibility
+//! mode keeps `PE`, stores `CR0`, clears `LMA` (`LME`, `CR3`, `CR4` and the PDPTE registers are kept)
+//! and turns paging off; in 64-bit mode (`CS.L = 1`) it is `#GP(0)`
+//! ([`ProtectedRefusal::Cr0PgClearIn64BitMode`]); `PE` cleared together with `PG` stays
+//! [`ProtectedRefusal::Cr0WriteUnmodelled`]. *Return to real mode* (SDM Vol. 3A §12.9.2): `MOV CR0`
+//! clearing `PE` with paging already off stores the value; every later [`ProtectedCpu::step`] is
+//! [`ProtectedRefusal::NotProtectedMode`] and [`ProtectedCpu::to_real_mode`] gives the [`RealModeCpu`]
+//! (segment caches kept as selector, base and limit).
+//!
 //! Segment loads (`MOV Sreg, r32` uses the low 16 bits of the register) follow the SDM Vol. 3A
 //! chapter 5 rules, from memory, with CPL = 0: a null selector, TI = 1 (the LDT is not modelled)
 //! and a selector beyond the GDT limit are refused; the descriptor must have `S = 1`; `SS` needs a
@@ -131,9 +148,10 @@
 //! silicon under VMX, except where the S6-14i note on `CR0.ET` applies; `RDMSR`/`WRMSR` of EFER are
 //! emulated by KVM, so the oracle shows KVM's guest-visible behaviour).
 
-use crate::legacy_mode::{CR0_ET, ProtectedSegment};
+use crate::legacy_mode::{CR0_ET, ProtectedSegment, RealModeState, RealSegment};
 use crate::paging::{
     self, AccessKind, PaeParams, PageRefusal, Paging32Params, PagingParams, PdpteRefusal, Touch,
+    WalkFeatures,
 };
 use crate::real_mode_exec::{
     CR0_PE, EAX, ECX, EDX, ESP, RealModeCpu, RealModeMemory, TableRegister, UNSUPPORTED_BYTES_MAX,
@@ -151,8 +169,11 @@ const CR0_NW: u32 = 0x2000_0000;
 const CR0_CD: u32 = 0x4000_0000;
 /// CR4.PAE.
 pub const CR4_PAE: u32 = 1 << 5;
-/// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`): the only bits `MOV CR4, EAX` may set in this slice.
-pub const CR4_MODELLED_MASK: u32 = 0x7FF;
+/// CR4.SMEP (bit 20, S2-25j): with it set an instruction fetch through a user-mode address is a `#PF`
+/// (see [`paging::WalkFeatures::smep`]). Not gated by CPUID (`CPUID.07H:EBX[7]` is not declared, S2-57).
+pub const CR4_SMEP: u32 = 1 << 20;
+/// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`) and `SMEP` (bit 20): the only bits `MOV CR4, EAX` may set.
+pub const CR4_MODELLED_MASK: u32 = 0x7FF | CR4_SMEP;
 /// CR4.PSE.
 const CR4_PSE: u32 = 1 << 4;
 /// CR4.PGE.
@@ -339,11 +360,18 @@ pub enum ProtectedRefusal {
     PdpteReservedBits { eip: u32, index: u8, pdpte: u64 },
     /// The PDPTE at `phys` could not be read from memory (a model limit, S2-25).
     PdpteUnreadable { eip: u32, phys: u32 },
-    /// `MOV CR0, EAX` that the model does not take: `PG` clear before and after (paging stays off),
-    /// `PG` cleared while IA-32e mode is active (`LMA = 1`: deactivating it is not modelled; in 64-bit
-    /// mode hardware raises `#GP`), `PE` cleared (a return to real mode), reserved bits, or `NW`
-    /// without `CD` (the last two are `#GP(0)` in hardware). `value` is EAX.
+    /// `MOV CR0, EAX` that the model does not take: `PG` and `PE` clear before and `PE` kept (a write
+    /// of the other bits with paging off), `PE` cleared together with `PG` while paging is on, reserved
+    /// bits, or `NW` without `CD` (the last two are `#GP(0)` in hardware). `value` is EAX.
     Cr0WriteUnmodelled { eip: u32, value: u32 },
+    /// `MOV CR0, EAX` clearing `PG` in 64-bit mode (`LMA = 1`, `CS.L = 1`): `#GP(0)` (S2-25j; SDM Vol. 2B
+    /// "MOV to control register", 64-Bit Mode Exceptions; Vol. 3A §12.8.5.4: IA-32e mode is left from
+    /// compatibility mode). `value` is EAX; nothing changes.
+    Cr0PgClearIn64BitMode { eip: u32, value: u32 },
+    /// The step was refused because `CR0.PE = 0`: the processor is in real-address mode (S2-25j,
+    /// after a `MOV CR0` that cleared `PE`). This model executes protected mode only; continue with
+    /// [`ProtectedCpu::to_real_mode`] and [`RealModeCpu`]. Nothing changes.
+    NotProtectedMode { eip: u32 },
     /// `MOV CR0, EAX` with `PG = 1` and `PE = 0`: `#GP(0)`.
     PagingWithoutProtection { eip: u32, value: u32 },
     /// `MOV CR0, EAX` with `PG = 1`, `EFER.LME = 1` and `CR4.PAE = 0`: `#GP(0)`.
@@ -425,7 +453,7 @@ pub struct ProtectedCpu {
     pub cr0: u32,
     /// Stored by `MOV CR3, EAX`; the PML4 base of the walk once `CR0.PG` is set.
     pub cr3: u32,
-    /// Stored by `MOV CR4, EAX` (bits 0..10 only).
+    /// Stored by `MOV CR4, EAX` (bits 0..10 and `SMEP`, bit 20, only).
     pub cr4: u32,
     /// `IA32_EFER`, the only MSR: 0 at entry; `WRMSR` stores `SCE`, `LME`, `NXE`. `LMA` is never
     /// changed by `WRMSR`; it becomes 1 at `MOV CR0` with `PG = 1` while `LME` and `PAE` are set.
@@ -434,6 +462,11 @@ pub struct ProtectedCpu {
     /// and `MOV CR4` (changing PAE, PGE or PSE) while `CR0.PG = 1`, `CR4.PAE = 1` and `LMA = 0`;
     /// 0 and unused otherwise.
     pub pdptes: [u64; 4],
+    /// Model switch of the PSE-36 mechanism of 32-bit paging (S2-25j): `false` by default and after
+    /// [`Self::from_real_entry`], as `CPUID.01H:EDX[17]` is clear in every profile (declaring it is
+    /// S2-57). `true`: bits 16:13 of a 4 MiB PDE are physical-address bits 35:32 (see
+    /// [`paging::translate32_with`]).
+    pub pse36: bool,
     pub cs: ProtectedSegment,
     pub ds: ProtectedSegment,
     pub es: ProtectedSegment,
@@ -501,6 +534,7 @@ impl ProtectedCpu {
             cr4: 0,
             efer: 0,
             pdptes: [0; 4],
+            pse36: false,
             cs,
             ds: real_data_segment(real.mode.ds),
             es: real_data_segment(real.mode.es),
@@ -511,6 +545,42 @@ impl ProtectedCpu {
             idtr: real.idtr,
             mov_ss_shadow: real.mov_ss_shadow,
         })
+    }
+
+    /// The real-address mode state after a `MOV CR0` cleared `PE` (S2-25j; SDM Vol. 3A §12.9.2): the
+    /// general registers, `EIP`, EFLAGS, CR0, GDTR/IDTR and the segment registers come from `self`; every
+    /// segment keeps its selector, base and limit (the descriptor caches survive the switch, §12.9.2
+    /// step 4) and is not attributed (a real-mode segment has no attributes in [`RealModeCpu`]).
+    /// `base` supplies what this model does not carry (the `CPUID` source): the real state the
+    /// protected run was entered from. CR3, CR4, EFER and the PDPTE registers are not part of
+    /// [`RealModeCpu`] and are not carried (they keep their value in `self`). `None` while `PE` is 1.
+    pub fn to_real_mode(&self, base: &RealModeCpu) -> Option<RealModeCpu> {
+        if self.cr0 & CR0_PE != 0 {
+            return None;
+        }
+        let seg = |s: ProtectedSegment| RealSegment {
+            selector: s.selector,
+            base: s.base,
+            limit: s.limit,
+        };
+        let mut real = *base;
+        real.gpr = self.gpr;
+        real.mov_ss_shadow = self.mov_ss_shadow;
+        real.gdtr = self.gdtr;
+        real.idtr = self.idtr;
+        real.cs_protected = None;
+        real.mode = RealModeState {
+            cs: seg(self.cs),
+            ds: seg(self.ds),
+            es: seg(self.es),
+            ss: seg(self.ss),
+            fs: seg(self.fs),
+            gs: seg(self.gs),
+            eip: self.eip,
+            eflags: self.eflags,
+            cr0: self.cr0,
+        };
+        Some(real)
     }
 
     /// The 64-bit `RIP`.
@@ -563,6 +633,27 @@ impl ProtectedCpu {
         self.cr0 & CR0_PG != 0 && self.cr4 & CR4_PAE == 0
     }
 
+    /// The optional features of the walk (S2-25j): `CR4.SMEP` and the PSE-36 model switch.
+    fn walk_features(&self) -> WalkFeatures {
+        WalkFeatures {
+            smep: self.cr4 & CR4_SMEP != 0,
+            pse36: self.pse36,
+        }
+    }
+
+    /// The `#PF` error code (SDM Vol. 3A §5.7) of a [`ProtectedRefusal::PageFault`] of this state
+    /// (S2-25j), for the supervisor access of the model: `P`, `W/R`, `RSVD` and `I/D` (bit 4: fetch with
+    /// `CR4.SMEP = 1`, or with `CR4.PAE = 1` and `EFER.NXE = 1`); `U/S` is 0. `None` for another
+    /// refusal and for a model limit of the walk that is no architectural fault.
+    pub fn page_fault_error_code(&self, refusal: &ProtectedRefusal) -> Option<u32> {
+        let ProtectedRefusal::PageFault { access, reason, .. } = refusal else {
+            return None;
+        };
+        let id_reporting =
+            self.cr4 & CR4_SMEP != 0 || (self.cr4 & CR4_PAE != 0 && self.efer & EFER_NXE != 0);
+        paging::page_fault_error_code(*reason, *access, id_reporting)
+    }
+
     /// The PDPTEs of the table `cr3` names (`MOV` to `CR0`/`CR3`/`CR4` of PAE paging); a refusal
     /// changes nothing.
     fn load_pdptes<M: RealModeMemory>(
@@ -610,16 +701,16 @@ impl ProtectedCpu {
                 wp: self.cr0 & CR0_WP != 0,
                 nxe: self.efer & EFER_NXE != 0,
             };
-            paging::translate_pae(mem, params, linear, access)
+            paging::translate_pae_with(mem, params, self.walk_features(), linear, access)
         } else if self.paging32() {
             let params = Paging32Params {
                 cr3: self.cr3,
                 wp: self.cr0 & CR0_WP != 0,
                 pse: self.cr4 & CR4_PSE != 0,
             };
-            paging::translate32(mem, params, linear, access)
+            paging::translate32_with(mem, params, self.walk_features(), linear, access)
         } else if let Some(params) = self.paging_params() {
-            paging::translate(mem, params, linear, access)
+            paging::translate_with(mem, params, self.walk_features(), linear, access)
         } else {
             return Ok(linear);
         };
@@ -1128,6 +1219,9 @@ impl ProtectedCpu {
         mem: &mut M,
         touches: &mut Vec<Touch>,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        if self.cr0 & CR0_PE == 0 {
+            return Err(ProtectedRefusal::NotProtectedMode { eip: self.eip });
+        }
         let (insn, len) = self.decode(mem)?;
         // Accessed/dirty updates of the paging structures walked by this instruction (the fetch
         // walks come first, as in hardware), written by `step` at the end.
@@ -1244,12 +1338,12 @@ impl ProtectedCpu {
                     return Err(ProtectedRefusal::Cr4PaeClearInLongMode { eip, value });
                 }
                 // PAE paging is in use after this write (paging on, PAE set, no IA-32e): a change
-                // of PAE, PGE or PSE reloads the PDPTEs from CR3 (SDM Vol. 3A §5.4.1).
+                // of PAE, PGE, PSE or SMEP reloads the PDPTEs from CR3 (SDM Vol. 3A §5.4.1).
                 let mut pdptes = self.pdptes;
                 if paging
                     && value & CR4_PAE != 0
                     && self.efer & EFER_LMA == 0
-                    && (value ^ self.cr4) & (CR4_PAE | CR4_PGE | CR4_PSE) != 0
+                    && (value ^ self.cr4) & (CR4_PAE | CR4_PGE | CR4_PSE | CR4_SMEP) != 0
                 {
                     pdptes = self.load_pdptes(mem, self.cr3)?;
                 }
@@ -1269,19 +1363,31 @@ impl ProtectedCpu {
                 let value = self.gpr[EAX];
                 let eip = self.eip;
                 let (paging_before, paging_after) = (self.cr0 & CR0_PG != 0, value & CR0_PG != 0);
-                if (!paging_before && !paging_after)
-                    || value & !CR0_VALID_MASK != 0
+                if value & !CR0_VALID_MASK != 0
                     || (value & CR0_NW != 0 && value & CR0_CD == 0)
+                    // Paging off before and after with `PE` kept: no other CR0 write is modelled.
+                    || (!paging_before && !paging_after && value & CR0_PE != 0)
                 {
                     return Err(ProtectedRefusal::Cr0WriteUnmodelled { eip, value });
                 }
                 if paging_after && value & CR0_PE == 0 {
                     return Err(ProtectedRefusal::PagingWithoutProtection { eip, value });
                 }
-                if paging_before {
-                    // Paging is on (S2-25, SDM Vol. 3A §5.1.2 and §5.4.1). Leaving protected mode
-                    // and deactivating IA-32e mode (`LMA = 1`) are not modelled.
-                    if value & CR0_PE == 0 || (!paging_after && self.efer & EFER_LMA != 0) {
+                if !paging_before && !paging_after {
+                    // Return to real-address mode (S2-25j; SDM Vol. 3A §12.9.2 step 6): `PE` is
+                    // cleared with paging already off (so `LMA` is 0). Nothing else changes: the
+                    // segment caches keep their descriptors, EFER, CR3 and CR4 keep their value. The
+                    // next `step` is [`ProtectedRefusal::NotProtectedMode`]; the real-mode state is
+                    // [`ProtectedCpu::to_real_mode`].
+                    self.cr0 = value | CR0_ET;
+                } else if paging_before {
+                    // Paging is on (S2-25, SDM Vol. 3A §5.1.2 and §5.4.1). Clearing PG in 64-bit
+                    // mode is `#GP(0)` (SDM Vol. 2B "MOV to control register", 64-Bit Mode
+                    // Exceptions). `PE` cleared together with `PG` is not modelled.
+                    if !paging_after && self.is_64bit() {
+                        return Err(ProtectedRefusal::Cr0PgClearIn64BitMode { eip, value });
+                    }
+                    if value & CR0_PE == 0 {
                         return Err(ProtectedRefusal::Cr0WriteUnmodelled { eip, value });
                     }
                     // PAE paging stays in use and the write modifies CD, NW or PG: the PDPTEs are
@@ -1296,6 +1402,12 @@ impl ProtectedCpu {
                     }
                     self.cr0 = value | CR0_ET;
                     self.pdptes = pdptes;
+                    if !paging_after {
+                        // Deactivating IA-32e mode from compatibility mode (S2-25j; SDM Vol. 3A
+                        // §12.8.5.4 step 2): PG cleared, the processor sets `LMA` to 0; `LME` keeps
+                        // its value (only `WRMSR` changes it).
+                        self.efer &= !EFER_LMA;
+                    }
                 } else if self.efer & EFER_LME == 0 {
                     // PG set with LME clear. Without PAE: 32-bit paging, no PDPTE (S2-25). With
                     // PAE: PAE paging, the PDPTEs are loaded from CR3 by this write (a reserved bit
@@ -1413,6 +1525,7 @@ mod tests {
             cr4: 0,
             efer: 0,
             pdptes: [0; 4],
+            pse36: false,
             cs: flat(0x08, 0x9B),
             ds: real,
             es: real,
@@ -3858,18 +3971,10 @@ mod tests {
     }
 
     #[test]
-    fn mov_cr0_with_paging_on_refuses_ia32e_deactivation_and_pe_clear() {
+    fn mov_cr0_with_paging_on_refuses_pe_clear() {
         let expect = |value| Err(ProtectedRefusal::Cr0WriteUnmodelled { eip: 0x2000, value });
-        // IA-32e mode: deactivating it (clearing PG with LMA = 1) is not modelled.
-        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
-        preset_accessed_dirty(&mut ram, false);
-        cpu.gpr[EAX] = 0x0005_0033;
-        assert_eq!(
-            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
-            expect(0x0005_0033)
-        );
         // Leaving protected mode with paging on: PG without PE is #GP(0); PG and PE both cleared
-        // is a return to real mode, not modelled.
+        // is a return to real mode through the paged state, not modelled.
         for (value, refusal) in [
             (
                 0x8005_0032u32,
