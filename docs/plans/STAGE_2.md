@@ -15201,6 +15201,20 @@ clear, CR0.CD/NW reload of the PDPTEs, task-switch CR3, SMEP/PSE-36, CPUID decla
 (S2-57/S2-58). No hardware oracle: the PAE walk and PDPTE rules are the SDM text only. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25g--pae-paging-cr4pae-policy-and-pdpte-rules-model-only).
 
+#### S2-25h — PAE walk of the board RAM in od-machine
+
+**Статус:** bounded slice (`od-machine`: `page_walk/pae.rs`, `pae_fetch_view.rs`); parent S2-25 stays open,
+not accepted, the checkbox is not set.
+
+Three-level PAE walk over `PhysicalMemory` (PDPTE registers, PD, PT; 4 KiB and 2 MiB pages) with the rights
+model of `od_isa::paging::translate_pae` (bits 62:36 reserved, XD reserved without NXE, 2 MiB PDE bits 20:13),
+plus the U/S check, the page-fault error code, the trace and compare-and-replace A/D bits of the IA-32e
+walk; board connection `LoadedFirmwareBoard::fetch_vcpu_view_pae` for a vCPU whose legacy model is on PAE
+paging. The long-mode walk is not changed. Checked by a differential sweep against `od-isa` and unit tests;
+no hardware oracle. Not done: operand access, the set loop and host/JIT paths on PAE, 32-bit paging, CPUID
+(S2-57/S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25h--pae-walk-of-the-board-ram-in-od-machine-bounded-slice).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`
