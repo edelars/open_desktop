@@ -15994,12 +15994,12 @@ is §4.1, §4.4, §9.8. Text read from the local `pdftotext` of the SDM, not fro
 |---|---|
 | PAE paging in use | CR0.PG=1, CR4.PAE=1, EFER.LMA=0 (`ProtectedCpu::pae_paging`) |
 | `MOV CR0` PG 0->1, LME=0, PAE=1 | load PDPTE0..3 from `CR3 & 0xFFFF_FFE0`; CR0 := value|ET; LMA stays 0 |
-| same, LME=0, PAE=0 | 32-bit paging: `PagingNotModelled` (unchanged) |
+| same, LME=0, PAE=0 | 32-bit paging (S2-25h; was `PagingNotModelled` in S2-25g) |
 | same, LME=1, PAE=0 | #GP(0) (`LongModePagingWithoutPae`, unchanged); LME=1, PAE=1 enters IA-32e (unchanged) |
 | `MOV CR3` under PAE paging | load PDPTEs from the new value, then store CR3; reserved bit with P=1 -> #GP(0), CR3 unchanged |
 | `MOV CR4` under PAE paging | PAE/PGE/PSE changed -> reload PDPTEs from CR3 (same #GP(0)); other bits no reload |
 | `MOV CR4` clears PAE, PG=1, LMA=1 | #GP(0) (`Cr4PaeClearInLongMode`; Long64 CPL0 `MOV CR4, RAX` too) |
-| `MOV CR4` clears PAE, PG=1, LMA=0 | `Cr4WriteUnmodelled` (would select 32-bit paging) |
+| `MOV CR4` clears PAE, PG=1, LMA=0 | 32-bit paging (S2-25h; was `Cr4WriteUnmodelled` in S2-25g) |
 | PG=0 | PAE/CR3 stored, no PDPTE read |
 | PDPTE reserved bits | 2:1, 8:5, 63:36 when P=1 (P=0 entries are not checked; the SDM notes some CPUs check them) |
 | PDE/PTE (PAE) | P=0 -> not present; bits 62:36 reserved (the 4-level walk ignores 62:52); XD reserved with NXE=0; PDE PS: bits 20:13 reserved; no R/W, U/S, XD or A bit in a PDPTE |
@@ -16020,6 +16020,45 @@ the narrow test `an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_
 (CR0/CR3/PDPTE state, a fetch and a load through the PAE walk, LMA clear, no hand-over). Not checked: the
 `page_table_reads` bookkeeping for the PDPTE reads (the descriptor-alias refusal on a PDPT page), the
 parallel mode with a gate, hardware.
+
+## S2-25h — 32-bit paging, PAE/32-bit transitions, CR0 writes with paging on (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.2 (Figure 5-1, paging-mode transitions, p. 5-3), §5.3
+(32-bit paging, Tables 5-3..5-6, pp. 5-9–5-10, reserved bits and PSE-36 footnotes), §5.4.1 (PDPTE loading
+conditions, p. 5-14) and §5.10 (caching of translations; the model has no TLB). The task's older numbering is
+§4.1.2, §4.3, §4.4.1, §4.10. Text read from the local `pdftotext` of the SDM, not from silicon. The Mac mini
+oracle cannot help: a user-space process cannot write CR0/CR4, so every row is a model rule.
+
+| State / write | Rule implemented |
+|---|---|
+| 32-bit paging in use | CR0.PG=1, CR4.PAE=0 (`ProtectedCpu::paging32`; IA-32e needs PAE, so LMA=0) |
+| `MOV CR0` PG 0->1, LME=0, PAE=0 | enter 32-bit paging, CR0 := value\|ET, no PDPTE read, LMA stays 0 (the memory at CR3 is not looked at) |
+| `MOV CR0` with PG set before and after | PE clear -> #GP(0) (`PagingWithoutProtection`); else CR0 := value\|ET; under PAE paging with LMA=0 a change of CD or NW reloads the PDPTEs from CR3 (reserved bit with P=1 -> #GP(0), CR0 and registers unchanged); WP/other bits: no reload; 32-bit paging and IA-32e: no reload |
+| `MOV CR0` clears PG, LMA=0 | paging off (PE must stay set); PDPTE registers keep their value, unused |
+| `MOV CR0` clears PG with LMA=1, or clears PE, or PG stays 0 | `Cr0WriteUnmodelled` (IA-32e deactivation and the return to real mode are not modelled) |
+| `MOV CR4` clears PAE, PG=1, LMA=0 | PAE paging -> 32-bit paging (Figure 5-1 "Clear PAE"); no #GP, registers kept, unused |
+| `MOV CR4` sets PAE, PG=1, LMA=0 | 32-bit -> PAE paging; PDPTEs loaded from CR3 (the PAE bit is in the SDM list of reload triggers); reserved bit with P=1 -> #GP(0), CR4 unchanged |
+| `MOV CR4` changes PSE/PGE under 32-bit paging | stored, no PDPTE load; PSE selects whether PS means a 4 MiB page at the next walk |
+| `MOV CR4` clears PAE, LMA=1 | #GP(0) (`Cr4PaeClearInLongMode`, unchanged) |
+| `MOV CR3` under 32-bit paging | stored; bits 31:12 are the directory, bits 2:0 and 11:5 ignored, PWT/PCD not modelled; no PDPTE load |
+| 32-bit PDE (PSE=1, PS=1) | 4 MiB page: frame = PDE bits 31:22, offset = linear bits 21:0; PDE bits 21:13 reserved (PSE-36 not declared, bits 39:32 do not exist), bit 12 PAT, bit 8 G free |
+| 32-bit PDE (PSE=0 or PS=0), PTE | page-table pointer / 4 KiB page, bits 31:12; with PSE=0 no bit is reserved and PS is ignored; PTE bit 7 is PAT (not refused, same PAT assumption as S2-25g) |
+| Access rights (CPL 0) | a clear R/W in the PDE or the PTE refuses a write when CR0.WP=1; U/S is not looked at; no XD in 32-bit paging (EFER.NXE has no effect); a refusal carries the final entry |
+| Accessed/dirty | A in the PDE and the PTE used, D in the final entry of a write (the PDE of a 4 MiB page), written after the instruction by `commit_touches` |
+
+Entries are 4 bytes. Two of them share one 8-aligned cell, the unit of `RealModeMemory::read_u64` and of the
+atomic `compare_replace_entry` (`BoardRam` needs an 8-aligned cell): `Touch` gained `cell` (`Quad`,
+`LowDword`, `HighDword`); the mask is shifted into the right half and the retry on a lost race compares only
+the entry's own dword on the translation bits, so a change of the neighbouring entry does not discard the touch.
+Memory is addressed with 32 bits: no 32-bit-paging address reaches above 4 GiB, as PSE-36 is not declared.
+No TLB: `MOV CR3`, `CR0`, `CR4` take effect at once. A refused `MOV` changes no state or memory. Tests:
+`paging::tests::paging32_*` (10 new) and 13 new `protected_exec::tests` (enter 32-bit paging, 32-bit
+ignores PDPTE registers and CR3 low bits, `MOV CR3`, PAE<->32-bit by `MOV CR4` with and without a reserved
+PDPTE, PSE toggle, 4 MiB page A bit, CD/NW reload with and without a reserved PDPTE, no reload outside PAE
+paging, PG clear, IA-32e/PE refusals). Not covered: hardware or KVM oracle, CPUID gating of CR4.PSE (the Windows profile does not declare
+PSE, the model accepts the bit), PSE-36, the `od-machine` MMU and the Long64 interpreter (neither has 32-bit
+paging), the `page_table_reads` bookkeeping of the AP board for 4-byte entries (the cell address is recorded;
+not run), task-switch CR3, SMEP.
 
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
