@@ -146,13 +146,29 @@ pub struct RunJournal {
 
 impl RunJournal {
     pub fn new(config: JournalConfig) -> Result<Self, String> {
-        // The phase log comes first: if it cannot be created, no dump directory is left behind.
-        // If the dump directory is then refused, the phase log just created is removed again.
+        // Nothing on disk changes before the dump directory is known to be usable: a directory
+        // that exists must be empty, so a refusal cannot touch an earlier phase log.
+        if let Some(frames) = &config.frames {
+            FrameDumper::check_existing(&frames.dir)?;
+        }
+        // The phase log is opened without truncation. A file this call created is removed again
+        // if the dump directory is then refused; a file of an earlier run is left untouched and
+        // is truncated only after the dump directory has been created.
+        let mut created = false;
         let phase_log = config
             .phase_log
             .map(|path| {
-                File::create(&path)
-                    .map(|file| (file, path.clone()))
+                let file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(file) => {
+                        created = true;
+                        Ok(file)
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        OpenOptions::new().write(true).open(&path)
+                    }
+                    Err(error) => Err(error),
+                };
+                file.map(|file| (file, path.clone()))
                     .map_err(|error| format!("{}: {error}", path.display()))
             })
             .transpose()?;
@@ -161,11 +177,17 @@ impl RunJournal {
             Err(error) => {
                 if let Some((file, path)) = phase_log {
                     drop(file);
-                    let _ = fs::remove_file(path);
+                    if created {
+                        let _ = fs::remove_file(path);
+                    }
                 }
                 return Err(error);
             }
         };
+        if !created && let Some((file, path)) = &phase_log {
+            file.set_len(0)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+        }
         Ok(Self {
             started: Instant::now(),
             phase_log,
@@ -302,21 +324,40 @@ struct FrameDumper {
 }
 
 impl FrameDumper {
+    /// Changes nothing on disk: a path that exists must be an empty directory. A missing path
+    /// is fine (it is created later).
+    fn check_existing(dir: &Path) -> Result<(), String> {
+        match fs::metadata(dir) {
+            Ok(meta) if !meta.is_dir() => Err(format!(
+                "{}: the framebuffer path is not a directory",
+                dir.display()
+            )),
+            Ok(_) => {
+                let empty = fs::read_dir(dir)
+                    .map_err(|error| format!("{}: {error}", dir.display()))?
+                    .next()
+                    .is_none();
+                if empty {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{}: the framebuffer directory is not empty",
+                        dir.display()
+                    ))
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("{}: {error}", dir.display())),
+        }
+    }
+
     /// The directory is created if absent and must be empty: dumps of an earlier run are never
     /// overwritten or mixed in.
     fn new(config: FrameDumpConfig) -> Result<Self, String> {
         let dir = &config.dir;
+        Self::check_existing(dir)?;
         fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-        let empty = fs::read_dir(dir)
-            .map_err(|error| format!("{}: {error}", dir.display()))?
-            .next()
-            .is_none();
-        if !empty {
-            return Err(format!(
-                "{}: the framebuffer directory is not empty",
-                dir.display()
-            ));
-        }
+        Self::check_existing(dir)?;
         Ok(Self {
             next_due_ns: config.every_ns,
             config,
@@ -648,6 +689,67 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!log.exists());
+    }
+
+    #[test]
+    fn a_refused_dump_directory_leaves_an_existing_phase_log_and_the_directory_untouched() {
+        let dir = TempDir::new("od-journal-keep");
+        let log = dir.0.join("phases.jsonl");
+        let before = b"{\"event\":\"earlier run\"}\n".to_vec();
+        fs::write(&log, &before).unwrap();
+        let busy = dir.0.join("busy");
+        fs::create_dir(&busy).unwrap();
+        fs::write(busy.join("old.raw"), b"x").unwrap();
+        let result = RunJournal::new(JournalConfig {
+            phase_log: Some(log.clone()),
+            frames: Some(FrameDumpConfig {
+                dir: busy.clone(),
+                every_ns: 1_000_000,
+                max_files: 10,
+                max_bytes: 1 << 20,
+            }),
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&log).unwrap(), before);
+        let names: Vec<_> = fs::read_dir(&busy)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("old.raw")]);
+        assert_eq!(fs::read(busy.join("old.raw")).unwrap(), b"x");
+        // A dump path that is a regular file is refused the same way.
+        let file_path = dir.0.join("not-a-dir");
+        fs::write(&file_path, b"y").unwrap();
+        let result = RunJournal::new(JournalConfig {
+            phase_log: Some(log.clone()),
+            frames: Some(FrameDumpConfig {
+                dir: file_path.clone(),
+                every_ns: 1_000_000,
+                max_files: 10,
+                max_bytes: 1 << 20,
+            }),
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&log).unwrap(), before);
+        assert_eq!(fs::read(&file_path).unwrap(), b"y");
+    }
+
+    #[test]
+    fn an_accepted_run_truncates_an_existing_phase_log() {
+        let dir = TempDir::new("od-journal-truncate");
+        let log = dir.0.join("phases.jsonl");
+        fs::write(&log, b"stale content of an earlier run\n").unwrap();
+        let journal = RunJournal::new(JournalConfig {
+            phase_log: Some(log.clone()),
+            frames: Some(FrameDumpConfig {
+                dir: dir.0.join("dumps"),
+                every_ns: 1_000_000,
+                max_files: 10,
+                max_bytes: 1 << 20,
+            }),
+        });
+        assert!(journal.is_ok());
+        assert_eq!(fs::read(&log).unwrap(), b"");
     }
 
     #[test]
