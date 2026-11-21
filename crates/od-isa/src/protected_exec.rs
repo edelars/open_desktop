@@ -767,6 +767,15 @@ impl ProtectedCpu {
             // The far jump refuses L = 1 with D = 1, so this state is not reachable by the model.
             return Err(self.unsupported(mem));
         }
+        // S2-25j: `0f 22 c0`, `MOV CR0, RAX` (the registers of the model are 32-bit: the high dword
+        // of RAX is taken as 0). Only to apply the 64-bit mode rules of `MOV CR0` (clearing `PG` is
+        // `#GP(0)`).
+        if self.fetch(mem, 0)? == 0x0F {
+            if self.fetch(mem, 1)? != 0x22 || self.fetch(mem, 2)? != 0xC0 {
+                return Err(self.unsupported(mem));
+            }
+            return Ok((ProtectedInstruction::MovCr0Eax, 3));
+        }
         // `ff /4` with `mod = 00`, `rm = 101`: the RIP-relative memory operand.
         if self.fetch(mem, 0)? != 0xFF || self.fetch(mem, 1)? != 0x25 {
             return Err(self.unsupported(mem));
