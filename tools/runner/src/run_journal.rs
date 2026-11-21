@@ -172,10 +172,10 @@ impl RunJournal {
                     .map_err(|error| format!("{}: {error}", path.display()))
             })
             .transpose()?;
-        // The file type is read before the dump directory is created, so an fstat error does not
+        // The file type is read before the dump directory is created, so a metadata error does not
         // leave an empty dump directory behind. Only a regular file of an earlier run is
-        // truncated: a FIFO or a character device (`/dev/stdout`, `/dev/null`) is written to as it
-        // is. On Linux `ftruncate` on such files fails with EINVAL; on macOS it happens to succeed
+        // truncated: a FIFO or a character device (e.g. `/dev/null`, or `/dev/stdout` when it is a
+        // terminal or pipe) is written to as it is. On Linux `ftruncate` on such files fails with EINVAL; on macOS it happens to succeed
         // on `/dev/null`, so the check is about semantics (do not truncate non-regular files),
         // not about macOS failing.
         let truncate_earlier_run = match &phase_log {
