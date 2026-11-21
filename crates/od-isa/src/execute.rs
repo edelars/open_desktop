@@ -70515,7 +70515,8 @@ fn sse_fp_arith_from_narrow(operation: Operation) -> Option<Operation> {
 }
 
 /// S2-37: `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` on the local SSE state (Intel SDM Vol. 2A Tables 2-19 (Type 2,
-/// packed) and 2-20 (Type 3, scalar); Vol. 1 §11.5). The arithmetic and the MXCSR policy are in
+/// packed) and 2-20 (Type 3, scalar); Vol. 1 §11.5). S2-54 (FP part): ADDSUBPS/PD, HADDPS/PD and HSUBPS/PD
+/// take the same path (packed, Type 2). The arithmetic and the MXCSR policy are in
 /// [`sse_fp::arith`]; this function owns the gates, the operand access and the exception vector.
 ///
 /// Check order, each before any state change:

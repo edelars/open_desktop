@@ -74,6 +74,11 @@ pub enum Sse3Source {
 /// DIVPS pp. 3-270..3-272, DIVSD pp. 3-273..3-274, DIVSS pp. 3-275..3-276; Vol. 2B MULPD pp. 4-142..4-144,
 /// MULPS pp. 4-145..4-147, MULSD pp. 4-148..4-149, MULSS pp. 4-150..4-151, SUBPD pp. 4-687..4-689, SUBPS
 /// pp. 4-690..4-692, SUBSD pp. 4-693..4-694, SUBSS pp. 4-695..4-696 (edition 325462-093US).
+///
+/// S2-54 (FP part): the SSE3 packed forms that reuse the same core, all Exceptions Type 2 (Vol. 2A
+/// Table 2-19) and only packed (`F2` = binary32, `66` = binary64): ADDSUBPD pp. 3-26..3-27 and ADDSUBPS
+/// pp. 3-28..3-29, HADDPD pp. 3-433..3-435, HADDPS pp. 3-436..3-438, HSUBPD pp. 3-442..3-444, HSUBPS
+/// pp. 3-445..3-447 (Vol. 2A, same edition).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SseFpArithKind {
     /// `0F 58`
@@ -84,6 +89,15 @@ pub enum SseFpArithKind {
     Sub,
     /// `0F 5E`
     Div,
+    /// S2-54: `F2 0F D0` ADDSUBPS, `66 0F D0` ADDSUBPD: element 0 (and 2) subtracts, element 1 (and 3) adds,
+    /// `DEST[i] := DEST[i] -/+ SRC[i]`.
+    AddSub,
+    /// S2-54: `F2 0F 7C` HADDPS, `66 0F 7C` HADDPD: the sum of each adjacent pair, the pairs of the
+    /// destination first, then those of the source.
+    HAdd,
+    /// S2-54: `F2 0F 7D` HSUBPS, `66 0F 7D` HSUBPD: the low element minus the high element of each
+    /// adjacent pair, the pairs of the destination first, then those of the source.
+    HSub,
 }
 
 /// The operand shape selected by the mandatory prefix: none = packed binary32 (`PS`), `66` = packed
@@ -2561,7 +2575,8 @@ pub enum Operation {
         immediate: u8,
     },
     /// S2-37 (general SSE floating-point core): `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` with any XMM or memory
-    /// source (`[66|F2|F3] 0F 58/59/5C/5E /r`). `destination` is the first source and the result register;
+    /// source (`[66|F2|F3] 0F 58/59/5C/5E /r`); S2-54 adds `ADDSUBPS/PD`, `HADDPS/PD` and `HSUBPS/PD`
+    /// (`F2|66 0F D0/7C/7D /r`, packed only). `destination` is the first source and the result register;
     /// `source` is the second source. Reached from [`decode`] in two ways: as the fallback for every form
     /// the narrow profile decoder refuses, and by the executor, which rewrites the narrow profile operations
     /// (`AddpsRegister`, `MulsdMemoryRax` and the like) into this operation when no narrow profile is
@@ -12626,13 +12641,25 @@ impl<M: GuestMemory> Fetch<'_, M> {
             0x59 => SseFpArithKind::Mul,
             0x5c => SseFpArithKind::Sub,
             0x5e => SseFpArithKind::Div,
+            0xd0 => SseFpArithKind::AddSub,
+            0x7c => SseFpArithKind::HAdd,
+            0x7d => SseFpArithKind::HSub,
             _ => return Ok(None),
         };
-        let shape = match (prefixes.group1, prefixes.operand_override) {
-            (None, false) => SseFpShape::Packed32,
-            (None, true) => SseFpShape::Packed64,
-            (Some(0xf3), false) => SseFpShape::Scalar32,
-            (Some(0xf2), false) => SseFpShape::Scalar64,
+        // The SSE3 forms are packed only and take the prefix the other way round: `F2` = PS, `66` = PD
+        // (no prefix and `F3` are not defined for them).
+        let sse3 = matches!(
+            kind,
+            SseFpArithKind::AddSub | SseFpArithKind::HAdd | SseFpArithKind::HSub
+        );
+        let shape = match (sse3, prefixes.group1, prefixes.operand_override) {
+            (true, Some(0xf2), false) => SseFpShape::Packed32,
+            (true, None, true) => SseFpShape::Packed64,
+            (true, _, _) => return Ok(None),
+            (false, None, false) => SseFpShape::Packed32,
+            (false, None, true) => SseFpShape::Packed64,
+            (false, Some(0xf3), false) => SseFpShape::Scalar32,
+            (false, Some(0xf2), false) => SseFpShape::Scalar64,
             _ => return Ok(None),
         };
         if matches!(prefixes.segment, Some(0x64 | 0x65)) {
@@ -12737,7 +12764,10 @@ pub fn decode(
             fetch.decode_popcnt_crc32()
         }
         // S2-37: ADD/MUL/SUB/DIV `PS/PD/SS/SD` outside the narrow profile forms.
-        (OpcodeMap::Escape0f, 0x58 | 0x59 | 0x5c | 0x5e) => fetch.decode_sse_fp_arith(),
+        // S2-54 (FP part): ADDSUBPS/PD (`0F D0`), HADDPS/PD (`0F 7C`) and HSUBPS/PD (`0F 7D`) share it.
+        (OpcodeMap::Escape0f, 0x58 | 0x59 | 0x5c | 0x5e | 0x7c | 0x7d | 0xd0) => {
+            fetch.decode_sse_fp_arith()
+        }
         _ => return profile,
     };
     match general {
