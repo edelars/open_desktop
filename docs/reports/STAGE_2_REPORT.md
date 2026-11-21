@@ -18239,6 +18239,7 @@ first-access order remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--f
 
 Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and Vol. 3A IA32_EFER /
 IA-32e paging ([official Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf), [official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [plan](../plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [Linux profile](STAGE_2_LINUX_PROFILE.md#s2-25e-local-read-only-ia32_efer-rdmsr), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-25e-ia32_efer-rdmsr).
+
 ## S2-25g — PAE paging, CR4.PAE policy and PDPTE rules (model only)
 
 Implemented in `od-isa`: `paging::{load_pdptes, translate_pae, PaeParams, PdpteRefusal}`, PAE-paging state
@@ -18257,6 +18258,14 @@ with LMA set. Run: `cargo test -p od-isa --lib` (2654 passed, new tests included
 the PAE walk cannot be checked against the KVM oracle of S6-14 here, so it is a model of the SDM text.
 The parent S2-25 stays open (32-bit paging, CR0.CD/NW PDPTE reload, task-switch CR3, remaining MSR and
 mode transitions).
+
+Review follow-up. (1) The AP trampoline of `od-machine` steps through `ProtectedCpu::step`, so its `MOV CR0`
+with PG=1, PAE=1, LME=0 now enters PAE paging instead of `PagingNotModelled`; long mode stays unreachable
+(`into_long_mode` requires LMA=1). Covered by one narrow test in `ap_legacy_exec.rs`; the `page_table_reads`
+bookkeeping of the PDPTE reads, the guarded parallel mode and hardware are not checked. (2) PAT: SDM §5.4.2
+makes PTE bit 7 / PDE(PS) bit 12 reserved when PAT is unsupported; the model treats PAT as supported (limit,
+listed in the contract). (3) `#GP(0)` on clearing PAE is closed in the `WriteCr0 | WriteCr4` branch with a
+control policy (`execute.rs`), open in the `cr4_profile` branch, which still answers `Unsupported`.
 
 ## S2-38f — exact Long64 MAXSS with bounded unmasked IM/DM exits
 

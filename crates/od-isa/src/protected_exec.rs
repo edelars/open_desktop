@@ -46,8 +46,9 @@
 //! [`ProtectedRefusal::PagingNotModelled`]; with `PAE = 1` it is PAE paging (S2-25, below); any
 //! `CR0` write with `PG = 0` is [`ProtectedRefusal::Cr0WriteUnmodelled`]. While paging is on,
 //! `WRMSR` may not change `LME` and `MOV CR4` may not clear `PAE` (`#GP` in IA-32e mode,
-//! [`ProtectedRefusal::Cr4PaeClearInLongMode`]; a model refusal in PAE paging). The far jump `JMP ptr16:32` (CPL 0) follows the SDM
-//! Vol. 3A direct far jump rules, by memory: the descriptor must be a present code segment with
+//! [`ProtectedRefusal::Cr4PaeClearInLongMode`]; a model refusal in PAE paging).
+//! The far jump `JMP ptr16:32` (CPL 0) follows the SDM Vol. 3A direct far jump rules, by memory:
+//! the descriptor must be a present code segment with
 //! `DPL = 0` (conforming: `DPL <= 0`) and `RPL = 0` for a non-conforming one; in IA-32e mode a
 //! descriptor with `L = 1` and `D = 1` is refused, `L = 1`, `D = 0` selects 64-bit mode (no limit
 //! check, `RIP` is the zero-extended offset) and `L = 0` the compatibility mode (offset under the
