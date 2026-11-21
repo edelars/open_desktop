@@ -2122,6 +2122,11 @@ pub enum Operation {
     FldcwM16Rax,
     /// Bare `DD 38` FNSTSW m2byte at [RAX], preserving the x87 snapshot.
     FnstswM16Rax,
+    /// S7-31i: `0F AE /2` LDMXCSR m32 (no prefix, memory operand only). Executed only in the FP member
+    /// of the CPL0 set, over a CPUID profile that declares SSE.
+    LdmxcsrMemory {
+        source: MemoryOperand,
+    },
     /// S7-31d: `DD /7` FNSTSW m2byte with any memory operand other than the exact `[RAX]` form
     /// (no prefix). Executed only in the CPL0 profile set that owns the FP state.
     FnstswM16 {
@@ -8849,6 +8854,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                 unreachable!("ModRM 05 is a memory operand");
                             };
                             Operation::FxsaveRipRelative(area)
+                        }
+                        // S7-31i: `0F AE /2` with a memory operand (LDMXCSR m32).
+                        modrm if modrm >> 6 != 3 && (modrm >> 3) & 7 == 2 => {
+                            let Operand::Memory(source) =
+                                self.rm_operand(modrm, prefixes, OperandSize::Dword)?
+                            else {
+                                unreachable!("mod != 3 is a memory operand")
+                            };
+                            Operation::LdmxcsrMemory { source }
                         }
                         _ => return Err(self.unsupported(opcode)),
                     }
@@ -22771,7 +22785,7 @@ mod tests {
             &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
-            &[0x0f, 0xae, 0x15, 0, 0, 0, 0][..],
+            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i, no longer refused.)
             &[0x0f, 0xae, 0x1d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
