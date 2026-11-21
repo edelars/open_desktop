@@ -84,6 +84,36 @@ pub enum SseFpArithKind {
     Sub,
     /// `0F 5E`
     Div,
+    /// `0F 51` (S2-38): the square root of the second source; the first source only supplies the bits of a
+    /// scalar result above the element. SDM Vol. 2B SQRTPD pp. 4-661..4-663, SQRTPS pp. 4-664..4-666, SQRTSD
+    /// pp. 4-667..4-668, SQRTSS pp. 4-669..4-670.
+    Sqrt,
+    /// `0F 5D` (S2-38): the second source when either operand is a NaN or the operands are equal. SDM Vol. 2B
+    /// MINPD pp. 4-16..4-18, MINPS pp. 4-19..4-21, MINSD pp. 4-22..4-23, MINSS pp. 4-24..4-26.
+    Min,
+    /// `0F 5F` (S2-38): as [`Self::Min`] for the maximum. SDM Vol. 2B MAXPD pp. 4-5..4-7, MAXPS pp. 4-8..4-10,
+    /// MAXSD pp. 4-11..4-12, MAXSS pp. 4-13..4-15.
+    Max,
+}
+
+/// The other forms of the general SSE floating-point core (S2-38): Intel SDM Vol. 2A CMPPD pp. 3-168..3-174,
+/// CMPPS pp. 3-175..3-184, CMPSD pp. 3-185..3-188, CMPSS pp. 3-189..3-193, COMISD pp. 3-199..3-200, COMISS
+/// pp. 3-201..3-202, CVTDQ2PS pp. 3-211..3-213, CVTPS2DQ pp. 3-225..3-227, CVTTPS2DQ pp. 3-248..3-249; Vol. 2B
+/// UCOMISD pp. 4-733..4-734, UCOMISS pp. 4-735..4-736 (edition 325462-093US).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpMiscKind {
+    /// `0F C2 /r ib`: the predicate is imm8 bits 2:0 (bits 7:3 are reserved: the executor refuses them).
+    Cmp,
+    /// `0F 2F`: ordered compare of the low elements into ZF, PF, CF (a quiet NaN is invalid too).
+    Comi,
+    /// `0F 2E`: unordered compare (only a signaling NaN is invalid).
+    Ucomi,
+    /// `0F 5B`: packed signed doublewords to binary32.
+    Cvtdq2ps,
+    /// `66 0F 5B`: packed binary32 to signed doublewords, rounded by MXCSR.RC.
+    Cvtps2dq,
+    /// `F3 0F 5B`: as [`Self::Cvtps2dq`], truncating.
+    Cvttps2dq,
 }
 
 /// The operand shape selected by the mandatory prefix: none = packed binary32 (`PS`), `66` = packed
@@ -2572,6 +2602,20 @@ pub enum Operation {
         destination: u8,
         source: Sse3Source,
     },
+    /// S2-38 (general SSE floating-point core): `CMPPS/CMPPD/CMPSS/CMPSD` (`0F C2 /r ib`), `COMISS/COMISD`
+    /// (`0F 2F`), `UCOMISS/UCOMISD` (`0F 2E`), `CVTDQ2PS` (`0F 5B`), `CVTPS2DQ` (`66 0F 5B`) and `CVTTPS2DQ`
+    /// (`F3 0F 5B`) with an XMM or any memory source. `shape` is the operand shape the prefix selects (the
+    /// compare-to-EFLAGS forms are `Scalar32`/`Scalar64`, the conversions `Packed32`); `immediate` is the CMPxx
+    /// predicate byte and zero elsewhere. Reached like [`Operation::SseFpArith`]: as the fallback of [`decode`] and
+    /// by the executor, which rewrites the narrow profile operations of these forms into it when no narrow profile
+    /// is configured. Executed through `step_sse_fp_arith`.
+    SseFpMisc {
+        kind: SseFpMiscKind,
+        shape: SseFpShape,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
     /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
     /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
     /// only as the fallback of [`decode`]; executed through `step_popcnt_crc32`.
@@ -3335,6 +3379,14 @@ impl Instruction {
                     | Sse41Kind::Pcmpestri
                     | Sse41Kind::Pcmpistrm
                     | Sse41Kind::Pcmpistri,
+                ..
+            } => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            // COMISS/COMISD/UCOMISS/UCOMISD (S2-38): ZF, PF, CF from the relation, OF, SF, AF cleared.
+            Operation::SseFpMisc {
+                kind: SseFpMiscKind::Comi | SseFpMiscKind::Ucomi,
                 ..
             } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
@@ -12626,6 +12678,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             0x59 => SseFpArithKind::Mul,
             0x5c => SseFpArithKind::Sub,
             0x5e => SseFpArithKind::Div,
+            0x51 => SseFpArithKind::Sqrt,
+            0x5d => SseFpArithKind::Min,
+            0x5f => SseFpArithKind::Max,
             _ => return Ok(None),
         };
         let shape = match (prefixes.group1, prefixes.operand_override) {
@@ -12674,6 +12729,85 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 shape,
                 destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                 source,
+            },
+        }))
+    }
+
+    /// S2-38: `CMPPS/CMPPD/CMPSS/CMPSD` (`0F C2 /r ib`), `COMISS/COMISD` (`0F 2F`), `UCOMISS/UCOMISD` (`0F 2E`),
+    /// `CVTDQ2PS` (`0F 5B`), `CVTPS2DQ` (`66 0F 5B`) and `CVTTPS2DQ` (`F3 0F 5B`) with an XMM or any memory
+    /// source, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode. The
+    /// prefix rules are those of [`Self::decode_sse_fp_arith`]: LOCK is #UD; a repeated prefix, FS/GS overrides,
+    /// `66` together with `F2`/`F3`, `F2`/`F3` on COMISx/UCOMISx and `F2` on `0F 5B` are refused. REX.W is ignored.
+    fn decode_sse_fp_misc(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let (kind, shape) = match (opcode.byte, prefixes.group1, prefixes.operand_override) {
+            (0x2e, None, false) => (SseFpMiscKind::Ucomi, SseFpShape::Scalar32),
+            (0x2e, None, true) => (SseFpMiscKind::Ucomi, SseFpShape::Scalar64),
+            (0x2f, None, false) => (SseFpMiscKind::Comi, SseFpShape::Scalar32),
+            (0x2f, None, true) => (SseFpMiscKind::Comi, SseFpShape::Scalar64),
+            (0xc2, None, false) => (SseFpMiscKind::Cmp, SseFpShape::Packed32),
+            (0xc2, None, true) => (SseFpMiscKind::Cmp, SseFpShape::Packed64),
+            (0xc2, Some(0xf3), false) => (SseFpMiscKind::Cmp, SseFpShape::Scalar32),
+            (0xc2, Some(0xf2), false) => (SseFpMiscKind::Cmp, SseFpShape::Scalar64),
+            (0x5b, None, false) => (SseFpMiscKind::Cvtdq2ps, SseFpShape::Packed32),
+            (0x5b, None, true) => (SseFpMiscKind::Cvtps2dq, SseFpShape::Packed32),
+            (0x5b, Some(0xf3), false) => (SseFpMiscKind::Cvttps2dq, SseFpShape::Packed32),
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let size = if shape == SseFpShape::Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            };
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        let immediate = if kind == SseFpMiscKind::Cmp {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::SseFpMisc {
+                kind,
+                shape,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+                immediate,
             },
         }))
     }
@@ -12737,7 +12871,11 @@ pub fn decode(
             fetch.decode_popcnt_crc32()
         }
         // S2-37: ADD/MUL/SUB/DIV `PS/PD/SS/SD` outside the narrow profile forms.
-        (OpcodeMap::Escape0f, 0x58 | 0x59 | 0x5c | 0x5e) => fetch.decode_sse_fp_arith(),
+        // S2-38: SQRT/MIN/MAX join them, and the compare, compare-to-EFLAGS and integer conversion forms.
+        (OpcodeMap::Escape0f, 0x58 | 0x59 | 0x5c | 0x5e | 0x51 | 0x5d | 0x5f) => {
+            fetch.decode_sse_fp_arith()
+        }
+        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b) => fetch.decode_sse_fp_misc(),
         _ => return profile,
     };
     match general {

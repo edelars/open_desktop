@@ -4648,6 +4648,52 @@ mod tests {
     }
 
     #[test]
+    fn sse_fp_misc_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-38: the interpreter executes SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the integer
+        // conversions through the general core; the JIT has no lowering for them, so the block is not built,
+        // whether the decoder returns the general operation or one of the narrow profile operations.
+        const ENTRY: u64 = 0x4f80;
+        for bytes in [
+            &[0x0f, 0x51, 0x03][..],         // SQRTPS xmm0, [rbx]
+            &[0xf3, 0x0f, 0x51, 0xc1],       // SQRTSS xmm0, xmm1 (narrow profile operation)
+            &[0xf2, 0x0f, 0x5d, 0x4b, 0x10], // MINSD xmm1, [rbx+0x10]
+            &[0x66, 0x44, 0x0f, 0x5f, 0xcf], // MAXPD xmm9, xmm7
+            &[0x0f, 0x2f, 0x03],             // COMISS xmm0, [rbx]
+            &[0x66, 0x0f, 0x2e, 0xc1],       // UCOMISD xmm0, xmm1 (narrow profile operation)
+            &[0x0f, 0xc2, 0x0b, 0x01],       // CMPLTPS xmm1, [rbx]
+            &[0xf3, 0x0f, 0xc2, 0xc1, 0x00], // CMPEQSS xmm0, xmm1 (narrow profile operation)
+            &[0x0f, 0x5b, 0x03],             // CVTDQ2PS xmm0, [rbx]
+            &[0x66, 0x0f, 0x5b, 0xc1],       // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
+            &[0xf3, 0x0f, 0x5b, 0x4b, 0x10], // CVTTPS2DQ xmm1, [rbx+0x10]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            let _ = decoded;
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x51, 0x03][..],
+            &[0xf0, 0x66, 0x0f, 0x5d, 0xc1],
+            &[0xf0, 0x0f, 0x2f, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
+            &[0xf0, 0x66, 0x0f, 0x5b, 0x03],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);
