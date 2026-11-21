@@ -2124,6 +2124,9 @@ pub(crate) struct PagedCpl0SetReport {
     /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
     /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
+    /// The walker's EFER at the end of the call: the `efer` handed in, with `NXE` as a retired
+    /// `WRMSR IA32_EFER` of this call left it (S2-25 NXE slice).
+    pub(crate) efer: u64,
     /// `#PF` and `#GP(0)` exceptions the loop delivered through the guest IDT. A delivery is not
     /// a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
@@ -2661,7 +2664,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     split_gate: Option<&dyn crate::bus::SplitLockGate>,
     vcpu: usize,
     cr3: u64,
-    efer: u64,
+    mut efer: u64,
     context: AccessContext,
     instruction_budget: u64,
     rflags_defined: u64,
@@ -2712,6 +2715,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 memory_error: None,
                 translation_context_changes: Vec::new(),
                 cr3,
+                efer,
                 delivered_exceptions: 0,
                 delivered_page_faults: 0,
                 delivered_general_protection_faults: 0,
@@ -3389,7 +3393,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             result.exit,
             result.instructions_executed,
             state,
-            efer,
+            &mut efer,
             &mut paging,
             &mut reported_cr3,
             &mut changes,
@@ -3417,6 +3421,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         memory_error,
         translation_context_changes: changes,
         cr3: reported_cr3,
+        efer,
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
@@ -4144,7 +4149,7 @@ fn handle_set_exit(
     exit: Cpl0ProfileSetExit<crate::BusAccessError>,
     instructions_executed: u64,
     state: &LongModeState,
-    efer: u64,
+    efer: &mut u64,
     paging: &mut Long64ProbeConfig,
     reported_cr3: &mut u64,
     changes: &mut Vec<TranslationContextChange>,
@@ -4163,9 +4168,30 @@ fn handle_set_exit(
                     effect_new_cr3: new_cr3,
                 });
             }
-            match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
+            match Long64ProbeConfig::from_cpu_state(state, new_cr3, *efer) {
                 Ok(candidate) => {
                     *paging = candidate;
+                    None
+                }
+                Err(error) => Some(PagedCpl0SetExit::Cr3SnapshotRejected { effect, error }),
+            }
+        }
+        // S2-25 NXE slice: a retired `WRMSR IA32_EFER` changed NXE. Only that bit of the walker's
+        // EFER follows (SCE and the rest of the loop's value stay); the effect is not a CR3 change
+        // and is not added to `changes`. A rebuild failure reuses `Cr3SnapshotRejected`, whose
+        // `effect` names the EFER write.
+        Cpl0ProfileSetExit::TranslationContextChange(
+            effect @ TranslationContextChange::EferWrite { old_efer, new_efer },
+        ) => {
+            const NXE: u64 = 1 << 11;
+            if (old_efer ^ *efer) & NXE != 0 || (old_efer ^ new_efer) & NXE == 0 {
+                return Some(PagedCpl0SetExit::UnexpectedContextChange { effect });
+            }
+            let candidate_efer = (*efer & !NXE) | (new_efer & NXE);
+            match Long64ProbeConfig::from_cpu_state(state, paging.cr3(), candidate_efer) {
+                Ok(candidate) => {
+                    *paging = candidate;
+                    *efer = candidate_efer;
                     None
                 }
                 Err(error) => Some(PagedCpl0SetExit::Cr3SnapshotRejected { effect, error }),
@@ -8196,6 +8222,7 @@ mod tests {
     /// nothing reported yet.
     struct SetLoop {
         paging: Long64ProbeConfig,
+        efer: u64,
         reported_cr3: u64,
         changes: Vec<TranslationContextChange>,
     }
@@ -8204,6 +8231,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+                efer: EFER,
                 reported_cr3: ROOT,
                 changes: Vec::new(),
             }
@@ -8219,7 +8247,7 @@ mod tests {
                 exit,
                 instructions_executed,
                 state,
-                EFER,
+                &mut self.efer,
                 &mut self.paging,
                 &mut self.reported_cr3,
                 &mut self.changes,
@@ -8337,6 +8365,67 @@ mod tests {
             "the walker was not replaced"
         );
         assert_eq!((run.reported_cr3, run.changes), (new_cr3, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_an_efer_write_rebuilds_the_walker_for_nxe_only_and_is_not_a_cr3_change() {
+        // S2-25 NXE slice: the guest value carries SCE, the loop's walker EFER does not; only the
+        // NXE bit follows, and nothing is added to the CR3 changes.
+        let mut run = SetLoop::new();
+        let nxe = 1u64 << 11;
+        let effect = TranslationContextChange::EferWrite {
+            old_efer: EFER | 1,
+            new_efer: (EFER | 1) & !nxe,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(exit, None);
+        assert_eq!(run.efer, EFER & !nxe);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER & !nxe).unwrap()
+        );
+        assert_eq!((run.reported_cr3, run.changes.clone()), (ROOT, Vec::new()));
+        // Setting it again follows the same way.
+        let effect = TranslationContextChange::EferWrite {
+            old_efer: EFER & !nxe,
+            new_efer: EFER,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(exit, None);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap()
+        );
+        // An effect whose old NXE is not the walker's, or that changes no NXE, is unexpected.
+        for effect in [
+            TranslationContextChange::EferWrite {
+                old_efer: EFER & !nxe,
+                new_efer: EFER,
+            },
+            TranslationContextChange::EferWrite {
+                old_efer: EFER,
+                new_efer: EFER | 1,
+            },
+        ] {
+            let exit = run.handle(
+                Cpl0ProfileSetExit::TranslationContextChange(effect),
+                1,
+                &set_loop_state(ROOT),
+            );
+            assert_eq!(
+                exit,
+                Some(PagedCpl0SetExit::UnexpectedContextChange { effect })
+            );
+            assert_eq!(run.efer, EFER, "the walker EFER was not replaced");
+        }
     }
 
     #[test]
