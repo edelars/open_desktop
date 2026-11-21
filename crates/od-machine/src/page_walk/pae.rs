@@ -218,7 +218,9 @@ pub struct PaeTranslation {
     pub physical: GuestPhysicalAddress,
     pub page_size: PaePageSize,
     /// The PDE (2 MiB) or PTE (4 KiB) that mapped the page, and its value with the accessed bit
-    /// set (as the walk leaves it).
+    /// set. The committing forms write that bit into memory; the read-only forms
+    /// (`translate_pae_ram_read_only[_with_trace]`) do not: memory keeps the old entry, only this
+    /// returned value has A = 1.
     pub leaf_entry_address: GuestPhysicalAddress,
     pub leaf_entry_value: u64,
     /// Physical bases of the tables visited, indexed like the IA-32e walk (PML4, PDPT, PD, PT):

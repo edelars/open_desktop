@@ -32,9 +32,11 @@ impl LoadedFirmwareBoard {
     }
 
     /// Up to `len` bytes at the 32-bit linear address `linear` as an instruction fetch of vCPU `cpu`
-    /// would see them through PAE paging (no accessed/dirty bit is written), read from RAM. Returns
-    /// the physical address of `linear` (when it translates), the bytes read (they stop at the first
-    /// byte that does not translate or is not RAM) and the text of that failure. The linear address
+    /// would see them through PAE paging (no accessed/dirty bit is written). The bytes are read with
+    /// `PhysicalMemory::load_u8`, i.e. from any region with backing (RAM and ROM), not from
+    /// MMIO or reserved ranges; the walk itself reads its tables from RAM only. Returns the physical
+    /// address of `linear` (when it translates), the bytes read (they stop at the first byte that
+    /// does not translate or whose region has no readable backing) and the text of that failure. The linear address
     /// wraps at 4 GiB like a 32-bit EIP.
     pub(crate) fn fetch_vcpu_view_pae(
         &mut self,
