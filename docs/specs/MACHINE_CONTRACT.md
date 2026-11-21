@@ -331,6 +331,8 @@ The builder verifies the assembled bytes/layout and artifact hashes. See the
 
 > Уточнено в S4-38L9y: IER хранит биты 0..3 (RDA, THRE, RLS, MS), биты 4..7 читаются как 0 и отбрасываются при записи; отказ `UnsupportedConfiguration` остался только для битов MCR, кроме OUT2 (см. [CPU_CONTRACT](CPU_CONTRACT.md), раздел S4-38L9y).
 
+> S4-24f: IER бит 2 (RLS) имеет источник: LSR OE/PE/FE/BI (OE при доставке `deliver_received_byte` в полный RBR; PE/FE/BI задаёт host), IIR `0x06` с приоритетом над RDA и THRE, сброс чтением LSR. Modem status, loopback и FIFO не моделируются. См. [отчёт S4-24f](../reports/STAGE_4_S4-24F_2026-11-21.md).
+
 **UART interrupt model.** `Uart16550PollingTx` gains IER bit 0 (received data
 available, RDA) and bit 1 (transmitter holding register empty, THRE); any other
 IER bit (line status, modem status) and any MCR bit except OUT2 are rejected with

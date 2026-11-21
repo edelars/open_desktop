@@ -1671,6 +1671,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** не входит FIFO, baud timing, прерывания от LSR-ошибок и modem status, level route, JIT, совместимость с Linux 8250, production scheduler, IRQ из CPL3.
 - **Готово:** guest обрабатывает RX-IRQ через IOAPIC и LAPIC; вся цепочка проверена трейсом; ограниченный срез не выдаётся за полный S4-24.
 
+#### S4-24f. UART RLS-прерывание (ограниченный срез)
+
+- [ ] Срез реализован, ожидает ревью; родительский S4-24 остаётся открытым. Отчёт: [STAGE_4_S4-24F_2026-11-21.md](../reports/STAGE_4_S4-24F_2026-11-21.md).
+- **Граница:** IER бит 2, IIR `0x06` (приоритет над RDA/THRE), LSR OE/PE/FE/BI со сбросом чтением LSR, host-вызов `deliver_received_byte` (перезапись при переполнении, как 16450). 10 новых тестов; IOAPIC/8259 источники работают без изменений.
+- **Не входит:** modem status и loopback, FIFO и character timeout, baud timing, гостевой образ RLS и сверка с первичным datasheet (не найден).
+
 ### S4-25. Local APIC одного CPU
 
 - [x] Принято после ревью (закрыт срезами S4-25a–f; Claude Opus high). Не закрыто и вынесено: доставка с LINT/NMI/ExtINT; ESR-источники; logical destination в IOAPIC/ICR при logical mode ядра (риск S4-26/S4-38); сверка CPUID с отсутствием PMU/TM/CMCI (S4-38); проверка на настоящем Linux (S4-38); x2APIC и multi-CPU.
