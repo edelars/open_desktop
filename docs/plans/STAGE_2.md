@@ -1053,6 +1053,33 @@ S2-17c — 465, после S2-17d — 470, после S2-17e — 479, после
 acceptance остаётся в общем финальном mini substage. FS/GS and out-of-profile
 addressing, CALL, far transfers и формы S2-17 остаются незавершёнными.
 
+**Физическая сверка CMOVcc (2026-11-21, Mac mini, Ubuntu x86-64, ветка s2-16-cmov).**
+Это доказательство для приёмки S2-16c, а не приёмка: чекбокс S2-16 не поставлен.
+Дифференциальный прогон 5356 сгенерированных случаев `CMOVcc 0F 40–4F`: одна и та же
+инструкция исполняется на физическом CPL3-оракуле (inline asm на RWX-странице между
+фиксированными prologue/epilogue, семена GPR/флагов/данных одинаковы) и через
+`od_isa::execute::step`; сравниваются RFLAGS (CF/PF/AF/ZF/SF/OF/DF/AC), все GPR, MXCSR,
+XMM и хеш страницы данных. 5328 строк совпали побайтно, 28 расходятся только вне профиля
+(см. ниже). Покрыто: все 16 условий × таблица 32 комбинаций CF/PF/ZF/SF/OF × 16/32/64 бит
+× register-register и register-memory (192 из 192 ячеек «память/ширина/условие/taken»,
+минимум 8 случаев на ячейку); матрица dst×src по всем 14 регистрам (REX.R/REX.B, dst=src);
+адресация base/disp8/disp32/SIB (scale 0–3, все допустимые index, r12/r13/rsp/rbp-базы),
+index-only, absolute disp32, RIP-relative, `67` с мусором в верхних 32 битах и wrap
+32-битного адреса; страницы P0→P1 (чтение через границу), P2 (`PROT_NONE`), P3
+(не отображена), 0, non-canonical, kernel-half; `66`+REX.W, пустой REX, REX не перед
+`0F`. Независимая Python-проверка выхода самого оракула (не модели) по SDM: 4248
+register/memory случаев (результат, zero-extension 32-бит при ложном условии, сохранение
+верхних бит при 16-бит), флаги не меняются во всех 5261 успешных строках; во всех 91
+fault-строках (47 MAPERR, 28 ACCERR, 16 #GP) регистры, флаги и RIP не изменены, читается
+источник и при ложном условии. Расхождения вне профиля: 22 случая с `F0/F2/F3/66 66/67 67`
+(оракул исполняет их как обычный CMOVcc, а `F0` даёт #UD; модель — fail-closed `Unsupported`, как в профиле)
+и 6 случаев чтения через 2^64 (`0xffff_ffff_ffff_ffff`, 2–8 байт): оракул `SIGSEGV`, модель
+`MemoryError::AddressOverflow` (известное ISSUE-012, не специфично для CMOVcc). Расхождений
+исполняемой семантики нет, правок модели не потребовалось. Не проверено: FS/GS-формы
+(`CmovFsLoad`/`CmovGsLoad`, у оракула нет настроенной базы), 70 literal fixtures S2-16c
+как таковые (вместо них прогнан генератор), режимы CPL0/real/protected, JIT. Артефакты
+(gitignored): `work/stage8/s2_16_cmov_oracle/`.
+
 ### S2-17. Стек, CALL/RET и косвенное управление
 
 Подшаг S2-17a реализует только 64-bit GPR PUSH/POP opcode forms `50–5F` с `REX.B` и восемь literal fixtures. Проверены aliasing источника/назначения с RSP, bounded guest stack, полный canonical address range, `#SS(0)` и fault-before-commit. Local checks прошли; независимое Sol medium review чистое. Физическая проверка отложена.
