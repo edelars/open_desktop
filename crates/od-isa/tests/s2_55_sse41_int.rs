@@ -2756,20 +2756,18 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
         ));
     }
     // (66 0F 38 37 is PCMPGTQ since S2-56 and is covered by s2_56_sse42_popcnt.rs.)
-    // Neighbouring opcodes of the same maps that are not integer SSE4.1. The floating-point SSE4.1 forms
-    // (BLENDVPS/PD 38/14 and 38/15, ROUNDPS/PD/SS/SD 3A/08..0B, BLENDPS/PD 3A/0C and 3A/0D, EXTRACTPS 3A/17,
-    // INSERTPS 3A/21, DPPS 3A/40, DPPD 3A/41) wait for the FP core of S2-37/S2-38 and must stay refused.
+    // Neighbouring opcodes of the same maps that are not integer SSE4.1. (The floating-point SSE4.1 forms
+    // BLENDVPS/PD 38/14 and 38/15, ROUNDPS/PD/SS/SD 3A/08..0B, BLENDPS/PD 3A/0C and 3A/0D, EXTRACTPS 3A/17,
+    // INSERTPS 3A/21, DPPS 3A/40 and DPPD 3A/41 are decoded since S2-55 slice B, see s2_55_fp.rs.)
     for opcode in [
-        0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18, 0x19, 0x26, 0x27, 0x2c, 0x2d, 0x36, 0x42,
+        0x11u8, 0x12, 0x13, 0x16, 0x18, 0x19, 0x26, 0x27, 0x2c, 0x2d, 0x36, 0x42,
     ] {
         refused.push((
             vec![0x66, 0x0f, 0x38, opcode, 0x00],
             format!("66 0F 38 {opcode:02x}"),
         ));
     }
-    for opcode in [
-        0x08u8, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x17, 0x21, 0x40, 0x41, 0x43, 0x44,
-    ] {
+    for opcode in [0x43u8, 0x44] {
         refused.push((
             vec![0x66, 0x0f, 0x3a, opcode, 0x00, 0x01],
             format!("66 0F 3A {opcode:02x}"),
