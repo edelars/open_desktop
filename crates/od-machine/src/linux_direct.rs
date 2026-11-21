@@ -1873,7 +1873,8 @@ pub struct FirmwareUnifiedMarker {
 /// firmware device apertures (NVRAM, display registers, the firmware NVMe window, TPM CRB) are
 /// bound to the machine bus for the set loop, so the ROM's Runtime Services and boot services
 /// reach the same devices as in `run_boot`. The instruction set is the Linux set of the stage 4
-/// runs on the `X8664V1Stage4A` CPUID subset (FPU and FXSR members included: the ROM uses
+/// runs on the `X8664V1Stage4AExt1` CPUID subset (Stage4A plus SYSCALL, NX and LM in leaf
+/// 0x80000001; FPU and FXSR members included: the ROM uses
 /// `FXSAVE`/`FXRSTOR`) with the CPL3 entry, so the kernel can reach user space. Nothing is
 /// executed that the set does not admit: the first inadmissible instruction is the stop.
 ///
@@ -1910,8 +1911,10 @@ pub fn run_firmware_unified_marked(
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
     crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
 
+    // `X8664V1Stage4AExt1` (S7-31h): Stage4A plus SYSCALL, NX and LM in CPUID.80000001H:EDX. Without
+    // NX the kernel strips `_PAGE_NX` and its EFI runtime mapping fails (ISSUE-634).
     let members = LinuxCpl0SetMembers {
-        cpuid_profile: CpuidProfile::X8664V1Stage4A,
+        cpuid_profile: CpuidProfile::X8664V1Stage4AExt1,
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,
