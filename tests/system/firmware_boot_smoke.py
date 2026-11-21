@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,7 +26,23 @@ def build(args: list[str | Path]) -> None:
     subprocess.run(args, cwd=ROOT, check=True)
 
 
+# The CRCs of the Boot Services and Runtime Services tables cover function pointers. Their values
+# follow the code layout of the freestanding image: they change with any firmware code change and,
+# for the same sources, with the absolute path of the checkout (the order of items inside the single
+# codegen unit follows path-dependent hashes). The table contents are verified by field names in
+# ISSUE-611, not by the CRC value, so the comparison ignores only these two values. The System
+# Table CRC stays exact: it covers addresses of data, not of code.
+LAYOUT_CRC_LINE = re.compile(
+    rb"(OD-FW S7-05 table CRC ST=0x[0-9A-F]{16}) BS=0x[0-9A-F]{16} RT=0x[0-9A-F]{16}"
+)
+
+
+def mask_layout_crcs(data: bytes) -> bytes:
+    return LAYOUT_CRC_LINE.sub(rb"\1 BS=0x<layout> RT=0x<layout>", data)
+
+
 def check_transcript(actual: bytes, expected: bytes, label: str) -> None:
+    actual, expected = mask_layout_crcs(actual), mask_layout_crcs(expected)
     if actual == expected:
         return
     expected_lines = [repr(line) + "\n" for line in expected.splitlines(keepends=True)]

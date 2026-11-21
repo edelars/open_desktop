@@ -466,6 +466,53 @@ fn session_audit_bound_session_authorizes_owner_then_includes_the_auth_value() {
     check_attestation(&report, true, &expected);
 }
 
+/// Pins the chosen reading of an ambiguous point of the TPM Library text, recorded in VTPM.md
+/// ("Аудит сессий и аттестация", ambiguity A-1). The response HMAC of the first audited use of a
+/// bound session is keyed with `sessionKey` alone, the key of the command HMAC (Part 1 rev 01.83
+/// clause 19.6.10: one key for a command and its response). The alternative reading, where the
+/// binding is already dropped when the response is built and the key is `sessionKey || authValue`,
+/// is refused. The test computes the HMAC from the wire bytes, not through `check_hmac_ack`.
+#[test]
+fn first_audit_of_a_bound_session_answers_with_the_session_key_alone() {
+    let mut t = started();
+    ok(&set_auth(&mut t, OWNER, b"", OWNER_AUTH));
+    let s = start_hmac(&mut t, OWNER, OWNER_AUTH, &[0x68; 16]);
+    assert!(!s.key.is_empty());
+    assert_eq!(s.bound, Some((OWNER, OWNER_AUTH.to_vec())));
+    let c = Hc {
+        code: cc::CLOCK_SET,
+        handles: vec![OWNER],
+        names: vec![OWNER.to_be_bytes().to_vec()],
+        params: 1_000_000_000u64.to_be_bytes().to_vec(),
+        entity: (OWNER, OWNER_AUTH.to_vec()),
+        attrs: AUDIT,
+        nonce_caller: vec![0x33; 16],
+        entity_after: OWNER_AUTH.to_vec(),
+    };
+    let response = run(&mut t, packet(&c, &[], &[(&s, false)]));
+    let (params, acks) = split_response(&response, 0);
+    assert!(params.is_empty());
+    let (nonce, attributes, tag) = &acks[0];
+    assert_eq!(*attributes, AUDIT | EXCLUSIVE);
+
+    let rp_hash = h256(&[&0u32.to_be_bytes(), &c.code.to_be_bytes(), &params]);
+    let mut data = rp_hash;
+    data.extend_from_slice(nonce);
+    data.extend_from_slice(&c.nonce_caller);
+    data.push(*attributes);
+    let session_key_alone = crate::crypto::hmac_sha256(&s.key, &[&data]).to_vec();
+    let mut with_auth_value = s.key.clone();
+    with_auth_value.extend_from_slice(OWNER_AUTH);
+    let rejected_reading = crate::crypto::hmac_sha256(&with_auth_value, &[&data]).to_vec();
+    assert_ne!(session_key_alone, rejected_reading);
+    assert_eq!(tag, &session_key_alone);
+    assert_ne!(tag, &rejected_reading);
+
+    // The binding is dropped after the response: the next command is keyed with the authValue.
+    let slot = t.sessions.slot_of(s.handle).unwrap();
+    assert!(t.sessions.get(slot).unwrap().bound.is_none());
+}
+
 #[test]
 fn session_audit_authorizing_errors_leave_nonce_digest_and_exclusivity_unchanged() {
     let mut t = started();

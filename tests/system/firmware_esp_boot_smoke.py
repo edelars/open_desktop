@@ -13,6 +13,8 @@ import tempfile
 import uuid
 import zlib
 
+from firmware_boot_smoke import check_transcript
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures" / "firmware"
 BUILDER = ROOT / "tools" / "build" / "build_firmware.py"
@@ -231,8 +233,7 @@ def main() -> None:
             expected = manifest[name]
             require(digest(disk) == expected["disk_sha256"], f"{name} disk fixture SHA-256")
             require(digest(snapshot) == expected["nvram_sha256"], f"{name} NVRAM fixture SHA-256")
-            require(trace.read_bytes() == (FIXTURES / expected["transcript"]).read_bytes(),
-                    f"{name} COM1 differs from the recorded bytes")
+            check_transcript(trace.read_bytes(), (FIXTURES / expected["transcript"]).read_bytes(), name)
 
 
 if __name__ == "__main__":
