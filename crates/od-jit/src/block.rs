@@ -4569,6 +4569,11 @@ mod tests {
             &[0x66, 0x44, 0x0f, 0x5e, 0xcf], // DIVPD xmm9, xmm7 (REX.R)
             &[0xf3, 0x0f, 0x5c, 0x4b, 0x10], // SUBSS xmm1, [rbx+0x10]
             &[0xf2, 0x41, 0x0f, 0x59, 0x00], // MULSD xmm0, [r8]
+            // S2-54 (FP part): the SSE3 packed forms take the same general operation.
+            &[0xf2, 0x0f, 0x7c, 0xc1],       // HADDPS xmm0, xmm1
+            &[0x66, 0x0f, 0x7d, 0x03],       // HSUBPD xmm0, [rbx]
+            &[0xf2, 0x0f, 0xd0, 0xc1],       // ADDSUBPS xmm0, xmm1
+            &[0x66, 0x44, 0x0f, 0xd0, 0xcf], // ADDSUBPD xmm9, xmm7 (REX.R)
         ] {
             let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
@@ -4595,6 +4600,8 @@ mod tests {
             &[0xf0, 0x0f, 0x58, 0x03][..],
             &[0xf0, 0x66, 0x0f, 0x5e, 0xc1],
             &[0xf2, 0xf0, 0x0f, 0x5c, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0x7c, 0x00], // LOCK HADDPS xmm0, [rax]
+            &[0xf0, 0x66, 0x0f, 0xd0, 0xc1], // LOCK ADDSUBPD xmm0, xmm1
         ] {
             let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
