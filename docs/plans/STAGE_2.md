@@ -15269,6 +15269,38 @@ no hardware oracle. Not done: operand access, the set loop and host/JIT paths on
 (S2-57/S2-58). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25i--pae-walk-of-the-board-ram-in-od-machine-bounded-slice).
 
+#### S2-25j — PSE-36 walk, SMEP, IA-32e deactivation and return to real mode (model only)
+
+**Статус:** bounded interpreter slice (`od-isa`: `paging.rs`, `protected_exec.rs`) after the acceptance of the parent
+S2-25 (accepted by the owner 2026-11-21); the slice itself is not marked, the parent checkbox is not touched.
+Model only: no hardware oracle (a user-space process cannot write CR0/CR4) and **no CPUID bit is declared**
+(`CPUID.01H:EDX[17]` PSE-36 and `CPUID.07H:EBX[7]` SMEP stay clear in every profile; S2-57).
+
+- **PSE-36** (32-bit paging, SDM Rev. 093 Vol. 3A §5.3, Table 5-4): `ProtectedCpu::pse36` (default `false`) selects
+  `paging::translate32_with`: with `CR4.PSE` and `PS = 1` the frame is PDE bits 31:22 plus PDE bits 16:13 as physical
+  bits 35:32; bits 21:17 are reserved at `MAXPHYADDR` 36. A frame above 4 GiB is the existing model limit
+  `PhysicalBeyond4GiB` (memory is addressed with 32 bits), so only the layout and the reserved bits are checkable.
+- **SMEP** (§5.6.1, §5.7): `CR4.SMEP` (bit 20) is settable by `MOV CR4` (not CPUID-gated, like `PSE`) and changing it
+  reloads the PDPTEs of PAE paging; an instruction fetch of the CPL 0 model through a user-mode address (U/S = 1 in
+  every entry that controls the translation; the PDPTE of PAE paging has no U/S) is `PageRefusal::SmepFetch`
+  (the `#PF`); data accesses are unaffected (no SMAP). `ProtectedCpu::page_fault_error_code` gives the `#PF` error
+  code: P = 1, U/S = 0, I/D = 1 (0x11 for this fault; I/D is also reported for fetches with PAE and NXE).
+- **IA-32e deactivation** (§12.8.5.4): `MOV CR0` clearing `PG` with `LMA = 1` in compatibility mode keeps `PE`, stores
+  CR0 and clears `LMA`; `LME`, CR3, CR4 and the PDPTE registers keep their value, so `WRMSR` may then clear `LME` and
+  `PG = 1` enters PAE paging or (LME still set) IA-32e again. In 64-bit mode (`CS.L = 1`) it is `#GP(0)`
+  (`Cr0PgClearIn64BitMode`; the 64-bit decoder now also takes `0F 22 C0` for it). PG set with PE cleared stays `#GP(0)`;
+  PE cleared together with PG while paging is on stays `Cr0WriteUnmodelled`.
+- **Return to real mode** (§12.9.2 step 6): `MOV CR0` clearing `PE` with paging already off stores the value;
+  every later `step` is `ProtectedRefusal::NotProtectedMode` and `ProtectedCpu::to_real_mode(&base)` gives the
+  `RealModeCpu` (registers, EFLAGS, GDTR/IDTR, segments with the selector, base and limit of their caches; CR3, CR4,
+  EFER and PDPTEs are not part of `RealModeCpu` and stay in the `ProtectedCpu`). Other CR0 writes with PE kept and
+  paging off stay `Cr0WriteUnmodelled`.
+
+Tests: 6 in `paging.rs`, 16 in `protected_exec.rs` (each transition and refusal above, the error codes, the full
+IA-32e -> PG clear -> PE clear sequence). Not done: the Long64 CPL0 profile (`execute.rs`) `MOV CR0` rules, `od-machine`
+walks (SMEP/PSE-36 there), PE cleared together with PG, SMAP/PKU/PCIDE, CPUID declaration (S2-57). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25j--pse-36-walk-smep-ia-32e-deactivation-and-return-to-real-mode-model-only).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

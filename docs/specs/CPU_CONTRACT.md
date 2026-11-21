@@ -16093,6 +16093,25 @@ operand reads/writes and MMIO dispatch through PAE paging, the PAE path in the `
 and the host/JIT fast paths (they stay IA-32e only), 32-bit paging in od-machine (PG=1, PAE=0; the od-isa model is S2-25h), a stage-4 style probe on
 PAE tables, hardware oracle, CPUID declaration (S2-57/S2-58).
 
+## S2-25j — PSE-36 walk, SMEP, IA-32e deactivation and return to real mode (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.3 (Table 5-4, reserved bits of a 32-bit PDE), §5.6.1 (access
+rights, SMEP), §5.7 (page-fault error code), §12.8.5.4 (switching out of IA-32e mode), §12.9.2 (switching back to
+real-address mode); Vol. 2B "MOV to control register" (exceptions). Text only: no hardware oracle; no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| PSE-36 | `ProtectedCpu::pse36` = false: PDE (PS=1, PSE=1) bits 21:13 reserved, frame bits 31:22. true: bits 21:17 reserved (MAXPHYADDR 36), bits 16:13 = physical bits 35:32; a frame above 4 GiB is `PhysicalBeyond4GiB` (32-bit memory), not a `#PF`. CR4.PSE=0: PS ignored, nothing reserved |
+| SMEP | CR4 bit 20 in `CR4_MODELLED_MASK`; fetch through an address with U/S=1 in every entry (PDE+PTE for PAE and 32-bit, all four levels for IA-32e, 4 MiB/2 MiB leaf = PDE) is `PageRefusal::SmepFetch`, no A/D bit written; reads and writes unaffected; error code P+I/D = 0x11; SMEP change reloads PDPTEs (PAE paging) |
+| #PF error code | `paging::page_fault_error_code`: P=0 for not present, P+RSVD for reserved bits and 1 GiB pages, P for rights faults, W/R for a write, U/S=0 (CPL 0 model), I/D for a fetch when SMEP or (PAE and NXE); model limits give none |
+| IA-32e deactivation | `MOV CR0` PG 1->0 with LMA=1, CS.L=0, PE kept: `CR0 := value OR ET`, `LMA := 0`, LME/CR3/CR4/PDPTEs kept. CS.L=1: `#GP(0)` (`Cr0PgClearIn64BitMode`). PE also cleared with PG: `Cr0WriteUnmodelled` (not specified by the SDM sequence). PG=1 with PE=0: `PagingWithoutProtection` |
+| Real mode | `MOV CR0` PE 1->0, PG=0 before and after: `CR0 := value OR ET`, nothing else changes; next `step` `NotProtectedMode`; `to_real_mode` builds the `RealModeCpu` (caches keep selector/base/limit). PE kept with PG=0: `Cr0WriteUnmodelled` as before |
+
+Tests: `paging.rs` (`pse36_*`, `smep_*`, `page_fault_error_code_*`) and `protected_exec.rs` (`smep_*`, `mov_cr4_*smep*`, `pse36_switch_*`,
+`mov_cr0_clearing_pg_in_compatibility_mode_*`, `ia32e_*`, `clearing_pg_in_64bit_mode_*`, `mov_cr0_clearing_pe_*`, `to_real_mode_*`,
+`pe_clear_refusals_*`, `full_sequence_from_ia32e_to_real_mode`). Not covered: hardware oracle, `od-machine` walks, the Long64 CPL0
+profile, SMAP/PKU/PCIDE, CPUID declaration (S2-57).
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
