@@ -27,7 +27,7 @@
 | Носитель | `Windows11_Client_x64_en-us_26300_9457.iso`, 9 047 330 816 байт, SHA-256 `bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650`; вне Git. Подключается как сконвертированный GPT/FAT32 raw-диск ([ADR-0012](../decisions/ADR-0012-install-media-transport.md)) | SUPPORT_MATRIX, аудит S7-30 |
 | Образ | `sources/install.wim` индекс 6 (в сконвертированном носителе — набор `install.swm`, `install2.swm`…) | SUPPORT_MATRIX; ADR-0012 |
 | Build | База — 26300.9457 (`install.wim`); WinPE/Setup — 26100.9457 (`boot.wim`). Целевой build после накопительного обновления — 26300.9711 (KB5127648); фактический build записывает S8-50 | SUPPORT_MATRIX (база 26300.9457 и целевой 26300.9711); WinPE 26100.9457 — аудит S7-30, строка A10 ([WINDOWS_PLATFORM_REQUIREMENTS.md](WINDOWS_PLATFORM_REQUIREMENTS.md#1-носитель-и-цепочка-загрузки-наблюдения-в-iso), со ссылкой на GUEST_REQUIREMENTS.md) |
-| CPU, видимый гостю | Windows-профиль `od-x86-64-v2-windows-v0.1` по [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md); идентичность CPU ждёт решения владельца | ADR-0013 |
+| CPU, видимый гостю | Windows-профиль `od-x86-64-v2-windows-v0.1` по [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md); идентичность CPU — вариант B (N5105), решение 2026-11-21 | ADR-0013 |
 
 ## 2. Ресурсы
 

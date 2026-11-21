@@ -2740,7 +2740,7 @@ and [format](../testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profil
 
 | Возможность | Статус | Что нужно до объявления |
 |---|---|---|
-| Windows/Linux CPU profile | Linux — цель `od-x86-64-v1-neutral-v0.1` (раздел «Ubuntu Generic amd64»). Windows — [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md): подготовлено; ждёт архитектурного ревью; идентичность CPU — решение владельца (решения 1 и 3–6 ждут ревью); профиль `od-x86-64-v2-windows-v0.1` не реализован (S2-51…S2-58 этапа 2) | Exact media/build, сбор boot requirements, обязательные CPUID/MSR/ISA и драйверные проверки; для Windows — реализация пробелов ADR-0013 в этапе 2 и наблюдение на S8-24 |
+| Windows/Linux CPU profile | Linux — цель `od-x86-64-v1-neutral-v0.1` (раздел «Ubuntu Generic amd64»). Windows — [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md): принято (архитектурное решение по идентичности: вариант B, N5105; ревью 2026-11-21); профиль `od-x86-64-v2-windows-v0.1` не реализован (S2-51…S2-58 этапа 2) | Exact media/build, сбор boot requirements, обязательные CPUID/MSR/ISA и драйверные проверки; для Windows — реализация пробелов ADR-0013 в этапе 2 и наблюдение на S8-24 |
 | x86-64 application baseline | Не определён | Результаты выбранных приложений и минимальные ABI/runtime requirements |
 | 32-bit compatibility | Не включена в S0-09 | Guest mode transitions, segmentation, syscall/exception behavior и тестовый набор |
 | x87/SSE/AVX | Не включены в S0-09 | State layout, exception/masking semantics, feature gating и отдельная проверка каждого расширения |
