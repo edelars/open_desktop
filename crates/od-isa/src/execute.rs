@@ -7,8 +7,8 @@ use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
-    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
-    general_protection,
+    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse128MoveKind,
+    canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41431,7 +41431,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && instruction.prefixes.group1 == Some(0xf3)
                         && instruction.prefixes.rex.is_none()
                 }
-                _ => false,
+                // S2-34 (m128 addressing): under the FP-init CR0/CR4 pair, which carries the control
+                // registers next to the local SSE state, the memory moves run and are gated on
+                // CR0.EM / CR0.TS / CR4.OSFXSR by `step_sse128_memory_move`.
+                operation => {
+                    sse128_move_parts(operation).is_some()
+                        && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
+                        && cr4_profile == Some(Cr4Profile::FpInitLong64V1)
+                }
             }
         };
         if !allowed {
@@ -50336,6 +50343,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovupsLoadMemory { .. }
         | Operation::MovupdLoadMemory { .. }
         | Operation::MovupdStoreMemory { .. }
+        // S2-34 (m128 addressing): every memory form of the six raw 128-bit moves is admitted
+        // exactly like the MOVUPS forms above (local x87 + SSE state present) and executes through
+        // the one `step_sse128_memory_move` path; CPL3 keeps its own profile list.
+        | Operation::MovapsLoadMemory { .. }
+        | Operation::MovdqaLoadMemory { .. }
+        | Operation::MovdquLoadMemory { .. }
+        | Operation::Sse128MemoryMove { .. }
         | Operation::MovssLoadMemory { .. }
         | Operation::MovssStoreMemory { .. }
         | Operation::MovupsStoreMemory { .. } => state.x87.is_some() && state.sse.is_some(),
@@ -51416,11 +51430,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::RepneScasWdqAddr32 { .. } => false,
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
-        Operation::MovapsLoadMemory { .. } | Operation::PminubMemory { .. } => false,
+        Operation::PminubMemory { .. } => false,
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
-        | Operation::MovdquLoadMemory { .. }
-        | Operation::MovdqaLoadMemory { .. }
         | Operation::PshuflwRegister { .. }
         | Operation::PinsrwMemory { .. }
         | Operation::Fxsave64R12(_)
@@ -51524,67 +51536,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if let Operation::MovupsLoadMemory {
-        destination,
-        source,
-    } = instruction.operation
-    {
-        let address = match source.access_range_address_48(state, next_rip, 16) {
-            Ok(address) => address,
-            Err(error) => return report_memory_error(error),
-        };
-        let mut raw = [0u8; 16];
-        if let Err(error) = memory.read(address, context, &mut raw) {
-            return report_memory_error(error);
-        }
-        state
-            .sse
-            .as_mut()
-            .expect("MOVUPS local profile state was prevalidated")
-            .xmm[usize::from(destination)] = raw;
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
-    }
-    if let Operation::MovupdLoadMemory {
-        destination,
-        source,
-    } = instruction.operation
-    {
-        let address = match source.access_range_address_48(state, next_rip, 16) {
-            Ok(address) => address,
-            Err(error) => return report_memory_error(error),
-        };
-        let mut raw = [0u8; 16];
-        if let Err(error) = memory.read(address, context, &mut raw) {
-            return report_memory_error(error);
-        }
-        state
-            .sse
-            .as_mut()
-            .expect("MOVUPD local profile state was prevalidated")
-            .xmm[usize::from(destination)] = raw;
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
-    }
-    if let Operation::MovupdStoreMemory {
-        destination,
-        source,
-    } = instruction.operation
-    {
-        let address = match destination.access_range_address_48(state, next_rip, 16) {
-            Ok(address) => address,
-            Err(error) => return report_memory_error(error),
-        };
-        let raw = state
-            .sse
-            .as_ref()
-            .expect("MOVUPD local profile state was prevalidated")
-            .xmm[usize::from(source)];
-        if let Err(error) = memory.write(address, context, &raw) {
-            return report_memory_error(error);
-        }
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
+    // S2-34 (m128 addressing): the one path of all memory forms of the six raw 128-bit moves,
+    // whether the profile decoder (MOVUPS/MOVUPD/MOVAPS/MOVDQA/MOVDQU operations) or the general
+    // decoder (`Sse128MemoryMove`) produced them.
+    if let Some((kind, store, xmm, operand)) = sse128_move_parts(instruction.operation) {
+        return step_sse128_memory_move(
+            state,
+            memory,
+            context,
+            (kind, store, xmm, operand),
+            instruction.opcode.byte,
+            next_rip,
+        );
     }
     if let Operation::MovssLoadMemory {
         destination,
@@ -51667,56 +51630,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             .expect("MOVSD store local profile state was prevalidated")
             .xmm[usize::from(source)];
         if let Err(error) = memory.write(address, context, &raw[..8]) {
-            return report_memory_error(error);
-        }
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
-    }
-    if let Operation::MovupsStoreMemory {
-        destination,
-        source,
-    } = instruction.operation
-    {
-        let address = match destination.access_range_address_48(state, next_rip, 16) {
-            Ok(address) => address,
-            Err(error) => return report_memory_error(error),
-        };
-        let raw = state
-            .sse
-            .as_ref()
-            .expect("MOVUPS local profile state was prevalidated")
-            .xmm[usize::from(source)];
-        if let Err(error) = memory.write(address, context, &raw) {
-            return report_memory_error(error);
-        }
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
-    }
-    if let Operation::MovapsStoreMemory {
-        destination,
-        source,
-    } = instruction.operation
-    {
-        let address = match destination.linear_address_48(state, next_rip) {
-            Ok(address) => address,
-            Err(fault) => return Ok(StepOutcome::Fault(fault)),
-        };
-        if address & 15 != 0 {
-            return Ok(StepOutcome::Fault(ArchitecturalFault {
-                vector: 13,
-                error_code: Some(0),
-                linear_address: None,
-            }));
-        }
-        if let Err(error) = destination.access_range_address_48(state, next_rip, 16) {
-            return report_memory_error(error);
-        }
-        let raw = state
-            .sse
-            .as_ref()
-            .expect("MOVAPS store local profile state was prevalidated")
-            .xmm[usize::from(source)];
-        if let Err(error) = memory.write(address, context, &raw) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -62957,10 +62870,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::MovupsLoadMemory { .. } => unreachable!("MOVUPS load commits before dispatch"),
         Operation::MovupdLoadMemory { .. } => unreachable!("MOVUPD load commits before dispatch"),
         Operation::MovupdStoreMemory { .. } => unreachable!("MOVUPD store commits before dispatch"),
+        Operation::Sse128MemoryMove { .. }
+        | Operation::MovdquLoadMemory { .. }
+        | Operation::MovdqaLoadMemory { .. } => {
+            unreachable!("m128 SSE moves commit before dispatch")
+        }
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
-        | Operation::MovdquLoadMemory { .. }
-        | Operation::MovdqaLoadMemory { .. }
         | Operation::PcmpeqbMemory { .. }
         | Operation::MovlpdLoadMemory { .. }
         | Operation::MovhpdLoadMemory { .. }
@@ -69259,6 +69175,140 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
         MemoryError::Architectural(fault) => Ok(StepOutcome::Fault(fault)),
         error => Err(error),
     }
+}
+
+/// S2-34 (m128 addressing): the kind, direction, XMM register and memory operand of every memory
+/// form of the six raw 128-bit moves, from the general operation and from each narrower profile
+/// operation (so one executor, one set of exception checks, serves them all).
+fn sse128_move_parts(operation: Operation) -> Option<(Sse128MoveKind, bool, u8, MemoryOperand)> {
+    Some(match operation {
+        Operation::Sse128MemoryMove {
+            kind,
+            store,
+            xmm,
+            memory,
+        } => (kind, store, xmm, memory),
+        Operation::MovupsLoadMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movups, false, destination, source),
+        Operation::MovupsStoreMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movups, true, source, destination),
+        Operation::MovupdLoadMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movupd, false, destination, source),
+        Operation::MovupdStoreMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movupd, true, source, destination),
+        Operation::MovapsLoadMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movaps, false, destination, source),
+        Operation::MovapsStoreMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movaps, true, source, destination),
+        Operation::MovdqaLoadMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movdqa, false, destination, source),
+        Operation::MovdquLoadMemory {
+            destination,
+            source,
+        } => (Sse128MoveKind::Movdqu, false, destination, source),
+        _ => return None,
+    })
+}
+
+/// S2-34 (m128 addressing): a raw 16-byte copy between an XMM register of the local SSE state
+/// and memory (Intel SDM Vol. 2B, MOVAPS/MOVAPD/MOVDQA Type 1 and MOVUPS/MOVUPD Type 4
+/// exceptions; Vol. 2A Tables 2-18 and 2-21; MOVDQU has no #GP for misalignment by its description,
+/// Vol. 2B p. 4-65: "may be unaligned to any alignment without causing a general-protection
+/// exception"). No MXCSR bit is read or written and no flag changes.
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1: only when the state carries
+///    that control register (the local SSE profiles otherwise assume EM = 0, TS = 0, OSFXSR = 1).
+///    The CPUID.SSE/SSE2 gate and LOCK (`#UD`, decoder) are not modeled here (S2-57 owns CPUID).
+/// 2. A non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base).
+/// 3. MOVAPS/MOVAPD/MOVDQA with an address that is not 16-byte aligned: `#GP(0)`.
+/// 4. The 16-byte range must be canonical; then one `read` or `write` of 16 bytes (a memory fault,
+///    `#PF` included, is the backend's result and leaves the CPU state untouched).
+///
+/// The alignment-check exception `#AC` is not modeled. The SDM gives no #AC row for Type 1 and
+/// Type 4 and notes that "treatment of #AC varies" for MOVUPS/MOVUPD, so an unaligned MOVUPS,
+/// MOVUPD or MOVDQU at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is
+/// `Unsupported` instead of guessed.
+fn step_sse128_memory_move(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, store, xmm, operand): (Sse128MoveKind, bool, u8, MemoryOperand),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let address = match operand.linear_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(fault) => return Ok(StepOutcome::Fault(fault)),
+    };
+    let aligned = address & 15 == 0;
+    if kind.requires_alignment() && !aligned {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+    if let Err(error) = operand.access_range_address_48(state, next_rip, 16) {
+        return report_memory_error(error);
+    }
+    if !aligned
+        && context.privilege == PrivilegeLevel::Ring3
+        && state.rflags & (1 << 18) != 0
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    let sse = state
+        .sse
+        .as_mut()
+        .expect("m128 SSE move state was prevalidated");
+    if store {
+        let raw = sse.xmm[usize::from(xmm)];
+        if let Err(error) = memory.write(address, context, &raw) {
+            return report_memory_error(error);
+        }
+    } else {
+        let mut raw = [0u8; 16];
+        if let Err(error) = memory.read(address, context, &mut raw) {
+            return report_memory_error(error);
+        }
+        sse.xmm[usize::from(xmm)] = raw;
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
 }
 
 /// Store the defined fields of the exact bounded plain-Long64 FXSAVE profile.
@@ -160973,7 +161023,10 @@ mod tests {
     }
 
     #[test]
-    fn movdqu_memory_load_stays_outside_the_bare_movups_profile() {
+    fn movdqu_memory_load_runs_through_the_general_m128_path_in_the_bare_run() {
+        // S2-34 (m128 addressing) supersedes the old "MOVDQU load stays outside the bare MOVUPS
+        // profile" boundary: it is a raw unaligned 16-byte load (the value of every form is
+        // asserted in tests/s2_34_sse_moves_memory.rs).
         let mut memory = Memory::new(&[0xf3, 0x0f, 0x6f, 0x00]);
         let mut state = LongModeState::default();
         state.gpr[Register::Rax as usize] = 0x1001;
@@ -160993,10 +161046,14 @@ mod tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x6f }));
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert!(memory.accesses.is_empty());
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = before;
+        expected.rip = 4;
+        let sse = expected.sse.as_mut().unwrap();
+        sse.xmm[0] = core::array::from_fn(|i| i as u8 + 1);
+        assert_eq!(state, expected);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1001, 16)]);
     }
 
     #[test]
@@ -162465,15 +162522,39 @@ mod tests {
             }
         }
 
+        // S2-34 (m128 addressing): REX.B (ignored for RIP-relative), REX.W, REX.X, 67 and a null
+        // segment override are valid MOVUPS forms and no longer stop as Unsupported; the general
+        // m128 path decodes them (asserted with values in tests/s2_34_sse_moves_memory.rs). Here the
+        // data address 0x2008 is outside this mock's data window, so the access fails after the
+        // decode: not Unsupported, and no state change.
         for code in [
-            &[0x41, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.B cannot select R13 here.
+            &[0x41, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x45, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
-            &[0x48, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.W
-            &[0x42, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.X
+            &[0x48, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
+            &[0x42, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
+            &[0x67, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
+            &[0x2e, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
+        ] {
+            let mut memory = Memory::at(code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x38; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let outcome = step(&mut state, &mut memory, AccessContext::default());
+            assert!(
+                !matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+                "{code:02x?}: {outcome:?}"
+            );
+            assert_eq!(state, before, "{code:02x?}");
+        }
+
+        for code in [
             &[0xf2, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
             &[0xf3, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
-            &[0x67, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // address size
-            &[0x2e, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..], // segment
         ] {
             let mut memory = Memory::at(code, 0x2000);
             let mut state = LongModeState::default();

@@ -398,6 +398,17 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lahf", &[0x9f], 0x9f),
         ("sahf", &[0x9e], 0x9e),
         ("prefetchw [rdi]", &[0x0f, 0x0d, 0x0f], 0x0d),
+        // S2-34 (m128 addressing): the general decode of the six raw 128-bit moves is never admitted at
+        // CPL3; the live profile keeps exactly its own MOVUPS/MOVAPS/MOVDQA/MOVDQU forms.
+        (
+            "movaps xmm0,[rdi] (general form)",
+            &[0x0f, 0x28, 0x07],
+            0x28,
+        ),
+        ("movapd xmm0,[rdi]", &[0x66, 0x0f, 0x28, 0x07], 0x28),
+        ("movapd [rdi],xmm0", &[0x66, 0x0f, 0x29, 0x07], 0x29),
+        ("movdqa [rdi],xmm0", &[0x66, 0x0f, 0x7f, 0x07], 0x7f),
+        ("movdqu [rdi],xmm0", &[0xf3, 0x0f, 0x7f, 0x07], 0x7f),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.
@@ -975,6 +986,39 @@ fn lea_with_a_register_operand_is_invalid_opcode_without_change() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(memory.accesses, 0);
+    }
+}
+
+#[test]
+fn lock_before_a_raw_sse_memory_move_is_invalid_opcode_without_change() {
+    // S2-34 (m128 addressing): LOCK on MOVAPS/MOVUPS/MOVAPD/MOVUPD/MOVDQA/MOVDQU with a memory
+    // operand is #UD (SDM). Before S2-34 these stopped as `Unsupported`; the decoder now reports
+    // `Invalid`, so the live CPL3 profile gives #UD, not a refusal. The allow-list is not consulted.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bytes in [
+        &[0xf0, 0x0f, 0x28, 0x07][..],       // lock movaps xmm0, [rdi]
+        &[0xf0, 0x0f, 0x29, 0x07][..],       // lock movaps [rdi], xmm0
+        &[0xf0, 0x0f, 0x10, 0x07][..],       // lock movups xmm0, [rdi]
+        &[0xf0, 0x0f, 0x11, 0x07][..],       // lock movups [rdi], xmm0
+        &[0x66, 0xf0, 0x0f, 0x28, 0x07][..], // lock movapd xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x7f, 0x07][..], // lock movdqa [rdi], xmm0
+    ] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+        assert_eq!(memory.accesses, 0, "{bytes:02x?}");
     }
 }
 

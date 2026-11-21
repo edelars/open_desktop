@@ -4291,6 +4291,51 @@ mod tests {
     }
 
     #[test]
+    fn m128_sse_moves_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-34 (m128 addressing): the interpreter executes the six raw 128-bit moves with any
+        // memory operand; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4d40;
+        for bytes in [
+            &[0x0f, 0x28, 0x00][..],               // MOVAPS xmm0, [rax]
+            &[0x66, 0x0f, 0x29, 0x4b, 0x10],       // MOVAPD [rbx+0x10], xmm1
+            &[0x66, 0x0f, 0x7f, 0x04, 0x88],       // MOVDQA [rax+rcx*4], xmm0
+            &[0xf3, 0x0f, 0x7f, 0x05, 1, 0, 0, 0], // MOVDQU [rip+1], xmm0
+            &[0x66, 0x0f, 0x10, 0x00],             // MOVUPD xmm0, [rax]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse128MemoryMove { .. }
+                        | Operation::MovapsLoadMemory { .. }
+                        | Operation::MovupdLoadMemory { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK is #UD: a decode boundary, never a block.
+        let invalid = no_block(
+            build(
+                &[0xf0, 0x0f, 0x28, 0x00],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert!(matches!(boundary.error, DecodeError::Invalid { .. }));
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

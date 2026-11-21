@@ -5,6 +5,30 @@
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError};
 use crate::{LongModeState, OperandSize, Register, RegisterView};
 
+/// The six raw 128-bit SSE moves (Intel SDM Vol. 2B: MOVAPD pp. 4-37..4-40, MOVAPS pp. 4-41..4-44,
+/// MOVDQA pp. 4-59..4-63, MOVDQU pp. 4-64..4-71, MOVUPD pp. 4-122..4-125, MOVUPS pp. 4-126..4-129).
+/// They differ only in the mandatory prefix and in the alignment rule; none touches MXCSR or flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse128MoveKind {
+    Movaps,
+    Movapd,
+    Movups,
+    Movupd,
+    Movdqa,
+    Movdqu,
+}
+
+impl Sse128MoveKind {
+    /// MOVAPS, MOVAPD and MOVDQA raise #GP(0) for a memory operand that is not 16-byte aligned
+    /// (SDM Vol. 2A Table 2-18, Type 1); MOVUPS and MOVUPD have no alignment requirement
+    /// (Table 2-21, Type 4, note 1), and neither has MOVDQU: its description (Vol. 2B p. 4-65) says
+    /// the operand "may be unaligned to any alignment without causing a general-protection
+    /// exception" (note 1 of Table 2-21 does not list MOVDQU).
+    pub const fn requires_alignment(self) -> bool {
+        matches!(self, Self::Movaps | Self::Movapd | Self::Movdqa)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressBase {
     None,
@@ -2085,6 +2109,19 @@ pub enum Operation {
     MovupsStoreMemory {
         destination: MemoryOperand,
         source: u8,
+    },
+    /// S2-34 (m128 addressing): the memory form of any of the six raw 128-bit SSE moves
+    /// (MOVAPS `0F 28/29`, MOVUPS `0F 10/11`, MOVAPD `66 0F 28/29`, MOVUPD `66 0F 10/11`, MOVDQA
+    /// `66 0F 6F/7F`, MOVDQU `F3 0F 6F/7F`) with any ModR/M, SIB, displacement or RIP-relative operand
+    /// that the narrower profile decoders above did not claim (decoded only as the fallback of
+    /// [`decode`] when the legacy decode is `Unsupported`). `store` selects the direction:
+    /// `false` loads `xmm` from `memory`, `true` stores `xmm` to `memory`. Register forms stay with
+    /// the register operations above. Executed only through [`crate::execute`]'s shared m128 path.
+    Sse128MemoryMove {
+        kind: Sse128MoveKind,
+        store: bool,
+        xmm: u8,
+        memory: MemoryOperand,
     },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
@@ -11514,6 +11551,113 @@ impl<M: GuestMemory> Fetch<'_, M> {
             length: self.length,
         }
     }
+
+    /// S2-34 (m128 addressing): general decode of the memory forms of the six raw 128-bit SSE
+    /// moves, tried by [`decode`] only after the profile decoder returned `Unsupported` for
+    /// `0F 10/11/28/29/6F/7F`, so every form a narrower profile already claims keeps its
+    /// operation. Everything is re-fetched from the instruction start; `Ok(None)` means "not one
+    /// of these forms" and leaves the profile decoder's `Unsupported` result in force.
+    ///
+    /// Accepted: one optional REX immediately before the opcode (a legacy prefix after it drops it,
+    /// REX.W is ignored), the mandatory prefix of the instruction (none for MOVAPS/MOVUPS, `66` for
+    /// MOVAPD/MOVUPD/MOVDQA, `F3` for MOVDQU), an optional `67` (32-bit effective address, which
+    /// `MemoryOperand::effective_address` truncates), an optional CS/DS/ES/SS override (null base
+    /// in 64-bit mode, so ignored) and any ModR/M memory operand through the shared
+    /// `rm_operand`. Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in
+    /// this operand model), F2, a second mandatory prefix, the MMX `0F 6F/7F` without `66`/`F3`
+    /// and the register forms (mod = 3). LOCK (`F0`) before the memory form of one of the six
+    /// encodings is #UD (SDM Vol. 2A Tables 2-18 and 2-21) and is returned as
+    /// `DecodeError::Invalid`.
+    fn decode_sse128_memory_move(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let mut prefixes = Prefixes::default();
+        let mut seen = 0u8;
+        let first = loop {
+            let byte = self.byte()?;
+            let group = match byte {
+                0xf0 | 0xf2 | 0xf3 => {
+                    prefixes.group1 = Some(byte);
+                    1
+                }
+                0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 => {
+                    prefixes.segment = Some(byte);
+                    2
+                }
+                0x66 => {
+                    prefixes.operand_override = true;
+                    4
+                }
+                0x67 => {
+                    prefixes.address_override = true;
+                    8
+                }
+                0x40..=0x4f => {
+                    if prefixes.rex.is_some() {
+                        return Ok(None);
+                    }
+                    prefixes.rex = Some(byte);
+                    continue;
+                }
+                _ => break byte,
+            };
+            if seen & group != 0 {
+                return Ok(None);
+            }
+            seen |= group;
+            prefixes.rex = None;
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let locked = prefixes.group1 == Some(0xf0);
+        let mandatory = if locked { None } else { prefixes.group1 };
+        let kind = match (opcode.byte, prefixes.operand_override, mandatory) {
+            (0x10 | 0x11, false, None) => Sse128MoveKind::Movups,
+            (0x10 | 0x11, true, None) => Sse128MoveKind::Movupd,
+            (0x28 | 0x29, false, None) => Sse128MoveKind::Movaps,
+            (0x28 | 0x29, true, None) => Sse128MoveKind::Movapd,
+            (0x6f | 0x7f, true, None) => Sse128MoveKind::Movdqa,
+            (0x6f | 0x7f, false, Some(0xf3)) => Sse128MoveKind::Movdqu,
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if modrm >> 6 == 3 {
+            return Ok(None);
+        }
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)? else {
+            return Ok(None);
+        };
+        let rex = prefixes.rex.unwrap_or(0);
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse128MemoryMove {
+                kind,
+                store: matches!(opcode.byte, 0x11 | 0x29 | 0x7f),
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                memory,
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -11529,13 +11673,35 @@ pub fn decode(
     rip: u64,
     context: AccessContext,
 ) -> Result<Instruction, DecodeError> {
-    Fetch {
-        memory,
+    let profile = Fetch {
+        memory: &mut *memory,
         start: rip,
         length: 0,
         context,
     }
-    .decode()
+    .decode();
+    // S2-34 (m128 addressing): the profile decoder claims only its own narrow forms of the six raw
+    // SSE moves; every other memory form of them gets the general decode below.
+    let Err(DecodeError::Unsupported { opcode, .. }) = profile else {
+        return profile;
+    };
+    if opcode.map != OpcodeMap::Escape0f
+        || !matches!(opcode.byte, 0x10 | 0x11 | 0x28 | 0x29 | 0x6f | 0x7f)
+    {
+        return profile;
+    }
+    match (Fetch {
+        memory,
+        start: rip,
+        length: 0,
+        context,
+    })
+    .decode_sse128_memory_move()
+    {
+        Ok(Some(instruction)) => Ok(instruction),
+        Ok(None) => profile,
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn canonical(address: u64) -> bool {
@@ -11604,9 +11770,45 @@ mod tests {
                 fault_at: None,
             }
         }
+        /// The profile decoder alone: the narrow per-profile boundaries of the S2-34 SSE move
+        /// slices are asserted through this entry point.
         fn decode(&mut self) -> Result<Instruction, DecodeError> {
+            let start = self.base;
+            Fetch {
+                memory: self,
+                start,
+                length: 0,
+                context: AccessContext::default(),
+            }
+            .decode()
+        }
+        /// The public entry point: profile decoder first, then the S2-34 (m128 addressing)
+        /// general decode of the six raw SSE moves.
+        fn decode_general(&mut self) -> Result<Instruction, DecodeError> {
             decode(self, self.base, AccessContext::default())
         }
+    }
+    /// A form the narrow profile decoder rejects (`Unsupported`) but the S2-34 (m128 addressing)
+    /// general decode accepts as a raw 128-bit SSE move: both halves of the boundary are asserted.
+    #[track_caller]
+    fn assert_profile_rejects_general_move(bytes: &[u8]) {
+        assert!(
+            matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ),
+            "profile must reject {bytes:02x?}"
+        );
+        assert!(
+            matches!(
+                Memory::new(bytes).decode_general(),
+                Ok(Instruction {
+                    operation: Operation::Sse128MemoryMove { .. },
+                    ..
+                })
+            ),
+            "general decode must accept {bytes:02x?}"
+        );
     }
     impl GuestMemory for Memory {
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
@@ -18111,8 +18313,8 @@ mod tests {
             }
         }
 
+        assert_profile_rejects_general_move(&[0x0f, 0x28, 0x00]); // memory
         for bytes in [
-            &[0x0f, 0x28, 0x00][..], // memory
             &[0xf2, 0x0f, 0x28, 0xc1][..],
             &[0xf3, 0x0f, 0x28, 0xc1][..],
             &[0x64, 0x0f, 0x28, 0xc1][..],
@@ -18244,8 +18446,8 @@ mod tests {
                 source: 1
             }
         );
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x28, 0x00]); // memory
         for bytes in [
-            &[0x66, 0x0f, 0x28, 0x00][..],
             &[0x66, 0xf2, 0x0f, 0x28, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x28, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x28, 0xc1][..],
@@ -18359,13 +18561,13 @@ mod tests {
             );
         }
         for bytes in [
-            &[0x66, 0x48, 0x0f, 0x10, 0x00][..],
-            &[0x66, 0x42, 0x0f, 0x10, 0x00][..],
-            &[0x67, 0x66, 0x0f, 0x10, 0x00][..],
-            &[0x66, 0x0f, 0x10][..],
+            &[0x66, 0x48, 0x0f, 0x10, 0x00][..], // REX.W
+            &[0x66, 0x42, 0x0f, 0x10, 0x00][..], // REX.X
+            &[0x67, 0x66, 0x0f, 0x10, 0x00][..], // address-size override
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert_profile_rejects_general_move(bytes);
         }
+        assert!(Memory::new(&[0x66, 0x0f, 0x10]).decode().is_err());
         let decoded = Memory::new(&[0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0])
             .decode()
             .unwrap();
@@ -18455,8 +18657,8 @@ mod tests {
                 }
             );
         }
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x29, 0x00]); // memory
         for bytes in [
-            &[0x66, 0x0f, 0x29, 0x00][..], // memory
             &[0x66, 0xf2, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],
@@ -18517,10 +18719,14 @@ mod tests {
         for bytes in [
             &[0x42, 0x0f, 0x10, 0x00][..], // REX.X
             &[0x48, 0x0f, 0x10, 0x00][..], // REX.W
+            &[0x67, 0x0f, 0x10, 0x00][..], // address-size override
+            &[0x2e, 0x0f, 0x10, 0x00][..], // CS override
+        ] {
+            assert_profile_rejects_general_move(bytes);
+        }
+        for bytes in [
             &[0xf2, 0x0f, 0x10, 0x01][..], // other-base MOVSD load remains out of this form
             &[0xf0, 0x0f, 0x10, 0x00][..],
-            &[0x67, 0x0f, 0x10, 0x00][..],
-            &[0x2e, 0x0f, 0x10, 0x00][..],
             &[0x40, 0x41, 0x0f, 0x10, 0x00][..],
             &[0xc5, 0xf8, 0x10, 0x00][..],
             &[0xc4, 0xe1, 0x78, 0x10, 0x00][..],
@@ -18558,9 +18764,13 @@ mod tests {
         for bytes in [
             &[0x42, 0x0f, 0x11, 0x00][..], // REX.X
             &[0x48, 0x0f, 0x11, 0x00][..], // REX.W
+            &[0x67, 0x0f, 0x11, 0x00][..], // address-size override
+            &[0x2e, 0x0f, 0x11, 0x00][..], // CS override
+        ] {
+            assert_profile_rejects_general_move(bytes);
+        }
+        for bytes in [
             &[0xf0, 0x0f, 0x11, 0x00][..],
-            &[0x67, 0x0f, 0x11, 0x00][..],
-            &[0x2e, 0x0f, 0x11, 0x00][..],
             &[0x40, 0x41, 0x0f, 0x11, 0x00][..],
             &[0xc5, 0xf8, 0x11, 0x00][..],
             &[0xc4, 0xe1, 0x78, 0x11, 0x00][..],
@@ -18625,8 +18835,8 @@ mod tests {
             }
         }
 
+        assert_profile_rejects_general_move(&[0x42, 0x0f, 0x10, 0x01]); // REX.X without SIB
         for bytes in [
-            &[0x42, 0x0f, 0x10, 0x01][..],    // REX.X is rejected without SIB
             &[0x0f, 0x10, 0x04][..],          // truncated SIB
             &[0x0f, 0x10, 0x44, 0x00][..],    // truncated disp8 after SIB
             &[0x0f, 0x10, 0x84, 0x00, 0][..], // truncated disp32 after SIB
@@ -18706,11 +18916,9 @@ mod tests {
                 ..
             }
         ));
-        assert!(
-            Memory::new(&[0x66, 0x41, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00])
-                .decode()
-                .is_err()
-        );
+        assert_profile_rejects_general_move(&[
+            0x66, 0x41, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00,
+        ]);
 
         for (bytes, base, vector) in [
             (&[0x66, 0x0f, 0x10, 0x45, 0][..], Register::Rbp, 12),
@@ -18844,7 +19052,7 @@ mod tests {
             &[0x66, 0x48, 0x0f, 0x10, 0x04, 0x08][..], // REX.W
             &[0x67, 0x66, 0x0f, 0x10, 0x04, 0x08],     // address size override
         ] {
-            assert!(Memory::new(bad).decode().is_err(), "{bad:02x?}");
+            assert_profile_rejects_general_move(bad);
         }
     }
 
@@ -18998,7 +19206,7 @@ mod tests {
             &[0x66, 0x48, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.W is outside the profile.
             &[0x67, 0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // Address-size override.
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert_profile_rejects_general_move(bytes);
         }
     }
 
@@ -19050,11 +19258,7 @@ mod tests {
             &[0x41, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x45, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
         ] {
-            let mut memory = Memory::new(bytes);
-            assert!(matches!(
-                memory.decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            assert_profile_rejects_general_move(bytes);
         }
     }
 
@@ -34959,8 +35163,6 @@ mod tests {
             &[0x66, 0x66, 0x0f, 0x6f, 0xd3][..], // duplicate mandatory prefix
             &[0x66, 0xf3, 0x0f, 0x6f, 0xd3][..],
             &[0xf3, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
-            &[0x66, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
-            &[0x48, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
             &[0x0f, 0x29, 0x44, 0x24][..], // truncated displacement
         ] {
             assert!(
@@ -34968,6 +35170,9 @@ mod tests {
                 "unexpected decode for {bytes:02x?}"
             );
         }
+        // Memory forms of MOVAPD/MOVAPS: outside the profile, taken by the general S2-34 decode.
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x29, 0x44, 0x24, 0x20]);
+        assert_profile_rejects_general_move(&[0x48, 0x0f, 0x29, 0x44, 0x24, 0x20]);
     }
 
     #[test]
