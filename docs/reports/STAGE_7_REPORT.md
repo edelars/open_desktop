@@ -10335,3 +10335,48 @@ python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38
 **Провал не замаскирован.** Причина одна: ROM из `main` исполняет `sete byte ptr [rsp+0x70]` (`0f 94 44 24 70`), форму `SETcc` с операндом в памяти интерпретатор не поддерживает. Бисекция сборкой ROM и тем же runner: `0ffc506^` и `0ffc506` проходят, `0e5aeb1` (S7-31b, правки по ревью) и `main` — нет. Запись — [ISSUE-631](../KNOWN_ISSUES.md#issue-631). Побочное наблюдение: SHA-256 ROM зависит от пути checkout (`bdcc333f…`, `44d346ed…`, `5953bb08…` для одного и того же дерева `main`), поведение при этом одинаково.
 
 **Не проверено.** Зелёный прогон всей команды (регрессия ISSUE-631 исправлена в a5a2edd; после исправления не измерена): шаги `firmware_*_smoke`, оба ignored-теста и общее время после исправления не измерены. Не входят в команду: 50 циклов сброса (около 2,2 часа), `tools/bench/firmware_boot_bench.py`, `cargo test -p od-machine` и `-p od-runner` без фильтров, ROM с `--with-reboot-app` вне `firmware_reset_smoke.py`, инвентарь ISA ROM S7-31b. Запуск на Linux и на второй машине не выполнялся. Скрипты, которые принимают `--runner`/`--rom`, получили собранные командой файлы только для `pkcs7` и `tpm`; остальные собирают ROM сами по своим путям (отсюда разные SHA-256 ROM в одном прогоне).
+
+
+## S7-40 — итог ревью (2026-11-21)
+
+Независимое итоговое ревью ступеней 1–6 (Opus, 2026-11-21) дало десять замечаний. Блокирующими для пункта «Проверить» S7-40 названы ISSUE-628 (замечание 5) и ISSUE-630 (замечание 2); обе записи закрыты этим срезом. Независимое ревью самого среза не выполнено: код написан агентом Sonnet, ревью Opus остаётся за вызывающим (правило AGENTS.md); чекбокс S7-40 в плане не отмечен.
+
+| № | Важность | Замечание | Статус | Коммит | Проверка |
+|---|---|---|---|---|---|
+| 1 | высокая | единая проверка прошивки | закрыто | `5acfb58` (слит в `main`) | команда `tools/build/firmware_check_all.py`, результат на чистом checkout — раздел «S7-40 — единая проверка прошивки» выше; зелёный прогон всей команды не измерен |
+| 2 | средняя | нет пересчёта журнала Event03 по обоим банкам для PCR0–7 против `TPM2_PCR_Read` ([ISSUE-630](../KNOWN_ISSUES.md#issue-630)) | закрыто, с границей теста | коммит с этой записью | ignored-тест PCR7: `ok`, 1306,62 с; `cargo test -p od-machine --lib tcg_log_replay_tests`: 2 теста `ok` |
+| 3 | средняя | отчёт этапа не синхронизирован с планом | закрыто | `76e309b` | сверка таблицы статусов отчёта с чекбоксами плана (33 принятые задачи, пересчёт 2026-11-21) |
+| 4, 6, 7, 8, 10 | низкие | правки документации и исключений, внесённые одним коммитом: ссылки на спецификацию TCG вместо сторонней реализации TPM в [VTPM.md](../specs/VTPM.md) и комментариях `od-tpm`; запись о `serde_json` в [DEPENDENCIES.md](../policies/DEPENDENCIES.md); исключение `STAGE4_DEVICES` в [ACPI_SMBIOS_TABLES.md](../specs/ACPI_SMBIOS_TABLES.md); формулировка статуса S7-35 в плане; комментарий `firmware/uefi/src/var/nvram.rs` | закрыто | `76e309b` | перечень изменений коммита `76e309b` (документы и комментарии кода; поведенческих проверок для них не запускалось) |
+| 5 | низкая | в UEFI_PROFILE.md нет столбца «тест»; четыре слота Runtime Services с `EFI_UNSUPPORTED` без гостевой проверки ([ISSUE-628](../KNOWN_ISSUES.md#issue-628)) | закрыто | коммит с этой записью | `firmware_boot_smoke.py`: exit 0, `rt #1…#5` 6549451 инструкций, 3482 кванта; сборка `build_firmware.py --with-test-apps`: exit 0 |
+| 9 | низкая | FIRMWARE_BOOT.md длиннее 3000 строк ([ISSUE-629](../KNOWN_ISSUES.md#issue-629)) | открыто | — | вынос журнала срезов ISSUE-257… не выполнялся |
+
+Соответствие номеров 4, 6, 7, 8 и 10 темам перечислено по составу коммита `76e309b`; исходный текст ревью в репозитории не сохранён, поэтому разбиение этих пяти замечаний по номерам не утверждается.
+
+### ISSUE-628
+
+- **Гостевая проверка.** `firmware/uefi/tests/apps/rt/main.rs`, функция `check_unsupported_slots`: вызывает `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и `QueryCapsuleCapabilities` (ровно эти четыре слота возвращают `EFI_UNSUPPORTED` в `firmware/uefi/src/uefi/runtime.rs`; остальные слоты таблицы реализованы в `rt/driver.rs` и `rt/variable.rs`) сначала по физической таблице, затем после `SetVirtualAddressMap` по виртуальной. Сверяет статус и то, что выходные буферы не тронуты (значение-страж `0xa5…`). Остановка при расхождении: `OD-UEFI rt failure U`. Успех: строка `OD-UEFI rt unsupported slots` в COM1, добавлена в `tests/fixtures/firmware/rt_com1.txt`; sha256 эталона в `manifest.json` обновлён (`5c610219…` → `fb0c2c11…`).
+- **Находка по ходу.** Первая версия проверки (сравнение массивов) остановила машину на `Unsupported { opcode: 51 }`; проверка переписана на скалярные volatile-обращения. Какая именно инструкция не входит в профиль CPU прошивки, не выяснялось.
+- **Столбец «тест».** [UEFI_PROFILE.md](../specs/UEFI_PROFILE.md#покрытие-слотов-сервисов-тестами): 43 слота Boot Services (внутренние проверки прошивки `OD-FW S7-05 …` и гостевые приложения) и 14 слотов Runtime Services (приложение и host-тест). Привязка Boot Services получена автоматически по вызовам слота в `firmware/uefi/src/main.rs` (до ближайшего маркера `OD-FW S7-05 … verified`) и в `firmware/uefi/tests/apps/`; это слот «вызывается», а не «покрыты все ветви статуса». Слотов без теста нет; `GetWakeupTime` имеет тест (новая проверка), а не «нет теста».
+- **Проверки.**
+
+```text
+python3 tools/build/build_firmware.py --with-test-apps --target-dir <dir> --out <rom>   exit 0
+od-runner boot-firmware --image <rom> --budget 7750000 --fv-app rt                       exit 0, stop_reason Shutdown, 6549451 instructions
+python3 tests/system/firmware_boot_smoke.py                                              exit 0 (rt #1…#5 6549451 instructions, 3482 quanta; остальные строки без изменений: boot_core 4304609, hello 6327183, ebs 6321442, vars 6404708, acpi 6491486, gop 7472810, blk 6567273, fs 11277101)
+cargo test --manifest-path firmware/uefi/Cargo.toml --offline system_table               exit 0, 4 passed (включая runtime_status_slots_report_unavailable_without_accessing_arguments)
+```
+
+### ISSUE-630
+
+- **Что сделано.** `crates/od-machine/src/firmware_board/tcg_log_replay_tests.rs`: `replay_log` пересчитывает журнал Event03 для PCR0–7 обоих банков (SHA-256, SHA-384), `read_pcrs` читает PCR0–7 обоих банков через `TPM2_PCR_Read` по CRB (по команде на банк). Подробности, происхождение фикстур и перезапись — [FIRMWARE.md](../testing/FIRMWARE.md#полный-пересчёт-журнала-event03-для-pcr07-issue-630).
+- **Живой прогон** (три платы: неподписанный запуск, зачисление, отзыв): пересчёт равен `TPM2_PCR_Read` во всех 16 PCR-значениях каждой платы (PCR0–7 × 2 банка); `firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation`: `ok`, 1306,62 с.
+- **Всегда выполняемые тесты:** `recorded_boot_logs_replay_to_the_recorded_pcr0_to_7_in_both_banks` и `a_corrupted_log_no_longer_replays_to_the_recorded_pcrs` — `2 passed` (`cargo test --release --offline -p od-machine --lib tcg_log_replay_tests`). Фикстуры `tests/fixtures/firmware/tcg_log_{unsigned,enroll,revoke}.bin` — 20812, 23817 и 25317 октетов (≤ 100 КиБ), записаны этим живым прогоном; в каждой расширены все PCR0–7 (событий: PCR0 — 3, PCR1 — 4 или 5, PCR2, 3, 6 — по 1, PCR4 — 6 или 11, PCR5 — 2, PCR7 — 8, 12 или 10). Независимый пересчёт на Python по тем же файлам дал тот же результат.
+- **Граница.** Для типов `0x8000000a` (PCR0), `0x8000000b` (PCR1) и `0x80000003` (PCR4) дайджест в журнале не равен хешу данных события и берётся как есть; тест доказывает согласованность журнала с PCR, а не правильность этих дайджестов. Для типов `EV_SEPARATOR`, `EV_ACTION`, `EV_EFI_ACTION`, `EV_EFI_VARIABLE_DRIVER_CONFIG` и `EV_EFI_VARIABLE_AUTHORITY` дайджесты обоих банков сверяются с хешем данных.
+- **Не проверено.** Живой прогон выполнен до последней правки `replay_log` (конец журнала без нулевого слота считается концом, нужно для обрезанных фикстур); эта правка проверена только на фикстурах. Живой прогон занимает около 22 минут и не входит в узкие проверки среза повторно. Для `firmware_check_all.py` шаг `ignored-secure-boot-pcr7` теперь включает полную сверку без изменения команды.
+
+### Что остаётся для S7-40
+
+1. Независимое ревью этого среза (Opus, `high`); до него замечания 2 и 5 считаются закрытыми автором, но не принятыми.
+2. [ISSUE-629](../KNOWN_ISSUES.md#issue-629) (замечание 9) открыта: вынос журнала срезов ISSUE-257… из FIRMWARE_BOOT.md.
+3. Зелёный прогон `tools/build/firmware_check_all.py` целиком после ISSUE-631 не измерен (см. раздел выше).
+4. Чекбокс S7-40 в [плане](../plans/STAGE_7.md) и строка S7-40 в таблице статусов отчёта не менялись.

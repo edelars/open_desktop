@@ -42,5 +42,6 @@ OD-FW S7-05 watchdog armed
 OD-FW S7-05 watchdog service verified
 OD-FW S7-05 service ABI boundaries verified
 [0m[?25h[2J[HOD-UEFI rt physical
+OD-UEFI rt unsupported slots
 OD-UEFI rt virtual
 OD-UEFI rt shutdown

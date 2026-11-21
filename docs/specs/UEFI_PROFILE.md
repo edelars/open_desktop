@@ -216,7 +216,9 @@ runtime-дескриптора из последней карты Boot Services.
 `SetTime` сбрасывает её дробную часть. TimeZone и Daylight остаются в
 runtime-памяти текущей загрузки. RTC отсутствует в базовой конфигурации
 платы. `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и
-`QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED`.
+`QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED` и не пишут в буферы
+вызывающего; гостевая проверка — `rt`, `check_unsupported_slots`
+([таблица покрытия](#покрытие-слотов-сервисов-тестами)).
 [UEFI 2.11, §8.3](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#time-services).
 
 При наличии ACPI fixed hardware `ResetSystem` выполняет аппаратный
@@ -235,6 +237,87 @@ register и reset value, FADT скрывает возможность reset, а 
 защищённую переменную `ODMonotonicHigh` до возврата нового значения.
 Сервис требует подключённого NVRAM. При сбое записи он возвращает
 `EFI_DEVICE_ERROR`. [UEFI 2.11, §8.5](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#miscellaneous-runtime-services).
+
+### Покрытие слотов сервисов тестами
+
+Столбец «проверки» связывает каждый слот с тестами, которые его вызывают.
+«Вызывает» означает, что слот выполняется в проверке; перечень проверенных
+ветвей статуса остаётся в описании сервиса выше и в самом тесте.
+Строка «—» в столбце означает, что в этой категории слот не вызывается.
+
+**Boot Services.** Маркеры `OD-FW S7-05 …` печатает внутренняя диагностика
+прошивки (`firmware/uefi/src/main.rs`) после проверки; они входят в байтовые
+фикстуры COM1 `tests/fixtures/firmware/*_com1.txt`, которые сверяет
+`tests/system/firmware_boot_smoke.py`. Гостевые приложения лежат в
+`firmware/uefi/tests/apps/`.
+Каждый из 43 слотов вызывается минимум в одной внутренней проверке;
+слот `Reserved` вызова не имеет.
+
+| Слот | Внутренние проверки прошивки | Гостевые приложения |
+|---|---|---|
+| `RaiseTpl` | `S7-05 event dispatch verified`, `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified` | — |
+| `RestoreTpl` | `S7-05 event dispatch verified`, `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified` | — |
+| `AllocatePages` | `S7-05 Boot Services memory verified`, `S7-05 exit boot services verified` | `rt` |
+| `FreePages` | `S7-05 Boot Services memory verified` | — |
+| `GetMemoryMap` | `S7-05 Boot Services memory verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | `rt`, `ebs`, `tpm`, `failure-probe` |
+| `AllocatePool` | `S7-05 Boot Services utilities verified`, `S7-05 Boot Services memory verified`, `S7-05 Boot Services protocol registry verified`, `S7-05 exit boot services verified` | `failure-probe` |
+| `FreePool` | `S7-05 Boot Services memory verified`, `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `gop`, `fs`, `failure-probe`, `blk` |
+| `CreateEvent` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `SetTimer` | `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `WaitForEvent` | `S7-05 boot timers and waits verified` | `echo` |
+| `SignalEvent` | `S7-05 event dispatch verified` | — |
+| `CloseEvent` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 boot timers and waits verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `CheckEvent` | `S7-05 event dispatch verified`, `S7-05 boot timers and waits verified` | — |
+| `InstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified`, `S7-05 exit boot services verified` | — |
+| `ReinstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `UninstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | — |
+| `HandleProtocol` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `esp-boot-probe`, `gop`, `fs`, `hello`, `failure-probe`, `blk`, `enroll`, `tpm` |
+| `RegisterProtocolNotify` | `S7-05 protocol notifications verified` | — |
+| `LocateHandle` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `LocateDevicePath` | `S7-05 event dispatch verified` | `esp-boot-probe` |
+| `InstallConfigurationTable` | `S7-05 configuration tables verified` | — |
+| `LoadImage` | `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | `failure-probe`, `enroll` |
+| `StartImage` | `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | `enroll` |
+| `Exit` | `S7-05 service ABI boundaries verified` | — |
+| `UnloadImage` | `S7-05 service ABI boundaries verified` | `failure-probe`, `enroll` |
+| `ExitBootServices` | `S7-05 exit boot services verified` | `ebs`, `rt` |
+| `GetNextMonotonicCount` | `S7-05 service ABI boundaries verified` | `rt`, `vars` |
+| `Stall` | `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | — |
+| `SetWatchdogTimer` | `S7-05 watchdog service verified` | — |
+| `ConnectController` | `S7-05 service ABI boundaries verified` | — |
+| `DisconnectController` | `S7-05 event dispatch verified`, `S7-05 service ABI boundaries verified` | — |
+| `OpenProtocol` | `S7-05 event dispatch verified` | — |
+| `CloseProtocol` | `S7-05 event dispatch verified` | — |
+| `OpenProtocolInformation` | `S7-05 event dispatch verified` | — |
+| `ProtocolsPerHandle` | `S7-05 event dispatch verified` | — |
+| `LocateHandleBuffer` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `gop`, `fs`, `blk` |
+| `LocateProtocol` | `S7-05 Boot Services protocol registry verified`, `S7-05 protocol notifications verified` | `ebs`, `tpm`, `reboot`, `enroll`, `tpm-absent`, `pkcs7-probe` |
+| `InstallMultipleProtocolInterfaces` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `UninstallMultipleProtocolInterfaces` | `S7-05 event dispatch verified` | — |
+| `CalculateCrc32` | `S7-05 Boot Services utilities verified` | — |
+| `CopyMem` | `S7-05 Boot Services utilities verified` | — |
+| `SetMem` | `S7-05 Boot Services utilities verified` | `rt` |
+| `CreateEventEx` | `S7-05 event dispatch verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | — |
+
+**Runtime Services.** Гостевое приложение `rt` проверяет таблицу до и после
+`SetVirtualAddressMap`; итог `OD-UEFI rt …` сверяет `rt_com1.txt`.
+
+| Слот | Тест |
+|---|---|
+| `GetTime` | `rt`: `check_time` (виртуальный режим); host: `rt::time::tests` |
+| `SetTime` | `rt`: `check_time` (виртуальный режим, запись и чтение обратно); host: `rt::time::tests` |
+| `GetWakeupTime` | `rt`: `check_unsupported_slots` (физический и виртуальный режим), маркер `OD-UEFI rt unsupported slots`; host: `uefi::system_table::tests::runtime_status_slots_report_unavailable_without_accessing_arguments` |
+| `SetWakeupTime` | то же, что `GetWakeupTime` |
+| `SetVirtualAddressMap` | `rt`: `finish` (ошибочный размер, успех, повторный вызов); host: `rt::virt::tests` |
+| `ConvertPointer` | `rt`: `finish` (вызов вне уведомления даёт `EFI_UNSUPPORTED`); host: `rt::virt::tests` |
+| `GetVariable` | `rt`, `vars`, `reboot`, `enroll`, `esp-boot-probe`; host: `var::tests` |
+| `GetNextVariableName` | `rt`, `vars`; host: `var::tests` |
+| `SetVariable` | `rt`, `vars`, `reboot`, `enroll`, `esp-boot-probe`; host: `var::tests` |
+| `QueryVariableInfo` | `rt`, `vars`; host: `var::tests` |
+| `GetNextHighMonotonicCount` | `rt` (виртуальный режим, проверка значения старшего слова), `vars` |
+| `ResetSystem` | `rt` (Shutdown), `reboot` (Cold); `tests/system/firmware_reset_smoke.py` |
+| `UpdateCapsule` | `rt`: `check_unsupported_slots` (как `GetWakeupTime`) |
+| `QueryCapsuleCapabilities` | `rt`: `check_unsupported_slots` (как `GetWakeupTime`) |
 
 ### Конфигурационные таблицы
 
