@@ -385,7 +385,7 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
         ("int3", &[0xcc], 0xcc),
         // S2-51: CMPXCHG16B executes in the bare run and in the CPL0 set at Ring0 only; the CPL3
-        // profile (the Linux live profile) does not list it, and CPUID declares no CX16 until S2-57.
+        // profile (the Linux live profile) does not list it, and CX16 stays refused at CPL3 even though the Windows CPUID profile (S2-57 slice) declares it.
         ("cmpxchg16b [rdi]", &[0x48, 0x0f, 0xc7, 0x0f], 0xc7),
         (
             "lock cmpxchg16b [rdi]",
@@ -393,8 +393,8 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             0xc7,
         ),
         // S2-52/S2-53: LAHF, SAHF and PREFETCHW execute in the bare run and in the CPL0 set at Ring0
-        // only; the CPL3 profile (the Linux live profile) does not list them, and CPUID declares
-        // neither LAHF_SAHF_64 nor PREFETCHW until S2-57.
+        // only; the CPL3 profile (the Linux live profile) does not list them, and they stay refused at
+        // CPL3 even though the Windows CPUID profile (S2-57 slice) declares LAHF_SAHF_64 and PREFETCHW.
         ("lahf", &[0x9f], 0x9f),
         ("sahf", &[0x9e], 0x9e),
         ("prefetchw [rdi]", &[0x0f, 0x0d, 0x0f], 0x0d),
