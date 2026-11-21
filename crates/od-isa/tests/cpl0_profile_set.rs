@@ -591,14 +591,14 @@ fn cr4_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
     // 0x1020 adds LA57 (bit 12); bit 17 is PCIDE, bit 18 OSXSAVE, bit 2 TSD and
     // bit 40 is reserved: all outside the CR4 policy (only PSE/PGE/OSFXSR/
-    // OSXMMEXCPT may vary). PAE cleared is outside as well.
+    // OSXMMEXCPT may vary). PAE cleared is not here: it is #GP(0), see
+    // `cr4_write_clearing_pae_is_gp_without_mutation`.
     for value in [
         0x1020u64,
         CR4_BASE | (1 << 17),
         CR4_BASE | (1 << 18),
         CR4_BASE | (1 << 2),
         CR4_BASE | (1 << 40),
-        0,
     ] {
         let mut code = movabs_rax(value);
         code.extend_from_slice(&MOV_CR4_RAX);
