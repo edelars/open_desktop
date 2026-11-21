@@ -44,6 +44,8 @@ mod lock_wait_metrics;
 mod nvme;
 mod nvram_device;
 mod page_walk;
+#[cfg(test)]
+mod page_walk_2m_matrix_tests;
 mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
