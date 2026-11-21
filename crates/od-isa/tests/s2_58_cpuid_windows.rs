@@ -2,17 +2,20 @@
 //!
 //! Every expected value is written by hand from the Intel SDM rev. 093 (Vol. 1, Table 21-10 leaf 01H
 //! EDX and Table 21-90 leaf 80000001H EDX; Vol. 3A, sections 5.1.4, 5.4.1, 5.4.2, 12.8.5 and Table 5-7), never from the
-//! implementation under test. The bits are declared before the owner accepted S2-25, S4-10 and
-//! S4-38L8d (deviation of S2-58, awaiting the owner's confirmation; `CPU_CONTRACT.md`).
+//! implementation under test. PAE and APIC are declared before the owner accepted S2-25 and S4-38L8d
+//! (deviation of S2-58, confirmed by the owner 2026-11-21; `CPU_CONTRACT.md`). NX is NOT declared:
+//! the owner deferred it until S4-10 is accepted (decision of 2026-11-21).
 //!
 //! Groups:
 //!
-//! 1. The table: PAE (leaf 1 EDX[6]), APIC (leaf 1 EDX[9]) and NX (80000001H EDX[20]) are set, the
-//!    registers are exactly those bits, every neighbouring bit that S2-58 does not own is clear.
+//! 1. The table: PAE (leaf 1 EDX[6]) and APIC (leaf 1 EDX[9]) are set, NX (80000001H EDX[20]) is
+//!    clear, the registers are exactly those bits, every neighbouring bit that S2-58 does not own
+//!    is clear.
 //! 2. PAE rests on: the PAE walk (PDPTE registers, 4 KiB and 2 MiB pages, reserved bits) and the
 //!    CR4.PAE policy of the Long64 CPL0 profile (IA-32e active: clearing PAE is #GP(0)).
-//! 3. NX rests on: `WRMSR IA32_EFER` setting NXE is admitted with the Windows CPUID member
-//!    (and is #GP(0) with a member that does not declare NX), and XD in a 2 MiB leaf follows NXE.
+//! 3. NX (not declared by the Windows profile) rests on: `WRMSR IA32_EFER` setting NXE is #GP(0)
+//!    with the Windows CPUID member (NX = 0) and is admitted with a member that declares NX (the
+//!    Linux target profile), and XD in a 2 MiB leaf follows NXE.
 //! 4. APIC rests on: the initial APIC ID of leaf 1 EBX (APIC ID = vCPU index). The LAPIC device
 //!    itself (xAPIC mode, base 0xFEE00000) is not an `od-isa` object (S2-27).
 
@@ -40,20 +43,38 @@ static STAGE4A: CpuidProfile = CpuidProfile::X8664V1Stage4A;
 // ---- group 1: the table ----
 
 #[test]
-fn pae_apic_and_nx_are_declared_at_their_sdm_positions() {
+fn pae_and_apic_are_declared_at_their_sdm_positions_and_nx_is_not() {
     let leaf1 = WINDOWS.query(1, 0);
     let ext1 = WINDOWS.query(0x8000_0001, 0);
-    // CPUID.01H:EDX[6] PAE, EDX[9] APIC; CPUID.80000001H:EDX[20] Execute Disable Bit.
+    // CPUID.01H:EDX[6] PAE, EDX[9] APIC; CPUID.80000001H:EDX[20] Execute Disable Bit (NX).
     assert_ne!(leaf1.edx & (1 << 6), 0, "PAE");
     assert_ne!(leaf1.edx & (1 << 9), 0, "APIC");
-    assert_ne!(ext1.edx & (1 << 20), 0, "NX");
-    // The registers are exactly those bits: 0x40 + 0x200 and 0x100000.
+    // Owner decision 2026-11-21: NX is not declared until S4-10 is accepted.
+    assert_eq!(ext1.edx & (1 << 20), 0, "NX");
+    // The registers are exactly those bits: 0x40 + 0x200 and zero.
     assert_eq!(leaf1.edx, 0x0000_0240);
-    assert_eq!(ext1.edx, 0x0010_0000);
+    assert_eq!(ext1.edx, 0);
     // The rest of both leaves is the S2-57 table.
     assert_eq!(leaf1.eax, 0x0009_06C0);
     assert_eq!(leaf1.ecx, 0x0098_2201);
     assert_eq!((ext1.eax, ext1.ebx, ext1.ecx), (0, 0, 0x0000_0101));
+}
+
+/// Negative (owner decision 2026-11-21): NX [80000001H EDX 20] is not declared by the Windows profile,
+/// for any sub-leaf and any vCPU, while the Linux target profile still declares it.
+#[test]
+fn nx_is_not_declared_in_the_windows_profile() {
+    for subleaf in [0, 1] {
+        assert_eq!(WINDOWS.query(0x8000_0001, subleaf).edx & (1 << 20), 0);
+    }
+    for (index, count) in [(0, 1), (0, 2), (1, 2)] {
+        let edx = WINDOWS.query_for_vcpu(0x8000_0001, 0, index, count).edx;
+        assert_eq!(edx & (1 << 20), 0, "vCPU {index} of {count}");
+    }
+    assert_ne!(
+        CpuidProfile::OdX8664V1Neutral.query(0x8000_0001, 0).edx & (1 << 20),
+        0
+    );
 }
 
 #[test]
@@ -84,6 +105,7 @@ fn every_neighbouring_bit_that_s2_58_does_not_own_is_clear() {
     }
     for (bit, name) in [
         (11, "SYSCALL/SYSRET"),
+        (20, "NX (deferred until S4-10)"),
         (26, "Page1GB"),
         (27, "RDTSCP"),
         (29, "Intel 64 (LM)"),
@@ -250,7 +272,7 @@ fn movabs_rax(value: u64) -> Vec<u8> {
 }
 
 /// `CPUID` executed in a set whose CPUID member is the Windows profile returns the declared
-/// registers (leaf 1 EDX = PAE | APIC, 80000001H EDX = NX).
+/// registers (leaf 1 EDX = PAE | APIC, 80000001H EDX = 0: NX is not declared).
 #[test]
 fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
     static CLI: CliProfile = CliProfile::NonPviLong64V1;
@@ -258,10 +280,7 @@ fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
         .with_cli(&CLI)
         .with_cpuid(&WINDOWS);
     // mov eax, leaf; cpuid
-    for (leaf, edx, ecx) in [
-        (1u32, 0x240u64, 0x0098_2201u64),
-        (0x8000_0001, 0x10_0000, 0x101),
-    ] {
+    for (leaf, edx, ecx) in [(1u32, 0x240u64, 0x0098_2201u64), (0x8000_0001, 0, 0x101)] {
         let mut code = vec![0xb8];
         code.extend_from_slice(&leaf.to_le_bytes());
         code.extend_from_slice(&[0x0f, 0xa2]);
@@ -446,11 +465,14 @@ fn wrmsr_efer(
 }
 
 #[test]
-fn wrmsr_efer_setting_nxe_is_admitted_with_the_windows_member() {
-    // SDM Vol. 3A 5.1.4: NXE may be set to 1 only if CPUID.80000001H:EDX[20] = 1.
+fn wrmsr_efer_setting_nxe_is_admitted_with_a_member_that_declares_nx() {
+    // SDM Vol. 3A 5.1.4: NXE may be set to 1 only if CPUID.80000001H:EDX[20] = 1. The Linux target
+    // profile declares NX (80000001H EDX = 0x20100800); the Windows profile does not (see below).
+    let neutral = CpuidProfile::OdX8664V1Neutral;
+    assert_ne!(neutral.query(0x8000_0001, 0).edx & (1 << 20), 0);
     for (old, new) in [(0x500u64, 0xd00u64), (0x501, 0xd01)] {
         let cell = Cell::new(old);
-        let (state, before, result) = wrmsr_efer(&cell, &WINDOWS, new);
+        let (state, before, result) = wrmsr_efer(&cell, &neutral, new);
         assert_eq!(
             result.exit,
             Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::EferWrite {
@@ -469,19 +491,24 @@ fn wrmsr_efer_setting_nxe_is_admitted_with_the_windows_member() {
 
 #[test]
 fn wrmsr_efer_setting_nxe_is_gp0_with_a_member_that_does_not_declare_nx() {
-    for (old, new) in [(0x500u64, 0xd00u64), (0x501, 0xd01)] {
-        let cell = Cell::new(old);
-        let (state, before, result) = wrmsr_efer(&cell, &STAGE4A, new);
-        assert_eq!(
-            result.exit,
-            Cpl0ProfileSetExit::Run(gp0()),
-            "{old:#x}->{new:#x}"
-        );
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert_eq!(cell.get(), old);
+    // The Windows member does not declare NX (owner decision 2026-11-21, deferred until S4-10), so
+    // NXE=1 is #GP(0), clear or set alike for the other bits; so is the Stage-4A subset member.
+    assert_eq!(WINDOWS.query(0x8000_0001, 0).edx & (1 << 20), 0);
+    for member in [&WINDOWS, &STAGE4A] {
+        for (old, new) in [(0x500u64, 0xd00u64), (0x501, 0xd01)] {
+            let cell = Cell::new(old);
+            let (state, before, result) = wrmsr_efer(&cell, member, new);
+            assert_eq!(
+                result.exit,
+                Cpl0ProfileSetExit::Run(gp0()),
+                "{old:#x}->{new:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(cell.get(), old);
+        }
     }
-    // A reserved EFER bit is #GP(0) with the Windows member as well.
+    // A reserved EFER bit is #GP(0) with the Windows member as well (NXE not involved).
     let cell = Cell::new(0x500);
     let (state, before, result) = wrmsr_efer(&cell, &WINDOWS, 0xd02);
     assert_eq!(result.exit, Cpl0ProfileSetExit::Run(gp0()));
