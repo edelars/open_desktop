@@ -8,8 +8,8 @@ use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind, SseFpShape,
-    Ssse3IntKind, canonical, general_protection,
+    Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind,
+    SseFpMiscKind, SseFpShape, Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41304,8 +41304,69 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || configured_subsd_register_controls.is_some()
         || configured_subss_register_controls.is_some()
         || configured_scalar_float_memory_rax_profile.is_some();
-    let instruction = match sse_fp_arith_from_narrow(instruction.operation) {
-        Some(general) if !narrow_fp_arith_profile && control_policy.is_none() => {
+    // S2-38: the same for the narrow profile operations of SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the
+    // integer conversions (RCP*/RSQRT* keep their narrow form). The composite FP-init MINSS profile is one of
+    // them.
+    let narrow_fp_misc_profile = cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
+        || unmasked_minss_denormal
+        || configured_minss_controls.is_some()
+        || configured_maxss_controls.is_some()
+        || configured_minsd_controls.is_some()
+        || configured_maxsd_controls.is_some()
+        || configured_minpd_controls.is_some()
+        || configured_maxpd_controls.is_some()
+        || configured_minps_controls.is_some()
+        || configured_maxps_controls.is_some()
+        || configured_cvtdq2ps_register_controls.is_some()
+        || configured_cvtdq2ps_memory_controls.is_some()
+        || configured_cvtps2dq_register_controls.is_some()
+        || configured_cvtps2dq_memory_profile.is_some()
+        || configured_cvttps2dq_register_controls.is_some()
+        || configured_cvttps2dq_memory_controls.is_some()
+        || configured_sqrtss_register_controls.is_some()
+        || configured_sqrtss_memory_rax_controls.is_some()
+        || configured_sqrtsd_register_controls.is_some()
+        || configured_sqrtps_register_controls.is_some()
+        || configured_sqrtpd_register_controls.is_some()
+        || configured_sqrtps_memory_rax_controls.is_some()
+        || configured_sqrtpd_memory_rax_controls.is_some()
+        || configured_sqrtsd_memory_rax_controls.is_some()
+        || configured_comiss_ucomiss_controls.is_some()
+        || configured_comisd_ucomisd_controls.is_some()
+        || configured_comparison_memory_rax_controls.is_some()
+        || configured_cmpss_controls.is_some()
+        || configured_cmpss_memory_rax_controls.is_some()
+        || configured_cmpsd_memory_rax_controls.is_some()
+        || configured_cmpsd_controls.is_some()
+        || configured_cmppd_controls.is_some()
+        || configured_cmppd_memory_rax_controls.is_some()
+        || configured_cmpps_memory_rax_controls.is_some()
+        || configured_cmpps_controls.is_some()
+        || configured_minsd_memory_rax_controls.is_some()
+        || configured_minsd_memory_unmasked_rax_controls.is_some()
+        || configured_maxss_memory_rax_controls.is_some()
+        || configured_minss_memory_rax_controls.is_some()
+        || configured_maxsd_memory_rax_controls.is_some()
+        || configured_maxsd_memory_unmasked_rax_controls.is_some()
+        || configured_minpd_memory_rax_controls.is_some()
+        || configured_minps_memory_profile.is_some()
+        || configured_maxpd_memory_rax_controls.is_some()
+        || configured_maxpd_memory_unmasked_rax_controls.is_some()
+        || configured_maxps_memory_rax_controls.is_some()
+        || configured_maxps_memory_unmasked_rax_controls.is_some();
+    let general_fp_closed = |operation: Operation| match operation {
+        Operation::SseFpArith {
+            kind: SseFpArithKind::Sqrt | SseFpArithKind::Min | SseFpArithKind::Max,
+            ..
+        }
+        | Operation::SseFpMisc { .. } => narrow_fp_misc_profile,
+        _ => narrow_fp_arith_profile,
+    };
+    let general_from_narrow = sse_fp_arith_from_narrow(instruction.operation).or_else(|| {
+        sse_fp_misc_from_narrow(instruction.operation, instruction.prefixes.operand_override)
+    });
+    let instruction = match general_from_narrow {
+        Some(general) if !general_fp_closed(general) && control_policy.is_none() => {
             long_decode::Instruction {
                 operation: general,
                 ..instruction
@@ -41490,8 +41551,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                                 | Operation::Sse41Fp { .. }
                                 | Operation::FisttpMemory { .. }
                         )
-                        || matches!(operation, Operation::SseFpArith { .. })
-                            && !narrow_fp_arith_profile)
+                        || matches!(
+                            operation,
+                            Operation::SseFpArith { .. } | Operation::SseFpMisc { .. }
+                        ) && !general_fp_closed(operation))
                         && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
                         && cr4_profile == Some(Cr4Profile::FpInitLong64V1)
                 }
@@ -50722,7 +50785,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Sse41Fp { .. } => state.sse.is_some(),
         // A configured narrow profile of the sixteen arithmetic forms is a closed set: every other encoding
         // of them stays `Unsupported` while it is active.
-        Operation::SseFpArith { .. } => state.sse.is_some() && !narrow_fp_arith_profile,
+        Operation::SseFpArith { .. } | Operation::SseFpMisc { .. } => {
+            state.sse.is_some() && !general_fp_closed(instruction.operation)
+        }
         Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-33: the MMX forms and EMMS work on the MMX registers, the physical x87 data registers, so they
         // need the local x87 state (not the SSE state); CPL3 keeps its own profile list (neither is in it).
@@ -51720,10 +51785,33 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state,
             memory,
             context,
-            (kind, shape, destination, source),
+            (FpForm::Arith(kind), shape, destination, source),
             instruction.opcode.byte,
             next_rip,
         );
+    }
+    // S2-38: the compares, COMISS/UCOMISS and the integer conversions. Only COMISS/UCOMISS touch RFLAGS (the
+    // six arithmetic flags, defined afterwards); the shared tail below is bypassed.
+    if let Operation::SseFpMisc {
+        kind,
+        shape,
+        destination,
+        source,
+        immediate,
+    } = instruction.operation
+    {
+        let outcome = step_sse_fp_arith(
+            state,
+            memory,
+            context,
+            (FpForm::Misc(kind, immediate), shape, destination, source),
+            instruction.opcode.byte,
+            next_rip,
+        )?;
+        if matches!(outcome, StepOutcome::Advanced) {
+            *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+        }
+        return Ok(outcome);
     }
     // S2-55 slice B: the floating-point SSE4.1 forms commit here as well.
     if let Operation::Sse41Fp {
@@ -63110,6 +63198,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Sse41 { .. }
         | Operation::Sse41Fp { .. }
         | Operation::SseFpArith { .. }
+        | Operation::SseFpMisc { .. }
         | Operation::Popcnt { .. }
         | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
@@ -70415,7 +70504,7 @@ fn step_sse41(
 /// `[rax]` forms read through a 64-bit `[rax]` operand and use XMM0 as the destination, as their decoder
 /// fixes; `MulsdMemory` already carries its operand.
 fn sse_fp_arith_from_narrow(operation: Operation) -> Option<Operation> {
-    use SseFpArithKind::{Add, Div, Mul, Sub};
+    use SseFpArithKind::{Add, Div, Max, Min, Mul, Sqrt, Sub};
     use SseFpShape::{Packed32, Packed64, Scalar32, Scalar64};
     let register = |kind, shape, destination, source| Operation::SseFpArith {
         kind,
@@ -70530,6 +70619,165 @@ fn sse_fp_arith_from_narrow(operation: Operation) -> Option<Operation> {
             destination,
             source: Sse3Source::Memory(source),
         },
+        // S2-38: SQRT, MIN and MAX (gated by the profiles of those forms, see `general_fp_closed`).
+        Operation::SqrtssRegister {
+            destination,
+            source,
+        } => register(Sqrt, Scalar32, destination, source),
+        Operation::SqrtsdRegister {
+            destination,
+            source,
+        } => register(Sqrt, Scalar64, destination, source),
+        Operation::SqrtpsRegister {
+            destination,
+            source,
+        } => register(Sqrt, Packed32, destination, source),
+        Operation::SqrtpdRegister {
+            destination,
+            source,
+        } => register(Sqrt, Packed64, destination, source),
+        Operation::SqrtssMemoryRax => rax(Sqrt, Scalar32),
+        Operation::SqrtsdMemoryRax => rax(Sqrt, Scalar64),
+        Operation::SqrtpsMemoryRax => rax(Sqrt, Packed32),
+        Operation::SqrtpdMemoryRax => rax(Sqrt, Packed64),
+        Operation::MinssRegisterMasked {
+            destination,
+            source,
+        } => register(Min, Scalar32, destination, source),
+        Operation::MinsdRegisterMasked {
+            destination,
+            source,
+        } => register(Min, Scalar64, destination, source),
+        Operation::MinpsRegisterMasked {
+            destination,
+            source,
+        } => register(Min, Packed32, destination, source),
+        Operation::MinpdRegisterMasked {
+            destination,
+            source,
+        } => register(Min, Packed64, destination, source),
+        Operation::MaxssRegisterMasked {
+            destination,
+            source,
+        } => register(Max, Scalar32, destination, source),
+        Operation::MaxsdRegisterMasked {
+            destination,
+            source,
+        } => register(Max, Scalar64, destination, source),
+        Operation::MaxpsRegisterMasked {
+            destination,
+            source,
+        } => register(Max, Packed32, destination, source),
+        Operation::MaxpdRegisterMasked {
+            destination,
+            source,
+        } => register(Max, Packed64, destination, source),
+        Operation::MinssMemoryRax => rax(Min, Scalar32),
+        Operation::MinsdMemoryRax => rax(Min, Scalar64),
+        Operation::MinpsMemoryRax => rax(Min, Packed32),
+        Operation::MinpdMemoryRax => rax(Min, Packed64),
+        Operation::MaxssMemoryRax => rax(Max, Scalar32),
+        Operation::MaxsdMemoryRax => rax(Max, Scalar64),
+        Operation::MaxpsMemoryRax => rax(Max, Packed32),
+        Operation::MaxpdMemoryRax => rax(Max, Packed64),
+        _ => return None,
+    })
+}
+
+/// The general floating-point form [`step_sse_fp_arith`] executes: an arithmetic operation (S2-37, extended by
+/// S2-38 with SQRT, MIN and MAX) or one of the other S2-38 forms with its imm8.
+#[derive(Clone, Copy)]
+enum FpForm {
+    Arith(SseFpArithKind),
+    Misc(SseFpMiscKind, u8),
+}
+
+/// S2-38: the general operation equal to one of the narrow profile operations of the compares, COMISS/UCOMISS
+/// and the integer conversions. `double` is the 66 prefix, which the narrow COMISx/UCOMISx register operation
+/// does not record. The `[rax]` forms use XMM0 as the destination, as their decoder fixes.
+fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operation> {
+    use SseFpMiscKind::{Cmp, Comi, Cvtdq2ps, Cvtps2dq, Cvttps2dq, Ucomi};
+    use SseFpShape::{Packed32, Packed64, Scalar32, Scalar64};
+    let register = |kind, shape, destination, source, immediate| Operation::SseFpMisc {
+        kind,
+        shape,
+        destination,
+        source: Sse3Source::Register(source),
+        immediate,
+    };
+    let rax = |kind, shape: SseFpShape, immediate| Operation::SseFpMisc {
+        kind,
+        shape,
+        destination: 0,
+        source: Sse3Source::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: if shape == Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+        }),
+        immediate,
+    };
+    Some(match operation {
+        Operation::Cvtdq2psRegister {
+            destination,
+            source,
+        } => register(Cvtdq2ps, Packed32, destination, source, 0),
+        Operation::Cvtps2dqRegister {
+            destination,
+            source,
+        } => register(Cvtps2dq, Packed32, destination, source, 0),
+        Operation::Cvttps2dqRegister {
+            destination,
+            source,
+        } => register(Cvttps2dq, Packed32, destination, source, 0),
+        Operation::Cvtdq2psMemoryRax => rax(Cvtdq2ps, Packed32, 0),
+        Operation::Cvtps2dqMemoryRax => rax(Cvtps2dq, Packed32, 0),
+        Operation::Cvttps2dqMemoryRax => rax(Cvttps2dq, Packed32, 0),
+        Operation::ComissUcomissRegister {
+            unordered_quiet,
+            destination,
+            source,
+        } => register(
+            if unordered_quiet { Ucomi } else { Comi },
+            if double { Scalar64 } else { Scalar32 },
+            destination,
+            source,
+            0,
+        ),
+        Operation::ComissMemoryRax => rax(Comi, Scalar32, 0),
+        Operation::UcomissMemoryRax => rax(Ucomi, Scalar32, 0),
+        Operation::ComisdMemoryRax => rax(Comi, Scalar64, 0),
+        Operation::UcomisdMemoryRax => rax(Ucomi, Scalar64, 0),
+        Operation::CmpssRegister {
+            predicate,
+            destination,
+            source,
+        } => register(Cmp, Scalar32, destination, source, predicate),
+        Operation::CmpsdRegister {
+            predicate,
+            destination,
+            source,
+        } => register(Cmp, Scalar64, destination, source, predicate),
+        Operation::CmppsRegister {
+            predicate,
+            destination,
+            source,
+        } => register(Cmp, Packed32, destination, source, predicate),
+        Operation::CmppdRegister {
+            predicate,
+            destination,
+            source,
+        } => register(Cmp, Packed64, destination, source, predicate),
+        Operation::CmpssMemoryRax { predicate } => rax(Cmp, Scalar32, predicate),
+        Operation::CmpsdMemoryRax { predicate } => rax(Cmp, Scalar64, predicate),
+        Operation::CmppsMemoryRax { predicate } => rax(Cmp, Packed32, predicate),
+        Operation::CmppdMemoryRax { predicate } => rax(Cmp, Packed64, predicate),
         _ => return None,
     })
 }
@@ -70557,7 +70805,7 @@ fn step_sse_fp_arith(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
-    (kind, shape, destination, source): (SseFpArithKind, SseFpShape, u8, Sse3Source),
+    (form, shape, destination, source): (FpForm, SseFpShape, u8, Sse3Source),
     opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
@@ -70586,6 +70834,10 @@ fn step_sse_fp_arith(
         .expect("SSE floating-point arithmetic state was prevalidated");
     let mxcsr = sse.mxcsr;
     if mxcsr & sse_fp::MXCSR_RESERVED != 0 {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    // CMPxx predicates are imm8 bits 2:0; bits 7:3 are reserved in the legacy encoding (SDM): not modeled.
+    if matches!(form, FpForm::Misc(SseFpMiscKind::Cmp, immediate) if immediate > 7) {
         return Ok(StepOutcome::Unsupported { opcode });
     }
     let mut raw = [0u8; 16];
@@ -70617,13 +70869,33 @@ fn step_sse_fp_arith(
         }
     }
     let destination_index = usize::from(destination);
-    let outcome = sse_fp::arith(
-        kind,
-        shape,
-        state.sse.as_ref().expect("checked above").xmm[destination_index],
-        raw,
-        mxcsr,
-    );
+    let first = state.sse.as_ref().expect("checked above").xmm[destination_index];
+    if let FpForm::Misc(kind @ (SseFpMiscKind::Comi | SseFpMiscKind::Ucomi), _) = form {
+        // COMISS/COMISD/UCOMISS/UCOMISD: ZF, PF, CF from the relation, OF, SF, AF cleared; an unmasked
+        // exception leaves EFLAGS (and everything else but MXCSR) unchanged.
+        let outcome = sse_fp::compare_flags(
+            kind == SseFpMiscKind::Comi,
+            shape.is_double(),
+            first,
+            raw,
+            mxcsr,
+        );
+        if outcome.fault {
+            let Some(cr4) = state.cr4 else {
+                return Ok(StepOutcome::Unsupported { opcode });
+            };
+            state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+            return fault(if cr4 & CR4_OSXMMEXCPT != 0 { 19 } else { 6 });
+        }
+        state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+        state.rflags = state.rflags & !sse_fp::EFLAGS_COMPARE_MASK | outcome.eflags;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    let outcome = match form {
+        FpForm::Arith(kind) => sse_fp::arith(kind, shape, first, raw, mxcsr),
+        FpForm::Misc(kind, immediate) => sse_fp::misc(kind, shape, first, raw, immediate, mxcsr),
+    };
     if outcome.fault {
         let Some(cr4) = state.cr4 else {
             return Ok(StepOutcome::Unsupported { opcode });
@@ -139412,9 +139684,13 @@ mod tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(state, before);
-        assert_eq!(result.instructions_executed, 0);
+        // S2-38: the generic dispatch (no CMPPD controls) runs the general core: LT on equal lanes is false.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        let mut expected = before.clone();
+        expected.rip += code.len() as u64;
+        expected.sse.as_mut().unwrap().xmm[0] = [0; 16];
+        assert_eq!(state, expected);
+        assert_eq!(result.instructions_executed, 1);
     }
 
     #[test]
@@ -140461,8 +140737,12 @@ mod tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(state, before);
+        // S2-38: the generic dispatch (no CMPPS controls) runs the general core: LT on equal lanes is false.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        let mut expected = before.clone();
+        expected.rip += code.len() as u64;
+        expected.sse.as_mut().unwrap().xmm[0] = [0; 16];
+        assert_eq!(state, expected);
     }
 
     #[test]
@@ -140645,9 +140925,13 @@ mod tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(state, before);
-        assert_eq!(result.instructions_executed, 0);
+        // S2-38: the generic dispatch (no CMPSD controls) runs the general core: EQ on equal lanes is true.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        let mut expected = before.clone();
+        expected.rip += generic_cmpsd_code.len() as u64;
+        expected.sse.as_mut().unwrap().xmm[0][..8].fill(0xff);
+        assert_eq!(state, expected);
+        assert_eq!(result.instructions_executed, 1);
         assert_eq!(memory.fetches.len(), 5);
         assert!(memory.accesses.is_empty());
 
@@ -155968,12 +156252,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5d },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5d },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -158749,7 +159043,10 @@ mod tests {
             cr4_osfxsr: true,
             cr4_osxmmexcpt: true,
         };
-        for code in forms {
+        // Passes over the code bytes per form: one when the profile decoder alone refuses the form, two when the
+        // general decoder (S2-38) then decodes it again before the closed profile stops it.
+        let fetch_passes: [usize; 4] = [1, 2, 2, 1];
+        for (index, code) in forms.into_iter().enumerate() {
             let mut memory = Memory::at(code, 0x8000);
             let mut state = LongModeState::default();
             state.rip = 0x8000;
@@ -158772,7 +159069,14 @@ mod tests {
             );
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5d });
             assert_eq!(state, before);
-            assert_eq!(memory.fetches.len(), code.len());
+            // S2-38: a form the profile decoder refuses is decoded once more by the general decoder (which
+            // then still stops under the closed profile), so the bytes are fetched once or twice.
+            assert_eq!(
+                memory.fetches.len(),
+                fetch_passes[index] * code.len(),
+                "{:?}",
+                memory.fetches
+            );
             assert!(memory.accesses.is_empty());
         }
 
@@ -159258,7 +159562,10 @@ mod tests {
             cr4_osfxsr: true,
             cr4_osxmmexcpt: true,
         };
-        for code in forms {
+        // Passes over the code bytes per form: one when the profile decoder alone refuses the form, two when the
+        // general decoder (S2-38) then decodes it again before the closed profile stops it.
+        let fetch_passes: [usize; 4] = [1, 2, 2, 1];
+        for (index, code) in forms.into_iter().enumerate() {
             let mut memory = Memory::at(code, 0x8000);
             let mut state = LongModeState::default();
             state.rip = 0x8000;
@@ -159281,7 +159588,14 @@ mod tests {
             );
             assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5f });
             assert_eq!(state, before);
-            assert_eq!(memory.fetches.len(), code.len());
+            // S2-38: a form the profile decoder refuses is decoded once more by the general decoder (which
+            // then still stops under the closed profile), so the bytes are fetched once or twice.
+            assert_eq!(
+                memory.fetches.len(),
+                fetch_passes[index] * code.len(),
+                "{:?}",
+                memory.fetches
+            );
             assert!(memory.accesses.is_empty());
         }
 
@@ -159643,12 +159957,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5d },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5d },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -159842,7 +160166,24 @@ mod tests {
             assert!(same_lane_memory.accesses.is_empty());
         }
 
-        for mxcsr in [0x0000_1f00, 0x0000_1fc0, 0x0000_9f80, 0x0001_1f80] {
+        // S2-38: DAZ and FTZ are architectural; without a narrow profile the general core runs them.
+        for mxcsr in [0x0000_1fc0, 0x0000_9f80] {
+            let mut memory = Memory::at(&code, 0x3800);
+            let mut state = LongModeState::default();
+            state.rip = 0x3800;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState { xmm, mxcsr });
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced,
+                "MXCSR={mxcsr:08x}"
+            );
+            assert!(memory.accesses.is_empty());
+        }
+
+        // The unmasked invalid operation (a quiet NaN is invalid for MAX) has no CR4 in the bare run to pick the
+        // vector from, and a reserved MXCSR bit is not architectural: both stay Unsupported without change.
+        for mxcsr in [0x0000_1f00, 0x0001_1f80] {
             let mut refused_memory = Memory::at(&code, 0x3800);
             let mut refused = LongModeState::default();
             refused.rip = 0x3800;
@@ -159893,12 +160234,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5f },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5f },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -160047,11 +160398,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5d }
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5d },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += extended_code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -160271,12 +160633,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5d },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5d },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -160466,12 +160838,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5f },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5f },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
         let mut memory = Memory::at(&code, 0x7000);
@@ -160638,12 +161020,22 @@ mod tests {
                 mxcsr,
             });
             let before = state.clone();
-            assert_eq!(
-                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
-                StepOutcome::Unsupported { opcode: 0x5f },
-                "MXCSR={mxcsr:08x}"
-            );
-            assert_eq!(state, before);
+            let outcome = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+            // S2-38: without a narrow profile the generic dispatch runs the general core for every architectural
+            // MXCSR (the equal operands raise nothing, so only RIP moves); a reserved bit stays Unsupported.
+            if mxcsr & 0xffff_0000 != 0 {
+                assert_eq!(
+                    outcome,
+                    StepOutcome::Unsupported { opcode: 0x5f },
+                    "MXCSR={mxcsr:08x}"
+                );
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(outcome, StepOutcome::Advanced, "MXCSR={mxcsr:08x}");
+                let mut expected = before.clone();
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "MXCSR={mxcsr:08x}");
+            }
             assert!(memory.accesses.is_empty());
         }
 
@@ -190651,7 +191043,11 @@ mod swapgs_profile_tests {
         );
         assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2e }));
         assert_eq!(result.instructions_executed, 0);
-        assert_eq!(memory.fetches, [0xa500, 0xa501, 0xa502]);
+        // S2-38: the profile decoder refuses the [rax] + xmm1 form and the general decoder reads it once more.
+        assert_eq!(
+            memory.fetches,
+            [0xa500, 0xa501, 0xa502, 0xa500, 0xa501, 0xa502]
+        );
         assert!(memory.accesses.is_empty());
         assert_eq!(state, before);
 
@@ -190671,7 +191067,10 @@ mod swapgs_profile_tests {
             || false,
         );
         assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2e }));
-        assert_eq!(memory.fetches, [0xa500, 0xa501, 0xa502]);
+        assert_eq!(
+            memory.fetches,
+            [0xa500, 0xa501, 0xa502, 0xa500, 0xa501, 0xa502]
+        );
         assert!(memory.accesses.is_empty());
         assert_eq!(state, before);
 
@@ -192050,9 +192449,13 @@ mod swapgs_profile_tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(state, before);
-        assert_eq!(result.instructions_executed, 0);
+        // S2-38: the generic dispatch (no CMPSS controls) runs the general core: EQ on equal lanes is true.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        let mut expected = before.clone();
+        expected.rip += generic_cmpss_code.len() as u64;
+        expected.sse.as_mut().unwrap().xmm[0][..4].fill(0xff);
+        assert_eq!(state, expected);
+        assert_eq!(result.instructions_executed, 1);
         assert_eq!(memory.fetches.len(), 5);
         assert!(memory.accesses.is_empty());
     }
@@ -206040,9 +206443,12 @@ mod swapgs_profile_tests {
             },
             || false,
         );
-        assert!(matches!(generic.exit, RunExit::Unsupported { .. }));
-        assert_eq!(generic_state, generic_before);
-        assert!(generic_memory.accesses.is_empty());
+        // S2-38: the generic dispatch (no CVTDQ2PS controls) runs the general core: one 16-byte read, RIP moves, the
+        // general registers stay.
+        assert_eq!(generic.exit, RunExit::StopAddress);
+        assert_eq!(generic_state.rip, generic_stop);
+        assert_eq!(generic_state.gpr, generic_before.gpr);
+        assert_eq!(generic_memory.accesses, [(AccessKind::Read, 0x1000, 16)]);
 
         for (probe, vector) in [
             (
@@ -223699,7 +224105,9 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert!(matches!(result.exit, RunExit::Unsupported { .. }));
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
-        assert!(memory.accesses.is_empty());
+        // S2-38: the general core reads the 16-byte source before the unmasked invalid operation stops it (the bare
+        // run has no CR4 to pick the vector from: Unsupported, nothing changed).
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 16)]);
     }
     #[test]
     fn cvttps2dq_memory_unmasked_exception_precedence_matrix() {
@@ -224175,7 +224583,9 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert!(matches!(result.exit, RunExit::Unsupported { .. }));
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
-        assert!(memory.accesses.is_empty());
+        // S2-38: the general core reads the 16-byte source before the unmasked invalid operation stops it (the bare
+        // run has no CR4 to pick the vector from: Unsupported, nothing changed).
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 16)]);
     }
 
     #[test]

@@ -4655,6 +4655,63 @@ mod tests {
     }
 
     #[test]
+    fn sse_fp_misc_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-38: the interpreter executes SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the integer
+        // conversions through the general core; the JIT has no lowering for them, so the block is not built,
+        // whether the decoder returns the general operation or one of the narrow profile operations. Each
+        // entry: the bytes, the opcode byte after the prefixes, and whether the decoder returns the general
+        // operation (`SseFpArith`/`SseFpMisc`) rather than a narrow profile one.
+        const ENTRY: u64 = 0x4f80;
+        for (bytes, opcode, general) in [
+            (&[0x0f, 0x51, 0x03][..], 0x51, true), // SQRTPS xmm0, [rbx]
+            (&[0xf3, 0x0f, 0x51, 0xc1][..], 0x51, false), // SQRTSS xmm0, xmm1 (narrow profile operation)
+            (&[0xf2, 0x0f, 0x5d, 0x4b, 0x10][..], 0x5d, true), // MINSD xmm1, [rbx+0x10]
+            (&[0x66, 0x44, 0x0f, 0x5f, 0xcf][..], 0x5f, false), // MAXPD xmm9, xmm7 (narrow profile operation)
+            (&[0x0f, 0x2f, 0x03][..], 0x2f, true),              // COMISS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x2e, 0xc1][..], 0x2e, false), // UCOMISD xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0xc2, 0x0b, 0x01][..], 0xc2, true),  // CMPLTPS xmm1, [rbx]
+            (&[0xf3, 0x0f, 0xc2, 0xc1, 0x00][..], 0xc2, false), // CMPEQSS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x5b, 0x03][..], 0x5b, true),              // CVTDQ2PS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x5b, 0xc1][..], 0x5b, false), // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
+            (&[0xf3, 0x0f, 0x5b, 0x4b, 0x10][..], 0x5b, true), // CVTTPS2DQ xmm1, [rbx+0x10]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert_eq!(decoded.opcode.byte, opcode, "{bytes:02x?}");
+            assert_eq!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseFpArith { .. } | Operation::SseFpMisc { .. }
+                ),
+                general,
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x51, 0x03][..],
+            &[0xf0, 0x66, 0x0f, 0x5d, 0xc1],
+            &[0xf0, 0x0f, 0x2f, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
+            &[0xf0, 0x66, 0x0f, 0x5b, 0x03],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn floating_point_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
         // S2-55 slice B: the interpreter executes ROUND*, DPPS/DPPD, BLEND*, INSERTPS and EXTRACTPS; the JIT
         // has no lowering for them, so the block is not built.
