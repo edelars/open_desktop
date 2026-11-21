@@ -411,3 +411,22 @@ COM1, SHA-256 обоих дисков и SHA-256 сохранённых NVRAM sn
 ## Измерения
 
 Изменения аллокатора, очередей NVMe и кеша FAT проверяются сравнением с исходной реализацией на той же нагрузке. Для воспроизведения исходной серии см. [методику S7-27](#измерения-пути-загрузки-s7-27).
+
+## Диагностика пути Linux через UEFI (S7-31a)
+
+Диагностический срез, не приёмка S7-31. Ядро и initramfs берутся из `work/stage4/` основной копии репозитория (в Git их нет). Запись остановки неизменённого `vmlinuz` Ubuntu 7.0.0-38 и двух диагностических копий (ImageBase 0x1000000; то же и SizeOfHeaders 0x400), по два прогона каждой:
+
+```sh
+cargo build --release -p od-runner --offline
+python3 tests/system/firmware_linux_uefi_stop_record.py \
+  --stage4-dir <корень>/work/stage4 --out work/stage7/linux-uefi-stop-record.json
+```
+
+Код 0 означает, что записи обоих прогонов каждого варианта совпали, а не что Linux загрузился; сама остановка описана в JSON (RIP, байты у RIP из ROM или файла PE, символ, отметки, строка COM1). Ожидаемая остановка на текущем ROM: `stock` — «no bootable option» ([ISSUE-620](../KNOWN_ISSUES.md#issue-620)); `rebased` — `Unsupported { opcode: 131 }` в `load_into` ([ISSUE-621](../KNOWN_ISSUES.md#issue-621)); `rebased-hdr` — `Unsupported { opcode: 30 }` на первой инструкции stub ([ISSUE-622](../KNOWN_ISSUES.md#issue-622)). Один прогон занимает 45–95 с. Статический инвентарь инструкций stub:
+
+```sh
+cargo build --release -p od-isa --example firmware_profile_probe --offline
+python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38-generic>
+```
+
+ESP для этих прогонов собирает `tools/build/make_test_disk.py --esp-fat32 --bootx64 <efi> --boot-file INITRD.IMG=<файл>` (дополнительные файлы только в `\EFI\BOOT\` с короткими именами 8.3). Результаты и выводы: [отчёт этапа 7](../reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20), [ADR-0013](../decisions/ADR-0013-uefi-linux-cpu-profile.md).
