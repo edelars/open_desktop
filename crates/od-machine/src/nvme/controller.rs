@@ -331,6 +331,20 @@ impl NvmeState {
         self.rr_next = 0;
     }
 
+    /// Platform reset (S7-26): the controller returns to its power-on register state. Queues,
+    /// features, outstanding events and the registers the driver programmed (`CC`, `INTMS`,
+    /// `AQA`, `ASQ`, `ACQ`) are lost; the attached backend, the namespace size, the I/O
+    /// statistics and the PCI frontend (only present on a Linux board, which is not reset this
+    /// way) stay.
+    fn platform_reset(&mut self) {
+        self.reset();
+        self.cc = 0;
+        self.intms = 0;
+        self.aqa = 0;
+        self.asq = 0;
+        self.acq = 0;
+    }
+
     /// `CC.EN` 0 to 1: validate the configuration and create the admin queues.
     fn enable(&mut self) {
         let cc = self.cc;
@@ -825,6 +839,12 @@ impl NvmeHandle {
         state.config.namespace_sectors = sectors;
         state.backend = Some(BackendSlot(backend));
         Ok(())
+    }
+
+    /// Takes the controller back to its power-on state (S7-26, the platform reset of the
+    /// board). The attached backend and its contents are kept.
+    pub(crate) fn platform_reset(&self) {
+        lock(&self.state).platform_reset();
     }
 
     /// Samples MSI-X and INTx state without waiting for a worker inside the storage provider.

@@ -444,6 +444,26 @@ fn startup_flushes_sequences_and_resets_pcr() {
 }
 
 #[test]
+fn init_at_clears_volatile_state_and_anchors_the_owner_clock() {
+    let mut t = started();
+    ok(&extend(&mut t, 4, &[7; 32]));
+    assert_ne!(read_pcr(&mut t, 4), vec![0u8; 32]);
+    t.advance_power_time(1_000);
+    t.init_at(1_000);
+    // The powered time before the reset is kept and the owner's clock continues from it.
+    assert_eq!(t.clock_ms(), 1_000);
+    t.advance_power_time(1_010);
+    assert_eq!(
+        t.clock_ms(),
+        1_010,
+        "a plain init() would count the 1000 ms twice"
+    );
+    ok(&run(&mut t, plain(cc::STARTUP, &[], &[0, 0])));
+    assert_eq!(read_pcr(&mut t, 4), vec![0u8; 32]);
+    assert_eq!(read_pcr(&mut t, 17), vec![0xFFu8; 32]);
+}
+
+#[test]
 fn shutdown_state_then_startup_state_resumes_saved_pcr() {
     let mut t = started();
     let event = |pcr| with_pw(cc::PCR_EVENT, &[pcr], &[b""], &tpm2b(b"save both banks"));

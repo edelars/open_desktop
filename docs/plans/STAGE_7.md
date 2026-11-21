@@ -216,7 +216,7 @@
 | S7-23 | S7-21; перечень команд — после S7-30 | TPM фаза B: иерархии, ключи RSA/ECC, сессии, NV, persistent state v1 |
 | S7-24 | S7-06, S7-10, S7-20, S7-22; решения владельца §1.1 (D3–D7) | Secure Boot: authenticated variables, PK/KEK/db/dbx, Authenticode в `LoadImage`, PCR7 |
 | S7-25 | S7-19, S7-24 | Проверка Secure Boot и отказов TPM/Secure Boot на собственных приложениях |
-| S7-26 | S7-11, S7-14, S7-22; blocked до S4-21 (lifecycle vCPU) | Сброс и перезагрузка: `ResetSystem` → сброс машины, NVRAM/TPM переживают сброс |
+| S7-26 | S7-11, S7-14, S7-22; S4-21 снят (остатки в S6-24) | Сброс и перезагрузка: `ResetSystem` → сброс машины, NVRAM/TPM переживают сброс |
 | S7-27 | S7-08, S7-19, S7-22 | Измерения пути загрузки |
 | S7-28 | S7-11, S7-19 | Отказы без TPM/Secure Boot: handoff, NVRAM, PE, GPT, FAT, отсутствующий диск, EBS |
 | S7-29 | S7-08, S7-11, S7-14, S7-19, S7-28 | Промежуточное ревью и приёмка gates G1–G3 |
@@ -671,7 +671,7 @@
 
 ### S7-26. Сброс, перезагрузка и сохранность NVRAM/TPM
 
-- [ ] Принято после ревью. **Blocked до S4-21** (жизненный цикл одного vCPU: reset как операция машины); до него сброс через reset register останавливает машину с причиной `Reset`, а runner перезапускает её сам — это записывается как временная замена, не как перезагрузка.
+- [ ] Принято после ревью. Блокер S4-21 снят: остатки перенесены в S6-24, он принят, `reset_cpu_complex` есть. **Срез S7-26a реализован 2026-11-21 и ждёт независимого ревью:** сброс платы внутри процесса (`LoadedFirmwareBoard::platform_reset`, Cold и Warm), приложение `reboot` (`fv_app = 10`), `boot-firmware --reboot-cycles N`, `tests/system/firmware_reset_smoke.py`. Факты, границы и измерения — [FIRMWARE_BOOT.md, раздел 12.1](../specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a) и [FIRMWARE.md](../testing/FIRMWARE.md#сброс-и-перезагрузка-s7-26a). Остаётся за пределами среза: сброс Linux-платы и платы с Linux-профилем, `Shutdown` как отдельная операция, снимок (этап 9).
 - **Где:** `crates/od-machine/src/firmware_board.rs` и lifecycle (`paged_vcpu_session.rs` или его расширение), `tools/runner/src/firmware_boot.rs` (флаг `--reboot-cycles N`), `tests/system/firmware_reset_smoke.py`, координация с [S4-43](STAGE_4.md#s4-43-проверить-reset-churn-и-ограниченные-ресурсы).
 - **Сделать:** `ResetSystem(Cold/Warm)` → reset register (S7-14) → машина сбрасывает CPU, RAM-содержимое (cold: очищается; warm: сохраняется — записать выбор), ROM перечитывается, NVRAM и TPM persistent state сохраняются, TPM volatile (PCR, sessions) сбрасывается с `Startup(CLEAR)`; `Shutdown` → остановка с причиной; 50 циклов перезагрузки без роста памяти процесса runner и с одинаковым COM1 на каждом цикле (кроме счётчика цикла).
 - **Проверить:** скрипт: 50 циклов, RSS runner в начале и конце отличается не больше записанного порога; переменная-счётчик `BootCount` в NVRAM растёт на 1 за цикл; PCR0 одинаков на каждом цикле.

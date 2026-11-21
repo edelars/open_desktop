@@ -164,6 +164,20 @@ class FirmwareVolumeTest(unittest.TestCase):
             self.assertIn("requires a ROM build", result.stderr)
 
 
+    def test_with_reboot_app_requires_the_test_apps(self) -> None:
+        args = BUILDER.parse_args(["--with-test-apps", "--with-reboot-app"])
+        self.assertTrue(args.with_test_apps and args.with_reboot_app)
+        self.assertFalse(BUILDER.parse_args(["--with-test-apps"]).with_reboot_app)
+        self.assertNotIn("reboot", BUILDER.TEST_APPS)
+        self.assertEqual(BUILDER.EXTRA_TEST_APPS, ("reboot",))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--with-reboot-app"],
+            capture_output=True, text=True, cwd=ROOT, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--with-reboot-app requires --with-test-apps", result.stderr)
+
+
 class SmokeImageTest(unittest.TestCase):
     def test_smoke_image_is_a_valid_v1_image_with_the_expected_code(self) -> None:
         image = BUILDER.build_smoke_image()
@@ -446,6 +460,30 @@ class FirmwareVolumeBuildTest(unittest.TestCase):
             image = out.read_bytes()
             BUILDER.validate_image(image)
             self.assertEqual(image.count(archive), 1)
+            reboot = (app_dir / "reboot.efi").read_bytes()
+            with_reboot = BUILDER.pack_fv({"runtime": driver.read_bytes(), **files, "reboot": reboot})
+            self.assertEqual(image.count(with_reboot), 0, "the default ROM has no reboot application")
+
+    def test_reboot_app_is_embedded_only_with_its_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target_dir = Path(directory) / "target"
+            out = Path(directory) / "firmware-with-reboot.bin"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--with-test-apps", "--with-reboot-app",
+                 "--target-dir", str(target_dir), "--out", str(out)],
+                capture_output=True, text=True, cwd=ROOT, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            app_dir = target_dir / "test-apps" / BUILDER.PROBE_TARGET / "release"
+            files = {name: (app_dir / f"{name}.efi").read_bytes() for name in BUILDER.TEST_APPS}
+            reboot = (app_dir / "reboot.efi").read_bytes()
+            self.assertEqual(BUILDER.inspect_pe(reboot)["subsystem"], 10)
+            driver = target_dir / "runtime" / BUILDER.PROBE_TARGET / "release" / "od-runtime.efi"
+            with_reboot = BUILDER.pack_fv({"runtime": driver.read_bytes(), **files, "reboot": reboot})
+            without = BUILDER.pack_fv({"runtime": driver.read_bytes(), **files})
+            image = out.read_bytes()
+            self.assertEqual(image.count(with_reboot), 1)
+            self.assertEqual(image.count(without), 0)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,8 @@
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    NvramDevice, PagedProbeExit, SecureBootKeys, TpmConfig, firmware_handoff_block,
-    load_firmware_image,
+    NvramDevice, PagedProbeExit, PlatformResetKind, SecureBootKeys, TpmConfig,
+    firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -20,7 +20,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--nvram-reboot-out <file>] \
+                    [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
                     [--sample-rip <hex> ...]";
@@ -28,7 +29,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
 const DUMP_USAGE: &str =
-    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm]";
+    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot]";
 const PREPARE_NVRAM_USAGE: &str =
     "prepare-secure-boot-nvram setup|defaults --out <new file> [--nvram-in <protected snapshot>]";
 
@@ -44,6 +45,9 @@ struct Options {
     framebuffer_out: Option<String>,
     nvme_image: Option<String>,
     tpm: bool,
+    /// S7-26: boot, reset in process and boot again this many times (`--fv-app reboot`).
+    reboot_cycles: Option<u64>,
+    reboot_kind: PlatformResetKind,
     sample_rips: Vec<u64>,
 }
 
@@ -82,7 +86,8 @@ fn board_config(
         } else {
             Vec::new()
         },
-        nvram: (rt || reboot).then_some(NvramConfig::Empty),
+        nvram: (rt || reboot || fv_app == Some(FirmwareFvApp::Reboot))
+            .then_some(NvramConfig::Empty),
         nvme: matches!(fv_app, Some(FirmwareFvApp::Blk | FirmwareFvApp::Fs)).then(Default::default),
         ..FirmwareBoardConfig::default()
     }
@@ -99,8 +104,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "blk" => Ok(FirmwareFvApp::Blk),
         "fs" => Ok(FirmwareFvApp::Fs),
         "tpm" => Ok(FirmwareFvApp::Tpm),
+        "reboot" => Ok(FirmwareFvApp::Reboot),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk, fs or tpm"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk, fs, tpm or reboot"
         )),
     }
 }
@@ -120,10 +126,11 @@ pub fn dump_handoff(args: &[String]) -> ExitCode {
         }
         let path = out.ok_or_else(|| format!("usage: {DUMP_USAGE}"))?;
         // Only the descriptor is serialized. No TPM is created by this command.
-        let tpm = (app == Some(FirmwareFvApp::Tpm)).then(|| TpmConfig {
-            entropy: Vec::new(),
-            snapshot: None,
-        });
+        let tpm =
+            matches!(app, Some(FirmwareFvApp::Tpm | FirmwareFvApp::Reboot)).then(|| TpmConfig {
+                entropy: Vec::new(),
+                snapshot: None,
+            });
         let block = firmware_handoff_block(&board_config(app, false, tpm))
             .map_err(|error| format!("{error:?}"))?;
         fs::write(path, block).map_err(|error| format!("{path}: {error}"))
@@ -173,7 +180,11 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let tpm = if options.tpm || options.fv_app == Some(FirmwareFvApp::Tpm) {
+    let tpm = if options.tpm
+        || matches!(
+            options.fv_app,
+            Some(FirmwareFvApp::Tpm | FirmwareFvApp::Reboot)
+        ) {
         match tpm_config(None) {
             Ok(config) => Some(config),
             Err(error) => {
@@ -197,6 +208,9 @@ pub fn run(args: &[String]) -> ExitCode {
         || (options.nvme_image.is_some() && options.fv_app.is_none())
     {
         config.nvram.get_or_insert(NvramConfig::Empty);
+    }
+    if let Some(cycles) = options.reboot_cycles {
+        return run_reboot_cycles(&options, &image, &config, cycles);
     }
     let nvme_image = options.nvme_image.as_deref();
     let mut first = match boot(
@@ -653,6 +667,155 @@ impl BootRun {
     }
 }
 
+fn exit_label(exit: &PagedProbeExit) -> &'static str {
+    match exit {
+        PagedProbeExit::Halted => "halted",
+        PagedProbeExit::Shutdown => "shutdown",
+        PagedProbeExit::BudgetExhausted => "budget_exhausted",
+        PagedProbeExit::Stopped => "stopped",
+        PagedProbeExit::Rejected(_) => "rejected",
+        PagedProbeExit::Unsupported { .. } => "unsupported",
+        PagedProbeExit::Fault(_) => "fault",
+        PagedProbeExit::Backend(_) => "backend_error",
+        PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
+    }
+}
+
+/// Resident set of this process in KiB, from `ps` (the same on macOS and Linux).
+fn rss_kib() -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Physical footprint of this process in KiB, from the macOS `footprint` tool: unlike RSS it
+/// counts memory the compressor holds, so it does not shrink when idle pages are compressed.
+/// `None` where the tool does not exist.
+fn footprint_kib() -> Option<u64> {
+    let output = Command::new("footprint")
+        .args([
+            "-p",
+            &std::process::id().to_string(),
+            "--format",
+            "bytes",
+            "--noCategories",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let rest = &text[text.find("Footprint: ")? + "Footprint: ".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some(digits.parse::<u64>().ok()? / 1024)
+}
+
+/// S7-26: `cycles` boots of one board in one process. Every boot of `--fv-app reboot` ends
+/// with `ResetSystem`, which the machine reports as a `Reset` stop; the board is then reset by
+/// `LoadedFirmwareBoard::platform_reset` (RAM, CPU and devices; NVRAM and the persistent TPM state
+/// stay) and runs again. Nothing is rebuilt, so the memory of this process must stay flat. COM1
+/// of all cycles goes to `--com1-out` in order; `boots[i].com1_offset` says where cycle `i`
+/// begins. `rss_kib_*` (from `ps`) and `footprint_kib_*` (macOS `footprint`, which also counts
+/// compressed memory) are the memory of this process at the start, after each cycle and at the end.
+fn run_reboot_cycles(
+    options: &Options,
+    image: &[u8],
+    config: &FirmwareBoardConfig,
+    cycles: u64,
+) -> ExitCode {
+    let mut board = match load_firmware_image(image, config) {
+        Ok(board) => board,
+        Err(error) => return emit(failure("loader_error", "loader", format!("{error:?}")), 4),
+    };
+    let rss_start = rss_kib();
+    let footprint_start = footprint_kib();
+    let started = Instant::now();
+    let mut com1: Vec<u8> = Vec::new();
+    let mut boots = Vec::new();
+    let mut rss_samples = Vec::new();
+    let mut footprint_samples = Vec::new();
+    let mut failed: Option<(&str, String)> = None;
+    for cycle in 1..=cycles {
+        let run = match board.run_boot(options.budget) {
+            Ok(run) => run,
+            Err(error) => {
+                failed = Some(("run", format!("cycle {cycle}: {error:?}")));
+                break;
+            }
+        };
+        let reset = run.exit == PagedProbeExit::Stopped
+            && run.stop_reason == Some(MachineStopReason::Reset);
+        boots.push(json!({
+            "cycle": cycle,
+            "exit": exit_label(&run.exit),
+            "stop_reason": run.stop_reason.map(|reason| format!("{reason:?}")),
+            "retired": run.retired,
+            "quanta": run.quanta,
+            "virtual_ns": run.virtual_ns,
+            "com1_offset": com1.len(),
+            "com1_bytes": run.com1.len(),
+        }));
+        com1.extend_from_slice(&run.com1);
+        if !reset {
+            failed = Some((
+                "reboot",
+                format!(
+                    "cycle {cycle} did not end with a Reset stop: {:?}",
+                    run.exit
+                ),
+            ));
+            break;
+        }
+        if let Err(error) = board.platform_reset(options.reboot_kind) {
+            failed = Some(("platform_reset", format!("cycle {cycle}: {error:?}")));
+            break;
+        }
+        rss_samples.push(rss_kib());
+        footprint_samples.push(footprint_kib());
+        // Progress for a long run; the report on stdout is written once, at the end.
+        eprintln!(
+            "reboot cycle {cycle}/{cycles}: retired {} wall_ms {} rss_kib {:?} footprint_kib {:?}",
+            run.retired,
+            started.elapsed().as_millis(),
+            rss_samples.last().copied().flatten(),
+            footprint_samples.last().copied().flatten(),
+        );
+    }
+    let rss_end = rss_kib();
+    let footprint_end = footprint_kib();
+    if let Err(error) = fs::write(&options.com1_out, &com1) {
+        return emit(failure("invalid_input", "com1_out", error.to_string()), 3);
+    }
+    let mut report = json!({
+        "schema_version": 1,
+        "command": "boot-firmware",
+        "status": if failed.is_none() { "completed" } else { "error" },
+        "reboot_cycles": cycles,
+        "reboot_kind": format!("{:?}", options.reboot_kind),
+        "image_sha256": sha256_hex(image),
+        "budget": options.budget,
+        "com1_bytes": com1.len(),
+        "com1_out": options.com1_out,
+        "rss_kib_start": rss_start,
+        "rss_kib_end": rss_end,
+        "rss_kib_after_cycle": rss_samples,
+        "footprint_kib_start": footprint_start,
+        "footprint_kib_end": footprint_end,
+        "footprint_kib_after_cycle": footprint_samples,
+        "wall_ms": started.elapsed().as_millis() as u64,
+        "boots": boots,
+    });
+    let code = match failed {
+        None => 0,
+        Some((kind, detail)) => {
+            report["error"] = json!({"kind": kind, "detail": detail});
+            5
+        }
+    };
+    emit(report, code)
+}
+
 fn boot(
     image: &[u8],
     config: &FirmwareBoardConfig,
@@ -713,18 +876,7 @@ fn boot(
         return Err((failure("invalid_input", "com1_out", error.to_string()), 3));
     }
     let fw_stop = parse_fw_stop(&report.com1);
-    let exit = match report.exit {
-        PagedProbeExit::Halted => "halted",
-        PagedProbeExit::Shutdown => "shutdown",
-        PagedProbeExit::BudgetExhausted => "budget_exhausted",
-        PagedProbeExit::Stopped => "stopped",
-        PagedProbeExit::Rejected(_) => "rejected",
-        PagedProbeExit::Unsupported { .. } => "unsupported",
-        PagedProbeExit::Fault(_) => "fault",
-        PagedProbeExit::Backend(_) => "backend_error",
-        PagedProbeExit::PortIo(_) => "pio_error",
-        PagedProbeExit::IntegrationError(_) => "integration_error",
-    };
+    let exit = exit_label(&report.exit);
     let halted = matches!(report.exit, PagedProbeExit::Halted);
     let rt = config.fv_app == Some(FirmwareFvApp::Rt);
     let hardware_stop =
@@ -803,6 +955,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut framebuffer_out = None;
     let mut nvme_image = None;
     let mut tpm = false;
+    let mut reboot_cycles = None;
+    let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -824,6 +978,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--nvram-out" if nvram_out.is_none() => nvram_out = Some(value.clone()),
             "--framebuffer-out" if framebuffer_out.is_none() => {
                 framebuffer_out = Some(value.clone())
+            }
+            "--reboot-cycles" if reboot_cycles.is_none() => {
+                reboot_cycles = Some(
+                    value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|cycles| *cycles > 0)
+                        .ok_or_else(|| format!("invalid --reboot-cycles '{value}'"))?,
+                );
+            }
+            "--reboot-kind" => {
+                reboot_kind = match value.as_str() {
+                    "cold" => PlatformResetKind::Cold,
+                    "warm" => PlatformResetKind::Warm,
+                    _ => {
+                        return Err(format!(
+                            "invalid --reboot-kind '{value}'; expected cold or warm"
+                        ));
+                    }
+                };
             }
             "--nvram-reboot-out" if nvram_reboot_out.is_none() => {
                 nvram_reboot_out = Some(value.clone())
@@ -851,6 +1025,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
         }
         index += 2;
+    }
+    if reboot_cycles.is_some() {
+        if fv_app != Some(FirmwareFvApp::Reboot) {
+            return Err("--reboot-cycles requires --fv-app reboot".to_owned());
+        }
+        if nvram_reboot_out.is_some()
+            || nvram_in.is_some()
+            || nvram_out.is_some()
+            || nvme_image.is_some()
+            || !sample_rips.is_empty()
+        {
+            return Err(
+                "--reboot-cycles does not combine with the NVRAM, NVMe and sample options"
+                    .to_owned(),
+            );
+        }
     }
     if acpi_out.is_some() && fv_app != Some(FirmwareFvApp::Acpi) {
         return Err("--acpi-out requires --fv-app acpi".to_owned());
@@ -893,6 +1083,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         framebuffer_out,
         nvme_image,
         tpm,
+        reboot_cycles,
+        reboot_kind,
         sample_rips,
     })
 }
@@ -983,6 +1175,98 @@ mod tests {
                 .unwrap()
                 .contains("requires a single boot")
         );
+    }
+
+    #[test]
+    fn reboot_cycles_need_the_reboot_app_and_exclude_the_other_modes() {
+        let required = [
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "first.com1",
+            "--budget",
+            "4000000",
+        ];
+        for (extra, expected) in [
+            (
+                &["--reboot-cycles", "5"][..],
+                Some("requires --fv-app reboot"),
+            ),
+            (
+                &["--reboot-cycles", "5", "--fv-app", "vars"][..],
+                Some("requires --fv-app reboot"),
+            ),
+            (
+                &["--reboot-cycles", "0", "--fv-app", "reboot"][..],
+                Some("invalid --reboot-cycles"),
+            ),
+            (
+                &["--reboot-cycles", "x", "--fv-app", "reboot"][..],
+                Some("invalid --reboot-cycles"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--reboot-kind",
+                    "tepid",
+                    "--fv-app",
+                    "reboot",
+                ][..],
+                Some("invalid --reboot-kind"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--fv-app",
+                    "reboot",
+                    "--nvram-out",
+                    "x.nv",
+                ][..],
+                Some("does not combine"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--fv-app",
+                    "reboot",
+                    "--sample-rip",
+                    "0x200040",
+                ][..],
+                Some("does not combine"),
+            ),
+            (&["--reboot-cycles", "5", "--fv-app", "reboot"][..], None),
+        ] {
+            let input = args(&[&required[..], extra].concat());
+            match expected {
+                Some(error) => assert!(parse(&input).err().unwrap().contains(error)),
+                None => {
+                    let options = parse(&input).unwrap();
+                    assert_eq!(options.reboot_cycles, Some(5));
+                    assert_eq!(options.reboot_kind, PlatformResetKind::Cold);
+                }
+            }
+        }
+        let warm = args(
+            &[
+                &required[..],
+                &[
+                    "--reboot-cycles",
+                    "2",
+                    "--reboot-kind",
+                    "warm",
+                    "--fv-app",
+                    "reboot",
+                ][..],
+            ]
+            .concat(),
+        );
+        assert_eq!(parse(&warm).unwrap().reboot_kind, PlatformResetKind::Warm);
+        // Without the flag the app runs once and stops on its reset.
+        let single = args(&[&required[..], &["--fv-app", "reboot"][..]].concat());
+        assert_eq!(parse(&single).unwrap().reboot_cycles, None);
     }
 
     #[test]

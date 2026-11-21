@@ -210,6 +210,8 @@ pub enum FirmwareFvApp {
     Blk = 7,
     Fs = 8,
     Tpm = 9,
+    /// Counts boots in an NVRAM variable and resets the machine (S7-26); handoff v1.13 like `Tpm`.
+    Reboot = 10,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -535,6 +537,13 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     if config.fv_app == Some(FirmwareFvApp::Tpm) && config.tpm.is_none() {
         return Err(FirmwareBoardError::Config(
             "tpm FV application needs TPM CRB",
+        ));
+    }
+    if config.fv_app == Some(FirmwareFvApp::Reboot)
+        && !(config.tpm.is_some() && config.nvram.is_some())
+    {
+        return Err(FirmwareBoardError::Config(
+            "reboot FV application needs the TPM CRB and NVRAM",
         ));
     }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
@@ -1343,6 +1352,27 @@ impl Com1Log {
     }
 }
 
+/// What a platform reset does to RAM (S7-26, FIRMWARE_BOOT.md section 12.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlatformResetKind {
+    /// Power-on state: every RAM byte is zero again (the reset register of the board performs
+    /// this one: it is a hard reset, and so is every `ResetSystem` type of the firmware).
+    Cold,
+    /// RAM keeps its contents except what the entry contract rewrites: the firmware shadow, the
+    /// handoff block and the boot page tables. Requested through the host API only.
+    Warm,
+}
+
+/// The bytes and the CPU state a platform reset restores besides the ROM, which is its own
+/// source of truth (S7-26): the pristine boot page tables, the root the paged interpreter walks
+/// from (the firmware's own `MOV CR3` moves `page_table_root` to its tables while it runs) and
+/// the direct-entry state.
+struct ResetSource {
+    tables: Vec<u8>,
+    root: u64,
+    entry: LongModeState,
+}
+
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
 pub struct LoadedFirmwareBoard {
     bus: MachineBus,
@@ -1369,6 +1399,9 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
+    /// What [`Self::platform_reset`] puts back at power-on (S7-26); `None` on a Linux board,
+    /// which has no firmware entry and cannot be reset this way.
+    reset_source: Option<ResetSource>,
     /// The CONFIG_ADDRESS value last recorded by a LinuxDirect run.
     pci_config_address: u32,
     /// The ordinary CPL0 set changed its address cell since the last transfer to the shared bus.
@@ -1719,9 +1752,9 @@ impl LoadedFirmwareBoard {
     ///   Remote IRR of cannot veto it.
     ///
     /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
-    /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
-    /// machine reset of `S9`. On an error nothing has changed.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// the interrupt source and the clock: virtual time does not move. The devices and RAM are
+    /// reset by [`Self::platform_reset`] (S7-26), which calls this first. On an error nothing has
+    /// changed.
     pub(crate) fn reset_cpu_complex(
         &mut self,
         bsp_state: LongModeState,
@@ -1740,6 +1773,107 @@ impl LoadedFirmwareBoard {
                 Vcpu::new_ap(index)
             };
             vcpu.set_cpuid(cpuid);
+        }
+        Ok(())
+    }
+
+    /// The platform reset of the firmware board (S7-26): what the reset register of the board
+    /// (`MachineStopReason::Reset`) and a host request do, inside the same process and on the
+    /// same board value, with no board rebuilt. The caller runs `run_boot` again afterwards.
+    ///
+    /// - CPU complex: [`Self::reset_cpu_complex`] to the direct-entry state of the loader, and the
+    ///   walk root of the paged interpreter back to the boot page tables.
+    /// - RAM: `Cold` zeroes every RAM region; `Warm` keeps it. Either way the ROM is read back
+    ///   into the firmware shadow, and the handoff block and the pristine boot page tables are
+    ///   written again, because the firmware overwrites all three while it runs.
+    /// - Devices back to their power-on state: UART (COM1 is configured again as at load),
+    ///   display (framebuffer bytes and `generation` are kept, DISPLAY_DEVICE.md 10), NVMe
+    ///   (queues and registers; the attached backend and the disk stay), ACPI PM block (registers
+    ///   and the latched stop request) and the TPM CRB (`_TPM_Init`, no locality granted).
+    ///   The board has no HPET.
+    /// - Not reset: the virtual clock, hence the PM timer and the RTC, which read it; the
+    ///   committed banks of the NVRAM (only its registers and a write in flight are lost); the
+    ///   persistent state of the TPM (its PCRs, sessions and loaded objects are the volatile
+    ///   state and are lost). `TPM2_Startup(CLEAR)` is sent by the firmware that boots next,
+    ///   as after the first power-on.
+    ///
+    /// A Linux board (no firmware entry) and a board with the Linux profile (PIT, 8259 pair) are
+    /// refused with `Config` before anything changes; so is a ROM that cannot be read back.
+    /// There is no other error path: a failure after the CPU complex was reset would leave a
+    /// board that must not be run, and none is reachable for the constant layout of the loader.
+    pub fn platform_reset(&mut self, kind: PlatformResetKind) -> Result<(), FirmwareBoardError> {
+        if self.reset_source.is_none() || self.has_linux_profile() {
+            return Err(FirmwareBoardError::Config(
+                "platform_reset: only the firmware profile has an entry to reset to",
+            ));
+        }
+        let rom = GuestPhysicalAddress::new(FIRMWARE_ROM_BASE);
+        let mut shadow = vec![0u8; FIRMWARE_IMAGE_BYTES];
+        self.bus
+            .read_flat_bytes(rom, &mut shadow)
+            .map_err(FirmwareBoardError::Bus)?;
+        let source = self.reset_source.as_ref().expect("checked above");
+        let entry = source.entry.clone();
+        self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
+        if kind == PlatformResetKind::Cold {
+            self.clear_ram()?;
+        }
+        let source = self.reset_source.as_ref().expect("checked above");
+        self.page_table_root = source.root;
+        let writes = [
+            (FIRMWARE_LINK_BASE, &shadow[..]),
+            (source.root, &source.tables[..]),
+            (FIRMWARE_HANDOFF_GPA, &self.handoff[..]),
+        ];
+        for (address, bytes) in writes {
+            self.bus
+                .write_flat_bytes(GuestPhysicalAddress::new(address), bytes, |_| {})
+                .map_err(FirmwareBoardError::Bus)?;
+        }
+        self.uart.reset();
+        configure_com1(&mut self.bus)?;
+        self.display.reset();
+        if let Some(nvme) = &self.nvme {
+            nvme.platform_reset();
+        }
+        if let Some(pm) = &self.acpi_pm {
+            pm.platform_reset();
+        }
+        if let Some(nvram) = &self.nvram {
+            nvram.platform_reset();
+        }
+        if let Some(tpm) = &self.tpm {
+            tpm.platform_reset(self.clock.snapshot().now_ns());
+        }
+        self.pci_config_address = 0;
+        self.pci_config_pending = false;
+        self.host_stop_honoured = false;
+        Ok(())
+    }
+
+    /// Zero every RAM region of the memory map, 1 MiB at a time, through the committed-write
+    /// path (so the code page generations of a decoded or compiled page change).
+    fn clear_ram(&mut self) -> Result<(), FirmwareBoardError> {
+        const CHUNK: usize = 1 << 20;
+        let zeros = vec![0u8; CHUNK];
+        let regions: Vec<_> = self
+            .bus
+            .physical_memory()
+            .region_specs()
+            .filter(|spec| spec.kind == MemoryRegionKind::Ram)
+            .map(|spec| spec.range)
+            .collect();
+        for region in regions {
+            let end = region.end_exclusive();
+            let mut at = u128::from(region.start().get());
+            while at < end {
+                let len = (end - at).min(CHUNK as u128) as usize;
+                let address = GuestPhysicalAddress::new(at as u64);
+                self.bus
+                    .write_flat_bytes(address, &zeros[..len], |_| {})
+                    .map_err(FirmwareBoardError::Bus)?;
+                at += len as u128;
+            }
         }
         Ok(())
     }
@@ -4390,6 +4524,11 @@ impl AssembledBoard {
         };
         state.gpr[Register::Rsp as usize] = FIRMWARE_BOOT_STACK_TOP;
         state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
+        let reset_source = ResetSource {
+            tables,
+            root: page_table_root,
+            entry: state.clone(),
+        };
         Ok(LoadedFirmwareBoard {
             bus,
             vcpus: vcpu_set(state, lapic.cpu_count()),
@@ -4407,6 +4546,7 @@ impl AssembledBoard {
             handoff,
             page_table_bytes,
             page_table_root,
+            reset_source: Some(reset_source),
             pci_config_address: 0,
             pci_config_pending: false,
             com1_log: Com1Log::default(),
@@ -4489,6 +4629,7 @@ impl AssembledBoard {
             handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
+            reset_source: None,
             pci_config_address: 0,
             pci_config_pending: false,
             com1_log: Com1Log::default(),
@@ -6607,6 +6748,232 @@ mod tests {
         let report = board.run_boot(3).unwrap();
         assert_eq!(report.exit, PagedProbeExit::Stopped);
         assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+    }
+
+    /// A board that ran `MOV AL,imm8; MOV DX,imm16; OUT DX,AL; HLT` on the reset register to its
+    /// reset stop.
+    fn reset_stopped_board(config: FirmwareBoardConfig) -> LoadedFirmwareBoard {
+        let [lo, hi] = ACPI_RESET_REG.to_le_bytes();
+        let code = [0xb0, ACPI_RESET_VALUE, 0x66, 0xba, lo, hi, 0xee, 0xf4];
+        // `handoff_minor_max` 13: the image takes the TPM handoff of the device test.
+        let image = test_image(&code, &[(0x2A, &13u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+        board
+    }
+
+    fn ram_at(board: &mut LoadedFirmwareBoard, address: u64, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0; len];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(address), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn put_ram(board: &mut LoadedFirmwareBoard, address: u64, bytes: &[u8]) {
+        board
+            .bus_mut()
+            .write_flat_bytes(GuestPhysicalAddress::new(address), bytes, |_| {})
+            .unwrap();
+    }
+
+    fn mmio32(board: &mut LoadedFirmwareBoard, address: u64) -> u64 {
+        board
+            .bus_mut()
+            .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Dword)
+            .unwrap()
+    }
+
+    fn put_mmio32(board: &mut LoadedFirmwareBoard, address: u64, value: u64) {
+        board
+            .bus_mut()
+            .write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Dword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn platform_reset_runs_the_same_firmware_again_on_the_same_board() {
+        let mut board = reset_stopped_board(pm_config());
+        for cycle in 1..=3u64 {
+            board.platform_reset(PlatformResetKind::Cold).unwrap();
+            assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+            let report = board.run_boot(100).unwrap();
+            assert_eq!(report.exit, PagedProbeExit::Stopped);
+            assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+            assert_eq!(report.retired, 3, "the same instructions every cycle");
+            // The virtual clock is not reset: three nanoseconds per run, cumulative.
+            assert_eq!(report.virtual_ns, 3 * (cycle + 1));
+        }
+    }
+
+    #[test]
+    fn cold_reset_zeroes_ram_warm_reset_keeps_it_and_both_restore_the_entry_contract() {
+        for kind in [PlatformResetKind::Cold, PlatformResetKind::Warm] {
+            let mut board = reset_stopped_board(pm_config());
+            // Markers in low RAM and far above the tables, garbage over the shadow, the handoff
+            // block and the boot page tables, the way a running firmware leaves them.
+            let markers = [0x2_0000u64, 0x0100_0000];
+            for at in markers {
+                put_ram(&mut board, at, &[0xA5; 64]);
+            }
+            let root = board.page_table_root;
+            for at in [
+                FIRMWARE_LINK_BASE + 0x100,
+                FIRMWARE_HANDOFF_GPA + 8,
+                root + 8,
+            ] {
+                put_ram(&mut board, at, &[0xCC; 8]);
+            }
+            // The firmware's `MOV CR3` moved the walk root to its own tables.
+            board.page_table_root = 0x0015_0000;
+            board.vcpus[0].state.cr3 = Some(0x0015_0000);
+            board.vcpus[0].state.rip = 0x1234;
+            board.vcpus[0].state.gpr[Register::Rsp as usize] = 0x5678;
+
+            board.platform_reset(kind).unwrap();
+
+            let expected = if kind == PlatformResetKind::Cold {
+                0
+            } else {
+                0xA5
+            };
+            for at in markers {
+                assert_eq!(ram_at(&mut board, at, 64), vec![expected; 64], "{kind:?}");
+            }
+            let mut rom = vec![0; FIRMWARE_IMAGE_BYTES];
+            board
+                .bus_mut()
+                .read_flat_bytes(GuestPhysicalAddress::new(FIRMWARE_ROM_BASE), &mut rom)
+                .unwrap();
+            assert_eq!(ram_at(&mut board, FIRMWARE_LINK_BASE, rom.len()), rom);
+            let handoff = board.handoff_block().to_vec();
+            assert_eq!(
+                ram_at(&mut board, FIRMWARE_HANDOFF_GPA, handoff.len()),
+                handoff
+            );
+            let tables = board.reset_source.as_ref().unwrap().tables.clone();
+            assert_eq!(ram_at(&mut board, root, tables.len()), tables);
+            assert_eq!(
+                board.page_table_root, root,
+                "{kind:?}: the walk root is the boot one"
+            );
+            let state = board.state();
+            assert_eq!(state.rip, FIRMWARE_LINK_BASE + 0x40);
+            assert_eq!(state.gpr[Register::Rsp as usize], FIRMWARE_BOOT_STACK_TOP);
+            assert_eq!(state.gpr[Register::Rdi as usize], FIRMWARE_HANDOFF_GPA);
+            // No CR3 of the vCPU's own: the interpreter walks from the boot tables again (the
+            // `#PF` of the first Warm run came from a stale root).
+            assert_eq!(state.cr3, None, "{kind:?}");
+            assert_eq!(board.guest_efer(), FIRMWARE_EFER);
+        }
+    }
+
+    #[test]
+    fn platform_reset_takes_the_devices_to_power_on_and_keeps_the_clock() {
+        let config = FirmwareBoardConfig {
+            acpi_pm: true,
+            acpi_tables: true,
+            nvram: Some(NvramConfig::Empty),
+            nvme: Some(NvmeConfig::default()),
+            tpm: Some(TpmConfig {
+                entropy: vec![0x55; 48],
+                snapshot: None,
+            }),
+            ..reference_config()
+        };
+        let mut board = reset_stopped_board(config);
+        // PM block: an enabled event.
+        let pm_en = ACPI_PM1A_EVT_BLK + 2;
+        board
+            .bus_mut()
+            .write_port(io_port(pm_en), AccessWidth::Word, 1)
+            .unwrap();
+        // COM1: a byte in the holding register.
+        board
+            .bus_mut()
+            .write_port(io_port(FIRMWARE_COM1_PORT), AccessWidth::Byte, 0x41)
+            .unwrap();
+        assert!(board.uart.holding_occupied());
+        // NVMe: the admin queue size the driver programmed.
+        put_mmio32(&mut board, NVME_MMIO_BASE + 0x24, 0x001f_001f);
+        assert_eq!(mmio32(&mut board, NVME_MMIO_BASE + 0x24), 0x001f_001f);
+        // NVRAM: a transfer address, and a committed bank that must survive.
+        let nvram =
+            crate::nvram_device::NVRAM_MMIO_BASE + crate::nvram_device::NVRAM_STORE_BYTES as u64;
+        put_mmio32(&mut board, nvram, 0x1234);
+        let committed = board.nvram_snapshot().unwrap();
+        // TPM CRB: a granted locality.
+        let crb_loc_ctrl = TPM_CRB_BASE + 0x08;
+        let crb_loc_sts = TPM_CRB_BASE + 0x0c;
+        put_mmio32(&mut board, crb_loc_ctrl, 1);
+        assert_eq!(mmio32(&mut board, crb_loc_sts), 1);
+        let before = board.clock().now_ns();
+        assert!(before > 0);
+
+        board.platform_reset(PlatformResetKind::Cold).unwrap();
+
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+        let pm_en_value = board
+            .bus_mut()
+            .read_port(io_port(pm_en), AccessWidth::Word)
+            .unwrap();
+        assert_eq!(pm_en_value, 0);
+        assert!(!board.uart.holding_occupied());
+        assert_eq!(mmio32(&mut board, NVME_MMIO_BASE + 0x24), 0);
+        assert_eq!(mmio32(&mut board, nvram), 0);
+        assert_eq!(board.nvram_snapshot().unwrap(), committed);
+        assert_eq!(mmio32(&mut board, crb_loc_sts), 0);
+        assert_eq!(board.clock().now_ns(), before, "time does not move");
+        // COM1 is configured again as at load, and the firmware runs to its reset again.
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+    }
+
+    #[test]
+    fn platform_reset_refuses_a_linux_board_and_changes_nothing() {
+        let mut board = linux_board();
+        let rip = board.state().rip;
+        assert!(matches!(
+            board.platform_reset(PlatformResetKind::Cold),
+            Err(FirmwareBoardError::Config(_))
+        ));
+        assert_eq!(board.state().rip, rip);
+    }
+
+    #[test]
+    fn reboot_app_needs_tpm_and_nvram() {
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Reboot),
+            acpi_pm: true,
+            acpi_tables: true,
+            ..reference_config()
+        };
+        assert!(matches!(
+            validate_config(&config),
+            Err(FirmwareBoardError::Config(_))
+        ));
+        let full = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Empty),
+            tpm: Some(TpmConfig {
+                entropy: vec![0; 48],
+                snapshot: None,
+            }),
+            ..config
+        };
+        assert!(validate_config(&full).is_ok());
+        let block = firmware_handoff_block(&full).unwrap();
+        assert_eq!(u16::from_le_bytes([block[0x0a], block[0x0b]]), 13);
+        assert_eq!(
+            u32::from_le_bytes(block[0xa0..0xa4].try_into().unwrap()),
+            10
+        );
     }
 
     #[test]

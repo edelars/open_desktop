@@ -1496,6 +1496,7 @@ fn boot_fv_image(
         Some(FirmwareFvApp::Blk) => "blk",
         Some(FirmwareFvApp::Fs) => "fs",
         Some(FirmwareFvApp::Tpm) => "tpm",
+        Some(FirmwareFvApp::Reboot) => "reboot",
         _ => "hello",
     };
     let mut path_buffer = [0; 64];

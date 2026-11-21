@@ -1496,7 +1496,8 @@
 - **Компонент:** `tests/system/` (runner stress mode), `crates/od-jit/src/dispatch.rs` (executable cache), runner (`--reboot-cycles`), guest RAM.
 - **Владелец:** S4-44; далее `docs/plans/STAGE_7.md` (S7-26) для boot/STOP/reset и `--reboot-cycles`.
 - **Статус:** открыта.
-- **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles`, явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
+- **Обновление 2026-11-21 (S7-26a):** `--reboot-cycles` в runner реализован для прошивки (`boot-firmware --fv-app reboot --reboot-cycles N`, сброс платы в процессе); повторные STOP/boot и reset устройств и прошивки проверены `tests/system/firmware_reset_smoke.py`. Остальное ниже остаётся открытым; reset путей Linux-платы и Linux-профиля не сделан.
+- **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles` (для Linux-платы), явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
 - **Следующий шаг:** S4-44 назначает исполнителя по каждому пункту; остаток до STAGE_7.
 
 ### ISSUE-095 — Linux direct boot не запускался с JIT (0 %)
@@ -7153,3 +7154,49 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Воспроизведение:** вариант `rebased-hdr` скрипта `tests/system/firmware_linux_uefi_stop_record.py`: `exit=unsupported`, `Unsupported { opcode: 30 }`, RIP `0x2075f78`, 97 505 008 инструкций, байты `f3 0f 1e fa`. Инвентарь: `cargo build --release -p od-isa --example firmware_profile_probe --offline`, затем `python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz> --out <json>`.
 - **Последствия:** чужой EFI-код упирается в первую незнакомую инструкцию; добавление кодировок по одной (как ISSUE-385/386) потребует десятков срезов только для stub, а после ExitBootServices ядро всё равно исполняется CPL0-набором. Дальше ExitBootServices прогон не доходил.
 - **Статус:** открыто, решение за Opus high по [ADR-0013](decisions/ADR-0013-uefi-linux-cpu-profile.md) (Предложено). Не править допуски CPU и `firmware_board.rs` до решения.
+
+<a id="issue-623"></a>
+
+### ISSUE-623 — S7-22/S7-26: один загрузочный цикл с TPM стоит около 3,66·10⁸ инструкций гостя (около 160 с)
+
+- **Дата обнаружения:** 2026-11-21 (срез S7-26a).
+- **Компонент:** `firmware/uefi/src/tpm/measure.rs` (`platform`: измерение всего образа ROM в PCR0), интерпретатор paged-пути `od-machine`.
+- **Статус:** открыта как предел текущей реализации; не дефект корректности.
+- **Суть и последствия:** при загрузке с TPM прошивка хеширует 4 MiB ROM в двух банках (SHA-256 и SHA-384) программно в госте; `boot-firmware --fv-app reboot` на M3 Max (release, без LTO) выполняет такой цикл за 160–165 с (`retired` около 3,657·10⁸, около 2,3 млн инструкций в секунду). Пятьдесят циклов занимают около 2,3 часа, поэтому такой прогон запускают в фоне. Сборка с `lto=fat`, `codegen-units=1`, `target-cpu=native` скорость не изменила (2,03–2,13 с на загрузке обычного ROM в обеих сборках).
+- **Основание:** измерения S7-26a ([FIRMWARE.md](testing/FIRMWARE.md#сброс-и-перезагрузка-s7-26a)); код `measure.rs`.
+- **Следующий шаг:** решение по скорости принимать только по замерам (AGENTS.md): профилировать путь, на который уходят инструкции (хеши в госте или интерпретатор), и сравнить варианты; база для этого — S7-27. Не ослаблять измерение ROM ради времени.
+
+
+<a id="issue-624"></a>
+
+### ISSUE-624 — S7-26a: эталоны COM1 зависят от суммарного размера тестовых приложений в FV
+
+- **Дата обнаружения:** 2026-11-21 (срез S7-26a).
+- **Компонент:** `tests/fixtures/firmware/*_com1.txt`, `manifest.json`, `tools/build/build_firmware.py` (`TEST_APPS`), раскладка памяти прошивки (`OD-FW MEM`).
+- **Статус:** открыта; не закрывать до выбора пути.
+- **Суть и последствия:** добавление приложения `reboot` в `TEST_APPS` увеличило встроенный FV на две страницы и сдвинуло две записи `OD-FW MEM type=0x4` (`base=0x255000 pages=0x2B` → `pages=0x2D`; `base=0x280000 pages=0x380` → `base=0x282000 pages=0x37E`) в 11 эталонах с приложениями (`acpi`, `blk`, `blk_no_gpt`, `ebs`, `fs`, `gop`, `hello`, `nvram_first`, `nvram_second`, `rt`, `vars`); `firmware_boot_smoke.py` падал на `hello #1`. Любое новое приложение в наборе по умолчанию делает то же самое. Для S7-26a приложение вынесено из набора по умолчанию (флаг `--with-reboot-app`, [FIRMWARE.md](testing/FIRMWARE.md)).
+- **Основание:** запуск `firmware_boot_smoke.py` на объединённом дереве 2026-11-21; разница строк выше.
+- **Следующий шаг (два пути):** (1) собирать группы приложений по опциям, как сейчас `--with-reboot-app`, и закреплять эталон каждой группы; (2) сделать раскладку, не зависящую от размера FV (карта памяти не должна менять `base`/`pages` соседних записей при росте архива), либо маскировать эти строки так же, как `BS=`/`RT=` ([ISSUE-611](#issue-611)).
+
+
+<a id="issue-625"></a>
+
+### ISSUE-625 — S7-26a: `ResetSystem` не посылает `TPM2_Shutdown`, поведение TPM после неупорядоченного сброса не описано
+
+- **Дата обнаружения:** 2026-11-21 (ревью S7-26a).
+- **Компонент:** `firmware/uefi/src/rt/reset.rs`, `crates/od-machine/src/tpm_crb.rs` (`TpmCrbHandle::platform_reset`), `crates/od-tpm/src/state.rs` (`Tpm::init_at`, `orderly`, `reset_count`).
+- **Статус:** открыта; не дефект корректности, пробел в проверке и описании.
+- **Суть и последствия:** сброс платы выполняет `_TPM_Init` без предшествующего `TPM2_Shutdown`: прошивка при `ResetSystem` его не шлёт. Как при этом ведут себя DA (защита от перебора), `resetCount`/`restartCount` и сохранённое состояние (`Shutdown(STATE)`) после следующего `Startup(CLEAR)`, не описано; единичный тест `tpm_crb::tests::platform_reset_*` проверяет PCR, постоянное состояние и `TPM_RC_INITIALIZE`, но не эти счётчики.
+- **Основание:** ревью S7-26a; код `reset.rs` и `Tpm::init_at`.
+- **Следующий шаг:** решить, должна ли прошивка посылать `Shutdown(CLEAR)` перед сбросом (как требует TCG PC Client для упорядоченного выключения), описать ожидаемые `resetCount` и DA в VTPM.md и добавить проверку.
+
+<a id="issue-626"></a>
+
+### ISSUE-626 — S7-26a: CMOS и маска NMI переживают сброс платы; `host_stop` не сбрасывается
+
+- **Дата обнаружения:** 2026-11-21 (ревью S7-26a).
+- **Компонент:** `crates/od-machine/src/rtc_cmos.rs` (`RtcCmos`), `crates/od-machine/src/firmware_board.rs` (`platform_reset`, `host_stop`).
+- **Статус:** открыта как записанное поведение; не закрывать, пока не принято решение по гостям, которым нужен чистый CMOS.
+- **Суть и последствия:** (1) RTC/CMOS (индекс, маска NMI, `Status A/B`, 128 байт CMOS RAM) не сбрасывается: у MC146818 CMOS питается от батареи, а время считается от несбрасываемых часов платы. Прошивка CMOS не использует, но гость, включивший маску NMI или записавший в CMOS, увидит это после сброса. (2) `host_stop` (`Arc<AtomicBool>`) не сбрасывается, снимается только `host_stop_honoured`; владелец платы обязан снять флаг сам.
+- **Основание:** ревью S7-26a; [FIRMWARE_BOOT.md, раздел 12.1](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a).
+- **Следующий шаг:** решение владельца платы: оставить как есть для Linux/Windows профилей или добавить сброс индекса и маски NMI (CMOS RAM оставить); `host_stop` — зафиксировать в API платы, кто его снимает.

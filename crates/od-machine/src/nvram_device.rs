@@ -359,6 +359,22 @@ impl NvramHandle {
         lock(&self.state).banks.snapshot()
     }
 
+    /// Platform reset (S7-26): the registers, the staging buffer and any transfer in flight are
+    /// lost and the volatile `POLICY_EPOCH` restarts from zero, as after a reopen. Both banks
+    /// are untouched: the committed generation survives, and a write that was not committed
+    /// stays in the bank it was staged into (the inactive one, already invalidated by `WRITE`).
+    pub(crate) fn platform_reset(&self) {
+        let mut state = lock(&self.state);
+        state.address = 0;
+        state.length = 0;
+        state.status = Status::Idle;
+        state.transfer = Transfer::Idle;
+        state.policy_epoch = 0;
+        if let Some(staging) = state.staging.as_deref_mut() {
+            staging.fill(0);
+        }
+    }
+
     pub(crate) fn read(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
         lock(&self.state).read(access)
     }

@@ -10,7 +10,9 @@
 //! Stopping: a write of the S5 sleep command or of [`ACPI_RESET_VALUE`] latches a
 //! [`MachineStopReason`] on the device. The run loop polls
 //! [`AcpiPmHandle::stop_request`] after every instruction and stops the machine
-//! with that reason. The reset itself is S7-26; this device only reports it.
+//! with that reason. The device only reports the request; the reset of the machine is
+//! `LoadedFirmwareBoard::platform_reset` (S7-26), which also calls
+//! [`AcpiPmHandle::platform_reset`] to take the PM block back to its power-on state.
 //!
 //! Port tick (S4-37a2, ISSUE-067): every successful read of the PM timer register
 //! queues `ACPI_PM_TMR_READ_TICK_NS` (1 us) of virtual time; the value returned
@@ -148,8 +150,8 @@ const _: () = {
 /// Why the machine stopped on the request of this device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MachineStopReason {
-    /// The guest wrote [`ACPI_RESET_VALUE`] to the reset register. The reset
-    /// itself is S7-26.
+    /// The guest wrote [`ACPI_RESET_VALUE`] to the reset register. The run loop stops
+    /// with this reason; the owner then calls `LoadedFirmwareBoard::platform_reset` (S7-26).
     Reset,
     /// The guest entered S5 (`SLP_TYP = S5` with `SLP_EN`).
     Shutdown,
@@ -206,10 +208,23 @@ impl AcpiPmHandle {
         )
     }
 
-    /// The first stop the guest asked for, if any. It stays latched: the reset
-    /// operation (S7-26) is the only thing that will clear it.
+    /// The first stop the guest asked for, if any. It stays latched: only
+    /// [`Self::platform_reset`] (S7-26) clears it.
     pub fn stop_request(&self) -> Option<MachineStopReason> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stop
+    }
+
+    /// The PM block after a platform reset (S7-26): `PM1_STS`, `PM1_EN` and `PM1_CNT` go back
+    /// to zero (`SCI_EN` is constant), the latched stop request and the PM timer time not yet
+    /// taken by the clock owner are dropped. The PM timer itself is not reset: it reads the
+    /// board clock, which keeps running across a reset, and `timer_reads` stays a count since
+    /// construction.
+    pub(crate) fn platform_reset(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        *state = PmState {
+            timer_reads: state.timer_reads,
+            ..PmState::default()
+        };
     }
 }
 
