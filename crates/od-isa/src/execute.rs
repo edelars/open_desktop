@@ -50840,8 +50840,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S2-21: CMPXCHG8B (`[F0] [REX without W] 0F C7 /1 m64`; the decoder has already validated
         // the prefixes and refuses the register form as #UD). One eight-byte
         // `GuestMemory::atomic_compare_exchange_integer` call. Admitted exactly where CMPXCHG16B
-        // is: the CPL0 set at Ring0 and the bare run; never at CPL3 (CPUID does not declare CX8
-        // until S2-57, and `cpl3_allows` does not list it).
+        // is: the CPL0 set at Ring0 and the bare run; never at CPL3 (`cpl3_allows` does not list
+        // it: the CPL3 set is the Linux live profile). The interpreter does not gate on CPUID.CX8:
+        // OdX8664V1Neutral already declares the bit (S6-14h); the Windows profile does not declare
+        // it until the S2-57 acceptance.
         Operation::Cmpxchg8b { .. } => {
             instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0xc7
