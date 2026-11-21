@@ -40,6 +40,22 @@
 //! effect on RDA or the line. Semantics follow the 16550 datasheet from memory
 //! and were not checked against a primary source.
 //!
+//! S4-24f: the receiver line status interrupt (RLS, IER bit 2, IIR `0x06`) has
+//! a source. LSR bits 1..4 hold the receive errors: OE (overrun), PE (parity),
+//! FE (framing) and BI (break). OE is raised when a byte is delivered with
+//! [`Uart16550Handle::deliver_received_byte`] while the receive register is
+//! still full (the old byte is overwritten, as on a 16450 without FIFO); PE,
+//! FE and BI are supplied by the host with that call. While any of them is set
+//! and IER bit 2 is 1, IIR reads `0x06` with the highest priority (above RDA
+//! and THRE) and the interrupt output follows OUT2 as before. An LSR read
+//! returns the bits and clears them, which also drops the RLS condition; no
+//! other access clears it. The flow-controlled [`Uart16550Handle::inject_received_byte`]
+//! is unchanged and still reports `Busy` on a full register. Not modelled:
+//! the modem status interrupt (IER bit 3, IIR `0x00`), loopback, FIFO and the
+//! FIFO error bit (LSR bit 7). Semantics follow the 16550 datasheet from
+//! memory; the register and bit names agree with the Linux `serial_reg.h`
+//! header; neither was checked against the primary datasheet.
+//!
 //! S4-38L7br: the modem control register (offset 4) stores bit 0 (DTR), bit 1
 //! (RTS), bit 2 (OUT1) and bit 3 (OUT2) and reads them back. DTR, RTS and OUT1
 //! have no effect: the board has no modem and the lines are not wired, so no
@@ -73,8 +89,17 @@ const LCR_TX_GATE_MASK: u8 = 0xcf;
 const IIR_NO_INTERRUPT: u8 = 0x01;
 const IIR_THRE: u8 = 0x02;
 const IIR_RDA: u8 = 0x04;
+const IIR_RLS: u8 = 0x06;
 const IER_RDA: u8 = 0x01;
 const IER_THRE: u8 = 0x02;
+const IER_RLS: u8 = 0x04;
+/// LSR overrun error (bit 1): a byte arrived while the receive register was full.
+const LSR_OE: u8 = 0x02;
+/// LSR receive error bits the host may attach to a delivered byte.
+pub const UART_RX_ERROR_PARITY: u8 = 0x04;
+pub const UART_RX_ERROR_FRAMING: u8 = 0x08;
+pub const UART_RX_ERROR_BREAK: u8 = 0x10;
+const RX_ERRORS_ACCEPTED: u8 = UART_RX_ERROR_PARITY | UART_RX_ERROR_FRAMING | UART_RX_ERROR_BREAK;
 /// IER bits 3..0 (RDA, THRE, RLS, MS) are stored; bits 7..4 read as 0. Only
 /// RDA and THRE have interrupt sources; RLS (bit 2) and MS (bit 3) are
 /// stored only.
@@ -127,6 +152,8 @@ struct UartState {
     ier: u8,
     mcr: u8,
     thre_pending: bool,
+    /// LSR bits 4..1 (BI, FE, PE, OE) until an LSR read clears them (S4-24f).
+    line_errors: u8,
 }
 
 impl Uart16550PollingTx {
@@ -193,6 +220,12 @@ impl Uart16550PollingTx {
     pub fn inject_received_byte(&mut self, value: u8) -> Result<(), DeviceError> {
         self.with_state(|state| state.inject_received_byte(value))
     }
+
+    /// Delivers one byte from the line with overrun and receive-error semantics;
+    /// see [`Uart16550Handle::deliver_received_byte`].
+    pub fn deliver_received_byte(&mut self, value: u8, errors: u8) -> Result<bool, DeviceError> {
+        self.with_state(|state| state.deliver_received_byte(value, errors))
+    }
 }
 
 impl Default for Uart16550PollingTx {
@@ -246,6 +279,11 @@ impl Uart16550Handle {
         self.with_state(|state| state.interrupt_line())
     }
 
+    /// LSR error bits (OE, PE, FE, BI) pending until an LSR read, without clearing them.
+    pub fn line_errors(&self) -> u8 {
+        self.with_state(|state| state.line_errors)
+    }
+
     /// The IIR value a guest read would return now, without clearing anything.
     pub fn peek_iir(&self) -> u8 {
         self.with_state(|state| state.iir())
@@ -266,6 +304,16 @@ impl Uart16550Handle {
     pub fn inject_received_byte(&self, value: u8) -> Result<(), DeviceError> {
         self.with_state(|state| state.inject_received_byte(value))
     }
+
+    /// Delivers one byte from the line (S4-24f). Unlike
+    /// [`Self::inject_received_byte`] it never reports `Busy`: a full register is
+    /// overwritten and LSR OE is set. `errors` is a subset of
+    /// `UART_RX_ERROR_PARITY | UART_RX_ERROR_FRAMING | UART_RX_ERROR_BREAK`; other
+    /// bits are refused with `UnsupportedConfiguration` without mutation.
+    /// Returns whether an overrun occurred.
+    pub fn deliver_received_byte(&self, value: u8, errors: u8) -> Result<bool, DeviceError> {
+        self.with_state(|state| state.deliver_received_byte(value, errors))
+    }
 }
 
 impl UartState {
@@ -282,6 +330,7 @@ impl UartState {
             ier: 0,
             mcr: 0,
             thre_pending: false,
+            line_errors: 0,
         }
     }
 
@@ -298,9 +347,11 @@ impl UartState {
         true
     }
 
-    /// Highest-priority enabled condition: RDA over THRE; independent of OUT2.
+    /// Highest-priority enabled condition: RLS over RDA over THRE; independent of OUT2.
     fn iir(&self) -> u8 {
-        if self.ier & IER_RDA != 0 && self.received.is_some() {
+        if self.ier & IER_RLS != 0 && self.line_errors != 0 {
+            IIR_RLS
+        } else if self.ier & IER_RDA != 0 && self.received.is_some() {
             IIR_RDA
         } else if self.ier & IER_THRE != 0 && self.thre_pending {
             IIR_THRE
@@ -327,6 +378,19 @@ impl UartState {
         }
         self.received = Some(value);
         Ok(())
+    }
+
+    fn deliver_received_byte(&mut self, value: u8, errors: u8) -> Result<bool, DeviceError> {
+        if errors & !RX_ERRORS_ACCEPTED != 0 {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        let overrun = self.received.is_some();
+        self.received = Some(value);
+        self.line_errors |= errors;
+        if overrun {
+            self.line_errors |= LSR_OE;
+        }
+        Ok(overrun)
     }
 
     fn dlab(&self) -> bool {
@@ -390,7 +454,12 @@ impl UartState {
             }
             3 => self.line_control,
             4 => self.mcr,
-            5 => self.line_status(),
+            // An LSR read returns the receive error bits and clears them (S4-24f).
+            5 => {
+                let status = self.line_status() | self.line_errors;
+                self.line_errors = 0;
+                status
+            }
             // S4-38L9C: the modem status register has no input line behind
             // it, so levels (bits 7..4) and deltas (bits 3..0) are all 0.
             // The read has no side effect: reading MSR clears the deltas,
@@ -426,8 +495,8 @@ impl UartState {
             1 => {
                 // S4-38L9y: bits 3..0 (RDA, THRE, RLS, MS) are stored and read
                 // back; bits 7..4 are not implemented and are dropped, so
-                // they read as 0. RLS and MS are stored only: the model has
-                // no line-status or modem-status interrupt source.
+                // they read as 0. RLS reports receive errors (S4-24f); MS is
+                // stored only: the model has no modem-status interrupt source.
                 let value = value & IER_STORED;
                 // Enabling THRE while the holding register is empty raises
                 // the condition; disabling it drops any pending condition.
@@ -1408,5 +1477,164 @@ mod tests {
         assert_eq!(read(&mut device, 6), 0x00);
         assert_eq!(read(&mut device, 5), 0x60);
         assert!(!handle.interrupt_line());
+    }
+
+    // S4-24f: receiver line status (RLS) interrupt from OE, PE, FE and BI.
+    fn rls_device() -> (Uart16550PollingTx, Uart16550Handle) {
+        let (mut device, handle) = Uart16550PollingTx::new_with_handle();
+        write(&mut device, 4, 0x08);
+        (device, handle)
+    }
+
+    #[test]
+    fn overrun_sets_oe_overwrites_the_byte_and_reports_rls_with_priority() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x07);
+        assert_eq!(device.deliver_received_byte(0x11, 0), Ok(false));
+        assert_eq!(handle.line_errors(), 0);
+        assert_eq!(handle.peek_iir(), 0x04);
+        // The second byte arrives before the first was read: OE, new byte wins.
+        assert_eq!(device.deliver_received_byte(0x22, 0), Ok(true));
+        assert_eq!(handle.line_errors(), 0x02);
+        assert_eq!(handle.received_byte(), Some(0x22));
+        assert_eq!(handle.peek_iir(), 0x06, "RLS beats RDA and THRE");
+        assert!(handle.interrupt_line());
+        // IIR reads and RBR reads leave RLS alone.
+        assert_eq!(read(&mut device, 2), 0x06);
+        assert_eq!(read(&mut device, 0), 0x22);
+        assert_eq!(read(&mut device, 2), 0x06);
+        assert!(handle.interrupt_line());
+        // The LSR read returns DR=0, OE=1, THRE, TEMT and clears the condition.
+        assert_eq!(read(&mut device, 5), 0x62);
+        assert_eq!(handle.line_errors(), 0);
+        assert_eq!(read(&mut device, 5), 0x60);
+        assert_eq!(handle.peek_iir(), 0x02, "THRE remains once RLS is gone");
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 2), 0x02);
+        assert!(!handle.interrupt_line());
+    }
+
+    #[test]
+    fn rls_needs_ier_bit_2_and_out2_and_lsr_keeps_the_bits_without_them() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x01);
+        device.deliver_received_byte(0x01, 0).unwrap();
+        device.deliver_received_byte(0x02, 0).unwrap();
+        // IER bit 2 = 0: OE is visible in LSR only, IIR shows RDA.
+        assert_eq!(handle.line_errors(), 0x02);
+        assert_eq!(handle.peek_iir(), 0x04);
+        write(&mut device, 1, 0x05);
+        assert_eq!(handle.peek_iir(), 0x06);
+        assert!(handle.interrupt_line());
+        // Dropping IER bit 2 removes the report but not the LSR bit.
+        write(&mut device, 1, 0x01);
+        assert_eq!(handle.peek_iir(), 0x04);
+        assert_eq!(handle.line_errors(), 0x02);
+        write(&mut device, 1, 0x05);
+        // OUT2 gates the line, not the IIR.
+        write(&mut device, 4, 0x00);
+        assert_eq!(handle.peek_iir(), 0x06);
+        assert!(!handle.interrupt_line());
+        write(&mut device, 4, 0x08);
+        assert!(handle.interrupt_line());
+        assert_eq!(read(&mut device, 5) & 0x1e, 0x02);
+        assert_eq!(handle.peek_iir(), 0x04);
+    }
+
+    #[test]
+    fn parity_framing_and_break_bits_are_reported_and_clear_on_lsr_read() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        for (errors, lsr_bits) in [
+            (UART_RX_ERROR_PARITY, 0x04),
+            (UART_RX_ERROR_FRAMING, 0x08),
+            (UART_RX_ERROR_BREAK, 0x10),
+            (
+                UART_RX_ERROR_PARITY | UART_RX_ERROR_FRAMING | UART_RX_ERROR_BREAK,
+                0x1c,
+            ),
+        ] {
+            assert_eq!(device.deliver_received_byte(0x00, errors), Ok(false));
+            assert_eq!(handle.peek_iir(), 0x06);
+            assert!(handle.interrupt_line());
+            // DR (bit 0) and THRE/TEMT (bits 5..6) around the error bits.
+            assert_eq!(read(&mut device, 5), 0x61 | lsr_bits);
+            assert_eq!(handle.line_errors(), 0);
+            assert_eq!(handle.peek_iir(), 0x01);
+            assert!(!handle.interrupt_line());
+            assert_eq!(read(&mut device, 0), 0x00);
+        }
+    }
+
+    #[test]
+    fn error_bits_accumulate_until_one_lsr_read() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        device
+            .deliver_received_byte(0x31, UART_RX_ERROR_PARITY)
+            .unwrap();
+        device
+            .deliver_received_byte(0x32, UART_RX_ERROR_FRAMING)
+            .unwrap();
+        assert_eq!(handle.line_errors(), 0x0e, "PE, FE and OE");
+        assert_eq!(read(&mut device, 5), 0x61 | 0x0e);
+        assert_eq!(handle.peek_iir(), 0x01);
+    }
+
+    #[test]
+    fn unknown_error_bits_are_refused_without_mutation() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        for errors in [0x01_u8, 0x02, 0x20, 0x40, 0x80, 0xff] {
+            assert_eq!(
+                device.deliver_received_byte(0x55, errors),
+                Err(DeviceError::UnsupportedConfiguration)
+            );
+            assert_eq!(handle.received_byte(), None);
+            assert_eq!(handle.line_errors(), 0);
+            assert_eq!(handle.peek_iir(), 0x01);
+        }
+    }
+
+    #[test]
+    fn flow_controlled_inject_still_reports_busy_and_raises_no_oe() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        device.inject_received_byte(0x41).unwrap();
+        assert_eq!(device.inject_received_byte(0x42), Err(DeviceError::Busy));
+        assert_eq!(handle.received_byte(), Some(0x41));
+        assert_eq!(handle.line_errors(), 0);
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert_eq!(read(&mut device, 5), 0x61);
+    }
+
+    #[test]
+    fn handle_and_device_deliver_into_the_same_state_and_reset_clears_errors() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        assert_eq!(handle.deliver_received_byte(0x01, 0), Ok(false));
+        assert_eq!(device.deliver_received_byte(0x02, 0), Ok(true));
+        assert_eq!(handle.line_errors(), 0x02);
+        assert_eq!(handle.deliver_received_byte(0x03, 0), Ok(true));
+        handle.reset();
+        assert_eq!(handle.line_errors(), 0);
+        assert_eq!(handle.received_byte(), None);
+        assert_eq!(handle.peek_iir(), 0x01);
+        assert_eq!(read(&mut device, 5), 0x60);
+    }
+
+    #[test]
+    fn lsr_is_still_read_only_and_ier_bit_2_never_clears_through_other_registers() {
+        let (mut device, handle) = rls_device();
+        write(&mut device, 1, 0x04);
+        device
+            .deliver_received_byte(0x09, UART_RX_ERROR_BREAK)
+            .unwrap();
+        assert_eq!(device.write(access(5), 0), Err(DeviceError::ReadOnly));
+        write(&mut device, 7, 0x5a);
+        write(&mut device, 3, 0x03);
+        assert_eq!(read(&mut device, 6), 0x00);
+        assert_eq!(handle.line_errors(), 0x10);
+        assert_eq!(handle.peek_iir(), 0x06);
     }
 }
