@@ -979,8 +979,7 @@ fn quote_or_certify_with_sha384_scheme_verifies() {
 }
 
 /// `TPM2_Quote` hashes `pcrDigest` with the hash of the signing scheme (Part 3, clause 18.4.1;
-/// ms-tpm-20-ref `Quote.c`: `PCRComputeCurrentDigest(in->inScheme.details.any.hashAlg, ...)` after
-/// `CryptSelectSignScheme`), not always with SHA-256: this fails if SHA-384 or SHA-512 keys get a
+/// the digest is computed with the hash of the selected signing scheme), not always with SHA-256: this fails if SHA-384 or SHA-512 keys get a
 /// 32-octet pcrDigest. The expected digests are Python `hashlib` values of the SHA-256
 /// bank values of PCR 0 (32 zero octets) and PCR 4 (the selection of `sel04`) concatenated, and of
 /// the empty string (an empty selection still hashes, with the scheme hash); the generator of the pinned attests is `gen_quote_vectors.py` (outside the
