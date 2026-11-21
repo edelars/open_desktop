@@ -1534,6 +1534,42 @@ mod tests {
         std::mem::replace(board.vcpu_mut(1).unwrap(), crate::vcpu::Vcpu::new_ap(1))
     }
 
+    /// S2-25: the trampoline's `MOV CR0` with PG = 1, PAE = 1 and EFER.LME = 0 (no `WRMSR`) is PAE
+    /// paging of `ProtectedCpu::step` (PDPTEs loaded from CR3), not the refusal `PagingNotModelled`;
+    /// the next fetches and a load are translated by it, and the AP never reaches long mode.
+    #[test]
+    fn an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_and_stays_legacy() {
+        let mut block = vec![0x8E, 0xD2, 0x8E, 0xDA, 0x8E, 0xC2]; // mov ss/ds/es, edx
+        block.extend([0xB8]);
+        block.extend(le32(0x6B0));
+        block.extend([0x0F, 0x22, 0xE0]); // mov cr4, eax (PAE)
+        block.extend([0xB8]);
+        block.extend(le32(PML4 as u32));
+        block.extend([0x0F, 0x22, 0xD8]); // mov cr3, eax (the PDPT of PAE paging)
+        block.extend([0xB8]);
+        block.extend(le32(0x8005_0033));
+        block.extend([0x0F, 0x22, 0xC0]); // mov cr0, eax (PG, LME = 0)
+        block.extend([0xA1]);
+        block.extend(le32(CELLS_AT as u32)); // mov eax, ds:CELLS_AT (a translated load)
+        let mut patches = trampoline(CELLS_AT as u32);
+        patches.push((PROTECTED_AT, block));
+        // CR3 = PML4: here a PDPT of four entries; PDPTE0 -> PD (2 MiB page at 0), P only.
+        patches.push((PML4, (PD | 1).to_le_bytes().to_vec()));
+        let mut board = board_with(2, &patches);
+        // 14 real-mode steps, 9 up to the paging write inclusive, then the load.
+        let ap = take_ap_after_steps(&mut board, 24);
+        let Some(LegacyCpu::Protected(cpu)) = &ap.legacy else {
+            panic!("the AP is still a legacy protected-mode processor");
+        };
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        assert_eq!(cpu.cr3, PML4 as u32);
+        assert_eq!(cpu.efer & 0x400, 0, "LMA stays clear");
+        assert!(cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [PD | 1, 0, 0, 0]);
+        assert!(!cpu.target_entered);
+        assert_eq!(cpu.gpr[0], 0x901, "EAX: the cell read through the PAE walk");
+    }
+
     #[test]
     fn guarded_legacy_lease_refusal_keeps_real_entry_and_retry_commits_accessed() {
         let mut board = board();
