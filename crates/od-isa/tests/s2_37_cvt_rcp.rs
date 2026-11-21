@@ -551,7 +551,8 @@ fn cvtps2pd_nans_and_denormals() {
         Expect::Fault(0x1e80 | DE),
         "unmasked DE",
     );
-    // The invalid operation has priority over the denormal operand of the other lane.
+    // Both exception flags are recorded when the SNaN lane (IE) and the denormal lane (DE) are in the same operand:
+    // the unmasked #XM leaves IE and DE both set in MXCSR (neither one suppresses the other).
     check(
         Op::Cvtps2pd,
         (HI, s4([0x7fa0_0000, 1, 0, 0])),
@@ -970,6 +971,49 @@ fn unmasked_exception_without_cr4_is_unsupported_and_changes_nothing() {
         Ok(StepOutcome::Unsupported { opcode: 0x5a })
     );
     assert_eq!(cpu, before);
+}
+
+#[test]
+fn reserved_mxcsr_bits_stop_the_conversions_but_not_rcp_and_rsqrt() {
+    // SDM: RCP*/RSQRT* neither read the rounding control nor raise SIMD exceptions, so MXCSR is not an input of theirs;
+    // the conversions do read it, and a set reserved bit (31:16) is left Unsupported (the hardware #GP of LDMXCSR is
+    // what keeps such a value out of a real MXCSR; the model never lets the instruction run on it).
+    for reserved in [0x0001_0000u32, 0x0100_0000, 0x8000_0000, 0xffff_0000] {
+        let mx = MXCSR | reserved;
+        for op in [Op::Cvtps2pd, Op::Cvtpd2ps, Op::Cvtss2sd, Op::Cvtsd2ss] {
+            let mut cpu = cpu();
+            cpu.sse.as_mut().unwrap().mxcsr = mx;
+            set_xmm(&mut cpu, 2, s4([0x3f80_0000, 0x4000_0000, 0, 0]));
+            let before = cpu.clone();
+            let code = reg_code(op, 1, 2, false);
+            assert_eq!(
+                step(&mut cpu, &mut Ram::new(&code)),
+                Ok(StepOutcome::Unsupported { opcode: 0x5a }),
+                "{op:?} {mx:#x}"
+            );
+            assert_eq!(cpu, before, "{op:?} {mx:#x}");
+        }
+        for op in [Op::Rcpps, Op::Rcpss, Op::Rsqrtps, Op::Rsqrtss] {
+            // 1.0 and 4.0: the reciprocal is 1.0 and 0.25, the reciprocal square root 1.0 and 0.5.
+            let (dst, mx_out) = exec(
+                op,
+                (HI, s4([0x3f80_0000, 0x4080_0000, 0x3f80_0000, 0x4080_0000])),
+                mx,
+            );
+            assert_eq!(mx_out, mx, "{op:?}: MXCSR is not touched");
+            let lanes: [u32; 4] = core::array::from_fn(|i| (dst >> (32 * i)) as u32);
+            let reciprocal = matches!(op, Op::Rcpps | Op::Rcpss);
+            assert!(within_bound(lanes[0], 1.0), "{op:?} {:#x}", lanes[0]);
+            if matches!(op, Op::Rcpps | Op::Rsqrtps) {
+                let expected = if reciprocal { 0.25 } else { 0.5 };
+                assert!(within_bound(lanes[1], expected), "{op:?} {:#x}", lanes[1]);
+                assert!(within_bound(lanes[2], 1.0), "{op:?} {:#x}", lanes[2]);
+                assert!(within_bound(lanes[3], expected), "{op:?} {:#x}", lanes[3]);
+            } else {
+                assert_eq!(dst >> 32, HI >> 32, "{op:?}: the upper lanes are kept");
+            }
+        }
+    }
 }
 
 // ---- memory operands ----
@@ -3266,6 +3310,67 @@ const GOLDEN: &[Row] = &[
             (8, 0x70b61a2eff8a78a04bf97aa1d18dc35d),
         ],
         Expect::Ok(0x70b61a2eff8a78a0bfd0000000000000, 0x5780),
+    ),
+    // |x| >= 2^126 lanes: hardware flushes to same-sign zero (ISSUE-025, variant B).
+    (
+        "rg_rcpss_34_13",
+        &[0xf3, 0x41, 0x0f, 0x53, 0xe4],
+        0xf80,
+        &[
+            (4, 0xa528cfd41f021dd1356adac167fbedd9),
+            (12, 0x88db2b2b5a46ac5693c378767e800000),
+        ],
+        Expect::Ok(0xa528cfd41f021dd1356adac100000000, 0xf80),
+    ),
+    (
+        "rg_rcpss_34_15",
+        &[0xf3, 0x0f, 0x53, 0xd1],
+        0x3e80,
+        &[
+            (1, 0xaba2ad09b47f92e136339a217e800000),
+            (2, 0x9a5c2ac6d7dda726b65524b36d94054d),
+        ],
+        Expect::Ok(0x9a5c2ac6d7dda726b65524b300000000, 0x3e80),
+    ),
+    (
+        "rg_rcpps_20_13",
+        &[0x41, 0x0f, 0x53, 0xdc],
+        0xf80,
+        &[
+            (3, 0xff1bf528849b855ec8bc6de9407d14b8),
+            (12, 0x7e800000ffbfffffffbfffff7fbfffff),
+        ],
+        Expect::Ok(0x00000000ffffffffffffffff7fffffff, 0xf80),
+    ),
+    (
+        "rg_rcpps_18_0",
+        &[0x41, 0x0f, 0x53, 0xc6],
+        0x1f80,
+        &[
+            (0, 0xe14cedf15930264fef6a8deeb8f4b70b),
+            (14, 0x7f0000007e80000000000000ff800001),
+        ],
+        Expect::Ok(0x00000000000000007f800000ffc00001, 0x1f80),
+    ),
+    (
+        "rg_rcpps_14_8",
+        &[0x44, 0x0f, 0x53, 0xe0],
+        0x1f00,
+        &[
+            (0, 0x00400000ff7fffff7f8000017fc00001),
+            (12, 0x2d9054c4f05e9ee3e6d4c33fa45967d7),
+        ],
+        Expect::Ok(0x7f800000800000007fc000017fc00001, 0x1f00),
+    ),
+    (
+        "rg_rcpps_26_10",
+        &[0x41, 0x0f, 0x53, 0xc5],
+        0x1d80,
+        &[
+            (0, 0x985a3a69bec70e6cf21c68e62a299677),
+            (13, 0x00000003ff7fffff7fffffff00400000),
+        ],
+        Expect::Ok(0x7f800000800000007fffffff7f800000, 0x1d80),
     ),
     (
         "rg_rcpps_15_5",
