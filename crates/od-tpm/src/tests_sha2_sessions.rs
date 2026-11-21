@@ -414,7 +414,7 @@ fn xor_parameter_mask_uses_session_auth_hash() {
     // TPM2_Hash with decrypt and encrypt on a SHA-384 session whose symmetric definition is XOR
     // (SHA-256, the only hash StartAuthSession accepts there). The mask is
     // KDFa(authHash = SHA-384, sessionKey, "XOR", nonceNewer, nonceOlder, 8 * size) as in
-    // CryptXORObfuscation(session->authHashAlg, ...) of ms-tpm-20-ref, not a SHA-256 KDFa. Python
+    // the XOR parameter obfuscation of TPM Library v185 Part 1 §18.2 with the session authHash, not a SHA-256 KDFa. Python
     // `hmac`/`hashlib` (xor_sha384.py in the task scratchpad) computed the sessionKey, the masks, the
     // ciphertexts and the HMACs; the same script reproduces the pinned CFB transcript above.
     let mut t = started();

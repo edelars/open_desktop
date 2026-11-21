@@ -15,8 +15,8 @@
 //! CFB: `KDFa(authHash, sessionValue, "CFB", nonceNewer, nonceOlder, keyBits + 128)` with the `authHash` of
 //! the session (SHA-256, SHA-384 or SHA-512, step D), the first `keyBits / 8` octets are the AES key, the next
 //! 16 the IV; XOR: `mask = KDFa(authHash, sessionValue, "XOR", nonceNewer, nonceOlder, 8 * size)` (§18.2)
-//! with the `authHash` of the session, as `CryptXORObfuscation(session->authHashAlg, ...)` of the
-//! ms-tpm-20-ref reference implementation does. `StartAuthSession` accepts only SHA-256 as the hash of the
+//! with the `authHash` of the session (TPM Library v185 Part 1, XOR parameter obfuscation, §18.2).
+//! `StartAuthSession` accepts only SHA-256 as the hash of the
 //! XOR `symmetric` definition, so for a SHA-256 session the mask is the same as before step D, and for a
 //! SHA-384 or SHA-512 session the hash of the mask follows the session, not that definition. For a command `nonceNewer` is
 //! the `nonceCaller` of the session and `nonceOlder` the `nonceTPM` the session had before the
