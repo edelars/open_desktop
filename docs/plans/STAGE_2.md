@@ -712,6 +712,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Protocol review and layout/link checks recorded; originally protocol-only. S2-39k Linux native A/B/A/B passed on 2026-11-04; raw `execution_kind=unknown`, separately established physical acceptance remains open; [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39l | Offline A/B/A/B interpreter replay against validated S2-39k evidence | Explicit-path opt-in only; existing independent comparator validates raw Linux evidence, then the interpreter profile is replayed A/B/A/B and compared only at protocol-defined bytes with E+5 progression. Focused checks passed; independent Sol/high review found no defects; ignored evidence is not a default-test dependency; physical acceptance and parent S2-39 remain open. [Protocol](../testing/S2_39L_FXSAVE64_REPLAY.md); [report](../reports/S2_39L_INTERPRETER_REPLAY.md) |
+| [ ] | S2-39m | SSE state of the CPL0 set in `LongModeState.sse` | The FP member loads the SSE half of its `GuestFpState` cell into `state.sse` for the run and stores it back at every exit; at CPL0 the general SSE core of S2-34/37/38/54/55 then runs in the set with the bare-run result, the CR0.EM/TS and CR4.OSFXSR gates and #XM/#UD; FXSAVE64/FXRSTOR64 use the same state; x87 stays in the cell. CPL3 general forms, narrow integer SSE2 forms, MMX forms, LDMXCSR/STMXCSR, the register-register forms of the raw 128-bit moves and MOVSS/MOVSD in every form stay refused (listed in the S2-39m block). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
@@ -8454,6 +8455,41 @@ cross-check against saved Linux observations, not new hardware evidence or
 physical-host classification; parent S2-39 remains open.
 
 See the [S2-39l result](../reports/S2_39L_INTERPRETER_REPLAY.md).
+
+#### S2-39m. SSE state of the CPL0 set in `LongModeState.sse`
+
+The FP member of the CPL0 profile set (`Cpl0ProfileSet::with_fp_state`) keeps its
+`GuestFpState` cell as the owner between runs. While the set runs, the SSE half
+(XMM0-15, MXCSR) is in `LongModeState.sse`: loaded after admission, stored back
+at every exit, `None` outside the run. At CPL0 the general SSE core of
+S2-34/37/38/54/55 then executes in the set with the same registers, MXCSR,
+RFLAGS, memory and outcome as the bare run, including the CR0.EM/TS and
+CR4.OSFXSR gates (`#UD`/`#NM`) and the unmasked `#XM`/`#UD` by CR4.OSXMMEXCPT.
+`FXSAVE64`/`FXRSTOR64`, the CPL3 XMM list and the CPL3 scalar FP list moved to
+`state.sse`; the x87 half (`FNINIT`, `FWAIT`, selectors) stays in the cell and no
+SSE form changes it. Still refused in the set: the general forms at CPL3, the
+narrow integer SSE2 forms (PSHUFD, PUNPCK*, PAND, ...), the MMX forms (they need
+x87 in the state), LDMXCSR/STMXCSR and x87 arithmetic; also refused at CPL0 in the set: the register-register (mod = 3) forms of the raw 128-bit moves MOVUPS, MOVUPD, MOVAPS and MOVAPD (`[66] 0F 10`, `11`, `28`, `29`; for example MOVAPS xmm1,xmm2 `0F 28 /r`) and of the MOVDQA load (`66 0F 6F /r`), and MOVSS/MOVSD (`F3`/`F2 0F 10`, `11`) in every form (register-register, load, store); the plain `step` retires all of these, the FP-init CR0/CR4 pair refuses them, and the set follows the pair (their memory forms and the other S2-34 forms execute in both). CPUID bits are S2-57. No new
+oracle data: the reference is the bare run, whose values are the S2-37/38/54/55
+hardware tables. "Bare-run result" means the result of the plain `step` and of the
+FP-init CR0/CR4 pair, which are equal for every form that executes in the set; for the
+refused forms above it is the result of the FP-init pair alone (`Unsupported`), not of
+`step`.
+
+The interpreter does not gate on CPUID: the `X8664V1Stage4A` profile declares only
+FPU, TSC and FXSR, yet the SSE/SSE2/SSE3/SSSE3/SSE4.1 forms execute at CPL0 in the set
+(the CPUID gates are not modelled, see `execute.rs`; S2-57 owns the bits).
+
+Semantics, Intel SDM Rev. 093: unmasked `#XM` or `#UD` by CR4.OSXMMEXCPT - Vol. 1
+§11.5.1 and §11.5.3.2 (Handling Unmasked Exceptions); `#UD` for CR0.EM and `#NM` for
+CR0.TS - Vol. 3A §2.5 (Control Registers, Table 2-2) and the entries `Event 6 - #UD`,
+`Event 7 - #NM`, `Event 19 - #XM` of Vol. 3A chapter 7; per-instruction exception
+classes - Vol. 2A §2.5 (Intel AVX and Intel SSE Instruction Exception Classification).
+The CR4.OSFXSR = 0 `#UD`, the precedence of `#UD` over `#NM` and the order of the gates
+before the operand address checks are from memory, not checked against the PDF.
+Parent S2-39 remains open.
+
+See the [S2-39m result](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse).
 
 ### S2-40. Дополнительные обязательные расширения
 

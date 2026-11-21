@@ -11667,3 +11667,38 @@ fn cpl3_issue576_observed_rip_relative_movsd_load_uses_the_vcpu_fp_cell() {
     );
     assert_eq!(memory.read_widths, [(target, 8)]);
 }
+
+/// S2-39: the general SSE core runs in the CPL0 set at CPL0 on `state.sse` (tests/s2_39_cpl0_sse.rs); at CPL3
+/// the member keeps its own short profile list, so the general forms stay `Unsupported` with nothing changed.
+#[test]
+fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
+    let forms: [(&str, &[u8], u8); 6] = [
+        ("addps xmm1,xmm2", &[0x0f, 0x58, 0xca], 0x58),
+        ("addps xmm1,[rax]", &[0x0f, 0x58, 0x08], 0x58),
+        ("movaps xmm1,[rax]", &[0x0f, 0x28, 0x08], 0x28),
+        ("pminsd xmm1,xmm2", &[0x66, 0x0f, 0x38, 0x39, 0xca], 0x39),
+        ("haddps xmm1,xmm2", &[0xf2, 0x0f, 0x7c, 0xca], 0x7c),
+        ("andps xmm1,xmm2", &[0x0f, 0x54, 0xca], 0x54),
+    ];
+    for (name, code, opcode) in forms {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rax as usize] = DATA;
+        let expected = state.clone();
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[1] = [0x11; 16];
+        initial_fp.sse.xmm[2] = [0x22; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        for offset in 0..16 {
+            memory = memory.with_user(DATA + offset, 0x33);
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode }, "{name}");
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, expected, "{name}");
+        assert_eq!(*fp.borrow(), initial_fp, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+    }
+}
