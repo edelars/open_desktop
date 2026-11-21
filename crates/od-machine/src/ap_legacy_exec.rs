@@ -1630,6 +1630,65 @@ mod tests {
         assert_eq!(config.cr3(), PML4);
     }
 
+    /// S2-25h: the PAE view never sets an accessed bit. The tables are re-written with A = 0 (the
+    /// model's own walks had set it on PD[0]) for a 2 MiB page (PD[0]) and for a 4 KiB page behind a
+    /// PT the model never touched (PD[1] -> PT, PT[0] -> the page of PROTECTED_AT); the bytes of the
+    /// PD and PT are compared before and after the views, which commit nothing (a committing walk
+    /// would turn 0x83 into 0xA3, 0x03 into 0x23).
+    #[test]
+    fn the_board_pae_fetch_view_leaves_accessed_and_dirty_bits_clear_in_the_tables() {
+        use od_isa::memory::PrivilegeLevel;
+        const PT: u64 = 0x7000;
+        let mut board = board_with(2, &pae_trampoline_patches());
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(
+            run_legacy(&mut board, 1, 24, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            24
+        );
+        {
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            let put = |at: u64, value: u64| {
+                memory
+                    .store_u64(GuestPhysicalAddress::new(at), value, |_| {})
+                    .unwrap();
+            };
+            put(PD, 0x83); // 2 MiB page at 0: P, R/W, PS; A = 0, D = 0
+            put(PD + 8, PT | 3); // PD[1] -> PT: P, R/W; A = 0
+            put(PT, (PROTECTED_AT & !0xfff) | 3); // PT[0]: P, R/W; A = 0, D = 0
+        }
+        let pd_before = ram(&mut board, PD, 16);
+        let pt_before = ram(&mut board, PT, 16);
+        assert_eq!(pd_before[0], 0x83, "A is clear before the view");
+        assert_eq!(pd_before[8], 0x03);
+        assert_eq!(pt_before[0], 0x03);
+        // The 2 MiB page.
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pae(1, PROTECTED_AT as u32, 16, PrivilegeLevel::Ring0);
+        assert_eq!(error, None);
+        assert_eq!(first, Some(PROTECTED_AT));
+        assert_eq!(bytes, ram(&mut board, PROTECTED_AT, 16));
+        // The 4 KiB page through the PT: linear 0x20_0000 + the offset of PROTECTED_AT in its page.
+        let linear = 0x20_0000 + (PROTECTED_AT & 0xfff) as u32;
+        let (first, bytes, error) = board.fetch_vcpu_view_pae(1, linear, 16, PrivilegeLevel::Ring0);
+        assert_eq!(error, None);
+        assert_eq!(first, Some(PROTECTED_AT));
+        assert_eq!(bytes, ram(&mut board, PROTECTED_AT, 16));
+        assert_eq!(ram(&mut board, PD, 16), pd_before, "no A bit in the PD");
+        assert_eq!(
+            ram(&mut board, PT, 16),
+            pt_before,
+            "no A or D bit in the PT"
+        );
+    }
+
     #[test]
     fn guarded_legacy_lease_refusal_keeps_real_entry_and_retry_commits_accessed() {
         let mut board = board();
