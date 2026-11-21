@@ -1,0 +1,454 @@
+{
+  "cpl0_contract_stub_only": {
+    "forms_by_status": {
+      "absent": 7,
+      "exact": 2,
+      "family": 359,
+      "not_checked": 3,
+      "partial": 4
+    },
+    "instructions_by_status": {
+      "absent": 54,
+      "exact": 13,
+      "family": 7394,
+      "not_checked": 4,
+      "partial": 9
+    },
+    "status_meaning": "exact and family are covered by CPU_CONTRACT rules; absent, partial and not_checked are the forms the contract does not admit or does not name",
+    "uncovered_forms_by_count": [
+      {
+        "count": 43,
+        "example_asm": "endbr64",
+        "example_bytes": "f30f1efa",
+        "family": "REP endbr64",
+        "status": "absent"
+      },
+      {
+        "count": 4,
+        "example_asm": "nop dword ptr [rax]",
+        "example_bytes": "0f1f4000",
+        "family": "nop m",
+        "status": "absent"
+      },
+      {
+        "count": 4,
+        "example_asm": "rdmsr",
+        "example_bytes": "0f32",
+        "family": "rdmsr",
+        "status": "partial"
+      },
+      {
+        "count": 2,
+        "example_asm": "wrmsr",
+        "example_bytes": "0f30",
+        "family": "wrmsr",
+        "status": "partial"
+      },
+      {
+        "count": 2,
+        "example_asm": "vmmcall",
+        "example_bytes": "f30f01d9",
+        "family": "REP vmmcall",
+        "status": "absent"
+      },
+      {
+        "count": 2,
+        "example_asm": "tzcnt rsi, rsi",
+        "example_bytes": "f3480fbcf6",
+        "family": "REP W tzcnt r64,r64",
+        "status": "absent"
+      },
+      {
+        "count": 2,
+        "example_asm": "jmp rax",
+        "example_bytes": "3effe0",
+        "family": "DS jmp r64",
+        "status": "not_checked"
+      },
+      {
+        "count": 2,
+        "example_asm": "mov rdx, cr4",
+        "example_bytes": "0f20e2",
+        "family": "mov r64,creg",
+        "status": "partial"
+      },
+      {
+        "count": 1,
+        "example_asm": "nop word ptr [rax + rax]",
+        "example_bytes": "660f1f840000000000",
+        "family": "66 nop m",
+        "status": "absent"
+      },
+      {
+        "count": 1,
+        "example_asm": "rmpadjust",
+        "example_bytes": "f30f01fe",
+        "family": "REP rmpadjust",
+        "status": "absent"
+      },
+      {
+        "count": 1,
+        "example_asm": "nop word ptr cs:[rax + rax]",
+        "example_bytes": "66662e0f1f840000000000",
+        "family": "66+66+CS nop m",
+        "status": "absent"
+      },
+      {
+        "count": 1,
+        "example_asm": "cdq",
+        "example_bytes": "99",
+        "family": "cdq",
+        "status": "not_checked"
+      },
+      {
+        "count": 1,
+        "example_asm": "lgdt [rsp + 0x6]",
+        "example_bytes": "0f01542406",
+        "family": "lgdt m",
+        "status": "partial"
+      },
+      {
+        "count": 1,
+        "example_asm": "sete byte ptr [rsp + 0x20]",
+        "example_bytes": "0f94442420",
+        "family": "sete m",
+        "status": "not_checked"
+      }
+    ],
+    "uncovered_forms_total": 14,
+    "uncovered_instructions_total": 67
+  },
+  "decompressor_from_Lrelocated": {
+    "distinct_encodings": 11373,
+    "exit_kinds_of_decoded": {
+      "Backend": 588,
+      "Fault": 9,
+      "Halted": 4,
+      "Retired": 27251
+    },
+    "instructions": 28818,
+    "top_unsupported_mnemonics": [
+      [
+        "shlx",
+        217
+      ],
+      [
+        "shl",
+        180
+      ],
+      [
+        "shrx",
+        173
+      ],
+      [
+        "endbr64",
+        84
+      ],
+      [
+        "bsr",
+        39
+      ],
+      [
+        "lzcnt",
+        34
+      ],
+      [
+        "push",
+        34
+      ],
+      [
+        "bzhi",
+        21
+      ],
+      [
+        "movsx",
+        14
+      ],
+      [
+        "sub",
+        13
+      ],
+      [
+        "mov",
+        13
+      ],
+      [
+        "tzcnt",
+        12
+      ],
+      [
+        "sar",
+        11
+      ],
+      [
+        "add",
+        11
+      ],
+      [
+        "wrmsr",
+        11
+      ]
+    ],
+    "unsupported_distinct_encodings": 387,
+    "unsupported_instructions": 966,
+    "unsupported_share": 0.0335
+  },
+  "decompressor_text_start_pm_offset": "0x10459c0",
+  "indirect_sites_from_entry": 157,
+  "linear_instructions_in_text": 52534,
+  "note": "static estimate, not evidence of execution; see the module docstring",
+  "outside_targets_from_entry": 0,
+  "pe_entry_pm_offset": "0x1070f78",
+  "schema": "od-s7-31a-efi-stub-isa-inventory-v1",
+  "stub_only_not_reachable_from_Lrelocated": {
+    "distinct_encodings": 3485,
+    "exit_kinds_of_decoded": {
+      "Backend": 6,
+      "Halted": 1,
+      "Retired": 7215
+    },
+    "instructions": 7474,
+    "top_unsupported_mnemonics": [
+      [
+        "rol",
+        80
+      ],
+      [
+        "mov",
+        49
+      ],
+      [
+        "endbr64",
+        43
+      ],
+      [
+        "imul",
+        16
+      ],
+      [
+        "or",
+        9
+      ],
+      [
+        "movsx",
+        8
+      ],
+      [
+        "and",
+        5
+      ],
+      [
+        "rdmsr",
+        4
+      ],
+      [
+        "shl",
+        3
+      ],
+      [
+        "push",
+        3
+      ],
+      [
+        "bsr",
+        3
+      ],
+      [
+        "stosd",
+        3
+      ],
+      [
+        "jmp",
+        3
+      ],
+      [
+        "cdqe",
+        3
+      ],
+      [
+        "wrmsr",
+        2
+      ]
+    ],
+    "unsupported_distinct_encodings": 119,
+    "unsupported_instructions": 252,
+    "unsupported_share": 0.0337
+  },
+  "stub_reachable_from_entry": {
+    "distinct_encodings": 12327,
+    "exit_kinds_of_decoded": {
+      "Backend": 589,
+      "Fault": 1,
+      "Halted": 3,
+      "Retired": 30978
+    },
+    "instructions": 32673,
+    "top_unsupported_mnemonics": [
+      [
+        "shlx",
+        217
+      ],
+      [
+        "shl",
+        179
+      ],
+      [
+        "shrx",
+        173
+      ],
+      [
+        "endbr64",
+        82
+      ],
+      [
+        "rol",
+        82
+      ],
+      [
+        "mov",
+        52
+      ],
+      [
+        "bsr",
+        42
+      ],
+      [
+        "push",
+        37
+      ],
+      [
+        "lzcnt",
+        34
+      ],
+      [
+        "bzhi",
+        21
+      ],
+      [
+        "movsx",
+        20
+      ],
+      [
+        "imul",
+        17
+      ],
+      [
+        "sub",
+        14
+      ],
+      [
+        "sar",
+        13
+      ],
+      [
+        "tzcnt",
+        12
+      ]
+    ],
+    "unsupported_distinct_encodings": 466,
+    "unsupported_instructions": 1102,
+    "unsupported_share": 0.0337
+  },
+  "unsupported_by_firmware_profile_stub_only_examples": [
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "rmpadjust",
+      "bytes": "f30f01fe"
+    },
+    {
+      "asm": "or dword ptr [rax], 0x10000000",
+      "bytes": "810800000010"
+    },
+    {
+      "asm": "rdmsr",
+      "bytes": "0f32"
+    },
+    {
+      "asm": "shl rax, cl",
+      "bytes": "48d3e0"
+    },
+    {
+      "asm": "wrmsr",
+      "bytes": "0f30"
+    },
+    {
+      "asm": "vmmcall",
+      "bytes": "f30f01d9"
+    },
+    {
+      "asm": "rdmsr",
+      "bytes": "0f32"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "rdmsr",
+      "bytes": "0f32"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "wrmsr",
+      "bytes": "0f30"
+    },
+    {
+      "asm": "vmmcall",
+      "bytes": "f30f01d9"
+    },
+    {
+      "asm": "rdmsr",
+      "bytes": "0f32"
+    },
+    {
+      "asm": "mov bpl, byte ptr [rip + 0x13219]",
+      "bytes": "408a2d19320100"
+    },
+    {
+      "asm": "rol r8d",
+      "bytes": "41d1c0"
+    },
+    {
+      "asm": "rol r8d",
+      "bytes": "41d1c0"
+    },
+    {
+      "asm": "push qword ptr [rsp + 0x20]",
+      "bytes": "ff742420"
+    },
+    {
+      "asm": "rol r8d",
+      "bytes": "41d1c0"
+    },
+    {
+      "asm": "endbr64",
+      "bytes": "f30f1efa"
+    },
+    {
+      "asm": "rol ebx",
+      "bytes": "d1c3"
+    }
+  ]
+}

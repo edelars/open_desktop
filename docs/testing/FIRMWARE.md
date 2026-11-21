@@ -214,14 +214,27 @@ python3 tools/build/build_firmware.py --out "$od_fw_check/firmware.bin"
 cargo run --release --offline -p od-runner -- boot-firmware \
   --image "$od_fw_check/firmware.bin" --budget 6000000 \
   --com1-out "$od_fw_check/boot_core.com1"
-cmp tests/fixtures/firmware/boot_core_com1.txt "$od_fw_check/boot_core.com1"
+mask() { sed -E '/OD-FW S7-05 table CRC/ s/(BS|RT)=0x[0-9A-F]{16}/\1=0x<layout>/g' "$1"; }
+cmp <(mask tests/fixtures/firmware/boot_core_com1.txt) <(mask "$od_fw_check/boot_core.com1")
 ```
+
+Сравнение (bash) пропускает только значения `BS=` и `RT=` строки `OD-FW S7-05 table CRC`, как `mask_layout_crcs` в `tests/system/firmware_boot_smoke.py` (самотест: `python3 tests/system/test_firmware_boot_smoke_mask.py`); причина — в разделе [«Раскладка образа и CRC таблиц Boot Services и Runtime Services»](#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
 
 Эталон содержит версию `0.1.0`, сообщения о переходе на свои
 таблицы, 17 записей памяти и ключи диагностики аллокаторов. За ними идут
 строки S7-05 об утилитах, сервисах памяти и базе протоколов Boot Services. Проверка RX
 отдельно подаёт байт через handle UART и сравнивает дополнительную строку
 с его hex-значением. [Результаты для двух конфигураций RAM](../reports/STAGE_7_REPORT.md#s7-04--версия-прошивки-и-com1).
+
+## Раскладка образа и CRC таблиц Boot Services и Runtime Services
+
+Строка `OD-FW S7-05 table CRC ST=… BS=… RT=…` печатает CRC трёх таблиц до сервисных вызовов. Таблицы Boot Services и Runtime Services состоят из указателей на функции ядра, поэтому их CRC зависит от раскладки кода образа: он меняется при любой правке кода прошивки, которая сдвигает функции. Для одних и тех же исходников значение Runtime Services зависит и от абсолютного пути каталога сборки (порядок элементов единственного codegen-unit), поэтому один и тот же коммит в разных каталогах даёт разные `RT=` при совпадении всех остальных строк. CRC System Table покрывает адреса данных и от раскладки не зависит. Измерения и бисект — [ISSUE-611](../KNOWN_ISSUES.md#issue-611).
+
+Поэтому `firmware_boot_smoke.py`, `firmware_nvram_smoke.py` и `firmware_esp_boot_smoke.py` сравнивают транскрипты с маской значений `BS=` и `RT=` (`mask_layout_crcs`): остальные байты, включая `ST=`, число и порядок строк, должны совпасть точно. Содержимое таблиц по именам проверено разово (ISSUE-611); постоянной проверки значений указателей нет.
+
+Когда меняется код ядра прошивки, в эталонах меняются ровно четыре строки: три строки `OD-FW MEM type=0x…3` и `…4` (размер образа кода и сдвиг следующих регионов) и значения в строке CRC. Правило обновления: получить фактический COM1 теми же командами `boot-firmware` и параметрами, что в `manifest.json` и в скриптах, записать его поверх эталонов, убедиться по `git diff`, что отличаются только эти строки, пересчитать `fixture_sha256` в `tests/fixtures/firmware/manifest.json` и повторить скрипты без правок. Не принимать новый эталон, если отличаются другие строки: это изменение поведения.
+
+Чтобы убедиться, что таблицы не изменились по именам, а не только по CRC, использовались две проверки. Boot Services (376 байт) читаются из физической RAM после останова по адресу из последней строки `exit boot services verified BS=0x…`; CRC пересчитывается `zlib.crc32` с нулевым полем, а целевая функция каждого поля сопоставляется с символом ELF (`nm -C`). Runtime Services к останову заменены таблицей драйвера RT, поэтому исходная таблица собирается из `RuntimeServices::diagnostic` (поле → символ) и адресов символов ELF, а полученный CRC сравнивается с напечатанным. Скриптов в репозитории нет: чтение RAM потребовало временной правки runner.
 
 ## Что проверяет S7-05 (таблицы UEFI)
 
@@ -441,3 +454,22 @@ COM1, SHA-256 обоих дисков и SHA-256 сохранённых NVRAM sn
 ## Измерения
 
 Изменения аллокатора, очередей NVMe и кеша FAT проверяются сравнением с исходной реализацией на той же нагрузке. Для воспроизведения исходной серии см. [методику S7-27](#измерения-пути-загрузки-s7-27).
+
+## Диагностика пути Linux через UEFI (S7-31a)
+
+Диагностический срез, не приёмка S7-31. Ядро и initramfs берутся из `work/stage4/` основной копии репозитория (в Git их нет). Запись остановки неизменённого `vmlinuz` Ubuntu 7.0.0-38 и двух диагностических копий (ImageBase 0x1000000; то же и SizeOfHeaders 0x400), по два прогона каждой:
+
+```sh
+cargo build --release -p od-runner --offline
+python3 tests/system/firmware_linux_uefi_stop_record.py \
+  --stage4-dir <корень>/work/stage4 --out work/stage7/linux-uefi-stop-record.json
+```
+
+Код 0 означает, что записи обоих прогонов каждого варианта совпали, а не что Linux загрузился; сама остановка описана в JSON (RIP, байты у RIP из ROM или файла PE, символ, отметки, строка COM1). Ожидаемая остановка на текущем ROM: `stock` — «no bootable option» ([ISSUE-620](../KNOWN_ISSUES.md#issue-620)); `rebased` — `Unsupported { opcode: 131 }` в `load_into` ([ISSUE-621](../KNOWN_ISSUES.md#issue-621)); `rebased-hdr` — `Unsupported { opcode: 30 }` на первой инструкции stub ([ISSUE-622](../KNOWN_ISSUES.md#issue-622)). Один прогон занимает 45–95 с. Статический инвентарь инструкций stub:
+
+```sh
+cargo build --release -p od-isa --example firmware_profile_probe --offline
+python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38-generic>
+```
+
+ESP для этих прогонов собирает `tools/build/make_test_disk.py --esp-fat32 --bootx64 <efi> --boot-file INITRD.IMG=<файл>` (дополнительные файлы только в `\EFI\BOOT\` с короткими именами 8.3). Результаты и выводы: [отчёт этапа 7](../reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20), [ADR-0013](../decisions/ADR-0013-uefi-linux-cpu-profile.md).
