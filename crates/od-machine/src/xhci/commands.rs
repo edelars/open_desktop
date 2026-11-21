@@ -10,6 +10,7 @@ use super::contexts::{
     self, Context, endpoint as ep, input_endpoint, input_slot, output_endpoint, output_slot,
     read_context, slot as sc, write_context,
 };
+use super::device::UsbDevice;
 use super::ports::Port;
 use super::regs::{MAX_PORTS, MAX_SLOTS};
 use super::slots::{DCI_EP0, DCI_INTERRUPT_IN, Endpoint, EndpointState, Slot, SlotState};
@@ -62,6 +63,7 @@ type Reply = Result<CommandResult, DmaError>;
 pub(super) struct CommandEnv<'a> {
     pub(super) slots: &'a mut [Slot; MAX_SLOTS],
     pub(super) ports: &'a mut [Port; MAX_PORTS],
+    pub(super) devices: &'a mut [Box<dyn UsbDevice>; MAX_PORTS],
     pub(super) max_slots_enabled: u8,
     pub(super) dcbaap: u64,
     pub(super) dma: &'a mut dyn GuestDma,
@@ -103,16 +105,19 @@ pub(super) fn output_context_of(
     Ok(address)
 }
 
-/// Writes EP State into an Output Endpoint Context.
-pub(super) fn mirror_endpoint_state(
+/// Writes EP State and the TR Dequeue Pointer into an Output Endpoint Context.
+pub(super) fn mirror_endpoint(
     dma: &mut dyn GuestDma,
     output: u64,
     dci: u32,
-    state: EndpointState,
+    endpoint: &Endpoint,
 ) -> Result<(), DmaError> {
     let address = output_endpoint(output, dci);
     let mut context = read_context(dma, address)?;
-    ep::set_state(&mut context, state.context_value());
+    ep::set_state(&mut context, endpoint.state.context_value());
+    if endpoint.state != EndpointState::Disabled {
+        ep::set_dequeue(&mut context, endpoint.dequeue, endpoint.dcs);
+    }
     write_context(dma, address, &context)
 }
 
@@ -238,7 +243,7 @@ fn address_device(env: &mut CommandEnv<'_>, trb: &Trb) -> Reply {
     // SET_ADDRESS fails when the port is disabled or the device already has an address (it
     // answers to that address, not to 0); the slot keeps its state.
     if !env.ports[port - 1].is_enabled()
-        || (!block_set_address && env.ports[port - 1].device_address() != 0)
+        || (!block_set_address && env.devices[port - 1].address() != 0)
     {
         return reply(CC_USB_TRANSACTION_ERROR);
     }
@@ -255,7 +260,7 @@ fn address_device(env: &mut CommandEnv<'_>, trb: &Trb) -> Reply {
     let mut output_ep0 = ep0_context;
     ep::set_state(&mut output_ep0, EndpointState::Running.context_value());
     write_context(env.dma, output_endpoint(output, DCI_EP0), &output_ep0)?;
-    env.ports[port - 1].set_device_address(address as u8);
+    env.devices[port - 1].set_address(address as u8);
     let slot = &mut env.slots[index];
     slot.state = new_state;
     slot.port = port as u8;
@@ -592,7 +597,7 @@ fn reset_device(env: &mut CommandEnv<'_>, trb: &Trb) -> Reply {
     }
     // The device is reset with the slot: it answers to address 0 again.
     if let Some(port) = (slot.port as usize).checked_sub(1) {
-        env.ports[port].set_device_address(0);
+        env.devices[port].reset();
     }
     let slot = &mut env.slots[index];
     slot.state = SlotState::Default;

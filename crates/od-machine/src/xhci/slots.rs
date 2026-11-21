@@ -86,6 +86,9 @@ pub(super) struct Slot {
     /// DCIs whose EP State changed outside a command (doorbell Stopped to Running) and has not
     /// been written to the Output Endpoint Context yet.
     pub(super) unmirrored: u32,
+    /// DCIs with transfer work: a doorbell was rung, or an Interrupt IN endpoint waits for a
+    /// report. Cleared when the ring is empty or the endpoint is not Running.
+    pub(super) pending: u32,
 }
 
 impl Slot {
@@ -96,6 +99,7 @@ impl Slot {
             ep0: Endpoint::disabled(),
             interrupt_in: Endpoint::disabled(),
             unmirrored: 0,
+            pending: 0,
         }
     }
 

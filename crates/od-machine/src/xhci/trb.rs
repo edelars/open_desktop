@@ -4,6 +4,10 @@
 /// A TRB is 16 bytes: parameter (DW0:DW1), status (DW2), control (DW3).
 pub(super) const TRB_BYTES: u64 = 16;
 
+pub(super) const TRB_TYPE_NORMAL: u32 = 1;
+pub(super) const TRB_TYPE_SETUP_STAGE: u32 = 2;
+pub(super) const TRB_TYPE_DATA_STAGE: u32 = 3;
+pub(super) const TRB_TYPE_STATUS_STAGE: u32 = 4;
 pub(super) const TRB_TYPE_LINK: u32 = 6;
 pub(super) const TRB_TYPE_ENABLE_SLOT: u32 = 9;
 pub(super) const TRB_TYPE_DISABLE_SLOT: u32 = 10;
@@ -27,8 +31,12 @@ pub(super) const COMMAND_TYPES: std::ops::RangeInclusive<u32> = 9..=25;
 /// Completion codes (xHCI table 6-90) the model produces.
 pub(super) const CC_SUCCESS: u32 = 1;
 pub(super) const CC_USB_TRANSACTION_ERROR: u32 = 4;
+pub(super) const CC_DATA_BUFFER_ERROR: u32 = 2;
+pub(super) const CC_BABBLE_DETECTED_ERROR: u32 = 3;
 pub(super) const CC_TRB_ERROR: u32 = 5;
+pub(super) const CC_STALL_ERROR: u32 = 6;
 pub(super) const CC_NO_SLOTS_AVAILABLE: u32 = 9;
+pub(super) const CC_SHORT_PACKET: u32 = 13;
 pub(super) const CC_SLOT_NOT_ENABLED: u32 = 11;
 pub(super) const CC_PARAMETER_ERROR: u32 = 17;
 pub(super) const CC_CONTEXT_STATE_ERROR: u32 = 19;
@@ -63,6 +71,46 @@ impl Trb {
 
     pub(super) fn trb_type(&self) -> u32 {
         (self.0[3] >> 10) & 0x3F
+    }
+
+    /// Interrupt on Short Packet (DW3 bit 2).
+    pub(super) fn isp(&self) -> bool {
+        self.0[3] & (1 << 2) != 0
+    }
+
+    /// Chain bit (DW3 bit 4).
+    pub(super) fn chain(&self) -> bool {
+        self.0[3] & (1 << 4) != 0
+    }
+
+    /// Interrupt On Completion (DW3 bit 5).
+    pub(super) fn ioc(&self) -> bool {
+        self.0[3] & (1 << 5) != 0
+    }
+
+    /// Immediate Data (DW3 bit 6).
+    pub(super) fn idt(&self) -> bool {
+        self.0[3] & (1 << 6) != 0
+    }
+
+    /// Block Event Interrupt (DW3 bit 9).
+    pub(super) fn bei(&self) -> bool {
+        self.0[3] & (1 << 9) != 0
+    }
+
+    /// Data Stage and Status Stage direction: IN (DW3 bit 16).
+    pub(super) fn dir_in(&self) -> bool {
+        self.0[3] & (1 << 16) != 0
+    }
+
+    /// TRB Transfer Length (DW2 16:0).
+    pub(super) fn length(&self) -> u32 {
+        self.0[2] & 0x1_FFFF
+    }
+
+    /// Interrupter Target (DW2 31:22): the model has only Interrupter 0.
+    pub(super) fn interrupter_target(&self) -> u32 {
+        self.0[2] >> 22
     }
 
     pub(super) fn slot_id(&self) -> u32 {

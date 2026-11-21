@@ -36,6 +36,11 @@ impl EventRing {
         }
     }
 
+    /// TRBs of the segment.
+    pub(super) fn size(&self) -> u32 {
+        self.size
+    }
+
     pub(super) fn free(&self) -> u32 {
         self.size - self.used
     }
