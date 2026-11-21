@@ -50642,6 +50642,30 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && cpu_owned_cr3.is_none()
                 }
         }
+        // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
+        // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
+        // never at CPL3, whose set stays the Linux live profile (CPUID declares neither LAHF_SAHF_64
+        // nor PREFETCHW until S2-57, and `cpl3_allows` does not list them).
+        Operation::Lahf | Operation::Sahf | Operation::Prefetchw => {
+            let opcode_matches = match instruction.operation {
+                Operation::Lahf => {
+                    instruction.opcode.map == OpcodeMap::Primary && instruction.opcode.byte == 0x9f
+                }
+                Operation::Sahf => {
+                    instruction.opcode.map == OpcodeMap::Primary && instruction.opcode.byte == 0x9e
+                }
+                _ => instruction.opcode.map == OpcodeMap::Escape0f && instruction.opcode.byte == 0x0d,
+            };
+            opcode_matches
+                && if control_policy.is_some() {
+                context.privilege == PrivilegeLevel::Ring0
+            } else {
+                cr0_profile.is_none()
+                    && cr4_profile.is_none()
+                    && mov_cr3_profile.is_none()
+                    && cpu_owned_cr3.is_none()
+            }
+        }
         Operation::XchgMemory { memory, .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x87
@@ -52230,6 +52254,26 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::ClearDirectionFlag => {
             state.rflags &= !crate::DF;
+        }
+        // S2-52: AH := RFLAGS(SF:ZF:0:AF:0:PF:1:CF). The low flag byte has the AH layout (bit 7 SF,
+        // 6 ZF, 4 AF, 2 PF, 0 CF); bits 5 and 3 read as 0 and bit 1 as 1 whatever RFLAGS holds. Only
+        // bits 15:8 of RAX change (AH is implicit: REX does not redirect it to SPL).
+        Operation::Lahf => {
+            let ah = u64::from(
+                (state.rflags
+                    & (crate::SF | crate::ZF | crate::AF | crate::PF | crate::CF))
+                    as u8
+                    | 0x02,
+            );
+            let rax = &mut state.gpr[Register::Rax as usize];
+            *rax = (*rax & !0xff00) | (ah << 8);
+        }
+        // S2-52: SF, ZF, AF, PF, CF := AH bits 7, 6, 4, 2, 0; every other RFLAGS bit (including the
+        // reserved bits 1, 3 and 5) keeps its value.
+        Operation::Sahf => {
+            const LOADED: u64 = crate::SF | crate::ZF | crate::AF | crate::PF | crate::CF;
+            let ah = (state.gpr[Register::Rax as usize] >> 8) & 0xff;
+            state.rflags = (state.rflags & !LOADED) | (ah & LOADED);
         }
         Operation::MovupsRegister {
             destination,
@@ -65300,10 +65344,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
+        // S2-53: PREFETCHW is a hint: no memory access, no fault, no state change but RIP.
         Operation::Endbr64Nop
         | Operation::RdsspqRax
         | Operation::Pause
         | Operation::NopModrm
+        | Operation::Prefetchw
         | Operation::Invlpg => {}
         // S4-38L9o: the fences change nothing but RIP and the retired count. S6-32: each one
         // calls the memory's `fence` with its own kind (Load for LFENCE, Store for SFENCE; MFENCE

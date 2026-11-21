@@ -392,6 +392,12 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
             0xc7,
         ),
+        // S2-52/S2-53: LAHF, SAHF and PREFETCHW execute in the bare run and in the CPL0 set at Ring0
+        // only; the CPL3 profile (the Linux live profile) does not list them, and CPUID declares
+        // neither LAHF_SAHF_64 nor PREFETCHW until S2-57.
+        ("lahf", &[0x9f], 0x9f),
+        ("sahf", &[0x9e], 0x9e),
+        ("prefetchw [rdi]", &[0x0f, 0x0d, 0x0f], 0x0d),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.

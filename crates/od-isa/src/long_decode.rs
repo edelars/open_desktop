@@ -1007,6 +1007,19 @@ pub enum Operation {
     Cmpxchg16b {
         destination: MemoryOperand,
     },
+    /// S2-52: `9F` (LAHF): AH := RFLAGS(SF:ZF:0:AF:0:PF:1:CF) (SDM Vol. 2A, LAHF, p. 3-532). No
+    /// operand is decoded: AH is implicit, so REX (and 66H/67H/segment prefixes) change nothing;
+    /// LOCK is #UD (`DecodeError::Invalid`). The 64-bit-mode CPUID gate (`80000001H:ECX[0]`) is
+    /// not modeled here: S2-57 declares the bit.
+    Lahf,
+    /// S2-52: `9E` (SAHF): SF, ZF, AF, PF and CF := AH bits 7, 6, 4, 2 and 0; the reserved
+    /// RFLAGS bits 1, 3 and 5 keep their values (SDM Vol. 2B, SAHF, p. 4-601). LOCK is #UD.
+    Sahf,
+    /// S2-53: `0F 0D /1 m8` (PREFETCHW), memory form only (SDM Vol. 2B, PREFETCHW, pp. 4-416..4-417):
+    /// a hint with no architectural effect: it reads and writes no guest memory, so an unmapped or
+    /// non-canonical address does not fault; LOCK is #UD. The register form and the other `/r`
+    /// members of `0F 0D` are not decoded (`Unsupported`).
+    Prefetchw,
     /// S4-38L7l: `F0 [REX] FF /0` (LOCK INC m32, and with REX.W m64), memory destination only.
     /// Executed only in the CPL0 set; the destination is always written back.
     LockIncMem {
@@ -2722,6 +2735,11 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
+            // S2-52: SAHF defines the five flags it loads; LAHF reads flags and defines none.
+            Operation::Sahf => FlagEffects {
+                defined: crate::CF | crate::PF | crate::AF | crate::ZF | crate::SF,
+                undefined: 0,
+            },
             // S2-51: CMPXCHG16B defines ZF only; CF, PF, AF, SF and OF are unaffected (SDM, "Flags
             // Affected"), so none of them is marked defined or undefined.
             Operation::Cmpxchg16b { .. } => FlagEffects {
@@ -3674,8 +3692,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x9e | 0x9f | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
+                | (OpcodeMap::Escape0f, 0x00 | 0x0d | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -3698,6 +3716,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_cmpxchg16b_candidate = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xc7
             && prefixes.group1 == Some(0xf0);
+        // S2-52/S2-53: and for LAHF/SAHF (`F0 9F|9E`) and PREFETCHW (`F0 0F 0D /1`): LOCK is #UD for
+        // these forms (SDM), reported as `DecodeError::Invalid` by the opcode arms below.
+        let locked_ud_candidate = prefixes.group1 == Some(0xf0)
+            && matches!(
+                (opcode.map, opcode.byte),
+                (OpcodeMap::Primary, 0x9e | 0x9f) | (OpcodeMap::Escape0f, 0x0d)
+            );
         // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
         // it only in the CPL0 set.
         let locked_qword_memory_cmpxchg_candidate = opcode.map == OpcodeMap::Escape0f
@@ -6193,7 +6218,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_cli
                 && !locked_hlt
                 && !locked_fwait_candidate
-                && !locked_cmpxchg16b_candidate)
+                && !locked_cmpxchg16b_candidate
+                && !locked_ud_candidate)
         {
             return Err(self.unsupported(opcode));
         }
@@ -9460,6 +9486,53 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     };
                     Operation::Cmps { size }
                 }
+            }
+            // S2-52: LAHF/SAHF (SDM Vol. 2A 3-532, Vol. 2B 4-601). No ModRM and no operand: AH is
+            // implicit, so REX, 66H, 67H and segment prefixes have no effect. LOCK is #UD (SDM, 64-bit
+            // mode exceptions); REP/REPNE never get here (refused by the prefix gate above).
+            (OpcodeMap::Primary, 0x9e | 0x9f) => {
+                if prefixes.group1 == Some(0xf0) {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                size = OperandSize::Byte;
+                if opcode.byte == 0x9f {
+                    Operation::Lahf
+                } else {
+                    Operation::Sahf
+                }
+            }
+            // S2-53: PREFETCHW (SDM Vol. 2B 4-416..4-417): `0F 0D /1 m8` only. Its effective address
+            // is never computed, so the operand is parsed for the length only. The register form
+            // (mod = 3) and the other /r members stay `Unsupported`: the SDM defines only /1 with a
+            // memory operand (PREFETCHWT1 `/2` is Vol. 2D and has its own CPUID bit). LOCK is #UD.
+            (OpcodeMap::Escape0f, 0x0d) => {
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 1 {
+                    return Err(self.unsupported(opcode));
+                }
+                let locked = prefixes.group1 == Some(0xf0);
+                if modrm >> 6 == 3 {
+                    return Err(if locked {
+                        DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        }
+                    } else {
+                        self.unsupported(opcode)
+                    });
+                }
+                size = OperandSize::Byte;
+                self.rm_operand(modrm, prefixes, size)?;
+                if locked {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                Operation::Prefetchw
             }
             (OpcodeMap::Primary, 0x9c) => {
                 // In 64-bit mode REX.W selects qword and overrides 66H;

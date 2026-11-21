@@ -4252,6 +4252,45 @@ mod tests {
     }
 
     #[test]
+    fn lahf_sahf_and_prefetchw_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-52/S2-53: the interpreter executes them; the JIT has no lowering for them, so the block
+        // is not built (the entry instruction is left to the interpreter, no state is touched: the
+        // builder only reads the code bytes).
+        const ENTRY: u64 = 0x4d00;
+        for (bytes, expected) in [
+            (&[0x9f][..], "lahf"),
+            (&[0x9e], "sahf"),
+            (&[0x48, 0x9f], "lahf"),
+            (&[0x0f, 0x0d, 0x0f], "prefetchw"),
+            (&[0x48, 0x0f, 0x0d, 0x4f, 0x10], "prefetchw"),
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            let matched = match (expected, decoded.operation) {
+                ("lahf", Operation::Lahf) | ("sahf", Operation::Sahf) => true,
+                ("prefetchw", Operation::Prefetchw) => true,
+                _ => false,
+            };
+            assert!(matched, "{bytes:02x?}: {:?}", decoded.operation);
+        }
+        // LOCK is #UD: a decode boundary, never a block.
+        for bytes in [&[0xf0, 0x9f][..], &[0xf0, 0x9e], &[0xf0, 0x0f, 0x0d, 0x0f]] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);
