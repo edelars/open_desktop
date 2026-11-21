@@ -110,19 +110,23 @@ impl<'a> VirtualMap<'a> {
             if desc.attribute & RUNTIME == 0 {
                 continue;
             }
-            if !final_map.iter().any(|old| {
-                old.attribute & RUNTIME != 0
-                    && old.physical_start == desc.physical_start
-                    && old.number_of_pages == desc.number_of_pages
-                    && old.memory_type == desc.memory_type
-            }) {
-                return Err(Status::NOT_FOUND);
+            // UEFI 2.11, SetVirtualAddressMap: EFI_NOT_FOUND is "a virtual address was supplied for
+            // an address that is not found in the memory map". The range of a supplied runtime
+            // descriptor must lie in the firmware's map, in regions of its type; it need not be
+            // one region of that map: an OS may merge adjacent regions of one type, and may mark
+            // a region it keeps (for example Boot Services memory) as runtime (S7-31j).
+            if desc.physical_start % PAGE_BYTES != 0 {
+                return Err(Status::INVALID_PARAMETER);
             }
             let length = desc
                 .number_of_pages
                 .checked_mul(PAGE_BYTES)
                 .filter(|length| *length != 0)
+                .filter(|length| desc.physical_start.checked_add(*length).is_some())
                 .ok_or(Status::INVALID_PARAMETER)?;
+            if !covered_by_map(final_map, &desc) {
+                return Err(Status::NOT_FOUND);
+            }
             let end = desc
                 .virtual_start
                 .checked_add(length - 1)
@@ -141,7 +145,9 @@ impl<'a> VirtualMap<'a> {
                     continue;
                 }
                 let prev_end = prev.virtual_start + (prev.number_of_pages * PAGE_BYTES - 1);
-                if prev.physical_start == desc.physical_start
+                let prev_physical_end = prev.physical_start + prev.number_of_pages * PAGE_BYTES;
+                if (desc.physical_start < prev_physical_end
+                    && prev.physical_start < desc.physical_start + length)
                     || (desc.virtual_start <= prev_end && prev.virtual_start <= end)
                 {
                     return Err(Status::INVALID_PARAMETER);
@@ -152,9 +158,13 @@ impl<'a> VirtualMap<'a> {
             .iter()
             .filter(|desc| desc.attribute & RUNTIME != 0)
         {
-            result
-                .translate(desc.physical_start)
-                .map_err(|_| Status::NO_MAPPING)?;
+            // Every page of the region needs a virtual address (UEFI 2.11: NO_MAPPING), not
+            // only its first page: the supplied runtime descriptors may cover it in parts.
+            let end = desc.physical_start + desc.number_of_pages * PAGE_BYTES;
+            let mut cursor = desc.physical_start;
+            while cursor < end {
+                cursor = result.runtime_range_end(cursor).ok_or(Status::NO_MAPPING)?;
+            }
         }
         Ok(result)
     }
@@ -176,6 +186,18 @@ impl<'a> VirtualMap<'a> {
             value.attribute = ptr::addr_of!((*desc).attribute).read_unaligned();
             value
         }
+    }
+
+    /// End of the supplied runtime descriptor that contains `physical`, if any.
+    fn runtime_range_end(&self, physical: u64) -> Option<u64> {
+        (0..self.count).find_map(|index| {
+            let desc = self.read(index);
+            if desc.attribute & RUNTIME == 0 {
+                return None;
+            }
+            let end = desc.physical_start + desc.number_of_pages * PAGE_BYTES;
+            (desc.physical_start <= physical && physical < end).then_some(end)
+        })
     }
 
     pub fn translate(&self, physical: u64) -> Result<u64, Status> {
@@ -215,6 +237,36 @@ impl<'a> VirtualMap<'a> {
         self.translate(physical as u64)
             .map(|address| address as usize)
     }
+}
+
+/// Every page of `desc` lies in some region of `final_map` with the descriptor's memory type.
+fn covered_by_map(final_map: &[MemoryDescriptor], desc: &MemoryDescriptor) -> bool {
+    let Some(end) = desc
+        .number_of_pages
+        .checked_mul(PAGE_BYTES)
+        .and_then(|length| desc.physical_start.checked_add(length))
+    else {
+        return false;
+    };
+    let mut cursor = desc.physical_start;
+    while cursor < end {
+        let Some(next) = final_map
+            .iter()
+            .filter(|region| region.memory_type == desc.memory_type)
+            .filter_map(|region| {
+                let region_end = region
+                    .number_of_pages
+                    .checked_mul(PAGE_BYTES)
+                    .and_then(|length| region.physical_start.checked_add(length))?;
+                (region.physical_start <= cursor && cursor < region_end).then_some(region_end)
+            })
+            .max()
+        else {
+            return false;
+        };
+        cursor = next;
+    }
+    true
 }
 
 fn canonical(address: u64) -> bool {
@@ -292,6 +344,128 @@ mod tests {
         assert_eq!(
             map.convert_pointer(2, 0x8000),
             Err(Status::INVALID_PARAMETER)
+        );
+    }
+
+    /// S7-31k: the OS maps the runtime images writable during SetVirtualAddressMap, so the driver
+    /// has no business writing control registers: no MOV CR0 (the ISA set does not admit it,
+    /// ADR-0013) and no inline asm that names a control register outside comments. The driver
+    /// module is not built for the host, hence the source scan.
+    #[test]
+    fn driver_code_does_not_write_control_registers() {
+        let source = include_str!("driver.rs");
+        for line in source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+        {
+            let lowered = line.to_ascii_lowercase();
+            assert!(
+                !lowered.contains(concat!("c", "r0")) && !lowered.contains(concat!("c", "r3")),
+                "control register in driver code: {line}"
+            );
+        }
+    }
+
+    /// S7-31j: an OS may merge adjacent regions of one type and may mark a region it keeps (Boot
+    /// Services memory) as runtime. Both are ranges found in the memory map (UEFI 2.11,
+    /// SetVirtualAddressMap): accepted; an address outside the map or of another type is
+    /// EFI_NOT_FOUND; a runtime region left without a virtual address is EFI_NO_MAPPING.
+    #[test]
+    fn accepts_merged_and_os_marked_runtime_ranges_and_rejects_ranges_outside_the_map() {
+        let mut boot_data = MemoryDescriptor::EMPTY;
+        boot_data.memory_type = MemoryType::BOOT_SERVICES_DATA.raw();
+        boot_data.physical_start = 0x20000;
+        boot_data.number_of_pages = 4;
+        boot_data.attribute = 0; // not runtime in the firmware's map
+        let mut final_map = [
+            descriptor(0x1000, 2),
+            descriptor(0x3000, 1), // adjacent, same type: the OS merges both
+            descriptor(0x8000, 1),
+            boot_data,
+        ];
+        final_map[3].attribute = 0;
+        let check = |input: &[MemoryDescriptor]| {
+            // SAFETY: the slice owns stable, initialized descriptor fields.
+            unsafe {
+                VirtualMap::new(
+                    input.as_ptr(),
+                    core::mem::size_of_val(input),
+                    size_of::<MemoryDescriptor>(),
+                    DESCRIPTOR_VERSION,
+                    &final_map,
+                )
+            }
+            .map(|map| map.translate(0x3fff))
+        };
+        let merged = with_virtual(descriptor(0x1000, 3), 0x10_0000);
+        let other = with_virtual(descriptor(0x8000, 1), 0x20_0000);
+        // Merged region: both original regions are mapped through it.
+        assert_eq!(check(&[merged, other]), Ok(Ok(0x10_2fff)));
+        // A Boot Services region the OS marked runtime (a range in the map, not runtime there).
+        let mut marked = boot_data;
+        marked.attribute = RUNTIME;
+        let marked = with_virtual(marked, 0x30_0000);
+        assert_eq!(check(&[merged, other, marked]), Ok(Ok(0x10_2fff)));
+        // Part of the range outside the map: not found.
+        assert_eq!(
+            check(&[with_virtual(descriptor(0x1000, 4), 0x10_0000), other]).err(),
+            Some(Status::NOT_FOUND)
+        );
+        // The right addresses, the wrong type: not found.
+        let mut wrong_type = merged;
+        wrong_type.memory_type = MemoryType::RUNTIME_SERVICES_CODE.raw();
+        assert_eq!(check(&[wrong_type, other]).err(), Some(Status::NOT_FOUND));
+        // A runtime region without a virtual address: no mapping.
+        assert_eq!(check(&[merged]).err(), Some(Status::NO_MAPPING));
+        // Partial coverage (S7-31k, S7-31l): the region 0x1000 of two pages is given one page,
+        // the regions 0x3000 and 0x8000 are given whole. The first page of every region is
+        // covered, so a check of the first page alone accepts this input; only the second page
+        // of the first region lacks a virtual address.
+        let one_page = with_virtual(descriptor(0x1000, 1), 0x10_0000);
+        let third_only = with_virtual(descriptor(0x3000, 1), 0x70_0000);
+        assert_eq!(
+            check(&[one_page, third_only, other]).err(),
+            Some(Status::NO_MAPPING)
+        );
+        // A physical start that is not page aligned is malformed, not "not found".
+        let mut unaligned = merged;
+        unaligned.physical_start += 0x10;
+        assert_eq!(
+            check(&[unaligned, other]).err(),
+            Some(Status::INVALID_PARAMETER)
+        );
+        // Zero length or an overflowing range is a malformed descriptor, not "not found".
+        assert_eq!(
+            check(&[
+                with_virtual(descriptor(0x1000, 0), 0x10_0000),
+                merged,
+                other
+            ])
+            .err(),
+            Some(Status::INVALID_PARAMETER)
+        );
+        let mut overflow = with_virtual(descriptor(0xffff_ffff_ffff_f000, 2), 0x50_0000);
+        overflow.number_of_pages = 2;
+        assert_eq!(
+            check(&[overflow, merged, other]).err(),
+            Some(Status::INVALID_PARAMETER)
+        );
+        // Two input descriptors that together cover the region are enough.
+        let halves = [
+            with_virtual(descriptor(0x1000, 1), 0x10_0000),
+            with_virtual(descriptor(0x2000, 1), 0x60_0000),
+        ];
+        let third = with_virtual(descriptor(0x3000, 1), 0x70_0000);
+        assert!(check(&[halves[0], halves[1], third, other]).is_ok());
+        // Two supplied ranges that overlap physically (merged plus one of its parts).
+        assert_eq!(
+            check(&[
+                merged,
+                with_virtual(descriptor(0x1000, 2), 0x40_0000),
+                other
+            ])
+            .err(),
+            Some(Status::INVALID_PARAMETER)
         );
     }
 

@@ -11,6 +11,11 @@
 //! implemented: every other x87/FXSR form, e.g. `FXRSTOR`, stays `Unsupported`). It is not the
 //! full target table and not an Ubuntu boot contract.
 //!
+//! `X8664V1Stage4AApic` (S4-38L8d) is `X8664V1Stage4A` plus the APIC bit. `X8664V1Stage4AExt1`
+//! (S7-31h) is `X8664V1Stage4A` plus the extended leaf 0x80000001 EDX of the target (SYSCALL, NX,
+//! LM); `X8664V1Stage4AExt2` (S7-31i) is `Ext1` plus SSE and SSE2 in leaf 1 EDX. Ext1 and Ext2
+//! are selected only by the unified UEFI+Linux loop; `X8664V1Stage4A` itself is unchanged.
+//!
 //! `OdX8664V1Neutral` (S6-14h) is the full CPUID table of that target (leaves 0, 1, 0x80000000,
 //! 0x80000001 and 0x80000008). It is selected only explicitly and declares feature bits whose
 //! behaviour the engine does not implement yet, so no existing path uses it.
@@ -47,6 +52,12 @@ pub enum CpuidProfile {
     /// the walker and has `SYSCALL` in the set (`with_syscall`); `X8664V1Stage4A` itself stays as it
     /// was, so the evidence of the linux-direct runs is unchanged.
     X8664V1Stage4AExt1,
+    /// S7-31i: `X8664V1Stage4AExt1` plus SSE (CPUID.01H:EDX bit 25) and SSE2 (bit 26) and nothing else.
+    /// Selected only by the unified UEFI+Linux loop: the kernel executes `LDMXCSR` in
+    /// `kernel_fpu_begin_mask` (`efi_set_virtual_address_map`; XMM is in its required-feature mask),
+    /// which the FP member of the CPL0 set implements and admits only over a profile that declares
+    /// SSE (ISSUE-636). `X8664V1Stage4A` and `X8664V1Stage4AExt1` stay as they were.
+    X8664V1Stage4AExt2,
     /// S6-14h: the complete table of `od-x86-64-v1-neutral-v0.1` (`CPU_CONTRACT.md`): leaf 1 EDX
     /// `0x0781A379` (FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE, SSE2),
     /// leaf 1 ECX 0, and 0x80000001 EDX `0x20100800` (SYSCALL, NX, LM). Never the default; the
@@ -63,9 +74,14 @@ const LEAF1_EDX_TSC: u32 = 1 << 4;
 /// member (the kernel's `fpu__init_system` gives up without this bit). From the Intel SDM, from memory.
 const LEAF1_EDX_FPU: u32 = 1 << 0;
 /// CPUID.01H:EDX bit 24 (FXSR), declared since S4-38L9d: the plain `FXSAVE` is implemented in the
-/// same member. SSE (25) and SSE2 (26) are NOT declared: no SSE instruction is implemented. From the
-/// Intel SDM, from memory.
+/// same member. SSE (25) and SSE2 (26) are NOT declared by the profiles up to `X8664V1Stage4AExt1`;
+/// `X8664V1Stage4AExt2` declares them (S7-31i, the `LDMXCSR` of the FP member). From the Intel SDM,
+/// from memory.
 const LEAF1_EDX_FXSR: u32 = 1 << 24;
+/// CPUID.01H:EDX bit 25 (SSE) and bit 26 (SSE2), declared by `X8664V1Stage4AExt2` (S7-31i); the
+/// positions are those of the target table's `0x0781A379`. From the Intel SDM, from memory.
+const LEAF1_EDX_SSE: u32 = 1 << 25;
+const LEAF1_EDX_SSE2: u32 = 1 << 26;
 /// CPUID.01H:EDX of the full target table (S6-14h), the contract's `0x0781A379`: bits 0 FPU, 3 PSE,
 /// 4 TSC, 5 MSR, 6 PAE, 8 CX8, 9 APIC, 13 PGE, 15 CMOV, 16 PAT, 23 MMX, 24 FXSR, 25 SSE, 26 SSE2.
 const NEUTRAL_LEAF1_EDX: u32 = 0x0781_A379;
@@ -109,6 +125,9 @@ impl CpuidProfile {
             Self::X8664V1Stage4A | Self::X8664V1Stage4AExt1 => {
                 LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR
             }
+            Self::X8664V1Stage4AExt2 => {
+                LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR | LEAF1_EDX_SSE | LEAF1_EDX_SSE2
+            }
             Self::X8664V1Stage4AApic => {
                 LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_APIC | LEAF1_EDX_FXSR
             }
@@ -133,7 +152,12 @@ impl CpuidProfile {
                 ecx: 0,
                 edx: 0,
             },
-            0x8000_0001 if matches!(self, Self::OdX8664V1Neutral | Self::X8664V1Stage4AExt1) => {
+            0x8000_0001
+                if matches!(
+                    self,
+                    Self::OdX8664V1Neutral | Self::X8664V1Stage4AExt1 | Self::X8664V1Stage4AExt2
+                ) =>
+            {
                 CpuidResult {
                     eax: 0,
                     ebx: 0,
@@ -191,6 +215,45 @@ mod tests {
         assert_eq!(result.edx, 0x2010_0800);
         // The Stage 4 board gates still treat only the two Stage4A profiles as that family.
         assert!(!ext.is_stage4a_family());
+    }
+
+    /// S7-31i: `X8664V1Stage4AExt2` is `Ext1` plus SSE (bit 25) and SSE2 (bit 26) in leaf 1 EDX and
+    /// nothing else; `Ext1` and `Stage4A` keep their values (the S7-31h record and the linux-direct
+    /// runs stay reproducible).
+    #[test]
+    fn stage4a_ext2_adds_only_sse_and_sse2_to_ext1() {
+        let ext1 = CpuidProfile::X8664V1Stage4AExt1;
+        let ext2 = CpuidProfile::X8664V1Stage4AExt2;
+        for leaf in [
+            0,
+            2,
+            4,
+            6,
+            7,
+            0xb,
+            0x15,
+            0x16,
+            0x8000_0000,
+            0x8000_0001,
+            0x8000_0008,
+        ] {
+            assert_eq!(ext2.query(leaf, 0), ext1.query(leaf, 0), "leaf {leaf:#x}");
+        }
+        let one = ext2.query(1, 0);
+        assert_eq!(
+            one,
+            CpuidResult {
+                edx: ext1.query(1, 0).edx | (1 << 25) | (1 << 26),
+                ..ext1.query(1, 0)
+            }
+        );
+        // SSE and SSE2 are both in the target table's leaf 1 word.
+        assert_eq!(one.edx & NEUTRAL_LEAF1_EDX, one.edx);
+        // The earlier profiles are as they were.
+        assert_eq!(CpuidProfile::X8664V1Stage4A.query(1, 0).edx, 0x0100_0011);
+        assert_eq!(ext1.query(1, 0).edx, 0x0100_0011);
+        assert_eq!(ext1.query(0x8000_0001, 0).edx, 0x2010_0800);
+        assert!(!ext2.is_stage4a_family());
     }
 
     /// S4-28b: the APIC timer has no TSC-deadline mode, so the profile must
