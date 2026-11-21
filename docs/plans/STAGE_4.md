@@ -360,7 +360,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-10. Добавить необходимые page sizes и режимы
 
-- [x] Ограниченный S4-10a admission-boundary срез принят после независимого ревью.
+- [x] Принято владельцем проекта 2026-11-21 по запросу пользователя, без независимого ревью полного S4-10. Открыто и не реализовано: 1 GiB, 2 MiB для MMIO, полная матрица прав и A/D, S4-00 manifest, Linux boot prerequisites. Реализовано: S4-10a и opt-in RAM-only 2 MiB (S4-10b). Ограниченный S4-10a admission-boundary срез принят после независимого ревью.
 - Реализовано: для текущего Long64/4 KiB профиля present PS на PDPT/PD
   отвергается как `UnsupportedPageSize` с сохранением уже committed A у предков;
   pure probe остаётся без мутаций, PML4 bit 7 остаётся reserved-bit fault, PT
