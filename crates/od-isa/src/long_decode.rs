@@ -156,16 +156,59 @@ pub enum SseFpMiscKind {
     Cvtpd2dq,
     /// `66 0F E6` (S2-37 remainder): as [`Self::Cvtpd2dq`], truncating. SDM Vol. 2A CVTTPD2DQ pp. 3-244..3-247.
     Cvttpd2dq,
+    /// `0F 2A` (S2-37 MMX): the two signed doublewords of an MMX register or an 8-byte memory operand to two binary32
+    /// in the low half of the XMM destination, the high half kept (`shape` is `Packed32`; `source` names an MMX
+    /// register). SDM Vol. 2A CVTPI2PS p. 3-224.
+    Cvtpi2ps,
+    /// `66 0F 2A` (S2-37 MMX): the two signed doublewords of an MMX register or an 8-byte memory operand to two
+    /// binary64 (`shape` is `Packed64`; exact). SDM Vol. 2A CVTPI2PD p. 3-223.
+    Cvtpi2pd,
+    /// `0F 2D` (S2-37 MMX): the two low binary32 of an XMM register or an 8-byte memory operand to two signed
+    /// doublewords in an MMX register, rounded by MXCSR.RC (`shape` is `Packed32`; `destination` names an MMX
+    /// register). SDM Vol. 2A CVTPS2PI p. 3-231.
+    Cvtps2pi,
+    /// `0F 2C` (S2-37 MMX): as [`Self::Cvtps2pi`], truncating. SDM Vol. 2A CVTTPS2PI p. 3-252.
+    Cvttps2pi,
+    /// `66 0F 2D` (S2-37 MMX): two binary64 of an XMM register or a 16-byte aligned memory operand to two signed
+    /// doublewords in an MMX register (`shape` is `Packed64`). SDM Vol. 2A CVTPD2PI p. 3-218.
+    Cvtpd2pi,
+    /// `66 0F 2C` (S2-37 MMX): as [`Self::Cvtpd2pi`], truncating. SDM Vol. 2A CVTTPD2PI p. 3-248.
+    Cvttpd2pi,
 }
 
 impl SseFpMiscKind {
+    /// The MMX conversions (S2-37): one operand is an MMX register, which is the physical x87 data register of the same
+    /// number, and the instruction puts the x87 unit in MMX state.
+    pub const fn mmx(self) -> bool {
+        matches!(
+            self,
+            Self::Cvtpi2ps
+                | Self::Cvtpi2pd
+                | Self::Cvtps2pi
+                | Self::Cvttps2pi
+                | Self::Cvtpd2pi
+                | Self::Cvttpd2pi
+        )
+    }
+
+    /// Whether the source operand of an MMX conversion is the MMX register or the 8-byte memory operand (CVTPI2PS,
+    /// CVTPI2PD); for the others the destination is the MMX register.
+    pub const fn mmx_source(self) -> bool {
+        matches!(self, Self::Cvtpi2ps | Self::Cvtpi2pd)
+    }
+
     /// The memory source of the form: its size in bytes and whether a 16-byte alignment is required (Vol. 2A
     /// Table 2-19 Type 2 and Table 2-21 Type 4 for the 128-bit operands: `#GP(0)` when misaligned; Table 2-20
     /// Type 3 and Table 2-22 Type 5 otherwise). It follows the shape, except that the CVTPS2PD source is 8 bytes
     /// whatever the packed shape says.
     pub const fn source_access(self, shape: SseFpShape) -> (u64, bool) {
         match self {
-            Self::Cvtps2pd | Self::Cvtdq2pd => (8, false),
+            Self::Cvtps2pd
+            | Self::Cvtdq2pd
+            | Self::Cvtpi2ps
+            | Self::Cvtpi2pd
+            | Self::Cvtps2pi
+            | Self::Cvttps2pi => (8, false),
             _ => (shape.memory_bytes(), shape.is_packed()),
         }
     }
@@ -13028,9 +13071,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
     /// `CVTSS2SI/CVTSD2SI`, `CVTTSS2SI/CVTTSD2SI r32/r64, xmm/m32|m64` (`F3|F2 [REX.W] 0F 2D|2C /r`), tried by
     /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2A CVTSI2SS
     /// pp. 3-238..3-239, CVTSI2SD pp. 3-236..3-237, CVTSS2SI pp. 3-242..3-243, CVTSD2SI pp. 3-232..3-233, CVTTSS2SI
-    /// pp. 3-255..3-256, CVTTSD2SI pp. 3-253..3-254). LOCK is #UD; a repeated prefix, FS/GS overrides, `66`
-    /// together with `F2`/`F3` and the encodings without `F2`/`F3` (the MMX conversions) are refused. REX.W
-    /// selects the 64-bit integer operand, else it is 32 bits; REX.R and REX.B extend the register fields.
+    /// pp. 3-255..3-256, CVTTSD2SI pp. 3-253..3-254). LOCK is #UD; a repeated prefix, FS/GS overrides and `66`
+    /// together with `F2`/`F3` are refused. REX.W selects the 64-bit integer operand, else it is 32 bits; REX.R and
+    /// REX.B extend the register fields.
+    ///
+    /// Without `F2`/`F3` the same opcodes are the MMX conversions (SDM Vol. 2A CVTPI2PS p. 3-224 and CVTPI2PD
+    /// p. 3-223 [`0F 2A`, `66 0F 2A`], CVTPS2PI p. 3-231 and CVTPD2PI p. 3-218 [`0F 2D`, `66 0F 2D`], CVTTPS2PI
+    /// p. 3-252 and CVTTPD2PI p. 3-248 [`0F 2C`, `66 0F 2C`]), decoded as [`Operation::SseFpMisc`] whose MMX
+    /// register operand is numbered by the three ModRM bits (REX.R and REX.B do not extend it) and whose XMM operand
+    /// is extended by them. A memory operand is 8 bytes, except for CVTPD2PI/CVTTPD2PI (16 bytes, aligned).
     fn decode_sse_int_convert(&mut self) -> Result<Option<Instruction>, DecodeError> {
         let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
             return Ok(None);
@@ -13042,11 +13091,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
             map: OpcodeMap::Escape0f,
             byte: self.byte()?,
         };
-        let double = match (prefixes.group1, prefixes.operand_override) {
-            (Some(0xf3), false) => false,
-            (Some(0xf2), false) => true,
+        // `None`: the scalar forms (F3/F2); `Some(packed_double)`: the MMX forms without a group-1 prefix.
+        let mmx = match (prefixes.group1, prefixes.operand_override) {
+            (Some(0xf3 | 0xf2), false) => None,
+            (None, packed_double) => Some(packed_double),
             _ => return Ok(None),
         };
+        let double = prefixes.group1 == Some(0xf2);
         if matches!(prefixes.segment, Some(0x64 | 0x65)) {
             return Ok(None);
         }
@@ -13058,6 +13109,54 @@ impl<M: GuestMemory> Fetch<'_, M> {
             });
         }
         let rex = prefixes.rex.unwrap_or(0);
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        if let Some(packed_double) = mmx {
+            use SseFpMiscKind::{Cvtpd2pi, Cvtpi2pd, Cvtpi2ps, Cvtps2pi, Cvttpd2pi, Cvttps2pi};
+            let (kind, shape) = match (opcode.byte, packed_double) {
+                (0x2a, false) => (Cvtpi2ps, SseFpShape::Packed32),
+                (0x2a, true) => (Cvtpi2pd, SseFpShape::Packed64),
+                (0x2d, false) => (Cvtps2pi, SseFpShape::Packed32),
+                (0x2d, true) => (Cvtpd2pi, SseFpShape::Packed64),
+                (_, false) => (Cvttps2pi, SseFpShape::Packed32),
+                (_, true) => (Cvttpd2pi, SseFpShape::Packed64),
+            };
+            let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+            let register_source = if kind.mmx_source() {
+                // The source MMX register: REX.B does not extend it.
+                modrm & 7
+            } else {
+                (modrm & 7) | ((rex & 1) << 3)
+            };
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register(register_source)
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation: Operation::SseFpMisc {
+                    kind,
+                    shape,
+                    // The MMX destination register: REX.R does not extend it.
+                    destination: if kind.mmx_source() { reg } else { reg & 7 },
+                    source,
+                    immediate: 0,
+                },
+            }));
+        }
         let general = if rex & 8 != 0 {
             OperandSize::Qword
         } else {
@@ -13096,11 +13195,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             opcode,
             prefixes,
             operand_size: general,
-            address_size: if prefixes.address_override {
-                OperandSize::Dword
-            } else {
-                OperandSize::Qword
-            },
+            address_size,
             operation,
         }))
     }

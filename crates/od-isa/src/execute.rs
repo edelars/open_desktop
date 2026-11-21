@@ -41421,7 +41421,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || configured_cvtsd2si_memory_r32_profile.is_some()
         || configured_cvtsd2si_memory_r64_controls.is_some()
         || configured_cvttsd2si_memory_r32_profile.is_some()
-        || configured_cvttsd2si_memory_r64_controls.is_some();
+        || configured_cvttsd2si_memory_r64_controls.is_some()
+        || configured_cvtpi2_profile.is_some()
+        || configured_cvtpi2pd_memory_controls.is_some();
     let general_fp_closed = |operation: Operation| match operation {
         Operation::SseFpArith {
             kind: SseFpArithKind::Sqrt | SseFpArithKind::Min | SseFpArithKind::Max,
@@ -50879,6 +50881,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Sse41Fp { .. } => state.sse.is_some(),
         // A configured narrow profile of the sixteen arithmetic forms is a closed set: every other encoding
         // of them stays `Unsupported` while it is active.
+        // S2-37 (MMX conversions): one operand is an MMX register, so the local x87 state is needed too.
+        Operation::SseFpMisc { kind, .. } if kind.mmx() => {
+            state.sse.is_some() && state.x87.is_some() && !general_fp_closed(instruction.operation)
+        }
         Operation::SseFpArith { .. }
         | Operation::SseFpMisc { .. }
         | Operation::SseCvtFromInt { .. }
@@ -51883,6 +51889,25 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (FpForm::Arith(kind), shape, destination, source),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    // S2-37 (MMX conversions): CVTPI2PS/PD, CVT[T]PS2PI and CVT[T]PD2PI also touch the MMX registers.
+    if let Operation::SseFpMisc {
+        kind,
+        shape,
+        destination,
+        source,
+        ..
+    } = instruction.operation
+        && kind.mmx()
+    {
+        return step_sse_mmx_convert(
+            state,
+            memory,
+            context,
+            (kind, shape, destination, source),
             instruction.opcode.byte,
             next_rip,
         );
@@ -70808,8 +70833,9 @@ enum FpForm {
 /// does not record. The `[rax]` forms use XMM0 as the destination, as their decoder fixes.
 fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operation> {
     use SseFpMiscKind::{
-        Cmp, Comi, Cvtdq2pd, Cvtdq2ps, Cvtpd2dq, Cvtpd2ps, Cvtps2dq, Cvtps2pd, Cvtsd2ss, Cvtss2sd,
-        Cvttpd2dq, Cvttps2dq, Rcp, Rsqrt, Ucomi,
+        Cmp, Comi, Cvtdq2pd, Cvtdq2ps, Cvtpd2dq, Cvtpd2pi, Cvtpd2ps, Cvtpi2pd, Cvtpi2ps, Cvtps2dq,
+        Cvtps2pd, Cvtps2pi, Cvtsd2ss, Cvtss2sd, Cvttpd2dq, Cvttpd2pi, Cvttps2dq, Cvttps2pi, Rcp,
+        Rsqrt, Ucomi,
     };
     use SseFpShape::{Packed32, Packed64, Scalar32, Scalar64};
     let register = |kind, shape, destination, source, immediate| Operation::SseFpMisc {
@@ -71095,6 +71121,20 @@ fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operati
             (0, Qword),
             Sse3Source::Memory(rax_memory(Qword)),
         ),
+        // The MMX conversions: the register forms are XMM0 and MM1 (CVTPI2PS/PD) or MM0 and XMM1 (the others), the
+        // `[rax]` forms XMM0 or MM0.
+        Operation::Cvtpi2psXmm0Mm1 => register(Cvtpi2ps, Packed32, 0, 1, 0),
+        Operation::Cvtpi2psMemoryRax => rax(Cvtpi2ps, Packed32, 0),
+        Operation::Cvtpi2pdXmm0Mm1 => register(Cvtpi2pd, Packed64, 0, 1, 0),
+        Operation::Cvtpi2pdMemoryRax => rax(Cvtpi2pd, Packed64, 0),
+        Operation::Cvtps2piMm0Xmm1 => register(Cvtps2pi, Packed32, 0, 1, 0),
+        Operation::Cvtps2piMm0MemoryRax => rax(Cvtps2pi, Packed32, 0),
+        Operation::Cvttps2piMm0Xmm1 => register(Cvttps2pi, Packed32, 0, 1, 0),
+        Operation::Cvttps2piMm0MemoryRax => rax(Cvttps2pi, Packed32, 0),
+        Operation::Cvtpd2piMm0Xmm1 => register(Cvtpd2pi, Packed64, 0, 1, 0),
+        Operation::Cvtpd2piMm0MemoryRax => rax(Cvtpd2pi, Packed64, 0),
+        Operation::Cvttpd2piMm0Xmm1 => register(Cvttpd2pi, Packed64, 0, 1, 0),
+        Operation::Cvttpd2piMm0MemoryRax => rax(Cvttpd2pi, Packed64, 0),
         _ => return None,
     })
 }
@@ -71289,6 +71329,122 @@ fn read_sse_fp_memory(
         return Err(report_memory_error(error));
     }
     Ok(raw)
+}
+
+/// S2-37 (MMX conversions): CVTPI2PS, CVTPI2PD, CVTPS2PI, CVTTPS2PI, CVTPD2PI and CVTTPD2PI (Intel SDM Vol. 2A
+/// pp. 3-218, 3-223, 3-224, 3-231, 3-248, 3-252), `Operation::SseFpMisc` with an MMX kind. The MMX register is the low
+/// 64 bits of the physical x87 data register of the same number (Vol. 1 §9.2.2), so `source` (CVTPI2PS/PD) or
+/// `destination` (the others) numbers an MM register and the other operand an XMM register. Check order, each before
+/// any state change: the [`sse_fp_gate`] `#UD`/`#NM` checks, then the MMX entry checks of [`mmx_entry_fault`]
+/// (a pending unmasked x87 exception is `#MF`); a reserved MXCSR bit is `Unsupported`; the memory operand (8 bytes
+/// without an alignment rule, 16 bytes aligned for CVT[T]PD2PI; [`read_sse_fp_memory`]); then the conversion
+/// through [`sse_fp::misc`]. An unmasked exception sets the detected flags in MXCSR, writes nothing and raises
+/// `#XM` or `#UD` as in [`step_sse_int_convert`]. An instruction that reads or writes an MMX register does what every
+/// MMX instruction except EMMS does to the x87 state (also when it then raises the SIMD exception): TOP becomes 0 and
+/// the tag word valid; a destination MMX register also gets 0xFFFF in bits 79:64. CVTPI2PS/CVTPI2PD with a memory
+/// source touch no MMX register and leave the x87 state alone (physical oracle).
+fn step_sse_mmx_convert(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, shape, destination, source): (SseFpMiscKind, SseFpShape, u8, Sse3Source),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    if let Some(outcome) = sse_fp_gate(state) {
+        return Ok(outcome);
+    }
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return Ok(outcome);
+    }
+    let mxcsr = state
+        .sse
+        .as_ref()
+        .expect("SSE conversion state was prevalidated")
+        .mxcsr;
+    if mxcsr & sse_fp::MXCSR_RESERVED != 0 {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    let raw = match source {
+        Sse3Source::Register(index) if kind.mmx_source() => {
+            let mut raw = [0u8; 16];
+            raw[..8].copy_from_slice(
+                &state
+                    .x87
+                    .as_ref()
+                    .expect("MMX conversion state was prevalidated")
+                    .mmx_register(index)
+                    .expect("the decoder gives MM0..MM7"),
+            );
+            raw
+        }
+        Sse3Source::Register(index) => {
+            state.sse.as_ref().expect("checked above").xmm[usize::from(index)]
+        }
+        Sse3Source::Memory(operand) => {
+            match read_sse_fp_memory(
+                state,
+                memory,
+                context,
+                operand,
+                kind.source_access(shape),
+                opcode,
+                next_rip,
+            ) {
+                Ok(raw) => raw,
+                Err(done) => return done,
+            }
+        }
+    };
+    // The x87 unit enters MMX state only when an MMX register is read or written: CVTPI2PS/PD with a memory source leave
+    // TOP and the tag word alone (oracle).
+    let touches_mmx = !kind.mmx_source() || matches!(source, Sse3Source::Register(_));
+    // CVTPI2PS keeps the high half of the XMM destination; the other forms have no register to merge with.
+    let first = if kind.mmx_source() {
+        state.sse.as_ref().expect("checked above").xmm[usize::from(destination)]
+    } else {
+        [0u8; 16]
+    };
+    let outcome = sse_fp::misc(kind, shape, first, raw, 0, mxcsr);
+    if outcome.fault {
+        let Some(cr4) = state.cr4 else {
+            return Ok(StepOutcome::Unsupported { opcode });
+        };
+        state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+        // The hardware has entered MMX state before it raises the SIMD exception (oracle).
+        if touches_mmx {
+            state
+                .x87
+                .as_mut()
+                .expect("MMX conversion state was prevalidated")
+                .enter_mmx_state();
+        }
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: if cr4 & CR4_OSXMMEXCPT != 0 { 19 } else { 6 },
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+    if kind.mmx_source() {
+        state.sse.as_mut().expect("checked above").xmm[usize::from(destination)] = outcome.result;
+    }
+    let x87 = state
+        .x87
+        .as_mut()
+        .expect("MMX conversion state was prevalidated");
+    if touches_mmx {
+        x87.enter_mmx_state();
+    }
+    if !kind.mmx_source() {
+        x87.write_mmx_register(
+            destination,
+            outcome.result[..8].try_into().expect("eight bytes"),
+        );
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
 }
 
 /// S2-37 (remainder): CVTSI2SS/CVTSI2SD (`Operation::SseCvtFromInt`) and CVTSS2SI, CVTTSS2SI, CVTSD2SI, CVTTSD2SI

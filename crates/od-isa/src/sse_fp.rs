@@ -450,7 +450,13 @@ pub(crate) fn misc(
         | SseFpMiscKind::Cvtsd2ss
         | SseFpMiscKind::Cvtdq2pd
         | SseFpMiscKind::Cvtpd2dq
-        | SseFpMiscKind::Cvttpd2dq => return convert(kind, destination, source, mxcsr),
+        | SseFpMiscKind::Cvttpd2dq
+        | SseFpMiscKind::Cvtpi2ps
+        | SseFpMiscKind::Cvtpi2pd
+        | SseFpMiscKind::Cvtps2pi
+        | SseFpMiscKind::Cvttps2pi
+        | SseFpMiscKind::Cvtpd2pi
+        | SseFpMiscKind::Cvttpd2pi => return convert(kind, destination, source, mxcsr),
         SseFpMiscKind::Rcp | SseFpMiscKind::Rsqrt => {
             return reciprocal(kind, shape, destination, source, mxcsr);
         }
@@ -502,6 +508,12 @@ pub(crate) fn misc(
             | SseFpMiscKind::Cvtdq2pd
             | SseFpMiscKind::Cvtpd2dq
             | SseFpMiscKind::Cvttpd2dq
+            | SseFpMiscKind::Cvtpi2ps
+            | SseFpMiscKind::Cvtpi2pd
+            | SseFpMiscKind::Cvtps2pi
+            | SseFpMiscKind::Cvttps2pi
+            | SseFpMiscKind::Cvtpd2pi
+            | SseFpMiscKind::Cvttpd2pi
             | SseFpMiscKind::Rcp
             | SseFpMiscKind::Rsqrt => unreachable!("handled above"),
         });
@@ -617,9 +629,13 @@ fn convert(kind: SseFpMiscKind, destination: [u8; 16], source: [u8; 16], mxcsr: 
             lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), true, mxcsr));
             (8, true)
         }
-        // CVTPD2DQ / CVTTPD2DQ: the two binary64 to signed doublewords in the low half.
-        SseFpMiscKind::Cvtpd2dq | SseFpMiscKind::Cvttpd2dq => {
-            let mode = if kind == SseFpMiscKind::Cvttpd2dq {
+        // CVTPD2DQ / CVTTPD2DQ: the two binary64 to signed doublewords in the low half. CVTPD2PI / CVTTPD2PI give the
+        // same two doublewords; the executor takes them from the low half of the result for the MMX register.
+        SseFpMiscKind::Cvtpd2dq
+        | SseFpMiscKind::Cvttpd2dq
+        | SseFpMiscKind::Cvtpd2pi
+        | SseFpMiscKind::Cvttpd2pi => {
+            let mode = if matches!(kind, SseFpMiscKind::Cvttpd2dq | SseFpMiscKind::Cvttpd2pi) {
                 RationalRoundingMode::TowardZero
             } else {
                 rounding_mode(mxcsr)
@@ -628,13 +644,50 @@ fn convert(kind: SseFpMiscKind, destination: [u8; 16], source: [u8; 16], mxcsr: 
             lanes[1] = Some(float_to_int_lane(low64(1), (true, false), mode, mxcsr));
             (4, false)
         }
+        // CVTPS2PI / CVTTPS2PI: the two low binary32 to signed doublewords (the MMX register is the low half).
+        SseFpMiscKind::Cvtps2pi | SseFpMiscKind::Cvttps2pi => {
+            let mode = if kind == SseFpMiscKind::Cvttps2pi {
+                RationalRoundingMode::TowardZero
+            } else {
+                rounding_mode(mxcsr)
+            };
+            lanes[0] = Some(float_to_int_lane(
+                u64::from(low32(0)),
+                (false, false),
+                mode,
+                mxcsr,
+            ));
+            lanes[1] = Some(float_to_int_lane(
+                u64::from(low32(1)),
+                (false, false),
+                mode,
+                mxcsr,
+            ));
+            (4, false)
+        }
+        // CVTPI2PS: the two signed doublewords of the MMX source to two binary32 in the low half; the high half of the
+        // destination is kept. CVTPI2PD: to two binary64 (exact).
+        SseFpMiscKind::Cvtpi2ps => {
+            lanes[0] = Some(int_to_float_lane(i64::from(low32(0) as i32), false, mxcsr));
+            lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), false, mxcsr));
+            (4, false)
+        }
+        SseFpMiscKind::Cvtpi2pd => {
+            lanes[0] = Some(int_to_float_lane(i64::from(low32(0) as i32), true, mxcsr));
+            lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), true, mxcsr));
+            (8, true)
+        }
         _ => unreachable!("convert handles the precision and the packed integer conversions"),
     };
     // CVTPD2PS, CVTPD2DQ and CVTTPD2DQ write the whole destination: the high quadword becomes zero.
     let mut base = destination;
     if matches!(
         kind,
-        SseFpMiscKind::Cvtpd2ps | SseFpMiscKind::Cvtpd2dq | SseFpMiscKind::Cvttpd2dq
+        SseFpMiscKind::Cvtpd2ps
+            | SseFpMiscKind::Cvtpd2dq
+            | SseFpMiscKind::Cvttpd2dq
+            | SseFpMiscKind::Cvtpd2pi
+            | SseFpMiscKind::Cvttpd2pi
     ) {
         base[8..].fill(0);
     }
