@@ -693,6 +693,31 @@ Gates G1–G8 плана (раздел 8) не приняты.
 - Открытые решения (для архитектурного агента): (А) единое состояние x87 для локального снимка и CPL0-набора перед остальными MMX-инструкциями; рекомендация — в рамках S2-39 (FP/SIMD save/restore), до этого MMX остаётся на `LongModeState.x87`. (Б) `F2`/`F3`/`66` + `0F 77`: железо даёт #UD, SDM не определяет; (A, реализовано) `Unsupported`, (B) #UD как на железе; рекомендация A, как в предыдущих срезах. (В) #AC для 8-байтного операнда на CPL3 — вместе с общим решением по #AC.
 - Что осталось: S2-33 — `MOVD`/`MOVQ`, `PADD*`/`PSUB*`, логика, сдвиги, насыщение, упаковка/распаковка, сравнения (с проверкой на физическом процессоре) и интеграция с FXSAVE/FNSAVE/FRSTOR модели; S2-54 — `ADDSUBPS/PD`, `HADDPS/PD`, `HSUBPS/PD` (после S2-37/S2-38), затем биты SSE3 и SSSE3 для S2-57.
 
+### Раздел S2: S2-58 (исследование и статус)
+
+Задача этапа 2 ([S2-58](../plans/STAGE_2.md#s2-58-объявить-pae-nx-и-apic-в-windows-профиле-adr-0013)): объявить PAE, NX и APIC в Windows-профиле. Срез — только исследование; код не менялся, ни один бит CPUID не объявлен, чекбокс S2-58 не поставлен. Windows-варианта `CpuidProfile` в `crates/od-isa/src/cpuid.rs` нет (его создаёт S2-57, а S2-57 заблокирована этой задачей), поэтому объявлять пока некуда.
+
+- Источник номеров битов: Intel SDM, объединённый PDF 325462-093US (`getContent/671200`, текст через pdftotext; номера — индекс страницы PDF): Vol. 2A, CPUID, таблица признаков листа `01H` EDX (PDF с. ~452): EDX[6] PAE — «extended page table entry formats; an extra level in the page translation tables; and 2-MByte pages rather than 4 Mbyte pages»; EDX[9] APIC — «processor contains an APIC, responding to memory mapped commands FEE00000H–FEE00FFFH»; в разделе о зависимостях от `IA32_MISC_ENABLE`/`IA32_APIC_BASE` (PDF с. ~443) EDX[9] отражает `IA32_APIC_BASE[11]` (APIC Global Enable); лист `80000001H` EDX[20] «Execute Disable Bit» (PDF с. ~528); Vol. 3, `IA32_EFER.NXE` — бит 11 (PDF с. ~3215).
+- Oracle (Mac mini, Intel Core i5-3210M, Ubuntu): CPUID(1) EAX `0x000306A9`, EDX `0xBFEBFBFF` — PAE = 1, APIC = 1; CPUID(0x80000001) EDX `0x28100800` — NX = 1, LM = 1. Подтверждает только позиции битов (3 бита из 3), не приёмку владельцев.
+
+| Бит | Владелец (зависимость) | Статус | Тест |
+|---|---|---|---|
+| PAE, `1` EDX[6] | S4-07 (4-уровневая трансляция) | принят | `page_walk::nonpresent_ps_is_a_page_fault_and_pml4_pt_bit_seven_keep_their_roles` |
+| | S4-08 (права, точный #PF) | принят | `page_walk::tracked_nx_matrix_checks_fetch_faults_reserved_bits_and_data_access` |
+| | S4-10 (2 MiB-страницы) | родитель **не принят**: приняты S4-10a (отказ PS), S4-10b (RAM-only 2 MiB, поднабор), S4-10c (PDPTE.PS → #PF RSVD); матрица прав/A-D, MMIO, системная приёмка открыты | тесты срезов a/b/c есть, но приёмку родителя не заменяют |
+| | S2-25 (`CR4.PAE`, переходы режима) | **не принята** (строка плана `[ ]`; приняты ограниченные срезы S2-25a…e) | срезовые тесты S2-25a/b/c/e |
+| NX, `80000001` EDX[20] | S4-08 (бит XD в MMU) | принят | `page_walk::tracked_nx_matrix_...`, `firmware_board::instruction_fetch_from_rom_is_a_page_fault_by_nx` (S7-03) |
+| | S2-25 (`EFER.NXE` с reserved-битами) | **не принята**: `WRMSR IA32_EFER` с изменением NXE — `Unsupported` (`execute.rs`, `efer_write_decision`: менять можно только SCE) | теста записи NXE нет по построению |
+| | S4-10 (XD в 2 MiB-листе) | **не принят** | нет |
+| APIC, `1` EDX[9] | S4-25 (Local APIC одного CPU) | принят (срезы a–f) | тесты `od-machine` LAPIC |
+| | S4-38L8d (бит APIC в профиле, согласованный с платой) | реализовано, **ждёт независимого ревью** (план: `[ ]`); профиль `X8664V1Stage4AApic` — Linux-плата | `cpuid::tests::stage4a_apic_*`, 8 синтетических тестов `od-machine` |
+
+Вывод: ни одно из трёх условий объявления не выполнено (PAE и NX — не приняты S2-25 и S4-10; APIC — S4-38L8d не прошла ревью), поэтому по правилу «бит не объявляется, пока не приняты все зависимости его строки» PAE, NX и APIC в Windows-профиле остаются 0. Linux-профили не менялись (`OdX8664V1Neutral` из S6-14h с PAE/NX/APIC — прежняя целевая таблица, не по умолчанию; `X8664V1Stage4A*` — прежние тесты).
+
+Блокеры по порядку снятия: (1) приёмка S4-38L8d — снимает APIC (после неё объявлять только на плате с LAPIC; `firmware_board.rs` подключает LAPIC/IOAPIC); (2) S2-25: политика `CR4` (`ControlRegisterPolicy::Cpl0BaseLong64V1` держит PAE всегда включённым, сброс не моделируется) и запись `EFER.NXE` (сейчас `Unsupported`); (3) S4-10: 2 MiB-страницы целиком, включая XD в листе; (4) решение (Opus `high`, до кода, п. 1 «Сделать» S2-58): SDM связывает бит PAE с расширенным форматом записей, лишним уровнем и 2 MiB-страницами, а профиль моделирует только IA-32e 4-уровневую трансляцию (legacy 32-битный и PAE-paging — `PagingNotModelled`, `Long64ProbeConfig` требует `CR4.PAE` и `EFER.LME/LMA`). Нужно решить, достаточно ли для объявления PAE ссылки на long mode (где PAE обязателен) без legacy-PAE.
+- Тесты: не добавлялись (нечего объявлять; негативные тесты Linux-профилей — `stage4a_leaf_1_declares_only_fpu_tsc_and_fxsr`, `stage4a_unclaimed_leaves_are_zero_and_ecx_is_ignored`, `diagnostic_v1_*` — существуют и не затронуты). Тест «бит Windows-профиля равен 0 до приёмки» и позитивный тест создаются вместе с профилем S2-57.
+- Не проверено: сборка и тесты не запускались (кода нет); CR4/EFER-политика прочитана в коде, а не исполнена.
+
 ### Вторая волна: повторное ревью Q1–Q4
 
 Повторное независимое ревью изменённых файлов проведено 2026-11-20 после правок первой волны. Вердикты и статус исправлений:
