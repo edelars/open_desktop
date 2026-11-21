@@ -8,7 +8,8 @@ use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse128MoveKind, Ssse3IntKind, canonical, general_protection,
+    Sse3Source, Sse41Kind, Sse41Operand, Sse128MoveKind, Ssse3IntKind, canonical,
+    general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41441,6 +41442,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                             operation,
                             Operation::Sse3Permute { .. }
                                 | Operation::Ssse3Int { .. }
+                                | Operation::Sse41 { .. }
                                 | Operation::FisttpMemory { .. }
                         ))
                         && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
@@ -50665,7 +50667,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         // S2-54 slice C: the non-FP SSE3 forms need the local SSE state, FISTTP the local x87 state;
         // CPL3 keeps its own profile list (neither is in it).
-        Operation::Sse3Permute { .. } | Operation::Ssse3Int { .. } => state.sse.is_some(),
+        Operation::Sse3Permute { .. } | Operation::Ssse3Int { .. } | Operation::Sse41 { .. } => {
+            state.sse.is_some()
+        }
         Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
         // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
@@ -51589,6 +51593,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, destination, source, immediate),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    // S2-55 slice A: the integer SSE4.1 forms commit here as well.
+    if let Operation::Sse41 {
+        kind,
+        xmm,
+        operand,
+        immediate,
+    } = instruction.operation
+    {
+        return step_sse41(
+            state,
+            memory,
+            context,
+            (kind, xmm, operand, immediate),
             instruction.opcode.byte,
             next_rip,
         );
@@ -62931,8 +62952,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
+        | Operation::Sse41 { .. }
         | Operation::FisttpMemory { .. } => {
-            unreachable!("S2-54 slice C and D forms commit before dispatch")
+            unreachable!("S2-54 slice C and D and S2-55 slice A forms commit before dispatch")
         }
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
@@ -69717,6 +69739,337 @@ fn step_ssse3_int(
     let sse = state.sse.as_mut().expect("SSSE3 state was prevalidated");
     let slot = &mut sse.xmm[usize::from(destination)];
     *slot = ssse3_int_result(kind, *slot, raw, immediate);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// The lane arithmetic of the vector SSE4.1 forms that write the destination register (Intel SDM Vol. 2B,
+/// "Operation" of the 128-bit legacy SSE versions). `dest` is the destination register (first operand),
+/// `src` the register or memory source (second operand; only its low `memory_bytes` bytes are defined for
+/// PMOVSX/PMOVZX) and `mask` XMM0 (PBLENDVB). PMOVSX/PMOVZX widen the low source lanes; PMULLD keeps the low
+/// 32 bits of each product; PMULDQ is the signed 32x32->64 product of dword lanes 0 and 2; PACKUSDW clamps
+/// signed dwords to the unsigned word range, the destination in the low half and the source in the high half;
+/// PBLENDW takes word lane i from the source when `immediate` bit i is set, PBLENDVB takes byte i from the
+/// source when bit 7 of XMM0 byte i is set; PHMINPOSUW puts the minimum unsigned word (lowest index on a tie)
+/// in bits 15:0 and its index in bits 18:16 and zeroes the rest; MPSADBW sums four absolute byte differences
+/// of the 4-byte block of the source selected by imm8[1:0] against each of the eight byte-offset windows of
+/// the destination starting at 4*imm8[2] (bits 7:3 ignored).
+fn sse41_vector_result(
+    kind: Sse41Kind,
+    dest: [u8; 16],
+    src: [u8; 16],
+    mask: [u8; 16],
+    immediate: u8,
+) -> [u8; 16] {
+    let lane = |value: &[u8; 16], width: usize, index: usize, signed: bool| -> i64 {
+        let mut raw = 0u64;
+        for byte in 0..width {
+            raw |= u64::from(value[index * width + byte]) << (8 * byte);
+        }
+        if signed {
+            let shift = 64 - 8 * width as u32;
+            ((raw << shift) as i64) >> shift
+        } else {
+            raw as i64
+        }
+    };
+    let put = |out: &mut [u8; 16], width: usize, index: usize, value: i64| {
+        out[index * width..(index + 1) * width].copy_from_slice(&value.to_le_bytes()[..width]);
+    };
+    // (source width, destination width, sign-extend) of a PMOVSX/PMOVZX form.
+    let widen = |from: usize, to: usize, signed: bool| {
+        let mut out = [0u8; 16];
+        for index in 0..16 / to {
+            put(&mut out, to, index, lane(&src, from, index, signed));
+        }
+        out
+    };
+    // (lane width, signed, maximum) of a PMIN*/PMAX* form.
+    let extremum = |width: usize, signed: bool, maximum: bool| {
+        let mut out = [0u8; 16];
+        for index in 0..16 / width {
+            let (a, b) = (
+                lane(&dest, width, index, signed),
+                lane(&src, width, index, signed),
+            );
+            put(
+                &mut out,
+                width,
+                index,
+                if maximum { a.max(b) } else { a.min(b) },
+            );
+        }
+        out
+    };
+    match kind {
+        Sse41Kind::Pmovsxbw => widen(1, 2, true),
+        Sse41Kind::Pmovsxbd => widen(1, 4, true),
+        Sse41Kind::Pmovsxbq => widen(1, 8, true),
+        Sse41Kind::Pmovsxwd => widen(2, 4, true),
+        Sse41Kind::Pmovsxwq => widen(2, 8, true),
+        Sse41Kind::Pmovsxdq => widen(4, 8, true),
+        Sse41Kind::Pmovzxbw => widen(1, 2, false),
+        Sse41Kind::Pmovzxbd => widen(1, 4, false),
+        Sse41Kind::Pmovzxbq => widen(1, 8, false),
+        Sse41Kind::Pmovzxwd => widen(2, 4, false),
+        Sse41Kind::Pmovzxwq => widen(2, 8, false),
+        Sse41Kind::Pmovzxdq => widen(4, 8, false),
+        Sse41Kind::Pminsb => extremum(1, true, false),
+        Sse41Kind::Pminsd => extremum(4, true, false),
+        Sse41Kind::Pminuw => extremum(2, false, false),
+        Sse41Kind::Pminud => extremum(4, false, false),
+        Sse41Kind::Pmaxsb => extremum(1, true, true),
+        Sse41Kind::Pmaxsd => extremum(4, true, true),
+        Sse41Kind::Pmaxuw => extremum(2, false, true),
+        Sse41Kind::Pmaxud => extremum(4, false, true),
+        Sse41Kind::Pmulld => {
+            let mut out = [0u8; 16];
+            for index in 0..4 {
+                let product = lane(&dest, 4, index, true).wrapping_mul(lane(&src, 4, index, true));
+                put(&mut out, 4, index, product);
+            }
+            out
+        }
+        Sse41Kind::Pmuldq => {
+            let mut out = [0u8; 16];
+            for index in 0..2 {
+                let product = lane(&dest, 4, 2 * index, true) * lane(&src, 4, 2 * index, true);
+                put(&mut out, 8, index, product);
+            }
+            out
+        }
+        Sse41Kind::Pcmpeqq => {
+            let mut out = [0u8; 16];
+            for index in 0..2 {
+                if dest[8 * index..8 * index + 8] == src[8 * index..8 * index + 8] {
+                    out[8 * index..8 * index + 8].fill(0xff);
+                }
+            }
+            out
+        }
+        Sse41Kind::Packusdw => {
+            let mut out = [0u8; 16];
+            for index in 0..4 {
+                put(
+                    &mut out,
+                    2,
+                    index,
+                    lane(&dest, 4, index, true).clamp(0, 0xffff),
+                );
+                put(
+                    &mut out,
+                    2,
+                    4 + index,
+                    lane(&src, 4, index, true).clamp(0, 0xffff),
+                );
+            }
+            out
+        }
+        Sse41Kind::Pblendw => {
+            let mut out = dest;
+            for index in 0..8 {
+                if immediate >> index & 1 != 0 {
+                    out[2 * index..2 * index + 2].copy_from_slice(&src[2 * index..2 * index + 2]);
+                }
+            }
+            out
+        }
+        Sse41Kind::Pblendvb => {
+            let mut out = dest;
+            for index in 0..16 {
+                if mask[index] & 0x80 != 0 {
+                    out[index] = src[index];
+                }
+            }
+            out
+        }
+        Sse41Kind::Phminposuw => {
+            let mut best = (lane(&src, 2, 0, false), 0usize);
+            for index in 1..8 {
+                let value = lane(&src, 2, index, false);
+                if value < best.0 {
+                    best = (value, index);
+                }
+            }
+            let mut out = [0u8; 16];
+            put(&mut out, 2, 0, best.0);
+            put(&mut out, 2, 1, best.1 as i64);
+            out
+        }
+        Sse41Kind::Mpsadbw => {
+            let source_block = usize::from(immediate & 3) * 4;
+            let destination_block = usize::from(immediate >> 2 & 1) * 4;
+            let mut out = [0u8; 16];
+            for index in 0..8 {
+                let sum: i64 = (0..4)
+                    .map(|byte| {
+                        (i64::from(dest[destination_block + index + byte])
+                            - i64::from(src[source_block + byte]))
+                        .abs()
+                    })
+                    .sum();
+                put(&mut out, 2, index, sum);
+            }
+            out
+        }
+        Sse41Kind::Movntdqa => src,
+        Sse41Kind::Ptest
+        | Sse41Kind::Pextrb
+        | Sse41Kind::Pextrw
+        | Sse41Kind::Pextrd
+        | Sse41Kind::Pextrq
+        | Sse41Kind::Pinsrb
+        | Sse41Kind::Pinsrd
+        | Sse41Kind::Pinsrq => unreachable!("handled by step_sse41"),
+    }
+}
+
+/// S2-55 slice A: the integer SSE4.1 forms on the local SSE state (Intel SDM Vol. 2B, see [`Sse41Kind`]).
+/// No MXCSR bit is read or written and no SIMD floating-point exception exists; only PTEST changes RFLAGS
+/// (ZF, CF from the SDM operation; AF, OF, PF, SF cleared). Bits above 127 do not exist here (legacy SSE
+/// leaves them unchanged). PEXTR* to a register zero-extends to 64 bits (SDM: the default operand size of
+/// the register destination is 64 bits in 64-bit mode); PINSRB takes the low byte of the register source.
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries
+///    that control register). The CPUID.SSE4_1 gate is not modeled (S2-57 owns CPUID); LOCK and the register
+///    form of MOVNTDQA are decoder `#UD`.
+/// 2. A memory operand: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base).
+/// 3. A 128-bit memory operand (Type 4 forms and MOVNTDQA, Type 1) that is not 16-byte aligned is `#GP(0)`;
+///    the Type 5 forms (PMOVSX/PMOVZX, PINSR*, PEXTR*) have no alignment `#GP`.
+/// 4. The whole operand range must be canonical; then one `read` or (PEXTR*) one `write` of the operand
+///    width (a memory fault, `#PF` included, is the backend's result and leaves the CPU state untouched).
+///
+/// The alignment-check exception `#AC` of Type 5 (Table 2-22: 2-, 4- and 8-byte accesses at CPL3) is not
+/// modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0
+/// not carried) is `Unsupported`, as in the SSE3 permutes, instead of guessed.
+fn step_sse41(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, xmm, operand, immediate): (Sse41Kind, u8, Sse41Operand, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let length = kind.memory_bytes();
+    let mut address = 0;
+    if let Sse41Operand::Memory(memory_operand) = operand {
+        address = match memory_operand.linear_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(fault) => return Ok(StepOutcome::Fault(fault)),
+        };
+        if kind.requires_alignment() && address & 15 != 0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
+            return report_memory_error(error);
+        }
+        if length > 1
+            && address & (length as u64 - 1) != 0
+            && context.privilege == PrivilegeLevel::Ring3
+            && state.rflags & (1 << 18) != 0
+            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+    }
+    let general = |encoding: u8| {
+        Register::from_encoding(encoding).expect("a REX-extended register number") as usize
+    };
+    if kind.stores_to_rm() {
+        let source = state
+            .sse
+            .as_ref()
+            .expect("SSE4.1 state was prevalidated")
+            .xmm[usize::from(xmm)];
+        let lane = |width: usize, index: u8| {
+            let start = usize::from(index) % (16 / width) * width;
+            let mut raw = [0u8; 8];
+            raw[..width].copy_from_slice(&source[start..start + width]);
+            u64::from_le_bytes(raw)
+        };
+        let value = match kind {
+            Sse41Kind::Pextrb => lane(1, immediate),
+            Sse41Kind::Pextrw => lane(2, immediate),
+            Sse41Kind::Pextrd => lane(4, immediate),
+            _ => lane(8, immediate),
+        };
+        match operand {
+            Sse41Operand::Gpr(encoding) => state.gpr[general(encoding)] = value,
+            Sse41Operand::Memory(_) => {
+                if let Err(error) = memory.write(address, context, &value.to_le_bytes()[..length]) {
+                    return report_memory_error(error);
+                }
+            }
+            Sse41Operand::Xmm(_) => unreachable!("PEXTR* decode a general register or memory"),
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    let mut raw = [0u8; 16];
+    match operand {
+        Sse41Operand::Xmm(index) => {
+            raw = state
+                .sse
+                .as_ref()
+                .expect("SSE4.1 state was prevalidated")
+                .xmm[usize::from(index)];
+        }
+        Sse41Operand::Gpr(encoding) => {
+            raw[..8].copy_from_slice(&state.gpr[general(encoding)].to_le_bytes());
+        }
+        Sse41Operand::Memory(_) => {
+            if let Err(error) = memory.read(address, context, &mut raw[..length]) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let sse = state.sse.as_mut().expect("SSE4.1 state was prevalidated");
+    let dest = sse.xmm[usize::from(xmm)];
+    let insert = |width: usize| {
+        let mut out = dest;
+        let start = usize::from(immediate) % (16 / width) * width;
+        out[start..start + width].copy_from_slice(&raw[..width]);
+        out
+    };
+    let result = match kind {
+        Sse41Kind::Ptest => {
+            let zero = dest.iter().zip(&raw).all(|(d, s)| d & s == 0);
+            let carry = dest.iter().zip(&raw).all(|(d, s)| !d & s == 0);
+            state.rflags = (state.rflags & !crate::ARITHMETIC_FLAGS)
+                | if zero { crate::ZF } else { 0 }
+                | if carry { crate::CF } else { 0 };
+            state.rip = next_rip;
+            return Ok(StepOutcome::Advanced);
+        }
+        Sse41Kind::Pinsrb => insert(1),
+        Sse41Kind::Pinsrd => insert(4),
+        Sse41Kind::Pinsrq => insert(8),
+        _ => sse41_vector_result(kind, dest, raw, sse.xmm[0], immediate),
+    };
+    sse.xmm[usize::from(xmm)] = result;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }

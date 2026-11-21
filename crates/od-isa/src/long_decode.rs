@@ -142,6 +142,202 @@ impl Ssse3IntKind {
     }
 }
 
+/// The integer SSE4.1 forms (Intel SDM Vol. 2B, combined SDM 325462-093US: PTEST pp. 4-498..4-499,
+/// PMOVSX pp. 4-352..4-361, PMOVZX pp. 4-362..4-371, PMULDQ pp. 4-372..4-374, PMULLD pp. 4-387..4-390,
+/// PMINSB/PMINSD/PMINUW/PMINUD pp. 4-332..4-349, PMAXSB/PMAXSD/PMAXUW/PMAXUD pp. 4-316..4-331, PCMPEQQ
+/// pp. 4-251..4-253, PACKUSDW pp. 4-191..4-195, PBLENDW pp. 4-235..4-237, PBLENDVB pp. 4-231..4-234,
+/// PINSRB/PINSRD/PINSRQ pp. 4-305..4-307, PEXTRB/PEXTRD/PEXTRQ pp. 4-286..4-288, PEXTRW pp. 4-289..4-291,
+/// MOVNTDQA pp. 4-90..4-91, PHMINPOSUW pp. 4-298..4-299, MPSADBW pp. 4-132..4-139). Only the legacy
+/// `66`-prefixed encodings exist here (no VEX/EVEX). Exceptions class by form: Type 4 (Vol. 2A Table 2-21,
+/// 16-byte aligned m128) for the register-or-m128 forms, Type 1 (Table 2-18) for MOVNTDQA, Type 5
+/// (Table 2-22, no alignment requirement) for PMOVSX/PMOVZX, PINSR* and PEXTR*.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41Kind {
+    /// `66 0F 38 17 /r`
+    Ptest,
+    /// `66 0F 38 20 /r` .. `25 /r`: sign-extend bytes to words, bytes to dwords, bytes to qwords, words to
+    /// dwords, words to qwords, dwords to qwords.
+    Pmovsxbw,
+    Pmovsxbd,
+    Pmovsxbq,
+    Pmovsxwd,
+    Pmovsxwq,
+    Pmovsxdq,
+    /// `66 0F 38 30 /r` .. `35 /r`: the zero-extending twins.
+    Pmovzxbw,
+    Pmovzxbd,
+    Pmovzxbq,
+    Pmovzxwd,
+    Pmovzxwq,
+    Pmovzxdq,
+    /// `66 0F 38 28 /r`
+    Pmuldq,
+    /// `66 0F 38 29 /r`
+    Pcmpeqq,
+    /// `66 0F 38 2A /r` (memory source only)
+    Movntdqa,
+    /// `66 0F 38 2B /r`
+    Packusdw,
+    /// `66 0F 38 38 /r` .. `3F /r`
+    Pminsb,
+    Pminsd,
+    Pminuw,
+    Pminud,
+    Pmaxsb,
+    Pmaxsd,
+    Pmaxuw,
+    Pmaxud,
+    /// `66 0F 38 40 /r`
+    Pmulld,
+    /// `66 0F 38 41 /r`
+    Phminposuw,
+    /// `66 0F 38 10 /r` (implicit XMM0 mask)
+    Pblendvb,
+    /// `66 0F 3A 0E /r ib`
+    Pblendw,
+    /// `66 0F 3A 14 /r ib`
+    Pextrb,
+    /// `66 0F 3A 15 /r ib`
+    Pextrw,
+    /// `66 0F 3A 16 /r ib`
+    Pextrd,
+    /// `66 REX.W 0F 3A 16 /r ib`
+    Pextrq,
+    /// `66 0F 3A 20 /r ib`
+    Pinsrb,
+    /// `66 0F 3A 22 /r ib`
+    Pinsrd,
+    /// `66 REX.W 0F 3A 22 /r ib`
+    Pinsrq,
+    /// `66 0F 3A 42 /r ib`
+    Mpsadbw,
+}
+
+impl Sse41Kind {
+    /// The form selected by the opcode map and byte; `rex_w` only splits PEXTRD/PEXTRQ and PINSRD/PINSRQ
+    /// (every other form ignores REX.W). The mandatory `66` is checked by the decoder.
+    pub const fn from_opcode(map: OpcodeMap, byte: u8, rex_w: bool) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f38, 0x17) => Self::Ptest,
+            (OpcodeMap::Escape0f38, 0x20) => Self::Pmovsxbw,
+            (OpcodeMap::Escape0f38, 0x21) => Self::Pmovsxbd,
+            (OpcodeMap::Escape0f38, 0x22) => Self::Pmovsxbq,
+            (OpcodeMap::Escape0f38, 0x23) => Self::Pmovsxwd,
+            (OpcodeMap::Escape0f38, 0x24) => Self::Pmovsxwq,
+            (OpcodeMap::Escape0f38, 0x25) => Self::Pmovsxdq,
+            (OpcodeMap::Escape0f38, 0x30) => Self::Pmovzxbw,
+            (OpcodeMap::Escape0f38, 0x31) => Self::Pmovzxbd,
+            (OpcodeMap::Escape0f38, 0x32) => Self::Pmovzxbq,
+            (OpcodeMap::Escape0f38, 0x33) => Self::Pmovzxwd,
+            (OpcodeMap::Escape0f38, 0x34) => Self::Pmovzxwq,
+            (OpcodeMap::Escape0f38, 0x35) => Self::Pmovzxdq,
+            (OpcodeMap::Escape0f38, 0x28) => Self::Pmuldq,
+            (OpcodeMap::Escape0f38, 0x29) => Self::Pcmpeqq,
+            (OpcodeMap::Escape0f38, 0x2a) => Self::Movntdqa,
+            (OpcodeMap::Escape0f38, 0x2b) => Self::Packusdw,
+            (OpcodeMap::Escape0f38, 0x38) => Self::Pminsb,
+            (OpcodeMap::Escape0f38, 0x39) => Self::Pminsd,
+            (OpcodeMap::Escape0f38, 0x3a) => Self::Pminuw,
+            (OpcodeMap::Escape0f38, 0x3b) => Self::Pminud,
+            (OpcodeMap::Escape0f38, 0x3c) => Self::Pmaxsb,
+            (OpcodeMap::Escape0f38, 0x3d) => Self::Pmaxsd,
+            (OpcodeMap::Escape0f38, 0x3e) => Self::Pmaxuw,
+            (OpcodeMap::Escape0f38, 0x3f) => Self::Pmaxud,
+            (OpcodeMap::Escape0f38, 0x40) => Self::Pmulld,
+            (OpcodeMap::Escape0f38, 0x41) => Self::Phminposuw,
+            (OpcodeMap::Escape0f38, 0x10) => Self::Pblendvb,
+            (OpcodeMap::Escape0f3a, 0x0e) => Self::Pblendw,
+            (OpcodeMap::Escape0f3a, 0x14) => Self::Pextrb,
+            (OpcodeMap::Escape0f3a, 0x15) => Self::Pextrw,
+            (OpcodeMap::Escape0f3a, 0x16) => {
+                if rex_w {
+                    Self::Pextrq
+                } else {
+                    Self::Pextrd
+                }
+            }
+            (OpcodeMap::Escape0f3a, 0x20) => Self::Pinsrb,
+            (OpcodeMap::Escape0f3a, 0x22) => {
+                if rex_w {
+                    Self::Pinsrq
+                } else {
+                    Self::Pinsrd
+                }
+            }
+            (OpcodeMap::Escape0f3a, 0x42) => Self::Mpsadbw,
+            _ => return None,
+        })
+    }
+
+    /// PBLENDW, PEXTR*, PINSR* and MPSADBW carry an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        matches!(
+            self,
+            Self::Pblendw
+                | Self::Pextrb
+                | Self::Pextrw
+                | Self::Pextrd
+                | Self::Pextrq
+                | Self::Pinsrb
+                | Self::Pinsrd
+                | Self::Pinsrq
+                | Self::Mpsadbw
+        )
+    }
+
+    /// PEXTR* and PINSR* take a general register (or memory) as the `r/m` operand.
+    pub const fn uses_general_register(self) -> bool {
+        matches!(
+            self,
+            Self::Pextrb
+                | Self::Pextrw
+                | Self::Pextrd
+                | Self::Pextrq
+                | Self::Pinsrb
+                | Self::Pinsrd
+                | Self::Pinsrq
+        )
+    }
+
+    /// PEXTR* write their `r/m` operand; every other form only reads it.
+    pub const fn stores_to_rm(self) -> bool {
+        matches!(
+            self,
+            Self::Pextrb | Self::Pextrw | Self::Pextrd | Self::Pextrq
+        )
+    }
+
+    /// Bytes of the memory operand: 16 for the Type 4 forms and MOVNTDQA, the SDM operand width
+    /// (m64, m32, m16, m8) for the Type 5 forms.
+    pub const fn memory_bytes(self) -> usize {
+        match self {
+            Self::Pmovsxbw | Self::Pmovzxbw | Self::Pmovsxwd | Self::Pmovzxwd => 8,
+            Self::Pmovsxdq | Self::Pmovzxdq => 8,
+            Self::Pmovsxbd | Self::Pmovzxbd | Self::Pmovsxwq | Self::Pmovzxwq => 4,
+            Self::Pmovsxbq | Self::Pmovzxbq | Self::Pextrw => 2,
+            Self::Pextrb | Self::Pinsrb => 1,
+            Self::Pextrd | Self::Pinsrd => 4,
+            Self::Pextrq | Self::Pinsrq => 8,
+            _ => 16,
+        }
+    }
+
+    /// A 128-bit memory operand must be 16-byte aligned (`#GP(0)` otherwise): Table 2-21 note 1 exempts
+    /// only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms, and MOVNTDQA is Type 1 (Table 2-18).
+    pub const fn requires_alignment(self) -> bool {
+        self.memory_bytes() == 16
+    }
+}
+
+/// The `r/m` operand of [`Operation::Sse41`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41Operand {
+    Xmm(u8),
+    /// General register number including REX.B (PEXTR*, PINSR*).
+    Gpr(u8),
+    Memory(MemoryOperand),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressBase {
     None,
@@ -2253,6 +2449,16 @@ pub enum Operation {
         kind: Ssse3IntKind,
         destination: u8,
         source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx` and `66 0F 3A xx ib`). `xmm` is the ModRM.reg
+    /// XMM register (destination, or the source of PEXTR*); `operand` the ModRM.r/m operand. `immediate` is
+    /// zero for the forms without `imm8`. Decoded only as the fallback of [`decode`] when the profile
+    /// decoder is `Unsupported` for the opcode; executed through `step_sse41`.
+    Sse41 {
+        kind: Sse41Kind,
+        xmm: u8,
+        operand: Sse41Operand,
         immediate: u8,
     },
     /// S2-54 slice C: x87 `FISTTP m16int/m32int/m64int` (`DF /1`, `DB /1`, `DD /1`): store ST(0) as a
@@ -12038,6 +12244,84 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx /r`, `66 0F 3A xx /r ib`), tried by [`decode`]
+    /// only after the profile decoder returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A
+    /// Tables 2-18, 2-21 and 2-22, "If preceded by a LOCK prefix (F0H)"), as is the register form of
+    /// MOVNTDQA (the SDM operand is `m128`). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no
+    /// segment base in this operand model), a missing `66` (without it these opcodes are not SSE4.1),
+    /// `F2`/`F3` and the VEX/EVEX encodings. REX.W selects PEXTRQ/PINSRQ and is ignored by every other form.
+    fn decode_sse41(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let rex = prefixes.rex.unwrap_or(0);
+        let Some(kind) = Sse41Kind::from_opcode(opcode.map, opcode.byte, rex & 8 != 0) else {
+            return Ok(None);
+        };
+        if !prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (register_form && kind == Sse41Kind::Movntdqa) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let operand = if register_form {
+            let encoding = (modrm & 7) | ((rex & 1) << 3);
+            if kind.uses_general_register() {
+                Sse41Operand::Gpr(encoding)
+            } else {
+                Sse41Operand::Xmm(encoding)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse41 {
+                kind,
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                operand,
+                immediate,
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -12084,6 +12368,12 @@ pub fn decode(
             if Ssse3IntKind::from_opcode(opcode.map, byte).is_some() =>
         {
             fetch.decode_ssse3_int()
+        }
+        // S2-55 slice A: the integer SSE4.1 forms.
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Sse41Kind::from_opcode(opcode.map, byte, false).is_some() =>
+        {
+            fetch.decode_sse41()
         }
         _ => return profile,
     };

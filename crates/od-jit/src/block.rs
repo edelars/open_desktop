@@ -4423,6 +4423,51 @@ mod tests {
     }
 
     #[test]
+    fn integer_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-55 slice A: the interpreter executes the integer SSE4.1 forms; the JIT has no lowering for
+        // them, so the block is not built.
+        const ENTRY: u64 = 0x4e80;
+        for bytes in [
+            &[0x66, 0x0f, 0x38, 0x17, 0xc1][..],         // PTEST xmm0, xmm1
+            &[0x66, 0x0f, 0x38, 0x20, 0x00],             // PMOVSXBW xmm0, [rax]
+            &[0x66, 0x0f, 0x38, 0x40, 0x4b, 0x10],       // PMULLD xmm1, [rbx+0x10]
+            &[0x66, 0x0f, 0x38, 0x2a, 0x00],             // MOVNTDQA xmm0, [rax]
+            &[0x66, 0x0f, 0x38, 0x10, 0xd3],             // PBLENDVB xmm2, xmm3
+            &[0x66, 0x0f, 0x3a, 0x0e, 0xc1, 0x05],       // PBLENDW xmm0, xmm1, 5
+            &[0x66, 0x0f, 0x3a, 0x16, 0xc0, 0x01],       // PEXTRD eax, xmm0, 1
+            &[0x66, 0x48, 0x0f, 0x3a, 0x22, 0xc0, 0x01], // PINSRQ xmm0, rax, 1
+            &[0x66, 0x0f, 0x3a, 0x42, 0xc1, 0x02],       // MPSADBW xmm0, xmm1, 2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41 { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms (and the register form of MOVNTDQA) is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x38, 0x17, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x0e, 0xc1, 0x00],
+            &[0x66, 0x0f, 0x38, 0x2a, 0xc1],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);
