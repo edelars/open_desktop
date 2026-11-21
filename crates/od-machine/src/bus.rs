@@ -1,9 +1,9 @@
 use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{
     GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig,
-    MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory,
-    ProbeReport, RamAccessOperation, RamLimits, TrackedAccessError, TrackedAccessOutcome,
-    TrackedAccessReport, TrackedAccessRequest,
+    MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PaeAccessRequest,
+    PaeProbeConfig, PhysicalMemory, ProbeReport, RamAccessOperation, RamLimits, TrackedAccessError,
+    TrackedAccessOutcome, TrackedAccessReport, TrackedAccessRequest,
 };
 use od_isa::{
     PortIo,
@@ -1167,83 +1167,36 @@ impl MachineBus {
             committed_write,
             None,
             |address, width, operation| {
-                let width = match width {
-                    8 => AccessWidth::Qword,
-                    4 => AccessWidth::Dword,
-                    2 => AccessWidth::Word,
-                    1 => AccessWidth::Byte,
-                    _ => {
-                        return Err(crate::page_walk::MmioDispatchError::Backend(format!(
-                            "unsupported MMIO width {width}"
-                        )));
-                    }
-                };
-                let len = u64::from(width.bytes());
-                let region = regions
-                    .iter()
-                    .find(|region| {
-                        region.kind == MemoryRegionKind::Mmio
-                            && region.range.start() <= address
-                            && u128::from(address.get()) + u128::from(len)
-                                <= region.range.end_exclusive()
-                    })
-                    .ok_or_else(|| {
-                        crate::page_walk::MmioDispatchError::Backend(
-                            "MMIO range is not wholly inside one device region".to_owned(),
-                        )
-                    })?;
-                let binding = mmio
-                    .iter()
-                    .find(|binding| binding.region_start == region.range.start())
-                    .ok_or_else(|| {
-                        crate::page_walk::MmioDispatchError::Backend(format!(
-                            "unmapped MMIO address {address:?}"
-                        ))
-                    })?;
-                let access = DeviceAccess {
-                    space: IoSpace::Mmio,
-                    offset: address.get() - region.range.start().get(),
-                    width,
-                };
-                match operation {
-                    RamAccessOperation::Read { .. } => devices[binding.device_index]
-                        .read_from_cpu(vcpu, access)
-                        .map(|value| value & width.mask())
-                        .map_err(|error| {
-                            crate::page_walk::MmioDispatchError::Backend(format!(
-                                "MMIO device {} read failed: {error:?}",
-                                binding.device_index
-                            ))
-                        }),
-                    RamAccessOperation::Write { value, .. } => devices[binding.device_index]
-                        .write_from_cpu(vcpu, access, value & width.mask())
-                        .map(|()| 0)
-                        .map_err(|error| {
-                            crate::page_walk::MmioDispatchError::Backend(format!(
-                                "MMIO device {} write failed: {error:?}",
-                                binding.device_index
-                            ))
-                        }),
-                    RamAccessOperation::Fetch => Err(crate::page_walk::MmioDispatchError::Backend(
-                        "instruction fetch from MMIO is unsupported".to_owned(),
-                    )),
-                    RamAccessOperation::ReadPseudoDescriptor => {
-                        Err(crate::page_walk::MmioDispatchError::Backend(
-                            "pseudo-descriptor reads are RAM-only".to_owned(),
-                        ))
-                    }
-                    RamAccessOperation::ReadForWrite { .. } => {
-                        Err(crate::page_walk::MmioDispatchError::Backend(
-                            "write-intent reads are RAM-only".to_owned(),
-                        ))
-                    }
-                    // S6-31: refused by the walker before the dispatch.
-                    RamAccessOperation::AtomicTarget { .. } => {
-                        Err(crate::page_walk::MmioDispatchError::Backend(
-                            "locked operations are RAM-only".to_owned(),
-                        ))
-                    }
-                }
+                dispatch_tracked_mmio(&regions, mmio, devices, vcpu, address, width, operation)
+            },
+        )
+    }
+
+    /// S2-25j: a tracked operand access of PAE paging by vCPU `vcpu`: the walk of
+    /// [`crate::page_walk::pae`], then the physical address decides RAM, device or refusal; an MMIO
+    /// operand reaches the device as that vCPU's access (the same dispatch as [`Self::access_tracked`]).
+    pub(crate) fn access_tracked_pae(
+        &mut self,
+        vcpu: usize,
+        paging: &PaeProbeConfig,
+        request: PaeAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> TrackedAccessReport {
+        let Self {
+            memory,
+            devices,
+            mmio,
+            ..
+        } = self;
+        let devices = exclusive_devices(devices);
+        let regions = memory.region_specs().collect::<Vec<_>>();
+        crate::page_walk::pae::access_pae_with_mmio(
+            memory,
+            paging,
+            request,
+            committed_write,
+            |address, width, operation| {
+                dispatch_tracked_mmio(&regions, mmio, devices, vcpu, address, width, operation)
             },
         )
     }
@@ -1904,6 +1857,96 @@ impl PortIo for MachineBusPortIo<'_> {
             AccessWidth::Dword,
             value,
         )
+    }
+}
+
+/// The device dispatch of a tracked MMIO operand access by vCPU `vcpu` (shared by the 4-level and the
+/// PAE paths of [`MachineBus`]): the operand must lie wholly inside one `Mmio` region that has a
+/// device binding; it reaches the device as that vCPU's access of the operand width.
+fn dispatch_tracked_mmio(
+    regions: &[MemoryRegionSpec],
+    mmio: &[MmioBinding],
+    devices: &mut [Box<dyn BusDevice>],
+    vcpu: usize,
+    address: GuestPhysicalAddress,
+    width: u8,
+    operation: RamAccessOperation,
+) -> Result<u64, crate::page_walk::MmioDispatchError> {
+    let width = match width {
+        8 => AccessWidth::Qword,
+        4 => AccessWidth::Dword,
+        2 => AccessWidth::Word,
+        1 => AccessWidth::Byte,
+        _ => {
+            return Err(crate::page_walk::MmioDispatchError::Backend(format!(
+                "unsupported MMIO width {width}"
+            )));
+        }
+    };
+    let len = u64::from(width.bytes());
+    let region = regions
+        .iter()
+        .find(|region| {
+            region.kind == MemoryRegionKind::Mmio
+                && region.range.start() <= address
+                && u128::from(address.get()) + u128::from(len) <= region.range.end_exclusive()
+        })
+        .ok_or_else(|| {
+            crate::page_walk::MmioDispatchError::Backend(
+                "MMIO range is not wholly inside one device region".to_owned(),
+            )
+        })?;
+    let binding = mmio
+        .iter()
+        .find(|binding| binding.region_start == region.range.start())
+        .ok_or_else(|| {
+            crate::page_walk::MmioDispatchError::Backend(format!(
+                "unmapped MMIO address {address:?}"
+            ))
+        })?;
+    let access = DeviceAccess {
+        space: IoSpace::Mmio,
+        offset: address.get() - region.range.start().get(),
+        width,
+    };
+    match operation {
+        RamAccessOperation::Read { .. } => devices[binding.device_index]
+            .read_from_cpu(vcpu, access)
+            .map(|value| value & width.mask())
+            .map_err(|error| {
+                crate::page_walk::MmioDispatchError::Backend(format!(
+                    "MMIO device {} read failed: {error:?}",
+                    binding.device_index
+                ))
+            }),
+        RamAccessOperation::Write { value, .. } => devices[binding.device_index]
+            .write_from_cpu(vcpu, access, value & width.mask())
+            .map(|()| 0)
+            .map_err(|error| {
+                crate::page_walk::MmioDispatchError::Backend(format!(
+                    "MMIO device {} write failed: {error:?}",
+                    binding.device_index
+                ))
+            }),
+        RamAccessOperation::Fetch => Err(crate::page_walk::MmioDispatchError::Backend(
+            "instruction fetch from MMIO is unsupported".to_owned(),
+        )),
+        RamAccessOperation::ReadPseudoDescriptor => {
+            Err(crate::page_walk::MmioDispatchError::Backend(
+                "pseudo-descriptor reads are RAM-only".to_owned(),
+            ))
+        }
+        RamAccessOperation::ReadForWrite { .. } => {
+            Err(crate::page_walk::MmioDispatchError::Backend(
+                "write-intent reads are RAM-only".to_owned(),
+            ))
+        }
+        // S6-31: refused by the walker before the dispatch.
+        RamAccessOperation::AtomicTarget { .. } => {
+            Err(crate::page_walk::MmioDispatchError::Backend(
+                "locked operations are RAM-only".to_owned(),
+            ))
+        }
     }
 }
 

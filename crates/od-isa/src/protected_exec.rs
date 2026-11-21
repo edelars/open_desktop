@@ -173,6 +173,9 @@ pub const EFER_WRITABLE_MASK: u64 = EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE;
 /// accessed), as the KVM oracle reports it (`type 3`, `P 1`, `DPL 0`).
 pub const REAL_MODE_DATA_ACCESS: u8 = 0x93;
 
+/// The dirty bit (bit 6) in the mask of a [`Touch`].
+const TOUCH_DIRTY: u8 = 1 << 6;
+
 const EFLAGS_CF: u32 = 1;
 const EFLAGS_ZF: u32 = 1 << 6;
 /// CF, PF, AF, ZF, SF, OF: rewritten by `ADD`.
@@ -210,6 +213,9 @@ pub enum ProtectedInstruction {
     MovEaxFromDs(u32),
     /// `8b 15 disp32`: `MOV EDX, DWORD PTR ds:disp32`.
     MovEdxFromDs(u32),
+    /// `a3 disp32`: `MOV DWORD PTR ds:disp32, EAX`. Not a form of the Linux trampoline trace: the
+    /// store of the operand slice of PAE paging (S2-25j), where a write walk sets `D`.
+    MovDsFromEax(u32),
     /// `3b 05 disp32`: `CMP EAX, DWORD PTR ds:disp32`.
     CmpEaxWithDs(u32),
     /// `3b 15 disp32`: `CMP EDX, DWORD PTR ds:disp32`.
@@ -314,6 +320,8 @@ pub enum ProtectedRefusal {
     DataBeyondLimit { eip: u32, disp: u32, limit: u32 },
     /// A data byte at `linear` is not readable in memory.
     DataUnreadable { eip: u32, linear: u32 },
+    /// A data byte at `linear` of a store is not writable in memory (S2-25j): nothing was written.
+    DataUnwritable { eip: u32, linear: u32 },
     /// A segment load was refused for `reason`.
     SegmentLoadRefused {
         eip: u32,
@@ -816,6 +824,10 @@ impl ProtectedCpu {
                 ProtectedInstruction::MovEaxFromDs(self.fetch_u32(mem, 1)?),
                 5,
             )),
+            0xA3 => Ok((
+                ProtectedInstruction::MovDsFromEax(self.fetch_u32(mem, 1)?),
+                5,
+            )),
             0xB8 => Ok((
                 ProtectedInstruction::MovEaxImm32(self.fetch_u32(mem, 1)?),
                 5,
@@ -853,6 +865,54 @@ impl ProtectedCpu {
             })?;
         }
         Ok(u32::from_le_bytes(bytes))
+    }
+
+    /// Writes the DWORD `value` at `DS:disp` (S2-25j): the operand must lie under the DS limit, every
+    /// byte is translated as a write and checked writable before the first byte is stored, so a
+    /// refused store leaves the memory unchanged. The accessed bits of the walks that completed stay
+    /// in `touches` also when a later byte is refused; the dirty bit is kept only when the whole store
+    /// is done (the hardware sets it with the write, a refused store does not dirty the page).
+    fn write_ds_u32<M: RealModeMemory>(
+        &self,
+        mem: &mut M,
+        disp: u32,
+        value: u32,
+        touches: &mut Vec<Touch>,
+    ) -> Result<(), ProtectedRefusal> {
+        if u64::from(disp) + 3 > u64::from(self.ds.limit) {
+            return Err(ProtectedRefusal::DataBeyondLimit {
+                eip: self.eip,
+                disp,
+                limit: self.ds.limit,
+            });
+        }
+        let mut walked = Vec::new();
+        let mut targets = [0u32; 4];
+        for (i, target) in targets.iter_mut().enumerate() {
+            let linear = self.ds.base.wrapping_add(disp).wrapping_add(i as u32);
+            let walk = self.physical(mem, linear, AccessKind::Write, &mut walked);
+            let refusal = match walk {
+                Ok(phys) if mem.can_write(phys) => {
+                    *target = phys;
+                    continue;
+                }
+                Ok(_) => ProtectedRefusal::DataUnwritable {
+                    eip: self.eip,
+                    linear,
+                },
+                Err(refusal) => refusal,
+            };
+            touches.extend(walked.into_iter().filter_map(|touch| {
+                let mask = touch.mask & !TOUCH_DIRTY;
+                (mask != 0).then_some(Touch { mask, ..touch })
+            }));
+            return Err(refusal);
+        }
+        touches.extend(walked);
+        for (&phys, byte) in targets.iter().zip(value.to_le_bytes()) {
+            assert!(mem.write_u8(phys, byte), "can_write was true");
+        }
+        Ok(())
     }
 
     /// Target of a taken `Jcc rel8` whose next instruction is at `next_eip`: the 32-bit EIP wraps
@@ -1193,6 +1253,9 @@ impl ProtectedCpu {
             }
             ProtectedInstruction::MovEdxFromDs(disp) => {
                 self.gpr[EDX] = self.read_ds_u32(mem, disp, touches)?;
+            }
+            ProtectedInstruction::MovDsFromEax(disp) => {
+                self.write_ds_u32(mem, disp, self.gpr[EAX], touches)?;
             }
             ProtectedInstruction::CmpEaxWithDs(disp) => {
                 let rhs = self.read_ds_u32(mem, disp, touches)?;
