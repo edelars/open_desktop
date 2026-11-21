@@ -110,7 +110,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="od-firmware-reset-") as directory:
         scratch = Path(directory)
         image = scratch / "firmware-with-apps.bin"
-        build([sys.executable, BUILDER, "--with-test-apps", "--out", image,
+        build([sys.executable, BUILDER, "--with-test-apps", "--with-reboot-app", "--out", image,
                "--target-dir", scratch / "target"])
         transcript = scratch / "reboot.com1"
         result = subprocess.run(

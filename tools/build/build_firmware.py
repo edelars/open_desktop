@@ -47,7 +47,10 @@ BIN_NAME = "od-firmware"
 PROBE_DIR = FIRMWARE_DIR / "probe/efi_probe"
 PROBE_TARGET = "x86_64-unknown-uefi"
 PROBE_ARTIFACT = "efi_probe.efi"
-TEST_APPS = ("acpi", "blk", "ebs", "echo", "fs", "gop", "hello", "reboot", "rt", "tpm", "vars")
+TEST_APPS = ("acpi", "blk", "ebs", "echo", "fs", "gop", "hello", "rt", "tpm", "vars")
+# Embedded only on request: the COM1 fixtures of the standard apps record the memory map, which
+# depends on the total size of the firmware volume (ISSUE-624).
+EXTRA_TEST_APPS = ("reboot",)
 FV_MAGIC = b"ODFVARC\0"
 FV_VERSION = 1
 FV_HEADER_SIZE = 24
@@ -489,7 +492,9 @@ def build_runtime_driver(tools: ProbeTools, target_dir: Path) -> bytes:
     return pe
 
 
-def build_test_apps(tools: ProbeTools, target_dir: Path) -> dict[str, bytes]:
+def build_test_apps(
+    tools: ProbeTools, target_dir: Path, extra: tuple[str, ...] = ()
+) -> dict[str, bytes]:
     env = dict(tools.tool_env)
     env.pop("RUSTFLAGS", None)
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
@@ -500,7 +505,7 @@ def build_test_apps(tools: ProbeTools, target_dir: Path) -> dict[str, bytes]:
         cwd=FIRMWARE_DIR / "tests/apps",
     )
     files = {}
-    for name in TEST_APPS:
+    for name in (*TEST_APPS, *extra):
         artifact = target_dir / PROBE_TARGET / "release" / f"{name}.efi"
         if not artifact.is_file():
             raise BuildError(f"cargo did not produce {artifact}")
@@ -578,7 +583,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="build and embed the test EFI applications in the firmware volume",
     )
+    parser.add_argument(
+        "--with-reboot-app",
+        action="store_true",
+        help="also embed the reboot application of S7-26a (requires --with-test-apps)",
+    )
     args = parser.parse_args(argv)
+    if args.with_reboot_app and not args.with_test_apps:
+        parser.error("--with-reboot-app requires --with-test-apps")
     if args.acpi_blob is not None and (args.smoke or args.efi_probe is not None):
         parser.error("--acpi-blob is a separate build mode")
     if args.compare_acpi_guest is not None and args.acpi_blob is None:
@@ -684,7 +696,8 @@ def main(argv: list[str] | None = None) -> int:
         pe_tools = resolve_probe_tools()
         fv_files = {"runtime": build_runtime_driver(pe_tools, target_dir / "runtime")}
         if args.with_test_apps:
-            fv_files.update(build_test_apps(pe_tools, target_dir / "test-apps"))
+            extra = EXTRA_TEST_APPS if args.with_reboot_app else ()
+            fv_files.update(build_test_apps(pe_tools, target_dir / "test-apps", extra))
         fv_archive = write_fv_archive(target_dir, pack_fv(fv_files))
         image, fields = build_image(tools, fv_archive.parent, args.out.absolute(), fv_archive=fv_archive)
         versions = tool_versions(tools)
