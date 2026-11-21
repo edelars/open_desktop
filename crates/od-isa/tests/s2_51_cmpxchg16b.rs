@@ -591,9 +591,8 @@ fn read_only_page_faults_on_both_outcomes_because_the_destination_is_always_writ
 #[test]
 fn neighbouring_forms_stay_unsupported_without_change() {
     let forms: &[(&str, &[u8])] = &[
-        ("cmpxchg8b [rdi] (no REX.W)", &[0x0f, 0xc7, 0x0f]),
-        ("lock cmpxchg8b [rdi]", &[0xf0, 0x0f, 0xc7, 0x0f]),
-        ("REX without W", &[0x40, 0x0f, 0xc7, 0x0f]),
+        // S2-21: the no-REX.W forms (CMPXCHG8B, `0F C7 /1 m64`, with or without LOCK or a bare REX)
+        // decode as CMPXCHG8B now; their cases live in s2_21_cmpxchg8b.rs.
         ("operand-size 66", &[0x66, 0x48, 0x0f, 0xc7, 0x0f]),
         ("address-size 67", &[0x67, 0x48, 0x0f, 0xc7, 0x0f]),
         ("fs segment", &[0x64, 0x48, 0x0f, 0xc7, 0x0f]),

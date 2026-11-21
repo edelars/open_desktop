@@ -9802,6 +9802,97 @@ mod tests {
         assert_eq!(split_state(&memory), before);
     }
 
+    /// S2-21: `CMPXCHG8B` reaches this adapter as an eight-byte `atomic_compare_exchange_integer`,
+    /// which has a host primitive: unlike `CMPXCHG16B` it is not refused in the parallel mode.
+    /// An aligned operand runs on the host atomic (equal: replaced; unequal: the old value is
+    /// returned and the data is unchanged), a misaligned one (a split lock) keeps the S6-31
+    /// refusal in the parallel mode without the stop-all gate and runs as the serial S6-20 pair
+    /// in the interleaving mode.
+    #[test]
+    fn an_eight_byte_compare_exchange_is_a_host_atomic_when_aligned_and_a_split_follows_s6_31() {
+        use od_isa::OperandSize::Qword;
+        let pattern = |offset: u64| -> u64 {
+            (0..8u64).fold(0, |acc, i| {
+                acc | (u64::from(((offset + i) * 7 + 3) as u8) << (8 * i))
+            })
+        };
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
+        let mut log = Vec::new();
+        {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let old = pattern(0x40);
+            // Unequal: the old value comes back, the data is unchanged.
+            let observed = adapter
+                .atomic_compare_exchange_integer(DATA_LINEAR + 0x40, context(), Qword, !old, 7)
+                .unwrap();
+            assert_eq!(observed, old);
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+                old
+            );
+            // Equal: the replacement is stored.
+            let observed = adapter
+                .atomic_compare_exchange_integer(
+                    DATA_LINEAR + 0x40,
+                    context(),
+                    Qword,
+                    old,
+                    0x0123_4567_89ab_cdef,
+                )
+                .unwrap();
+            assert_eq!(observed, old);
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+                0x0123_4567_89ab_cdef
+            );
+        }
+        assert_eq!(memory.split_lock_refusals(), 0);
+        // A misaligned operand in the parallel mode: refused before any effect, counted.
+        let before = split_state(&memory);
+        {
+            let mut note = |_| {};
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for offset in [1u64, 4, 0x3c] {
+                let result = adapter.atomic_compare_exchange_integer(
+                    DATA_LINEAR + 0x40 + offset,
+                    context(),
+                    Qword,
+                    0,
+                    1,
+                );
+                assert!(
+                    matches!(&result, Err(MemoryError::Backend(m)) if m.contains("not naturally aligned")),
+                    "+{offset:#x}: {result:?}"
+                );
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), 3);
+        assert_eq!(split_state(&memory), before);
+        // The interleaving mode runs the same misaligned operand as the serial pair.
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Interleaved);
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        let old = pattern(0x41);
+        let observed = adapter
+            .atomic_compare_exchange_integer(
+                DATA_LINEAR + 0x41,
+                context(),
+                Qword,
+                old,
+                0x1122_3344_5566_7788,
+            )
+            .unwrap();
+        assert_eq!(observed, old);
+        assert_eq!(memory.split_lock_refusals(), 0);
+        assert_eq!(
+            (0..8u64)
+                .map(|i| u64::from(data_byte(&memory, 0x41 + i)) << (8 * i))
+                .fold(0, |a, b| a | b),
+            0x1122_3344_5566_7788
+        );
+    }
+
     #[test]
     fn cpl3_aligned_qword_atomic_rmw_walks_for_write_and_commits_data_last() {
         use od_isa::OperandSize::Qword;
