@@ -15115,6 +15115,9 @@ cpu-owned CR3 sink; ends the run with `TranslationContextChange::EferWrite` and 
 paged loop rebuilds its walker for the new NXE. Remaining for S2-25: CR4.PAE policy and
 mode transitions; hardware, JIT/native and S2-58 CPUID declaration are not done. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25f--wrmsr-ia32_efer-may-change-nxe-cpl0-set).
+Review fix: the board's walkers (`run_quantum`, fetch view, frame chains, stop record) take NXE from the
+guest EFER through `LoadedFirmwareBoard::efer()`; the remaining paths on a fixed EFER are listed in the
+contract section. The slice is not accepted; S2-25 stays open and NX stays blocked through S2-25.
 
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
