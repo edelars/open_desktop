@@ -255,7 +255,7 @@ Report descriptor (Usage Page Generic Desktop, Usage Keyboard, Application Colle
 
 Явные границы; расширение — отдельные задачи или версия контракта:
 
-- **MSI и MSI-X** в v1 нет (раздел 11): отложены с условием, добавляются до повторного прогона S8-44, если `usbxhci` откажет на INTx. Команды, кроме перечисленных в 9.1, — TRB Error. **Stop Endpoint, Reset Endpoint, Set TR Dequeue Pointer и Reset Device входят в v1** (срез B, раздел 9.1), Disable Slot принята в v1 (решения Opus high 2026-11-21).
+- **MSI и MSI-X** в v1 нет (раздел 11): отложены с условием, добавляются до повторного прогона S8-44, если `usbxhci` откажет на INTx. Команды, кроме перечисленных в 9.1, — TRB Error. **Stop Endpoint, Reset Endpoint, Set TR Dequeue Pointer и Reset Device входят в v1** (срез B, раздел 9.1), Disable Slot принята в v1 (решения Opus high 2026-11-21; отступления v1 приняты владельцем проекта 2026-11-21).
 - **Command Abort и Command Ring Stop** (CRCR.CA, CRCR.CS): команды исполняются целиком внутри `service`, прерывать нечего; Command Ring Stopped/Aborted не формируются.
 - USB 3 / SuperSpeed (в том числе PORTSC Port Speed ≥ 4), SuperSpeed-порты и Supported Protocol USB 3; High-speed и Low-speed устройства; **streams**; **isochronous**; bulk; **mass storage** и прочие классы кроме HID; **внешние хабы** (Route String ≠ 0), TT; **passthrough** USB с host.
 - Горячее подключение и отключение, suspend/resume, remote wakeup, Link Power Management, USB 3 Link, управление питанием портов.
