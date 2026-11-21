@@ -71335,14 +71335,16 @@ fn read_sse_fp_memory(
 /// pp. 3-218, 3-223, 3-224, 3-231, 3-248, 3-252), `Operation::SseFpMisc` with an MMX kind. The MMX register is the low
 /// 64 bits of the physical x87 data register of the same number (Vol. 1 §9.2.2), so `source` (CVTPI2PS/PD) or
 /// `destination` (the others) numbers an MM register and the other operand an XMM register. Check order, each before
-/// any state change: the [`sse_fp_gate`] `#UD`/`#NM` checks, then the MMX entry checks of [`mmx_entry_fault`]
-/// (a pending unmasked x87 exception is `#MF`); a reserved MXCSR bit is `Unsupported`; the memory operand (8 bytes
+/// any state change: the [`sse_fp_gate`] `#UD`/`#NM` checks, then, for every form except CVTPI2PS/CVTPI2PD with a memory
+/// source, the MMX entry checks of [`mmx_entry_fault`] (a pending unmasked x87 exception is `#MF`); a reserved MXCSR bit is `Unsupported`; the memory operand (8 bytes
 /// without an alignment rule, 16 bytes aligned for CVT[T]PD2PI; [`read_sse_fp_memory`]); then the conversion
 /// through [`sse_fp::misc`]. An unmasked exception sets the detected flags in MXCSR, writes nothing and raises
 /// `#XM` or `#UD` as in [`step_sse_int_convert`]. An instruction that reads or writes an MMX register does what every
 /// MMX instruction except EMMS does to the x87 state (also when it then raises the SIMD exception): TOP becomes 0 and
 /// the tag word valid; a destination MMX register also gets 0xFFFF in bits 79:64. CVTPI2PS/CVTPI2PD with a memory
-/// source touch no MMX register and leave the x87 state alone (physical oracle).
+/// source touch no MMX register: they leave the x87 state alone and do not deliver a pending x87 exception, which
+/// stays pending (physical oracle). The memory operand is read before that decision, so an address fault is reported as usual
+/// (not measured).
 fn step_sse_mmx_convert(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -71355,7 +71357,12 @@ fn step_sse_mmx_convert(
     if let Some(outcome) = sse_fp_gate(state) {
         return Ok(outcome);
     }
-    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+    // The x87 unit enters MMX state only when an MMX register is read or written: CVTPI2PS/CVTPI2PD with a memory source
+    // touch no MMX register, leave TOP and the tag word alone and do not deliver a pending x87 exception (they complete
+    // and the exception stays pending for the next waiting x87 instruction; physical oracle, i5-3210M and the Mac mini
+    // Ubuntu host). Every other form, a register source included, raises #MF at the instruction (same oracle).
+    let touches_mmx = !kind.mmx_source() || matches!(source, Sse3Source::Register(_));
+    if touches_mmx && let Some(outcome) = mmx_entry_fault(state, opcode) {
         return Ok(outcome);
     }
     let mxcsr = state
@@ -71397,9 +71404,6 @@ fn step_sse_mmx_convert(
             }
         }
     };
-    // The x87 unit enters MMX state only when an MMX register is read or written: CVTPI2PS/PD with a memory source leave
-    // TOP and the tag word alone (oracle).
-    let touches_mmx = !kind.mmx_source() || matches!(source, Sse3Source::Register(_));
     // CVTPI2PS keeps the high half of the XMM destination; the other forms have no register to merge with.
     let first = if kind.mmx_source() {
         state.sse.as_ref().expect("checked above").xmm[usize::from(destination)]
