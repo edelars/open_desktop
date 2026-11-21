@@ -7099,3 +7099,33 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Не связано с приёмкой S7-23:** `firmware_tpm_smoke.py` на той же прошивке проходит (`tpm-fv` и `tpm-esp`).
 - **Последствия:** эталон `boot_core` не подтверждает текущую раскладку таблиц; регрессия или сдвиг раскладки не разобраны.
 - **Статус:** открыто. Следующий шаг: сравнить раскладку памяти BS/RT с коммитом, где эталон был получен, решить, это изменение раскладки (тогда обновить эталон с обоснованием) или регрессия (тогда исправить код).
+
+<a id="issue-620"></a>
+
+### ISSUE-620. S7-31a: LoadImage не загружает PE без `.reloc` с ImageBase 0 (EFI stub ядра Ubuntu)
+
+- **Компонент:** прошивка, `firmware/uefi/src/mem/pages/image.rs` (`plan_image`), `firmware/uefi/src/pe/loader.rs` (`load_into`), [UEFI_PROFILE.md](specs/UEFI_PROFILE.md).
+- **Суть:** образ с ImageBase 0, без каталога базовых перемещений и без флага `RELOCS_STRIPPED` (так собран EFI stub ядра Ubuntu 7.0.0-38) считается нерелоцируемым. `plan_image` пытается разместить его по адресу 0, места под 17,7 МиБ там нет, LoadImage должен вернуть `OUT_OF_RESOURCES`. `load_into` независимо отвергает такой образ при ненулевой разности между базовым адресом и ImageBase (`RelocationsRequired`, поведение закреплено в `loader_tests.rs`). Менеджер загрузки пропускает вариант и печатает «no bootable option». Образ без перемещений и без флага «перемещения удалены» допустим по PE format: перемещать нечего.
+- **Воспроизведение (неизменённый артефакт):** ESP с `vmlinuz-7.0.0-38-generic` как `\EFI\BOOT\BOOTX64.EFI` и Boot0001 с OptionalData; `python3 tests/system/firmware_linux_uefi_stop_record.py --stage4-dir <work/stage4> --out <json> --variants stock`. Ожидаемо: `exit=halted`, RIP `0x20ac02`, COM1 заканчивается `OD-FW STOP code=0x21 detail=0x0000000000000001`, 187 595 596 инструкций, отметка `plan_image #2` есть, `load_into #2` нет. Запись: [JSON](reports/data/stage7/s7-31a-linux-uefi-stop-record.json), [отчёт](reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20).
+- **Последствия:** блокирует S7-31 при любом загрузчике, у которого нет перемещений (EFI stub ядра; для shim/GRUB не проверялось). Внутренний тест «нерелоцируемый образ загружается только по своему ImageBase» верен для образов с фиксированной базой, но не для образа с ImageBase 0.
+- **Статус:** открыто. Следующий шаг (срез S7-31b, после ADR-0013): определить в [UEFI_PROFILE.md](specs/UEFI_PROFILE.md) политику для образа без перемещений и с ImageBase 0 (размещение в любом адресе при пустом каталоге перемещений и сброшенном флаге), изменить `plan_image` и `load_into` вместе, добавить тесты на реальные заголовки ядра. Не править до решения по ADR-0013.
+
+<a id="issue-621"></a>
+
+### ISSUE-621. S7-31a: код `load_into` при SizeOfHeaders больше 1 KiB использует форму вне профиля прошивки
+
+- **Компонент:** `crates/od-isa` (`PagedCpl0FirmwareBootV1`), `firmware/uefi/src/pe/loader.rs`.
+- **Суть:** при копировании заголовков PE кусками `MEMORY_CHUNK` (1024 байта) компилятор строит счётчик кусков командой `48 83 64 24 08 fe` (`and qword ptr [rsp+8], -2`). Профиль прошивки её не допускает (`Unsupported { opcode: 131 }`). Ветка исполняется, только если заголовки занимают больше 1024 байт; прежние образы (`SizeOfHeaders=0x400`) её не затрагивали, у ядра Ubuntu `SizeOfHeaders=0x1000`.
+- **Воспроизведение:** диагностическая копия ядра с `ImageBase=0x1000000` (вариант `rebased` скрипта `tests/system/firmware_linux_uefi_stop_record.py`): `exit=unsupported`, RIP `0x22f236` (`od_firmware::pe::loader::load_into+0x276`), 96 739 774 инструкций. Дизассемблирование: `llvm-objdump -d` ELF прошивки по адресу `0x22f236`.
+- **Последствия:** любой образ с заголовками больше 1 KiB останавливает прошивку внутри собственного кода; это не ошибка гостя. Показывает, что допуск точных кодировок не покрывает ветки собственного кода ROM, не пройденные прежними системными проверками.
+- **Статус:** открыто. Следующий шаг: либо добавить точную кодировку по правилам профиля (отдельный срез с тестами соседей и CPL3), либо изменить код `load_into` так, чтобы форма не порождалась; выбор — в рамках решения по ADR-0013 (вариант (b) снимает вопрос для кода ROM, если набор CPL0 допускает форму).
+
+<a id="issue-622"></a>
+
+### ISSUE-622. S7-31a: EFI stub ядра Ubuntu начинается с `endbr64` и содержит около 3,4 % инструкций вне профиля прошивки
+
+- **Компонент:** `PagedCpl0FirmwareBootV1`, CPL0-набор ([CPU_CONTRACT.md](specs/CPU_CONTRACT.md)), путь `run_paged_firmware_probe`.
+- **Суть:** первая инструкция `efi_pe_entry` — `f3 0f 1e fa` (`endbr64`, ядро собрано с CET); у профиля прошивки это `Unsupported { opcode: 30 }`, в CPU_CONTRACT форма помечена «absent». Статическая оценка ([JSON](reports/data/stage7/s7-31a-efi-stub-isa-inventory.json)): из 7 474 инструкций только EFI stub профиль прошивки не допускает 252 (119 различных кодировок), из них `endbr64` 43, `rol` 80, `mov` 49; вне CPU_CONTRACT 14 форм (67 экземпляров). Оценка статическая и приблизительная (157 косвенных переходов не прослежены, невзятые ветки включены).
+- **Воспроизведение:** вариант `rebased-hdr` скрипта `tests/system/firmware_linux_uefi_stop_record.py`: `exit=unsupported`, `Unsupported { opcode: 30 }`, RIP `0x2075f78`, 97 505 008 инструкций, байты `f3 0f 1e fa`. Инвентарь: `cargo build --release -p od-isa --example firmware_profile_probe --offline`, затем `python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz> --out <json>`.
+- **Последствия:** чужой EFI-код упирается в первую незнакомую инструкцию; добавление кодировок по одной (как ISSUE-385/386) потребует десятков срезов только для stub, а после ExitBootServices ядро всё равно исполняется CPL0-набором. Дальше ExitBootServices прогон не доходил.
+- **Статус:** открыто, решение за Opus high по [ADR-0013](decisions/ADR-0013-uefi-linux-cpu-profile.md) (Предложено). Не править допуски CPU и `firmware_board.rs` до решения.

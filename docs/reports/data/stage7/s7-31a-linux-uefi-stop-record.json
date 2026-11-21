@@ -1,0 +1,291 @@
+{
+  "inputs": {
+    "boot_option": "Boot0001 = \\EFI\\BOOT\\BOOTX64.EFI + OptionalData (UTF-16LE cmdline), BootOrder = [1]",
+    "cmdline": "console=ttyS0 initrd=\\EFI\\BOOT\\INITRD.IMG od.nonce=od7s31adiagnostic0001",
+    "firmware_rom_sha256": "582c9dc59198173331afb3030e93a41b63d80fe82e5b3cef39079261fe4c5785",
+    "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "nonce_channel": "kernel command line od.nonce= (S5-07 path); no trailer in the archive",
+    "nvram_seed_sha256": "551f9d995b3c7b482f168bee48b488cbca2ff3ebf3e81d9285b4d08c324ce625",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "schema": "od-s7-31a-stop-record-v1",
+  "variants": {
+    "rebased": {
+      "esp_sha256": "b47e8c093a4fb4f4c27e2ed870d41c25ffdae160d042f91ec5a4200dd4538e6c",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x1000",
+        "image_base": "0x1000000",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "bytes": {
+            "at_rip": "4883642408fe4531e4bb0004000048895424384989d70f1f40004d89fd4981ed",
+            "before": "0175084531e4e9c70000004889442430",
+            "source": "firmware-rom"
+          },
+          "com1_bytes": 3145,
+          "com1_last_line": "OD-FW S7-05 service ABI boundaries verified",
+          "com1_sha256": "d4b5f305a5167ee922e1197f0aa02b9cff4203dcf235b8e573fdbc177c501c74",
+          "exit": "unsupported",
+          "exit_detail": "Unsupported { opcode: 131 }",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2"
+          ],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 206148,
+          "retired": 96739774,
+          "rip": "0x000000000022f236",
+          "rip_symbol": "od_firmware::pe::loader::load_into+0x276",
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "variant": "rebased"
+        },
+        {
+          "activity": "Running",
+          "bytes": {
+            "at_rip": "4883642408fe4531e4bb0004000048895424384989d70f1f40004d89fd4981ed",
+            "before": "0175084531e4e9c70000004889442430",
+            "source": "firmware-rom"
+          },
+          "com1_bytes": 3145,
+          "com1_last_line": "OD-FW S7-05 service ABI boundaries verified",
+          "com1_sha256": "d4b5f305a5167ee922e1197f0aa02b9cff4203dcf235b8e573fdbc177c501c74",
+          "exit": "unsupported",
+          "exit_detail": "Unsupported { opcode: 131 }",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2"
+          ],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 206148,
+          "retired": 96739774,
+          "rip": "0x000000000022f236",
+          "rip_symbol": "od_firmware::pe::loader::load_into+0x276",
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "variant": "rebased"
+        }
+      ],
+      "variant_file_sha256": "6edb37f06ab7af065fc852db05b243d3ef3357b246837c1c75423fc51c2bf63c"
+    },
+    "rebased-hdr": {
+      "esp_sha256": "edf1e1e318ccc9ab9a71bcb7b7a7cbf7a485a4bd74913c0625dbe0162cff0e8f",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x400",
+        "image_base": "0x1000000",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "bytes": {
+            "at_rip": "f30f1efa574889cf564889d631d250e8c7ebfffff30f1efa41544989d4488d15",
+            "before": "7ac2000031c0e831d8ffffe929fbffff",
+            "source": "kernel-pe-file"
+          },
+          "com1_bytes": 3145,
+          "com1_last_line": "OD-FW S7-05 service ABI boundaries verified",
+          "com1_sha256": "d4b5f305a5167ee922e1197f0aa02b9cff4203dcf235b8e573fdbc177c501c74",
+          "exit": "unsupported",
+          "exit_detail": "Unsupported { opcode: 30 }",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)"
+          ],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 206148,
+          "retired": 97505008,
+          "rip": "0x0000000002075f78",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "variant": "rebased-hdr"
+        },
+        {
+          "activity": "Running",
+          "bytes": {
+            "at_rip": "f30f1efa574889cf564889d631d250e8c7ebfffff30f1efa41544989d4488d15",
+            "before": "7ac2000031c0e831d8ffffe929fbffff",
+            "source": "kernel-pe-file"
+          },
+          "com1_bytes": 3145,
+          "com1_last_line": "OD-FW S7-05 service ABI boundaries verified",
+          "com1_sha256": "d4b5f305a5167ee922e1197f0aa02b9cff4203dcf235b8e573fdbc177c501c74",
+          "exit": "unsupported",
+          "exit_detail": "Unsupported { opcode: 30 }",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "kernel EFI stub entry (efi_pe_entry, first instruction)"
+          ],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 206148,
+          "retired": 97505008,
+          "rip": "0x0000000002075f78",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "variant": "rebased-hdr"
+        }
+      ],
+      "variant_file_sha256": "08274984c35fd60dce78c001b62aa84cca4504d0bb9972169a5183cc2bd7f70f"
+    },
+    "stock": {
+      "esp_sha256": "29dfb4aa6a8030430328cdb660940f9a3bd295e4d853ecc9b9c7026a7ffff266",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x1000",
+        "image_base": "0x0",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Halted",
+          "bytes": {
+            "at_rip": "ebfccccccccccccccccccccccccc0f3148c1e22089c04809d0c3cccccccc5048",
+            "before": "fd03eca82075d7ffce75f3ebd890faf4",
+            "source": "firmware-rom"
+          },
+          "com1_bytes": 3219,
+          "com1_last_line": "OD-FW STOP code=0x21 detail=0x0000000000000001",
+          "com1_sha256": "26c661a2a29ca06167cb1ccbadf2189c94d3c45f73b084c1ad06b80bf484fa88",
+          "exit": "halted",
+          "exit_detail": null,
+          "fw_stop": {
+            "code": "0x21",
+            "detail": "0x0000000000000001"
+          },
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2"
+          ],
+          "nvram_snapshot_sha256": "b8fe79467290429876571cbc63fdff6c40179341600e34ffcf07374fd0866e02",
+          "page_fault": null,
+          "quanta": 409202,
+          "retired": 187595596,
+          "rip": "0x000000000020ac02",
+          "rip_symbol": "od_firmware::stop+0x72",
+          "runner_exit_code": 6,
+          "status": "firmware_stop",
+          "stop_reason": null,
+          "variant": "stock"
+        },
+        {
+          "activity": "Halted",
+          "bytes": {
+            "at_rip": "ebfccccccccccccccccccccccccc0f3148c1e22089c04809d0c3cccccccc5048",
+            "before": "fd03eca82075d7ffce75f3ebd890faf4",
+            "source": "firmware-rom"
+          },
+          "com1_bytes": 3219,
+          "com1_last_line": "OD-FW STOP code=0x21 detail=0x0000000000000001",
+          "com1_sha256": "26c661a2a29ca06167cb1ccbadf2189c94d3c45f73b084c1ad06b80bf484fa88",
+          "exit": "halted",
+          "exit_detail": null,
+          "fw_stop": {
+            "code": "0x21",
+            "detail": "0x0000000000000001"
+          },
+          "memory_error": null,
+          "milestones_requested": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2",
+            "load_into #2",
+            "ExitBootServices"
+          ],
+          "milestones_visited_in_order": [
+            "plan_image #1",
+            "load_into #1",
+            "plan_image #2"
+          ],
+          "nvram_snapshot_sha256": "b8fe79467290429876571cbc63fdff6c40179341600e34ffcf07374fd0866e02",
+          "page_fault": null,
+          "quanta": 409202,
+          "retired": 187595596,
+          "rip": "0x000000000020ac02",
+          "rip_symbol": "od_firmware::stop+0x72",
+          "runner_exit_code": 6,
+          "status": "firmware_stop",
+          "stop_reason": null,
+          "variant": "stock"
+        }
+      ],
+      "variant_file_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  }
+}

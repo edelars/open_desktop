@@ -372,6 +372,18 @@ def write_udf102(out: Path, app: bytes) -> None:
     out.write_bytes(disk)
 
 
+def extra_boot_file(spec: str, parser: argparse.ArgumentParser) -> tuple[bytes, bytes]:
+    """Parse NAME.EXT=PATH into an 11-byte short directory name and the file contents."""
+    name, separator, path = spec.partition("=")
+    stem, dot, extension = name.partition(".")
+    valid = (separator and path and dot and 1 <= len(stem) <= 8 and 1 <= len(extension) <= 3
+             and name.isascii() and name == name.upper() and name.count(".") == 1
+             and all(c.isalnum() or c in "_-" for c in stem + extension))
+    if not valid:
+        parser.error(f"--boot-file needs an upper-case 8.3 NAME.EXT=PATH, got {spec!r}")
+    return (stem.ljust(8) + extension.ljust(3)).encode("ascii"), Path(path).read_bytes()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--damage", choices=("none", "primary", "both"), default="none")
@@ -381,6 +393,8 @@ def main() -> None:
     form.add_argument("--udf102", action="store_true")
     parser.add_argument("--bootx64", type=Path, help="place this EFI image at \\EFI\\BOOT\\BOOTX64.EFI")
     parser.add_argument("--boot-probe", type=Path, help="place this EFI image at \\EFI\\BOOT\\CHECK.EFI")
+    parser.add_argument("--boot-file", action="append", default=[], metavar="NAME.EXT=PATH",
+                        help="place PATH at \\EFI\\BOOT\\NAME.EXT (8.3 name, upper case, repeatable)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.iso9660 or args.udf102:
@@ -393,9 +407,9 @@ def main() -> None:
             (name, path.read_bytes())
             for name, path in ((b"BOOTX64 EFI", args.bootx64), (b"CHECK   EFI", args.boot_probe))
             if path is not None
-        )
+        ) + tuple(extra_boot_file(spec, parser) for spec in args.boot_file)
         write_fat32(args.out, args.damage, boot_files)
-    elif args.bootx64 or args.boot_probe:
+    elif args.bootx64 or args.boot_probe or args.boot_file:
         parser.error("EFI files require --esp-fat32, --iso9660 or --udf102")
     else:
         args.out.write_bytes(image(args.damage))
