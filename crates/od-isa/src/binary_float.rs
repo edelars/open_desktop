@@ -976,7 +976,11 @@ impl Binary32 {
     /// unchanged, and quiets SNaN by setting its quiet bit. Normal finite
     /// values use exact same-format division of `1.0 / self`, rounded once to
     /// nearest-ties-even; a subnormal rounded result is flushed to same-sign
-    /// zero. The helper is value-only: it does not consult or update MXCSR,
+    /// zero. Every finite input with `|x| >= 2^126` (magnitude bits
+    /// `0x7e80_0000` and above) also yields same-sign zero, including
+    /// `|x| == 2^126` whose exact reciprocal would be the minimum normal; this
+    /// is the measured hardware behavior (ISSUE-025), not an Intel SDM
+    /// guarantee. The helper is value-only: it does not consult or update MXCSR,
     /// report diagnostics, or deliver SIMD floating-point exceptions. Its
     /// finite result is a deterministic reference policy, not a promise of
     /// identical hardware bits.
@@ -999,7 +1003,9 @@ impl Binary32 {
                 )
                 .expect("normal divisor is nonzero")
                 .value();
-                if rounded.class() == BinaryClass::Subnormal {
+                if rounded.class() == BinaryClass::Subnormal
+                    || self.0 & !Self::SIGN_MASK >= 0x7e80_0000
+                {
                     Self::from_bits(rounded.0 & Self::SIGN_MASK)
                 } else {
                     rounded
@@ -2827,7 +2833,8 @@ mod tests {
             (0x0080_0000, 0x7e80_0000),
             (0x8080_0000, 0xfe80_0000),
             (0x7e7f_ffff, 0x0080_0001),
-            (0x7e80_0000, 0x0080_0000),
+            (0x7e80_0000, 0x0000_0000),
+            (0xfe80_0000, 0x8000_0000),
             (0x7e80_0001, 0x0000_0000),
             (0xfe80_0001, 0x8000_0000),
             (0x7f7f_ffff, 0x0000_0000),
