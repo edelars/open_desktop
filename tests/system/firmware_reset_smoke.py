@@ -38,8 +38,10 @@ PCR0_LINE = re.compile(rb"OD-UEFI PCR0=([0-9a-f]{64})\r\n")
 BUDGET = 700_000_000
 # Change of the runner memory between the start and the end of the cycles that is accepted, in KiB.
 # Measured (docs/testing/FIRMWARE.md, S7-26a): the footprint grew by 3024 KiB over 50 cycles and by
-# 2656 KiB over 5 (almost all of it in the first two cycles), the `ps` RSS by 5136 KiB over 50.
-# The limit is the measured 50-cycle growth rounded up to the next MiB.
+# 2528..2656 KiB over 5 (almost all of it in the first two cycles). The limit is a margin over
+# that, 1072 KiB (35 %), for the spread between runs; it is not a rounding of the measurement.
+# Without the `footprint` tool the script compares the `ps` RSS, which grew by 5136 KiB over 50
+# cycles: on such a platform a 50-cycle run does not pass with this limit (known limitation).
 RSS_LIMIT_KIB = 4096
 
 

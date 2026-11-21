@@ -6833,6 +6833,7 @@ mod tests {
             }
             // The firmware's `MOV CR3` moved the walk root to its own tables.
             board.page_table_root = 0x0015_0000;
+            board.vcpus[0].state.cr3 = Some(0x0015_0000);
             board.vcpus[0].state.rip = 0x1234;
             board.vcpus[0].state.gpr[Register::Rsp as usize] = 0x5678;
 
@@ -6867,6 +6868,9 @@ mod tests {
             assert_eq!(state.rip, FIRMWARE_LINK_BASE + 0x40);
             assert_eq!(state.gpr[Register::Rsp as usize], FIRMWARE_BOOT_STACK_TOP);
             assert_eq!(state.gpr[Register::Rdi as usize], FIRMWARE_HANDOFF_GPA);
+            // No CR3 of the vCPU's own: the interpreter walks from the boot tables again (the
+            // `#PF` of the first Warm run came from a stale root).
+            assert_eq!(state.cr3, None, "{kind:?}");
             assert_eq!(board.guest_efer(), FIRMWARE_EFER);
         }
     }
