@@ -415,7 +415,108 @@ impl Sse41Kind {
     }
 }
 
-/// The `r/m` operand of [`Operation::Sse41`].
+/// The floating-point SSE4.1 forms (S2-55 slice B; Intel SDM Vol. 2A BLENDPD pp. 3-78..3-79, BLENDPS
+/// pp. 3-80..3-81, BLENDVPD pp. 3-82..3-83, BLENDVPS pp. 3-84..3-85, DPPD pp. 3-277..3-278, DPPS
+/// pp. 3-279..3-281, EXTRACTPS pp. 3-305..3-306, INSERTPS pp. 3-464..3-466; Vol. 2B ROUNDPD pp. 4-583..4-585,
+/// ROUNDPS pp. 4-586..4-587, ROUNDSD pp. 4-588..4-589, ROUNDSS pp. 4-590..4-591; combined SDM 325462-093US).
+/// Only the legacy `66`-prefixed encodings exist here (no VEX/EVEX). Exceptions class by form: Type 2
+/// (Vol. 2A Table 2-19: 16-byte aligned m128, #XM) for ROUNDPS/ROUNDPD and DPPS/DPPD, Type 3 (Table 2-20:
+/// no alignment, #XM) for ROUNDSS/ROUNDSD, Type 4 (Table 2-21: 16-byte aligned m128, no SIMD exception) for
+/// BLENDPS/BLENDPD/BLENDVPS/BLENDVPD, Type 5 (Table 2-22) for INSERTPS and EXTRACTPS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41FpKind {
+    /// `66 0F 3A 08 /r ib`
+    Roundps,
+    /// `66 0F 3A 09 /r ib`
+    Roundpd,
+    /// `66 0F 3A 0A /r ib`
+    Roundss,
+    /// `66 0F 3A 0B /r ib`
+    Roundsd,
+    /// `66 0F 3A 0C /r ib`
+    Blendps,
+    /// `66 0F 3A 0D /r ib`
+    Blendpd,
+    /// `66 0F 38 14 /r` (implicit XMM0 mask)
+    Blendvps,
+    /// `66 0F 38 15 /r` (implicit XMM0 mask)
+    Blendvpd,
+    /// `66 0F 3A 17 /r ib` (the destination is a general register or m32)
+    Extractps,
+    /// `66 0F 3A 21 /r ib`
+    Insertps,
+    /// `66 0F 3A 40 /r ib`
+    Dpps,
+    /// `66 0F 3A 41 /r ib`
+    Dppd,
+}
+
+impl Sse41FpKind {
+    /// The form selected by the opcode map and byte; the mandatory `66` is checked by the decoder.
+    pub const fn from_opcode(map: OpcodeMap, byte: u8) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f3a, 0x08) => Self::Roundps,
+            (OpcodeMap::Escape0f3a, 0x09) => Self::Roundpd,
+            (OpcodeMap::Escape0f3a, 0x0a) => Self::Roundss,
+            (OpcodeMap::Escape0f3a, 0x0b) => Self::Roundsd,
+            (OpcodeMap::Escape0f3a, 0x0c) => Self::Blendps,
+            (OpcodeMap::Escape0f3a, 0x0d) => Self::Blendpd,
+            (OpcodeMap::Escape0f38, 0x14) => Self::Blendvps,
+            (OpcodeMap::Escape0f38, 0x15) => Self::Blendvpd,
+            (OpcodeMap::Escape0f3a, 0x17) => Self::Extractps,
+            (OpcodeMap::Escape0f3a, 0x21) => Self::Insertps,
+            (OpcodeMap::Escape0f3a, 0x40) => Self::Dpps,
+            (OpcodeMap::Escape0f3a, 0x41) => Self::Dppd,
+            _ => return None,
+        })
+    }
+
+    /// Every form but BLENDVPS/BLENDVPD carries an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        !matches!(self, Self::Blendvps | Self::Blendvpd)
+    }
+
+    /// Bytes of the memory operand: 16 for the packed forms, 4 for ROUNDSS, INSERTPS and EXTRACTPS, 8 for
+    /// ROUNDSD.
+    pub const fn memory_bytes(self) -> usize {
+        match self {
+            Self::Roundss | Self::Insertps | Self::Extractps => 4,
+            Self::Roundsd => 8,
+            _ => 16,
+        }
+    }
+
+    /// A 128-bit memory operand must be 16-byte aligned (`#GP(0)` otherwise): Types 2 and 4.
+    pub const fn requires_alignment(self) -> bool {
+        self.memory_bytes() == 16
+    }
+
+    /// EXTRACTPS writes its `r/m` operand (a general register or m32); every other form only reads it.
+    pub const fn stores_to_rm(self) -> bool {
+        matches!(self, Self::Extractps)
+    }
+
+    /// ROUND* and DPPS/DPPD read MXCSR, set its flags and can raise `#XM`.
+    pub const fn is_arithmetic(self) -> bool {
+        matches!(
+            self,
+            Self::Roundps | Self::Roundpd | Self::Roundss | Self::Roundsd | Self::Dpps | Self::Dppd
+        )
+    }
+
+    /// The element shape of an arithmetic form.
+    pub const fn shape(self) -> Option<SseFpShape> {
+        match self {
+            Self::Roundps | Self::Dpps => Some(SseFpShape::Packed32),
+            Self::Roundpd | Self::Dppd => Some(SseFpShape::Packed64),
+            Self::Roundss => Some(SseFpShape::Scalar32),
+            Self::Roundsd => Some(SseFpShape::Scalar64),
+            _ => None,
+        }
+    }
+}
+
+/// The `r/m` operand of [`Operation::Sse41`] and [`Operation::Sse41Fp`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Sse41Operand {
     Xmm(u8),
@@ -2571,6 +2672,17 @@ pub enum Operation {
         shape: SseFpShape,
         destination: u8,
         source: Sse3Source,
+    },
+    /// S2-55 slice B: the floating-point SSE4.1 forms (`66 0F 38 14/15 /r`, `66 0F 3A 08..0D/17/21/40/41 /r ib`).
+    /// `xmm` is the ModRM.reg XMM register (destination, or the source of EXTRACTPS); `operand` the ModRM.r/m
+    /// operand (`Gpr` only for the register form of EXTRACTPS). `immediate` is zero for BLENDVPS/BLENDVPD.
+    /// Decoded only as the fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode;
+    /// executed through `step_sse41_fp`.
+    Sse41Fp {
+        kind: Sse41FpKind,
+        xmm: u8,
+        operand: Sse41Operand,
+        immediate: u8,
     },
     /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
     /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
@@ -12677,6 +12789,82 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// S2-55 slice B: the floating-point SSE4.1 forms (`66 0F 38 xx /r`, `66 0F 3A xx /r ib`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A
+    /// Tables 2-19..2-22, "If preceded by a LOCK prefix (F0H)"). Refused (`Ok(None)`): a repeated prefix,
+    /// FS/GS overrides (no segment base in this operand model), a missing `66`, `F2`/`F3` and the VEX/EVEX
+    /// encodings. REX.W is ignored (EXTRACTPS always zero-extends a register destination to 64 bits).
+    fn decode_sse41_fp(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let Some(kind) = Sse41FpKind::from_opcode(opcode.map, opcode.byte) else {
+            return Ok(None);
+        };
+        if !prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let operand = if modrm >> 6 == 3 {
+            let encoding = (modrm & 7) | ((rex & 1) << 3);
+            if kind.stores_to_rm() {
+                Sse41Operand::Gpr(encoding)
+            } else {
+                Sse41Operand::Xmm(encoding)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse41Fp {
+                kind,
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                operand,
+                immediate,
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -12731,6 +12919,12 @@ pub fn decode(
             if Sse41Kind::from_opcode(opcode.map, byte, false).is_some() =>
         {
             fetch.decode_sse41()
+        }
+        // S2-55 slice B: the floating-point SSE4.1 forms.
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Sse41FpKind::from_opcode(opcode.map, byte).is_some() =>
+        {
+            fetch.decode_sse41_fp()
         }
         // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`).
         (OpcodeMap::Escape0f, 0xb8) | (OpcodeMap::Escape0f38, 0xf0 | 0xf1) => {
