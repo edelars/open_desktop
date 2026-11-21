@@ -173,9 +173,10 @@ unsafe fn apply_virtual_address_map(
         (*event_table).notify_virtual_address_change();
         ptr::addr_of_mut!(ACTIVE_MAP).write_volatile(ptr::null());
 
-        // The caller owns these page tables. Use the existing physical
-        // aliases without altering their permissions or the caller's CR3.
-        let (cr0, flags) = suspend_write_protection();
+        // The caller owns these page tables. Use the existing physical aliases without altering
+        // their permissions, CR0 or CR3. The OS maps the runtime images writable while
+        // SetVirtualAddressMap runs (Linux and EDK2 do) and applies final permissions after it
+        // returns; the driver therefore never touches CR0.WP (S7-31k).
         for (image, delta) in (*storage).images.0.iter().zip(deltas) {
             if image.fixup_count != 0 && delta != 0 {
                 for &fixup in slice::from_raw_parts(image.fixups, image.fixup_count) {
@@ -183,7 +184,6 @@ unsafe fn apply_virtual_address_map(
                 }
             }
         }
-        resume_write_protection(cr0, flags);
         ptr::addr_of_mut!((*storage).table).write(runtime);
         system.write(virtual_system);
         ptr::addr_of_mut!((*storage).virtual_mode).write(true);
@@ -230,35 +230,6 @@ unsafe extern "efiapi" fn virtualize_private_pointers(_: Event, context: *mut c_
         (*storage).system = convert_address((*storage).system.cast(), 0).cast();
         (*storage).event_table = convert_address((*storage).event_table.cast(), 0).cast();
         ptr::addr_of_mut!(ROOT).write_volatile(convert_address(context, 0).cast());
-    }
-}
-
-unsafe fn suspend_write_protection() -> (u64, u64) {
-    let cr0: u64;
-    let flags: u64;
-    unsafe {
-        asm!(
-            "pushfq",
-            "pop {flags}",
-            "cli",
-            "mov rax, cr0",
-            "mov {cr0}, rax",
-            "and rax, -65537",
-            "mov cr0, rax",
-            cr0 = out(reg) cr0,
-            flags = out(reg) flags,
-            out("rax") _,
-        );
-    }
-    (cr0, flags)
-}
-
-unsafe fn resume_write_protection(cr0: u64, flags: u64) {
-    unsafe {
-        asm!("mov cr0, rax", in("rax") cr0, options(nostack));
-        if flags & (1 << 9) != 0 {
-            asm!("sti", options(nostack));
-        }
     }
 }
 
