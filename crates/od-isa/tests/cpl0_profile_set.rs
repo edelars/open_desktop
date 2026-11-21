@@ -43291,7 +43291,9 @@ fn the_fp_member_admission_requires_declared_fpu_and_fxsr_and_known_selectors() 
 
 #[test]
 fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member() {
-    let rip_forms: [(&str, &[u8], u8); 16] = [
+    // xorps and movups (and the rest of the general SSE core) are no longer refused under the member:
+    // S2-39 runs them on `state.sse` (tests/s2_39_cpl0_sse.rs).
+    let rip_forms: [(&str, &[u8], u8); 14] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
         ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
@@ -43311,8 +43313,6 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
             &[0x66, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
             0xae,
         ),
-        ("xorps xmm0,xmm0", &[0x0f, 0x57, 0xc0], 0x57),
-        ("movups xmm0,[rax]", &[0x0f, 0x10, 0x00], 0x10),
         ("mov cr0,rsi", &[0x0f, 0x22, 0xc6], 0x22),
         ("rex mov cr0,rdi", &[0x48, 0x0f, 0x22, 0xc7], 0x22),
         ("lock mov cr0,rdi", &[0xf0, 0x0f, 0x22, 0xc7], 0x22),
