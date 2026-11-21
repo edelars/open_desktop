@@ -704,6 +704,217 @@ mod tests {
         assert_eq!(walk(&ram, 0x2000, AccessKind::Read).unwrap().phys, 0x2000);
     }
 
+    // ---- S2-25: PAE paging (model only: there is no hardware oracle for it) ----------------
+
+    /// PAE tables: the PDPT (32 bytes) at `PDPT`, PDPTE0 -> PD (`P` only: bits 2:1 and 8:5 of a PDPTE
+    /// are reserved), PD[0] -> PT, PT[i] = identity of page i (i < 5).
+    fn pae_tables_4k() -> Vec<u8> {
+        let mut ram = vec![0u8; RAM];
+        set(&mut ram, PDPT, PD as u64 | 1);
+        set(&mut ram, PD, PT as u64 | 3);
+        for page in 0..5usize {
+            set(&mut ram, PT + 8 * page, (page as u64) << 12 | 3);
+        }
+        ram
+    }
+
+    fn pae_params(ram: &[u8]) -> PaeParams {
+        PaeParams {
+            pdptes: load_pdptes(
+                &ImageMemory {
+                    base: 0,
+                    bytes: ram,
+                },
+                PDPT as u32,
+            )
+            .unwrap(),
+            wp: true,
+            nxe: true,
+        }
+    }
+
+    fn pae_walk(ram: &[u8], linear: u32, kind: AccessKind) -> Result<Translation, PageRefusal> {
+        let mut copy = ram.to_vec();
+        translate_pae(
+            &ImageMemoryMut {
+                base: 0,
+                bytes: &mut copy,
+            },
+            pae_params(ram),
+            linear,
+            kind,
+        )
+    }
+
+    #[test]
+    fn pae_four_kib_translation_touches_the_pde_and_pte_but_never_the_pdpte() {
+        let ram = pae_tables_4k();
+        let read = pae_walk(&ram, 0x2123, AccessKind::Read).unwrap();
+        assert_eq!((read.phys, read.size), (0x2123, PageSize::Size4K));
+        // A on the PDE and the PTE; the PDPTE is a register: no accessed bit, no touch.
+        assert_eq!(
+            read.touches,
+            vec![touch(&ram, PD, 0x20), touch(&ram, PT + 16, 0x20)]
+        );
+        let write = pae_walk(&ram, 0x2123, AccessKind::Write).unwrap();
+        assert_eq!(
+            write.touches,
+            vec![touch(&ram, PD, 0x20), touch(&ram, PT + 16, 0x60)]
+        );
+    }
+
+    #[test]
+    fn pae_two_mib_page_and_the_pdpte_selected_by_bits_31_30() {
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PD, 0x40_0000 | 0x83);
+        let t = pae_walk(&ram, 0x0012_3456, AccessKind::Write).unwrap();
+        assert_eq!((t.phys, t.size), (0x52_3456, PageSize::Size2M));
+        assert_eq!(t.touches, vec![touch(&ram, PD, 0x60)]);
+        // PDPTE3 (linear 0xC000_0000..) -> a page directory at 0x1000 with one 2 MiB page at 0.
+        set(&mut ram, PDPT + 24, 0x1000 | 1);
+        set(&mut ram, 0x1000, 0x83);
+        let t = pae_walk(&ram, 0xC000_1234, AccessKind::Read).unwrap();
+        assert_eq!((t.phys, t.size), (0x1234, PageSize::Size2M));
+        // PDPTE1 is not present: a #PF at level 3 (the entry is the register value).
+        assert_eq!(
+            pae_walk(&ram, 0x4000_0000, AccessKind::Read),
+            Err(PageRefusal::NotPresent { level: 3, entry: 0 })
+        );
+    }
+
+    #[test]
+    fn pae_reserved_bits_differ_from_the_four_level_walk() {
+        // Bits 62:36 are reserved in a PAE PDE/PTE (the 4-level walk ignores 62:52).
+        for bit in [36u32, 51, 52, 62] {
+            let mut ram = pae_tables_4k();
+            set(&mut ram, PT + 16, 0x2000 | 3 | 1 << bit);
+            assert_eq!(
+                pae_walk(&ram, 0x2000, AccessKind::Read),
+                Err(PageRefusal::ReservedBits {
+                    level: 1,
+                    entry: 0x2000 | 3 | 1 << bit
+                }),
+                "PTE bit {bit}"
+            );
+            let mut ram = pae_tables_4k();
+            set(&mut ram, PD, PT as u64 | 3 | 1 << bit);
+            assert!(matches!(
+                pae_walk(&ram, 0x2000, AccessKind::Read),
+                Err(PageRefusal::ReservedBits { level: 2, .. })
+            ));
+        }
+        // PDE with PS: bits 20:13 are reserved, bit 12 (PAT) is not.
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PD, 0x2000 | 0x83);
+        assert!(matches!(
+            pae_walk(&ram, 0x2000, AccessKind::Read),
+            Err(PageRefusal::ReservedBits { level: 2, .. })
+        ));
+        set(&mut ram, PD, 0x1000 | 0x83);
+        assert!(pae_walk(&ram, 0x2000, AccessKind::Read).is_ok());
+        // XD is reserved while EFER.NXE = 0.
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PT + 16, 0x2000 | 3 | 1 << 63);
+        let mut copy = ram.clone();
+        let no_nxe = PaeParams {
+            nxe: false,
+            ..pae_params(&ram)
+        };
+        let mem = ImageMemoryMut {
+            base: 0,
+            bytes: &mut copy,
+        };
+        assert!(matches!(
+            translate_pae(&mem, no_nxe, 0x2000, AccessKind::Read),
+            Err(PageRefusal::ReservedBits { level: 1, .. })
+        ));
+        // Not present PDE and PTE.
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PT + 16, 0x2000 | 2);
+        assert!(matches!(
+            pae_walk(&ram, 0x2000, AccessKind::Read),
+            Err(PageRefusal::NotPresent { level: 1, .. })
+        ));
+        set(&mut ram, PD, PT as u64 | 2);
+        assert!(matches!(
+            pae_walk(&ram, 0x2000, AccessKind::Read),
+            Err(PageRefusal::NotPresent { level: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn pae_write_protect_and_no_execute_use_the_pde_and_pte_only() {
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PD, PT as u64 | 1); // R/W clear in the PDE
+        assert!(matches!(
+            pae_walk(&ram, 0x2000, AccessKind::Write),
+            Err(PageRefusal::WriteProtected { .. })
+        ));
+        assert!(pae_walk(&ram, 0x2000, AccessKind::Read).is_ok());
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PT + 16, 0x2000 | 3 | 1 << 63);
+        assert!(matches!(
+            pae_walk(&ram, 0x2000, AccessKind::Fetch),
+            Err(PageRefusal::NoExecute { .. })
+        ));
+        assert!(pae_walk(&ram, 0x2000, AccessKind::Read).is_ok());
+    }
+
+    #[test]
+    fn pdpte_loading_checks_reserved_bits_only_with_p_and_ignores_cr3_low_bits() {
+        let ok = pae_tables_4k();
+        let m = ImageMemory {
+            base: 0,
+            bytes: &ok,
+        };
+        assert_eq!(
+            load_pdptes(&m, PDPT as u32 | 0x1F),
+            Ok([PD as u64 | 1, 0, 0, 0]),
+            "bits 4:0 of CR3 are ignored"
+        );
+        // Bits 2:1, 8:5 and 63:36 are reserved in a PDPTE with P = 1.
+        for bit in [1u32, 2, 5, 6, 7, 8, 36, 50, 63] {
+            for index in 0..4usize {
+                let mut ram = pae_tables_4k();
+                let bad = PD as u64 | 1 | 1 << bit;
+                set(&mut ram, PDPT + 8 * index, bad);
+                let m = ImageMemory {
+                    base: 0,
+                    bytes: &ram,
+                };
+                assert_eq!(
+                    load_pdptes(&m, PDPT as u32),
+                    Err(PdpteRefusal::Reserved {
+                        index: index as u8,
+                        pdpte: bad
+                    }),
+                    "bit {bit} of PDPTE{index}"
+                );
+                // The same bits with P = 0 are not checked (model decision, SDM footnote).
+                let mut ram = pae_tables_4k();
+                set(&mut ram, PDPT + 8 * index, bad & !1);
+                let m = ImageMemory {
+                    base: 0,
+                    bytes: &ram,
+                };
+                assert!(load_pdptes(&m, PDPT as u32).is_ok());
+            }
+        }
+        // Bits 3 (PWT), 4 (PCD) and 11:9 (ignored) are allowed.
+        let mut ram = pae_tables_4k();
+        set(&mut ram, PDPT, PD as u64 | 1 | 0x18 | 0xE00);
+        let m = ImageMemory {
+            base: 0,
+            bytes: &ram,
+        };
+        assert!(load_pdptes(&m, PDPT as u32).is_ok());
+        // The table must be readable: 0x5000 is the end of the image.
+        assert_eq!(
+            load_pdptes(&m, 0x5000),
+            Err(PdpteRefusal::Unreadable { phys: 0x5000 })
+        );
+    }
+
     #[test]
     fn a_gigabyte_page_is_refused() {
         let mut ram = tables_4k();

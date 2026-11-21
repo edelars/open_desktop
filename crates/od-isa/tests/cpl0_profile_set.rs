@@ -621,6 +621,42 @@ fn cr4_write_outside_policy_is_unsupported_without_mutation() {
     }
 }
 
+/// S2-25: the profile runs with IA-32e active (LMA = 1); `MOV CR4, RAX` that clears PAE is
+/// `#GP(0)` with no state change (SDM Vol. 3A §12.8.5, "IA-32e mode is active and an attempt is
+/// made to disable physical-address extensions"), whatever else the value holds.
+#[test]
+fn cr4_write_clearing_pae_is_gp_without_mutation() {
+    let set = cr_set();
+    let gp = RunExit::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    });
+    for value in [0u64, 0x600, 0x10, 0x1000, 1 << 40, !0x20u64] {
+        let mut code = movabs_rax(value);
+        code.extend_from_slice(&MOV_CR4_RAX);
+        let mut state = board_state();
+        let mut memory = Memory::code(&code);
+        let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+        let label = format!("cr4 value {value:#x}");
+        assert_eq!(exit(&result), &gp, "{label}");
+        // Only the MOV RAX,imm retired; the fault leaves RIP at the MOV CR4.
+        assert_eq!(result.instructions_executed, 1, "{label}");
+        assert_eq!(state.rip, RIP + 10, "{label}");
+        assert_eq!(state.cr4, Some(CR4_BASE), "{label}");
+        assert_eq!(state.cr0, Some(CR0_BASE), "{label}");
+        assert_eq!(state.gpr[0], value, "{label}");
+    }
+    // PAE kept: the write is accepted (OSFXSR) as before.
+    let mut code = movabs_rax(CR4_BASE | 0x200);
+    code.extend_from_slice(&MOV_CR4_RAX);
+    let mut state = board_state();
+    let mut memory = Memory::code(&code);
+    let result = run_set(&mut state, &mut memory, &set, 64).unwrap();
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.cr4, Some(CR4_BASE | 0x200));
+}
+
 #[test]
 fn cr0_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
