@@ -15203,8 +15203,8 @@ clear, CR0.CD/NW reload of the PDPTEs, task-switch CR3, SMEP/PSE-36, CPUID decla
 
 #### S2-25h — PAE walk of the board RAM in od-machine
 
-**Статус:** bounded slice (`od-machine`: `page_walk/pae.rs`, `pae_fetch_view.rs`); parent S2-25 stays open,
-not accepted, the checkbox is not set.
+**Статус:** bounded slice (`od-machine`: `page_walk/pae.rs`, `pae_fetch_view.rs`) after the acceptance of the parent
+S2-25 (accepted by the owner 2026-11-21); the slice itself is not marked.
 
 Three-level PAE walk over `PhysicalMemory` (PDPTE registers, PD, PT; 4 KiB and 2 MiB pages) with the rights
 model of `od_isa::paging::translate_pae` (bits 62:36 reserved, XD reserved without NXE, 2 MiB PDE bits 20:13),
