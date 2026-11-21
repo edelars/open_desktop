@@ -1,7 +1,7 @@
 //! S2-21: CMPXCHG8B (`[F0] [REX without W] 0F C7 /1`, m64).
 //!
 //! Every expected value is written down from the Intel SDM text of CMPXCHG8B/CMPXCHG16B (Vol. 2A,
-//! pp. 3-196..3-198, combined SDM order numbers 253665/325383/325384/335592):
+//! pp. 3-196..3-198; Intel SDM revision 093, combined volumes 325462-093US, Vol. 2A 253666-093US):
 //!
 //! * 0F C7 /1 CMPXCHG8B m64: compare EDX:EAX with m64; if equal, set ZF and load ECX:EBX into m64;
 //!   else clear ZF and load m64 into EDX:EAX. EDX and ECX hold the high 32 bits.
@@ -16,12 +16,15 @@
 //! writes, which zero the upper halves; an equal compare leaves RAX/RDX untouched; the upper halves
 //! of RAX/RDX/RBX/RCX are not inputs) and the fault classes of unaligned, page-crossing and
 //! protected operands are not in the SDM text and were taken from the hardware oracle of S2-21
-//! (work/stage8/s2_21_cx8_oracle, byte for byte). The interpreter does not gate on the CPUID bit
-//! (the bit is declared by S2-57 only), so the cases below do not cover the CX8 = 0 #UD.
+//! (work/stage8/s2_21_cx8_oracle, byte for byte). The interpreter does not gate on CPUID.CX8
+//! (OdX8664V1Neutral declares the bit, S6-14h; the Windows profile does not declare it until the
+//! S2-57 acceptance). The SDM text of this instruction states no CX8 = 0 exception (unlike
+//! CMPXCHG16B, whose CPUID flag is listed under #GP(0) in 64-bit mode), so no such case is
+//! modelled or tested.
 
 use od_isa::execute::{
-    self, ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cr0Profile, Cr4Profile,
-    RunConfig, RunExit, StepOutcome, run_with_cpl0_profile_set,
+    self, ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
+    Cr0Profile, Cr4Profile, RunConfig, RunExit, StepOutcome, run_with_cpl0_profile_set,
 };
 use od_isa::{
     AccessContext, AccessKind, ArchitecturalFault, CpuActivity, GuestMemory, LongModeState,
@@ -719,6 +722,43 @@ fn neighbouring_forms_stay_unsupported_without_change() {
     }
 }
 
+/// REX.R does not extend the ModRM.reg field of an opcode-extension group (`0F C7 /1`): `44 0F C7 0F`
+/// is still CMPXCHG8B [rdi]. Checked on the oracle (Mac mini, x86-64 Linux): the equal case
+/// stored ECX:EBX and set ZF, no #UD.
+#[test]
+fn rex_r_does_not_change_the_opcode_extension_and_the_form_is_cmpxchg8b() {
+    for code in [
+        vec![0x44, 0x0f, 0xc7, 0x0f],
+        vec![0xf0, 0x44, 0x0f, 0xc7, 0x0f],
+    ] {
+        for equal in [true, false] {
+            let mut cpu = state();
+            cpu.rflags = 0x2 | CF;
+            set_pairs(
+                &mut cpu,
+                if equal { MEMORY_VALUE } else { !MEMORY_VALUE },
+                REPLACEMENT,
+                GARBAGE,
+            );
+            let mut ram = Ram::with_code(&code);
+            ram.set64(CELL, MEMORY_VALUE);
+            let mut memory = Counting::new(ram);
+            assert_eq!(step(&mut cpu, &mut memory), Ok(StepOutcome::Advanced));
+            assert_eq!(memory.cas_calls.len(), 1, "{code:02x?}");
+            assert_eq!((memory.direct_reads, memory.direct_writes), (0, 0));
+            if equal {
+                assert_eq!(memory.inner.get64(CELL), REPLACEMENT, "{code:02x?}");
+                assert_eq!(cpu.rflags, 0x2 | CF | ZF, "{code:02x?}");
+            } else {
+                assert_eq!(memory.inner.get64(CELL), MEMORY_VALUE, "{code:02x?}");
+                assert_eq!(edx_eax(&cpu), MEMORY_VALUE, "{code:02x?}");
+                assert_eq!(cpu.rflags, 0x2 | CF, "{code:02x?}");
+            }
+            assert_eq!(cpu.rip, CODE + code.len() as u64);
+        }
+    }
+}
+
 #[test]
 fn rex_w_still_selects_cmpxchg16b_and_is_not_cmpxchg8b() {
     // `48 0F C7 0F` is CMPXCHG16B: a misaligned operand is #GP(0) (CMPXCHG8B has no such rule),
@@ -803,6 +843,55 @@ fn the_cpl0_profile_set_executes_both_outcomes_at_ring0() {
                 assert_eq!(cpu.rflags, 0x2 | CF | SF);
             }
             assert_eq!(cpu.rip, CODE + code.len() as u64);
+        }
+    }
+}
+
+/// The CPL0 set is a Ring0-only set: its admission refuses a Ring1, Ring2 or Ring3 context with
+/// `WrongPrivilege` before anything is fetched, so the form is never reached below CPL0 (the
+/// per-instruction `context.privilege == Ring0` test of the admission arm is the second layer of
+/// the same rule, as for CMPXCHG16B).
+#[test]
+fn the_cpl0_profile_set_refuses_the_form_outside_ring0() {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for privilege in [
+        PrivilegeLevel::Ring1,
+        PrivilegeLevel::Ring2,
+        PrivilegeLevel::Ring3,
+    ] {
+        for code in [CMPXCHG8B_RDI.to_vec(), with_lock(&CMPXCHG8B_RDI)] {
+            let mut cpu = cpl0_state();
+            set_pairs(&mut cpu, MEMORY_VALUE, REPLACEMENT, GARBAGE);
+            let before = cpu.clone();
+            let mut ram = Ram::with_code(&code);
+            ram.set64(CELL, MEMORY_VALUE);
+            let snapshot = ram.bytes.clone();
+            let mut memory = Counting::new(ram);
+            let config = RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege,
+                    ..AccessContext::default()
+                },
+            };
+            let result = run_with_cpl0_profile_set(
+                &mut cpu,
+                &mut memory,
+                config,
+                od_isa::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            );
+            assert_eq!(
+                result.map(|r| r.exit),
+                Err(Cpl0ProfileSetInputError::WrongPrivilege),
+                "{privilege:?} {code:02x?}"
+            );
+            assert_eq!(cpu, before, "{privilege:?}");
+            assert_eq!(memory.inner.bytes, snapshot, "{privilege:?}");
+            assert!(memory.cas_calls.is_empty(), "{privilege:?}");
         }
     }
 }

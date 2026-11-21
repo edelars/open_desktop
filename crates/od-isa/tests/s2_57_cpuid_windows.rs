@@ -64,7 +64,12 @@ const UNDECLARED: [(Reg, u32, &str, &str); 34] = [
     (Reg::Edx1, 4, "TSC", "S2-26 not accepted"),
     (Reg::Edx1, 5, "MSR", "S2-25/S2-26 not accepted"),
     (Reg::Edx1, 6, "PAE", "S2-58 not accepted"),
-    (Reg::Edx1, 8, "CX8", "CMPXCHG8B not implemented (S2-21)"),
+    (
+        Reg::Edx1,
+        8,
+        "CX8",
+        "instruction implemented (S2-21), bit not declared until acceptance",
+    ),
     (Reg::Edx1, 9, "APIC", "S2-58 not accepted"),
     (Reg::Edx1, 13, "PGE", "no task"),
     (
