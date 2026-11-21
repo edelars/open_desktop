@@ -1791,6 +1791,8 @@ pub struct FirmwareUnifiedRun {
     /// CR2 and the error code of the first `#PF` delivered to the guest, recorded only with a
     /// marker (S7-31e).
     pub first_page_fault: Option<FirmwareUnifiedPageFault>,
+    /// The CPU state the run stopped in (S7-31g, diagnostics).
+    pub final_state: FirmwareUnifiedState,
     /// The RIP that was asked to be marked (S7-31d), if any.
     pub marker_rip: Option<u64>,
     /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
@@ -1799,6 +1801,24 @@ pub struct FirmwareUnifiedRun {
     /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
     /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
     pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+}
+
+/// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
+/// admits the next instruction (`MOV SS` needs a clear interrupt shadow, TF = 0 and
+/// modeled SS state; since S7-31g IF may be 0 or 1).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedState {
+    pub rflags: u64,
+    pub rax: u64,
+    pub rsp: u64,
+    /// GDTR as (base, limit).
+    pub gdtr: Option<(u64, u16)>,
+    pub cs_selector: Option<u16>,
+    pub ss_selector: Option<u16>,
+    /// `Debug` text of the SS hidden cache.
+    pub ss_cache: Option<String>,
+    /// `Debug` text of the interrupt shadow.
+    pub sti_shadow: Option<String>,
 }
 
 /// One raw paging-structure entry of the walk of the final RIP (S7-31e).
@@ -1853,7 +1873,8 @@ pub struct FirmwareUnifiedMarker {
 /// firmware device apertures (NVRAM, display registers, the firmware NVMe window, TPM CRB) are
 /// bound to the machine bus for the set loop, so the ROM's Runtime Services and boot services
 /// reach the same devices as in `run_boot`. The instruction set is the Linux set of the stage 4
-/// runs on the `X8664V1Stage4A` CPUID subset (FPU and FXSR members included: the ROM uses
+/// runs on the `X8664V1Stage4AExt1` CPUID subset (Stage4A plus SYSCALL, NX and LM in leaf
+/// 0x80000001; FPU and FXSR members included: the ROM uses
 /// `FXSAVE`/`FXRSTOR`) with the CPL3 entry, so the kernel can reach user space. Nothing is
 /// executed that the set does not admit: the first inadmissible instruction is the stop.
 ///
@@ -1890,8 +1911,10 @@ pub fn run_firmware_unified_marked(
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
     crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
 
+    // `X8664V1Stage4AExt1` (S7-31h): Stage4A plus SYSCALL, NX and LM in CPUID.80000001H:EDX. Without
+    // NX the kernel strips `_PAGE_NX` and its EFI runtime mapping fails (ISSUE-634).
     let members = LinuxCpl0SetMembers {
-        cpuid_profile: CpuidProfile::X8664V1Stage4A,
+        cpuid_profile: CpuidProfile::X8664V1Stage4AExt1,
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,
@@ -1973,6 +1996,19 @@ pub fn run_firmware_unified_marked(
         .collect();
     let report = result.map_err(|failure| failure.error)?;
     let rip = board.state().rip;
+    let final_state = {
+        let state = board.state();
+        FirmwareUnifiedState {
+            rflags: state.rflags,
+            rax: state.gpr[Register::Rax as usize],
+            rsp: state.gpr[Register::Rsp as usize],
+            gdtr: state.gdtr.map(|gdtr| (gdtr.base, gdtr.limit)),
+            cs_selector: state.cs_selector,
+            ss_selector: state.ss_selector,
+            ss_cache: state.ss_cache.map(|cache| format!("{cache:?}")),
+            sti_shadow: state.sti_shadow.map(|shadow| format!("{shadow:?}")),
+        }
+    };
     let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
     let rip_walk = board
         .raw_page_walk(rip)
@@ -1997,6 +2033,7 @@ pub fn run_firmware_unified_marked(
         rip_fetch_error,
         rip_walk,
         first_page_fault,
+        final_state,
         marker_rip,
         marker,
         checkpoints,

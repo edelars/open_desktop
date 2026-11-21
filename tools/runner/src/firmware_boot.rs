@@ -882,6 +882,19 @@ fn boot(
                 "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
                 "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
                 "rip_fetch_error": run.rip_fetch_error,
+                "final_state": {
+                    "rflags": format!("0x{:x}", run.final_state.rflags),
+                    "rax": format!("0x{:x}", run.final_state.rax),
+                    "rsp": format!("0x{:x}", run.final_state.rsp),
+                    "gdtr": run.final_state.gdtr.map(|(base, limit)| json!({
+                        "base": format!("0x{base:x}"),
+                        "limit": format!("0x{limit:x}"),
+                    })),
+                    "cs_selector": run.final_state.cs_selector.map(|selector| format!("0x{selector:x}")),
+                    "ss_selector": run.final_state.ss_selector.map(|selector| format!("0x{selector:x}")),
+                    "ss_cache": run.final_state.ss_cache,
+                    "sti_shadow": run.final_state.sti_shadow,
+                },
                 "rip_walk": run.rip_walk.iter().map(|entry| json!({
                     "level": entry.level,
                     "entry_gpa": format!("0x{:x}", entry.entry_gpa),

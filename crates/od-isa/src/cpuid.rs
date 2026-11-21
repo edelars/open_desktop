@@ -39,6 +39,14 @@ pub enum CpuidProfile {
     /// the same profile). x2APIC (ECX[21]), TSC-deadline (ECX[24]) and the hypervisor bit (ECX[31])
     /// stay clear; leaves 6, 0xB, 0x15 and 0x16 stay zero.
     X8664V1Stage4AApic,
+    /// S7-31h: `X8664V1Stage4A` plus CPUID.80000001H:EDX of the target table (SYSCALL bit 11, NX bit
+    /// 20, LM bit 29: `0x20100800`) and nothing else. Selected only by the unified UEFI+Linux loop:
+    /// the kernel of that run reads NX from leaf 0x80000001 and, without it, prints "NX (Execute
+    /// Disable) protection missing in CPU!", strips `_PAGE_NX` from its page-table mask and fails
+    /// `efi_map_region` (ISSUE-634). The board already runs with EFER.NXE and LME/LMA, honors NX in
+    /// the walker and has `SYSCALL` in the set (`with_syscall`); `X8664V1Stage4A` itself stays as it
+    /// was, so the evidence of the linux-direct runs is unchanged.
+    X8664V1Stage4AExt1,
     /// S6-14h: the complete table of `od-x86-64-v1-neutral-v0.1` (`CPU_CONTRACT.md`): leaf 1 EDX
     /// `0x0781A379` (FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE, SSE2),
     /// leaf 1 ECX 0, and 0x80000001 EDX `0x20100800` (SYSCALL, NX, LM). Never the default; the
@@ -98,7 +106,9 @@ impl CpuidProfile {
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
         let leaf1_edx = match self {
             Self::DiagnosticV1 => 0,
-            Self::X8664V1Stage4A => LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR,
+            Self::X8664V1Stage4A | Self::X8664V1Stage4AExt1 => {
+                LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_FXSR
+            }
             Self::X8664V1Stage4AApic => {
                 LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_APIC | LEAF1_EDX_FXSR
             }
@@ -123,12 +133,14 @@ impl CpuidProfile {
                 ecx: 0,
                 edx: 0,
             },
-            0x8000_0001 if matches!(self, Self::OdX8664V1Neutral) => CpuidResult {
-                eax: 0,
-                ebx: 0,
-                ecx: 0,
-                edx: NEUTRAL_EXT1_EDX,
-            },
+            0x8000_0001 if matches!(self, Self::OdX8664V1Neutral | Self::X8664V1Stage4AExt1) => {
+                CpuidResult {
+                    eax: 0,
+                    ebx: 0,
+                    ecx: 0,
+                    edx: NEUTRAL_EXT1_EDX,
+                }
+            }
             0x8000_0008 => CpuidResult {
                 eax: 0x3024,
                 ebx: 0,
@@ -148,6 +160,38 @@ impl CpuidProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S7-31h: `X8664V1Stage4AExt1` is `X8664V1Stage4A` plus the extended leaf 0x80000001 EDX of
+    /// the target table (SYSCALL, NX, LM) and nothing else; `X8664V1Stage4A` still declares none.
+    #[test]
+    fn stage4a_ext1_adds_only_syscall_nx_and_lm_to_leaf_0x80000001() {
+        let base = CpuidProfile::X8664V1Stage4A;
+        let ext = CpuidProfile::X8664V1Stage4AExt1;
+        for leaf in [
+            0,
+            1,
+            2,
+            4,
+            6,
+            7,
+            0xb,
+            0x15,
+            0x16,
+            0x8000_0000,
+            0x8000_0008,
+            0x8000_0009,
+        ] {
+            assert_eq!(ext.query(leaf, 0), base.query(leaf, 0), "leaf {leaf:#x}");
+        }
+        assert_eq!(base.query(0x8000_0001, 0), CpuidResult::default());
+        let result = ext.query(0x8000_0001, 0);
+        assert_eq!((result.eax, result.ebx, result.ecx), (0, 0, 0));
+        // SYSCALL (bit 11), NX (bit 20), LM (bit 29) and nothing else.
+        assert_eq!(result.edx, (1 << 11) | (1 << 20) | (1 << 29));
+        assert_eq!(result.edx, 0x2010_0800);
+        // The Stage 4 board gates still treat only the two Stage4A profiles as that family.
+        assert!(!ext.is_stage4a_family());
+    }
 
     /// S4-28b: the APIC timer has no TSC-deadline mode, so the profile must
     /// not declare it (CPUID.01H:ECX[24]) nor the APIC/TSC feature bits.

@@ -206,12 +206,12 @@ pub use linux_checkpoints::{
 };
 pub use linux_direct::{
     FirmwareUnifiedCheckpoint, FirmwareUnifiedMarker, FirmwareUnifiedPageFault, FirmwareUnifiedRun,
-    FirmwareUnifiedWalkEntry, LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot,
-    LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
-    LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
-    LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, LinuxVcpuRunMode,
-    LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
-    load_linux_direct_board, load_linux_direct_board_with_nvme,
+    FirmwareUnifiedState, FirmwareUnifiedWalkEntry, LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers,
+    LinuxDirectBoot, LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput,
+    LinuxDirectZone, LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport,
+    LinuxStopInputs, LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport,
+    LinuxVcpuRunMode, LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal,
+    SyscallJournalEntry, load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
     run_firmware_unified, run_firmware_unified_marked, run_linux_direct_board,
     run_linux_direct_board_set, run_linux_direct_board_set_observed,
