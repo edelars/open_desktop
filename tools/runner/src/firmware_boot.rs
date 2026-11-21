@@ -24,7 +24,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
-                    [--sample-rip <hex> ...]";
+                    [--cpu-loop firmware|unified] [--sample-rip <hex> ...]";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -49,6 +49,9 @@ struct Options {
     reboot_cycles: Option<u64>,
     reboot_kind: PlatformResetKind,
     sample_rips: Vec<u64>,
+    /// S7-31c: `--cpu-loop unified` runs the ROM and the guest it starts in the CPL0 profile set
+    /// loop on a board with the Linux profile (ADR-0013 variant (b)).
+    unified: bool,
 }
 
 fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
@@ -195,6 +198,13 @@ pub fn run(args: &[String]) -> ExitCode {
         None
     };
     let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some(), tpm);
+    if options.unified {
+        // The Linux profile needs the PM block, the ACPI tables and the ECAM window.
+        config.linux_profile = true;
+        config.acpi_pm = true;
+        config.acpi_tables = true;
+        config.pci_ecam = true;
+    }
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
     }
@@ -220,6 +230,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &options.com1_out,
         nvme_image,
         &options.sample_rips,
+        options.unified,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -358,6 +369,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &reboot_out,
         nvme_image,
         &[],
+        false,
     ) {
         Ok(run) => run,
         Err((mut value, code)) => {
@@ -823,6 +835,7 @@ fn boot(
     com1_out: &str,
     nvme_image: Option<&str>,
     sample_rips: &[u64],
+    unified: bool,
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -849,7 +862,25 @@ fn boot(
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let mut samples = Vec::with_capacity(sample_rips.len());
-    let run = if sample_rips.is_empty() {
+    let mut unified_run = None;
+    let run = if unified {
+        // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
+        od_machine::run_firmware_unified(&mut board, budget).map(|run| {
+            let report = run.run;
+            unified_run = Some(json!({
+                "set_exit_detail": run.set_exit_detail,
+                "members": run.members,
+                "exceptions_delivered": run.exceptions_delivered,
+                "page_faults_delivered": run.page_faults_delivered,
+                "cr3_changes": run.cr3_changes,
+                "cpl3_retired": run.cpl3_retired,
+                "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
+                "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
+                "rip_bytes": run.rip_bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            }));
+            report
+        })
+    } else if sample_rips.is_empty() {
         board.run_boot(budget)
     } else {
         let start = Instant::now();
@@ -924,6 +955,10 @@ fn boot(
             MachineStopReason::Shutdown => "Shutdown",
         }));
     }
+    if let Some(unified_run) = unified_run {
+        result["cpu_loop"] = json!("unified");
+        result["unified"] = unified_run;
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -958,6 +993,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
+    let mut unified = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1012,6 +1048,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
             }
+            "--cpu-loop" => match value.as_str() {
+                "unified" => unified = true,
+                "firmware" => unified = false,
+                _ => {
+                    return Err(format!(
+                        "invalid --cpu-loop '{value}'; expected firmware or unified"
+                    ));
+                }
+            },
             "--sample-rip" if sample_rips.len() < MAX_RIP_SAMPLES => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 let rip = u64::from_str_radix(hex, 16)
@@ -1086,6 +1131,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         reboot_cycles,
         reboot_kind,
         sample_rips,
+        unified,
     })
 }
 

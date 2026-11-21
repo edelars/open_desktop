@@ -2666,6 +2666,40 @@ impl LoadedFirmwareBoard {
         self.rdtsc_tick.is_some()
     }
 
+    /// True for a board loaded from a firmware image (it has an entry to reset to); false for the
+    /// Linux direct board, which has no firmware.
+    pub(crate) const fn has_firmware_entry(&self) -> bool {
+        self.reset_source.is_some()
+    }
+
+    /// S7-31c (ADR-0013 variant (b)): bind the firmware device apertures (NVRAM, display
+    /// registers, the firmware NVMe window, TPM CRB) to the machine bus, so that the CPL0 set
+    /// loop serves them like the firmware profile loop does. Idempotent for a given board.
+    pub(crate) fn serve_firmware_set_windows(&mut self) {
+        let mut apertures = Vec::new();
+        if self.display_mmio.is_some() {
+            apertures.push((
+                crate::display_device::DISPLAY_REGISTERS_BASE,
+                crate::display_device::DISPLAY_REGISTERS_BYTES,
+            ));
+        }
+        if self.nvram.is_some() {
+            apertures.push((
+                crate::nvram_device::NVRAM_MMIO_BASE,
+                crate::nvram_device::NVRAM_MMIO_BYTES,
+            ));
+        }
+        // A firmware board never has `nvme_pci` (the loader refuses it), so the controller sits
+        // at the firmware's own NVMe window; under the Linux profile it is a bus device.
+        if self.nvme.is_some() {
+            apertures.push((crate::nvme::NVME_MMIO_BASE, crate::nvme::NVME_MMIO_BYTES));
+        }
+        if self.tpm.is_some() {
+            apertures.push((crate::tpm_crb::TPM_CRB_BASE, crate::tpm_crb::TPM_CRB_LEN));
+        }
+        self.bus.serve_firmware_set_windows(&apertures);
+    }
+
     /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
     /// identity tables (`page_table_root` passed to `AssembledBoard::into_linux_board`). After a
     /// run through the CPL0 set (`run_linux_boot_cpl0_set`) it is the CR3 of the last `MOV CR3`

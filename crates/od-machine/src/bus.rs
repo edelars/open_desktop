@@ -287,6 +287,9 @@ pub struct MachineBus {
     mmio_lens: Vec<u64>,
     /// Selected once by the board to restrict set-step MMIO to its opt-in devices.
     set_step_windows: &'static [crate::page_walk::MmioWindow],
+    /// S7-31c: the windows the set loop serves when the board runs the firmware ROM in it:
+    /// `set_step_windows` and the firmware device apertures. `None` for every other board.
+    firmware_set_windows: Option<Vec<crate::page_walk::MmioWindow>>,
     ports: Vec<PortRegionBinding>,
 }
 
@@ -731,7 +734,7 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     ports: &'a [PortRegionBinding],
     mmio: &'a [MmioBinding],
     mmio_lens: &'a [u64],
-    windows: &'static [crate::page_walk::MmioWindow],
+    windows: &'a [crate::page_walk::MmioWindow],
     /// Index of the vCPU whose set loop this is (S6-16a): its MMIO accesses reach the
     /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
     vcpu: usize,
@@ -1066,6 +1069,7 @@ impl MachineBus {
             mmio,
             mmio_lens,
             set_step_windows,
+            firmware_set_windows,
             ports,
         } = self;
         (
@@ -1079,7 +1083,7 @@ impl MachineBus {
                 ports,
                 mmio,
                 mmio_lens,
-                windows: set_step_windows,
+                windows: firmware_set_windows.as_deref().unwrap_or(*set_step_windows),
                 vcpu,
             },
         )
@@ -1102,7 +1106,10 @@ impl MachineBus {
                 ports: &self.ports,
                 mmio: &self.mmio,
                 mmio_lens: &self.mmio_lens,
-                windows: self.set_step_windows,
+                windows: self
+                    .firmware_set_windows
+                    .as_deref()
+                    .unwrap_or(self.set_step_windows),
                 vcpu,
             },
         )
@@ -1116,6 +1123,24 @@ impl MachineBus {
         } else {
             &SET_STEP_APIC_WINDOWS
         };
+    }
+
+    /// S7-31c (ADR-0013 variant (b)): let the set loop reach the firmware device apertures (NVRAM,
+    /// display registers, the firmware NVMe window, TPM CRB). The devices are bound on the bus
+    /// like every other MMIO device of the board; the set loop dispatches an access to them
+    /// through those bindings, once the window is served. Call it after the `enable_*` window
+    /// calls: the windows are taken from the bus as it is now.
+    pub(crate) fn serve_firmware_set_windows(
+        &mut self,
+        apertures: &[crate::page_walk::MmioWindow],
+    ) {
+        let mut windows = self.set_step_windows.to_vec();
+        for aperture in apertures {
+            if !windows.contains(aperture) {
+                windows.push(*aperture);
+            }
+        }
+        self.firmware_set_windows = Some(windows);
     }
 
     pub(crate) fn enable_nvme_pci_mmio_window(&mut self) {
@@ -1529,6 +1554,7 @@ impl MachineBus {
             mmio,
             mmio_lens,
             set_step_windows: &SET_STEP_WINDOWS,
+            firmware_set_windows: None,
             ports,
         })
     }

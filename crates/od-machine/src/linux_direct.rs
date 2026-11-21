@@ -1755,6 +1755,140 @@ fn run_linux_direct_board_set_with_post_iret_index(
     ))
 }
 
+/// What [`run_firmware_unified`] reports besides the usual run report.
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedRun {
+    /// The run report; `exit` is the set's exit in `PagedProbeExit` terms.
+    pub run: FirmwareRunReport,
+    /// The `Debug` text of the set's own final exit.
+    pub set_exit_detail: String,
+    /// The members of the instruction set the run used, in binding order.
+    pub members: Vec<String>,
+    /// `#PF`/`#GP(0)` exceptions delivered to the guest through its IDT (not retired instructions).
+    pub exceptions_delivered: u64,
+    /// Successfully delivered guest `#PF` exceptions.
+    pub page_faults_delivered: u64,
+    /// Retired `MOV CR3` instructions.
+    pub cr3_changes: u64,
+    /// Instructions retired at CPL3 (part of `run.retired`).
+    pub cpl3_retired: u64,
+    /// The leaf of the `CPUID` the run stopped before, if it did.
+    pub cpuid_divergence_leaf: Option<u32>,
+    /// The guest-physical address of the final RIP, when it translates (read-only walk with the
+    /// board CR3; no accessed or dirty bit is set).
+    pub rip_physical: Option<u64>,
+    /// Up to 32 bytes at the final RIP as a fetch would see them (they stop at the first byte
+    /// that does not translate or is not RAM).
+    pub rip_bytes: Vec<u8>,
+}
+
+/// S7-31c (ADR-0013 variant (b)): run a firmware board with the Linux profile through the CPL0
+/// profile set, one loop for the ROM and for the guest it starts (the EFI stub, then the kernel).
+///
+/// The board is a firmware board (loaded from a ROM image) built with `linux_profile`. The
+/// firmware device apertures (NVRAM, display registers, the firmware NVMe window, TPM CRB) are
+/// bound to the machine bus for the set loop, so the ROM's Runtime Services and boot services
+/// reach the same devices as in `run_boot`. The instruction set is the Linux set of the stage 4
+/// runs on the `X8664V1Stage4A` CPUID subset (FPU and FXSR members included: the ROM uses
+/// `FXSAVE`/`FXRSTOR`) with the CPL3 entry, so the kernel can reach user space. Nothing is
+/// executed that the set does not admit: the first inadmissible instruction is the stop.
+///
+/// Not a replacement of `run_boot` (the firmware profile loop, which stays as it was) nor of
+/// `run_linux_direct_board_set` (Linux without firmware).
+pub fn run_firmware_unified(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    if !board.has_firmware_entry() || !board.has_linux_profile() {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified needs a firmware board with the Linux profile",
+        ));
+    }
+    if board.vcpu_count() != 1 {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified runs one vCPU",
+        ));
+    }
+    // The ROM entry state models no descriptor tables, and the set refuses `LGDT` over a state
+    // without a modeled GDTR. The architectural value after reset (Intel SDM Vol. 3A, 10.1.1,
+    // Table 10-1) is base 0, limit 0xFFFF; the ROM replaces it with its own GDT at once
+    // (`od_fw_install_gdt`).
+    {
+        let state = board.state_mut();
+        if state.gdtr.is_none() {
+            state.gdtr = Some(od_isa::state::Gdtr {
+                base: 0,
+                limit: 0xffff,
+            });
+        }
+        // The set loads a selector into SS/DS/ES/FS/GS only over a modeled hidden cache (the
+        // entry contract leaves them unmodeled, `LongModeState::default()`). Long mode ignores
+        // base and limit of these registers (FS/GS bases are MSR state); the flat 64-bit data
+        // cache of the Linux entry state is the value the ROM's own selector loads replace.
+        let data = od_isa::DataSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        let flat = od_isa::FsDescriptorCache {
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        if state.ss_cache.is_none() {
+            state.ss_cache = Some(data);
+            state.ss_selector.get_or_insert(0);
+        }
+        state.ds_cache.get_or_insert(data);
+        state.es_cache.get_or_insert(data);
+        state.fs_cache.get_or_insert(flat);
+        state.gs_cache.get_or_insert(flat);
+    }
+    let members = LinuxCpl0SetMembers {
+        cpuid_profile: CpuidProfile::X8664V1Stage4A,
+        msr_tdx_keyid_partitioning_read: true,
+        fp_state: true,
+        int3: true,
+        ..LinuxCpl0SetMembers::linux_default()
+    };
+    let profile = LinuxCpl0Profile::new(members, true, board.efer());
+    let cpu_cells = LinuxVcpuCells::from_vcpu(
+        board
+            .vcpu(BOOT_VCPU_INDEX)
+            .expect("a firmware board has a boot vCPU"),
+    );
+    let pci_cell = Cell::new(board.pci_config_address());
+    let mut names = Vec::new();
+    let set = profile.bind(&cpu_cells, &pci_cell, |member| {
+        names.push(member.to_string())
+    });
+    board.serve_firmware_set_windows();
+    let result =
+        board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, false);
+    cpu_cells.commit(
+        board
+            .vcpu_mut(BOOT_VCPU_INDEX)
+            .expect("a firmware board has a boot vCPU"),
+    );
+    board.set_pci_config_address(pci_cell.get());
+    let report = result.map_err(|failure| failure.error)?;
+    let rip = board.state().rip;
+    let (rip_physical, rip_bytes, _) = board.fetch_view_2m(rip, 32);
+    Ok(FirmwareUnifiedRun {
+        run: report.run,
+        set_exit_detail: report.set_exit_detail,
+        members: names,
+        exceptions_delivered: report.exceptions_delivered,
+        page_faults_delivered: report.page_faults_delivered,
+        cr3_changes: report.translation_context_changes.len() as u64,
+        cpl3_retired: report.cpl3_retired,
+        cpuid_divergence_leaf: report.cpuid_divergence_leaf,
+        rip_physical,
+        rip_bytes,
+    })
+}
+
 /// Reads the E820 table out of a `boot_params` page. The count byte comes from guest memory
 /// (u8, up to 255) and the table holds at most 128 entries, so a larger count is a corrupted
 /// page, not something to clamp: an honest loader never writes more than
