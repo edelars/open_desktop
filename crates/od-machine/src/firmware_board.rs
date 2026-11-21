@@ -6773,7 +6773,7 @@ mod tests {
         assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
         assert_ne!(*board.state(), entry, "the run moved the boot processor");
         // Events the old run left for the processors: a fixed interrupt and an NMI in the
-        // boot processor's Local APIC, an INIT and a SIPI for the application processor.
+        // boot processor's Local APIC, an INIT for the application processor.
         board.local_apic().request_fixed_edge(0x41).unwrap();
         let ap_apic = board.local_apic_of(1).unwrap();
         ap_apic.write_icr(1, 0, 4 << 8).unwrap();
