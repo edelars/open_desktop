@@ -501,7 +501,9 @@ python3 tests/system/firmware_linux_uefi_stop_record.py \
   --stage4-dir <корень>/work/stage4 --out work/stage7/linux-uefi-stop-record.json
 ```
 
-Код 0 означает, что записи обоих прогонов каждого варианта совпали, а не что Linux загрузился; сама остановка описана в JSON (RIP, байты у RIP из ROM или файла PE, символ, отметки, строка COM1). Ожидаемая остановка на текущем ROM: `stock` — «no bootable option» ([ISSUE-620](../KNOWN_ISSUES.md#issue-620)); `rebased` — `Unsupported { opcode: 131 }` в `load_into` ([ISSUE-621](../KNOWN_ISSUES.md#issue-621)); `rebased-hdr` — `Unsupported { opcode: 30 }` на первой инструкции stub ([ISSUE-622](../KNOWN_ISSUES.md#issue-622)). Один прогон занимает 45–95 с. Статический инвентарь инструкций stub:
+Запись efivarfs и ACPI (S7-31n, диагностика): `python3 tests/system/firmware_linux_uefi_efivars_acpi.py --stage4-dir <корень>/work/stage4 --out <record.json>` собирает `work/stage7/s7-31n/initramfs.cpio` (`tools/build/build_s7_31n_initramfs.py`), загружает ядро на едином цикле с зерном NVRAM (`Boot0001`, `BootOrder`, `ODBootCount`) и записывает имена переменных `efivarfs` и строки ACPI из dmesg (хеш и выдержки COM1; код 0 — записи прогонов совпали, а не что ACPI чист). Узкие проверки: `python3 -m unittest tools/build/test_build_s7_31n_initramfs.py`.
+
+Код 0 у записи остановки означает, что записи обоих прогонов каждого варианта совпали, а не что Linux загрузился; сама остановка описана в JSON (RIP, байты у RIP из ROM или файла PE, символ, отметки, строка COM1). Ожидаемая остановка на текущем ROM: `stock` — «no bootable option» ([ISSUE-620](../KNOWN_ISSUES.md#issue-620)); `rebased` — `Unsupported { opcode: 131 }` в `load_into` ([ISSUE-621](../KNOWN_ISSUES.md#issue-621)); `rebased-hdr` — `Unsupported { opcode: 30 }` на первой инструкции stub ([ISSUE-622](../KNOWN_ISSUES.md#issue-622)). Один прогон занимает 45–95 с. Статический инвентарь инструкций stub:
 
 ```sh
 cargo build --release -p od-isa --example firmware_profile_probe --offline
