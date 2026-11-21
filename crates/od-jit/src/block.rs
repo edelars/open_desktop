@@ -4423,6 +4423,46 @@ mod tests {
     }
 
     #[test]
+    fn mmx_forms_and_emms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-33: the interpreter executes EMMS and the MMX forms of the SSSE3 integer instructions on the
+        // x87 data registers; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4e80;
+        for bytes in [
+            &[0x0f, 0x38, 0x00, 0x00][..],   // PSHUFB mm0, [rax]
+            &[0x0f, 0x38, 0x04, 0xc1],       // PMADDUBSW mm0, mm1
+            &[0x0f, 0x3a, 0x0f, 0xc1, 0x04], // PALIGNR mm0, mm1, 4
+            &[0x0f, 0x77],                   // EMMS
+            &[0x48, 0x0f, 0x77],             // REX.W EMMS
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::MmxSsse3 { .. } | Operation::Emms
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [&[0xf0, 0x0f, 0x38, 0x00, 0x00][..], &[0xf0, 0x0f, 0x77]] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn integer_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
         // S2-55 slice A: the interpreter executes the integer SSE4.1 forms; the JIT has no lowering for
         // them, so the block is not built.

@@ -121,10 +121,10 @@ impl SseFpShape {
 /// The integer SSSE3 forms on XMM registers (Intel SDM Vol. 2B: PSHUFB pp. 4-421..4-425, PALIGNR
 /// pp. 4-216..4-219, PABSB/PABSW/PABSD pp. 4-177..4-182, PSIGNB/PSIGNW/PSIGND pp. 4-437..4-440,
 /// PMADDUBSW pp. 4-310..4-312, PMULHRSW pp. 4-375..4-378, PHADDW/PHADDD pp. 4-294..4-297, PHSUBW/PHSUBD
-/// pp. 4-302..4-304, PHADDSW pp. 4-292..4-293, PHSUBSW pp. 4-300..4-301). Only the mandatory-`66` XMM
-/// encodings exist here: the MMX forms (no prefix) need the MMX/x87 register aliasing of S2-33 and stay
-/// refused. Every form is Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit memory source must be
-/// 16-byte aligned.
+/// pp. 4-302..4-304, PHADDSW pp. 4-292..4-293, PHSUBSW pp. 4-300..4-301). The `66` encodings are the XMM
+/// forms ([`Operation::Ssse3Int`]); the encodings without a prefix are the MMX forms on MM0..MM7
+/// ([`Operation::MmxSsse3`], S2-33). Every form is Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit
+/// memory source must be 16-byte aligned; the 64-bit memory source of an MMX form has no alignment rule.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ssse3IntKind {
     /// `66 0F 38 00 /r`
@@ -2537,6 +2537,19 @@ pub enum Operation {
         source: Sse3Source,
         immediate: u8,
     },
+    /// S2-33 / S2-54: the MMX forms of the SSSE3 integer instructions (`0F 38 xx` and `0F 3A 0F ib` without
+    /// `66`). `destination` is the MMX register ModR/M.reg (REX.R is ignored: there are only MM0..MM7) and a
+    /// register `source` is ModR/M.r/m (REX.B ignored); a memory `source` is 64 bits with no alignment rule.
+    /// `immediate` is the PALIGNR byte count and zero for the other forms. The MMX register model is the
+    /// physical x87 data register file ([`crate::state::X87State`]). Executed through `step_mmx_ssse3`.
+    MmxSsse3 {
+        kind: Ssse3IntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-33: `EMMS` (`NP 0F 77`), the whole x87 tag word becomes empty (SDM Vol. 2A, EMMS).
+    Emms,
     /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx` and `66 0F 3A xx ib`). `xmm` is the ModRM.reg
     /// XMM register (destination, or the source of PEXTR*); `operand` the ModRM.r/m operand. `immediate` is
     /// zero for the forms without `imm8`. Decoded only as the fallback of [`decode`] when the profile
@@ -12301,10 +12314,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
 
     /// S2-54 slice D: `66 0F 38 00..0B/1C..1E /r` and `66 0F 3A 0F /r ib` (the integer SSSE3 forms) with an
     /// XMM or memory source, tried by [`decode`] only after the profile decoder returned `Unsupported`
-    /// for the opcode. LOCK is #UD (SDM Vol. 2A Table 2-21, "If preceded by a LOCK prefix (F0H)").
-    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model),
-    /// a missing `66` (the MMX forms need the MMX register model of S2-33), `F2`/`F3` (not defined for
-    /// these opcodes) and the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored.
+    /// for the opcode. Without `66` the same opcodes are the MMX forms (S2-33; [`Operation::MmxSsse3`]): the
+    /// register operands are MM0..MM7 (REX.R/REX.B ignored) and the memory operand is 64 bits. LOCK is #UD
+    /// (SDM Vol. 2A Table 2-21, "If preceded by a LOCK prefix (F0H)"). Refused (`Ok(None)`): a repeated
+    /// prefix, FS/GS overrides (no segment base in this operand model), `F2`/`F3` (not defined for these
+    /// opcodes) and the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored.
     fn decode_ssse3_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
         let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
             return Ok(None);
@@ -12324,12 +12338,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let Some(kind) = Ssse3IntKind::from_opcode(opcode.map, opcode.byte) else {
             return Ok(None);
         };
-        if !prefixes.operand_override
-            || prefixes.group1.is_some()
-            || matches!(prefixes.segment, Some(0x64 | 0x65))
-        {
+        if prefixes.group1.is_some() || matches!(prefixes.segment, Some(0x64 | 0x65)) {
             return Ok(None);
         }
+        let mmx = !prefixes.operand_override;
         let modrm = self.byte()?;
         if locked {
             return Err(DecodeError::Invalid {
@@ -12337,7 +12349,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 length: self.length,
             });
         }
-        let rex = prefixes.rex.unwrap_or(0);
+        // MM0..MM7 have no REX extension bit: REX.R and REX.B do not reach the register numbers.
+        let rex = if mmx { 0 } else { prefixes.rex.unwrap_or(0) };
         let source = if modrm >> 6 == 3 {
             Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
         } else {
@@ -12352,6 +12365,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         } else {
             0
         };
+        let destination = ((modrm >> 3) & 7) | ((rex & 4) << 1);
         Ok(Some(Instruction {
             length: self.length,
             opcode,
@@ -12362,12 +12376,55 @@ impl<M: GuestMemory> Fetch<'_, M> {
             } else {
                 OperandSize::Qword
             },
-            operation: Operation::Ssse3Int {
-                kind,
-                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                source,
-                immediate,
+            operation: if mmx {
+                Operation::MmxSsse3 {
+                    kind,
+                    destination,
+                    source,
+                    immediate,
+                }
+            } else {
+                Operation::Ssse3Int {
+                    kind,
+                    destination,
+                    source,
+                    immediate,
+                }
             },
+        }))
+    }
+
+    /// S2-33: `NP 0F 77` EMMS, tried by [`decode`] only after the profile decoder returned `Unsupported`
+    /// for `0F 77`. LOCK is #UD (SDM Vol. 2A, EMMS: "If the LOCK prefix is used"). Refused (`Ok(None)`): a
+    /// repeated prefix and `66`, `F2`/`F3` (the SDM defines only the no-prefix form; the physical oracle gives
+    /// #UD for them). A REX prefix, `67` and any segment override have no operand to act on and are accepted.
+    fn decode_emms(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f || self.byte()? != 0x77 {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: 0x77,
+        };
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        if prefixes.operand_override || prefixes.group1.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Dword,
+            address_size: OperandSize::Qword,
+            operation: Operation::Emms,
         }))
     }
 
@@ -12661,6 +12718,8 @@ pub fn decode(
         }
         (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
         (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),
+        // S2-33: EMMS.
+        (OpcodeMap::Escape0f, 0x77) => fetch.decode_emms(),
         // S2-54 slice D: the integer SSSE3 forms.
         (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
             if Ssse3IntKind::from_opcode(opcode.map, byte).is_some() =>

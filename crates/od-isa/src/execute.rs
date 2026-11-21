@@ -41484,6 +41484,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                             operation,
                             Operation::Sse3Permute { .. }
                                 | Operation::Ssse3Int { .. }
+                                | Operation::MmxSsse3 { .. }
+                                | Operation::Emms
                                 | Operation::Sse41 { .. }
                                 | Operation::FisttpMemory { .. }
                         )
@@ -50720,6 +50722,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // of them stays `Unsupported` while it is active.
         Operation::SseFpArith { .. } => state.sse.is_some() && !narrow_fp_arith_profile,
         Operation::FisttpMemory { .. } => state.x87.is_some(),
+        // S2-33: the MMX forms and EMMS work on the MMX registers, the physical x87 data registers, so they
+        // need the local x87 state (not the SSE state); CPL3 keeps its own profile list (neither is in it).
+        Operation::MmxSsse3 { .. } | Operation::Emms => state.x87.is_some(),
         // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`) are general-register forms with
         // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and in the
         // bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the Linux live profile
@@ -51659,6 +51664,26 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             instruction.opcode.byte,
             next_rip,
         );
+    }
+    // S2-33: the MMX forms of SSSE3 and EMMS commit here as well.
+    if let Operation::MmxSsse3 {
+        kind,
+        destination,
+        source,
+        immediate,
+    } = instruction.operation
+    {
+        return step_mmx_ssse3(
+            state,
+            memory,
+            context,
+            (kind, destination, source, immediate),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    if instruction.operation == Operation::Emms {
+        return Ok(step_emms(state, instruction.opcode.byte, next_rip));
     }
     // S2-56 slice A: POPCNT and CRC32 commit here as well.
     if let Operation::Popcnt { dst, src } | Operation::Crc32 { dst, src } = instruction.operation {
@@ -63061,13 +63086,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
+        | Operation::MmxSsse3 { .. }
+        | Operation::Emms
         | Operation::Sse41 { .. }
         | Operation::SseFpArith { .. }
         | Operation::Popcnt { .. }
         | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
             unreachable!(
-                "S2-54 slice C and D, S2-55 slice A, S2-56 slice A and S2-37 forms commit before dispatch"
+                "S2-33, S2-54 slice C and D, S2-55 slice A, S2-56 slice A and S2-37 forms commit before dispatch"
             )
         }
         Operation::MoveIntegerToXmm { .. }
@@ -69631,7 +69658,8 @@ fn step_sse3_permute(
 }
 
 /// The lane arithmetic of the integer SSSE3 forms (Intel SDM Vol. 2B, "Operation" of the 128-bit legacy SSE
-/// versions). `dest` is the destination register (first operand) and `src` the register or memory source
+/// versions; with N = 8 the 64-bit MMX versions, whose pseudocode differs only in the lane count: PSHUFB keeps
+/// the low three index bits and PALIGNR concatenates 16 bytes). `dest` is the destination register (first operand) and `src` the register or memory source
 /// (second operand). PALIGNR concatenates `dest:src` (`src` in the low half) and shifts right by
 /// `immediate` bytes; a count above 31 gives zero. PABS* is the unsigned magnitude of the source (the most
 /// negative value maps to itself as an unsigned lane). PSIGN* negates (wrapping), zeroes or keeps the
@@ -69639,10 +69667,15 @@ fn step_sse3_permute(
 /// by the signed source bytes and saturates each pair sum to a signed word. PMULHRSW is
 /// `(((a * b) >> 14) + 1) >> 1` in 32 bits, low 16 bits kept. The horizontal forms put the pairs of the
 /// destination in the low half and the pairs of the source in the high half; the S forms saturate.
-fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate: u8) -> [u8; 16] {
+fn ssse3_int_result<const N: usize>(
+    kind: Ssse3IntKind,
+    dest: [u8; N],
+    src: [u8; N],
+    immediate: u8,
+) -> [u8; N] {
     let word =
-        |value: &[u8; 16], lane: usize| i16::from_le_bytes([value[2 * lane], value[2 * lane + 1]]);
-    let dword = |value: &[u8; 16], lane: usize| {
+        |value: &[u8; N], lane: usize| i16::from_le_bytes([value[2 * lane], value[2 * lane + 1]]);
+    let dword = |value: &[u8; N], lane: usize| {
         i32::from_le_bytes([
             value[4 * lane],
             value[4 * lane + 1],
@@ -69651,31 +69684,31 @@ fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate
         ])
     };
     let saturate = |value: i32| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    let mut out = [0u8; 16];
+    let mut out = [0u8; N];
     let mut put_word = |lane: usize, value: i16| {
         out[2 * lane..2 * lane + 2].copy_from_slice(&value.to_le_bytes());
     };
     match kind {
         Ssse3IntKind::Pmaddubsw => {
-            for lane in 0..8 {
+            for lane in 0..N / 2 {
                 let sum = i32::from(dest[2 * lane]) * i32::from(src[2 * lane] as i8)
                     + i32::from(dest[2 * lane + 1]) * i32::from(src[2 * lane + 1] as i8);
                 put_word(lane, saturate(sum));
             }
         }
         Ssse3IntKind::Pmulhrsw => {
-            for lane in 0..8 {
+            for lane in 0..N / 2 {
                 let product = i32::from(word(&dest, lane)) * i32::from(word(&src, lane));
                 put_word(lane, (((product >> 14) + 1) >> 1) as i16);
             }
         }
         Ssse3IntKind::Pabsw => {
-            for lane in 0..8 {
+            for lane in 0..N / 2 {
                 put_word(lane, word(&src, lane).unsigned_abs() as i16);
             }
         }
         Ssse3IntKind::Psignw => {
-            for lane in 0..8 {
+            for lane in 0..N / 2 {
                 let control = word(&src, lane);
                 let value = word(&dest, lane);
                 put_word(
@@ -69698,10 +69731,10 @@ fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate
                 Ssse3IntKind::Phaddsw => saturate(i32::from(first) + i32::from(second)),
                 _ => saturate(i32::from(first) - i32::from(second)),
             };
-            for lane in 0..4 {
+            for lane in 0..N / 4 {
                 put_word(lane, pair(word(&dest, 2 * lane), word(&dest, 2 * lane + 1)));
                 put_word(
-                    4 + lane,
+                    N / 4 + lane,
                     pair(word(&src, 2 * lane), word(&src, 2 * lane + 1)),
                 );
             }
@@ -69710,33 +69743,33 @@ fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate
     }
     match kind {
         Ssse3IntKind::Pshufb => {
-            for lane in 0..16 {
+            for lane in 0..N {
                 let control = src[lane];
                 out[lane] = if control & 0x80 != 0 {
                     0
                 } else {
-                    dest[usize::from(control & 0x0f)]
+                    dest[usize::from(control) & (N - 1)]
                 };
             }
         }
         Ssse3IntKind::Palignr => {
             let mut concatenated = [0u8; 32];
-            concatenated[..16].copy_from_slice(&src);
-            concatenated[16..].copy_from_slice(&dest);
-            for lane in 0..16 {
-                out[lane] = concatenated
+            concatenated[..N].copy_from_slice(&src);
+            concatenated[N..2 * N].copy_from_slice(&dest);
+            for lane in 0..N {
+                out[lane] = concatenated[..2 * N]
                     .get(lane + usize::from(immediate))
                     .copied()
                     .unwrap_or(0);
             }
         }
         Ssse3IntKind::Pabsb => {
-            for lane in 0..16 {
+            for lane in 0..N {
                 out[lane] = (src[lane] as i8).unsigned_abs();
             }
         }
         Ssse3IntKind::Psignb => {
-            for lane in 0..16 {
+            for lane in 0..N {
                 out[lane] = match (src[lane] as i8).signum() {
                     -1 => (dest[lane] as i8).wrapping_neg() as u8,
                     0 => 0,
@@ -69745,13 +69778,13 @@ fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate
             }
         }
         Ssse3IntKind::Pabsd => {
-            for lane in 0..4 {
+            for lane in 0..N / 4 {
                 out[4 * lane..4 * lane + 4]
                     .copy_from_slice(&dword(&src, lane).unsigned_abs().to_le_bytes());
             }
         }
         Ssse3IntKind::Psignd => {
-            for lane in 0..4 {
+            for lane in 0..N / 4 {
                 let value = dword(&dest, lane);
                 let result = match dword(&src, lane).signum() {
                     -1 => value.wrapping_neg(),
@@ -69769,11 +69802,11 @@ fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate
                     first.wrapping_sub(second)
                 }
             };
-            for lane in 0..2 {
+            for lane in 0..N / 8 {
                 let low = pair(dword(&dest, 2 * lane), dword(&dest, 2 * lane + 1));
                 let high = pair(dword(&src, 2 * lane), dword(&src, 2 * lane + 1));
                 out[4 * lane..4 * lane + 4].copy_from_slice(&low.to_le_bytes());
-                out[8 + 4 * lane..12 + 4 * lane].copy_from_slice(&high.to_le_bytes());
+                out[N / 2 + 4 * lane..N / 2 + 4 * lane + 4].copy_from_slice(&high.to_le_bytes());
             }
         }
         _ => {}
@@ -69853,6 +69886,119 @@ fn step_ssse3_int(
     let sse = state.sse.as_mut().expect("SSSE3 state was prevalidated");
     let slot = &mut sse.xmm[usize::from(destination)];
     *slot = ssse3_int_result(kind, *slot, raw, immediate);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// The checks that precede every MMX instruction, EMMS included (Intel SDM Vol. 1 `9.6.1 and Vol. 2A
+/// EMMS "Protected Mode Exceptions"; the Type 4 table of Vol. 2A p. 2-29 for the SSSE3 forms): #UD for
+/// CR0.EM = 1, #NM for CR0.TS = 1 and #MF for a pending unmasked x87 exception (ES set with an unmasked
+/// flag in the status word, the predicate of FWAIT). CR4.OSFXSR is not a condition of an MMX form: Table
+/// 2-21 lists it for "Legacy SSE instruction" only. A pending exception with CR0.NE = 0 is signalled
+/// through the external FERR# line, which this model does not have: it is refused as `Unsupported`
+/// without a state change. Each check is made before any state change.
+fn mmx_entry_fault(state: &LongModeState, opcode: u8) -> Option<StepOutcome> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR0_NE: u64 = 1 << 5;
+    let fault = |vector| {
+        Some(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0) {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let x87 = state.x87.as_ref().expect("MMX state was prevalidated");
+    if x87.status_word & (1 << 7) != 0 && x87.status_word & 0x003f & !x87.control_word != 0 {
+        if state.cr0.is_some_and(|cr0| cr0 & CR0_NE == 0) {
+            return Some(StepOutcome::Unsupported { opcode });
+        }
+        return fault(16);
+    }
+    None
+}
+
+/// S2-33: EMMS (`NP 0F 77`, Intel SDM Vol. 2A pp. 3-282, Vol. 1 §9.4.8, §9.6.3, Vol. 3A §15.2): after the
+/// [`mmx_entry_fault`] checks every tag of the x87 tag word becomes empty (`x87FPUTagWord := FFFFH`) and
+/// TOP becomes 0 (Vol. 3A Table 15-2). The data registers, the other x87 registers, the flags and the SSE
+/// state are untouched.
+fn step_emms(state: &mut LongModeState, opcode: u8, next_rip: u64) -> StepOutcome {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return outcome;
+    }
+    state
+        .x87
+        .as_mut()
+        .expect("MMX state was prevalidated")
+        .emms();
+    state.rip = next_rip;
+    StepOutcome::Advanced
+}
+
+/// S2-33 / S2-54: the MMX forms of the integer SSSE3 instructions on the physical x87 data registers
+/// (Intel SDM Vol. 2B, "Operation" of the 64-bit MMX versions; Vol. 1 `9.2.2, `9.6.2). After the
+/// [`mmx_entry_fault`] checks a memory source is read in full (8 bytes, no alignment rule: the
+/// Type 4 #GP is a 128-bit rule) before any state change, as for the XMM forms: a non-canonical address is
+/// #GP(0) (#SS(0) for an RSP/RBP base), a backend fault leaves the CPU state untouched. On success the
+/// instruction does what every MMX instruction except EMMS does to the x87 state: TOP becomes 0, the whole
+/// tag word becomes valid, and the destination register MMd gets the 64-bit result with 0xFFFF in bits
+/// 79:64; the other registers keep their payloads (a source register is not rewritten). No flag, MXCSR or
+/// XMM state changes. `#AC` is not modeled: an 8-byte operand that is not 8-byte aligned at CPL3 with
+/// RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the S2-54 slice C forms.
+fn step_mmx_ssse3(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, destination, source, immediate): (Ssse3IntKind, u8, Sse3Source, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return Ok(outcome);
+    }
+    let mut raw = [0u8; 8];
+    match source {
+        Sse3Source::Register(index) => {
+            raw = state
+                .x87
+                .as_ref()
+                .expect("MMX state was prevalidated")
+                .mmx_register(index)
+                .expect("the decoder gives MM0..MM7");
+        }
+        Sse3Source::Memory(operand) => {
+            let address = match operand.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if let Err(error) = operand.access_range_address_48(state, next_rip, raw.len()) {
+                return report_memory_error(error);
+            }
+            if address & 7 != 0
+                && context.privilege == PrivilegeLevel::Ring3
+                && state.rflags & (1 << 18) != 0
+                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+            {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            if let Err(error) = memory.read(address, context, &mut raw) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+    let current = x87
+        .mmx_register(destination)
+        .expect("the decoder gives MM0..MM7");
+    let result = ssse3_int_result(kind, current, raw, immediate);
+    x87.enter_mmx_state();
+    x87.write_mmx_register(destination, result);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }
