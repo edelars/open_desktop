@@ -1689,6 +1689,155 @@ mod tests {
         );
     }
 
+    /// S2-25j: the board's operand access of an AP that the trampoline put on PAE paging: a store
+    /// and a load of RAM through a PT (A and D committed, the written page's code generation
+    /// advanced), an MMIO operand (the Local APIC window) served as an access of that vCPU with
+    /// the dirty bit set first, a 36-bit physical address outside the memory map as an operand
+    /// error, and the #PF error codes of PAE paging; a vCPU not on PAE paging is a typed text.
+    #[test]
+    fn the_board_pae_operand_access_serves_ram_mmio_and_faults_of_an_ap_on_pae_paging() {
+        use crate::{AccessWidth, PaeOperandOperation, TrackedAccessError, TrackedAccessOutcome};
+        use od_isa::memory::PrivilegeLevel::{Ring0, Ring3};
+        const PT: u64 = 0x7000;
+        const OUTSIDE: u64 = 0x8_0000_0000;
+        let read4 = PaeOperandOperation::Read {
+            width: AccessWidth::Dword,
+        };
+        let write4 = |value| PaeOperandOperation::Write {
+            width: AccessWidth::Dword,
+            value,
+        };
+        let mut board = board_with(2, &pae_trampoline_patches());
+        // Before SIPI the AP has no protected model; the BSP never has a legacy one.
+        for cpu in [0, 1] {
+            assert!(
+                board
+                    .pae_operand_access(cpu, 0, 0x8000, Ring0, read4)
+                    .is_err(),
+                "cpu {cpu}"
+            );
+        }
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(
+            run_legacy(&mut board, 1, 24, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            24
+        );
+        {
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            let put = |at: u64, value: u64| {
+                memory
+                    .store_u64(GuestPhysicalAddress::new(at), value, |_| {})
+                    .unwrap();
+            };
+            put(PD + 8, PT | 3); // PD[1] -> PT: P, R/W (supervisor only); A = 0
+            put(PT, MARKER | 3); // linear 0x20_0000: RAM
+            put(PT + 8, LOCAL_APIC_MMIO_BASE | 0x13); // 0x20_1000: the Local APIC window
+            put(PT + 16, OUTSIDE | 3); // 0x20_2000: 36-bit address, no region
+        }
+        let ap_of = |board: &LoadedFirmwareBoard| board.pae_paging_of(1).unwrap();
+        assert_eq!(ap_of(&board).pdptes(), [PD | 1, 0, 0, 0]);
+        let q = |board: &mut LoadedFirmwareBoard, at: u64| {
+            u64::from_le_bytes(ram(board, at, 8).try_into().unwrap())
+        };
+
+        // A store: A of the PDE and the PTE, D of the PTE, then the four bytes.
+        let generation_before = generation(&mut board, MARKER);
+        let stored = board
+            .pae_operand_access(1, 0x8200, 0x20_0010, Ring0, write4(0x600D_F00D))
+            .unwrap();
+        assert_eq!(stored.report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(stored.report.ad_update_count, 3);
+        assert_eq!(
+            stored.committed_writes.last().copied(),
+            Some(
+                crate::GuestPhysicalRange::new(GuestPhysicalAddress::new(MARKER + 0x10), 4)
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            ram(&mut board, MARKER + 0x10, 4),
+            0x600D_F00Du32.to_le_bytes()
+        );
+        assert_eq!(q(&mut board, PD + 8), PT | 0x23);
+        assert_eq!(q(&mut board, PT), MARKER | 0x63);
+        assert!(generation(&mut board, MARKER) > generation_before);
+        // The load sees it and commits nothing more.
+        let loaded = board
+            .pae_operand_access(1, 0x8200, 0x20_0010, Ring0, read4)
+            .unwrap();
+        assert_eq!(
+            loaded.report.outcome,
+            Ok(TrackedAccessOutcome::Read(0x600D_F00D))
+        );
+        assert_eq!(loaded.report.ad_update_count, 0);
+        assert!(loaded.committed_writes.is_empty());
+
+        // The Local APIC window: vCPU 1's own ID register, then a TPR write and read back.
+        let id = board
+            .pae_operand_access(1, 0x8200, 0x20_1020, Ring0, read4)
+            .unwrap();
+        assert_eq!(id.report.outcome, Ok(TrackedAccessOutcome::Read(1 << 24)));
+        assert_eq!(
+            q(&mut board, PT + 8),
+            LOCAL_APIC_MMIO_BASE | 0x33,
+            "A, no D after a read"
+        );
+        let tpr = board
+            .pae_operand_access(1, 0x8200, 0x20_1080, Ring0, write4(0x30))
+            .unwrap();
+        assert_eq!(tpr.report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            q(&mut board, PT + 8),
+            LOCAL_APIC_MMIO_BASE | 0x73,
+            "A and D"
+        );
+        let tpr = board
+            .pae_operand_access(1, 0x8200, 0x20_1080, Ring0, read4)
+            .unwrap();
+        assert_eq!(tpr.report.outcome, Ok(TrackedAccessOutcome::Read(0x30)));
+
+        // A 36-bit physical address that no region covers is an operand error, not a fault.
+        let outside = board
+            .pae_operand_access(1, 0x8200, 0x20_2000, Ring0, write4(1))
+            .unwrap();
+        assert!(matches!(
+            outside.report.outcome,
+            Err(TrackedAccessError::OperandPhysical { address, .. })
+                if address == GuestPhysicalAddress::new(OUTSIDE)
+        ));
+        assert_eq!(q(&mut board, PT + 16) & 0x40, 0, "no dirty bit for it");
+
+        // #PF with the PAE error codes: PDPTE 1 not present (write, CPL 0 -> 2); a CPL 3 read of the
+        // supervisor-only page (present, user -> 5).
+        let fault_code = |board: &mut LoadedFirmwareBoard, linear, privilege, op| {
+            let access = board
+                .pae_operand_access(1, 0x8200, linear, privilege, op)
+                .unwrap();
+            match access.report.outcome {
+                Err(TrackedAccessError::PageFault { record, .. }) => {
+                    (record.fault().error_code.unwrap(), record.cr2_value())
+                }
+                other => panic!("expected a page fault, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            fault_code(&mut board, 0x4000_0000, Ring0, write4(1)),
+            (2, 0x4000_0000)
+        );
+        assert_eq!(
+            fault_code(&mut board, 0x20_0010, Ring3, read4),
+            (5, 0x20_0010)
+        );
+    }
+
     #[test]
     fn guarded_legacy_lease_refusal_keeps_real_entry_and_retry_commits_accessed() {
         let mut board = board();

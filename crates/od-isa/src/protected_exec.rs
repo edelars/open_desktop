@@ -5746,4 +5746,326 @@ mod tests {
         let i = leaves.iter().position(|l| *l == 0x8000_0002).unwrap();
         assert_eq!([reg(i, 0), reg(i, 1), reg(i, 2), reg(i, 3)], [0; 4]);
     }
+    // ---- S2-25j: operand access through PAE paging (model only: no hardware oracle) --------------
+
+    /// PAE paging active at 0x2000 on the tables of `pae_ram` (A and D clear); page 5 -> 0x6000.
+    fn pae_operand_setup() -> (ProtectedCpu, Vec<u8>) {
+        let mut ram = pae_ram();
+        put_q(&mut ram, PT + 40, 0x6000 | 3);
+        (pae_active_cpu(), ram)
+    }
+
+    /// `MOV DS:disp32, EAX` (`a3 disp32`).
+    fn mov_ds_eax(disp: u32) -> [u8; 5] {
+        let d = disp.to_le_bytes();
+        [0xA3, d[0], d[1], d[2], d[3]]
+    }
+
+    /// `MOV EAX, DS:disp32` (`a1 disp32`).
+    fn mov_eax_ds(disp: u32) -> [u8; 5] {
+        let d = disp.to_le_bytes();
+        [0xA1, d[0], d[1], d[2], d[3]]
+    }
+
+    #[test]
+    fn mov_ds_eax_stores_without_paging_and_stops_at_the_ds_limit() {
+        let mut ram = new_ram();
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        let mut cpu = entry_cpu();
+        cpu.gpr[EAX] = 0xCAFE_BABE;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x5008..0x500C], &0xCAFE_BABEu32.to_le_bytes());
+        assert_eq!(cpu.eip, 0x2005);
+        // The last byte of the operand is beyond the limit: refused, nothing written.
+        let mut ram = new_ram();
+        let mut cpu = entry_cpu();
+        cpu.ds.limit = 0x5FFF;
+        let result = step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5FFD));
+        assert_eq!(
+            result,
+            Err(ProtectedRefusal::DataBeyondLimit {
+                eip: 0x2000,
+                disp: 0x5FFD,
+                limit: 0x5FFF
+            })
+        );
+    }
+
+    #[test]
+    fn pae_operand_loads_set_a_in_the_pde_and_pte_and_never_d_or_a_pdpte_bit() {
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+        // mov eax, ds:0x5008 ; mov edx, ds:0x5008 ; cmp eax, ds:0x5008 ; bt ds:0x5008, 3
+        let code: &[u8] = &[
+            0xA1, 0x08, 0x50, 0, 0, 0x8B, 0x15, 0x08, 0x50, 0, 0, 0x3B, 0x05, 0x08, 0x50, 0, 0,
+            0x0F, 0xBA, 0x25, 0x08, 0x50, 0, 0, 3,
+        ];
+        put(&mut ram, 0x2000, code);
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxFromDs(0x5008)));
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEdxFromDs(0x5008)));
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::CmpEaxWithDs(0x5008)));
+        assert_eq!(cpu.eflags & EFLAGS_ZF, EFLAGS_ZF);
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::BtDsImm8 {
+                disp: 0x5008,
+                bit: 3
+            })
+        );
+        assert_eq!(
+            (cpu.gpr[EAX], cpu.gpr[EDX], cpu.eip),
+            (0x1234_5678, 0x1234_5678, 0x2019)
+        );
+        assert_eq!(cpu.eflags & EFLAGS_CF, EFLAGS_CF, "bit 3 of 0x78 is set");
+        assert_eq!(
+            get_q(&ram, PDPT),
+            PD as u64 | 1,
+            "a PDPTE has no accessed bit"
+        );
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x2000 | 0x23, "the code page: A");
+        assert_eq!(
+            get_q(&ram, PT + 40),
+            0x6000 | 0x23,
+            "the data page: A, no D"
+        );
+        assert_eq!(get_q(&ram, PT), 3, "page 0 was not used");
+    }
+
+    #[test]
+    fn pae_operand_store_sets_a_and_d_of_the_leaf_and_a_of_the_pde() {
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        cpu.gpr[EAX] = 0xCAFE_BABE;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x6008..0x600C], &0xCAFE_BABEu32.to_le_bytes());
+        assert_eq!(
+            &ram[0x5008..0x500C],
+            &[0; 4],
+            "the identity address is another page"
+        );
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23, "A on the PDE, D never");
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x63, "A and D on the PTE");
+        assert_eq!(
+            get_q(&ram, PT + 16),
+            0x2000 | 0x23,
+            "the fetch page: A only"
+        );
+        assert_eq!(cpu.eip, 0x2005);
+    }
+
+    #[test]
+    fn pae_operand_store_through_a_two_mib_page_sets_d_in_the_pde() {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        put_q(&mut ram, PDPT, PD as u64 | 1);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        let mut cpu = pae_active_cpu();
+        cpu.gpr[EAX] = 0x0102_0304;
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(&ram[0x5008..0x500C], &0x0102_0304u32.to_le_bytes());
+        assert_eq!(get_q(&ram, PD), 0xE3, "A and D on the 2 MiB PDE");
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+    }
+
+    #[test]
+    fn pae_operand_bits_31_30_select_the_pdpte_register() {
+        // PDPTE register 1 names the same page directory: 0x4000_5010 is the page of 0x5010.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        cpu.ds = flat(0x10, 0x93);
+        cpu.pdptes[1] = PD as u64 | 1;
+        put(&mut ram, 0x2000, &mov_ds_eax(0x4000_5010));
+        cpu.gpr[EAX] = 0x1111_2222;
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(&ram[0x6010..0x6014], &0x1111_2222u32.to_le_bytes());
+        // PDPTE register 2 is not present: the walk stops at level 3, reading no table.
+        put(&mut ram, 0x2005, &mov_eax_ds(0x8000_0000));
+        let before = ram.clone();
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2005,
+                linear: 0x8000_0000,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 3, entry: 0 },
+            })
+        );
+        assert_eq!(ram, before);
+    }
+
+    #[test]
+    fn pae_operand_refusals_name_the_level_and_change_nothing() {
+        let page_fault = |access, linear, reason| {
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear,
+                access,
+                reason,
+            })
+        };
+        // Tables with A and D set: the fetch walk writes nothing, so a refusal leaves the memory.
+        let setup = || {
+            let mut cpu = pae_active_cpu();
+            cpu.ds = flat(0x10, 0x93);
+            (cpu, pae_ram_ad())
+        };
+        // PDE with P = 0 (PD[1]).
+        let (mut cpu, mut ram) = setup();
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x0020_0000)),
+            page_fault(
+                AccessKind::Write,
+                0x0020_0000,
+                PageRefusal::NotPresent { level: 2, entry: 0 }
+            )
+        );
+        // PTE with P = 0 (PT[10]).
+        let (mut cpu, mut ram) = setup();
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0xA000)),
+            page_fault(
+                AccessKind::Read,
+                0xA000,
+                PageRefusal::NotPresent { level: 1, entry: 0 }
+            )
+        );
+        // Bit 36 of a PTE is reserved with PAE paging (MAXPHYADDR = 36), bits 62:52 too.
+        for entry in [
+            0x6000 | 0x63 | 1 << 36,
+            0x6000 | 0x63 | 1 << 52,
+            0x6000 | 0x63 | 1 << 62,
+        ] {
+            let (mut cpu, mut ram) = setup();
+            put_q(&mut ram, PT + 40, entry);
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+                page_fault(
+                    AccessKind::Read,
+                    0x5008,
+                    PageRefusal::ReservedBits { level: 1, entry }
+                ),
+                "{entry:#x}"
+            );
+        }
+        // XD is reserved while EFER.NXE = 0.
+        let (mut cpu, mut ram) = setup();
+        cpu.efer = 0;
+        let entry = 0x6000 | 0x63 | 1 << 63;
+        put_q(&mut ram, PT + 40, entry);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            page_fault(
+                AccessKind::Read,
+                0x5008,
+                PageRefusal::ReservedBits { level: 1, entry }
+            )
+        );
+        // Bit 35 is a valid address bit of a PTE; the model addresses memory with 32 bits.
+        let (mut cpu, mut ram) = setup();
+        put_q(&mut ram, PT + 40, 1 << 35 | 0x6000 | 0x63);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            page_fault(
+                AccessKind::Read,
+                0x5008,
+                PageRefusal::PhysicalBeyond4GiB {
+                    phys: 1 << 35 | 0x6008
+                }
+            )
+        );
+        // A page with R/W = 0: a load works, a store is #PF with WP = 1 and works with WP = 0.
+        let entry = 0x6000 | 0x61;
+        let (mut cpu, mut ram) = setup();
+        put_q(&mut ram, PT + 40, entry);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            page_fault(
+                AccessKind::Write,
+                0x5008,
+                PageRefusal::WriteProtected { entry }
+            )
+        );
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+        let (mut cpu, mut ram) = setup();
+        cpu.cr0 &= !CR0_WP;
+        put_q(&mut ram, PT + 40, entry);
+        cpu.gpr[EAX] = 0x0A0B_0C0D;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x6008..0x600C], &0x0A0B_0C0Du32.to_le_bytes());
+        // The operand is beyond the DS limit.
+        let (mut cpu, mut ram) = setup();
+        cpu.ds.limit = 0x5FFF;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5FFD)),
+            Err(ProtectedRefusal::DataBeyondLimit {
+                eip: 0x2000,
+                disp: 0x5FFD,
+                limit: 0x5FFF
+            })
+        );
+    }
+
+    #[test]
+    fn pae_operand_store_refused_on_a_later_byte_keeps_a_and_leaves_d_clear() {
+        // Bytes 0 and 1 are on page 5, bytes 2 and 3 on page 6 (PT[6] absent): the walk of the page
+        // 5 completed (A in the PDE and the PTE), the store did not happen (no D, no byte).
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 48, 0);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5FFE));
+        cpu.gpr[EAX] = 0xFFFF_FFFF;
+        let before = cpu;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x6000,
+                access: AccessKind::Write,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 },
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(&ram[0x6FFE..0x7000], &[0; 2]);
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23, "A, no D");
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+    }
+
+    #[test]
+    fn pae_operand_to_memory_that_is_not_there_is_a_data_refusal_with_a_but_no_d() {
+        // PT[5] -> 0xB000, beyond the 0xA100 bytes of the image.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 40, 0xB000 | 3);
+        put(&mut ram, 0x2000, &mov_eax_ds(0x5008));
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::DataUnreadable {
+                eip: 0x2000,
+                linear: 0x5008
+            })
+        );
+        assert_eq!(get_q(&ram, PT + 40), 0xB000 | 0x23);
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 40, 0xB000 | 3);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::DataUnwritable {
+                eip: 0x2000,
+                linear: 0x5008
+            })
+        );
+        assert_eq!(get_q(&ram, PT + 40), 0xB000 | 0x23, "A, no D");
+    }
 }

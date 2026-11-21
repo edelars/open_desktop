@@ -27,6 +27,8 @@ use super::*;
 use od_isa::protected_exec::ProtectedCpu;
 
 #[cfg(test)]
+mod operand_tests;
+#[cfg(test)]
 mod tests;
 
 /// PDPTE bits that must be 0 when P = 1: 2:1, 8:5 and 63:MAXPHYADDR (SDM Vol. 3A Table 5-8).
