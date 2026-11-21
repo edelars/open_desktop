@@ -128,6 +128,37 @@ pub enum SseFpMiscKind {
     Cvtps2dq,
     /// `F3 0F 5B`: as [`Self::Cvtps2dq`], truncating.
     Cvttps2dq,
+    /// `0F 5A` (S2-37): the two low binary32 of the source to two binary64 (`shape` is `Packed32`; a memory source is
+    /// 8 bytes with no alignment requirement). SDM Vol. 2A CVTPS2PD pp. 3-228..3-230.
+    Cvtps2pd,
+    /// `66 0F 5A` (S2-37): two binary64 to two binary32 in the low half, the high half zero (`shape` is
+    /// `Packed64`; a memory source is 16 bytes, 16-byte aligned). SDM Vol. 2A CVTPD2PS pp. 3-219..3-222.
+    Cvtpd2ps,
+    /// `F3 0F 5A` (S2-37): element 0 binary32 to binary64 (`shape` is `Scalar32`). SDM Vol. 2A CVTSS2SD
+    /// pp. 3-240..3-241.
+    Cvtss2sd,
+    /// `F2 0F 5A` (S2-37): element 0 binary64 to binary32 (`shape` is `Scalar64`). SDM Vol. 2A CVTSD2SS
+    /// pp. 3-234..3-235.
+    Cvtsd2ss,
+    /// `0F 53` RCPPS (`Packed32`) and `F3 0F 53` RCPSS (`Scalar32`) (S2-37): the reciprocal approximation. SDM Vol. 2B
+    /// RCPPS pp. 4-538..4-539, RCPSS pp. 4-540..4-541.
+    Rcp,
+    /// `0F 52` RSQRTPS (`Packed32`) and `F3 0F 52` RSQRTSS (`Scalar32`) (S2-37): the reciprocal square root
+    /// approximation. SDM Vol. 2B RSQRTPS pp. 4-594..4-595, RSQRTSS pp. 4-596..4-597.
+    Rsqrt,
+}
+
+impl SseFpMiscKind {
+    /// The memory source of the form: its size in bytes and whether a 16-byte alignment is required (Vol. 2A
+    /// Table 2-19 Type 2 and Table 2-21 Type 4 for the 128-bit operands: `#GP(0)` when misaligned; Table 2-20
+    /// Type 3 and Table 2-22 Type 5 otherwise). It follows the shape, except that the CVTPS2PD source is 8 bytes
+    /// whatever the packed shape says.
+    pub const fn source_access(self, shape: SseFpShape) -> (u64, bool) {
+        match self {
+            Self::Cvtps2pd => (8, false),
+            _ => (shape.memory_bytes(), shape.is_packed()),
+        }
+    }
 }
 
 /// The operand shape selected by the mandatory prefix: none = packed binary32 (`PS`), `66` = packed
@@ -12900,6 +12931,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (0x5b, None, false) => (SseFpMiscKind::Cvtdq2ps, SseFpShape::Packed32),
             (0x5b, None, true) => (SseFpMiscKind::Cvtps2dq, SseFpShape::Packed32),
             (0x5b, Some(0xf3), false) => (SseFpMiscKind::Cvttps2dq, SseFpShape::Packed32),
+            (0x5a, None, false) => (SseFpMiscKind::Cvtps2pd, SseFpShape::Packed32),
+            (0x5a, None, true) => (SseFpMiscKind::Cvtpd2ps, SseFpShape::Packed64),
+            (0x5a, Some(0xf3), false) => (SseFpMiscKind::Cvtss2sd, SseFpShape::Scalar32),
+            (0x5a, Some(0xf2), false) => (SseFpMiscKind::Cvtsd2ss, SseFpShape::Scalar64),
+            (0x52, None, false) => (SseFpMiscKind::Rsqrt, SseFpShape::Packed32),
+            (0x52, Some(0xf3), false) => (SseFpMiscKind::Rsqrt, SseFpShape::Scalar32),
+            (0x53, None, false) => (SseFpMiscKind::Rcp, SseFpShape::Packed32),
+            (0x53, Some(0xf3), false) => (SseFpMiscKind::Rcp, SseFpShape::Scalar32),
             _ => return Ok(None),
         };
         if matches!(prefixes.segment, Some(0x64 | 0x65)) {
@@ -13098,7 +13137,9 @@ pub fn decode(
             OpcodeMap::Escape0f,
             0x58 | 0x59 | 0x5c | 0x5e | 0x51 | 0x5d | 0x5f | 0x7c | 0x7d | 0xd0,
         ) => fetch.decode_sse_fp_arith(),
-        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b) => fetch.decode_sse_fp_misc(),
+        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b | 0x5a | 0x52 | 0x53) => {
+            fetch.decode_sse_fp_misc()
+        }
         _ => return profile,
     };
     match general {

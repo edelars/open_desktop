@@ -432,6 +432,8 @@ const fn predicate_signals(predicate: u8) -> bool {
 /// The instruction forms outside the four arithmetic operations that write a vector: CMPPS/CMPPD/CMPSS/CMPSD
 /// (`immediate` bits 2:0 select the predicate; the caller refuses the reserved bits 7:3), CVTDQ2PS, CVTPS2DQ
 /// and CVTTPS2DQ (`shape` is the packed binary32 shape: the elements are 32 bits wide in both formats).
+/// S2-37 (remainder): CVTPS2PD, CVTPD2PS, CVTSS2SD and CVTSD2SS (`shape` is the one the prefix selects, see
+/// [`convert`]) and RCPPS, RCPSS, RSQRTPS and RSQRTSS (see [`reciprocal`]).
 pub(crate) fn misc(
     kind: SseFpMiscKind,
     shape: SseFpShape,
@@ -441,6 +443,16 @@ pub(crate) fn misc(
     mxcsr: u32,
 ) -> FpOutcome {
     debug_assert_eq!(mxcsr & MXCSR_RESERVED, 0);
+    match kind {
+        SseFpMiscKind::Cvtps2pd
+        | SseFpMiscKind::Cvtpd2ps
+        | SseFpMiscKind::Cvtss2sd
+        | SseFpMiscKind::Cvtsd2ss => return convert(kind, destination, source, mxcsr),
+        SseFpMiscKind::Rcp | SseFpMiscKind::Rsqrt => {
+            return reciprocal(kind, shape, destination, source, mxcsr);
+        }
+        _ => {}
+    }
     let (width, count) = match shape {
         SseFpShape::Packed32 => (4, 4),
         SseFpShape::Packed64 => (8, 2),
@@ -500,9 +512,169 @@ pub(crate) fn misc(
             SseFpMiscKind::Comi | SseFpMiscKind::Ucomi => {
                 unreachable!("COMISS and UCOMISS write EFLAGS: see compare_flags")
             }
+            SseFpMiscKind::Cvtps2pd
+            | SseFpMiscKind::Cvtpd2ps
+            | SseFpMiscKind::Cvtss2sd
+            | SseFpMiscKind::Cvtsd2ss
+            | SseFpMiscKind::Rcp
+            | SseFpMiscKind::Rsqrt => unreachable!("handled above"),
         });
     }
     commit(lanes, width, shape.is_double(), destination, mxcsr)
+}
+
+/// DAZ: a denormal source is a zero of the same sign (the denormal-operand exception is not reported then).
+fn daz32(bits: u32, mxcsr: u32) -> u32 {
+    if mxcsr & MXCSR_DAZ != 0 && Binary32::from_bits(bits).class() == BinaryClass::Subnormal {
+        bits & (1 << 31)
+    } else {
+        bits
+    }
+}
+
+fn daz64(bits: u64, mxcsr: u32) -> u64 {
+    if mxcsr & MXCSR_DAZ != 0 && Binary64::from_bits(bits).class() == BinaryClass::Subnormal {
+        bits & (1 << 63)
+    } else {
+        bits
+    }
+}
+
+/// One CVTPS2PD/CVTSS2SD element: the exact widening of a binary32. A signaling NaN is quieted and invalid, a
+/// denormal source (without DAZ) is a denormal operand; nothing rounds.
+fn widen_lane(bits: u32, mxcsr: u32) -> Lane {
+    let class = Binary32::from_bits(bits).class();
+    let widened = Binary64::widen_from_binary32(Binary32::from_bits(daz32(bits, mxcsr)));
+    let denormal = class == BinaryClass::Subnormal && mxcsr & MXCSR_DAZ == 0;
+    Lane {
+        bits: widened.value().to_bits(),
+        pre: if widened.invalid_operation() {
+            MXCSR_IE
+        } else {
+            0
+        } | if denormal { MXCSR_DE } else { 0 },
+        overflow: false,
+        inexact: false,
+        unbounded_inexact: false,
+        tiny: false,
+    }
+}
+
+/// One CVTPD2PS/CVTSD2SS element: the binary64 rounded to binary32 under MXCSR.RC (overflow, underflow and
+/// precision as for the arithmetic forms; a NaN keeps the top 23 bits of its payload, a signaling NaN is quieted
+/// and invalid).
+fn narrow_lane(bits: u64, mxcsr: u32) -> Lane {
+    let class = Binary64::from_bits(bits).class();
+    let narrowed = Binary32::narrow_from_binary64(
+        Binary64::from_bits(daz64(bits, mxcsr)),
+        rounding_mode(mxcsr),
+    );
+    let denormal = class == BinaryClass::Subnormal && mxcsr & MXCSR_DAZ == 0;
+    Lane {
+        bits: u64::from(narrowed.value().to_bits()),
+        pre: if narrowed.invalid_operation() {
+            MXCSR_IE
+        } else {
+            0
+        } | if denormal { MXCSR_DE } else { 0 },
+        overflow: narrowed.overflow(),
+        inexact: narrowed.inexact(),
+        unbounded_inexact: narrowed.unbounded_inexact(),
+        tiny: narrowed.tiny_after_precision_rounding(),
+    }
+}
+
+/// CVTPS2PD (two low binary32 of `source` to a binary64 pair), CVTPD2PS (a binary64 pair to two binary32 in the
+/// low half, the high half zero), CVTSS2SD and CVTSD2SS (element 0 only, the bits above the result element are the
+/// destination's). Intel SDM Vol. 2A CVTPD2PS pp. 3-219..3-222, CVTPS2PD pp. 3-228..3-230, CVTSD2SS pp. 3-234..3-235,
+/// CVTSS2SD pp. 3-240..3-241. Exceptions: CVTPS2PD and CVTSS2SD invalid and denormal only; CVTPD2PS and CVTSD2SS also
+/// overflow, underflow and precision.
+fn convert(kind: SseFpMiscKind, destination: [u8; 16], source: [u8; 16], mxcsr: u32) -> FpOutcome {
+    let low32 = |index: usize| {
+        u32::from_le_bytes(
+            source[index * 4..index * 4 + 4]
+                .try_into()
+                .expect("four bytes"),
+        )
+    };
+    let low64 = |index: usize| {
+        u64::from_le_bytes(
+            source[index * 8..index * 8 + 8]
+                .try_into()
+                .expect("eight bytes"),
+        )
+    };
+    let mut lanes = [None; 4];
+    // `width` and `double` describe the destination elements (the FTZ sign and the lane stride).
+    let (width, double) = match kind {
+        SseFpMiscKind::Cvtps2pd => {
+            lanes[0] = Some(widen_lane(low32(0), mxcsr));
+            lanes[1] = Some(widen_lane(low32(1), mxcsr));
+            (8, true)
+        }
+        SseFpMiscKind::Cvtss2sd => {
+            lanes[0] = Some(widen_lane(low32(0), mxcsr));
+            (8, true)
+        }
+        SseFpMiscKind::Cvtpd2ps => {
+            lanes[0] = Some(narrow_lane(low64(0), mxcsr));
+            lanes[1] = Some(narrow_lane(low64(1), mxcsr));
+            (4, false)
+        }
+        SseFpMiscKind::Cvtsd2ss => {
+            lanes[0] = Some(narrow_lane(low64(0), mxcsr));
+            (4, false)
+        }
+        _ => unreachable!("convert handles the four precision conversions"),
+    };
+    // CVTPD2PS writes the whole destination: the high quadword becomes zero.
+    let mut base = destination;
+    if kind == SseFpMiscKind::Cvtpd2ps {
+        base[8..].fill(0);
+    }
+    let mut outcome = commit(lanes, width, double, base, mxcsr);
+    if outcome.fault {
+        outcome.result = destination;
+    }
+    outcome
+}
+
+/// RCPPS, RCPSS, RSQRTPS and RSQRTSS (Intel SDM Vol. 2B RCPPS pp. 4-538..4-539, RCPSS pp. 4-540..4-541, RSQRTPS
+/// pp. 4-594..4-595, RSQRTSS pp. 4-596..4-597): approximations with a relative error of at most 1.5 * 2^-12. The
+/// value of each lane is the deterministic reference of [`Binary32::reciprocal_sse_raw`] and
+/// [`Binary32::reciprocal_sqrt_sse_raw`] (ISSUE-025: not a claim of bit equality with the hardware table); a
+/// denormal source is a zero whatever DAZ says, MXCSR.RC and FTZ do not matter, and no exception or flag exists.
+/// For the scalar shape the bits above element 0 are the destination's.
+fn reciprocal(
+    kind: SseFpMiscKind,
+    shape: SseFpShape,
+    destination: [u8; 16],
+    source: [u8; 16],
+    mxcsr: u32,
+) -> FpOutcome {
+    let count = if shape.is_packed() { 4 } else { 1 };
+    let mut lanes = [None; 4];
+    for (index, slot) in lanes.iter_mut().enumerate().take(count) {
+        let operand = Binary32::from_bits(u32::from_le_bytes(
+            source[index * 4..index * 4 + 4]
+                .try_into()
+                .expect("four bytes"),
+        ));
+        let result = if kind == SseFpMiscKind::Rcp {
+            operand.reciprocal_sse_raw()
+        } else {
+            operand.reciprocal_sqrt_sse_raw()
+        };
+        *slot = Some(Lane {
+            bits: u64::from(result.to_bits()),
+            pre: 0,
+            overflow: false,
+            inexact: false,
+            unbounded_inexact: false,
+            tiny: false,
+        });
+    }
+    commit(lanes, 4, false, destination, mxcsr)
 }
 
 /// One CMPxx element: an all-ones or all-zero mask of the element width.

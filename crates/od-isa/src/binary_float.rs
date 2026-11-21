@@ -619,7 +619,8 @@ impl Binary32 {
                         rounded.inexact(),
                         rounded.overflow(),
                         rounded.tiny_after_precision_rounding(),
-                    ),
+                    )
+                    .with_unbounded_inexact(rounded.unbounded_inexact()),
                     false,
                 )
             }
