@@ -7124,13 +7124,6 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Нужные проверки (не реализованы).** (1) Самопроверка в `verify_boot_services`: гость пересчитывает CRC заголовков System Table, Boot Services и Runtime Services с нулевым полем `crc32` и останавливается кодом `STOP_BOOT_SERVICES`, если результат не равен полю заголовка. Проверка не зависит от раскладки образа и заменяет сравнение напечатанных значений. (2) Host unit-тест в `firmware/uefi` (`cargo test --manifest-path firmware/uefi/Cargo.toml --offline`): для `BootServices::diagnostic()` и `RuntimeServices::diagnostic()` каждое поле сравнивается по имени с указателем на ожидаемую функцию (`misc::calculate_crc32`, `rt::variable::set_variable` и так далее), а также проверяются подпись, редакция, размер и нулевые поля; тест ловит подмену или перестановку полей, которую маска CRC в смоке не видит.
 - **Статус.** Открыто. Следующий шаг: реализовать обе проверки отдельным срезом S7 и обновить [FIRMWARE.md](testing/FIRMWARE.md#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
 
-- **Компонент:** прошивка S7-05/S7-22 (`firmware/uefi`, диагностика ядра), `tests/system/firmware_boot_smoke.py`, эталон `tests/fixtures/firmware/boot_core_com1.txt`.
-- **Суть:** строки COM1 `OD-FW S7-05 table CRC` расходятся с эталоном в адресах таблиц Boot Services и Runtime Services (`BS=`/`RT=`). Первая строка `ST`-CRC совпадает. Расхождение наблюдается на коммите `70ca76c` и на текущем HEAD `e6d7465`.
-- **Воспроизведение:** `cargo build --release -p od-runner --offline`; `python3 tools/build/build_firmware.py --with-test-apps --target-dir work/stage7/tpm-target --out work/stage7/tpm-rom.bin`; `python3 tests/system/firmware_boot_smoke.py --runner target/release/od-runner --rom work/stage7/tpm-rom.bin`.
-- **Не связано с приёмкой S7-23:** `firmware_tpm_smoke.py` на той же прошивке проходит (`tpm-fv` и `tpm-esp`).
-- **Последствия:** эталон `boot_core` не подтверждает текущую раскладку таблиц; регрессия или сдвиг раскладки не разобраны.
-- **Статус:** открыто. Следующий шаг: сравнить раскладку памяти BS/RT с коммитом, где эталон был получен, решить, это изменение раскладки (тогда обновить эталон с обоснованием) или регрессия (тогда исправить код).
-
 <a id="issue-620"></a>
 
 ### ISSUE-620. S7-31a: LoadImage не загружает PE без `.reloc` с ImageBase 0 (EFI stub ядра Ubuntu)
