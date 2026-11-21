@@ -26,6 +26,9 @@
 use super::*;
 use od_isa::protected_exec::ProtectedCpu;
 
+#[cfg(test)]
+mod tests;
+
 /// PDPTE bits that must be 0 when P = 1: 2:1, 8:5 and 63:MAXPHYADDR (SDM Vol. 3A Table 5-8).
 const PDPTE_RESERVED: u64 = 0xFFFF_FFF0_0000_0000 | 0x1E6;
 /// PDE/PTE bits 62:MAXPHYADDR with PAE paging, reserved when P = 1 (SDM Vol. 3A section 5.4.2).
@@ -250,6 +253,7 @@ fn pae_translation(
 /// nor in the accessed-bit updates; a PDPTE with P = 0 is `PageFaultReason::NotPresent` at
 /// `PageTableLevel::Pdpt` with no table read at all. The rest is [`walk_long64_4k_with_writer`] for
 /// the two lower levels, with 2 MiB pages always admitted.
+#[allow(clippy::too_many_arguments)]
 fn walk_pae_with_writer(
     memory: &PhysicalMemory,
     paging: &PaeProbeConfig,

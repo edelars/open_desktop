@@ -1537,8 +1537,9 @@ mod tests {
     /// S2-25: the trampoline's `MOV CR0` with PG = 1, PAE = 1 and EFER.LME = 0 (no `WRMSR`) is PAE
     /// paging of `ProtectedCpu::step` (PDPTEs loaded from CR3), not the refusal `PagingNotModelled`;
     /// the next fetches and a load are translated by it, and the AP never reaches long mode.
-    #[test]
-    fn an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_and_stays_legacy() {
+    /// The trampoline with the protected block of the PAE tests: PAE on, CR3 = the PDPT, `MOV CR0`
+    /// with PG and LME = 0, then a load from `CELLS_AT`. PDPTE0 -> PD (2 MiB page at 0), P only.
+    fn pae_trampoline_patches() -> Vec<(u64, Vec<u8>)> {
         let mut block = vec![0x8E, 0xD2, 0x8E, 0xDA, 0x8E, 0xC2]; // mov ss/ds/es, edx
         block.extend([0xB8]);
         block.extend(le32(0x6B0));
@@ -1555,7 +1556,12 @@ mod tests {
         patches.push((PROTECTED_AT, block));
         // CR3 = PML4: here a PDPT of four entries; PDPTE0 -> PD (2 MiB page at 0), P only.
         patches.push((PML4, (PD | 1).to_le_bytes().to_vec()));
-        let mut board = board_with(2, &patches);
+        patches
+    }
+
+    #[test]
+    fn an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_and_stays_legacy() {
+        let mut board = board_with(2, &pae_trampoline_patches());
         // 14 real-mode steps, 9 up to the paging write inclusive, then the load.
         let ap = take_ap_after_steps(&mut board, 24);
         let Some(LegacyCpu::Protected(cpu)) = &ap.legacy else {
@@ -1568,6 +1574,60 @@ mod tests {
         assert_eq!(cpu.pdptes, [PD | 1, 0, 0, 0]);
         assert!(!cpu.target_entered);
         assert_eq!(cpu.gpr[0], 0x901, "EAX: the cell read through the PAE walk");
+    }
+
+    /// S2-25h: the board's PAE view of an AP that the trampoline put on PAE paging (the od_isa model
+    /// ran the walks that got it there) reads, through the od-machine PAE walk, the bytes the model
+    /// fetches; it is read-only, and a vCPU that is not on PAE paging is a typed text, not a read.
+    #[test]
+    fn the_board_pae_fetch_view_of_an_ap_on_pae_paging_reads_the_bytes_the_model_fetches() {
+        use od_isa::memory::PrivilegeLevel;
+        let mut board = board_with(2, &pae_trampoline_patches());
+        // Before SIPI the AP has no protected model; the BSP never has a legacy one.
+        for cpu in [0, 1] {
+            let (first, bytes, error) =
+                board.fetch_vcpu_view_pae(cpu, PROTECTED_AT as u32, 8, PrivilegeLevel::Ring0);
+            assert_eq!((first, bytes.len()), (None, 0), "cpu {cpu}");
+            assert!(error.is_some(), "cpu {cpu}");
+        }
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        // 14 real-mode steps, 9 up to the paging write inclusive, then the load.
+        assert_eq!(
+            run_legacy(&mut board, 1, 24, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            24
+        );
+        let tables_before = ram(&mut board, PD, 8);
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pae(1, PROTECTED_AT as u32, 16, PrivilegeLevel::Ring0);
+        assert_eq!(error, None);
+        assert_eq!(
+            first,
+            Some(PROTECTED_AT),
+            "the 2 MiB page at 0 is an identity map"
+        );
+        assert_eq!(bytes, ram(&mut board, PROTECTED_AT, 16));
+        assert_eq!(
+            ram(&mut board, PD, 8),
+            tables_before,
+            "the view sets no accessed bit"
+        );
+        // PDPTE1 is not present: the first byte already fails, with the fault named.
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pae(1, 0x4000_0000, 4, PrivilegeLevel::Ring0);
+        assert_eq!((first, bytes.len()), (None, 0));
+        assert!(error.unwrap().contains("Pdpt"));
+        // The snapshot is the model's own registers.
+        let config = board.pae_paging_of(1).unwrap();
+        assert_eq!(config.pdptes(), [PD | 1, 0, 0, 0]);
+        assert_eq!(config.cr3(), PML4);
     }
 
     #[test]
