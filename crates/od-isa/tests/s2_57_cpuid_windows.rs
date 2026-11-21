@@ -5,6 +5,10 @@
 //! pages) or from a published check value (CRC-32C of "123456789" is 0xE3069283, RFC 3720), never
 //! from the implementation under test.
 //!
+//! Slice C of S2-57 (TSC, CX8, CMOV declared; FPU, MSR, SYSCALL and LM kept clear with a recorded blocker,
+//! see CPU_CONTRACT.md) adds TSC (Vol. 1 Table 21-10, EDX[4]), CX8 (EDX[8]) and CMOV (EDX[15]) to the
+//! declared set below.
+//!
 //! Three groups:
 //!
 //! 1. The table: each declared bit is set and each bit of an owner task that is not accepted (or has
@@ -17,10 +21,11 @@
 //! 3. `CPUID` executed in Long64 with the profile returns the table, byte for byte.
 
 use od_isa::cpuid::{CpuidProfile, CpuidResult};
-use od_isa::execute::{self, RunConfig, RunExit, StepOutcome};
+use od_isa::execute::{self, RdtscControls, RunConfig, RunExit, StepOutcome};
 use od_isa::state::{SseState, X87State};
 use od_isa::{
-    AccessContext, AccessKind, GuestMemory, LongModeState, MemoryError, PrivilegeLevel, Register,
+    AccessContext, AccessKind, ArchitecturalFault, GuestMemory, LongModeState, MemoryError,
+    PrivilegeLevel, Register,
 };
 
 const WINDOWS: CpuidProfile = CpuidProfile::OdX8664V2Windows;
@@ -45,7 +50,12 @@ fn register(reg: Reg) -> u32 {
 }
 
 /// (register, bit, name, owner task): declared because the owner task is implemented and merged.
-const DECLARED: [(Reg, u32, &str, &str); 11] = [
+const DECLARED: [(Reg, u32, &str, &str); 14] = [
+    // S2-57 slice C (deviation: declared before S2-16, S2-21 and S2-26 are accepted, awaiting the
+    // owner). Bit numbers: Intel SDM rev. 093, Vol. 1, Table 21-10 (pp. 21-12 and 21-13).
+    (Reg::Edx1, 4, "TSC", "S2-26e"),
+    (Reg::Edx1, 8, "CX8 (CMPXCHG8B)", "S2-21i"),
+    (Reg::Edx1, 15, "CMOV", "S2-16c"),
     // S2-58 (deviation: declared before S2-25, S4-10 and S4-38L8d are accepted, awaiting the owner).
     (Reg::Edx1, 6, "PAE", "S2-58"),
     (Reg::Edx1, 9, "APIC", "S2-58"),
@@ -62,24 +72,21 @@ const DECLARED: [(Reg, u32, &str, &str); 11] = [
 
 /// (register, bit, name, why it is clear). The profile is built from the owner-task table of S2-57,
 /// not from the Linux table: a bit whose owner is not accepted, or has no task, stays clear.
-const UNDECLARED: [(Reg, u32, &str, &str); 31] = [
-    (Reg::Edx1, 0, "FPU", "x87 S2-28..S2-32 not complete"),
-    (Reg::Edx1, 3, "PSE", "no task"),
-    (Reg::Edx1, 4, "TSC", "S2-26 not accepted"),
-    (Reg::Edx1, 5, "MSR", "S2-25/S2-26 not accepted"),
+const UNDECLARED: [(Reg, u32, &str, &str); 28] = [
     (
         Reg::Edx1,
-        8,
-        "CX8",
-        "instruction implemented (S2-21), bit not declared until acceptance",
+        0,
+        "FPU",
+        "x87 is not complete for CPL0: FSIN, FCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FSTENV, FSAVE are not implemented (S2-30, S2-31, S2-32 open)",
+    ),
+    (Reg::Edx1, 3, "PSE", "no task"),
+    (
+        Reg::Edx1,
+        5,
+        "MSR",
+        "only single MSRs (EFER, FS/GS base, STAR, LSTAR, FMASK, SYSENTER) are modelled, not the Windows set (S2-25 open)",
     ),
     (Reg::Edx1, 13, "PGE", "no task"),
-    (
-        Reg::Edx1,
-        15,
-        "CMOV",
-        "S2-16 not accepted (physical check pending)",
-    ),
     (Reg::Edx1, 16, "PAT", "no task"),
     (Reg::Edx1, 19, "CLFSH", "no task"),
     (Reg::Edx1, 23, "MMX", "S2-33 minimal only"),
@@ -100,10 +107,20 @@ const UNDECLARED: [(Reg, u32, &str, &str); 31] = [
     (Reg::Ecx1, 28, "AVX", "ADR-0013, decision 4"),
     (Reg::Ecx1, 31, "hypervisor", "ADR-0013, decision 3"),
     (Reg::Ecx80000001, 5, "LZCNT", "no task"),
-    (Reg::Edx80000001, 11, "SYSCALL", "S2-27 not accepted"),
+    (
+        Reg::Edx80000001,
+        11,
+        "SYSCALL",
+        "SYSCALL/SYSRET only in the Linux board sets, semantics from memory of the SDM, no compatibility mode (S2-27, S2-24 open)",
+    ),
     (Reg::Edx80000001, 26, "1 GiB pages", "no task"),
     (Reg::Edx80000001, 27, "RDTSCP", "no task"),
-    (Reg::Edx80000001, 29, "LM", "S2-24/S2-25 not accepted"),
+    (
+        Reg::Edx80000001,
+        29,
+        "LM",
+        "EFER.LME/LMA changes and compatibility mode are not modelled (S2-24, S2-25 open)",
+    ),
 ];
 
 #[test]
@@ -129,9 +146,10 @@ fn feature_registers_are_exactly_the_declared_bits() {
     );
     assert_eq!(register(Reg::Ecx1), 0x0098_2201);
     assert_eq!(register(Reg::Ecx80000001), 0x0000_0101);
-    // EDX of leaf 1: PAE [6] and APIC [9] (S2-58); 80000001H EDX: NX [20] (S2-58). No bit is left
-    // over that the lists above do not name.
-    assert_eq!(register(Reg::Edx1), 0x40 | 0x200);
+    // EDX of leaf 1: TSC [4], CX8 [8], CMOV [15] (S2-57 slice C), PAE [6] and APIC [9] (S2-58);
+    // 80000001H EDX: NX [20] (S2-58). No bit is left over that the lists above do not name.
+    assert_eq!(register(Reg::Edx1), 0x10 | 0x40 | 0x100 | 0x200 | 0x8000);
+    assert_eq!(register(Reg::Edx1), 0x8350);
     assert_eq!(register(Reg::Edx80000001), 0x10_0000);
     for reg in [Reg::Edx1, Reg::Ecx1, Reg::Ecx80000001, Reg::Edx80000001] {
         let mut declared = 0u32;
@@ -155,13 +173,11 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     assert_eq!(linux.query(0x8000_0001, 0).ecx, 0);
     assert_eq!(linux.query(0x8000_0001, 0).edx, 0x2010_0800);
     assert_eq!(linux.query(0x8000_0002, 0), CpuidResult::default());
-    // The Windows profile has its own identity and takes from the Linux EDX bits only the three
-    // that S2-58 declares: PAE and APIC in leaf 1, NX in 80000001H (the other Linux bits stay clear).
+    // The Windows profile has its own identity and takes from the Linux EDX bits only those it
+    // declares: TSC, PAE, CX8, APIC and CMOV in leaf 1, NX in 80000001H (the other Linux bits stay
+    // clear).
     assert_ne!(WINDOWS.query(0, 0), linux.query(0, 0));
-    assert_eq!(
-        WINDOWS.query(1, 0).edx & linux.query(1, 0).edx,
-        0x40 | 0x200
-    );
+    assert_eq!(WINDOWS.query(1, 0).edx & linux.query(1, 0).edx, 0x8350);
     assert_eq!(
         WINDOWS.query(0x8000_0001, 0).edx & linux.query(0x8000_0001, 0).edx,
         0x10_0000
@@ -289,8 +305,8 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
 fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     // Order of the result: EAX, EBX, ECX, EDX.
     assert_eq!(cpuid_leaf(0), [1, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
-    // EDX: PAE | APIC (S2-58).
-    assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x240]);
+    // EDX: TSC | PAE | CX8 | APIC | CMOV (S2-57 slice C, S2-58).
+    assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x8350]);
     assert_eq!(cpuid_leaf(0x8000_0000), [0x8000_0008, 0, 0, 0]);
     // EDX: NX (S2-58).
     assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0x10_0000]);
@@ -544,4 +560,252 @@ fn cpu_for_crc() -> LongModeState {
     let mut cpu = cpu();
     cpu.gpr[Register::Rax as usize] = 0xffff_ffff;
     cpu
+}
+
+// ---- slice C: TSC, CX8 and CMOV (one representative form each, positive and negative) ----
+
+fn step_outcome(
+    code: &[u8],
+    cpu: &mut LongModeState,
+    ram: &mut Ram,
+) -> Result<StepOutcome, MemoryError> {
+    ram.bytes[CODE as usize..CODE as usize + code.len()].copy_from_slice(code);
+    execute::step(cpu, ram, ring0())
+}
+
+fn ud() -> StepOutcome {
+    StepOutcome::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    })
+}
+
+/// CX8: `0F C7 /1` m64 (CMPXCHG8B) compares EDX:EAX with the operand. Equal: ZF = 1 and ECX:EBX is
+/// stored. Not equal: ZF = 0, the operand is loaded into EDX:EAX and memory keeps its value (Intel SDM
+/// Vol. 2A, CMPXCHG8B, pp. 3-196 to 3-198). Only ZF changes among the flags. The register form is #UD.
+#[test]
+fn cx8_cmpxchg8b_both_outcomes_and_the_register_form_is_ud() {
+    let code = [0x0f, 0xc7, 0x0f];
+    let operand = 0x1111_2222_3333_4444u64;
+    let replacement = 0xaaaa_bbbb_cccc_ddddu64;
+    for equal in [true, false] {
+        let mut cpu = cpu();
+        let mut ram = Ram::with_code(&code);
+        ram.bytes[DATA as usize..DATA as usize + 8].copy_from_slice(&operand.to_le_bytes());
+        cpu.gpr[Register::Rdi as usize] = DATA;
+        let expected = if equal { operand } else { operand ^ 1 };
+        cpu.gpr[Register::Rax as usize] = 0xdead_beef_0000_0000 | (expected & 0xffff_ffff);
+        cpu.gpr[Register::Rdx as usize] = 0xdead_beef_0000_0000 | (expected >> 32);
+        cpu.gpr[Register::Rbx as usize] = 0x5555_5555_0000_0000 | (replacement & 0xffff_ffff);
+        cpu.gpr[Register::Rcx as usize] = 0x5555_5555_0000_0000 | (replacement >> 32);
+        step(&code, &mut cpu, &mut ram);
+        let stored = u64::from_le_bytes(
+            ram.bytes[DATA as usize..DATA as usize + 8]
+                .try_into()
+                .unwrap(),
+        );
+        if equal {
+            assert_eq!(stored, replacement);
+            assert_ne!(cpu.rflags & 0x40, 0, "ZF = 1");
+            // EDX:EAX is not modified when the operands are equal.
+            assert_eq!(cpu.gpr[Register::Rax as usize] as u32, expected as u32);
+            assert_eq!(
+                cpu.gpr[Register::Rdx as usize] as u32,
+                (expected >> 32) as u32
+            );
+        } else {
+            assert_eq!(stored, operand, "memory keeps its value");
+            assert_eq!(cpu.rflags & 0x40, 0, "ZF = 0");
+            // 32-bit writes in 64-bit mode zero the upper halves of RAX and RDX.
+            assert_eq!(cpu.gpr[Register::Rax as usize], operand & 0xffff_ffff);
+            assert_eq!(cpu.gpr[Register::Rdx as usize], operand >> 32);
+        }
+        assert_eq!(cpu.rflags & !0x40, ALL_FLAGS & !0x40, "only ZF changes");
+    }
+    // Register form (mod = 3): #UD, nothing changes.
+    let reg_code = [0x0f, 0xc7, 0xcb];
+    let mut cpu = cpu();
+    let before = cpu.clone();
+    let mut ram = Ram::with_code(&reg_code);
+    assert_eq!(step_outcome(&reg_code, &mut cpu, &mut ram), Ok(ud()));
+    assert_eq!(cpu, before);
+}
+
+/// CMOV: `0F 44 /r` CMOVE moves the source when ZF = 1 and leaves the destination when ZF = 0; no flag
+/// changes (Intel SDM Vol. 2A, CMOVcc, pp. 3-157 to 3-160). In 64-bit mode the 32-bit form clears the
+/// upper half of the destination even when the condition is false.
+#[test]
+fn cmov_moves_only_when_the_condition_holds() {
+    let code = [0x48, 0x0f, 0x44, 0xc1];
+    for zf in [true, false] {
+        let mut cpu = cpu_with_zf(zf);
+        let before = cpu.clone();
+        let mut ram = Ram::with_code(&code);
+        step(&code, &mut cpu, &mut ram);
+        let (rax, rcx) = (
+            before.gpr[Register::Rax as usize],
+            before.gpr[Register::Rcx as usize],
+        );
+        assert_eq!(cpu.gpr[Register::Rax as usize], if zf { rcx } else { rax });
+        assert_eq!(cpu.gpr[Register::Rcx as usize], rcx);
+        assert_eq!(cpu.rflags, before.rflags, "CMOVcc changes no flag");
+    }
+    // 32-bit form with a false condition: EAX is kept, the upper half of RAX is cleared.
+    let code = [0x0f, 0x44, 0xc1];
+    let mut cpu = cpu();
+    cpu.rflags = ALL_FLAGS & !0x40;
+    cpu.gpr[Register::Rax as usize] = 0x1234_5678_9abc_def0;
+    cpu.gpr[Register::Rcx as usize] = 0x0fed_cba9_8765_4321;
+    let mut ram = Ram::with_code(&code);
+    step(&code, &mut cpu, &mut ram);
+    assert_eq!(cpu.gpr[Register::Rax as usize], 0x9abc_def0);
+    // 32-bit form with a true condition: the low half of RCX, zero-extended.
+    cpu.rflags = ALL_FLAGS | 0x40;
+    cpu.gpr[Register::Rax as usize] = 0x1234_5678_9abc_def0;
+    cpu.rip = CODE;
+    step(&code, &mut cpu, &mut ram);
+    assert_eq!(cpu.gpr[Register::Rax as usize], 0x8765_4321);
+    // The memory source is read even when the condition is false (Vol. 2A, CMOVcc).
+    let code = [0x48, 0x0f, 0x44, 0x07];
+    let mut cpu = cpu_with_zf(false);
+    cpu.gpr[Register::Rdi as usize] = DATA;
+    let before = cpu.clone();
+    let mut ram = Ram::with_code(&code);
+    step(&code, &mut cpu, &mut ram);
+    let mut expected = before;
+    expected.rip += 4;
+    assert_eq!(cpu, expected);
+    let mut cpu = cpu_with_zf(false);
+    cpu.gpr[Register::Rdi as usize] = 0x1_0000_0000;
+    let mut ram = Ram::with_code(&code);
+    assert!(matches!(
+        step_outcome(&code, &mut cpu, &mut ram),
+        Err(MemoryError::Unmapped { .. })
+    ));
+}
+
+fn cpu_with_zf(zf: bool) -> LongModeState {
+    let mut cpu = cpu();
+    cpu.rflags = if zf {
+        ALL_FLAGS | 0x40
+    } else {
+        ALL_FLAGS & !0x40
+    };
+    cpu
+}
+
+/// TSC: `0F 31` RDTSC puts the low 32 bits of the injected counter in EAX and the high 32 bits in EDX,
+/// clearing the upper halves of RAX and RDX; with CR4.TSD = 1 at CPL > 0 it is #GP(0) and the source is
+/// not read (Intel SDM Vol. 2B, RDTSC, pp. 4-559 to 4-560).
+fn rdtsc(privilege: PrivilegeLevel, cr4_tsd: bool, value: u64) -> (LongModeState, RunExit, u32) {
+    let mut cpu = cpu();
+    let mut ram = Ram::with_code(&[0x0f, 0x31]);
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        value
+    };
+    let result = execute::run_with_rdtsc_source(
+        &mut cpu,
+        &mut ram,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(CODE + 2),
+            context: AccessContext {
+                privilege,
+                ..AccessContext::default()
+            },
+        },
+        RdtscControls { cr4_tsd },
+        &mut source,
+        || false,
+    );
+    (cpu, result.exit, calls)
+}
+
+#[test]
+fn tsc_rdtsc_splits_the_injected_counter_into_edx_eax() {
+    let before = cpu();
+    let (cpu, exit, calls) = rdtsc(PrivilegeLevel::Ring0, false, 0xfedc_ba98_7654_3210);
+    assert_eq!(exit, RunExit::StopAddress);
+    assert_eq!(calls, 1, "the counter is read once");
+    assert_eq!(cpu.gpr[Register::Rax as usize], 0x7654_3210);
+    assert_eq!(cpu.gpr[Register::Rdx as usize], 0xfedc_ba98);
+    assert_eq!(cpu.rip, CODE + 2);
+    // Every other register and flag is preserved.
+    let mut expected = before;
+    expected.gpr[Register::Rax as usize] = 0x7654_3210;
+    expected.gpr[Register::Rdx as usize] = 0xfedc_ba98;
+    expected.rip = CODE + 2;
+    assert_eq!(cpu, expected);
+    // CR4.TSD = 1 does not restrict CPL 0.
+    let (cpu, exit, calls) = rdtsc(PrivilegeLevel::Ring0, true, 1);
+    assert_eq!(
+        (exit, calls, cpu.gpr[Register::Rax as usize]),
+        (RunExit::StopAddress, 1, 1)
+    );
+}
+
+#[test]
+fn tsc_rdtsc_with_cr4_tsd_is_gp0_outside_cpl0_and_does_not_read_the_source() {
+    for privilege in [
+        PrivilegeLevel::Ring1,
+        PrivilegeLevel::Ring2,
+        PrivilegeLevel::Ring3,
+    ] {
+        let before = cpu();
+        let (cpu, exit, calls) = rdtsc(privilege, true, 0x1234);
+        assert_eq!(
+            exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{privilege:?}"
+        );
+        assert_eq!(calls, 0, "{privilege:?}: the counter is not read");
+        assert_eq!(cpu, before, "{privilege:?}: no state change");
+        // With TSD clear the same CPL reads the counter.
+        let (_, exit, calls) = rdtsc(privilege, false, 0x1234);
+        assert_eq!((exit, calls), (RunExit::StopAddress, 1), "{privilege:?}");
+    }
+}
+
+// ---- slice C: the bits that stay clear have a live blocker ----
+
+/// Each of these forms is what keeps a bit clear. When a task implements one, the matching
+/// `UNDECLARED` row has to be re-examined, and this test is the reminder.
+#[test]
+fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
+    let unsupported = |code: &[u8], setup: &dyn Fn(&mut LongModeState)| {
+        let mut cpu = cpu();
+        setup(&mut cpu);
+        let mut ram = Ram::with_code(code);
+        let before = cpu.clone();
+        let outcome = step_outcome(code, &mut cpu, &mut ram);
+        assert!(
+            matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+            "{code:02x?}: {outcome:?}"
+        );
+        assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
+    };
+    // FPU: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 (DF /4).
+    for code in [
+        &[0xd9u8, 0xfe][..],
+        &[0xd9, 0xf3],
+        &[0xd9, 0xf0],
+        &[0xd9, 0xfd],
+        &[0xdf, 0x27],
+    ] {
+        unsupported(code, &|cpu| cpu.gpr[Register::Rdi as usize] = DATA);
+    }
+    // MSR: RDMSR of IA32_APIC_BASE (0x1B) and WRMSR of IA32_PAT (0x277) in the bare run.
+    unsupported(&[0x0f, 0x32], &|cpu| cpu.gpr[Register::Rcx as usize] = 0x1b);
+    unsupported(&[0x0f, 0x30], &|cpu| {
+        cpu.gpr[Register::Rcx as usize] = 0x277
+    });
+    // SYSCALL: bare run, no board member.
+    unsupported(&[0x0f, 0x05], &|_| {});
 }

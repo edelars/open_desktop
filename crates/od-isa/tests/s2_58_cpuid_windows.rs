@@ -47,8 +47,10 @@ fn pae_apic_and_nx_are_declared_at_their_sdm_positions() {
     assert_ne!(leaf1.edx & (1 << 6), 0, "PAE");
     assert_ne!(leaf1.edx & (1 << 9), 0, "APIC");
     assert_ne!(ext1.edx & (1 << 20), 0, "NX");
-    // The registers are exactly those bits: 0x40 + 0x200 and 0x100000.
-    assert_eq!(leaf1.edx, 0x0000_0240);
+    // Leaf 1 EDX is PAE and APIC (0x40 + 0x200) plus the bits of S2-57 slice C (TSC 0x10, CX8 0x100,
+    // CMOV 0x8000); 80000001H EDX is NX only (0x100000).
+    assert_eq!(leaf1.edx & (0x40 | 0x200), 0x0000_0240);
+    assert_eq!(leaf1.edx, 0x0000_8350);
     assert_eq!(ext1.edx, 0x0010_0000);
     // The rest of both leaves is the S2-57 table.
     assert_eq!(leaf1.eax, 0x0009_06C0);
@@ -63,12 +65,9 @@ fn every_neighbouring_bit_that_s2_58_does_not_own_is_clear() {
     for (bit, name) in [
         (0, "FPU"),
         (3, "PSE"),
-        (4, "TSC"),
         (5, "MSR"),
         (7, "MCE"),
-        (8, "CX8"),
         (13, "PGE"),
-        (15, "CMOV"),
         (16, "PAT"),
         (17, "PSE-36"),
         (23, "MMX"),
@@ -124,7 +123,7 @@ fn apic_id_of_leaf1_ebx_is_the_vcpu_index() {
     assert_eq!(WINDOWS.query_for_vcpu(1, 0, 0, 2).ebx, 0x0002_0100);
     assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).ebx, 0x0102_0100);
     // EDX does not change with the vCPU, HTT (bit 28) stays clear.
-    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).edx, 0x0000_0240);
+    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).edx, 0x0000_8350);
 }
 
 // ---- executing guest code on the Windows member ----
@@ -250,7 +249,7 @@ fn movabs_rax(value: u64) -> Vec<u8> {
 }
 
 /// `CPUID` executed in a set whose CPUID member is the Windows profile returns the declared
-/// registers (leaf 1 EDX = PAE | APIC, 80000001H EDX = NX).
+/// registers (leaf 1 EDX = TSC | PAE | CX8 | APIC | CMOV, 80000001H EDX = NX).
 #[test]
 fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
     static CLI: CliProfile = CliProfile::NonPviLong64V1;
@@ -259,7 +258,7 @@ fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
         .with_cpuid(&WINDOWS);
     // mov eax, leaf; cpuid
     for (leaf, edx, ecx) in [
-        (1u32, 0x240u64, 0x0098_2201u64),
+        (1u32, 0x8350u64, 0x0098_2201u64),
         (0x8000_0001, 0x10_0000, 0x101),
     ] {
         let mut code = vec![0xb8];
