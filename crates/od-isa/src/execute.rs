@@ -50671,6 +50671,20 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.sse.is_some()
         }
         Operation::FisttpMemory { .. } => state.x87.is_some(),
+        // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`) are general-register forms with
+        // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and in the
+        // bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the Linux live profile
+        // (CPUID does not declare POPCNT or SSE4.2 until S2-57, and `cpl3_allows` does not list them).
+        Operation::Popcnt { .. } | Operation::Crc32 { .. } => {
+            if control_policy.is_some() {
+                context.privilege == PrivilegeLevel::Ring0
+            } else {
+                cr0_profile.is_none()
+                    && cr4_profile.is_none()
+                    && mov_cr3_profile.is_none()
+                    && cpu_owned_cr3.is_none()
+            }
+        }
         // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
         // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
         // never at CPL3, whose set stays the Linux live profile (CPUID declares neither LAHF_SAHF_64
@@ -51597,6 +51611,27 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             next_rip,
         );
     }
+    // S2-56 slice A: POPCNT and CRC32 commit here as well.
+    if let Operation::Popcnt { dst, src } | Operation::Crc32 { dst, src } = instruction.operation {
+        let outcome = step_popcnt_crc32(
+            state,
+            memory,
+            context,
+            (
+                matches!(instruction.operation, Operation::Crc32 { .. }),
+                dst,
+                src,
+            ),
+            instruction.opcode.byte,
+            next_rip,
+        )?;
+        // The shared tail below is bypassed, so the definedness of the flags is updated here: POPCNT
+        // defines all six arithmetic flags, CRC32 none.
+        if matches!(outcome, StepOutcome::Advanced) {
+            *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+        }
+        return Ok(outcome);
+    }
     // S2-55 slice A: the integer SSE4.1 forms commit here as well.
     if let Operation::Sse41 {
         kind,
@@ -51605,14 +51640,20 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         immediate,
     } = instruction.operation
     {
-        return step_sse41(
+        let outcome = step_sse41(
             state,
             memory,
             context,
             (kind, xmm, operand, immediate),
             instruction.opcode.byte,
             next_rip,
-        );
+        )?;
+        // The shared tail below is bypassed, so the definedness of the flags is updated here: PTEST
+        // defines all six arithmetic flags, the other SSE4.1 forms none (`flag_effects` is empty).
+        if matches!(outcome, StepOutcome::Advanced) {
+            *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+        }
+        return Ok(outcome);
     }
     if let Operation::FisttpMemory { memory: operand } = instruction.operation {
         return step_fisttp(
@@ -62953,8 +62994,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
         | Operation::Sse41 { .. }
+        | Operation::Popcnt { .. }
+        | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
-            unreachable!("S2-54 slice C and D and S2-55 slice A forms commit before dispatch")
+            unreachable!(
+                "S2-54 slice C and D, S2-55 slice A and S2-56 slice A forms commit before dispatch"
+            )
         }
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
@@ -69847,6 +69892,16 @@ fn sse41_vector_result(
             }
             out
         }
+        // S2-56: PCMPGTQ, the signed qword comparison dest > src per lane (SDM Vol. 2B p. 4-265).
+        Sse41Kind::Pcmpgtq => {
+            let mut out = [0u8; 16];
+            for index in 0..2 {
+                if lane(&dest, 8, index, true) > lane(&src, 8, index, true) {
+                    out[8 * index..8 * index + 8].fill(0xff);
+                }
+            }
+            out
+        }
         Sse41Kind::Packusdw => {
             let mut out = [0u8; 16];
             for index in 0..4 {
@@ -70070,6 +70125,83 @@ fn step_sse41(
         _ => sse41_vector_result(kind, dest, raw, sse.xmm[0], immediate),
     };
     sse.xmm[usize::from(xmm)] = result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// CRC-32C accumulation (Intel SDM Vol. 2A CRC32 "Operation", p. 3-205): the polynomial 11EDC6F41H with
+/// the data and the CRC both in reflected bit order is the reflected polynomial 82F63B78H shifted right.
+/// The source bytes are processed least significant byte first (a 64-bit source is two 32-bit steps in the
+/// SDM operation, which is the same bit stream).
+fn crc32c_update(crc: u32, source: u64, bytes: usize) -> u32 {
+    const REFLECTED_POLYNOMIAL: u32 = 0x82f6_3b78;
+    let mut crc = crc;
+    for byte in &source.to_le_bytes()[..bytes] {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (REFLECTED_POLYNOMIAL & (crc & 1).wrapping_neg());
+        }
+    }
+    crc
+}
+
+/// S2-56 slice A: POPCNT and CRC32 on the general registers (Intel SDM Vol. 2B POPCNT pp. 4-405..4-406,
+/// Vol. 2A CRC32 pp. 3-205..3-207). Neither reads CR0 or CR4 and neither touches the SSE or x87 state: the
+/// only `#UD` besides LOCK (a decoder `#UD`) is the CPUID bit (POPCNT, SSE4.2), which this model does not
+/// gate (S2-57 owns CPUID). The source is read completely before any register or flag changes, so a
+/// memory fault leaves the state untouched. POPCNT clears CF, OF, SF, AF and PF and sets ZF only for a zero
+/// source; CRC32 leaves every flag alone. The destination is written through `RegisterView`: a dword
+/// destination zero-extends to 64 bits, a word destination (POPCNT r16) keeps bits 63:16.
+///
+/// The alignment-check exception `#AC` (SDM: CPL3 only) is not modeled: an operand that is not aligned to
+/// its size at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in
+/// `step_sse41`, instead of guessed. CPL3 is refused before this point in every profile that has a CPL0
+/// set.
+fn step_popcnt_crc32(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (crc, dst, src): (bool, RegisterView, Operand),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    let size = match src {
+        Operand::Register(view) => view.size(),
+        Operand::Memory(operand) => operand.size,
+        Operand::Immediate(_) => unreachable!("POPCNT and CRC32 have no immediate source"),
+    };
+    let source = match src {
+        Operand::Register(view) => state.read(view),
+        Operand::Memory(operand) => {
+            let address = match operand.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            let length = operand.size.bytes() as u64;
+            if length > 1
+                && address & (length - 1) != 0
+                && context.privilege == PrivilegeLevel::Ring3
+                && state.rflags & (1 << 18) != 0
+                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+            {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            match memory.read_integer(address, context, operand.size) {
+                Ok(value) => value,
+                Err(error) => return report_memory_error(error),
+            }
+        }
+        Operand::Immediate(_) => unreachable!("checked above"),
+    };
+    if crc {
+        let accumulated = crc32c_update(state.read(dst) as u32, source, size.bytes());
+        state.write(dst, u64::from(accumulated));
+    } else {
+        let masked = source & size.mask();
+        state.write(dst, u64::from(masked.count_ones()));
+        state.rflags =
+            (state.rflags & !crate::ARITHMETIC_FLAGS) | if masked == 0 { crate::ZF } else { 0 };
+    }
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }

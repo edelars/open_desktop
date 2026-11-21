@@ -4468,6 +4468,53 @@ mod tests {
     }
 
     #[test]
+    fn popcnt_crc32_and_pcmpgtq_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-56 slice A: the interpreter executes POPCNT, CRC32 and PCMPGTQ; the JIT has no lowering for
+        // them, so the block is not built.
+        const ENTRY: u64 = 0x4f00;
+        for bytes in [
+            &[0x66, 0x0f, 0x38, 0x37, 0xc1][..],   // PCMPGTQ xmm0, xmm1
+            &[0x66, 0x0f, 0x38, 0x37, 0x00],       // PCMPGTQ xmm0, [rax]
+            &[0xf3, 0x0f, 0xb8, 0xca],             // POPCNT ecx, edx
+            &[0xf3, 0x48, 0x0f, 0xb8, 0x08],       // POPCNT rcx, [rax]
+            &[0x66, 0xf3, 0x0f, 0xb8, 0xca],       // POPCNT cx, dx
+            &[0xf2, 0x0f, 0x38, 0xf0, 0xca],       // CRC32 ecx, dl
+            &[0xf2, 0x48, 0x0f, 0x38, 0xf1, 0xca], // CRC32 rcx, rdx
+            &[0x66, 0xf2, 0x0f, 0x38, 0xf1, 0x08], // CRC32 ecx, word [rax]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse41 { .. } | Operation::Popcnt { .. } | Operation::Crc32 { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x38, 0x37, 0x00][..],
+            &[0xf0, 0xf3, 0x0f, 0xb8, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0x38, 0xf0, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

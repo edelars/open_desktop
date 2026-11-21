@@ -147,7 +147,9 @@ impl Ssse3IntKind {
 /// PMINSB/PMINSD/PMINUW/PMINUD pp. 4-332..4-349, PMAXSB/PMAXSD/PMAXUW/PMAXUD pp. 4-316..4-331, PCMPEQQ
 /// pp. 4-251..4-253, PACKUSDW pp. 4-191..4-195, PBLENDW pp. 4-235..4-237, PBLENDVB pp. 4-231..4-234,
 /// PINSRB/PINSRD/PINSRQ pp. 4-305..4-307, PEXTRB/PEXTRD/PEXTRQ pp. 4-286..4-288, PEXTRW pp. 4-289..4-291,
-/// MOVNTDQA pp. 4-90..4-91, PHMINPOSUW pp. 4-298..4-299, MPSADBW pp. 4-132..4-139). Only the legacy
+/// MOVNTDQA pp. 4-90..4-91, PHMINPOSUW pp. 4-298..4-299, MPSADBW pp. 4-132..4-139; S2-56 adds the SSE4.2
+/// PCMPGTQ pp. 4-264..4-266, which has the same operand model and Type 4 exception class and therefore the
+/// same decoder and executor). Only the legacy
 /// `66`-prefixed encodings exist here (no VEX/EVEX). Exceptions class by form: Type 4 (Vol. 2A Table 2-21,
 /// 16-byte aligned m128) for the register-or-m128 forms, Type 1 (Table 2-18) for MOVNTDQA, Type 5
 /// (Table 2-22, no alignment requirement) for PMOVSX/PMOVZX, PINSR* and PEXTR*.
@@ -174,6 +176,8 @@ pub enum Sse41Kind {
     Pmuldq,
     /// `66 0F 38 29 /r`
     Pcmpeqq,
+    /// `66 0F 38 37 /r` (SSE4.2, S2-56): signed qword greater-than, all ones or zero per lane.
+    Pcmpgtq,
     /// `66 0F 38 2A /r` (memory source only)
     Movntdqa,
     /// `66 0F 38 2B /r`
@@ -233,6 +237,7 @@ impl Sse41Kind {
             (OpcodeMap::Escape0f38, 0x35) => Self::Pmovzxdq,
             (OpcodeMap::Escape0f38, 0x28) => Self::Pmuldq,
             (OpcodeMap::Escape0f38, 0x29) => Self::Pcmpeqq,
+            (OpcodeMap::Escape0f38, 0x37) => Self::Pcmpgtq,
             (OpcodeMap::Escape0f38, 0x2a) => Self::Movntdqa,
             (OpcodeMap::Escape0f38, 0x2b) => Self::Packusdw,
             (OpcodeMap::Escape0f38, 0x38) => Self::Pminsb,
@@ -2461,6 +2466,21 @@ pub enum Operation {
         operand: Sse41Operand,
         immediate: u8,
     },
+    /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
+    /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
+    /// only as the fallback of [`decode`]; executed through `step_popcnt_crc32`.
+    Popcnt {
+        dst: RegisterView,
+        src: Operand,
+    },
+    /// S2-56 slice A: `CRC32 r32/r64, r/m8/r/m16/r/m32/r/m64` (`F2 [REX.W] 0F 38 F0/F1 /r`): accumulates
+    /// CRC-32C (polynomial 11EDC6F41H, reflected bit order) of the source into the low 32 bits of `dst` and
+    /// zero-extends. `dst` is a dword or (REX.W) qword register, `src.size` is the SDM source width. No
+    /// flags change. Decoded only as the fallback of [`decode`]; executed through `step_popcnt_crc32`.
+    Crc32 {
+        dst: RegisterView,
+        src: Operand,
+    },
     /// S2-54 slice C: x87 `FISTTP m16int/m32int/m64int` (`DF /1`, `DB /1`, `DD /1`): store ST(0) as a
     /// signed integer with truncation and pop. `memory.size` is Word, Dword or Qword. Decoded only
     /// as the fallback of [`decode`]; executed through `step_fisttp`.
@@ -3197,7 +3217,14 @@ impl Instruction {
                 defined: crate::CF,
                 undefined: crate::PF | crate::AF | crate::SF | crate::OF,
             },
-            Operation::BitScan { .. } => FlagEffects {
+            // PTEST: ZF and CF come from the operands, AF, OF, PF and SF are cleared (SDM), so all six
+            // arithmetic flags are defined afterwards.
+            Operation::BitScan { .. }
+            | Operation::Popcnt { .. }
+            | Operation::Sse41 {
+                kind: Sse41Kind::Ptest,
+                ..
+            } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -12322,6 +12349,103 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// S2-56 slice A: POPCNT (`F3 [REX.W] 0F B8 /r`) and CRC32 (`F2 [REX.W] 0F 38 F0/F1 /r`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2B
+    /// POPCNT pp. 4-405..4-406, Vol. 2A CRC32 pp. 3-205..3-207). The mandatory prefix (`F3` for POPCNT, `F2` for
+    /// CRC32) is required: without it `0F B8` is not POPCNT and `0F 38 F0/F1` is MOVBE, both owned elsewhere.
+    /// LOCK is #UD (SDM: "If LOCK prefix is used"). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides
+    /// (no segment base in this operand model), the other group-1 prefix and the VEX/EVEX encodings. Operand
+    /// width: REX.W selects 64 bits, else `66` selects 16 (POPCNT and CRC32 `F1` only), else 32; CRC32
+    /// `F0` has an 8-bit source (with a REX prefix the byte registers are SPL, BPL, SIL, DIL) and its
+    /// destination is r64 with REX.W, else r32; `66` does not change the destination of CRC32.
+    fn decode_popcnt_crc32(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let (opcode, mandatory) = match self.byte()? {
+            0xb8 => (
+                Opcode {
+                    map: OpcodeMap::Escape0f,
+                    byte: 0xb8,
+                },
+                0xf3,
+            ),
+            0x38 => match self.byte()? {
+                byte @ (0xf0 | 0xf1) => (
+                    Opcode {
+                        map: OpcodeMap::Escape0f38,
+                        byte,
+                    },
+                    0xf2,
+                ),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        if prefixes.group1 != Some(mandatory) || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let wide = rex & 8 != 0;
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let general = if wide {
+            OperandSize::Qword
+        } else if prefixes.operand_override {
+            OperandSize::Word
+        } else {
+            OperandSize::Dword
+        };
+        let (dst_size, src_size) = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Escape0f, _) => (general, general),
+            (_, 0xf0) => (
+                if wide {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                },
+                OperandSize::Byte,
+            ),
+            _ => (
+                if wide {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                },
+                general,
+            ),
+        };
+        let src = self.rm_operand(modrm, prefixes, src_size)?;
+        let dst = RegisterView::low(
+            Register::from_encoding(((modrm >> 3) & 7) | ((rex & 4) << 1)).unwrap(),
+            dst_size,
+        );
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: dst_size,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: if mandatory == 0xf3 {
+                Operation::Popcnt { dst, src }
+            } else {
+                Operation::Crc32 { dst, src }
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -12369,11 +12493,15 @@ pub fn decode(
         {
             fetch.decode_ssse3_int()
         }
-        // S2-55 slice A: the integer SSE4.1 forms.
+        // S2-55 slice A: the integer SSE4.1 forms (and, S2-56, PCMPGTQ).
         (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
             if Sse41Kind::from_opcode(opcode.map, byte, false).is_some() =>
         {
             fetch.decode_sse41()
+        }
+        // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`).
+        (OpcodeMap::Escape0f, 0xb8) | (OpcodeMap::Escape0f38, 0xf0 | 0xf1) => {
+            fetch.decode_popcnt_crc32()
         }
         _ => return profile,
     };

@@ -1676,6 +1676,46 @@ fn ptest_sets_zf_and_cf_clears_the_other_arithmetic_flags_and_leaves_the_registe
 }
 
 #[test]
+fn flag_definedness_ptest_defines_the_arithmetic_flags_and_other_forms_change_none() {
+    let config = RunConfig {
+        instruction_budget: 1,
+        stop_rip: None,
+        context: ctx(PrivilegeLevel::Ring0),
+    };
+    // PTEST xmm2, xmm1 sets ZF and CF from the operands and clears AF, OF, PF and SF (SDM), so all six
+    // arithmetic flags are defined afterwards, whatever the tracker held before; DF is not touched.
+    for initial in [0x02, 0x02 | 0x800, 0x02 | STATUS | (1 << 10)] {
+        let code = reg_code(kind_named("ptest"), 2, 1, 0);
+        let mut ram = Ram::new(&code);
+        let mut after = cpu();
+        let result =
+            execute::run_with_rflags_defined(&mut after, &mut ram, config, initial, || false)
+                .unwrap();
+        assert_eq!(
+            result.exit,
+            RunExit::InstructionBudgetExhausted,
+            "{initial:#x}"
+        );
+        assert_eq!(result.rflags_defined, initial | STATUS, "{initial:#x}");
+    }
+    // A form without flag effects keeps the definedness unchanged.
+    for initial in [0x02, 0x02 | 0x800, 0x02 | STATUS] {
+        let code = reg_code(kind_named("pmovsxbw"), 2, 1, 0);
+        let mut ram = Ram::new(&code);
+        let mut after = cpu();
+        let result =
+            execute::run_with_rflags_defined(&mut after, &mut ram, config, initial, || false)
+                .unwrap();
+        assert_eq!(
+            result.exit,
+            RunExit::InstructionBudgetExhausted,
+            "{initial:#x}"
+        );
+        assert_eq!(result.rflags_defined, initial, "{initial:#x}");
+    }
+}
+
+#[test]
 fn phminposuw_returns_the_smallest_word_its_first_index_and_zeroes_the_rest() {
     let junk = counting(0x40);
     // Minimum 3 first occurs at index 1.
@@ -2715,11 +2755,12 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
             format!("{name} LOCK no 66"),
         ));
     }
+    // (66 0F 38 37 is PCMPGTQ since S2-56 and is covered by s2_56_sse42_popcnt.rs.)
     // Neighbouring opcodes of the same maps that are not integer SSE4.1. The floating-point SSE4.1 forms
     // (BLENDVPS/PD 38/14 and 38/15, ROUNDPS/PD/SS/SD 3A/08..0B, BLENDPS/PD 3A/0C and 3A/0D, EXTRACTPS 3A/17,
     // INSERTPS 3A/21, DPPS 3A/40, DPPD 3A/41) wait for the FP core of S2-37/S2-38 and must stay refused.
     for opcode in [
-        0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18, 0x19, 0x26, 0x27, 0x2c, 0x2d, 0x36, 0x37, 0x42,
+        0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18, 0x19, 0x26, 0x27, 0x2c, 0x2d, 0x36, 0x42,
     ] {
         refused.push((
             vec![0x66, 0x0f, 0x38, opcode, 0x00],
