@@ -23,9 +23,10 @@
 //!
 //! S4-38L9y: IER stores bits 3..0 (RDA, THRE, RLS, MS) and returns them;
 //! bits 7..4 are dropped on write and read as 0 (a write of `0xff` reads back
-//! `0x0f`). RLS and MS are stored only: the model has no line-status or
-//! modem-status interrupt source, so they never change IIR or the line. RDA
-//! and THRE behave as before. Semantics follow the 16550 datasheet from memory
+//! `0x0f`). RLS became an interrupt source in S4-24f (IIR 0x06, see
+//! `deliver_received_byte`); MS is stored only: the model has no modem-status
+//! interrupt source, so it never changes IIR or the line. RDA and THRE behave
+//! as before. Semantics follow the 16550 datasheet from memory
 //! and were not checked against a primary source.
 //!
 //! S4-38L9z: the FIFO control register (offset 2, write) accepts any byte and
@@ -101,8 +102,8 @@ pub const UART_RX_ERROR_FRAMING: u8 = 0x08;
 pub const UART_RX_ERROR_BREAK: u8 = 0x10;
 const RX_ERRORS_ACCEPTED: u8 = UART_RX_ERROR_PARITY | UART_RX_ERROR_FRAMING | UART_RX_ERROR_BREAK;
 /// IER bits 3..0 (RDA, THRE, RLS, MS) are stored; bits 7..4 read as 0. Only
-/// RDA and THRE have interrupt sources; RLS (bit 2) and MS (bit 3) are
-/// stored only.
+/// RDA, THRE and (since S4-24f) RLS (bit 2) have interrupt sources; MS (bit 3)
+/// is stored only.
 const IER_STORED: u8 = 0x0f;
 /// MCR bits 0..2 (DTR, RTS, OUT1) are stored and read back only; OUT2
 /// (bit 3) additionally gates the interrupt line. LOOP (bit 4) and bits 5..7
@@ -311,6 +312,9 @@ impl Uart16550Handle {
     /// `UART_RX_ERROR_PARITY | UART_RX_ERROR_FRAMING | UART_RX_ERROR_BREAK`; other
     /// bits are refused with `UnsupportedConfiguration` without mutation.
     /// Returns whether an overrun occurred.
+    ///
+    /// Limitation (not fixed): a real 16550 puts RBR = 0x00 on BREAK, while the
+    /// model stores the supplied `value` as given.
     pub fn deliver_received_byte(&self, value: u8, errors: u8) -> Result<bool, DeviceError> {
         self.with_state(|state| state.deliver_received_byte(value, errors))
     }
@@ -850,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn ier_rls_and_ms_bits_are_stored_only_and_raise_nothing() {
+    fn ier_rls_and_ms_bits_are_stored_and_raise_nothing_without_a_condition() {
         let mut device = Uart16550PollingTx::new();
         let handle = device.handle();
         setup_8n1_divisor(&mut device);
@@ -859,7 +863,9 @@ mod tests {
         assert_eq!(read(&mut device, 1), 0x0c);
         assert_eq!(handle.peek_iir(), 0x01);
         assert!(!handle.interrupt_line());
-        // Conditions exist but neither RLS nor MS reports them.
+        // inject_received_byte sets no error bits, so RLS has no condition to
+        // report here (RLS with real errors: the S4-24f tests below); MS has
+        // no source at all.
         device.inject_received_byte(0x33).unwrap();
         assert_eq!(handle.peek_iir(), 0x01);
         assert!(!handle.interrupt_line());
