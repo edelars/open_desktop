@@ -1688,6 +1688,28 @@ Guest faults, backend, port I/O, loader and input failures remain distinct.
 The cancellation source is deterministic; VMHost and OS signal wiring is S4-41.
 See [S4-21d report](../reports/STAGE_4_S4-21D_2026-11-07.md).
 
+## Restart of the firmware board processors (S4-21e)
+
+`LoadedFirmwareBoard::restart_vcpus` is the processor half of the machine reset
+that S7-26 completes. It is legal between runs after any stop (guest reset or
+S5, halt, budget, host STOP, guest shutdown, host fault). It returns every vCPU
+to the power-on state through `reset_cpu_complex`: the boot processor takes
+the entry state the loader gave it (recorded on the board; the firmware entry is
+direct Long64, not the reset vector), every application processor waits for SIPI
+with the real-mode reset state, the guest CR2/EFER/MSR cells, `REP` resume flag
+and NMI blocking are cleared, and every Local APIC and the IOAPIC route drop
+pending interrupts, NMI, INIT/SIPI, armed timer and Remote IRR. It then
+acknowledges the PM block's stop latch (`take_stop_request`) and returns the
+acknowledged `MachineStopReason`, so the next run is not stopped before its first
+instruction. A board assembled for the Linux direct boot has no recorded entry
+state and refuses the call without changing anything.
+Not touched: guest RAM, ROM, devices (the PM registers too), NVRAM, TPM, the
+virtual clock and the host STOP flag. RAM policy of cold and warm reset, device
+and TPM volatile reset, and the runner loop are S7-26. The hardware-reset
+values of the x87 state (FCW `0040H`, FTW `5555H`, SDM Vol. 3A Table 12-1)
+are not modelled: vCPUs reset to the `FNINIT` values (S4-38L9d).
+See [S4-21e report](../reports/STAGE_4_S4-21E_2026-11-21.md).
+
 ## Caller-driven virtual clock and RDTSC boundary
 
 S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной

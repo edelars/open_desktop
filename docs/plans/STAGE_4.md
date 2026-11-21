@@ -1547,6 +1547,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Контракт:** `--stage4-probe` использует `PagedVcpuSession`; HLT подтверждает `guest_completed` только при трёх инструкциях, совпадении ожидаемого nonce с RAX и единственного UART byte с его младшим байтом. Отдельные статусы для HLT, несовпадения, STOP, лимита и ошибок.
 - **Проверки и границы:** 8 runner CLI tests, 1 reproducible-build CLI test, 1 session drain unit test, runner all-targets check, fmt и diff прошли; см. [отчёт](../reports/STAGE_4_S4-21D_2026-11-07.md), [manifest](../reports/data/stage4/s4-21d-runner.json), [методику](../testing/MACHINE.md#s4-21d-runner-completion-and-cancellation). `--cancel-after` — детерминированный источник STOP; подключение VMHost/OS signals относится к S4-41.
 
+#### S4-21e. Перезапуск процессоров платы после остановки
+
+- [ ] Ограниченный срез реализован, ждёт независимого ревью; S4-21 остаётся открытым.
+- **Контракт:** `LoadedFirmwareBoard::restart_vcpus` возвращает все vCPU в состояние power-on (BSP — записанное при загрузке прямое entry-состояние, AP — `WaitForSipi`), сбрасывает ожидающие события всех Local APIC/IOAPIC и подтверждает защёлку остановки ACPI PM (`Reset`/`Shutdown`). Допустим после любой остановки. Плата Linux direct без записанного entry отказывает без изменений.
+- **Проверки:** узкие тесты `od-machine` (restart 4 новых, acpi_pm 26, vcpu 170), all-targets check, fmt. Сверка с SDM Vol. 3A 12.1.1 Table 12-1 записана в [отчёте](../reports/STAGE_4_S4-21E_2026-11-21.md), [контракт](../specs/MACHINE_CONTRACT.md#restart-of-the-firmware-board-processors-s4-21e).
+- **Границы:** RAM (cold/warm), ROM, устройства, NVRAM, TPM, часы и host STOP не трогаются — это S7-26; нет reset-вектора BSP, INIT BSP, x87 hardware-reset значений (FCW `0040H`, FTW `5555H`).
+
 ### S4-22. Virtual clock и TSC
 
 - [x] Принято после ревью (с переносом остатков, решение владельца 2026-11-15).
