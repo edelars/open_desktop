@@ -21656,24 +21656,27 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             state.rip = next_rip;
             return result(PagedProbeExit::Retired, 1);
         }
-        // EnableCursor stores the normalized BOOLEAN in the console mode.
+        // S7-31b regression fix: `0F 90..9F /r` SETcc r/m8 with a memory destination of any
+        // addressing form (Intel SDM Vol. 2, SETcc). One byte, 1 if the condition holds and 0
+        // otherwise, is stored; ModRM.reg is ignored and the flags are not modified. A 0x66 prefix
+        // is ignored by SETcc and a 0x67 prefix only narrows the address, which the shared
+        // effective-address path already applies. REX only extends base and index. LOCK, REPNE/REP
+        // and segment overrides are rejected by the decoder. RIP is committed only after the byte
+        // store, and a faulting store leaves the state untouched.
         Operation::SetCondition {
             condition,
             dst:
                 destination @ Operand::Memory(MemoryOperand {
-                    base: AddressBase::NextRip,
-                    index: None,
-                    scale: 1,
-                    address_size: OperandSize::Qword,
                     size: OperandSize::Byte,
                     ..
                 }),
             ..
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0x95
-            && instruction.length == 7
-            && instruction.prefixes == Prefixes::default() =>
+            && matches!(instruction.opcode.byte, 0x90..=0x9f)
+            && instruction.operand_size == OperandSize::Byte
+            && instruction.prefixes.group1.is_none()
+            && instruction.prefixes.segment.is_none() =>
         {
             let value = u64::from(condition.evaluate(state.rflags));
             if let Err(error) = write_operand(state, memory, context, next_rip, destination, value)
@@ -22889,37 +22892,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
-        // S7-04 stores SETNE to [RSP+7]. S7-22 additionally uses SETE [RSP]
-        // and SETNE [RSP+0x20]. Commit RIP only after the exact byte store.
+        // S7-04 stores SETNE to [RSP+7] in the base profile. The firmware boot profile takes every
+        // SETcc memory store in the general arm above. Commit RIP only after the exact byte store.
         Operation::SetCondition {
             condition,
             dst: Operand::Memory(destination),
             raw_modrm,
-        } if ((base_profile
+        } if (base_profile
             && condition == ConditionCode::NotEqual
             && instruction.opcode.byte == 0x95
             && instruction.length == 5
             && raw_modrm == 0x44
             && destination.displacement == 7)
-            || (firmware_boot_profile
-                && matches!(
-                    (
-                        condition,
-                        instruction.opcode.byte,
-                        instruction.length,
-                        raw_modrm,
-                        destination.displacement
-                    ),
-                    (ConditionCode::Equal, 0x94, 4, 0x04, 0)
-                        | (ConditionCode::Equal, 0x94, 5, 0x44, 0x20 | 0x3c)
-                        | (
-                            ConditionCode::NotEqual,
-                            0x95,
-                            5,
-                            0x44,
-                            0x18 | 0x20 | 0x68 | 0x70
-                        )
-                )))
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.operand_size == OperandSize::Byte
             && instruction.prefixes == Prefixes::default()

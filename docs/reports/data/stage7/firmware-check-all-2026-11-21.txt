@@ -1,0 +1,25 @@
+# S7-40: python3 tools/build/firmware_check_all.py --work <каталог> --table-out <файл>
+# Дата: 2026-11-21. Чистый checkout: git worktree add --detach (вне репозитория) d0408f5 = main 3df4b11483ce + коммиты S7-40 (только команда, её самопроверка и docs/testing/FIRMWARE.md; firmware/ и crates/ не менялись).
+# Хост: Apple M3 Max (aarch64), macOS 26.7.1, rustc/cargo 1.99.0, Python 3.15.2. Код выхода команды: 1.
+# Журналы шагов (в scratch-каталоге) в git не хранятся; причины отказов: ISSUE-628.
+
+step                          exit     seconds  key line
+build-runner                  0        77       Finished `release` profile [optimized] target(s) in 1m 16s
+build-rom-stock               0        10       sha256: bdcc333f509dc364a90f3fe3d681a82753a02656d240b97de100f6348b7e5d30
+build-rom-test-apps           0        15       sha256: 5840e8d8d5dbc8f6473f826c3be7df7fa032cd72cd2da4ca16507f8f3f0a075e
+firmware_boot_smoke           1        44       boot_core #1 COM1 differs from its byte fixture
+firmware_esp_boot_smoke       1        17       ESP boot smoke: esp_default did not reach boot exh ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_nvram_smoke          1        17       {"activity":"Running","budget":7500000,"com1_bytes ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_failure_smoke        1        99       create legacy NV store: Unsupported { opcode: 148 } at 0x227cae
+firmware_install_media_smoke  1        55       install media smoke: converted-esp did not reach b ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_pkcs7_smoke          1        7        RuntimeError: enroll: {'activity': 'Running', 'bud ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_secure_boot_smoke    1        17       Secure Boot enrollment smoke: setup-1: {'activity' ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_tpm_smoke            1        152      RuntimeError: tpm-fv: runner exited 5: {'activity' ... exit_detail=Unsupported { opcode: 148 } rip=0x0000000000227cae
+firmware_reset_smoke          1        174      {"boots":[{"com1_bytes":3497,"com1_offset":0,"cycle":1,"exit":"unsupported","quanta":3498,"retired":363968642,"stop_reason":null,"virtual_ns":363968642}],"budge
+host-tests-firmware-uefi      0        6        cargo test: 339 passed; 0 failed; 0 ignored (2 result lines)
+ignored-tpm-startup-failure   101      8        left: Unsupported { opcode: 148 }
+ignored-secure-boot-pcr7      skipped  0        prerequisite failed: firmware_secure_boot_smoke
+python-selftests              0        56       OK
+
+total 753 s; 5 of 16 steps passed
+logs: /private/tmp/claude-501/-Users-senya-projects-open-desktop/db078cd0-be7b-4e9e-a7bd-b3e5b4e57952/scratchpad/fc-work/logs

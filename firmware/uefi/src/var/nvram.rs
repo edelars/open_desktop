@@ -96,7 +96,7 @@ impl Nvram {
         Ok(u64::from(high) << 32 | u64::from(low))
     }
 
-    /// Submits one complete file. Disabled means SetupMode or the host's explicit bypass.
+    /// Submits one complete file. Disabled means SetupMode or Secure Boot turned off (the `SecureBoot` variable reads 0).
     /// If provided, `authority` receives the exact enrolled EFI_SIGNATURE_DATA at success.
     #[cfg(target_os = "none")]
     pub(crate) fn authorize_image(

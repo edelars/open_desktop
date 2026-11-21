@@ -537,7 +537,7 @@ TPM `Time`. С совпадающим `nonceTPM` срок отсчитывает
 для двух расширений дайджеста. Восстанавливаются ограничения срока
 и `cpHashA`. Trial после разбора полей выполняет только расширения
 дайджеста по §23.1. Референсная реализация Microsoft отклоняет такой
-trial с `ATTRIBUTES`. [TPM Library v185 Part 3 §§23.1 и 23.5](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf), [Microsoft TPM reference](https://raw.githubusercontent.com/microsoft/ms-tpm-20-ref/main/TPMCmd/tpm/src/command/EA/PolicyTicket.c).
+trial с `ATTRIBUTES`. [TPM Library v185 Part 3 §§23.1 и 23.5](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf).
 
 Кодировка билета в этом TPM использует ровно восемь байт `timeout`.
 Младшие 63 бита содержат миллисекунды `Time`. Старший бит означает,
@@ -549,7 +549,7 @@ trial с `ATTRIBUTES`. [TPM Library v185 Part 3 §§23.1 и 23.5](https://medias
 однозначно различать пустые и заполненные поля. Источник использует
 proof своей иерархии. Для Lockout это Owner proof. Для NV выбор
 определяет `PLATFORMCREATE`.
-[TPM Library v185 Part 2 §§10.3.10 и 10.6.6](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf), [Microsoft TPM reference](https://raw.githubusercontent.com/microsoft/ms-tpm-20-ref/main/TPMCmd/tpm/src/support/Entity.c).
+[TPM Library v185 Part 2 §§10.3.10 и 10.6.6](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-2-Structures_Version-185_pub.pdf).
 
 После смены эпохи билет в новой сессии получает `TICKET` при
 несовпадении HMAC. Истёкший срок или старая эпоха самой сессии
@@ -895,7 +895,7 @@ SHA-256 и конкатенацию полных значений 32/48 байт
 вычисления политики другой конфигурации. `Hash`, `PCR_Event` и
 `EventSequenceComplete` сохраняют поддержку обоих алгоритмов.
 [TPM Library v185, Part 3 §§9.4, 22.5 и 23.7](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf),
-[порядок обновления в эталонной реализации](https://github.com/microsoft/ms-tpm-20-ref/blob/main/TPMCmd/tpm/src/subsystem/PCR.c).
+порядок обновления описан в TPM Library v185 Part 4 (Supporting Routines), модуль PCR; Part 4 входит в ту же редакцию спецификации TCG.
 
 ### Кадрирование и коды ответа
 
@@ -1018,7 +1018,7 @@ SHA-256 и конкатенацию полных значений 32/48 байт
   сессии и `PolicyPassword` также проходят проверку класса привязки.
   Если защищены обе сущности, проверяются оба условия блокировки.
   При неверном доказательстве приоритет имеет защита `lockoutAuth`.
-  [TPM Library v185 Part 1 §§16.8.5, 16.8.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf), [Part 3 §11.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf), [проверка учёта в референсной реализации](https://github.com/microsoft/ms-tpm-20-ref/blob/main/TPMCmd/tpm/src/main/SessionProcess.c#L71-L130).
+  [TPM Library v185 Part 1 §§16.8.5, 16.8.7](https://trustedcomputinggroup.org/wp-content/uploads/Trusted-Platform-Module-2.0-Library-Part-1-Architecture_Version-185_pub.pdf), [Part 3 §11.1](https://medias.cdn.trustedcomputinggroup.org/production/Trusted_Platform_Module_2_0_Library_Part_3_Commands_Version_185_pub_87a5c10230.pdf); проверка учёта описана в TPM Library v185 Part 4 (Supporting Routines), модуль SessionProcess.
 - Тело контекста сессии сохраняет DA-класс в битах 2–3 существующего
   поля флагов. У старого HMAC-контекста с записанным handle Lockout класс
   восстанавливается из handle. В старых policy и audit контекстах без
@@ -1417,7 +1417,7 @@ host через отдельный HMAC_DRBG с собственной стро�
 57. Шифрование параметров: `TPM_RC_ATTRIBUTES` (номер сессии) для `decrypt`/`encrypt` у команды без размерного первого параметра (ответа) и для второй сессии с тем же атрибутом (текст даёт правила, не код); списки команд `decrypt`/`encrypt` — выведены из таблиц команд Part 3 (первый параметр — `TPM2B_*`), `TPM2_StartAuthSession` исключена; `TPM_RC_KEY_SIZE` (AES не 128) и `TPM_RC_HASH` (хеш XOR не SHA-256) у `StartAuthSession`, `TPM_RC_MODE` для режима не CFB — по Part 3, 11.1.1; в `sessionValue` `authValue` без хвостовых нулей; атрибуты в ответе сессии повторяют присланные (в том числе `decrypt` и `encrypt`); `sessionValue` для policy-сессии включает `authValue` без `PolicyAuthValue` (Part 1, 19.1); TPM_ALG_XOR в `TPM_CAP_ALGS` с битами hash+symmetric (по колонке типов Table 11).
 58. `PolicySecret` с `expiration` ≠ 0 не реализован (`TPM_RC_VALUE`, параметр 4): значения `timeout`, `timeEpoch`, `resetCount` в тексте implementation-specific, ticket без `PolicyTicket` не используется.
 59. Шифрование ответа: `sessionValue` берёт `authValue` сущности, как он есть ПОСЛЕ выполнения команды (так же, как HMAC ответа); текст Part 1, 19.1 момент снятия `authValue` для ответа не называет (NOT VERIFIED). Команды, меняющие auth авторизующего handle (`HierarchyChangeAuth`, `NV_ChangeAuth`), параметров ответа не возвращают, а `ObjectChangeAuth` не меняет auth загруженного объекта (меняется только возвращаемый `outPrivate`), поэтому порядок в результате не проявляется; теста нет.
-60. Срез 2а (RSA-3072, RSAPSS, OAEP с SHA-384/SHA-512), пометки в `crypto.rs`, `asym.rs`, `object.rs`: подпись RSAPSS делается с солью длиной в дайджест (Part 1, Annex B.7; генерация), а проверка принимает любую допустимую длину соли — как эталон (`PssDecode` в `CryptRsa.c` ms-tpm-20-ref находит разделитель `0x01` после нулевого заполнения и берёт остаток блока за соль). Это выбор проекта и отклонение от строгого чтения спецификации; текст Annex B.7 недоступен, проверка сверена по коду эталона; подписи, сделанные `openssl` с солью 0, 20 и максимальной (350 октетов для RSA-3072/SHA-256), принимаются (`rsapss_verify_accepts_any_salt_length_but_refuses_corrupted_sig`).
+60. Срез 2а (RSA-3072, RSAPSS, OAEP с SHA-384/SHA-512), пометки в `crypto.rs`, `asym.rs`, `object.rs`: подпись RSAPSS делается с солью длиной в дайджест (Part 1, Annex B.7; генерация), а проверка принимает любую допустимую длину соли (разделитель `0x01` ищется после нулевого заполнения, остаток блока считается солью). Это выбор проекта и отклонение от строгого чтения спецификации; текст Annex B.7 недоступен, поэтому сверка с ним остаётся открытой, а поведение подтверждено подписями, сделанными независимым инструментом; подписи, сделанные `openssl` с солью 0, 20 и максимальной (350 октетов для RSA-3072/SHA-256), принимаются (`rsapss_verify_accepts_any_salt_length_but_refuses_corrupted_sig`).
 61. `TPM2_RSA_Encrypt` для сообщения длиннее модуля ключа: у нас `TPM_RC_SIZE` (параметр 1), у эталонной реализации `TPM_RC_VALUE`; код по тексту Part 3/4 не сверен.
 62. ORDERLY (срез 3): значение 255 у `TPM_PT_ORDERLY_COUNT`, правило «записать в NV при первом и каждом 255-м приращении, при неупорядоченном `Startup` прибавить 255» и ограничение `ORDERLY` типом counter — выбор реализации; по тексту Part 2/3 не сверены (VTPM.md текста об ORDERLY не содержал).
 63. PIN_FAIL и PIN_PASS (срез 3): расположение полей, требование `NO_DA` у PIN_FAIL, обнуление `pinCount` при успехе, прирост `passCount`, `TPM_RC_LOCKOUT` у лимита и целая запись 8 октетов — минимум плана среза, по Part 3 (31.3.1, 31.7) и Part 2 (Table 231) не сверены.
