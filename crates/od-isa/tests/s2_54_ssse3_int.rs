@@ -14,7 +14,7 @@
 //! transcription of that pseudocode on 64-bit integers that shares no code with the model.
 //!
 //! Not asserted here because the SDM text does not define it or the model does not carry it: the MMX forms
-//! (no `66` prefix; the MMX register model of S2-33 is absent, so they stay refused), the CPUID.SSSE3 gate
+//! (no `66` prefix; they are in `s2_54_ssse3_mmx.rs`, on the MMX register model of S2-33), the CPUID.SSSE3 gate
 //! (S2-57), `#AC` (an aligned operand never faults on alignment and an unaligned one is `#GP` first).
 
 use od_isa::execute::{self, Cr4Profile, RunConfig, RunExit, StepOutcome};
@@ -1677,15 +1677,6 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
     for kind in &KINDS {
         let tail: &[u8] = if kind.immediate() { &[0x04] } else { &[] };
         let name = kind.name;
-        // The MMX forms (no mandatory prefix) need the MMX register model: refused.
-        refused.push((
-            [&kind.opcode[..], &[0x00], tail].concat(),
-            format!("{name} MMX memory"),
-        ));
-        refused.push((
-            [&kind.opcode[..], &[0xc1], tail].concat(),
-            format!("{name} MMX register"),
-        ));
         // F2 / F3 with 66, repeated prefixes, FS and GS (no segment base in this operand model).
         for (prefix, what) in [
             (&[0xf2u8, 0x66][..], "F2 66"),
@@ -1708,11 +1699,6 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
                 ));
             }
         }
-        // LOCK without the 66 prefix is the MMX form with LOCK: not claimed either.
-        refused.push((
-            [&[0xf0][..], &kind.opcode, &[0x00], tail].concat(),
-            format!("{name} LOCK MMX"),
-        ));
     }
     // Neighbouring opcodes of the same maps that are not integer SSSE3.
     for opcode in [0x0cu8, 0x0d, 0x0e, 0x0f, 0x1b, 0x1f] {
