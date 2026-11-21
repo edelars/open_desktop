@@ -495,10 +495,13 @@ enum SessionUse {
 /// - Errata v1.5, item 2.15: a bound session first used for audit and authorization is a case the
 ///   reference code got wrong in the response HMAC of the later authorizations.
 ///
-/// NOT VERIFIED: the numbering of these clauses in v185 and Part 2 Table 38 (not read); the key of
-/// the response HMAC of the first audited use of a bound session. The code keeps the key of the
+/// NOT VERIFIED: the numbering of these clauses in v185 and Part 2 Table 38 (not read).
+///
+/// Ambiguity A-1 of the specification text (VTPM.md, "Неоднозначность A-1"): the key of the
+/// response HMAC of the first audited use of a bound session. The code keeps the key of the
 /// command HMAC (clause 19.6.10 gives one key for a command and its response), the bind is
-/// dropped after the response is built.
+/// dropped after the response is built. Pinned by the test
+/// `first_audit_of_a_bound_session_answers_with_the_session_key_alone`.
 fn classify_sessions(
     tpm: &Tpm,
     spec: &CommandSpec,
