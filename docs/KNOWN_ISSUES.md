@@ -1496,7 +1496,7 @@
 - **Компонент:** `tests/system/` (runner stress mode), `crates/od-jit/src/dispatch.rs` (executable cache), runner (`--reboot-cycles`), guest RAM.
 - **Владелец:** S4-44; далее `docs/plans/STAGE_7.md` (S7-26) для boot/STOP/reset и `--reboot-cycles`.
 - **Статус:** открыта.
-- **Обновление 2026-11-21 (S7-26a):** `--reboot-cycles` в runner реализован для прошивки (`boot-firmware --fv-app reboot --reboot-cycles N`, сброс платы в процессе); повторные STOP/boot и reset устройств и прошивки проверены `tests/system/firmware_reset_smoke.py`. Остальное ниже остаётся открытым; reset путей Linux-платы и Linux-профиля не сделан.
+- **Обновление 2026-11-21 (S7-26a):** `--reboot-cycles` в runner реализован для прошивки (`boot-firmware --fv-app reboot --reboot-cycles N`, сброс платы в процессе); повторные STOP/boot и reset устройств и прошивки проверены `tests/system/firmware_reset_smoke.py`. Остальное ниже остаётся открытым; reset путей Linux-платы и Linux-профиля не сделан ([ISSUE-627](#issue-627)).
 - **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles` (для Linux-платы), явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
 - **Следующий шаг:** S4-44 назначает исполнителя по каждому пункту; остаток до STAGE_7.
 
@@ -7200,3 +7200,15 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Суть и последствия:** (1) RTC/CMOS (индекс, маска NMI, `Status A/B`, 128 байт CMOS RAM) не сбрасывается: у MC146818 CMOS питается от батареи, а время считается от несбрасываемых часов платы. Прошивка CMOS не использует, но гость, включивший маску NMI или записавший в CMOS, увидит это после сброса. (2) `host_stop` (`Arc<AtomicBool>`) не сбрасывается, снимается только `host_stop_honoured`; владелец платы обязан снять флаг сам.
 - **Основание:** ревью S7-26a; [FIRMWARE_BOOT.md, раздел 12.1](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a).
 - **Следующий шаг:** решение владельца платы: оставить как есть для Linux/Windows профилей или добавить сброс индекса и маски NMI (CMOS RAM оставить); `host_stop` — зафиксировать в API платы, кто его снимает.
+
+<a id="issue-627"></a>
+
+### ISSUE-627 — S7-26a: сброс платы Linux и платы с Linux-профилем (PIT, пара 8259) не реализован
+
+- **Дата обнаружения:** 2026-11-21 (сверка документов по итогам ревью S7-26a).
+- **Компонент:** `crates/od-machine/src/firmware_board.rs` (`LoadedFirmwareBoard::platform_reset`), модели PIT и пары 8259 платы Linux.
+- **Владелец:** этап 9 (жизненный цикл и снимок VM); номер задачи этапа 9 не назначен.
+- **Статус:** открыта; вне объёма S7-26.
+- **Суть и последствия:** `platform_reset` отклоняет плату Linux и плату с Linux-профилем ошибкой `Config` до любых изменений: сброс PIT, пары 8259 и связанных линий IRQ не описан и не проверен. Перезагрузка внутри процесса и `--reboot-cycles` для Linux-платы недоступны; повторный запуск возможен только новым процессом runner. Раньше этот остаток в [FIRMWARE_BOOT.md](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a) был записан как «задача этапа 9» без номера.
+- **Основание:** [FIRMWARE_BOOT.md, раздел 12.1](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a); ревью S7-26a; ISSUE-096 (общий остаток `--reboot-cycles` для Linux-платы).
+- **Следующий шаг:** при планировании этапа 9 назначить задачу: определить сброс PIT/8259 и IRQ-маршрута, снять отказ `Config` для этих плат, добавить проверку по образцу `tests/system/firmware_reset_smoke.py`.
