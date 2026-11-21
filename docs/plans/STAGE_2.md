@@ -15183,6 +15183,24 @@ guest EFER through `LoadedFirmwareBoard::efer()`; the remaining paths on a fixed
 contract section. The slice is not accepted; S2-25 stays open and NX stays blocked through S2-25.
 
 
+#### S2-25g — PAE paging, CR4.PAE policy and PDPTE rules (model only)
+
+**Статус:** bounded interpreter slice (protected-mode model of S6-14 plus the Long64 CPL0 profile);
+parent S2-25 stays open, not accepted.
+
+Protected-mode model (`protected_exec.rs`, `paging.rs`): PAE paging (CR0.PG=1, CR4.PAE=1, EFER.LME=0,
+LMA=0) is entered by `MOV CR0`, which loads the four PDPTE registers from CR3 and does not set LMA.
+`MOV CR3` under PAE paging and a `MOV CR4` that changes PAE/PGE/PSE reload them; a PDPTE with P=1 and a
+reserved bit (2:1, 8:5, 63:36) is #GP(0) at the `MOV` with CR0/CR3/CR4 and the registers unchanged.
+Walk: `translate_pae` (PDPTE register, PDE, PTE, 4 KiB and 2 MiB pages, bits 62:36 reserved, no
+accessed bit in a PDPTE). `MOV CR4` clearing PAE with IA-32e active is #GP(0) (new
+`Cr4PaeClearInLongMode`); the same in the Long64 CPL0 profile `MOV CR4, RAX` was `Unsupported` and is
+now #GP(0). LME=1 with PG and no PAE stays #GP(0); LME cannot change while PG=1. Still closed:
+32-bit paging (PG=1, PAE=0, LME=0), clearing PAE under PAE paging, CR0 writes with PG already set or
+clear, CR0.CD/NW reload of the PDPTEs, task-switch CR3, SMEP/PSE-36, CPUID declaration of PAE
+(S2-57/S2-58). No hardware oracle: the PAE walk and PDPTE rules are the SDM text only. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25g--pae-paging-cr4pae-policy-and-pdpte-rules-model-only).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

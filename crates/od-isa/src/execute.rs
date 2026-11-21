@@ -47117,6 +47117,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             let policy = control_policy.expect("guarded by the match arm");
             let value = state.gpr[Register::Rax as usize];
             let is_cr0 = instruction.operation == Operation::WriteCr0;
+            // S2-25: the Long64 profiles run with IA-32e active (LMA = 1); clearing CR4.PAE then
+            // is #GP(0) with no state change (SDM Vol. 3A §12.8.5), as for `MOV CR4, r64` below.
+            if !is_cr0 && value & Cr4Profile::BASE == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
             let accepted = if is_cr0 {
                 policy.accepts_cr0(value)
             } else {
