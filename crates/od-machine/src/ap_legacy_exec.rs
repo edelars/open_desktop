@@ -1535,7 +1535,7 @@ mod tests {
     }
 
     /// S2-25: the trampoline's `MOV CR0` with PG = 1, PAE = 1 and EFER.LME = 0 (no `WRMSR`) is PAE
-    /// paging of `ProtectedCpu::step` (PDPTEs loaded from CR3), not the refusal `PagingNotModelled`;
+    /// paging of `ProtectedCpu::step` (PDPTEs loaded from CR3), not the former 32-bit-paging refusal;
     /// the next fetches and a load are translated by it, and the AP never reaches long mode.
     #[test]
     fn an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_and_stays_legacy() {

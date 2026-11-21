@@ -15195,11 +15195,29 @@ reserved bit (2:1, 8:5, 63:36) is #GP(0) at the `MOV` with CR0/CR3/CR4 and the r
 Walk: `translate_pae` (PDPTE register, PDE, PTE, 4 KiB and 2 MiB pages, bits 62:36 reserved, no
 accessed bit in a PDPTE). `MOV CR4` clearing PAE with IA-32e active is #GP(0) (new
 `Cr4PaeClearInLongMode`); the same in the Long64 CPL0 profile `MOV CR4, RAX` was `Unsupported` and is
-now #GP(0). LME=1 with PG and no PAE stays #GP(0); LME cannot change while PG=1. Still closed:
-32-bit paging (PG=1, PAE=0, LME=0), clearing PAE under PAE paging, CR0 writes with PG already set or
-clear, CR0.CD/NW reload of the PDPTEs, task-switch CR3, SMEP/PSE-36, CPUID declaration of PAE
-(S2-57/S2-58). No hardware oracle: the PAE walk and PDPTE rules are the SDM text only. See the
+now #GP(0). LME=1 with PG and no PAE stays #GP(0); LME cannot change while PG=1. Still closed here
+(32-bit paging, clearing PAE under PAE paging, CR0 writes with PG set and the CD/NW reload are S2-25h below):
+task-switch CR3, SMEP/PSE-36, CPUID declaration of PAE (S2-57/S2-58). No hardware oracle: the PAE walk and
+PDPTE rules are the SDM text only. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25g--pae-paging-cr4pae-policy-and-pdpte-rules-model-only).
+
+#### S2-25h — 32-bit paging, PAE/32-bit transitions, CR0 writes with paging on (model only)
+
+**Статус:** bounded interpreter slice (protected-mode model of S6-14, `protected_exec.rs`, `paging.rs`);
+parent S2-25 stays open, not accepted.
+
+32-bit paging (CR0.PG=1, CR4.PAE=0, LME=0) is entered by `MOV CR0` (no PDPTE is loaded) or by a `MOV CR4`
+that clears PAE under PAE paging with LMA=0; `translate32` walks CR3 bits 31:12 -> PDE -> PTE, 10+10+12 bits,
+4-byte entries, 4 MiB pages with CR4.PSE (PSE=0: PS is ignored, no reserved bits), bits 21:13 of a 4 MiB PDE
+reserved (PSE-36 is not declared, `CPUID.01H:EDX[17]` is clear in every profile), no XD. A `MOV CR4` that sets
+PAE under 32-bit paging loads the PDPTEs from CR3 (same #GP(0) for a reserved bit, CR4 unchanged). A `MOV CR0`
+that keeps PG set reloads the PDPTEs only under PAE paging and only when CD or NW change (PG cannot change
+while it stays set); one that clears PG with LMA=0 turns paging off; LMA=1 (deactivating IA-32e) and PE
+cleared are `Cr0WriteUnmodelled`. The former `PagingNotModelled` refusal and the `Cr4WriteUnmodelled` for
+PAE clear are gone. Still closed: task-switch CR3, SMEP, PSE-36 and CR4.PCIDE, CPUID gating of CR4 bits (the
+Windows profile does not declare PSE, the model still accepts CR4.PSE), the `od-machine` MMU (4-level only), IA-32e
+deactivation. No hardware oracle (a user-space process cannot write CR0/CR4): the rules are the SDM text. See
+the [CPU contract](../specs/CPU_CONTRACT.md#s2-25h--32-bit-paging-pae32-bit-transitions-cr0-writes-with-paging-on-model-only).
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
