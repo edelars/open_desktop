@@ -24525,6 +24525,43 @@ concrete defects. The [S2-39l report](S2_39L_INTERPRETER_REPLAY.md) records the
 Graphify refresh and repository layout check's pre-existing missing ignored
 artifact links in this isolated worktree.
 
+## S2-39m — SSE state of the CPL0 set in `LongModeState.sse`
+
+The FP member of the CPL0 profile set now runs on `LongModeState.sse`:
+`run_cpl0_profile_set_inner` loads the SSE half of the `GuestFpState` cell after
+admission and stores it back at every exit (`state.sse` is `None` outside the
+run; the x87 half stays in the cell and `state.x87` stays `None`).
+`FXSAVE64`/`FXRSTOR64` of the member, the CPL3 XMM list (`step_cpl3_xmm`) and the
+CPL3 scalar FP list read and write `state.sse`. At CPL0 under the member the
+narrow register forms that S2-37/S2-38 convert to the general operations
+(arithmetic, compares, conversions, bitwise) and the S2-34 raw 128-bit moves
+take the general core, exactly as in the bare run; the S2-54/S2-55 forms and the
+[RAX] forms already reached it once `state.sse` existed. CPL3 keeps its own short
+list (a new test pins the general forms as refused), and a set without
+`with_fp_state` is unchanged.
+
+Tests (all passed): the new `s2_39_cpl0_sse` (11): 45 forms (S2-34, S2-37,
+S2-38, S2-54, S2-55) equal to the bare `step` and to the FP-init CR0/CR4 pair on
+both operand sets (registers, MXCSR, RFLAGS, memory, outcome), one program of the
+45 forms in one run, CR0.EM/TS and CR4.OSFXSR gates before any address check
+(five control combinations, three RAX values), unmasked `#XM`/`#UD` with the
+MXCSR flag kept and the destination unchanged, reserved MXCSR bits, misaligned,
+non-canonical and unmapped operands, `FXRSTOR64` then `FXSAVE64` round trip,
+an SSE form between them, `FXRSTOR64` with reserved MXCSR bits, `FNINIT` around
+SSE forms, and no change without the member. `cpl0_profile_set` 1626,
+`cpl3_profile_set` 238 (one new), `cpl3_syscall` 29, `od-isa --lib` filtered
+(cpl0 fxsave fxrstor sse fp_state cpl3 s6_22) 174, `od-machine --lib` filtered
+(fp linux_direct s4_38) 452 passed and 4 ignored; `cargo check --workspace
+--all-targets`, `cargo fmt --all -- --check`, `git diff --check` clean. The
+refusal test of the member dropped `xorps` and `movups`, which now execute, and the
+S6-22 unit test of `step_cpl3_xmm` now seeds `state.sse`.
+
+Not checked: the full suite, a new oracle run (the reference is the bare run
+validated by the S2-37/38/54/55 hardware tables), a Windows or Linux boot on the
+board, the JIT. Still refused in the set: general forms at CPL3, narrow integer
+SSE2 forms (PSHUFD, PUNPCK*, PAND, ...), MMX forms (need x87 in the state),
+LDMXCSR/STMXCSR, x87 arithmetic. Parent S2-39 remains open.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64
