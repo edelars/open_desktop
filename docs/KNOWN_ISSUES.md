@@ -7115,6 +7115,8 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Остаётся.** Сами значения CRC BS и RT больше ничего не проверяют: поля таблиц сверены по именам однократно (способ выше), постоянной проверки на RAM или ELF нет. Постоянные проверки (самопроверка CRC в `verify_boot_services` и host unit-тест полей по именам) описаны в [ISSUE-612](#issue-612) и не реализованы. Зависимость раскладки от каталога сборки — свойство toolchain; воспроизводимость образа между каталогами не заявляется.
 
 
+<a id="issue-612"></a>
+
 ### ISSUE-612 — постоянная проверка таблиц Boot Services и Runtime Services по полям
 
 - **Компонент:** `firmware/uefi` (`verify_boot_services` в `src/main.rs`, `src/uefi/system_table.rs`), `tests/system/firmware_boot_smoke.py`. Продолжение [ISSUE-611](#issue-611).
