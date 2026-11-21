@@ -635,6 +635,37 @@ fn cvtsi2ss_rounds_by_rc_and_keeps_the_upper_bits() {
         ok(keep32(0xdf00_0000), MXCSR),
         "i64::MIN is exact",
     );
+    // 2^60 + 2^36 + 1 is above the midpoint of two binary32 neighbours (2^60 and 2^60 + 2^37), but rounding it first to
+    // binary64 gives 2^60 + 2^36 (the +1 is lost), which is exactly the midpoint and ties to the even 2^60: a model that
+    // converts through f64 returns 0x5d800000 for round-to-nearest. Hardware (Mac mini Ubuntu host, CVTSI2SS r64):
+    // RN 0x5d800001, RD/RZ 0x5d800000, RU 0x5d800001 and the mirrored negative values; MXCSR gets PE in every mode.
+    let twice = (1u64 << 60) + (1 << 36) + 1;
+    for (value, [rn, rd, ru, rz]) in [
+        (
+            twice,
+            [0x5d80_0001u32, 0x5d80_0000, 0x5d80_0001, 0x5d80_0000],
+        ),
+        (
+            twice.wrapping_neg(),
+            [0xdd80_0001, 0xdd80_0001, 0xdd80_0000, 0xdd80_0000],
+        ),
+    ] {
+        for (mx, bits) in [
+            (MXCSR, rn),
+            (MXCSR | RC_DOWN, rd),
+            (MXCSR | RC_UP, ru),
+            (MXCSR | RC_ZERO, rz),
+        ] {
+            check(
+                Op::Cvtsi2ss,
+                true,
+                (u128::from(value), HI),
+                mx,
+                ok(keep32(bits), mx | PE),
+                "2^60+2^36+1 (double rounding through binary64)",
+            );
+        }
+    }
 }
 
 #[test]
@@ -2763,6 +2794,120 @@ fn mmx_gates_and_the_pending_x87_exception() {
         );
         assert_eq!(cpu, before);
     }
+}
+
+/// Hardware, measured on the Mac mini Ubuntu host (x86-64, SIGFPE probe: ES and IE set with CW = 0x037e through FLDENV, the
+/// instruction, FXSAVE, FWAIT, the RIP of the signal compared with the instruction and with the FWAIT): CVTPI2PS and
+/// CVTPI2PD with a memory source complete without #MF and leave TOP, the tags and the pending exception alone (the exception
+/// is then delivered at the FWAIT); CVTPS2PI, CVTTPS2PI, CVTPD2PI and CVTTPD2PI with a memory source, and both CVTPI2xx
+/// register forms, raise #MF at the instruction (CR0.NE = 0 is outside the FP-init profile that this run uses).
+#[test]
+fn mmx_memory_forms_and_the_pending_x87_exception() {
+    for op in ALL_MMX {
+        let (width, _) = op.memory();
+        let reg = if op.from_mm() { 1 } else { 4 };
+        let code = mmx_mem_code(op, reg, &[0x03], false);
+        let data: u128 = match op {
+            Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => pair(3, 1),
+            Mmx::Cvtps2pi | Mmx::Cvttps2pi => pair(0x4040_0000, 0x3f80_0000),
+            Mmx::Cvtpd2pi | Mmx::Cvttpd2pi => d2([0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000]),
+        };
+        {
+            let mut cpu = mmx_cpu(true, 0x33, 4, 0x1122_3344_5566_7788);
+            cpu.gpr[Register::Rbx as usize] = DATA;
+            set_xmm(&mut cpu, 1, HI);
+            let x87 = cpu.x87.as_mut().unwrap();
+            x87.control_word = 0x0340; // IM and the other unmasked flags: IE is unmasked
+            x87.status_word |= 0x81; // ES and IE
+            let before = cpu.clone();
+            let mut ram = Ram::new(&code);
+            ram.put(DATA, &data.to_le_bytes()[..width]);
+            let (result, cpu) = run_fp_init(cpu, &mut ram);
+            match op {
+                Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => {
+                    assert_eq!(result.exit, RunExit::InstructionBudgetExhausted, "{op:?}");
+                    assert_eq!(ram.reads, vec![(DATA, width)], "{op:?}");
+                    // The x87 state, the pending exception included, is exactly as before; only XMM1 and RIP change.
+                    let mut expected = before.clone();
+                    set_xmm(
+                        &mut expected,
+                        1,
+                        if op == Mmx::Cvtpi2ps {
+                            HI & !0xffff_ffff_ffff_ffff
+                                | u128::from(0x3f80_0000u32) << 32
+                                | u128::from(0x4040_0000u32)
+                        } else {
+                            d2([0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000])
+                        },
+                    );
+                    expected.rip += code.len() as u64;
+                    assert_eq!(cpu, expected, "{op:?}");
+                    assert_eq!(cpu.x87, before.x87, "{op:?}");
+                }
+                _ => {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector: 16,
+                            error_code: None,
+                            linear_address: None
+                        }),
+                        "{op:?}"
+                    );
+                    // The entry check precedes the memory access and any state change.
+                    assert!(ram.reads.is_empty(), "{op:?}");
+                    assert_eq!(cpu, before, "{op:?}");
+                }
+            }
+        }
+    }
+}
+
+/// Without CR4 the model cannot choose between #XM and #UD, so an unmasked SIMD exception is Unsupported with the state
+/// unchanged. The shared conversion functions read a memory source before that decision (the check needs the
+/// converted value), so the read is observable: for MMIO the access happens and the instruction is then refused.
+/// This test pins the access (`ram.reads`) for the integer and the MMX conversions.
+#[test]
+fn unmasked_exception_without_cr4_reads_a_memory_source_before_unsupported() {
+    for (op, wide, src) in [
+        (Op::Cvtss2si, false, 0x7fc0_0000u128),
+        (Op::Cvttsd2si, true, 0x7ff8_0000_0000_0000),
+    ] {
+        let (width, _) = op.memory(wide);
+        let code = mem_code(op, wide, 6, &[0x03], false);
+        let mut cpu = cpu();
+        cpu.sse.as_mut().unwrap().mxcsr = MXCSR & !IM;
+        cpu.gpr[Register::Rbx as usize] = DATA;
+        let before = cpu.clone();
+        let mut ram = Ram::new(&code);
+        ram.put(DATA, &src.to_le_bytes()[..width]);
+        assert_eq!(
+            step(&mut cpu, &mut ram),
+            Ok(StepOutcome::Unsupported {
+                opcode: op.opcode_byte()
+            }),
+            "{op:?}"
+        );
+        assert_eq!(ram.reads, vec![(DATA, width)], "{op:?}");
+        assert!(ram.writes.is_empty());
+        assert_eq!(cpu, before, "{op:?}");
+    }
+    // CVTPS2PI mm4, m64 with a quiet NaN lane and IM unmasked.
+    let code = mmx_mem_code(Mmx::Cvtps2pi, 4, &[0x03], false);
+    let mut cpu = mmx_cpu(false, 0x33, 4, 0x1122_3344_5566_7788);
+    cpu.sse.as_mut().unwrap().mxcsr = MXCSR & !IM;
+    cpu.gpr[Register::Rbx as usize] = DATA;
+    let before = cpu.clone();
+    let mut ram = Ram::new(&code);
+    ram.put(DATA, &pair(0x7fc0_0000, 0x3f80_0000).to_le_bytes()[..8]);
+    assert_eq!(
+        step(&mut cpu, &mut ram),
+        Ok(StepOutcome::Unsupported {
+            opcode: Mmx::Cvtps2pi.opcode_byte()
+        })
+    );
+    assert_eq!(ram.reads, vec![(DATA, 8)]);
+    assert_eq!(cpu, before);
 }
 
 #[test]
