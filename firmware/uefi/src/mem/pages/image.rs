@@ -49,7 +49,11 @@ impl PageAllocator<'_, '_> {
             }
         }
         let bytes = byte_count(pages)?;
-        let preferred_fit = if preferred.is_multiple_of(alignment) {
+        // ImageBase 0 on a movable image is not a placement request: never put
+        // an image on the null page even when the map reports it free.
+        let preferred_fit = if preferred == 0 && relocatable {
+            Err(PageError::InvalidAddress)
+        } else if preferred.is_multiple_of(alignment) {
             self.plan_allocation(AllocateAt::Address(preferred), bytes)
         } else {
             Err(PageError::InvalidAddress)
@@ -243,5 +247,29 @@ mod tests {
         allocator.release_image(0x70000, 4).unwrap();
         assert_eq!(allocator.map().descriptors(), [before]);
         assert_eq!(allocator.map().key(), u64::MAX);
+    }
+
+    #[test]
+    fn image_base_zero_on_a_movable_image_never_lands_on_the_null_page() {
+        let mut descriptors = [MemoryDescriptor::EMPTY; 8];
+        let mut tags = [PageOwner::Initial; 8];
+        let map = MemoryMap::test_conventional(&mut descriptors, 0, 0x98000);
+        let allocator = PageAllocator::new(map, &mut tags).unwrap();
+        let ranges = [ImageMemoryRange {
+            pages: 4,
+            memory_type: MemoryType::LOADER_CODE,
+        }];
+        // The aligned fallback is the highest fit, not page zero.
+        let movable = allocator.plan_image(0, true, PAGE_BYTES, &ranges).unwrap();
+        assert_eq!(movable.span, 0x94000..0x98000);
+        let aligned = allocator.plan_image(0, true, 0x10000, &ranges).unwrap();
+        assert_eq!(aligned.span, 0x90000..0x94000);
+        // An image pinned to its base keeps the exact address it asked for.
+        let pinned = allocator.plan_image(0, false, PAGE_BYTES, &ranges).unwrap();
+        assert_eq!(pinned.span, 0..0x4000);
+        assert!(matches!(
+            allocator.plan_image(0x2000_0000, false, PAGE_BYTES, &ranges),
+            Err(PageError::NotFound)
+        ));
     }
 }

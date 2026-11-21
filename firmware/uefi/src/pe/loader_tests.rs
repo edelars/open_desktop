@@ -167,3 +167,124 @@ fn handles_missing_and_stripped_tables_and_checks_caller_span() {
     assert!(destination.iter().all(|&byte| byte == 0xa5));
     assert!(run(&file, PREFERRED, &mut destination).is_ok());
 }
+
+const PIC_BASE_OFFSET: usize = crate::pe::test_image::OPTIONAL_START + 24;
+const UBUNTU_VMLINUZ: &str = "work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic";
+
+fn position_independent_fixture() -> Vec<u8> {
+    let mut file = fixture(10);
+    file[PIC_BASE_OFFSET..PIC_BASE_OFFSET + 8].copy_from_slice(&0u64.to_le_bytes());
+    put_u32(&mut file, RELOCATIONS, 0);
+    put_u32(&mut file, RELOCATIONS + 4, 0);
+    file
+}
+
+#[test]
+fn zero_base_image_without_relocations_loads_at_any_aligned_address() {
+    let mut file = position_independent_fixture();
+    file[RAW_TEXT + 0x20..RAW_TEXT + 0x28].copy_from_slice(&0x1234u64.to_le_bytes());
+    let image = PeImage::parse(&file).unwrap();
+    assert!(is_relocatable(&image));
+    for base in [0, LOAD_BASE, 0xc000_0000_0000_0000] {
+        let mut destination = [0xa5; IMAGE_BYTES];
+        let mapped = run(&file, base, &mut destination).unwrap();
+        assert_eq!(mapped.base, base);
+        assert_eq!(mapped.entry_address, base + 0x1000);
+        // No fixups exist: the bytes are copied verbatim at every base.
+        assert_eq!(get_u64(&destination, 0x1020), 0x1234);
+        assert_eq!(destination[0x1000], 0xc3);
+    }
+    let mut destination = [0xa5; IMAGE_BYTES];
+    assert_eq!(
+        run(&file, LOAD_BASE + 1, &mut destination),
+        Err(LoadError::InvalidAddress)
+    );
+    assert!(destination.iter().all(|&byte| byte == 0xa5));
+}
+
+#[test]
+fn stripped_or_nonzero_base_image_without_relocations_stays_pinned() {
+    let mut destination = [0xa5; IMAGE_BYTES];
+
+    let mut stripped = position_independent_fixture();
+    put_u16(&mut stripped, PE_START + 22, 0x0003);
+    assert!(!is_relocatable(&PeImage::parse(&stripped).unwrap()));
+    assert!(run(&stripped, 0, &mut destination).is_ok());
+    assert_eq!(
+        run(&stripped, LOAD_BASE, &mut destination),
+        Err(LoadError::RelocationsRequired)
+    );
+
+    let mut fixed = fixture(10);
+    put_u32(&mut fixed, RELOCATIONS, 0);
+    put_u32(&mut fixed, RELOCATIONS + 4, 0);
+    assert!(!is_relocatable(&PeImage::parse(&fixed).unwrap()));
+    assert!(run(&fixed, PREFERRED, &mut destination).is_ok());
+    assert_eq!(
+        run(&fixed, LOAD_BASE, &mut destination),
+        Err(LoadError::RelocationsRequired)
+    );
+}
+
+#[test]
+fn zero_base_image_with_a_directory_applies_fixups() {
+    let mut file = fixture(10);
+    file[PIC_BASE_OFFSET..PIC_BASE_OFFSET + 8].copy_from_slice(&0u64.to_le_bytes());
+    file[RAW_TEXT + 0x20..RAW_TEXT + 0x28].copy_from_slice(&0x420u64.to_le_bytes());
+    block(&mut file, 0x1000, &[DIR64 | 0x20]);
+    assert!(is_relocatable(&PeImage::parse(&file).unwrap()));
+    let mut destination = [0; IMAGE_BYTES];
+    run(&file, LOAD_BASE, &mut destination).unwrap();
+    assert_eq!(get_u64(&destination, 0x1020), LOAD_BASE + 0x420);
+}
+
+fn ubuntu_vmlinuz() -> Option<Vec<u8>> {
+    let relative = std::path::Path::new(UBUNTU_VMLINUZ);
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = std::env::var_os("OD_UBUNTU_VMLINUZ")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            // The kernel lives in the untracked work/ tree of the main checkout;
+            // a linked worktree sits below it in .claude/worktrees/.
+            manifest
+                .ancestors()
+                .map(|root| root.join(relative))
+                .find(|candidate| candidate.is_file())
+        })?;
+    Some(std::fs::read(path).unwrap())
+}
+
+#[test]
+fn ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups() {
+    let Some(file) = ubuntu_vmlinuz() else {
+        eprintln!("skipped: {UBUNTU_VMLINUZ} is not staged (set OD_UBUNTU_VMLINUZ)");
+        return;
+    };
+    eprintln!("ubuntu vmlinuz: {} bytes", file.len());
+    let image = PeImage::parse(&file).unwrap();
+    // Facts read from the real headers (S7-31b): ImageBase 0, no base
+    // relocation directory, RELOCS_STRIPPED clear.
+    assert_eq!(image.image_base(), 0);
+    assert!(image.relocation_data().is_none());
+    assert!(!image.relocations_stripped());
+    assert!(is_relocatable(&image));
+    // LoadImage derives its page runs from the same headers.
+    assert!(crate::pe::PageLayout::for_image(&image).is_some());
+    let size = image.image_size() as usize;
+    let text = image
+        .sections()
+        .find(|section| section.file_data.len() > 0x1000 && section.virtual_address == 0x5000)
+        .expect(".text section");
+    for base in [0x4000_0000u64, 0x1_0000_0000] {
+        let mut destination = vec![0xa5; size];
+        let mapped = run(&file, base, &mut destination).unwrap();
+        assert_eq!(mapped.base, base);
+        assert_eq!(mapped.size as usize, size);
+        assert_eq!(mapped.entry_address, base + u64::from(image.entry_rva()));
+        assert_eq!(&destination[..0x40], &file[..0x40]);
+        assert_eq!(
+            &destination[0x5000..0x5000 + 0x1000],
+            &text.file_data[..0x1000]
+        );
+    }
+}

@@ -369,7 +369,7 @@ unsafe fn load(
             let alignment = u64::from(pe.section_alignment()).max(PAGE_BYTES);
             let Ok(plan) = state.allocator.plan_image(
                 pe.image_base(),
-                pe.base_relocations().is_some(),
+                pe::is_relocatable(&pe),
                 alignment,
                 &regions[..region_count],
             ) else {

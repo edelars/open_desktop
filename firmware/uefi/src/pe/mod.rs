@@ -11,7 +11,7 @@ mod reloc;
 mod test_image;
 
 pub use loader::{LoadError, MappedImage, load_into};
-pub(crate) use loader::{capture_runtime_fixups, runtime_fixup_count};
+pub(crate) use loader::{capture_runtime_fixups, is_relocatable, runtime_fixup_count};
 pub use od_uefi_security::pe::{
     DigestAlgorithm, DigestError, Error, PeImage, Section, Subsystem, authenticode_digest,
 };
