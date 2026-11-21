@@ -9287,10 +9287,10 @@ fn wrmsr_efer_ignores_the_upper_halves_of_rax_rdx_like_edx_eax() {
 }
 
 #[test]
-fn wrmsr_efer_changing_lme_lma_or_nxe_is_unsupported_without_mutation() {
-    for value in [
-        0x001u64, 0x000, 0x500, 0x501, 0x900, 0x901, 0xc00, 0xc01, 0x101,
-    ] {
+fn wrmsr_efer_changing_lme_or_lma_is_unsupported_without_mutation() {
+    // NXE clear/set (0x500, 0x501) is not in this list since S2-25: without the translation
+    // sink it is `Unsupported` for another reason (see the NXE tests below).
+    for value in [0x001u64, 0x000, 0x900, 0x901, 0xc00, 0xc01, 0x101] {
         let cell = Cell::new(0xd00);
         let (state, before, result) = run_efer_write(&cell, 0xd00, &WRMSR, (EFER_MSR, value, 0), 1);
         assert_eq!(
@@ -9301,6 +9301,161 @@ fn wrmsr_efer_changing_lme_lma_or_nxe_is_unsupported_without_mutation() {
         assert_eq!(result.instructions_executed, 0, "{value:#x}");
         assert_eq!(state, before, "{value:#x}");
         assert_eq!(cell.get(), 0xd00, "{value:#x}");
+    }
+}
+
+// ---- S2-25 NXE slice: WRMSR IA32_EFER changing NXE (SDM Vol. 3A Table 2-1, Section 5.1.4) ----
+
+/// `WRMSR IA32_EFER` in a set that owns CR3 (the translation sink), with the EFER write cell and,
+/// when given, a CPUID member. `owned_cr3 = false` leaves the sink out.
+fn run_efer_nxe(
+    cell: &Cell<u64>,
+    cpuid: Option<&CpuidProfile>,
+    owned_cr3: bool,
+    code: &[u8],
+    (rax, rdx): (u64, u64),
+    budget: u64,
+) -> (LongModeState, LongModeState, Cpl0ProfileSetResult) {
+    let profile = MsrProfile::EferReadOnlyV1(cell.get());
+    let mut set = base().with_msr(&profile).with_msr_efer_write(cell);
+    if owned_cr3 {
+        set = set.with_cpu_owned_cr3(MovCr3Long64V1);
+    }
+    if let Some(cpuid) = cpuid {
+        set = set.with_cpuid(cpuid);
+    }
+    let mut state = board_state();
+    state.cr4 = Some(CR4_BASE | (1 << 4) | (1 << 7));
+    if owned_cr3 {
+        state.cr3 = Some(0x2000);
+    }
+    state.gpr[1] = EFER_MSR;
+    state.gpr[0] = rax;
+    state.gpr[2] = rdx;
+    let before = state.clone();
+    let mut memory = Memory::code(code);
+    let result = run_set(&mut state, &mut memory, &set, budget).unwrap();
+    (state, before, result)
+}
+
+fn efer_write_effect(old_efer: u64, new_efer: u64) -> Cpl0ProfileSetExit {
+    Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::EferWrite {
+        old_efer,
+        new_efer,
+    })
+}
+
+#[test]
+fn wrmsr_efer_clearing_nxe_retires_stores_and_reports_the_walker_effect() {
+    // Clearing NXE needs no CPUID bit (no CPUID member here). WRMSR retires, the run stops
+    // before the RDMSR that follows (budget 2, one retired), and only RIP changes.
+    let mut code = WRMSR.to_vec();
+    code.extend_from_slice(&RDMSR);
+    for (old, new) in [(0xd00u64, 0x500u64), (0xd01, 0x501)] {
+        let cell = Cell::new(old);
+        let (state, before, result) = run_efer_nxe(&cell, None, true, &code, (new, 0), 2);
+        assert_eq!(result.exit, efer_write_effect(old, new), "{old:#x}");
+        assert_eq!(result.instructions_executed, 1, "{old:#x}");
+        assert_eq!(cell.get(), new, "{old:#x}");
+        let mut expected = before.clone();
+        expected.rip += 2;
+        assert_eq!(state, expected, "{old:#x}: only RIP changes");
+        assert_eq!(result.rflags_defined, od_isa::INTEGER_FLAGS);
+        // The next run reads the new value from the cell, not the profile seed.
+        let (state, _, result) = run_efer_nxe(&cell, None, true, &RDMSR, (0, 0), 1);
+        assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+        assert_eq!((state.gpr[0], state.gpr[2]), (new, 0));
+    }
+    // SCE-only changes, a retained NXE and a no-op write keep the plain Run exit.
+    for (old, new) in [
+        (0xd00u64, 0xd01u64),
+        (0xd01, 0xd00),
+        (0xd00, 0xd00),
+        (0x500, 0x501),
+    ] {
+        let cell = Cell::new(old);
+        let (_, _, result) = run_efer_nxe(&cell, None, true, &WRMSR, (new, 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{old:#x}"
+        );
+        assert_eq!(cell.get(), new);
+    }
+}
+
+#[test]
+fn wrmsr_efer_setting_nxe_needs_nx_in_the_cpuid_member_else_gp0() {
+    // SDM Vol. 3A 5.1.4: NXE may be set only if CPUID.80000001H:EDX[20] = 1. The Stage-4A subset
+    // profile and a set without a CPUID member do not declare NX; the neutral profile does.
+    let stage4a = CpuidProfile::X8664V1Stage4A;
+    let neutral = CpuidProfile::OdX8664V1Neutral;
+    for (old, new) in [(0x500u64, 0xd00u64), (0x501, 0xd01), (0x501, 0xd00)] {
+        for cpuid in [None, Some(&stage4a)] {
+            let cell = Cell::new(old);
+            let (state, before, result) = run_efer_nxe(&cell, cpuid, true, &WRMSR, (new, 0), 1);
+            assert_eq!(exit(&result), &gp0(), "{old:#x}->{new:#x}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(cell.get(), old);
+        }
+        let cell = Cell::new(old);
+        let (state, before, result) =
+            run_efer_nxe(&cell, Some(&neutral), true, &WRMSR, (new, 0), 1);
+        assert_eq!(
+            result.exit,
+            efer_write_effect(old, new),
+            "{old:#x}->{new:#x}"
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cell.get(), new);
+        let mut expected = before.clone();
+        expected.rip += 2;
+        assert_eq!(state, expected);
+    }
+    // A reserved bit wins over everything: #GP(0) even where NXE would be admitted.
+    let cell = Cell::new(0x500);
+    let (_, _, result) = run_efer_nxe(&cell, Some(&neutral), true, &WRMSR, (0xd02, 0), 1);
+    assert_eq!(exit(&result), &gp0());
+    assert_eq!(cell.get(), 0x500);
+}
+
+#[test]
+fn wrmsr_efer_nxe_change_without_the_translation_sink_or_with_lme_lma_change_is_unsupported() {
+    let neutral = CpuidProfile::OdX8664V1Neutral;
+    // No cpu-owned CR3: nobody could rebuild a walker, so the NXE change is refused locally,
+    // clear and set alike (NX declared), without mutation.
+    for (old, new) in [(0xd00u64, 0x500u64), (0x500, 0xd00)] {
+        let cell = Cell::new(old);
+        let (state, before, result) =
+            run_efer_nxe(&cell, Some(&neutral), false, &WRMSR, (new, 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{old:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), old);
+    }
+    // LME/LMA still cannot change, with NXE changing or not, with the sink present.
+    for (old, new) in [
+        (0xd00u64, 0x400u64),
+        (0xd00, 0x100),
+        (0x500, 0x900),
+        (0xd00, 0x000),
+    ] {
+        let cell = Cell::new(old);
+        let (state, before, result) =
+            run_efer_nxe(&cell, Some(&neutral), true, &WRMSR, (new, 0), 1);
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0x30 },
+            "{old:#x}->{new:#x}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cell.get(), old);
     }
 }
 
