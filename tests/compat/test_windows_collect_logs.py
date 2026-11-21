@@ -676,11 +676,13 @@ class NtfsBranchLogic(unittest.TestCase):
         volumes = [{"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False}]
         fake = FakeMacTools(volumes)
         base = fake.run_cmd
+        seen_mounts = []
 
         def leaky(argv, check=True):
             if argv[:3] == ["diskutil", "mount", "readOnly"]:
                 fake.calls.append(list(argv))
-                msg = "cannot use mount point %s on %s" % (os.path.realpath(argv[4]), argv[5])
+                seen_mounts.append(argv[4])
+                msg = "cannot use mount point %s (%s) on %s" % (argv[4], os.path.realpath(argv[4]), argv[5])
                 return subprocess.CompletedProcess(argv, 1, stdout="", stderr=msg)
             return base(argv, check)
 
@@ -691,8 +693,14 @@ class NtfsBranchLogic(unittest.TestCase):
         ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = wcl.main(argv)
         self.assertEqual(code, wcl.EXIT_NOT_MOUNTED)
-        self.assertNotIn("od8-logs-", out.getvalue())
-        self.assertNotIn(self.tmp + os.sep + "od8", out.getvalue())
+        text = out.getvalue()
+        self.assertNotIn("od8-logs-", text)
+        self.assertTrue(seen_mounts, "diskutil mount was not attempted")
+        for p in seen_mounts:
+            self.assertNotIn(p, text)
+            self.assertNotIn(os.path.realpath(p), text)
+        self.assertIn("<mountpoint>", text)
+        self.assertNotIn("/private<mountpoint>", text)
 
     def test_default_out_root_is_under_work(self):
         args = wcl.parse_args(["--run-id", "x", "--target-image", "t.img"])
