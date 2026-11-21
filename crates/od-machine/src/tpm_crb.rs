@@ -148,6 +148,19 @@ impl TpmCrbHandle {
         state.tpm.persistent_snapshot()
     }
 
+    /// Platform reset (S7-26): `_TPM_Init` of the TPM at the board time `now_ns` and a CRB that
+    /// has no locality granted and no command in flight. The persistent state (seeds, NV,
+    /// persistent objects, `Clock`, the counters) survives; the volatile one (PCRs, sessions,
+    /// loaded objects, the saved context state) is lost. The TPM is then in the state after
+    /// `_TPM_Init`: the firmware that boots next sends `TPM2_Startup(CLEAR)`, exactly as after
+    /// the first power-on.
+    pub(crate) fn platform_reset(&self, now_ns: u64) {
+        let mut state = lock(&self.state);
+        state.tpm.init_at(now_ns / 1_000_000);
+        state.granted = false;
+        state.go_idle();
+    }
+
     pub(crate) fn read(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
         let access = Access::checked(access)?;
         Ok(lock(&self.state).read(access))
@@ -851,6 +864,57 @@ mod tests {
         transact(&mut restored, &STARTUP);
         new_clock.advance_standalone(3_000_000).unwrap();
         assert_eq!(read_clock(&mut restored), 20);
+    }
+
+    #[test]
+    fn platform_reset_loses_the_volatile_state_and_keeps_the_persistent_one() {
+        use od_tpm::codes::cc;
+        let pcr_select = |params: &mut Vec<u8>| {
+            params.extend_from_slice(&1u32.to_be_bytes());
+            params.extend_from_slice(&0x000bu16.to_be_bytes());
+        };
+        let extend = |crb: &mut TpmCrb| {
+            let mut params = Vec::new();
+            pcr_select(&mut params);
+            params.extend_from_slice(&[7; 32]);
+            let (response, _) =
+                transact(crb, &command(cc::PCR_EXTEND, &[4], Some(&[b""]), &params));
+            assert_eq!(rc_of(&response), 0);
+        };
+        let read_pcr4 = |crb: &mut TpmCrb| {
+            let mut params = Vec::new();
+            pcr_select(&mut params);
+            params.extend_from_slice(&[3, 0x10, 0, 0]);
+            let (response, _) = transact(crb, &command(cc::PCR_READ, &[], None, &params));
+            assert_eq!(rc_of(&response), 0);
+            response[response.len() - 32..].to_vec()
+        };
+        let mut crb = fresh();
+        transact(&mut crb, &STARTUP);
+        extend(&mut crb);
+        let extended = read_pcr4(&mut crb);
+        assert_ne!(extended, vec![0; 32]);
+
+        let now = crb.clock.snapshot().now_ns();
+        let before = crb.handle().persistent_snapshot(now);
+        crb.handle().platform_reset(now);
+        // No locality is granted, no command is in flight and the persistent state is the same.
+        assert_eq!(read(&mut crb, LOC_STS), 0);
+        assert_eq!(read(&mut crb, BUFFER_OFFSET), 0);
+        assert_eq!(crb.handle().persistent_snapshot(now), before);
+        // The TPM is after `_TPM_Init`: a command other than Startup is refused...
+        let (response, _) = transact(&mut crb, &RANDOM);
+        assert_eq!(rc_of(&response), Rc::INITIALIZE.0);
+        // ...and after Startup(CLEAR) the PCRs are back at their initial value.
+        let (response, _) = transact(&mut crb, &STARTUP);
+        assert_eq!(rc_of(&response), 0);
+        assert_eq!(read_pcr4(&mut crb), vec![0; 32]);
+        extend(&mut crb);
+        assert_eq!(
+            read_pcr4(&mut crb),
+            extended,
+            "the same measurement, the same PCR"
+        );
     }
 
     // ML-DSA-65 through the CRB window (ADR-0009, decision 7, item 1). The commands are marshaled

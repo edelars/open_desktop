@@ -119,6 +119,13 @@ bench = false
 doc = false
 
 [[bin]]
+name = "reboot"
+path = "reboot/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "enroll"
 path = "enroll/main.rs"
 test = false

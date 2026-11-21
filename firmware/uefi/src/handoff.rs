@@ -50,6 +50,7 @@ pub enum FirmwareFvApp {
     Blk = 7,
     Fs = 8,
     Tpm = 9,
+    Reboot = 10,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -784,6 +785,7 @@ impl<'a> Handoff<'a> {
                 7 if minor >= HANDOFF_MINOR_FV_APP_BLK => Some(FirmwareFvApp::Blk),
                 8 if minor >= HANDOFF_MINOR_FV_APP_FS => Some(FirmwareFvApp::Fs),
                 9 if minor >= HANDOFF_MINOR_TPM => Some(FirmwareFvApp::Tpm),
+                10 if minor >= HANDOFF_MINOR_TPM => Some(FirmwareFvApp::Reboot),
                 value => return Err(HandoffError::InvalidFvApp(value)),
             }
         } else {

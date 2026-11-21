@@ -289,6 +289,17 @@ impl Tpm {
         self.da_v = DaVolatile::default();
     }
 
+    /// `_TPM_Init` delivered by a platform that keeps running (a machine reset, S7-26) at the
+    /// owner's time `now_ms`: the powered time up to the reset is folded into `Clock` first,
+    /// and the calibration of the owner's clock starts at `now_ms`, so the next command at
+    /// `now_ms + d` advances the power time by `d`, not by `now_ms + d`. Everything else is
+    /// [`Self::init`]; the next command must be `TPM2_Startup`.
+    pub fn init_at(&mut self, now_ms: u64) {
+        self.advance_power_time(now_ms);
+        self.init();
+        self.time_calibration.reference_ms = now_ms;
+    }
+
     /// Runs one command. `command` is the complete command buffer, `locality` the locality of the
     /// caller (only 0 is served, ADR-0009), and `now_ms` the owner's uncalibrated milliseconds since
     /// `_TPM_Init` (non-decreasing; a smaller value is ignored). Returns the complete response.
