@@ -36,8 +36,7 @@ impl Tables {
         Some(page)
     }
 
-    /// Read the boot leaf to carry the current NX/cache policy into the fixture; the mapping is
-    /// writable (see below).
+    /// Read the boot leaf to carry the current W/NX/cache policy into the fixture.
     pub unsafe fn map(&mut self, old_root: u64, physical: u64, linear: u64) -> bool {
         unsafe {
             let Some(leaf) = leaf(old_root, physical) else {
@@ -61,10 +60,10 @@ impl Tables {
                 }
                 table = bits & ADDRESS;
             }
-            // An OS maps the runtime images writable while SetVirtualAddressMap runs (Linux and
-            // EDK2 do) and applies the final permissions later; the driver writes its fixups
-            // through these mappings without touching CR0.WP (S7-31k).
-            entry(table, linear, 12).write_volatile(bits | WRITE);
+            // The leaf bits of the firmware's tables are carried unchanged: ExitBootServices has
+            // made the runtime images writable there (S7-31l), and the driver writes its fixups
+            // through these mappings without touching CR0.WP.
+            entry(table, linear, 12).write_volatile(bits);
         }
         true
     }

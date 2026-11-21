@@ -115,6 +115,9 @@ impl<'a> VirtualMap<'a> {
             // descriptor must lie in the firmware's map, in regions of its type; it need not be
             // one region of that map: an OS may merge adjacent regions of one type, and may mark
             // a region it keeps (for example Boot Services memory) as runtime (S7-31j).
+            if desc.physical_start % PAGE_BYTES != 0 {
+                return Err(Status::INVALID_PARAMETER);
+            }
             let length = desc
                 .number_of_pages
                 .checked_mul(PAGE_BYTES)
@@ -414,10 +417,22 @@ mod tests {
         assert_eq!(check(&[wrong_type, other]).err(), Some(Status::NOT_FOUND));
         // A runtime region without a virtual address: no mapping.
         assert_eq!(check(&[merged]).err(), Some(Status::NO_MAPPING));
-        // Partial coverage (S7-31k): the region 0x1000 of two pages given one page only.
+        // Partial coverage (S7-31k, S7-31l): the region 0x1000 of two pages is given one page,
+        // the regions 0x3000 and 0x8000 are given whole. The first page of every region is
+        // covered, so a check of the first page alone accepts this input; only the second page
+        // of the first region lacks a virtual address.
+        let one_page = with_virtual(descriptor(0x1000, 1), 0x10_0000);
+        let third_only = with_virtual(descriptor(0x3000, 1), 0x70_0000);
         assert_eq!(
-            check(&[with_virtual(descriptor(0x1000, 1), 0x10_0000), other]).err(),
+            check(&[one_page, third_only, other]).err(),
             Some(Status::NO_MAPPING)
+        );
+        // A physical start that is not page aligned is malformed, not "not found".
+        let mut unaligned = merged;
+        unaligned.physical_start += 0x10;
+        assert_eq!(
+            check(&[unaligned, other]).err(),
+            Some(Status::INVALID_PARAMETER)
         );
         // Zero length or an overflowing range is a malformed descriptor, not "not found".
         assert_eq!(

@@ -174,9 +174,10 @@ unsafe fn apply_virtual_address_map(
         ptr::addr_of_mut!(ACTIVE_MAP).write_volatile(ptr::null());
 
         // The caller owns these page tables. Use the existing physical aliases without altering
-        // their permissions, CR0 or CR3. The OS maps the runtime images writable while
-        // SetVirtualAddressMap runs (Linux and EDK2 do) and applies final permissions after it
-        // returns; the driver therefore never touches CR0.WP (S7-31k).
+        // their permissions, CR0 or CR3. The fixup writes go through those aliases: Linux maps
+        // the runtime regions writable while SetVirtualAddressMap runs, and on the firmware's own
+        // tables ExitBootServices has made the runtime images writable (as EDK2 does, S7-31l).
+        // The driver never touches CR0.WP (S7-31k).
         for (image, delta) in (*storage).images.0.iter().zip(deltas) {
             if image.fixup_count != 0 && delta != 0 {
                 for &fixup in slice::from_raw_parts(image.fixups, image.fixup_count) {
