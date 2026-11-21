@@ -44,6 +44,8 @@ mod lock_wait_metrics;
 mod nvme;
 mod nvram_device;
 mod page_walk;
+#[cfg(test)]
+mod page_walk_2m_matrix_tests;
 mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
@@ -536,7 +538,10 @@ pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,
 };
-pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
+pub use uart16550::{
+    UART_RX_ERROR_BREAK, UART_RX_ERROR_FRAMING, UART_RX_ERROR_PARITY, Uart16550Handle,
+    Uart16550PollingTx,
+};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
 pub use translation_probe_cache::{

@@ -371,6 +371,9 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   страницы RIP. MMIO, 1 GiB, полная матрица прав и системная приёмка остаются открытыми;
   CPU-owned CR3 со смешанными картами — S4-12e.
   [Отчёт](../reports/STAGE_4_S4-10B_2026-11-08.md).
+- S4-10d (без чекбокса, ревью не проводилось): матрица прав, XD (NXE=0/1) и reserved bits 2 MiB leaf в
+  IA-32e против reference-модели и 4 KiB leaf, тесты `page_walk_2m_matrix_tests`, код walker не менялся.
+  [Отчёт](../reports/STAGE_4_S4-10D_2026-11-21.md).
 - Полный S4-10 остаётся открытым до S4-00 manifest: 2 MiB/1 GiB leaves,
   необходимые modes, alignment/reserved/permissions/A-D matrix и Linux boot
   prerequisites не приняты. См. [machine contract](../specs/MACHINE_CONTRACT.md#huge-page-и-mode-admission-boundary).
@@ -1544,6 +1547,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Контракт:** `--stage4-probe` использует `PagedVcpuSession`; HLT подтверждает `guest_completed` только при трёх инструкциях, совпадении ожидаемого nonce с RAX и единственного UART byte с его младшим байтом. Отдельные статусы для HLT, несовпадения, STOP, лимита и ошибок.
 - **Проверки и границы:** 8 runner CLI tests, 1 reproducible-build CLI test, 1 session drain unit test, runner all-targets check, fmt и diff прошли; см. [отчёт](../reports/STAGE_4_S4-21D_2026-11-07.md), [manifest](../reports/data/stage4/s4-21d-runner.json), [методику](../testing/MACHINE.md#s4-21d-runner-completion-and-cancellation). `--cancel-after` — детерминированный источник STOP; подключение VMHost/OS signals относится к S4-41.
 
+#### S4-21e. Перезапуск процессоров платы после остановки
+
+- [ ] Ограниченный срез реализован, ждёт независимого ревью; S4-21 остаётся открытым.
+- **Контракт:** `LoadedFirmwareBoard::restart_vcpus` возвращает все vCPU в состояние power-on (BSP — записанное при загрузке прямое entry-состояние, AP — `WaitForSipi`), сбрасывает ожидающие события всех Local APIC/IOAPIC и подтверждает защёлку остановки ACPI PM (`Reset`/`Shutdown`). Допустим после любой остановки. Плата Linux direct без записанного entry отказывает без изменений.
+- **Проверки:** узкие тесты `od-machine` (restart 4 новых, acpi_pm 26, vcpu 170), all-targets check, fmt. Сверка с SDM Vol. 3A 12.1.1 Table 12-1 записана в [отчёте](../reports/STAGE_4_S4-21E_2026-11-21.md), [контракт](../specs/MACHINE_CONTRACT.md#restart-of-the-firmware-board-processors-s4-21e).
+- **Границы:** RAM (cold/warm), ROM, устройства, NVRAM, TPM, часы и host STOP не трогаются — это S7-26; нет reset-вектора BSP, INIT BSP, x87 hardware-reset значений (FCW `0040H`, FTW `5555H`).
+
 ### S4-22. Virtual clock и TSC
 
 - [x] Принято после ревью (с переносом остатков, решение владельца 2026-11-15).
@@ -1667,6 +1677,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** негативные кейсы: IER=0 (нет IRQ); маска IOAPIC (edge при маске теряется, снятие маски не доставляет); повторный IRQ без EOI; injected regression, которая обязана ломать проверку. Builder → runner: guest state и trace событий (IRR/ISR/EOI), бюджеты и STOP.
 - **Граница:** не входит FIFO, baud timing, прерывания от LSR-ошибок и modem status, level route, JIT, совместимость с Linux 8250, production scheduler, IRQ из CPL3.
 - **Готово:** guest обрабатывает RX-IRQ через IOAPIC и LAPIC; вся цепочка проверена трейсом; ограниченный срез не выдаётся за полный S4-24.
+
+#### S4-24f. UART RLS-прерывание (ограниченный срез)
+
+- [ ] Срез реализован, ожидает ревью; родительский S4-24 остаётся открытым. Отчёт: [STAGE_4_S4-24F_2026-11-21.md](../reports/STAGE_4_S4-24F_2026-11-21.md).
+- **Граница:** IER бит 2, IIR `0x06` (приоритет над RDA/THRE), LSR OE/PE/FE/BI со сбросом чтением LSR, host-вызов `deliver_received_byte` (перезапись при переполнении, как 16450). 10 новых тестов; IOAPIC/8259 источники работают без изменений.
+- **Не входит:** modem status и loopback, FIFO и character timeout, baud timing, гостевой образ RLS и сверка с первичным datasheet (не найден).
 
 ### S4-25. Local APIC одного CPU
 

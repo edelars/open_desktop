@@ -71,6 +71,10 @@ fn opcode(kind: Kind) -> u8 {
         Kind::Div => 0x5e,
         // S2-38 kinds have their own test (s2_38_misc_fp).
         Kind::Sqrt | Kind::Min | Kind::Max => unreachable!(),
+        // S2-54 (FP part): covered by s2_54_fp_hadd.rs.
+        Kind::AddSub => 0xd0,
+        Kind::HAdd => 0x7c,
+        Kind::HSub => 0x7d,
     }
 }
 
@@ -104,6 +108,9 @@ fn name(kind: Kind, shape: Shape) -> String {
         Kind::Div => "div",
         // S2-38 kinds have their own test (s2_38_misc_fp).
         Kind::Sqrt | Kind::Min | Kind::Max => unreachable!(),
+        Kind::AddSub => "addsub",
+        Kind::HAdd => "hadd",
+        Kind::HSub => "hsub",
     };
     let suffix = match shape {
         Shape::Packed32 => "ps",
@@ -2339,6 +2346,7 @@ fn round_to_nearest_even_matches_the_host_arithmetic_on_random_operands() {
                 Kind::Div => fx / fy,
                 // S2-38 kinds have their own test (s2_38_misc_fp).
                 Kind::Sqrt | Kind::Min | Kind::Max => unreachable!(),
+                Kind::AddSub | Kind::HAdd | Kind::HSub => unreachable!("not in KINDS"),
             };
             let observed = run_reg(
                 (kind, Shape::Scalar32),
@@ -2379,6 +2387,7 @@ fn round_to_nearest_even_matches_the_host_arithmetic_on_random_operands() {
                 Kind::Div => fx / fy,
                 // S2-38 kinds have their own test (s2_38_misc_fp).
                 Kind::Sqrt | Kind::Min | Kind::Max => unreachable!(),
+                Kind::AddSub | Kind::HAdd | Kind::HSub => unreachable!("not in KINDS"),
             };
             let observed = run_reg(
                 (kind, Shape::Scalar64),

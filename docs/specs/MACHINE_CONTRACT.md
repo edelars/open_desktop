@@ -331,6 +331,8 @@ The builder verifies the assembled bytes/layout and artifact hashes. See the
 
 > Уточнено в S4-38L9y: IER хранит биты 0..3 (RDA, THRE, RLS, MS), биты 4..7 читаются как 0 и отбрасываются при записи; отказ `UnsupportedConfiguration` остался только для битов MCR, кроме OUT2 (см. [CPU_CONTRACT](CPU_CONTRACT.md), раздел S4-38L9y).
 
+> S4-24f: IER бит 2 (RLS) имеет источник: LSR OE/PE/FE/BI (OE при доставке `deliver_received_byte` в полный RBR; PE/FE/BI задаёт host), IIR `0x06` с приоритетом над RDA и THRE, сброс чтением LSR. Modem status, loopback и FIFO не моделируются. См. [отчёт S4-24f](../reports/STAGE_4_S4-24F_2026-11-21.md).
+
 **UART interrupt model.** `Uart16550PollingTx` gains IER bit 0 (received data
 available, RDA) and bit 1 (transmitter holding register empty, THRE); any other
 IER bit (line status, modem status) and any MCR bit except OUT2 are rejected with
@@ -1685,6 +1687,28 @@ expectation is `guest_halted`; a failed comparison is `completion_mismatch`.
 Guest faults, backend, port I/O, loader and input failures remain distinct.
 The cancellation source is deterministic; VMHost and OS signal wiring is S4-41.
 See [S4-21d report](../reports/STAGE_4_S4-21D_2026-11-07.md).
+
+## Restart of the firmware board processors (S4-21e)
+
+`LoadedFirmwareBoard::restart_vcpus` is the processor half of the machine reset
+that S7-26 completes. It is legal between runs after any stop (guest reset or
+S5, halt, budget, host STOP, guest shutdown, host fault). It returns every vCPU
+to the power-on state through `reset_cpu_complex`: the boot processor takes
+the entry state the loader gave it (recorded on the board; the firmware entry is
+direct Long64, not the reset vector), every application processor waits for SIPI
+with the real-mode reset state, the guest CR2/EFER/MSR cells, `REP` resume flag
+and NMI blocking are cleared, and every Local APIC and the IOAPIC route drop
+pending interrupts, NMI, INIT/SIPI, armed timer and Remote IRR. It then
+acknowledges the PM block's stop latch (`take_stop_request`) and returns the
+acknowledged `MachineStopReason`, so the next run is not stopped before its first
+instruction. A board assembled for the Linux direct boot has no recorded entry
+state and refuses the call without changing anything.
+Not touched: guest RAM, ROM, devices (the PM registers too), NVRAM, TPM, the
+virtual clock and the host STOP flag. RAM policy of cold and warm reset, device
+and TPM volatile reset, and the runner loop are S7-26. The hardware-reset
+values of the x87 state (FCW `0040H`, FTW `5555H`, SDM Vol. 3A Table 12-1)
+are not modelled: vCPUs reset to the `FNINIT` values (S4-38L9d).
+See [S4-21e report](../reports/STAGE_4_S4-21E_2026-11-21.md).
 
 ## Caller-driven virtual clock and RDTSC boundary
 

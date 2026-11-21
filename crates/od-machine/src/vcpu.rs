@@ -1112,4 +1112,20 @@ mod tests {
         assert_eq!(one.cpuid_profile(), LINUX_AP_CPUID_PROFILE);
         assert!(one.vcpu(0).unwrap().legacy.is_none());
     }
+
+    #[test]
+    fn a_board_without_a_recorded_entry_state_refuses_a_restart_and_changes_nothing() {
+        // S4-21e: the Linux-profile assembly leaves the entry state to its caller.
+        let mut board = assembled(2).unwrap();
+        board.state_mut().rip = 0x1234;
+        board.local_apic().request_fixed_edge(0x41).unwrap();
+        assert_eq!(
+            board.restart_vcpus(),
+            Err(FirmwareBoardError::Config(
+                "restart_vcpus: the board has no recorded entry state"
+            ))
+        );
+        assert_eq!(board.state().rip, 0x1234);
+        assert_eq!(board.local_apic().pending(), Some(0x41));
+    }
 }

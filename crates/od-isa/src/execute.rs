@@ -8,8 +8,8 @@ use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind, SseFpMiscKind, SseFpShape,
-    Ssse3IntKind, canonical, general_protection,
+    Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind,
+    SseFpMiscKind, SseFpShape, Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41548,6 +41548,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                                 | Operation::MmxSsse3 { .. }
                                 | Operation::Emms
                                 | Operation::Sse41 { .. }
+                                | Operation::Sse41Fp { .. }
                                 | Operation::FisttpMemory { .. }
                         )
                         || matches!(
@@ -50778,9 +50779,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // CPL3 keeps its own profile list (neither is in it).
         // S2-37: the general floating-point arithmetic needs the local SSE state as well; CPL3 keeps its own
         // profile list (the general form is not in it).
-        Operation::Sse3Permute { .. } | Operation::Ssse3Int { .. } | Operation::Sse41 { .. } => {
-            state.sse.is_some()
-        }
+        Operation::Sse3Permute { .. }
+        | Operation::Ssse3Int { .. }
+        | Operation::Sse41 { .. }
+        | Operation::Sse41Fp { .. } => state.sse.is_some(),
         // A configured narrow profile of the sixteen arithmetic forms is a closed set: every other encoding
         // of them stays `Unsupported` while it is active.
         Operation::SseFpArith { .. } | Operation::SseFpMisc { .. } => {
@@ -51810,6 +51812,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
         }
         return Ok(outcome);
+    }
+    // S2-55 slice B: the floating-point SSE4.1 forms commit here as well.
+    if let Operation::Sse41Fp {
+        kind,
+        xmm,
+        operand,
+        immediate,
+    } = instruction.operation
+    {
+        return step_sse41_fp(
+            state,
+            memory,
+            context,
+            (kind, xmm, operand, immediate),
+            instruction.opcode.byte,
+            next_rip,
+        );
     }
     // S2-55 slice A: the integer SSE4.1 forms commit here as well.
     if let Operation::Sse41 {
@@ -63177,13 +63196,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MmxSsse3 { .. }
         | Operation::Emms
         | Operation::Sse41 { .. }
+        | Operation::Sse41Fp { .. }
         | Operation::SseFpArith { .. }
         | Operation::SseFpMisc { .. }
         | Operation::Popcnt { .. }
         | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
             unreachable!(
-                "S2-33, S2-54 slice C and D, S2-55 slice A, S2-56 slice A and S2-37 forms commit before dispatch"
+                "S2-33, S2-54 slice C and D, S2-55 slice A and B, S2-56 slice A and S2-37 forms commit before dispatch"
             )
         }
         Operation::MoveIntegerToXmm { .. }
@@ -70763,7 +70783,8 @@ fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operati
 }
 
 /// S2-37: `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` on the local SSE state (Intel SDM Vol. 2A Tables 2-19 (Type 2,
-/// packed) and 2-20 (Type 3, scalar); Vol. 1 §11.5). The arithmetic and the MXCSR policy are in
+/// packed) and 2-20 (Type 3, scalar); Vol. 1 §11.5). S2-54 (FP part): ADDSUBPS/PD, HADDPS/PD and HSUBPS/PD
+/// take the same path (packed, Type 2). The arithmetic and the MXCSR policy are in
 /// [`sse_fp::arith`]; this function owns the gates, the operand access and the exception vector.
 ///
 /// Check order, each before any state change:
@@ -71119,6 +71140,196 @@ fn step_popcnt_crc32(
         state.rflags =
             (state.rflags & !crate::ARITHMETIC_FLAGS) | if masked == 0 { crate::ZF } else { 0 };
     }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-55 slice B: the floating-point SSE4.1 forms on the local SSE state (Intel SDM, see [`Sse41FpKind`]).
+/// ROUND* and DPPS/DPPD run through [`sse_fp::round`] and [`sse_fp::dot_product`] under MXCSR (flags,
+/// rounding, masks); BLENDP*, BLENDVP*, INSERTPS and EXTRACTPS only move bits, signal no SIMD exception and
+/// neither read nor write MXCSR (a signaling NaN is copied unchanged). RFLAGS is neither read nor written.
+/// PEXTR-like: EXTRACTPS to a register zero-extends the dword to 64 bits.
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries that
+///    control register). The CPUID.SSE4_1 gate is not modeled (S2-57); LOCK is a decoder `#UD`.
+/// 2. An arithmetic form with reserved MXCSR bits set is `Unsupported` (LDMXCSR cannot create such a value).
+/// 3. A memory operand: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base); a 16-byte
+///    operand (Types 2 and 4) that is not 16-byte aligned is `#GP(0)`; the whole operand range must be
+///    canonical; then one `read` or (EXTRACTPS) one `write` of the operand width (a memory fault, `#PF`
+///    included, is the backend's result and leaves the CPU state untouched).
+/// 4. The operation. An unmasked exception of an arithmetic form leaves the destination unchanged, sets the
+///    detected flags in MXCSR and raises `#XM` (vector 19) when CR4.OSXMMEXCPT = 1 or `#UD` when it is 0;
+///    without CR4 in the state the vector is not known and the instruction is `Unsupported` with nothing
+///    changed.
+///
+/// The alignment-check exception `#AC` of the Type 3 and Type 5 forms (Tables 2-20 and 2-22: 4- and 8-byte
+/// accesses at CPL3) is not modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1
+/// (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the integer SSE4.1 forms, instead of guessed.
+fn step_sse41_fp(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, xmm, operand, immediate): (Sse41FpKind, u8, Sse41Operand, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let mxcsr = state
+        .sse
+        .as_ref()
+        .expect("floating-point SSE4.1 state was prevalidated")
+        .mxcsr;
+    if kind.is_arithmetic() && mxcsr & sse_fp::MXCSR_RESERVED != 0 {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    let length = kind.memory_bytes();
+    let mut address = 0;
+    if let Sse41Operand::Memory(memory_operand) = operand {
+        address = match memory_operand.linear_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(fault) => return Ok(StepOutcome::Fault(fault)),
+        };
+        if kind.requires_alignment() && address & 15 != 0 {
+            return fault_general_protection();
+        }
+        if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
+            return report_memory_error(error);
+        }
+        if length > 1
+            && address & (length as u64 - 1) != 0
+            && context.privilege == PrivilegeLevel::Ring3
+            && state.rflags & (1 << 18) != 0
+            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+    }
+    let general = |encoding: u8| {
+        Register::from_encoding(encoding).expect("a REX-extended register number") as usize
+    };
+    let sse = state.sse.as_ref().expect("checked above");
+    if kind.stores_to_rm() {
+        let start = usize::from(immediate & 3) * 4;
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(&sse.xmm[usize::from(xmm)][start..start + 4]);
+        match operand {
+            Sse41Operand::Gpr(encoding) => {
+                state.gpr[general(encoding)] = u64::from(u32::from_le_bytes(raw));
+            }
+            Sse41Operand::Memory(_) => {
+                if let Err(error) = memory.write(address, context, &raw) {
+                    return report_memory_error(error);
+                }
+            }
+            Sse41Operand::Xmm(_) => unreachable!("EXTRACTPS decodes a general register or memory"),
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    let mut raw = [0u8; 16];
+    match operand {
+        Sse41Operand::Xmm(index) => raw = sse.xmm[usize::from(index)],
+        Sse41Operand::Gpr(_) => unreachable!("only EXTRACTPS decodes a general register"),
+        Sse41Operand::Memory(_) => {
+            if let Err(error) = memory.read(address, context, &mut raw[..length]) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let register_source = matches!(operand, Sse41Operand::Xmm(_));
+    let dest = sse.xmm[usize::from(xmm)];
+    let mask = sse.xmm[0];
+    let result = match kind {
+        Sse41FpKind::Roundps
+        | Sse41FpKind::Roundpd
+        | Sse41FpKind::Roundss
+        | Sse41FpKind::Roundsd
+        | Sse41FpKind::Dpps
+        | Sse41FpKind::Dppd => {
+            let shape = kind.shape().expect("an arithmetic form has a shape");
+            let outcome = if matches!(kind, Sse41FpKind::Dpps | Sse41FpKind::Dppd) {
+                sse_fp::dot_product(shape, dest, raw, immediate, mxcsr)
+            } else {
+                sse_fp::round(shape, dest, raw, immediate, mxcsr)
+            };
+            if outcome.fault {
+                let Some(cr4) = state.cr4 else {
+                    return Ok(StepOutcome::Unsupported { opcode });
+                };
+                state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+                return fault(if cr4 & CR4_OSXMMEXCPT != 0 { 19 } else { 6 });
+            }
+            state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+            outcome.result
+        }
+        Sse41FpKind::Blendps | Sse41FpKind::Blendvps => {
+            let mut out = dest;
+            for index in 0..4 {
+                let selected = if kind == Sse41FpKind::Blendps {
+                    immediate >> index & 1 != 0
+                } else {
+                    mask[4 * index + 3] & 0x80 != 0
+                };
+                if selected {
+                    out[4 * index..4 * index + 4].copy_from_slice(&raw[4 * index..4 * index + 4]);
+                }
+            }
+            out
+        }
+        Sse41FpKind::Blendpd | Sse41FpKind::Blendvpd => {
+            let mut out = dest;
+            for index in 0..2 {
+                let selected = if kind == Sse41FpKind::Blendpd {
+                    immediate >> index & 1 != 0
+                } else {
+                    mask[8 * index + 7] & 0x80 != 0
+                };
+                if selected {
+                    out[8 * index..8 * index + 8].copy_from_slice(&raw[8 * index..8 * index + 8]);
+                }
+            }
+            out
+        }
+        Sse41FpKind::Insertps => {
+            // Count_S selects the source dword of a register source; a memory source is the dword itself.
+            let source_start = if register_source {
+                usize::from(immediate >> 6) * 4
+            } else {
+                0
+            };
+            let destination_start = usize::from(immediate >> 4 & 3) * 4;
+            let mut out = dest;
+            out[destination_start..destination_start + 4]
+                .copy_from_slice(&raw[source_start..source_start + 4]);
+            for index in 0..4 {
+                if immediate >> index & 1 != 0 {
+                    out[4 * index..4 * index + 4].fill(0);
+                }
+            }
+            out
+        }
+        Sse41FpKind::Extractps => unreachable!("handled above"),
+    };
+    state.sse.as_mut().expect("checked above").xmm[usize::from(xmm)] = result;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }
@@ -158832,7 +159043,10 @@ mod tests {
             cr4_osfxsr: true,
             cr4_osxmmexcpt: true,
         };
-        for code in forms {
+        // Passes over the code bytes per form: one when the profile decoder alone refuses the form, two when the
+        // general decoder (S2-38) then decodes it again before the closed profile stops it.
+        let fetch_passes: [usize; 4] = [1, 2, 2, 1];
+        for (index, code) in forms.into_iter().enumerate() {
             let mut memory = Memory::at(code, 0x8000);
             let mut state = LongModeState::default();
             state.rip = 0x8000;
@@ -158857,8 +159071,9 @@ mod tests {
             assert_eq!(state, before);
             // S2-38: a form the profile decoder refuses is decoded once more by the general decoder (which
             // then still stops under the closed profile), so the bytes are fetched once or twice.
-            assert!(
-                memory.fetches.len() == code.len() || memory.fetches.len() == 2 * code.len(),
+            assert_eq!(
+                memory.fetches.len(),
+                fetch_passes[index] * code.len(),
                 "{:?}",
                 memory.fetches
             );
@@ -159347,7 +159562,10 @@ mod tests {
             cr4_osfxsr: true,
             cr4_osxmmexcpt: true,
         };
-        for code in forms {
+        // Passes over the code bytes per form: one when the profile decoder alone refuses the form, two when the
+        // general decoder (S2-38) then decodes it again before the closed profile stops it.
+        let fetch_passes: [usize; 4] = [1, 2, 2, 1];
+        for (index, code) in forms.into_iter().enumerate() {
             let mut memory = Memory::at(code, 0x8000);
             let mut state = LongModeState::default();
             state.rip = 0x8000;
@@ -159372,8 +159590,9 @@ mod tests {
             assert_eq!(state, before);
             // S2-38: a form the profile decoder refuses is decoded once more by the general decoder (which
             // then still stops under the closed profile), so the bytes are fetched once or twice.
-            assert!(
-                memory.fetches.len() == code.len() || memory.fetches.len() == 2 * code.len(),
+            assert_eq!(
+                memory.fetches.len(),
+                fetch_passes[index] * code.len(),
                 "{:?}",
                 memory.fetches
             );

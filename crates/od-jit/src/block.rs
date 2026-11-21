@@ -4569,6 +4569,11 @@ mod tests {
             &[0x66, 0x44, 0x0f, 0x5e, 0xcf], // DIVPD xmm9, xmm7 (REX.R)
             &[0xf3, 0x0f, 0x5c, 0x4b, 0x10], // SUBSS xmm1, [rbx+0x10]
             &[0xf2, 0x41, 0x0f, 0x59, 0x00], // MULSD xmm0, [r8]
+            // S2-54 (FP part): the SSE3 packed forms take the same general operation.
+            &[0xf2, 0x0f, 0x7c, 0xc1],       // HADDPS xmm0, xmm1
+            &[0x66, 0x0f, 0x7d, 0x03],       // HSUBPD xmm0, [rbx]
+            &[0xf2, 0x0f, 0xd0, 0xc1],       // ADDSUBPS xmm0, xmm1
+            &[0x66, 0x44, 0x0f, 0xd0, 0xcf], // ADDSUBPD xmm9, xmm7 (REX.R)
         ] {
             let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
@@ -4595,6 +4600,8 @@ mod tests {
             &[0xf0, 0x0f, 0x58, 0x03][..],
             &[0xf0, 0x66, 0x0f, 0x5e, 0xc1],
             &[0xf2, 0xf0, 0x0f, 0x5c, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0x7c, 0x00], // LOCK HADDPS xmm0, [rax]
+            &[0xf0, 0x66, 0x0f, 0xd0, 0xc1], // LOCK ADDSUBPD xmm0, xmm1
         ] {
             let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
@@ -4651,20 +4658,22 @@ mod tests {
     fn sse_fp_misc_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
         // S2-38: the interpreter executes SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the integer
         // conversions through the general core; the JIT has no lowering for them, so the block is not built,
-        // whether the decoder returns the general operation or one of the narrow profile operations.
+        // whether the decoder returns the general operation or one of the narrow profile operations. Each
+        // entry: the bytes, the opcode byte after the prefixes, and whether the decoder returns the general
+        // operation (`SseFpArith`/`SseFpMisc`) rather than a narrow profile one.
         const ENTRY: u64 = 0x4f80;
-        for bytes in [
-            &[0x0f, 0x51, 0x03][..],         // SQRTPS xmm0, [rbx]
-            &[0xf3, 0x0f, 0x51, 0xc1],       // SQRTSS xmm0, xmm1 (narrow profile operation)
-            &[0xf2, 0x0f, 0x5d, 0x4b, 0x10], // MINSD xmm1, [rbx+0x10]
-            &[0x66, 0x44, 0x0f, 0x5f, 0xcf], // MAXPD xmm9, xmm7
-            &[0x0f, 0x2f, 0x03],             // COMISS xmm0, [rbx]
-            &[0x66, 0x0f, 0x2e, 0xc1],       // UCOMISD xmm0, xmm1 (narrow profile operation)
-            &[0x0f, 0xc2, 0x0b, 0x01],       // CMPLTPS xmm1, [rbx]
-            &[0xf3, 0x0f, 0xc2, 0xc1, 0x00], // CMPEQSS xmm0, xmm1 (narrow profile operation)
-            &[0x0f, 0x5b, 0x03],             // CVTDQ2PS xmm0, [rbx]
-            &[0x66, 0x0f, 0x5b, 0xc1],       // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
-            &[0xf3, 0x0f, 0x5b, 0x4b, 0x10], // CVTTPS2DQ xmm1, [rbx+0x10]
+        for (bytes, opcode, general) in [
+            (&[0x0f, 0x51, 0x03][..], 0x51, true), // SQRTPS xmm0, [rbx]
+            (&[0xf3, 0x0f, 0x51, 0xc1][..], 0x51, false), // SQRTSS xmm0, xmm1 (narrow profile operation)
+            (&[0xf2, 0x0f, 0x5d, 0x4b, 0x10][..], 0x5d, true), // MINSD xmm1, [rbx+0x10]
+            (&[0x66, 0x44, 0x0f, 0x5f, 0xcf][..], 0x5f, false), // MAXPD xmm9, xmm7 (narrow profile operation)
+            (&[0x0f, 0x2f, 0x03][..], 0x2f, true),              // COMISS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x2e, 0xc1][..], 0x2e, false), // UCOMISD xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0xc2, 0x0b, 0x01][..], 0xc2, true),  // CMPLTPS xmm1, [rbx]
+            (&[0xf3, 0x0f, 0xc2, 0xc1, 0x00][..], 0xc2, false), // CMPEQSS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x5b, 0x03][..], 0x5b, true),              // CVTDQ2PS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x5b, 0xc1][..], 0x5b, false), // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
+            (&[0xf3, 0x0f, 0x5b, 0x4b, 0x10][..], 0x5b, true), // CVTTPS2DQ xmm1, [rbx+0x10]
         ] {
             let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
@@ -4672,7 +4681,16 @@ mod tests {
                 panic!("{bytes:02x?}: {:?}", refused.stop_reason);
             };
             assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
-            let _ = decoded;
+            assert_eq!(decoded.opcode.byte, opcode, "{bytes:02x?}");
+            assert_eq!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseFpArith { .. } | Operation::SseFpMisc { .. }
+                ),
+                general,
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
         }
         // LOCK on these forms is #UD: a decode boundary, never a block.
         for bytes in [
@@ -4681,6 +4699,54 @@ mod tests {
             &[0xf0, 0x0f, 0x2f, 0x03],
             &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
             &[0xf0, 0x66, 0x0f, 0x5b, 0x03],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn floating_point_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-55 slice B: the interpreter executes ROUND*, DPPS/DPPD, BLEND*, INSERTPS and EXTRACTPS; the JIT
+        // has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x5040;
+        for bytes in [
+            &[0x66, 0x0f, 0x3a, 0x08, 0xc1, 0x01][..], // ROUNDPS xmm0, xmm1, 1
+            &[0x66, 0x0f, 0x3a, 0x09, 0x00, 0x02],     // ROUNDPD xmm0, [rax], 2
+            &[0x66, 0x0f, 0x3a, 0x0a, 0xd3, 0x09],     // ROUNDSS xmm2, xmm3, 9
+            &[0x66, 0x0f, 0x3a, 0x0b, 0x4b, 0x10, 0x04], // ROUNDSD xmm1, [rbx+0x10], 4
+            &[0x66, 0x0f, 0x3a, 0x0c, 0xc1, 0x05],     // BLENDPS xmm0, xmm1, 5
+            &[0x66, 0x0f, 0x3a, 0x0d, 0x00, 0x01],     // BLENDPD xmm0, [rax], 1
+            &[0x66, 0x0f, 0x38, 0x14, 0xd3],           // BLENDVPS xmm2, xmm3
+            &[0x66, 0x0f, 0x38, 0x15, 0x00],           // BLENDVPD xmm0, [rax]
+            &[0x66, 0x0f, 0x3a, 0x17, 0xc0, 0x01],     // EXTRACTPS eax, xmm0, 1
+            &[0x66, 0x0f, 0x3a, 0x21, 0xc1, 0x10],     // INSERTPS xmm0, xmm1, 0x10
+            &[0x66, 0x0f, 0x3a, 0x40, 0xc1, 0xff],     // DPPS xmm0, xmm1, 0xff
+            &[0x66, 0x44, 0x0f, 0x3a, 0x41, 0xcf, 0x33], // DPPD xmm9, xmm7, 0x33
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41Fp { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x3a, 0x0b, 0x00, 0x01][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x40, 0xc1, 0xff],
+            &[0xf0, 0x66, 0x0f, 0x38, 0x14, 0x00],
         ] {
             let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
