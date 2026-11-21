@@ -59,7 +59,7 @@
       "name": "rt",
       "fv_app": "rt",
       "fixture": "rt_com1.txt",
-      "fixture_sha256": "15e99871f0fdc8cbe3f1ed038f1f40a15bfebb189f295bc3a0475cf4c41dce6d",
+      "fixture_sha256": "5f980836bd097b0c04378f954ea08d7490efb3caf74d45033e36bb51b1a13978",
       "repetitions": 5,
       "returncode": 0,
       "status": "completed",

@@ -216,6 +216,7 @@ unsafe extern "efiapi" fn finish(context: *mut LoaderContext) -> ! {
             fail(b'B');
         }
         trace(b"OD-UEFI rt physical\r\n");
+        check_unsupported_slots(runtime);
         if protected_nvram {
             if !secure_vars::after_exit(runtime) {
                 fail(b'X');
@@ -290,6 +291,8 @@ unsafe extern "efiapi" fn finish(context: *mut LoaderContext) -> ! {
             fail(b'H');
         }
         check_time(virtual_runtime);
+        check_unsupported_slots(virtual_runtime);
+        trace(b"OD-UEFI rt unsupported slots\r\n");
         trace(b"OD-UEFI rt virtual\r\n");
         trace(b"OD-UEFI rt shutdown\r\n");
         ((*virtual_runtime).reset_system)(RESET_SHUTDOWN, Status::SUCCESS, 0, ptr::null());
@@ -398,6 +401,39 @@ unsafe fn check_time(runtime: *mut RuntimeServices) {
             ) != (1969, 12, 31, 13, 24, 180, 1)
         {
             fail(b'W');
+        }
+    }
+}
+
+/// The four slots the profile leaves at EFI_UNSUPPORTED (UEFI_PROFILE.md, Runtime
+/// Services) must return that status and leave every caller buffer untouched.
+unsafe fn check_unsupported_slots(runtime: *mut RuntimeServices) {
+    const SENTINEL: u64 = 0xa5a5_a5a5_a5a5_a5a5;
+    const _: () = assert!(size_of::<Time>() == 16);
+    // Scalar volatile accesses: an array-compare form of this check stopped the machine with
+    // Unsupported { opcode: 51 }, an instruction the firmware CPU profile does not cover.
+    let mut time = MaybeUninit::<[u64; 2]>::uninit();
+    let time_words = time.as_mut_ptr().cast::<u64>();
+    let (mut enabled, mut pending) = (SENTINEL as u8, SENTINEL as u8);
+    let (mut maximum, mut reset) = (SENTINEL, SENTINEL as u32);
+    unsafe {
+        ptr::write_volatile(time_words, SENTINEL);
+        ptr::write_volatile(time_words.add(1), SENTINEL);
+        let time_pointer = time_words.cast::<Time>();
+        if ((*runtime).get_wakeup_time)(&mut enabled, &mut pending, time_pointer)
+            != Status::UNSUPPORTED
+            || ((*runtime).set_wakeup_time)(1, time_pointer) != Status::UNSUPPORTED
+            || ((*runtime).update_capsule)(ptr::null(), 0, 0) != Status::UNSUPPORTED
+            || ((*runtime).query_capsule_capabilities)(ptr::null(), 0, &mut maximum, &mut reset)
+                != Status::UNSUPPORTED
+            || ptr::read_volatile(&enabled) != SENTINEL as u8
+            || ptr::read_volatile(&pending) != SENTINEL as u8
+            || ptr::read_volatile(&maximum) != SENTINEL
+            || ptr::read_volatile(&reset) != SENTINEL as u32
+            || ptr::read_volatile(time_words) != SENTINEL
+            || ptr::read_volatile(time_words.add(1)) != SENTINEL
+        {
+            fail(b'U');
         }
     }
 }

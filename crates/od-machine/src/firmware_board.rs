@@ -4825,6 +4825,9 @@ fn load_firmware_image_inner(
 mod secure_boot_pcr7_tests;
 
 #[cfg(test)]
+mod tcg_log_replay_tests;
+
+#[cfg(test)]
 mod failure_smoke_tests;
 
 #[cfg(test)]

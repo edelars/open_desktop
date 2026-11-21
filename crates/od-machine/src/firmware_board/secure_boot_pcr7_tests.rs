@@ -1,6 +1,9 @@
 //! End-to-end replay through the guest event log and the board's TPM CRB.
 
-use super::*;
+use super::{
+    tcg_log_replay_tests::{Banks, check_boot, dump_boot, read_pcrs},
+    *,
+};
 use crate::{InMemoryBackend, acpi_blob::sha256};
 use sha2::{Digest, Sha384};
 use std::path::{Path, PathBuf};
@@ -31,15 +34,19 @@ struct Event<'a> {
 
 type PcrDigests = ([u8; 32], [u8; 48]);
 
+fn pcr7(banks: &Banks) -> PcrDigests {
+    (banks.0[7], banks.1[7])
+}
+
 #[test]
 #[ignore = "requires a local ROM and fixtures from firmware_secure_boot_smoke.py --work"]
 fn firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation() {
     let rom = std::fs::read(required_path("OD_SB_PCR7_ROM")).unwrap();
     let fixtures = required_path("OD_SB_PCR7_FIXTURES");
     let [
-        (setup_log, setup_pcr),
-        (enroll_log, enroll_pcr),
-        (revoke_log, revoke_pcr),
+        (setup_log, setup_banks),
+        (enroll_log, enroll_banks),
+        (revoke_log, revoke_banks),
     ] = std::thread::scope(|scope| {
         let rom = rom.as_slice();
         let fixtures = fixtures.as_path();
@@ -59,6 +66,16 @@ fn firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation() {
         })
         .map(|run| run.join().unwrap())
     });
+    // ISSUE-630: the whole log replays to PCR0-7 of both banks, not only to PCR7.
+    for (name, log, banks) in [
+        ("unsigned", &setup_log, &setup_banks),
+        ("enroll", &enroll_log, &enroll_banks),
+        ("revoke", &revoke_log, &revoke_banks),
+    ] {
+        check_boot(name, log, banks);
+    }
+    let (setup_pcr, enroll_pcr, revoke_pcr) =
+        (pcr7(&setup_banks), pcr7(&enroll_banks), pcr7(&revoke_banks));
     assert_ne!(setup_pcr, enroll_pcr);
     assert_ne!(enroll_pcr, revoke_pcr);
     assert_ne!(setup_pcr, revoke_pcr);
@@ -137,13 +154,7 @@ fn required_path(name: &str) -> PathBuf {
         .into()
 }
 
-fn run(
-    rom: &[u8],
-    fixtures: &Path,
-    snapshot: &str,
-    disk: &str,
-    marker: &[u8],
-) -> (Vec<u8>, PcrDigests) {
+fn run(rom: &[u8], fixtures: &Path, snapshot: &str, disk: &str, marker: &[u8]) -> (Vec<u8>, Banks) {
     let config = FirmwareBoardConfig {
         acpi_pm: true,
         acpi_tables: true,
@@ -173,7 +184,8 @@ fn run(
     );
     let bus = board.bus_mut();
     let log = locate_event_log(bus, config.ram_bytes);
-    let pcr = read_pcr7(bus);
+    let pcr = read_pcrs(bus);
+    dump_boot(disk.trim_end_matches(".raw"), &log, &pcr);
     println!(
         "{disk}: {} instructions, {} quanta",
         report.retired, report.quanta
@@ -204,41 +216,6 @@ fn locate_event_log(bus: &mut MachineBus, ram_bytes: u64) -> Vec<u8> {
     let start = starts.next().expect("primary TCG2 log");
     assert_eq!(starts.next(), None);
     memory[start..start + LOG_CAPACITY].to_vec()
-}
-
-fn read_pcr7(bus: &mut MachineBus) -> PcrDigests {
-    let addr = |offset| GuestPhysicalAddress::new(TPM_CRB_BASE + offset);
-    for (offset, value) in [(8, 1), (0x40, 2), (0x40, 1)] {
-        bus.write_physical(addr(offset), AccessWidth::Dword, value, |_| {})
-            .unwrap();
-    }
-    let command: [u8; 26] = [
-        0x80, 1, 0, 0, 0, 26, 0, 0, 1, 0x7e, 0, 0, 0, 2, 0, 0x0b, 3, 0x80, 0, 0, 0, 0x0c, 3, 0x80,
-        0, 0,
-    ];
-    for (index, byte) in command.into_iter().enumerate() {
-        bus.write_physical(
-            addr(0x80 + index as u64),
-            AccessWidth::Byte,
-            u64::from(byte),
-            |_| {},
-        )
-        .unwrap();
-    }
-    bus.write_physical(addr(0x4c), AccessWidth::Dword, 1, |_| {})
-        .unwrap();
-    let response: [u8; 118] = std::array::from_fn(|index| {
-        bus.read_physical(addr(0x80 + index as u64), AccessWidth::Byte)
-            .unwrap() as u8
-    });
-    assert_eq!(response[..10], [0x80, 1, 0, 0, 0, 118, 0, 0, 0, 0]);
-    assert_eq!(response[14..30], command[10..]);
-    assert_eq!(response[30..36], [0, 0, 0, 2, 0, 32]);
-    assert_eq!(response[68..70], [0, 48]);
-    (
-        response[36..68].try_into().unwrap(),
-        response[70..].try_into().unwrap(),
-    )
 }
 
 fn replay_pcr7(log: &[u8], actual: PcrDigests) -> Vec<Event<'_>> {
@@ -304,7 +281,7 @@ fn replay_pcr7(log: &[u8], actual: PcrDigests) -> Vec<Event<'_>> {
     events
 }
 
-fn le32(bytes: &[u8], at: usize) -> u32 {
+pub(super) fn le32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
