@@ -5,9 +5,9 @@
 //! pages) or from a published check value (CRC-32C of "123456789" is 0xE3069283, RFC 3720), never
 //! from the implementation under test.
 //!
-//! Slice C of S2-57 (TSC, CX8, CMOV declared; FPU, MSR, SYSCALL and LM kept clear with a recorded blocker,
-//! see CPU_CONTRACT.md) adds TSC (Vol. 1 Table 21-10, EDX[4]), CX8 (EDX[8]) and CMOV (EDX[15]) to the
-//! declared set below.
+//! Slice C of S2-57 (CX8 and CMOV declared; FPU, TSC, MSR, SYSCALL and LM kept clear until a separate
+//! owner decision, 2026-11-21, see CPU_CONTRACT.md) adds CX8 (Vol. 1 Table 21-10, EDX[8]) and CMOV
+//! (EDX[15]) to the declared set below.
 //!
 //! Three groups:
 //!
@@ -50,16 +50,16 @@ fn register(reg: Reg) -> u32 {
 }
 
 /// (register, bit, name, owner task): declared because the owner task is implemented and merged.
-const DECLARED: [(Reg, u32, &str, &str); 14] = [
-    // S2-57 slice C (deviation: declared before S2-16, S2-21 and S2-26 are accepted, awaiting the
-    // owner). Bit numbers: Intel SDM rev. 093, Vol. 1, Table 21-10 (pp. 21-12 and 21-13).
-    (Reg::Edx1, 4, "TSC", "S2-26e"),
+const DECLARED: [(Reg, u32, &str, &str); 12] = [
+    // S2-57 slice C (S2-16 and S2-21 accepted, confirmed by the owner 2026-11-21). TSC [4] is NOT
+    // here: the owner holds it until a separate decision. Bit numbers: Intel SDM rev. 093, Vol. 1,
+    // Table 21-10 (pp. 21-12 and 21-13).
     (Reg::Edx1, 8, "CX8 (CMPXCHG8B)", "S2-21i"),
     (Reg::Edx1, 15, "CMOV", "S2-16c"),
-    // S2-58 (deviation: declared before S2-25, S4-10 and S4-38L8d are accepted, awaiting the owner).
+    // S2-58 (deviation: declared before S2-25 and S4-38L8d are accepted, confirmed by the owner
+    // 2026-11-21). NX [80000001H EDX 20] is NOT here: the owner deferred it until S4-10 is accepted.
     (Reg::Edx1, 6, "PAE", "S2-58"),
     (Reg::Edx1, 9, "APIC", "S2-58"),
-    (Reg::Edx80000001, 20, "NX", "S2-58"),
     (Reg::Ecx1, 0, "SSE3", "S2-54"),
     (Reg::Ecx1, 9, "SSSE3", "S2-54"),
     (Reg::Ecx1, 13, "CX16 (CMPXCHG16B)", "S2-51"),
@@ -72,7 +72,7 @@ const DECLARED: [(Reg, u32, &str, &str); 14] = [
 
 /// (register, bit, name, why it is clear). The profile is built from the owner-task table of S2-57,
 /// not from the Linux table: a bit whose owner is not accepted, or has no task, stays clear.
-const UNDECLARED: [(Reg, u32, &str, &str); 28] = [
+const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
     (
         Reg::Edx1,
         0,
@@ -80,6 +80,12 @@ const UNDECLARED: [(Reg, u32, &str, &str); 28] = [
         "x87 is not complete for CPL0: FSIN, FCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FSTENV, FSAVE are not implemented (S2-30, S2-31, S2-32 open)",
     ),
     (Reg::Edx1, 3, "PSE", "no task"),
+    (
+        Reg::Edx1,
+        4,
+        "TSC",
+        "owner decision 2026-11-21: not declared until a separate owner decision",
+    ),
     (
         Reg::Edx1,
         5,
@@ -112,6 +118,12 @@ const UNDECLARED: [(Reg, u32, &str, &str); 28] = [
         11,
         "SYSCALL",
         "SYSCALL/SYSRET only in the Linux board sets, semantics from memory of the SDM, no compatibility mode (S2-27, S2-24 open)",
+    ),
+    (
+        Reg::Edx80000001,
+        20,
+        "NX",
+        "S4-10 not accepted (owner decision 2026-11-21: NX deferred)",
     ),
     (Reg::Edx80000001, 26, "1 GiB pages", "no task"),
     (Reg::Edx80000001, 27, "RDTSCP", "no task"),
@@ -146,11 +158,12 @@ fn feature_registers_are_exactly_the_declared_bits() {
     );
     assert_eq!(register(Reg::Ecx1), 0x0098_2201);
     assert_eq!(register(Reg::Ecx80000001), 0x0000_0101);
-    // EDX of leaf 1: TSC [4], CX8 [8], CMOV [15] (S2-57 slice C), PAE [6] and APIC [9] (S2-58);
-    // 80000001H EDX: NX [20] (S2-58). No bit is left over that the lists above do not name.
-    assert_eq!(register(Reg::Edx1), 0x10 | 0x40 | 0x100 | 0x200 | 0x8000);
-    assert_eq!(register(Reg::Edx1), 0x8350);
-    assert_eq!(register(Reg::Edx80000001), 0x10_0000);
+    // EDX of leaf 1: CX8 [8], CMOV [15] (S2-57 slice C), PAE [6] and APIC [9] (S2-58); TSC [4] is
+    // held by the owner. 80000001H EDX: zero (NX [20] is deferred until S4-10, owner decision
+    // 2026-11-21). No bit is left over that the lists above do not name.
+    assert_eq!(register(Reg::Edx1), 0x40 | 0x100 | 0x200 | 0x8000);
+    assert_eq!(register(Reg::Edx1), 0x8340);
+    assert_eq!(register(Reg::Edx80000001), 0);
     for reg in [Reg::Edx1, Reg::Ecx1, Reg::Ecx80000001, Reg::Edx80000001] {
         let mut declared = 0u32;
         for (r, bit, _, _) in DECLARED {
@@ -174,13 +187,13 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     assert_eq!(linux.query(0x8000_0001, 0).edx, 0x2010_0800);
     assert_eq!(linux.query(0x8000_0002, 0), CpuidResult::default());
     // The Windows profile has its own identity and takes from the Linux EDX bits only those it
-    // declares: TSC, PAE, CX8, APIC and CMOV in leaf 1, NX in 80000001H (the other Linux bits stay
-    // clear).
+    // declares: PAE, CX8, APIC and CMOV in leaf 1; NX in 80000001H is not taken (the other Linux
+    // bits stay clear, TSC included).
     assert_ne!(WINDOWS.query(0, 0), linux.query(0, 0));
-    assert_eq!(WINDOWS.query(1, 0).edx & linux.query(1, 0).edx, 0x8350);
+    assert_eq!(WINDOWS.query(1, 0).edx & linux.query(1, 0).edx, 0x8340);
     assert_eq!(
         WINDOWS.query(0x8000_0001, 0).edx & linux.query(0x8000_0001, 0).edx,
-        0x10_0000
+        0
     );
 }
 
@@ -305,11 +318,11 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
 fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     // Order of the result: EAX, EBX, ECX, EDX.
     assert_eq!(cpuid_leaf(0), [1, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
-    // EDX: TSC | PAE | CX8 | APIC | CMOV (S2-57 slice C, S2-58).
-    assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x8350]);
+    // EDX: PAE | CX8 | APIC | CMOV (S2-57 slice C, S2-58); TSC is clear.
+    assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x8340]);
     assert_eq!(cpuid_leaf(0x8000_0000), [0x8000_0008, 0, 0, 0]);
-    // EDX: NX (S2-58).
-    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0x10_0000]);
+    // EDX: zero (NX deferred until S4-10).
+    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0]);
     // "Inte" "l(R)" " Cel" "eron" | "(R) " "N510" "5 @ " "2.00" | "GHz" NUL and zeros.
     assert_eq!(
         cpuid_leaf(0x8000_0002),
@@ -562,7 +575,7 @@ fn cpu_for_crc() -> LongModeState {
     cpu
 }
 
-// ---- slice C: TSC, CX8 and CMOV (one representative form each, positive and negative) ----
+// ---- slice C: CX8 and CMOV declared, TSC form (RDTSC) tested but its bit not declared ----
 
 fn step_outcome(
     code: &[u8],

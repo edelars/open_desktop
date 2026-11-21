@@ -19,13 +19,15 @@
 //! `CPU_CONTRACT.md`): the identity of an Intel Celeron N5105 and, in leaves 1 and 0x80000001,
 //! only the feature bits whose implementing tasks are done (not the table of
 //! `OdX8664V1Neutral`, which is never inherited). It is an intermediate profile, not yet a Windows
-//! boot contract: SSE/SSE2, FXSR, FPU, MMX, MSR, SYSCALL and LM stay clear until their tasks are
-//! accepted. S2-57 (slice C) declares CX8 (EDX[8]), CMOV (EDX[15]) and TSC (EDX[4]), whose forms are
-//! implemented and tested (deviation: the owner tasks S2-16, S2-21 and S2-26 are not accepted,
-//! awaiting the owner's confirmation; `CPU_CONTRACT.md`). S2-58 declares PAE (EDX[6]), APIC (EDX[9]) and NX (80000001H
-//! EDX[20]) before the owner accepted S2-25, S4-10 and S4-38L8d (deviation, awaiting the owner's
-//! confirmation; `CPU_CONTRACT.md`). The interpreter does not gate a form on these bits except
-//! one: `WRMSR` setting `EFER.NXE` needs NX in the set's own CPUID member (S2-25f).
+//! boot contract: SSE/SSE2, FXSR, FPU, MMX, TSC, MSR, SYSCALL and LM stay clear until their tasks
+//! are accepted (owner decision of 2026-11-21: FPU, TSC, MSR, SYSCALL and LM are not declared until
+//! a separate owner decision). S2-57 (slice C) declares CX8 (EDX[8]) and CMOV (EDX[15]), whose forms
+//! are implemented and tested and whose tasks S2-21 and S2-16 the owner accepted (confirmed
+//! 2026-11-21; `CPU_CONTRACT.md`). S2-58 declares PAE (EDX[6]) and APIC (EDX[9]) before the owner
+//! accepted S2-25 and S4-38L8d (deviation, confirmed by the owner 2026-11-21; `CPU_CONTRACT.md`). NX
+//! (80000001H EDX[20]) is NOT declared: the owner deferred it until S4-10 is accepted (decision of
+//! 2026-11-21). The interpreter does not gate a form on these bits except one: `WRMSR` setting
+//! `EFER.NXE` needs NX in the set's own CPUID member (S2-25f), so with this profile it is #GP(0).
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -59,7 +61,8 @@ pub enum CpuidProfile {
     /// S2-57: the Windows profile `od-x86-64-v2-windows-v0.1` (ADR-0013, `CPU_CONTRACT.md`). Never the
     /// default and not a member of the Stage 4 family. Leaf 1 ECX declares SSE3, SSSE3, CMPXCHG16B,
     /// SSE4.1, SSE4.2 and POPCNT, leaf 0x80000001 ECX declares LAHF/SAHF and PREFETCHW; leaf 1 EDX
-    /// and leaf 0x80000001 EDX stay zero. The Linux target `OdX8664V1Neutral` is unchanged.
+    /// declares PAE, CX8, APIC and CMOV (`0x8340`; S2-58 and S2-57 slice C) and leaf 0x80000001 EDX stays zero
+    /// (NX deferred until S4-10). The Linux target `OdX8664V1Neutral` is unchanged.
     OdX8664V2Windows,
 }
 
@@ -92,23 +95,23 @@ const WINDOWS_LEAF1_EAX: u32 = 0x0009_06C0;
 /// VMX [5], AES [25], XSAVE [26], OSXSAVE [27], AVX [28], the hypervisor bit [31] and every other
 /// bit (ADR-0013, decisions 3 and 4).
 const WINDOWS_LEAF1_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
-/// CPUID.01H:EDX of the Windows profile: PAE [6] and APIC [9] (S2-58; bit numbers from the Intel SDM
-/// rev. 093, Vol. 1, Table 21-10, leaf 01H EDX). Declared before the owner accepted
-/// S2-25 (PAE paging beyond IA-32e is a model without a hardware oracle), S4-10 and S4-38L8d
-/// (deviation of S2-58, awaiting the owner's confirmation). S2-57 slice C adds TSC [4] (RDTSC,
-/// S2-26e), CX8 [8] (CMPXCHG8B, S2-21i) and CMOV [15] (CMOVcc, S2-16c); bit numbers from the Intel SDM
-/// rev. 093, Vol. 1, Table 21-10 (pp. 21-12, 21-13), also declared before the owner accepted S2-16,
-/// S2-21 and S2-26 (deviation, awaiting the owner's confirmation). FPU, MSR, MMX, FXSR, SSE and SSE2
-/// wait for their tasks (`CPU_CONTRACT.md`, S2-57); PSE, PGE and PAT have no task.
-const WINDOWS_LEAF1_EDX: u32 = (1 << 6) | LEAF1_EDX_APIC | LEAF1_EDX_TSC | (1 << 8) | (1 << 15);
+/// CPUID.01H:EDX of the Windows profile: PAE [6], CX8 [8], APIC [9] and CMOV [15] (`0x8340`; bit
+/// numbers from the Intel SDM rev. 093, Vol. 1, Table 21-10, pp. 21-12, 21-13). PAE and APIC (S2-58)
+/// were declared before the owner accepted S2-25 (PAE paging beyond IA-32e is a model without a
+/// hardware oracle), S4-10 and S4-38L8d (deviation, confirmed by the owner 2026-11-21). CX8
+/// (CMPXCHG8B, S2-21i) and CMOV (CMOVcc, S2-16c) are declared by S2-57 slice C, confirmed by the
+/// owner 2026-11-21 (acceptance of S2-21 and S2-16). TSC [4] is NOT declared: the owner decision of
+/// 2026-11-21 holds it (with FPU, MSR, SYSCALL and LM) until a separate owner decision. MMX, FXSR,
+/// SSE and SSE2 wait for their tasks (`CPU_CONTRACT.md`, S2-57); PSE, PGE and PAT have no task.
+const WINDOWS_LEAF1_EDX: u32 = (1 << 6) | (1 << 8) | LEAF1_EDX_APIC | (1 << 15);
 /// CPUID.80000001H:ECX of the Windows profile: LAHF/SAHF in 64-bit mode [0] (S2-52) and PREFETCHW
 /// [8] (S2-53), from the Intel SDM (Vol. 1, "Leaf 80000001H"). LZCNT [5] is not declared.
 const WINDOWS_EXT1_ECX: u32 = (1 << 0) | (1 << 8);
-/// CPUID.80000001H:EDX of the Windows profile: NX (Execute Disable) [20] (S2-58; bit number from the
-/// Intel SDM rev. 093, Vol. 1, Table 21-90, leaf 80000001H EDX), declared before the owner accepted
-/// S2-25 and S4-10 (S2-58 deviation, awaiting the owner's confirmation). SYSCALL [11] and LM [29]
-/// wait for S2-27 and S2-24/S2-25; Page1GB [26] is never declared.
-const WINDOWS_EXT1_EDX: u32 = 1 << 20;
+/// CPUID.80000001H:EDX of the Windows profile: zero. NX (Execute Disable) [20] is NOT declared: the
+/// owner deferred it until S4-10 is accepted (decision of 2026-11-21, withdrawing the S2-58
+/// declaration; the bit number is from the Intel SDM rev. 093, Vol. 1, Table 21-90). SYSCALL [11] and
+/// LM [29] wait for S2-27 and S2-24/S2-25; Page1GB [26] is never declared.
+const WINDOWS_EXT1_EDX: u32 = 0;
 /// CPUID.80000002H..80000004H of the Windows profile: the brand string of an Intel Celeron N5105
 /// (ADR-0013, decision 2), NUL-padded to 48 bytes (Intel SDM, Vol. 1, "Methods for Returning
 /// Branding Information Using CPUID").
@@ -695,7 +698,7 @@ mod tests {
     /// S2-57. Oracles written by hand from the Intel SDM tables (Vol. 1, chapter "Processor
     /// identification and feature determination"): GenuineIntel in EBX, EDX, ECX order; the
     /// signature of family 6 model 0x9C stepping 0; ECX bits 0, 9, 13, 19, 20, 23 (0x982201);
-    /// EDX bits 4, 6, 8, 9, 15 (0x8350); 80000001H ECX bits 0 and 8 (0x101).
+    /// EDX bits 6, 8, 9, 15 (0x8340); 80000001H ECX bits 0 and 8 (0x101).
     #[test]
     fn windows_declares_the_identity_and_only_the_accepted_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
@@ -712,19 +715,24 @@ mod tests {
             0x1 + 0x200 + 0x2000 + 0x8_0000 + 0x10_0000 + 0x80_0000
         );
         assert_eq!(leaf1.ecx, 0x0098_2201);
-        // TSC (bit 4), PAE (6), CX8 (8), APIC (9) and CMOV (15) only, by hand from the Intel SDM.
+        // PAE (bit 6), CX8 (8), APIC (9) and CMOV (15) only, by hand from the Intel SDM.
         assert_eq!(
             leaf1.edx,
-            0x10 + 0x40 + 0x100 + 0x200 + 0x8000,
-            "only TSC, PAE, CX8, APIC and CMOV in leaf 1 EDX"
+            0x40 + 0x100 + 0x200 + 0x8000,
+            "only PAE, CX8, APIC and CMOV in leaf 1 EDX"
         );
-        assert_eq!(leaf1.edx, 0x8350);
+        assert_eq!(leaf1.edx, 0x8340);
+        assert_eq!(leaf1.edx & (1 << 4), 0, "TSC (bit 4) is not declared");
         let ext = p.query(0x8000_0000, 0);
         assert_eq!(ext.eax, 0x8000_0008);
         assert_eq!((ext.ebx, ext.ecx, ext.edx), (0, 0, 0));
         let ext1 = p.query(0x8000_0001, 0);
         assert_eq!((ext1.eax, ext1.ebx), (0, 0));
-        assert_eq!(ext1.edx, 0x10_0000, "only NX (bit 20) in 80000001H EDX");
+        assert_eq!(
+            ext1.edx, 0,
+            "80000001H EDX is zero: NX is deferred until S4-10"
+        );
+        assert_eq!(ext1.edx & (1 << 20), 0, "NX (bit 20) is not declared");
         assert_eq!(ext1.ecx, 0x1 + 0x100);
         let widths = p.query(0x8000_0008, 0);
         assert_eq!(widths.eax, 0x0000_3024);
@@ -753,14 +761,15 @@ mod tests {
     fn windows_does_not_copy_the_linux_table_nor_declare_forbidden_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
         let linux = CpuidProfile::OdX8664V1Neutral;
-        // The declared EDX bits (TSC, PAE, CX8, APIC, CMOV; NX in 80000001H) are a strict subset of the
-        // Linux table's; every other Linux bit (FPU, PSE, MSR, PGE, PAT, MMX, FXSR, SSE, SSE2,
-        // SYSCALL, LM) stays clear.
+        // The declared EDX bits (PAE, CX8, APIC, CMOV) are a strict subset of the Linux table's; every
+        // other Linux bit (FPU, PSE, TSC, MSR, PGE, PAT, MMX, FXSR, SSE, SSE2, SYSCALL, NX, LM) stays
+        // clear.
         let leaf1_edx = p.query(1, 0).edx;
-        assert_eq!(leaf1_edx, 0x8350);
+        assert_eq!(leaf1_edx, 0x8340);
         for (bit, name) in [
             (0, "FPU"),
             (3, "PSE"),
+            (4, "TSC"),
             (5, "MSR"),
             (13, "PGE"),
             (16, "PAT"),
@@ -774,7 +783,7 @@ mod tests {
         assert_ne!(leaf1_edx, linux.query(1, 0).edx);
         assert_eq!(leaf1_edx & !linux.query(1, 0).edx, 0);
         let ext1_edx = p.query(0x8000_0001, 0).edx;
-        assert_eq!(ext1_edx, 0x10_0000, "SYSCALL and LM stay clear, only NX");
+        assert_eq!(ext1_edx, 0, "SYSCALL, NX and LM stay clear");
         assert_ne!(ext1_edx, linux.query(0x8000_0001, 0).edx);
         let ecx = p.query(1, 0).ecx;
         for (bit, name) in [
