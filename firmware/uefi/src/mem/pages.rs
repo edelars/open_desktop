@@ -7,7 +7,7 @@ use core::{convert::identity, ops::Range};
 
 mod image;
 mod pool;
-pub(crate) use image::ImageMemoryRange;
+pub(crate) use image::{ImageMemoryRange, ImagePlacement};
 pub use pool::{PoolError, PoolHeader, PoolMemory};
 
 const PHYSICAL_END: u64 = 1 << 36;
@@ -148,6 +148,34 @@ impl<'map, 'tags> PageAllocator<'map, 'tags> {
             }
         }
         best.ok_or(PageError::NotFound)
+    }
+
+    /// The lowest `step`-aligned address at or above `floor` that starts a free run of `bytes`.
+    fn find_lowest_fit(&self, bytes: u64, floor: u64, step: u64) -> Result<u64, PageError> {
+        let mut run_start = None;
+        let mut run_end = 0;
+        for (index, &descriptor) in self.map.descriptors().iter().enumerate() {
+            if !is_free(descriptor, self.owners[index]) {
+                run_start = None;
+                continue;
+            }
+            let start = run_start
+                .filter(|_| run_end == descriptor.physical_start)
+                .unwrap_or(descriptor.physical_start);
+            run_end = descriptor.end();
+            run_start = Some(start);
+            let candidate = start
+                .max(floor)
+                .checked_next_multiple_of(step)
+                .ok_or(PageError::InvalidAddress)?;
+            if candidate
+                .checked_add(bytes)
+                .is_some_and(|end| end <= run_end)
+            {
+                return Ok(candidate);
+            }
+        }
+        Err(PageError::NotFound)
     }
 
     fn covered_by(
