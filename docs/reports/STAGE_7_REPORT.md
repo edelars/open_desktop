@@ -10350,6 +10350,26 @@ python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38
 
 **Не проверено.** Точные дескрипторы, переданные ядром; успешный возврат `SetVirtualAddressMap`; поведение гостя на COM2–COM4; `efivarfs`, `/init`; полные наборы.
 
+## S7-31k — NO_MAPPING по страницам, Runtime-драйвер без записи CR0, новая остановка на HLT (2026-11-21)
+
+Решение Opus по ISSUE-639: `mov cr0` исполнял не ядро, а наш Runtime-драйвер (`suspend_write_protection`); Linux и EDK2 держат runtime-регионы на запись во время `SetVirtualAddressMap`, WP снимать не нужно; вариант (б) принят, допуск `MOV CR0` в набор (вариант (а)) отклонён.
+
+**1. NO_MAPPING.** `VirtualMap::new` проверял покрытие только первой страницы runtime-региона прошивки (`translate(desc.physical_start)`). Теперь каждая страница каждого runtime-региона карты прошивки должна лежать в переданных runtime-дескрипторах (цикл по `runtime_range_end`, как `covered_by_map`); частичное покрытие — `EFI_NO_MAPPING`. Заодно нулевая длина и переполнение диапазона дают `EFI_INVALID_PARAMETER` (раньше `NOT_FOUND`). `ConvertPointer` уже работает по странице, содержащей указатель (`translate`), менять не потребовалось. Тест `accepts_merged_and_os_marked_runtime_ranges_and_rejects_ranges_outside_the_map` расширен: регион на 2 страницы при одной переданной — `NO_MAPPING`, две половины вместе принимаются, нулевая длина и переполнение — `INVALID_PARAMETER`.
+
+**2. LDMXCSR на CPL3.** Проверки привилегии в `step_cpl0_fp` нет; набор CPL0 отказывает контексту кольца 3 раньше (`WrongPrivilege`, шаг не выполняется). Тест `ldmxcsr_in_the_cpl0_set_does_not_run_under_a_ring3_context`; формулировка в CPU_CONTRACT.md исправлена: по SDM `LDMXCSR` не привилегирован, но набор CPL3 его не содержит.
+
+**3. Необязательное.** Комментарий про Ext2 в `cpuid.rs`; тест `absent_uarts_are_not_bound_without_the_linux_profile` (порты `0x2F8`, `0x2F9`, `0x3E8`, `0x2E8` без `linux_profile` остаются ловушками); нулевая длина и переполнение — см. п. 1.
+
+**4. Драйвер без CR0.** Подвешивание и возврат WP удалены из `rt/driver.rs` (вместе с `cli`/`sti` внутри них); тест `driver_code_does_not_write_control_registers` (сканирует исходник драйвера, поскольку на хосте модуль не собирается). Гостевой RT-тест `tests/apps/rt` играл роль ОС с отображением по флагам загрузочной страницы (страницы образа драйвера оказывались без права записи): без WP-подвеса запись fixup давала #PF (`error_code 3`, запись в защищённую страницу). Тест-приложение теперь отображает образы на запись, как ОС (`paging.rs`: `bits | WRITE`). Условие записано в UEFI_PROFILE.md и FIRMWARE_BOOT.md.
+
+**Проверки.** `cargo test --offline` в `firmware/uefi`: `test result: ok. 343 passed; 0 failed` (EXIT=0). `firmware_boot_smoke.py` — exit 0 (`Missing FV application stopped with EFI_NOT_FOUND`), `firmware_esp_boot_smoke.py` — exit 0. od-isa: тесты `s7_31i_ldmxcsr` (7), `cpl0_profile_set`, `cpl3_profile_set`, `s7_31d`, `s7_31c`, `cpuid` — ok; od-machine `absent_ports::` и `firmware_board::` — `161 passed; 0 failed; 3 ignored`. Полные наборы не повторялись. Первый прогон `firmware_boot_smoke.py` дал exit 1 (`rt #1 COM1 differs`: нет строк `OD-UEFI rt virtual` и `rt shutdown`, #PF на записи fixup, см. п. 4); после правки тест-приложения — exit 0.
+
+**Измерение** (единый цикл, release, бюджет 6·10⁹, три варианта × 2 прогона, прогоны идентичны; запись [s7-31k-linux-uefi-stop-record.json](data/stage7/s7-31k-linux-uefi-stop-record.json)). Остановка на `Unsupported { opcode: 244 }` (`HLT`, байты `F4 C3 CC CC CC CC 90 90`) на CPL0, RFLAGS `0x246` (IF = 1), RIP `0xffffffff8b728f0a` (stock; `0xffffffff94528f0a` rebased; `0xffffffffa5528f0a` rebased-hdr), инструкций 2 797 399 885 / 2 797 263 955 / 2 797 546 729. Прошлая остановка (`mov cr0` внутри `SetVirtualAddressMap`, 1,66·10⁹) и остановка на порту `0x2F9` (2,32·10⁹) пройдены. #PF-остановки на записи fixup нет (`page_fault: None`; доставленные #PF — ранние обращения ядра, 11, первый `cr2 0xffff888007f0e000` до построения прямого отображения). `cpl3_retired` = 751 (раньше 0). Строк о `efivarfs` и `/init` в журнале нет (последняя строка `rcu: Max phase no-delay instances is 400.`; консоль 8250 ядра печатает асинхронно, поэтому журнал мог отстать): `efivarfs` и `/init` не подтверждены. [ISSUE-638](../KNOWN_ISSUES.md#issue-638) и [ISSUE-639](../KNOWN_ISSUES.md#issue-639) закрыты по факту, открыт [ISSUE-640](../KNOWN_ISSUES.md#issue-640) (`HLT` в наборе CPL0).
+
+**Статус S7-31 (промежуточный).** После ExitBootServices ядро Ubuntu 7.0.0-38 проходит `MOV SS`, NX, `LDMXCSR`, `SetVirtualAddressMap` (без остановок и сообщений об ошибке), зондирование 8250 (COM2–COM4 читаются как 0xFF), исполняет 751 инструкцию пользовательского режима и останавливается на `HLT` холостого хода. Новая форма ISA (`HLT` с IF = 1, ISSUE-640) в срезе не добавлялась по решению Opus; следующий шаг — отдельный план с бюджетом.
+
+**Не проверено.** Возврат `SetVirtualAddressMap` успехом напрямую; код, исполненный на CPL3; `efivarfs`, `/init`; полные наборы.
+
 ## S7-23 — независимое ревью фазы B (2026-11-21)
 
 **Вердикт.** «С замечаниями» (независимое итоговое ревью фазы B, Opus, effort high). Код и тесты подтверждены; замечания документальные. S7-23 принята 2026-11-21 по решению 7 ADR-0009, пп. 1–5. Эта правка меняет только документы, код не менялся.
