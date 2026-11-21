@@ -46783,6 +46783,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | Operation::Fxrstor64RbxDisp8(_)
                 | Operation::Fxrstor64RipRelative(_)
                 | Operation::Fxrstor64Rdi(_)
+                | Operation::FnstswM16 { .. }
+                | Operation::FnstcwM16 { .. }
         )
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
@@ -51368,7 +51370,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::PinsrwMemory { .. }
         | Operation::Fxsave64R12(_)
         | Operation::Fxrstor64RipRelative(_)
-        | Operation::Fxrstor64Rdi(_) => false,
+        | Operation::Fxrstor64Rdi(_)
+        // S7-31d: FNSTSW/FNSTCW with any memory operand run only in the FP member of the set.
+        | Operation::FnstswM16 { .. }
+        | Operation::FnstcwM16 { .. } => false,
     };
     if !executable {
         return Ok(StepOutcome::Unsupported {
@@ -52183,6 +52188,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::Fxrstor64RipRelative(_) | Operation::Fxrstor64Rdi(_) => {
             unreachable!("FXRSTOR64 commits in its prevalidated field-load path")
+        }
+        Operation::FnstswM16 { .. } | Operation::FnstcwM16 { .. } => {
+            unreachable!("FNSTSW/FNSTCW m2byte run in the FP member of the set")
         }
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before state commit")
@@ -69890,6 +69898,44 @@ fn step_cpl0_fp(
                 }));
             }
             drop(fp);
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::FnstswM16 { destination } | Operation::FnstcwM16 { destination } => {
+            // S7-31d. Intel SDM Vol. 2A, FNSTSW/FNSTCW (stores without checking for pending
+            // unmasked x87 exceptions, so there is no FWAIT): the status word (`DD /7`) or the
+            // control word (`D9 /7`) goes to the 16-bit memory operand; no flag and no other
+            // register changes. #NM when CR0.EM or CR0.TS is 1; the memory faults are the
+            // ordinary ones. They are control instructions: the x87 instruction and data
+            // pointers and the opcode register are not updated (Vol. 1, 8.1.8).
+            let control = matches!(instruction.operation, Operation::FnstcwM16 { .. });
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != if control { 0xd9 } else { 0xdd }
+                || instruction.prefixes != Prefixes::default()
+                || destination.size != OperandSize::Word
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            let value = {
+                let fp = cell.borrow();
+                if control {
+                    fp.x87.control_word
+                } else {
+                    fp.x87.status_word
+                }
+            };
+            let address = match destination.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(error) => return report_memory_error(error),
+            };
+            if let Err(error) =
+                memory.write_integer(address, context, OperandSize::Word, u64::from(value))
+            {
+                return report_memory_error(error);
+            }
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }

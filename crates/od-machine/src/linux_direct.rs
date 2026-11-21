@@ -1755,6 +1755,9 @@ fn run_linux_direct_board_set_with_post_iret_index(
     ))
 }
 
+/// The checkpoint slot of the marked RIP (an address slot of the Linux table, 1..=17).
+const MARKER_CHECKPOINT_ID: u8 = 1;
+
 /// What [`run_firmware_unified`] reports besides the usual run report.
 #[derive(Debug, Eq, PartialEq)]
 pub struct FirmwareUnifiedRun {
@@ -1780,6 +1783,38 @@ pub struct FirmwareUnifiedRun {
     /// Up to 32 bytes at the final RIP as a fetch would see them (they stop at the first byte
     /// that does not translate or is not RAM).
     pub rip_bytes: Vec<u8>,
+    /// The RIP that was asked to be marked (S7-31d), if any.
+    pub marker_rip: Option<u64>,
+    /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
+    /// run never got there.
+    pub marker: Option<FirmwareUnifiedMarker>,
+    /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
+    /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
+    pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+}
+
+/// One checkpoint record of a unified run (S7-31d).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedCheckpoint {
+    pub id: u8,
+    pub name: String,
+    pub kind: &'static str,
+    pub rip: u64,
+    pub retired: u64,
+    pub quanta: u64,
+    pub virtual_ns: u64,
+    pub cpl: u8,
+}
+
+/// The first instruction boundary of a run at the marked RIP (S7-31d).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedMarker {
+    /// Instructions retired in the run before the instruction at the marked RIP.
+    pub retired: u64,
+    /// Quanta of the run up to and including the one the boundary is in.
+    pub quanta: u64,
+    /// Virtual time at the boundary, ns.
+    pub virtual_ns: u64,
 }
 
 /// S7-31c (ADR-0013 variant (b)): run a firmware board with the Linux profile through the CPL0
@@ -1798,6 +1833,20 @@ pub struct FirmwareUnifiedRun {
 pub fn run_firmware_unified(
     board: &mut LoadedFirmwareBoard,
     instruction_budget: u64,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_marked(board, instruction_budget, None)
+}
+
+/// [`run_firmware_unified`] with one marked RIP (S7-31d): the run records the first boundary at
+/// which RIP equals `marker_rip` (an address in the ROM, for example the entry of
+/// `exit_boot_services`), through the existing checkpoint recorder of the set loop. It only
+/// observes: the quanta, the clock and the result are those of a run without a marker. The
+/// recorder also notes its own loop events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID`
+/// leaf 0); only the marked RIP is reported.
+pub fn run_firmware_unified_marked(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
@@ -1831,6 +1880,20 @@ pub fn run_firmware_unified(
         names.push(member.to_string())
     });
     board.serve_firmware_set_windows();
+    if let Some(rip) = marker_rip {
+        board
+            .enable_checkpoints(crate::linux_checkpoints::LinuxCheckpointTable {
+                targets: vec![crate::linux_checkpoints::LinuxCheckpointTarget {
+                    id: MARKER_CHECKPOINT_ID,
+                    name: "marker".to_owned(),
+                    va: Some(rip),
+                    pa: None,
+                    cpl3: false,
+                    after: None,
+                }],
+            })
+            .map_err(|_| crate::FirmwareBoardError::Config("run_firmware_unified: bad marker"))?;
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, false);
     cpu_cells.commit(
@@ -1839,6 +1902,28 @@ pub fn run_firmware_unified(
             .expect("a firmware board has a boot vCPU"),
     );
     board.set_pci_config_address(pci_cell.get());
+    let records = board.take_checkpoints().unwrap_or_default();
+    let marker = records
+        .iter()
+        .find(|record| record.id == MARKER_CHECKPOINT_ID)
+        .map(|record| FirmwareUnifiedMarker {
+            retired: record.retired,
+            quanta: record.quanta,
+            virtual_ns: record.virtual_ns,
+        });
+    let checkpoints = records
+        .into_iter()
+        .map(|record| FirmwareUnifiedCheckpoint {
+            id: record.id,
+            name: record.name,
+            kind: record.kind,
+            rip: record.rip,
+            retired: record.retired,
+            quanta: record.quanta,
+            virtual_ns: record.virtual_ns,
+            cpl: record.cpl,
+        })
+        .collect();
     let report = result.map_err(|failure| failure.error)?;
     let rip = board.state().rip;
     let (rip_physical, rip_bytes, _) = board.fetch_view_2m(rip, 32);
@@ -1853,6 +1938,9 @@ pub fn run_firmware_unified(
         cpuid_divergence_leaf: report.cpuid_divergence_leaf,
         rip_physical,
         rip_bytes,
+        marker_rip,
+        marker,
+        checkpoints,
     })
 }
 
