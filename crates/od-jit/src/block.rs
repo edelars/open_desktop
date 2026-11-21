@@ -4771,6 +4771,58 @@ mod tests {
     }
 
     #[test]
+    fn sse_logic_shuffle_unpack_and_movmsk_forms_are_refused_by_the_block_builder() {
+        // S2-38 (logic and permute remainder): the interpreter executes the general bitwise, shuffle and unpack forms
+        // and MOVMSKPS/MOVMSKPD; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x5240;
+        for bytes in [
+            &[0x0f, 0x54, 0x00][..],         // ANDPS xmm0, [rax]
+            &[0x66, 0x0f, 0x55, 0x4b, 0x10], // ANDNPD xmm1, [rbx+0x10]
+            &[0x0f, 0x56, 0x00],             // ORPS xmm0, [rax]
+            &[0x66, 0x0f, 0x57, 0x00],       // XORPD xmm0, [rax]
+            &[0x0f, 0xc6, 0xc1, 0x1b],       // SHUFPS xmm0, xmm1, 0x1b
+            &[0x66, 0x0f, 0xc6, 0x00, 0x01], // SHUFPD xmm0, [rax], 1
+            &[0x0f, 0x14, 0xc1],             // UNPCKLPS xmm0, xmm1
+            &[0x66, 0x0f, 0x14, 0x00],       // UNPCKLPD xmm0, [rax]
+            &[0x0f, 0x15, 0x00],             // UNPCKHPS xmm0, [rax]
+            &[0x66, 0x44, 0x0f, 0x15, 0xcf], // UNPCKHPD xmm9, xmm7
+            &[0x0f, 0x50, 0xc1],             // MOVMSKPS eax, xmm1
+            &[0x66, 0x44, 0x0f, 0x50, 0xfb], // MOVMSKPD r15d, xmm3
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseLogicPermute { .. } | Operation::SseMovmsk { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms, and MOVMSKPS with a memory operand, are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x54, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0xc6, 0x00, 0x01],
+            &[0xf0, 0x0f, 0x50, 0xc1],
+            &[0x0f, 0x50, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);
