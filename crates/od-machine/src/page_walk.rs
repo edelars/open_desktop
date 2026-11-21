@@ -9,6 +9,8 @@ use od_isa::memory::{
 };
 use std::fmt;
 
+pub mod pae;
+
 const CR0_PE: u64 = 1 << 0;
 const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;
