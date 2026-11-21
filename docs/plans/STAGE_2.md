@@ -2159,14 +2159,25 @@ Decodes `[F0] [REX without W] 0F C7 /1 m64` as the new `Operation::Cmpxchg8b`
 (REX.W keeps selecting CMPXCHG16B, S2-51). One eight-byte
 `GuestMemory::atomic_compare_exchange_integer` call; ZF only; the destination is
 written on both branches; no alignment rule; register form is #UD; admitted in
-the bare run and the CPL0 set at Ring0, refused at CPL3 and in the JIT. The
-parallel mode needs no separate refusal: the eight-byte host primitive of S6-31
-serves the aligned operand and the split-lock rule of S6-31/S6-34 applies to the
-rest (CMPXCHG16B stays refused there: no 16-byte primitive). CPUID CX8 is not
-declared (S2-57). Evidence: 692 data cases and 19 fault cases identical to a
+the bare run and the CPL0 set at Ring0, refused at CPL3 and in the JIT. In the
+parallel mode the aligned eight-byte operand runs on the host CAS of S6-31; a
+misaligned one (split lock) runs under the stop-all of the S6-34 gate when the
+gate is installed and is refused without it; the interleaving mode runs it as the
+serial S6-20 pair (CMPXCHG16B stays refused there: no 16-byte primitive).
+**Deviation from the S2-21 task, awaiting acceptance by the owner/Opus:** a
+separate refusal of CMPXCHG8B in the parallel mode was NOT added, because the
+aligned operand goes through the S6-31 host CAS and the misaligned one through
+the S6-34 gate or the S6-20 pair. CPUID CX8: `OdX8664V1Neutral` already declares
+the bit (leaf 1 EDX `0x0781A379`, S6-14h); the Windows profile does not (the
+instruction is implemented, the bit stays undeclared until acceptance, S2-57).
+The interpreter does not check the bit; the SDM text of this instruction states
+no CX8 = 0 exception (`#UD` at CX8 = 0 is not confirmed and not modelled).
+REX.R does not change the `/1` extension (`44 0F C7 0F` is CMPXCHG8B, checked
+on the oracle and by a test). Evidence: 692 data cases and 19 fault cases identical to a
 physical Intel i5-3210M (`work/stage8/s2_21_cx8_oracle/`, gitignored); unit
 tests `crates/od-isa/tests/s2_21_cmpxchg8b.rs`. Normative source: Intel SDM
-Vol. 2A, CMPXCHG8B/CMPXCHG16B, pp. 3-196–3-198. This slice does not close S2-21
+revision 093 (combined volumes 325462-093US), Vol. 2A (253666-093US),
+CMPXCHG8B/CMPXCHG16B, pp. 3-196–3-198. This slice does not close S2-21
 (other atomic/fence forms, the CPL3 profile and the final acceptance remain) and
 resolves question D6 of STAGE_6 only for CMPXCHG8B, together with S2-51 for
 CMPXCHG16B.
