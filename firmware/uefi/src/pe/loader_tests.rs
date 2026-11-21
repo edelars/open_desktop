@@ -254,19 +254,66 @@ fn ubuntu_vmlinuz() -> Option<Vec<u8>> {
     Some(std::fs::read(path).unwrap())
 }
 
-#[test]
-fn ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups() {
-    let Some(file) = ubuntu_vmlinuz() else {
-        eprintln!("skipped: {UBUNTU_VMLINUZ} is not staged (set OD_UBUNTU_VMLINUZ)");
-        return;
-    };
-    eprintln!("ubuntu vmlinuz: {} bytes", file.len());
-    let image = PeImage::parse(&file).unwrap();
+/// The header layout of the Ubuntu 7.0.0-38 EFI stub, rebuilt from scratch: ImageBase 0,
+/// Characteristics 0x206, no base relocation directory, SizeOfHeaders 0x1000, four
+/// sections with the same virtual addresses and sizes, SizeOfImage 0x10f0000. Section
+/// contents are zero except marker bytes; no kernel bytes are copied.
+fn stub_layout_fixture() -> Vec<u8> {
+    const DATA_RAW_END: usize = 0x108_4200;
+    let mut file = vec![0u8; DATA_RAW_END];
+    file[..2].copy_from_slice(b"MZ");
+    put_u32(&mut file, 0x3c, PE_START as u32);
+    file[PE_START..][..4].copy_from_slice(b"PE\0\0");
+    put_u16(&mut file, PE_START + 4, 0x8664);
+    put_u16(&mut file, PE_START + 6, 4);
+    put_u16(&mut file, PE_START + 20, 0xa0);
+    put_u16(&mut file, PE_START + 22, 0x0206);
+    let optional = PE_START + 24;
+    put_u16(&mut file, optional, 0x020b);
+    put_u32(&mut file, optional + 16, 0x107_5f78);
+    put_u32(&mut file, optional + 20, 0x5000);
+    // ImageBase 0 is already zero.
+    put_u32(&mut file, optional + 32, 0x1000);
+    put_u32(&mut file, optional + 36, 0x200);
+    put_u32(&mut file, optional + 56, 0x10f_0000);
+    put_u32(&mut file, optional + 60, 0x1000);
+    put_u16(&mut file, optional + 68, 10);
+    put_u16(&mut file, optional + 70, 0x0100);
+    put_u32(&mut file, optional + 108, 6);
+    let sections = optional + 0xa0;
+    for (index, (name, virtual_size, rva, raw_size, flags)) in [
+        (b".setup\0\0", 0x3000, 0x1000, 0x3000, 0x4200_0040u32),
+        (b".compat\0", 0x1000, 0x4000, 0x1000, 0x4200_0040),
+        (b".text\0\0\0", 0x107_e000, 0x5000, 0x107_e000, 0x6000_0020),
+        (b".data\0\0\0", 0x6_d000, 0x108_3000, 0x1200, 0xc000_0040),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offset = sections + index * 40;
+        file[offset..offset + 8].copy_from_slice(name);
+        put_u32(&mut file, offset + 8, virtual_size);
+        put_u32(&mut file, offset + 12, rva);
+        put_u32(&mut file, offset + 16, raw_size);
+        put_u32(&mut file, offset + 20, rva);
+        put_u32(&mut file, offset + 36, flags);
+    }
+    file[0x5000] = 0x90;
+    file[0x107_5f78] = 0xc3;
+    file[0x108_3000] = 0x7e;
+    file
+}
+
+/// Checks shared by the real kernel and the rebuilt layout: the image is
+/// position independent and `load_into` copies it without fixups at any base.
+fn assert_stub_image_loads_without_fixups(file: &[u8]) {
+    let image = PeImage::parse(file).unwrap();
     // Facts read from the real headers (S7-31b): ImageBase 0, no base
     // relocation directory, RELOCS_STRIPPED clear.
     assert_eq!(image.image_base(), 0);
     assert!(image.relocation_data().is_none());
     assert!(!image.relocations_stripped());
+    assert_eq!(image.image_size(), 0x10f_0000);
     assert!(is_relocatable(&image));
     // LoadImage derives its page runs from the same headers.
     assert!(crate::pe::PageLayout::for_image(&image).is_some());
@@ -277,7 +324,7 @@ fn ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups() {
         .expect(".text section");
     for base in [0x4000_0000u64, 0x1_0000_0000] {
         let mut destination = vec![0xa5; size];
-        let mapped = run(&file, base, &mut destination).unwrap();
+        let mapped = run(file, base, &mut destination).unwrap();
         assert_eq!(mapped.base, base);
         assert_eq!(mapped.size as usize, size);
         assert_eq!(mapped.entry_address, base + u64::from(image.entry_rva()));
@@ -287,4 +334,26 @@ fn ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups() {
             &text.file_data[..0x1000]
         );
     }
+}
+
+#[test]
+fn stub_layout_image_is_position_independent_and_loads_without_fixups() {
+    assert_stub_image_loads_without_fixups(&stub_layout_fixture());
+}
+
+/// `OD_REQUIRE_UBUNTU_VMLINUZ=1` turns a missing kernel into a failure; the S7-31
+/// acceptance command sets it. Without it the test is skipped with a message,
+/// because the kernel is an untracked artifact of the work/ tree.
+#[test]
+fn ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups() {
+    let Some(file) = ubuntu_vmlinuz() else {
+        assert!(
+            std::env::var_os("OD_REQUIRE_UBUNTU_VMLINUZ").is_none_or(|value| value != "1"),
+            "OD_REQUIRE_UBUNTU_VMLINUZ=1 but {UBUNTU_VMLINUZ} is not staged (set OD_UBUNTU_VMLINUZ)"
+        );
+        eprintln!("skipped: {UBUNTU_VMLINUZ} is not staged (set OD_UBUNTU_VMLINUZ)");
+        return;
+    };
+    eprintln!("ubuntu vmlinuz: {} bytes", file.len());
+    assert_stub_image_loads_without_fixups(&file);
 }

@@ -6,7 +6,10 @@ use crate::bs::{
     memory::IdentityPoolMemory,
     protocol::{HandleSnapshot, connect_controller},
 };
-use crate::mem::{map::MemoryType, pages::ImageMemoryRange};
+use crate::mem::{
+    map::MemoryType,
+    pages::{ImageMemoryRange, ImagePlacement},
+};
 use crate::paging::PAGE_BYTES;
 use crate::pe::Subsystem;
 use crate::uefi::{
@@ -355,7 +358,7 @@ unsafe fn allocate_stack(state: &mut state::ServiceState<'_>, index: usize) -> R
     }];
     let stack = state
         .allocator
-        .plan_image(u64::MAX, true, PAGE_BYTES, &regions)
+        .plan_image(u64::MAX, ImagePlacement::Highest, PAGE_BYTES, &regions)
         .map_err(|_| Status::OUT_OF_RESOURCES)?;
     let span = stack.span.clone();
     unsafe {

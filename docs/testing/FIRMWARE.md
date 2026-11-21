@@ -477,3 +477,13 @@ python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38
 ```
 
 ESP для этих прогонов собирает `tools/build/make_test_disk.py --esp-fat32 --bootx64 <efi> --boot-file INITRD.IMG=<файл>` (дополнительные файлы только в `\EFI\BOOT\` с короткими именами 8.3). Результаты и выводы: [отчёт этапа 7](../reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20), [ADR-0013](../decisions/ADR-0013-uefi-linux-cpu-profile.md).
+
+
+## Политика LoadImage для образа без перемещений (S7-31b)
+
+Host-тесты `pe::loader::tests` и `mem::pages::image::tests` проверяют политику ISSUE-620 без запуска гостя: `cargo test --manifest-path firmware/uefi/Cargo.toml --offline --lib pe::` и `--lib mem::pages`.
+
+- `stub_layout_image_is_position_independent_and_loads_without_fixups` собирает заголовки EFI stub ядра Ubuntu 7.0.0-38 с нуля (ImageBase 0, Characteristics `0x206`, SizeOfHeaders `0x1000`, четыре секции с теми же VA, `SizeOfImage=0x10f0000`). Запускается всегда; байтов ядра в Git нет.
+- `ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups` читает настоящий `vmlinuz-7.0.0-38-generic` как данные. Файл ищется по `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` вверх от каталога `firmware/uefi` либо по переменной `OD_UBUNTU_VMLINUZ` (полный путь).
+- Переменная `OD_REQUIRE_UBUNTU_VMLINUZ=1`: если файла нет, этот тест **падает**. Без неё тест при отсутствии файла печатает `skipped` и проходит (ядро не хранится в Git). Команда приёмки S7-31 задаёт переменную, чтобы пропуск не считался прохождением.
+- Размещение: образ с ImageBase 0 без каталога перемещений ставится по самому нижнему свободному адресу не ниже 1 МиБ, выровненному на 2 МиБ; образ с каталогом — по самому верхнему; закреплённый образ с ImageBase 0 получает `EFI_OUT_OF_RESOURCES`. Проверено на модели карты платы 128 МиБ ([FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), раздел 2).

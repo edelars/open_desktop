@@ -6,6 +6,23 @@ use super::{
 };
 use core::ops::Range;
 
+/// Where an image may be placed when its ImageBase is not free.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ImagePlacement {
+    /// Only at ImageBase. ImageBase 0 is never available (null page).
+    Pinned,
+    /// Any aligned range; the highest free one.
+    Highest,
+    /// Position-independent image with ImageBase 0 (Linux EFI stub): the lowest free
+    /// range from `LOW_IMAGE_FLOOR`, aligned to `LOW_IMAGE_ALIGNMENT`.
+    LowestAligned,
+}
+
+/// Nothing below 1 MiB is handed to a zero-based image: that area stays with the OS.
+pub(crate) const LOW_IMAGE_FLOOR: u64 = 0x10_0000;
+/// The kernel_alignment of an x86 Linux image (2 MiB).
+pub(crate) const LOW_IMAGE_ALIGNMENT: u64 = 0x20_0000;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ImageMemoryRange {
     pub(crate) pages: u64,
@@ -27,7 +44,7 @@ impl PageAllocator<'_, '_> {
     pub(crate) fn plan_image<'a>(
         &self,
         preferred: u64,
-        relocatable: bool,
+        placement: ImagePlacement,
         alignment: u64,
         ranges: &'a [ImageMemoryRange],
     ) -> Result<ImageMapPlan<'a>, PageError> {
@@ -49,9 +66,10 @@ impl PageAllocator<'_, '_> {
             }
         }
         let bytes = byte_count(pages)?;
-        // ImageBase 0 on a movable image is not a placement request: never put
-        // an image on the null page even when the map reports it free.
-        let preferred_fit = if preferred == 0 && relocatable {
+        // ImageBase 0 is not a placement request for any image: nothing goes on the
+        // null page even when the map reports it free. A pinned image then has no
+        // valid range and the caller reports EFI_OUT_OF_RESOURCES.
+        let preferred_fit = if preferred == 0 {
             Err(PageError::InvalidAddress)
         } else if preferred.is_multiple_of(alignment) {
             self.plan_allocation(AllocateAt::Address(preferred), bytes)
@@ -60,7 +78,16 @@ impl PageAllocator<'_, '_> {
         };
         let (covered, span) = match preferred_fit {
             Ok(placement) => placement,
-            Err(PageError::NotFound | PageError::InvalidAddress) if relocatable => {
+            Err(PageError::NotFound | PageError::InvalidAddress)
+                if placement == ImagePlacement::LowestAligned =>
+            {
+                let step = alignment.max(LOW_IMAGE_ALIGNMENT);
+                let base = self.find_lowest_fit(bytes, LOW_IMAGE_FLOOR, step)?;
+                self.plan_allocation(AllocateAt::Address(base), bytes)?
+            }
+            Err(PageError::NotFound | PageError::InvalidAddress)
+                if placement == ImagePlacement::Highest =>
+            {
                 let base = if alignment == PAGE_BYTES {
                     self.find_highest_fit(bytes, PHYSICAL_END, core::convert::identity)?
                 } else {
@@ -170,11 +197,11 @@ mod tests {
         };
         let regions = [data, data, code, data];
         assert!(matches!(
-            allocator.plan_image(0x140000000, false, 0x10000, &regions),
+            allocator.plan_image(0x140000000, ImagePlacement::Pinned, 0x10000, &regions),
             Err(PageError::NotFound)
         ));
         let plan = allocator
-            .plan_image(0x140000000, true, 0x10000, &regions)
+            .plan_image(0x140000000, ImagePlacement::Highest, 0x10000, &regions)
             .unwrap();
         assert_eq!(plan.span, 0x90000..0x94000);
         assert_eq!(allocator.map().key(), 1);
@@ -230,18 +257,18 @@ mod tests {
         }];
         let before = allocator.map().descriptors()[0];
         assert!(matches!(
-            allocator.plan_image(0x70000, false, PAGE_BYTES, &partial),
+            allocator.plan_image(0x70000, ImagePlacement::Pinned, PAGE_BYTES, &partial),
             Err(PageError::OutOfDescriptors)
         ));
         assert!(matches!(
-            allocator.plan_image(0x70000, false, PAGE_BYTES, &full),
+            allocator.plan_image(0x70000, ImagePlacement::Pinned, PAGE_BYTES, &full),
             Err(PageError::MapKeyExhausted)
         ));
         assert_eq!(allocator.map().descriptors(), [before]);
         assert_eq!(allocator.map().key(), u64::MAX - 1);
         allocator.map.map_key -= 1;
         let prepared = allocator
-            .plan_image(0x70000, false, PAGE_BYTES, &full)
+            .plan_image(0x70000, ImagePlacement::Pinned, PAGE_BYTES, &full)
             .unwrap();
         allocator.commit_image(prepared);
         allocator.release_image(0x70000, 4).unwrap();
@@ -249,26 +276,101 @@ mod tests {
         assert_eq!(allocator.map().key(), u64::MAX);
     }
 
+    fn code_range(pages: u64) -> [ImageMemoryRange; 1] {
+        [ImageMemoryRange {
+            pages,
+            memory_type: MemoryType::LOADER_CODE,
+        }]
+    }
+
     #[test]
-    fn image_base_zero_on_a_movable_image_never_lands_on_the_null_page() {
+    fn image_base_zero_is_never_placed_on_the_null_page() {
         let mut descriptors = [MemoryDescriptor::EMPTY; 8];
         let mut tags = [PageOwner::Initial; 8];
+        // Page zero is free in this map.
         let map = MemoryMap::test_conventional(&mut descriptors, 0, 0x98000);
         let allocator = PageAllocator::new(map, &mut tags).unwrap();
-        let ranges = [ImageMemoryRange {
-            pages: 4,
-            memory_type: MemoryType::LOADER_CODE,
-        }];
-        // The aligned fallback is the highest fit, not page zero.
-        let movable = allocator.plan_image(0, true, PAGE_BYTES, &ranges).unwrap();
-        assert_eq!(movable.span, 0x94000..0x98000);
-        let aligned = allocator.plan_image(0, true, 0x10000, &ranges).unwrap();
-        assert_eq!(aligned.span, 0x90000..0x94000);
-        // An image pinned to its base keeps the exact address it asked for.
-        let pinned = allocator.plan_image(0, false, PAGE_BYTES, &ranges).unwrap();
-        assert_eq!(pinned.span, 0..0x4000);
+        let ranges = code_range(4);
+        let highest = allocator.plan_image(0, ImagePlacement::Highest, PAGE_BYTES, &ranges);
+        assert_eq!(highest.unwrap().span, 0x94000..0x98000);
+        let aligned = allocator.plan_image(0, ImagePlacement::Highest, 0x10000, &ranges);
+        assert_eq!(aligned.unwrap().span, 0x90000..0x94000);
+        // A pinned image with ImageBase 0 has no range at all: LoadImage then
+        // returns EFI_OUT_OF_RESOURCES instead of reaching the null-page check.
         assert!(matches!(
-            allocator.plan_image(0x2000_0000, false, PAGE_BYTES, &ranges),
+            allocator.plan_image(0, ImagePlacement::Pinned, PAGE_BYTES, &ranges),
+            Err(PageError::InvalidAddress)
+        ));
+        // A pinned image keeps the exact address it asked for, or fails.
+        let pinned = allocator.plan_image(0x2000, ImagePlacement::Pinned, PAGE_BYTES, &ranges);
+        assert_eq!(pinned.unwrap().span, 0x2000..0x6000);
+        assert!(matches!(
+            allocator.plan_image(0x2000_0000, ImagePlacement::Pinned, PAGE_BYTES, &ranges),
+            Err(PageError::NotFound)
+        ));
+    }
+
+    /// 128 MiB board map of FIRMWARE_BOOT.md section 2: 1 MiB of low RAM, handoff
+    /// and boot stack up to 0x150000, the 4 MiB firmware shadow at 0x200000, then
+    /// boot page tables (N = 0x50 pages here; the real N is board dependent).
+    fn board_128_mib<'a, 'b>(
+        descriptors: &'a mut [MemoryDescriptor],
+        tags: &'b mut [PageOwner],
+    ) -> PageAllocator<'a, 'b> {
+        let map = MemoryMap::test_conventional(descriptors, 0, 0x800_0000);
+        let mut allocator = PageAllocator::new(map, tags).unwrap();
+        for (address, pages, memory_type) in [
+            (0x10_0000, 0x50, MemoryType::RESERVED),
+            (0x20_0000, 0x400, MemoryType::BOOT_SERVICES_CODE),
+            (0x60_0000, 0x50, MemoryType::BOOT_SERVICES_DATA),
+        ] {
+            allocator
+                .allocate_pages(AllocateAt::Address(address), memory_type, pages)
+                .unwrap();
+        }
+        allocator
+    }
+
+    #[test]
+    fn zero_based_position_independent_image_takes_the_lowest_2_mib_aligned_range() {
+        let mut descriptors = [MemoryDescriptor::EMPTY; 16];
+        let mut tags = [PageOwner::Initial; 16];
+        let allocator = board_128_mib(&mut descriptors, &mut tags);
+        // The Ubuntu 7.0.0-38 EFI stub: SizeOfImage 0x10f0000, section alignment 0x1000.
+        let ranges = code_range(0x10f0);
+        let plan = allocator
+            .plan_image(0, ImagePlacement::LowestAligned, PAGE_BYTES, &ranges)
+            .unwrap();
+        // Page 0 is free but below 1 MiB; 0x150000..0x200000 is too small and not
+        // 2 MiB aligned; the shadow and tables occupy up to 0x650000.
+        assert_eq!(plan.span, 0x80_0000..0x18f_0000);
+        assert!(plan.span.start >= LOW_IMAGE_FLOOR);
+        assert_eq!(plan.span.start % LOW_IMAGE_ALIGNMENT, 0);
+        // The kernel decompressor still finds its working window above the image.
+        let window = plan.span.end.next_multiple_of(LOW_IMAGE_ALIGNMENT);
+        assert_eq!(window, 0x1a0_0000);
+        assert!(window >= 0x100_0000);
+        assert_eq!(0x800_0000 - window, 0x660_0000);
+        assert!(0x800_0000 - window >= 0x44c_1000);
+        // An image with a relocation directory keeps the highest placement.
+        let highest = allocator
+            .plan_image(0, ImagePlacement::Highest, PAGE_BYTES, &ranges)
+            .unwrap();
+        assert_eq!(highest.span, 0x800_0000 - 0x10f_0000..0x800_0000);
+    }
+
+    #[test]
+    fn lowest_placement_fails_without_a_big_enough_aligned_range() {
+        let mut descriptors = [MemoryDescriptor::EMPTY; 16];
+        let mut tags = [PageOwner::Initial; 16];
+        let allocator = board_128_mib(&mut descriptors, &mut tags);
+        assert!(matches!(
+            allocator.plan_image(
+                0,
+                ImagePlacement::LowestAligned,
+                PAGE_BYTES,
+                &code_range(0x8000)
+            ),
             Err(PageError::NotFound)
         ));
     }

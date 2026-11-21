@@ -1,58 +1,99 @@
 {
+  "bare_probe_context_artifacts": {
+    "encodings": 4,
+    "instructions": 13,
+    "note": "encodings the bare step_paged_firmware_probe rejects and the board context decodes (mov cr3, FXSAVE/FXRSTOR, RDTSC): false positives of a bare probe",
+    "rows": [
+      {
+        "asm": "mov cr3, rax",
+        "bytes": "0f22d8",
+        "count": 5,
+        "first_address": "0x20b1a4",
+        "functions": [
+          "od_fw_main",
+          "od_firmware::bs::image::release_record",
+          "od_firmware::bs::image::load",
+          "od_firmware::bs::image::invoke::release_stack",
+          "od_firmware::bs::image::invoke::allocate_stack"
+        ]
+      },
+      {
+        "asm": "rdtsc",
+        "bytes": "0f31",
+        "count": 5,
+        "first_address": "0x2031fa",
+        "functions": [
+          "od_firmware::notify_modern_exit",
+          "od_firmware::verify_timer_services",
+          "od_firmware::read_tsc"
+        ]
+      },
+      {
+        "asm": "fxrstor64 [rbx + 0x40]",
+        "bytes": "480fae4b40",
+        "count": 2,
+        "first_address": "0x254bea",
+        "functions": [
+          "od_fw_invoke_image"
+        ]
+      },
+      {
+        "asm": "fxsave64 [rax + 0x40]",
+        "bytes": "480fae4040",
+        "count": 1,
+        "first_address": "0x254bd7",
+        "functions": [
+          "od_fw_invoke_image"
+        ]
+      }
+    ]
+  },
   "calibration": {
-    "asm_expected": "and qword ptr [rsp+8], -2",
-    "bytes": "4883642408fe",
-    "firmware_profile_verdict": "unsupported",
-    "function_name_part": "load_into",
+    "bytes": "fc",
+    "expected_verdict": "decoded",
+    "firmware_profile_verdict": "decoded",
+    "function_name_part": "_start",
     "ok": true,
     "sites": [
       {
-        "address": "0x22f141",
-        "asm": "and qword ptr [rsp + 0x8], -0x2",
-        "function": "od_firmware::pe::loader::load_into"
+        "address": "0x200040",
+        "asm": "cld",
+        "function": "_start"
       }
     ],
     "sites_total": 1
   },
-  "cpl0_contract_all_text": {
+  "cpl0_contract_all_functions": {
     "forms_by_status": {
       "absent": 10,
       "exact": 10,
-      "family": 576,
-      "not_checked": 39,
+      "family": 567,
+      "not_checked": 34,
       "partial": 7
     },
     "instructions_by_status": {
-      "absent": 822,
-      "exact": 27,
-      "family": 80767,
-      "not_checked": 4864,
+      "absent": 823,
+      "exact": 24,
+      "family": 80870,
+      "not_checked": 1362,
       "partial": 16
     },
     "status_meaning": "exact and family are covered by CPU_CONTRACT rules; absent, partial and not_checked are the forms the contract does not admit or does not name (hand-assessed in S4-38 L2, may be stale)",
     "uncovered_forms_by_count": [
       {
-        "count": 3492,
-        "example_asm": "int3",
-        "example_bytes": "cc",
-        "family": "int3",
-        "first_function": null,
-        "status": "not_checked"
-      },
-      {
-        "count": 580,
+        "count": 575,
         "example_asm": "out dx, al",
         "example_bytes": "ee",
         "family": "out r16,r8",
-        "first_function": null,
+        "first_function": "od_firmware::boot_fv_image",
         "status": "not_checked"
       },
       {
-        "count": 575,
+        "count": 574,
         "example_asm": "in al, dx",
         "example_bytes": "ec",
         "family": "in r8,r16",
-        "first_function": null,
+        "first_function": "od_firmware::boot_fv_image",
         "status": "not_checked"
       },
       {
@@ -72,7 +113,7 @@
         "status": "not_checked"
       },
       {
-        "count": 61,
+        "count": 62,
         "example_asm": "nop word ptr [rax + rax]",
         "example_bytes": "660f1f840000000000",
         "family": "66 nop m",
@@ -129,18 +170,18 @@
       },
       {
         "count": 8,
-        "example_asm": "ud2",
-        "example_bytes": "0f0b",
-        "family": "ud2",
-        "first_function": "od_fw_main",
-        "status": "not_checked"
-      },
-      {
-        "count": 8,
         "example_asm": "bswap ebp",
         "example_bytes": "0fcd",
         "family": "bswap r32",
         "first_function": "sha2::sha256::compress256",
+        "status": "not_checked"
+      },
+      {
+        "count": 7,
+        "example_asm": "ud2",
+        "example_bytes": "0f0b",
+        "family": "ud2",
+        "first_function": "od_fw_main",
         "status": "not_checked"
       },
       {
@@ -265,6 +306,14 @@
       },
       {
         "count": 3,
+        "example_asm": "sete byte ptr [rsp + 0x70]",
+        "example_bytes": "0f94442470",
+        "family": "sete m",
+        "first_function": "od_firmware::bs::image::load",
+        "status": "not_checked"
+      },
+      {
+        "count": 3,
         "example_asm": "bswap edx",
         "example_bytes": "0fca",
         "family": "bswap r32",
@@ -289,16 +338,8 @@
       },
       {
         "count": 2,
-        "example_asm": "sete byte ptr [rsp + 0xb]",
-        "example_bytes": "0f9444240b",
-        "family": "sete m",
-        "first_function": "od_firmware::rt::variable::query_variable_info",
-        "status": "not_checked"
-      },
-      {
-        "count": 2,
-        "example_asm": "setne byte ptr [rip + 0x2a3ae]",
-        "example_bytes": "0f9505aea30200",
+        "example_asm": "setne byte ptr [rip + 0x2a12e]",
+        "example_bytes": "0f95052ea10200",
         "family": "setne m",
         "first_function": "od_firmware::console::text_out::terminal::enable_cursor",
         "status": "not_checked"
@@ -337,8 +378,8 @@
       },
       {
         "count": 1,
-        "example_asm": "lgdt [rip + 0x6ee9]",
-        "example_bytes": "0f0115e96e0000",
+        "example_asm": "lgdt [rip + 0x6c89]",
+        "example_bytes": "0f0115896c0000",
         "family": "lgdt m",
         "first_function": "od_fw_install_gdt",
         "status": "partial"
@@ -369,14 +410,6 @@
       },
       {
         "count": 1,
-        "example_asm": "int3",
-        "example_bytes": "414243444546cc",
-        "family": "int3",
-        "first_function": null,
-        "status": "not_checked"
-      },
-      {
-        "count": 1,
         "example_asm": "fxsave64 [rax + 0x40]",
         "example_bytes": "480fae4040",
         "family": "W fxsave64 m",
@@ -397,30 +430,6 @@
         "example_bytes": "490fcc",
         "family": "W bswap r64",
         "first_function": "od_firmware::tpm::secure_boot::digest_parts",
-        "status": "not_checked"
-      },
-      {
-        "count": 1,
-        "example_asm": "push r8",
-        "example_bytes": "4f50",
-        "family": "W push r64",
-        "first_function": null,
-        "status": "not_checked"
-      },
-      {
-        "count": 1,
-        "example_asm": "<unknown>",
-        "example_bytes": "61",
-        "family": "<unknown>",
-        "first_function": null,
-        "status": "not_checked"
-      },
-      {
-        "count": 1,
-        "example_asm": "cmp eax, 0x31307830",
-        "example_bytes": "64653d30783031",
-        "family": "FS+GS cmp r32,imm",
-        "first_function": null,
         "status": "not_checked"
       },
       {
@@ -480,39 +489,32 @@
         "status": "absent"
       }
     ],
-    "uncovered_forms_total": 56,
-    "uncovered_instructions_total": 5702
+    "uncovered_forms_total": 51,
+    "uncovered_instructions_total": 2201
   },
   "elf": {
-    "bytes": 531064,
+    "bytes": 531176,
     "entry": "0x200040",
     "executable_sections": [
       {
         "addr": "0x200040",
         "name": ".text",
-        "size": "0x54960"
+        "size": "0x54be0"
       }
     ],
-    "sha256": "a39adbc58256e33317dc3ff0037b1f1bcac7e825f53bfc01839e9f03ef1a880d"
+    "sha256": "f5718fb8b9bf03e745c93b3d86db34461c837a2e85de99bce66208fcd6cd4547"
   },
-  "firmware_profile_all_text": {
-    "distinct_encodings": 28168,
+  "firmware_profile_all_functions": {
+    "distinct_encodings": 28178,
     "exit_kinds_of_decoded": {
-      "Backend": 1632,
-      "Fault": 54,
-      "Halted": 7,
-      "Retired": 81223
+      "Backend": 1631,
+      "Fault": 55,
+      "Halted": 6,
+      "Retired": 81330,
+      "TranslationContextChange": 5
     },
-    "instructions": 86496,
+    "instructions": 83095,
     "top_unsupported_mnemonics": [
-      [
-        "int3",
-        3493
-      ],
-      [
-        "mov",
-        14
-      ],
       [
         "or",
         13
@@ -526,20 +528,12 @@
         10
       ],
       [
+        "mov",
+        9
+      ],
+      [
         "dec",
         7
-      ],
-      [
-        "rdtsc",
-        5
-      ],
-      [
-        "add",
-        4
-      ],
-      [
-        "and",
-        3
       ],
       [
         "sub",
@@ -550,61 +544,66 @@
         3
       ],
       [
-        "imul",
-        2
+        "add",
+        3
+      ],
+      [
+        "sete",
+        3
       ],
       [
         "bsr",
         2
       ],
       [
-        "sete",
-        2
+        "movsx",
+        1
       ],
       [
-        "fxrstor64",
-        2
+        "and",
+        1
+      ],
+      [
+        "test",
+        1
+      ],
+      [
+        "imul",
+        1
+      ],
+      [
+        "retfq",
+        1
       ]
     ],
-    "unsupported_distinct_encodings": 47,
-    "unsupported_instructions": 3580,
-    "unsupported_share": 0.0414
+    "unsupported_distinct_encodings": 35,
+    "unsupported_instructions": 68,
+    "unsupported_share": 0.0008
   },
   "firmware_profile_reachable_from_entry": {
-    "distinct_encodings": 22355,
+    "distinct_encodings": 20820,
     "exit_kinds_of_decoded": {
-      "Backend": 1099,
-      "Fault": 33,
-      "Halted": 4,
-      "Retired": 63427
+      "Backend": 983,
+      "Fault": 27,
+      "Halted": 3,
+      "Retired": 57617,
+      "TranslationContextChange": 2
     },
-    "instructions": 65750,
+    "instructions": 58676,
     "top_unsupported_mnemonics": [
-      [
-        "int3",
-        1131
-      ],
-      [
-        "mov",
-        14
-      ],
       [
         "or",
         13
+      ],
+      [
+        "mov",
+        9
       ],
       [
         "dec",
         6
       ],
       [
-        "jmp",
-        4
-      ],
-      [
-        "sub",
-        3
-      ],
-      [
         "inc",
         3
       ],
@@ -613,7 +612,7 @@
         3
       ],
       [
-        "rdtsc",
+        "sub",
         2
       ],
       [
@@ -621,7 +620,11 @@
         2
       ],
       [
-        "fxrstor64",
+        "sete",
+        2
+      ],
+      [
+        "jmp",
         2
       ],
       [
@@ -629,37 +632,384 @@
         1
       ],
       [
-        "sete",
-        1
-      ],
-      [
         "retfq",
-        1
-      ],
-      [
-        "fxsave64",
         1
       ]
     ],
-    "unsupported_distinct_encodings": 31,
-    "unsupported_instructions": 1187,
-    "unsupported_share": 0.0181
+    "unsupported_distinct_encodings": 25,
+    "unsupported_instructions": 44,
+    "unsupported_share": 0.0007
   },
-  "indirect_sites_from_entry": 555,
-  "linear_instructions": 86496,
-  "note": "static estimate over every instruction of the executable sections (dead code included); not evidence of execution; see the module docstring",
-  "reachable_from_entry_note": "recursive descent from e_entry; indirect transfers (vectors, tables) are not followed, so this is a lower bound",
-  "schema": "od-s7-31b-rom-isa-inventory-v1",
+  "indirect_sites_from_entry": 499,
+  "instructions_in_functions": 83095,
+  "linear_instructions_in_text": 86688,
+  "note": "static estimate over every instruction inside a sized function symbol (dead code included); not evidence of execution; see the module docstring",
+  "outside_functions": {
+    "instructions": 3593,
+    "int3_instructions": 3525,
+    "non_int3_instructions": 68,
+    "non_int3_rows": [
+      {
+        "asm": "out dx, al",
+        "bytes": "ee",
+        "count": 5,
+        "first_address": "0x200095"
+      },
+      {
+        "asm": "jmp r9",
+        "bytes": "41ffe1",
+        "count": 2,
+        "first_address": "0x20010b"
+      },
+      {
+        "asm": "lea r9, [rip + 0x2]",
+        "bytes": "4c8d0d02000000",
+        "count": 2,
+        "first_address": "0x2000d5"
+      },
+      {
+        "asm": "lea r12, [rip + 0x2]",
+        "bytes": "4c8d2502000000",
+        "count": 2,
+        "first_address": "0x2000b2"
+      },
+      {
+        "asm": "mov dx, 0x3f8",
+        "bytes": "66baf803",
+        "count": 2,
+        "first_address": "0x200096"
+      },
+      {
+        "asm": "mov dx, 0x3fb",
+        "bytes": "66bafb03",
+        "count": 2,
+        "first_address": "0x20008f"
+      },
+      {
+        "asm": "add byte ptr [rax], dh",
+        "bytes": "0030",
+        "count": 1,
+        "first_address": "0x200150"
+      },
+      {
+        "asm": "ud2",
+        "bytes": "0f0b",
+        "count": 1,
+        "first_address": "0x254bba"
+      },
+      {
+        "asm": "and byte ptr [rbx + 0x6f], ah",
+        "bytes": "20636f",
+        "count": 1,
+        "first_address": "0x200139"
+      },
+      {
+        "asm": "and byte ptr [rbp + 2*riz + 0x74], ah",
+        "bytes": "20646574",
+        "count": 1,
+        "first_address": "0x200143"
+      },
+      {
+        "asm": "xor dword ptr [rdx], esi",
+        "bytes": "3132",
+        "count": 1,
+        "first_address": "0x200152"
+      },
+      {
+        "asm": "xor eax, eax",
+        "bytes": "31c0",
+        "count": 1,
+        "first_address": "0x2000a1"
+      },
+      {
+        "asm": "xor esi, dword ptr [1*rsi + 0x39383736]",
+        "bytes": "33343536373839",
+        "count": 1,
+        "first_address": "0x200154"
+      },
+      {
+        "asm": "mov r11d, 0x10000",
+        "bytes": "41bb00000100",
+        "count": 1,
+        "first_address": "0x2000f7"
+      },
+      {
+        "asm": "mov r13d, 0x10",
+        "bytes": "41bd10000000",
+        "count": 1,
+        "first_address": "0x2000c2"
+      },
+      {
+        "asm": "dec r11d",
+        "bytes": "41ffcb",
+        "count": 1,
+        "first_address": "0x200106"
+      },
+      {
+        "asm": "dec r13d",
+        "bytes": "41ffcd",
+        "count": 1,
+        "first_address": "0x2000de"
+      },
+      {
+        "asm": "jmp r12",
+        "bytes": "41ffe4",
+        "count": 1,
+        "first_address": "0x20012c"
+      },
+      {
+        "asm": "mov eax, r8d",
+        "bytes": "4489c0",
+        "count": 1,
+        "first_address": "0x2000cc"
+      },
+      {
+        "asm": "and rsp, -0x10",
+        "bytes": "4883e4f0",
+        "count": 1,
+        "first_address": "0x254bb1"
+      },
+      {
+        "asm": "lea rsi, [rip + 0x64]",
+        "bytes": "488d3564000000",
+        "count": 1,
+        "first_address": "0x2000e3"
+      },
+      {
+        "asm": "lea rsi, [rip + 0x7d]",
+        "bytes": "488d357d000000",
+        "count": 1,
+        "first_address": "0x2000ab"
+      },
+      {
+        "asm": "lea rdi, [rip + 0x8f]",
+        "bytes": "488d3d8f000000",
+        "count": 1,
+        "first_address": "0x2000bb"
+      },
+      {
+        "asm": "inc rsi",
+        "bytes": "48ffc6",
+        "count": 1,
+        "first_address": "0x200127"
+      },
+      {
+        "asm": "mov r8, rdi",
+        "bytes": "4989f8",
+        "count": 1,
+        "first_address": "0x20008c"
+      },
+      {
+        "asm": "rol r8, 0x4",
+        "bytes": "49c1c004",
+        "count": 1,
+        "first_address": "0x2000c8"
+      },
+      {
+        "asm": "sub eax, 0x53205746",
+        "bytes": "4f442d46572053",
+        "count": 1,
+        "first_address": "0x20012f"
+      },
+      {
+        "asm": "push r8",
+        "bytes": "4f50",
+        "count": 1,
+        "first_address": "0x200137"
+      },
+      {
+        "asm": "push rsp",
+        "bytes": "54",
+        "count": 1,
+        "first_address": "0x200136"
+      },
+      {
+        "asm": "<unknown>",
+        "bytes": "61",
+        "count": 1,
+        "first_address": "0x200147"
+      },
+      {
+        "asm": "cmp eax, 0x31307830",
+        "bytes": "64653d30783031",
+        "count": 1,
+        "first_address": "0x20013c"
+      },
+      {
+        "asm": "nop word ptr [rax + rax]",
+        "bytes": "660f1f840000000000",
+        "count": 1,
+        "first_address": "0x2541a7"
+      },
+      {
+        "asm": "mov dx, 0x3f9",
+        "bytes": "66baf903",
+        "count": 1,
+        "first_address": "0x20009d"
+      },
+      {
+        "asm": "mov dx, 0x3fd",
+        "bytes": "66bafd03",
+        "count": 1,
+        "first_address": "0x2000fd"
+      },
+      {
+        "asm": "imul ebp, dword ptr [rbp + rdi + 0x30], 0xa0d0078",
+        "bytes": "696c3d3078000d0a",
+        "count": 1,
+        "first_address": "0x200148"
+      },
+      {
+        "asm": "je 0x20012c <_start+0xec>",
+        "bytes": "740e",
+        "count": 1,
+        "first_address": "0x20011c"
+      },
+      {
+        "asm": "jne 0x20010e <_start+0xce>",
+        "bytes": "7508",
+        "count": 1,
+        "first_address": "0x200104"
+      },
+      {
+        "asm": "jne 0x2000c8 <_start+0x88>",
+        "bytes": "75e5",
+        "count": 1,
+        "first_address": "0x2000e1"
+      },
+      {
+        "asm": "jne 0x2000fd <_start+0xbd>",
+        "bytes": "75f2",
+        "count": 1,
+        "first_address": "0x200109"
+      },
+      {
+        "asm": "and eax, 0xf",
+        "bytes": "83e00f",
+        "count": 1,
+        "first_address": "0x2000cf"
+      },
+      {
+        "asm": "test bl, bl",
+        "bytes": "84db",
+        "count": 1,
+        "first_address": "0x20011a"
+      },
+      {
+        "asm": "mov al, bl",
+        "bytes": "88d8",
+        "count": 1,
+        "first_address": "0x200112"
+      },
+      {
+        "asm": "mov bl, byte ptr [rdi + rax]",
+        "bytes": "8a1c07",
+        "count": 1,
+        "first_address": "0x2000d2"
+      },
+      {
+        "asm": "mov bl, byte ptr [rsi]",
+        "bytes": "8a1e",
+        "count": 1,
+        "first_address": "0x200118"
+      },
+      {
+        "asm": "test al, 0x20",
+        "bytes": "a820",
+        "count": 1,
+        "first_address": "0x200102"
+      },
+      {
+        "asm": "mov al, 0x1",
+        "bytes": "b001",
+        "count": 1,
+        "first_address": "0x20009a"
+      },
+      {
+        "asm": "mov al, 0x3",
+        "bytes": "b003",
+        "count": 1,
+        "first_address": "0x2000a8"
+      },
+      {
+        "asm": "mov al, -0x80",
+        "bytes": "b080",
+        "count": 1,
+        "first_address": "0x200093"
+      },
+      {
+        "asm": "call 0x20aff0 <od_fw_exception_stop>",
+        "bytes": "e83664fbff",
+        "count": 1,
+        "first_address": "0x254bb5"
+      },
+      {
+        "asm": "jmp 0x2000f7 <_start+0xb7>",
+        "bytes": "eb19",
+        "count": 1,
+        "first_address": "0x2000dc"
+      },
+      {
+        "asm": "jmp 0x200118 <_start+0xd8>",
+        "bytes": "eb25",
+        "count": 1,
+        "first_address": "0x2000f1"
+      },
+      {
+        "asm": "jmp 0x200118 <_start+0xd8>",
+        "bytes": "eb5d",
+        "count": 1,
+        "first_address": "0x2000b9"
+      },
+      {
+        "asm": "jmp 0x2000f7 <_start+0xb7>",
+        "bytes": "ebd0",
+        "count": 1,
+        "first_address": "0x200125"
+      },
+      {
+        "asm": "jmp 0x200118 <_start+0xd8>",
+        "bytes": "ebec",
+        "count": 1,
+        "first_address": "0x20012a"
+      },
+      {
+        "asm": "jmp 0x2000f3 <_start+0xb3>",
+        "bytes": "ebfc",
+        "count": 1,
+        "first_address": "0x2000f5"
+      },
+      {
+        "asm": "in al, dx",
+        "bytes": "ec",
+        "count": 1,
+        "first_address": "0x200101"
+      },
+      {
+        "asm": "hlt",
+        "bytes": "f4",
+        "count": 1,
+        "first_address": "0x2000f4"
+      },
+      {
+        "asm": "cli",
+        "bytes": "fa",
+        "count": 1,
+        "first_address": "0x2000f3"
+      },
+      {
+        "asm": "cld",
+        "bytes": "fc",
+        "count": 1,
+        "first_address": "0x254bb0"
+      }
+    ],
+    "note": "padding and data in .text outside any sized STT_FUNC symbol; excluded from every count below"
+  },
+  "probe_context": "board: step_paged_firmware_probe_with_guest_fp with CR3, guest FP state and an RDTSC source, as od-machine paged_probe.rs; the bare probe is reported separately",
+  "reachable_from_entry_note": "recursive descent from e_entry over function code; indirect transfers (vectors, tables) are not followed, so this is a lower bound",
+  "schema": "od-s7-31b-rom-isa-inventory-v2",
   "unsupported_by_firmware_profile": [
-    {
-      "asm": "int3",
-      "bytes": "cc",
-      "count": 3492,
-      "first_address": "0x200162",
-      "functions": [
-        null
-      ]
-    },
     {
       "asm": "ror al",
       "bytes": "d0c8",
@@ -673,7 +1023,7 @@
       "asm": "dec cl",
       "bytes": "fec9",
       "count": 7,
-      "first_address": "0x2220eb",
+      "first_address": "0x22232b",
       "functions": [
         "od_firmware::bs::config_table::install_configuration_table",
         "od_firmware::fs::file::new_handle",
@@ -697,41 +1047,17 @@
       "asm": "or bx, r11w",
       "bytes": "664409db",
       "count": 6,
-      "first_address": "0x2174c1",
+      "first_address": "0x217571",
       "functions": [
         "od_firmware::block::storage::EndpointBindings::install",
         "od_firmware::block::storage::EndpointBindings::uninstall"
       ]
     },
     {
-      "asm": "mov cr3, rax",
-      "bytes": "0f22d8",
-      "count": 5,
-      "first_address": "0x20b1a4",
-      "functions": [
-        "od_fw_main",
-        "od_firmware::bs::image::release_record",
-        "od_firmware::bs::image::load",
-        "od_firmware::bs::image::invoke::release_stack",
-        "od_firmware::bs::image::invoke::allocate_stack"
-      ]
-    },
-    {
-      "asm": "rdtsc",
-      "bytes": "0f31",
-      "count": 5,
-      "first_address": "0x2031fa",
-      "functions": [
-        "od_firmware::notify_modern_exit",
-        "od_firmware::verify_timer_services",
-        "od_firmware::read_tsc"
-      ]
-    },
-    {
       "asm": "jmp qword ptr [rcx + 0x18]",
       "bytes": "ff6118",
       "count": 4,
-      "first_address": "0x2526d8",
+      "first_address": "0x252958",
       "functions": [
         "core::fmt::Formatter::pad",
         "core::fmt::Formatter::write_str",
@@ -760,15 +1086,6 @@
       ]
     },
     {
-      "asm": "fxrstor64 [rbx + 0x40]",
-      "bytes": "480fae4b40",
-      "count": 2,
-      "first_address": "0x25496a",
-      "functions": [
-        "od_fw_invoke_image"
-      ]
-    },
-    {
       "asm": "bsr rcx, rax",
       "bytes": "480fbdc8",
       "count": 2,
@@ -791,26 +1108,17 @@
       "asm": "jmp qword ptr [rax + 0x18]",
       "bytes": "ff6018",
       "count": 2,
-      "first_address": "0x25211e",
+      "first_address": "0x25239e",
       "functions": [
         "core::fmt::Formatter::pad_integral",
         "core::fmt::write"
       ]
     },
     {
-      "asm": "add byte ptr [rax], dh",
-      "bytes": "0030",
+      "asm": "or byte ptr [rip + 0x3c5db], al",
+      "bytes": "0805dbc50300",
       "count": 1,
-      "first_address": "0x200150",
-      "functions": [
-        null
-      ]
-    },
-    {
-      "asm": "or byte ptr [rip + 0x3c85b], al",
-      "bytes": "08055bc80300",
-      "count": 1,
-      "first_address": "0x233271",
+      "first_address": "0x2334f1",
       "functions": [
         "od_firmware::tpm::tcg2::measure_parts"
       ]
@@ -819,43 +1127,25 @@
       "asm": "sete byte ptr [rsp + 0xb]",
       "bytes": "0f9444240b",
       "count": 1,
-      "first_address": "0x230547",
+      "first_address": "0x2307c7",
       "functions": [
         "od_firmware::rt::variable::query_variable_info"
       ]
     },
     {
-      "asm": "and byte ptr [rbx + 0x6f], ah",
-      "bytes": "20636f",
+      "asm": "sete byte ptr [rsp + 0x70]",
+      "bytes": "0f94442470",
       "count": 1,
-      "first_address": "0x200139",
+      "first_address": "0x227cae",
       "functions": [
-        null
-      ]
-    },
-    {
-      "asm": "and byte ptr [rbp + 2*riz + 0x74], ah",
-      "bytes": "20646574",
-      "count": 1,
-      "first_address": "0x200143",
-      "functions": [
-        null
-      ]
-    },
-    {
-      "asm": "xor dword ptr [rdx], esi",
-      "bytes": "3132",
-      "count": 1,
-      "first_address": "0x200152",
-      "functions": [
-        null
+        "od_firmware::bs::image::load"
       ]
     },
     {
       "asm": "sete byte ptr [r14]",
       "bytes": "410f9406",
       "count": 1,
-      "first_address": "0x25330f",
+      "first_address": "0x25358f",
       "functions": [
         "_RNvXs0_NtNtCs1R9DcZHJAgT_4core3fmt8buildersNtB5_10PadAdapterNtB7_5Write10write_char"
       ]
@@ -864,43 +1154,25 @@
       "asm": "movsx edx, byte ptr [r8 + rax + 0x4d]",
       "bytes": "410fbe54004d",
       "count": 1,
-      "first_address": "0x22d49b",
+      "first_address": "0x22d71b",
       "functions": [
         "od_firmware::fs::file::get_info"
-      ]
-    },
-    {
-      "asm": "int3",
-      "bytes": "414243444546cc",
-      "count": 1,
-      "first_address": "0x20015b",
-      "functions": [
-        null
       ]
     },
     {
       "asm": "test byte ptr [rbx + 0x40018], r12b",
       "bytes": "4484a318000400",
       "count": 1,
-      "first_address": "0x22ff92",
+      "first_address": "0x230212",
       "functions": [
         "od_firmware::rt::variable::get_variable"
-      ]
-    },
-    {
-      "asm": "fxsave64 [rax + 0x40]",
-      "bytes": "480fae4040",
-      "count": 1,
-      "first_address": "0x254957",
-      "functions": [
-        "od_fw_invoke_image"
       ]
     },
     {
       "asm": "and qword ptr [rsp + 0x8], -0x2",
       "bytes": "4883642408fe",
       "count": 1,
-      "first_address": "0x22f141",
+      "first_address": "0x22f3c1",
       "functions": [
         "od_firmware::pe::loader::load_into"
       ]
@@ -909,7 +1181,7 @@
       "asm": "add qword ptr [rsp + 0xb8], -0x5",
       "bytes": "48838424b8000000fb",
       "count": 1,
-      "first_address": "0x24055b",
+      "first_address": "0x2407db",
       "functions": [
         "od_firmware::bootmgr::policy::run"
       ]
@@ -918,7 +1190,7 @@
       "asm": "add qword ptr [rsp + 0xc0], 0x3",
       "bytes": "48838424c000000003",
       "count": 1,
-      "first_address": "0x227a32",
+      "first_address": "0x227c88",
       "functions": [
         "od_firmware::bs::image::load"
       ]
@@ -927,7 +1199,7 @@
       "asm": "add qword ptr [rsp + 0xc0], 0x4",
       "bytes": "48838424c000000004",
       "count": 1,
-      "first_address": "0x2279e8",
+      "first_address": "0x227c3e",
       "functions": [
         "od_firmware::bs::image::load"
       ]
@@ -936,52 +1208,25 @@
       "asm": "retfq",
       "bytes": "48cb",
       "count": 1,
-      "first_address": "0x253f15",
+      "first_address": "0x254195",
       "functions": [
         "od_fw_install_gdt"
-      ]
-    },
-    {
-      "asm": "<unknown>",
-      "bytes": "61",
-      "count": 1,
-      "first_address": "0x200147",
-      "functions": [
-        null
-      ]
-    },
-    {
-      "asm": "cmp eax, 0x31307830",
-      "bytes": "64653d30783031",
-      "count": 1,
-      "first_address": "0x20013c",
-      "functions": [
-        null
       ]
     },
     {
       "asm": "sub r12w, word ptr [rbp - 0x68]",
       "bytes": "66442b6598",
       "count": 1,
-      "first_address": "0x25228d",
+      "first_address": "0x25250d",
       "functions": [
         "core::fmt::Formatter::pad_integral"
-      ]
-    },
-    {
-      "asm": "imul ebp, dword ptr [rbp + rdi + 0x30], 0xa0d0078",
-      "bytes": "696c3d3078000d0a",
-      "count": 1,
-      "first_address": "0x200148",
-      "functions": [
-        null
       ]
     },
     {
       "asm": "imul ecx, ecx, 0x347",
       "bytes": "69c947030000",
       "count": 1,
-      "first_address": "0x253608",
+      "first_address": "0x253888",
       "functions": [
         "_RNvXs3_NtNtNtCs1R9DcZHJAgT_4core3fmt3num3imptNtB9_7Display3fmt"
       ]
@@ -990,7 +1235,7 @@
       "asm": "mov es, eax",
       "bytes": "8ec0",
       "count": 1,
-      "first_address": "0x253f1d",
+      "first_address": "0x25419d",
       "functions": [
         "od_fw_install_gdt"
       ]
@@ -999,7 +1244,7 @@
       "asm": "mov ss, eax",
       "bytes": "8ed0",
       "count": 1,
-      "first_address": "0x253f23",
+      "first_address": "0x2541a3",
       "functions": [
         "od_fw_install_gdt"
       ]
@@ -1008,7 +1253,7 @@
       "asm": "mov ds, eax",
       "bytes": "8ed8",
       "count": 1,
-      "first_address": "0x253f1b",
+      "first_address": "0x25419b",
       "functions": [
         "od_fw_install_gdt"
       ]
@@ -1017,7 +1262,7 @@
       "asm": "mov fs, eax",
       "bytes": "8ee0",
       "count": 1,
-      "first_address": "0x253f1f",
+      "first_address": "0x25419f",
       "functions": [
         "od_fw_install_gdt"
       ]
@@ -1026,7 +1271,7 @@
       "asm": "mov gs, eax",
       "bytes": "8ee8",
       "count": 1,
-      "first_address": "0x253f21",
+      "first_address": "0x2541a1",
       "functions": [
         "od_fw_install_gdt"
       ]
@@ -1035,7 +1280,7 @@
       "asm": "inc byte ptr [rsp + 0x28]",
       "bytes": "fe442428",
       "count": 1,
-      "first_address": "0x214587",
+      "first_address": "0x214637",
       "functions": [
         "od_firmware::acpi::aml::builder::AmlBuilder::begin_scope"
       ]
@@ -1044,43 +1289,43 @@
       "asm": "inc byte ptr [rsp + 0x30]",
       "bytes": "fe442430",
       "count": 1,
-      "first_address": "0x244a85",
+      "first_address": "0x244d05",
       "functions": [
         "od_firmware::acpi::aml::validate::walk"
       ]
     },
     {
-      "asm": "jmp qword ptr [rip + 0x20431]",
-      "bytes": "ff2531040200",
+      "asm": "jmp qword ptr [rip + 0x2036d]",
+      "bytes": "ff256d030200",
       "count": 1,
-      "first_address": "0x253771",
-      "functions": [
-        "_RNvXs8_NtCs1R9DcZHJAgT_4core3fmtNtB5_9ArgumentsNtB5_7Display3fmt"
-      ]
-    },
-    {
-      "asm": "jmp qword ptr [rip + 0x205ed]",
-      "bytes": "ff25ed050200",
-      "count": 1,
-      "first_address": "0x2535dd",
+      "first_address": "0x25385d",
       "functions": [
         "_RNvXs1i_NtCs1R9DcZHJAgT_4core3fmtReNtB6_7Display3fmtB8_"
       ]
     },
     {
-      "asm": "jmp qword ptr [rip + 0x1fff5]",
-      "bytes": "ff25f5ff0100",
+      "asm": "jmp qword ptr [rip + 0x1fd75]",
+      "bytes": "ff2575fd0100",
       "count": 1,
-      "first_address": "0x253bad",
+      "first_address": "0x253e2d",
       "functions": [
         "_RNvYNtNtNtCs1R9DcZHJAgT_4core3fmt8builders10PadAdapterNtB6_5Write9write_fmtB8_"
+      ]
+    },
+    {
+      "asm": "jmp qword ptr [rip + 0x201b1]",
+      "bytes": "ff25b1010200",
+      "count": 1,
+      "first_address": "0x2539f1",
+      "functions": [
+        "_RNvXs8_NtCs1R9DcZHJAgT_4core3fmtNtB5_9ArgumentsNtB5_7Display3fmt"
       ]
     },
     {
       "asm": "inc dword ptr [rsp + 0x24]",
       "bytes": "ff442424",
       "count": 1,
-      "first_address": "0x21e9a7",
+      "first_address": "0x21ebe7",
       "functions": [
         "od_firmware::smbios::install"
       ]
@@ -1089,16 +1334,11 @@
       "asm": "jmp qword ptr [rcx + 0x20]",
       "bytes": "ff6120",
       "count": 1,
-      "first_address": "0x25331e",
+      "first_address": "0x25359e",
       "functions": [
         "_RNvXs0_NtNtCs1R9DcZHJAgT_4core3fmt8buildersNtB5_10PadAdapterNtB7_5Write10write_char"
       ]
     }
   ],
-  "unsupported_by_firmware_profile_excluding_int3_padding": {
-    "encodings": 45,
-    "instructions": 87,
-    "note": "int3 fills the gaps between functions and is never executed in a correct ROM"
-  },
-  "unsupported_by_firmware_profile_total_encodings": 47
+  "unsupported_by_firmware_profile_total_encodings": 35
 }

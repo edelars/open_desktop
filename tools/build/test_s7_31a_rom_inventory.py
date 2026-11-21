@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import s7_31a_efi_stub_isa_inventory as tool  # noqa: E402
 
 
+CODE = bytes.fromhex("4883642408fe")
+
+
 class DemangleTests(unittest.TestCase):
     def test_v0_path(self) -> None:
         name = "_RNvNtNtCseWy8E3VS3N2_11od_firmware2pe6loader9load_into"
@@ -28,17 +31,24 @@ class CalibrationTests(unittest.TestCase):
         return {"addr": address, "bytes": data, "asm": "and qword ptr [rsp + 0x8], -0x2"}
 
     def test_found_only_inside_load_into(self) -> None:
-        insns = [self.insn(0x10, tool.CALIBRATION_BYTES), self.insn(0x80, tool.CALIBRATION_BYTES)]
+        insns = [self.insn(0x10, CODE), self.insn(0x80, CODE)]
         names = {0x10: "od_firmware::pe::loader::load_into", 0x80: "od_firmware::pe::loader::launch"}
-        verdicts = {tool.CALIBRATION_BYTES: ("unsupported", "Unsupported")}
-        result = tool.calibrate(insns, names.get, verdicts)
+        verdicts = {CODE: ("unsupported", "Unsupported")}
+        result = tool.calibrate(insns, names.get, verdicts, CODE, "load_into", "unsupported")
         self.assertTrue(result["ok"])
         self.assertEqual(result["sites_total"], 1)
         self.assertEqual(result["firmware_profile_verdict"], "unsupported")
 
+    def test_wrong_probe_verdict_fails_the_calibration(self) -> None:
+        insns = [self.insn(0x10, CODE)]
+        verdicts = {CODE: ("decoded", "Retired")}
+        result = tool.calibrate(insns, lambda address: "a::load_into", verdicts, CODE, "load_into", "unsupported")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["sites_total"], 1)
+
     def test_missing_form_fails_the_calibration(self) -> None:
         insns = [self.insn(0x10, bytes.fromhex("90"))]
-        result = tool.calibrate(insns, lambda address: "od_firmware::pe::loader::load_into", {})
+        result = tool.calibrate(insns, lambda address: "od_firmware::pe::loader::load_into", {}, CODE, "load_into", "decoded")
         self.assertFalse(result["ok"])
 
 

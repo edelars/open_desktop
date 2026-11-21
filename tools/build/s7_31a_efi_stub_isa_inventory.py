@@ -15,8 +15,10 @@ followed (lower bound), branches that are not taken at run time are followed (up
 Exit codes: 0 written, 2 usage or input error, 3 (ROM mode) calibration failed, 4 (ROM mode) output too large.
 
 ROM mode (S7-31b, `--rom-elf`): the same two verdicts over every instruction of the executable sections of the
-firmware ELF (ADR-0013, "Checks"). The calibration requires `48 83 64 24 08 fe` (and qword ptr [rsp+8], -2) inside
-`load_into` (ISSUE-621); without it nothing is written.
+firmware ELF (ADR-0013, "Checks"). Only instructions inside sized function symbols count; padding and data in .text are reported apart. The probe runs in
+the board context (CR3, guest FP, RDTSC); forms only the bare probe rejects are listed as context artifacts. The
+calibration instruction (default: the first at e_entry; or --calibration-bytes/--calibration-symbol/--calibration-expect)
+must be found in the named function and get the expected verdict, otherwise nothing is written.
 """
 
 from __future__ import annotations
@@ -48,9 +50,10 @@ def pe_entry_rva(image: bytes) -> int:
     return struct.unpack_from("<I", image, pe + 24 + 16)[0]
 
 
-def probe(binary: Path, encodings: list[bytes]) -> dict[bytes, tuple[str, str]]:
+def probe(binary: Path, encodings: list[bytes], board_context: bool = False) -> dict[bytes, tuple[str, str]]:
     text = "".join(f"{code.hex()}\n" for code in encodings)
-    done = subprocess.run([binary], input=text, capture_output=True, text=True, check=True)
+    command = [binary, "--board-context"] if board_context else [binary]
+    done = subprocess.run(command, input=text, capture_output=True, text=True, check=True)
     verdicts = {}
     for line in done.stdout.splitlines():
         digits, verdict, kind = line.split()
@@ -143,10 +146,11 @@ def build(image: bytes, objdump: str, work: Path, binary: Path) -> dict:
 
 SHF_EXECINSTR = 0x4
 STT_FUNC = 2
-# `and qword ptr [rsp+8], -2`: the form ISSUE-621 found in load_into (chunked header copy). The ROM mode
-# is calibrated on it: if it is not found in load_into, the disassembly or the symbol table is wrong.
-CALIBRATION_BYTES = bytes.fromhex("48836424" "08fe")
-CALIBRATION_FUNCTION = "load_into"
+# Calibration: a known instruction must be found inside a named function and get the expected verdict from
+# the probe, otherwise the disassembly, the symbol table or the probe is wrong. The default is the first
+# instruction at e_entry (start.S, which runs on every boot and must decode). The S7-31b run also used the
+# ISSUE-621 form: --calibration-bytes 4883642408fe --calibration-symbol load_into --calibration-expect unsupported
+# (`and qword ptr [rsp+8], -2` in load_into).
 DEFAULT_ROM_OUT = ROOT / "docs/reports/data/stage7/s7-31b-rom-isa-inventory.json"
 MAX_ROWS = 150
 MAX_OUTPUT_BYTES = 200 * 1024
@@ -236,56 +240,85 @@ def locate_function(ranges: list[tuple[int, int, str]], starts: list[int], addre
     return None
 
 
-def calibrate(insns: list[dict], function_of, verdicts: dict) -> dict:
-    """Find CALIBRATION_BYTES inside the ROM functions named CALIBRATION_FUNCTION."""
-    found = [i for i in insns if i["bytes"] == CALIBRATION_BYTES
-             and CALIBRATION_FUNCTION in (function_of(i["addr"]) or "").split("::")]
-    verdict = verdicts.get(CALIBRATION_BYTES)
+def calibrate(insns: list[dict], function_of, verdicts: dict, code: bytes, symbol: str, expect: str) -> dict:
+    """Find `code` inside the ROM functions whose name has the component `symbol`; the probe must answer `expect`."""
+    found = [i for i in insns if i["bytes"] == code and symbol in (function_of(i["addr"]) or "").split("::")]
+    verdict = verdicts.get(code)
+    actual = verdict[0] if verdict else None
     return {
-        "bytes": CALIBRATION_BYTES.hex(),
-        "asm_expected": "and qword ptr [rsp+8], -2",
-        "function_name_part": CALIBRATION_FUNCTION,
-        "ok": bool(found),
+        "bytes": code.hex(),
+        "function_name_part": symbol,
+        "expected_verdict": expect,
+        "firmware_profile_verdict": actual,
+        "ok": bool(found) and actual == expect,
         "sites": [{"address": hex(i["addr"]), "function": function_of(i["addr"]), "asm": i["asm"]}
                   for i in found][:10],
         "sites_total": len(found),
-        "firmware_profile_verdict": verdict[0] if verdict else None,
     }
 
 
-def build_rom(elf_path: Path, objdump: str, binary: Path) -> dict:
+def build_rom(elf_path: Path, objdump: str, binary: Path, calibration_spec: tuple | None = None) -> dict:
+    """`calibration_spec` is (hex bytes, symbol, expected verdict) or None for the e_entry default."""
     image = elf_path.read_bytes()
     elf = oracle.Elf64(elf_path)
     sections = executable_sections(image)
-    insns: list[dict] = []
+    all_insns: list[dict] = []
     for section in sections:
-        insns += inv.disassemble(elf_path, objdump, section["addr"], section["addr"] + section["size"])
-    if not insns:
+        all_insns += inv.disassemble(elf_path, objdump, section["addr"], section["addr"] + section["size"])
+    if not all_insns:
         raise ValueError("no instructions disassembled from the executable sections")
-    by_addr = {i["addr"]: i for i in insns}
     ranges = function_ranges(elf)
     starts = [r[0] for r in ranges]
 
     def function_of(address: int) -> str | None:
         return locate_function(ranges, starts, address)
 
-    verdicts = probe(binary, sorted({i["bytes"] for i in insns}))
-    calibration = calibrate(insns, function_of, verdicts)
+    # Only code inside a sized STT_FUNC symbol is ROM code. The rest of .text is alignment padding (int3) and
+    # data placed in the text section; objdump decodes both as instructions, which would be false findings.
+    insns = [i for i in all_insns if function_of(i["addr"]) is not None]
+    outside = [i for i in all_insns if function_of(i["addr"]) is None]
+    by_addr = {i["addr"]: i for i in insns}
+    # board_context: how the board runs the profile (CR3, guest FP, RDTSC); bare: step_paged_firmware_probe.
+    encodings = sorted({i["bytes"] for i in all_insns})
+    verdicts = probe(binary, encodings, board_context=True)
+    bare = probe(binary, encodings, board_context=False)
+    if calibration_spec is None:
+        entry = by_addr.get(elf.e_entry)
+        if entry is None:
+            raise ValueError("no instruction at e_entry inside a sized function")
+        calibration_spec = (entry["bytes"].hex(), (function_of(elf.e_entry) or "").split("::")[-1], "decoded")
+    calibration = calibrate(insns, function_of, verdicts, bytes.fromhex(calibration_spec[0]),
+                            calibration_spec[1], calibration_spec[2])
     all_addresses = sorted(by_addr)
     seen_entry, info_entry = inv.walk(by_addr, [elf.e_entry])
 
-    unsupported: dict[bytes, dict] = {}
-    for insn in insns:
-        if verdicts[insn["bytes"]][0] != "unsupported":
-            continue
-        row = unsupported.setdefault(insn["bytes"], {
-            "bytes": insn["bytes"].hex(), "asm": insn["asm"], "count": 0, "first_address": hex(insn["addr"]),
-            "functions": []})
+    def unsupported_rows_of(table: dict) -> list[dict]:
+        rows: dict[bytes, dict] = {}
+        for insn in insns:
+            if table[insn["bytes"]][0] != "unsupported":
+                continue
+            row = rows.setdefault(insn["bytes"], {
+                "bytes": insn["bytes"].hex(), "asm": insn["asm"], "count": 0, "first_address": hex(insn["addr"]),
+                "functions": []})
+            row["count"] += 1
+            function = function_of(insn["addr"])
+            if function not in row["functions"] and len(row["functions"]) < 5:
+                row["functions"].append(function)
+        return sorted(rows.values(), key=lambda r: (-r["count"], r["bytes"]))
+
+    unsupported_rows = unsupported_rows_of(verdicts)
+    bare_rows = unsupported_rows_of(bare)
+    board_unsupported = {row["bytes"] for row in unsupported_rows}
+    # Forms the bare profile rejects but the board context decodes: context artifacts, not ROM defects.
+    context_artifacts = [row for row in bare_rows if row["bytes"] not in board_unsupported]
+
+    outside_rows: dict[bytes, dict] = {}
+    for insn in outside:
+        row = outside_rows.setdefault(insn["bytes"], {"bytes": insn["bytes"].hex(), "asm": insn["asm"], "count": 0,
+                                                      "first_address": hex(insn["addr"])})
         row["count"] += 1
-        function = function_of(insn["addr"])
-        if function not in row["functions"] and len(row["functions"]) < 5:
-            row["functions"].append(function)
-    unsupported_rows = sorted(unsupported.values(), key=lambda r: (-r["count"], r["bytes"]))
+    outside_non_int3 = sorted((r for r in outside_rows.values() if r["asm"] != "int3"),
+                              key=lambda r: (-r["count"], r["bytes"]))
 
     forms: dict[str, dict] = {}
     inv.add_forms(forms, insns, "rom", lambda a: a, locate=lambda a: (function_of(a),))
@@ -303,27 +336,39 @@ def build_rom(elf_path: Path, objdump: str, binary: Path) -> dict:
     uncovered.sort(key=lambda r: (-r["count"], r["example_bytes"]))
     sha256, size = oracle.sha256_file(elf_path)
     return {
-        "schema": "od-s7-31b-rom-isa-inventory-v1",
-        "note": "static estimate over every instruction of the executable sections (dead code included); "
+        "schema": "od-s7-31b-rom-isa-inventory-v2",
+        "note": "static estimate over every instruction inside a sized function symbol (dead code included); "
                 "not evidence of execution; see the module docstring",
         "elf": {"sha256": sha256, "bytes": size, "entry": hex(elf.e_entry),
                 "executable_sections": [{"name": s["name"], "addr": hex(s["addr"]), "size": hex(s["size"])}
                                         for s in sections]},
         "calibration": calibration,
-        "linear_instructions": len(insns),
+        "linear_instructions_in_text": len(all_insns),
+        "instructions_in_functions": len(insns),
+        "outside_functions": {
+            "note": "padding and data in .text outside any sized STT_FUNC symbol; excluded from every count below",
+            "instructions": len(outside),
+            "int3_instructions": sum(r["count"] for r in outside_rows.values() if r["asm"] == "int3"),
+            "non_int3_instructions": sum(r["count"] for r in outside_non_int3),
+            "non_int3_rows": outside_non_int3[:MAX_ROWS],
+        },
         "indirect_sites_from_entry": len(info_entry["indirect_sites"]),
-        "reachable_from_entry_note": "recursive descent from e_entry; indirect transfers (vectors, tables) are not "
-                                     "followed, so this is a lower bound",
-        "firmware_profile_all_text": summarize_firmware(all_addresses, by_addr, verdicts),
+        "reachable_from_entry_note": "recursive descent from e_entry over function code; indirect transfers "
+                                     "(vectors, tables) are not followed, so this is a lower bound",
+        "probe_context": "board: step_paged_firmware_probe_with_guest_fp with CR3, guest FP state and an RDTSC "
+                         "source, as od-machine paged_probe.rs; the bare probe is reported separately",
+        "firmware_profile_all_functions": summarize_firmware(all_addresses, by_addr, verdicts),
         "firmware_profile_reachable_from_entry": summarize_firmware(sorted(seen_entry), by_addr, verdicts),
         "unsupported_by_firmware_profile_total_encodings": len(unsupported_rows),
-        "unsupported_by_firmware_profile_excluding_int3_padding": {
-            "note": "int3 fills the gaps between functions and is never executed in a correct ROM",
-            "instructions": sum(r["count"] for r in unsupported_rows if r["asm"] != "int3"),
-            "encodings": sum(1 for r in unsupported_rows if r["asm"] != "int3"),
-        },
         "unsupported_by_firmware_profile": unsupported_rows[:MAX_ROWS],
-        "cpl0_contract_all_text": {
+        "bare_probe_context_artifacts": {
+            "note": "encodings the bare step_paged_firmware_probe rejects and the board context decodes "
+                    "(mov cr3, FXSAVE/FXRSTOR, RDTSC): false positives of a bare probe",
+            "encodings": len(context_artifacts),
+            "instructions": sum(r["count"] for r in context_artifacts),
+            "rows": context_artifacts[:MAX_ROWS],
+        },
+        "cpl0_contract_all_functions": {
             "forms_by_status": dict(status_forms),
             "instructions_by_status": dict(status_instructions),
             "status_meaning": "exact and family are covered by CPU_CONTRACT rules; absent, partial and "
@@ -346,6 +391,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="cargo build --release -p od-isa --example firmware_profile_probe")
     parser.add_argument("--objdump", default=inv.DEFAULT_OBJDUMP)
     parser.add_argument("--out", type=Path, help="default depends on the mode")
+    parser.add_argument("--calibration-bytes", help="ROM mode: HEX of the calibration instruction "
+                        "(default: the instruction at e_entry)")
+    parser.add_argument("--calibration-symbol", help="ROM mode: name component of the function that holds it")
+    parser.add_argument("--calibration-expect", choices=("decoded", "unsupported"), default="decoded",
+                        help="ROM mode: verdict the probe must give (default decoded)")
     args = parser.parse_args(argv)
     if args.rom_elf is not None:
         return main_rom(args)
@@ -366,10 +416,13 @@ def main_rom(args: argparse.Namespace) -> int:
     if not args.rom_elf.is_file() or not args.probe.is_file():
         print("error: --rom-elf and --probe must exist", file=sys.stderr)
         return 2
-    result = build_rom(args.rom_elf, args.objdump, args.probe)
+    if bool(args.calibration_bytes) != bool(args.calibration_symbol):
+        print("error: --calibration-bytes and --calibration-symbol go together", file=sys.stderr)
+        return 2
+    spec = (args.calibration_bytes, args.calibration_symbol, args.calibration_expect) if args.calibration_bytes else None
+    result = build_rom(args.rom_elf, args.objdump, args.probe, spec)
     if not result["calibration"]["ok"]:
-        print("error: calibration failed: " + result["calibration"]["bytes"] + " not found in load_into; "
-              "nothing written", file=sys.stderr)
+        print("error: calibration failed, nothing written: " + json.dumps(result["calibration"]), file=sys.stderr)
         return 3
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if len(text.encode()) > MAX_OUTPUT_BYTES:
@@ -378,7 +431,7 @@ def main_rom(args: argparse.Namespace) -> int:
     out = args.out or DEFAULT_ROM_OUT
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
-    print(json.dumps({k: result[k] for k in ("calibration", "linear_instructions", "firmware_profile_all_text")},
+    print(json.dumps({k: result[k] for k in ("calibration", "instructions_in_functions", "firmware_profile_all_functions")},
                      indent=1)[:3000])
     return 0
 

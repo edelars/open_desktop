@@ -7,7 +7,7 @@
 //! The third column is the name of the exit variant, so a caller can see what "decoded" contains.
 use std::io::BufRead;
 
-use od_isa::execute::{self, PagedCpl0FirmwareBootV1, PagedProbeExit};
+use od_isa::execute::{self, GuestFpState, PagedCpl0FirmwareBootV1, PagedProbeExit};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CpuActivity, GuestMemory, InstructionMode,
     LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
@@ -118,7 +118,14 @@ impl PortIo for Pio {
     }
 }
 
+/// Active CR3 the board passes to the firmware profile; any aligned value gives the same verdict.
+const BOARD_CR3: u64 = 0x60_0000;
+
 fn main() {
+    // `--board-context` runs the profile the way the board does (od-machine paged_probe.rs): with
+    // an active CR3, guest FP state and an RDTSC source. Without it the bare `step_paged_firmware_probe`
+    // is used, which reports `mov cr3`, FXSAVE/FXRSTOR and RDTSC as unsupported (S7-31a behaviour).
+    let board = std::env::args().any(|argument| argument == "--board-context");
     let context = AccessContext {
         mode: InstructionMode::Long64,
         privilege: PrivilegeLevel::Ring0,
@@ -150,14 +157,34 @@ fn main() {
             ..LongModeState::default()
         };
         state.gpr[4] = 0x8000; // RSP points into mapped scratch memory
-        let result = execute::step_paged_firmware_probe(
-            PagedCpl0FirmwareBootV1,
-            &mut state,
-            &mut memory,
-            &mut Pio,
-            context,
-            defined,
-        );
+        if board {
+            // The board enables FXSAVE/SSE (CR4.OSFXSR and OSXMMEXCPT) before any FP instruction runs.
+            state.cr4 = Some(od_isa::execute::Cr4Profile::BASE | (1 << 9) | (1 << 10));
+        }
+        let result = if board {
+            let mut fp = GuestFpState::initial();
+            let mut tsc = || Ok(0x1234_5678);
+            execute::step_paged_firmware_probe_with_guest_fp(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut Pio,
+                context,
+                defined,
+                BOARD_CR3,
+                &mut fp,
+                Some(&mut tsc),
+            )
+        } else {
+            execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut state,
+                &mut memory,
+                &mut Pio,
+                context,
+                defined,
+            )
+        };
         let verdict = match result.exit {
             PagedProbeExit::Unsupported { .. } => "unsupported",
             _ => "decoded",
