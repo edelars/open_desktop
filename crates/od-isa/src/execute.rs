@@ -41415,12 +41415,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         _ => instruction,
     };
-    // S2-38 (logic and permute remainder): a state that carries CR0 or CR4 outside the CPL0/CPL3 profile sets is gated by
-    // CR0.EM/CR0.TS/CR4.OSFXSR like every general SSE form, so the narrow register forms of the eight bitwise operations
-    // run through the general core there (the narrow profile operations accept no such state and were `Unsupported`).
+    // S2-38 (logic and permute remainder): under the FP-init CR0/CR4 pair the general forms are gated by CR0.EM/CR0.TS/
+    // CR4.OSFXSR, so the narrow register forms of the eight bitwise operations run through the general core there (the
+    // pair admits no narrow profile operation of them and answered `Unsupported`). The composite FP-init profiles and
+    // every other configuration keep the narrow operations.
     let instruction = match sse_logic_from_narrow(instruction.operation) {
         Some(general)
-            if control_policy.is_none() && (state.cr0.is_some() || state.cr4.is_some()) =>
+            if control_policy.is_none()
+                && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
+                && cr4_profile == Some(Cr4Profile::FpInitLong64V1) =>
         {
             long_decode::Instruction {
                 operation: general,
