@@ -9,13 +9,14 @@
 //! executes the command ring (`docs/specs/XHCI_DEVICE.md` section 3). Time is the
 //! virtual clock handed in at construction: port reset (50 ms) and `MFINDEX`.
 
-use super::commands::{self, SlotTable};
+use super::commands::{self, CommandEnv};
 use super::ports::Port;
 use super::regs::{self, MAX_PORTS, MAX_SLOTS};
 use super::ring::{EventRing, MAX_SEGMENT_TRBS, MIN_SEGMENT_TRBS};
+use super::slots::{EndpointState, Slot, SlotState};
 use super::trb::{
-    TRB_BYTES, TRB_TYPE_LINK, Trb, command_completion_event, event_ring_full_event,
-    port_status_change_event,
+    TRB_BYTES, TRB_TYPE_LINK, TRB_TYPE_STOP_ENDPOINT, Trb, command_completion_event,
+    event_ring_full_event, port_status_change_event,
 };
 use super::{XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_USB_PORT_RESET_NS};
 use crate::nvme::{BusDma, DmaError, GuestDma};
@@ -56,6 +57,9 @@ pub enum HseCause {
     EventRingDma,
     /// A command TRB or Link target is not in RAM.
     CommandRingDma,
+    /// An Input Context cannot be read, or an Output Device Context (DCBAA entry 0, unaligned
+    /// or not in RAM) cannot be read or written.
+    ContextDma,
 }
 
 /// Work done by one [`XhciHandle::service`] call.
@@ -98,7 +102,7 @@ struct Hw {
     ehb: bool,
     ring: Option<EventRing>,
     erst_load_pending: bool,
-    slots: [bool; MAX_SLOTS],
+    slots: [Slot; MAX_SLOTS],
     ports: [Port; MAX_PORTS],
 }
 
@@ -128,7 +132,7 @@ impl Hw {
             ehb: false,
             ring: None,
             erst_load_pending: false,
-            slots: [false; MAX_SLOTS],
+            slots: [Slot::disabled(); MAX_SLOTS],
             ports: [Port::new(); MAX_PORTS],
         }
     }
@@ -505,15 +509,70 @@ impl XhciState {
             } else {
                 self.ignored_doorbells += 1;
             }
-        } else {
-            // Slice A has no Address Device: every endpoint of every slot is Disabled, and a
-            // doorbell on a Disabled endpoint is ignored (contract 9.1); the transfer slices
-            // validate slot, DCI and stream id.
+        } else if !Self::slot_doorbell(&mut hw.slots[index - 1], value) {
             self.ignored_doorbells += 1;
         }
     }
 
+    /// A doorbell of a slot (contract 9.1 and 9.3): the slot must be Default, Addressed or
+    /// Configured, the DCI 1 or 3 (DCI 3 only in a Configured slot), the stream id 0. A Stopped endpoint
+    /// becomes Running; Disabled, Halted and Error endpoints ignore the doorbell. Returns
+    /// `false` when the doorbell is ignored. Executing the transfer ring is the job of the
+    /// transfer slice; nothing is left pending here.
+    fn slot_doorbell(slot: &mut Slot, value: u32) -> bool {
+        let dci = value & 0xFF;
+        let stream_id = value >> 16;
+        let slot_state = slot.state;
+        let usable = match dci {
+            // EP0 of a Default slot carries the descriptor requests sent to address 0.
+            1 => slot_state.is_addressable(),
+            3 => slot_state == SlotState::Configured,
+            _ => false,
+        };
+        if !usable || stream_id != 0 {
+            return false;
+        }
+        match slot.endpoint_mut(dci) {
+            Some(endpoint) if endpoint.state == EndpointState::Stopped => {
+                endpoint.state = EndpointState::Running;
+                // The Output Endpoint Context says Stopped until `service` writes Running.
+                slot.unmirrored |= 1 << dci;
+                true
+            }
+            Some(endpoint) => endpoint.state == EndpointState::Running,
+            None => false,
+        }
+    }
+
     /// Loads the single ERST entry written to ERSTBA and initializes the event ring.
+    /// Writes the EP State of endpoints a doorbell restarted into their Output Endpoint Contexts.
+    fn mirror_endpoint_states(&mut self, dma: &mut dyn GuestDma) {
+        for index in 0..MAX_SLOTS {
+            let slot = self.hw.slots[index];
+            if slot.unmirrored == 0 {
+                continue;
+            }
+            self.hw.slots[index].unmirrored = 0;
+            let result = commands::output_context_of(self.hw.dcbaap, dma, index as u32 + 1)
+                .and_then(|output| {
+                    (0..32u32)
+                        .filter(|dci| slot.unmirrored & (1 << dci) != 0)
+                        .try_for_each(|dci| {
+                            commands::mirror_endpoint_state(
+                                dma,
+                                output,
+                                dci,
+                                slot.endpoint_state(dci),
+                            )
+                        })
+                });
+            if result.is_err() {
+                self.fault(HseCause::ContextDma);
+                return;
+            }
+        }
+    }
+
     fn load_event_ring(&mut self, dma: &mut dyn GuestDma) {
         if !self.hw.erst_load_pending || self.hw.erstsz != 1 {
             return;
@@ -541,19 +600,20 @@ impl XhciState {
         self.hw.ring = Some(EventRing::new(base, size));
     }
 
-    /// Makes room for one more event. A full ring gets the Event Ring Full Error once and
-    /// blocks processing until the driver moves ERDP.
-    fn reserve_event(&mut self, dma: &mut dyn GuestDma) -> bool {
+    /// Makes room for `count` more events and the TRB kept for the Event Ring Full Error. When
+    /// there is not enough room the ring gets the Event Ring Full Error once and processing is
+    /// blocked until the driver moves ERDP.
+    fn reserve_events(&mut self, dma: &mut dyn GuestDma, count: u32) -> bool {
         let Some(ring) = self.hw.ring.as_mut() else {
             return false;
         };
         if ring.full_reported() || ring.free() == 0 {
             return false;
         }
-        if ring.free() >= 2 {
+        if ring.free() > count {
             return true;
         }
-        // One TRB left: it is reserved for the Event Ring Full Error.
+        // The last TRBs are reserved for the Event Ring Full Error.
         match ring.write(dma, event_ring_full_event()) {
             Ok(()) => {
                 ring.mark_full_reported();
@@ -564,7 +624,7 @@ impl XhciState {
         false
     }
 
-    /// Writes an event into room made by [`Self::reserve_event`].
+    /// Writes an event into room made by [`Self::reserve_events`].
     fn post_event(&mut self, dma: &mut dyn GuestDma, event: Trb) {
         let Some(ring) = self.hw.ring.as_mut() else {
             return;
@@ -580,7 +640,7 @@ impl XhciState {
             if !self.hw.ports[index].event_due() {
                 continue;
             }
-            if !self.reserve_event(dma) {
+            if !self.reserve_events(dma, 1) {
                 return;
             }
             self.post_event(dma, port_status_change_event(index as u32 + 1));
@@ -623,17 +683,31 @@ impl XhciState {
                 hw.cmd_ptr = target;
                 continue;
             }
-            if !self.reserve_event(dma) {
+            // Stop Endpoint writes a Transfer Event before the Command Completion Event.
+            let events = if trb.trb_type() == TRB_TYPE_STOP_ENDPOINT {
+                2
+            } else {
+                1
+            };
+            if !self.reserve_events(dma, events) {
                 return;
             }
-            let result = commands::execute(
-                SlotTable {
-                    enabled: &mut self.hw.slots,
-                    max_slots_enabled: self.hw.max_slots_en,
-                },
-                &trb,
-            );
+            let hw = &mut self.hw;
+            let mut env = CommandEnv {
+                slots: &mut hw.slots,
+                ports: &mut hw.ports,
+                max_slots_enabled: hw.max_slots_en,
+                dcbaap: hw.dcbaap,
+                dma: &mut *dma,
+            };
+            let Ok(result) = commands::execute(&mut env, &trb) else {
+                self.fault(HseCause::ContextDma);
+                return;
+            };
             self.hw.cmd_ptr = address.wrapping_add(TRB_BYTES);
+            if let Some(event) = result.transfer_event {
+                self.post_event(dma, event);
+            }
             self.post_event(
                 dma,
                 command_completion_event(address, result.code, result.slot_id),
@@ -654,7 +728,9 @@ impl XhciState {
             return true;
         }
         let room = hw.ring.as_ref().is_some_and(EventRing::has_room);
-        hw.running && room && (hw.cmd_doorbell || hw.ports.iter().any(Port::event_due))
+        hw.running
+            && (hw.slots.iter().any(|slot| slot.unmirrored != 0)
+                || room && (hw.cmd_doorbell || hw.ports.iter().any(Port::event_due)))
     }
 
     fn service(&mut self, dma: &mut dyn GuestDma) -> XhciServiceReport {
@@ -673,10 +749,37 @@ impl XhciState {
         if self.hw.hse || !self.hw.running {
             return;
         }
+        self.mirror_endpoint_states(dma);
+        if self.hw.hse {
+            return;
+        }
         self.publish_port_events(dma);
         if !self.hw.hse {
             self.run_commands(dma, report);
         }
+    }
+}
+
+#[cfg(test)]
+impl XhciHandle {
+    /// Test hook: the endpoint state of a slot (slot ids and DCI 1 or 3).
+    pub(super) fn endpoint_state(&self, slot_id: usize, dci: u32) -> EndpointState {
+        lock(&self.state).hw.slots[slot_id - 1].endpoint_state(dci)
+    }
+
+    /// Test hook: puts an endpoint into a state transfers will reach in the transfer slice
+    /// (Halted, Error).
+    pub(super) fn force_endpoint_state(&self, slot_id: usize, dci: u32, state: EndpointState) {
+        let mut guard = lock(&self.state);
+        let endpoint = guard.hw.slots[slot_id - 1]
+            .endpoint_mut(dci)
+            .expect("endpoint exists");
+        endpoint.state = state;
+    }
+
+    /// Test hook: the USB address the device behind a root port was given.
+    pub(super) fn device_address(&self, port: usize) -> u8 {
+        lock(&self.state).hw.ports[port - 1].device_address()
     }
 }
 

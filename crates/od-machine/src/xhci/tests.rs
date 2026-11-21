@@ -17,6 +17,8 @@ use crate::{
     VirtualClockHandle,
 };
 
+mod slot_commands;
+
 const RAM_BYTES: u64 = 16 << 20;
 const CMD_RING: u64 = 0x1_0000;
 /// Command ring segment: 31 command slots and a Link TRB.
@@ -82,6 +84,7 @@ struct Event {
     kind: u32,
     cycle: bool,
     dw0: u32,
+    raw: [u32; 4],
 }
 
 impl Event {
@@ -93,6 +96,7 @@ impl Event {
             kind: (dw[3] >> 10) & 0x3F,
             cycle: dw[3] & 1 != 0,
             dw0: dw[0],
+            raw: dw,
         }
     }
 
@@ -863,9 +867,8 @@ fn slot_doorbell_with_a_stream_id_is_ignored_and_counted() {
 }
 
 #[test]
-fn slot_doorbell_for_dci_1_and_3_of_an_enabled_slot_is_ignored_in_slice_a() {
-    // Every endpoint is Disabled until Address Device exists: the doorbell is ignored and does
-    // not leave work behind.
+fn slot_doorbell_for_dci_1_and_3_of_a_slot_that_is_only_enabled_is_ignored() {
+    // The endpoints are Disabled until Address Device: the doorbell is ignored.
     let mut rig = running_rig();
     rig.enable_slot();
     rig.set_dword(doorbell(1), 1);
@@ -1624,18 +1627,6 @@ fn no_op_succeeds_with_slot_id_zero() {
     let event = rig.command(trb);
     assert_eq!(event.code, CC_SUCCESS);
     assert_eq!(event.slot_id, 0);
-}
-
-#[test]
-fn commands_of_the_later_slices_are_a_trb_error_with_the_slot_id_of_the_trb() {
-    // Address Device, Configure Endpoint, Evaluate Context, Reset Endpoint, Stop Endpoint,
-    // Set TR Dequeue Pointer, Reset Device.
-    let mut rig = running_rig();
-    for kind in 11..=17 {
-        let event = rig.command(command_trb(kind, 3));
-        assert_eq!(event.code, CC_TRB_ERROR, "command type {kind}");
-        assert_eq!(event.slot_id, 3, "command type {kind}");
-    }
 }
 
 #[test]
