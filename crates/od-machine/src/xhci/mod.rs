@@ -3,10 +3,12 @@
 //! Contract: `docs/specs/XHCI_DEVICE.md`.
 
 mod commands;
+mod contexts;
 mod controller;
 mod ports;
 mod regs;
 mod ring;
+mod slots;
 #[cfg(test)]
 mod tests;
 mod trb;
