@@ -1789,6 +1789,14 @@ impl Cr0Profile {
 /// Bits 12..=15 are `Unsupported` here conservatively (from memory: architecturally `#GP(0)` when the
 /// CPUID feature is absent).
 const EFER_SCE: u64 = 1;
+/// IA32_EFER.NXE (bit 11). Writable (SDM Vol. 3A Table 2-1); it may be set to 1 only when
+/// CPUID.80000001H:EDX.EXECUTE_DIS[20] = 1 (Vol. 3A Section 5.1.4, "Enumeration of Paging Features
+/// by CPUID", p. 5-6), and a WRMSR that sets a bit reserved in the MSR is `#GP(0)` (Vol. 2D WRMSR).
+const EFER_NXE: u64 = 1 << 11;
+/// IA32_EFER.LME (bit 8) and LMA (bit 10): a change of either is not modelled by the CPL0 set.
+const EFER_LME_LMA: u64 = (1 << 8) | (1 << 10);
+/// CPUID.80000001H:EDX bit 20 (NX / EXECUTE_DIS).
+const CPUID_EXT1_EDX_NX: u32 = 1 << 20;
 const EFER_FEATURE_BITS: u64 = 0xf << 12;
 const EFER_WRITABLE_KNOWN: u64 = EFER_SCE | (1 << 8) | (1 << 10) | (1 << 11) | EFER_FEATURE_BITS;
 
@@ -1802,15 +1810,16 @@ enum EferWrite {
     Accept,
 }
 
-/// Reserved bits (1..=7, 9, 16..=63) raise `#GP(0)`; the CPUID-dependent bits 12..=15 and any
-/// change of `LME`, `LMA` or `NXE` (the walker's EFER is kept separately and must stay valid;
-/// at active paging LME/LMA cannot change anyway) are `Unsupported`. Only `SCE` may differ.
-/// A change of LME while PG=1 is architecturally `#GP(0)` (from memory); it stays a conservative
-/// `Unsupported` here.
-const fn efer_write_decision(current: u64, value: u64) -> EferWrite {
-    if value & !EFER_WRITABLE_KNOWN != 0 {
+/// Reserved bits (1..=7, 9, 16..=63) raise `#GP(0)`, and so does setting `NXE` (0 to 1) while the
+/// set's CPUID profile does not declare NX (`nx_declared`; S2-25 NXE slice). The CPUID-dependent
+/// bits 12..=15 and any change of `LME` or `LMA` (at active paging they cannot change anyway) are
+/// `Unsupported`. `SCE` and `NXE` may differ; a retained `NXE = 1` is not a change, and clearing
+/// `NXE` needs no CPUID bit. A change of LME while PG=1 is architecturally `#GP(0)` (from memory);
+/// it stays a conservative `Unsupported` here.
+const fn efer_write_decision(current: u64, value: u64, nx_declared: bool) -> EferWrite {
+    if value & !EFER_WRITABLE_KNOWN != 0 || (value & !current & EFER_NXE != 0 && !nx_declared) {
         EferWrite::Reserved
-    } else if value & EFER_FEATURE_BITS != 0 || (value ^ current) & !EFER_SCE != 0 {
+    } else if value & EFER_FEATURE_BITS != 0 || (value ^ current) & EFER_LME_LMA != 0 {
         EferWrite::Unsupported
     } else {
         EferWrite::Accept
@@ -2052,10 +2061,14 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// profile chosen by [`Self::with_msr`]. The set does not own the EFER value: `cell`
     /// holds the caller's guest-visible EFER and supersedes the value of the profile for
     /// `RDMSR` and as the base of the write checks. A write replaces the cell only when it is
-    /// admitted (see `execute_efer_write`): `LME`, `LMA` and `NXE` must equal the cell (so the
-    /// translation walker's EFER, which the caller keeps separate, stays valid) and only
-    /// `SCE` (bit 0) may change; reserved bits set raise `#GP(0)`, other values are
-    /// `Unsupported`; both without a state change. Without this member the EFER stays
+    /// admitted (see `efer_write_decision`): `LME` and `LMA` must equal the cell; `SCE` (bit 0)
+    /// and, since the S2-25 NXE slice, `NXE` (bit 11) may change. Setting `NXE` needs NX in the
+    /// set's own CPUID member (`CPUID.80000001H:EDX[20]`), else `#GP(0)`; clearing it is always
+    /// allowed. An `NXE` change needs [`Self::with_cpu_owned_cr3`] (else `Unsupported`) and
+    /// ends the run right after the retired `WRMSR` with
+    /// [`Cpl0ProfileSetExit::TranslationContextChange`] of [`TranslationContextChange::EferWrite`],
+    /// so the translation owner rebuilds its walker. Reserved bits set raise `#GP(0)`, other
+    /// values are `Unsupported`; both without a state change. Without this member the EFER stays
     /// read-only (`WRMSR` is `Unsupported`).
     pub const fn with_msr_efer_write(mut self, cell: &'a Cell<u64>) -> Self {
         self.msr_efer = Some(cell);
@@ -2962,8 +2975,20 @@ pub struct RunResult {
 /// Mandatory execution-boundary effect emitted by bounded control-register writes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TranslationContextChange {
-    Cr3Write { old_cr3: u64, new_cr3: u64 },
-    Cr0Write { old_cr0: u64, new_cr0: u64 },
+    Cr3Write {
+        old_cr3: u64,
+        new_cr3: u64,
+    },
+    Cr0Write {
+        old_cr0: u64,
+        new_cr0: u64,
+    },
+    /// A retired `WRMSR IA32_EFER` that changed `NXE` under the CPL0 set (S2-25 NXE slice): the
+    /// walker must be rebuilt for `new_efer` (the full guest value) before the next access.
+    EferWrite {
+        old_efer: u64,
+        new_efer: u64,
+    },
 }
 
 /// A successful guest page invalidation request emitted by the bounded CPU profile.
@@ -47806,14 +47831,35 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                             opcode: instruction.opcode.byte,
                         });
                     };
-                    match efer_write_decision(cell.get(), value) {
+                    // S2-25 NXE slice: NX is declared only by the set's own CPUID member.
+                    let nx_declared = cpuid_profile.is_some_and(|selection| {
+                        selection.query(0x8000_0001, 0).edx & CPUID_EXT1_EDX_NX != 0
+                    });
+                    let current = cell.get();
+                    match efer_write_decision(current, value, nx_declared) {
                         EferWrite::Reserved => return Ok(gp0()),
                         EferWrite::Unsupported => {
                             return Ok(StepOutcome::Unsupported {
                                 opcode: instruction.opcode.byte,
                             });
                         }
-                        EferWrite::Accept => cell.set(value),
+                        EferWrite::Accept => {
+                            if (current ^ value) & EFER_NXE != 0 {
+                                // NXE changes the walk of every later access: the translation
+                                // owner must learn of it before the next fetch, so the effect
+                                // needs the set's translation sink (the cpu-owned CR3 member).
+                                let Some(sink) = cpu_owned_cr3 else {
+                                    return Ok(StepOutcome::Unsupported {
+                                        opcode: instruction.opcode.byte,
+                                    });
+                                };
+                                sink.set(Some(TranslationContextChange::EferWrite {
+                                    old_efer: current,
+                                    new_efer: value,
+                                }));
+                            }
+                            cell.set(value);
+                        }
                     }
                     state.rip = next_rip;
                     return Ok(StepOutcome::Advanced);

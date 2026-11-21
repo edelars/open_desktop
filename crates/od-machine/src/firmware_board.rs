@@ -3336,6 +3336,12 @@ impl LoadedFirmwareBoard {
             .map(|configs| std::rc::Rc::new(FetchCacheSweep::new(configs)));
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
+        // S2-25 NXE slice: the walker's EFER is the board's `FIRMWARE_EFER` with the NXE bit of the
+        // guest EFER (a guest `WRMSR IA32_EFER` that cleared NXE in an earlier run keeps it clear);
+        // a retired NXE write of a quantum reaches the next one through `report.efer`.
+        const EFER_NXE: u64 = 1 << 11;
+        let mut walker_efer =
+            (FIRMWARE_EFER & !EFER_NXE) | (self.vcpus[BOOT_VCPU_INDEX].guest_efer & EFER_NXE);
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
         // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
         // entry), the CR2 the guest left is kept in `guest_cr2` and fed back on entry,
@@ -3510,7 +3516,7 @@ impl LoadedFirmwareBoard {
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
                 board.page_table_root,
-                FIRMWARE_EFER,
+                walker_efer,
                 context,
                 quantum_budget,
                 INTEGER_FLAGS,
@@ -3540,6 +3546,7 @@ impl LoadedFirmwareBoard {
             );
             // The walker of the next quantum starts from the CR3 the guest left.
             board.page_table_root = report.cr3;
+            walker_efer = report.efer;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
             page_faults_delivered += report.delivered_page_faults;
