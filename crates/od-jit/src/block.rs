@@ -4515,6 +4515,59 @@ mod tests {
     }
 
     #[test]
+    fn sse_fp_arithmetic_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-37: the interpreter executes ADD/SUB/MUL/DIV PS/PD/SS/SD through the general core; the JIT has
+        // no lowering for them, so the block is not built, whether the decoder returns the general
+        // operation or one of the narrow profile operations for the same encoding.
+        const ENTRY: u64 = 0x4f40;
+        for bytes in [
+            &[0x0f, 0x58, 0xc1][..],   // ADDPS xmm0, xmm1 (narrow profile operation)
+            &[0x66, 0x0f, 0x5c, 0xd1], // SUBPD xmm2, xmm1 (narrow profile operation)
+            &[0xf3, 0x0f, 0x59, 0xc1], // MULSS xmm0, xmm1
+            &[0xf2, 0x0f, 0x5e, 0x00], // DIVSD xmm0, [rax]
+            &[0x0f, 0x58, 0x03],       // ADDPS xmm0, [rbx] (general operation)
+            &[0x66, 0x44, 0x0f, 0x5e, 0xcf], // DIVPD xmm9, xmm7 (REX.R)
+            &[0xf3, 0x0f, 0x5c, 0x4b, 0x10], // SUBSS xmm1, [rbx+0x10]
+            &[0xf2, 0x41, 0x0f, 0x59, 0x00], // MULSD xmm0, [r8]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseFpArith { .. }
+                        | Operation::AddpsRegister { .. }
+                        | Operation::SubpdRegister { .. }
+                        | Operation::MulssRegister { .. }
+                        | Operation::DivpdRegister { .. }
+                        | Operation::DivsdMemoryRax
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x58, 0x03][..],
+            &[0xf0, 0x66, 0x0f, 0x5e, 0xc1],
+            &[0xf2, 0xf0, 0x0f, 0x5c, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

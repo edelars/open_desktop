@@ -69,6 +69,55 @@ pub enum Sse3Source {
     Memory(MemoryOperand),
 }
 
+/// The four arithmetic operations of the general SSE floating-point core (S2-37): Intel SDM Vol. 2A ADDPD
+/// pp. 3-16..3-18, ADDPS pp. 3-19..3-21, ADDSD pp. 3-22..3-23, ADDSS pp. 3-24..3-25, DIVPD pp. 3-267..3-269,
+/// DIVPS pp. 3-270..3-272, DIVSD pp. 3-273..3-274, DIVSS pp. 3-275..3-276; Vol. 2B MULPD pp. 4-142..4-144,
+/// MULPS pp. 4-145..4-147, MULSD pp. 4-148..4-149, MULSS pp. 4-150..4-151, SUBPD pp. 4-687..4-689, SUBPS
+/// pp. 4-690..4-692, SUBSD pp. 4-693..4-694, SUBSS pp. 4-695..4-696 (edition 325462-093US).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpArithKind {
+    /// `0F 58`
+    Add,
+    /// `0F 59`
+    Mul,
+    /// `0F 5C`
+    Sub,
+    /// `0F 5E`
+    Div,
+}
+
+/// The operand shape selected by the mandatory prefix: none = packed binary32 (`PS`), `66` = packed
+/// binary64 (`PD`), `F3` = scalar binary32 (`SS`), `F2` = scalar binary64 (`SD`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpShape {
+    Packed32,
+    Packed64,
+    Scalar32,
+    Scalar64,
+}
+
+impl SseFpShape {
+    /// Packed shapes are Exceptions Type 2 (Vol. 2A Table 2-19): a 128-bit memory operand that is not
+    /// 16-byte aligned is #GP(0). Scalar shapes are Type 3 (Table 2-20): no alignment requirement.
+    pub const fn is_packed(self) -> bool {
+        matches!(self, Self::Packed32 | Self::Packed64)
+    }
+
+    /// Whether the elements are binary64.
+    pub const fn is_double(self) -> bool {
+        matches!(self, Self::Packed64 | Self::Scalar64)
+    }
+
+    /// Bytes read from a memory source: 16 packed, 4 for SS, 8 for SD.
+    pub const fn memory_bytes(self) -> u64 {
+        match self {
+            Self::Packed32 | Self::Packed64 => 16,
+            Self::Scalar32 => 4,
+            Self::Scalar64 => 8,
+        }
+    }
+}
+
 /// The integer SSSE3 forms on XMM registers (Intel SDM Vol. 2B: PSHUFB pp. 4-421..4-425, PALIGNR
 /// pp. 4-216..4-219, PABSB/PABSW/PABSD pp. 4-177..4-182, PSIGNB/PSIGNW/PSIGND pp. 4-437..4-440,
 /// PMADDUBSW pp. 4-310..4-312, PMULHRSW pp. 4-375..4-378, PHADDW/PHADDD pp. 4-294..4-297, PHSUBW/PHSUBD
@@ -2465,6 +2514,18 @@ pub enum Operation {
         xmm: u8,
         operand: Sse41Operand,
         immediate: u8,
+    },
+    /// S2-37 (general SSE floating-point core): `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` with any XMM or memory
+    /// source (`[66|F2|F3] 0F 58/59/5C/5E /r`). `destination` is the first source and the result register;
+    /// `source` is the second source. Reached from [`decode`] in two ways: as the fallback for every form
+    /// the narrow profile decoder refuses, and by the executor, which rewrites the narrow profile operations
+    /// (`AddpsRegister`, `MulsdMemoryRax` and the like) into this operation when no narrow profile is
+    /// configured. Executed through `step_sse_fp_arith`.
+    SseFpArith {
+        kind: SseFpArithKind,
+        shape: SseFpShape,
+        destination: u8,
+        source: Sse3Source,
     },
     /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
     /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
@@ -12446,6 +12507,81 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// S2-37: `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` (`[66|F2|F3] 0F 58/59/5C/5E /r`) with an XMM or any memory
+    /// source, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode.
+    /// LOCK is #UD for every form (Vol. 2A Tables 2-19 and 2-20, "If preceded by a LOCK prefix (F0H)").
+    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model),
+    /// `66` together with `F2`/`F3` (the hardware ignores the `66` there; the model does not guess) and
+    /// the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored; REX.R/B extend the
+    /// registers, REX.X/B and `67` the address.
+    fn decode_sse_fp_arith(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = match opcode.byte {
+            0x58 => SseFpArithKind::Add,
+            0x59 => SseFpArithKind::Mul,
+            0x5c => SseFpArithKind::Sub,
+            0x5e => SseFpArithKind::Div,
+            _ => return Ok(None),
+        };
+        let shape = match (prefixes.group1, prefixes.operand_override) {
+            (None, false) => SseFpShape::Packed32,
+            (None, true) => SseFpShape::Packed64,
+            (Some(0xf3), false) => SseFpShape::Scalar32,
+            (Some(0xf2), false) => SseFpShape::Scalar64,
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let size = if shape == SseFpShape::Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            };
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::SseFpArith {
+                kind,
+                shape,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -12503,6 +12639,8 @@ pub fn decode(
         (OpcodeMap::Escape0f, 0xb8) | (OpcodeMap::Escape0f38, 0xf0 | 0xf1) => {
             fetch.decode_popcnt_crc32()
         }
+        // S2-37: ADD/MUL/SUB/DIV `PS/PD/SS/SD` outside the narrow profile forms.
+        (OpcodeMap::Escape0f, 0x58 | 0x59 | 0x5c | 0x5e) => fetch.decode_sse_fp_arith(),
         _ => return profile,
     };
     match general {

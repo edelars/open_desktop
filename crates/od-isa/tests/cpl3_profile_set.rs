@@ -485,6 +485,21 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0x66, 0x0f, 0x3a, 0x42, 0xc1, 0x02],
             0x42,
         ),
+        // S2-37: the general ADD/SUB/MUL/DIV forms (any memory source, REX.W, the two-byte REX forms) are not in the
+        // Linux live profile either; only the exact narrow forms of that profile run at CPL3.
+        ("addps xmm0,[rdi]", &[0x0f, 0x58, 0x07], 0x58),
+        ("subpd xmm1,[rsi]", &[0x66, 0x0f, 0x5c, 0x0e], 0x5c),
+        (
+            "mulss xmm0,[rdi+0x10]",
+            &[0xf3, 0x0f, 0x59, 0x47, 0x10],
+            0x59,
+        ),
+        ("divsd xmm2,[rbx]", &[0xf2, 0x0f, 0x5e, 0x13], 0x5e),
+        (
+            "addpd xmm1,xmm2 (REX.W)",
+            &[0x66, 0x48, 0x0f, 0x58, 0xca],
+            0x58,
+        ),
         // S2-56 slice A: POPCNT, SSE4.2 and CRC32 are not declared either (S2-57); the forms are refused at CPL3.
         ("pcmpgtq xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x37, 0xc1], 0x37),
         ("pcmpgtq xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x37, 0x07], 0x37),
@@ -1137,6 +1152,8 @@ fn lock_before_an_sse3_form_or_fisttp_is_invalid_opcode_without_change() {
         &[0x66, 0xf0, 0x0f, 0x38, 0x40, 0xc1][..], // pmulld with LOCK after 66
         &[0xf0, 0x66, 0x0f, 0x3a, 0x16, 0xc0, 0x01][..], // lock pextrd eax, xmm0, 1
         &[0x66, 0x0f, 0x38, 0x2a, 0xc1][..], // movntdqa xmm0, xmm1 (register form)
+        &[0xf0, 0x0f, 0x58, 0x07][..],       // lock addps xmm0, [rdi]
+        &[0xf0, 0xf2, 0x0f, 0x5e, 0x13][..], // lock divsd xmm2, [rbx]
         &[0xf0, 0x66, 0x0f, 0x38, 0x37, 0x07][..], // lock pcmpgtq xmm0, [rdi]
         &[0xf0, 0xf3, 0x0f, 0xb8, 0x07][..], // lock popcnt eax, [rdi]
         &[0xf3, 0xf0, 0x48, 0x0f, 0xb8, 0xc1][..], // popcnt with LOCK after F3

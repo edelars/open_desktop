@@ -8,8 +8,8 @@ use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse41Kind, Sse41Operand, Sse128MoveKind, Ssse3IntKind, canonical,
-    general_protection,
+    Sse3Source, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind, SseFpShape, Ssse3IntKind,
+    canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -17,6 +17,7 @@ use crate::memory::{
 };
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
+use crate::sse_fp;
 use crate::state::{X87State, X87Tag};
 use crate::swapgs::SwapgsProfile;
 #[cfg(test)]
@@ -41271,6 +41272,47 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    // S2-37: the narrow profile operations of the sixteen arithmetic forms (`AddpsRegister`,
+    // `MulsdMemoryRax` and the like) execute only under their own explicit profile. With none of those
+    // profiles configured, and outside the CPL0/CPL3 profile set (whose FP member keeps its own state), the
+    // same encodings run as the general operation, so a canonical register or `[rax]` form behaves like
+    // every other form of the instruction instead of stopping as `Unsupported`.
+    let narrow_fp_arith_profile = configured_subpd_register_controls.is_some()
+        || configured_subpd_memory_rax_controls.is_some()
+        || configured_mulpd_memory_rax_controls.is_some()
+        || configured_mulpd_register_controls.is_some()
+        || configured_addpd_register_controls.is_some()
+        || configured_addpd_memory_rax_controls.is_some()
+        || configured_addsd_register_controls.is_some()
+        || configured_addsd_memory_rax_profile.is_some()
+        || configured_addss_register_controls.is_some()
+        || configured_addss_memory_rax_controls.is_some()
+        || configured_addps_register_controls.is_some()
+        || configured_addps_memory_rax_unmasked_controls.is_some()
+        || configured_subps_memory_rax_unmasked_controls.is_some()
+        || configured_divpd_register_controls.is_some()
+        || divpd_memory_enabled
+        || configured_divsd_register_controls.is_some()
+        || configured_divps_register_controls.is_some()
+        || configured_divps_memory_rax_unmasked_controls.is_some()
+        || configured_divss_register_controls.is_some()
+        || configured_mulsd_register_controls.is_some()
+        || configured_mulss_register_controls.is_some()
+        || configured_mulps_register_controls.is_some()
+        || configured_mulps_memory_rax_unmasked_controls.is_some()
+        || configured_subps_register_controls.is_some()
+        || configured_subsd_register_controls.is_some()
+        || configured_subss_register_controls.is_some()
+        || configured_scalar_float_memory_rax_profile.is_some();
+    let instruction = match sse_fp_arith_from_narrow(instruction.operation) {
+        Some(general) if !narrow_fp_arith_profile && control_policy.is_none() => {
+            long_decode::Instruction {
+                operation: general,
+                ..instruction
+            }
+        }
+        _ => instruction,
+    };
     let minss_invalid_controls = if cr4_profile
         == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
         && matches!(instruction.operation, Operation::MinssRegisterMasked { .. })
@@ -41444,7 +41486,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                                 | Operation::Ssse3Int { .. }
                                 | Operation::Sse41 { .. }
                                 | Operation::FisttpMemory { .. }
-                        ))
+                        )
+                        || matches!(operation, Operation::SseFpArith { .. })
+                            && !narrow_fp_arith_profile)
                         && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
                         && cr4_profile == Some(Cr4Profile::FpInitLong64V1)
                 }
@@ -50667,9 +50711,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         // S2-54 slice C: the non-FP SSE3 forms need the local SSE state, FISTTP the local x87 state;
         // CPL3 keeps its own profile list (neither is in it).
+        // S2-37: the general floating-point arithmetic needs the local SSE state as well; CPL3 keeps its own
+        // profile list (the general form is not in it).
         Operation::Sse3Permute { .. } | Operation::Ssse3Int { .. } | Operation::Sse41 { .. } => {
             state.sse.is_some()
         }
+        // A configured narrow profile of the sixteen arithmetic forms is a closed set: every other encoding
+        // of them stays `Unsupported` while it is active.
+        Operation::SseFpArith { .. } => state.sse.is_some() && !narrow_fp_arith_profile,
         Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`) are general-register forms with
         // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and in the
@@ -51631,6 +51680,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
         }
         return Ok(outcome);
+    }
+    // S2-37: the general floating-point arithmetic commits here as well (it neither reads nor writes RFLAGS).
+    if let Operation::SseFpArith {
+        kind,
+        shape,
+        destination,
+        source,
+    } = instruction.operation
+    {
+        return step_sse_fp_arith(
+            state,
+            memory,
+            context,
+            (kind, shape, destination, source),
+            instruction.opcode.byte,
+            next_rip,
+        );
     }
     // S2-55 slice A: the integer SSE4.1 forms commit here as well.
     if let Operation::Sse41 {
@@ -62994,11 +63060,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
         | Operation::Sse41 { .. }
+        | Operation::SseFpArith { .. }
         | Operation::Popcnt { .. }
         | Operation::Crc32 { .. }
         | Operation::FisttpMemory { .. } => {
             unreachable!(
-                "S2-54 slice C and D, S2-55 slice A and S2-56 slice A forms commit before dispatch"
+                "S2-54 slice C and D, S2-55 slice A, S2-56 slice A and S2-37 forms commit before dispatch"
             )
         }
         Operation::MoveIntegerToXmm { .. }
@@ -70127,6 +70194,241 @@ fn step_sse41(
     sse.xmm[usize::from(xmm)] = result;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+/// S2-37: the general operation equal to one of the narrow profile operations of the sixteen arithmetic
+/// forms, so that a canonical register or `[rax]` encoding takes the same path as every other one. The
+/// `[rax]` forms read through a 64-bit `[rax]` operand and use XMM0 as the destination, as their decoder
+/// fixes; `MulsdMemory` already carries its operand.
+fn sse_fp_arith_from_narrow(operation: Operation) -> Option<Operation> {
+    use SseFpArithKind::{Add, Div, Mul, Sub};
+    use SseFpShape::{Packed32, Packed64, Scalar32, Scalar64};
+    let register = |kind, shape, destination, source| Operation::SseFpArith {
+        kind,
+        shape,
+        destination,
+        source: Sse3Source::Register(source),
+    };
+    let rax = |kind, shape: SseFpShape| Operation::SseFpArith {
+        kind,
+        shape,
+        destination: 0,
+        source: Sse3Source::Memory(MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: if shape == Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+        }),
+    };
+    Some(match operation {
+        Operation::AddpsRegister {
+            destination,
+            source,
+        } => register(Add, Packed32, destination, source),
+        Operation::AddpdRegister {
+            destination,
+            source,
+        } => register(Add, Packed64, destination, source),
+        Operation::AddssRegister {
+            destination,
+            source,
+        } => register(Add, Scalar32, destination, source),
+        Operation::AddsdRegister {
+            destination,
+            source,
+        } => register(Add, Scalar64, destination, source),
+        Operation::SubpsRegister {
+            destination,
+            source,
+        } => register(Sub, Packed32, destination, source),
+        Operation::SubpdRegister {
+            destination,
+            source,
+        } => register(Sub, Packed64, destination, source),
+        Operation::SubssRegister {
+            destination,
+            source,
+        } => register(Sub, Scalar32, destination, source),
+        Operation::SubsdRegister {
+            destination,
+            source,
+        } => register(Sub, Scalar64, destination, source),
+        Operation::MulpsRegister {
+            destination,
+            source,
+        } => register(Mul, Packed32, destination, source),
+        Operation::MulpdRegister {
+            destination,
+            source,
+        } => register(Mul, Packed64, destination, source),
+        Operation::MulssRegister {
+            destination,
+            source,
+        } => register(Mul, Scalar32, destination, source),
+        Operation::MulsdRegister {
+            destination,
+            source,
+        } => register(Mul, Scalar64, destination, source),
+        Operation::DivpsRegister {
+            destination,
+            source,
+        } => register(Div, Packed32, destination, source),
+        Operation::DivpdRegister {
+            destination,
+            source,
+        } => register(Div, Packed64, destination, source),
+        Operation::DivssRegister {
+            destination,
+            source,
+        } => register(Div, Scalar32, destination, source),
+        Operation::DivsdRegister {
+            destination,
+            source,
+        } => register(Div, Scalar64, destination, source),
+        Operation::AddpsMemoryRax => rax(Add, Packed32),
+        Operation::AddpdMemoryRax => rax(Add, Packed64),
+        Operation::AddssMemoryRax => rax(Add, Scalar32),
+        Operation::AddsdMemoryRax => rax(Add, Scalar64),
+        Operation::SubpsMemoryRax => rax(Sub, Packed32),
+        Operation::SubpdMemoryRax => rax(Sub, Packed64),
+        Operation::SubssMemoryRax => rax(Sub, Scalar32),
+        Operation::SubsdMemoryRax => rax(Sub, Scalar64),
+        Operation::MulpsMemoryRax => rax(Mul, Packed32),
+        Operation::MulpdMemoryRax => rax(Mul, Packed64),
+        Operation::MulssMemoryRax => rax(Mul, Scalar32),
+        Operation::MulsdMemoryRax => rax(Mul, Scalar64),
+        Operation::DivpsMemoryRax => rax(Div, Packed32),
+        Operation::DivpdMemoryRax => rax(Div, Packed64),
+        Operation::DivssMemoryRax => rax(Div, Scalar32),
+        Operation::DivsdMemoryRax => rax(Div, Scalar64),
+        Operation::MulsdMemory {
+            destination,
+            source,
+        } => Operation::SseFpArith {
+            kind: Mul,
+            shape: Scalar64,
+            destination,
+            source: Sse3Source::Memory(source),
+        },
+        _ => return None,
+    })
+}
+
+/// S2-37: `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` on the local SSE state (Intel SDM Vol. 2A Tables 2-19 (Type 2,
+/// packed) and 2-20 (Type 3, scalar); Vol. 1 §11.5). The arithmetic and the MXCSR policy are in
+/// [`sse_fp::arith`]; this function owns the gates, the operand access and the exception vector.
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries that
+///    control register). The CPUID gate is not modeled (S2-57); LOCK is a decoder `#UD`.
+/// 2. An MXCSR with reserved bits 31:16 is not an architectural value: `Unsupported`.
+/// 3. A memory source: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base); a packed
+///    operand that is not 16-byte aligned is `#GP(0)`; the whole operand range must be canonical; then one
+///    `read` of 16, 4 or 8 bytes (a memory fault, `#PF` included, is the backend's result).
+/// 4. The arithmetic. An unmasked exception leaves the destination unchanged, sets the detected flags in MXCSR
+///    and raises `#XM` (vector 19) when CR4.OSXMMEXCPT = 1 or `#UD` when it is 0; without CR4 in the state
+///    the vector is not known and the instruction is `Unsupported` with nothing changed.
+///
+/// The alignment-check exception `#AC` of the scalar forms (Table 2-20) is not modeled: an unaligned scalar
+/// operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in the
+/// S2-34 moves, instead of guessed. RFLAGS is neither read nor written; RIP advances only on success.
+fn step_sse_fp_arith(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, shape, destination, source): (SseFpArithKind, SseFpShape, u8, Sse3Source),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let sse = state
+        .sse
+        .as_ref()
+        .expect("SSE floating-point arithmetic state was prevalidated");
+    let mxcsr = sse.mxcsr;
+    if mxcsr & sse_fp::MXCSR_RESERVED != 0 {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    let mut raw = [0u8; 16];
+    match source {
+        Sse3Source::Register(index) => raw = sse.xmm[usize::from(index)],
+        Sse3Source::Memory(operand) => {
+            let address = match operand.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if shape.is_packed() && address & 15 != 0 {
+                return fault_general_protection();
+            }
+            let length = shape.memory_bytes() as usize;
+            if let Err(error) = operand.access_range_address_48(state, next_rip, length) {
+                return report_memory_error(error);
+            }
+            if !shape.is_packed()
+                && address & (shape.memory_bytes() - 1) != 0
+                && context.privilege == PrivilegeLevel::Ring3
+                && state.rflags & (1 << 18) != 0
+                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+            {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            if let Err(error) = memory.read(address, context, &mut raw[..length]) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let destination_index = usize::from(destination);
+    let outcome = sse_fp::arith(
+        kind,
+        shape,
+        state.sse.as_ref().expect("checked above").xmm[destination_index],
+        raw,
+        mxcsr,
+    );
+    if outcome.fault {
+        let Some(cr4) = state.cr4 else {
+            return Ok(StepOutcome::Unsupported { opcode });
+        };
+        state.sse.as_mut().expect("checked above").mxcsr = mxcsr | outcome.flags;
+        return fault(if cr4 & CR4_OSXMMEXCPT != 0 { 19 } else { 6 });
+    }
+    let sse = state.sse.as_mut().expect("checked above");
+    sse.mxcsr = mxcsr | outcome.flags;
+    sse.xmm[destination_index] = outcome.result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+fn fault_general_protection() -> Result<StepOutcome, MemoryError> {
+    Ok(StepOutcome::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    }))
 }
 
 /// CRC-32C accumulation (Intel SDM Vol. 2A CRC32 "Operation", p. 3-205): the polynomial 11EDC6F41H with
@@ -198480,14 +198782,16 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
         }
 
-        // Generic interpreter dispatch has no ADDPS controls and stays closed.
+        // S2-37: generic interpreter dispatch has no ADDPS controls and runs the general core: 0 + 0 is
+        // +0 without any flag, so only RIP moves past the instruction.
         let mut generic = LongModeState::default();
         generic.rip = 0x2b300;
         generic.sse = Some(SseState {
             xmm: [[0; 16]; 16],
             mxcsr: 0x1f80,
         });
-        let before = generic.clone();
+        let mut expected = generic.clone();
+        expected.rip += code.len() as u64;
         let mut memory = Memory::at(&code, generic.rip);
         assert_eq!(
             run(
@@ -198501,9 +198805,9 @@ mod swapgs_profile_tests {
                 || false,
             )
             .exit,
-            RunExit::Unsupported { opcode: 0x58 }
+            RunExit::InstructionBudgetExhausted
         );
-        assert_eq!(generic, before);
+        assert_eq!(generic, expected);
         assert!(memory.accesses.is_empty());
 
         // Existing sticky IE/DE/PE bits do not retrigger when a zero sum
@@ -198693,14 +198997,16 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
         }
 
-        // Generic interpreter dispatch has no ADDSS controls and stays closed.
+        // S2-37: generic interpreter dispatch has no ADDSS controls and runs the general core: 0 + 0 is
+        // +0 without any flag, so only RIP moves past the instruction.
         let mut generic = LongModeState::default();
         generic.rip = 0x2b300;
         generic.sse = Some(SseState {
             xmm: [[0; 16]; 16],
             mxcsr: 0x1f80,
         });
-        let before = generic.clone();
+        let mut expected = generic.clone();
+        expected.rip += code.len() as u64;
         let mut memory = Memory::at(&code, generic.rip);
         assert_eq!(
             run(
@@ -198714,9 +199020,9 @@ mod swapgs_profile_tests {
                 || false,
             )
             .exit,
-            RunExit::Unsupported { opcode: 0x58 }
+            RunExit::InstructionBudgetExhausted
         );
-        assert_eq!(generic, before);
+        assert_eq!(generic, expected);
         assert!(memory.accesses.is_empty());
 
         // Existing sticky IE/DE/PE bits do not retrigger when a zero sum
@@ -212238,7 +212544,13 @@ mod cvtsi2ss_r64_memory_profile_tests {
             .exit,
             RunExit::Unsupported { .. }
         ));
-        assert_eq!(memory.fetches, [0x7050, 0x7051, 0x7052, 0x7053]);
+        // S2-37: the profile decoder refuses the form and the general decoder fetches the bytes once more.
+        assert_eq!(
+            memory.fetches,
+            [
+                0x7050, 0x7051, 0x7052, 0x7053, 0x7050, 0x7051, 0x7052, 0x7053
+            ]
+        );
         assert!(memory.accesses.is_empty());
         assert_eq!(state, before);
 
@@ -212468,8 +212780,16 @@ mod cvtsi2ss_r64_memory_profile_tests {
             },
             || false,
         );
-        assert!(matches!(generic_result.exit, RunExit::Unsupported { .. }));
-        assert!(generic.accesses.is_empty());
+        // S2-37: without the narrow profile the encoding runs through the general core. The destination is
+        // 0xa5a5a5a5a5a5a5a5 (about -2^-421, biased exponent 0x25a) in both lanes and the operand lanes are about 2^-911 and 2^-783:
+        // the rounded differences are the destination again, inexact, so only PE is set.
+        assert_eq!(generic_result.exit, RunExit::StopAddress);
+        assert_eq!(
+            generic.accesses,
+            [(AccessKind::Read, generic.data_base, 16)]
+        );
+        assert_eq!(generic_state.sse.as_ref().unwrap().mxcsr, 0x1fa0);
+        assert_eq!(generic_state.sse.as_ref().unwrap().xmm, [[0xa5; 16]; 16]);
 
         for (controls, vector) in [
             (
@@ -215700,16 +216020,25 @@ mod cvtsi2ss_r64_memory_profile_tests {
             mxcsr: 0x1f80,
         });
         let mut unconfigured_memory = Memory::at(&code, 0x5300);
+        // S2-37: without the narrow profile the encoding runs through the general core: it reads the m32
+        // operand (unmapped here, so the backend error is the result) and changes nothing.
+        let before_unconfigured = unconfigured.clone();
         assert_eq!(
             step(
                 &mut unconfigured,
                 &mut unconfigured_memory,
                 AccessContext::default()
-            )
-            .unwrap(),
-            StepOutcome::Unsupported { opcode: 0x58 },
+            ),
+            Err(MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Read,
+            })
         );
-        assert!(unconfigured_memory.accesses.is_empty());
+        assert_eq!(unconfigured, before_unconfigured);
+        assert_eq!(
+            unconfigured_memory.accesses,
+            [(AccessKind::Read, 0x2000, 4)]
+        );
 
         for address in [0x0000_7fff_ffff_fffd, u64::MAX - 1] {
             let mut state = LongModeState::default();
@@ -216262,16 +216591,25 @@ mod cvtsi2ss_r64_memory_profile_tests {
             mxcsr: 0x1f80,
         });
         let mut unconfigured_memory = Memory::at(&code, 0x5300);
+        // S2-37: without the narrow profile the encoding runs through the general core: it reads the m32
+        // operand (unmapped here, so the backend error is the result) and changes nothing.
+        let before_unconfigured = unconfigured.clone();
         assert_eq!(
             step(
                 &mut unconfigured,
                 &mut unconfigured_memory,
                 AccessContext::default()
-            )
-            .unwrap(),
-            StepOutcome::Unsupported { opcode: 0x5c },
+            ),
+            Err(MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Read,
+            })
         );
-        assert!(unconfigured_memory.accesses.is_empty());
+        assert_eq!(unconfigured, before_unconfigured);
+        assert_eq!(
+            unconfigured_memory.accesses,
+            [(AccessKind::Read, 0x2000, 4)]
+        );
 
         for address in [0x0000_7fff_ffff_fffd, u64::MAX - 1] {
             let mut state = LongModeState::default();
@@ -216729,11 +217067,18 @@ mod cvtsi2ss_r64_memory_profile_tests {
             mxcsr: 0x1f80,
         });
         let mut memory = Memory::at(&code, 0x5300);
+        // S2-37: without the narrow profile the encoding runs through the general core: it reads the m32
+        // operand (address 0 is unmapped here, so the backend error is the result) and changes nothing.
+        let before_unconfigured = unconfigured.clone();
         assert_eq!(
-            step(&mut unconfigured, &mut memory, AccessContext::default()).unwrap(),
-            StepOutcome::Unsupported { opcode: 0x59 }
+            step(&mut unconfigured, &mut memory, AccessContext::default()),
+            Err(MemoryError::Unmapped {
+                address: 0,
+                access: AccessKind::Read,
+            })
         );
-        assert!(memory.accesses.is_empty());
+        assert_eq!(unconfigured, before_unconfigured);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0, 4)]);
     }
 
     #[test]
@@ -217288,11 +217633,18 @@ mod cvtsi2ss_r64_memory_profile_tests {
             mxcsr: 0x1f80,
         });
         let mut memory = Memory::at(&code, 0x5300);
+        // S2-37: without the narrow profile the encoding runs through the general core: it reads the m64
+        // operand (address 0 is unmapped here, so the backend error is the result) and changes nothing.
+        let before_unconfigured = unconfigured.clone();
         assert_eq!(
-            step(&mut unconfigured, &mut memory, AccessContext::default()).unwrap(),
-            StepOutcome::Unsupported { opcode: 0x59 }
+            step(&mut unconfigured, &mut memory, AccessContext::default()),
+            Err(MemoryError::Unmapped {
+                address: 0,
+                access: AccessKind::Read,
+            })
         );
-        assert!(memory.accesses.is_empty());
+        assert_eq!(unconfigured, before_unconfigured);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0, 8)]);
     }
 
     #[test]
@@ -217952,7 +218304,9 @@ mod cvtsi2ss_r64_memory_profile_tests {
     }
 
     #[test]
-    fn subsd_memory_rax_profile_does_not_enable_generic_runner() {
+    fn subsd_memory_rax_without_its_profile_runs_the_general_core() {
+        use crate::memory::AccessKind;
+
         let code = [0xf2, 0x0f, 0x5c, 0x00];
         let mut state = LongModeState::default();
         state.rip = 0x5700;
@@ -217974,10 +218328,16 @@ mod cvtsi2ss_r64_memory_profile_tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert!(memory.accesses.is_empty());
+        // S2-37: without the narrow profile the encoding runs through the general core. The destination is
+        // 0x5a5a5a5a5a5a5a5a (about 2^422) and the operand 0x0706050403020100 (about 2^-911): the rounded
+        // result is the destination again, inexact, so only PE is set.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = before.clone();
+        expected.rip = 0x5704;
+        expected.sse.as_mut().unwrap().mxcsr = 0x1fa0;
+        assert_eq!(state, expected);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
     }
 
     #[test]
@@ -218096,7 +218456,9 @@ mod cvtsi2ss_r64_memory_profile_tests {
     }
 
     #[test]
-    fn addsd_memory_rax_profile_does_not_enable_generic_runner() {
+    fn addsd_memory_rax_without_its_profile_runs_the_general_core() {
+        use crate::memory::AccessKind;
+
         let code = [0xf2, 0x0f, 0x58, 0x00];
         let mut state = LongModeState::default();
         state.rip = 0x5250;
@@ -218118,10 +218480,16 @@ mod cvtsi2ss_r64_memory_profile_tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
-        assert_eq!(result.instructions_executed, 0);
-        assert_eq!(state, before);
-        assert!(memory.accesses.is_empty());
+        // S2-37: without the narrow profile the encoding runs through the general core. The destination is
+        // 0x5a5a5a5a5a5a5a5a (about 2^422) and the operand 0x0706050403020100 (about 2^-911): the rounded
+        // result is the destination again, inexact, so only PE is set.
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        let mut expected = before.clone();
+        expected.rip = 0x5254;
+        expected.sse.as_mut().unwrap().mxcsr = 0x1fa0;
+        assert_eq!(state, expected);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
     }
 
     #[test]
@@ -219920,7 +220288,13 @@ mod cvtsi2ss_r64_memory_profile_tests {
             run(&mut state, &mut memory, disabled_and_ts).exit,
             RunExit::Unsupported { .. }
         ));
-        assert_eq!(memory.fetches, [0x6050, 0x6051, 0x6052, 0x6053]);
+        // S2-37: the profile decoder refuses the form and the general decoder fetches the bytes once more.
+        assert_eq!(
+            memory.fetches,
+            [
+                0x6050, 0x6051, 0x6052, 0x6053, 0x6050, 0x6051, 0x6052, 0x6053
+            ]
+        );
         assert!(memory.accesses.is_empty());
         assert_eq!(state, before);
 

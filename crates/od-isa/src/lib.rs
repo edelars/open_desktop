@@ -27,6 +27,7 @@ pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;
 pub mod sep;
+mod sse_fp;
 pub mod state;
 pub mod sti;
 pub mod swapgs;
