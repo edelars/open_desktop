@@ -44,6 +44,8 @@ mod lock_wait_metrics;
 mod nvme;
 mod nvram_device;
 mod page_walk;
+#[cfg(test)]
+mod page_walk_2m_matrix_tests;
 mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
@@ -53,8 +55,6 @@ mod paged_probe;
 mod paged_pump_backend;
 mod paged_vcpu_session;
 mod parallel_run;
-#[cfg(test)]
-mod page_walk_2m_matrix_tests;
 #[cfg(test)]
 mod parallel_snapshot_tests;
 mod pci_ecam;
