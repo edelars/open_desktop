@@ -41334,8 +41334,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || configured_subss_register_controls.is_some()
         || configured_scalar_float_memory_rax_profile.is_some();
     // S2-38: the same for the narrow profile operations of SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the
-    // integer conversions (RCP*/RSQRT* keep their narrow form). The composite FP-init MINSS profile is one of
-    // them.
+    // integer conversions; S2-37 adds the precision conversions (CVTPS2PD, CVTPD2PS, CVTSS2SD, CVTSD2SS) and
+    // RCP*/RSQRT*. The composite FP-init MINSS profile is one of them.
     let narrow_fp_misc_profile = cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
         || unmasked_minss_denormal
         || configured_minss_controls.is_some()
@@ -41382,7 +41382,19 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || configured_maxpd_memory_rax_controls.is_some()
         || configured_maxpd_memory_unmasked_rax_controls.is_some()
         || configured_maxps_memory_rax_controls.is_some()
-        || configured_maxps_memory_unmasked_rax_controls.is_some();
+        || configured_maxps_memory_unmasked_rax_controls.is_some()
+        || configured_cvtps2pd_register_controls.is_some()
+        || configured_cvtps2pd_memory_controls.is_some()
+        || configured_cvtpd2ps_register_controls.is_some()
+        || configured_cvtpd2ps_memory_controls.is_some()
+        || configured_cvtss2sd_register_controls.is_some()
+        || configured_cvtss2sd_memory_controls.is_some()
+        || configured_cvtsd2ss_register_controls.is_some()
+        || configured_cvtsd2ss_memory_controls.is_some()
+        || configured_rcpps_memory_rax_controls.is_some()
+        || configured_rcpss_memory_rax_controls.is_some()
+        || configured_rsqrtps_memory_rax_controls.is_some()
+        || configured_rsqrtss_memory_rax_controls.is_some();
     let general_fp_closed = |operation: Operation| match operation {
         Operation::SseFpArith {
             kind: SseFpArithKind::Sqrt | SseFpArithKind::Min | SseFpArithKind::Max,
@@ -70746,7 +70758,10 @@ enum FpForm {
 /// and the integer conversions. `double` is the 66 prefix, which the narrow COMISx/UCOMISx register operation
 /// does not record. The `[rax]` forms use XMM0 as the destination, as their decoder fixes.
 fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operation> {
-    use SseFpMiscKind::{Cmp, Comi, Cvtdq2ps, Cvtps2dq, Cvttps2dq, Ucomi};
+    use SseFpMiscKind::{
+        Cmp, Comi, Cvtdq2ps, Cvtpd2ps, Cvtps2dq, Cvtps2pd, Cvtsd2ss, Cvtss2sd, Cvttps2dq, Rcp,
+        Rsqrt, Ucomi,
+    };
     use SseFpShape::{Packed32, Packed64, Scalar32, Scalar64};
     let register = |kind, shape, destination, source, immediate| Operation::SseFpMisc {
         kind,
@@ -70828,6 +70843,47 @@ fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operati
         Operation::CmpsdMemoryRax { predicate } => rax(Cmp, Scalar64, predicate),
         Operation::CmppsMemoryRax { predicate } => rax(Cmp, Packed32, predicate),
         Operation::CmppdMemoryRax { predicate } => rax(Cmp, Packed64, predicate),
+        // S2-37 (remainder): the precision conversions and the reciprocal approximations.
+        Operation::Cvtps2pdRegister {
+            destination,
+            source,
+        } => register(Cvtps2pd, Packed32, destination, source, 0),
+        Operation::Cvtpd2psRegister {
+            destination,
+            source,
+        } => register(Cvtpd2ps, Packed64, destination, source, 0),
+        Operation::Cvtss2sdRegister {
+            destination,
+            source,
+        } => register(Cvtss2sd, Scalar32, destination, source, 0),
+        Operation::Cvtsd2ssRegister {
+            destination,
+            source,
+        } => register(Cvtsd2ss, Scalar64, destination, source, 0),
+        Operation::Cvtps2pdMemoryRax => rax(Cvtps2pd, Packed32, 0),
+        Operation::Cvtpd2psMemoryRax => rax(Cvtpd2ps, Packed64, 0),
+        Operation::Cvtss2sdMemoryRax => rax(Cvtss2sd, Scalar32, 0),
+        Operation::Cvtsd2ssMemoryRax => rax(Cvtsd2ss, Scalar64, 0),
+        Operation::RcppsRegister {
+            destination,
+            source,
+        } => register(Rcp, Packed32, destination, source, 0),
+        Operation::RcpssRegister {
+            destination,
+            source,
+        } => register(Rcp, Scalar32, destination, source, 0),
+        Operation::RsqrtpsRegister {
+            destination,
+            source,
+        } => register(Rsqrt, Packed32, destination, source, 0),
+        Operation::RsqrtssRegister {
+            destination,
+            source,
+        } => register(Rsqrt, Scalar32, destination, source, 0),
+        Operation::RcppsMemoryRax => rax(Rcp, Packed32, 0),
+        Operation::RcpssMemoryRax => rax(Rcp, Scalar32, 0),
+        Operation::RsqrtpsMemoryRax => rax(Rsqrt, Packed32, 0),
+        Operation::RsqrtssMemoryRax => rax(Rsqrt, Scalar32, 0),
         _ => return None,
     })
 }
@@ -70883,7 +70939,12 @@ fn step_sse_fp_arith(
         .as_ref()
         .expect("SSE floating-point arithmetic state was prevalidated");
     let mxcsr = sse.mxcsr;
-    if mxcsr & sse_fp::MXCSR_RESERVED != 0 {
+    // RCP*/RSQRT* do not read MXCSR (SDM: not affected by the rounding control, no exceptions).
+    let reads_mxcsr = !matches!(
+        form,
+        FpForm::Misc(SseFpMiscKind::Rcp | SseFpMiscKind::Rsqrt, _)
+    );
+    if reads_mxcsr && mxcsr & sse_fp::MXCSR_RESERVED != 0 {
         return Ok(StepOutcome::Unsupported { opcode });
     }
     // CMPxx predicates are imm8 bits 2:0; bits 7:3 are reserved in the legacy encoding (SDM): not modeled.
@@ -70898,15 +70959,20 @@ fn step_sse_fp_arith(
                 Ok(address) => address,
                 Err(fault) => return Ok(StepOutcome::Fault(fault)),
             };
-            if shape.is_packed() && address & 15 != 0 {
+            // The size and the alignment rule of the memory operand: the shape's, except for CVTPS2PD (8 bytes).
+            let (bytes, aligned) = match form {
+                FpForm::Misc(kind, _) => kind.source_access(shape),
+                FpForm::Arith(_) => (shape.memory_bytes(), shape.is_packed()),
+            };
+            if aligned && address & 15 != 0 {
                 return fault_general_protection();
             }
-            let length = shape.memory_bytes() as usize;
+            let length = bytes as usize;
             if let Err(error) = operand.access_range_address_48(state, next_rip, length) {
                 return report_memory_error(error);
             }
-            if !shape.is_packed()
-                && address & (shape.memory_bytes() - 1) != 0
+            if !aligned
+                && address & (bytes - 1) != 0
                 && context.privilege == PrivilegeLevel::Ring3
                 && state.rflags & (1 << 18) != 0
                 && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
@@ -70944,7 +71010,14 @@ fn step_sse_fp_arith(
     }
     let outcome = match form {
         FpForm::Arith(kind) => sse_fp::arith(kind, shape, first, raw, mxcsr),
-        FpForm::Misc(kind, immediate) => sse_fp::misc(kind, shape, first, raw, immediate, mxcsr),
+        FpForm::Misc(kind, immediate) => sse_fp::misc(
+            kind,
+            shape,
+            first,
+            raw,
+            immediate,
+            mxcsr & !sse_fp::MXCSR_RESERVED,
+        ),
     };
     if outcome.fault {
         let Some(cr4) = state.cr4 else {
@@ -156083,7 +156156,7 @@ mod tests {
             ),
             (
                 [0x7e7f_ffff, 0x7e80_0000, 0x7e80_0001, 0xfe80_0001],
-                [0x0080_0001, 0x0080_0000, 0x0000_0000, 0x8000_0000],
+                [0x0080_0001, 0x0000_0000, 0x0000_0000, 0x8000_0000],
             ),
             (
                 [0x4000_0000, 0x8000_0000, 0x7f80_0000, 0xc000_0000],
@@ -189138,11 +189211,18 @@ mod swapgs_profile_tests {
             },
             || false,
         );
-        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5a });
-        assert_eq!(result.instructions_executed, 0);
+        // S2-37: the generic dispatch (no CVTSD2SS controls) runs the general core: 0x6c6c6c6c6c6c6c6c is about
+        // 2^711, which overflows binary32 to +infinity (masked: OE and PE).
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
         assert_eq!(generic_memory.fetches, [0x9b00, 0x9b01, 0x9b02, 0x9b03]);
         assert!(generic_memory.accesses.is_empty());
-        assert_eq!(generic_state, generic_before);
+        let mut generic_expected = generic_before.clone();
+        generic_expected.rip = 0x9b04;
+        let sse = generic_expected.sse.as_mut().unwrap();
+        sse.xmm[0][..4].copy_from_slice(&0x7f80_0000u32.to_le_bytes());
+        sse.mxcsr = 0x1f80 | 0x28;
+        assert_eq!(generic_state, generic_expected);
     }
 
     #[test]

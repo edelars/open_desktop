@@ -4674,6 +4674,15 @@ mod tests {
             (&[0x0f, 0x5b, 0x03][..], 0x5b, true),              // CVTDQ2PS xmm0, [rbx]
             (&[0x66, 0x0f, 0x5b, 0xc1][..], 0x5b, false), // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
             (&[0xf3, 0x0f, 0x5b, 0x4b, 0x10][..], 0x5b, true), // CVTTPS2DQ xmm1, [rbx+0x10]
+            // S2-37 (remainder): the precision conversions and the reciprocal approximations.
+            (&[0x0f, 0x5a, 0x03][..], 0x5a, true), // CVTPS2PD xmm0, [rbx]
+            (&[0x66, 0x0f, 0x5a, 0x4b, 0x10][..], 0x5a, true), // CVTPD2PS xmm1, [rbx+0x10]
+            (&[0xf3, 0x4d, 0x0f, 0x5a, 0xca][..], 0x5a, true), // CVTSS2SD xmm9, xmm10 (REX.W)
+            (&[0xf2, 0x0f, 0x5a, 0xc1][..], 0x5a, false), // CVTSD2SS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x53, 0x03][..], 0x53, true),        // RCPPS xmm0, [rbx]
+            (&[0xf3, 0x0f, 0x53, 0xc1][..], 0x53, false), // RCPSS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x52, 0xc1][..], 0x52, false), // RSQRTPS xmm0, xmm1 (narrow profile operation)
+            (&[0xf3, 0x0f, 0x52, 0x4b, 0x10][..], 0x52, true), // RSQRTSS xmm1, [rbx+0x10]
         ] {
             let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
@@ -4699,6 +4708,8 @@ mod tests {
             &[0xf0, 0x0f, 0x2f, 0x03],
             &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
             &[0xf0, 0x66, 0x0f, 0x5b, 0x03],
+            &[0xf0, 0x0f, 0x5a, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0x53, 0x03],
         ] {
             let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
