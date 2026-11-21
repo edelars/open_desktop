@@ -392,6 +392,9 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
             0xc7,
         ),
+        // S2-21: CMPXCHG8B follows CMPXCHG16B: bare run and CPL0 set at Ring0 only, refused at CPL3.
+        ("cmpxchg8b [rdi]", &[0x0f, 0xc7, 0x0f], 0xc7),
+        ("lock cmpxchg8b [rdi]", &[0xf0, 0x0f, 0xc7, 0x0f], 0xc7),
         // S2-52/S2-53: LAHF, SAHF and PREFETCHW execute in the bare run and in the CPL0 set at Ring0
         // only; the CPL3 profile (the Linux live profile) does not list them, and they stay refused at
         // CPL3 even though the Windows CPUID profile (S2-57 slice) declares LAHF_SAHF_64 and PREFETCHW.

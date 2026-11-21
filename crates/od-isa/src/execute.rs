@@ -50837,6 +50837,27 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && cpu_owned_cr3.is_none()
                 }
         }
+        // S2-21: CMPXCHG8B (`[F0] [REX without W] 0F C7 /1 m64`; the decoder has already validated
+        // the prefixes and refuses the register form as #UD). One eight-byte
+        // `GuestMemory::atomic_compare_exchange_integer` call. Admitted exactly where CMPXCHG16B
+        // is: the CPL0 set at Ring0 and the bare run; never at CPL3 (`cpl3_allows` does not list
+        // it: the CPL3 set is the Linux live profile). The interpreter does not gate on CPUID.CX8:
+        // OdX8664V1Neutral already declares the bit (S6-14h); the Windows profile does not declare
+        // it until the S2-57 acceptance.
+        Operation::Cmpxchg8b { .. } => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xc7
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                && if control_policy.is_some() {
+                    context.privilege == PrivilegeLevel::Ring0
+                } else {
+                    cr0_profile.is_none()
+                        && cr4_profile.is_none()
+                        && mov_cr3_profile.is_none()
+                        && cpu_owned_cr3.is_none()
+                }
+        }
         // S2-54 slice C: the non-FP SSE3 forms need the local SSE state, FISTTP the local x87 state;
         // CPL3 keeps its own profile list (neither is in it).
         // S2-37: the general floating-point arithmetic needs the local SSE state as well; CPL3 keeps its own
@@ -64151,6 +64172,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::PushGsMem { .. }
         | Operation::LockCmpxchgMem { .. }
         | Operation::Cmpxchg16b { .. }
+        | Operation::Cmpxchg8b { .. }
         | Operation::LockIncMem { .. }
         | Operation::LockDecMem { .. }
         | Operation::LockOrMem { .. }
@@ -73694,6 +73716,37 @@ fn transfer(
                 state.rflags &= !crate::ZF;
                 state.gpr[Register::Rax as usize] = observed as u64;
                 state.gpr[Register::Rdx as usize] = (observed >> 64) as u64;
+            }
+        }
+        // S2-21: CMPXCHG8B m64 (SDM Vol. 2A, 3-196..3-198). Compare EDX:EAX with the operand and,
+        // when equal, store ECX:EBX; the destination is written on both branches (a read-only page
+        // faults on a failed compare too). One eight-byte `atomic_compare_exchange_integer` call (the
+        // atomicity of the memory operation is defined by the `GuestMemory` contract, S6-20/S6-31;
+        // the operand has no alignment requirement and the call handles line- and page-crossing
+        // operands as it does for the other qword LOCK forms). The address (a non-canonical start or
+        // last byte is #GP(0), #SS(0) for an RSP/RBP based operand) is resolved before any access.
+        // The CPU state commits only after the call succeeded: ZF = 1 on equality (RAX/RDX
+        // untouched), otherwise ZF = 0 and EDX:EAX = the old memory value through dword register
+        // writes (zero-extended into RDX/RAX); CF, PF, AF, SF and OF are unaffected. A fault leaves
+        // memory, registers and flags unchanged. LOCK is optional and has no further effect here.
+        Operation::Cmpxchg8b { destination } => {
+            let address = destination.access_address_48(state, next_rip)?;
+            let low = |register: Register| state.gpr[register as usize] & 0xffff_ffff;
+            let expected = (low(Register::Rdx) << 32) | low(Register::Rax);
+            let replacement = (low(Register::Rcx) << 32) | low(Register::Rbx);
+            let observed = memory.atomic_compare_exchange_integer(
+                address,
+                context,
+                OperandSize::Qword,
+                expected,
+                replacement,
+            )?;
+            if observed == expected {
+                state.rflags |= crate::ZF;
+            } else {
+                state.rflags &= !crate::ZF;
+                state.gpr[Register::Rax as usize] = observed & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = observed >> 32;
             }
         }
         Operation::LockIncMem { destination } => {
