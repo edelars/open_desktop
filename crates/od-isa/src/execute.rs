@@ -2222,8 +2222,12 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// the bare `FNINIT` (`DB E3`) and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`, no prefix,
     /// no REX), together with the exact `MOV CR0, RDI` (`0F 22 C7`) of `native_write_cr0`. `cell`
     /// holds the caller's guest FP state (x87 environment and registers, MXCSR, XMM) between runs;
-    /// it is NOT part of `LongModeState` (whose `x87`/`sse` stay `None` under the set, so every
-    /// other x87/SSE/MMX form keeps its refusal with its exact opcode). `FNINIT` applies the
+    /// it is NOT part of `LongModeState`: `state.x87` stays `None`, and `state.sse` is `None` at the
+    /// entry and at every exit. S2-39: while the set runs the SSE half (XMM0-15, MXCSR) is loaded
+    /// into `state.sse` and stored back to the cell, so at CPL0 the general SSE core of S2-34, S2-37,
+    /// S2-38, S2-54 and S2-55 executes on it as in the bare run (the narrow integer SSE2 forms, the
+    /// MMX forms and every x87 form other than those below keep their refusal with their exact
+    /// opcode; CPL3 keeps its own short list). `FNINIT` applies the
     /// architectural reset of the x87 environment (FCW `0x037F`, FSW 0, FTW `0xFFFF`, FIP/FDP/FOP
     /// and the selectors 0; register payloads survive). `FXSAVE` writes the 512-byte image through
     /// the set's memory with the S2-39c layout (16-byte alignment else `#GP(0)`; MXCSR_MASK
@@ -2790,8 +2794,10 @@ struct ExecutionProfiles<'a> {
     mov_cr3: Option<MovCr3Long64V1>,
     control_policy: Option<ControlRegisterPolicy>,
     /// S4-38L9d: the FP state of the CPL0 set (`FNINIT`, plain `FXSAVE`), set only by a
-    /// `Cpl0ProfileSet` built with `with_fp_state`. `LongModeState.x87/sse` stay `None`
-    /// under a policy, so every other x87/SSE form keeps its refusal.
+    /// `Cpl0ProfileSet` built with `with_fp_state`. `LongModeState.x87` stays `None` under a policy,
+    /// so every x87 form outside the member keeps its refusal. S2-39: `LongModeState.sse` carries
+    /// the SSE half of the cell for the duration of the run (loaded at the entry, stored at the
+    /// exit), which is what the shared SSE core needs.
     fp_cpl0: Option<&'a RefCell<GuestFpState>>,
     /// CPU-owned CR3 under a control-register policy. The cell receives the
     /// translation-context effect of a retired `MOV CR3, RAX`, which makes the
@@ -33857,6 +33863,13 @@ fn run_cpl0_profile_set_inner(
         }
         None => None,
     };
+    // S2-39: the SSE state of the FP member lives in `state.sse` (XMM0-15 and MXCSR, the model of the
+    // shared SSE core) while the set runs and returns to the cell at every exit below; the x87 half
+    // stays in the cell. `state.sse` was `None` at the entry (checked above), and the entry checked
+    // that the cell has no outstanding borrow.
+    if let Some(cell) = set.fp_state {
+        state.sse = Some(cell.borrow().sse.clone());
+    }
     let result = run_configured(
         state,
         memory,
@@ -34048,6 +34061,11 @@ fn run_cpl0_profile_set_inner(
             stop_requested: &mut stop_requested,
         },
     );
+    if let Some(cell) = set.fp_state
+        && let Some(sse) = state.sse.take()
+    {
+        cell.borrow_mut().sse = sse;
+    }
     let user_outcome = user_entry.entry.get().map(|entry| {
         if user_entry.committed.get() {
             UserEntryOutcome::Committed(entry)
@@ -41424,6 +41442,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         || configured_cvttsd2si_memory_r64_controls.is_some()
         || configured_cvtpi2_profile.is_some()
         || configured_cvtpi2pd_memory_controls.is_some();
+    // S2-39: the FP member of the CPL0 set at CPL0 keeps its SSE state in `state.sse` (see
+    // `run_cpl0_profile_set_inner`), so the register forms the profile decoder returns as narrow
+    // operations run through the general SSE core there, as in the bare run. CPL3 keeps its own
+    // narrow profile list.
+    let sse_cpl0 =
+        control_policy.is_some() && fp_cpl0.is_some() && context.privilege == PrivilegeLevel::Ring0;
     let general_fp_closed = |operation: Operation| match operation {
         Operation::SseFpArith {
             kind: SseFpArithKind::Sqrt | SseFpArithKind::Min | SseFpArithKind::Max,
@@ -41438,7 +41462,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         sse_fp_misc_from_narrow(instruction.operation, instruction.prefixes.operand_override)
     });
     let instruction = match general_from_narrow {
-        Some(general) if !general_fp_closed(general) && control_policy.is_none() => {
+        Some(general) if !general_fp_closed(general) && (control_policy.is_none() || sse_cpl0) => {
             long_decode::Instruction {
                 operation: general,
                 ..instruction
@@ -41452,9 +41476,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // every other configuration keep the narrow operations.
     let instruction = match sse_logic_from_narrow(instruction.operation) {
         Some(general)
-            if control_policy.is_none()
-                && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
-                && cr4_profile == Some(Cr4Profile::FpInitLong64V1) =>
+            if sse_cpl0
+                || control_policy.is_none()
+                    && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
+                    && cr4_profile == Some(Cr4Profile::FpInitLong64V1) =>
         {
             long_decode::Instruction {
                 operation: general,
@@ -46989,7 +47014,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | Operation::PaddqRegister { .. }
         )
     {
-        return step_cpl3_xmm(state, memory, context, &instruction, next_rip, fp_cpl0);
+        return step_cpl3_xmm(state, memory, context, &instruction, next_rip);
     }
     if context.privilege == PrivilegeLevel::Ring3
         && control_policy.is_some()
@@ -47009,7 +47034,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 exact_hlt_only,
                 stop_requested,
             },
-            fp_cpl0.expect("checked above"),
         );
     }
     // S4-38L9d/E, S4-39f22 and S6-22 ISSUE-578: the FP member of the CPL0 set owns `FNINIT`, the
@@ -49822,6 +49846,22 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && visible_selector(state, sreg).is_some()
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
+        // S2-39: the raw 128-bit moves of S2-34 (one `step_sse128_memory_move` path) need only the SSE
+        // state, which the FP member of the CPL0 set keeps in `state.sse` at CPL0; the x87 half of the
+        // local-state profile test is not used by them.
+        Operation::MovapsLoadMemory { .. }
+        | Operation::MovapsStoreMemory { .. }
+        | Operation::MovdqaLoadMemory { .. }
+        | Operation::MovdquLoadMemory { .. }
+        | Operation::Sse128MemoryMove { .. }
+        | Operation::MovupsLoadMemory { .. }
+        | Operation::MovupsStoreMemory { .. }
+        | Operation::MovupdLoadMemory { .. }
+        | Operation::MovupdStoreMemory { .. }
+            if sse_cpl0 =>
+        {
+            state.sse.is_some()
+        }
         Operation::Sysenter | Operation::Sysexit => false,
         // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
         Operation::Syscall => false,
@@ -65915,13 +65955,8 @@ fn step_cpl3_scalar_fp(
     mut profiles: ExecutionProfiles<'_>,
     instruction: &long_decode::Instruction,
     runtime: StepRuntime<'_, '_, '_>,
-    fp_cell: &RefCell<GuestFpState>,
 ) -> Result<StepOutcome, MemoryError> {
-    let (Some(cr0), Some(cr4), Ok(sse)) = (
-        state.cr0,
-        state.cr4,
-        fp_cell.try_borrow().map(|fp| fp.sse.clone()),
-    ) else {
+    let (Some(cr0), Some(cr4), true) = (state.cr0, state.cr4, state.sse.is_some()) else {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     };
     let controls = |sse2_available| {
@@ -66002,8 +66037,10 @@ fn step_cpl3_scalar_fp(
             }),
         );
     profiles.fp_cpl0 = None;
+    // `state.sse` already holds the SSE state of the FP member (S2-39): the nested step works on a
+    // copy, a retired instruction replaces the state, and a fault keeps only the SSE state (MXCSR flags
+    // of an unmasked exception) and nothing else, as before.
     let mut local = state.clone();
-    local.sse = Some(sse);
     let outcome = step_configured(
         &mut local,
         memory,
@@ -66013,21 +66050,8 @@ fn step_cpl3_scalar_fp(
         runtime,
     )?;
     match outcome {
-        StepOutcome::Advanced => {
-            let updated_sse = local.sse.take().expect("temporary SSE state stays present");
-            fp_cell
-                .try_borrow_mut()
-                .expect("guest FP state is not borrowed during a CPL3 instruction")
-                .sse = updated_sse;
-            *state = local;
-        }
-        StepOutcome::Fault(_) => {
-            let updated_sse = local.sse.take().expect("temporary SSE state stays present");
-            fp_cell
-                .try_borrow_mut()
-                .expect("guest FP state is not borrowed during a CPL3 instruction")
-                .sse = updated_sse;
-        }
+        StepOutcome::Advanced => *state = local,
+        StepOutcome::Fault(_) => state.sse = local.sse.take(),
         _ => {}
     }
     Ok(outcome)
@@ -72493,15 +72517,32 @@ fn pshuflw_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8, control: u
     xmm[usize::from(destination)] = result;
 }
 
+/// The SSE state that the FP member of the CPL0 set loads into `LongModeState.sse` for the run
+/// (S2-39); the callers check that it is present.
+fn sse_mut(state: &mut LongModeState) -> &mut crate::state::SseState {
+    state
+        .sse
+        .as_mut()
+        .expect("the CPL0 set loads the SSE state of its FP member before the run")
+}
+
+fn sse_ref(state: &LongModeState) -> &crate::state::SseState {
+    state
+        .sse
+        .as_ref()
+        .expect("the CPL0 set loads the SSE state of its FP member before the run")
+}
+
 fn step_cpl3_xmm(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     instruction: &long_decode::Instruction,
     next_rip: u64,
-    fp: Option<&RefCell<GuestFpState>>,
 ) -> Result<StepOutcome, MemoryError> {
-    let (Some(fp), Some(cr0), Some(cr4)) = (fp, state.cr0, state.cr4) else {
+    // The SSE state is in `state.sse` only under the FP member of the CPL0 set (S2-39); without it
+    // every one of these forms stays `Unsupported`.
+    let (true, Some(cr0), Some(cr4)) = (state.sse.is_some(), state.cr0, state.cr4) else {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -72531,13 +72572,13 @@ fn step_cpl3_xmm(
             };
             let mut result = [0; 16];
             result[..8].copy_from_slice(&value.to_le_bytes());
-            fp.borrow_mut().sse.xmm[usize::from(destination)] = result;
+            sse_mut(state).xmm[usize::from(destination)] = result;
         }
         Operation::MovqFromXmm {
             destination,
             source,
         } => {
-            let source = fp.borrow().sse.xmm[usize::from(source)];
+            let source = sse_ref(state).xmm[usize::from(source)];
             let value = u64::from_le_bytes(source[..8].try_into().unwrap());
             if let Err(error) = write_operand(
                 state,
@@ -72554,9 +72595,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let source = fp.sse.xmm[usize::from(source)];
-            let target = &mut fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let source = sse.xmm[usize::from(source)];
+            let target = &mut sse.xmm[usize::from(destination)];
             let previous = *target;
             target[4..8].copy_from_slice(&source[..4]);
             target[8..12].copy_from_slice(&previous[4..8]);
@@ -72566,9 +72607,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            let target = &mut fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            let target = &mut sse.xmm[usize::from(destination)];
             for (byte, mask) in target.iter_mut().zip(rhs) {
                 *byte &= mask;
             }
@@ -72577,9 +72618,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = !*dst & src;
             }
         }
@@ -72587,45 +72628,45 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            fp.sse.xmm[usize::from(destination)][8..].copy_from_slice(&rhs[..8]);
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            sse.xmm[usize::from(destination)][8..].copy_from_slice(&rhs[..8]);
         }
         Operation::PunpcklbwRegister {
             destination,
             source,
         } => {
-            punpcklbw_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+            punpcklbw_xmm(&mut sse_mut(state).xmm, destination, source);
         }
         Operation::PunpcklwdRegister {
             destination,
             source,
         } => {
-            punpcklwd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+            punpcklwd_xmm(&mut sse_mut(state).xmm, destination, source);
         }
         Operation::MovdqaRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let value = fp.sse.xmm[usize::from(source)];
-            fp.sse.xmm[usize::from(destination)] = value;
+            let sse = sse_mut(state);
+            let value = sse.xmm[usize::from(source)];
+            sse.xmm[usize::from(destination)] = value;
         }
         Operation::MovapsRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let value = fp.sse.xmm[usize::from(source)];
-            fp.sse.xmm[usize::from(destination)] = value;
+            let sse = sse_mut(state);
+            let value = sse.xmm[usize::from(source)];
+            sse.xmm[usize::from(destination)] = value;
         }
         Operation::XorpsRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst ^= src;
             }
         }
@@ -72633,9 +72674,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst ^= src;
             }
         }
@@ -72643,9 +72684,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = dst.wrapping_add(src);
             }
         }
@@ -72653,9 +72694,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)]
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)]
                 .chunks_exact_mut(4)
                 .zip(rhs.chunks_exact(4))
             {
@@ -72668,9 +72709,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)]
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)]
                 .chunks_exact_mut(4)
                 .zip(rhs.chunks_exact(4))
             {
@@ -72680,8 +72721,8 @@ fn step_cpl3_xmm(
             }
         }
         Operation::PsrlwImmediateRegister { destination, count } => {
-            let mut fp = fp.borrow_mut();
-            let original = fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let original = sse.xmm[usize::from(destination)];
             let mut shifted = [0; 16];
             if count < 16 {
                 for lane in 0..8 {
@@ -72690,27 +72731,27 @@ fn step_cpl3_xmm(
                         .copy_from_slice(&(value >> count).to_le_bytes());
                 }
             }
-            fp.sse.xmm[usize::from(destination)] = shifted;
+            sse.xmm[usize::from(destination)] = shifted;
         }
         Operation::PunpckhwdRegister {
             destination,
             source,
         } => {
-            punpckhwd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+            punpckhwd_xmm(&mut sse_mut(state).xmm, destination, source);
         }
         Operation::PackuswbRegister {
             destination,
             source,
         } => {
-            packuswb_xmm(&mut fp.borrow_mut().sse.xmm, destination, source);
+            packuswb_xmm(&mut sse_mut(state).xmm, destination, source);
         }
         Operation::PcmpeqbRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = if *dst == src { 0xff } else { 0 };
             }
         }
@@ -72718,9 +72759,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = if (*dst as i8) > (src as i8) { 0xff } else { 0 };
             }
         }
@@ -72728,9 +72769,9 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = (*dst).min(src);
             }
         }
@@ -72756,8 +72797,8 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut rhs) {
                 return report_memory_error(error);
             }
-            let mut fp = fp.borrow_mut();
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = (*dst).min(src);
             }
         }
@@ -72781,8 +72822,8 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut rhs) {
                 return report_memory_error(error);
             }
-            let mut fp = fp.borrow_mut();
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = if *dst == src { 0xff } else { 0 };
             }
         }
@@ -72798,7 +72839,7 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut low) {
                 return report_memory_error(error);
             }
-            fp.borrow_mut().sse.xmm[usize::from(destination)][..8].copy_from_slice(&low);
+            sse_mut(state).xmm[usize::from(destination)][..8].copy_from_slice(&low);
         }
         Operation::MovsdLoadMemory {
             destination,
@@ -72812,8 +72853,8 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut raw) {
                 return report_memory_error(error);
             }
-            let mut fp = fp.borrow_mut();
-            let target = &mut fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let target = &mut sse.xmm[usize::from(destination)];
             target[..8].copy_from_slice(&raw);
             target[8..].fill(0);
         }
@@ -72825,7 +72866,7 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            let raw = fp.borrow().sse.xmm[usize::from(source)];
+            let raw = sse_ref(state).xmm[usize::from(source)];
             if let Err(error) = memory.write(address, context, &raw[..8]) {
                 return report_memory_error(error);
             }
@@ -72846,15 +72887,15 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut high) {
                 return report_memory_error(error);
             }
-            fp.borrow_mut().sse.xmm[usize::from(destination)][8..].copy_from_slice(&high);
+            sse_mut(state).xmm[usize::from(destination)][8..].copy_from_slice(&high);
         }
         Operation::PsubbRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst = dst.wrapping_sub(src);
             }
         }
@@ -72862,7 +72903,7 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let xmm = fp.borrow().sse.xmm[usize::from(source)];
+            let xmm = sse_ref(state).xmm[usize::from(source)];
             let mask = xmm.iter().enumerate().fold(0u32, |mask, (lane, byte)| {
                 mask | (u32::from(byte >> 7) << lane)
             });
@@ -72872,37 +72913,37 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(rhs) {
                 *dst |= src;
             }
         }
         Operation::PslldqImmediateRegister { destination, count } => {
-            let mut fp = fp.borrow_mut();
-            let original = fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let original = sse.xmm[usize::from(destination)];
             let mut shifted = [0; 16];
             if count < 16 {
                 shifted[count as usize..].copy_from_slice(&original[..16 - count as usize]);
             }
-            fp.sse.xmm[usize::from(destination)] = shifted;
+            sse.xmm[usize::from(destination)] = shifted;
         }
         Operation::PsrldqImmediateRegister { destination, count } => {
-            let mut fp = fp.borrow_mut();
-            let original = fp.sse.xmm[usize::from(destination)];
+            let sse = sse_mut(state);
+            let original = sse.xmm[usize::from(destination)];
             let mut shifted = [0; 16];
             if count < 16 {
                 shifted[..16 - count as usize].copy_from_slice(&original[count as usize..]);
             }
-            fp.sse.xmm[usize::from(destination)] = shifted;
+            sse.xmm[usize::from(destination)] = shifted;
         }
         Operation::PaddqRegister {
             destination,
             source,
         } => {
-            let mut fp = fp.borrow_mut();
-            let rhs = fp.sse.xmm[usize::from(source)];
-            for (dst, src) in fp.sse.xmm[usize::from(destination)]
+            let sse = sse_mut(state);
+            let rhs = sse.xmm[usize::from(source)];
+            for (dst, src) in sse.xmm[usize::from(destination)]
                 .chunks_exact_mut(8)
                 .zip(rhs.chunks_exact(8))
             {
@@ -72929,7 +72970,7 @@ fn step_cpl3_xmm(
             if let Err(error) = destination.access_range_address_48(state, next_rip, 16) {
                 return report_memory_error(error);
             }
-            let value = fp.borrow().sse.xmm[usize::from(source)];
+            let value = sse_ref(state).xmm[usize::from(source)];
             if let Err(error) = memory.write(address, context, &value) {
                 return report_memory_error(error);
             }
@@ -72956,21 +72997,21 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut value) {
                 return report_memory_error(error);
             }
-            fp.borrow_mut().sse.xmm[usize::from(destination)] = value;
+            sse_mut(state).xmm[usize::from(destination)] = value;
         }
         Operation::PshufdRegister {
             destination,
             source,
             control,
         } => {
-            pshufd_xmm(&mut fp.borrow_mut().sse.xmm, destination, source, control);
+            pshufd_xmm(&mut sse_mut(state).xmm, destination, source, control);
         }
         Operation::PshuflwRegister {
             destination,
             source,
             control,
         } => {
-            pshuflw_xmm(&mut fp.borrow_mut().sse.xmm, destination, source, control);
+            pshuflw_xmm(&mut sse_mut(state).xmm, destination, source, control);
         }
         Operation::PinsrwMemory {
             destination,
@@ -72986,7 +73027,7 @@ fn step_cpl3_xmm(
                 return report_memory_error(error);
             }
             let lane = usize::from(control & 7);
-            fp.borrow_mut().sse.xmm[usize::from(destination)][lane * 2..lane * 2 + 2]
+            sse_mut(state).xmm[usize::from(destination)][lane * 2..lane * 2 + 2]
                 .copy_from_slice(&raw);
         }
         Operation::MovupsStoreMemory {
@@ -72997,7 +73038,7 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
-            let value = fp.borrow().sse.xmm[usize::from(source)];
+            let value = sse_ref(state).xmm[usize::from(source)];
             if let Err(error) = memory.write(address, context, &value) {
                 return report_memory_error(error);
             }
@@ -73040,7 +73081,7 @@ fn step_cpl3_xmm(
             if let Err(error) = memory.read(address, context, &mut value) {
                 return report_memory_error(error);
             }
-            fp.borrow_mut().sse.xmm[usize::from(destination)] = value;
+            sse_mut(state).xmm[usize::from(destination)] = value;
         }
         _ => unreachable!(),
     }
@@ -73175,7 +73216,7 @@ fn step_cpl0_fp(
             let address = area.effective_address(state, next_rip);
             if let Err(error) = fxsave(
                 &fp.x87,
-                &fp.sse,
+                sse_ref(state),
                 memory,
                 context,
                 address,
@@ -73218,7 +73259,7 @@ fn step_cpl0_fp(
             let fp = cell.borrow();
             if let Err(error) = fxsave(
                 &fp.x87,
-                &fp.sse,
+                sse_ref(state),
                 memory,
                 context,
                 address,
@@ -73256,7 +73297,7 @@ fn step_cpl0_fp(
             let fp = cell.borrow();
             if let Err(error) = fxsave(
                 &fp.x87,
-                &fp.sse,
+                sse_ref(state),
                 memory,
                 context,
                 address,
@@ -73293,7 +73334,7 @@ fn step_cpl0_fp(
                 return device_not_available;
             }
             let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
+            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
                 return report_memory_error(error);
             }
             state.rip = next_rip;
@@ -73321,7 +73362,7 @@ fn step_cpl0_fp(
                 return device_not_available;
             }
             let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
+            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
                 return report_memory_error(error);
             }
             state.rip = next_rip;
@@ -73349,7 +73390,7 @@ fn step_cpl0_fp(
                 return device_not_available;
             }
             let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, memory, context, address) {
+            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
                 return report_memory_error(error);
             }
             state.rip = next_rip;
@@ -73617,19 +73658,20 @@ fn apply_fxrstor64_fields(
 /// FXRSTOR, from memory), then the whole 512-byte image is read as 64 ascending qword
 /// `GuestMemory::read` calls (the address is 16-byte aligned, so no qword crosses a page and the
 /// paged adapter needs no narrower read width), then reserved MXCSR bits (`MXCSR & !MXCSR_MASK`,
-/// `#GP(0)`, from memory). Only then the cell is replaced; a failing read or a check leaves it
-/// unchanged. The x87 selectors (FCS/FDS) are not part of the Long64 image and stay as they are.
+/// `#GP(0)`, from memory). Only then the x87 half (the cell) and the SSE half (`state.sse`) are
+/// replaced; a failing read or a check leaves both unchanged. The x87 selectors (FCS/FDS) are not part of the Long64 image and stay as they are.
 fn fxrstor64_cpl0(
     cell: &RefCell<GuestFpState>,
+    state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     address: u64,
 ) -> Result<(), MemoryError> {
     let image = read_fxrstor64_narrow(memory, context, address)?;
-    // The cell is borrowed only after every memory callback has returned.
+    // The cell is borrowed only after every memory callback has returned. The x87 half lives in the
+    // cell, the SSE half in `state.sse` (S2-39).
     let mut fp = cell.borrow_mut();
-    let GuestFpState { x87, sse } = &mut *fp;
-    restore_fxrstor64_image(x87, sse, &image)
+    restore_fxrstor64_image(&mut fp.x87, sse_mut(state), &image)
 }
 
 fn read_fxrstor64_narrow(
@@ -226573,8 +226615,8 @@ mod paged_ltr_tests {
         let mut state = LongModeState::default();
         state.cr0 = Some(0);
         state.cr4 = Some(1 << 9);
-        let fp = RefCell::new(GuestFpState::initial());
-        fp.borrow_mut().sse.xmm[11] = [0x5a; 16];
+        state.sse = Some(GuestFpState::initial().sse);
+        state.sse.as_mut().unwrap().xmm[11] = [0x5a; 16];
         let mut copy_memory = Memory::new(&[0x66, 0x41, 0x0f, 0x6f, 0xd3]);
         let copy = long_decode::decode(&mut copy_memory, 0, context).unwrap();
         assert!(cpl3_allows(&copy, false, false));
@@ -226585,17 +226627,16 @@ mod paged_ltr_tests {
                 context,
                 &copy,
                 u64::from(copy.length),
-                Some(&fp),
             )
             .unwrap(),
             StepOutcome::Advanced
         );
-        assert_eq!(fp.borrow().sse.xmm[2], [0x5a; 16]);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[2], [0x5a; 16]);
 
         // PADDB wraps per byte; this concrete high-register form is also in the workload.
         state.rip = 0;
-        fp.borrow_mut().sse.xmm[8] = [0xff; 16];
-        fp.borrow_mut().sse.xmm[1] = [1; 16];
+        state.sse.as_mut().unwrap().xmm[8] = [0xff; 16];
+        state.sse.as_mut().unwrap().xmm[1] = [1; 16];
         let mut add_memory = Memory::new(&[0x66, 0x44, 0x0f, 0xfc, 0xc1]);
         let add = long_decode::decode(&mut add_memory, 0, context).unwrap();
         assert!(cpl3_allows(&add, false, false));
@@ -226606,12 +226647,11 @@ mod paged_ltr_tests {
                 context,
                 &add,
                 u64::from(add.length),
-                Some(&fp),
             )
             .unwrap(),
             StepOutcome::Advanced
         );
-        assert_eq!(fp.borrow().sse.xmm[8], [0; 16]);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[8], [0; 16]);
 
         for (code, destination, source, operation) in [
             (&[0x66, 0x0f, 0xef, 0xc0][..], 0u8, 0u8, "pxor"),
@@ -226627,39 +226667,36 @@ mod paged_ltr_tests {
             let instruction = long_decode::decode(&mut memory, 0, context).unwrap();
             assert!(cpl3_allows(&instruction, false, false), "{operation}");
             if operation == "paddd" {
-                fp.borrow_mut().sse.xmm[destination as usize] = [0xff; 16];
-                fp.borrow_mut().sse.xmm[source as usize] = [1; 16];
+                state.sse.as_mut().unwrap().xmm[destination as usize] = [0xff; 16];
+                state.sse.as_mut().unwrap().xmm[source as usize] = [1; 16];
             } else if operation == "pcmpeqd" {
-                fp.borrow_mut().sse.xmm[destination as usize] = [0x3c; 16];
+                state.sse.as_mut().unwrap().xmm[destination as usize] = [0x3c; 16];
             } else if operation == "psrlw" {
-                fp.borrow_mut().sse.xmm[destination as usize] = [
+                state.sse.as_mut().unwrap().xmm[destination as usize] = [
                     0x00, 0x01, 0x00, 0x80, 0x34, 0x12, 0xff, 0xff, 1, 0, 2, 0, 3, 0, 4, 0,
                 ];
             } else if operation == "punpckhwd" {
                 let value = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0];
-                fp.borrow_mut().sse.xmm[destination as usize] = value;
-                fp.borrow_mut().sse.xmm[source as usize] = value;
+                state.sse.as_mut().unwrap().xmm[destination as usize] = value;
+                state.sse.as_mut().unwrap().xmm[source as usize] = value;
             } else if operation == "packuswb" {
-                let mut fp = fp.borrow_mut();
+                let fp = state.sse.as_mut().unwrap();
                 let left = [i16::MIN, 1, 255, 256, 4, -2, 6, 7];
                 let right = [128, 129, i16::MAX, -4, 14, 15, 16, 17];
-                for (slot, word) in fp.sse.xmm[usize::from(destination)]
+                for (slot, word) in fp.xmm[usize::from(destination)]
                     .chunks_exact_mut(2)
                     .zip(left)
                 {
                     slot.copy_from_slice(&word.to_le_bytes());
                 }
                 if source != destination {
-                    for (slot, word) in fp.sse.xmm[usize::from(source)]
-                        .chunks_exact_mut(2)
-                        .zip(right)
-                    {
+                    for (slot, word) in fp.xmm[usize::from(source)].chunks_exact_mut(2).zip(right) {
                         slot.copy_from_slice(&word.to_le_bytes());
                     }
                 }
             } else {
-                fp.borrow_mut().sse.xmm[destination as usize] = [0xa5; 16];
-                fp.borrow_mut().sse.xmm[source as usize] = [0xa5; 16];
+                state.sse.as_mut().unwrap().xmm[destination as usize] = [0xa5; 16];
+                state.sse.as_mut().unwrap().xmm[source as usize] = [0xa5; 16];
             }
             assert_eq!(
                 step_cpl3_xmm(
@@ -226668,13 +226705,12 @@ mod paged_ltr_tests {
                     context,
                     &instruction,
                     u64::from(instruction.length),
-                    Some(&fp),
                 )
                 .unwrap(),
                 StepOutcome::Advanced,
                 "{operation}"
             );
-            let result = fp.borrow().sse.xmm[destination as usize];
+            let result = state.sse.as_ref().unwrap().xmm[destination as usize];
             match operation {
                 "pxor" => assert_eq!(result, [0; 16]),
                 "paddd" => assert_eq!(result, [0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1]),
@@ -226699,7 +226735,7 @@ mod paged_ltr_tests {
         // An aligned MOVAPS store writes all 16 bytes. Misalignment raises #GP before access.
         state.rip = 0;
         state.gpr[Register::Rsp as usize] = 0x1000;
-        fp.borrow_mut().sse.xmm[0] = [0xa5; 16];
+        state.sse.as_mut().unwrap().xmm[0] = [0xa5; 16];
         let mut store_memory = Memory::new(&[0x0f, 0x29, 0x04, 0x24]);
         let store = long_decode::decode(&mut store_memory, 0, context).unwrap();
         assert!(cpl3_allows(&store, false, false));
@@ -226710,7 +226746,6 @@ mod paged_ltr_tests {
                 context,
                 &store,
                 u64::from(store.length),
-                Some(&fp),
             )
             .unwrap(),
             StepOutcome::Advanced
@@ -226728,7 +226763,6 @@ mod paged_ltr_tests {
                 context,
                 &misaligned,
                 u64::from(misaligned.length),
-                Some(&fp),
             )
             .unwrap(),
             StepOutcome::Fault(ArchitecturalFault {
@@ -226744,7 +226778,7 @@ mod paged_ltr_tests {
             state.rip = 0;
             state.cr0 = Some(cr0);
             state.cr4 = Some(cr4);
-            let before = fp.borrow().clone();
+            let before = state.sse.clone();
             let mut memory = Memory::new(&[0x66, 0x0f, 0xef, 0xc1]);
             let instruction = long_decode::decode(&mut memory, 0, context).unwrap();
             assert_eq!(
@@ -226754,7 +226788,6 @@ mod paged_ltr_tests {
                     context,
                     &instruction,
                     u64::from(instruction.length),
-                    Some(&fp),
                 )
                 .unwrap(),
                 StepOutcome::Fault(ArchitecturalFault {
@@ -226763,7 +226796,7 @@ mod paged_ltr_tests {
                     linear_address: None,
                 })
             );
-            assert_eq!(*fp.borrow(), before);
+            assert_eq!(state.sse, before);
         }
     }
 }
