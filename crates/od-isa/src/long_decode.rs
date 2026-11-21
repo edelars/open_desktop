@@ -146,6 +146,16 @@ pub enum SseFpMiscKind {
     /// `0F 52` RSQRTPS (`Packed32`) and `F3 0F 52` RSQRTSS (`Scalar32`) (S2-37): the reciprocal square root
     /// approximation. SDM Vol. 2B RSQRTPS pp. 4-594..4-595, RSQRTSS pp. 4-596..4-597.
     Rsqrt,
+    /// `F3 0F E6` (S2-37 remainder): the two low signed doublewords of the source to two binary64 (`shape` is
+    /// `Packed32`; a memory source is 8 bytes with no alignment requirement). The conversion is exact. SDM
+    /// Vol. 2A CVTDQ2PD pp. 3-208..3-210.
+    Cvtdq2pd,
+    /// `F2 0F E6` (S2-37 remainder): two binary64 to two signed doublewords in the low half, rounded by
+    /// MXCSR.RC, the high half zero (`shape` is `Packed64`; a memory source is 16 bytes, 16-byte aligned). SDM
+    /// Vol. 2A CVTPD2DQ pp. 3-214..3-217.
+    Cvtpd2dq,
+    /// `66 0F E6` (S2-37 remainder): as [`Self::Cvtpd2dq`], truncating. SDM Vol. 2A CVTTPD2DQ pp. 3-244..3-247.
+    Cvttpd2dq,
 }
 
 impl SseFpMiscKind {
@@ -155,7 +165,7 @@ impl SseFpMiscKind {
     /// whatever the packed shape says.
     pub const fn source_access(self, shape: SseFpShape) -> (u64, bool) {
         match self {
-            Self::Cvtps2pd => (8, false),
+            Self::Cvtps2pd | Self::Cvtdq2pd => (8, false),
             _ => (shape.memory_bytes(), shape.is_packed()),
         }
     }
@@ -2762,6 +2772,27 @@ pub enum Operation {
         destination: u8,
         source: Sse3Source,
         immediate: u8,
+    },
+    /// S2-37 (remainder): `CVTSI2SS` (`F3 [REX.W] 0F 2A /r`, `double` false) and `CVTSI2SD` (`F2 [REX.W] 0F 2A /r`,
+    /// `double` true): the signed integer `source` (`Dword` or, with REX.W, `Qword` register or memory) is
+    /// converted into element 0 of XMM `destination` under MXCSR.RC; the bits above the element are kept. Reached
+    /// like [`Operation::SseFpMisc`] (fallback of [`decode`] and the executor's rewrite of the narrow profile
+    /// operations) and executed through `step_sse_int_convert`.
+    SseCvtFromInt {
+        double: bool,
+        destination: u8,
+        source: Operand,
+    },
+    /// S2-37 (remainder): `CVTSS2SI`/`CVTTSS2SI` (`F3 [REX.W] 0F 2D/2C /r`, `double` false) and
+    /// `CVTSD2SI`/`CVTTSD2SI` (`F2 [REX.W] 0F 2D/2C /r`, `double` true): element 0 of an XMM register or a 4- or
+    /// 8-byte memory operand to the signed integer `dst` (`Dword` zero-extended to 64 bits or, with REX.W, `Qword`),
+    /// rounded by MXCSR.RC (`truncate` false) or toward zero. An invalid conversion delivers the integer
+    /// indefinite value. Reached like [`Operation::SseFpMisc`] and executed through `step_sse_int_convert`.
+    SseCvtToInt {
+        double: bool,
+        truncate: bool,
+        dst: RegisterView,
+        source: Sse3Source,
     },
     /// S2-55 slice B: the floating-point SSE4.1 forms (`66 0F 38 14/15 /r`, `66 0F 3A 08..0D/17/21/40/41 /r ib`).
     /// `xmm` is the ModRM.reg XMM register (destination, or the source of EXTRACTPS); `operand` the ModRM.r/m
@@ -12939,6 +12970,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (0x52, Some(0xf3), false) => (SseFpMiscKind::Rsqrt, SseFpShape::Scalar32),
             (0x53, None, false) => (SseFpMiscKind::Rcp, SseFpShape::Packed32),
             (0x53, Some(0xf3), false) => (SseFpMiscKind::Rcp, SseFpShape::Scalar32),
+            (0xe6, Some(0xf3), false) => (SseFpMiscKind::Cvtdq2pd, SseFpShape::Packed32),
+            (0xe6, Some(0xf2), false) => (SseFpMiscKind::Cvtpd2dq, SseFpShape::Packed64),
+            (0xe6, None, true) => (SseFpMiscKind::Cvttpd2dq, SseFpShape::Packed64),
             _ => return Ok(None),
         };
         if matches!(prefixes.segment, Some(0x64 | 0x65)) {
@@ -12987,6 +13021,87 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 source,
                 immediate,
             },
+        }))
+    }
+
+    /// S2-37 (remainder): `CVTSI2SS/CVTSI2SD xmm, r/m32/64` (`F3|F2 [REX.W] 0F 2A /r`) and
+    /// `CVTSS2SI/CVTSD2SI`, `CVTTSS2SI/CVTTSD2SI r32/r64, xmm/m32|m64` (`F3|F2 [REX.W] 0F 2D|2C /r`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2A CVTSI2SS
+    /// pp. 3-238..3-239, CVTSI2SD pp. 3-236..3-237, CVTSS2SI pp. 3-242..3-243, CVTSD2SI pp. 3-232..3-233, CVTTSS2SI
+    /// pp. 3-255..3-256, CVTTSD2SI pp. 3-253..3-254). LOCK is #UD; a repeated prefix, FS/GS overrides, `66`
+    /// together with `F2`/`F3` and the encodings without `F2`/`F3` (the MMX conversions) are refused. REX.W
+    /// selects the 64-bit integer operand, else it is 32 bits; REX.R and REX.B extend the register fields.
+    fn decode_sse_int_convert(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let double = match (prefixes.group1, prefixes.operand_override) {
+            (Some(0xf3), false) => false,
+            (Some(0xf2), false) => true,
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let general = if rex & 8 != 0 {
+            OperandSize::Qword
+        } else {
+            OperandSize::Dword
+        };
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let operation = if opcode.byte == 0x2a {
+            Operation::SseCvtFromInt {
+                double,
+                destination: reg,
+                source: self.rm_operand(modrm, prefixes, general)?,
+            }
+        } else {
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+            } else {
+                let size = if double {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                };
+                let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            Operation::SseCvtToInt {
+                double,
+                truncate: opcode.byte == 0x2c,
+                dst: RegisterView::low(Register::from_encoding(reg).unwrap(), general),
+                source,
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: general,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation,
         }))
     }
 
@@ -13137,9 +13252,11 @@ pub fn decode(
             OpcodeMap::Escape0f,
             0x58 | 0x59 | 0x5c | 0x5e | 0x51 | 0x5d | 0x5f | 0x7c | 0x7d | 0xd0,
         ) => fetch.decode_sse_fp_arith(),
-        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b | 0x5a | 0x52 | 0x53) => {
+        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b | 0x5a | 0x52 | 0x53 | 0xe6) => {
             fetch.decode_sse_fp_misc()
         }
+        // S2-37 (remainder): CVTSI2SS/SD and CVT[T]SS2SI/SD2SI.
+        (OpcodeMap::Escape0f, 0x2a | 0x2c | 0x2d) => fetch.decode_sse_int_convert(),
         _ => return profile,
     };
     match general {
