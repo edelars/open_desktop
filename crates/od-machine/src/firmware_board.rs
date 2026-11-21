@@ -6755,6 +6755,118 @@ mod tests {
         assert_ne!(Some(MachineStopReason::Shutdown), report.stop_reason);
     }
 
+    // ---- S4-21e: restart of the processors after a stop ----
+
+    fn two_vcpu_pm_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            vcpu_count: 2,
+            ..pm_config()
+        }
+    }
+
+    #[test]
+    fn restart_after_a_guest_reset_returns_the_processors_to_the_entry_state() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &two_vcpu_pm_config()).unwrap();
+        let entry = board.state().clone();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+        assert_ne!(*board.state(), entry, "the run moved the boot processor");
+        // Events the old run left for the processors: a fixed interrupt and an NMI in the
+        // boot processor's Local APIC, an INIT and a SIPI for the application processor.
+        board.local_apic().request_fixed_edge(0x41).unwrap();
+        let ap_apic = board.local_apic_of(1).unwrap();
+        ap_apic.write_icr(1, 0, 4 << 8).unwrap();
+        assert!(board.local_apic().pending_nmi());
+        board
+            .local_apic()
+            .write_icr(0, 1, (5 << 8) | (3 << 14))
+            .unwrap();
+        let ram = board.ram_sha256().unwrap();
+        let clock = board.clock();
+        assert_eq!(
+            board.acpi_pm().unwrap().stop_request(),
+            Some(MachineStopReason::Reset)
+        );
+
+        assert_eq!(
+            board.restart_vcpus(),
+            Ok(Some(MachineStopReason::Reset)),
+            "the acknowledged stop is the reset"
+        );
+
+        assert_eq!(*board.state(), entry);
+        let boot = board.vcpu(0).unwrap();
+        assert_eq!(boot.guest_efer, FIRMWARE_EFER);
+        assert_eq!(boot.guest_cr2, None);
+        assert!(boot.legacy.is_none());
+        let ap = board.vcpu(1).unwrap();
+        assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+        assert!(ap.real_mode().is_some());
+        // No old pending event survives, for any vCPU, and the stop is acknowledged.
+        for index in 0..2 {
+            let apic = board.local_apic_of(index).unwrap();
+            assert_eq!(apic.pending(), None, "vCPU {index}");
+            assert!(!apic.pending_nmi(), "vCPU {index}");
+            assert_eq!(apic.take_startup().unwrap(), Default::default());
+        }
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+        // Neither RAM nor virtual time moved.
+        assert_eq!(board.ram_sha256().unwrap(), ram);
+        assert_eq!(board.clock(), clock);
+
+        // The restarted processors run the entry code again on the RAM the guest left.
+        let again = board.run_boot(100).unwrap();
+        assert_eq!(again.exit, PagedProbeExit::Stopped);
+        assert_eq!(again.stop_reason, Some(MachineStopReason::Reset));
+        assert_eq!(again.retired, 3);
+    }
+
+    #[test]
+    fn restart_acknowledges_a_shutdown_once_and_any_other_end_of_a_run_returns_none() {
+        let slp = ((u16::from(ACPI_SLP_TYP_S5) << 10) | ACPI_PM1_CNT_SLP_EN) >> 8;
+        let image = out_byte_image(ACPI_PM1A_CNT_BLK + 1, slp as u8);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        assert_eq!(
+            board.run_boot(100).unwrap().stop_reason,
+            Some(MachineStopReason::Shutdown)
+        );
+        assert_eq!(board.restart_vcpus(), Ok(Some(MachineStopReason::Shutdown)));
+        // The stop was taken: a second restart has nothing to acknowledge.
+        assert_eq!(board.restart_vcpus(), Ok(None));
+
+        // A halted guest (no stop request) is restartable too and runs again from the entry.
+        let mut halted = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        let entry = halted.state().clone();
+        let report = halted.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(halted.state().activity, Some(CpuActivity::Halted));
+        assert_eq!(halted.restart_vcpus(), Ok(None));
+        assert_eq!(*halted.state(), entry);
+        assert_eq!(halted.state().activity, Some(CpuActivity::Running));
+        assert_eq!(halted.run_boot(100).unwrap().exit, PagedProbeExit::Halted);
+
+        // Without the PM block there is nothing to acknowledge either.
+        let mut plain = load(&hlt_image());
+        plain.run_boot(100).unwrap();
+        assert_eq!(plain.restart_vcpus(), Ok(None));
+    }
+
+    #[test]
+    fn restart_leaves_the_host_stop_flag_to_the_host() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        board.set_host_stop(Arc::clone(&flag));
+        board.run_boot(100).unwrap();
+        flag.store(true, Ordering::Relaxed);
+        board.restart_vcpus().unwrap();
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "the host's STOP request stays"
+        );
+    }
+
     #[test]
     fn a_stop_on_the_last_budgeted_instruction_is_not_a_budget_exhaustion() {
         let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
