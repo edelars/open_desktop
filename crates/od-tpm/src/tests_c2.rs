@@ -3754,7 +3754,7 @@ pub(super) fn parse_attestation(resp: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 // ------------------------------------------------------------------------------------- HMAC
 
-fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
+pub(super) fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
     TpmtPublic {
         name_alg: alg::SHA256,
         attributes: oa::FIXED_TPM
@@ -3768,7 +3768,7 @@ fn hmac_key(scheme: Scheme, origin: bool) -> TpmtPublic {
     }
 }
 
-const HMAC_SHA256: Scheme = Scheme {
+pub(super) const HMAC_SHA256: Scheme = Scheme {
     alg: alg::HMAC,
     hash: alg::SHA256,
 };
@@ -3792,7 +3792,7 @@ fn hmac_out(resp: &[u8]) -> Vec<u8> {
     d
 }
 
-fn hmac_start(t: &mut Tpm, key: u32, pw: &[u8], auth: &[u8], hash: u16) -> Vec<u8> {
+pub(super) fn hmac_start(t: &mut Tpm, key: u32, pw: &[u8], auth: &[u8], hash: u16) -> Vec<u8> {
     run(
         t,
         with_pw(
@@ -4458,6 +4458,48 @@ const QUOTE_Y: &str = "cb94108076eeef988e6d73698714edef104caf5576928bcf409c688ad
 const QUOTE_R: &str = "98378dddb7c3cc2274927e49eb753cdcd4125309b2a5776138c62971bda2e8e6";
 const QUOTE_S: &str = "04aceeb16951370efbbac748dc8dac2691b30850e4e755a74a7d56547dc52d45";
 const QUOTE_ATTEST: &str = "ff54434780180022000b6619f848a29382a87230dd749a509f02a2b808317654843277c8a533b5c021bf00056e6f6e63650000000000000000000000010000000001000100000000000000000001000b031100000020b5ab2eaee749a8f5fe3e847815d70e8c15332cb6ab8a80491cfe7afc8dd7f8bc";
+
+#[test]
+fn get_capability_and_quote_report_the_same_firmware_version() {
+    let mut t = started();
+    let (_, capability, body, count) = cap_list(&get_cap(
+        &mut t,
+        cap::TPM_PROPERTIES,
+        pt::FIRMWARE_VERSION_1,
+        2,
+    ));
+    assert_eq!((capability, count), (cap::TPM_PROPERTIES, 2));
+    let word = |at: usize| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
+    assert_eq!(
+        (word(0), word(8)),
+        (pt::FIRMWARE_VERSION_1, pt::FIRMWARE_VERSION_2)
+    );
+    let reported = u64::from(word(4)) << 32 | u64::from(word(12));
+    assert_eq!(reported, FIRMWARE);
+    assert_eq!(reported, crate::codes::FIRMWARE_VERSION);
+
+    // The endorsement hierarchy does not obfuscate, so firmwareVersion is the plain value.
+    let e = parse_primary(&create_primary(&mut t, ENDORSEMENT, b"", &ecc_sign()));
+    let (attest, _) = parse_attestation(&quote(
+        &mut t,
+        e.handle,
+        b"",
+        b"n",
+        &u16b(alg::NULL),
+        &hex("00000000"),
+    ));
+    assert_eq!(
+        attest,
+        attest_bytes(
+            ST_ATTEST_QUOTE,
+            &qualified(ENDORSEMENT, &e.name),
+            b"n",
+            (0, 1, 0),
+            reported,
+            &cat(&[&hex("00000000"), &tpm2b(&hex(SHA256_EMPTY))]),
+        )
+    );
+}
 
 #[test]
 fn attestations_of_storage_hierarchy_keys_are_obfuscated() {
@@ -5157,14 +5199,15 @@ fn session_contexts_save_once_and_load_once() {
 fn context_commands_check_their_handles_and_take_no_session() {
     let (mut t, parent) = with_ecc_parent();
     // What cannot be saved: persistent objects, NV indices, permanent handles, PCR, unloaded
-    // objects and sessions, sequence objects.
+    // objects and sessions, and the sequence objects that are not saved (a hash, sign or verify
+    // sequence is saved since slice 8; an event sequence is not).
     let seq = {
         let r = run(
             &mut t,
             plain(
                 cc::HASH_SEQUENCE_START,
                 &[],
-                &cat(&[&tpm2b(b""), &u16b(alg::SHA256)]),
+                &cat(&[&tpm2b(b""), &u16b(alg::NULL)]),
             ),
         );
         ok(&r);

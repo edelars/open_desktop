@@ -164,7 +164,9 @@ pub mod pt {
     pub const FAMILY_INDICATOR: u32 = FIXED;
     pub const LEVEL: u32 = FIXED + 1;
     pub const REVISION: u32 = FIXED + 2;
-    pub const DAY_OF_YEAR: u32 = FIXED + 3;
+    /// Part 2 v185 calls `PT_FIXED + 3` `TPM_PT_ERRATA` (before v185: `TPM_PT_DAY_OF_YEAR`).
+    pub const ERRATA: u32 = FIXED + 3;
+    /// Part 2 v185: `PT_FIXED + 4` shall be zero.
     pub const YEAR: u32 = FIXED + 4;
     pub const MANUFACTURER: u32 = FIXED + 5;
     pub const VENDOR_STRING_1: u32 = FIXED + 6;
@@ -182,6 +184,7 @@ pub mod pt {
     pub const PCR_SELECT_MIN: u32 = FIXED + 19;
     pub const CONTEXT_GAP_MAX: u32 = FIXED + 20;
     pub const NV_COUNTERS_MAX: u32 = FIXED + 22;
+    pub const MEMORY: u32 = FIXED + 24;
     pub const CLOCK_UPDATE: u32 = FIXED + 25;
     pub const CONTEXT_HASH: u32 = FIXED + 26;
     pub const CONTEXT_SYM: u32 = FIXED + 27;
@@ -205,6 +208,8 @@ pub mod pt {
     pub const VENDOR_COMMANDS: u32 = FIXED + 43;
     pub const NV_BUFFER_MAX: u32 = FIXED + 44;
     pub const MAX_CAP_BUFFER: u32 = FIXED + 46;
+    pub const FIRMWARE_SVN: u32 = FIXED + 47;
+    pub const FIRMWARE_MAX_SVN: u32 = FIXED + 48;
     pub const ML_PARAMETER_SETS: u32 = FIXED + 49;
     pub const PERMANENT: u32 = VAR;
     pub const STARTUP_CLEAR: u32 = VAR + 1;
@@ -218,6 +223,7 @@ pub mod pt {
     pub const HR_PERSISTENT_AVAIL: u32 = VAR + 9;
     pub const NV_COUNTERS: u32 = VAR + 10;
     pub const NV_COUNTERS_AVAIL: u32 = VAR + 11;
+    pub const ALGORITHM_SET: u32 = VAR + 12;
     pub const LOADED_CURVES: u32 = VAR + 13;
     pub const HR_PERSISTENT_MIN: u32 = FIXED + 15;
     /// Dictionary attack properties (Part 2 v184, Table 30): `failedTries`, `maxTries`,
@@ -251,7 +257,11 @@ pub mod alg {
     pub const ECDH: u16 = 0x0019;
     pub const KDF1_SP800_56A: u16 = 0x0020;
     pub const ECC: u16 = 0x0023;
+    /// `TPM_ALG_SYMCIPHER`: the object type of a symmetric block cipher key (Part 2 v185, Table 8).
+    pub const SYMCIPHER: u16 = 0x0025;
     pub const MLKEM: u16 = 0x00A0;
+    /// `TPM_ALG_MLDSA`: pure ML-DSA, FIPS 204 (Part 2 v185, Table 8). `TPM_ALG_HASH_MLDSA` (0x00A2) is not implemented.
+    pub const MLDSA: u16 = 0x00A1;
     /// The symmetric algorithm of a storage key template; protects `outPrivate` (`object.rs`).
     pub const AES: u16 = 0x0006;
     pub const CFB: u16 = 0x0043;
@@ -262,6 +272,7 @@ pub mod alg {
 /// Table 12 (v184): `TPM_ECC_CURVE`.
 pub mod curve {
     pub const NIST_P256: u16 = 0x0003;
+    pub const NIST_P384: u16 = 0x0004;
 }
 
 /// Table 39 (v184): `TPMA_OBJECT` bits.
@@ -341,14 +352,20 @@ pub mod handle {
 /// structure.
 pub const TPM_GENERATED_VALUE: u32 = 0xFF54_4347;
 
-/// Table 3 (v184): `TPM_SPEC_*`. The project targets v185 (ADR-0009); `REVISION` reports 185.
-/// NOT VERIFIED against TPM 2.0 Library v185: v185 `TPM_SPEC_YEAR`/`TPM_SPEC_DAY_OF_YEAR` and the
-/// exact `TPM_PT_REVISION` encoding (v184 states version number = TPM_SPEC_VERSION from v184 on);
-/// the v184 year/day (2025, 79) are used as placeholders.
+/// The firmware version of this build: `TPM_PT_FIRMWARE_VERSION_1` is the high 32 bits and
+/// `TPM_PT_FIRMWARE_VERSION_2` the low 32 bits, and the same value is the `firmwareVersion` of
+/// every attestation structure (ADR-0009, decision 6: one source for both).
+pub(crate) const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
+
+/// Part 2 v185, Table 6: `TPM_SPEC_*` (checked against the v185 text: `TPM_SPEC_VERSION` 185,
+/// `TPM_SPEC_YEAR` 0, `TPM_SPEC_ERRATA` 0, which was `TPM_SPEC_DAY_OF_YEAR` before v185). The
+/// project targets v185 (ADR-0009); `REVISION` reports 185.
 pub mod spec {
     pub const FAMILY: u32 = 0x322E_3000;
     pub const LEVEL: u32 = 0;
     pub const REVISION: u32 = 185;
-    pub const YEAR: u32 = 2025;
-    pub const DAY_OF_YEAR: u32 = 79;
+    /// `TPM_SPEC_YEAR`: zero since v185 (the errata level is `TPM_SPEC_ERRATA`).
+    pub const YEAR: u32 = 0;
+    /// `TPM_SPEC_ERRATA` (Part 2 v185, Table 6): the base document, no errata level claimed.
+    pub const ERRATA: u32 = 0;
 }

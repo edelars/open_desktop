@@ -79,6 +79,8 @@ impl Rc {
     pub const ECC_POINT: Rc = Rc(RC_FMT1 + 0x027);
 
     // Warnings (RC_WARN + n).
+    /// `TPM_RC_CONTEXT_GAP`: a warning, so it carries no handle or parameter number.
+    pub const CONTEXT_GAP: Rc = Rc(RC_WARN + 0x001);
     pub const OBJECT_MEMORY: Rc = Rc(RC_WARN + 0x002);
     pub const SESSION_HANDLES: Rc = Rc(RC_WARN + 0x005);
     pub const OBJECT_HANDLES: Rc = Rc(RC_WARN + 0x006);

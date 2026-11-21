@@ -274,6 +274,9 @@ const ECDSA_SHA256: Scheme = Scheme {
     hash: alg::SHA256,
 };
 
+// Row 28 (the `TPM2_CertifyCreation` response, which names a key made by `TPM2_Create`) was re-pinned
+// when ECC keys of `TPM2_Create` began to use extra random bits (Part 1 v185 §44.6); rows 0-27 are as
+// recorded.
 const GOLDEN: [&str; 29] = [
     "29e2e3f0909910c6d2d376156a7ade399dfe34a3dbfc71b30191466b2db7d182",
     "5ff8a6f6d9dd196b1d85a1989a8a5d2a31bf61e591be407b910af389d5af5e73",
@@ -303,7 +306,7 @@ const GOLDEN: [&str; 29] = [
     "846494ad2ad9428e05e3b26c54493144058d359d359c0a89d57f7c6791b7bce3",
     "6ab4ecc4d95767ef045fe106d367afc940f7fae6668ba34f5c8e169fa878766f",
     "051f03e187f9a77d06b73ecacca6081820587ce58c9819cf1305e99289af92f0",
-    "eb420116611dab4e19ccf02dea74fc509cce16cab4cbe9cbc3b4639b9103c12e",
+    "6dc62f450d3aba9bc744687e1c93ef47fe7f5d6d588a8914be886e5cc3877dc7",
 ];
 
 #[test]
@@ -369,7 +372,7 @@ const VECTORS: [Vector; 4] = [
     },
 ];
 
-const MESSAGE: &[u8] = b"slice 1b: hash agility signing";
+pub(super) const MESSAGE: &[u8] = b"slice 1b: hash agility signing";
 /// Python hashlib: sha384(MESSAGE), sha512(MESSAGE), and the digests of 40 octets 0x5c (the NV data).
 const MESSAGE_SHA384: &str = "012d2fbb824b2484ad3977ea449de6d24640143dfc18b25fc33a6f25c17353e093f7a266ba85a93cbac50da349d3d262";
 const MESSAGE_SHA512: &str = "fdff692bc78e1a7378665b7d775e317b67ef644a91ef2eb00193e53934da8c5a6743302b5ed3db31b046ab3c881bd4feca322bc45850c8e55d6e94eca5e7c9b0";
@@ -422,6 +425,17 @@ fn vector_key(t: &mut Tpm, v: &Vector) -> Primary {
     };
     assert_eq!(public, v.public);
     key
+}
+
+/// The pinned, OpenSSL-verified TPMT_SIGNATURE (hex) of SignDigest(H(MESSAGE)) for a key kind and
+/// hash (used by the context tests of the sequences).
+pub(super) fn pinned_signature(rsa_key: bool, hash: u16) -> &'static str {
+    vector(rsa_key, hash).signature
+}
+
+/// The owner primary key of the pinned vector of a key kind and hash (auth "pw").
+pub(super) fn pinned_key(t: &mut Tpm, rsa_key: bool, hash: u16) -> Primary {
+    vector_key(t, vector(rsa_key, hash))
 }
 
 /// The same signature structure relabelled with another hash.

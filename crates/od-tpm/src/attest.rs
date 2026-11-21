@@ -1,5 +1,9 @@
 //! TPM attestation commands (Part 3, clause 18).
 //!
+//! **ML-DSA keys (slice 7).** The attestation structure itself is signed (no digest, empty context);
+//! `inScheme` can only be NULL, and `TPM2_Quote` is `TPM_RC_SCHEME` because the hash of its `pcrDigest`
+//! comes from the signing scheme, which an ML-DSA key does not have.
+//!
 //! **Attestation** (Part 3, clauses 18.1, 18.2 and 18.4; Part 2, clauses 10.12.2-10.12.13). The TPM
 //! builds a `TPMS_ATTEST` (`magic` = `TPM_GENERATED_VALUE`, `type`, `qualifiedSigner` = Qualified
 //! Name of the signing key, `extraData` = `qualifyingData`, `clockInfo`, `firmwareVersion`, the
@@ -57,7 +61,7 @@
 //! `TPMS_TIME_INFO` is the milliseconds since the TPM was powered (`power_ms`), the same value
 //! `TPM2_ReadClock` reports.
 
-use crate::codes::{TPM_GENERATED_VALUE, alg, handle, object_attr, st};
+use crate::codes::{FIRMWARE_VERSION, TPM_GENERATED_VALUE, alg, handle, object_attr, st};
 use crate::crypto::{HashAlg, ecc_sign, hash, kdfa_sha256};
 use crate::dispatch::Invocation;
 use crate::marshal::{
@@ -66,7 +70,7 @@ use crate::marshal::{
 };
 use crate::nv::{NV_BUFFER_MAX, attr as nv_attr};
 use crate::object::{Object, Secret, find_object, is_object_hierarchy};
-use crate::object_cmd::{rsa_signature, select_signing_scheme};
+use crate::object_cmd::{mldsa_message_signature, rsa_signature, select_signing_scheme};
 use crate::policy::pcr_selection_digest_with;
 use crate::random::Drbg;
 use crate::response::{Output, Rc};
@@ -74,9 +78,6 @@ use crate::state::Tpm;
 
 /// The Qualified Name of `TPM_RH_NULL`: the handle itself (clause 18.1).
 const NULL_QN: [u8; 4] = handle::RH_NULL.to_be_bytes();
-
-/// `TPM_PT_FIRMWARE_VERSION_1 << 32 | TPM_PT_FIRMWARE_VERSION_2` (`capability.rs`).
-const FIRMWARE_VERSION: u64 = 0x0001_0000 << 32;
 
 /// The checked signing key of an attestation command and its scheme, or `None` for
 /// `TPM_RH_NULL` (the NULL signature).
@@ -97,7 +98,9 @@ fn attest_scheme(
     }
     if matches!(
         o.public.params,
-        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. }
+        PublicParams::KeyedHash { .. }
+            | PublicParams::MlKem { .. }
+            | PublicParams::SymCipher { .. }
     ) {
         return Err(Rc::KEY.in_handle(handle_no));
     }
@@ -124,7 +127,7 @@ fn sign_digest(
                 s,
             })
         }
-        Secret::Data(_) | Secret::MlKem(_) => Err(Rc::KEY.in_handle(1)),
+        Secret::Data(_) | Secret::MlKem(_) | Secret::MlDsa(_) => Err(Rc::KEY.in_handle(1)),
     }
 }
 
@@ -204,10 +207,15 @@ impl Tpm {
     ) -> Result<Output, Rc> {
         let signature = match scheme {
             Some(scheme) => {
-                let digest = hash(HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?, &[&attest]);
                 let signer = find_object(&self.objects, &self.persistent.objects, sign_handle)
                     .ok_or(Rc::reference_handle(0))?;
-                sign_digest(signer, scheme, digest.as_slice(), &mut self.drbg)?
+                if matches!(signer.public.params, PublicParams::MlDsa { .. }) {
+                    // ML-DSA signs the attestation structure itself (no digest, empty context).
+                    mldsa_message_signature(signer, &attest, &[])?
+                } else {
+                    let digest = hash(HashAlg::from_alg(scheme.hash).ok_or(Rc::HASH)?, &[&attest]);
+                    sign_digest(signer, scheme, digest.as_slice(), &mut self.drbg)?
+                }
             }
             None => TpmtSignature::Null,
         };
@@ -277,6 +285,12 @@ impl Tpm {
         let mut selection = TpmlPcrSelection::unmarshal(p)?;
         p.finish()?;
         let signing = self.attest_signer(inv.handles[0], in_scheme, 1, 2)?;
+        // The PCR digest is hashed with the hash of the signing scheme (clause 18.4.1), and an ML-DSA
+        // key has no scheme and no hash: `TPM_RC_SCHEME`. NOT VERIFIED: Part 3 v185 names no other
+        // hash for such a key.
+        if signing.is_some_and(|(o, _)| matches!(o.public.params, PublicParams::MlDsa { .. })) {
+            return Err(Rc::SCHEME.in_param(2));
+        }
         self.pcrs.filter_selection(&mut selection);
         // pcrDigest is hashed with the hash of the signing scheme (clause 18.4.1); for TPM_RH_NULL
         // the scheme is inScheme, and a NULL one keeps SHA-256.

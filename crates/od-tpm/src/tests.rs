@@ -19,12 +19,20 @@ mod tests_c1;
 mod tests_c2;
 #[path = "tests_c3.rs"]
 mod tests_c3;
+#[path = "tests_context_seq.rs"]
+mod tests_context_seq;
 #[path = "tests_ek.rs"]
 mod tests_ek;
+#[path = "tests_ek_high.rs"]
+mod tests_ek_high;
+#[path = "tests_mldsa.rs"]
+mod tests_mldsa;
 #[path = "tests_nv_props.rs"]
 mod tests_nv_props;
 #[path = "tests_obj.rs"]
 mod tests_obj;
+#[path = "tests_p384.rs"]
+mod tests_p384;
 #[path = "tests_rsa3072.rs"]
 mod tests_rsa3072;
 #[path = "tests_salted.rs"]
@@ -41,6 +49,8 @@ mod tests_sha2_policy;
 mod tests_sha2_sessions;
 #[path = "tests_sha2_sign.rs"]
 mod tests_sha2_sign;
+#[path = "tests_symcipher_mlkem.rs"]
+mod tests_symcipher_mlkem;
 
 const ENTROPY: [u8; 48] = [5; 48];
 
@@ -277,6 +287,34 @@ fn commands_outside_the_profile_return_command_code_not_success() {
         // Outside the table range too.
         err(&run(&mut t, plain(0x0000_0000, &[], &[])), Rc::COMMAND_CODE);
         err(&run(&mut t, plain(0xFFFF_FFFF, &[], &[])), Rc::COMMAND_CODE);
+    }
+}
+
+#[test]
+fn field_upgrade_commands_are_absent() {
+    // ADR-0009, decision 6: TPM2_FieldUpgradeStart, TPM2_FieldUpgradeData and TPM2_FirmwareRead
+    // are not implemented, and there is no Field Upgrade mode or TPM_RC_UPGRADE.
+    const ABSENT: [u32; 3] = [0x0000_012F, 0x0000_0141, 0x0000_0179];
+    for startup in [false, true] {
+        let mut t = if startup { started() } else { tpm_new() };
+        for code in ABSENT {
+            err(&run(&mut t, plain(code, &[], &[])), Rc::COMMAND_CODE);
+            let params = u32b(0);
+            err(&run(&mut t, plain(code, &[], &params)), Rc::COMMAND_CODE);
+        }
+    }
+    let mut t = started();
+    let listed = listed_commands(&mut t);
+    for code in ABSENT {
+        assert!(!listed.contains(&(code & 0xFFFF)), "{code:#x} is listed");
+        assert!(COMMANDS.iter().all(|c| c.code != code));
+        // The listing starts at the next implemented command, never at the absent one.
+        let (_, _, body, count) = cap_list(&get_cap(&mut t, cap::COMMANDS, code, 1));
+        assert_eq!(count, 1);
+        assert_ne!(
+            u32::from_be_bytes([body[0], body[1], body[2], body[3]]) & 0xFFFF,
+            code
+        );
     }
 }
 
@@ -911,7 +949,9 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
     let mut t = started();
     let before = t.persistent_snapshot();
     for (encoded, error) in [
-        ("0025", Rc::TYPE), // SYMCIPHER is outside the implemented profile.
+        ("0025", Rc::INSUFFICIENT), // SYMCIPHER (slice 5): the cipher is missing.
+        ("00a1", Rc::INSUFFICIENT), // ML-DSA (slice 7): the parameter set is missing.
+        ("00a2", Rc::TYPE),         // HashML-DSA (0x00A2) is not implemented.
         ("0001000600c000430010080000000000", Rc::VALUE), // AES-192.
         ("00010006008000420010080000000000", Rc::MODE), // AES-CBC.
         ("0001001000140027080000000000", Rc::HASH), // SHA3-256 is not implemented.
@@ -919,11 +959,11 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
         ("000100100014000b040000000000", Rc::VALUE), // RSA-1024.
         ("000100100014000b0c0100000000", Rc::VALUE), // 3073 key bits.
         ("000100100014000b080000000003", Rc::RANGE), // Unsupported exponent.
-        ("002300100018000b00040010", Rc::CURVE), // NIST P-384.
+        ("002300100018000b00050010", Rc::CURVE), // NIST P-521 (P-384 is supported since slice 6).
         ("002300100018000b00030021", Rc::KDF), // Non-null KDF.
         ("002300100014000b00030010", Rc::SCHEME), // RSASSA in ECC union.
         ("00080005", Rc::INSUFFICIENT), // Missing HMAC hash.
-        ("", Rc::INSUFFICIENT), // Missing type selector.
+        ("", Rc::INSUFFICIENT),     // Missing type selector.
     ] {
         err(
             &run(&mut t, plain(0x18A, &[], &hex(encoded))),
@@ -943,8 +983,8 @@ fn test_parms_refuses_unsupported_encodings_and_reports_parameter_one() {
 fn capability_algs_pcrs_and_handles() {
     let mut t = started();
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ALGS, 0, 100));
-    assert!(!more && c == cap::ALGS && count == 17);
-    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, CFB with their
+    assert!(!more && c == cap::ALGS && count == 19);
+    // RSA, HMAC, AES, KEYEDHASH, XOR, SHA256, SHA384, SHA512, RSASSA, RSAES, RSAPSS, OAEP, ECDSA, ECDH, ECC, SYMCIPHER, CFB with their
     // TPMA_ALGORITHM bits (Part 2, Table 11 types: RSA "A O", KEYEDHASH "H O", SHA256 "H", RSASSA
     // and ECDSA "A X", ECC "A O", RSAES "A E", OAEP "A E H", ECDH "A M"; AES "S O" and CFB "E" are
     // NOT VERIFIED).
@@ -969,19 +1009,26 @@ fn capability_algs_pcrs_and_handles() {
             &[0x00, 0x18, 0, 0, 1, 1],
             &[0x00, 0x19, 0, 0, 4, 1],
             &[0x00, 0x23, 0, 0, 0, 9],
+            // SYMCIPHER "O" (slice 5); NOT VERIFIED: the bit is our reading of the registry.
+            &[0x00, 0x25, 0, 0, 0, 8],
             &[0x00, 0x43, 0, 0, 2, 0],
             &[0x00, 0xA0, 0, 0, 0, 9],
+            // MLDSA "A O X" (slice 7); NOT VERIFIED: the bits are our reading of the registry.
+            &[0x00, 0xA1, 0, 0, 1, 9],
         ]
         .concat()
     );
     // Paging starts at the given algorithm ID.
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 11);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 2);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 1);
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 0);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x0C, 100)).3, 13);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x24, 100)).3, 4);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x26, 100)).3, 3);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0x44, 100)).3, 2);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA1, 100)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ALGS, 0xA2, 100)).3, 0);
     let (_, _, sets, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x131, 1));
     assert_eq!(count, 1);
-    assert_eq!(sets, hex("0000013100000002"));
+    // mlKem_768 (bit 1), mlDsa_65 (bit 4) and extMu (bit 6).
+    assert_eq!(sets, hex("0000013100000052"));
 
     let r = get_cap(&mut t, cap::PCRS, 0, 100);
     let p = params(&r, 0);
@@ -1072,8 +1119,8 @@ fn capability_tpm_properties() {
     assert_eq!(var.len(), count as usize);
     assert!(var.windows(2).all(|w| w[0].0 < w[1].0));
     let v = |tag: u32| var.iter().find(|p| p.0 == tag).map(|p| p.1);
-    // Three sequence slots plus eight object slots (slice B).
-    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(11));
+    // The smaller of the two pools: three sequence slots and eight object slots (slice B).
+    assert_eq!(v(pt::HR_TRANSIENT_AVAIL), Some(3));
     assert_eq!(v(pt::HR_PERSISTENT), Some(0));
     assert_eq!(v(pt::HR_PERSISTENT_AVAIL), Some(16));
     assert_eq!(v(pt::HR_NV_INDEX), Some(0));
@@ -1089,6 +1136,53 @@ fn capability_tpm_properties() {
         cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, 0x300, 100)).3,
         0
     );
+}
+
+#[test]
+fn get_capability_lists_every_tpm_pt_of_part2_v185() {
+    // The TPM_PT table of Part 2 v185 (PTP 1.07 clause 4.2 asks for every defined property):
+    // PT_FIXED + 0..=20 and 22..=49 (+21 is reserved), PT_VAR + 0..=20.
+    let expected: Vec<u32> = (0..=20)
+        .chain(22..=49)
+        .map(|n| pt::FIXED + n)
+        .chain((0..=20).map(|n| pt::VAR + n))
+        .collect();
+    assert_eq!(expected.len(), 49 + 21);
+    let mut t = started();
+    let mut listed = Vec::new();
+    let mut values = std::collections::HashMap::new();
+    for group in [pt::FIXED, pt::VAR] {
+        let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::TPM_PROPERTIES, group, 1000));
+        assert!(!more && c == cap::TPM_PROPERTIES);
+        assert_eq!(body.len(), 8 * count as usize);
+        for entry in body.chunks(8) {
+            let tag = u32::from_be_bytes(entry[..4].try_into().unwrap());
+            listed.push(tag);
+            values.insert(tag, u32::from_be_bytes(entry[4..].try_into().unwrap()));
+        }
+    }
+    assert_eq!(
+        listed, expected,
+        "TPM_PT of the response against Part 2 v185"
+    );
+    // The values that are zero because the TPM has no such feature, not because they are stubs.
+    for tag in [
+        pt::MEMORY,
+        pt::ALGORITHM_SET,
+        pt::SPLIT_MAX,
+        pt::MODES,
+        pt::NV_WRITE_RECOVERY,
+        pt::AUDIT_COUNTER_0,
+        pt::AUDIT_COUNTER_1,
+        pt::CLOCK_UPDATE,
+        pt::ERRATA,
+        pt::YEAR,
+        pt::FIRMWARE_SVN,
+        pt::FIRMWARE_MAX_SVN,
+    ] {
+        assert_eq!(values[&tag], 0, "{tag:#x}");
+    }
+    assert_eq!(values[&pt::REVISION], 185);
 }
 
 #[test]
