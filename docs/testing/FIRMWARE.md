@@ -171,11 +171,11 @@ python3 tools/build/build_firmware.py --out "$od_fw_check/firmware.bin"
 cargo run --release --offline -p od-runner -- boot-firmware \
   --image "$od_fw_check/firmware.bin" --budget 6000000 \
   --com1-out "$od_fw_check/boot_core.com1"
-mask() { sed -E 's/(BS|RT)=0x[0-9A-F]{16}/\1=0x<layout>/' "$1"; }
+mask() { sed -E '/OD-FW S7-05 table CRC/ s/(BS|RT)=0x[0-9A-F]{16}/\1=0x<layout>/g' "$1"; }
 cmp <(mask tests/fixtures/firmware/boot_core_com1.txt) <(mask "$od_fw_check/boot_core.com1")
 ```
 
-Сравнение (bash) пропускает только значения `BS=` и `RT=` строки `OD-FW S7-05 table CRC`, как `mask_layout_crcs` в `tests/system/firmware_boot_smoke.py`; причина — в разделе [«Раскладка образа и CRC таблиц Boot Services и Runtime Services»](#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
+Сравнение (bash) пропускает только значения `BS=` и `RT=` строки `OD-FW S7-05 table CRC`, как `mask_layout_crcs` в `tests/system/firmware_boot_smoke.py` (самотест: `python3 tests/system/test_firmware_boot_smoke_mask.py`); причина — в разделе [«Раскладка образа и CRC таблиц Boot Services и Runtime Services»](#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
 
 Эталон содержит версию `0.1.0`, сообщения о переходе на свои
 таблицы, 17 записей памяти и ключи диагностики аллокаторов. За ними идут
