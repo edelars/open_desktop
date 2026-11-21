@@ -127,6 +127,10 @@ fn check_transfer(state: &NvmeState, command: &Command) -> Result<Transfer, Stat
 
 fn flush(state: &mut NvmeState, command: &Command) -> Result<Completion, Status> {
     check_common(state, command)?;
+    if state.write_protected {
+        // Nothing can be dirty on a protected namespace: success without touching the disk.
+        return Ok(Completion::ok(0));
+    }
     let backend = state.backend.as_mut().ok_or(Status::NAMESPACE_NOT_READY)?;
     backend.flush().map_err(|_| Status::INTERNAL_ERROR)?;
     Ok(Completion::ok(0))
@@ -155,6 +159,11 @@ fn write(
     dma: &mut dyn GuestDma,
 ) -> Result<Completion, Status> {
     let transfer = check_transfer(state, command)?;
+    // A write-protected namespace refuses the command before the payload is
+    // fetched, so neither guest memory nor the disk is touched (NVME_DEVICE.md 14.5).
+    if state.write_protected {
+        return Err(Status::NAMESPACE_WRITE_PROTECTED);
+    }
     // The whole payload is fetched before the backend is touched: a bad PRP
     // leaves the disk unchanged.
     let data = read_from_host(dma, command.prp1, command.prp2, transfer.bytes())?;

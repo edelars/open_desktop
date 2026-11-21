@@ -12,7 +12,7 @@ use od_machine::{BackendError, NvmeAttachError, NvmeBackend, NvmeHandle};
 use od_storage::io::{CheckedStorage, DurabilityScope, StorageBackend, StorageError};
 use od_storage::raw::{RawError, RawImage};
 
-use crate::storage_io::{HostFileStorage, WriterOpenError};
+use crate::storage_io::{HostFileStorage, LeaseOpenError, ReadLease, WriterOpenError};
 
 const SECTOR_BYTES: usize = 512;
 const SECTOR_BYTES_U64: u64 = SECTOR_BYTES as u64;
@@ -21,6 +21,8 @@ const SECTOR_BYTES_U64: u64 = SECTOR_BYTES as u64;
 #[derive(Debug)]
 pub enum PersistentNvmeOpenError {
     WriterOpen(WriterOpenError),
+    /// A read-only attachment could not take its shared read lease.
+    ReadLease(LeaseOpenError),
     RawImage(RawError),
     FileDurabilityUnsupported,
 }
@@ -115,6 +117,79 @@ fn attach_persistent_nvme_backend(
     handle
         .attach_backend(Box::new(backend))
         .map_err(AttachPersistentNvmeError::Attach)
+}
+
+/// Opens a RAW image for reading only and attaches it as a write-protected
+/// namespace (S8-21, `docs/specs/NVME_DEVICE.md` 14.5): the controller reports
+/// `NSATTR` bit 0 and refuses every Write with `Namespace is Write Protected`.
+///
+/// The file is opened without write access and holds a shared lock
+/// (`flock(LOCK_SH)`, [`ReadLease`]): a live writer makes this fail with
+/// `LeaseOpenError::LeaseBusy`, and while this backend lives no writer can lock
+/// the file. Several read-only attachments of one file can coexist. Nothing is
+/// copied into memory: reads are `pread` of the requested sectors.
+pub fn attach_read_only_nvme(
+    handle: &NvmeHandle,
+    path: &Path,
+) -> Result<(), AttachPersistentNvmeError> {
+    let backend = ReadOnlyNvmeBackend::open(path).map_err(AttachPersistentNvmeError::Open)?;
+    handle
+        .attach_backend_read_only(Box::new(backend))
+        .map_err(AttachPersistentNvmeError::Attach)
+}
+
+/// Read-only file-backed NVMe namespace. Attach through
+/// [`attach_read_only_nvme`] so that the controller also write protects it.
+pub struct ReadOnlyNvmeBackend {
+    image: RawImage<ReadLease>,
+    sectors: u64,
+}
+
+impl ReadOnlyNvmeBackend {
+    /// Opens an existing RAW image (a nonzero whole number of 512-byte
+    /// sectors) under a shared read lease.
+    pub fn open(path: &Path) -> Result<Self, PersistentNvmeOpenError> {
+        let lease = ReadLease::open(path).map_err(PersistentNvmeOpenError::ReadLease)?;
+        let image = RawImage::open_read_only(lease, None, SECTOR_BYTES_U64)
+            .map_err(PersistentNvmeOpenError::RawImage)?;
+        let sectors = image.block_count();
+        Ok(Self { image, sectors })
+    }
+}
+
+impl NvmeBackend for ReadOnlyNvmeBackend {
+    fn sector_count(&self) -> u64 {
+        self.sectors
+    }
+
+    fn read_sectors(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), BackendError> {
+        if buffer.is_empty() || !buffer.len().is_multiple_of(SECTOR_BYTES) {
+            return Err(BackendError::OutOfRange);
+        }
+        let count =
+            u64::try_from(buffer.len() / SECTOR_BYTES).map_err(|_| BackendError::OutOfRange)?;
+        let end = lba.checked_add(count).ok_or(BackendError::OutOfRange)?;
+        if end > self.sectors {
+            return Err(BackendError::OutOfRange);
+        }
+        let offset = lba
+            .checked_mul(SECTOR_BYTES_U64)
+            .ok_or(BackendError::OutOfRange)?;
+        self.image
+            .read_aligned(offset, buffer)
+            .map_err(|_| BackendError::Io)
+    }
+
+    /// The controller never calls this on a write-protected namespace; a
+    /// direct call is refused instead of ignored.
+    fn write_sectors(&mut self, _lba: u64, _data: &[u8]) -> Result<(), BackendError> {
+        Err(BackendError::Io)
+    }
+
+    /// Nothing can be dirty on a read-only image.
+    fn flush(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
 }
 
 enum Held<B: StorageBackend> {
@@ -923,5 +998,64 @@ mod tests {
                 WriterOpenError::WriterBusy
             ))
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_only_backend_reads_sectors_and_refuses_writes_without_changing_the_file() {
+        let mut bytes = vec![0u8; SECTOR_BYTES * 4];
+        bytes[SECTOR_BYTES..SECTOR_BYTES * 2].fill(0x5a);
+        let file = TempFile::new(&bytes);
+        let mut backend = ReadOnlyNvmeBackend::open(&file.path).expect("open read-only");
+        assert_eq!(backend.sector_count(), 4);
+        let mut two = [0u8; SECTOR_BYTES * 2];
+        backend.read_sectors(0, &mut two).expect("read");
+        assert_eq!(&two[SECTOR_BYTES..], &[0x5a; SECTOR_BYTES]);
+        assert_eq!(
+            backend.read_sectors(3, &mut two),
+            Err(BackendError::OutOfRange)
+        );
+        assert_eq!(
+            backend.write_sectors(0, &[0xff; SECTOR_BYTES]),
+            Err(BackendError::Io)
+        );
+        assert_eq!(backend.flush(), Ok(()));
+        drop(backend);
+        assert_eq!(fs::read(&file.path).expect("read back"), bytes);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_only_backend_shares_the_file_but_excludes_writers() {
+        let file = TempFile::new(&[0x11; SECTOR_BYTES * 2]);
+        let first = ReadOnlyNvmeBackend::open(&file.path).expect("first reader");
+        let second = ReadOnlyNvmeBackend::open(&file.path).expect("readers share the file");
+        assert!(matches!(
+            PersistentNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::WriterOpen(
+                WriterOpenError::WriterBusy
+            ))
+        ));
+        drop((first, second));
+        let writer = PersistentNvmeBackend::open(&file.path).expect("writer after the readers");
+        assert!(matches!(
+            ReadOnlyNvmeBackend::open(&file.path),
+            Err(PersistentNvmeOpenError::ReadLease(
+                LeaseOpenError::LeaseBusy
+            ))
+        ));
+        drop(writer);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_only_backend_rejects_an_empty_or_partial_sector_image() {
+        for len in [0, SECTOR_BYTES + 1] {
+            let file = TempFile::new(&vec![0u8; len]);
+            assert!(matches!(
+                ReadOnlyNvmeBackend::open(&file.path),
+                Err(PersistentNvmeOpenError::RawImage(_))
+            ));
+        }
     }
 }

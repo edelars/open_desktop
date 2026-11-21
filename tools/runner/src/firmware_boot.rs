@@ -30,8 +30,9 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--sample-rip <hex> ...] [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
-\x20\x20--disk <path>,ro: the ',ro' suffix is not supported yet and is rejected \
-(docs/specs/NVME_DEVICE.md 14.5).\n\
+\x20\x20--disk <path>,ro: the file is opened read-only under a shared lock and the namespace is \
+write protected: the guest sees NSATTR bit 0 and every Write is refused with Namespace is Write \
+Protected (docs/specs/NVME_DEVICE.md 14.5); the file is never modified.\n\
 \x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
 board is dropped, so the writer lock (LOCK_EX) is released between the two boots \
 (limitation until S8-23).";
@@ -57,8 +58,11 @@ struct Options {
     /// a volatile namespace. Guest writes never reach the file.
     nvme_image: Option<String>,
     /// S8-21: RAW file attached through the stage 5 persistent backend (locked,
-    /// durable flush after each write). Mutually exclusive with `nvme_image`.
+    /// durable flush after each write), or read-only with `disk_read_only`.
+    /// Mutually exclusive with `nvme_image`.
     disk: Option<String>,
+    /// S8-21: `--disk <path>,ro`: shared read lease and a write-protected namespace.
+    disk_read_only: bool,
     tpm: bool,
     sample_rips: Vec<u64>,
     /// S8-10: JSON snapshot of the stopped machine (any stop except machine `Shutdown`).
@@ -81,7 +85,7 @@ struct FramebufferDumps {
 #[derive(Clone, Copy)]
 enum NvmeSource<'a> {
     Memory(&'a str),
-    Disk(&'a str),
+    Disk { path: &'a str, read_only: bool },
 }
 
 impl Options {
@@ -91,7 +95,10 @@ impl Options {
 
     fn nvme_source(&self) -> Option<NvmeSource<'_>> {
         match (&self.disk, &self.nvme_image) {
-            (Some(path), _) => Some(NvmeSource::Disk(path)),
+            (Some(path), _) => Some(NvmeSource::Disk {
+                path,
+                read_only: self.disk_read_only,
+            }),
             (None, Some(path)) => Some(NvmeSource::Memory(path)),
             (None, None) => None,
         }
@@ -675,8 +682,10 @@ fn validate_nvme_paths(image: &str, options: &Options) -> Result<(), String> {
         }
     }
     if options.disk.is_some() {
-        // A disk is written by the guest, so it must not be any other file the
-        // runner reads or writes (the in-memory `--nvme-image` is only read).
+        // A disk can be written by the guest (and a read-only one is not a
+        // reason to share a file with the ROM or NVRAM), so it must not be any
+        // other file the runner reads or writes (the in-memory `--nvme-image`
+        // is only read).
         for other in [
             Some(options.image.as_str()),
             options.nvram_in.as_deref(),
@@ -886,26 +895,50 @@ impl BootRun {
     }
 }
 
-/// Attaches an existing RAW file through the stage 5 persistent backend: the
+/// With `read_only` (`--disk <path>,ro`) the file is opened read-only under a
+/// shared lock (`LOCK_SH`) and the namespace is write protected (NVME_DEVICE.md
+/// 14.5): a writer is refused while it lives and the file is never modified.
+///
+/// Otherwise attaches an existing RAW file through the stage 5 persistent backend: the
 /// writer lock (`LOCK_EX`) is held until the backend is dropped, so a second
 /// runner (or a second boot in this process while the first board is alive)
 /// cannot write the same image, and every guest write is flushed durably
 /// before it completes. The file is neither created, resized nor copied into
 /// memory.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn attach_disk(nvme: &od_machine::NvmeHandle, path: &str) -> Result<(), (Value, u8)> {
+fn attach_disk(
+    nvme: &od_machine::NvmeHandle,
+    path: &str,
+    read_only: bool,
+) -> Result<(), (Value, u8)> {
     use od_host::persistent_nvme::{
         AttachPersistentNvmeError, PersistentNvmeOpenError, attach_persistent_nvme,
+        attach_read_only_nvme,
     };
-    use od_host::storage_io::WriterOpenError;
-    attach_persistent_nvme(nvme, Path::new(path)).map_err(|error| match error {
+    use od_host::storage_io::{LeaseOpenError, WriterOpenError};
+    let attached = if read_only {
+        attach_read_only_nvme(nvme, Path::new(path))
+    } else {
+        attach_persistent_nvme(nvme, Path::new(path))
+    };
+    attached.map_err(|error| match error {
         AttachPersistentNvmeError::Open(PersistentNvmeOpenError::WriterOpen(
             WriterOpenError::WriterBusy,
         )) => (
             failure(
                 "invalid_input",
                 "disk",
-                format!("{path}: the disk image is locked by another writer"),
+                format!("{path}: the disk image is locked by another writer or by a read-only run"),
+            ),
+            3,
+        ),
+        AttachPersistentNvmeError::Open(PersistentNvmeOpenError::ReadLease(
+            LeaseOpenError::LeaseBusy,
+        )) => (
+            failure(
+                "invalid_input",
+                "disk",
+                format!("{path}: the disk image is locked by a writer"),
             ),
             3,
         ),
@@ -921,7 +954,11 @@ fn attach_disk(nvme: &od_machine::NvmeHandle, path: &str) -> Result<(), (Value, 
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn attach_disk(_nvme: &od_machine::NvmeHandle, _path: &str) -> Result<(), (Value, u8)> {
+fn attach_disk(
+    _nvme: &od_machine::NvmeHandle,
+    _path: &str,
+    _read_only: bool,
+) -> Result<(), (Value, u8)> {
     Err((
         failure(
             "invalid_input",
@@ -943,21 +980,23 @@ fn boot(
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
-    if let Some(NvmeSource::Disk(path)) = nvme {
+    if let Some(NvmeSource::Disk { path, read_only }) = nvme {
         attach_disk(
             &board.nvme().expect("runner enabled the NVMe controller"),
             path,
+            read_only,
         )?;
     }
     // Hashes of the inputs the stop snapshot records (only computed when it is requested).
     let snapshot_wanted = diagnostics.stop_snapshot.is_some();
     let mut nvme_input = Value::Null;
-    if let Some(NvmeSource::Disk(path)) = nvme
+    if let Some(NvmeSource::Disk { path, read_only }) = nvme
         && snapshot_wanted
     {
-        // The disk is written by the guest and can be tens of GiB: path and size, no hash.
+        // A writable disk is written by the guest (a read-only one cannot be) and can be tens of
+        // GiB: path, read_only and size, no hash.
         nvme_input = json!({
-            "kind": "disk", "path": path,
+            "kind": "disk", "path": path, "read_only": read_only,
             "bytes": fs::metadata(path).ok().map(|metadata| metadata.len()),
             "sha256": null,
         });
@@ -1275,7 +1314,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
         Some(FirmwareFvApp::Fs) => Some("fs"),
         _ => None,
     };
-    let disk = parse_disks(&disks)?;
+    let (disk, disk_read_only) = match parse_disks(&disks)? {
+        Some((path, read_only)) => (Some(path), read_only),
+        None => (None, false),
+    };
     if disk.is_some() && nvme_image.is_some() {
         return Err("--disk and --nvme-image are mutually exclusive".to_owned());
     }
@@ -1343,6 +1385,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         framebuffer_out,
         nvme_image,
         disk,
+        disk_read_only,
         tpm,
         sample_rips,
         stop_snapshot,
@@ -1375,7 +1418,7 @@ fn parse_positive(name: &str, value: &str) -> Result<u64, String> {
 /// `--disk <path>[,ro]`, repeatable; the order is the order of NVMe
 /// controllers. The board has one controller (S8-20 adds more), so exactly one
 /// disk is accepted; a second one is refused rather than ignored.
-fn parse_disks(values: &[&String]) -> Result<Option<String>, String> {
+fn parse_disks(values: &[&String]) -> Result<Option<(String, bool)>, String> {
     let [value] = values else {
         return if values.is_empty() {
             Ok(None)
@@ -1399,14 +1442,7 @@ fn parse_disks(values: &[&String]) -> Result<Option<String>, String> {
             "--disk '{value}': only the ',ro' option exists and a path must not contain ','"
         ));
     }
-    if read_only {
-        return Err(
-            "--disk <path>,ro is not supported yet: the NVMe controller has no write-protected \
-             namespace (docs/specs/NVME_DEVICE.md, 14.5 'Диск только для чтения (запрос S8-21; не реализован)')"
-                .to_owned(),
-        );
-    }
-    Ok(Some(path.to_owned()))
+    Ok(Some((path.to_owned(), read_only)))
 }
 
 /// `(code, detail)` of the `OD-FW STOP code=0xNN detail=0xDDDDDDDDDDDDDDDD`
@@ -1673,24 +1709,23 @@ mod tests {
             assert!(parse(&bad).is_err(), "{bad:?}");
         }
     }
-    fn disks(values: &[&str]) -> Result<Option<String>, String> {
+    fn disks(values: &[&str]) -> Result<Option<(String, bool)>, String> {
         let owned: Vec<String> = values.iter().map(|value| value.to_string()).collect();
         parse_disks(&owned.iter().collect::<Vec<_>>())
     }
 
     #[test]
-    fn disk_option_accepts_one_writable_file_and_refuses_everything_else() {
+    fn disk_option_accepts_one_file_with_an_optional_ro_and_refuses_everything_else() {
         assert_eq!(disks(&[]), Ok(None));
         assert_eq!(
             disks(&["work/stage8/target.raw"]),
-            Ok(Some("work/stage8/target.raw".to_owned()))
+            Ok(Some(("work/stage8/target.raw".to_owned(), false)))
+        );
+        assert_eq!(
+            disks(&["work/stage8/media.raw,ro"]),
+            Ok(Some(("work/stage8/media.raw".to_owned(), true)))
         );
         assert!(disks(&["a.raw", "b.raw"]).unwrap_err().contains("S8-20"));
-        assert!(
-            disks(&["a.raw,ro"])
-                .unwrap_err()
-                .contains("not supported yet")
-        );
         assert!(disks(&[",ro"]).unwrap_err().contains("file path"));
         assert!(
             disks(&["a,b.raw"])
@@ -1715,7 +1750,18 @@ mod tests {
         assert_eq!(disk.nvme_image, None);
         assert!(matches!(
             disk.nvme_source(),
-            Some(NvmeSource::Disk("b.raw"))
+            Some(NvmeSource::Disk {
+                path: "b.raw",
+                read_only: false
+            })
+        ));
+        let read_only = parsed(&["--disk", "b.raw,ro", "--fv-app", "blk"]).unwrap();
+        assert!(matches!(
+            read_only.nvme_source(),
+            Some(NvmeSource::Disk {
+                path: "b.raw",
+                read_only: true
+            })
         ));
         let memory = parsed(&["--nvme-image", "a.raw"]).unwrap();
         assert!(matches!(
@@ -1758,6 +1804,16 @@ mod tests {
     /// `boot` path as the CLI, then drives a real NVMe write by MMIO.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn boot_with_disk(rom: &[u8], com1: &Path, disk: &str) -> Result<BootRun, (Value, u8)> {
+        boot_with_disk_mode(rom, com1, disk, false)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_with_disk_mode(
+        rom: &[u8],
+        com1: &Path,
+        disk: &str,
+        read_only: bool,
+    ) -> Result<BootRun, (Value, u8)> {
         let config = FirmwareBoardConfig {
             nvme: Some(Default::default()),
             ..board_config(None, false, None)
@@ -1767,7 +1823,10 @@ mod tests {
             &config,
             4,
             com1.to_str().unwrap(),
-            Some(NvmeSource::Disk(disk)),
+            Some(NvmeSource::Disk {
+                path: disk,
+                read_only,
+            }),
             &[],
             &mut Diagnostics::default(),
         )
@@ -1848,5 +1907,56 @@ mod tests {
             .expect("missing image");
         assert_eq!(error.0["error"]["kind"], "disk");
         assert!(!missing.exists());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn read_only_disk_refuses_guest_writes_and_leaves_the_file_unchanged() {
+        let dir = TempDir::new("od-disk-ro");
+        let (disk_path, com1) = (dir.join("media.raw"), dir.join("c1"));
+        let disk = disk_path.to_str().unwrap();
+        let rom = halting_rom();
+        // Content that the stand's write pattern at LBA 0 would visibly change.
+        let content: Vec<u8> = (0..1usize << 20).map(|index| (index % 251) as u8).collect();
+        fs::write(&disk_path, &content).unwrap();
+        let hash_before = sha256_hex(&content);
+
+        let mut first = boot_with_disk_mode(&rom, &com1, disk, true)
+            .unwrap_or_else(|(value, _)| panic!("read-only boot: {value}"));
+        // Readers share the file; a writer is refused while a reader lives.
+        let second = boot_with_disk_mode(&rom, &com1, disk, true)
+            .ok()
+            .expect("a second read-only run shares the file");
+        drop(second);
+        let (busy, code) = boot_with_disk(&rom, &com1, disk)
+            .err()
+            .expect("a writer next to a reader");
+        assert_eq!(code, 3);
+        assert_eq!(busy["error"]["kind"], "disk");
+        assert!(busy["error"]["detail"].as_str().unwrap().contains("locked"));
+        // The stand writes sector 0: the controller refuses it with Namespace is
+        // Write Protected (generic 0x20, DNR = 1).
+        let nvme = first.board.nvme().unwrap();
+        let error = crate::s5_nvme_stand::drive_nvme(&mut first.board, &nvme)
+            .err()
+            .expect("the guest write must be refused");
+        let status = error
+            .strip_prefix("NVMe command completed with status 0x")
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .unwrap_or_else(|| panic!("unexpected error: {error}"));
+        assert_eq!(status & 0x07FF, 0x020, "SCT 0, SC 0x20: {error}");
+        assert_ne!(status & 0x4000, 0, "DNR is set: {error}");
+        drop(nvme);
+        drop(first);
+
+        let after = fs::read(&disk_path).unwrap();
+        assert_eq!(sha256_hex(&after), hash_before);
+        assert_eq!(after, content);
+        // Once the reader is gone a writer can lock the file again.
+        drop(
+            boot_with_disk(&rom, &com1, disk)
+                .ok()
+                .expect("writer after the reader"),
+        );
     }
 }

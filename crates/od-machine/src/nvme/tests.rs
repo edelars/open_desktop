@@ -2410,6 +2410,113 @@ fn identify_namespace_follows_the_size_of_the_attached_backend() {
     assert_eq!(controller[77], 8, "MDTS");
 }
 
+/// A disk that was filled before it became write protected.
+fn protected_disk() -> (Rig, SharedBackend, Vec<u8>) {
+    let mut rig = rig();
+    let disk = SharedBackend::new(DISK_SECTORS);
+    let content = pattern(1024, 7);
+    disk.0.lock().unwrap().write_sectors(30, &content).unwrap();
+    rig.nvme
+        .attach_backend_read_only(Box::new(disk.clone()))
+        .unwrap();
+    rig.enable();
+    rig.create_io_queues();
+    (rig, disk, content)
+}
+
+#[test]
+fn write_protected_namespace_reports_nsattr_bit_0_and_otherwise_matches_a_writable_one() {
+    let (mut rig, _, _) = protected_disk();
+    let (cqe, page) = rig.identify(0, 1);
+    assert_eq!(cqe.status(), (0, 0));
+    assert_eq!(page[99], 1, "NSATTR bit 0: Write Protected");
+    let (mut writable, _) = Rig::with_disk();
+    let (_, mut expected) = writable.identify(0, 1);
+    assert_eq!(expected[99], 0, "a writable namespace leaves NSATTR clear");
+    expected[99] = 1;
+    assert_eq!(page, expected, "only NSATTR differs");
+}
+
+#[test]
+fn write_to_a_protected_namespace_is_refused_before_the_payload_and_the_disk_are_touched() {
+    let (mut rig, disk, content) = protected_disk();
+    rig.mem_write(BUF_A, &pattern(512, 9));
+    let write = rig.io(Sqe::new(OPC_WRITE).nsid(1).prp(BUF_A, 0).rw(30, 0));
+    assert_eq!(write.status(), (0, 0x20), "Namespace is Write Protected");
+    assert!(write.dnr, "a retry cannot succeed");
+    // The payload is not fetched: a PRP outside RAM, which fails a writable
+    // namespace with Data Transfer Error, still reports the protection.
+    let bad_prp = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(RAM_BYTES + 0x1000, 0)
+        .rw(30, 0));
+    assert_eq!(bad_prp.status(), (0, 0x20));
+    // FUA does not change it either.
+    let fua = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A, 0)
+        .rw(30, 0)
+        .cdw12_bits(1 << 30));
+    assert_eq!(fua.status(), (0, 0x20));
+    assert_eq!(disk.bytes(30, 2), content, "the disk is unchanged");
+    assert_eq!(disk.flushes(), 0);
+    // Checks that precede the write keep their precedence: LBA Out of Range and Invalid Field.
+    let range = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A, 0)
+        .rw(DISK_SECTORS, 0));
+    assert_eq!(range.status(), (0, 0x80));
+    let field = rig.io(Sqe::new(OPC_WRITE)
+        .nsid(1)
+        .prp(BUF_A, 0)
+        .rw(30, 0)
+        .cdw12_bits(1 << 16));
+    assert_eq!(field.status(), (0, 0x02));
+    assert_eq!(disk.bytes(30, 2), content);
+}
+
+#[test]
+fn a_protected_namespace_still_reads_and_flush_succeeds_without_touching_the_disk() {
+    let (mut rig, disk, content) = protected_disk();
+    let read = rig.io(Sqe::new(OPC_READ).nsid(1).prp(BUF_C, 0).rw(30, 1));
+    assert_eq!(read.status(), (0, 0));
+    assert_eq!(rig.mem_read(BUF_C, 1024), content);
+    let flush = rig.io(Sqe::new(OPC_FLUSH).nsid(1));
+    assert_eq!(flush.status(), (0, 0));
+    assert_eq!(disk.flushes(), 0, "Flush does not reach a protected disk");
+    // The other Flush checks still apply.
+    assert_eq!(
+        rig.io(Sqe::new(OPC_FLUSH).nsid(1).fuse(1)).status(),
+        (0, 0x02)
+    );
+}
+
+#[test]
+fn write_protection_survives_a_controller_reset_and_a_new_attach_clears_it() {
+    let (mut protected, _, _) = protected_disk();
+    protected.set_dword(0x14, 0);
+    protected.sq_tail = 0;
+    protected.cq_head = 0;
+    protected.cq_phase = true;
+    protected.mem_write(ACQ, &[0u8; CQE_BYTES * 2]);
+    protected.enable();
+    let (_, page) = protected.identify(0, 1);
+    assert_eq!(page[99], 1, "the host-set flag is not guest state");
+    // A new attachment while the controller is disabled replaces the flag.
+    let mut again = rig();
+    again
+        .nvme
+        .attach_backend_read_only(Box::new(InMemoryBackend::new(DISK_SECTORS).unwrap()))
+        .unwrap();
+    again
+        .nvme
+        .attach_backend(Box::new(InMemoryBackend::new(DISK_SECTORS).unwrap()))
+        .unwrap();
+    again.enable();
+    let (_, page) = again.identify(0, 1);
+    assert_eq!(page[99], 0);
+}
+
 #[test]
 fn a_full_completion_queue_holds_back_writes_until_the_host_moves_the_head() {
     let (mut rig, disk) = Rig::with_disk();

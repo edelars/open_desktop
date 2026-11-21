@@ -767,3 +767,36 @@ fn periodic_dumps_and_the_phase_log_work_on_any_boot_and_skip_unchanged_frames()
     assert!(!again.com1.exists());
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// `--disk <path>,ro` end to end through the binary: the ROM halts at once (the guest write
+/// path is covered by the runner unit test and the od-machine tests), the file is opened
+/// read-only under a shared lock and is byte for byte the same afterwards.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn read_only_disk_is_attached_and_the_file_stays_unchanged() {
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("od-runner-ro-{}-{id}.raw", std::process::id()));
+    let content: Vec<u8> = (0..4096usize)
+        .map(|index| (index * 7 % 253) as u8)
+        .collect();
+    fs::write(&path, &content).unwrap();
+    let mut rom = image(&[0xf4]);
+    rom[0x2a..0x2c].copy_from_slice(&12u16.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let spec = format!("{},ro", path.to_str().unwrap());
+    let run = invoke_with_args(&rom, "100", &["--disk", &spec]);
+    assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
+    assert_eq!(report(&run)["exit"], "halted");
+    assert_eq!(fs::read(&path).unwrap(), content);
+    fs::remove_file(&run.com1).unwrap();
+
+    // A read-only run does not create or extend a missing image.
+    let missing = format!("{}.missing,ro", path.to_str().unwrap());
+    let run = invoke_with_args(&rom, "100", &["--disk", &missing]);
+    assert_eq!(run.output.status.code(), Some(3));
+    assert_eq!(report(&run)["error"]["kind"], "disk");
+    assert!(!std::path::Path::new(missing.strip_suffix(",ro").unwrap()).exists());
+    fs::remove_file(path).unwrap();
+}

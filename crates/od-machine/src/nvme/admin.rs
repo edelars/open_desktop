@@ -598,6 +598,9 @@ fn identify_namespace(state: &NvmeState) -> Vec<u8> {
     put(&mut page, 8, &sectors); // NCAP
     put(&mut page, 16, &sectors); // NUSE: no thin provisioning
     // NSFEAT, NLBAF (one format), FLBAS (format 0) are zero.
+    if state.write_protected {
+        page[99] = 1; // NSATTR bit 0: Write Protected (S8-21, NVME_DEVICE.md 14.5)
+    }
     let capacity = u128::from(config.namespace_sectors) << LBA_DATA_SIZE_LOG2;
     put(&mut page, 48, &capacity.to_le_bytes()); // NVMCAP
     put(&mut page, 104, &config.namespace_uuid); // NGUID
