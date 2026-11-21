@@ -4515,6 +4515,46 @@ mod tests {
     }
 
     #[test]
+    fn string_compares_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-56 slice B: the interpreter executes PCMPESTRI/PCMPESTRM/PCMPISTRI/PCMPISTRM; the JIT has no
+        // lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4f80;
+        for bytes in [
+            &[0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00][..], // PCMPESTRI xmm0, xmm1, 0
+            &[0x66, 0x0f, 0x3a, 0x60, 0x00, 0x44],     // PCMPESTRM xmm0, [rax], 0x44
+            &[0x66, 0x0f, 0x3a, 0x63, 0xc1, 0x0c],     // PCMPISTRI xmm0, xmm1, 0x0c
+            &[0x66, 0x0f, 0x3a, 0x62, 0x00, 0x40],     // PCMPISTRM xmm0, [rax], 0x40
+            &[0x66, 0x48, 0x0f, 0x3a, 0x61, 0xc1, 0x00], // PCMPESTRI xmm0, xmm1, 0 (REX.W)
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41 { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x63, 0x00, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

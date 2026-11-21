@@ -504,6 +504,32 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
             0xf1,
         ),
         ("crc32 rcx,rdx", &[0xf2, 0x48, 0x0f, 0x38, 0xf1, 0xca], 0xf1),
+        // S2-56 slice B: the string compares are SSE4.2 forms and are refused at CPL3 as well.
+        (
+            "pcmpestri xmm0,xmm1,0",
+            &[0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00],
+            0x61,
+        ),
+        (
+            "pcmpestrm xmm0,[rdi],0x44",
+            &[0x66, 0x0f, 0x3a, 0x60, 0x07, 0x44],
+            0x60,
+        ),
+        (
+            "pcmpistri xmm0,xmm1,0x0c",
+            &[0x66, 0x0f, 0x3a, 0x63, 0xc1, 0x0c],
+            0x63,
+        ),
+        (
+            "pcmpistrm xmm0,[rdi],0x40",
+            &[0x66, 0x0f, 0x3a, 0x62, 0x07, 0x40],
+            0x62,
+        ),
+        (
+            "pcmpestri xmm0,xmm1,0 (REX.W)",
+            &[0x66, 0x48, 0x0f, 0x3a, 0x61, 0xc1, 0x00],
+            0x61,
+        ),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.
