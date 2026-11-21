@@ -90,18 +90,23 @@ r"""Генератор постоянного ответ-файла автома
    defense in depth" (https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies,
    2026-11-20), поэтому -ExecutionPolicy Bypass здесь не обход проверки безопасности.
    Справочник: команды FirstLogonCommands идут последовательно в заданном порядке.
-8. Шифрование устройства: решение S8-05 не записано (задача не выполнена).
-   Поэтому по умолчанию шифрование выключено: компонент
+8. Шифрование устройства: решение S8-05 принято архитектурным ревью
+   (docs/specs/WINDOWS_GUEST_PROFILE.md). В приёмочном профиле этапа 8 шифрование
+   выключено по умолчанию: компонент
    Microsoft-Windows-SecureStartup-FilterDriver, PreventDeviceEncryption=true, фаза
-   specialize. ВНИМАНИЕ: страница PreventDeviceEncryption подписана "These settings
-   only apply to Windows 8" (пример для Windows 8.1) - действие на Windows 11 по
-   источнику НЕ подтверждено (источник не найден), наблюдать на S8-25. Режим
+   specialize (Microsoft Learn, страница OEMBL для Windows 11: "To disable BitLocker
+   automatic device encryption, you can use an Unattend file and set
+   PreventDeviceEncryption to True"). Замечание: страница PreventDeviceEncryption подписана "These settings
+   only apply to Windows 8" (пример для Windows 8.1), поэтому
+   действие компонента на конкретной сборке Windows 11 - наблюдать на S8-25. Режим
    --device-encryption allow не выпускает параметр вообще. Генератор печатает
    предупреждение. DisableEncryptedDiskProvisioning относится к аппаратным
    eDrive (Opal) и к BitLocker device encryption не относится - не используется.
-9. Ключ продукта в шаблон не входит (S8-05 п. 4). Нужен ли он для выбора Pro по
+9. Ключ продукта генератор не выпускает: опции нет, в шаблон он не входит (S8-05 п. 4). Нужен ли он для выбора Pro по
    индексу и для пропуска страницы ключа в Setup - неизвестно, наблюдать на
-   S8-24; если нужен - вопрос о доступе владельцу, не вшивать ключ.
+   S8-24; если нужен - вопрос о доступе владельцу, не вшивать ключ (передача -
+   отдельным изменением S8-22 из ignored-файла в work/stage8/ по образцу
+   --password-file).
 10. Не используются обходы LabConfig, bypass-ключи TPM и Secure Boot.
 """
 
@@ -139,9 +144,10 @@ FIRSTLOGON_SCRIPT = "firstlogon.ps1"
 PAYLOAD_WAIT_SECONDS = 120
 
 DEVICE_ENCRYPTION_NOTE = (
-    "решение S8-05 о шифровании устройства не записано: параметр выключен "
-    "(PreventDeviceEncryption=true, фаза specialize); источник относит параметр "
-    "только к Windows 8.x - действие на Windows 11 не подтверждено, наблюдать на S8-25"
+    "шифрование устройства выключено по решению S8-05 (принято архитектурным ревью): "
+    "PreventDeviceEncryption=true, фаза specialize; страница компонента относит "
+    "параметр к Windows 8.x, страница OEMBL документирует его для Windows 11 - "
+    "действие на конкретной сборке наблюдать на S8-25"
 )
 
 ET.register_namespace("", UNATTEND_NS)
@@ -471,7 +477,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--image-path", default=None, help="optional InstallFrom/Path (unconfirmed for SWM; for S8-24 diagnostics only)")
     parser.add_argument("--payload-label", default="OD8PAYLOAD", help="volume label of the payload disk (default: OD8PAYLOAD)")
     parser.add_argument("--payload-dir", default="OD8", help="directory with firstlogon.ps1 on the payload disk (default: OD8)")
-    parser.add_argument("--device-encryption", choices=("prevent", "allow"), default="prevent", help="prevent: emit PreventDeviceEncryption=true (default until S8-05 records the decision); allow: emit nothing")
+    parser.add_argument("--device-encryption", choices=("prevent", "allow"), default="prevent", help="prevent: emit PreventDeviceEncryption=true (default; S8-05 decision accepted by architecture review); allow: emit nothing")
     return parser.parse_args(argv)
 
 
