@@ -60,6 +60,23 @@ fn pae_and_apic_are_declared_at_their_sdm_positions_and_nx_is_not() {
     assert_eq!((ext1.eax, ext1.ebx, ext1.ecx), (0, 0, 0x0000_0101));
 }
 
+/// Negative (owner decision 2026-11-21): NX [80000001H EDX 20] is not declared by the Windows profile,
+/// for any sub-leaf and any vCPU, while the Linux target profile still declares it.
+#[test]
+fn nx_is_not_declared_in_the_windows_profile() {
+    for subleaf in [0, 1] {
+        assert_eq!(WINDOWS.query(0x8000_0001, subleaf).edx & (1 << 20), 0);
+    }
+    for (index, count) in [(0, 1), (0, 2), (1, 2)] {
+        let edx = WINDOWS.query_for_vcpu(0x8000_0001, 0, index, count).edx;
+        assert_eq!(edx & (1 << 20), 0, "vCPU {index} of {count}");
+    }
+    assert_ne!(
+        CpuidProfile::OdX8664V1Neutral.query(0x8000_0001, 0).edx & (1 << 20),
+        0
+    );
+}
+
 #[test]
 fn every_neighbouring_bit_that_s2_58_does_not_own_is_clear() {
     let leaf1 = WINDOWS.query(1, 0);
