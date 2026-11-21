@@ -172,6 +172,20 @@ impl RunJournal {
                     .map_err(|error| format!("{}: {error}", path.display()))
             })
             .transpose()?;
+        // The file type is read before the dump directory is created, so an fstat error does not
+        // leave an empty dump directory behind. Only a regular file of an earlier run is
+        // truncated: a FIFO or a character device (`/dev/stdout`, `/dev/null`) is written to as it
+        // is. On Linux `ftruncate` on such files fails with EINVAL; on macOS it happens to succeed
+        // on `/dev/null`, so the check is about semantics (do not truncate non-regular files),
+        // not about macOS failing.
+        let truncate_earlier_run = match &phase_log {
+            Some((file, path)) if !created => file
+                .metadata()
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .file_type()
+                .is_file(),
+            _ => false,
+        };
         let frames = match config.frames.map(FrameDumper::new).transpose() {
             Ok(frames) => frames,
             Err(error) => {
@@ -184,18 +198,9 @@ impl RunJournal {
                 return Err(error);
             }
         };
-        // Only a regular file of an earlier run is truncated: a FIFO or a character device
-        // (`/dev/stdout`, `/dev/null`) is written to as it is, and `set_len` on it would fail.
-        if !created && let Some((file, path)) = &phase_log {
-            let is_regular = file
-                .metadata()
-                .map_err(|error| format!("{}: {error}", path.display()))?
-                .file_type()
-                .is_file();
-            if is_regular {
-                file.set_len(0)
-                    .map_err(|error| format!("{}: {error}", path.display()))?;
-            }
+        if truncate_earlier_run && let Some((file, path)) = &phase_log {
+            file.set_len(0)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
         }
         Ok(Self {
             started: Instant::now(),
