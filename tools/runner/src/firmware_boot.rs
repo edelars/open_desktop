@@ -5,11 +5,15 @@
 //! time (`retired * 1 ns` per quantum) live in `od-machine`
 //! (`docs/specs/FIRMWARE_BOOT.md` sections 8 and 11).
 
+use crate::run_journal::{
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, FrameDumpConfig, JournalConfig, RunJournal, StopInfo,
+};
+use crate::stop_snapshot::{self, BoardMemory};
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    NvramDevice, PagedProbeExit, SecureBootKeys, TpmConfig, firmware_handoff_block,
-    load_firmware_image,
+    NvramDevice, PagedProbeExit, QuantumProgress, SecureBootKeys, TpmConfig,
+    firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
 use serde_json::{Value, json};
@@ -23,7 +27,9 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--sample-rip <hex> ...]\n\
+                    [--sample-rip <hex> ...] [--stop-snapshot <file>] [--phase-log <file>] \
+                    [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
+                    [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
 \x20\x20--disk <path>,ro: the ',ro' suffix is not supported yet and is rejected \
 (docs/specs/NVME_DEVICE.md 14.5).\n\
 \x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
@@ -55,6 +61,20 @@ struct Options {
     disk: Option<String>,
     tpm: bool,
     sample_rips: Vec<u64>,
+    /// S8-10: JSON snapshot of the stopped machine (any stop except machine `Shutdown`).
+    stop_snapshot: Option<String>,
+    /// S8-11: JSON lines, one per phase event.
+    phase_log: Option<String>,
+    /// S8-11: periodic raw screen dumps of any boot.
+    framebuffer: Option<FramebufferDumps>,
+}
+
+/// `--framebuffer-every`, `--framebuffer-dir` and the limits.
+struct FramebufferDumps {
+    dir: String,
+    every_ns: u64,
+    max_files: u64,
+    max_bytes: u64,
 }
 
 /// Where the single NVMe namespace of the board comes from.
@@ -196,6 +216,9 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = validate_nvram_paths(&options) {
         return emit(failure("invalid_input", "paths", error), 3);
     }
+    if let Err(error) = validate_diagnostic_paths(&options) {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
     let read = File::open(&options.image).and_then(|file| {
         file.take(FIRMWARE_IMAGE_BYTES as u64 + 1)
@@ -229,6 +252,15 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         config.nvram.get_or_insert(NvramConfig::Empty);
     }
+    // The journal creates its files (the phase log and the dump directory), so only its
+    // configuration is built here; `boot` creates it once the image is loaded and the NVMe
+    // controller is attached. A run refused before that point (bad arguments or paths, an
+    // unreadable image or NVRAM snapshot, a loader or NVMe refusal) leaves neither file behind.
+    let mut diagnostics = Diagnostics {
+        stop_snapshot: options.stop_snapshot.clone(),
+        journal_config: journal_config(&options),
+        journal: None,
+    };
     let nvme = options.nvme_source();
     let mut first = match boot(
         &image,
@@ -237,6 +269,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &options.com1_out,
         nvme,
         &options.sample_rips,
+        &mut diagnostics,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -372,7 +405,15 @@ pub fn run(args: &[String]) -> ExitCode {
         tpm,
         ..config
     };
-    let second = match boot(&image, &restored, options.budget, &reboot_out, nvme, &[]) {
+    let second = match boot(
+        &image,
+        &restored,
+        options.budget,
+        &reboot_out,
+        nvme,
+        &[],
+        &mut Diagnostics::default(),
+    ) {
         Ok(run) => run,
         Err((mut value, code)) => {
             value["initial_boot"] = first_report;
@@ -507,6 +548,38 @@ struct RebootPath {
 }
 
 impl RebootPath {
+    /// Like `resolve`, for a directory the run may still create (`create_dir_all`): the part
+    /// that does not exist yet is appended to the resolved nearest existing ancestor, so a dump
+    /// directory under missing parents is judged the same with and without `--phase-log`.
+    fn resolve_creatable_dir(path: &Path) -> io::Result<Self> {
+        let mut existing = path;
+        let mut missing = Vec::new();
+        loop {
+            match fs::symlink_metadata(existing) {
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let Some(name) = existing.file_name() else {
+                        return Err(error);
+                    };
+                    missing.push(name);
+                    existing = existing
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let mut resolved = Self::resolve(existing)?;
+        if !missing.is_empty() {
+            for name in missing.into_iter().rev() {
+                resolved.absolute.push(name);
+            }
+            resolved.metadata = None;
+        }
+        Ok(resolved)
+    }
+
     fn resolve(path: &Path) -> io::Result<Self> {
         let mut path = path.to_path_buf();
         for _ in 0..40 {
@@ -680,6 +753,117 @@ fn validate_distinct_paths(
     Ok(())
 }
 
+/// `--stop-snapshot` and `--phase-log` must not alias another file of the run, nor each other,
+/// and must not lie inside (or be) the `--framebuffer-dir` directory of the screen dumps.
+fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
+    let new = [
+        ("--stop-snapshot", options.stop_snapshot.as_deref()),
+        ("--phase-log", options.phase_log.as_deref()),
+    ];
+    if new.iter().all(|(_, path)| path.is_none()) {
+        return Ok(());
+    }
+    let all = [
+        ("--image", Some(options.image.as_str())),
+        ("--com1-out", Some(options.com1_out.as_str())),
+        ("the NVMe file", options.nvme_path()),
+        ("--nvram-in", options.nvram_in.as_deref()),
+        ("--nvram-out", options.nvram_out.as_deref()),
+        ("--acpi-out", options.acpi_out.as_deref()),
+        ("--framebuffer-out", options.framebuffer_out.as_deref()),
+        new[0],
+        new[1],
+    ];
+    let resolved = all
+        .iter()
+        .filter_map(|(name, path)| path.map(|path| (*name, path)))
+        .map(|(name, path)| {
+            RebootPath::resolve(Path::new(path))
+                .map(|resolved| (name, resolved))
+                .map_err(|error| format!("{path}: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index, (name, path)) in resolved.iter().enumerate() {
+        if !matches!(*name, "--stop-snapshot" | "--phase-log") {
+            continue;
+        }
+        if let Some((other, _)) = resolved
+            .iter()
+            .enumerate()
+            .find(|(other_index, (_, other))| *other_index != index && path.aliases(other))
+            .map(|(_, entry)| entry)
+        {
+            return Err(format!("{name} and {other} must be distinct files"));
+        }
+    }
+    if let Some(dumps) = &options.framebuffer {
+        let dir = RebootPath::resolve_creatable_dir(Path::new(&dumps.dir))
+            .map_err(|error| format!("{}: {error}", dumps.dir))?;
+        for (name, path) in &resolved {
+            if matches!(*name, "--stop-snapshot" | "--phase-log")
+                && path.absolute.starts_with(&dir.absolute)
+            {
+                return Err(format!(
+                    "{name} must not be the --framebuffer-dir directory or a file inside it"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn journal_config(options: &Options) -> Option<JournalConfig> {
+    if options.phase_log.is_none() && options.framebuffer.is_none() {
+        return None;
+    }
+    Some(JournalConfig {
+        phase_log: options.phase_log.as_ref().map(PathBuf::from),
+        frames: options.framebuffer.as_ref().map(|dumps| FrameDumpConfig {
+            dir: PathBuf::from(&dumps.dir),
+            every_ns: dumps.every_ns,
+            max_files: dumps.max_files,
+            max_bytes: dumps.max_bytes,
+        }),
+    })
+}
+
+/// The optional diagnostics of one boot (S8-10, S8-11). Both only read the machine.
+#[derive(Default)]
+struct Diagnostics {
+    stop_snapshot: Option<String>,
+    /// What `boot` builds the journal from; taken when the journal is created.
+    journal_config: Option<JournalConfig>,
+    journal: Option<RunJournal>,
+}
+
+/// The vCPU the single-processor firmware boot runs on.
+const BOOT_VCPU: usize = 0;
+
+/// Writes the snapshot of the stopped machine and says what happened. Never changes the machine:
+/// it reads the vCPU registers and guest-virtual memory through the board's diagnostic API.
+fn write_stop_snapshot(
+    path: &str,
+    board: &LoadedFirmwareBoard,
+    reason: Value,
+    counters: Value,
+    inputs: Value,
+) -> Value {
+    let Some(state) = board.diagnostic_vcpu_state(BOOT_VCPU) else {
+        return json!({"path": path, "written": false, "error": "the board has no boot vCPU"});
+    };
+    let memory = BoardMemory {
+        board,
+        vcpu: BOOT_VCPU,
+    };
+    let snapshot = stop_snapshot::snapshot(&state, &memory, reason, counters, inputs);
+    let mut text = serde_json::to_string_pretty(&snapshot).expect("a JSON value serializes");
+    text.push('\n');
+    match fs::write(path, text) {
+        Ok(()) => json!({"path": path, "written": true}),
+        Err(error) => json!({"path": path, "written": false, "error": error.to_string()}),
+    }
+}
+
 struct BootRun {
     board: LoadedFirmwareBoard,
     report: Value,
@@ -755,6 +939,7 @@ fn boot(
     com1_out: &str,
     nvme: Option<NvmeSource<'_>>,
     sample_rips: &[u64],
+    diagnostics: &mut Diagnostics,
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -764,9 +949,28 @@ fn boot(
             path,
         )?;
     }
+    // Hashes of the inputs the stop snapshot records (only computed when it is requested).
+    let snapshot_wanted = diagnostics.stop_snapshot.is_some();
+    let mut nvme_input = Value::Null;
+    if let Some(NvmeSource::Disk(path)) = nvme
+        && snapshot_wanted
+    {
+        // The disk is written by the guest and can be tens of GiB: path and size, no hash.
+        nvme_input = json!({
+            "kind": "disk", "path": path,
+            "bytes": fs::metadata(path).ok().map(|metadata| metadata.len()),
+            "sha256": null,
+        });
+    }
     if let Some(NvmeSource::Memory(path)) = nvme {
         let bytes = fs::read(path)
             .map_err(|error| (failure("invalid_input", "nvme_image", error.to_string()), 3))?;
+        if snapshot_wanted {
+            nvme_input = json!({
+                "kind": "nvme_image", "path": path,
+                "bytes": bytes.len(), "sha256": sha256_hex(&bytes),
+            });
+        }
         let backend = InMemoryBackend::from_bytes(bytes).map_err(|error| {
             (
                 failure("invalid_input", "nvme_image", format!("{error:?}")),
@@ -784,10 +988,21 @@ fn boot(
                 )
             })?;
     }
+    // Every refusal of `boot` is behind us: only now do the journal's files appear.
+    if let Some(config) = diagnostics.journal_config.take() {
+        diagnostics.journal = Some(
+            RunJournal::new(config)
+                .map_err(|error| (failure("invalid_input", "diagnostics", error), 3))?,
+        );
+    }
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let mut samples = Vec::with_capacity(sample_rips.len());
-    let run = if sample_rips.is_empty() {
+    let run = if let Some(journal) = &mut diagnostics.journal {
+        board.run_boot_with_quantum_hook(budget, |board, progress| {
+            journal.at_boundary(board, progress)
+        })
+    } else if sample_rips.is_empty() {
         board.run_boot(budget)
     } else {
         let start = Instant::now();
@@ -797,11 +1012,45 @@ fn boot(
             }
         })
     };
+    let inputs = || {
+        json!({
+            "image_sha256": sha256_hex(image),
+            "handoff_sha256": handoff_sha256,
+            "budget": budget,
+            "fv_app": config.fv_app.map(|app| format!("{app:?}")),
+            "tpm": config.tpm.is_some(),
+            "nvram_in_sha256": match &config.nvram {
+                Some(NvramConfig::Snapshot(bytes)) => json!(sha256_hex(bytes)),
+                _ => Value::Null,
+            },
+            "nvme": nvme_input,
+        })
+    };
     let report = match run {
         Ok(report) => report,
         Err(error) => {
             // Keep the bytes the guest already wrote (even an empty transcript).
             let mut value = failure("run_error", "run", format!("{error:?}"));
+            // The machine stays as the failed run left it; the diagnostics only read it.
+            if let Some(journal) = &mut diagnostics.journal {
+                value["journal"] = journal.finish(
+                    &board,
+                    StopInfo {
+                        exit: "run_error".to_owned(),
+                        stop_reason: Value::Null,
+                        progress: None,
+                    },
+                );
+            }
+            if let Some(path) = &diagnostics.stop_snapshot {
+                value["stop_snapshot"] = write_stop_snapshot(
+                    path,
+                    &board,
+                    json!({"exit": "run_error", "exit_detail": format!("{error:?}")}),
+                    Value::Null,
+                    inputs(),
+                );
+            }
             if let Err(write_error) = std::fs::write(com1_out, board.com1_transcript()) {
                 value["com1_out_error"] = json!(write_error.to_string());
             }
@@ -886,6 +1135,46 @@ fn boot(
                 .collect::<Vec<_>>()
         );
     }
+    if let Some(journal) = &mut diagnostics.journal {
+        result["journal"] = journal.finish(
+            &board,
+            StopInfo {
+                exit: exit.to_owned(),
+                stop_reason: result["stop_reason"].clone(),
+                progress: Some(QuantumProgress {
+                    retired: report.retired,
+                    quanta: report.quanta,
+                }),
+            },
+        );
+    }
+    if let Some(path) = &diagnostics.stop_snapshot {
+        // A machine `Shutdown` (ACPI S5) is the clean power-off; every other stop is described.
+        result["stop_snapshot"] = if report.stop_reason == Some(MachineStopReason::Shutdown) {
+            json!({"path": path, "written": false, "skipped": "stop reason Shutdown"})
+        } else {
+            let reason = json!({
+                "exit": result["exit"],
+                "exit_detail": result["exit_detail"],
+                "unsupported_opcode": match &report.exit {
+                    PagedProbeExit::Unsupported { opcode } => json!(format!("0x{opcode:02x}")),
+                    _ => Value::Null,
+                },
+                "stop_reason": result["stop_reason"],
+                "page_fault": result["page_fault"],
+                "memory_error": result["memory_error"],
+                "fw_stop": result["fw_stop"],
+            });
+            let counters = json!({
+                "retired": report.retired,
+                "quanta": report.quanta,
+                "virtual_ns": report.virtual_ns,
+                "tsc_hz": report.tsc_hz,
+                "budget": budget,
+            });
+            write_stop_snapshot(path, &board, reason, counters, inputs())
+        };
+    }
     Ok(BootRun {
         board,
         report: result,
@@ -906,6 +1195,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut disks: Vec<&String> = Vec::new();
     let mut tpm = false;
     let mut sample_rips = Vec::new();
+    let mut stop_snapshot = None;
+    let mut phase_log = None;
+    let mut framebuffer_dir = None;
+    let mut framebuffer_every = None;
+    let mut framebuffer_max_files = None;
+    let mut framebuffer_max_bytes = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -940,6 +1235,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
+            }
+            "--stop-snapshot" if stop_snapshot.is_none() => stop_snapshot = Some(value.clone()),
+            "--phase-log" if phase_log.is_none() => phase_log = Some(value.clone()),
+            "--framebuffer-dir" if framebuffer_dir.is_none() => {
+                framebuffer_dir = Some(value.clone())
+            }
+            "--framebuffer-every" if framebuffer_every.is_none() => {
+                framebuffer_every = Some(parse_virtual_seconds(value)?);
+            }
+            "--framebuffer-max-files" if framebuffer_max_files.is_none() => {
+                framebuffer_max_files = Some(parse_positive(name, value)?);
+            }
+            "--framebuffer-max-bytes" if framebuffer_max_bytes.is_none() => {
+                framebuffer_max_bytes = Some(parse_positive(name, value)?);
             }
             "--sample-rip" if sample_rips.len() < MAX_RIP_SAMPLES => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
@@ -978,6 +1287,39 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
+    let framebuffer = match (framebuffer_dir, framebuffer_every) {
+        (Some(dir), Some(every_ns)) => Some(FramebufferDumps {
+            dir,
+            every_ns,
+            max_files: framebuffer_max_files.unwrap_or(DEFAULT_MAX_FILES),
+            max_bytes: framebuffer_max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
+        }),
+        (None, None) if framebuffer_max_files.is_none() && framebuffer_max_bytes.is_none() => None,
+        _ => {
+            return Err(
+                "--framebuffer-every and --framebuffer-dir go together, and the \
+                 --framebuffer-max-* limits need them"
+                    .to_owned(),
+            );
+        }
+    };
+    if (stop_snapshot.is_some() || phase_log.is_some() || framebuffer.is_some())
+        && !sample_rips.is_empty()
+    {
+        return Err(
+            "--sample-rip cannot be combined with --stop-snapshot, --phase-log or --framebuffer-*"
+                .to_owned(),
+        );
+    }
+    if nvram_reboot_out.is_some()
+        && (stop_snapshot.is_some() || phase_log.is_some() || framebuffer.is_some())
+    {
+        return Err(
+            "--stop-snapshot, --phase-log and --framebuffer-* describe one boot and cannot be \
+             combined with --nvram-reboot-out (restarts are S8-23)"
+                .to_owned(),
+        );
+    }
     if let Some(reboot_out) = &nvram_reboot_out {
         if !sample_rips.is_empty() {
             return Err("--sample-rip requires a single boot".to_owned());
@@ -1003,7 +1345,31 @@ fn parse(args: &[String]) -> Result<Options, String> {
         disk,
         tpm,
         sample_rips,
+        stop_snapshot,
+        phase_log,
+        framebuffer,
     })
+}
+
+/// Virtual seconds (decimals allowed) as nanoseconds; positive and finite.
+fn parse_virtual_seconds(value: &str) -> Result<u64, String> {
+    let seconds = value
+        .parse::<f64>()
+        .ok()
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .ok_or_else(|| {
+            format!("invalid --framebuffer-every '{value}': a positive number of seconds")
+        })?;
+    // At least 1 ns, so the period is never zero.
+    Ok(((seconds * 1e9).round() as u64).max(1))
+}
+
+fn parse_positive(name: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|number| *number > 0)
+        .ok_or_else(|| format!("invalid {name} '{value}': a positive integer"))
 }
 
 /// `--disk <path>[,ro]`, repeatable; the order is the order of NVMe
@@ -1403,6 +1769,7 @@ mod tests {
             com1.to_str().unwrap(),
             Some(NvmeSource::Disk(disk)),
             &[],
+            &mut Diagnostics::default(),
         )
     }
 

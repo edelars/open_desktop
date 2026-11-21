@@ -1447,6 +1447,16 @@ impl MachineBus {
         Ok(())
     }
 
+    /// Diagnostic read of RAM, ROM or framebuffer bytes (S8-10): never touches an MMIO device, so
+    /// it changes no device state. An MMIO or reserved range is an error.
+    pub(crate) fn read_physical_bytes_readonly(
+        &self,
+        address: GuestPhysicalAddress,
+        output: &mut [u8],
+    ) -> Result<(), MemoryAccessError> {
+        self.memory.load_bytes(address, output)
+    }
+
     /// Copies frame bytes out of the `Framebuffer` region at `base`. Used only
     /// by the display handle between guest quanta.
     pub(crate) fn read_framebuffer_bytes(

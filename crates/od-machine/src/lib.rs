@@ -85,6 +85,7 @@ mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
 mod stage6_smp_probe;
+mod stop_diagnostic;
 mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
@@ -129,6 +130,10 @@ pub use nvram_device::{
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
     RtcCmosError,
+};
+pub use stop_diagnostic::{
+    DiagnosticReadError, DiagnosticReadFailure, DiagnosticTranslateError, DiagnosticTranslation,
+    VcpuDiagnosticState,
 };
 pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmPlatformPort};
 
@@ -265,7 +270,7 @@ pub use firmware_board::{
     FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_EXECUTION_CYCLE_NS,
     FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
     FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
-    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard,
+    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard, QuantumProgress,
     firmware_handoff_block, load_firmware_image,
 };
 

@@ -7,10 +7,12 @@ use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
 mod firmware_boot;
+mod guest_module;
 mod host_stop;
 mod linux_direct;
 mod linux_discovery;
 mod linux_gate;
+mod run_journal;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod s5_nvme_stand;
 mod stage4_alias_probe;
@@ -32,6 +34,7 @@ mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
 mod stage6_litmus;
 mod stage6_smp_probe;
+mod stop_snapshot;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
