@@ -183,8 +183,12 @@ pub(crate) fn arith(
     for (index, slot) in lanes.iter_mut().enumerate().take(count) {
         // The operands and the operation of each result element. The horizontal forms combine the two
         // elements of an adjacent pair (the pairs of the destination fill the low half of the result, those of
-        // the source the high half): HADD is `low + high`, HSUB `low - high`, as in the SDM pseudocode
-        // (`SRC1[63:32] + SRC1[31:0]`, `SRC1[31:0] - SRC1[63:32]`); the first operand decides which NaN wins.
+        // the source the high half): HADD is `low + high`, HSUB `low - high`. The SDM pseudocode writes HADD with
+        // the high element first (`SRC1[63:32] + SRC1[31:0]`); the order here deliberately differs from that text,
+        // because the hardware takes the low element as the first operand (checked on the oracle), and the first
+        // operand decides which NaN wins. Precondition: HAdd/HSub only come with a packed shape (count is 2 or 4,
+        // so `half` is at least 1); the decoder never builds them with a scalar shape, and `index % half` would
+        // divide by zero for a hand-built scalar one.
         // ADDSUB subtracts in the even elements and adds in the odd ones.
         let (kind, lhs, rhs) = match kind {
             SseFpArithKind::HAdd | SseFpArithKind::HSub => {
