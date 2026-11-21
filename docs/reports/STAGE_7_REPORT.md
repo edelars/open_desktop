@@ -10239,3 +10239,23 @@ python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38
 
 После слияния S7-31b (0e5aeb1) ROM из main останавливался на `sete byte ptr [rsp+0x70]` по адресу 0x227cae. Профиль прошивки принимал SETcc с операндом в памяти только из списка точных форм. Исправлено в `crates/od-isa` (любой `0F 90..9F /r` с памятью-приёмником по Intel SDM), см. ISSUE-631. Проверка: `tests/system/firmware_boot_smoke.py` — exit 0; `cargo test -p od-isa --offline --test paged_probe_profile` — 1715 passed. Полные наборы od-machine и od-runner не запускались.
 
+## S7-40 — единая проверка прошивки
+
+**Команда.** `python3 tools/build/firmware_check_all.py --table-out <файл>` ([описание](../testing/FIRMWARE.md#одна-команда)): сборка runner и двух ROM, все девять `tests/system/firmware_*_smoke.py`, host-тесты `firmware/uefi`, два ignored-теста `od-machine` (отказ TPM при Startup, PCR7), Python-самопроверки. Печатает таблицу «шаг — код выхода — секунды — ключевая строка», возвращает `1` при любом провале или пропуске. Самопроверка команды — `tools/build/test_firmware_check_all.py` (каждый новый `firmware_*_smoke.py` без шага в команде роняет тест).
+
+**Запуск.** 2026-11-21, чистый checkout (`git worktree add --detach` во временный каталог вне репозитория) на коммите `d0408f5` = `main` `3df4b11` плюс коммиты S7-40 (команда, её тест, `FIRMWARE.md`; `firmware/`, `crates/` не менялись; команда есть только на ветке S7-40, поэтому чистый checkout взят от неё). Apple M3 Max, macOS 26.7.1, `rustc`/`cargo` 1.99.0, Python 3.15.2. Полный текст таблицы — [firmware-check-all-2026-11-21.txt](data/stage7/firmware-check-all-2026-11-21.txt). Время 753 с (12,5 мин); большинство шагов упало рано, поэтому зелёный прогон будет длиннее (только `firmware_reset_smoke.py` по документу занимает около 13 мин; общее время зелёного прогона не измерено). Тот же результат дал первый прогон на `58879c4` (до правки ключевых строк таблицы).
+
+| Шаг | Код | Итог |
+|---|---|---|
+| build-runner, build-rom-stock, build-rom-test-apps | 0 | собраны (ROM `bdcc333f…` и `5840e8d8…`) |
+| firmware_boot_smoke | 1 | COM1 обрывается после `no storage boot devices` |
+| firmware_esp_boot_smoke, nvram, install_media, pkcs7, secure_boot, tpm, reset | 1 | runner: `Unsupported { opcode: 148 }`, RIP `0x227cae` |
+| firmware_failure_smoke | 1 | `create legacy NV store: Unsupported { opcode: 148 }` |
+| host-tests-firmware-uefi | 0 | 339 passed, 0 failed |
+| ignored-tpm-startup-failure | 101 | `Unsupported { opcode: 148 }` вместо `Halted` |
+| ignored-secure-boot-pcr7 | не запущен | нужен ROM и fixtures из `firmware_secure_boot_smoke` |
+| python-selftests | 0 | OK |
+
+**Провал не замаскирован.** Причина одна: ROM из `main` исполняет `sete byte ptr [rsp+0x70]` (`0f 94 44 24 70`), форму `SETcc` с операндом в памяти интерпретатор не поддерживает. Бисекция сборкой ROM и тем же runner: `0ffc506^` и `0ffc506` проходят, `0e5aeb1` (S7-31b, правки по ревью) и `main` — нет. Запись — [ISSUE-631](../KNOWN_ISSUES.md#issue-631). Побочное наблюдение: SHA-256 ROM зависит от пути checkout (`bdcc333f…`, `44d346ed…`, `5953bb08…` для одного и того же дерева `main`), поведение при этом одинаково.
+
+**Не проверено.** Зелёный прогон всей команды (регрессия ISSUE-631 исправлена в a5a2edd; после исправления не измерена): шаги `firmware_*_smoke`, оба ignored-теста и общее время после исправления не измерены. Не входят в команду: 50 циклов сброса (около 2,2 часа), `tools/bench/firmware_boot_bench.py`, `cargo test -p od-machine` и `-p od-runner` без фильтров, ROM с `--with-reboot-app` вне `firmware_reset_smoke.py`, инвентарь ISA ROM S7-31b. Запуск на Linux и на второй машине не выполнялся. Скрипты, которые принимают `--runner`/`--rom`, получили собранные командой файлы только для `pkcs7` и `tpm`; остальные собирают ROM сами по своим путям (отсюда разные SHA-256 ROM в одном прогоне).
