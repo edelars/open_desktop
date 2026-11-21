@@ -8,6 +8,18 @@ S7-01 определяет проверку формата образа ROM и P
 
 Запуск из корня проекта с установленными [инструментами сборки прошивки](../../firmware/uefi/README.md#команды).
 
+**Все проверки прошивки (S7-40).**
+
+```sh
+python3 tools/build/firmware_check_all.py --table-out work/stage7/firmware-check-all.txt
+```
+
+Команда выполняет по порядку: (а) `cargo build --release -p od-runner --offline`; (б) два ROM — базовый и с `--with-test-apps` (для `firmware_tpm_smoke.py`, которому нужны `--runner`, `--rom` и `--app` = `tpm.efi` из каталога сборки); (в) все `tests/system/firmware_*_smoke.py`: `boot`, `esp_boot`, `nvram`, `failure`, `install_media`, `pkcs7` (`--runner`, `--rom`), `secure_boot` (`--work`), `tpm`, `reset` (5 циклов; `--reset-cycles` меняет число) — скрипты, у которых аргументы необязательны, сами собирают недостающее; ROM с `--with-reboot-app` собирает только `firmware_reset_smoke.py` ([ISSUE-624](../KNOWN_ISSUES.md#issue-624)); (г) `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`; (д) два ignored-теста `od-machine` из разделов [«Отказ TPM при Startup»](#отказ-tpm-при-startup) и [«Проверка PCR7 и отказов Secure Boot»](#проверка-pcr7-и-отказов-secure-boot) с переменными `OD_TPM_FAILURE_ROM`, `OD_TPM_FAILURE_ESP`, `OD_SB_PCR7_ROM`, `OD_SB_PCR7_FIXTURES` (ROM и fixtures PCR7 берутся из `--work` прогона `secure_boot`); (е) `python3 -m unittest` для `tools/build/test_build_firmware.py`, `test_s7_31a_rom_inventory.py`, `test_firmware_check_all.py` и `tests/system/test_firmware_*.py`.
+
+Шаг, упавший или пропущенный из-за упавшего предварительного шага, не останавливает остальные. В конце печатается таблица «шаг — код выхода — секунды — ключевая строка», команда возвращает `1` при любом провале (в том числе при `--skip`). Журналы каждого шага — в `<work>/logs/` (`--work` принимает пустой каталог, по умолчанию создаётся временный). `--list` печатает шаги, `--only <glob>` запускает выбранные вместе с обязательными предшественниками. Полный прогон занимает порядка часа; 50 циклов сброса и воспроизводимые измерения (`firmware_boot_bench.py`) в него не входят. Запускать на чистом checkout: `git worktree add <каталог вне репозитория> <коммит>`. Результат последнего прогона — [отчёт этапа 7](../reports/STAGE_7_REPORT.md#s7-40--единая-проверка-прошивки).
+
+Прежние отдельные команды остаются в силе:
+
 ```sh
 python3 tests/system/firmware_boot_smoke.py &&
 python3 tests/system/firmware_esp_boot_smoke.py &&
@@ -15,7 +27,7 @@ python3 tests/system/firmware_nvram_smoke.py &&
 python3 tests/system/firmware_failure_smoke.py
 ```
 
-Эта последовательность проверяет G1–G3. Каждый скрипт собирает необходимые
+Эта последовательность проверяет G1–G3 и входит в команду выше. Каждый скрипт собирает необходимые
 ROM и тестовые EFI-приложения и завершает запуск кодом ошибки при расхождении.
 Штатный запрос `ResetSystem`, который остановил плату аппаратно, возвращает
 `exit=stopped` и `stop_reason=Reset` или `Shutdown`. Для `--fv-app rt`
