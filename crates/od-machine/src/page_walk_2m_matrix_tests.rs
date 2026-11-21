@@ -1,7 +1,7 @@
 //! S4-10d: permission, execute-disable and reserved-bit matrix of the IA-32e 2 MiB leaf
-//! (PDE.PS=1), checked against an independent reference model of Intel SDM vol. 3A, section 4.6
-//! (access rights) and table 4-18 (PDE that maps a 2-MByte page), and against the 4 KiB leaf with
-//! the same rights. Every walk entry point that accepts 2 MiB leaves is compared with the
+//! (PDE.PS=1), checked against an independent reference model of Intel SDM vol. 3A
+//! (section, table and figure numbers follow the text, not checked against revision 325462-093US),
+//! access rights and the PDE that maps a 2-MByte page, and against the 4 KiB leaf with the same rights. Every walk entry point that accepts 2 MiB leaves is compared with the
 //! tracked access, so a single walker owns the result.
 
 use crate::page_walk::{translate_long64_2m_ram_read_only, translate_long64_2m_ram_write_check};
@@ -112,7 +112,7 @@ fn leaf_level(case: &Case) -> PageTableLevel {
     }
 }
 
-/// Literal PFEC layout (SDM vol. 3A, figure 4-12): P, W/R, U/S, RSVD, I/D (only with NXE).
+/// Literal PFEC layout (SDM vol. 3A, page-fault error code figure; number not checked against revision 325462-093US): P, W/R, U/S, RSVD, I/D (only with NXE).
 fn pfec(case: &Case, rsvd: bool) -> u32 {
     1 | ((case.access == AccessKind::Write) as u32) << 1
         | (case.ring3 as u32) << 2
@@ -372,7 +372,7 @@ fn permission_xd_matrix_of_the_two_mib_leaf_matches_the_reference_model() {
         }
         check_case(case);
     }
-    // The matrix reaches every class in both leaf sizes.
+    // Totals over both leaf sizes together reach every outcome class (not checked per leaf size).
     assert!(allowed > 0 && protection > 0 && reserved > 0);
 }
 
