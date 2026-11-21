@@ -211,6 +211,17 @@ impl AcpiPmHandle {
     pub fn stop_request(&self) -> Option<MachineStopReason> {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stop
     }
+
+    /// Acknowledge the latched stop and return it (S4-21e): the board's restart of the processors
+    /// ([`crate::LoadedFirmwareBoard::restart_vcpus`]) is the only caller. Nothing else of the
+    /// PM block changes; resetting its registers belongs to the machine reset (S7-26).
+    pub(crate) fn take_stop_request(&self) -> Option<MachineStopReason> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stop
+            .take()
+    }
 }
 
 /// The PM block device. Offsets are relative to [`ACPI_PM_BASE_PORT`].

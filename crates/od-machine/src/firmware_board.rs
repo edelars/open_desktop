@@ -1362,6 +1362,10 @@ pub struct LoadedFirmwareBoard {
     bus: MachineBus,
     /// The set of virtual processors (S6-10): exactly one element, index 0; every path takes it.
     vcpus: Vec<Vcpu>,
+    /// The state the loader gave the boot processor (the direct entry of the firmware image),
+    /// kept for [`Self::restart_vcpus`] (S4-21e). `None` for a Linux-profile board: its caller
+    /// sets the entry state itself and the board does not know it.
+    entry_state: Option<LongModeState>,
     uart: Uart16550Handle,
     display: DisplayHandle,
     display_mmio: Option<DisplayDevice>,
@@ -1811,8 +1815,7 @@ impl LoadedFirmwareBoard {
     ///
     /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
     /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
-    /// machine reset of `S9`. On an error nothing has changed.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// machine reset of S7-26. On an error nothing has changed.
     pub(crate) fn reset_cpu_complex(
         &mut self,
         bsp_state: LongModeState,
@@ -1833,6 +1836,32 @@ impl LoadedFirmwareBoard {
             vcpu.set_cpuid(cpuid);
         }
         Ok(())
+    }
+
+    /// Restart the processors after a stop (S4-21e, the processor half of the machine reset of
+    /// S7-26): the CPU complex goes back to the entry state the loader gave the boot processor
+    /// ([`Self::reset_cpu_complex`]: every vCPU at its power-on state, the Local APICs and the IOAPIC
+    /// route without pending events) and the guest stop that ended the run is acknowledged. The
+    /// acknowledged stop is returned: `Some(Reset)` after the guest wrote the reset register,
+    /// `Some(Shutdown)` after S5, `None` for any other end of a run (a halt, a budget, a host STOP,
+    /// a guest shutdown or a host fault: a restart is legal after all of them; the host decides).
+    ///
+    /// A host STOP flag set with [`Self::set_host_stop`] belongs to the host and is not cleared
+    /// (only the CPL0-set Linux runs look at it).
+    /// Not touched: guest RAM (the entry state is only usable on RAM the caller has put back, or
+    /// on a guest that sets up everything itself), ROM, the devices (including the PM block's
+    /// registers), NVRAM, the TPM and virtual time. Their reset, and the RAM policy of cold and
+    /// warm reset, are S7-26. Without a recorded entry state (a Linux-profile board) it is a
+    /// configuration error. On an error nothing has changed.
+    pub fn restart_vcpus(&mut self) -> Result<Option<MachineStopReason>, FirmwareBoardError> {
+        let entry = self.entry_state.clone().ok_or(FirmwareBoardError::Config(
+            "restart_vcpus: the board has no recorded entry state",
+        ))?;
+        self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
+        Ok(self
+            .acpi_pm
+            .as_ref()
+            .and_then(AcpiPmHandle::take_stop_request))
     }
 
     /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
@@ -4516,6 +4545,7 @@ impl AssembledBoard {
         state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
         Ok(LoadedFirmwareBoard {
             bus,
+            entry_state: Some(state.clone()),
             vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
             display,
@@ -4598,6 +4628,7 @@ impl AssembledBoard {
         configure_com1(&mut bus)?;
         let mut board = LoadedFirmwareBoard {
             bus,
+            entry_state: None,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
             display,
