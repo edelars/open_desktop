@@ -15219,6 +15219,20 @@ Windows profile does not declare PSE, the model still accepts CR4.PSE), the `od-
 deactivation. No hardware oracle (a user-space process cannot write CR0/CR4): the rules are the SDM text. See
 the [CPU contract](../specs/CPU_CONTRACT.md#s2-25h--32-bit-paging-pae32-bit-transitions-cr0-writes-with-paging-on-model-only).
 
+#### S2-25i — PAE walk of the board RAM in od-machine
+
+**Статус:** bounded slice (`od-machine`: `page_walk/pae.rs`, `pae_fetch_view.rs`) after the acceptance of the parent
+S2-25 (accepted by the owner 2026-11-21); the slice itself is not marked.
+
+Three-level PAE walk over `PhysicalMemory` (PDPTE registers, PD, PT; 4 KiB and 2 MiB pages) with the rights
+model of `od_isa::paging::translate_pae` (bits 62:36 reserved, XD reserved without NXE, 2 MiB PDE bits 20:13),
+plus the U/S check, the page-fault error code, the trace and compare-and-replace A/D bits of the IA-32e
+walk; board connection `LoadedFirmwareBoard::fetch_vcpu_view_pae` for a vCPU whose legacy model is on PAE
+paging. The long-mode walk is not changed. Checked by a differential sweep against `od-isa` and unit tests;
+no hardware oracle. Not done: operand access, the set loop and host/JIT paths on PAE, 32-bit paging in od-machine (the od-isa model is S2-25h), CPUID
+(S2-57/S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25i--pae-walk-of-the-board-ram-in-od-machine-bounded-slice).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

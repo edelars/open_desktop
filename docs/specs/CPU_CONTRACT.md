@@ -16010,7 +16010,7 @@ Memory is addressed with 32 bits (entries above 4 GiB refused as in the 4-level 
 access walks and `MOV CR3` takes effect at once. A refused `MOV` changes no register or memory except the accessed/dirty bits set by walks that had completed before the refusal (the fetch walk of the `MOV` included, as `ProtectedCpu::step` commits them for any refusal after decode and as hardware does). `into_long_mode`
 still requires LMA=1, so PAE paging is not handed to the Long64 interpreter. Not covered: hardware,
 KVM/silicon oracle, JIT/native admission, CPUID PAE declaration, the `od-machine` page walker
-(4-level only).
+(4-level only; the PAE walk of the board RAM is S2-25i below).
 
 AP trampoline of `od-machine` (`ap_legacy_exec.rs`): it runs its legacy steps through `ProtectedCpu::step`,
 so a `MOV CR0` with PG=1, PAE=1, LME=0 there is now PAE paging (`translate_pae`; `load_pdptes` reads the
@@ -16059,6 +16059,39 @@ paging, PG clear, IA-32e/PE refusals). Not covered: hardware or KVM oracle, CPUI
 PSE, the model accepts the bit), PSE-36, the `od-machine` MMU and the Long64 interpreter (neither has 32-bit
 paging), the `page_table_reads` bookkeeping of the AP board for 4-byte entries (the cell address is recorded;
 not run), task-switch CR3, SMEP.
+
+## S2-25i — PAE walk of the board RAM in od-machine (bounded slice)
+
+Normative source: as S2-25g (Intel SDM Rev. 093 Vol. 3A §5.4.1 Tables 5-7 and 5-8, §5.4.2 PAE translation,
+pp. 5-14–5-17). Text only: there is no hardware oracle for PAE paging (the Oracle machines run long mode),
+so the walk is checked against the `od-isa` model of S2-25 and by hand against the SDM.
+
+| Item | Rule implemented (`crates/od-machine/src/page_walk/pae.rs`) |
+|---|---|
+| Configuration | `PaeProbeConfig`: CR0.PE/PG/ET and CR4.PAE set, EFER.LME and LMA clear (EFER may hold SCE and NXE), a 32-bit CR3 (bits 4:0 ignored), the four PDPTE registers. `PaeProbeConfig::load` / `load_pae_pdptes` read the PDPT (RAM only); `from_protected_cpu` takes a legacy `ProtectedCpu` as it is |
+| PDPTE | register selected by linear bits 31:30; P=0 -> `#PF` not present at `PageTableLevel::Pdpt` with no table read; reserved bits 2:1, 8:5, 63:36 refused when P=1 at load (as `load_pdptes`); no R/W, U/S, XD or accessed bit, never written, not in the walk trace |
+| PDE/PTE | as S2-25g: bits 62:36 reserved when P=1, XD reserved with NXE=0, 2 MiB PDE bits 20:13 reserved, PS honored independently of CR4.PSE; physical address bits 35:12 |
+| Rights | OR of XD and AND of R/W and U/S over the PDE and PTE only; CPL 3 needs U/S; supervisor write needs R/W when CR0.WP=1 (CPL 3 always); fetch with NXE=1 faults on XD; error code from `page_fault_error_code` (P, W/R, U/S, RSVD, I/D with NXE) |
+| Accessed/dirty | each as one compare-and-replace of the entry (`compare_replace_table_entry`, S6-25); A on every PDE/PTE the walk reaches, D on the leaf of a write (`commit_leaf_dirty`) |
+| API | `translate_pae_ram` (commits A/D), `translate_pae_ram_read_only[_with_trace]` (commits nothing); translation only, no operand access |
+| Board | `LoadedFirmwareBoard::pae_paging_of` and `fetch_vcpu_view_pae` (`pae_fetch_view.rs`): the read-only instruction-byte view of a vCPU whose `legacy` model is a `ProtectedCpu` on PAE paging. The IA-32e path (`Long64ProbeConfig`, `walk_long64_4k_with_writer`) is not changed or selected by it |
+
+Deliberate differences from the `od-isa` model (`translate_pae`): the physical address is not limited to
+4 GiB (MAXPHYADDR 36, the memory map decides); the accessed bit of an entry is set when the walk reaches it,
+also when a later entry or the rights then fault (as the IA-32e walk of this crate), `od-isa` sets A/D only
+after a successful walk; `commit_leaf_dirty` ignores a concurrent change of bits 52..=62, which are
+reserved in a PAE entry. CPL: the `od-isa` model has no U/S check; the `od-machine` walk has one and is
+tested for it separately.
+
+Tests (`page_walk/pae/tests.rs`, `ap_legacy_exec.rs`): a differential sweep of 400 random table sets
+(PDE/PTE with random P, R/W, U/S, A, D, XD, ignored bits and reserved bits; 4 KiB and 2 MiB pages) x WP x
+NXE x 6 linear addresses x Read/Write/Fetch at CPL 0 compares outcome, physical address, page size and, on
+success, the table bytes after the A/D updates with `od-isa`; unit tests for each reserved bit
+(62:36, 20:13), XD with and without NXE, WP and U/S, PDPTE selection and loading, PDPTE not touched, a
+physical address above 4 GiB; the board view of an AP that the trampoline put on PAE paging. Not covered:
+operand reads/writes and MMIO dispatch through PAE paging, the PAE path in the `PagedMovMemoryAdapter` set loop
+and the host/JIT fast paths (they stay IA-32e only), 32-bit paging in od-machine (PG=1, PAE=0; the od-isa model is S2-25h), a stage-4 style probe on
+PAE tables, hardware oracle, CPUID declaration (S2-57/S2-58).
 
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
