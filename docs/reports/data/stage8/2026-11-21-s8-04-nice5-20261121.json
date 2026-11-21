@@ -1,0 +1,470 @@
+{
+  "schema_version": 1,
+  "run_id": "s8-04-nice5-20261121",
+  "task": "S8-04",
+  "date_utc": "2026-11-21T09:52:26+00:00",
+  "host": {
+    "model": "Mac15,11",
+    "cpu": "Apple M3 Max",
+    "logical_cpus": 14,
+    "memory_bytes": 38654705664,
+    "page_size": 16384,
+    "macos_product_version": "26.7.1",
+    "macos_build": "25G241",
+    "architecture": "arm64",
+    "python": "3.15.2",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "loadavg_start": [
+      6.25,
+      4.42,
+      3.54
+    ],
+    "loadavg_end": [
+      3.13,
+      3.25,
+      3.24
+    ]
+  },
+  "nice": {
+    "requested": -5,
+    "script_nice": -5,
+    "wrapper": [],
+    "probe_effective": -5,
+    "probe_stderr": "",
+    "satisfied": true,
+    "seen_in_runs": [
+      -5
+    ],
+    "satisfied_in_runs": true
+  },
+  "build": {
+    "profile": "release",
+    "git_head": "cc792ad96ad105719e9288a1cc7577b0bfbfd28b",
+    "source_diff_sha256": "b972fb304ad9e4f6b64128ad82687760ad41004abf6b7d1b1807640f2de998bb",
+    "dirty_files": 7,
+    "runner_sha256": "41581aa6199f9a9f06c4243daede77e6ddc164ee2c1c4faebef643336413d40e",
+    "rom_sha256": "ec554e4ac6f32f1e45fffa1597c9008308f710f83f05089667989b9a297898f7",
+    "asset_sha256": {
+      "firmware": "ec554e4ac6f32f1e45fffa1597c9008308f710f83f05089667989b9a297898f7",
+      "efi_app": "44cf4792133f0ee743347d892a7cf5c21e15e6ed792115a17a56136e24140922",
+      "load_image_payload": "a10f0cec85fd5f9da040a34935be055d909e6f45cbc5f598ca6c6bc2c30bb503",
+      "disk": "dab109b55c71aa3a2413fd513057794afef4d5da618ad304f18474550a3f75a9"
+    },
+    "tools": [
+      "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo 1.99.0 (5f94df478 2026-08-27)",
+      "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+      "rust-objcopy: llvm-objcopy, compatible with GNU objcopy"
+    ],
+    "sources_sha256": {
+      "crates/od-machine/src/firmware_board.rs": "5b96df5f47f9aa73302bc911da26c9732fe252e3b74a3879be60efbff4d7ad18",
+      "crates/od-machine/src/paged_probe.rs": "dde2c30f5ff28582410be2575e80e5e9d3b27162fec61bf83e6a7f86b5a7ef11",
+      "tools/runner/src/firmware_boot.rs": "b00c4dddaf6aff1b21c05f2644498e8e6e67c837585358013b12e0ecc0c26397",
+      "crates/od-isa/Cargo.toml": "44fb6280effcd27cdea99ba8b7be64397c2711cf768254dc51363061b4cf5e96",
+      "tools/bench/windows_boot_bench.py": "45ed2eb3a713114fa12b45627c43ffecb6e8d51de4aa42167bdaf17ffc444e63",
+      "tools/bench/firmware_boot_bench.py": "3b26393b0d915bb58248e614027d1fb9e56a3f3ca55a6a6d76bfa2f7bb27ec11"
+    }
+  },
+  "engine": {
+    "jit_mentions": {
+      "crates/od-machine/src/firmware_board.rs": 0,
+      "crates/od-machine/src/paged_probe.rs": 0,
+      "tools/runner/src/firmware_boot.rs": 0,
+      "crates/od-isa/Cargo.toml": 0,
+      "crates/od-machine/src/firmware_board/*.rs": 0
+    },
+    "interpreter_call": "crates/od-machine/src/paged_probe.rs:1108",
+    "firmware_path_mentions_jit": false,
+    "od_jit_linked_in_runner": true,
+    "od_jit_evidence": {
+      "cargo_manifests": {
+        "crates/od-machine/Cargo.toml": true,
+        "tools/runner/Cargo.toml": true
+      },
+      "used_in_sources": {
+        "crates/od-machine/src/diagnostic_vcpu.rs": true,
+        "tools/runner/src/main.rs": true
+      },
+      "note": "od-jit is a dependency of od-machine and od-runner and is used by the diagnostic vCPU and the runner main; no od-jit mention was found in the firmware board paths (text search; not a proof of no call)"
+    },
+    "engine": "interpreter (od_isa::execute::step_paged_firmware_probe_with_guest_fp)",
+    "engine_basis": "text search of the firmware board execution paths for 'jit' (firmware_board.rs, firmware_board/*.rs, paged_probe.rs, firmware_boot.rs, od-isa Cargo.toml); not a proof that no call to od-jit exists"
+  },
+  "board": {
+    "vcpu_count": 1,
+    "ram_bytes": 134217728,
+    "tpm": "CRB, SHA-256 and SHA-384 banks (--tpm)",
+    "nvme": "fixed controller, in-memory copy of disk.raw",
+    "budget_instructions": 1200000000,
+    "quantum": "remaining global budget, shortened by device events and deadlines (crates/od-machine/src/firmware_board.rs run_boot_with, quantum_budget)"
+  },
+  "vcpu": {
+    "runner_has_vcpu_option": false,
+    "supported_counts": [
+      1
+    ],
+    "two_vcpu": "not measured: boot-firmware has no vCPU option, the board default is vcpu_count = 1 and S6-51 (two vCPUs for stages 7, 8, 11) is not accepted; no code was changed"
+  },
+  "routes": [
+    {
+      "route": "FV",
+      "vcpus": 1,
+      "reference": {
+        "retired": 549802885,
+        "quanta": 36765,
+        "handoff_sha256": "cddaf98b5c030793fcf37faff560db254515ee612644f7bd7f4b4cfc121ad5fe",
+        "budget": 1200000000,
+        "tsc_hz": 1000000000
+      },
+      "stop_rip": "0x20ac21",
+      "sample_rips": [
+        "0x200040",
+        "0x20ac21"
+      ],
+      "warmup": {
+        "retired": 549802885,
+        "quanta": 36765,
+        "wall_ns": 273952299333,
+        "guest_window_ns": 273896434458,
+        "guest_window_retired": 549802884,
+        "guest_window_quanta": 36764,
+        "ips_wall": 2006929.3,
+        "ips_guest_window": 2007338.6,
+        "cpu_user_s": 270.521,
+        "cpu_sys_s": 0.708,
+        "nice_seen": [
+          -5
+        ]
+      },
+      "runs": [
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 272866458708,
+          "guest_window_ns": 272812336208,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2014915.6,
+          "ips_guest_window": 2015315.3,
+          "cpu_user_s": 271.125,
+          "cpu_sys_s": 0.93,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 267297061667,
+          "guest_window_ns": 267242788958,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2056898.3,
+          "ips_guest_window": 2057316.1,
+          "cpu_user_s": 266.334,
+          "cpu_sys_s": 0.666,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 274199538750,
+          "guest_window_ns": 274147517042,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2005119.7,
+          "ips_guest_window": 2005500.1,
+          "cpu_user_s": 273.356,
+          "cpu_sys_s": 0.636,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 268309999209,
+          "guest_window_ns": 268252232333,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2049133.0,
+          "ips_guest_window": 2049574.3,
+          "cpu_user_s": 267.878,
+          "cpu_sys_s": 0.745,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 549802885,
+          "quanta": 36765,
+          "wall_ns": 272191590292,
+          "guest_window_ns": 272122602292,
+          "guest_window_retired": 549802884,
+          "guest_window_quanta": 36764,
+          "ips_wall": 2019911.4,
+          "ips_guest_window": 2020423.4,
+          "cpu_user_s": 269.384,
+          "cpu_sys_s": 0.889,
+          "nice_seen": [
+            -5
+          ]
+        }
+      ],
+      "summary": {
+        "wall_ns": {
+          "n": 5,
+          "mean": 270972929725.2,
+          "p50": 272191590292,
+          "p95": 274199538750,
+          "min": 267297061667,
+          "max": 274199538750,
+          "spread": 6902477083,
+          "stdev": 3003531101.058
+        },
+        "guest_window_ns": {
+          "n": 5,
+          "mean": 270915495366.6,
+          "p50": 272122602292,
+          "p95": 274147517042,
+          "min": 267242788958,
+          "max": 274147517042,
+          "spread": 6904728084,
+          "stdev": 3003448799.594
+        },
+        "ips_wall": {
+          "n": 5,
+          "mean": 2029195.6,
+          "p50": 2019911.4,
+          "p95": 2056898.3,
+          "min": 2005119.7,
+          "max": 2056898.3,
+          "spread": 51778.60000000009,
+          "stdev": 22553.842
+        },
+        "ips_guest_window": {
+          "n": 5,
+          "mean": 2029625.84,
+          "p50": 2020423.4,
+          "p95": 2057316.1,
+          "min": 2005500.1,
+          "max": 2057316.1,
+          "spread": 51816.0,
+          "stdev": 22562.244
+        },
+        "retired": {
+          "n": 5,
+          "mean": 549802885.0,
+          "p50": 549802885,
+          "p95": 549802885,
+          "min": 549802885,
+          "max": 549802885,
+          "spread": 0,
+          "stdev": 0.0
+        },
+        "quanta": {
+          "n": 5,
+          "mean": 36765.0,
+          "p50": 36765,
+          "p95": 36765,
+          "min": 36765,
+          "max": 36765,
+          "spread": 0,
+          "stdev": 0.0
+        }
+      }
+    },
+    {
+      "route": "ESP",
+      "vcpus": 1,
+      "reference": {
+        "retired": 365245503,
+        "quanta": 3960,
+        "handoff_sha256": "eaab15873b6eee34e5100b352f429456d5803e196d96cabf25756a5adf5ca29b",
+        "budget": 1200000000,
+        "tsc_hz": 1000000000
+      },
+      "stop_rip": "0x20ac21",
+      "sample_rips": [
+        "0x200040",
+        "0x20ac21"
+      ],
+      "warmup": {
+        "retired": 365245503,
+        "quanta": 3960,
+        "wall_ns": 173038143791,
+        "guest_window_ns": 172986683166,
+        "guest_window_retired": 365245502,
+        "guest_window_quanta": 3959,
+        "ips_wall": 2110780.3,
+        "ips_guest_window": 2111408.2,
+        "cpu_user_s": 172.612,
+        "cpu_sys_s": 0.601,
+        "nice_seen": [
+          -5
+        ]
+      },
+      "runs": [
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 177632715958,
+          "guest_window_ns": 177577387084,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2056183.7,
+          "ips_guest_window": 2056824.4,
+          "cpu_user_s": 176.197,
+          "cpu_sys_s": 0.487,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 179362169500,
+          "guest_window_ns": 179297677542,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2036357.5,
+          "ips_guest_window": 2037090.0,
+          "cpu_user_s": 178.919,
+          "cpu_sys_s": 0.598,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 177365384000,
+          "guest_window_ns": 177308099208,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2059282.9,
+          "ips_guest_window": 2059948.2,
+          "cpu_user_s": 177.003,
+          "cpu_sys_s": 0.473,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 174804164750,
+          "guest_window_ns": 174751601084,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2089455.4,
+          "ips_guest_window": 2090083.9,
+          "cpu_user_s": 174.417,
+          "cpu_sys_s": 0.497,
+          "nice_seen": [
+            -5
+          ]
+        },
+        {
+          "retired": 365245503,
+          "quanta": 3960,
+          "wall_ns": 174974232500,
+          "guest_window_ns": 174921721208,
+          "guest_window_retired": 365245502,
+          "guest_window_quanta": 3959,
+          "ips_wall": 2087424.5,
+          "ips_guest_window": 2088051.2,
+          "cpu_user_s": 174.663,
+          "cpu_sys_s": 0.464,
+          "nice_seen": [
+            -5
+          ]
+        }
+      ],
+      "summary": {
+        "wall_ns": {
+          "n": 5,
+          "mean": 176827733341.6,
+          "p50": 177365384000,
+          "p95": 179362169500,
+          "min": 174804164750,
+          "max": 179362169500,
+          "spread": 4558004750,
+          "stdev": 1929425244.659
+        },
+        "guest_window_ns": {
+          "n": 5,
+          "mean": 176771297225.2,
+          "p50": 177308099208,
+          "p95": 179297677542,
+          "min": 174751601084,
+          "max": 179297677542,
+          "spread": 4546076458,
+          "stdev": 1924879131.302
+        },
+        "ips_wall": {
+          "n": 5,
+          "mean": 2065740.8,
+          "p50": 2059282.9,
+          "p95": 2089455.4,
+          "min": 2036357.5,
+          "max": 2089455.4,
+          "spread": 53097.89999999991,
+          "stdev": 22522.134
+        },
+        "ips_guest_window": {
+          "n": 5,
+          "mean": 2066399.54,
+          "p50": 2059948.2,
+          "p95": 2090083.9,
+          "min": 2037090.0,
+          "max": 2090083.9,
+          "spread": 52993.89999999991,
+          "stdev": 22483.858
+        },
+        "retired": {
+          "n": 5,
+          "mean": 365245503.0,
+          "p50": 365245503,
+          "p95": 365245503,
+          "min": 365245503,
+          "max": 365245503,
+          "spread": 0,
+          "stdev": 0.0
+        },
+        "quanta": {
+          "n": 5,
+          "mean": 3960.0,
+          "p50": 3960,
+          "p95": 3960,
+          "min": 3960,
+          "max": 3960,
+          "spread": 0,
+          "stdev": 0.0
+        }
+      }
+    }
+  ],
+  "install_budget": {
+    "status": "hypothesis",
+    "basis": "No measured install instruction count exists before S8-25. 1e12..1e13 is an order of magnitude for a 10..60 minute native Windows 11 setup on a ~3 GHz core at 1..3 instructions per ns (unsourced hypothesis, to be replaced by the S8-25 count).",
+    "measured_ips_used": 2047468,
+    "limit_hours": 24,
+    "rows": [
+      {
+        "instructions": 1000000000000.0,
+        "required_ips": 11574074,
+        "factor_over_measured": 5.7,
+        "hours_at_measured": 135.7
+      },
+      {
+        "instructions": 10000000000000.0,
+        "required_ips": 115740741,
+        "factor_over_measured": 56.5,
+        "hours_at_measured": 1356.7
+      }
+    ]
+  }
+}

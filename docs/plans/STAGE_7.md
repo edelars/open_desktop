@@ -224,7 +224,7 @@
 | S7-31 | S7-13, S7-14, S7-15, S7-19; blocked до accepted Linux guest evidence этапа 5 (S5-05 build recipe не является boot evidence; S5-06/07 не приняты), S4-39, accepted S7-16, PCI-привязки (S4-30) и ACPI/discovery S4-31 | Linux через собственную UEFI |
 | S7-32 | S7-13, S7-14, S7-15, S7-19, S7-22, S7-24, S7-30, S7-35; blocked до: PCI-привязки S7-16 (S4-30), S4-10 (2 MiB страницы), этапа 6 (2 vCPU); S7-34 — по итогам S7-30 | Установочный образ Windows через собственную UEFI до экрана Setup |
 | S7-33 | S7-10, S7-23, S7-24 | Передача контрактов persistence этапу 9 (S9-26, S9-27) |
-| S7-34 | S7-07; blocked до xHCI-модели платы (нет задачи) и S4-30 | USB HID клавиатура прошивки для `ConIn` |
+| S7-34 | S7-07; blocked до xHCI-модели платы ([XHCI_DEVICE.md](../specs/XHCI_DEVICE.md), задачи S8-42/S8-43 этапа 8; решение (а) подтверждено 2026-11-21) и S4-30 | USB HID клавиатура прошивки для `ConIn` |
 | S7-35 | S7-17, S7-30 | Транспорт установочного носителя: El Torito/UDF или конвертация — решение и реализация |
 | S7-40 | S7-29, S7-27, S7-15, S7-23, S7-25, S7-30, S7-33 | Независимое итоговое ревью ступеней 1–6 |
 | S7-41 | S7-40 | Документация и приёмка ступеней 1–6 |
@@ -744,7 +744,7 @@
 
 ### S7-34. USB HID клавиатура прошивки для `ConIn`
 
-- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI 1.2 + USB HID; задачи модели нет ни в одном плане — завести её в плане этапа 5 или 11 решением владельца) и до S4-30 (xHCI — PCI-устройство).
+- [ ] Принято после ревью. **Blocked** до появления xHCI-модели платы в `od-machine` (`VIRTUAL_BOARD.md` строка «Ввод»: PCI xHCI 1.2 + USB HID; контракт модели — [XHCI_DEVICE.md](../specs/XHCI_DEVICE.md), реализация — задачи S8-42/S8-43 этапа 8; решение (а) подтверждено владельцем 2026-11-21) и до S4-30 (xHCI — PCI-устройство).
 - **Где:** `firmware/uefi/src/usb/{xhci,hub,hid_keyboard}.rs`, `firmware/uefi/src/console/text_in.rs` (ConIn с несколькими источниками: COM1 и USB), `docs/specs/UEFI_PROFILE.md` (раздел «Консоль»).
 - **Сделать:** собственный pre-boot стек xHCI 1.2 (один контроллер, control/interrupt transfers, перечисление корневого хаба и устройств), USB HID 1.11 boot protocol keyboard → `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`/`EX`; передача состояния устройства ОС при `ExitBootServices` (остановка контроллера по UEFI 2.11 раздел «USB Host Controller Protocol» и xHCI); `ConIn` — объединение источников.
 - **Проверить:** runner подаёт HID-отчёты через модель xHCI; приложение `echo` печатает клавиши; после EBS контроллер остановлен (регистры модели).
