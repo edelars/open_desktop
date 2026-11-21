@@ -15943,6 +15943,27 @@ entry snapshot/absolute-first-access limitation remain under
 [ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
 
 Normative semantics: Intel SDM Rev. 093 Vol. 2B RDMSR ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)) and Vol. 3A IA32_EFER / IA-32e paging ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+## S2-25f — WRMSR IA32_EFER may change NXE (CPL0 set)
+
+Bounded slice of S2-25 (the parent stays open). Under `Cpl0ProfileSet::with_msr_efer_write`
+a `WRMSR` of IA32_EFER may change NXE (bit 11) besides SCE. Setting NXE (0 to 1)
+requires NX in the set's own CPUID member (CPUID.80000001H:EDX[20], SDM Vol. 3A
+§5.1.4 p. 5-6: NXE "may be set to 1" only then); otherwise the write is
+`#GP(0)` (Vol. 2D WRMSR: value sets a reserved bit) with no state change. Clearing
+NXE needs no CPUID bit. A write that keeps NXE=1 is not a change. LME/LMA changes
+and bits 12..15 stay `Unsupported`, reserved bits `#GP(0)`.
+
+An NXE change retires, stores the cell and ends the run with
+`TranslationContextChange::EferWrite { old_efer, new_efer }`; it needs the
+`with_cpu_owned_cr3` sink (else `Unsupported`, nothing changes). The paged CPL0 loop
+rebuilds its walker for the new NXE only and reports the final walker EFER in
+`PagedCpl0SetReport::efer`; the effect is not a CR3 change. With NXE=0 bit 63 of a
+paging entry is reserved (`#PF` with RSVD), with NXE=1 it is XD (S4-08 walker).
+No profile declares NX except `OdX8664V1Neutral` (S2-58 owns declaring it); the
+synthetic initial EFER 0xd00 with NXE=1 under a profile without NX is not an
+architectural claim (ISSUE-027). Hardware, JIT/native, the host-thread NMI path and
+the legacy/protected path are not covered. See the [S2-25f plan note](../plans/STAGE_2.md#s2-25f--wrmsr-ia32_efer-with-nxe).
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts

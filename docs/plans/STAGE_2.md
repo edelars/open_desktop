@@ -15105,6 +15105,17 @@ transitions, NX enforcement, guest exception delivery, MMU/paging effects, or
 hardware execution. Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and
 Vol. 3A IA32_EFER / IA-32e paging.
 
+#### S2-25f — WRMSR IA32_EFER with NXE
+
+**Статус:** bounded interpreter slice implemented; parent S2-25 stays open.
+
+Under the CPL0 set `WRMSR IA32_EFER` may change NXE: set only with NX declared by the
+set's CPUID member (else `#GP(0)`, SDM Vol. 3A §5.1.4), clear always; needs the
+cpu-owned CR3 sink; ends the run with `TranslationContextChange::EferWrite` and the
+paged loop rebuilds its walker for the new NXE. Remaining for S2-25: CR4.PAE policy and
+mode transitions; hardware, JIT/native and S2-58 CPUID declaration are not done. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25f--wrmsr-ia32_efer-may-change-nxe-cpl0-set).
+
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
