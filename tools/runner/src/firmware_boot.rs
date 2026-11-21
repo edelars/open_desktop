@@ -1177,6 +1177,32 @@ mod tests {
     }
 
     #[test]
+    fn cpu_loop_selects_the_unified_loop_and_defaults_to_the_firmware_profile() {
+        let required = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        assert!(!parse(&required).unwrap().unified);
+        for (value, unified) in [("unified", true), ("firmware", false)] {
+            let mut given = required.clone();
+            given.extend(args(&["--cpu-loop", value]));
+            assert_eq!(parse(&given).unwrap().unified, unified);
+        }
+        let mut invalid = required;
+        invalid.extend(args(&["--cpu-loop", "kvm"]));
+        assert!(
+            parse(&invalid)
+                .err()
+                .unwrap()
+                .contains("invalid --cpu-loop")
+        );
+    }
+
+    #[test]
     fn firmware_boot_samples_allow_ordered_repeats_in_one_boot_only() {
         let required = args(&[
             "--image",

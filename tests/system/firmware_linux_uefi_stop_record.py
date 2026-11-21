@@ -126,10 +126,12 @@ def window(rip: int, rom: bytes, kernel: bytes, layout: dict, base: int | None) 
 
 
 def boot(runner: Path, rom: Path, esp: Path, nvram: Path, scratch: Path, name: str,
-         budget: int, samples: list[int]) -> tuple[dict, bytes]:
+         budget: int, samples: list[int], cpu_loop: str = "firmware") -> tuple[dict, bytes]:
     trace = scratch / f"{name}.com1"
     args = [runner, "boot-firmware", "--image", rom, "--nvme-image", esp, "--budget", str(budget),
             "--com1-out", trace, "--nvram-in", nvram, "--nvram-out", scratch / f"{name}-after.nv"]
+    if cpu_loop != "firmware":
+        args += ["--cpu-loop", cpu_loop]
     for address in samples:
         args += ["--sample-rip", f"0x{address:x}"]
     result = subprocess.run(args, capture_output=True, text=True, check=False, cwd=ROOT)
@@ -170,6 +172,9 @@ def stop_record(variant: str, report: dict, com1: bytes, rom: bytes, kernel: byt
         "milestones_requested": sampled,
         "milestones_visited_in_order": sampled[:len(visited)],
         "nvram_snapshot_sha256": report["nvram_snapshot_sha256"],
+        "cpu_loop": report.get("cpu_loop", "firmware"),
+        # S7-31c: the unified loop reads the bytes at RIP from guest memory (a read-only walk).
+        "unified": report.get("unified"),
     }
 
 
@@ -182,6 +187,9 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--budget", type=int, default=2_000_000_000)
     parser.add_argument("--variants", default=",".join(VARIANTS))
+    parser.add_argument("--cpu-loop", choices=("firmware", "unified"), default="firmware",
+                        help="firmware: the firmware profile loop (S7-31a record); unified: the ROM and the guest in the "
+                             "CPL0 profile set loop (S7-31c, ADR-0013 variant (b)); no RIP milestones there")
     args = parser.parse_args()
     variants = args.variants.split(",")
     if any(name not in VARIANTS for name in variants) or args.runs < 1:
@@ -205,7 +213,7 @@ def main() -> None:
         option = esp_smoke.load_option(esp_smoke.file_node("BOOTX64.EFI"), (CMDLINE + "\0").encode("utf-16le"))
         nvram.write_bytes(esp_smoke.encode_snapshot([("Boot0001", option), ("BootOrder", struct.pack("<H", 1))]))
         record = {
-            "schema": "od-s7-31a-stop-record-v1",
+            "schema": "od-s7-31a-stop-record-v1" if args.cpu_loop == "firmware" else "od-s7-31c-stop-record-v1",
             "inputs": {
                 "vmlinuz_sha256": sha256(kernel_path),
                 "initramfs_sha256": sha256(initrd_path),
@@ -226,17 +234,19 @@ def main() -> None:
                             "--boot-file", f"INITRD.IMG={initrd_path}", "--out", esp], check=True, cwd=ROOT)
             base = layout["image_base"] if variant != "stock" else None
             samples, labels = [], []
-            for number in range(1, LOADS + 1):
-                samples += [named[PLAN_IMAGE], named[LOAD_INTO]]
-                labels += [f"plan_image #{number}", f"load_into #{number}"]
-            if base is not None:
-                samples.append(base + layout["entry_rva"])
-                labels.append("kernel EFI stub entry (efi_pe_entry, first instruction)")
-            samples.append(named[EXIT_BOOT_SERVICES])
-            labels.append("ExitBootServices")
+            if args.cpu_loop == "firmware":  # the unified loop has no per-instruction RIP observer
+                for number in range(1, LOADS + 1):
+                    samples += [named[PLAN_IMAGE], named[LOAD_INTO]]
+                    labels += [f"plan_image #{number}", f"load_into #{number}"]
+                if base is not None:
+                    samples.append(base + layout["entry_rva"])
+                    labels.append("kernel EFI stub entry (efi_pe_entry, first instruction)")
+                samples.append(named[EXIT_BOOT_SERVICES])
+                labels.append("ExitBootServices")
             records = []
             for run in range(args.runs):
-                report, com1 = boot(runner, rom, esp, nvram, scratch, f"{variant}-{run}", args.budget, samples)
+                report, com1 = boot(runner, rom, esp, nvram, scratch, f"{variant}-{run}", args.budget, samples,
+                                   args.cpu_loop)
                 records.append(stop_record(variant, report, com1, rom_bytes, patched.read_bytes(), layout,
                                            base, table, labels))
                 print(f"{variant} run {run}: {records[-1]['exit']} {records[-1]['exit_detail']} "

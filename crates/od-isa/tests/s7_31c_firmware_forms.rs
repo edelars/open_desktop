@@ -262,6 +262,62 @@ fn and_qword_memory_imm8_with_sib_and_displacement_forms() {
 }
 
 #[test]
+fn notrack_jmp_register_is_jmp_register_at_cpl0() {
+    // 3E FF E0: NOTRACK JMP RAX (the stub of the Ubuntu kernel, `3e ff e0`). No CET IBT is
+    // modeled, so NOTRACK changes nothing: RIP = RAX, flags and registers untouched.
+    let mut state = state(2 | CF | ZF);
+    state.gpr[Register::Rax as usize] = 0x1234_5678;
+    let before = (state.gpr, state.rflags);
+    let mut memory = Memory::new(&[0x3e, 0xff, 0xe0]);
+    let (exit, _) = one(&mut state, &mut memory);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x1234_5678);
+    assert_eq!((state.gpr, state.rflags), before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
+fn repe_cmpsb_runs_from_any_flag_state_and_stops_at_the_first_difference() {
+    // F3 A6: REPE CMPSB. Flags before are arbitrary (CF|OF|SF here); the stub of the Ubuntu
+    // kernel reaches it after unrelated code. Compare [RSI] with [RDI], advance both (DF = 0),
+    // count RCX down, stop when ZF = 0 or RCX = 0 (Intel SDM, REP/REPE and CMPS).
+    let mut state = state(2 | CF | OF | SF);
+    state.gpr[Register::Rsi as usize] = DATA;
+    state.gpr[Register::Rdi as usize] = DATA + 0x20;
+    state.gpr[Register::Rcx as usize] = 4;
+    let mut memory = Memory::new(&[0xf3, 0xa6]);
+    memory.data[..4].copy_from_slice(&[1, 2, 3, 4]);
+    memory.data[0x20..0x24].copy_from_slice(&[1, 2, 9, 4]);
+    let (exit, defined) = one(&mut state, &mut memory);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    // Three comparisons ran: 1-1, 2-2, 3-9.
+    assert_eq!(state.gpr[Register::Rcx as usize], 1);
+    assert_eq!(state.gpr[Register::Rsi as usize], DATA + 3);
+    assert_eq!(state.gpr[Register::Rdi as usize], DATA + 0x23);
+    assert_eq!(state.rip, CODE + 2);
+    // 3 - 9 = 0xfa: borrow (CF), AF (3 < 9 in the low nibble), SF, PF (six one bits); no
+    // overflow, not zero.
+    assert_eq!(state.rflags & ARITHMETIC, CF | PF | AF | SF);
+    assert_eq!(defined & ARITHMETIC, ARITHMETIC);
+}
+
+#[test]
+fn repe_cmpsb_with_a_zero_count_leaves_flags_and_registers_alone() {
+    let mut state = state(2 | CF | OF | SF);
+    state.gpr[Register::Rsi as usize] = DATA;
+    state.gpr[Register::Rdi as usize] = DATA + 0x20;
+    state.gpr[Register::Rcx as usize] = 0;
+    let before = (state.gpr, state.rflags);
+    let mut memory = Memory::new(&[0xf3, 0xa6]);
+    let (exit, defined) = one(&mut state, &mut memory);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!((state.gpr, state.rflags), before);
+    assert_eq!(state.rip, CODE + 2);
+    assert_eq!(defined, od_isa::INTEGER_FLAGS);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
+}
+
+#[test]
 fn endbr64_is_a_four_byte_nop() {
     let mut state = state(2 | CF | ZF | (1 << 9));
     let before = (state.gpr, state.rflags);

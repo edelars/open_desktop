@@ -47694,7 +47694,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             opcode: instruction.opcode.byte,
         });
     }
-    if matches!(instruction.operation, Operation::RepCmps { .. })
+    // S7-31c: the CPL0 profile set runs `REPE CMPS` from any arithmetic-flag state (the stub of
+    // the Ubuntu kernel runs `F3 A6` after arbitrary code, and a zero count leaves the flags
+    // as they are); every other path keeps the exact entry gate PF|ZF, all six defined.
+    if control_policy.is_none()
+        && matches!(instruction.operation, Operation::RepCmps { .. })
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
             || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
     {
@@ -50891,8 +50895,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::IndirectJump {
             operand: Operand::Register(_),
         } if instruction.prefixes.segment == Some(0x3e) => {
+            // S7-31c: `3E FF /4` (NOTRACK JMP r64). The set models no CET indirect-branch
+            // tracking, so NOTRACK has no effect and the instruction is `JMP r64`; the EFI stub
+            // of the Ubuntu kernel runs it at CPL0 (`3E FF E0`).
             control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring3
+                && matches!(
+                    context.privilege,
+                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+                )
                 && cpl3_notrack_register_jump(&instruction)
         }
         Operation::IndirectJump { .. } => {
@@ -64637,6 +64647,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 let (_, flags) =
                     arithmetic_result(size, ArithmeticKind::Cmp, first, second, state.rflags);
                 state.rflags = flags;
+                // S7-31c: after one comparison the six arithmetic flags are those of the
+                // compare (Intel SDM, CMPS: the flags are set as CMP sets them); with a zero
+                // count nothing runs and RFLAGS and its definedness stay as they were.
+                *rflags_defined |= crate::ARITHMETIC_FLAGS;
                 let step = if state.rflags & (1 << 10) == 0 {
                     size.bytes() as u64
                 } else {

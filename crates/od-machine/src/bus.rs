@@ -2176,6 +2176,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn firmware_set_windows_add_to_the_set_windows_in_both_views_and_only_once() {
+        let (mut bus, _) = setup(false);
+        // Without the call a board serves exactly what it served before (S7-31c).
+        assert_eq!(
+            bus.split_for_set_step_of_vcpu(0).1.windows(),
+            SET_STEP_WINDOWS
+        );
+        let nvram = (0xff00_0000, 0x4_1000);
+        let tpm = (0xfed4_0000, 0x5000);
+        bus.enable_apic_mmio_windows();
+        bus.serve_firmware_set_windows(&[nvram, tpm, nvram]);
+        let mut expected = SET_STEP_APIC_WINDOWS.to_vec();
+        expected.extend([nvram, tpm]);
+        assert_eq!(bus.split_for_set_step_shared(0).1.windows(), expected);
+        assert_eq!(bus.split_for_set_step_of_vcpu(0).1.windows(), expected);
+    }
+
     fn diagnostic_page_bus(map_second_page: bool) -> (MachineBus, Long64ProbeConfig) {
         let map = MachineMemoryMap::new(
             36,
