@@ -54,6 +54,8 @@ mod paged_pump_backend;
 mod paged_vcpu_session;
 mod parallel_run;
 #[cfg(test)]
+mod page_walk_2m_matrix_tests;
+#[cfg(test)]
 mod parallel_snapshot_tests;
 mod pci_ecam;
 mod physical_memory;
