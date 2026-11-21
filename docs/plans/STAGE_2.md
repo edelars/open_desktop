@@ -15197,7 +15197,8 @@ accessed bit in a PDPTE). `MOV CR4` clearing PAE with IA-32e active is #GP(0) (n
 `Cr4PaeClearInLongMode`); the same in the Long64 CPL0 profile `MOV CR4, RAX` was `Unsupported` and is
 now #GP(0). LME=1 with PG and no PAE stays #GP(0); LME cannot change while PG=1. Still closed here
 (32-bit paging, clearing PAE under PAE paging, CR0 writes with PG set and the CD/NW reload are S2-25h below):
-task-switch CR3, SMEP/PSE-36, CPUID declaration of PAE (S2-57/S2-58). No hardware oracle: the PAE walk and PDPTE rules are the SDM text only. See the
+task-switch CR3, SMEP/PSE-36, CPUID declaration of PAE (S2-57/S2-58). No hardware oracle: the PAE walk and
+PDPTE rules are the SDM text only. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25g--pae-paging-cr4pae-policy-and-pdpte-rules-model-only).
 
 #### S2-25h — 32-bit paging, PAE/32-bit transitions, CR0 writes with paging on (model only)

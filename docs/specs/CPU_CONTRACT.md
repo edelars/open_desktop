@@ -16007,7 +16007,7 @@ is §4.1, §4.4, §9.8. Text read from the local `pdftotext` of the SDM, not fro
 | `#GP(0)` on PAE clear (coverage) | closed: the `WriteCr0 \| WriteCr4` branch with a control policy (the Long64 profiles, `execute.rs`) answers `MOV CR4` without PAE with `#GP(0)`, state unchanged. Open: the `cr4_profile` branch (`WriteCr4` with an explicit `Cr4Profile`, the S2-25b fixed-domain profiles) keeps `Unsupported` for a value without PAE, not `#GP(0)` |
 
 Memory is addressed with 32 bits (entries above 4 GiB refused as in the 4-level walk); no TLB: every
-access walks and `MOV CR3` takes effect at once. A refused `MOV` changes no state or memory. `into_long_mode`
+access walks and `MOV CR3` takes effect at once. A refused `MOV` changes no register or memory except the accessed/dirty bits set by walks that had completed before the refusal (the fetch walk of the `MOV` included, as `ProtectedCpu::step` commits them for any refusal after decode and as hardware does). `into_long_mode`
 still requires LMA=1, so PAE paging is not handed to the Long64 interpreter. Not covered: hardware,
 KVM/silicon oracle, JIT/native admission, CPUID PAE declaration, the `od-machine` page walker
 (4-level only).
@@ -16024,7 +16024,7 @@ parallel mode with a gate, hardware.
 ## S2-25h — 32-bit paging, PAE/32-bit transitions, CR0 writes with paging on (model only)
 
 Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.2 (Figure 5-1, paging-mode transitions, p. 5-3), §5.3
-(32-bit paging, Tables 5-3..5-6, pp. 5-9–5-10, reserved bits and PSE-36 footnotes), §5.4.1 (PDPTE loading
+(32-bit paging from p. 5-9; Tables 5-3..5-6 on pp. 5-12–5-13, reserved bits and PSE-36 footnotes), §5.4.1 (PDPTE loading
 conditions, p. 5-14) and §5.10 (caching of translations; the model has no TLB). The task's older numbering is
 §4.1.2, §4.3, §4.4.1, §4.10. Text read from the local `pdftotext` of the SDM, not from silicon. The Mac mini
 oracle cannot help: a user-space process cannot write CR0/CR4, so every row is a model rule.
@@ -16051,7 +16051,7 @@ atomic `compare_replace_entry` (`BoardRam` needs an 8-aligned cell): `Touch` gai
 `LowDword`, `HighDword`); the mask is shifted into the right half and the retry on a lost race compares only
 the entry's own dword on the translation bits, so a change of the neighbouring entry does not discard the touch.
 Memory is addressed with 32 bits: no 32-bit-paging address reaches above 4 GiB, as PSE-36 is not declared.
-No TLB: `MOV CR3`, `CR0`, `CR4` take effect at once. A refused `MOV` changes no state or memory. Tests:
+No TLB: `MOV CR3`, `CR0`, `CR4` take effect at once. A refused `MOV` changes no register or memory except the accessed/dirty bits set by walks that had completed before the refusal (the fetch walk of the `MOV` included, as `ProtectedCpu::step` commits them for any refusal after decode and as hardware does). Tests:
 `paging::tests::paging32_*` (10 new) and 13 new `protected_exec::tests` (enter 32-bit paging, 32-bit
 ignores PDPTE registers and CR3 low bits, `MOV CR3`, PAE<->32-bit by `MOV CR4` with and without a reserved
 PDPTE, PSE toggle, 4 MiB page A bit, CD/NW reload with and without a reserved PDPTE, no reload outside PAE
