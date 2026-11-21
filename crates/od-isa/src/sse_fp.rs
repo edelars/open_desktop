@@ -112,6 +112,9 @@ macro_rules! arith_lane {
                             result.tiny_after_precision_rounding(),
                         )
                     }
+                    SseFpArithKind::AddSub | SseFpArithKind::HAdd | SseFpArithKind::HSub => {
+                        unreachable!("the caller resolves these to Add or Sub for each element")
+                    }
                     SseFpArithKind::Div => {
                         let result = $float::divide_raw_result(left, right, mode);
                         (
@@ -151,6 +154,9 @@ arith_lane!(arith_lane64, Binary64, u64, 1 << 63);
 
 /// Executes `kind` on `destination` (first source) and `source` (second source) under `mxcsr`.
 ///
+/// S2-54: the SSE3 packed forms (ADDSUB, HADD, HSUB) run the same lane arithmetic with a different pairing of
+/// the source elements (see the loop below); their exceptions, flags and MXCSR policy are those of ADD and SUB.
+///
 /// For a scalar shape only element 0 is computed and the bits above it are the first source's; the bits of
 /// `source` above the element are ignored. `mxcsr` must not carry reserved bits (the caller refuses such a
 /// value).
@@ -175,7 +181,34 @@ pub(crate) fn arith(
     };
     let mut lanes = [None; 4];
     for (index, slot) in lanes.iter_mut().enumerate().take(count) {
-        let (lhs, rhs) = (element(&destination, index), element(&source, index));
+        // The operands and the operation of each result element. The horizontal forms combine the two
+        // elements of an adjacent pair (the pairs of the destination fill the low half of the result, those of
+        // the source the high half): HADD is `low + high`, HSUB `low - high`, as in the SDM pseudocode
+        // (`SRC1[63:32] + SRC1[31:0]`, `SRC1[31:0] - SRC1[63:32]`); the first operand decides which NaN wins.
+        // ADDSUB subtracts in the even elements and adds in the odd ones.
+        let (kind, lhs, rhs) = match kind {
+            SseFpArithKind::HAdd | SseFpArithKind::HSub => {
+                let half = count / 2;
+                let vector = if index < half { &destination } else { &source };
+                let pair = (index % half) * 2;
+                let operation = if kind == SseFpArithKind::HAdd {
+                    SseFpArithKind::Add
+                } else {
+                    SseFpArithKind::Sub
+                };
+                (operation, element(vector, pair), element(vector, pair + 1))
+            }
+            SseFpArithKind::AddSub => (
+                if index % 2 == 0 {
+                    SseFpArithKind::Sub
+                } else {
+                    SseFpArithKind::Add
+                },
+                element(&destination, index),
+                element(&source, index),
+            ),
+            kind => (kind, element(&destination, index), element(&source, index)),
+        };
         *slot = Some(if shape.is_double() {
             arith_lane64(kind, lhs, rhs, mxcsr)
         } else {
