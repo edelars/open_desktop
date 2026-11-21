@@ -29,6 +29,46 @@ impl Sse128MoveKind {
     }
 }
 
+/// The non-floating-point SSE3 permutations and the unaligned load (Intel SDM Vol. 2A: LDDQU
+/// pp. 3-537..3-538; Vol. 2B: MOVDDUP pp. 4-47..4-49, MOVSHDUP pp. 4-107..4-109, MOVSLDUP
+/// pp. 4-110..4-112). Each copies or duplicates raw lanes: no MXCSR bit is read or written, no flag
+/// changes and no SIMD floating-point exception exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse3PermuteKind {
+    /// `F3 0F 16 /r`: DEST := SRC[63:32], SRC[63:32], SRC[127:96], SRC[127:96] (32-bit lanes, low first).
+    Movshdup,
+    /// `F3 0F 12 /r`: DEST := SRC[31:0], SRC[31:0], SRC[95:64], SRC[95:64].
+    Movsldup,
+    /// `F2 0F 12 /r`: DEST[63:0] and DEST[127:64] := SRC[63:0]; the source memory operand is 64 bits.
+    Movddup,
+    /// `F2 0F F0 /r`: DEST[127:0] := SRC[127:0] from memory only; the register form is #UD.
+    Lddqu,
+}
+
+impl Sse3PermuteKind {
+    /// MOVSHDUP and MOVSLDUP are Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit memory operand
+    /// that is not 16-byte aligned is #GP(0). LDDQU is named in note 1 of the same table and has no
+    /// alignment fault; MOVDDUP is Type 5 (Table 2-22, a 64-bit memory operand) and has none either.
+    pub const fn requires_alignment(self) -> bool {
+        matches!(self, Self::Movshdup | Self::Movsldup)
+    }
+
+    /// Bytes read from a memory source: 8 for MOVDDUP, 16 for the others.
+    pub const fn memory_bytes(self) -> u64 {
+        match self {
+            Self::Movddup => 8,
+            _ => 16,
+        }
+    }
+}
+
+/// The source operand of [`Operation::Sse3Permute`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse3Source {
+    Register(u8),
+    Memory(MemoryOperand),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressBase {
     None,
@@ -2121,6 +2161,21 @@ pub enum Operation {
         kind: Sse128MoveKind,
         store: bool,
         xmm: u8,
+        memory: MemoryOperand,
+    },
+    /// S2-54 slice C: MOVSHDUP, MOVSLDUP, MOVDDUP (register or memory source) and LDDQU (memory
+    /// source only) with any ModR/M, SIB, displacement or RIP-relative operand. Decoded only as the
+    /// fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode. Executed
+    /// through [`crate::execute`]'s shared `step_sse3_permute`.
+    Sse3Permute {
+        kind: Sse3PermuteKind,
+        destination: u8,
+        source: Sse3Source,
+    },
+    /// S2-54 slice C: x87 `FISTTP m16int/m32int/m64int` (`DF /1`, `DB /1`, `DD /1`): store ST(0) as a
+    /// signed integer with truncation and pop. `memory.size` is Word, Dword or Qword. Decoded only
+    /// as the fallback of [`decode`]; executed through `step_fisttp`.
+    FisttpMemory {
         memory: MemoryOperand,
     },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
@@ -11658,6 +11713,176 @@ impl<M: GuestMemory> Fetch<'_, M> {
             },
         }))
     }
+
+    /// Legacy prefixes and at most one REX for the S2-54 slice C decoders: LOCK (`F0`, kept apart
+    /// because LOCK with a mandatory prefix is a valid two-prefix sequence), one group-1 repeat
+    /// prefix (`F2`/`F3`), CS/DS/ES/SS/FS/GS overrides, `66`, `67`, then an optional REX that must
+    /// immediately precede the opcode (a legacy prefix after it drops it). `Ok(None)` for a repeated
+    /// prefix of any group. Returns the prefixes, the LOCK flag and the first non-prefix byte.
+    fn scan_slice_c_prefixes(&mut self) -> Result<Option<(Prefixes, bool, u8)>, DecodeError> {
+        let mut prefixes = Prefixes::default();
+        let mut seen = 0u8;
+        let mut locked = false;
+        let first = loop {
+            let byte = self.byte()?;
+            let group = match byte {
+                0xf0 => {
+                    if locked {
+                        return Ok(None);
+                    }
+                    locked = true;
+                    prefixes.rex = None;
+                    continue;
+                }
+                0xf2 | 0xf3 => {
+                    prefixes.group1 = Some(byte);
+                    1
+                }
+                0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 => {
+                    prefixes.segment = Some(byte);
+                    2
+                }
+                0x66 => {
+                    prefixes.operand_override = true;
+                    4
+                }
+                0x67 => {
+                    prefixes.address_override = true;
+                    8
+                }
+                0x40..=0x4f => {
+                    if prefixes.rex.is_some() {
+                        return Ok(None);
+                    }
+                    prefixes.rex = Some(byte);
+                    continue;
+                }
+                _ => break byte,
+            };
+            if seen & group != 0 {
+                return Ok(None);
+            }
+            seen |= group;
+            prefixes.rex = None;
+        };
+        Ok(Some((prefixes, locked, first)))
+    }
+
+    /// S2-54 slice C: `F3 0F 16` MOVSHDUP, `F3 0F 12` MOVSLDUP, `F2 0F 12` MOVDDUP (xmm or memory
+    /// source) and `F2 0F F0` LDDQU (memory source), tried by [`decode`] only after the profile decoder
+    /// returned `Unsupported` for `0F 12/16/F0`. LOCK with the form is #UD (SDM Vol. 2A Tables 2-21 and
+    /// 2-22: "If preceded by a LOCK prefix"), as is the register form of LDDQU (the SDM operand is
+    /// `mem`). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this
+    /// operand model), `66` with the mandatory prefix, the opposite or no mandatory prefix (those
+    /// opcodes are MOVLPS/MOVHLPS/MOVHPS/MOVLPD/MOVHPD, owned elsewhere), and 0F F0 without `F2`.
+    fn decode_sse3_permute(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = match (opcode.byte, prefixes.group1) {
+            (0x16, Some(0xf3)) => Sse3PermuteKind::Movshdup,
+            (0x12, Some(0xf3)) => Sse3PermuteKind::Movsldup,
+            (0x12, Some(0xf2)) => Sse3PermuteKind::Movddup,
+            (0xf0, Some(0xf2)) => Sse3PermuteKind::Lddqu,
+            _ => return Ok(None),
+        };
+        if prefixes.operand_override || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (register_form && kind == Sse3PermuteKind::Lddqu) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if register_form {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse3Permute {
+                kind,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+            },
+        }))
+    }
+
+    /// S2-54 slice C: x87 `DF /1` FISTTP m16int, `DB /1` FISTTP m32int and `DD /1` FISTTP m64int with
+    /// any ModR/M memory operand, tried by [`decode`] after the profile decoder returned `Unsupported`
+    /// for `DB/DD/DF`. LOCK is #UD (SDM Vol. 2A p. 3-350). Refused (`Ok(None)`): the register forms
+    /// (mod = 3 is another instruction or undefined), other /r values, FS/GS overrides, and `66`/`F2`/`F3`
+    /// before the opcode (their effect on x87 opcodes is not asserted).
+    fn decode_fisttp(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        let size = match first {
+            0xdf => OperandSize::Word,
+            0xdb => OperandSize::Dword,
+            0xdd => OperandSize::Qword,
+            _ => return Ok(None),
+        };
+        if prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Primary,
+            byte: first,
+        };
+        let modrm = self.byte()?;
+        if modrm >> 6 == 3 || (modrm >> 3) & 7 != 1 {
+            return Ok(None);
+        }
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+            return Ok(None);
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::FisttpMemory { memory },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -11685,19 +11910,23 @@ pub fn decode(
     let Err(DecodeError::Unsupported { opcode, .. }) = profile else {
         return profile;
     };
-    if opcode.map != OpcodeMap::Escape0f
-        || !matches!(opcode.byte, 0x10 | 0x11 | 0x28 | 0x29 | 0x6f | 0x7f)
-    {
-        return profile;
-    }
-    match (Fetch {
+    let mut fetch = Fetch {
         memory,
         start: rip,
         length: 0,
         context,
-    })
-    .decode_sse128_memory_move()
-    {
+    };
+    // S2-54 slice C: the non-FP SSE3 forms (`0F 12/16/F0`) and x87 FISTTP (`DB/DD/DF /1`) get the
+    // same fallback treatment.
+    let general = match (opcode.map, opcode.byte) {
+        (OpcodeMap::Escape0f, 0x10 | 0x11 | 0x28 | 0x29 | 0x6f | 0x7f) => {
+            fetch.decode_sse128_memory_move()
+        }
+        (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
+        (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),
+        _ => return profile,
+    };
+    match general {
         Ok(Some(instruction)) => Ok(instruction),
         Ok(None) => profile,
         Err(error) => Err(error),

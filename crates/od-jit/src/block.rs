@@ -4336,6 +4336,52 @@ mod tests {
     }
 
     #[test]
+    fn sse3_permutes_and_fisttp_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-54 slice C: the interpreter executes MOVSHDUP/MOVSLDUP/MOVDDUP/LDDQU and FISTTP; the JIT has
+        // no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4e40;
+        for bytes in [
+            &[0xf3, 0x0f, 0x16, 0x00][..],   // MOVSHDUP xmm0, [rax]
+            &[0xf3, 0x0f, 0x12, 0xc1],       // MOVSLDUP xmm0, xmm1
+            &[0xf2, 0x0f, 0x12, 0x4b, 0x10], // MOVDDUP xmm1, [rbx+0x10]
+            &[0xf2, 0x0f, 0xf0, 0x04, 0x88], // LDDQU xmm0, [rax+rcx*4]
+            &[0xdf, 0x08],                   // FISTTP word [rax]
+            &[0xdb, 0x4b, 0x10],             // FISTTP dword [rbx+0x10]
+            &[0xdd, 0x0d, 1, 0, 0, 0],       // FISTTP qword [rip+1]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK and the register form of LDDQU are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0xf3, 0x0f, 0x16, 0x00][..],
+            &[0xf0, 0xdf, 0x08],
+            &[0xf2, 0x0f, 0xf0, 0xc1],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

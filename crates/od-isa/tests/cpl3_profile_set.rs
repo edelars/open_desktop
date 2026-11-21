@@ -409,6 +409,17 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("movapd [rdi],xmm0", &[0x66, 0x0f, 0x29, 0x07], 0x29),
         ("movdqa [rdi],xmm0", &[0x66, 0x0f, 0x7f, 0x07], 0x7f),
         ("movdqu [rdi],xmm0", &[0xf3, 0x0f, 0x7f, 0x07], 0x7f),
+        // S2-54 slice C: SSE3 is not declared (S2-57), so the live profile never admits the non-FP
+        // SSE3 forms or FISTTP.
+        ("movshdup xmm0,[rdi]", &[0xf3, 0x0f, 0x16, 0x07], 0x16),
+        ("movshdup xmm0,xmm1", &[0xf3, 0x0f, 0x16, 0xc1], 0x16),
+        ("movsldup xmm0,[rdi]", &[0xf3, 0x0f, 0x12, 0x07], 0x12),
+        ("movddup xmm0,[rdi]", &[0xf2, 0x0f, 0x12, 0x07], 0x12),
+        ("movddup xmm0,xmm1", &[0xf2, 0x0f, 0x12, 0xc1], 0x12),
+        ("lddqu xmm0,[rdi]", &[0xf2, 0x0f, 0xf0, 0x07], 0xf0),
+        ("fisttp word [rdi]", &[0xdf, 0x0f], 0xdf),
+        ("fisttp dword [rdi]", &[0xdb, 0x0f], 0xdb),
+        ("fisttp qword [rdi]", &[0xdd, 0x0f], 0xdd),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.
@@ -1002,6 +1013,39 @@ fn lock_before_a_raw_sse_memory_move_is_invalid_opcode_without_change() {
         &[0xf0, 0x0f, 0x11, 0x07][..],       // lock movups [rdi], xmm0
         &[0x66, 0xf0, 0x0f, 0x28, 0x07][..], // lock movapd xmm0, [rdi]
         &[0xf0, 0x66, 0x0f, 0x7f, 0x07][..], // lock movdqa [rdi], xmm0
+    ] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+        assert_eq!(memory.accesses, 0, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn lock_before_an_sse3_form_or_fisttp_is_invalid_opcode_without_change() {
+    // S2-54 slice C: LOCK on the non-FP SSE3 forms and FISTTP, and the register form of LDDQU, are
+    // #UD (SDM); the decoder reports `Invalid` before the CPL3 allow-list is consulted.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bytes in [
+        &[0xf0, 0xf3, 0x0f, 0x16, 0x07][..], // lock movshdup xmm0, [rdi]
+        &[0xf3, 0xf0, 0x0f, 0x12, 0x07][..], // movsldup with LOCK after the prefix
+        &[0xf0, 0xf2, 0x0f, 0x12, 0xc1][..], // lock movddup xmm0, xmm1
+        &[0xf0, 0xf2, 0x0f, 0xf0, 0x07][..], // lock lddqu xmm0, [rdi]
+        &[0xf2, 0x0f, 0xf0, 0xc1][..],       // lddqu xmm0, xmm1 (register form)
+        &[0xf0, 0xdf, 0x0f][..],             // lock fisttp word [rdi]
+        &[0xf0, 0xdd, 0x0f][..],             // lock fisttp qword [rdi]
     ] {
         let mut state = user_state();
         let before = state.clone();

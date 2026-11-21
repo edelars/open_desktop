@@ -7,8 +7,8 @@ use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
-    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse128MoveKind,
-    canonical, general_protection,
+    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
+    Sse3Source, Sse128MoveKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -16,7 +16,7 @@ use crate::memory::{
 };
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
-use crate::state::X87Tag;
+use crate::state::{X87State, X87Tag};
 use crate::swapgs::SwapgsProfile;
 #[cfg(test)]
 use crate::x87::divide_finite_significands;
@@ -41434,8 +41434,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 // S2-34 (m128 addressing): under the FP-init CR0/CR4 pair, which carries the control
                 // registers next to the local SSE state, the memory moves run and are gated on
                 // CR0.EM / CR0.TS / CR4.OSFXSR by `step_sse128_memory_move`.
+                // S2-54 slice C: the non-FP SSE3 forms and FISTTP are admitted here the same way.
                 operation => {
-                    sse128_move_parts(operation).is_some()
+                    (sse128_move_parts(operation).is_some()
+                        || matches!(
+                            operation,
+                            Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. }
+                        ))
                         && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
                         && cr4_profile == Some(Cr4Profile::FpInitLong64V1)
                 }
@@ -50656,6 +50661,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && cpu_owned_cr3.is_none()
                 }
         }
+        // S2-54 slice C: the non-FP SSE3 forms need the local SSE state, FISTTP the local x87 state;
+        // CPL3 keeps its own profile list (neither is in it).
+        Operation::Sse3Permute { .. } => state.sse.is_some(),
+        Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
         // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
         // never at CPL3, whose set stays the Linux live profile (CPUID declares neither LAHF_SAHF_64
@@ -51545,6 +51554,32 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, store, xmm, operand),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    // S2-54 slice C: the non-FP SSE3 forms and FISTTP commit here, before the match below.
+    if let Operation::Sse3Permute {
+        kind,
+        destination,
+        source,
+    } = instruction.operation
+    {
+        return step_sse3_permute(
+            state,
+            memory,
+            context,
+            (kind, destination, source),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    if let Operation::FisttpMemory { memory: operand } = instruction.operation {
+        return step_fisttp(
+            state,
+            memory,
+            context,
+            operand,
             instruction.opcode.byte,
             next_rip,
         );
@@ -62875,6 +62910,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovdqaLoadMemory { .. } => {
             unreachable!("m128 SSE moves commit before dispatch")
         }
+        Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. } => {
+            unreachable!("S2-54 slice C forms commit before dispatch")
+        }
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
         | Operation::PcmpeqbMemory { .. }
@@ -69307,6 +69345,264 @@ fn step_sse128_memory_move(
         }
         sse.xmm[usize::from(xmm)] = raw;
     }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-54 slice C: the non-FP SSE3 permutations MOVSHDUP, MOVSLDUP, MOVDDUP and LDDQU on the local SSE
+/// state (Intel SDM Vol. 2A pp. 3-537..3-538, Vol. 2B pp. 4-47..4-49, 4-107..4-112; Vol. 2A Tables 2-21
+/// and 2-22). The result is a lane copy or duplication of raw bits: no MXCSR bit is read or written, no
+/// flag changes and no SIMD floating-point exception exists. Bits above 127 do not exist here (legacy
+/// SSE leaves them unchanged).
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries
+///    that control register). The CPUID.SSE3 gate is not modeled (S2-57 owns CPUID); LOCK and the
+///    register form of LDDQU are decoder #UD.
+/// 2. A memory source: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base).
+/// 3. MOVSHDUP/MOVSLDUP with an address that is not 16-byte aligned: `#GP(0)` (Type 4, note 1 lists
+///    only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms as exempt); LDDQU and MOVDDUP have none.
+/// 4. The whole source range (16 bytes, 8 for MOVDDUP) must be canonical; then one `read` (a memory
+///    fault, `#PF` included, is the backend's result and leaves the CPU state untouched).
+///
+/// The alignment-check exception `#AC` is not modeled: a source that is not aligned to its access
+/// size (8 bytes for MOVDDUP, 16 for the rest) at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1, or CR0 not
+/// carried) is `Unsupported`, as in the S2-34 moves, instead of guessed. For LDDQU this follows the SDM
+/// note on its alignment (Vol. 2A p. 3-538) and the 16-byte mask is the model's choice; for MOVDDUP
+/// (Table 2-22) the SDM defines `#AC(0)` at CPL3, so refusing is a conservative model choice.
+fn step_sse3_permute(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, destination, source): (Sse3PermuteKind, u8, Sse3Source),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let mut raw = [0u8; 16];
+    match source {
+        Sse3Source::Register(index) => {
+            raw = state
+                .sse
+                .as_ref()
+                .expect("SSE3 permute state was prevalidated")
+                .xmm[usize::from(index)];
+        }
+        Sse3Source::Memory(operand) => {
+            let address = match operand.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if kind.requires_alignment() && address & 15 != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let length = kind.memory_bytes() as usize;
+            if let Err(error) = operand.access_range_address_48(state, next_rip, length) {
+                return report_memory_error(error);
+            }
+            let alignment_mask = kind.memory_bytes() - 1;
+            if address & alignment_mask != 0
+                && context.privilege == PrivilegeLevel::Ring3
+                && state.rflags & (1 << 18) != 0
+                && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+            {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            if let Err(error) = memory.read(address, context, &mut raw[..length]) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let dword = |lane: usize| {
+        [
+            raw[lane * 4],
+            raw[lane * 4 + 1],
+            raw[lane * 4 + 2],
+            raw[lane * 4 + 3],
+        ]
+    };
+    let result: [u8; 16] = match kind {
+        Sse3PermuteKind::Lddqu => raw,
+        Sse3PermuteKind::Movddup => {
+            let mut result = [0u8; 16];
+            result[..8].copy_from_slice(&raw[..8]);
+            result[8..].copy_from_slice(&raw[..8]);
+            result
+        }
+        Sse3PermuteKind::Movshdup | Sse3PermuteKind::Movsldup => {
+            let (low, high) = if kind == Sse3PermuteKind::Movshdup {
+                (dword(1), dword(3))
+            } else {
+                (dword(0), dword(2))
+            };
+            let mut result = [0u8; 16];
+            result[0..4].copy_from_slice(&low);
+            result[4..8].copy_from_slice(&low);
+            result[8..12].copy_from_slice(&high);
+            result[12..16].copy_from_slice(&high);
+            result
+        }
+    };
+    state
+        .sse
+        .as_mut()
+        .expect("SSE3 permute state was prevalidated")
+        .xmm[usize::from(destination)] = result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// x87 status-word bits used by FISTTP: IE (invalid operation), PE (precision), SF (stack fault).
+const X87_SW_IE: u16 = 0x0001;
+const X87_SW_SF: u16 = 0x0040;
+const X87_SW_PE: u16 = 0x0020;
+
+/// S2-54 slice C: the value that FISTTP stores for ST(0), and the status-word exception bits it
+/// raises, from the raw binary80 register contents (Intel SDM Vol. 2A p. 3-350, Table 1-24; Vol. 1
+/// §8.5): ST(0) empty is a stack underflow (IE and SF); every infinity, NaN, pseudo-infinity,
+/// pseudo-NaN and unnormal (exponent 1..7FFEH with the integer bit clear) is an invalid operation;
+/// a finite value is truncated toward zero, a value that does not fit the signed destination
+/// (positive above 2^(bits-1)-1, negative below -2^(bits-1)) is an invalid operation, and a
+/// truncated nonzero fraction raises PE only when the integer fits. Both invalid cases produce the
+/// integer indefinite (the most negative value). The tag is consulted only for "empty": the class of
+/// a non-empty register comes from its bits, like the hardware's FXSAVE-derived tags.
+fn fisttp_convert(x87: &X87State, bits: u32) -> (u64, u16) {
+    let indefinite = 1u64 << (bits - 1);
+    let top = x87.top();
+    if x87.tag(top) == Some(X87Tag::Empty) {
+        return (indefinite, X87_SW_IE | X87_SW_SF);
+    }
+    let raw = x87.registers[usize::from(top)];
+    let mantissa = u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]);
+    let sign_exponent = u16::from_le_bytes([raw[8], raw[9]]);
+    let negative = sign_exponent & 0x8000 != 0;
+    let exponent = i32::from(sign_exponent & 0x7fff);
+    if exponent == 0x7fff || (exponent != 0 && mantissa >> 63 == 0) {
+        return (indefinite, X87_SW_IE);
+    }
+    if mantissa == 0 {
+        return (0, 0);
+    }
+    // Exponent field 0 (denormal or pseudo-denormal) and any unbiased exponent below zero: nonzero
+    // magnitude below one.
+    if exponent == 0 || exponent < 16383 {
+        return (0, X87_SW_PE);
+    }
+    let unbiased = exponent - 16383;
+    if unbiased > 63 {
+        return (indefinite, X87_SW_IE);
+    }
+    let shift = (63 - unbiased) as u32;
+    let magnitude = mantissa >> shift;
+    let inexact = shift != 0 && mantissa & ((1u64 << shift) - 1) != 0;
+    let limit = if negative { indefinite } else { indefinite - 1 };
+    if magnitude > limit {
+        return (indefinite, X87_SW_IE);
+    }
+    let value = if negative {
+        0u64.wrapping_sub(magnitude)
+    } else {
+        magnitude
+    };
+    (value, if inexact { X87_SW_PE } else { 0 })
+}
+
+/// S2-54 slice C: x87 FISTTP m16int/m32int/m64int (Intel SDM Vol. 2A pp. 3-350..3-351).
+///
+/// Check order, each before any state change:
+/// 1. `#NM` for CR0.EM = 1 or CR0.TS = 1 (only when the state carries CR0).
+/// 2. `Unsupported` (the model's bounded x87 profile, like every x87 form here) for a pending x87
+///    exception (status ES or B, or an armed status exception flag whose control-word mask bit is
+///    clear: FLDENV/FRSTOR can load such a state without ES and the SDM then delivers #MF before the
+///    instruction runs), and for an exception that would be unmasked: the invalid-operation
+///    case needs CW.IM = 1 and the precision case CW.PM = 1; the unmasked #MF delivery is not modeled.
+///    The rounding-control and precision-control fields are irrelevant: truncation is fixed.
+/// 3. A non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base); then one write of the
+///    destination width (a backend fault, `#PF` included, leaves the CPU state untouched).
+///
+/// Commit: ST(0) is popped (its tag becomes empty and TOP increments, also after a masked stack
+/// underflow), C1 is cleared, the exception bits from [`fisttp_convert`] are ORed into the status word
+/// and the x87 instruction and data pointers are updated like the FIST/FISTP forms; C0, C2 and C3
+/// are undefined by the SDM and stay unchanged; the last-opcode register is not modeled by any form.
+/// `#AC` is not modeled (see [`step_sse3_permute`]): a misaligned destination at CPL3 with
+/// RFLAGS.AC = 1 is `Unsupported`; the SDM defines `#AC(0)` for FISTTP, so this is a conservative
+/// model choice, not a statement of the SDM.
+fn step_fisttp(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    destination: MemoryOperand,
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    if state.cr0.is_some_and(|cr0| cr0 & (CR0_EM | CR0_TS) != 0) {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    let size = destination.size;
+    let (value, flags) = {
+        let x87 = state.x87.as_ref().expect("FISTTP state was prevalidated");
+        let (value, flags) = fisttp_convert(x87, (size.bytes() * 8) as u32);
+        let masked = |bit: u16| x87.control_word & bit != 0;
+        if x87.status_word & 0x8080 != 0
+            || x87.status_word & !x87.control_word & 0x003f != 0
+            || (flags & X87_SW_IE != 0 && !masked(X87_SW_IE))
+            || (flags & X87_SW_PE != 0 && !masked(X87_SW_PE))
+        {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+        (value, flags)
+    };
+    let address = match destination.access_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(error) => return report_memory_error(error),
+    };
+    if address & (size.bytes() as u64 - 1) != 0
+        && context.privilege == PrivilegeLevel::Ring3
+        && state.rflags & (1 << 18) != 0
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    if let Err(error) = memory.write_integer(address, context, size, value) {
+        return report_memory_error(error);
+    }
+    let x87 = state.x87.as_mut().expect("FISTTP state was prevalidated");
+    let old_top = x87.top();
+    x87.set_tag(old_top, X87Tag::Empty);
+    x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9)))
+        | (u16::from(old_top.wrapping_add(1) & 7) << 11)
+        | flags;
+    x87.instruction_pointer = state.rip;
+    x87.data_pointer = address;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }
