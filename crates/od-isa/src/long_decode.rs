@@ -69,6 +69,79 @@ pub enum Sse3Source {
     Memory(MemoryOperand),
 }
 
+/// The integer SSSE3 forms on XMM registers (Intel SDM Vol. 2B: PSHUFB pp. 4-421..4-425, PALIGNR
+/// pp. 4-216..4-219, PABSB/PABSW/PABSD pp. 4-177..4-182, PSIGNB/PSIGNW/PSIGND pp. 4-437..4-440,
+/// PMADDUBSW pp. 4-310..4-312, PMULHRSW pp. 4-375..4-378, PHADDW/PHADDD pp. 4-294..4-297, PHSUBW/PHSUBD
+/// pp. 4-302..4-304, PHADDSW pp. 4-292..4-293, PHSUBSW pp. 4-300..4-301). Only the mandatory-`66` XMM
+/// encodings exist here: the MMX forms (no prefix) need the MMX/x87 register aliasing of S2-33 and stay
+/// refused. Every form is Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit memory source must be
+/// 16-byte aligned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssse3IntKind {
+    /// `66 0F 38 00 /r`
+    Pshufb,
+    /// `66 0F 3A 0F /r ib`
+    Palignr,
+    /// `66 0F 38 1C /r`
+    Pabsb,
+    /// `66 0F 38 1D /r`
+    Pabsw,
+    /// `66 0F 38 1E /r`
+    Pabsd,
+    /// `66 0F 38 08 /r`
+    Psignb,
+    /// `66 0F 38 09 /r`
+    Psignw,
+    /// `66 0F 38 0A /r`
+    Psignd,
+    /// `66 0F 38 04 /r`
+    Pmaddubsw,
+    /// `66 0F 38 0B /r`
+    Pmulhrsw,
+    /// `66 0F 38 01 /r`
+    Phaddw,
+    /// `66 0F 38 02 /r`
+    Phaddd,
+    /// `66 0F 38 05 /r`
+    Phsubw,
+    /// `66 0F 38 06 /r`
+    Phsubd,
+    /// `66 0F 38 03 /r`
+    Phaddsw,
+    /// `66 0F 38 07 /r`
+    Phsubsw,
+}
+
+impl Ssse3IntKind {
+    /// The form selected by the opcode map and byte (the mandatory `66` is checked by the decoder).
+    pub const fn from_opcode(map: OpcodeMap, byte: u8) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f38, 0x00) => Self::Pshufb,
+            (OpcodeMap::Escape0f3a, 0x0f) => Self::Palignr,
+            (OpcodeMap::Escape0f38, 0x1c) => Self::Pabsb,
+            (OpcodeMap::Escape0f38, 0x1d) => Self::Pabsw,
+            (OpcodeMap::Escape0f38, 0x1e) => Self::Pabsd,
+            (OpcodeMap::Escape0f38, 0x08) => Self::Psignb,
+            (OpcodeMap::Escape0f38, 0x09) => Self::Psignw,
+            (OpcodeMap::Escape0f38, 0x0a) => Self::Psignd,
+            (OpcodeMap::Escape0f38, 0x04) => Self::Pmaddubsw,
+            (OpcodeMap::Escape0f38, 0x0b) => Self::Pmulhrsw,
+            (OpcodeMap::Escape0f38, 0x01) => Self::Phaddw,
+            (OpcodeMap::Escape0f38, 0x02) => Self::Phaddd,
+            (OpcodeMap::Escape0f38, 0x05) => Self::Phsubw,
+            (OpcodeMap::Escape0f38, 0x06) => Self::Phsubd,
+            (OpcodeMap::Escape0f38, 0x03) => Self::Phaddsw,
+            (OpcodeMap::Escape0f38, 0x07) => Self::Phsubsw,
+            _ => return None,
+        })
+    }
+
+    /// Only PALIGNR carries an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        matches!(self, Self::Palignr)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressBase {
     None,
@@ -2171,6 +2244,16 @@ pub enum Operation {
         kind: Sse3PermuteKind,
         destination: u8,
         source: Sse3Source,
+    },
+    /// S2-54 slice D: the integer SSSE3 forms (`66 0F 38 xx` and `66 0F 3A 0F ib`) with an XMM or any
+    /// ModR/M/SIB/RIP-relative m128 source (always 16-byte aligned, Type 4). `immediate` is the PALIGNR
+    /// byte shift count and zero for the other forms. Decoded only as the fallback of [`decode`] when
+    /// the profile decoder is `Unsupported` for the opcode; executed through `step_ssse3_int`.
+    Ssse3Int {
+        kind: Ssse3IntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
     },
     /// S2-54 slice C: x87 `FISTTP m16int/m32int/m64int` (`DF /1`, `DB /1`, `DD /1`): store ST(0) as a
     /// signed integer with truncation and pop. `memory.size` is Word, Dword or Qword. Decoded only
@@ -11883,6 +11966,78 @@ impl<M: GuestMemory> Fetch<'_, M> {
             operation: Operation::FisttpMemory { memory },
         }))
     }
+
+    /// S2-54 slice D: `66 0F 38 00..0B/1C..1E /r` and `66 0F 3A 0F /r ib` (the integer SSSE3 forms) with an
+    /// XMM or memory source, tried by [`decode`] only after the profile decoder returned `Unsupported`
+    /// for the opcode. LOCK is #UD (SDM Vol. 2A Table 2-21, "If preceded by a LOCK prefix (F0H)").
+    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model),
+    /// a missing `66` (the MMX forms need the MMX register model of S2-33), `F2`/`F3` (not defined for
+    /// these opcodes) and the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored.
+    fn decode_ssse3_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let Some(kind) = Ssse3IntKind::from_opcode(opcode.map, opcode.byte) else {
+            return Ok(None);
+        };
+        if !prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Ssse3Int {
+                kind,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+                immediate,
+            },
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -11924,6 +12079,12 @@ pub fn decode(
         }
         (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
         (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),
+        // S2-54 slice D: the integer SSSE3 forms.
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Ssse3IntKind::from_opcode(opcode.map, byte).is_some() =>
+        {
+            fetch.decode_ssse3_int()
+        }
         _ => return profile,
     };
     match general {

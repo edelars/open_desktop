@@ -8,7 +8,7 @@ use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
     LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse128MoveKind, canonical, general_protection,
+    Sse3Source, Sse128MoveKind, Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
@@ -41439,7 +41439,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     (sse128_move_parts(operation).is_some()
                         || matches!(
                             operation,
-                            Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. }
+                            Operation::Sse3Permute { .. }
+                                | Operation::Ssse3Int { .. }
+                                | Operation::FisttpMemory { .. }
                         ))
                         && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
                         && cr4_profile == Some(Cr4Profile::FpInitLong64V1)
@@ -50663,7 +50665,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         // S2-54 slice C: the non-FP SSE3 forms need the local SSE state, FISTTP the local x87 state;
         // CPL3 keeps its own profile list (neither is in it).
-        Operation::Sse3Permute { .. } => state.sse.is_some(),
+        Operation::Sse3Permute { .. } | Operation::Ssse3Int { .. } => state.sse.is_some(),
         Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
         // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
@@ -51570,6 +51572,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, destination, source),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    // S2-54 slice D: the integer SSSE3 forms commit here as well.
+    if let Operation::Ssse3Int {
+        kind,
+        destination,
+        source,
+        immediate,
+    } = instruction.operation
+    {
+        return step_ssse3_int(
+            state,
+            memory,
+            context,
+            (kind, destination, source, immediate),
             instruction.opcode.byte,
             next_rip,
         );
@@ -62910,8 +62929,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovdqaLoadMemory { .. } => {
             unreachable!("m128 SSE moves commit before dispatch")
         }
-        Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. } => {
-            unreachable!("S2-54 slice C forms commit before dispatch")
+        Operation::Sse3Permute { .. }
+        | Operation::Ssse3Int { .. }
+        | Operation::FisttpMemory { .. } => {
+            unreachable!("S2-54 slice C and D forms commit before dispatch")
         }
         Operation::MoveIntegerToXmm { .. }
         | Operation::MovqFromXmm { .. }
@@ -69469,6 +69490,233 @@ fn step_sse3_permute(
         .as_mut()
         .expect("SSE3 permute state was prevalidated")
         .xmm[usize::from(destination)] = result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// The lane arithmetic of the integer SSSE3 forms (Intel SDM Vol. 2B, "Operation" of the 128-bit legacy SSE
+/// versions). `dest` is the destination register (first operand) and `src` the register or memory source
+/// (second operand). PALIGNR concatenates `dest:src` (`src` in the low half) and shifts right by
+/// `immediate` bytes; a count above 31 gives zero. PABS* is the unsigned magnitude of the source (the most
+/// negative value maps to itself as an unsigned lane). PSIGN* negates (wrapping), zeroes or keeps the
+/// destination lane by the sign of the source lane. PMADDUBSW multiplies the unsigned destination bytes
+/// by the signed source bytes and saturates each pair sum to a signed word. PMULHRSW is
+/// `(((a * b) >> 14) + 1) >> 1` in 32 bits, low 16 bits kept. The horizontal forms put the pairs of the
+/// destination in the low half and the pairs of the source in the high half; the S forms saturate.
+fn ssse3_int_result(kind: Ssse3IntKind, dest: [u8; 16], src: [u8; 16], immediate: u8) -> [u8; 16] {
+    let word =
+        |value: &[u8; 16], lane: usize| i16::from_le_bytes([value[2 * lane], value[2 * lane + 1]]);
+    let dword = |value: &[u8; 16], lane: usize| {
+        i32::from_le_bytes([
+            value[4 * lane],
+            value[4 * lane + 1],
+            value[4 * lane + 2],
+            value[4 * lane + 3],
+        ])
+    };
+    let saturate = |value: i32| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let mut out = [0u8; 16];
+    let mut put_word = |lane: usize, value: i16| {
+        out[2 * lane..2 * lane + 2].copy_from_slice(&value.to_le_bytes());
+    };
+    match kind {
+        Ssse3IntKind::Pmaddubsw => {
+            for lane in 0..8 {
+                let sum = i32::from(dest[2 * lane]) * i32::from(src[2 * lane] as i8)
+                    + i32::from(dest[2 * lane + 1]) * i32::from(src[2 * lane + 1] as i8);
+                put_word(lane, saturate(sum));
+            }
+        }
+        Ssse3IntKind::Pmulhrsw => {
+            for lane in 0..8 {
+                let product = i32::from(word(&dest, lane)) * i32::from(word(&src, lane));
+                put_word(lane, (((product >> 14) + 1) >> 1) as i16);
+            }
+        }
+        Ssse3IntKind::Pabsw => {
+            for lane in 0..8 {
+                put_word(lane, word(&src, lane).unsigned_abs() as i16);
+            }
+        }
+        Ssse3IntKind::Psignw => {
+            for lane in 0..8 {
+                let control = word(&src, lane);
+                let value = word(&dest, lane);
+                put_word(
+                    lane,
+                    match control.signum() {
+                        -1 => value.wrapping_neg(),
+                        0 => 0,
+                        _ => value,
+                    },
+                );
+            }
+        }
+        Ssse3IntKind::Phaddw
+        | Ssse3IntKind::Phsubw
+        | Ssse3IntKind::Phaddsw
+        | Ssse3IntKind::Phsubsw => {
+            let pair = |first: i16, second: i16| match kind {
+                Ssse3IntKind::Phaddw => first.wrapping_add(second),
+                Ssse3IntKind::Phsubw => first.wrapping_sub(second),
+                Ssse3IntKind::Phaddsw => saturate(i32::from(first) + i32::from(second)),
+                _ => saturate(i32::from(first) - i32::from(second)),
+            };
+            for lane in 0..4 {
+                put_word(lane, pair(word(&dest, 2 * lane), word(&dest, 2 * lane + 1)));
+                put_word(
+                    4 + lane,
+                    pair(word(&src, 2 * lane), word(&src, 2 * lane + 1)),
+                );
+            }
+        }
+        _ => {}
+    }
+    match kind {
+        Ssse3IntKind::Pshufb => {
+            for lane in 0..16 {
+                let control = src[lane];
+                out[lane] = if control & 0x80 != 0 {
+                    0
+                } else {
+                    dest[usize::from(control & 0x0f)]
+                };
+            }
+        }
+        Ssse3IntKind::Palignr => {
+            let mut concatenated = [0u8; 32];
+            concatenated[..16].copy_from_slice(&src);
+            concatenated[16..].copy_from_slice(&dest);
+            for lane in 0..16 {
+                out[lane] = concatenated
+                    .get(lane + usize::from(immediate))
+                    .copied()
+                    .unwrap_or(0);
+            }
+        }
+        Ssse3IntKind::Pabsb => {
+            for lane in 0..16 {
+                out[lane] = (src[lane] as i8).unsigned_abs();
+            }
+        }
+        Ssse3IntKind::Psignb => {
+            for lane in 0..16 {
+                out[lane] = match (src[lane] as i8).signum() {
+                    -1 => (dest[lane] as i8).wrapping_neg() as u8,
+                    0 => 0,
+                    _ => dest[lane],
+                };
+            }
+        }
+        Ssse3IntKind::Pabsd => {
+            for lane in 0..4 {
+                out[4 * lane..4 * lane + 4]
+                    .copy_from_slice(&dword(&src, lane).unsigned_abs().to_le_bytes());
+            }
+        }
+        Ssse3IntKind::Psignd => {
+            for lane in 0..4 {
+                let value = dword(&dest, lane);
+                let result = match dword(&src, lane).signum() {
+                    -1 => value.wrapping_neg(),
+                    0 => 0,
+                    _ => value,
+                };
+                out[4 * lane..4 * lane + 4].copy_from_slice(&result.to_le_bytes());
+            }
+        }
+        Ssse3IntKind::Phaddd | Ssse3IntKind::Phsubd => {
+            let pair = |first: i32, second: i32| {
+                if kind == Ssse3IntKind::Phaddd {
+                    first.wrapping_add(second)
+                } else {
+                    first.wrapping_sub(second)
+                }
+            };
+            for lane in 0..2 {
+                let low = pair(dword(&dest, 2 * lane), dword(&dest, 2 * lane + 1));
+                let high = pair(dword(&src, 2 * lane), dword(&src, 2 * lane + 1));
+                out[4 * lane..4 * lane + 4].copy_from_slice(&low.to_le_bytes());
+                out[8 + 4 * lane..12 + 4 * lane].copy_from_slice(&high.to_le_bytes());
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// S2-54 slice D: the integer SSSE3 forms on the local SSE state (Intel SDM Vol. 2B; every form is
+/// Exceptions Type 4, Vol. 2A Table 2-21: no SIMD floating-point exception, no MXCSR access, no flag
+/// change; legacy SSE leaves bits above 127 unchanged).
+///
+/// Check order, each before any state change:
+/// 1. `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for CR0.TS = 1 (only when the state carries
+///    that control register). The CPUID.SSSE3 gate is not modeled (S2-57 owns CPUID); LOCK is decoder
+///    `#UD`.
+/// 2. A memory source: a non-canonical address is `#GP(0)` (`#SS(0)` for an RSP/RBP base).
+/// 3. A 128-bit memory source that is not 16-byte aligned is `#GP(0)` for every form (Table 2-21 note 1
+///    exempts only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms). Because the address is then aligned
+///    the Type 4 class has no `#AC` row to model.
+/// 4. The whole 16-byte source range must be canonical; then one `read` (a memory fault, `#PF`
+///    included, is the backend's result and leaves the CPU state untouched).
+fn step_ssse3_int(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, destination, source, immediate): (Ssse3IntKind, u8, Sse3Source, u8),
+    _opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let mut raw = [0u8; 16];
+    match source {
+        Sse3Source::Register(index) => {
+            raw = state
+                .sse
+                .as_ref()
+                .expect("SSSE3 state was prevalidated")
+                .xmm[usize::from(index)];
+        }
+        Sse3Source::Memory(operand) => {
+            let address = match operand.linear_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
+            if address & 15 != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            if let Err(error) = operand.access_range_address_48(state, next_rip, raw.len()) {
+                return report_memory_error(error);
+            }
+            if let Err(error) = memory.read(address, context, &mut raw) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let sse = state.sse.as_mut().expect("SSSE3 state was prevalidated");
+    let slot = &mut sse.xmm[usize::from(destination)];
+    *slot = ssse3_int_result(kind, *slot, raw, immediate);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
 }

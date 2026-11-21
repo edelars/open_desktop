@@ -420,6 +420,30 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("fisttp word [rdi]", &[0xdf, 0x0f], 0xdf),
         ("fisttp dword [rdi]", &[0xdb, 0x0f], 0xdb),
         ("fisttp qword [rdi]", &[0xdd, 0x0f], 0xdd),
+        // S2-54 slice D: SSSE3 is not declared either (S2-57); the integer SSSE3 forms are refused at CPL3.
+        ("pshufb xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x00, 0x07], 0x00),
+        ("pshufb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x00, 0xc1], 0x00),
+        ("phaddw xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x01, 0x07], 0x01),
+        ("phaddsw xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x03, 0xc1], 0x03),
+        (
+            "pmaddubsw xmm0,[rdi]",
+            &[0x66, 0x0f, 0x38, 0x04, 0x07],
+            0x04,
+        ),
+        ("psignb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x08, 0xc1], 0x08),
+        ("pmulhrsw xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x0b, 0x07], 0x0b),
+        ("pabsb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x1c, 0xc1], 0x1c),
+        ("pabsd xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x1e, 0x07], 0x1e),
+        (
+            "palignr xmm0,xmm1,4",
+            &[0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x04],
+            0x0f,
+        ),
+        (
+            "palignr xmm0,[rdi],1",
+            &[0x66, 0x0f, 0x3a, 0x0f, 0x07, 0x01],
+            0x0f,
+        ),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.
@@ -1046,6 +1070,9 @@ fn lock_before_an_sse3_form_or_fisttp_is_invalid_opcode_without_change() {
         &[0xf2, 0x0f, 0xf0, 0xc1][..],       // lddqu xmm0, xmm1 (register form)
         &[0xf0, 0xdf, 0x0f][..],             // lock fisttp word [rdi]
         &[0xf0, 0xdd, 0x0f][..],             // lock fisttp qword [rdi]
+        &[0xf0, 0x66, 0x0f, 0x38, 0x00, 0x07][..], // lock pshufb xmm0, [rdi]
+        &[0x66, 0xf0, 0x0f, 0x38, 0x1c, 0xc1][..], // pabsb with LOCK after 66
+        &[0xf0, 0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x04][..], // lock palignr xmm0, xmm1, 4
     ] {
         let mut state = user_state();
         let before = state.clone();
