@@ -1,7 +1,10 @@
 //! S2-37 (remainder of the conversions): CVTSI2SS (F3 [REX.W] 0F 2A), CVTSI2SD (F2 [REX.W] 0F 2A), CVTSS2SI (F3 [REX.W]
 //! 0F 2D), CVTTSS2SI (F3 [REX.W] 0F 2C), CVTSD2SI (F2 [REX.W] 0F 2D), CVTTSD2SI (F2 [REX.W] 0F 2C), CVTDQ2PD (F3 0F E6),
 //! CVTPD2DQ (F2 0F E6) and CVTTPD2DQ (66 0F E6) on the general SSE floating-point core, with any register or memory
-//! operand. The MMX conversions (CVTPI2PS/PD, CVTPS2PI, CVTTPS2PI, CVTPD2PI, CVTTPD2PI) are not part of this file.
+//! operand, and the MMX conversions CVTPI2PS (0F 2A), CVTPI2PD (66 0F 2A), CVTPS2PI (0F 2D), CVTTPS2PI (0F 2C), CVTPD2PI
+//! (66 0F 2D) and CVTTPD2PI (66 0F 2C) (Vol. 2A pp. 3-218, 3-223, 3-224, 3-231, 3-248, 3-252: two doublewords of an MMX
+//! register or m64 to two binary32/binary64 in an XMM register, or two binary32/binary64 to two doublewords in an MMX
+//! register; the instructions that use an MMX register put the x87 unit in MMX state).
 //!
 //! Sources (Intel SDM edition 325462-093US, cdrdv2.intel.com/v1/dl/getContent/671200, text through pdftotext):
 //! Vol. 2A CVTDQ2PD pp. 3-208..3-210 (two signed doublewords to two binary64, exact, no SIMD exception, Exceptions
@@ -1998,8 +2001,7 @@ fn memory_access_of_a_decoded_form_follows_the_instruction() {
 
 #[test]
 fn decoder_refuses_what_it_does_not_model_and_locked_forms_are_invalid() {
-    // Unsupported: 66 together with F2/F3, a repeated prefix, FS/GS, and the encodings without a mandatory prefix
-    // (the MMX conversions are not modeled here).
+    // Unsupported: 66 together with F2/F3, a repeated prefix, FS/GS, and 0F E6 without a mandatory prefix.
     for bytes in [
         &[0x66, 0xf2, 0x0f, 0x2a, 0x03][..],
         &[0x66, 0xf3, 0x0f, 0x2d, 0x03],
@@ -2008,8 +2010,6 @@ fn decoder_refuses_what_it_does_not_model_and_locked_forms_are_invalid() {
         &[0x64, 0xf3, 0x0f, 0x2a, 0x03],
         &[0x65, 0xf2, 0x0f, 0x2d, 0x03],
         &[0x0f, 0xe6, 0x03],
-        &[0x0f, 0x2a, 0x03],
-        &[0x66, 0x0f, 0x2c, 0x03],
         &[0xf2, 0xf3, 0x0f, 0xe6, 0x03],
     ] {
         assert!(
@@ -2329,6 +2329,791 @@ fn integer_conversions_match_the_host_on_random_operands() {
                 f64::from((pair >> 32) as u32 as i32).to_bits()
             ])
         );
+    }
+}
+
+// ---- MMX conversions ----
+
+/// CVTPI2PS, CVTPI2PD (the source is an MMX register or m64, the destination an XMM register) and CVTPS2PI, CVTTPS2PI,
+/// CVTPD2PI, CVTTPD2PI (the destination is an MMX register). Intel SDM Vol. 2A pp. 3-218, 3-223, 3-224, 3-231, 3-248,
+/// 3-252; the MMX register MMn is the low 64 bits of the physical x87 data register Rn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mmx {
+    Cvtpi2ps,
+    Cvtpi2pd,
+    Cvtps2pi,
+    Cvttps2pi,
+    Cvtpd2pi,
+    Cvttpd2pi,
+}
+
+const ALL_MMX: [Mmx; 6] = [
+    Mmx::Cvtpi2ps,
+    Mmx::Cvtpi2pd,
+    Mmx::Cvtps2pi,
+    Mmx::Cvttps2pi,
+    Mmx::Cvtpd2pi,
+    Mmx::Cvttpd2pi,
+];
+
+impl Mmx {
+    fn packed_double(self) -> bool {
+        matches!(self, Mmx::Cvtpi2pd | Mmx::Cvtpd2pi | Mmx::Cvttpd2pi)
+    }
+
+    fn opcode(self) -> u8 {
+        match self {
+            Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => 0x2a,
+            Mmx::Cvtps2pi | Mmx::Cvtpd2pi => 0x2d,
+            Mmx::Cvttps2pi | Mmx::Cvttpd2pi => 0x2c,
+        }
+    }
+
+    /// The source is the MMX register or m64 and the destination an XMM register.
+    fn from_mm(self) -> bool {
+        matches!(self, Mmx::Cvtpi2ps | Mmx::Cvtpi2pd)
+    }
+
+    /// The size of a memory source and whether it must be 16-byte aligned (Exceptions Types 2 and 5).
+    fn memory(self) -> (usize, bool) {
+        match self {
+            Mmx::Cvtpd2pi | Mmx::Cvttpd2pi => (16, true),
+            _ => (8, false),
+        }
+    }
+
+    fn opcode_byte(self) -> u8 {
+        self.opcode()
+    }
+}
+
+/// The register forms: xmm1 and MMn for the conversions to XMM, MMn and xmm2 for the conversions to MMX.
+fn mmx_reg_code(op: Mmx, mm: u8) -> Vec<u8> {
+    let mut code = vec![];
+    if op.packed_double() {
+        code.push(0x66);
+    }
+    code.extend([0x0f, op.opcode()]);
+    code.push(if op.from_mm() {
+        0xc8 | mm
+    } else {
+        0xc0 | mm << 3 | 2
+    });
+    code
+}
+
+/// A memory form: the XMM (or MMX) register number in the ModRM reg field, the address bytes without a reg field.
+fn mmx_mem_code(op: Mmx, reg: u8, address: &[u8], rex_b: bool) -> Vec<u8> {
+    let mut code = vec![];
+    if op.packed_double() {
+        code.push(0x66);
+    }
+    if rex_b {
+        code.push(0x41);
+    }
+    code.extend([0x0f, op.opcode()]);
+    code.push(address[0] | (reg & 7) << 3);
+    code.extend(&address[1..]);
+    code
+}
+
+/// An 80-bit register image with the given low 64 bits and an exponent field that is not the MMX one.
+fn reg80(data: u64) -> [u8; 10] {
+    let mut raw = [0u8; 10];
+    raw[..8].copy_from_slice(&data.to_le_bytes());
+    raw[8] = 0xff;
+    raw[9] = 0x3f;
+    raw
+}
+
+/// The state with x87 TOP = 3, the tag word given and the physical register R[mm] holding the MMX data.
+fn mmx_cpu(cr: bool, tag: u16, mm: usize, data: u64) -> LongModeState {
+    let mut cpu = if cr {
+        fp_init_cpu(CR0_BASE, CR4_ALL)
+    } else {
+        self::cpu()
+    };
+    let x87 = cpu.x87.as_mut().unwrap();
+    x87.control_word = 0x37f;
+    x87.status_word = 3 << 11;
+    x87.tag_word = tag;
+    x87.registers[mm] = reg80(data);
+    cpu
+}
+
+/// What every MMX instruction does to the x87 state: TOP = 0, all tags valid; a destination register gets the result
+/// in bits 63:0 and all ones in bits 79:64.
+fn entered_mmx(before: &LongModeState, written: Option<(usize, u64)>) -> LongModeState {
+    let mut after = before.clone();
+    let x87 = after.x87.as_mut().unwrap();
+    x87.status_word &= !(7 << 11);
+    x87.tag_word = 0;
+    if let Some((mm, value)) = written {
+        let mut raw = [0xffu8; 10];
+        raw[..8].copy_from_slice(&value.to_le_bytes());
+        x87.registers[mm] = raw;
+    }
+    after
+}
+
+fn mm_value(cpu: &LongModeState, mm: usize) -> u64 {
+    u64::from_le_bytes(
+        cpu.x87.as_ref().unwrap().registers[mm][..8]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// One MMX hardware vector: instruction, MXCSR, the MMX register used, source (the MMX data or the XMM source),
+/// destination XMM before (zero for the MMX destinations), outcome.
+type MmxRow = (Mmx, u32, u8, u128, u128, Expect);
+
+fn run_mmx_golden(row: &MmxRow) {
+    let (op, mxcsr, mm, src, dest, expect) = row;
+    let (op, mm) = (*op, usize::from(*mm));
+    let code = mmx_reg_code(op, mm as u8);
+    let name = format!("{op:?} mx={mxcsr:#x} mm={mm} src={src:#x} dest={dest:#x}");
+    let build = |cr: bool| {
+        let mut cpu = mmx_cpu(
+            cr,
+            0x33,
+            mm,
+            if op.from_mm() {
+                *src as u64
+            } else {
+                0x1234_5678_9abc_def0
+            },
+        );
+        cpu.sse.as_mut().unwrap().mxcsr = *mxcsr;
+        if op.from_mm() {
+            set_xmm(&mut cpu, 1, *dest);
+        } else {
+            set_xmm(&mut cpu, 2, *src);
+        }
+        cpu
+    };
+    let expected_of = |before: &LongModeState| match expect {
+        Expect::Ok(value, mx) => {
+            let mut expected = if op.from_mm() {
+                entered_mmx(before, None)
+            } else {
+                entered_mmx(before, Some((mm, *value as u64)))
+            };
+            if op.from_mm() {
+                set_xmm(&mut expected, 1, *value);
+            }
+            expected.sse.as_mut().unwrap().mxcsr = *mx;
+            expected.rip += code.len() as u64;
+            expected
+        }
+        Expect::Fault(mx) => {
+            // The hardware has entered MMX state when it raises the SIMD exception; the destination is not written.
+            let mut expected = entered_mmx(before, None);
+            expected.sse.as_mut().unwrap().mxcsr = *mx;
+            expected
+        }
+    };
+    // The FP-init profile pair with CR4.OSXMMEXCPT = 1 also runs the faulting vectors (#XM).
+    let before = build(true);
+    let mut ram = Ram::new(&code);
+    let (result, after) = run_fp_init(before.clone(), &mut ram);
+    assert!(ram.reads.is_empty() && ram.writes.is_empty(), "{name}");
+    match expect {
+        Expect::Ok(..) => assert_eq!(result.exit, RunExit::InstructionBudgetExhausted, "{name}"),
+        Expect::Fault(_) => assert_eq!(result.exit, xm(), "{name}"),
+    }
+    assert_eq!(after, expected_of(&before), "{name}");
+    if let Expect::Ok(..) = expect {
+        let before = build(false);
+        let mut bare = before.clone();
+        assert_eq!(
+            step(&mut bare, &mut Ram::new(&code)),
+            Ok(StepOutcome::Advanced),
+            "{name} (bare)"
+        );
+        assert_eq!(bare, expected_of(&before), "{name} (bare)");
+    }
+}
+
+#[test]
+fn hardware_vectors_mmx_register_forms() {
+    assert!(GOLDEN_MMX.len() >= 190);
+    for row in GOLDEN_MMX {
+        run_mmx_golden(row);
+    }
+}
+
+/// One MMX conversion on the register forms: MMn holds the data (CVTPI2PS/PD) or xmm2 the source.
+fn run_mmx(op: Mmx, src: u128, mx: u32) -> (RunExit, LongModeState, LongModeState) {
+    let mm = 5usize;
+    let mut cpu = mmx_cpu(
+        true,
+        0x33,
+        mm,
+        if op.from_mm() {
+            src as u64
+        } else {
+            0x1234_5678_9abc_def0
+        },
+    );
+    cpu.sse.as_mut().unwrap().mxcsr = mx;
+    if op.from_mm() {
+        set_xmm(&mut cpu, 1, HI);
+    } else {
+        set_xmm(&mut cpu, 2, src);
+    }
+    let before = cpu.clone();
+    let (result, after) = run_fp_init(cpu, &mut Ram::new(&mmx_reg_code(op, mm as u8)));
+    (result.exit, before, after)
+}
+
+fn pair(lo: u32, hi: u32) -> u128 {
+    u128::from(lo) | u128::from(hi) << 32
+}
+
+#[test]
+fn cvtpi2ps_converts_two_dwords_keeps_the_high_half_and_enters_mmx_state() {
+    // -1 in the high dword, 2^24 + 1 in the low one: the low result is inexact.
+    let src = pair(16_777_217, 0xffff_ffff);
+    for (mx, low) in [
+        (MXCSR, 0x4b80_0000u32),
+        (MXCSR | RC_DOWN, 0x4b80_0000),
+        (MXCSR | RC_UP, 0x4b80_0001),
+        (MXCSR | RC_ZERO, 0x4b80_0000),
+    ] {
+        let (exit, before, after) = run_mmx(Mmx::Cvtpi2ps, src, mx);
+        assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+        let mut expected = entered_mmx(&before, None);
+        set_xmm(
+            &mut expected,
+            1,
+            HI & !0xffff_ffff_ffff_ffff | u128::from(0xbf80_0000u32) << 32 | u128::from(low),
+        );
+        expected.sse.as_mut().unwrap().mxcsr = mx | PE;
+        expected.rip += 3;
+        assert_eq!(after, expected, "{mx:#x}");
+    }
+    // Exact values raise nothing. The register source is not rewritten: its exponent field stays.
+    let (_, before, after) = run_mmx(Mmx::Cvtpi2ps, pair(3, 0xffff_fffe), MXCSR);
+    assert_eq!(
+        xmm(&after, 1),
+        HI & !0xffff_ffff_ffff_ffff | u128::from(0xc000_0000u32) << 32 | u128::from(0x4040_0000u32)
+    );
+    assert_eq!(after.sse.as_ref().unwrap().mxcsr, MXCSR);
+    assert_eq!(
+        after.x87.as_ref().unwrap().registers[5],
+        before.x87.as_ref().unwrap().registers[5]
+    );
+    assert_eq!(after.x87.as_ref().unwrap().tag_word, 0);
+    assert_eq!(after.x87.as_ref().unwrap().status_word & (7 << 11), 0);
+    // Unmasked precision: #XM, no XMM change; the hardware has entered MMX state.
+    let mx = MXCSR & !PM;
+    let (exit, before, after) = run_mmx(Mmx::Cvtpi2ps, src, mx);
+    assert_eq!(exit, xm());
+    let mut expected = entered_mmx(&before, None);
+    expected.sse.as_mut().unwrap().mxcsr = mx | PE;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn cvtpi2pd_is_exact_and_replaces_the_whole_destination() {
+    let src = pair(0x7fff_ffff, 0xffff_fffe);
+    let expected = d2([0x41df_ffff_ffc0_0000, 0xc000_0000_0000_0000]);
+    for mx in [MXCSR, 0, MXCSR | RC_UP | DAZ] {
+        let (exit, before, after) = run_mmx(Mmx::Cvtpi2pd, src, mx);
+        assert_eq!(exit, RunExit::InstructionBudgetExhausted, "{mx:#x}");
+        let mut want = entered_mmx(&before, None);
+        set_xmm(&mut want, 1, expected);
+        want.rip += 4;
+        assert_eq!(after, want, "{mx:#x}");
+    }
+}
+
+#[test]
+fn cvtps2pi_and_cvttps2pi_write_the_mmx_register() {
+    // 2.5 and -2.5 as binary32 in the low 64 bits of xmm2; the upper 64 bits play no part.
+    let src = pair(0x4020_0000, 0xc020_0000) | u128::from(0x7fc0_0000u32) << 64;
+    for (mx, lanes) in [
+        (MXCSR, [2i32, -2]),
+        (MXCSR | RC_DOWN, [2, -3]),
+        (MXCSR | RC_UP, [3, -2]),
+        (MXCSR | RC_ZERO, [2, -2]),
+    ] {
+        let (exit, before, after) = run_mmx(Mmx::Cvtps2pi, src, mx);
+        assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+        let value = u64::from(lanes[0] as u32) | u64::from(lanes[1] as u32) << 32;
+        let mut expected = entered_mmx(&before, Some((5, value)));
+        expected.sse.as_mut().unwrap().mxcsr = mx | PE;
+        expected.rip += 3;
+        assert_eq!(after, expected, "{mx:#x}");
+        assert_eq!(after.x87.as_ref().unwrap().registers[5][8..], [0xff, 0xff]);
+        // CVTTPS2PI ignores the rounding control.
+        let (_, _, truncated) = run_mmx(Mmx::Cvttps2pi, src, mx);
+        assert_eq!(
+            mm_value(&truncated, 5),
+            u64::from(2u32) | u64::from(-2i32 as u32) << 32,
+            "{mx:#x}"
+        );
+    }
+    // A NaN or an out-of-range lane is the integer indefinite value and invalid.
+    let (_, before, after) = run_mmx(Mmx::Cvtps2pi, pair(0x7fc0_0000, 0x3f80_0000), MXCSR);
+    let mut expected = entered_mmx(&before, Some((5, 0x0000_0001_8000_0000)));
+    expected.sse.as_mut().unwrap().mxcsr = MXCSR | IE;
+    expected.rip += 3;
+    assert_eq!(after, expected);
+    // Unmasked: #XM, the MMX register is not written (the hardware has entered MMX state).
+    let mx = MXCSR & !IM;
+    let (exit, before, after) = run_mmx(Mmx::Cvttps2pi, pair(0x7f80_0000, 0), mx);
+    assert_eq!(exit, xm());
+    let mut expected = entered_mmx(&before, None);
+    expected.sse.as_mut().unwrap().mxcsr = mx | IE;
+    assert_eq!(after, expected);
+}
+
+#[test]
+fn cvtpd2pi_and_cvttpd2pi_convert_two_doubles() {
+    let src = d2([0x4004_0000_0000_0000, 0xc004_0000_0000_0000]);
+    for (op, mx, lanes) in [
+        (Mmx::Cvtpd2pi, MXCSR, [2i32, -2]),
+        (Mmx::Cvtpd2pi, MXCSR | RC_UP, [3, -2]),
+        (Mmx::Cvtpd2pi, MXCSR | RC_DOWN, [2, -3]),
+        (Mmx::Cvttpd2pi, MXCSR | RC_UP, [2, -2]),
+    ] {
+        let (exit, before, after) = run_mmx(op, src, mx);
+        assert_eq!(exit, RunExit::InstructionBudgetExhausted, "{op:?} {mx:#x}");
+        let value = u64::from(lanes[0] as u32) | u64::from(lanes[1] as u32) << 32;
+        let mut expected = entered_mmx(&before, Some((5, value)));
+        expected.sse.as_mut().unwrap().mxcsr = mx | PE;
+        expected.rip += 4;
+        assert_eq!(after, expected, "{op:?} {mx:#x}");
+    }
+    // 1e10 does not fit: the indefinite value in that lane.
+    let (_, _, after) = run_mmx(
+        Mmx::Cvtpd2pi,
+        d2([0x4202_a05f_2000_0000, 0x3ff0_0000_0000_0000]),
+        MXCSR,
+    );
+    assert_eq!(mm_value(&after, 5), 0x0000_0001_8000_0000);
+    assert_eq!(after.sse.as_ref().unwrap().mxcsr, MXCSR | IE);
+}
+
+#[test]
+fn mmx_gates_and_the_pending_x87_exception() {
+    for op in ALL_MMX {
+        let code = mmx_reg_code(op, 5);
+        for (cr0, cr4, vector) in [
+            (CR0_BASE | 1 << 2, CR4_ALL, 6u8),       // CR0.EM
+            (CR0_BASE | 1 << 3, CR4_ALL, 7),         // CR0.TS: #NM
+            (CR0_BASE, CR4_PAE | CR4_OSXMMEXCPT, 6), // CR4.OSFXSR = 0
+        ] {
+            let mut cpu = mmx_cpu(true, 0x33, 5, 0x0102_0304_0506_0708);
+            cpu.cr0 = Some(cr0);
+            cpu.cr4 = Some(cr4);
+            let before = cpu.clone();
+            let (result, after) = run_fp_init(cpu, &mut Ram::new(&code));
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                }),
+                "{op:?}"
+            );
+            assert_eq!(after, before, "{op:?}");
+        }
+        // A pending unmasked x87 exception (ES set, an unmasked flag in the status word) is #MF with CR0.NE = 1.
+        let mut cpu = mmx_cpu(true, 0x33, 5, 0x0102_0304_0506_0708);
+        let x87 = cpu.x87.as_mut().unwrap();
+        x87.control_word = 0x0340;
+        x87.status_word |= 0x81;
+        let before = cpu.clone();
+        let (result, after) = run_fp_init(cpu, &mut Ram::new(&code));
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 16,
+                error_code: None,
+                linear_address: None
+            }),
+            "{op:?}"
+        );
+        assert_eq!(after, before, "{op:?}");
+        // LOCK is #UD.
+        let mut locked = vec![0xf0];
+        locked.extend(&code);
+        let mut cpu = self::cpu();
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut Ram::new(&locked)),
+            Ok(fault_of(6, None)),
+            "lock {op:?}"
+        );
+        assert_eq!(cpu, before);
+        // A reserved MXCSR bit is Unsupported.
+        let mut cpu = mmx_cpu(false, 0x33, 5, 0x0102_0304_0506_0708);
+        cpu.sse.as_mut().unwrap().mxcsr = MXCSR | 0x1_0000;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut Ram::new(&code)),
+            Ok(StepOutcome::Unsupported {
+                opcode: op.opcode_byte()
+            }),
+            "{op:?}"
+        );
+        assert_eq!(cpu, before);
+    }
+}
+
+#[test]
+fn mmx_memory_forms_sizes_alignment_and_the_x87_state() {
+    for op in ALL_MMX {
+        let (width, aligned) = op.memory();
+        // The destination register number in the reg field: XMM 1 or MM 4 (avoiding the address registers).
+        let reg = if op.from_mm() { 1 } else { 4 };
+        for (name, address, rex_b, registers, effective) in address_forms(0) {
+            let code = mmx_mem_code(op, reg, &address, rex_b);
+            let mut cpu = mmx_cpu(false, 0x33, 4, 0x1122_3344_5566_7788);
+            set_xmm(&mut cpu, 1, HI);
+            for (register, value) in registers {
+                cpu.gpr[register as usize] = value;
+            }
+            let before = cpu.clone();
+            let mut ram = Ram::new(&code);
+            // 3.0 and 1.0 as two binary32, or 3 and 1 as two doublewords; for the double forms as binary64.
+            let data: u128 = match op {
+                Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => pair(3, 1),
+                Mmx::Cvtps2pi | Mmx::Cvttps2pi => pair(0x4040_0000, 0x3f80_0000),
+                Mmx::Cvtpd2pi | Mmx::Cvttpd2pi => {
+                    d2([0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000])
+                }
+            };
+            ram.put(effective, &data.to_le_bytes()[..width]);
+            ram.put(effective + width as u64, &[0xa5; 16]);
+            let mut cpu_after = cpu.clone();
+            assert_eq!(
+                step(&mut cpu_after, &mut ram),
+                Ok(StepOutcome::Advanced),
+                "{op:?} {name}"
+            );
+            assert_eq!(ram.reads, vec![(effective, width)], "{op:?} {name}");
+            assert!(ram.writes.is_empty());
+            let mut expected = match op {
+                // No MMX register is touched: the x87 state is left alone (physical oracle).
+                Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => before.clone(),
+                _ => entered_mmx(&before, Some((4, 0x0000_0001_0000_0003))),
+            };
+            match op {
+                Mmx::Cvtpi2ps => set_xmm(
+                    &mut expected,
+                    1,
+                    HI & !0xffff_ffff_ffff_ffff
+                        | u128::from(0x3f80_0000u32) << 32
+                        | u128::from(0x4040_0000u32),
+                ),
+                Mmx::Cvtpi2pd => set_xmm(
+                    &mut expected,
+                    1,
+                    d2([0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000]),
+                ),
+                _ => {}
+            }
+            expected.rip += code.len() as u64;
+            assert_eq!(cpu_after, expected, "{op:?} {name}");
+        }
+        // Alignment: only the 128-bit forms need it.
+        for delta in [1u64, 4, 8, 12] {
+            let (name, address, rex_b, registers, effective) = address_forms(delta).remove(1);
+            let code = mmx_mem_code(op, reg, &address, rex_b);
+            let mut cpu = mmx_cpu(false, 0x33, 4, 0x1122_3344_5566_7788);
+            for (register, value) in registers {
+                cpu.gpr[register as usize] = value;
+            }
+            let before = cpu.clone();
+            let mut ram = Ram::new(&code);
+            ram.put(effective, &[0u8; 16]);
+            let outcome = step(&mut cpu, &mut ram);
+            if aligned {
+                assert_eq!(outcome, Ok(fault_of(13, Some(0))), "{op:?} {name} +{delta}");
+                assert_eq!(cpu, before);
+                assert!(ram.reads.is_empty());
+            } else {
+                assert_eq!(outcome, Ok(StepOutcome::Advanced), "{op:?} {name} +{delta}");
+                assert_eq!(ram.reads, vec![(effective, width)]);
+            }
+        }
+        // A backend fault leaves everything unchanged, the x87 state included; a non-canonical address is #GP(0).
+        let code = mmx_mem_code(op, reg, &[0x03], false);
+        let mut cpu = mmx_cpu(false, 0x33, 4, 0x1122_3344_5566_7788);
+        // The operand crosses into the faulting page (a 16-byte aligned operand lies entirely in it).
+        cpu.gpr[Register::Rbx as usize] = if aligned {
+            DATA + 0x1000
+        } else {
+            DATA + 0x1000 - width as u64 + 4
+        };
+        let before = cpu.clone();
+        let mut ram = Ram::new(&code);
+        ram.fault_page = Some(DATA + 0x1000);
+        match step(&mut cpu, &mut ram) {
+            Ok(StepOutcome::Fault(fault)) => assert_eq!(fault.vector, 14, "{op:?}"),
+            Err(MemoryError::Architectural(fault)) => assert_eq!(fault.vector, 14, "{op:?}"),
+            other => panic!("{op:?}: {other:?}"),
+        }
+        assert_eq!(cpu, before, "{op:?}");
+        let mut cpu = mmx_cpu(false, 0x33, 4, 0x1122_3344_5566_7788);
+        cpu.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut Ram::new(&code)),
+            Ok(fault_of(13, Some(0))),
+            "{op:?}"
+        );
+        assert_eq!(cpu, before);
+    }
+}
+
+#[test]
+fn mmx_decoder_numbers_the_registers_and_refuses_the_prefix_mixes() {
+    use SseFpMiscKind::{Cvtpd2pi, Cvtpi2pd, Cvtpi2ps, Cvtps2pi, Cvttpd2pi, Cvttps2pi};
+    // (bytes, kind, shape, destination, source register): REX.R extends the XMM register, REX.B the XMM source only.
+    let registers: [(&[u8], SseFpMiscKind, SseFpShape, u8, u8); 10] = [
+        (
+            &[0x44, 0x0f, 0x2a, 0xec],
+            Cvtpi2ps,
+            SseFpShape::Packed32,
+            13,
+            4,
+        ), // XMM13, MM4
+        (
+            &[0x41, 0x0f, 0x2a, 0xc9],
+            Cvtpi2ps,
+            SseFpShape::Packed32,
+            1,
+            1,
+        ), // REX.B does not extend the MM source
+        (
+            &[0x66, 0x44, 0x0f, 0x2a, 0xfb],
+            Cvtpi2pd,
+            SseFpShape::Packed64,
+            15,
+            3,
+        ),
+        (
+            &[0x40, 0x0f, 0x2d, 0xd1],
+            Cvtps2pi,
+            SseFpShape::Packed32,
+            2,
+            1,
+        ), // MM2, XMM1
+        (
+            &[0x41, 0x0f, 0x2d, 0xd1],
+            Cvtps2pi,
+            SseFpShape::Packed32,
+            2,
+            9,
+        ), // REX.B extends the XMM source
+        (
+            &[0x44, 0x0f, 0x2c, 0xd1],
+            Cvttps2pi,
+            SseFpShape::Packed32,
+            2,
+            1,
+        ), // REX.R does not extend the MM destination
+        (
+            &[0x66, 0x40, 0x0f, 0x2d, 0xe2],
+            Cvtpd2pi,
+            SseFpShape::Packed64,
+            4,
+            2,
+        ),
+        (
+            &[0x66, 0x45, 0x0f, 0x2c, 0xf7],
+            Cvttpd2pi,
+            SseFpShape::Packed64,
+            6,
+            15,
+        ),
+        (
+            &[0x4a, 0x0f, 0x2c, 0xd1],
+            Cvttps2pi,
+            SseFpShape::Packed32,
+            2,
+            1,
+        ), // REX.W/X are ignored
+        (
+            &[0x66, 0x4a, 0x0f, 0x2a, 0xc2],
+            Cvtpi2pd,
+            SseFpShape::Packed64,
+            0,
+            2,
+        ),
+    ];
+    for (bytes, kind, shape, destination, source) in registers {
+        let instruction = decode(bytes).unwrap();
+        assert_eq!(usize::from(instruction.length), bytes.len(), "{bytes:02x?}");
+        assert_eq!(
+            instruction.operation,
+            Operation::SseFpMisc {
+                kind,
+                shape,
+                destination,
+                source: Sse3Source::Register(source),
+                immediate: 0
+            },
+            "{bytes:02x?}"
+        );
+    }
+    // Memory forms: the source size follows the instruction.
+    for (bytes, kind, size) in [
+        (&[0x0f, 0x2a, 0x03][..], Cvtpi2ps, 8u8),
+        (&[0x66, 0x0f, 0x2a, 0x03], Cvtpi2pd, 8),
+        (&[0x0f, 0x2d, 0x03], Cvtps2pi, 8),
+        (&[0x0f, 0x2c, 0x03], Cvttps2pi, 8),
+        (&[0x66, 0x0f, 0x2d, 0x03], Cvtpd2pi, 16),
+        (&[0x66, 0x0f, 0x2c, 0x03], Cvttpd2pi, 16),
+    ] {
+        let instruction = decode(bytes).unwrap();
+        let Operation::SseFpMisc {
+            kind: k,
+            source: Sse3Source::Memory(_),
+            ..
+        } = instruction.operation
+        else {
+            panic!("{bytes:02x?}: {:?}", instruction.operation);
+        };
+        assert_eq!(k, kind, "{bytes:02x?}");
+        assert_eq!(
+            kind.source_access(if kind == Cvtpd2pi || kind == Cvttpd2pi {
+                SseFpShape::Packed64
+            } else {
+                SseFpShape::Packed32
+            })
+            .0,
+            u64::from(size)
+        );
+    }
+    // F2/F3 select the scalar forms, 66 together with them and the other mixes stay refused.
+    for bytes in [
+        &[0x66, 0xf3, 0x0f, 0x2a, 0xc1][..],
+        &[0xf2, 0x66, 0x0f, 0x2d, 0xc1],
+        &[0x66, 0x66, 0x0f, 0x2a, 0xc1],
+    ] {
+        assert!(
+            matches!(decode(bytes), Err(DecodeError::Unsupported { .. })),
+            "{bytes:02x?}"
+        );
+    }
+}
+
+/// The narrow profile decoder handles the exact XMM0/MM1 and MM0/XMM1 register forms and the [rax] forms, which the
+/// executor rewrites into the general operation; with a REX prefix the general decoder handles the same instruction.
+#[test]
+fn mmx_narrow_forms_and_general_forms_agree() {
+    let mut seed = 0x1357_9bdf_2468_ace0u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let f32_pool = [
+        0u32,
+        0x8000_0000,
+        0x3f80_0000,
+        0xbf80_0000,
+        0x4020_0000,
+        0x7f80_0000,
+        0x7fc0_0001,
+        1,
+        0x4f00_0000,
+        0xcf00_0000,
+        0x3fc0_0000,
+    ];
+    for op in ALL_MMX {
+        for round in 0..300 {
+            let lane = |n: &mut dyn FnMut() -> u64| -> u64 {
+                match op {
+                    Mmx::Cvtpi2ps | Mmx::Cvtpi2pd => n() & 0xffff_ffff,
+                    Mmx::Cvtps2pi | Mmx::Cvttps2pi => {
+                        u64::from(f32_pool[(n() % f32_pool.len() as u64) as usize])
+                    }
+                    Mmx::Cvtpd2pi | Mmx::Cvttpd2pi => [
+                        0u64,
+                        0x3ff0_0000_0000_0000,
+                        0x4004_0000_0000_0000,
+                        0x7ff8_0000_0000_0000,
+                        0x41e0_0000_0000_0000,
+                        0xc1e0_0000_0010_0000,
+                    ][(n() % 6) as usize],
+                }
+            };
+            let data: u128 = if matches!(op, Mmx::Cvtpd2pi | Mmx::Cvttpd2pi) {
+                u128::from(lane(&mut next)) | u128::from(lane(&mut next)) << 64
+            } else {
+                u128::from(lane(&mut next))
+                    | u128::from(lane(&mut next)) << 32
+                    | u128::from(next()) << 64
+            };
+            let mx = [
+                MXCSR,
+                MXCSR | DAZ,
+                MXCSR & !IM,
+                0,
+                MXCSR | 3 << 13,
+                MXCSR & !PM,
+            ][round % 6];
+            let (xmm_n, mm_n) = if op.from_mm() {
+                (0usize, 1usize)
+            } else {
+                (1, 0)
+            };
+            for memory in [false, true] {
+                let mut codes = vec![];
+                for rex in [false, true] {
+                    let mut code = vec![];
+                    if op.packed_double() {
+                        code.push(0x66);
+                    }
+                    if rex {
+                        code.push(0x40);
+                    }
+                    code.extend([0x0f, op.opcode()]);
+                    // [rax]; otherwise xmm0, mm1 (CVTPI2PS/PD) or mm0, xmm1.
+                    code.push(if memory { 0x00 } else { 0xc1 });
+                    codes.push(code);
+                }
+                let mut states = vec![];
+                for code in &codes {
+                    let mut cpu = mmx_cpu(true, 0x0f, 1, 0x5555_6666_7777_8888);
+                    cpu.x87.as_mut().unwrap().registers[0] = reg80(0x0102_0304_0506_0708);
+                    cpu.sse.as_mut().unwrap().mxcsr = mx;
+                    let mut ram = Ram::new(code);
+                    if op.from_mm() {
+                        cpu.x87.as_mut().unwrap().registers[mm_n] = reg80(data as u64);
+                        set_xmm(&mut cpu, xmm_n, HI);
+                    } else {
+                        set_xmm(&mut cpu, xmm_n, data);
+                    }
+                    cpu.gpr[Register::Rax as usize] = DATA + 0x40;
+                    ram.put(DATA + 0x40, &data.to_le_bytes());
+                    let (result, mut after) = run_fp_init(cpu, &mut ram);
+                    // The REX form is one byte longer.
+                    if result.exit == RunExit::InstructionBudgetExhausted {
+                        after.rip -= code.len() as u64;
+                    }
+                    states.push((result.exit, after, ram.reads));
+                }
+                assert_eq!(
+                    states[0].0, states[1].0,
+                    "{op:?} memory={memory} {data:#x} {mx:#x}"
+                );
+                assert_eq!(
+                    states[0].1, states[1].1,
+                    "{op:?} memory={memory} {data:#x} {mx:#x}"
+                );
+                assert_eq!(states[0].2, states[1].2, "{op:?} memory={memory}");
+            }
+        }
     }
 }
 
@@ -7934,5 +8719,1608 @@ const GOLDEN: &[Row] = &[
         0xe7685358069991af0ace3049852bb31,
         0x457ebe38f3e7d36d4cb93d8e06e9c0e9,
         Expect::Fault(0x1e0f),
+    ),
+];
+
+const GOLDEN_MMX: &[MmxRow] = &[
+    (
+        Mmx::Cvtpd2pi,
+        0x1f80,
+        6,
+        0x7ff00000000000007fefffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x1f81),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xf80,
+        0,
+        0xbfdfffffffffffff0000000000000001,
+        0x0,
+        Expect::Fault(0xfa0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x3f00,
+        7,
+        0x41dfffffffc00000,
+        0x0,
+        Expect::Ok(0x7fffffff, 0x3f00),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x2f80,
+        0,
+        0xfff0000000000000bcbd577588afaf01,
+        0x0,
+        Expect::Fault(0x2fa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x3f80,
+        0,
+        0x89f0a077d76240844000000000000000,
+        0x0,
+        Expect::Ok(0xffffffff00000002, 0x3fa0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x3f80,
+        4,
+        0x40140000000000004008000000000000,
+        0x0,
+        Expect::Ok(0x500000003, 0x3f80),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x3f80,
+        1,
+        0xc3dfffffffffffff3ff8000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000001, 0x3fa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x5e80,
+        6,
+        0xc3245ca7a40d51f9c1dfffffffe00000,
+        0x0,
+        Expect::Ok(0x8000000080000001, 0x5ea1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x5780,
+        2,
+        0xd0f28d5070fd20010000000000001,
+        0x0,
+        Expect::Ok(0x100000001, 0x57a0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x7f00,
+        3,
+        0x3ff00000000000014330000000000001,
+        0x0,
+        Expect::Fault(0x7f01),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x7d80,
+        5,
+        0x7fdfffffffffffff4000000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000002, 0x7d81),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x7d80,
+        5,
+        0x3fd00000000000007ff7ffffffffffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x7da1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x7b80,
+        0,
+        0xbca0d49b4c16e87c802b2991812520cb,
+        0x0,
+        Expect::Ok(0x0, 0x7ba0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x5f80,
+        2,
+        0xa82aebc86ef16c01432a070f346c0c66,
+        0x0,
+        Expect::Ok(0x80000000, 0x5fa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x6f80,
+        5,
+        0xfffffffffffff7ff0000000000001,
+        0x0,
+        Expect::Fault(0x6fa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x9f00,
+        1,
+        0xc329485ca917337200209769a813a6f1,
+        0x0,
+        Expect::Fault(0x9f01),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x7f80,
+        3,
+        0x57dda23d4c82fa6ac3dfffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x7f81),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x8f80,
+        1,
+        0xc1e00000001fffffbff5c91aef9a1f7f,
+        0x0,
+        Expect::Fault(0x8fa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xfc0,
+        3,
+        0xc1e00000000000004008000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000003, 0xfc0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xfc0,
+        6,
+        0x3ff80000000000008000c02cde67c627,
+        0x0,
+        Expect::Fault(0xfe0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xfe80,
+        0,
+        0xc1e00000000000004014000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000005, 0xfe80),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x1fc0,
+        0,
+        0xbe6e39faec2f15bd7ff0000000000001,
+        0x0,
+        Expect::Ok(0x80000000, 0x1fe1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x1fc0,
+        6,
+        0x20c43df25db60c00e8caf789e0833,
+        0x0,
+        Expect::Ok(0xfffffffc, 0x1fe0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xfb80,
+        2,
+        0x3fd00000000000000000000000000001,
+        0x0,
+        Expect::Ok(0x0, 0xfba0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x77c0,
+        6,
+        0x3fe00000000000007ffd28fc600b1847,
+        0x0,
+        Expect::Ok(0x80000000, 0x77e1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x6fc0,
+        1,
+        0xc00c57b6d3855f9f3ff0000000000000,
+        0x0,
+        Expect::Fault(0x6fe0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x2000,
+        6,
+        0x40000000000000007ff8000000000000,
+        0x0,
+        Expect::Fault(0x2001),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x4000,
+        2,
+        0xbff00000000000004000000000000000,
+        0x0,
+        Expect::Ok(0xffffffff00000002, 0x4000),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x4000,
+        5,
+        0x3fefffffffffffffc004000000000000,
+        0x0,
+        Expect::Fault(0x4020),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x9f80,
+        2,
+        0x6b19890cc6c98fc2c1e0000000200000,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x9f81),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x9f80,
+        6,
+        0xbfdfffffffffffff3ca6f7fd3b46e4da,
+        0x0,
+        Expect::Ok(0x0, 0x9fa0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x80c0,
+        3,
+        0x400000000000000000086a791e03f7dc,
+        0x0,
+        Expect::Ok(0x200000000, 0x80c0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x1f95,
+        4,
+        0x1000000000000141e0000000000001,
+        0x0,
+        Expect::Ok(0x80000000, 0x1fb5),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x5faa,
+        1,
+        0xbfdfffffffffffff8000000000000000,
+        0x0,
+        Expect::Ok(0x0, 0x5faa),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x5faa,
+        7,
+        0x7ff00000000000010000000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x5fab),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x1d80,
+        2,
+        0xffefffffffffffff0008000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x1da1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x1b80,
+        3,
+        0x8000000000000000fff0000000000000,
+        0x0,
+        Expect::Ok(0x80000000, 0x1b81),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xffc0,
+        6,
+        0x8000000000000001bff0000000000000,
+        0x0,
+        Expect::Ok(0xffffffff, 0xffc0),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xffc0,
+        2,
+        0xffefffffffffffff8000000000000001,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0xffc1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xffc0,
+        5,
+        0x7ff8000000000000bca7996a7b29df34,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0xffe1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0xf80,
+        5,
+        0xc1e00000001fffff400735ce1d8f7258,
+        0x0,
+        Expect::Fault(0xfa1),
+    ),
+    (
+        Mmx::Cvtpd2pi,
+        0x0,
+        5,
+        0xfff68d1576614b4043dfffffffffffff,
+        0x0,
+        Expect::Fault(0x1),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x1f80,
+        1,
+        0x12345678,
+        0xcc9bdae22f4b707891782565ee598dbe,
+        Expect::Ok(0x41b2345678000000, 0x1f80),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x5f00,
+        7,
+        0x1dcfa8fe01000001,
+        0x9399668059e134111a7e43f1df6301ee,
+        Expect::Ok(0x41bdcfa8fe0000004170000010000000, 0x5f00),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x9d80,
+        2,
+        0x300000001,
+        0xaa78d39ef84e4633d6d8770875587daf,
+        Expect::Ok(0x40080000000000003ff0000000000000, 0x9d80),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x1fc0,
+        4,
+        0xfffffffffe000001,
+        0xc36c55d0381d72380ade8f871665ade2,
+        Expect::Ok(0xbff0000000000000c17ffffff0000000, 0x1fc0),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0xfb80,
+        5,
+        0x800000019a3069ad,
+        0xac4131fbf7f62b45af0c070a6695073d,
+        Expect::Ok(0xc1dfffffffc00000c1d973e594c00000, 0xfb80),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x40,
+        4,
+        0x168197b4e,
+        0x63488bfcdc9073eb9185c516ddc800b1,
+        Expect::Ok(0x3ff000000000000041da065ed3800000, 0x40),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x80c0,
+        1,
+        0xfffffffe80000000,
+        0x3efac41e9138adb754bd3e23ef995df3,
+        Expect::Ok(0xc000000000000000c1e0000000000000, 0x80c0),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x1fbf,
+        0,
+        0xffef82e95d85ecba,
+        0xcedab5d74d3c57df7bb1d52348773627,
+        Expect::Ok(0xc1307d170000000041d7617b2e800000, 0x1fbf),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0x5faa,
+        6,
+        0xfffffe00,
+        0xed8fcfc7a74bb3f7064a1c9eaa8e893,
+        Expect::Ok(0xc080000000000000, 0x5faa),
+    ),
+    (
+        Mmx::Cvtpi2pd,
+        0xfbf,
+        2,
+        0x48ddc5c1fffffffe,
+        0x77fb070eeb725a1d4132ad8de65a4118,
+        Expect::Ok(0x41d2377170400000c000000000000000, 0xfbf),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1f80,
+        3,
+        0xfffffffffffffc00,
+        0xe88083ad7e248552dba541d171700dd3,
+        Expect::Ok(0xe88083ad7e248552bf800000c4800000, 0x1f80),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1f80,
+        2,
+        0xfffffe007469ec72,
+        0xc5d816ff5069a341269f17e6a14ef1fa,
+        Expect::Ok(0xc5d816ff5069a341c40000004ee8d3d9, 0x1fa0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1780,
+        5,
+        0x7799f38ffffffffe,
+        0xe9363d752335d74337fe2510dcb36823,
+        Expect::Ok(0xe9363d752335d7434eef33e7c0000000, 0x17a0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x2f80,
+        4,
+        0xae57ddf4ffffffff,
+        0x6213a03c1193bdf639f36310401b85ac,
+        Expect::Fault(0x2fa0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x5780,
+        0,
+        0x1fffffc01,
+        0xf2a619162eb5e0b1eaeb4d58ca0f7136,
+        Expect::Ok(0xf2a619162eb5e0b13f800000c47fc000, 0x5780),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x6f80,
+        4,
+        0xedcba98800000000,
+        0xfcbc67b505d8de820914fd84e8e1bb1d,
+        Expect::Fault(0x6fa0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x9780,
+        0,
+        0xfffffffffffffffe,
+        0xa8db8be823a307e2e4811e5e35f37785,
+        Expect::Ok(0xa8db8be823a307e2bf800000c0000000, 0x9780),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x7f40,
+        2,
+        0x100000000,
+        0xd878ac48135d59b62740fc9f5286e0c9,
+        Expect::Ok(0xd878ac48135d59b63f80000000000000, 0x7f40),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x7ec0,
+        4,
+        0x1000001fffffffe,
+        0x2002b9462fadebec94c0f621753fb351,
+        Expect::Ok(0x2002b9462fadebec4b800000c0000000, 0x7ee0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1fc0,
+        0,
+        0x8000000000000001,
+        0x7b55b7b44bb20a0bc1904d3ea1f321ff,
+        Expect::Ok(0x7b55b7b44bb20a0bcf0000003f800000, 0x1fc0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x6fc0,
+        3,
+        0x115b6cb17,
+        0xdaa57fc97f14ab8db63ec62d333467a5,
+        Expect::Fault(0x6fe0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x40,
+        5,
+        0xffffffff00000000,
+        0x714e90cabaff2609efd937dee299c8d2,
+        Expect::Ok(0x714e90cabaff2609bf80000000000000, 0x40),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x80c0,
+        1,
+        0x64922d8ea02221f6,
+        0x60f3ea5410fb2eff296ff77c54d3c4ea,
+        Expect::Fault(0x80e0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x80c0,
+        5,
+        0x1ffffffff,
+        0x854a871ed2cd6af5b391311bfc9e5da1,
+        Expect::Ok(0x854a871ed2cd6af53f800000bf800000, 0x80c0),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1fbf,
+        2,
+        0x93aae5a7bd99588,
+        0x72d0d573113aaf37509a0a4bd514ddfd,
+        Expect::Ok(0x72d0d573113aaf374d13aae64ef7b32b, 0x1fbf),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x1f95,
+        5,
+        0xfffffdff88441960,
+        0xa45a2c4e5c11907712b3fd9615a5f0ad,
+        Expect::Ok(0xa45a2c4e5c119077c4004000ceef77cd, 0x1fb5),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0xfbf,
+        3,
+        0xffffffff713476f2,
+        0x60d88b3a39bab4c76e460fdf93975e90,
+        Expect::Fault(0xfbf),
+    ),
+    (
+        Mmx::Cvtpi2ps,
+        0x380,
+        0,
+        0xfffffdff01ffffff,
+        0x7af5159a2d8df1ccdb756337d9cc7f6d,
+        Expect::Fault(0x3a0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1f80,
+        3,
+        0x501409c0f3716efdcf0000013fc00000,
+        0x0,
+        Expect::Ok(0x8000000000000002, 0x1fa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1b80,
+        6,
+        0x58c0c8f4c8f88bd8ffbfffff4b000000,
+        0x0,
+        Expect::Ok(0x8000000000800000, 0x1b81),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1780,
+        5,
+        0x1b5832b0d3405e77007fffff00800001,
+        0x0,
+        Expect::Ok(0x0, 0x17a0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xf80,
+        5,
+        0xb175928dcc09c41f7effffff00000003,
+        0x0,
+        Expect::Fault(0xfa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x3d80,
+        6,
+        0x131e55b1e56713e4b7fffff4b800001,
+        0x0,
+        Expect::Ok(0xffffff01000002, 0x3d80),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x3b80,
+        0,
+        0x801cacbfca8f53fb3e800000c009c384,
+        0x0,
+        Expect::Ok(0xfffffffd, 0x3ba0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x3f80,
+        7,
+        0x37c45064375a25b2400000007e800000,
+        0x0,
+        Expect::Ok(0x280000000, 0x3f81),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x3f80,
+        3,
+        0xac2391ef8e695a42ff90cc8e80000001,
+        0x0,
+        Expect::Ok(0x80000000ffffffff, 0x3fa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x5e80,
+        2,
+        0x82f88c1a8dddfcea40400000bf800000,
+        0x0,
+        Expect::Ok(0x3ffffffff, 0x5e80),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x5d80,
+        7,
+        0x2000159ae770c32c00ad48cfffc00000,
+        0x0,
+        Expect::Ok(0x180000000, 0x5da1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x7e80,
+        6,
+        0xbaff9a3af92c32b04f0000004b7fffff,
+        0x0,
+        Expect::Ok(0x8000000000ffffff, 0x7e81),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x5f80,
+        6,
+        0x18f506b80d0e0df70000000374fda4aa,
+        0x0,
+        Expect::Ok(0x180000000, 0x5fa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x6f80,
+        5,
+        0x26234fec648bf82c7fa00000bf7fffff,
+        0x0,
+        Expect::Fault(0x6fa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x9f00,
+        5,
+        0xccf66d3d5b0ebd025f0000017fc00000,
+        0x0,
+        Expect::Fault(0x9f01),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1f40,
+        2,
+        0x2445470f9800e95f7effffff80d4cfe5,
+        0x0,
+        Expect::Fault(0x1f41),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x9d80,
+        0,
+        0xc29ed8a9e7f2231d7fa0000074ca9c46,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x9d81),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x7f80,
+        6,
+        0x2aae6a788c0170bb4b0000007fffffff,
+        0x0,
+        Expect::Ok(0x80000080000000, 0x7f81),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x7f80,
+        4,
+        0x78b772e72443d149bf00000000400000,
+        0x0,
+        Expect::Ok(0x0, 0x7fa0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x8f80,
+        1,
+        0xf8def5b5ec7329b93ff264b6beffffff,
+        0x0,
+        Expect::Fault(0x8fa0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x8f80,
+        4,
+        0x9921996b5d668b0800800000cfd10d99,
+        0x0,
+        Expect::Fault(0x8fa1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xff00,
+        0,
+        0x56303ce6207088fa5effffff40200000,
+        0x0,
+        Expect::Fault(0xff01),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x7f40,
+        3,
+        0x81468eb5bb226174ff800001cf000001,
+        0x0,
+        Expect::Fault(0x7f41),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x7ec0,
+        0,
+        0xaed374aeb45c22eb8000000180000000,
+        0x0,
+        Expect::Ok(0x0, 0x7ec0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xfd80,
+        7,
+        0x78d9dcdba06ac3bd7f7fffff807fffff,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0xfda1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1fc0,
+        0,
+        0xe611e7722c55daeaff80000040200000,
+        0x0,
+        Expect::Ok(0x8000000000000002, 0x1fe1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1fc0,
+        5,
+        0x5f8f3428b49b3edb807fffff4efffffe,
+        0x0,
+        Expect::Ok(0x7fffff00, 0x1fc0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xfb80,
+        1,
+        0xecc301e01858adf88000000000d89ffb,
+        0x0,
+        Expect::Ok(0x0, 0xfba0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xf780,
+        5,
+        0x3dda88ba078d9eefcefffffe3f800000,
+        0x0,
+        Expect::Ok(0x8000010000000001, 0xf780),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x4000,
+        2,
+        0x929749ba3ccfa4afbfcc8b3fc0000000,
+        0x0,
+        Expect::Fault(0x4020),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x6000,
+        3,
+        0x6447de038a4399b1c03d429d3f800001,
+        0x0,
+        Expect::Fault(0x6020),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x9f80,
+        0,
+        0xbba2fd4856306a5c0000000cefffffe,
+        0x0,
+        Expect::Ok(0xfffffffe80000100, 0x9f80),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x80c0,
+        4,
+        0x35ab2a7a0c0e2adf3effffff7fffffff,
+        0x0,
+        Expect::Fault(0x80e1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x80c0,
+        1,
+        0x512ebe333408e95f0059740f00800000,
+        0x0,
+        Expect::Fault(0x80e0),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1f95,
+        6,
+        0x5883688b2eb37223ff800001816bdbba,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x1fb5),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x5faa,
+        3,
+        0xb8702d1f74a7381e3fc00000ff19a783,
+        0x0,
+        Expect::Ok(0x280000000, 0x5fab),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x5faa,
+        2,
+        0xfcd6f2be001c82fcc0200000c034adcc,
+        0x0,
+        Expect::Ok(0xfffffffefffffffe, 0x5faa),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xfbf,
+        0,
+        0x3d31d44ee62e46e0807fffffc0200000,
+        0x0,
+        Expect::Fault(0xfbf),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0xffc0,
+        2,
+        0xccb57d1bcfbbf69ec02000007f800001,
+        0x0,
+        Expect::Ok(0xfffffffe80000000, 0xffe1),
+    ),
+    (
+        Mmx::Cvtps2pi,
+        0x1a00,
+        7,
+        0x8551b6354fbf4b0c000000040000000,
+        0x0,
+        Expect::Ok(0xfffffffe00000002, 0x1a00),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1f80,
+        0,
+        0x41e00000000000013ff0000000000000,
+        0x0,
+        Expect::Ok(0x8000000000000001, 0x1f81),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1f80,
+        7,
+        0xbca5f0ee84a8ce137fd0000000000000,
+        0x0,
+        Expect::Ok(0x80000000, 0x1fa1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1b80,
+        3,
+        0x3ca00000000000000008f83c82f93859,
+        0x0,
+        Expect::Ok(0x0, 0x1ba0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1780,
+        1,
+        0x3ff0000000000000ffd46b8a818ce0d6,
+        0x0,
+        Expect::Ok(0x180000000, 0x1781),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xf80,
+        0,
+        0xfffb4dd0a0b27d4dbffb4e36f8d008c8,
+        0x0,
+        Expect::Fault(0xfa1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x3f00,
+        2,
+        0x41dfffffffc000000000000000000000,
+        0x0,
+        Expect::Ok(0x7fffffff00000000, 0x3f00),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x3d80,
+        5,
+        0x3ff80000000000003f8b2891e89deb76,
+        0x0,
+        Expect::Ok(0x100000000, 0x3da0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x2f80,
+        4,
+        0x40080000000000008010000000000000,
+        0x0,
+        Expect::Fault(0x2fa0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x2f80,
+        0,
+        0x43e00000000000003fe0000000000000,
+        0x0,
+        Expect::Fault(0x2fa1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x3f80,
+        7,
+        0x7fff4ec98d7c2a3ac3dfffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x3f81),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x3f80,
+        6,
+        0x41e0000000000001bca3a2b0b6e23c0d,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x3fa1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x3f80,
+        5,
+        0x34000000000000000,
+        0x0,
+        Expect::Ok(0x2, 0x3fa0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5d80,
+        0,
+        0x1433fffffffffffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x5da1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5b80,
+        5,
+        0x4014000000000000c000000000000000,
+        0x0,
+        Expect::Ok(0x5fffffffe, 0x5b80),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5780,
+        6,
+        0x7fdfffffffffffff7fefffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x5781),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x4f80,
+        4,
+        0x7ff40000000000003fd0000000000000,
+        0x0,
+        Expect::Fault(0x4fa1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x7f00,
+        3,
+        0x41dfffffffc000004008000000000000,
+        0x0,
+        Expect::Ok(0x7fffffff00000003, 0x7f00),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5f80,
+        2,
+        0xc0000000000000004008000000000000,
+        0x0,
+        Expect::Ok(0xfffffffe00000003, 0x5f80),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5f80,
+        0,
+        0xbcb507c6afe6d666802c8888689f1114,
+        0x0,
+        Expect::Ok(0x0, 0x5fa0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x5f80,
+        0,
+        0x43300000000000007fd0000000000000,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x5f81),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x9e80,
+        6,
+        0x40140000000000004000000000000000,
+        0x0,
+        Expect::Ok(0x500000002, 0x9e80),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x9b80,
+        5,
+        0x7fdfffffffffffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x9b81),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x9780,
+        3,
+        0x1000000000000100082e1695b2a973,
+        0x0,
+        Expect::Ok(0x0, 0x97a0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfc0,
+        5,
+        0x216b5fb72c216eb43e0000000000001,
+        0x0,
+        Expect::Fault(0xfe1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfc0,
+        5,
+        0xc3e000000000000141e0000000000001,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0xfc1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfe80,
+        1,
+        0xc0000000000000003ff0000000000000,
+        0x0,
+        Expect::Ok(0xfffffffe00000001, 0xfe80),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x7ec0,
+        4,
+        0x7fdcf8dca7fc85923fdfffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x7ee1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfd80,
+        0,
+        0xbcb06d3f7793a72e43e0000000000000,
+        0x0,
+        Expect::Ok(0x80000000, 0xfda1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfd80,
+        7,
+        0xbffe5fdd5ec8a1e140008d3c8191b538,
+        0x0,
+        Expect::Ok(0xffffffff00000002, 0xfda0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1fc0,
+        3,
+        0x282bcd9cd5a5ae3ff8000000000000,
+        0x0,
+        Expect::Ok(0x1, 0x1fe0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1fc0,
+        3,
+        0xb5bd22b8306b4800fffffffffffff,
+        0x0,
+        Expect::Ok(0x0, 0x1fc0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x6fc0,
+        7,
+        0x41dfffffffc000008004b48d14b70aff,
+        0x0,
+        Expect::Ok(0x7fffffff00000000, 0x6fc0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x6fc0,
+        2,
+        0xbfdfffffffffffffc1e0000000000000,
+        0x0,
+        Expect::Fault(0x6fe0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x4000,
+        6,
+        0x800e0e47ab7b9c783fff44f35368bd9d,
+        0x0,
+        Expect::Fault(0x4020),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x9f80,
+        2,
+        0xfff8123456789abcfff0000000000001,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x9f81),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x40,
+        7,
+        0x7fda4ba8c7f250f900222a84af55c036,
+        0x0,
+        Expect::Fault(0x41),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x80c0,
+        1,
+        0x3ff8000000000000668bedfa87a031dc,
+        0x0,
+        Expect::Fault(0x80e1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x80c0,
+        2,
+        0x433fffffffffffffffefffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x80c1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x80c0,
+        6,
+        0xf45661b79924b4008000000000000,
+        0x0,
+        Expect::Ok(0x3, 0x80c0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xfbf,
+        0,
+        0x7fe10000000000007fd0000000000000,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0xfbf),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xffc0,
+        5,
+        0x7fffffffffffffff7fdfffffffffffff,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0xffc1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xffc0,
+        0,
+        0xbfe0000000000000c3dfffffffffffff,
+        0x0,
+        Expect::Ok(0x80000000, 0xffe1),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0xffc0,
+        0,
+        0x41dfffffffc000003cb67ce1c7a18581,
+        0x0,
+        Expect::Ok(0x7fffffff00000000, 0xffe0),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x1f00,
+        7,
+        0x7ffbd0c8cec1047841e0000000000000,
+        0x0,
+        Expect::Fault(0x1f01),
+    ),
+    (
+        Mmx::Cvttpd2pi,
+        0x380,
+        4,
+        0xbcb8859d1b39aba03ca0000000000000,
+        0x0,
+        Expect::Fault(0x3a0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x2f80,
+        4,
+        0xa13498af169b71ab008000017f000000,
+        0x0,
+        Expect::Fault(0x2fa1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x2f80,
+        0,
+        0x1b2cedca2fd0f93d7fa00000bf800000,
+        0x0,
+        Expect::Ok(0x80000000ffffffff, 0x2f81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x2f80,
+        0,
+        0xf9097800ad38f70dcf00000000000003,
+        0x0,
+        Expect::Fault(0x2fa0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x3f80,
+        0,
+        0xdb14dc0e2e59c3be0b14d04500800000,
+        0x0,
+        Expect::Ok(0x0, 0x3fa0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x3f80,
+        7,
+        0xa1a9a8311c3d3e174b7fffffff3c40a4,
+        0x0,
+        Expect::Ok(0xffffff80000000, 0x3f81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5b80,
+        2,
+        0x64c1867062e7a43fb3dfaa00462ddf,
+        0x0,
+        Expect::Ok(0x100000000, 0x5ba0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5b80,
+        2,
+        0xb3dff949dd756b0f4b8000014efffffe,
+        0x0,
+        Expect::Ok(0x10000027fffff00, 0x5b80),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7e80,
+        3,
+        0xc14af41bd1e70a57f000000ff800000,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x7e81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7d80,
+        5,
+        0xe4df88944dfdd9c0007fffffbfc00000,
+        0x0,
+        Expect::Ok(0xffffffff, 0x7da0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5f80,
+        1,
+        0xdf734b71377a9e217fa0000000000003,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x5fa1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5f80,
+        3,
+        0x8bb39ca14a7955a07e8000004f853391,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x5f81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5f80,
+        4,
+        0xf9b3d6081f1f61183f00000040000000,
+        0x0,
+        Expect::Ok(0x2, 0x5fa0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x6f80,
+        2,
+        0xf6489fc5edcd2ef13f800001bf000000,
+        0x0,
+        Expect::Fault(0x6fa0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x6f80,
+        7,
+        0xc390ba2f877b762500800001df000000,
+        0x0,
+        Expect::Fault(0x6fa1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x9d80,
+        4,
+        0xa8dcbe6669a32bf1df0000014f000000,
+        0x0,
+        Expect::Ok(0x8000000080000000, 0x9d81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1bc0,
+        7,
+        0x4b82a4eb521fbc7b010000007f800001,
+        0x0,
+        Expect::Ok(0x80000000, 0x1be1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1bc0,
+        0,
+        0xf96c33b6cbce92b5004000007fbfffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x1bc1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7f80,
+        2,
+        0xb3a58e802193a39bbeffffff40200000,
+        0x0,
+        Expect::Ok(0x2, 0x7fa0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7f80,
+        3,
+        0xbd3a930800587d583f800000c0000000,
+        0x0,
+        Expect::Ok(0x1fffffffe, 0x7f80),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7f80,
+        6,
+        0x6cfdad6524f02b807fc000004b800001,
+        0x0,
+        Expect::Ok(0x8000000001000002, 0x7f81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xfc0,
+        3,
+        0x5e5ee41bab1f2239808055924f000001,
+        0x0,
+        Expect::Fault(0xfe1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xff00,
+        4,
+        0x2680207be7389d3f4b8000017fffffff,
+        0x0,
+        Expect::Fault(0xff01),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7f40,
+        7,
+        0x358b865257b0087fff800001ffc12345,
+        0x0,
+        Expect::Fault(0x7f41),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7dc0,
+        1,
+        0x8d973017c8d4acfc003934fc800f2c18,
+        0x0,
+        Expect::Ok(0x0, 0x7dc0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x7dc0,
+        2,
+        0xacc3ec97e36d3ce7effffff40a00000,
+        0x0,
+        Expect::Ok(0x8000000000000005, 0x7dc1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1fc0,
+        4,
+        0x86576a2e1408ffdd017ee64f00400000,
+        0x0,
+        Expect::Ok(0x0, 0x1fe0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xf780,
+        5,
+        0xf224412b09be60f1f4c869e0804dda38,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0xf7a1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x6fc0,
+        7,
+        0xe24ee1c53fbb60a10064678180800000,
+        0x0,
+        Expect::Fault(0x6fe0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x2000,
+        4,
+        0xd40846fb2ff87081ffc12345cf000001,
+        0x0,
+        Expect::Fault(0x2001),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x2000,
+        4,
+        0xb7b4fac054d9080f4b8000004b000000,
+        0x0,
+        Expect::Ok(0x100000000800000, 0x2000),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x9f80,
+        2,
+        0x464a8caf2b733043800000004b800001,
+        0x0,
+        Expect::Ok(0x1000002, 0x9f80),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x9f80,
+        5,
+        0xc9515139ddc1f1d87e8000004b7fffff,
+        0x0,
+        Expect::Ok(0x8000000000ffffff, 0x9f81),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x9f80,
+        5,
+        0x6508b28de1386fe97fbfffff0134809d,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0x9fa1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x40,
+        4,
+        0x386da5f59655b44e00000001c0200000,
+        0x0,
+        Expect::Fault(0x60),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x80c0,
+        1,
+        0xfd5cd59a833da578ff7fffff3f000000,
+        0x0,
+        Expect::Fault(0x80e1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x80c0,
+        1,
+        0x816461b2be0a928f00000000ffbfffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x80c1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x5faa,
+        6,
+        0x7c0fc0e7f70772d540000000cb000001,
+        0x0,
+        Expect::Ok(0x2ff7fffff, 0x5faa),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xfbf,
+        4,
+        0xa3cfe4989d0a8e24ff8eb76200ffffff,
+        0x0,
+        Expect::Fault(0xfbf),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xffc0,
+        7,
+        0x15da6ceb47bb53197fbfffffa329733f,
+        0x0,
+        Expect::Ok(0x8000000000000000, 0xffe1),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xffc0,
+        4,
+        0xd29998456813a689cefffffe004d1f0f,
+        0x0,
+        Expect::Ok(0x8000010000000000, 0xffc0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0xffc0,
+        7,
+        0xcb7a867f51ce2dbb4b7fffff8b06b265,
+        0x0,
+        Expect::Ok(0xffffff00000000, 0xffe0),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1f00,
+        3,
+        0xae899285b7c94935bfc00000c0200000,
+        0x0,
+        Expect::Ok(0xfffffffffffffffe, 0x1f20),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x380,
+        6,
+        0xd7cb7e6aecfe419340400000e6048dc6,
+        0x0,
+        Expect::Ok(0x380000000, 0x381),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1a00,
+        5,
+        0x5423bb9066ff551648bdc1ac7f800001,
+        0x0,
+        Expect::Fault(0x1a01),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1f00,
+        6,
+        0x4704c6266f478089cefffffe4efffffe,
+        0x0,
+        Expect::Ok(0x800001007fffff00, 0x1f00),
+    ),
+    (
+        Mmx::Cvttps2pi,
+        0x1e80,
+        5,
+        0x4ec51219ca135f930b78d7ccffbfffff,
+        0x0,
+        Expect::Ok(0x80000000, 0x1ea1),
     ),
 ];
