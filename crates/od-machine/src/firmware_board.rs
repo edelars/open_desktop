@@ -4509,7 +4509,14 @@ fn assemble_board_with_layout(
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
-        for region in [AbsentPortRegion::IoDelay, AbsentPortRegion::Post] {
+        // COM2, COM3 and COM4 are not declared by the board: absent UARTs read 0xFF (S7-31j).
+        for region in [
+            AbsentPortRegion::IoDelay,
+            AbsentPortRegion::Post,
+            AbsentPortRegion::Uart2,
+            AbsentPortRegion::Uart3,
+            AbsentPortRegion::Uart4,
+        ] {
             bind(
                 region.base_port(),
                 region.port_bytes(),
@@ -8532,6 +8539,51 @@ mod tests {
                 .read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
             Ok(u32::from(ACPI_PM1_CNT_SCI_EN))
         );
+    }
+
+    /// S7-31j: the three legacy UART positions the board does not declare read `0xFF` and ignore
+    /// writes under the Linux profile (the kernel's 8250 driver probes all four); COM1 is the
+    /// declared UART and answers as before; undeclared ports outside these stay traps.
+    #[test]
+    fn linux_profile_absent_uarts_read_ff_ignore_writes_and_leave_com1_alone() {
+        let mut board = linux_board();
+        let com1_lsr = inb(&mut board, 0x3fd).expect("COM1 line status");
+        assert_ne!(
+            com1_lsr, 0xff,
+            "COM1 is a declared UART, not an absent port"
+        );
+        for base in [0x2f8u16, 0x3e8, 0x2e8] {
+            for offset in 0..8u16 {
+                let port = base + offset;
+                assert_eq!(inb(&mut board, port), Ok(0xff), "read {port:#x}");
+                board
+                    .bus_mut()
+                    .write_port(io_port(port), AccessWidth::Byte, 0x5a)
+                    .unwrap_or_else(|error| panic!("write {port:#x}: {error:?}"));
+                assert_eq!(
+                    inb(&mut board, port),
+                    Ok(0xff),
+                    "read after write {port:#x}"
+                );
+            }
+        }
+        // Not byte-wide: refused (the width policy of the absent-port devices), not 0xFFFF.
+        assert!(
+            board
+                .bus_mut()
+                .read_port(io_port(0x2f9), AccessWidth::Word)
+                .is_err()
+        );
+        // The ports next to the absent UARTs stay unbound traps (the policy of this board).
+        for port in [0x2f7u16, 0x300, 0x3e7, 0x3f0, 0x2e7] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+        // COM1 unchanged by the new bindings.
+        assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr));
     }
 
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----
