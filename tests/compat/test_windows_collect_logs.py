@@ -30,6 +30,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -425,6 +426,278 @@ class CollectUnit(unittest.TestCase):
         self.assertNotIn("Traceback", r.stderr)
         self.assertTrue(os.path.islink(os.path.join(run_dir, "logs")))
         self.assertEqual(os.listdir(victim), ["keep.txt"])
+
+
+class FakeMacTools:
+    """Подставные ответы hdiutil/diskutil/sw_vers для run_cmd (S8-12, проверка ветки логики).
+
+    Это НЕ NTFS-монтирование и не hdiutil: ничего не подключается, "NTFS" - лишь значение
+    volume-kind/content-hint в подставном plist. Фиктивный diskutil при "монтировании"
+    раскладывает заготовленное дерево файлов в точку монтирования; при отказе отвечает
+    кодом 1 и текстом, похожим на настоящую ошибку macOS.
+    """
+
+    WHOLE = "/dev/disk9"
+
+    def __init__(self, volumes):
+        # volumes: [{"kind", "hint", "mount_ok", "tree"}], номера срезов 1..N по порядку.
+        self.volumes = volumes
+        self.calls = []
+        self.mount_points = {}
+
+    def dev(self, n):
+        return "%ss%d" % (self.WHOLE, n)
+
+    def _attach_plist(self):
+        entities = [{"dev-entry": self.WHOLE, "content-hint": "GUID_partition_scheme"}]
+        for n, v in enumerate(self.volumes, 1):
+            entities.append(
+                {
+                    "dev-entry": self.dev(n),
+                    "content-hint": v.get("hint", ""),
+                    "volume-kind": v.get("kind", ""),
+                    "potentially-mountable": True,
+                }
+            )
+        return plistlib.dumps({"system-entities": entities}).decode()
+
+    def run_cmd(self, argv, check=True):
+        self.calls.append(list(argv))
+        rc, out, err = 0, "", ""
+        if argv[0] == "sw_vers":
+            out = "ProductName: macOS\nProductVersion: 15.0\nBuildVersion: FAKE\n"
+        elif argv[:3] == ["hdiutil", "info", "-plist"]:
+            out = plistlib.dumps({"images": []}).decode()
+        elif argv[:2] == ["hdiutil", "attach"]:
+            out = self._attach_plist()
+        elif argv[:2] == ["hdiutil", "detach"]:
+            pass
+        elif argv[:3] == ["diskutil", "mount", "readOnly"]:
+            mountpoint, device = argv[4], argv[5]
+            volume = self.volumes[int(device.rsplit("s", 1)[1]) - 1]
+            if volume.get("mount_ok", True):
+                self.mount_points[device] = mountpoint
+                if volume.get("tree"):
+                    volume["tree"](mountpoint)
+            else:
+                rc, err = 1, "Volume on %s failed to mount (Couldn't mount disk)" % device
+        elif argv[:3] == ["diskutil", "info", "-plist"]:
+            out = plistlib.dumps({"WritableVolume": False}).decode()
+        elif argv[:2] == ["diskutil", "unmount"]:
+            pass
+        else:
+            raise AssertionError("неожиданный внешний вызов: %r" % (argv,))
+        if check and rc != 0:
+            raise wcl.ToolError("%s: код %d: %s" % (" ".join(argv), rc, (err or out).strip()))
+        return subprocess.CompletedProcess(argv, rc, stdout=out, stderr=err)
+
+    def called(self, *prefix):
+        return [c for c in self.calls if c[: len(prefix)] == list(prefix)]
+
+
+class NtfsBranchLogic(unittest.TestCase):
+    """Ветки "NTFS-том не смонтирован" (код 3) и "каталога Windows нет" (код 4).
+
+    ЭТО ПРОВЕРКА ЛОГИКИ скрипта на подставных ответах hdiutil/diskutil, а НЕ проверка
+    NTFS-монтирования: реальный NTFS на macOS не проверен (нужны ntfs-3g-mac или готовый
+    образ Windows). Тесты не требуют ни hdiutil, ни NTFS, ни права на подключение образов.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="od8-ntfs-logic-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # Корень результатов называется work/..., образ лежит под ним же: всё, что скрипт
+        # печатает про пути, обязано оставаться внутри этого work/.
+        self.work = os.path.join(self.tmp, "work")
+        self.out_root = os.path.join(self.work, "stage8")
+        self.image = os.path.join(self.work, "images", "target.img")
+        write_file(self.image, b"raw")
+
+    def run_main(self, volumes, run_id="ntfs-logic", extra=()):
+        fake = FakeMacTools(volumes)
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["--run-id", run_id, "--target-image", self.image, "--out-root", self.out_root, *extra]
+        with mock.patch.object(wcl, "run_cmd", fake.run_cmd), mock.patch.object(
+            wcl.sys, "platform", "darwin"
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = wcl.main(argv)
+        summary_path = os.path.join(self.out_root, run_id, "logs", "summary.json")
+        summary = None
+        if os.path.exists(summary_path):
+            with open(summary_path, encoding="utf-8") as f:
+                summary = json.load(f)
+        return fake, code, out.getvalue(), err.getvalue(), summary
+
+    @staticmethod
+    def fat_with_bt(mp):
+        write_file(os.path.join(mp, "$WINDOWS.~BT", "Sources", "Panther", "setupact.log"), b"bt\n")
+
+    def test_unmounted_ntfs_volume_gives_exit_3_and_fallback_text(self):
+        # Том NTFS (по volume-kind) обнаружен, macOS его не смонтировала; на другом томе
+        # каталога Windows нет.
+        volumes = [
+            {"kind": "msdos", "hint": "EFI", "mount_ok": True},
+            {"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False},
+        ]
+        fake, code, out, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        self.assertIn(wcl.FALLBACK_TEXT, out)
+        self.assertEqual(summary["images"][0]["advice"], [wcl.FALLBACK_TEXT])
+        by_slice = {v["slice"]: v for v in summary["images"][0]["volumes"]}
+        self.assertFalse(by_slice["s2"]["mounted"])
+        self.assertIn("failed to mount", by_slice["s2"]["note"])
+        # Запасной путь не использует сторонний драйвер и не пишет в образ.
+        self.assertFalse(fake.called("diskutil", "mount", "readWrite"))
+
+    def test_unmounted_ntfs_by_content_hint_only_gives_exit_3(self):
+        # volume-kind macOS не сообщила, тип виден только по content-hint.
+        volumes = [{"kind": "", "hint": "Windows_NTFS", "mount_ok": False}]
+        _, code, out, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        self.assertIn(wcl.FALLBACK_TEXT, out)
+
+    def test_unmounted_ntfs_with_files_on_other_volume_still_exit_3(self):
+        # $WINDOWS.~BT собран с FAT-тома, но NTFS-том не смонтирован: не молчаливый 0.
+        volumes = [
+            {"kind": "msdos", "hint": "", "mount_ok": True, "tree": self.fat_with_bt},
+            {"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False},
+        ]
+        _, code, out, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        self.assertEqual(summary["file_count"], 1)
+        self.assertIn(wcl.FALLBACK_TEXT, out)
+
+    def test_mounted_volume_without_windows_directory_gives_exit_4(self):
+        # Том "NTFS" смонтирован (в подставных ответах), но каталога Windows в нём нет.
+        volumes = [
+            {"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": True,
+             "tree": lambda mp: write_file(os.path.join(mp, "Users", "x.txt"), b"x")},
+        ]
+        _, code, out, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NO_WINDOWS, err)
+        self.assertEqual(summary["images"][0]["advice"], ["смонтированные тома не содержат каталога Windows"])
+        self.assertNotIn(wcl.FALLBACK_TEXT, out)  # NTFS-тома без монтирования нет: запасной путь не нужен
+        self.assertEqual(summary["file_count"], 0)
+
+    def test_mounted_volume_with_windows_directory_gives_exit_0(self):
+        # Контроль к тесту кода 4: тот же сценарий с каталогом Windows даёт 0, а не 4.
+        volumes = [{"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": True, "tree": windows_tree}]
+        _, code, out, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_OK, err)
+        self.assertEqual(summary["images"][0]["advice"], [])
+        self.assertTrue(summary["images"][0]["volumes"][0]["has_windows"])
+
+    def test_detach_is_called_when_mount_fails(self):
+        volumes = [{"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False}]
+        fake, code, _, err, summary = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        # Отказ монтирования не прерывает сбор, образ отключается, подключён -> отключён.
+        self.assertEqual(fake.called("hdiutil", "detach"), [["hdiutil", "detach", FakeMacTools.WHOLE]])
+        self.assertLess(
+            fake.calls.index(fake.called("diskutil", "mount")[0]),
+            fake.calls.index(["hdiutil", "detach", FakeMacTools.WHOLE]),
+        )
+        self.assertTrue(summary["images"][0]["attached"])
+        self.assertTrue(summary["images"][0]["detached"])
+        # Том не смонтирован - размонтировать нечего.
+        self.assertEqual(fake.called("diskutil", "unmount"), [])
+
+    def test_detach_after_mount_failure_also_unmounts_mounted_volumes_first(self):
+        volumes = [
+            {"kind": "msdos", "hint": "", "mount_ok": True},
+            {"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False},
+        ]
+        fake, code, _, err, _ = self.run_main(volumes)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        unmount = ["diskutil", "unmount", fake.dev(1)]
+        detach = ["hdiutil", "detach", FakeMacTools.WHOLE]
+        self.assertEqual(fake.called("diskutil", "unmount"), [unmount])
+        self.assertLess(fake.calls.index(unmount), fake.calls.index(detach))
+
+    def test_detach_failure_is_an_error_not_silent_success(self):
+        # Если отключить образ не удалось, прогон не должен заканчиваться кодом 3 как успешный.
+        volumes = [{"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False}]
+        fake = FakeMacTools(volumes)
+        base = fake.run_cmd
+
+        def failing_detach(argv, check=True):
+            if argv[:2] == ["hdiutil", "detach"]:
+                fake.calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="busy")
+            return base(argv, check)
+
+        err = io.StringIO()
+        argv = ["--run-id", "detach-fail", "--target-image", self.image, "--out-root", self.out_root]
+        with mock.patch.object(wcl, "run_cmd", failing_detach), mock.patch.object(
+            wcl.sys, "platform", "darwin"
+        ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = wcl.main(argv)
+        self.assertEqual(code, wcl.EXIT_FAIL)
+        self.assertIn("не отключён", err.getvalue())
+        # Обычный detach и затем detach -force.
+        self.assertEqual(
+            fake.called("hdiutil", "detach"),
+            [["hdiutil", "detach", FakeMacTools.WHOLE], ["hdiutil", "detach", "-force", FakeMacTools.WHOLE]],
+        )
+
+    def test_output_has_no_paths_outside_work(self):
+        volumes = [
+            {"kind": "msdos", "hint": "", "mount_ok": True, "tree": self.fat_with_bt},
+            {"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False},
+        ]
+        fake, code, out, err, summary = self.run_main(volumes, extra=["--json"])
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED, err)
+        with open(os.path.join(self.out_root, "ntfs-logic", "logs", "summary.json"), encoding="utf-8") as f:
+            summary_text = f.read()
+        text_out = self.run_main(volumes, run_id="ntfs-logic-text")[2]
+        mount_points = list(fake.mount_points.values())
+        self.assertTrue(mount_points)  # FAT-том действительно "монтировался" во временную точку
+        path_re = re.compile(r"(?<![\w./$~-])/(?:[\w.$~-]+/)*[\w.$~-]+")
+        for label, text in (("stdout --json", out), ("stdout text", text_out), ("summary.json", summary_text),
+                            ("stderr", err)):
+            for mp in mount_points:
+                self.assertNotIn(mp, text, label)
+                self.assertNotIn(os.path.realpath(mp), text, label)
+            self.assertNotIn("od8-mnt-", text, label)
+            self.assertNotIn("od8-logs-", text, label)
+            self.assertNotIn(self.tmp + os.sep + "od8", text, label)
+            for path in path_re.findall(text):
+                if path.startswith("/dev/diskN"):
+                    continue  # номер диска нормализован, реальный /dev/diskN в сводку не попадает
+                self.assertTrue(
+                    path == self.work or path.startswith(self.work + os.sep),
+                    "путь вне work/ в выводе (%s): %s" % (label, path),
+                )
+        self.assertNotIn("/dev/disk9", out + text_out + summary_text)
+
+    def test_mount_failure_message_does_not_leak_mount_point(self):
+        # Если diskutil назовёт временную точку монтирования в тексте ошибки, она не должна
+        # попасть в сводку (точка лежит вне work/).
+        volumes = [{"kind": "ntfs", "hint": "Windows_NTFS", "mount_ok": False}]
+        fake = FakeMacTools(volumes)
+        base = fake.run_cmd
+
+        def leaky(argv, check=True):
+            if argv[:3] == ["diskutil", "mount", "readOnly"]:
+                fake.calls.append(list(argv))
+                msg = "cannot use mount point %s on %s" % (os.path.realpath(argv[4]), argv[5])
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr=msg)
+            return base(argv, check)
+
+        argv = ["--run-id", "leak", "--target-image", self.image, "--out-root", self.out_root, "--json"]
+        out = io.StringIO()
+        with mock.patch.object(wcl, "run_cmd", leaky), mock.patch.object(
+            wcl.sys, "platform", "darwin"
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = wcl.main(argv)
+        self.assertEqual(code, wcl.EXIT_NOT_MOUNTED)
+        self.assertNotIn("od8-logs-", out.getvalue())
+        self.assertNotIn(self.tmp + os.sep + "od8", out.getvalue())
+
+    def test_default_out_root_is_under_work(self):
+        args = wcl.parse_args(["--run-id", "x", "--target-image", "t.img"])
+        wcl.check_out_root(args.out_root)  # не бросает: по умолчанию внутри work/
+        self.assertTrue(wcl._is_inside(args.out_root, wcl.WORK_DIR))
 
 
 def wcl_plist(entities):

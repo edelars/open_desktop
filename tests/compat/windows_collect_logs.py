@@ -434,6 +434,8 @@ def process_image(image, role, index, staging_logs, mount_base, with_hash):
             ok, msg = mount_readonly(vol["device"], mp, mounted)
             if not ok:
                 os.rmdir(mp)
+                for name in {mp, os.path.realpath(mp)}:
+                    msg = msg.replace(name, "<mountpoint>")
                 v["note"] = re.sub(r"/dev/disk\d+", "/dev/diskN", msg)
                 continue
             v["mounted"] = True
