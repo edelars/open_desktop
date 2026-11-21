@@ -95,6 +95,7 @@ mod uart_rx_events;
 mod vcpu;
 mod virtual_clock;
 mod vm_snapshot;
+mod xhci;
 
 pub use acpi_blob::{
     ACPI_BLOB_ALIGN, ACPI_BLOB_DIR_ENTRY_BYTES, ACPI_BLOB_HEADER_BYTES, ACPI_BLOB_MAGIC,
@@ -532,6 +533,11 @@ pub use physical_memory::{
 };
 
 pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};
+
+pub use xhci::{
+    HseCause, XHCI_INTX_GSI, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT,
+    XHCI_USB_PORT_RESET_NS, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
+};
 
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,

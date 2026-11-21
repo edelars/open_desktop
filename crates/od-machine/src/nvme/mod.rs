@@ -29,3 +29,6 @@ pub(crate) const NVME_PCI_BAR_BYTES: u64 = 0x4000;
 pub(crate) const NVME_PCI_SLOT: u8 = 4;
 
 pub(crate) mod irq_source;
+
+/// Guest-RAM access shared with the other DMA-capable PCI models (the xHCI model).
+pub(crate) use queues::{BusDma, DmaError, GuestDma};
