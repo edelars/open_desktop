@@ -6443,3 +6443,14 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Дата и компонент.** 2026-11-20, профиль исполнения EFI-приложений в `od-isa`.
 - **Основание.** В прогоне новой CRB-пробы из FV runner подтвердил доставку кадра на 4991 байт и проверку event log, затем остановился на RIP `0x7F50514` с `Unsupported { opcode: 51 }`. В `tpm.efi` по RVA `0x2514` находятся байты `48 33 94 24 7A 01 00 00` для `xor rdx, qword ptr [rsp + 0x17a]`. LLVM выбрал эту форму для сравнения полей ответа `TPM2_PCR_Read`.
 - **Статус и следующий шаг.** Открыто для декодера. EFI-проба сравнивает поля ответа отдельными байтовыми чтениями. Прогоны из FV и с ESP завершились успешно. При расширении набора инструкций проверить обычную форму `REX.W 33 /r` с источником из памяти в профиле EFI. [Отчёт CRB](reports/STAGE_7_REPORT.md#s7-23--crb-chunking).
+
+<a id="issue-535"></a>
+
+### ISSUE-535. `firmware_boot_smoke.py` не совпадает с эталоном COM1 на текущем HEAD
+
+- **Компонент:** прошивка S7-05/S7-22 (`firmware/uefi`, диагностика ядра), `tests/system/firmware_boot_smoke.py`, эталон `tests/fixtures/firmware/boot_core_com1.txt`.
+- **Суть:** строки COM1 `OD-FW S7-05 table CRC` расходятся с эталоном в адресах таблиц Boot Services и Runtime Services (`BS=`/`RT=`). Первая строка `ST`-CRC совпадает. Расхождение наблюдается на коммите `70ca76c` и на текущем HEAD `e6d7465`.
+- **Воспроизведение:** `cargo build --release -p od-runner --offline`; `python3 tools/build/build_firmware.py --with-test-apps --target-dir work/stage7/tpm-target --out work/stage7/tpm-rom.bin`; `python3 tests/system/firmware_boot_smoke.py --runner target/release/od-runner --rom work/stage7/tpm-rom.bin`.
+- **Не связано с приёмкой S7-23:** `firmware_tpm_smoke.py` на той же прошивке проходит (`tpm-fv` и `tpm-esp`).
+- **Последствия:** эталон `boot_core` не подтверждает текущую раскладку таблиц; регрессия или сдвиг раскладки не разобраны.
+- **Статус:** открыто. Следующий шаг: сравнить раскладку памяти BS/RT с коммитом, где эталон был получен, решить, это изменение раскладки (тогда обновить эталон с обоснованием) или регрессия (тогда исправить код).
