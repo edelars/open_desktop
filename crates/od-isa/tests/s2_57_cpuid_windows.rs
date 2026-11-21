@@ -45,11 +45,11 @@ fn register(reg: Reg) -> u32 {
 }
 
 /// (register, bit, name, owner task): declared because the owner task is implemented and merged.
-const DECLARED: [(Reg, u32, &str, &str); 11] = [
-    // S2-58 (deviation: declared before S2-25, S4-10 and S4-38L8d are accepted, awaiting the owner).
+const DECLARED: [(Reg, u32, &str, &str); 10] = [
+    // S2-58 (deviation: declared before S2-25 and S4-38L8d are accepted, confirmed by the owner
+    // 2026-11-21). NX [80000001H EDX 20] is NOT here: the owner deferred it until S4-10 is accepted.
     (Reg::Edx1, 6, "PAE", "S2-58"),
     (Reg::Edx1, 9, "APIC", "S2-58"),
-    (Reg::Edx80000001, 20, "NX", "S2-58"),
     (Reg::Ecx1, 0, "SSE3", "S2-54"),
     (Reg::Ecx1, 9, "SSSE3", "S2-54"),
     (Reg::Ecx1, 13, "CX16 (CMPXCHG16B)", "S2-51"),
@@ -62,7 +62,7 @@ const DECLARED: [(Reg, u32, &str, &str); 11] = [
 
 /// (register, bit, name, why it is clear). The profile is built from the owner-task table of S2-57,
 /// not from the Linux table: a bit whose owner is not accepted, or has no task, stays clear.
-const UNDECLARED: [(Reg, u32, &str, &str); 31] = [
+const UNDECLARED: [(Reg, u32, &str, &str); 32] = [
     (Reg::Edx1, 0, "FPU", "x87 S2-28..S2-32 not complete"),
     (Reg::Edx1, 3, "PSE", "no task"),
     (Reg::Edx1, 4, "TSC", "S2-26 not accepted"),
@@ -101,6 +101,12 @@ const UNDECLARED: [(Reg, u32, &str, &str); 31] = [
     (Reg::Ecx1, 31, "hypervisor", "ADR-0013, decision 3"),
     (Reg::Ecx80000001, 5, "LZCNT", "no task"),
     (Reg::Edx80000001, 11, "SYSCALL", "S2-27 not accepted"),
+    (
+        Reg::Edx80000001,
+        20,
+        "NX",
+        "S4-10 not accepted (owner decision 2026-11-21: NX deferred)",
+    ),
     (Reg::Edx80000001, 26, "1 GiB pages", "no task"),
     (Reg::Edx80000001, 27, "RDTSCP", "no task"),
     (Reg::Edx80000001, 29, "LM", "S2-24/S2-25 not accepted"),
@@ -129,10 +135,10 @@ fn feature_registers_are_exactly_the_declared_bits() {
     );
     assert_eq!(register(Reg::Ecx1), 0x0098_2201);
     assert_eq!(register(Reg::Ecx80000001), 0x0000_0101);
-    // EDX of leaf 1: PAE [6] and APIC [9] (S2-58); 80000001H EDX: NX [20] (S2-58). No bit is left
-    // over that the lists above do not name.
+    // EDX of leaf 1: PAE [6] and APIC [9] (S2-58); 80000001H EDX: zero (NX [20] is deferred until
+    // S4-10, owner decision 2026-11-21). No bit is left over that the lists above do not name.
     assert_eq!(register(Reg::Edx1), 0x40 | 0x200);
-    assert_eq!(register(Reg::Edx80000001), 0x10_0000);
+    assert_eq!(register(Reg::Edx80000001), 0);
     for reg in [Reg::Edx1, Reg::Ecx1, Reg::Ecx80000001, Reg::Edx80000001] {
         let mut declared = 0u32;
         for (r, bit, _, _) in DECLARED {
@@ -155,8 +161,9 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     assert_eq!(linux.query(0x8000_0001, 0).ecx, 0);
     assert_eq!(linux.query(0x8000_0001, 0).edx, 0x2010_0800);
     assert_eq!(linux.query(0x8000_0002, 0), CpuidResult::default());
-    // The Windows profile has its own identity and takes from the Linux EDX bits only the three
-    // that S2-58 declares: PAE and APIC in leaf 1, NX in 80000001H (the other Linux bits stay clear).
+    // The Windows profile has its own identity and takes from the Linux EDX bits only the two
+    // that S2-58 declares: PAE and APIC in leaf 1; NX in 80000001H is not taken (the other Linux
+    // bits stay clear).
     assert_ne!(WINDOWS.query(0, 0), linux.query(0, 0));
     assert_eq!(
         WINDOWS.query(1, 0).edx & linux.query(1, 0).edx,
@@ -164,7 +171,7 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     );
     assert_eq!(
         WINDOWS.query(0x8000_0001, 0).edx & linux.query(0x8000_0001, 0).edx,
-        0x10_0000
+        0
     );
 }
 
@@ -292,8 +299,8 @@ fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     // EDX: PAE | APIC (S2-58).
     assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x240]);
     assert_eq!(cpuid_leaf(0x8000_0000), [0x8000_0008, 0, 0, 0]);
-    // EDX: NX (S2-58).
-    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0x10_0000]);
+    // EDX: zero (NX deferred until S4-10).
+    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0]);
     // "Inte" "l(R)" " Cel" "eron" | "(R) " "N510" "5 @ " "2.00" | "GHz" NUL and zeros.
     assert_eq!(
         cpuid_leaf(0x8000_0002),
