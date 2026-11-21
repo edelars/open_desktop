@@ -447,7 +447,16 @@ pub(crate) fn misc(
         SseFpMiscKind::Cvtps2pd
         | SseFpMiscKind::Cvtpd2ps
         | SseFpMiscKind::Cvtss2sd
-        | SseFpMiscKind::Cvtsd2ss => return convert(kind, destination, source, mxcsr),
+        | SseFpMiscKind::Cvtsd2ss
+        | SseFpMiscKind::Cvtdq2pd
+        | SseFpMiscKind::Cvtpd2dq
+        | SseFpMiscKind::Cvttpd2dq
+        | SseFpMiscKind::Cvtpi2ps
+        | SseFpMiscKind::Cvtpi2pd
+        | SseFpMiscKind::Cvtps2pi
+        | SseFpMiscKind::Cvttps2pi
+        | SseFpMiscKind::Cvtpd2pi
+        | SseFpMiscKind::Cvttpd2pi => return convert(kind, destination, source, mxcsr),
         SseFpMiscKind::Rcp | SseFpMiscKind::Rsqrt => {
             return reciprocal(kind, shape, destination, source, mxcsr);
         }
@@ -487,27 +496,7 @@ pub(crate) fn misc(
                 } else {
                     rounding_mode(mxcsr)
                 };
-                // DAZ: a denormal source is a zero of the same sign. The instruction reports no denormal-operand
-                // exception at all (SDM: "Invalid, Precision").
-                let mut bits = rhs as u32;
-                if mxcsr & MXCSR_DAZ != 0
-                    && Binary32::from_bits(bits).class() == BinaryClass::Subnormal
-                {
-                    bits &= 1 << 31;
-                }
-                let converted = Binary32::from_bits(bits).to_i32(mode);
-                Lane {
-                    bits: u64::from(*converted.value() as u32),
-                    pre: if converted.invalid_operation() {
-                        MXCSR_IE
-                    } else {
-                        0
-                    },
-                    overflow: false,
-                    inexact: converted.inexact(),
-                    unbounded_inexact: false,
-                    tiny: false,
-                }
+                float_to_int_lane(rhs, (false, false), mode, mxcsr)
             }
             SseFpMiscKind::Comi | SseFpMiscKind::Ucomi => {
                 unreachable!("COMISS and UCOMISS write EFLAGS: see compare_flags")
@@ -516,6 +505,15 @@ pub(crate) fn misc(
             | SseFpMiscKind::Cvtpd2ps
             | SseFpMiscKind::Cvtss2sd
             | SseFpMiscKind::Cvtsd2ss
+            | SseFpMiscKind::Cvtdq2pd
+            | SseFpMiscKind::Cvtpd2dq
+            | SseFpMiscKind::Cvttpd2dq
+            | SseFpMiscKind::Cvtpi2ps
+            | SseFpMiscKind::Cvtpi2pd
+            | SseFpMiscKind::Cvtps2pi
+            | SseFpMiscKind::Cvttps2pi
+            | SseFpMiscKind::Cvtpd2pi
+            | SseFpMiscKind::Cvttpd2pi
             | SseFpMiscKind::Rcp
             | SseFpMiscKind::Rsqrt => unreachable!("handled above"),
         });
@@ -625,11 +623,72 @@ fn convert(kind: SseFpMiscKind, destination: [u8; 16], source: [u8; 16], mxcsr: 
             lanes[0] = Some(narrow_lane(low64(0), mxcsr));
             (4, false)
         }
-        _ => unreachable!("convert handles the four precision conversions"),
+        // CVTDQ2PD: the two low signed doublewords, converted exactly (no flag exists).
+        SseFpMiscKind::Cvtdq2pd => {
+            lanes[0] = Some(int_to_float_lane(i64::from(low32(0) as i32), true, mxcsr));
+            lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), true, mxcsr));
+            (8, true)
+        }
+        // CVTPD2DQ / CVTTPD2DQ: the two binary64 to signed doublewords in the low half. CVTPD2PI / CVTTPD2PI give the
+        // same two doublewords; the executor takes them from the low half of the result for the MMX register.
+        SseFpMiscKind::Cvtpd2dq
+        | SseFpMiscKind::Cvttpd2dq
+        | SseFpMiscKind::Cvtpd2pi
+        | SseFpMiscKind::Cvttpd2pi => {
+            let mode = if matches!(kind, SseFpMiscKind::Cvttpd2dq | SseFpMiscKind::Cvttpd2pi) {
+                RationalRoundingMode::TowardZero
+            } else {
+                rounding_mode(mxcsr)
+            };
+            lanes[0] = Some(float_to_int_lane(low64(0), (true, false), mode, mxcsr));
+            lanes[1] = Some(float_to_int_lane(low64(1), (true, false), mode, mxcsr));
+            (4, false)
+        }
+        // CVTPS2PI / CVTTPS2PI: the two low binary32 to signed doublewords (the MMX register is the low half).
+        SseFpMiscKind::Cvtps2pi | SseFpMiscKind::Cvttps2pi => {
+            let mode = if kind == SseFpMiscKind::Cvttps2pi {
+                RationalRoundingMode::TowardZero
+            } else {
+                rounding_mode(mxcsr)
+            };
+            lanes[0] = Some(float_to_int_lane(
+                u64::from(low32(0)),
+                (false, false),
+                mode,
+                mxcsr,
+            ));
+            lanes[1] = Some(float_to_int_lane(
+                u64::from(low32(1)),
+                (false, false),
+                mode,
+                mxcsr,
+            ));
+            (4, false)
+        }
+        // CVTPI2PS: the two signed doublewords of the MMX source to two binary32 in the low half; the high half of the
+        // destination is kept. CVTPI2PD: to two binary64 (exact).
+        SseFpMiscKind::Cvtpi2ps => {
+            lanes[0] = Some(int_to_float_lane(i64::from(low32(0) as i32), false, mxcsr));
+            lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), false, mxcsr));
+            (4, false)
+        }
+        SseFpMiscKind::Cvtpi2pd => {
+            lanes[0] = Some(int_to_float_lane(i64::from(low32(0) as i32), true, mxcsr));
+            lanes[1] = Some(int_to_float_lane(i64::from(low32(1) as i32), true, mxcsr));
+            (8, true)
+        }
+        _ => unreachable!("convert handles the precision and the packed integer conversions"),
     };
-    // CVTPD2PS writes the whole destination: the high quadword becomes zero.
+    // CVTPD2PS, CVTPD2DQ and CVTTPD2DQ write the whole destination: the high quadword becomes zero.
     let mut base = destination;
-    if kind == SseFpMiscKind::Cvtpd2ps {
+    if matches!(
+        kind,
+        SseFpMiscKind::Cvtpd2ps
+            | SseFpMiscKind::Cvtpd2dq
+            | SseFpMiscKind::Cvttpd2dq
+            | SseFpMiscKind::Cvtpd2pi
+            | SseFpMiscKind::Cvttpd2pi
+    ) {
         base[8..].fill(0);
     }
     let mut outcome = commit(lanes, width, double, base, mxcsr);
@@ -639,6 +698,150 @@ fn convert(kind: SseFpMiscKind, destination: [u8; 16], source: [u8; 16], mxcsr: 
     outcome
 }
 
+/// One signed-integer-to-binary lane (CVTDQ2PD, CVTSI2SS, CVTSI2SD): `value` rounded to binary64 (`double`) or
+/// binary32 under MXCSR.RC. Only the precision flag can arise: a binary32 holds every magnitude of a 64-bit
+/// integer without overflow, and a binary64 holds every 32-bit one exactly.
+fn int_to_float_lane(value: i64, double: bool, mxcsr: u32) -> Lane {
+    let (bits, inexact) = if double {
+        let converted = Binary64::from_i64(value, rounding_mode(mxcsr));
+        (converted.value().to_bits(), converted.inexact())
+    } else {
+        let converted = Binary32::from_i64(value, rounding_mode(mxcsr));
+        (u64::from(converted.value().to_bits()), converted.inexact())
+    };
+    Lane {
+        bits,
+        pre: 0,
+        overflow: false,
+        inexact,
+        unbounded_inexact: false,
+        tiny: false,
+    }
+}
+/// One floating-point-to-signed-integer lane (CVTPS2DQ, CVTTPS2DQ, CVTPD2DQ, CVTTPD2DQ, CVT[T]SS2SI,
+/// CVT[T]SD2SI): `bits` is a binary64 (`double`) or binary32 source; `wide` selects a 64-bit result, else the
+/// result is 32 bits (zero-extended in the lane). A NaN or an out-of-range value is the integer indefinite
+/// value and invalid. DAZ: a denormal source is a zero of the same sign, and none of these instructions reports
+/// a denormal-operand exception (SDM: "Invalid, Precision").
+fn float_to_int_lane(
+    bits: u64,
+    (double, wide): (bool, bool),
+    mode: RationalRoundingMode,
+    mxcsr: u32,
+) -> Lane {
+    let (value, invalid, inexact) = match (double, wide) {
+        (false, false) => {
+            let converted = Binary32::from_bits(daz32(bits as u32, mxcsr)).to_i32(mode);
+            (
+                u64::from(*converted.value() as u32),
+                converted.invalid_operation(),
+                converted.inexact(),
+            )
+        }
+        (false, true) => {
+            let converted = Binary32::from_bits(daz32(bits as u32, mxcsr)).to_i64(mode);
+            (
+                *converted.value() as u64,
+                converted.invalid_operation(),
+                converted.inexact(),
+            )
+        }
+        (true, false) => {
+            let converted = Binary64::from_bits(daz64(bits, mxcsr)).to_i32(mode);
+            (
+                u64::from(*converted.value() as u32),
+                converted.invalid_operation(),
+                converted.inexact(),
+            )
+        }
+        (true, true) => {
+            let converted = Binary64::from_bits(daz64(bits, mxcsr)).to_i64(mode);
+            (
+                *converted.value() as u64,
+                converted.invalid_operation(),
+                converted.inexact(),
+            )
+        }
+    };
+    Lane {
+        bits: value,
+        pre: if invalid { MXCSR_IE } else { 0 },
+        overflow: false,
+        inexact,
+        unbounded_inexact: false,
+        tiny: false,
+    }
+}
+
+/// The outcome of CVTSS2SI, CVTTSS2SI, CVTSD2SI or CVTTSD2SI: the integer for the general register (the 32-bit
+/// result in the low half, zero above), the MXCSR flag bits to OR in and whether an unmasked exception faults
+/// (the register is not written then).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntOutcome {
+    pub(crate) value: u64,
+    pub(crate) flags: u32,
+    pub(crate) fault: bool,
+}
+
+/// CVTSS2SI, CVTTSS2SI (`double` false) and CVTSD2SI, CVTTSD2SI (`double` true) (Intel SDM Vol. 2A pp. 3-232,
+/// 3-242, 3-253, 3-255): element 0 of `source` to a 32-bit (`wide` false) or 64-bit signed integer, rounded by
+/// MXCSR.RC or, for `truncate`, toward zero. `mxcsr` must not carry reserved bits.
+pub(crate) fn float_to_int(
+    (double, wide, truncate): (bool, bool, bool),
+    source: [u8; 16],
+    mxcsr: u32,
+) -> IntOutcome {
+    debug_assert_eq!(mxcsr & MXCSR_RESERVED, 0);
+    let bits = if double {
+        u64::from_le_bytes(source[..8].try_into().expect("eight bytes"))
+    } else {
+        u64::from(u32::from_le_bytes(
+            source[..4].try_into().expect("four bytes"),
+        ))
+    };
+    let mode = if truncate {
+        RationalRoundingMode::TowardZero
+    } else {
+        rounding_mode(mxcsr)
+    };
+    let lane = float_to_int_lane(bits, (double, wide), mode, mxcsr);
+    let outcome = commit(
+        [Some(lane), None, None, None],
+        if wide { 8 } else { 4 },
+        false,
+        [0; 16],
+        mxcsr,
+    );
+    IntOutcome {
+        value: u64::from_le_bytes(outcome.result[..8].try_into().expect("eight bytes")),
+        flags: outcome.flags,
+        fault: outcome.fault,
+    }
+}
+
+/// CVTSI2SS (`double` false) and CVTSI2SD (`double` true) (Intel SDM Vol. 2A pp. 3-236, 3-238): the signed
+/// `value` (already sign-extended from 32 or 64 bits) becomes element 0 of `destination`; the bits above the
+/// element are kept. Only the precision exception exists. `mxcsr` must not carry reserved bits.
+pub(crate) fn int_to_float(
+    double: bool,
+    destination: [u8; 16],
+    value: i64,
+    mxcsr: u32,
+) -> FpOutcome {
+    debug_assert_eq!(mxcsr & MXCSR_RESERVED, 0);
+    commit(
+        [
+            Some(int_to_float_lane(value, double, mxcsr)),
+            None,
+            None,
+            None,
+        ],
+        if double { 8 } else { 4 },
+        double,
+        destination,
+        mxcsr,
+    )
+}
 /// RCPPS, RCPSS, RSQRTPS and RSQRTSS (Intel SDM Vol. 2B RCPPS pp. 4-538..4-539, RCPSS pp. 4-540..4-541, RSQRTPS
 /// pp. 4-594..4-595, RSQRTSS pp. 4-596..4-597): approximations with a relative error of at most 1.5 * 2^-12. The
 /// value of each lane is the deterministic reference of [`Binary32::reciprocal_sse_raw`] and

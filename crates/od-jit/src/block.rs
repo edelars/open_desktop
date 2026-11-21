@@ -4683,6 +4683,21 @@ mod tests {
             (&[0xf3, 0x0f, 0x53, 0xc1][..], 0x53, false), // RCPSS xmm0, xmm1 (narrow profile operation)
             (&[0x0f, 0x52, 0xc1][..], 0x52, false), // RSQRTPS xmm0, xmm1 (narrow profile operation)
             (&[0xf3, 0x0f, 0x52, 0x4b, 0x10][..], 0x52, true), // RSQRTSS xmm1, [rbx+0x10]
+            // S2-37 (remainder): the integer conversions.
+            (&[0xf3, 0x0f, 0x2a, 0x03][..], 0x2a, true), // CVTSI2SS xmm0, dword [rbx]
+            (&[0xf2, 0x48, 0x0f, 0x2a, 0x4b, 0x10][..], 0x2a, true), // CVTSI2SD xmm1, qword [rbx+0x10]
+            (&[0xf3, 0x0f, 0x2a, 0xc1][..], 0x2a, false), // CVTSI2SS xmm0, ecx (narrow profile operation)
+            (&[0xf3, 0x0f, 0x2d, 0x03][..], 0x2d, true),  // CVTSS2SI eax, [rbx]
+            (&[0xf2, 0x48, 0x0f, 0x2c, 0xc1][..], 0x2c, false), // CVTTSD2SI rax, xmm1 (narrow profile operation)
+            (&[0xf2, 0x4c, 0x0f, 0x2d, 0x4b, 0x08][..], 0x2d, true), // CVTSD2SI r9, [rbx+8]
+            (&[0xf3, 0x0f, 0xe6, 0x03][..], 0xe6, true),        // CVTDQ2PD xmm0, [rbx]
+            (&[0xf2, 0x0f, 0xe6, 0xc1][..], 0xe6, false), // CVTPD2DQ xmm0, xmm1 (narrow profile operation)
+            (&[0x66, 0x0f, 0xe6, 0x4b, 0x10][..], 0xe6, true), // CVTTPD2DQ xmm1, [rbx+0x10]
+            (&[0x0f, 0x2a, 0x03][..], 0x2a, true),        // CVTPI2PS xmm0, [rbx]
+            (&[0x0f, 0x2a, 0xc1][..], 0x2a, false), // CVTPI2PS xmm0, mm1 (narrow profile operation)
+            (&[0x0f, 0x2c, 0xc1][..], 0x2c, false), // CVTTPS2PI mm0, xmm1 (narrow profile operation)
+            (&[0x66, 0x0f, 0x2d, 0x4b, 0x10][..], 0x2d, true), // CVTPD2PI mm1, [rbx+0x10]
+            (&[0x66, 0x44, 0x0f, 0x2a, 0xec][..], 0x2a, true), // CVTPI2PD xmm13, mm4
         ] {
             let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
             let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
@@ -4694,7 +4709,10 @@ mod tests {
             assert_eq!(
                 matches!(
                     decoded.operation,
-                    Operation::SseFpArith { .. } | Operation::SseFpMisc { .. }
+                    Operation::SseFpArith { .. }
+                        | Operation::SseFpMisc { .. }
+                        | Operation::SseCvtFromInt { .. }
+                        | Operation::SseCvtToInt { .. }
                 ),
                 general,
                 "{bytes:02x?}: {:?}",
@@ -4704,6 +4722,11 @@ mod tests {
         // LOCK on these forms is #UD: a decode boundary, never a block.
         for bytes in [
             &[0xf0, 0x0f, 0x51, 0x03][..],
+            &[0xf0, 0xf3, 0x0f, 0x2a, 0x03],
+            &[0xf0, 0xf2, 0x0f, 0x2d, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0xe6, 0x03],
+            &[0xf0, 0x0f, 0x2a, 0x03],
+            &[0xf0, 0x66, 0x0f, 0x2d, 0x03],
             &[0xf0, 0x66, 0x0f, 0x5d, 0xc1],
             &[0xf0, 0x0f, 0x2f, 0x03],
             &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
