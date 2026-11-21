@@ -881,6 +881,22 @@ fn boot(
                 "cpl3_retired": run.cpl3_retired,
                 "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
                 "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
+                "rip_fetch_error": run.rip_fetch_error,
+                "rip_walk": run.rip_walk.iter().map(|entry| json!({
+                    "level": entry.level,
+                    "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                    "raw": format!("0x{:016x}", entry.raw),
+                })).collect::<Vec<_>>(),
+                "first_page_fault": run.first_page_fault.as_ref().map(|fault| json!({
+                    "cr2": format!("0x{:x}", fault.cr2),
+                    "error_code": format!("0x{:x}", fault.error_code),
+                    "translation_error": fault.translation_error,
+                    "walk": fault.walk.iter().map(|entry| json!({
+                        "level": entry.level,
+                        "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                        "raw": format!("0x{:016x}", entry.raw),
+                    })).collect::<Vec<_>>(),
+                })),
                 "marker_rip": run.marker_rip.map(|rip| format!("0x{rip:x}")),
                 "checkpoints": run.checkpoints.iter().map(|record| json!({
                     "id": record.id,

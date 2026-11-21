@@ -2403,6 +2403,43 @@ impl LoadedFirmwareBoard {
 
     /// S4-38L4i: the checkpoints recorded so far (in id order) and the recorder removed; `None`
     /// when none was enabled.
+    /// S7-31e (diagnostics only): the raw entries of the 4-level walk of `linear` from the board CR3,
+    /// read from RAM without touching an accessed or dirty bit. Each item is the level name, the
+    /// guest-physical address of the entry and its raw value; the walk stops at the first
+    /// non-present entry, at a large page, after the PTE, or when an entry cannot be read from RAM.
+    pub(crate) fn raw_page_walk(&mut self, linear: u64) -> Vec<(&'static str, u64, u64)> {
+        const LEVELS: [(&str, u32); 4] = [("PML4E", 39), ("PDPTE", 30), ("PDE", 21), ("PTE", 12)];
+        let mut table = self.page_table_root & 0x000f_ffff_ffff_f000;
+        let mut walk = Vec::new();
+        for (index, (name, shift)) in LEVELS.into_iter().enumerate() {
+            let address = table + ((linear >> shift) & 0x1ff) * 8;
+            let mut raw = [0u8; 8];
+            if self
+                .bus
+                .read_flat_bytes(GuestPhysicalAddress::new(address), &mut raw)
+                .is_err()
+            {
+                break;
+            }
+            let raw = u64::from_le_bytes(raw);
+            walk.push((name, address, raw));
+            let large = matches!(index, 1 | 2) && raw & 0x80 != 0;
+            if raw & 1 == 0 || large {
+                break;
+            }
+            table = raw & 0x000f_ffff_ffff_f000;
+        }
+        walk
+    }
+
+    /// S7-31e: CR2 and the error code of the first `#PF` delivered to the guest while checkpoints
+    /// were enabled (diagnostics only).
+    pub(crate) fn first_delivered_page_fault(&self) -> Option<(u64, u32)> {
+        self.checkpoints
+            .as_ref()
+            .and_then(CheckpointRecorder::first_page_fault)
+    }
+
     pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
         self.checkpoints.take().map(|recorder| recorder.records())
     }
@@ -8171,6 +8208,41 @@ mod tests {
         model_unified_entry_descriptors(&mut modeled);
         assert_eq!(modeled.gdtr.map(|gdtr| gdtr.base), Some(0x1000));
         assert_eq!(modeled.ss_selector, Some(0x10));
+    }
+
+    #[test]
+    fn a_marker_only_observes_the_unified_run() {
+        // 40 NOPs, then HLT (the set has no halt member: the run ends Unsupported there).
+        let mut code = vec![0x90u8; 40];
+        code.push(0xf4);
+        let image = minor2_image(&code);
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let mut marked = load_firmware_image(&image, &linux_config()).unwrap();
+        let entry = plain.state().rip;
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        let with =
+            crate::run_firmware_unified_marked(&mut marked, 1_000, Some(entry + 10)).unwrap();
+        // The marker is the boundary before the 11th instruction.
+        assert_eq!(without.marker, None);
+        assert_eq!(with.marker_rip, Some(entry + 10));
+        assert_eq!(with.marker.as_ref().map(|marker| marker.retired), Some(10));
+        // Retired, quanta, time, exit and the final state are those of the run without it.
+        assert_eq!(with.run, without.run);
+        assert_eq!(with.set_exit_detail, without.set_exit_detail);
+        assert_eq!(with.run.retired, 40);
+        assert_eq!(with.run.exit, PagedProbeExit::Unsupported { opcode: 0xf4 });
+        assert_eq!(marked.state(), plain.state());
+        // The final RIP is reported with its raw paging-structure entries (S7-31e): the PML4E
+        // first, present, at the board CR3.
+        assert_eq!(with.rip_walk[0].level, "PML4E");
+        assert_eq!(with.rip_walk[0].entry_gpa & !0xfff, marked.cr3());
+        assert_eq!(with.rip_walk[0].raw & 1, 1);
+        // A marker the run never reaches is reported as not reached.
+        let mut unreached = load_firmware_image(&image, &linux_config()).unwrap();
+        let never =
+            crate::run_firmware_unified_marked(&mut unreached, 1_000, Some(0x1234)).unwrap();
+        assert_eq!(never.marker, None);
+        assert_eq!(never.run, without.run);
     }
 
     #[test]

@@ -8043,6 +8043,43 @@ fn run3_with_guest_fp(
     .unwrap()
 }
 
+/// S7-31d: the memory forms of FNSTSW/FNSTCW with any address are admitted only at CPL0. At CPL3
+/// (user mode with the FP member of the set) they stay `Unsupported`: nothing is read or
+/// written, nothing retires, the state is untouched, on a supervisor page and on a user page.
+#[test]
+fn cpl3_fnstsw_fnstcw_m16_with_any_address_stay_unsupported() {
+    // fnstsw [rbp+0]: DD 7D 00; fnstcw [rbp+0]: D9 7D 00.
+    for code in [[0xddu8, 0x7d, 0x00], [0xd9, 0x7d, 0x00]] {
+        let mut fp_state = od_isa::GuestFpState::initial();
+        fp_state.x87.status_word = 0x4521;
+        fp_state.x87.control_word = 0x027f;
+        let fp = std::cell::RefCell::new(fp_state);
+        for user_page in [false, true] {
+            let mut state = user_state();
+            state.gpr[Register::Rbp as usize] = DATA;
+            let expected = state.clone();
+            let mut memory = DataMemory::new(&code);
+            for offset in 0..2 {
+                memory = if user_page {
+                    memory.with_user(DATA + offset, 0)
+                } else {
+                    memory.with_supervisor(DATA + offset, 0)
+                };
+            }
+            let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+            assert!(
+                matches!(exit(&result), RunExit::Unsupported { .. }),
+                "{code:02x?} user_page {user_page}: {:?}",
+                exit(&result)
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, expected);
+            assert!(memory.writes.is_empty());
+            assert_eq!(memory.reads, 0);
+        }
+    }
+}
+
 #[test]
 fn cpl3_glibc_xmm_transfers_use_the_vcpus_fp_cell() {
     let code = [

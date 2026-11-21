@@ -1783,6 +1783,14 @@ pub struct FirmwareUnifiedRun {
     /// Up to 32 bytes at the final RIP as a fetch would see them (they stop at the first byte
     /// that does not translate or is not RAM).
     pub rip_bytes: Vec<u8>,
+    /// Why the bytes at the final RIP could not be read in full (the text of the first failed
+    /// translation of `fetch_view_2m`), or `None` when all 32 were read (S7-31e).
+    pub rip_fetch_error: Option<String>,
+    /// The raw paging-structure entries of the final RIP from the live CR3 (S7-31e).
+    pub rip_walk: Vec<FirmwareUnifiedWalkEntry>,
+    /// CR2 and the error code of the first `#PF` delivered to the guest, recorded only with a
+    /// marker (S7-31e).
+    pub first_page_fault: Option<FirmwareUnifiedPageFault>,
     /// The RIP that was asked to be marked (S7-31d), if any.
     pub marker_rip: Option<u64>,
     /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
@@ -1791,6 +1799,27 @@ pub struct FirmwareUnifiedRun {
     /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
     /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
     pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+}
+
+/// One raw paging-structure entry of the walk of the final RIP (S7-31e).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedWalkEntry {
+    pub level: &'static str,
+    /// Guest-physical address of the entry.
+    pub entry_gpa: u64,
+    pub raw: u64,
+}
+
+/// CR2 and the error code of a delivered `#PF` (S7-31e).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedPageFault {
+    pub cr2: u64,
+    pub error_code: u32,
+    /// The raw paging-structure entries of `cr2` from the live CR3 at the end of the run.
+    pub walk: Vec<FirmwareUnifiedWalkEntry>,
+    /// The text of the failed translation of the 2 MiB read-only walk at `cr2`, or `None` if it
+    /// translates to RAM.
+    pub translation_error: Option<String>,
 }
 
 /// One checkpoint record of a unified run (S7-31d).
@@ -1902,6 +1931,24 @@ pub fn run_firmware_unified_marked(
             .expect("a firmware board has a boot vCPU"),
     );
     board.set_pci_config_address(pci_cell.get());
+    let first_page_fault = board.first_delivered_page_fault().map(|(cr2, error_code)| {
+        let walk = board
+            .raw_page_walk(cr2)
+            .into_iter()
+            .map(|(level, entry_gpa, raw)| FirmwareUnifiedWalkEntry {
+                level,
+                entry_gpa,
+                raw,
+            })
+            .collect();
+        let (_, _, translation_error) = board.fetch_view_2m(cr2, 1);
+        FirmwareUnifiedPageFault {
+            cr2,
+            error_code,
+            walk,
+            translation_error,
+        }
+    });
     let records = board.take_checkpoints().unwrap_or_default();
     let marker = records
         .iter()
@@ -1926,7 +1973,16 @@ pub fn run_firmware_unified_marked(
         .collect();
     let report = result.map_err(|failure| failure.error)?;
     let rip = board.state().rip;
-    let (rip_physical, rip_bytes, _) = board.fetch_view_2m(rip, 32);
+    let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
+    let rip_walk = board
+        .raw_page_walk(rip)
+        .into_iter()
+        .map(|(level, entry_gpa, raw)| FirmwareUnifiedWalkEntry {
+            level,
+            entry_gpa,
+            raw,
+        })
+        .collect();
     Ok(FirmwareUnifiedRun {
         run: report.run,
         set_exit_detail: report.set_exit_detail,
@@ -1938,6 +1994,9 @@ pub fn run_firmware_unified_marked(
         cpuid_divergence_leaf: report.cpuid_divergence_leaf,
         rip_physical,
         rip_bytes,
+        rip_fetch_error,
+        rip_walk,
+        first_page_fault,
         marker_rip,
         marker,
         checkpoints,

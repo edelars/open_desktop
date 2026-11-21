@@ -3150,6 +3150,14 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                         *deliveries_without_retirement += 1;
                         if let Some(recorder) = checkpoints.as_deref_mut() {
                             recorder.note_page_fault_delivered();
+                            recorder.note_page_fault_detail(
+                                original_record
+                                    .as_ref()
+                                    .map_or(fault.linear_address.unwrap_or(0), |record| {
+                                        record.cr2_value()
+                                    }),
+                                fault.error_code.unwrap_or_default(),
+                            );
                         }
                         if yield_after_delivery {
                             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
