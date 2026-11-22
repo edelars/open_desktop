@@ -10,9 +10,15 @@
 //! escape byte, or a truncated fetch are not these forms. A prefix before `9B` is refused by the decoder.
 //!
 //! In the bounded profile the admission of the environment forms (all-masked control word, ES and B clear) leaves no pending
-//! unmasked exception, so the FWAIT part is a no-op; a state that would raise #MF (unmasked control word with ES, ES, B) is refused
+//! unmasked exception, so the FWAIT part is a no-op; a state that would raise #MF (незамаскированное FCW, ES, B) is refused
 //! (`Unsupported`, opcode `9B`), carried over, not modeled. In the CPL0 set the FWAIT part keeps the checks of the FWAIT of
 //! `step_cpl0_fp` (CR0.MP and CR0.TS #NM, pending exception #MF with CR0.NE set) before the gates of the x87 forms.
+//!
+//! Saved RIP of a fault (Intel SDM, FSTENV/FSAVE: the assembler issues two instructions, and "the save EIP points to the
+//! instruction that caused the exception"): an error of the FWAIT part (#NM for CR0.MP with CR0.TS, #MF) leaves RIP at `9B`;
+//! an error after the FWAIT part retired (the #NM of CR0.EM, or of CR0.TS with CR0.MP clear; a fault of the store) leaves
+//! RIP at the FNSTENV/FNSAVE byte, `9B` + 1. The decoder fetches no byte after `9B` across the page of `9B` (the three
+//! bytes of the spelling lie on one 4 KiB page, else the instruction is the bare FWAIT of its own byte).
 //!
 //! Physical oracle: Core i5-3210M (`data/x87_fwait_oracle.c`, images of `data/x87_env_oracle_gen.py`; the assembler emits
 //! `9B D9 30` for `fstenv` and `9B DD 30` for `fsave`): 324 rows, answers in `data/x87_fwait_oracle_i5_3210m.txt`; the file is
@@ -28,7 +34,8 @@ use od_isa::execute::{
 use od_isa::long_decode::{self, DecodeError, Operation, Prefixes};
 use od_isa::state::X87State;
 use od_isa::{
-    AccessContext, LongModeState, MemoryError, PrivilegeLevel, Register, cpuid::CpuidProfile,
+    AccessContext, GuestMemory, LongModeState, MemoryError, PrivilegeLevel, Register,
+    cpuid::CpuidProfile,
 };
 use std::cell::RefCell;
 
@@ -249,7 +256,14 @@ fn memory_faults_of_the_waiting_spellings_are_those_of_the_non_waiting_forms() {
             let (waiting_result, waiting_state, waiting_before, waiting_bytes) = run(waiting);
             let (plain_result, plain_state, ..) = run(plain);
             assert_eq!(waiting_result, plain_result, "{label} {waiting:02x?}");
-            assert_eq!(waiting_state, waiting_before.0, "{label}: state unchanged");
+            // The FWAIT part retired: the saved RIP of the fault is the FNSTENV/FNSAVE byte, 9B + 1 (Intel SDM,
+            // FSTENV/FSAVE: "the save EIP points to the instruction that caused the exception"); nothing else moved.
+            let mut expected = waiting_before.0.clone();
+            expected.rip = CODE + 1;
+            assert_eq!(
+                waiting_state, expected,
+                "{label}: only RIP moved, to 9B + 1"
+            );
             assert_eq!(plain_state.rip, CODE, "{label}");
             assert_eq!(waiting_bytes, waiting_before.1, "{label}: memory unchanged");
         }
@@ -396,6 +410,76 @@ fn a_truncated_or_faulting_lookahead_leaves_a_bare_fwait() {
     );
 }
 
+/// A RAM that records the address of every instruction fetch.
+struct FetchLog {
+    ram: Ram,
+    fetches: Vec<u64>,
+}
+
+impl GuestMemory for FetchLog {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.fetches.push(address);
+        self.ram.fetch(address, context)
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        out: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.ram.read(address, context, out)
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        data: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.ram.write(address, context, data)
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.ram.mfence(context)
+    }
+}
+
+#[test]
+fn the_lookahead_after_9b_never_leaves_the_page_of_the_9b_byte() {
+    // A page boundary at 0x5000. The three bytes of the spelling must all lie on the page of 9B, otherwise no byte after
+    // 9B is fetched (the next page may not be walked or recorded for a bare FWAIT) and the instruction is the bare FWAIT.
+    for (waiting, plain_operation) in [
+        (&FSTENV, Operation::FnstenvRax),
+        (&FSAVE, Operation::FnsaveRax),
+    ] {
+        for (start, fetched, operation, length) in [
+            (0x4ffd_u64, 3, plain_operation, 3), // 9B D9 30 end on the last byte of the page
+            (0x4ffe, 1, Operation::Fwait, 1), // 30 would be on the next page: 9B alone, nothing after it fetched
+            (0x4fff, 1, Operation::Fwait, 1), // 9B is the last byte: nothing after it fetched
+            (0x5000, 3, plain_operation, 3), // a spelling that starts on the next page is whole again
+        ] {
+            let mut log = FetchLog {
+                ram: Ram::new(&[]),
+                fetches: vec![],
+            };
+            log.ram.put(start, waiting);
+            let instruction =
+                long_decode::decode(&mut log, start, AccessContext::default()).unwrap();
+            assert_eq!(
+                (instruction.operation, instruction.length),
+                (operation, length),
+                "{start:#x} {waiting:02x?}"
+            );
+            assert_eq!(
+                log.fetches,
+                (start..start + fetched).collect::<Vec<_>>(),
+                "{start:#x} {waiting:02x?}: fetches"
+            );
+        }
+    }
+}
+
 #[test]
 fn fldenv_frstor_and_the_non_waiting_forms_do_not_change() {
     let x87 = x87_seed();
@@ -534,6 +618,9 @@ fn in_the_set_the_fwait_checks_come_first() {
             ("MP+TS", CR0_BASE | 1 << 3, seed()),
             ("pending, NE set", CR0_BASE, pending.clone()),
             ("MP+TS and pending", CR0_BASE | 1 << 3, pending.clone()),
+            // CR0.EM is no condition of FWAIT: with a pending unmasked exception the FWAIT part raises #MF (16)
+            // before the #NM of the FNSTENV/FNSAVE part; a check order with EM first would raise #NM (7).
+            ("EM and pending", CR0_BASE | 1 << 2, pending.clone()),
         ] {
             let (fwait_exit, fwait_state, ..) = in_set(&[0x9b], cr0, CR4_FP, &x87);
             let (exit, state, before, after, bytes, accesses) = in_set(waiting, cr0, CR4_FP, &x87);
@@ -555,19 +642,26 @@ fn in_the_set_the_fwait_checks_come_first() {
     assert!(exit.contains("vector: 16"), "{exit}");
     let (exit, ..) = in_set(&FSTENV, CR0_BASE | 1 << 3, CR4_FP, &seed());
     assert!(exit.contains("vector: 7"), "{exit}");
+    for waiting in [&FSTENV[..], &FSAVE[..]] {
+        let (exit, state, ..) = in_set(waiting, CR0_BASE | 1 << 2, CR4_FP, &pending);
+        assert!(exit.contains("vector: 16"), "EM and pending: {exit}");
+        assert_eq!(state.rip, CODE, "the #MF is that of the FWAIT part");
+    }
 }
 
 #[test]
 fn in_the_set_em_and_ts_without_a_pending_exception_are_nm_and_change_nothing() {
-    for cr0 in [
-        CR0_BASE | 1 << 2,
-        CR0_BASE | 1 << 3,
-        CR0_BASE | 1 << 2 | 1 << 3,
+    // The saved RIP depends on the part that raises #NM: CR0.MP with CR0.TS is the check of the FWAIT part (RIP = 9B);
+    // CR0.EM alone is a condition of the FNSTENV/FNSAVE part only, after FWAIT retired (RIP = 9B + 1).
+    for (cr0, rip) in [
+        (CR0_BASE | 1 << 2, CODE + 1),
+        (CR0_BASE | 1 << 3, CODE),
+        (CR0_BASE | 1 << 2 | 1 << 3, CODE),
     ] {
         for waiting in [&FSTENV[..], &FSAVE[..]] {
             let (exit, state, before, after, _, accesses) = in_set(waiting, cr0, CR4_FP, &seed());
             assert!(exit.contains("vector: 7"), "{exit}");
-            assert_eq!((state.rip, accesses), (CODE, 0));
+            assert_eq!((state.rip, accesses), (rip, 0), "cr0 {cr0:#x}");
             assert_eq!(before, after);
         }
     }
