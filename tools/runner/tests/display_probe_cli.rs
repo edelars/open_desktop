@@ -79,6 +79,8 @@ fn display_probe_with_a_small_budget_reports_an_unfinished_guest() {
     assert_eq!(report["status"], "error");
     assert_eq!(report["outcome"], "budget_exhausted");
     assert_eq!(report["retired"], 100);
+    assert_eq!(report["status_after_commit"], Value::Null);
+    assert_eq!(report["status_after_frame"], Value::Null);
     assert_eq!(report["frame_sha256"], Value::Null);
 }
 

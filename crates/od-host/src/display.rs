@@ -267,10 +267,12 @@ impl Machine {
         }
     }
 
-    fn bus_mut(&mut self) -> &mut MachineBus {
+    /// The writable bus of a bare machine. The probe machine has none: its memory is written
+    /// only by the guest, so the host cannot store into it by accident.
+    fn bare_bus_mut(&mut self) -> Option<&mut MachineBus> {
         match self {
-            Machine::Bare(bus) => bus,
-            Machine::Probe(probe) => probe.bus_mut(),
+            Machine::Bare(bus) => Some(bus),
+            Machine::Probe(_) => None,
         }
     }
 }
@@ -409,7 +411,7 @@ fn program_test_pattern(session: &mut Session) -> Option<()> {
     const FORMAT: u64 = DISPLAY_REGISTERS_BASE + 0x048;
     const MODE_COMMIT: u64 = DISPLAY_REGISTERS_BASE + 0x04C;
     const FRAME_GENERATION: u64 = DISPLAY_REGISTERS_BASE + 0x080;
-    let bus = session.machine.bus_mut();
+    let bus = session.machine.bare_bus_mut()?;
     let mut store = |address: u64, value: u32| {
         bus.write_physical(
             GuestPhysicalAddress::new(address),
@@ -509,7 +511,7 @@ fn program_second_screen_checker(session: &mut Session) -> Option<()> {
     const FORMAT: u64 = BASE + 0x048;
     const MODE_COMMIT: u64 = BASE + 0x04C;
     const FRAME_GENERATION: u64 = BASE + 0x080;
-    let bus = session.machine.bus_mut();
+    let bus = session.machine.bare_bus_mut()?;
     let mut store = |address: u64, value: u32| {
         bus.write_physical(
             GuestPhysicalAddress::new(address),
@@ -1179,7 +1181,10 @@ fn with_machine_for_test<R>(
     let entry = lookup(handle).expect("live handle");
     let mut guard = entry.enter().expect("not busy");
     let session = guard.session();
-    body(session.machine.bus_mut(), &session.display)
+    body(
+        session.machine.bare_bus_mut().expect("bare machine"),
+        &session.display,
+    )
 }
 
 #[cfg(test)]

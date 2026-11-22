@@ -73,8 +73,8 @@ pub fn run(args: &[String]) -> ExitCode {
             Stage10ProbeOutcome::Failed => "failed",
         },
         "retired": report.retired,
-        "status_after_commit": format!("0x{:08x}", report.status_after_commit),
-        "status_after_frame": format!("0x{:08x}", report.status_after_frame),
+        "status_after_commit": report.status_after_commit.map(|status| format!("0x{status:08x}")),
+        "status_after_frame": report.status_after_frame.map(|status| format!("0x{status:08x}")),
         "generation": report.generation,
         "mode_change_count": report.mode_change_count,
         "mode": {

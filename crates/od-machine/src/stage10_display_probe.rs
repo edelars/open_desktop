@@ -61,8 +61,9 @@ pub struct Stage10DisplayProbeReport {
     pub outcome: Option<Stage10ProbeOutcome>,
     pub failure: Option<String>,
     pub retired: u64,
-    pub status_after_commit: u32,
-    pub status_after_frame: u32,
+    /// Set only when the guest halted: before HLT these registers hold nothing the probe wrote.
+    pub status_after_commit: Option<u32>,
+    pub status_after_frame: Option<u32>,
     pub mode: DisplayMode,
     pub generation: u64,
     pub mode_change_count: u64,
@@ -163,10 +164,6 @@ impl LoadedStage10DisplayProbe {
         self.board.bus()
     }
 
-    pub fn bus_mut(&mut self) -> &mut MachineBus {
-        self.board.bus_mut()
-    }
-
     /// Copies the current frame through `DisplayHandle::read_frame_into`.
     pub fn read_frame(&self) -> Result<(FrameInfo, Vec<u8>), DisplayReadError> {
         let display = self.board.display();
@@ -179,6 +176,7 @@ impl LoadedStage10DisplayProbe {
     pub fn report(&self) -> Stage10DisplayProbeReport {
         let display = self.board.display();
         let gpr = &self.board.state().gpr;
+        let halted = self.finished == Some(Stage10ProbeOutcome::Halted);
         let (frame_sha256, frame_error) = match self.read_frame() {
             Ok((_, frame)) => (Some(sha256(&frame)), None),
             Err(error) => (None, Some(format!("{error:?}"))),
@@ -187,8 +185,8 @@ impl LoadedStage10DisplayProbe {
             outcome: self.finished,
             failure: self.failure.clone(),
             retired: self.retired,
-            status_after_commit: gpr[Register::Rdx as usize] as u32,
-            status_after_frame: gpr[Register::R9 as usize] as u32,
+            status_after_commit: halted.then(|| gpr[Register::Rdx as usize] as u32),
+            status_after_frame: halted.then(|| gpr[Register::R9 as usize] as u32),
             mode: display.current_mode(),
             generation: display.frame_generation(),
             mode_change_count: display.mode_change_count(),
@@ -243,11 +241,11 @@ mod tests {
         let report = probe.report();
         assert_eq!(report.outcome, Some(Stage10ProbeOutcome::Halted));
         assert_eq!(
-            u64::from(report.status_after_commit),
+            u64::from(report.status_after_commit.unwrap()),
             number(&manifest, "expected_status_after_commit")
         );
         assert_eq!(
-            u64::from(report.status_after_frame),
+            u64::from(report.status_after_frame.unwrap()),
             number(&manifest, "expected_status_after_frame")
         );
         assert_eq!(report.generation, number(&manifest, "expected_generation"));
@@ -305,6 +303,8 @@ mod tests {
         let report = probe.report();
         assert_eq!(report.outcome, None);
         assert_eq!(report.generation, 0);
+        assert_eq!(report.status_after_commit, None);
+        assert_eq!(report.status_after_frame, None);
         assert_eq!(report.frame_sha256, None);
         assert!(report.frame_error.is_some());
         let zero = probe.step(0).unwrap();
