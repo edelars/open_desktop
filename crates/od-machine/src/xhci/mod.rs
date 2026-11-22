@@ -5,17 +5,20 @@
 mod commands;
 mod contexts;
 mod controller;
+mod device;
 mod ports;
 mod regs;
 mod ring;
 mod slots;
 #[cfg(test)]
 mod tests;
+mod transfers;
 mod trb;
 
 pub use controller::{
-    HseCause, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
+    HseCause, InvalidPort, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
 };
+pub use device::{ControlResponse, InterruptStatus, UsbDevice};
 
 /// BAR0 of PCI function 00:05.0: 64-bit non-prefetchable memory, 16 KiB, programmed at board
 /// creation (contract section 2).

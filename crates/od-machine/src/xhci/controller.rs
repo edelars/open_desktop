@@ -10,13 +10,17 @@
 //! virtual clock handed in at construction: port reset (50 ms) and `MFINDEX`.
 
 use super::commands::{self, CommandEnv};
+use super::device::{InterruptStatus, NullDevice, UsbDevice};
 use super::ports::Port;
 use super::regs::{self, MAX_PORTS, MAX_SLOTS};
 use super::ring::{EventRing, MAX_SEGMENT_TRBS, MIN_SEGMENT_TRBS};
-use super::slots::{EndpointState, Slot, SlotState};
+use super::slots::{DCI_EP0, DCI_INTERRUPT_IN, Endpoint, EndpointState, Slot, SlotState};
+use super::transfers::{
+    self, Disposition, Execution, PlannedEvent, Position, Scan, ScanStop, TRANSFER_BUDGET, TdKind,
+};
 use super::trb::{
     TRB_BYTES, TRB_TYPE_LINK, TRB_TYPE_STOP_ENDPOINT, Trb, command_completion_event,
-    event_ring_full_event, port_status_change_event,
+    event_ring_full_event, port_status_change_event, transfer_event,
 };
 use super::{XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_USB_PORT_RESET_NS};
 use crate::nvme::{BusDma, DmaError, GuestDma};
@@ -57,6 +61,8 @@ pub enum HseCause {
     EventRingDma,
     /// A command TRB or Link target is not in RAM.
     CommandRingDma,
+    /// A transfer ring TRB is not in RAM.
+    TransferRingDma,
     /// An Input Context cannot be read, or an Output Device Context (DCBAA entry 0, unaligned
     /// or not in RAM) cannot be read or written.
     ContextDma,
@@ -149,6 +155,16 @@ pub(crate) struct XhciState {
     /// Events written since creation (not reset by HCRST); `service` reports the difference.
     events_written: u64,
     hse_cause: Option<HseCause>,
+    devices: Devices,
+}
+
+/// The devices behind the root ports (they outlive HCRST; HCRST resets them).
+struct Devices([Box<dyn UsbDevice>; MAX_PORTS]);
+
+impl std::fmt::Debug for Devices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Devices")
+    }
 }
 
 /// Counts the guest RAM accesses made on behalf of the controller.
@@ -191,6 +207,9 @@ impl XhciState {
             ram_accesses: 0,
             events_written: 0,
             hse_cause: None,
+            devices: Devices(std::array::from_fn(|_| {
+                Box::new(NullDevice::default()) as Box<dyn UsbDevice>
+            })),
         }
     }
 
@@ -210,9 +229,11 @@ impl XhciState {
     /// Completes port resets whose virtual time has come.
     fn poll_ports(&mut self) {
         let now = self.now_ns();
-        for port in &mut self.hw.ports {
-            if port.poll(now) {
-                self.hw.pcd = true;
+        for (port, device) in self.hw.ports.iter_mut().zip(self.devices.0.iter_mut()) {
+            if let Some(newly_changed) = port.poll(now) {
+                // The bus reset returns the device to the Default state.
+                device.reset();
+                self.hw.pcd |= newly_changed;
             }
         }
     }
@@ -236,11 +257,12 @@ impl XhciState {
         self.hse_cause = Some(cause);
     }
 
-    /// An event was written: IP, EHB and EINT go up unless an earlier event is still unacknowledged.
-    fn note_event_written(&mut self) {
+    /// An event was written: IP, EHB and EINT go up unless an earlier event is still
+    /// unacknowledged or the event blocks its interrupt (BEI).
+    fn note_event_written(&mut self, raise_interrupt: bool) {
         self.events_written += 1;
         let hw = &mut self.hw;
-        if !hw.ehb {
+        if raise_interrupt && !hw.ehb {
             hw.iman_ip = true;
             hw.ehb = true;
             hw.eint = true;
@@ -401,8 +423,9 @@ impl XhciState {
                 if (offset - regs::PORT_BASE) % regs::PORT_STRIDE == 0 {
                     let port = ((offset - regs::PORT_BASE) / regs::PORT_STRIDE) as usize;
                     let reset_ns = self.config.port_reset_ns;
-                    if self.hw.ports[port].write(value, now, reset_ns) {
-                        self.hw.pcd = true;
+                    if let Some(newly_changed) = self.hw.ports[port].write(value, now, reset_ns) {
+                        self.devices.0[port].reset();
+                        self.hw.pcd |= newly_changed;
                     }
                 }
             }
@@ -479,6 +502,7 @@ impl XhciState {
             // HCRST resets the whole controller state; the rest of the write is moot. The PCI
             // configuration, the configuration of the model and the diagnostics stay.
             self.hw = Hw::new();
+            self.devices.0.iter_mut().for_each(|device| device.reset());
             return;
         }
         let hw = &mut self.hw;
@@ -517,8 +541,8 @@ impl XhciState {
     /// A doorbell of a slot (contract 9.1 and 9.3): the slot must be Default, Addressed or
     /// Configured, the DCI 1 or 3 (DCI 3 only in a Configured slot), the stream id 0. A Stopped endpoint
     /// becomes Running; Disabled, Halted and Error endpoints ignore the doorbell. Returns
-    /// `false` when the doorbell is ignored. Executing the transfer ring is the job of the
-    /// transfer slice; nothing is left pending here.
+    /// `false` when the doorbell is ignored. An accepted doorbell leaves transfer work pending
+    /// for `service`.
     fn slot_doorbell(slot: &mut Slot, value: u32) -> bool {
         let dci = value & 0xFF;
         let stream_id = value >> 16;
@@ -537,15 +561,20 @@ impl XhciState {
                 endpoint.state = EndpointState::Running;
                 // The Output Endpoint Context says Stopped until `service` writes Running.
                 slot.unmirrored |= 1 << dci;
+                slot.pending |= 1 << dci;
                 true
             }
-            Some(endpoint) => endpoint.state == EndpointState::Running,
-            None => false,
+            Some(endpoint) if endpoint.state == EndpointState::Running => {
+                slot.pending |= 1 << dci;
+                true
+            }
+            _ => false,
         }
     }
 
     /// Loads the single ERST entry written to ERSTBA and initializes the event ring.
-    /// Writes the EP State of endpoints a doorbell restarted into their Output Endpoint Contexts.
+    /// Writes EP State and the dequeue pointer of endpoints that a doorbell or a transfer changed
+    /// into their Output Endpoint Contexts.
     fn mirror_endpoint_states(&mut self, dma: &mut dyn GuestDma) {
         for index in 0..MAX_SLOTS {
             let slot = self.hw.slots[index];
@@ -558,12 +587,11 @@ impl XhciState {
                     (0..32u32)
                         .filter(|dci| slot.unmirrored & (1 << dci) != 0)
                         .try_for_each(|dci| {
-                            commands::mirror_endpoint_state(
-                                dma,
-                                output,
-                                dci,
-                                slot.endpoint_state(dci),
-                            )
+                            let endpoint = slot
+                                .endpoint(dci)
+                                .copied()
+                                .unwrap_or_else(Endpoint::disabled);
+                            commands::mirror_endpoint(dma, output, dci, &endpoint)
                         })
                 });
             if result.is_err() {
@@ -610,6 +638,9 @@ impl XhciState {
         if ring.full_reported() || ring.free() == 0 {
             return false;
         }
+        // A TD with more events than the ring can hold waits for an empty ring and loses the
+        // rest (a driver gives the event ring room for its rings).
+        let count = count.min(ring.size() - 1);
         if ring.free() > count {
             return true;
         }
@@ -617,7 +648,7 @@ impl XhciState {
         match ring.write(dma, event_ring_full_event()) {
             Ok(()) => {
                 ring.mark_full_reported();
-                self.note_event_written();
+                self.note_event_written(true);
             }
             Err(DmaError) => self.fault(HseCause::EventRingDma),
         }
@@ -626,11 +657,19 @@ impl XhciState {
 
     /// Writes an event into room made by [`Self::reserve_events`].
     fn post_event(&mut self, dma: &mut dyn GuestDma, event: Trb) {
+        self.post_event_with(dma, event, true);
+    }
+
+    /// Like [`Self::post_event`]; `raise_interrupt` is false for a TRB with BEI = 1.
+    fn post_event_with(&mut self, dma: &mut dyn GuestDma, event: Trb, raise_interrupt: bool) {
         let Some(ring) = self.hw.ring.as_mut() else {
             return;
         };
+        if ring.free() == 0 {
+            return;
+        }
         match ring.write(dma, event) {
-            Ok(()) => self.note_event_written(),
+            Ok(()) => self.note_event_written(raise_interrupt),
             Err(DmaError) => self.fault(HseCause::EventRingDma),
         }
     }
@@ -696,6 +735,7 @@ impl XhciState {
             let mut env = CommandEnv {
                 slots: &mut hw.slots,
                 ports: &mut hw.ports,
+                devices: &mut self.devices.0,
                 max_slots_enabled: hw.max_slots_en,
                 dcbaap: hw.dcbaap,
                 dma: &mut *dma,
@@ -730,7 +770,10 @@ impl XhciState {
         let room = hw.ring.as_ref().is_some_and(EventRing::has_room);
         hw.running
             && (hw.slots.iter().any(|slot| slot.unmirrored != 0)
-                || room && (hw.cmd_doorbell || hw.ports.iter().any(Port::event_due)))
+                || room
+                    && (hw.cmd_doorbell
+                        || hw.ports.iter().any(Port::event_due)
+                        || hw.slots.iter().any(|slot| slot.pending != 0)))
     }
 
     fn service(&mut self, dma: &mut dyn GuestDma) -> XhciServiceReport {
@@ -757,6 +800,167 @@ impl XhciState {
         if !self.hw.hse {
             self.run_commands(dma, report);
         }
+        if !self.hw.hse {
+            self.run_transfers(dma);
+        }
+        if !self.hw.hse {
+            self.mirror_endpoint_states(dma);
+        }
+    }
+
+    /// Executes the transfer rings of every endpoint with pending work.
+    fn run_transfers(&mut self, dma: &mut dyn GuestDma) {
+        for index in 0..MAX_SLOTS {
+            for dci in [DCI_EP0, DCI_INTERRUPT_IN] {
+                if self.hw.slots[index].pending & (1 << dci) != 0 {
+                    self.run_endpoint(dma, index, dci);
+                    if self.hw.hse {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Executes TDs of one endpoint until its ring is empty or incomplete, the device NAKs, the
+    /// endpoint stops running, the event ring has no room, or the budget is spent.
+    fn run_endpoint(&mut self, dma: &mut dyn GuestDma, index: usize, dci: u32) {
+        let bit = 1 << dci;
+        let slot_id = index as u32 + 1;
+        let mut budget = TRANSFER_BUDGET;
+        loop {
+            let slot = self.hw.slots[index];
+            let endpoint = slot
+                .endpoint(dci)
+                .copied()
+                .unwrap_or_else(Endpoint::disabled);
+            let slot_usable = if dci == DCI_EP0 {
+                slot.state.is_addressable()
+            } else {
+                slot.state == SlotState::Configured
+            };
+            if !slot_usable || endpoint.state != EndpointState::Running {
+                self.hw.slots[index].pending &= !bit;
+                return;
+            }
+            let first_td = budget == TRANSFER_BUDGET;
+            let scan = if dci == DCI_EP0 {
+                transfers::scan_control(dma, &endpoint, &mut budget)
+            } else {
+                transfers::scan_interrupt(dma, &endpoint, &mut budget)
+            };
+            let execution = match scan {
+                Err(ScanStop::Dma) => {
+                    self.fault(HseCause::TransferRingDma);
+                    return;
+                }
+                // The rest of the ring waits for the next `service` call, unless a whole call
+                // could not get through one TD: such a ring (Link TRBs in a loop) is a TRB Error.
+                Err(ScanStop::Budget) if !first_td => return,
+                Err(ScanStop::Budget) => {
+                    if !self.reserve_events(dma, 1) {
+                        return;
+                    }
+                    Execution::trb_error_at(Position {
+                        pointer: endpoint.dequeue,
+                        dcs: endpoint.dcs,
+                    })
+                }
+                Ok(Scan::Empty | Scan::Incomplete) => {
+                    self.hw.slots[index].pending &= !bit;
+                    return;
+                }
+                Ok(Scan::Invalid(located)) => {
+                    if !self.reserve_events(dma, 1) {
+                        return;
+                    }
+                    Execution::trb_error(&located)
+                }
+                Ok(Scan::Td(td)) => {
+                    let port = usize::from(slot.port) - 1;
+                    // The device must be where the slot's context says: address 0 in a Default
+                    // slot, the Slot ID once addressed (a port reset puts it back to 0).
+                    let expected = if slot.state == SlotState::Default {
+                        0
+                    } else {
+                        slot_id as u8
+                    };
+                    let usable = self.hw.ports[port].is_enabled()
+                        && self.devices.0[port].address() == expected;
+                    // An Interrupt IN poll that gets a NAK writes no event and needs no room.
+                    if td.kind() == TdKind::InterruptIn
+                        && usable
+                        && self.devices.0[port].interrupt_in() == InterruptStatus::Nak
+                    {
+                        return;
+                    }
+                    if !self.reserve_events(dma, td.event_bound()) {
+                        return;
+                    }
+                    let device = &mut *self.devices.0[port];
+                    match td.kind() {
+                        TdKind::Control => transfers::execute_control(dma, &td, device, usable),
+                        TdKind::InterruptIn => {
+                            transfers::execute_interrupt(dma, &td, device, usable)
+                        }
+                    }
+                }
+            };
+            if !self.finish_transfer(dma, index, dci, &execution) {
+                return;
+            }
+        }
+    }
+
+    /// Posts the events of an executed TD and moves the endpoint. Returns `true` when the next TD
+    /// may run.
+    fn finish_transfer(
+        &mut self,
+        dma: &mut dyn GuestDma,
+        index: usize,
+        dci: u32,
+        execution: &Execution,
+    ) -> bool {
+        let slot_id = index as u32 + 1;
+        for PlannedEvent {
+            address,
+            code,
+            remaining,
+            block_interrupt,
+        } in &execution.events
+        {
+            let event = transfer_event(*address, *code, *remaining, slot_id, dci);
+            self.post_event_with(dma, event, !block_interrupt);
+            if self.hw.hse {
+                return false;
+            }
+        }
+        let slot = &mut self.hw.slots[index];
+        let Some(endpoint) = slot.endpoint_mut(dci) else {
+            return false;
+        };
+        match execution.disposition {
+            Disposition::Retry => return false,
+            Disposition::Done(position) => {
+                endpoint.dequeue = position.pointer;
+                endpoint.dcs = position.dcs;
+            }
+            Disposition::Halt(position) | Disposition::Fail(position) => {
+                endpoint.state = if matches!(execution.disposition, Disposition::Fail(_)) {
+                    EndpointState::Error
+                } else {
+                    EndpointState::Halted
+                };
+                endpoint.dequeue = position.pointer;
+                endpoint.dcs = position.dcs;
+            }
+        }
+        let still_running = endpoint.state == EndpointState::Running;
+        slot.unmirrored |= 1 << dci;
+        if !still_running {
+            slot.pending &= !(1 << dci);
+        }
+        still_running
     }
 }
 
@@ -779,7 +983,7 @@ impl XhciHandle {
 
     /// Test hook: the USB address the device behind a root port was given.
     pub(super) fn device_address(&self, port: usize) -> u8 {
-        lock(&self.state).hw.ports[port - 1].device_address()
+        lock(&self.state).devices.0[port - 1].address()
     }
 }
 
@@ -834,7 +1038,26 @@ impl XhciDevice {
     }
 }
 
+/// A port number outside `1..=2`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidPort(pub usize);
+
 impl XhciHandle {
+    /// Attaches the model of a device to root port `port` (1 or 2), replacing the previous one.
+    /// The device is reset: board setup time, not for a running guest.
+    pub fn attach_device(
+        &self,
+        port: usize,
+        mut device: Box<dyn UsbDevice>,
+    ) -> Result<(), InvalidPort> {
+        if !(1..=MAX_PORTS).contains(&port) {
+            return Err(InvalidPort(port));
+        }
+        device.reset();
+        lock(&self.state).devices.0[port - 1] = device;
+        Ok(())
+    }
+
     /// The INTx level of the function (before the IO-APIC): Interrupter 0 or Host System Error.
     pub fn sample_pci_interrupts(&self) -> bool {
         let mut state = lock(&self.state);

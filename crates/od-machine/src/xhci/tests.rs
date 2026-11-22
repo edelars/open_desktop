@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod slot_commands;
+mod transfers;
 
 const RAM_BYTES: u64 = 16 << 20;
 const CMD_RING: u64 = 0x1_0000;
