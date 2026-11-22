@@ -417,7 +417,8 @@ fn fwait_before_fnstenv_stores_the_same_image_in_the_set() {
     let result = run_with_cpl0_profile_set(
         &mut state,
         &mut ram,
-        run_config(2),
+        // S2-32f: `9B D9 30` is one instruction of three bytes (it was FWAIT and FNSTENV, two).
+        run_config(1),
         od_isa::INTEGER_FLAGS,
         &set,
         None,
@@ -428,6 +429,7 @@ fn fwait_before_fnstenv_stores_the_same_image_in_the_set() {
         result.exit,
         Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
     ));
+    assert_eq!(state.rip, CODE + 3);
     assert_eq!(observe_memory(&ram), plain.memory);
 }
 
