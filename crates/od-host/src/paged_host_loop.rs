@@ -2421,6 +2421,65 @@ mod tests {
         })
     }
 
+    /// S2-25l: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run by this loop.
+    /// The loop decodes and executes Long64 instructions (the native blocks and the CPL0 set are
+    /// 64-bit code), and its translation snapshot is the 4-level one; neither would be right for a
+    /// protected-mode PAE vCPU, so the refusal is explicit and typed (the configuration error of the
+    /// 4-level snapshot: EFER.LME and EFER.LMA are required), not a silent 4-level walk over PAE
+    /// tables. Nothing is fetched or walked: no instruction retires, RAM (accessed bits included),
+    /// registers and the write list are what they were.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block() {
+        let _guard = jit_guard();
+        let config = PagedHostLoopConfig {
+            // EFER.NXE only: LME and LMA clear is what PAE paging is.
+            efer: 1 << 11,
+            ..config()
+        };
+        let mut session = new_session();
+        let control = PagedHostLoopControl::new();
+        let mut bus = make_bus(&LOOP_JIT_STORE);
+        let mut state = loop_state();
+        let state_before = state.clone();
+        let ram_before = observe(&state, &mut bus, false);
+        let mut rflags_defined = RFLAGS_DEFINED;
+        let mut writes = Vec::new();
+        let report = run_paged_host_loop(
+            &mut session,
+            &control,
+            config,
+            &mut state,
+            &mut bus,
+            &mut rflags_defined,
+            10,
+            |range| writes.push((range.start().get(), range.len())),
+        );
+        assert_eq!(
+            report.exit,
+            PagedHostLoopExit::Interpreter(od_machine::PagedProbeExit::Rejected(
+                od_machine::PagedProbeRejection::Configuration(
+                    od_machine::ProbeConfigError::RequiredBits {
+                        register: "EFER",
+                        bits: (1 << 8) | (1 << 10),
+                    }
+                )
+            ))
+        );
+        assert_eq!(report.retired_total(), 0);
+        assert_eq!((report.retired_jit, report.steps_jit), (0, 0));
+        assert_eq!(report.remaining_budget, 10);
+        assert!(report.budget_is_consistent());
+        assert!(report.page_fault.is_none());
+        assert!(writes.is_empty(), "no walk wrote an accessed bit");
+        assert_eq!(state, state_before);
+        assert_same(
+            &observe(&state, &mut bus, false),
+            &ram_before,
+            "a refused PAE state",
+        );
+    }
+
     /// S6-42: tests of several vCPU threads over the slot backend and the
     /// cross-vCPU invalidation (child module: it uses the helpers above).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

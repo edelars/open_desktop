@@ -47,6 +47,9 @@ use od_isa::memory::{
     AccessContext, AccessOrigin, FenceKind, GuestMemory, MemoryError, PageFaultRecord,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// What the adapter reads and writes through.
 enum PaeAdapterBus<'a> {
     /// The physical memory alone: an MMIO operand is the typed error of an access without a device.
