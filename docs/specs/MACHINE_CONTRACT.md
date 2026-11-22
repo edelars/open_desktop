@@ -409,6 +409,15 @@ unchanged (see the S4-27i5 section). See the
 [S4-24e report](../reports/STAGE_4_S4-24E_2026-11-08.md) and
 [verification method](../testing/MACHINE.md#s4-24e-uart-irq4).
 
+## Канал агента: COM2 и `UartPortSpec` (S11-21, S4-24f)
+
+Предложено ADR-0007 (ждёт подтверждения владельца). Полный контракт: [AGENT_CHANNEL_DEVICE.md](AGENT_CHANNEL_DEVICE.md), host ABI — [AGENT_HOST_ABI_V1.md](AGENT_HOST_ABI_V1.md).
+
+- **S4-24f, размещение UART.** `UartPortSpec { base_port, irq_line }` задаёт, где стоит UART: `COM1` = `0x3F8`, IRQ4; `COM2` = `0x2F8`, IRQ3. Регистровая модель не менялась и от порта не зависит; `Uart16550PollingTx::new` и `new_with_handle` по-прежнему строят COM1, `new_with_handle_at(spec)` — другое размещение. `UartPicIrqSource` берёт вход ведущего 8259 из spec handle (COM1 — IR4, как раньше); `UartIoapicIrqSource` ведёт только INTIN4 и отвергает другую линию (входа INTIN3 в `apic_pair` нет, это часть S4-24).
+- **Канал агента.** `AgentChannel` оборачивает UART COM2 (профиль 16450, без FIFO) ограниченной очередью host → гость (питает `inject_received_byte`) и ограниченной очередью гость → host (питается из пути THR); по 65 536 байт (гипотеза до замера). Байт, не влезший в очередь, теряется и учитывается (`rx_overflow_bytes`, `tx_overflow_bytes`). Байты движутся по `AgentChannel::pump`, который сессия вызывает после каждого кванта гостя; циклы платы его пока не вызывают.
+- **Плата.** `FirmwareBoardConfig::agent_channel` (по умолчанию `false`) привязывает устройство к `0x2F8..0x300` и снимает `AbsentPortRegion::Uart2` с Linux-профиля. COM3 и COM4 остаются absent (Linux-профиль) или ловушками. Handoff и манифест ACPI не меняются; прерывание не маршрутизируется.
+- **Не сделано.** IRQ3 в IOAPIC; запись COM2 в манифесте платы (handoff, DSDT); pump в циклах платы. См. раздел 9 спецификации устройства.
+
 ## Display device (S10-03)
 
 Нормативное guest-visible поведение — [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md);

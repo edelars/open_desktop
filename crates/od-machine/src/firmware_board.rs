@@ -6,6 +6,7 @@
 //! builds the temporary 4 KiB identity page tables and the handoff block, and
 //! hands over a `LongModeState`. It is not a reset vector and not real mode.
 
+use crate::agent_channel::AgentChannel;
 use crate::clock_owner::{ClockOwner, ClockOwnerError, IdleOutcome};
 use crate::console_output_context::{
     ConsoleContextTrigger, ConsoleLineTrigger, ConsoleOutputContextSnapshot, MAX_CAPTURE_COUNT,
@@ -65,7 +66,7 @@ use crate::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
     PciEcam, Pic8259Handle, Pic8259Pair, Pit8254Devices, Pit8254Handle, PortAddress, PortRange,
     PortRegionBinding, RamLimits, RtcCmos, TrackedAccessError, Uart16550Handle, Uart16550PollingTx,
-    VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
+    UartPortSpec, VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
     run_paged_probe_with_rdtsc,
 };
 use crate::{
@@ -328,6 +329,14 @@ pub struct FirmwareBoardConfig {
     /// are unchanged unless the separate `nvme_pci` option is selected.
     /// Not bound: `0x60/0x64` (a trap), LAPIC shared timer, port tick, IRQ delivery.
     pub linux_profile: bool,
+    /// The agent channel (S11-21, ADR-0007): a second UART at COM2 (`0x2F8..0x2FF`, IRQ3, 16450
+    /// profile) with bounded host queues ([`crate::AgentChannel`], `AGENT_CHANNEL_DEVICE.md`). `false`
+    /// (the default) is the board as it was: nothing is bound at `0x2F8` (a trap, or the absent
+    /// UART under the Linux profile, S7-31j). `true` binds the device there instead and takes
+    /// `AbsentPortRegion::Uart2` off the Linux profile. It does not change the handoff block or the
+    /// ACPI manifest (COM2 is not described to the firmware yet, see the spec) and routes no
+    /// interrupt: the IRQ3 line is observable only. Needs no other option.
+    pub agent_channel: bool,
     /// Number of vCPUs `N` (S6-11), `1..=4`; `1` is the board as it was. Each has its own Local
     /// APIC with APIC ID equal to its index, and the IOAPIC accepts those IDs as destinations.
     /// Only the boot processor runs; the handoff block, the ACPI blob and CPUID still describe
@@ -355,6 +364,7 @@ impl Default for FirmwareBoardConfig {
             rtc_base_unix_seconds: None,
             fv_app: None,
             linux_profile: false,
+            agent_channel: false,
             vcpu_count: 1,
         }
     }
@@ -1454,6 +1464,8 @@ pub struct LoadedFirmwareBoard {
     /// The set of virtual processors (S6-10): exactly one element, index 0; every path takes it.
     vcpus: Vec<Vcpu>,
     uart: Uart16550Handle,
+    /// The COM2 agent channel when `FirmwareBoardConfig::agent_channel` is set.
+    agent_channel: Option<AgentChannel>,
     display: DisplayHandle,
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
@@ -1910,6 +1922,9 @@ impl LoadedFirmwareBoard {
                 .map_err(FirmwareBoardError::Bus)?;
         }
         self.uart.reset();
+        if let Some(channel) = &self.agent_channel {
+            channel.reset();
+        }
         configure_com1(&mut self.bus)?;
         self.display.reset();
         if let Some(nvme) = &self.nvme {
@@ -2257,6 +2272,13 @@ impl LoadedFirmwareBoard {
 
     pub fn uart(&self) -> Uart16550Handle {
         self.uart.clone()
+    }
+
+    /// The host handle of the COM2 agent channel; `None` unless
+    /// `FirmwareBoardConfig::agent_channel` was set. The run loops of this board do not pump it:
+    /// the session that runs guest code with the devices owns `AgentChannel::pump` (S10-09).
+    pub fn agent_channel(&self) -> Option<AgentChannel> {
+        self.agent_channel.clone()
     }
 
     pub fn display(&self) -> DisplayHandle {
@@ -4309,6 +4331,7 @@ fn load_firmware_image_with_pci(
 pub(crate) struct AssembledBoard {
     bus: MachineBus,
     uart: Uart16550Handle,
+    agent_channel: Option<AgentChannel>,
     display: DisplayHandle,
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
@@ -4572,6 +4595,21 @@ fn assemble_board_with_layout(
         range: com1,
         device_index: DEV_COM1,
     }];
+    // The agent channel: COM2 with the host queues (S11-21). Opt-in; without it `0x2F8` is unbound.
+    let mut agent_channel = None;
+    if config.agent_channel {
+        let (device, channel) = AgentChannel::new();
+        ports.push(PortRegionBinding {
+            range: PortRange::new(
+                PortAddress::new(UartPortSpec::COM2.base_port),
+                UartPortSpec::PORT_BYTES,
+            )
+            .map_err(FirmwareBoardError::BusBuild)?,
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        agent_channel = Some(channel);
+    }
     // A configured RTC is part of the firmware board as well as the Linux
     // profile. Without an explicit UTC base, Linux-profile boards retain the
     // S4-29 absent-port behavior; the ordinary firmware board leaves these
@@ -4649,14 +4687,18 @@ fn assemble_board_with_layout(
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
-        // COM2, COM3 and COM4 are not declared by the board: absent UARTs read 0xFF (S7-31j).
+        // COM3 and COM4 (and COM2 unless the agent channel owns it) are not declared by the board:
+        // absent UARTs read 0xFF (S7-31j).
         for region in [
             AbsentPortRegion::IoDelay,
             AbsentPortRegion::Post,
             AbsentPortRegion::Uart2,
             AbsentPortRegion::Uart3,
             AbsentPortRegion::Uart4,
-        ] {
+        ]
+        .into_iter()
+        .filter(|region| !(config.agent_channel && *region == AbsentPortRegion::Uart2))
+        {
             bind(
                 region.base_port(),
                 region.port_bytes(),
@@ -4684,6 +4726,7 @@ fn assemble_board_with_layout(
     Ok(AssembledBoard {
         bus,
         uart,
+        agent_channel,
         display,
         display_mmio,
         nvme_mmio,
@@ -4736,6 +4779,7 @@ impl AssembledBoard {
         let AssembledBoard {
             mut bus,
             uart,
+            agent_channel,
             display,
             display_mmio,
             nvme_mmio,
@@ -4803,6 +4847,7 @@ impl AssembledBoard {
             bus,
             vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
+            agent_channel,
             display,
             display_mmio,
             nvme_mmio,
@@ -4872,6 +4917,7 @@ impl AssembledBoard {
         let AssembledBoard {
             mut bus,
             uart,
+            agent_channel,
             display,
             nvme,
             xhci,
@@ -4892,6 +4938,7 @@ impl AssembledBoard {
             bus,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
+            agent_channel,
             display,
             display_mmio: None,
             nvme_mmio: None,
@@ -8980,7 +9027,9 @@ mod tests {
 
     /// S7-31j: the three legacy UART positions the board does not declare read `0xFF` and ignore
     /// writes under the Linux profile (the kernel's 8250 driver probes all four); COM1 is the
-    /// declared UART and answers as before; undeclared ports outside these stay traps.
+    /// declared UART and answers as before; undeclared ports outside these stay traps. This is
+    /// the board without the agent channel (the default, S11-21); with it COM2 is a real UART, see
+    /// `linux_profile_with_the_agent_channel_binds_com2_and_keeps_com3_and_com4_absent`.
     #[test]
     fn linux_profile_absent_uarts_read_ff_ignore_writes_and_leave_com1_alone() {
         let mut board = linux_board();
@@ -9023,7 +9072,9 @@ mod tests {
         assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr));
     }
 
-    /// S7-31k: without the Linux profile the absent UARTs are not bound: COM2..COM4 stay traps.
+    /// S7-31k: without the Linux profile the absent UARTs are not bound: COM2..COM4 stay traps
+    /// (without the agent channel; with it COM2 is bound, see
+    /// `the_agent_channel_exchanges_bytes_through_the_board_bus_without_the_linux_profile`).
     #[test]
     fn absent_uarts_are_not_bound_without_the_linux_profile() {
         let mut board = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
@@ -9034,6 +9085,113 @@ mod tests {
                 "read {port:#x}"
             );
         }
+    }
+
+    fn out_ok(board: &mut LoadedFirmwareBoard, port: u16, value: u8) {
+        board
+            .bus_mut()
+            .write_port(io_port(port), AccessWidth::Byte, u32::from(value))
+            .unwrap_or_else(|error| panic!("write {port:#x}: {error:?}"));
+    }
+
+    /// S11-21 (S7-31j with COM2): with the agent channel the Linux profile binds a real UART at
+    /// `0x2F8..0x2FF` instead of the absent one, COM3 and COM4 stay absent (read `0xFF`, writes
+    /// ignored), COM1 is not touched and the neighbours stay traps.
+    #[test]
+    fn linux_profile_with_the_agent_channel_binds_com2_and_keeps_com3_and_com4_absent() {
+        let config = FirmwareBoardConfig {
+            agent_channel: true,
+            ..linux_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        let com1_lsr = inb(&mut board, 0x3fd).expect("COM1 line status");
+        // COM2 is a declared UART: THR and transmitter empty, not the absent `0xFF`.
+        assert_eq!(inb(&mut board, 0x2fd), Ok(0x60));
+        out_ok(&mut board, 0x2ff, 0x5a);
+        assert_eq!(inb(&mut board, 0x2ff), Ok(0x5a), "scratch register of COM2");
+        assert_eq!(
+            inb(&mut board, 0x3ff),
+            Ok(0),
+            "COM1 scratch is a different register"
+        );
+        for base in [0x3e8u16, 0x2e8] {
+            for offset in 0..8u16 {
+                let port = base + offset;
+                assert_eq!(inb(&mut board, port), Ok(0xff), "read {port:#x}");
+                out_ok(&mut board, port, 0x5a);
+                assert_eq!(
+                    inb(&mut board, port),
+                    Ok(0xff),
+                    "read after write {port:#x}"
+                );
+            }
+        }
+        // Width policy of the UART model: byte accesses only.
+        assert!(
+            board
+                .bus_mut()
+                .read_port(io_port(0x2f9), AccessWidth::Word)
+                .is_err()
+        );
+        for port in [0x2f7u16, 0x300, 0x3e7, 0x3f0, 0x2e7] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+        assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr), "COM1 unchanged");
+    }
+
+    /// S11-21: the channel is opt-in. By default COM2 is the absent UART under the Linux profile
+    /// and unbound without it, and the board has no channel handle.
+    #[test]
+    fn the_agent_channel_is_off_by_default_and_com2_stays_absent_or_a_trap() {
+        assert!(!FirmwareBoardConfig::default().agent_channel);
+        let mut linux = linux_board();
+        assert!(linux.agent_channel().is_none());
+        assert_eq!(inb(&mut linux, 0x2fd), Ok(0xff));
+        let mut plain = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        assert!(plain.agent_channel().is_none());
+        assert_eq!(
+            inb(&mut plain, 0x2fd),
+            Err(BusAccessError::UnmappedPort(io_port(0x2fd)))
+        );
+    }
+
+    /// S11-21 (S7-31k with COM2): the channel does not need the Linux profile; without it COM3
+    /// and COM4 stay traps, and COM2 exchanges bytes with the host through the board's bus.
+    #[test]
+    fn the_agent_channel_exchanges_bytes_through_the_board_bus_without_the_linux_profile() {
+        let config = FirmwareBoardConfig {
+            agent_channel: true,
+            ..tables_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        for port in [0x3e8u16, 0x2e8] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+        let channel = board.agent_channel().expect("the channel handle");
+        // Host to guest: the byte shows in LSR.DR and RBR of COM2, not of COM1.
+        assert_eq!(channel.write_to_guest(b"Z"), 1);
+        assert_eq!(inb(&mut board, 0x2fd), Ok(0x61));
+        assert_eq!(inb(&mut board, 0x3fd).map(|lsr| lsr & 1), Ok(0));
+        assert_eq!(inb(&mut board, 0x2f8), Ok(u32::from(b'Z')));
+        // Guest to host: configure 8N1 with a divisor as a driver does, write THR, pump.
+        for (port, value) in [(0x2fbu16, 0x83u8), (0x2f8, 1), (0x2f9, 0), (0x2fb, 3)] {
+            out_ok(&mut board, port, value);
+        }
+        out_ok(&mut board, 0x2f8, b'Q');
+        assert!(channel.holding_occupied());
+        let mut buf = [0u8; 4];
+        assert_eq!(channel.read_from_guest(&mut buf), 1);
+        assert_eq!(buf[0], b'Q');
+        // COM1's transcript saw nothing.
+        assert!(board.uart().received_byte().is_none());
     }
 
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----

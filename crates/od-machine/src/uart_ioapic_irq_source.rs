@@ -66,11 +66,21 @@ pub(crate) struct UartIoapicIrqSource(Arc<Inner>);
 
 impl UartIoapicIrqSource {
     /// Wraps the PIT -> INTIN2 source; `uart` and `io_apic` are the handles of the same board.
+    ///
+    /// The IOAPIC model drives the UART line on INTIN4 only (`IoApicHandle::set_intin4`), so the UART
+    /// must be placed on IRQ4 (COM1). Routing the COM2 line (IRQ3) needs an INTIN3 input in
+    /// `apic_pair` and is a part of S4-24 that is not built (S4-24f only parametrises the 8259
+    /// source); a UART on another line is a programming error.
     pub(crate) fn new(
         pit_ioapic: PitIoapicIrqSource,
         uart: Uart16550Handle,
         io_apic: IoApicHandle,
     ) -> Self {
+        assert_eq!(
+            uart.port_spec().irq_line,
+            4,
+            "the IOAPIC UART source drives INTIN4 only"
+        );
         Self(Arc::new(Inner {
             pit_ioapic,
             uart,
