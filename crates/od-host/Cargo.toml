@@ -14,7 +14,7 @@ od-jit = { path = "../od-jit" }
 od-machine = { path = "../od-machine" }
 od-storage = { path = "../od-storage" }
 
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = { version = "=0.2.190", default-features = false }
 
 [dev-dependencies]
