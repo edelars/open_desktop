@@ -2911,6 +2911,24 @@ pub enum Operation {
         operand: Sse41Operand,
         immediate: u8,
     },
+    /// S2-39 (MASKMOVDQU, `66 0F F7 /r` with a register ModRM): the bytes of XMM `data` (ModRM.reg) whose byte of XMM `mask`
+    /// (ModRM.r/m) has its most significant bit set are stored at DS:DI/EDI/RDI. `memory` is the implicit `[rdi]` operand
+    /// (address size 32 with the `67` prefix). Decoded through [`decode_sse2_int`] (fallback of [`decode`]); executed
+    /// through `step_sse2_maskmov`.
+    Sse2Maskmov {
+        data: u8,
+        mask: u8,
+        memory: MemoryOperand,
+    },
+    /// S2-39 (MOVQ2DQ `F3 0F D6 /r` and MOVDQ2Q `F2 0F D6 /r`, register ModRM only): between the low quadword of an XMM
+    /// register and an MMX register (MM0..MM7: REX.R/REX.B do not extend it). `to_xmm` is MOVQ2DQ (`xmm` is ModRM.reg, the
+    /// destination, `mm` is ModRM.r/m); otherwise MOVDQ2Q (`mm` is ModRM.reg, `xmm` is ModRM.r/m, extended by REX.B). Both
+    /// make the x87 to MMX transition. Decoded through [`decode_sse2_int`]; executed through `step_sse2_mmx_move`.
+    Sse2MmxMove {
+        to_xmm: bool,
+        xmm: u8,
+        mm: u8,
+    },
     /// S2-37 (general SSE floating-point core): `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` with any XMM or memory
     /// source (`[66|F2|F3] 0F 58/59/5C/5E /r`); S2-54 adds `ADDSUBPS/PD`, `HADDPS/PD` and `HSUBPS/PD`
     /// (`F2|66 0F D0/7C/7D /r`, packed only). `destination` is the first source and the result register;
@@ -13152,7 +13170,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
     /// segment base in this operand model), a prefix other than the mandatory one of the opcode, and the
     /// register or memory form the instruction does not have (PEXTRW with a memory operand, MOVLPS/MOVHPS stores and
     /// loads with a register operand other than MOVHLPS/MOVLHPS, the memory forms of MOVDQU/MOVDQA, which are the S2-34
-    /// raw moves).
+    /// raw moves). The register form of MOVNTPS/MOVNTPD/MOVNTDQ and the memory form of MASKMOVDQU, MOVDQ2Q and MOVQ2DQ are
+    /// `#UD` (the physical oracle gives `SIGILL`). MASKMOVDQU and MOVDQ2Q/MOVQ2DQ decode to [`Operation::Sse2Maskmov`] and
+    /// [`Operation::Sse2MmxMove`].
     fn decode_sse2_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
         let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
             return Ok(None);
@@ -13195,6 +13215,46 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }
         let rm = (modrm & 7) | ((rex & 1) << 3);
         let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        // MASKMOVDQU, MOVDQ2Q and MOVQ2DQ have register forms only (the memory forms are `undefined_form`).
+        if let Some(operation) = match kind {
+            Sse2IntKind::Maskmovdqu => Some(Operation::Sse2Maskmov {
+                data: reg,
+                mask: rm,
+                memory: MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size,
+                    size: OperandSize::Qword,
+                },
+            }),
+            Sse2IntKind::Movdq2q => Some(Operation::Sse2MmxMove {
+                to_xmm: false,
+                xmm: rm,
+                mm: reg & 7,
+            }),
+            Sse2IntKind::Movq2dq => Some(Operation::Sse2MmxMove {
+                to_xmm: true,
+                xmm: reg,
+                mm: rm & 7,
+            }),
+            _ => None,
+        } {
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation,
+            }));
+        }
         let operand = if register_form {
             if kind.rm_is_general() {
                 Sse41Operand::Gpr(rm)
@@ -13227,11 +13287,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             opcode,
             prefixes,
             operand_size: OperandSize::Qword,
-            address_size: if prefixes.address_override {
-                OperandSize::Dword
-            } else {
-                OperandSize::Qword
-            },
+            address_size,
             operation: Operation::Sse2Int {
                 kind,
                 xmm,

@@ -11681,7 +11681,7 @@ fn cpl3_issue576_observed_rip_relative_movsd_load_uses_the_vcpu_fp_cell() {
 /// the member keeps its own short profile list, so the general forms stay `Unsupported` with nothing changed.
 #[test]
 fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
-    let forms: [(&str, &[u8], u8); 15] = [
+    let forms: [(&str, &[u8], u8); 21] = [
         ("addps xmm1,xmm2", &[0x0f, 0x58, 0xca], 0x58),
         ("addps xmm1,[rax]", &[0x0f, 0x58, 0x08], 0x58),
         ("movaps xmm1,[rax]", &[0x0f, 0x28, 0x08], 0x28),
@@ -11698,6 +11698,13 @@ fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
         ("movlps [rax],xmm1", &[0x0f, 0x13, 0x08], 0x13),
         ("movhlps xmm1,xmm2", &[0x0f, 0x12, 0xca], 0x12),
         ("pextrw ecx,xmm2,3", &[0x66, 0x0f, 0xc5, 0xca, 0x03], 0xc5),
+        // S2-39 (non-temporal stores, MASKMOVDQU, MOVDQ2Q/MOVQ2DQ): CPL0 of the set only, `s2_39_rest`.
+        ("movntdq [rax],xmm1", &[0x66, 0x0f, 0xe7, 0x08], 0xe7),
+        ("movntps [rax],xmm1", &[0x0f, 0x2b, 0x08], 0x2b),
+        ("movntpd [rax],xmm1", &[0x66, 0x0f, 0x2b, 0x08], 0x2b),
+        ("maskmovdqu xmm1,xmm2", &[0x66, 0x0f, 0xf7, 0xca], 0xf7),
+        ("movdq2q mm1,xmm2", &[0xf2, 0x0f, 0xd6, 0xca], 0xd6),
+        ("movq2dq xmm1,mm2", &[0xf3, 0x0f, 0xd6, 0xca], 0xd6),
     ];
     for (name, code, opcode) in forms {
         let mut state = user_state();

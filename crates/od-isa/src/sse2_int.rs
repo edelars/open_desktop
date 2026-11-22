@@ -7,7 +7,8 @@
 //! PMAXSW, PMINSW, PUNPCK{L,H}{BW,WD,DQ,QDQ}, PACKSSWB, PACKUSWB, PACKSSDW, PSLL/PSRL{W,D,Q} and PSRA{W,D}
 //! by an XMM or 128-bit memory count (the count is the low quadword), PSHUFD, PSHUFHW, PSHUFLW, MOVQ,
 //! MOVD, MOVLPS/MOVLPD, MOVHPS/MOVHPD, MOVHLPS, MOVLHPS, PEXTRW, PINSRW and the register forms of MOVDQU
-//! and MOVDQA. Vol. 1 section 10.4.2 describes the 128-bit packed integer data types; Vol. 2A section 2.5
+//! and MOVDQA; S2-39 (rest) adds the non-temporal stores MOVNTDQ/MOVNTPS/MOVNTPD, MASKMOVDQU and MOVDQ2Q/MOVQ2DQ
+//! (the last three execute through their own operations). Vol. 1 section 10.4.2 describes the 128-bit packed integer data types; Vol. 2A section 2.5
 //! (Table 2-21/2-22, exception types 4 and 5) gives the alignment and exception rules the executor applies.
 
 /// The operation of an [`crate::long_decode::Operation::Sse2Int`] instruction.
@@ -111,6 +112,16 @@ pub enum Sse2IntKind {
     MovdqRegisterLoad,
     /// `F3 0F 7F` (MOVDQU) and `66 0F 7F` (MOVDQA) xmm, xmm with the destination in ModRM.r/m.
     MovdqRegisterStore,
+    /// `0F 2B` MOVNTPS, `66 0F 2B` MOVNTPD and `66 0F E7` MOVNTDQ m128, xmm: the whole source register is stored to a
+    /// 16-byte aligned memory operand (the non-temporal hint has no effect in this model). Memory form only.
+    Movnt128,
+    /// `66 0F F7` MASKMOVDQU xmm1, xmm2 (register form only; decoded as [`crate::long_decode::Operation::Sse2Maskmov`]):
+    /// the bytes of xmm1 whose mask byte in xmm2 has its most significant bit set are stored at DS:DI/EDI/RDI.
+    Maskmovdqu,
+    /// `F2 0F D6` MOVDQ2Q mm, xmm (register form only; decoded as [`crate::long_decode::Operation::Sse2MmxMove`]).
+    Movdq2q,
+    /// `F3 0F D6` MOVQ2DQ xmm, mm (register form only; decoded as [`crate::long_decode::Operation::Sse2MmxMove`]).
+    Movq2dq,
 }
 
 /// The mandatory prefix of an encoding.
@@ -179,6 +190,10 @@ impl Sse2IntKind {
             (P66, 0xd4) => Self::Paddq,
             (P66, 0xd5) => Self::Pmullw,
             (P66, 0xd6) => Self::MovqStore,
+            (F2, 0xd6) if register_form => Self::Movdq2q,
+            (F3, 0xd6) if register_form => Self::Movq2dq,
+            (P66, 0xf7) if register_form => Self::Maskmovdqu,
+            (NoPrefix | P66, 0x2b) | (P66, 0xe7) if !register_form => Self::Movnt128,
             (P66, 0xd8) => Self::Psubusb,
             (P66, 0xd9) => Self::Psubusw,
             (P66, 0xda) => Self::Pminub,
@@ -237,13 +252,16 @@ impl Sse2IntKind {
 
     /// Whether the encoding is one of this module's opcodes in a form the SDM does not define, which is `#UD` on
     /// the physical oracle: the memory form of PEXTRW (`66 0F C5`), the register form of the MOVLPS/MOVLPD/MOVHPS/MOVHPD
-    /// stores (`0F 13`, `0F 17`, with or without `66`) and of the `66` loads (`66 0F 12`, `66 0F 16`).
+    /// stores (`0F 13`, `0F 17`, with or without `66`) and of the `66` loads (`66 0F 12`, `66 0F 16`), the register
+    /// form of the non-temporal stores (`0F 2B`, `66 0F 2B`, `66 0F E7`) and the memory form of MASKMOVDQU (`66 0F F7`),
+    /// MOVDQ2Q and MOVQ2DQ (`F2/F3 0F D6`).
     pub const fn undefined_form(prefix: Sse2Prefix, opcode: u8, register_form: bool) -> bool {
-        use Sse2Prefix::{None as NoPrefix, P66};
+        use Sse2Prefix::{F2, F3, None as NoPrefix, P66};
         match (prefix, opcode) {
             (P66, 0xc5) => !register_form,
-            (NoPrefix | P66, 0x13 | 0x17) => register_form,
-            (P66, 0x12 | 0x16) => register_form,
+            (NoPrefix | P66, 0x13 | 0x17 | 0x2b) => register_form,
+            (P66, 0x12 | 0x16 | 0xe7) => register_form,
+            (P66, 0xf7) | (F2 | F3, 0xd6) => !register_form,
             _ => false,
         }
     }
@@ -256,9 +274,10 @@ impl Sse2IntKind {
         )
     }
 
-    /// Whether a memory operand has to be 16-byte aligned (exception type 4: `#GP(0)` otherwise).
+    /// Whether a memory operand has to be 16-byte aligned (`#GP(0)` otherwise): exception type 4 for the packed forms,
+    /// type 1 for MOVNTDQ/MOVNTPS/MOVNTPD.
     pub const fn requires_alignment(self) -> bool {
-        self.is_packed()
+        self.is_packed() || matches!(self, Self::Movnt128)
     }
 
     /// The two-operand forms of 128-bit data: a source of an XMM register or 16 bytes of memory.
@@ -281,6 +300,10 @@ impl Sse2IntKind {
                 | Self::Movlhps
                 | Self::MovdqRegisterLoad
                 | Self::MovdqRegisterStore
+                | Self::Movnt128
+                | Self::Maskmovdqu
+                | Self::Movdq2q
+                | Self::Movq2dq
         )
     }
 
@@ -311,6 +334,7 @@ impl Sse2IntKind {
                 | Self::MovlStore
                 | Self::MovhStore
                 | Self::MovdqRegisterStore
+                | Self::Movnt128
         )
     }
 

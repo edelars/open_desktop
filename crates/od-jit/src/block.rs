@@ -4661,6 +4661,55 @@ mod tests {
     }
 
     #[test]
+    fn non_temporal_stores_maskmovdqu_and_the_mmx_xmm_moves_are_refused_by_the_block_builder() {
+        // S2-39 (rest): the interpreter executes these forms in the CPL0 set; the JIT has no lowering for them.
+        const ENTRY: u64 = 0x4fa0;
+        for bytes in [
+            &[0x66, 0x0f, 0xe7, 0x00][..], // MOVNTDQ [rax], xmm0
+            &[0x0f, 0x2b, 0x08],           // MOVNTPS [rax], xmm1
+            &[0x66, 0x0f, 0x2b, 0x08],     // MOVNTPD [rax], xmm1
+            &[0x66, 0x0f, 0xf7, 0xca],     // MASKMOVDQU xmm1, xmm2
+            &[0xf2, 0x0f, 0xd6, 0xca],     // MOVDQ2Q mm1, xmm2
+            &[0xf3, 0x0f, 0xd6, 0xca],     // MOVQ2DQ xmm1, mm2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse2Int { .. }
+                        | Operation::Sse2Maskmov { .. }
+                        | Operation::Sse2MmxMove { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK and the undefined register or memory forms are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xe7, 0x00][..],
+            &[0x66, 0x0f, 0xe7, 0xc1],
+            &[0x0f, 0x2b, 0xc1],
+            &[0x66, 0x0f, 0xf7, 0x00],
+            &[0xf3, 0x0f, 0xd6, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0xd6, 0xca],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn string_compares_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
         // S2-56 slice B: the interpreter executes PCMPESTRI/PCMPESTRM/PCMPISTRI/PCMPISTRM; the JIT has no
         // lowering for them, so the block is not built.

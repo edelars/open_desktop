@@ -1766,9 +1766,9 @@ fn encodings_outside_the_slice_stay_refused_without_a_change() {
             0x7e,
         ),
         (
-            "F3 MOVQ store (not an instruction)",
-            &[0xf3, 0x0f, 0xd6, 0xca],
-            0xd6,
+            "F2 PADDQ (not an instruction)",
+            &[0xf2, 0x0f, 0xd4, 0xca],
+            0xd4,
         ),
         (
             "MOVDQU register form with the F2 prefix (only F3 and 66 own the 6F pair)",
