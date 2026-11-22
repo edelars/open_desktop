@@ -1038,3 +1038,148 @@ fn one_program_of_the_six_forms_runs_in_the_set() {
     assert_eq!(after.x87.tag_word, 0);
     assert_eq!(after.x87.status_word, 0x4100);
 }
+
+/// Memory whose reads fail with a chosen error and whose writes land in RAM: it shows how the model reports the read that
+/// MASKMOVDQU makes for a partial mask (it stands for the page walk of the write, so a read failure is a write failure).
+struct FailingRead {
+    ram: Ram,
+    error: MemoryError,
+    reads: usize,
+}
+
+impl GuestMemory for FailingRead {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.ram.fetch(address, context)
+    }
+
+    fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        self.reads += 1;
+        Err(self.error.clone())
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        input: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.ram.write(address, context, input)
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Ok(())
+    }
+}
+
+/// One bare MASKMOVDQU xmm1, xmm2 with [rdi] = DATA and the given mask, over a memory whose reads fail with `error`.
+/// Returns the result, the number of reads the instruction made and the bytes of RAM after it.
+fn maskmovdqu_over_failing_read(error: MemoryError, mask: [u8; 16]) -> (Res, usize, Vec<u8>) {
+    let code = register_form(&[0x66], 0xf7, 1, 2);
+    let mut s = setup().reg(7, DATA);
+    s.xmm[2] = mask;
+    let mut state = initial_state(&s);
+    state.cr0 = None;
+    state.cr4 = None;
+    state.sse = Some(SseState {
+        xmm: s.xmm,
+        mxcsr: 0x1f80,
+    });
+    state.x87 = Some(s.x87.clone());
+    let mut memory = FailingRead {
+        ram: initial_ram(&code, &s),
+        error,
+        reads: 0,
+    };
+    let result = match execute::step(&mut state, &mut memory, context(false)) {
+        Ok(StepOutcome::Advanced) => Res::Retired,
+        Ok(StepOutcome::Fault(fault)) => Res::Fault(fault),
+        Ok(StepOutcome::Unsupported { opcode }) => Res::Unsupported(opcode),
+        Ok(other) => panic!("unexpected bare outcome {other:?}"),
+        Err(error) => Res::Memory(error),
+    };
+    (result, memory.reads, memory.ram.bytes)
+}
+
+#[test]
+fn maskmovdqu_reports_a_failure_of_its_partial_mask_read_as_a_failure_of_the_write() {
+    // A partial mask makes the model read the 16 bytes first; that read stands for the page walk of the write, so a
+    // page fault gets the W/R bit of its error code and a fixture failure the access kind Write. Hardware reports the
+    // fault of the store itself. A mask whose byte 0 has bit 7 clear is partial.
+    let mut partial = [0xff; 16];
+    partial[0] = 0x7f;
+    let untouched = initial_ram(&register_form(&[0x66], 0xf7, 1, 2), &setup()).bytes;
+    let page_fault = |error_code| {
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code,
+            linear_address: Some(DATA),
+        })
+    };
+    let reported = |error_code| {
+        Res::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code,
+            linear_address: Some(DATA),
+        })
+    };
+    // (error of the read, what the instruction reports)
+    let cases = [
+        // not present, supervisor read: the write bit is added (0b000 -> 0b010)
+        (page_fault(Some(0)), reported(Some(0b010))),
+        // protection violation, user read (0b101 -> 0b111)
+        (page_fault(Some(0b101)), reported(Some(0b111))),
+        // the write bit already set stays set
+        (page_fault(Some(0b010)), reported(Some(0b010))),
+        // no error code stays without one
+        (page_fault(None), reported(None)),
+        (
+            MemoryError::Unmapped {
+                address: DATA,
+                access: AccessKind::Read,
+            },
+            Res::Memory(MemoryError::Unmapped {
+                address: DATA,
+                access: AccessKind::Write,
+            }),
+        ),
+        (
+            MemoryError::PermissionDenied {
+                address: DATA,
+                access: AccessKind::Read,
+            },
+            Res::Memory(MemoryError::PermissionDenied {
+                address: DATA,
+                access: AccessKind::Write,
+            }),
+        ),
+        // another architectural fault and another error are passed on as they are
+        (
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            Res::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+        ),
+        (
+            MemoryError::Backend("read".into()),
+            Res::Memory(MemoryError::Backend("read".into())),
+        ),
+    ];
+    for (index, (error, expected)) in cases.into_iter().enumerate() {
+        let (result, reads, ram) = maskmovdqu_over_failing_read(error, partial);
+        assert_eq!(result, expected, "case {index}");
+        assert_eq!(reads, 1, "case {index}: one read for the partial mask");
+        assert_eq!(ram, untouched, "case {index}: nothing is written");
+    }
+    // A mask of all ones needs no read, so a failing read does not matter: the store retires.
+    let (result, reads, ram) =
+        maskmovdqu_over_failing_read(MemoryError::Backend("read".into()), [0xff; 16]);
+    assert_eq!(result, Res::Retired);
+    assert_eq!(reads, 0);
+    assert_ne!(ram, untouched);
+}
