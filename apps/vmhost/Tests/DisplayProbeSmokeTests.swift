@@ -7,7 +7,7 @@ import XCTest
 // S10-09: the probe mode of the test-only display smoke (`--display-smoke probe`): argument parsing and `ProbeGuestRun`, the quanta
 // loop over od_display_session_step, against a real display session of OD_DISPLAY_PROFILE_STAGE10_PROBE (the own guest code of
 // S10-08). The whole chain to a Metal frame is tests/system/display_end_to_end_smoke.py. From apps/ (the Rust staticlib first,
-// `cargo build -p od-host --offline` from the repository root):
+// `cargo build -p od-host --offline` and `cargo build -p od-host --offline --release` from the repository root; the test target links both):
 //
 //   swift test --filter DisplayProbeSmokeXCTests
 

@@ -782,7 +782,7 @@ final class FrameTransportWriter {
 
 /// S10-09: the probe guest of OD_DISPLAY_PROFILE_STAGE10_PROBE advanced in quanta through od_display_session_step.
 /// The frame loop checks the device between two quanta. HLT ends the run of the guest (final, later quanta are not issued);
-/// a guest failure or a spent budget without HLT is a failure of VMHost (exit status 1): no frame is better than a wrong state.
+/// a guest failure or a spent budget without HLT is a failure of VMHost (exit status 1; the viewer reports a non-zero status).
 final class ProbeGuestRun {
     /// Instructions per quantum. The probe retires 25 983 instructions, so it takes four quanta.
     static let quantum: UInt64 = 8_192
@@ -820,6 +820,10 @@ final class ProbeGuestRun {
         case OD_DISPLAY_STEP_BUDGET_EXHAUSTED.rawValue:
             guard remaining > 0 else {
                 throw FrameTransportError.hostRefusal("probe guest did not reach HLT within \(executedCount) instructions")
+            }
+            // A quantum that executes nothing while budget remains would spin forever: no progress is a failure.
+            guard report.instructions_executed > 0 else {
+                throw FrameTransportError.hostRefusal("probe guest made no progress after \(executedCount) instructions")
             }
         case OD_DISPLAY_STEP_FAILED.rawValue:
             throw FrameTransportError.hostRefusal("probe guest ended abnormally after \(executedCount) instructions")

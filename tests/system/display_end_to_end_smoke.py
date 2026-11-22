@@ -94,6 +94,9 @@ def load_manifest() -> dict:
     check(len(data) == manifest["frame_bytes"], "reference size differs from the manifest")
     check(hashlib.sha256(data).hexdigest() == manifest["expected_frame_sha256"], "reference hash differs from the manifest")
     check(manifest["width"] * manifest["height"] * 4 == manifest["frame_bytes"], "manifest size is inconsistent")
+    image = FIXTURES / manifest["image"]
+    check(image.exists(), f"missing {image}")
+    check(hashlib.sha256(image.read_bytes()).hexdigest() == manifest["image_sha256"], "guest image hash differs from the manifest")
     manifest["reference_bytes"] = data
     manifest["reference_path"] = reference
     return manifest
@@ -103,9 +106,9 @@ def hello(version: int = 3) -> bytes:
     return b"ODFT" + struct.pack("<HHII", version, 1, 0, 0)  # kind HELLO, empty payload
 
 
-def run_vmhost_alone(vmhost: Path, args: list[str], wait_for_exit: bool) -> tuple[int | None, str]:
-    """Starts VMHost with its frame socket on fd 3 (like the launcher). With `wait_for_exit` the socket stays open and
-    VMHost must end by itself (a failure, not the EOF teardown); returns (exit status or None, stderr)."""
+def run_vmhost_alone(vmhost: Path, args: list[str]) -> tuple[int, str]:
+    """Starts VMHost with its frame socket on fd 3 (like the launcher). The socket stays open, so VMHost must end by
+    itself (a failure, not the EOF teardown); returns (exit status, stderr)."""
     with tempfile.NamedTemporaryFile(prefix="vmhost_stderr_", delete=False) as stderr_file:
         stderr_path = stderr_file.name
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -139,25 +142,24 @@ def run_vmhost_alone(vmhost: Path, args: list[str], wait_for_exit: bool) -> tupl
         if status is None:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
-            if wait_for_exit:
-                raise Failure(f"VMHost {' '.join(args)} did not end by itself")
+            raise Failure(f"VMHost {' '.join(args)} did not end by itself")
         text = Path(stderr_path).read_text(errors="replace")
     finally:
         parent.close()
         os.unlink(stderr_path)
-    return (os.waitstatus_to_exitcode(status) if status is not None else None), text
+    return os.waitstatus_to_exitcode(status), text
 
 
 def check_vmhost_without_gpu(vmhost: Path, manifest: dict) -> None:
     """The probe must end in a failure of VMHost, not in a silent no-frame state, when it cannot finish (no GPU needed)."""
     retired = manifest["expected_retired"]
     budget = retired // 2
-    code, text = run_vmhost_alone(vmhost, ["--display-smoke", "probe", "--display-probe-budget", str(budget)], True)
+    code, text = run_vmhost_alone(vmhost, ["--display-smoke", "probe", "--display-probe-budget", str(budget)])
     check(code == 1, f"budget {budget} (< {retired} instructions): exit {code}, expected 1; stderr: {text.strip()}")
     check(f"did not reach HLT within {budget} instructions" in text, f"budget exhaustion not reported: {text.strip()}")
     check("published generation" not in text, "a frame was published although the guest did not finish")
     for bad in (["--display-smoke", "probe", "--display-screens", "2"], ["--display-smoke", "pattern", "--display-probe-budget", "5"]):
-        code, text = run_vmhost_alone(vmhost, bad, True)
+        code, text = run_vmhost_alone(vmhost, bad)
         check(code == 1 and "usage" in text, f"{' '.join(bad)}: exit {code}, expected a usage error; stderr: {text.strip()}")
 
 

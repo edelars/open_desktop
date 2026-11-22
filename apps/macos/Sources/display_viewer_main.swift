@@ -457,7 +457,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             // The windows are created after the ANNOUNCE of every screen, on the main thread, before the reader thread.
             session.waitForAnnounce(timeoutMs: config.timeoutMs)
             let title = session.presenters.count == 2 ? "Open Desktop display viewer (screen 0)"
-                : "Open Desktop display viewer (test pattern)"
+                : "Open Desktop display viewer (\(config.profile == "probe" ? "probe" : "test pattern"))"
             let first = DisplayWindow(
                 presenter: session.presenters[0], title: title,
                 contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: session.input)
