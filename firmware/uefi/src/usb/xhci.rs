@@ -12,7 +12,10 @@ use core::{
 };
 
 use crate::{
-    bs::{event::stall, memory::allocate_pages},
+    bs::{
+        event::stall,
+        memory::{allocate_pages, free_pages},
+    },
     mem::map::MemoryType,
     paging::PAGE_BYTES,
     uefi::status::Status,
@@ -315,14 +318,16 @@ impl Xhci {
 
     /// ExitBootServices (XHCI_DEVICE.md section 12.3): R/S = 0, HCH, HCRST, then the PCI
     /// Command register as found. Afterwards the controller references no memory and the driver
-    /// touches no ring. Idempotent.
-    pub(super) fn quiesce(&mut self) {
+    /// touches no ring. Idempotent. The PCI Command register is restored even when the reset
+    /// failed; the error says the controller may still reference its DMA pages (the caller must
+    /// then not free them).
+    pub(super) fn quiesce(&mut self) -> Result<(), UsbError> {
         if self.stopped {
-            return;
+            return Ok(());
         }
         self.stopped = true;
         self.keyboard = None;
-        let _ = self.reset();
+        let reset = self.reset();
         // SAFETY: `new` guarantees the ECAM window and device number.
         let ecam = unsafe { super::pci::Ecam::new(self.ecam) };
         super::pci::ConfigSpace::write(
@@ -332,6 +337,17 @@ impl Xhci {
             super::pci::COMMAND_REGISTER,
             self.saved_command,
         );
+        reset
+    }
+
+    /// Returns the DMA pages to Boot Services.
+    ///
+    /// # Safety
+    /// The controller is in the reset state (`quiesce` returned `Ok`) and nothing uses the driver
+    /// afterwards.
+    pub(super) unsafe fn free_dma(&self) {
+        // SAFETY: the pages are the driver's own allocation; see the caller's guarantee.
+        let _ = unsafe { free_pages(self.dma, DMA_PAGES) };
     }
 
     fn op_read(&self, offset: usize) -> u32 {
@@ -350,6 +366,15 @@ impl Xhci {
     /// waits are bounded, a stuck controller is an error, not a hang).
     fn reset(&self) -> Result<(), UsbError> {
         let halted = |xhci: &Self| xhci.op_read(OP_USBSTS) & USBSTS_HCH != 0;
+        // xHCI 1.2 section 4.2: no operational or runtime register is written before CNR = 0.
+        if !wait(REGISTER_WAIT_US, || {
+            self.op_read(OP_USBSTS) & USBSTS_CNR == 0
+        }) {
+            return Err(UsbError::new(
+                Step::ControllerReset,
+                self.op_read(OP_USBSTS),
+            ));
+        }
         self.op_write(OP_USBCMD, self.op_read(OP_USBCMD) & !USBCMD_RUN);
         if !wait(REGISTER_WAIT_US, || halted(self)) {
             return Err(UsbError::new(

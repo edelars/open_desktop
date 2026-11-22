@@ -2,9 +2,10 @@
 //!
 //! Slice A enumerates the board's xHCI function through ECAM, resets the controller, brings the
 //! keyboard on a root-hub port to boot protocol and polls its Interrupt IN endpoint into a key
-//! queue. The queue is not connected to `ConIn` yet (slice B), and nothing stops the controller
-//! at ExitBootServices yet (slice B, XHCI_DEVICE.md section 12.3). Contract: XHCI_DEVICE.md
-//! section 15.
+//! queue. An ExitBootServices handler stops the controller and restores PCI Command
+//! (XHCI_DEVICE.md sections 12.3 and 15, item 6). Not done yet: the queue is not connected to
+//! `ConIn` (slice B), and the register-level check of section 12.3 is slice C (ISSUE-648).
+//! Contract: XHCI_DEVICE.md section 15.
 
 use core::{ffi::c_void, ptr};
 
@@ -107,6 +108,8 @@ impl UsbError {
 
 const ENUMERATED_LINE: &[u8] = b"OD-FW xhci: keyboard enumerated\r\n";
 const FAILED_PREFIX: &[u8] = b"OD-FW xhci: enumeration failed step=";
+#[cfg(any(target_os = "none", target_os = "uefi"))]
+const STOP_FAILED_PREFIX: &[u8] = b"OD-FW xhci: stop at exit failed step=";
 const DETAIL_INFIX: &[u8] = b" detail=0x";
 
 const fn hex_digit(nibble: u32) -> u8 {
@@ -116,12 +119,17 @@ const fn hex_digit(nibble: u32) -> u8 {
 /// `OD-FW xhci: enumeration failed step=<name> detail=0xXXXXXXXX\r\n` into `out`; returns
 /// the length.
 fn format_failure(error: UsbError, out: &mut [u8; 128]) -> usize {
+    format_line(FAILED_PREFIX, error, out)
+}
+
+/// `<prefix><step name> detail=0xXXXXXXXX\r\n` into `out`.
+fn format_line(prefix: &[u8], error: UsbError, out: &mut [u8; 128]) -> usize {
     let mut length = 0;
     let mut put = |bytes: &[u8]| {
         out[length..length + bytes.len()].copy_from_slice(bytes);
         length += bytes.len();
     };
-    put(FAILED_PREFIX);
+    put(prefix);
     put(error.step.name().as_bytes());
     put(DETAIL_INFIX);
     let mut digits = [0u8; 8];
@@ -224,8 +232,18 @@ unsafe fn start(handoff: &Handoff<'_>) -> Result<Option<Xhci>, UsbError> {
 /// ExitBootServices handler (XHCI_DEVICE.md section 12.3).
 unsafe extern "efiapi" fn exit_boot_services(_: Event, _: *mut c_void) {
     // SAFETY: BSP; the handler runs at TPL_NOTIFY, so no other code holds the driver.
-    if let Some(driver) = unsafe { (*ptr::addr_of_mut!(DRIVER)).as_mut() } {
-        driver.quiesce();
+    if let Some(driver) = unsafe { (*ptr::addr_of_mut!(DRIVER)).as_mut() }
+        && let Err(error) = driver.quiesce()
+    {
+        // The controller may still own its DMA pages when the OS takes the memory: say so.
+        #[cfg(any(target_os = "none", target_os = "uefi"))]
+        {
+            let mut line = [0u8; 128];
+            let length = format_line(STOP_FAILED_PREFIX, error, &mut line);
+            crate::console::serial_term::write(&line[..length]);
+        }
+        #[cfg(not(any(target_os = "none", target_os = "uefi")))]
+        let _ = error;
     }
 }
 
@@ -264,14 +282,18 @@ fn release(ecam: &pci::Ecam, device: u8, saved: u32, controller: Option<&Xhci>, 
     ecam.write(device, 0, COMMAND_REGISTER, saved);
 }
 
-/// Result of [`install`].
+/// Result of [`install`]. `repr(u8)`: an explicit tag, not a niche in `Step` (the compiler turned
+/// the niche test into `sub $imm8, r8` (`80 /5`), which the firmware CPU profile does not run).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum Outcome {
     /// The board has no xHCI function: USB is absent, nothing is reported.
     Absent,
     /// The keyboard is enumerated and its Interrupt IN endpoint is armed.
     Enumerated,
-    /// A bring-up step failed; the controller was stopped and released.
+    /// A bring-up step failed. The controller was stopped (R/S = 0, HCRST) and PCI Command
+    /// restored; its DMA pages were returned only if the stop succeeded, otherwise they stay
+    /// allocated (BootServicesData) because the controller may still reference them.
     Failed(UsbError),
 }
 
@@ -305,8 +327,12 @@ pub unsafe fn install(handoff: &Handoff<'_>, system: *mut SystemTable) -> Outcom
         Ok(Some(mut controller)) => {
             // SAFETY: forwarded.
             if let Err(status) = unsafe { register_exit_handler(system) } {
-                // Without the handler the controller could not be stopped at ExitBootServices.
-                controller.quiesce();
+                // Without the handler the controller could not be stopped at ExitBootServices:
+                // stop it now and return the pages if it reached the reset state.
+                if controller.quiesce().is_ok() {
+                    // SAFETY: stopped above; the driver is dropped here.
+                    unsafe { controller.free_dma() };
+                }
                 return Outcome::Failed(UsbError::new(Step::ExitHandler, status.raw() as u32));
             }
             // SAFETY: BSP, single writer; nothing else reads `DRIVER` yet.
