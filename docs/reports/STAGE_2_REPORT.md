@@ -24601,8 +24601,13 @@ the masked retirement after the restore; refused prefix/mod = 11/REX.W/FS/GS for
 computed in the test; a 12-form program against the plain `step`. New decoder unit test (`long_decode`, 1). `cpl0_profile_set` 1626
 (LDMXCSR/STMXCSR left the refusal list), `cpl3_profile_set` 238, `s2_39_cpl0_sse` 11, `s2_34_sse_moves_memory` 14, `s2_37_fp_arith` 19,
 `s2_38_misc_fp` 21, `s2_54_fp_hadd` 20, `s2_55_fp` 33, `od-isa --lib` 2678, `od-testkit` 525+3+2, `od-machine --lib` 1950 (18 ignored);
-`cargo check --workspace --tests`, `cargo fmt --all -- --check`, `git diff --check` clean. Two existing decoder tests
-dropped `0F AE 15`/`1D` (LDMXCSR/STMXCSR RIP-relative) from their lists of refused forms; the REX.W forms stay refused.
+`cargo check --workspace --tests`, `cargo fmt --all -- --check`, `git diff --check` clean. One decoder test (`long_decode`) and one test of the set (`every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member`
+in `cpl0_profile_set.rs`) dropped `0F AE 15`/`1D` (LDMXCSR/STMXCSR RIP-relative) from their lists of refused forms; the REX.W forms stay refused.
+
+Behaviour change outside the set: the forms `0F AE /2` and `/3` with a memory operand now decode everywhere (the plain `step`
+and the CPL3 set included); the decoder reads the SIB byte and displacement before it returns `Unsupported`. On an
+encoding truncated at a memory boundary the plain `step` and the CPL3 set now report the fetch error of the missing byte
+instead of `Unsupported`; a complete encoding still ends in `Unsupported` there, with the same opcode (`0xae`).
 
 Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_sse_set_oracle/`, in the
 ignored area: `gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`; derived from the S2-37
