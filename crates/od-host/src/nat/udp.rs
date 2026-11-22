@@ -614,12 +614,20 @@ mod tests {
             (1, 1, 1)
         );
         assert_eq!(c.udp_datagrams, 1, "one per frame, whatever came of it");
-        // The flow survives: the next datagram is refused again, and nothing else is counted.
+        // The flow survives the refusal: the next datagram goes out on the same socket.
         send(&mut b, &frame, Instant::now());
-        assert_eq!(pump_for(&mut b, 1).len(), 1);
-        assert_eq!(b.counters().udp_refused, 2);
-        assert_eq!(b.counters().udp_flows_opened, 1);
-        assert_eq!(b.counters().udp_datagrams, 2);
+        let c = b.counters();
+        assert_eq!(
+            (c.udp_flows_opened, c.udp_datagrams, c.udp_forwarded),
+            (1, 2, 2)
+        );
+        // The kernel decides whether it answers this datagram with another ICMP port unreachable: it
+        // limits them per second for the whole machine and, while the whole NAT suite runs, it does
+        // not always send this second one (the backend has forwarded the datagram, as counted above).
+        // So the refusal is checked only when it comes, and then it is counted like the first.
+        let later = pump_quiet(&mut b, Duration::from_millis(300));
+        assert!(later.len() <= 1);
+        assert_eq!(b.counters().udp_refused, 1 + later.len() as u64);
     }
 
     #[test]
