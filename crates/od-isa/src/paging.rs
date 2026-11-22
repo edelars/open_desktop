@@ -18,8 +18,9 @@
 //!
 //! A `#PF` is not delivered: a walk that would fault is an explicit refusal with the reason and
 //! the linear address (the hardware loads `CR2` with it; the KVM oracle of S6-14m reports the same
-//! address). The privilege level is always 0 (supervisor): `U/S` is not looked at, and there is no
-//! `SMEP`/`SMAP` (`CR4` bits above 10 are never set by the model).
+//! address). The privilege level is always 0 (supervisor): `U/S` is not looked at, except for `CR4.SMEP` (S2-25j,
+//! [`WalkFeatures::smep`]), and there is no `SMAP` (`CR4` bits above 10 are never set by the model,
+//! except `SMEP`).
 //!
 //! Rules, from the Intel SDM Vol. 3A chapter 4 (by memory; every behaviour the model relies on is
 //! also an oracle image in `docs/reports/data/stage6/s6-14m/`):
@@ -50,6 +51,8 @@ pub const MAXPHYADDR_BITS: u32 = 36;
 
 const P: u64 = 1;
 const RW: u64 = 1 << 1;
+/// U/S (bit 2): the entry allows user-mode access.
+const US: u64 = 1 << 2;
 const ACCESSED: u64 = 1 << 5;
 const DIRTY: u64 = 1 << 6;
 const PS: u64 = 1 << 7;
@@ -66,6 +69,11 @@ const PDE_2M_RESERVED: u64 = 0x1F_E000;
 /// PSE-36 mechanism is not declared (`CPUID.01H:EDX[17]` is clear in every profile), so a 4 MiB page
 /// has no physical-address bits 39:32 and its frame is bits 31:22 only (bit 12 is PAT).
 const PDE_4M_RESERVED: u64 = 0x3F_E000;
+/// Bits 21:17 of a 4 MiB PDE of 32-bit paging when the PSE-36 mechanism is modelled
+/// ([`WalkFeatures::pse36`]) and `MAXPHYADDR` is 36 (SDM Vol. 3A §5.3, Rev. 093: "bits 21:M-19 are
+/// reserved, where M is the minimum of 40 and MAXPHYADDR"): bit 21 and the bits 20:17 that would be
+/// physical-address bits 39:36. Bits 16:13 are physical-address bits 35:32.
+const PDE_4M_RESERVED_PSE36: u64 = 0x3E_0000;
 
 /// Kind of memory access that walks the tables.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +81,22 @@ pub enum AccessKind {
     Read,
     Write,
     Fetch,
+}
+
+/// Optional features of a walk beyond the control state in the `*Params` structs (S2-25j). Both are
+/// model switches: neither is declared by a CPUID profile (`CPUID.07H:EBX[7]` SMEP and
+/// `CPUID.01H:EDX[17]` PSE-36 are clear, S2-57), so the callers that do not set them see the
+/// behaviour of the earlier slices (the `*_with` functions take them, the plain functions use
+/// [`WalkFeatures::default`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WalkFeatures {
+    /// `CR4.SMEP`: the privilege level of the model is 0 (supervisor), so an instruction fetch
+    /// through a translation whose `U/S` flag is 1 in every paging-structure entry controlling it
+    /// (a user-mode address) is refused as [`PageRefusal::SmepFetch`] (SDM Vol. 3A §5.6.1).
+    pub smep: bool,
+    /// The PSE-36 mechanism (32-bit paging only): bits 16:13 of a 4 MiB PDE are physical-address
+    /// bits 35:32 and bits 21:17 are reserved (`MAXPHYADDR` 36).
+    pub pse36: bool,
 }
 
 /// Paging control state of the walk.
@@ -100,12 +124,55 @@ pub enum PageRefusal {
     WriteProtected { entry: u64 },
     /// An instruction fetch through an entry with `XD = 1` and `EFER.NXE = 1`.
     NoExecute { entry: u64 },
+    /// An instruction fetch of the supervisor (CPL 0) through a user-mode address (`U/S = 1` in every
+    /// entry of the walk) with `CR4.SMEP = 1` (S2-25j; SDM Vol. 3A §5.6.1): `#PF`, error code
+    /// `P = 1`, `I/D = 1` (§5.7). `entry` is the leaf entry.
+    SmepFetch { entry: u64 },
     /// The 8 bytes of the entry at `phys` are not all readable in memory.
     EntryUnreadable { phys: u32 },
     /// The accessed/dirty update needs the entry byte at `phys` writable, and it is not.
     EntryUnwritable { phys: u32 },
     /// The entry or the page lies at `phys` >= 4 GiB (memory is addressed with 32 bits).
     PhysicalBeyond4GiB { phys: u64 },
+}
+
+/// P flag of a `#PF` error code (SDM Vol. 3A §5.7): the fault is not a missing translation.
+pub const PF_P: u32 = 1;
+/// W/R flag: the access was a write.
+pub const PF_W: u32 = 1 << 1;
+/// RSVD flag: a reserved bit was set in a paging-structure entry.
+pub const PF_RSVD: u32 = 1 << 3;
+/// I/D flag: the access was an instruction fetch and `CR4.SMEP = 1` or (`CR4.PAE = 1` and `EFER.NXE = 1`).
+pub const PF_ID: u32 = 1 << 4;
+
+/// The error code of the `#PF` that `reason` stands for (S2-25j; SDM Vol. 3A §5.7), for an `access`
+/// of the supervisor (the model runs at CPL 0, so `U/S` (bit 2) is 0). `id_reporting` is the
+/// condition of bit 4: `CR4.SMEP = 1`, or `CR4.PAE = 1` with `EFER.NXE = 1`. `None` for the model limits
+/// that are no architectural fault ([`PageRefusal::EntryUnreadable`], [`PageRefusal::EntryUnwritable`],
+/// [`PageRefusal::PhysicalBeyond4GiB`]).
+pub fn page_fault_error_code(
+    reason: PageRefusal,
+    access: AccessKind,
+    id_reporting: bool,
+) -> Option<u32> {
+    let base = match reason {
+        PageRefusal::NotPresent { .. } => 0,
+        PageRefusal::ReservedBits { .. } | PageRefusal::GigabytePage { .. } => PF_P | PF_RSVD,
+        PageRefusal::WriteProtected { .. }
+        | PageRefusal::NoExecute { .. }
+        | PageRefusal::SmepFetch { .. } => PF_P,
+        PageRefusal::EntryUnreadable { .. }
+        | PageRefusal::EntryUnwritable { .. }
+        | PageRefusal::PhysicalBeyond4GiB { .. } => return None,
+    };
+    let mut code = base;
+    if access == AccessKind::Write {
+        code |= PF_W;
+    }
+    if access == AccessKind::Fetch && id_reporting {
+        code |= PF_ID;
+    }
+    Some(code)
 }
 
 /// Page size of a successful translation.
@@ -171,10 +238,22 @@ pub fn translate<M: RealModeMemory>(
     linear: u32,
     kind: AccessKind,
 ) -> Result<Translation, PageRefusal> {
+    translate_with(mem, params, WalkFeatures::default(), linear, kind)
+}
+
+/// [`translate`] with the optional [`WalkFeatures`] (SMEP).
+pub fn translate_with<M: RealModeMemory>(
+    mem: &M,
+    params: PagingParams,
+    features: WalkFeatures,
+    linear: u32,
+    kind: AccessKind,
+) -> Result<Translation, PageRefusal> {
     // (level, address of the entry, entry)
     let mut used: Vec<(u8, u32, u64)> = Vec::with_capacity(4);
     let mut table = u64::from(params.cr3 & 0xFFFF_F000);
     let mut rw_all = true;
+    let mut us_all = true;
     let mut xd_any = false;
     let l = u64::from(linear);
     // A linear address below 4 GiB: the PML4 index (bits 47:39) is 0.
@@ -199,6 +278,7 @@ pub fn translate<M: RealModeMemory>(
         }
         used.push((level, entry_phys, entry));
         rw_all &= entry & RW != 0;
+        us_all &= entry & US != 0;
         xd_any |= entry & XD != 0;
         match level {
             4 if entry & PS != 0 => return Err(PageRefusal::ReservedBits { level, entry }),
@@ -227,6 +307,8 @@ pub fn translate<M: RealModeMemory>(
             linear: l,
             used: &used,
             rw_all,
+            us_all,
+            smep: features.smep,
             xd_any,
             size,
             entry,
@@ -244,6 +326,10 @@ struct WalkEnd<'a> {
     /// (level, address of the entry, entry) of every entry that takes an accessed bit.
     used: &'a [(u8, u32, u64)],
     rw_all: bool,
+    /// `U/S = 1` in every entry that controls the translation (a user-mode address).
+    us_all: bool,
+    /// `CR4.SMEP`.
+    smep: bool,
     xd_any: bool,
     size: PageSize,
     entry: u64,
@@ -258,6 +344,8 @@ fn finish_walk<M: RealModeMemory>(mem: &M, end: WalkEnd<'_>) -> Result<Translati
         linear: l,
         used,
         rw_all,
+        us_all,
+        smep,
         xd_any,
         size,
         entry,
@@ -267,6 +355,9 @@ fn finish_walk<M: RealModeMemory>(mem: &M, end: WalkEnd<'_>) -> Result<Translati
     }
     if kind == AccessKind::Fetch && nxe && xd_any {
         return Err(PageRefusal::NoExecute { entry });
+    }
+    if kind == AccessKind::Fetch && smep && us_all {
+        return Err(PageRefusal::SmepFetch { entry });
     }
     let phys64 = match size {
         PageSize::Size2M => (entry & ADDR_2M) | (l & 0x1F_FFFF),
@@ -364,6 +455,18 @@ pub fn translate_pae<M: RealModeMemory>(
     linear: u32,
     kind: AccessKind,
 ) -> Result<Translation, PageRefusal> {
+    translate_pae_with(mem, params, WalkFeatures::default(), linear, kind)
+}
+
+/// [`translate_pae`] with the optional [`WalkFeatures`] (SMEP). A PDPTE has no `U/S` flag: the
+/// translation is a user-mode address when the PDE and (for a 4 KiB page) the PTE have `U/S = 1`.
+pub fn translate_pae_with<M: RealModeMemory>(
+    mem: &M,
+    params: PaeParams,
+    features: WalkFeatures,
+    linear: u32,
+    kind: AccessKind,
+) -> Result<Translation, PageRefusal> {
     let l = u64::from(linear);
     let pdpte = params.pdptes[(linear >> 30) as usize];
     if pdpte & P == 0 {
@@ -375,6 +478,7 @@ pub fn translate_pae<M: RealModeMemory>(
     let mut table = pdpte & ADDR_4K;
     let mut used: Vec<(u8, u32, u64)> = Vec::with_capacity(2);
     let mut rw_all = true;
+    let mut us_all = true;
     let mut xd_any = false;
     let mut leaf: Option<(PageSize, u64)> = None;
     for (level, index) in [(2u8, (l >> 21) & 0x1FF), (1, (l >> 12) & 0x1FF)] {
@@ -391,6 +495,7 @@ pub fn translate_pae<M: RealModeMemory>(
         }
         used.push((level, entry_phys, entry));
         rw_all &= entry & RW != 0;
+        us_all &= entry & US != 0;
         xd_any |= entry & XD != 0;
         if level == 2 && entry & PS != 0 {
             if entry & PDE_2M_RESERVED != 0 {
@@ -415,6 +520,8 @@ pub fn translate_pae<M: RealModeMemory>(
             linear: l,
             used: &used,
             rw_all,
+            us_all,
+            smep: features.smep,
             xd_any,
             size,
             entry,
@@ -465,6 +572,25 @@ pub fn translate32<M: RealModeMemory>(
     linear: u32,
     kind: AccessKind,
 ) -> Result<Translation, PageRefusal> {
+    translate32_with(mem, params, WalkFeatures::default(), linear, kind)
+}
+
+/// [`translate32`] with the optional [`WalkFeatures`] (S2-25j):
+/// - `pse36`: a 4 MiB page (`CR4.PSE = 1`, `PDE.PS = 1`) has the physical-address bits 35:32 in PDE bits
+///   16:13, so the frame is `PDE[31:22] << 22 | PDE[16:13] << 32`; PDE bits 21:17 are reserved
+///   (`MAXPHYADDR` = 36, so bits 39:36 do not exist; SDM Vol. 3A §5.3, Table 5-4). Memory is addressed
+///   with 32 bits: a frame above 4 GiB (PDE bits 16:13 not all zero) is the model limit
+///   [`PageRefusal::PhysicalBeyond4GiB`] (the walk is correct, the memory interface cannot reach it;
+///   reported after the write-protect and SMEP checks, as the PAE walk does, so an architectural fault wins);
+/// - `smep`: an instruction fetch of a user-mode address (`U/S = 1` in the PDE and, for a 4 KiB page,
+///   in the PTE) is [`PageRefusal::SmepFetch`].
+pub fn translate32_with<M: RealModeMemory>(
+    mem: &M,
+    params: Paging32Params,
+    features: WalkFeatures,
+    linear: u32,
+    kind: AccessKind,
+) -> Result<Translation, PageRefusal> {
     // (address of the entry, its 8-byte cell, the entry)
     let mut used: Vec<(u32, u64, u32)> = Vec::with_capacity(2);
     let pde_at = (params.cr3 & 0xFFFF_F000) | ((linear >> 22) << 2);
@@ -477,18 +603,32 @@ pub fn translate32<M: RealModeMemory>(
     }
     used.push((pde_at, cell, pde));
     let mut rw_all = u64::from(pde) & RW != 0;
+    let mut us_all = u64::from(pde) & US != 0;
+    let mut beyond = None;
     let (size, phys, leaf) = if params.pse && u64::from(pde) & PS != 0 {
-        if u64::from(pde) & PDE_4M_RESERVED != 0 {
+        let reserved = if features.pse36 {
+            PDE_4M_RESERVED_PSE36
+        } else {
+            PDE_4M_RESERVED
+        };
+        if u64::from(pde) & reserved != 0 {
             return Err(PageRefusal::ReservedBits {
                 level: 2,
                 entry: u64::from(pde),
             });
         }
-        (
-            PageSize::Size4M,
-            (pde & 0xFFC0_0000) | (linear & 0x3F_FFFF),
-            pde,
-        )
+        // PSE-36: bits 35:32 of the frame (PDE bits 16:13); a frame above 4 GiB is out of reach.
+        let high = if features.pse36 {
+            (u64::from(pde) >> 13) & 0xF
+        } else {
+            0
+        };
+        let low = u64::from((pde & 0xFFC0_0000) | (linear & 0x3F_FFFF));
+        // The model limit is reported after the architectural checks below (as `finish_walk` does).
+        if high != 0 {
+            beyond = Some((high << 32) | low);
+        }
+        (PageSize::Size4M, low as u32, pde)
     } else {
         let pte_at = (pde & 0xFFFF_F000) | (((linear >> 12) & 0x3FF) << 2);
         let (cell, pte) = read_entry32(mem, pte_at)?;
@@ -500,6 +640,7 @@ pub fn translate32<M: RealModeMemory>(
         }
         used.push((pte_at, cell, pte));
         rw_all &= u64::from(pte) & RW != 0;
+        us_all &= u64::from(pte) & US != 0;
         (
             PageSize::Size4K,
             (pte & 0xFFFF_F000) | (linear & 0xFFF),
@@ -510,6 +651,14 @@ pub fn translate32<M: RealModeMemory>(
         return Err(PageRefusal::WriteProtected {
             entry: u64::from(leaf),
         });
+    }
+    if kind == AccessKind::Fetch && features.smep && us_all {
+        return Err(PageRefusal::SmepFetch {
+            entry: u64::from(leaf),
+        });
+    }
+    if let Some(phys) = beyond {
+        return Err(PageRefusal::PhysicalBeyond4GiB { phys });
     }
     let mut touches = Vec::new();
     for (i, &(entry_at, cell, e)) in used.iter().enumerate() {
@@ -1904,5 +2053,298 @@ mod tests {
             entry32(&raced.bytes, PD32 + 4),
             ((PT32 as u32 | 3) ^ 0x640) | 0x20
         );
+    }
+
+    // S2-25j: PSE-36, SMEP and the #PF error code. Model only (no hardware oracle).
+
+    fn walk32_with(
+        ram: &[u8],
+        features: WalkFeatures,
+        pse: bool,
+        linear: u32,
+        kind: AccessKind,
+    ) -> Result<Translation, PageRefusal> {
+        let mut copy = ram.to_vec();
+        translate32_with(
+            &ImageMemoryMut {
+                base: 0,
+                bytes: &mut copy,
+            },
+            Paging32Params { pse, ..PARAMS32 },
+            features,
+            linear,
+            kind,
+        )
+    }
+
+    const PSE36: WalkFeatures = WalkFeatures {
+        smep: false,
+        pse36: true,
+    };
+    const SMEP: WalkFeatures = WalkFeatures {
+        smep: true,
+        pse36: false,
+    };
+
+    #[test]
+    fn pse36_four_mib_pde_takes_bits_35_32_from_bits_16_13_and_reserves_21_17() {
+        let mut ram = tables32();
+        let linear = 0x0040_1234;
+        let refused = |pde: u32| {
+            Err(PageRefusal::ReservedBits {
+                level: 2,
+                entry: u64::from(pde),
+            })
+        };
+        // PDE[1]: 4 MiB page at 0x0040_0000 (P, R/W, PS): the same frame with and without PSE-36.
+        set32(&mut ram, PD32 + 4, 0x0040_0083);
+        for features in [WalkFeatures::default(), PSE36] {
+            let t = walk32_with(&ram, features, true, linear, AccessKind::Read).unwrap();
+            assert_eq!((t.phys, t.size), (0x0040_1234, PageSize::Size4M));
+        }
+        // PAT (bit 12) is not reserved.
+        set32(&mut ram, PD32 + 4, 0x0040_1083);
+        assert!(walk32_with(&ram, PSE36, true, linear, AccessKind::Read).is_ok());
+        // PA[35:32] = 1 (bit 13): reserved without PSE-36; with it the frame is 0x1_0040_1234,
+        // which the 32-bit memory interface cannot reach (a model limit, not a #PF).
+        set32(&mut ram, PD32 + 4, 0x0040_2083);
+        assert_eq!(
+            walk32_with(
+                &ram,
+                WalkFeatures::default(),
+                true,
+                linear,
+                AccessKind::Read
+            ),
+            refused(0x0040_2083)
+        );
+        assert_eq!(
+            walk32_with(&ram, PSE36, true, linear, AccessKind::Read),
+            Err(PageRefusal::PhysicalBeyond4GiB {
+                phys: 0x1_0040_1234
+            })
+        );
+        // Bits 16:13 = 0xF.
+        set32(&mut ram, PD32 + 4, 0x0041_E083);
+        assert_eq!(
+            walk32_with(&ram, PSE36, true, 0x0040_0001, AccessKind::Fetch),
+            Err(PageRefusal::PhysicalBeyond4GiB {
+                phys: 0xF_0040_0001
+            })
+        );
+        // The model limit comes after the architectural faults (as in the PAE walk): a write to a
+        // read-only frame above 4 GiB is the #PF, and so is a fetch of a user frame with SMEP.
+        set32(&mut ram, PD32 + 4, 0x0040_2081);
+        assert_eq!(
+            walk32_with(&ram, PSE36, true, linear, AccessKind::Write),
+            Err(PageRefusal::WriteProtected { entry: 0x0040_2081 })
+        );
+        set32(&mut ram, PD32 + 4, 0x0040_2087);
+        let smep36 = WalkFeatures {
+            smep: true,
+            pse36: true,
+        };
+        assert_eq!(
+            walk32_with(&ram, smep36, true, linear, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch { entry: 0x0040_2087 })
+        );
+        assert_eq!(
+            walk32_with(&ram, smep36, true, linear, AccessKind::Read),
+            Err(PageRefusal::PhysicalBeyond4GiB {
+                phys: 0x1_0040_1234
+            })
+        );
+        // Bits 20:17 (physical-address bits 39:36 beyond MAXPHYADDR) and bit 21 stay reserved;
+        // without PSE-36 they are reserved as well.
+        for bit in 17..=21u32 {
+            let pde = 0x0040_0083u32 | 1 << bit;
+            set32(&mut ram, PD32 + 4, pde);
+            for features in [WalkFeatures::default(), PSE36] {
+                assert_eq!(
+                    walk32_with(&ram, features, true, linear, AccessKind::Read),
+                    refused(pde),
+                    "bit {bit}"
+                );
+            }
+        }
+        // CR4.PSE = 0: PS is ignored and no bit is reserved, PSE-36 or not: the PDE is a page table.
+        set32(&mut ram, PD32, PT32 as u32 | 0x83);
+        for features in [WalkFeatures::default(), PSE36] {
+            let t = walk32_with(&ram, features, false, 0x1008, AccessKind::Read).unwrap();
+            assert_eq!((t.phys, t.size), (0x1008, PageSize::Size4K));
+        }
+    }
+
+    #[test]
+    fn smep_refuses_a_fetch_of_a_user_page_in_32bit_paging_and_nothing_else() {
+        let mut ram = tables32();
+        // PDE and PTE of page 2 both U/S = 1: a user-mode address.
+        set32(&mut ram, PD32, PT32 as u32 | 7);
+        set32(&mut ram, PT32 + 8, 0x2000 | 7);
+        // Page 3: PTE U/S = 0 under a U/S = 1 PDE: a supervisor-mode address.
+        set32(&mut ram, PT32 + 12, 0x3000 | 3);
+        let walk = |features, linear, kind| walk32_with(&ram, features, true, linear, kind);
+        assert_eq!(
+            walk(SMEP, 0x2000, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch {
+                entry: u64::from(0x2007u32)
+            })
+        );
+        assert!(walk(WalkFeatures::default(), 0x2000, AccessKind::Fetch).is_ok());
+        for kind in [AccessKind::Read, AccessKind::Write] {
+            assert!(walk(SMEP, 0x2000, kind).is_ok(), "{kind:?}: no SMAP");
+        }
+        assert!(walk(SMEP, 0x3000, AccessKind::Fetch).is_ok());
+        // PDE U/S = 0, PTE U/S = 1: supervisor-mode as well (every entry must be U/S = 1).
+        set32(&mut ram, PD32, PT32 as u32 | 3);
+        let walk = |linear| walk32_with(&ram, SMEP, true, linear, AccessKind::Fetch);
+        assert!(walk(0x2000).is_ok());
+        // A 4 MiB page: U/S in the PDE decides, the refused entry is the PDE.
+        set32(&mut ram, PD32 + 4, 0x0040_0087);
+        assert_eq!(
+            walk32_with(&ram, SMEP, true, 0x0040_0010, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch {
+                entry: u64::from(0x0040_0087u32)
+            })
+        );
+        set32(&mut ram, PD32 + 4, 0x0040_0083);
+        assert!(walk32_with(&ram, SMEP, true, 0x0040_0010, AccessKind::Fetch).is_ok());
+    }
+
+    #[test]
+    fn smep_in_pae_paging_looks_at_the_pde_and_pte_only() {
+        let mut ram = pae_tables_4k();
+        let walk = |ram: &[u8], features, linear, kind| {
+            let mut copy = ram.to_vec();
+            translate_pae_with(
+                &ImageMemoryMut {
+                    base: 0,
+                    bytes: &mut copy,
+                },
+                pae_params(ram),
+                features,
+                linear,
+                kind,
+            )
+        };
+        let smep = WalkFeatures {
+            smep: true,
+            pse36: false,
+        };
+        // The PDPTE has no U/S flag; PDE and PTE of page 1 U/S = 1: user-mode.
+        set(&mut ram, PD, PT as u64 | 7);
+        set(&mut ram, PT + 8, 0x1000 | 7);
+        assert_eq!(
+            walk(&ram, smep, 0x1000, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch { entry: 0x1007 })
+        );
+        assert!(walk(&ram, WalkFeatures::default(), 0x1000, AccessKind::Fetch).is_ok());
+        assert!(walk(&ram, smep, 0x1000, AccessKind::Read).is_ok());
+        // PTE U/S = 0 (page 2, PDE U/S = 1): supervisor-mode.
+        assert!(walk(&ram, smep, 0x2000, AccessKind::Fetch).is_ok());
+        // 2 MiB page: U/S of the PDE.
+        set(&mut ram, PD + 8, 0x0020_0087);
+        assert_eq!(
+            walk(&ram, smep, 0x0020_0000, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch { entry: 0x0020_0087 })
+        );
+        set(&mut ram, PD + 8, 0x0020_0083);
+        assert!(walk(&ram, smep, 0x0020_0000, AccessKind::Fetch).is_ok());
+    }
+
+    #[test]
+    fn smep_in_four_level_paging_needs_user_in_all_four_levels() {
+        let mut ram = tables_4k();
+        let smep = WalkFeatures {
+            smep: true,
+            pse36: false,
+        };
+        let walk = |ram: &[u8], features, linear, kind| {
+            let mut copy = ram.to_vec();
+            translate_with(
+                &ImageMemoryMut {
+                    base: 0,
+                    bytes: &mut copy,
+                },
+                PARAMS,
+                features,
+                linear,
+                kind,
+            )
+        };
+        // Only the PTE of page 1 is U/S = 1: supervisor-mode.
+        set(&mut ram, PT + 8, 0x1000 | 7);
+        assert!(walk(&ram, smep, 0x1000, AccessKind::Fetch).is_ok());
+        // Each upper level in turn also U/S = 1; the last one makes it user-mode.
+        for (i, at) in [PD, PDPT, PML4].into_iter().enumerate() {
+            let e = entry(&ram, at);
+            set(&mut ram, at, e | 4);
+            let expect = if i == 2 {
+                Err(PageRefusal::SmepFetch { entry: 0x1007 })
+            } else {
+                Ok(0x1000)
+            };
+            assert_eq!(
+                walk(&ram, smep, 0x1000, AccessKind::Fetch).map(|t| t.phys),
+                expect,
+                "level {}",
+                2 + i
+            );
+        }
+        assert!(walk(&ram, WalkFeatures::default(), 0x1000, AccessKind::Fetch).is_ok());
+        assert!(walk(&ram, smep, 0x1000, AccessKind::Write).is_ok());
+    }
+
+    #[test]
+    fn smep_fault_leaves_the_accessed_bits_alone() {
+        let mut ram = tables32();
+        set32(&mut ram, PD32, PT32 as u32 | 7);
+        set32(&mut ram, PT32 + 8, 0x2000 | 7);
+        // The refusal carries no touch; the success of the same walk without SMEP does.
+        assert!(walk32_with(&ram, SMEP, true, 0x2000, AccessKind::Fetch).is_err());
+        let t = walk32_with(
+            &ram,
+            WalkFeatures::default(),
+            true,
+            0x2000,
+            AccessKind::Fetch,
+        )
+        .unwrap();
+        assert_eq!(t.touches.len(), 2);
+    }
+
+    #[test]
+    fn page_fault_error_code_follows_the_sdm_flags() {
+        let c = page_fault_error_code;
+        let np = PageRefusal::NotPresent { level: 1, entry: 0 };
+        // Not present: P = 0; W for a write; I/D for a fetch only when reported.
+        assert_eq!(c(np, AccessKind::Read, true), Some(0));
+        assert_eq!(c(np, AccessKind::Write, true), Some(PF_W));
+        assert_eq!(c(np, AccessKind::Fetch, false), Some(0));
+        assert_eq!(c(np, AccessKind::Fetch, true), Some(PF_ID));
+        // Reserved bit: P | RSVD (a 1 GiB page is a reserved bit without the feature).
+        let rsvd = PageRefusal::ReservedBits { level: 2, entry: 0 };
+        assert_eq!(c(rsvd, AccessKind::Read, false), Some(PF_P | PF_RSVD));
+        assert_eq!(
+            c(rsvd, AccessKind::Write, false),
+            Some(PF_P | PF_RSVD | PF_W)
+        );
+        let gb = PageRefusal::GigabytePage { entry: 0 };
+        assert_eq!(c(gb, AccessKind::Read, false), Some(PF_P | PF_RSVD));
+        // Protection violations: P, plus the access flags; U/S is 0 (supervisor).
+        let wp = PageRefusal::WriteProtected { entry: 0 };
+        assert_eq!(c(wp, AccessKind::Write, false), Some(PF_P | PF_W));
+        let nx = PageRefusal::NoExecute { entry: 0 };
+        assert_eq!(c(nx, AccessKind::Fetch, true), Some(PF_P | PF_ID));
+        let smep = PageRefusal::SmepFetch { entry: 0 };
+        assert_eq!(c(smep, AccessKind::Fetch, true), Some(0x11));
+        // Model limits are no architectural fault.
+        for r in [
+            PageRefusal::EntryUnreadable { phys: 0 },
+            PageRefusal::EntryUnwritable { phys: 0 },
+            PageRefusal::PhysicalBeyond4GiB { phys: 1 << 32 },
+        ] {
+            assert_eq!(c(r, AccessKind::Read, true), None);
+        }
     }
 }

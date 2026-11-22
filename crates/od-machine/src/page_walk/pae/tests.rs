@@ -238,6 +238,7 @@ fn a_protected_mode_model_on_pae_paging_is_a_pae_snapshot() {
         cr4: 0x20,
         efer: EFER_NXE,
         pdptes: pdptes(&image),
+        pse36: false,
         cs: flat_segment(),
         ds: flat_segment(),
         es: flat_segment(),
