@@ -50403,9 +50403,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         {
             state.sse.is_some()
         }
-        // S2-39n: the register forms and the MOVSS/MOVSD/LDMXCSR/STMXCSR memory forms of `sse_cpl0_form`.
+        // S2-39n: the register forms and the MOVSS/MOVSD/STMXCSR memory forms of `sse_cpl0_form`.
         _ if sse_set && sse_cpl0_form(&instruction) => state.sse.is_some(),
-        Operation::Ldmxcsr(_) | Operation::Stmxcsr(_) => false,
+        Operation::Stmxcsr(_) => false,
         Operation::Sysenter | Operation::Sysexit => false,
         // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
         Operation::Syscall => false,
@@ -52743,37 +52743,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             next_rip,
         );
     }
-    // S2-39n: LDMXCSR m32 and STMXCSR m32 in the CPL0 set (Intel SDM Vol. 2A, LDMXCSR and STMXCSR; Vol. 1 section
-    // 10.2.3): the CR0/CR4 gates ran before the admission test. LDMXCSR reads the dword (a memory fault is the
-    // backend's result and changes nothing) and then raises `#GP(0)` for any bit outside
-    // `TARGET_FXSAVE_MXCSR_MASK` before MXCSR changes; no flag and no other register changes. STMXCSR writes MXCSR.
-    // Neither form checks alignment, and neither raises a SIMD floating-point exception.
-    if let Operation::Ldmxcsr(source) = instruction.operation {
-        let address = match source.access_range_address_48(state, next_rip, 4) {
-            Ok(address) => address,
-            Err(error) => return report_memory_error(error),
-        };
-        if cpl3_ac_unmodeled(state, context, address, 4) {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
-        }
-        let mut raw = [0u8; 4];
-        if let Err(error) = memory.read(address, context, &mut raw) {
-            return report_memory_error(error);
-        }
-        let value = u32::from_le_bytes(raw);
-        if value & !crate::TARGET_FXSAVE_MXCSR_MASK != 0 {
-            return Ok(StepOutcome::Fault(ArchitecturalFault {
-                vector: 13,
-                error_code: Some(0),
-                linear_address: None,
-            }));
-        }
-        sse_mut(state).mxcsr = value;
-        state.rip = next_rip;
-        return Ok(StepOutcome::Advanced);
-    }
+    // S2-39n: STMXCSR m32 in the CPL0 set (Intel SDM Vol. 2A, STMXCSR; Vol. 1 section 10.2.3): the CR0/CR4 gates ran
+    // before the admission test. STMXCSR writes MXCSR; no flag and no other register changes; no alignment check and
+    // no SIMD floating-point exception. LDMXCSR is not handled here: by the owner's "main priority" rule (merge
+    // 56c60c9) the S7-31i `Operation::LdmxcsrMemory` of the FP member (`step_cpl0_fp`) is the only LDMXCSR form.
     if let Operation::Stmxcsr(destination) = instruction.operation {
         let address = match destination.access_range_address_48(state, next_rip, 4) {
             Ok(address) => address,
@@ -64379,8 +64352,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovhpsLoadMemory { .. } => {
             return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
         }
-        Operation::Ldmxcsr(_) | Operation::Stmxcsr(_) => {
-            unreachable!("LDMXCSR and STMXCSR commit before dispatch")
+        Operation::Stmxcsr(_) => {
+            unreachable!("STMXCSR commits before dispatch")
         }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
         Operation::MovsdLoadMemory { .. } => unreachable!("MOVSD load commits before dispatch"),
@@ -74115,7 +74088,6 @@ fn sse_cpl0_memory_form(operation: &Operation) -> bool {
             | Operation::MovssStoreMemory { .. }
             | Operation::MovsdLoadMemory { .. }
             | Operation::MovsdStoreMemory { .. }
-            | Operation::Ldmxcsr(_)
             | Operation::Stmxcsr(_)
     )
 }
@@ -74145,7 +74117,9 @@ fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
 /// stay in the cell at CPL3) or the form itself (FS/GS overrides, an unsupported addressing shape) as `Unsupported`.
 fn cpl3_sse_set_form(instruction: &long_decode::Instruction) -> bool {
     let operation = instruction.operation;
-    sse_cpl0_form(instruction)
+    // S7-31i LDMXCSR (merge 56c60c9, "main priority"): executed by `step_cpl0_fp` on `state.sse`, also at CPL3.
+    matches!(operation, Operation::LdmxcsrMemory { .. })
+        || sse_cpl0_form(instruction)
         || sse_cpl0_cpl3_handler_form(&operation)
         || sse_fp_arith_from_narrow(operation).is_some()
         || sse_fp_misc_from_narrow(operation, instruction.prefixes.operand_override).is_some()
@@ -75569,6 +75543,13 @@ fn step_cpl0_fp(
             if cr0 & (1 << 3) != 0 {
                 return device_not_available;
             }
+            // S2-39 (CPL3 of the set): a misaligned operand with RFLAGS.AC = 1 and CR0.AM = 1 is a #AC that the
+            // model does not take, so it is refused like every other form of the set (the CPL0 context has none).
+            if let Ok(address) = source.access_range_address_48(state, next_rip, 4)
+                && cpl3_ac_unmodeled(state, context, address, 4)
+            {
+                return unsupported;
+            }
             let value =
                 match read_operand(state, memory, context, next_rip, Operand::Memory(source)) {
                     Ok(value) => value as u32,
@@ -75582,7 +75563,9 @@ fn step_cpl0_fp(
                     linear_address: None,
                 }));
             }
-            cell.borrow_mut().sse.mxcsr = value;
+            // The SSE half of the FP member lives in `state.sse` while the set runs (S2-39; FXSAVE64/FXRSTOR64
+            // and STMXCSR use it too) and returns to the cell at the exit, so MXCSR is written there.
+            sse_mut(state).mxcsr = value;
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }
@@ -184192,7 +184175,7 @@ mod fxsave_rip_tests {
         image[16..20].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
         image[20..22].copy_from_slice(&x87.data_selector.unwrap().to_le_bytes());
         image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
-        image[28..32].copy_from_slice(&0x0000_ffffu32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
         for logical in 0..8 {
             let physical = (usize::from(x87.top()) + logical) & 7;
             image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
@@ -184220,7 +184203,7 @@ mod fxsave_rip_tests {
         image[8..16].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
         image[16..24].copy_from_slice(&x87.data_pointer.to_le_bytes());
         image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
-        image[28..32].copy_from_slice(&0x0000_ffffu32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
         for logical in 0..8 {
             let physical = (usize::from(x87.top()) + logical) & 7;
             image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
@@ -184684,7 +184667,7 @@ mod fxsave_rip_tests {
         assert_eq!(&image[0..5], &[0x5a, 0xa5, 0x05, 0x00, 0b0111_0111]);
         assert_eq!(&image[6..14], &[0xff, 0x07, 0xef, 0xcd, 0xab, 0x89, 0, 0]);
         assert_eq!(&image[16..22], &[0x10, 0x32, 0x54, 0x76, 0x53, 0]);
-        assert_eq!(&image[24..32], &[0x34, 0x12, 0xa5, 0xa5, 0xff, 0xff, 0, 0]);
+        assert_eq!(&image[24..32], &[0x34, 0x12, 0xa5, 0xa5, 0xbf, 0xff, 0, 0]);
         assert_eq!(&image[464..], &[0xa5; 48]);
     }
 
@@ -185228,8 +185211,8 @@ mod fxsave_rip_tests {
         }
 
         let mut invalid = image;
-        // Bits 31:16 are reserved; DAZ (bit 6) is in the target mask (ADR-0014).
-        for unsupported_mxcsr_bits in [0x0001_0000u32, 0x8000_0000] {
+        // Bits 31:16 and DAZ (bit 6) are outside the target mask 0xffbf (S7-31i; ADR-0014 superseded, ISSUE-663).
+        for unsupported_mxcsr_bits in [0x0001_0000u32, 0x8000_0000, 0x0000_0040] {
             invalid[24..28].copy_from_slice(&(0x0000_1f80 | unsupported_mxcsr_bits).to_le_bytes());
             let mut state = fixture_state(2, 0x2b, 0x53);
             state.gpr[Register::Rbx as usize] = area - 0x40;
@@ -185257,27 +185240,8 @@ mod fxsave_rip_tests {
             assert_eq!(state, before);
         }
 
-        // DAZ set in the image is restored like any supported bit (i5-3210M: FXRSTOR64 with MXCSR 0x1fc0
-        // retires and STMXCSR reads 0x1fc0).
-        let mut daz = image;
-        daz[24..28].copy_from_slice(&0x0000_1fc0u32.to_le_bytes());
-        let mut state = fixture_state(2, 0x2b, 0x53);
-        state.gpr[Register::Rbx as usize] = area - 0x40;
-        let mut memory = RestoreMemory::literal(daz, area, None);
-        let result = run(
-            &mut state,
-            &mut memory,
-            RunConfig {
-                instruction_budget: 1,
-                stop_rip: Some(RIP + 5),
-                context: AccessContext::default(),
-            },
-            || false,
-        );
-        assert_eq!(result.exit, RunExit::StopAddress);
-        assert_eq!(result.instructions_executed, 1);
-        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x0000_1fc0);
-
+        // (A DAZ image, `0x1fc0`, is the `0x0000_0040` case of the loop above: the i5-3210M restores it, the model
+        // refuses it by the mask 0xffbf, ISSUE-663.)
         let mut state = fixture_state(4, 0x2b, 0x53);
         state.gpr[Register::Rbx as usize] = area - 0x40;
         let before = state.clone();

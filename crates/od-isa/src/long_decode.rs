@@ -1832,9 +1832,6 @@ pub enum Operation {
     /// S4-38L9o: bare `0F AE F8` (SFENCE); a no-op for the single-vCPU model, admitted only
     /// inside the CPL0 profile set.
     Sfence,
-    /// S2-39n: `[REX] 0F AE /2` LDMXCSR m32 (mod != 11; no mandatory prefix, no REX.W). Loaded into MXCSR by the
-    /// executor of the CPL0 set only; reserved bits are `#GP(0)` there.
-    Ldmxcsr(MemoryOperand),
     /// S2-39n: `[REX] 0F AE /3` STMXCSR m32 (mod != 11; no mandatory prefix, no REX.W); executed in the CPL0 set only.
     Stmxcsr(MemoryOperand),
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
@@ -9915,8 +9912,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0xae) => {
                 let modrm = self.byte()?;
-                // S2-39n: `[REX] 0F AE /2` LDMXCSR m32 and `[REX] 0F AE /3` STMXCSR m32 (memory operand, any
-                // addressing form). No 66/F2/F3/LOCK prefix, no stale REX (a REX not directly before the opcode)
+                // S2-39n: `[REX] 0F AE /3` STMXCSR m32 (memory operand, any addressing form). `0F AE /2`
+                // (LDMXCSR m32) is NOT decoded here: by the owner's "main priority" rule (merge 56c60c9) the
+                // S7-31i `Operation::LdmxcsrMemory` below is the only LDMXCSR form (ADR-0014 superseded for it).
+                // No 66/F2/F3/LOCK prefix, no stale REX (a REX not directly before the opcode)
                 // and no REX.W (refused, like the Linux profile refuses `48 0F AE 17`: the operand is 32 bits and
                 // the architectural effect of REX.W here is not measured).
                 let stale_rex = prefix_bytes[..prefix_count]
@@ -9924,7 +9923,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     .enumerate()
                     .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
                 if modrm >> 6 != 3
-                    && matches!((modrm >> 3) & 7, 2 | 3)
+                    && (modrm >> 3) & 7 == 3
                     && prefixes.group1.is_none()
                     && !prefixes.operand_override
                     && !stale_rex
@@ -9935,11 +9934,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     else {
                         unreachable!("a mod != 11 ModRM is a memory operand");
                     };
-                    if (modrm >> 3) & 7 == 2 {
-                        Operation::Ldmxcsr(area)
-                    } else {
-                        Operation::Stmxcsr(area)
-                    }
+                    Operation::Stmxcsr(area)
                 } else if prefixes == Prefixes::default() {
                     match modrm {
                         0xf0 => Operation::Mfence,
@@ -25583,7 +25578,8 @@ mod tests {
 
     #[test]
     fn ldmxcsr_and_stmxcsr_decode_any_memory_form_and_nothing_else() {
-        // S2-39n: `[REX] 0F AE /2` and `/3` with a memory operand, size dword.
+        // S2-39n: `[REX] 0F AE /3` STMXCSR with a memory operand, size dword; `0F AE /2` is the S7-31i
+        // `LdmxcsrMemory` (no prefix at all; by the "main priority" rule no REX form of LDMXCSR is decoded).
         let cases: [(&[u8], bool, AddressBase, i64, u8); 5] = [
             (
                 &[0x0f, 0xae, 0x10],
@@ -25600,8 +25596,8 @@ mod tests {
                 3,
             ),
             (
-                &[0x41, 0x0f, 0xae, 0x50, 0x08],
-                true,
+                &[0x41, 0x0f, 0xae, 0x58, 0x08],
+                false,
                 AddressBase::Register(Register::R8),
                 8,
                 5,
@@ -25614,22 +25610,23 @@ mod tests {
                 7,
             ),
             (
-                &[0x40, 0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff],
+                &[0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff],
                 true,
                 AddressBase::Register(Register::Rbp),
                 -16,
-                8,
+                7,
             ),
         ];
         for (bytes, load, base, displacement, length) in cases {
             let instruction = Memory::new(bytes).decode().unwrap();
             assert_eq!(instruction.length, length, "{bytes:02x?}");
-            let (Operation::Ldmxcsr(area) | Operation::Stmxcsr(area)) = instruction.operation
+            let (Operation::LdmxcsrMemory { source: area } | Operation::Stmxcsr(area)) =
+                instruction.operation
             else {
                 panic!("{bytes:02x?}: {:?}", instruction.operation)
             };
             assert_eq!(
-                matches!(instruction.operation, Operation::Ldmxcsr(_)),
+                matches!(instruction.operation, Operation::LdmxcsrMemory { .. }),
                 load,
                 "{bytes:02x?}"
             );
@@ -25644,6 +25641,8 @@ mod tests {
             &[0xf0, 0x0f, 0xae, 0x10][..],       // LOCK
             &[0x48, 0x0f, 0xae, 0x10][..],       // REX.W
             &[0x48, 0x41, 0x0f, 0xae, 0x10][..], // stale REX
+            &[0x41, 0x0f, 0xae, 0x50, 0x08][..], // REX LDMXCSR (S7-31i has no REX form)
+            &[0x40, 0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff][..], // REX LDMXCSR
             &[0x0f, 0xae, 0xd0][..],             // mod = 11, /2
             &[0x0f, 0xae, 0xd8][..],             // mod = 11, /3
         ] {
@@ -25683,7 +25682,7 @@ mod tests {
             &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
-            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i and `0F AE 1D` is `STMXCSR` since S4, no longer refused.)
+            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i and `0F AE 1D` is `STMXCSR` since S2-39n, no longer refused.)
             &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x35, 0, 0, 0, 0][..],

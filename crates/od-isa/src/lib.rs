@@ -99,12 +99,13 @@ const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
 pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF | 2;
 /// Profile flags writable by the implemented long-mode `POPFQ` slice.
 pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF;
-/// MXCSR_MASK of the target, stored in plain FXSAVE images and used by
-/// LDMXCSR and FXRSTOR64 to raise `#GP(0)` for a set bit outside it. Bits 15:0,
-/// including DAZ (bit 6), are supported, bits 31:16 are reserved (Intel SDM
-/// Vol. 1 §10.2.3.4, §11.6.3, §11.6.6; ADR-0014). This is intentionally
-/// distinct from testkit diagnostic metadata.
-pub const TARGET_FXSAVE_MXCSR_MASK: u32 = 0x0000_ffff;
+/// MXCSR_MASK of the selected synthetic Generic amd64 target, stored in plain
+/// FXSAVE images and used by LDMXCSR and FXRSTOR64 to raise `#GP(0)` for a set bit
+/// outside it. By the owner's "main priority" rule (merge 56c60c9) DAZ (bit 6) is
+/// NOT in the mask: 0xFFBF is the S7-31i value and ADR-0014's 0xFFFF is
+/// superseded (the oracle i5-3210M accepts DAZ; see KNOWN_ISSUES ISSUE-663). This is
+/// intentionally distinct from testkit diagnostic metadata.
+pub const TARGET_FXSAVE_MXCSR_MASK: u32 = 0x0000_ffbf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
