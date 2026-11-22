@@ -22,7 +22,7 @@
 
 use od_isa::cpuid::{CpuidProfile, CpuidResult};
 use od_isa::execute::{self, RdtscControls, RunConfig, RunExit, StepOutcome};
-use od_isa::state::{SseState, X87State};
+use od_isa::state::{SseState, X87State, X87Tag};
 use od_isa::{
     AccessContext, AccessKind, ArchitecturalFault, GuestMemory, LongModeState, MemoryError,
     PrivilegeLevel, Register,
@@ -77,7 +77,7 @@ const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
         Reg::Edx1,
         0,
         "FPU",
-        "x87 is not complete for CPL0: FSIN, FCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FSTENV, FSAVE are not implemented (S2-30, S2-31, S2-32 open)",
+        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP exist only in the bounded profile of S2-32a/S2-32b and are not connected to the CPL0 set (x87 state is None there), FSTENV and FSAVE are not implemented (S2-30, S2-31, S2-32 open)",
     ),
     (Reg::Edx1, 3, "PSE", "no task"),
     (
@@ -804,15 +804,60 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         );
         assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
     };
-    // FPU: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 (DF /4).
+    // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions (the x87 half of
+    // the FP cell is lent only to MMX forms), so every x87 arithmetic form is refused in the set. The
+    // forms of S2-32a/S2-32b exist in the bounded x87 profile of `step` but are not connected to the
+    // set: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20) and
+    // FBSTP m80 [RAX] (DF 30).
     for code in [
         &[0xd9u8, 0xfe][..],
         &[0xd9, 0xf3],
         &[0xd9, 0xf0],
         &[0xd9, 0xfd],
-        &[0xdf, 0x27],
+        &[0xdf, 0x20],
+        &[0xdf, 0x30],
     ] {
-        unsupported(code, &|cpu| cpu.gpr[Register::Rdi as usize] = DATA);
+        unsupported(code, &|cpu| {
+            cpu.x87 = None;
+            cpu.gpr[Register::Rax as usize] = DATA;
+        });
+    }
+    // Control for the above: the same FSIN completes when x87 state with a valid ST(0) is present, so the
+    // refusal in the set comes from the missing connection and not from the operand or the status word.
+    {
+        let mut cpu = cpu();
+        let mut x87 = X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x1000; // TOP = 2, no exception flags
+        x87.tag_word = 0xffff;
+        x87.registers[2] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]; // 1.0
+        x87.set_tag(2, X87Tag::Valid);
+        cpu.x87 = Some(x87);
+        let mut ram = Ram::with_code(&[0xd9, 0xfe]);
+        let outcome = step_outcome(&[0xd9, 0xfe], &mut cpu, &mut ram);
+        assert!(
+            matches!(outcome, Ok(StepOutcome::Advanced)),
+            "FSIN with x87 state: {outcome:?}"
+        );
+    }
+    // FPU, blocker 2: FSTENV (D9 /6) and FSAVE (DD /6) at [RAX] have no implementation even with clean x87
+    // state, whatever the set does.
+    for code in [&[0xd9u8, 0x30][..], &[0xdd, 0x30]] {
+        let mut cpu = cpu();
+        let mut x87 = X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x0000;
+        x87.tag_word = 0xffff;
+        cpu.x87 = Some(x87);
+        cpu.gpr[Register::Rax as usize] = DATA;
+        let mut ram = Ram::with_code(code);
+        let before = cpu.clone();
+        let outcome = step_outcome(code, &mut cpu, &mut ram);
+        assert!(
+            matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+            "{code:02x?}: {outcome:?}"
+        );
+        assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
     }
     // MSR: RDMSR of IA32_APIC_BASE (0x1B) and WRMSR of IA32_PAT (0x277) in the bare run.
     unsupported(&[0x0f, 0x32], &|cpu| cpu.gpr[Register::Rcx as usize] = 0x1b);
