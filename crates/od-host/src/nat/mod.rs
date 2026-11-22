@@ -108,8 +108,11 @@ impl NatBackend {
                 sender_ip,
             }) => {
                 let mut reply = [0u8; frame::ARP_REPLY_FRAME_LEN];
-                if let Some(len) =
-                    build_arp_reply(self.policy.guest_mac(), target_ip, sender_ip, &mut reply)
+                let built =
+                    build_arp_reply(self.policy.guest_mac(), target_ip, sender_ip, &mut reply);
+                // The buffer is exactly ARP_REPLY_FRAME_LEN long, so building cannot fail.
+                debug_assert!(built.is_some());
+                if let Some(len) = built
                     && self.enqueue_for_guest(&reply[..len])
                 {
                     bump(&mut self.counters.arp_replies);

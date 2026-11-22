@@ -14,7 +14,6 @@ use super::frame::{
 
 pub const GUEST_MAC: Mac = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
 pub const BROADCAST_MAC: Mac = [0xFF; 6];
-pub const ETH: usize = 14;
 pub const IP: usize = 14;
 pub const L4: usize = 34;
 
@@ -39,7 +38,7 @@ pub fn ref_checksum(parts: &[&[u8]]) -> u16 {
     !(sum as u16)
 }
 
-fn pseudo(src: Ipv4Addr, dst: Ipv4Addr, protocol: u8, len: usize) -> Vec<u8> {
+pub fn pseudo(src: Ipv4Addr, dst: Ipv4Addr, protocol: u8, len: usize) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&src.octets());
     p.extend_from_slice(&dst.octets());
@@ -155,6 +154,66 @@ pub fn fix_ip_checksum(frame: &mut [u8]) {
     frame[IP + 11] = 0;
     let c = ref_checksum(&[&frame[IP..IP + 20]]);
     frame[IP + 10..IP + 12].copy_from_slice(&c.to_be_bytes());
+}
+
+/// Recomputes the transport checksum of an IPv4 frame in place, from the reference routine, when the
+/// frame has a plain 20-byte IPv4 header and a TCP, UDP or ICMP payload long enough to hold the field.
+/// The IP header checksum is not touched. Used by the fuzz tests so that mutations of the transport
+/// header are not all stopped at the checksum.
+pub fn fix_l4_checksum(frame: &mut [u8]) {
+    if frame.len() < L4 || frame[12..14] != ETHERTYPE_IPV4.to_be_bytes() || frame[IP] != 0x45 {
+        return;
+    }
+    let total = usize::from(u16::from_be_bytes([frame[IP + 2], frame[IP + 3]]));
+    let end = (IP + total).min(frame.len());
+    if end < L4 {
+        return;
+    }
+    let protocol = frame[IP + 9];
+    let src = Ipv4Addr::new(
+        frame[IP + 12],
+        frame[IP + 13],
+        frame[IP + 14],
+        frame[IP + 15],
+    );
+    let dst = Ipv4Addr::new(
+        frame[IP + 16],
+        frame[IP + 17],
+        frame[IP + 18],
+        frame[IP + 19],
+    );
+    let (field, end) = match protocol {
+        PROTO_TCP => (16, end),
+        PROTO_ICMP => (2, end),
+        PROTO_UDP if end - L4 >= 8 => {
+            // The UDP checksum covers the datagram up to its own length field.
+            let udp_len = usize::from(u16::from_be_bytes([frame[L4 + 4], frame[L4 + 5]]));
+            (
+                6,
+                if (8..=end - L4).contains(&udp_len) {
+                    L4 + udp_len
+                } else {
+                    end
+                },
+            )
+        }
+        _ => return,
+    };
+    if end - L4 < field + 2 {
+        return;
+    }
+    frame[L4 + field] = 0;
+    frame[L4 + field + 1] = 0;
+    let mut checksum = if protocol == PROTO_ICMP {
+        ref_checksum(&[&frame[L4..end]])
+    } else {
+        let pseudo = pseudo(src, dst, protocol, end - L4);
+        ref_checksum(&[&pseudo, &frame[L4..end]])
+    };
+    if protocol == PROTO_UDP && checksum == 0 {
+        checksum = 0xFFFF;
+    }
+    frame[L4 + field..L4 + field + 2].copy_from_slice(&checksum.to_be_bytes());
 }
 
 /// An Ethernet frame from the guest.

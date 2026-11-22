@@ -1128,7 +1128,9 @@ fn check_accepted(frame: &[u8], inbound: &Inbound<'_>, policy: &Policy) {
     match inbound {
         Inbound::ArpIgnored => {}
         Inbound::ArpWhoHas { target_ip, .. } => {
-            assert!(*target_ip == GATEWAY_IP || *target_ip == DNS_IP)
+            assert!(*target_ip == GATEWAY_IP || *target_ip == DNS_IP);
+            // The ARP sender hardware address is the guest MAC (NETWORK.md section 6).
+            assert_eq!(frame[22..28], GUEST_MAC, "ARP sender MAC");
         }
         Inbound::Ipv4(p) => {
             assert!(within(frame, p.header) && within(frame, p.payload));
@@ -1141,6 +1143,33 @@ fn check_accepted(frame: &[u8], inbound: &Inbound<'_>, policy: &Policy) {
             assert!(policy.allows_loopback() || o[0] != 127);
             assert!(o[..3] != [10, 0, 2] || matches!(o[3], 2 | 3));
             assert!(matches!(p.protocol, 1 | 6 | 17));
+            // Destination MAC: the gateway or a group address; a group MAC needs a group IP.
+            let mac_is_group = frame[0] & 1 != 0;
+            assert!(
+                mac_is_group || frame[0..6] == GATEWAY_MAC,
+                "destination MAC"
+            );
+            let ip_is_group = o[0] >= 224;
+            if mac_is_group {
+                assert!(ip_is_group, "group MAC with unicast destination {}", p.dst);
+            }
+            // A group or broadcast destination is accepted only as DHCP: 255.255.255.255, UDP port 67.
+            if ip_is_group {
+                assert_eq!(p.dst, Ipv4Addr::BROADCAST);
+                assert!(
+                    matches!(p.l4, L4::Udp(u) if u.dst_port == 67),
+                    "group destination"
+                );
+            }
+            // The unspecified source is accepted only as the DHCP client: UDP 68 -> 67 to the
+            // limited broadcast address or the gateway.
+            if p.src.is_unspecified() {
+                assert!(p.dst == Ipv4Addr::BROADCAST || p.dst == GATEWAY_IP);
+                assert!(
+                    matches!(p.l4, L4::Udp(u) if u.src_port == 68 && u.dst_port == 67),
+                    "zero source"
+                );
+            }
             match p.l4 {
                 L4::Udp(u) => assert!(within(frame, u.data) && u.data.len() + 8 <= p.payload.len()),
                 L4::Tcp(t) => assert!(
@@ -1223,9 +1252,17 @@ fn every_prefix_and_every_single_byte_change_of_valid_frames_is_survived() {
             for value in 0..=255u8 {
                 let mut frame = base.clone();
                 frame[at] = value;
-                for p in [&strict, &open] {
-                    if let Ok(inbound) = classify(&frame, p) {
-                        check_accepted(&frame, &inbound, p);
+                // Once as it is, once with both checksums repaired.
+                let mut repaired = frame.clone();
+                if repaired.len() >= 34 {
+                    fix_ip_checksum(&mut repaired);
+                    fix_l4_checksum(&mut repaired);
+                }
+                for candidate in [&frame, &repaired] {
+                    for p in [&strict, &open] {
+                        if let Ok(inbound) = classify(candidate, p) {
+                            check_accepted(candidate, &inbound, p);
+                        }
                     }
                 }
             }
@@ -1257,6 +1294,11 @@ fn random_mutations_of_valid_frames_keep_the_promises() {
         // Frames with a repaired IPv4 header checksum get past item 4 and exercise the later items.
         if frame.len() >= 34 && round % 2 == 0 {
             fix_ip_checksum(&mut frame);
+            // In a part of the rounds the transport checksum is repaired too, so that mutations of
+            // the transport header reach item 8 and later instead of stopping at the checksum.
+            if round % 4 == 0 {
+                fix_l4_checksum(&mut frame);
+            }
         }
         for p in [&strict, &open] {
             if let Ok(inbound) = classify(&frame, p) {
@@ -1295,6 +1337,9 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
         };
         if frame.len() >= 34 && rng.below(2) == 0 {
             fix_ip_checksum(&mut frame);
+            if rng.below(2) == 0 {
+                fix_l4_checksum(&mut frame);
+            }
         }
         calls += 1;
         let _ = b.transmit(&frame);
@@ -1312,4 +1357,154 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
     );
     // Every accepted frame ended in exactly one counter after processing.
     assert_eq!(c.tx_frames, total_accounted(&c));
+}
+
+// ---- Frames built for the guest ---------------------------------------------------------------
+
+#[test]
+fn ipv4_frame_for_the_guest_has_the_documented_fields_at_the_largest_size() {
+    let mut rng = Rng::new(0x1480);
+    let mut l4 = vec![0u8; 1480];
+    rng.fill(&mut l4);
+    let mut out = [0u8; 2000];
+    let len = build_ipv4_frame(
+        GUEST_MAC, EXTERNAL, GUEST_IP, PROTO_UDP, 0xBEEF, &l4, &mut out,
+    )
+    .expect("1480 bytes of transport data make a 1514-byte frame");
+    assert_eq!(len, 1514);
+    let frame = &out[..len];
+    // Ethernet: to the guest, from the gateway, IPv4.
+    assert_eq!(frame[0..6], GUEST_MAC);
+    assert_eq!(frame[6..12], GATEWAY_MAC);
+    assert_eq!(frame[12..14], ETHERTYPE_IPV4.to_be_bytes());
+    // IPv4: version 4 / IHL 5, no TOS, length 1500, the identification we gave, DF and no
+    // fragment offset, TTL 64, the protocol and the addresses; the header sums to zero.
+    let ip = &frame[14..34];
+    assert_eq!(ip[0], 0x45);
+    assert_eq!(ip[1], 0);
+    assert_eq!(ip[2..4], 1500u16.to_be_bytes());
+    assert_eq!(ip[4..6], 0xBEEFu16.to_be_bytes());
+    assert_eq!(ip[6..8], 0x4000u16.to_be_bytes());
+    assert_eq!(ip[8], 64);
+    assert_eq!(ip[9], PROTO_UDP);
+    assert_eq!(ip[12..16], EXTERNAL.octets());
+    assert_eq!(ip[16..20], GUEST_IP.octets());
+    assert_eq!(ref_checksum(&[ip]), 0, "header checksum");
+    assert_eq!(frame[34..], l4[..]);
+}
+
+#[test]
+fn ipv4_frame_for_the_guest_is_refused_when_too_long_or_when_the_buffer_is_short() {
+    let l4 = vec![7u8; 1481];
+    let mut out = [0u8; 2000];
+    assert_eq!(
+        build_ipv4_frame(GUEST_MAC, EXTERNAL, GUEST_IP, PROTO_TCP, 1, &l4, &mut out),
+        None,
+        "1481 bytes make 1515"
+    );
+    // One byte short of the frame, and an empty buffer.
+    let l4 = vec![7u8; 1480];
+    assert_eq!(
+        build_ipv4_frame(
+            GUEST_MAC,
+            EXTERNAL,
+            GUEST_IP,
+            PROTO_TCP,
+            1,
+            &l4,
+            &mut out[..1513]
+        ),
+        None
+    );
+    assert_eq!(
+        build_ipv4_frame(
+            GUEST_MAC,
+            EXTERNAL,
+            GUEST_IP,
+            PROTO_ICMP,
+            1,
+            &[1, 2, 3],
+            &mut []
+        ),
+        None
+    );
+    let small = [0u8; 8];
+    assert_eq!(
+        build_ipv4_frame(
+            GUEST_MAC,
+            EXTERNAL,
+            GUEST_IP,
+            PROTO_UDP,
+            1,
+            &small,
+            &mut out[..41]
+        ),
+        None,
+        "42 bytes needed"
+    );
+    // Exactly long enough works and does not write past the frame.
+    out.fill(0xEE);
+    let len = build_ipv4_frame(
+        GUEST_MAC,
+        EXTERNAL,
+        GUEST_IP,
+        PROTO_UDP,
+        1,
+        &small,
+        &mut out[..42],
+    )
+    .unwrap();
+    assert_eq!(len, 42);
+    assert_eq!(out[42], 0xEE);
+    // An empty transport message is a 34-byte frame.
+    assert_eq!(
+        build_ipv4_frame(GUEST_MAC, EXTERNAL, GUEST_IP, PROTO_UDP, 1, &[], &mut out),
+        Some(34)
+    );
+}
+
+#[test]
+fn built_ipv4_headers_sum_to_zero_for_every_transport_length() {
+    let mut rng = Rng::new(0x1481);
+    let mut out = [0u8; 1514];
+    for l4_len in 0..=1480usize {
+        let mut l4 = vec![0u8; l4_len];
+        rng.fill(&mut l4);
+        let id = rng.next() as u16;
+        let protocol = [PROTO_ICMP, PROTO_TCP, PROTO_UDP][l4_len % 3];
+        let len =
+            build_ipv4_frame(GUEST_MAC, GATEWAY_IP, GUEST_IP, protocol, id, &l4, &mut out).unwrap();
+        assert_eq!(len, 34 + l4_len);
+        assert_eq!(ref_checksum(&[&out[14..34]]), 0, "l4 length {l4_len}");
+        assert_eq!(out[16..18], ((20 + l4_len) as u16).to_be_bytes());
+    }
+}
+
+#[test]
+fn l4_checksum_of_odd_and_even_lengths_matches_the_reference_sum() {
+    let mut rng = Rng::new(0x1482);
+    for (protocol, field) in [(PROTO_UDP, 6usize), (PROTO_TCP, 16)] {
+        for len in (field + 2)..=(field + 2 + 41) {
+            let mut l4 = vec![0u8; len];
+            rng.fill(&mut l4);
+            l4[field] = 0;
+            l4[field + 1] = 0;
+            let expected = ref_checksum(&[&pseudo(EXTERNAL, GUEST_IP, protocol, len), &l4]);
+            assert_eq!(
+                l4_checksum(EXTERNAL, GUEST_IP, protocol, &l4),
+                expected,
+                "protocol {protocol}, length {len}"
+            );
+            // With the value in place the whole message sums to zero (odd lengths pad with zero).
+            l4[field..field + 2].copy_from_slice(&expected.to_be_bytes());
+            assert_eq!(l4_checksum(EXTERNAL, GUEST_IP, protocol, &l4), 0);
+        }
+    }
+    // A hand-computed vector with an odd length: 10.0.2.2 -> 10.0.2.15, UDP, 9 bytes
+    // (ports 53 -> 1024, length 9, checksum 0, one data byte 0x41).
+    let l4 = [0, 53, 4, 0, 0, 9, 0, 0, 0x41];
+    // 0x0A00+0x0202+0x0A00+0x020F+0x0011+0x0009 (pseudo, length 9) + 0x0035+0x0400+0x0009+0x4100
+    // = 0x0A00+0x0202=0x0C02; +0x0A00=0x1602; +0x020F=0x1811; +0x0011=0x1822; +0x0009=0x182B;
+    // +0x0035=0x1860; +0x0400=0x1C60; +0x0009=0x1C69; +0x4100=0x5D69; checksum = !0x5D69 = 0xA296.
+    assert_eq!(l4_checksum(GATEWAY_IP, GUEST_IP, PROTO_UDP, &l4), 0xA296);
 }
