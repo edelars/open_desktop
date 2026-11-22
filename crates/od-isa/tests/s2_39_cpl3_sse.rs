@@ -904,7 +904,7 @@ struct SweepTotals {
     refused_mmx: usize,
     refused_crc32: usize,
     /// (prefix, map, opcode, REX.W, offset from a 16-byte boundary) of the memory forms that retired with AC set at
-    /// an operand misaligned for an 8-byte access.
+    /// an operand misaligned for a 16-byte access.
     misaligned_ac_retired: std::collections::BTreeSet<(Option<u8>, u8, u8, bool, u64)>,
 }
 
@@ -925,7 +925,8 @@ fn word_form(prefix: Option<u8>, map: u8, opcode: u8) -> bool {
 /// at an operand that is 4 mod 8 with AC set.
 fn eight_byte_form(prefix: Option<u8>, map: u8, opcode: u8, rex_w: bool) -> bool {
     match (prefix, map, opcode) {
-        (Some(0xf2), 0, 0x10 | 0x11 | 0x12 | 0x51..=0x5f | 0xe6) => true,
+        (Some(0xf2), 0, 0x10 | 0x11 | 0x12 | 0x2c | 0x2d | 0x51..=0x5f | 0xc2 | 0xe6) => true,
+        (Some(0x66), 2, 0x0b) => true,
         (None | Some(0x66), 0, 0x12 | 0x13 | 0x16 | 0x17) => true,
         (None, 0, 0x5a) | (Some(0x66), 0, 0x2e | 0x2f | 0xd6) | (Some(0xf3), 0, 0x7e | 0xe6) => {
             true
@@ -934,6 +935,42 @@ fn eight_byte_form(prefix: Option<u8>, map: u8, opcode: u8, rex_w: bool) -> bool
         (Some(0x66), 0, 0x6e | 0x7e)
         | (Some(0x66), 2, 0x16 | 0x22)
         | (Some(0xf2 | 0xf3), 0, 0x2a) => rex_w,
+        _ => false,
+    }
+}
+
+/// Whether the memory operand of the form at `offset` from a 16-byte boundary is misaligned for the size of the
+/// operand (the check of the `#AC` transfer): never for a byte form, at an odd address for a word form, at a
+/// non-multiple of eight for an eight-byte form, at a non-multiple of sixteen for the unaligned 16-byte moves, and
+/// at a non-multiple of four for the other forms (at most four bytes).
+fn misaligned_for_its_size(
+    prefix: Option<u8>,
+    map: u8,
+    opcode: u8,
+    rex_w: bool,
+    offset: u64,
+) -> bool {
+    if byte_form(prefix, map, opcode) {
+        false
+    } else if word_form(prefix, map, opcode) {
+        offset % 2 != 0
+    } else if eight_byte_form(prefix, map, opcode, rex_w) {
+        offset % 8 != 0
+    } else if sixteen_byte_form(prefix, map, opcode) {
+        offset % 16 != 0
+    } else {
+        offset % 4 != 0
+    }
+}
+
+/// Forms with a 16-byte memory operand that the hardware accepts at a misaligned address (no `#GP`).
+fn sixteen_byte_form(prefix: Option<u8>, map: u8, opcode: u8) -> bool {
+    match (prefix, map, opcode) {
+        // MOVUPS, MOVUPD, MOVDQU, LDDQU and the string compares PCMPESTRM/PCMPESTRI/PCMPISTRM/PCMPISTRI.
+        (None | Some(0x66), 0, 0x10 | 0x11)
+        | (Some(0xf3), 0, 0x6f | 0x7f)
+        | (Some(0xf2), 0, 0xf0) => true,
+        (Some(0x66), 2, 0x60..=0x63) => true,
         _ => false,
     }
 }
@@ -962,7 +999,7 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
             totals.equal += 1;
             if cpl3.result == Result_::Retired {
                 totals.equal_retired += 1;
-                if sweep.ac && sweep.memory && sweep.rax & 7 != 0 {
+                if sweep.ac && sweep.memory && sweep.rax & 15 != 0 {
                     totals.misaligned_ac_retired.insert((
                         sweep.prefix,
                         sweep.map,
@@ -988,7 +1025,16 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
                             [DATA as usize..DATA as usize + 0x500];
                 if !untouched {
                     failures.push(format!("{}: a refusal changed the state", sweep.name));
-                } else if sweep.ac && sweep.memory && sweep.rax & 15 != 0 {
+                } else if sweep.ac
+                    && sweep.memory
+                    && misaligned_for_its_size(
+                        sweep.prefix,
+                        sweep.map,
+                        sweep.opcode,
+                        sweep.rex_w,
+                        sweep.rax - DATA,
+                    )
+                {
                     totals.refused_ac += 1;
                 } else if mmx_class(sweep.prefix, sweep.map, sweep.opcode) {
                     totals.refused_mmx += 1;
@@ -1032,9 +1078,7 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
     // byte form anywhere, a word form at an even address, the other forms (at most four bytes) at a multiple of four.
     for (prefix, map, opcode, rex_w, offset) in &totals.misaligned_ac_retired {
         let (prefix, map, opcode, rex_w, offset) = (*prefix, *map, *opcode, *rex_w, *offset);
-        let allowed = byte_form(prefix, map, opcode)
-            || (offset % 2 == 0 && word_form(prefix, map, opcode))
-            || (offset % 4 == 0 && !eight_byte_form(prefix, map, opcode, rex_w));
+        let allowed = !misaligned_for_its_size(prefix, map, opcode, rex_w, offset);
         assert!(
             allowed,
             "retired at +{offset} with AC: {prefix:02x?} map {map} {opcode:#x} rex.w {rex_w}"
@@ -1326,58 +1370,78 @@ fn a_supervisor_page_is_a_page_fault_with_the_user_bit_at_cpl3_and_readable_at_c
 
 #[test]
 fn a_misaligned_operand_with_ac_at_cpl3_is_a_refusal_and_the_other_cases_run_like_cpl0() {
-    // (name, code, alignment in bytes the architecture checks #AC on, or 0 for an aligned form)
-    let forms: &[(&str, &[u8])] = &[
-        ("MOVUPS load", &[0x0f, 0x10, 0x08]),
-        ("MOVUPS store", &[0x0f, 0x11, 0x08]),
-        ("MOVUPD load", &[0x66, 0x0f, 0x10, 0x08]),
-        ("MOVDQU load", &[0xf3, 0x0f, 0x6f, 0x08]),
-        ("MOVDQU store", &[0xf3, 0x0f, 0x7f, 0x08]),
-        ("MOVSS load", &[0xf3, 0x0f, 0x10, 0x08]),
-        ("MOVSS store", &[0xf3, 0x0f, 0x11, 0x08]),
-        ("MOVSD load", &[0xf2, 0x0f, 0x10, 0x08]),
-        ("MOVSD store", &[0xf2, 0x0f, 0x11, 0x08]),
-        ("MOVLPS load", &[0x0f, 0x12, 0x08]),
-        ("MOVLPS store", &[0x0f, 0x13, 0x08]),
-        ("MOVHPD load", &[0x66, 0x0f, 0x16, 0x08]),
-        ("MOVQ load", &[0xf3, 0x0f, 0x7e, 0x08]),
-        ("MOVQ store", &[0x66, 0x0f, 0xd6, 0x08]),
-        ("MOVD load", &[0x66, 0x0f, 0x6e, 0x08]),
-        ("MOVD store", &[0x66, 0x0f, 0x7e, 0x08]),
-        ("PINSRW memory", &[0x66, 0x0f, 0xc4, 0x08, 0x01]),
-        ("ADDSS memory", &[0xf3, 0x0f, 0x58, 0x08]),
-        ("MULSD memory", &[0xf2, 0x0f, 0x59, 0x08]),
-        ("SQRTSD memory", &[0xf2, 0x0f, 0x51, 0x08]),
-        ("COMISS memory", &[0x0f, 0x2f, 0x08]),
-        ("UCOMISD memory", &[0x66, 0x0f, 0x2e, 0x08]),
-        ("CVTSI2SD memory", &[0xf2, 0x0f, 0x2a, 0x08]),
-        ("CVTSI2SS memory", &[0xf3, 0x0f, 0x2a, 0x08]),
-        ("CVTSD2SI memory", &[0xf2, 0x0f, 0x2d, 0x08]),
-        ("CVTTSS2SI memory", &[0xf3, 0x0f, 0x2c, 0x08]),
-        ("PMOVZXBW memory", &[0x66, 0x0f, 0x38, 0x30, 0x08]),
-        ("PMOVSXDQ memory", &[0x66, 0x0f, 0x38, 0x25, 0x08]),
-        ("LDMXCSR", &[0x0f, 0xae, 0x10]),
-        ("STMXCSR", &[0x0f, 0xae, 0x18]),
+    // (name, code, size of the memory operand in bytes: the alignment #AC is checked against)
+    let forms: &[(&str, &[u8], u64)] = &[
+        ("MOVUPS load", &[0x0f, 0x10, 0x08], 16),
+        ("MOVUPS store", &[0x0f, 0x11, 0x08], 16),
+        ("MOVUPD load", &[0x66, 0x0f, 0x10, 0x08], 16),
+        ("MOVDQU load", &[0xf3, 0x0f, 0x6f, 0x08], 16),
+        ("MOVDQU store", &[0xf3, 0x0f, 0x7f, 0x08], 16),
+        ("MOVSS load", &[0xf3, 0x0f, 0x10, 0x08], 4),
+        ("MOVSS store", &[0xf3, 0x0f, 0x11, 0x08], 4),
+        ("MOVSD load", &[0xf2, 0x0f, 0x10, 0x08], 8),
+        ("MOVSD store", &[0xf2, 0x0f, 0x11, 0x08], 8),
+        ("MOVLPS load", &[0x0f, 0x12, 0x08], 8),
+        ("MOVLPS store", &[0x0f, 0x13, 0x08], 8),
+        ("MOVHPD load", &[0x66, 0x0f, 0x16, 0x08], 8),
+        ("MOVQ load", &[0xf3, 0x0f, 0x7e, 0x08], 8),
+        ("MOVQ store", &[0x66, 0x0f, 0xd6, 0x08], 8),
+        ("MOVD load", &[0x66, 0x0f, 0x6e, 0x08], 4),
+        ("MOVD store", &[0x66, 0x0f, 0x7e, 0x08], 4),
+        ("PINSRW memory", &[0x66, 0x0f, 0xc4, 0x08, 0x01], 2),
+        ("ADDSS memory", &[0xf3, 0x0f, 0x58, 0x08], 4),
+        ("MULSD memory", &[0xf2, 0x0f, 0x59, 0x08], 8),
+        ("SQRTSD memory", &[0xf2, 0x0f, 0x51, 0x08], 8),
+        ("COMISS memory", &[0x0f, 0x2f, 0x08], 4),
+        ("UCOMISD memory", &[0x66, 0x0f, 0x2e, 0x08], 8),
+        ("CVTSI2SD memory", &[0xf2, 0x0f, 0x2a, 0x08], 4),
+        ("CVTSI2SS memory", &[0xf3, 0x0f, 0x2a, 0x08], 4),
+        ("CVTSD2SI memory", &[0xf2, 0x0f, 0x2d, 0x08], 8),
+        ("CVTTSS2SI memory", &[0xf3, 0x0f, 0x2c, 0x08], 4),
+        ("PMOVZXBW memory", &[0x66, 0x0f, 0x38, 0x30, 0x08], 8),
+        ("PMOVSXDQ memory", &[0x66, 0x0f, 0x38, 0x25, 0x08], 8),
+        ("LDMXCSR", &[0x0f, 0xae, 0x10], 4),
+        ("STMXCSR", &[0x0f, 0xae, 0x18], 4),
     ];
-    for (name, code) in forms {
-        // An odd offset is misaligned for every access size above one byte.
-        for offset in [1u64, 3, 5, 7] {
+    for (name, code, size) in forms {
+        // Offsets from a 16-byte boundary: an operand misaligned for its own size is refused, one aligned to its size
+        // (even when not to 16 bytes) is no #AC and runs.
+        for offset in [1u64, 2, 3, 4, 5, 6, 7, 8, 12] {
             let mut case = Case::new(true);
             // The 16 bytes at DATA + 0x10 hold a valid MXCSR value first (the LDMXCSR cases).
             case.rax = DATA + 0x10 + offset;
             // MXCSR for LDMXCSR: a valid value at the misaligned address.
             case.rflags |= RFLAGS_AC;
             let (ac, before, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
-            assert!(
-                matches!(ac.result, Result_::Unsupported(_)),
-                "{name} offset {offset}: a misaligned operand with AC at CPL3 must not retire: {:?}",
-                ac.result
-            );
-            assert_refused_unchanged(name, &ac, &before, &after, &case);
-            assert_eq!(
-                ac.data,
-                initial_memory(code, &case).bytes[DATA as usize..DATA as usize + 0x500]
-            );
+            let (cpl0_ac, _, _) = in_set(Level::Cpl0, code, &case, 1, |_| {});
+            if offset % size != 0 {
+                assert!(
+                    matches!(ac.result, Result_::Unsupported(_)),
+                    "{name} offset {offset}: a misaligned operand with AC at CPL3 must not retire: {:?}",
+                    ac.result
+                );
+                assert_refused_unchanged(name, &ac, &before, &after, &case);
+                assert_eq!(
+                    ac.data,
+                    initial_memory(code, &case).bytes[DATA as usize..DATA as usize + 0x500]
+                );
+            } else {
+                assert_eq!(ac, cpl0_ac, "{name} offset {offset}: equal to the CPL0 set");
+                // LDMXCSR reads whatever the data holds at the offset (a reserved bit set is a #GP(0) as at CPL0);
+                // every other form retires.
+                if *name != "LDMXCSR" {
+                    assert_eq!(
+                        ac.result,
+                        Result_::Retired,
+                        "{name} offset {offset}: an operand aligned to its size with AC at CPL3 runs"
+                    );
+                } else {
+                    assert!(
+                        !matches!(ac.result, Result_::Unsupported(_)),
+                        "{name} offset {offset}"
+                    );
+                }
+            }
             // CR0.AM = 0: no alignment check, the form runs as at CPL0 (and as in the bare run).
             let mut no_am = case.clone();
             no_am.cr0 &= !CR0_AM;
@@ -1390,7 +1454,6 @@ fn a_misaligned_operand_with_ac_at_cpl3_is_a_refusal_and_the_other_cases_run_lik
                 cpl3.result
             );
             // The CPL0 set has no #AC at all, and an aligned operand with AC runs at CPL3.
-            let (cpl0_ac, _, _) = in_set(Level::Cpl0, code, &case, 1, |_| {});
             assert_eq!(cpl0_ac, cpl0, "{name} offset {offset}: CPL0 ignores AC");
             let mut aligned = case.clone();
             aligned.rax = DATA + 0x10;
