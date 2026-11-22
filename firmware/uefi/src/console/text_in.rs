@@ -283,7 +283,7 @@ mod terminal {
         EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_TIMER, TIMER_PERIODIC, TPL_CALLBACK, TPL_NOTIFY,
         check_event, close_event, create_event, poll_due_events, set_timer, signal_event,
     };
-    use crate::console::key_queue::toggle_state;
+    use crate::console::key_queue::locks_of_set_state;
     use crate::console::serial_term::receive_checked;
     use crate::uefi::system_table::SystemTable;
     use core::{cell::UnsafeCell, ffi::c_void, ptr};
@@ -523,8 +523,11 @@ mod terminal {
         }
     }
 
-    /// SetState: the lock bits go to the keyboard and its LEDs (UEFI 2.11, 12.2.5; without the
-    /// VALID bit the request is refused as EFI_UNSUPPORTED, as EDK2's USB keyboard does).
+    /// SetState: the lock bits go to the keyboard and its LEDs (UEFI 2.11, 12.2.5). Without the
+    /// VALID bit, or with KEY_STATE_EXPOSED (partial keystrokes, not provided), the request is
+    /// refused as EFI_UNSUPPORTED, as EDK2's USB keyboard does. While a driver call is on the
+    /// stack (a nested call from the console timer) nothing is changed and EFI_NOT_READY says
+    /// so: the status is not in the list of 12.2.5, it marks a transient refusal.
     unsafe extern "efiapi" fn set_state(
         this: *mut SimpleTextInputExProtocol,
         state: *mut u8,
@@ -533,12 +536,17 @@ mod terminal {
             return Status::INVALID_PARAMETER;
         }
         let requested = unsafe { state.read() };
-        if requested & toggle_state::VALID == 0 {
+        if locks_of_set_state(requested).is_err() {
             return Status::UNSUPPORTED;
         }
-        crate::usb::set_toggles(requested);
-        crate::usb::service();
-        Status::SUCCESS
+        match crate::usb::set_toggles(requested) {
+            crate::usb::SetToggles::Done => {
+                crate::usb::service();
+                Status::SUCCESS
+            }
+            crate::usb::SetToggles::Busy => Status::NOT_READY,
+            crate::usb::SetToggles::Absent => Status::UNSUPPORTED,
+        }
     }
 
     /// Key notification is not supported (UEFI_PROFILE.md): applications poll ReadKeyStrokeEx.
