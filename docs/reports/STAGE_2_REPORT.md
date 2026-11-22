@@ -25422,3 +25422,12 @@ high review found no remaining issues after the exit-status documentation was
 corrected; the reviewer reran the focused suite (4/4), formatting, workspace
 check, and boundary probes. S2-43a is a verified partial slice; S2-43 remains
 open.
+
+## S2-25n — exact PAE refusal and the board PAE adapter
+
+Bounded slice after the acceptance of S2-25; S2-25 itself is not touched. No 32-bit executor runs on `GuestMemory`, so the long-mode host loop, JIT entries and
+probes keep refusing a protected-mode PAE vCPU, now with `ProbeConfigError::PaeProtectedMode` instead of a missing `EFER.LME|LMA`. `LoadedFirmwareBoard::pae_memory_adapter`
+gives the `PagedPaeMemoryAdapter` over the whole bus for a vCPU on PAE paging; the board adapter equals `pae_operand_access` on identical tables (RAM, Local APIC MMIO,
+an uncovered 36-bit page). Tests run: `od-machine` lib filters `pae` (53), `page_walk` (135), `paged_pae` (19); `od-host` `s2_25l` (1);
+`cargo check --workspace --all-targets`, `cargo fmt --all -- --check`, `git diff --check`. Not run: the full suite, a hardware oracle (PAE paging cannot be enabled from a
+user-space process), CPUID.
