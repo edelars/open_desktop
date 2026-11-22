@@ -652,13 +652,26 @@ fn faults_and_refusals_of_the_environment_forms_in_the_set_equal_the_bare_run() 
             observed.exit,
             reference.exit
         );
+        // The exact vector, error code, linear address or opcode: the bare `step` reports `Ok(<outcome>)`, the set
+        // the same outcome as a `RunExit`.
+        let bare_outcome = reference
+            .exit
+            .strip_prefix("Ok(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("{name}: bare exit {}", reference.exit));
+        assert_eq!(
+            observed.exit, bare_outcome,
+            "{name}: the exit equals the bare run"
+        );
+        assert_eq!(observed.rip, reference.rip, "{name}: rip");
+        assert_eq!(observed.rflags, reference.rflags, "{name}: rflags");
         assert_eq!(observed.x87, reference.x87, "{name}");
         assert_eq!(observed.memory, reference.memory, "{name}");
         assert_eq!(observed.reads, reference.reads, "{name}");
         assert_eq!(observed.writes, reference.writes, "{name}");
         assert_eq!(after, before, "{name}: the cell is unchanged");
         assert_eq!(state.rip, CODE, "{name}: nothing retired");
-        assert_eq!(state.gpr, observed.gpr, "{name}");
+        assert_eq!(state.gpr, reference.gpr, "{name}");
     }
 }
 
