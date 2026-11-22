@@ -7426,14 +7426,14 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Статус:** закрыто в срезе C (2026-11-22). Модель получила `XhciHandle::snapshot` (регистры, PCI Command, BAR0, счётчик `ram_accesses`; тест `snapshot_reports_the_state_that_section_12_3_describes_after_hcrst`), runner печатает блок `xhci` отчёта (снимок в конце, счётчик на первой границе кванта после остановки), `firmware_xhci_smoke.py` на приложении `ebs` проверяет HCH = 1, R/S = 0, CRR = 0, DCBAAP = 0, ERSTBA = 0, IMAN.IE = 0, BAR0 без изменений, PCI Command восстановлен и `ram_accesses` на остановке равен конечному (371 обращение до остановки, после — ни одного); контроль — `hello` (выхода нет, контроллер работает). Оговорка: после выхода приложение `ebs` останавливает прогон сразу, поэтому «ни одного обращения» подтверждено счётчиком на коротком хвосте и тестом модели (остановленный контроллер не читает и не пишет RAM при doorbell и `service`), а не длительной работой гостя после выхода.
 - **Владелец и условие закрытия:** S7-34, срез C (обязательно, по пункту «Проверить» S7-34: «после EBS контроллер остановлен (регистры модели)»). Условие: смоук проверяет значения раздела 12.3 по регистрам модели и `ram_accesses` до и после выхода.
 
-### ISSUE-651. S11-41: линковка `AudioToolbox` из `libod_host.a` в Swift-цели не проверена
+### ISSUE-651. S11-41: линковка `AudioToolbox` из `libod_host.a` в Swift-цели: `od-vmhost` исправлена в S10-09, harness и release не проверены (частично устранена)
 
 - **Дата обнаружения:** 2026-11-22, при проверке S11-41 (`nm -A` на `target/debug/libod_host.a`).
 - **Компонент:** `crates/od-host/src/audio_output.rs`, [apps/Package.swift](../apps/Package.swift) (`od-vmhost`), `tests/cpu/stage3_harness.py` (список `-framework`).
 - **Суть:** `audio_output` объявляет `#[link(name = "AudioToolbox", kind = "framework")]` и `CoreFoundation`, но staticlib не передаёт их потребителю: Swift-цели перечисляют framework вручную, `AudioToolbox` в списках нет (`CoreFoundation` есть).
 - **Основание:** в debug-сборке ссылки на `_AudioComponentFindNext`, `_ExtAudioFileWrite` лежат в объектном файле только с символами `audio_output` (`nm -A`), и линковщик его не тянет, пока C ABI не использует звук. В release/LTO объект может слиться с другими; `swift build` и release-сборка с линковкой `od-vmhost` не запускались.
 - **Последствия:** возможна ошибка линковки (неопределённые символы) Swift/harness-целей после release-сборки `od-host`; в `cargo test` не проявляется.
-- **Статус:** открыта. **Следующий шаг:** при подключении вывода к VMHost (S11-04/S11-42) добавить `.linkedFramework("AudioToolbox")` в `od-vmhost` и `-framework AudioToolbox` в harness; до этого проверить `swift build -c release --product od-vmhost`.
+- **Статус:** частично устранена в S10-09 (2026-11-22). Предположение выше опровергнуто: `swift build` (debug) `od-vmhost` на main после S11-41 **не линковался** (`Undefined symbols`: `_AudioOutputUnitStop`, `_AudioUnitInitialize`, `_ExtAudioFileWrite` и др.). В S10-09 в `apps/Package.swift` (`od-vmhost`) добавлено `.linkedFramework("AudioToolbox")`; после этого `swift build` и `swift test --filter DisplayProbeSmokeXCTests` проходят. **Остаётся:** `-framework AudioToolbox` в `tests/cpu/stage3_harness.py` и проверка `swift build -c release` (не запускались).
 
 ### ISSUE-652. S11-41: нет smoke-теста звука на VMHost, профиля `audio-test-tone`, измерения CPU и вывода на динамики
 
@@ -7477,3 +7477,13 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Последствия:** v1 пригоден для проверки семантики на host; подключать к гостю его пока нечем. Заполнение тома гостем возможно до введения квоты.
 - **Условия:** (1) запись больших файлов в папку с `read_only = 0`; (2) файл с режимом без бита чтения для владельца; (3) каталог из десятков тысяч записей.
 - **Статус:** открыто. Следующий шаг: (1) решение о квоте (владелец, до S11-29); (2) объявить `fstatat` с проверенной раскладкой `struct stat` и перевести на него `stat` и запасные ветки (тогда запись не открывается); (3) курсор или кэш листинга под ревью; (5) решение о `mkdir`/`rmdir` в S11-29; (7) валидатор в S11-02/S11-03; (8) формат кадров в `protocols/guest/` и ABI — S11-29/S11-22.
+
+### ISSUE-663. S10-09: ручной скриншот окна probe не получен
+
+- **Дата обнаружения:** 2026-11-22, при проверке S10-09.
+- **Компонент:** `tests/system/display_end_to_end_smoke.py`.
+- **Суть:** оконный режим просмотрщика с `--profile probe` запущен (VMHost: `probe halted after 25983 instructions in 4 quanta`, `published generation 1`, `window geometry: logical=640x480 physical=1280x960 scale=2.0`, выход 0), но `screencapture -x` в этой среде вернул полностью чёрный кадр 5120×2880 (экран заблокирован или нет разрешения записи экрана). Скриншот окна как «уровень 4» (DISPLAY.md) **не получен**; сквозное доказательство — уровни 2–3 скрипта (дамп offscreen, 0 отличий).
+- **Последствия:** нет глазами проверенного скриншота.
+- **Условие воспроизведения:** запустить `open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --profile probe --close-after-ms 8000` и снять экран в сессии с разблокированным экраном.
+- **Статус:** открыта.
+- **Следующий шаг:** владелец делает скриншот на разблокированном экране и прикладывает к отчёту.
