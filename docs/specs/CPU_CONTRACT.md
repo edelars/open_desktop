@@ -11936,7 +11936,7 @@ Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM Vol
 Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM 325462-093US: Vol. 2A FRSTOR p. 3-373, FSAVE/FNSAVE
 p. 3-375, FSTENV/FNSTENV p. 3-390; Vol. 1 section 8.1.8 (pointers), 8.1.10 and Figure 8-9 (the 32-bit protected-mode image).
 Bare encodings only: no prefix (so no 16-bit image and no REX.W), modrm `/6` or `/4` with the operand at `[RAX]`. `FSTENV` and
-`FSAVE` are `FWAIT` plus the non-waiting form (SDM); `FWAIT` is owned by the CPL0 set, so the bounded profile has no fused form.
+`FSAVE` are `FWAIT` plus the non-waiting form (SDM); `FWAIT` is owned by the CPL0 set, so this slice has no fused form (S2-32f adds the three-byte spellings, below).
 `FLDENV` (`D9 20`) is the later slice S2-32d (below). #NM (CR0.EM/TS) and CPL3 #AC are not modeled, as in the neighbouring bounded forms.
 
 - **Image.** 28 bytes (`FNSTENV`) or 108 bytes (`FNSAVE`, then ST(0)..ST(7) in stack order, 10 bytes each), one `GuestMemory`
@@ -12027,6 +12027,29 @@ p. 3-390 (each lists `#NM` for CR0.EM[bit 2] or CR0.TS[bit 3] = 1 and no CR4.OSF
   (unmasked control word, ES, B, unmasked or ES image, `#PF`, non-canonical) equal to the bare run, other x87 forms still refused.
   Not covered: FWAIT-prefixed forms beyond one `9B D9 30` pair, the `#MF` of pending exceptions for the S2-32a/b forms (refused by the
   selector rule before), CPL3 (the set at CPL3 has no x87), JIT and native (closed).
+
+## Local S2-32f: the FWAIT spellings of FSTENV (`9B D9 30`) and FSAVE (`9B DD 30`)
+
+Status: local `od-isa` interpreter and the CPL0 set with the FP member; no CPUID bit is declared. Decision of the owner 2026-11-22 (ADR-0015 item 8): the spellings
+with FWAIT are in scope; the `#MF` of pending exceptions and the 16-bit images (prefix `66`) are carried over. Intel SDM 325462-093US: Vol. 2A FSTENV/FNSTENV p. 3-390,
+FSAVE/FNSAVE p. 3-375 (the mnemonics with F are the non-waiting form preceded by the WAIT byte), WAIT/FWAIT in Vol. 2D, Vol. 1 section 8.7 (x87 exception synchronization).
+
+- **Decoding.** After a bare `9B` (no prefix) the decoder consumes the next two bytes only when they are exactly `D9 30` or `DD 30`: the instruction has the operation of
+  the non-waiting form (`FnstenvRax`, `FnsaveRax`), opcode `9B` (the first byte) and length 3. `9B` before any other byte, a prefix between `9B` and the escape byte,
+  a truncated fetch and a fetch error on either of the two bytes leave the bare FWAIT of one byte (the length is restored; a fetch error is left to the decode of the next instruction).
+  A prefix before `9B` is refused (`Unsupported`; `F0` keeps the bare FWAIT with LOCK, `#UD` in the set). `9B D9 20` is FWAIT and FLDENV, not a form of its own.
+  The fusion is the decoder's choice for the profile; the architecture has two instructions (no interrupt window between them in the fused form).
+- **Bounded profile.** FWAIT is a no-op: the admission of the environment forms (control word one of the twelve all-masked words, ES and B clear) leaves no pending unmasked
+  exception. The rest is the non-waiting form (image, one write, state), RIP advances by 3. A state that the SDM would answer with `#MF` at the FWAIT (unmasked control word,
+  ES, B) is refused, `Unsupported` with opcode `9B`, no state change, no memory access (carried over). The refusal of the other `D8..DF` forms while a selector is represented
+  does not apply (the opcode is `9B`; the environment forms define the selectors themselves).
+- **CPL0 set.** `step_cpl0_bounded_x87` first applies the checks of the FWAIT of `step_cpl0_fp`: CR0 and CR4 modeled (else `Unsupported`), `#NM` for CR0.MP and CR0.TS, a pending unmasked
+  exception (ES set and a status exception flag unmasked by the control word) is `#MF` with CR0.NE set (NE clear is `Unsupported`; the policy of the set admits only NE set), then the gates of
+  the x87 forms (`#NM` for CR0.EM or CR0.TS) and the bounded profile. The outcome with a pending exception is that of the bare FWAIT in the set; nothing changes on a fault.
+- **Oracle.** 324 Core i5-3210M rows (`data/x87_fwait_oracle.c`; `data/x87_fwait_oracle_i5_3210m.txt`): the images of S2-32c through `FNINIT; FRSTOR; FSTENV; FSAVE; FSTENV`, the assembler
+  emitting `9B D9 30` and `9B DD 30` (objdump). The answers are byte-identical to those of the non-waiting forms; all 324 rows (28 + 108 + 28 bytes) are reproduced from two starting selector states.
+- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (11); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
+- **Not covered.** `#MF` delivery in the bounded profile, 16-bit images, FWAIT before other forms, #AC, JIT and native (closed).
 
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
 
