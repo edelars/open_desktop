@@ -6,8 +6,8 @@
 use super::*;
 use crate::ap_legacy_exec::BoardRam;
 use crate::paged_pae_adapter::tests::{
-    ACCESSED, CODE, CountingDevice, DATA_A, DATA_B, DATA_X, DIRTY, Expect, MMIO_AT, P, PDPT, PT,
-    RW, Scenario, US, at, cpu, dump, first_difference, fixture, get, memory, put,
+    ACCESSED, CODE, CountingDevice, DATA_A, DATA_B, DATA_X, DIRTY, Expect, MMIO_AT, P, PD, PDPT,
+    PT, RW, Scenario, US, at, cpu, dump, first_difference, fixture, get, memory, put,
 };
 use crate::{MmioBinding, PhysicalMemory, RamLimits};
 use od_isa::protected_exec::ProtectedRefusal;
@@ -359,6 +359,158 @@ fn a_faulting_access_keeps_the_accessed_bit_of_the_leaf_it_reached_where_the_mod
             case.name
         );
     }
+}
+
+/// The lookahead of an unsupported-form refusal: the model reads the bytes it reports through its own
+/// walks and discards them with the refusal; the step reads them through the adapter, so the accessed
+/// bits of the entries of the walks stay (the adapter's rule, S2-25l). The lockstep stops at an
+/// `Unsupported` before it compares RAM, so the difference is its own case: the opcode is the last two
+/// bytes of linear page 5 and the lookahead continues on linear page 6.
+#[test]
+fn the_lookahead_of_an_unsupported_refusal_sets_accessed_bits_where_the_model_sets_none() {
+    let code = [0x90u8; 16];
+    let model_memory = memory_with(&code, &base());
+    let new_memory = memory_with(&code, &base());
+    let initial = dump(&model_memory);
+    let mut model = cpu(WP);
+    model.eip = 0x5FFE;
+    let before = model;
+    let mut ours = model;
+    let expected = model
+        .step(&mut BoardRam::new(&model_memory))
+        .expect_err("an opcode outside the closed set");
+    let ProtectedRefusal::Unsupported { bytes, .. } = &expected else {
+        panic!("Unsupported, got {expected:?}");
+    };
+    assert!(bytes.len() > 2, "the lookahead crosses into linear page 6");
+    let (outcome, record) = new_step(&mut ours, &new_memory, &mut Vec::new());
+    assert_eq!(
+        outcome,
+        PaeStepOutcome::Stopped(PaeProtectedStop::Refused(expected))
+    );
+    assert!(record.is_none(), "no fault");
+    assert_eq!((model, ours), (before, before));
+    assert_eq!(
+        dump(&model_memory),
+        initial,
+        "the model's refusal changes no bit"
+    );
+    let left = dump(&model_memory);
+    let right = dump(&new_memory);
+    let differing: Vec<usize> = (0..left.len())
+        .filter(|&at| left[at] != right[at])
+        .collect();
+    // PD[0] (the walks' common entry) and the leaves of linear pages 5 and 6.
+    assert_eq!(
+        differing,
+        vec![PD as usize, (PT + 8 * 5) as usize, (PT + 8 * 6) as usize]
+    );
+    for entry in [PD, PT + 8 * 5, PT + 8 * 6] {
+        assert_eq!(get(&model_memory, entry) & ACCESSED, 0);
+        assert_eq!(get(&new_memory, entry) & ACCESSED, ACCESSED);
+        assert_eq!(
+            get(&new_memory, entry) & DIRTY,
+            0,
+            "a fetch dirties nothing"
+        );
+    }
+}
+
+/// A `#PF` on a lookahead byte is recorded by the adapter but is no guest fault: the refusal stands
+/// (`PaeBoardStep::page_fault` documents it).
+#[test]
+fn a_page_fault_on_a_lookahead_byte_leaves_the_refusal_and_only_a_record() {
+    let code = [0x90u8; 16];
+    let scenario = base().pte6(0);
+    let memory = memory_with(&code, &scenario);
+    let mut ours = cpu(WP);
+    ours.eip = 0x5FFE;
+    let before = ours;
+    let (outcome, record) = new_step(&mut ours, &memory, &mut Vec::new());
+    let PaeStepOutcome::Stopped(PaeProtectedStop::Refused(ProtectedRefusal::Unsupported {
+        eip: 0x5FFE,
+        bytes,
+        ..
+    })) = outcome
+    else {
+        panic!("a refusal with the bytes before the page, got {outcome:?}");
+    };
+    assert_eq!(bytes, vec![0x90, 0x90], "the lookahead stops at the fault");
+    let record = record.expect("the record of the lookahead fault");
+    assert_eq!(record.cr2_value(), 0x6000);
+    assert_eq!(ours, before);
+}
+
+/// A DWORD operand that wraps past 4 GiB (here `DS.base + disp` = 0xFFFF_FFFE, the last byte at 4 GiB + 1)
+/// is a memory refusal of the adapter in the step, for a load and a store; the one that ends at the last
+/// byte of 4 GiB is translated (and faults on the absent page, as the PDPTE of that gigabyte is absent).
+#[test]
+fn a_dword_operand_past_4_gib_is_a_memory_refusal_in_the_step() {
+    for (name, code) in [
+        ("load", mov_eax_mem(0xFFFF_FFF8)),
+        ("store", mov_mem_eax(0xFFFF_FFF8)),
+    ] {
+        let memory = memory_with(&code, &base());
+        let initial = dump(&memory);
+        let mut ours = cpu(WP);
+        ours.ds.base = 6;
+        ours.gpr[0] = 0x1234_5678;
+        let before = ours;
+        let mut writes = Vec::new();
+        let (outcome, record) = new_step(&mut ours, &memory, &mut writes);
+        assert!(
+            matches!(
+                outcome,
+                PaeStepOutcome::Stopped(PaeProtectedStop::Memory(MemoryError::Backend(_)))
+            ),
+            "{name}: {outcome:?}"
+        );
+        assert!(record.is_none(), "{name}: no walk was started");
+        assert_eq!(ours, before, "{name}");
+        let after = dump(&memory);
+        // Only the accessed bits of the fetch walk differ (the code page).
+        let differing: Vec<usize> = (0..after.len())
+            .filter(|&at| initial[at] != after[at])
+            .collect();
+        assert_eq!(
+            differing,
+            vec![PD as usize, (PT + 8 * 8) as usize],
+            "{name}"
+        );
+
+        let mut fits = ours;
+        fits.ds.base = 4;
+        let (outcome, _) = new_step(&mut fits, &memory, &mut Vec::new());
+        let PaeStepOutcome::Fault(fault) = outcome else {
+            panic!("{name}: the operand ending at 4 GiB - 1 is translated, got {outcome:?}");
+        };
+        assert_eq!(
+            (fault.vector, fault.linear_address),
+            (14, Some(0xFFFF_FFFC)),
+            "{name}"
+        );
+    }
+}
+
+/// `EFLAGS.VM` = 1 (virtual-8086 mode, SDM Vol. 3A section 20.2) is not the flat CPL 0 model: refused
+/// before any fetch, with the flags named.
+#[test]
+fn a_virtual_8086_model_is_refused_before_any_fetch() {
+    let memory = memory_with(&mov_eax_imm(1), &base());
+    let initial = dump(&memory);
+    let mut model = cpu(WP);
+    model.eflags |= 1 << 17;
+    let before = model;
+    let (outcome, record) = new_step(&mut model, &memory, &mut Vec::new());
+    assert_eq!(
+        outcome,
+        PaeStepOutcome::Stopped(PaeProtectedStop::Virtual8086 {
+            eflags: before.eflags
+        })
+    );
+    assert!(record.is_none());
+    assert_eq!(model, before);
+    assert_eq!(dump(&memory), initial, "nothing was walked");
 }
 
 #[test]

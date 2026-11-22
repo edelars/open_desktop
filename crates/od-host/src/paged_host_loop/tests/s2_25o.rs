@@ -307,3 +307,84 @@ fn a_shared_bus_keeps_the_exact_pae_refusal() {
     assert!(writes.is_empty());
     assert_eq!(state, before);
 }
+
+/// A shared bus names the first failed register check in the order of the four-level configuration
+/// (`CR0.ET` clear is `Cr0EtRequired`), and `PaeProtectedMode` only for registers that pass them; the
+/// exclusive bus gives the same reason through the PAE snapshot. Before any fetch or walk in both.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn a_pae_state_with_cr0_et_clear_is_refused_with_that_reason_on_either_bus() {
+    let _guard = jit_guard();
+    let mut session = new_session();
+    let control = PagedHostLoopControl::new();
+    let cr0_without_et = 0x8005_0023u64;
+    let mut shared_state = pae_state();
+    shared_state.cr0 = Some(cr0_without_et);
+    let before = shared_state.clone();
+    let shared_bus = pae_bus(&pae_program(&[]));
+    let mut rflags_defined = RFLAGS_DEFINED;
+    let mut writes = Vec::new();
+    let report = run_paged_host_loop_shared(
+        &mut session,
+        &control,
+        pae_config(),
+        &mut shared_state,
+        &shared_bus,
+        0,
+        &mut rflags_defined,
+        10,
+        |range| writes.push(range),
+        || false,
+    );
+    assert_eq!(
+        report.exit,
+        PagedHostLoopExit::Interpreter(od_machine::PagedProbeExit::Rejected(
+            od_machine::PagedProbeRejection::Configuration(
+                od_machine::ProbeConfigError::Cr0EtRequired {
+                    value: cr0_without_et
+                }
+            )
+        ))
+    );
+    assert_eq!(report.retired_total(), 0);
+    assert!(writes.is_empty());
+    assert_eq!(shared_state, before);
+
+    let mut bus = pae_bus(&pae_program(&[]));
+    let mut state = pae_state();
+    state.cr0 = Some(cr0_without_et);
+    let run = run_pae(&mut session, &mut bus, &mut state, 10);
+    assert_eq!(
+        run.report.exit,
+        PagedHostLoopExit::PaeProtected(PaeProtectedStop::State(PaeStateRefusal::Paging(
+            od_machine::PaeConfigError::Config(od_machine::ProbeConfigError::Cr0EtRequired {
+                value: cr0_without_et
+            })
+        )))
+    );
+    assert_eq!(run.report.retired_total(), 0);
+    assert!(run.writes.is_empty(), "nothing was walked");
+}
+
+/// `EFLAGS.VM` = 1 is a virtual-8086 vCPU, not the flat CPL 0 model: the loop stops with that reason
+/// before any fetch.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn a_virtual_8086_pae_state_is_refused_before_any_fetch() {
+    let _guard = jit_guard();
+    let mut session = new_session();
+    let mut bus = pae_bus(&pae_program(&[]));
+    let mut state = pae_state();
+    state.rflags = 2 | (1 << 17);
+    let before = state.clone();
+    let run = run_pae(&mut session, &mut bus, &mut state, 10);
+    assert_eq!(
+        run.report.exit,
+        PagedHostLoopExit::PaeProtected(PaeProtectedStop::Virtual8086 {
+            eflags: 2 | (1 << 17)
+        })
+    );
+    assert_eq!(run.report.retired_total(), 0);
+    assert!(run.writes.is_empty(), "nothing was walked");
+    assert_eq!(state, before);
+}
