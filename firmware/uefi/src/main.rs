@@ -386,6 +386,16 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     // SAFETY: Boot Services are initialized and the board's MMIO is identity mapped.
     let usb = unsafe { od_firmware::usb::install(&handoff, system_pointer) };
     com1_write(usb.line(&mut [0; 128]));
+    if usb == od_firmware::usb::Outcome::Enumerated {
+        // The USB keyboard feeds the same key queue as COM1; ConInEx exposes its key state.
+        // SAFETY: the console is published and Boot Services are initialized.
+        let status = unsafe { od_firmware::console::install_input_ex(system_pointer) };
+        if status != Status::SUCCESS {
+            com1_write(b"OD-FW xhci: ConInEx install failed status=0x");
+            com1_write(&fixed_hex(status.raw() as u64));
+            com1_write(b"\r\n");
+        }
+    }
     let storage_boot = handoff.fv_app().is_none()
         && unsafe { od_firmware::bootmgr::storage_present(system_pointer) };
     if handoff.fv_app().is_none() && !storage_boot {

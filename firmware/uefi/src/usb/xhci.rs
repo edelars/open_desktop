@@ -26,7 +26,7 @@ use super::{
     desc::{
         self, DEVICE_DESCRIPTOR_BYTES, KeyboardInterface, MAX_CONFIGURATION_BYTES, SetupPacket,
     },
-    hid_keyboard::{BOOT_REPORT_BYTES, BootKeyboard},
+    hid_keyboard::{BOOT_REPORT_BYTES, BootKeyboard, KEYS_PER_REPORT},
     trb::{
         DCI_EP0, DCI_INTERRUPT_IN, DEVICE_CONTEXT_BYTES, EP0_MAX_PACKET, EventCursor,
         INPUT_CONTEXT_BYTES, InputContext, RingCursor, TRB_BYTES, TransferType, Trb, completion,
@@ -96,6 +96,8 @@ const PORTSC_PRC: u32 = 1 << 21;
 /// (write 1 disables the port) are written as 0 unless the caller sets them.
 const PORTSC_PRESERVE: u32 = (1 << 9) | (3 << 14) | (7 << 25);
 
+/// Marks a recorded LED failure whose detail is zero.
+const LED_FAILED: u32 = 0x8000_0000;
 const POLL_US: usize = 10;
 /// Waits are bounded in time through the Boot Services stall clock (the board's virtual clock):
 /// register handshakes, one command or transfer, one port reset. The port reset takes 50 ms of
@@ -241,6 +243,8 @@ pub(super) struct Keyboard {
     pub(super) interface: u8,
     /// Completion code of the last failed Interrupt IN transfer (0: none).
     pub(super) failure: u32,
+    /// Detail of the last failed LED SET_REPORT with [`LED_FAILED`] set (0: the last one worked).
+    pub(super) led_failure: u32,
 }
 
 impl Xhci {
@@ -730,6 +734,7 @@ impl Xhci {
             port,
             interface: interface.interface,
             failure: 0,
+            led_failure: 0,
         });
         self.arm_interrupt(slot);
         Ok(())
@@ -766,12 +771,44 @@ impl Xhci {
     }
 
     /// Polls the event ring: decodes finished Interrupt IN reports into the key queue.
+    ///
+    /// Reports are taken only while the staging queue can hold a whole report, so a full console
+    /// queue backs up into the event ring instead of dropping keys. The register write ends the
+    /// board's guest quantum, so the model delivers pending input between two polls.
     pub(super) fn poll(&mut self) {
         if self.stopped {
             return;
         }
-        while let Some(event) = self.next_event() {
+        self.yield_quantum();
+        while self.decoder.room() >= KEYS_PER_REPORT {
+            let Some(event) = self.next_event() else {
+                break;
+            };
             self.dispatch(event);
+        }
+    }
+
+    /// Sends the queued LED update (lock state changed on a key or by SetState), if any. A
+    /// failed transfer is recorded in [`Keyboard::led_failure`] and not retried (the next
+    /// lock change sends the whole state again). Runs only from the driver's own entry points,
+    /// never nested in another transfer (ISSUE-647).
+    pub(super) fn flush_led(&mut self) {
+        let Some(keyboard) = self.keyboard else {
+            return;
+        };
+        let Some(report) = self.decoder.take_led() else {
+            return;
+        };
+        let led = self.page(PAGE_DATA) + DATA_LED;
+        ram_write32(led, u32::from(report));
+        let sent = self.control(
+            Step::SetReport,
+            keyboard.slot,
+            SetupPacket::set_output_report(keyboard.interface),
+            Some((led, false)),
+        );
+        if let Some(current) = self.keyboard.as_mut() {
+            current.led_failure = sent.err().map_or(0, |error| error.detail | LED_FAILED);
         }
     }
 }
