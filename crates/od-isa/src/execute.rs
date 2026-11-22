@@ -30613,6 +30613,14 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
 /// iteration. A zero-budget call to the inner entry first checks state admission. A stop within a
 /// string leaves RIP on that instruction and preserves progress from completed iterations.
 ///
+/// S2-39 (CPL3): with the FP member (`with_fp_state`) the general SSE/SSE2 forms of the CPL0 set (S2-34, S2-37, S2-38,
+/// S2-54, S2-55 and the S2-39 slices) also run here, on `state.sse`, with the results of the bare run and of the CPL0
+/// set (see `cpl3_sse_set_form`); the allow-list above still decides every other form. The CPL3 rules of those forms:
+/// the CR0.EM/TS and CR4.OSFXSR gates, canonical addresses (`#GP`, `#SS` for an RSP/RBP base), the page privilege of the
+/// context, the alignment `#GP` of the aligned forms, and `Unsupported` (nothing changed) for a misaligned operand with
+/// RFLAGS.AC = 1 and CR0.AM = 1 (`#AC` is not modeled, ADR-0015 item 9). MMX and the forms that need the MMX registers
+/// stay refused: the x87 half of the cell is not loaded at CPL3.
+///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
 /// entry on the same state.
@@ -30689,12 +30697,16 @@ pub fn run_with_cpl3_profile_set(
                 }
                 continue;
             }
+            // S2-39: with the FP member the general SSE/SSE2 forms of the CPL0 set run at CPL3 too, on the same
+            // `state.sse` (see `cpl3_sse_set_form`); the step decides each of them, the MMX forms and the
+            // others stay `Unsupported` there.
             if !cpl3_allows(
                 &instruction,
                 set.syscall,
                 lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
                 set.msr_windows.is_some(),
-            ) {
+            ) && !(set.fp_state.is_some() && cpl3_sse_set_form(&instruction))
+            {
                 return Ok(Cpl0ProfileSetResult {
                     exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
                         // The opcode byte as the decoder reports it (the byte after `0F` for the
@@ -41634,8 +41646,16 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // `run_cpl0_profile_set_inner`), so the register forms the profile decoder returns as narrow
     // operations run through the general SSE core there, as in the bare run. CPL3 keeps its own
     // narrow profile list.
-    let sse_cpl0 =
-        control_policy.is_some() && fp_cpl0.is_some() && context.privilege == PrivilegeLevel::Ring0;
+    // S2-39 (CPL3): the same holds at CPL3 of the set. The CPL3 entry runs the same step on the same `state.sse`; the
+    // forms with a handler of their own in `step_cpl3_xmm` keep it (`sse_cpl0_cpl3_handler_form`), every other
+    // SSE/SSE2 form takes the general core, whose executors already carry the CPL3 rules (canonical, #SS, the
+    // page privilege of the context, and `Unsupported` for a misaligned operand with RFLAGS.AC = 1 and CR0.AM = 1).
+    let sse_set = control_policy.is_some()
+        && fp_cpl0.is_some()
+        && matches!(
+            context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        );
     let general_fp_closed = |operation: Operation| match operation {
         Operation::SseFpArith {
             kind: SseFpArithKind::Sqrt | SseFpArithKind::Min | SseFpArithKind::Max,
@@ -41650,7 +41670,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         sse_fp_misc_from_narrow(instruction.operation, instruction.prefixes.operand_override)
     });
     let instruction = match general_from_narrow {
-        Some(general) if !general_fp_closed(general) && (control_policy.is_none() || sse_cpl0) => {
+        Some(general) if !general_fp_closed(general) && (control_policy.is_none() || sse_set) => {
             long_decode::Instruction {
                 operation: general,
                 ..instruction
@@ -41664,7 +41684,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // every other configuration keep the narrow operations.
     let instruction = match sse_logic_from_narrow(instruction.operation) {
         Some(general)
-            if sse_cpl0
+            if sse_set
                 || control_policy.is_none()
                     && cr0_profile == Some(Cr0Profile::FpInitLong64V1)
                     && cr4_profile == Some(Cr4Profile::FpInitLong64V1) =>
@@ -47166,8 +47186,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    // S2-39 (CPL3): with the FP member only the forms that have no other executor go to `step_cpl3_xmm`
+    // (`sse_cpl0_cpl3_handler_form`); the rest run through the general core below, as at CPL0.
     if control_policy.is_some()
         && context.privilege == PrivilegeLevel::Ring3
+        && (fp_cpl0.is_none() || sse_cpl0_cpl3_handler_form(&instruction.operation))
         && matches!(
             instruction.operation,
             Operation::MoveIntegerToXmm { .. }
@@ -50044,7 +50067,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     // S2-39n: the FP member of the CPL0 set runs the narrow SSE forms on `state.sse` after the CR0/CR4 gates, before
     // any operand access or admission test.
-    if sse_cpl0 {
+    if sse_set {
         if sse_cpl0_cpl3_handler_form(&instruction.operation) {
             return step_cpl3_xmm(state, memory, context, &instruction, next_rip);
         }
@@ -50245,12 +50268,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovupsStoreMemory { .. }
         | Operation::MovupdLoadMemory { .. }
         | Operation::MovupdStoreMemory { .. }
-            if sse_cpl0 =>
+            if sse_set =>
         {
             state.sse.is_some()
         }
         // S2-39n: the register forms and the MOVSS/MOVSD/LDMXCSR/STMXCSR memory forms of `sse_cpl0_form`.
-        _ if sse_cpl0 && sse_cpl0_form(&instruction) => state.sse.is_some(),
+        _ if sse_set && sse_cpl0_form(&instruction) => state.sse.is_some(),
         Operation::Ldmxcsr(_) | Operation::Stmxcsr(_) => false,
         Operation::Sysenter | Operation::Sysexit => false,
         // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
@@ -52588,6 +52611,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 4) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let mut raw = [0u8; 4];
         if let Err(error) = memory.read(address, context, &mut raw) {
             return report_memory_error(error);
@@ -52609,6 +52637,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 4) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let value = sse_ref(state).mxcsr;
         if let Err(error) = memory.write(address, context, &value.to_le_bytes()) {
             return report_memory_error(error);
@@ -52625,6 +52658,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 4) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let mut raw = [0u8; 4];
         if let Err(error) = memory.read(address, context, &mut raw) {
             return report_memory_error(error);
@@ -52648,6 +52686,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 8) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let mut raw = [0u8; 8];
         if let Err(error) = memory.read(address, context, &mut raw) {
             return report_memory_error(error);
@@ -52671,6 +52714,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 4) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let raw = state
             .sse
             .as_ref()
@@ -52691,6 +52739,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             Ok(address) => address,
             Err(error) => return report_memory_error(error),
         };
+        if cpl3_ac_unmodeled(state, context, address, 8) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let raw = state
             .sse
             .as_ref()
@@ -73866,6 +73919,45 @@ fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
     )
 }
 
+/// S2-39 (CPL3): the instructions the CPL3 entry hands to the step when the set has the FP member: the forms of
+/// the CPL0 set that run on `state.sse` (the narrow register forms and MOVSS/MOVSD/LDMXCSR/STMXCSR of
+/// `sse_cpl0_form`, the handler forms of `step_cpl3_xmm`, the raw 128-bit moves, and every operation of the general
+/// SSE core: the narrow forms the step converts and the general operations). It only decides what reaches the step;
+/// the step still refuses what needs other state (the MMX forms and MOVDQ2Q/MOVQ2DQ need the x87 registers, which
+/// stay in the cell at CPL3) or the form itself (FS/GS overrides, an unsupported addressing shape) as `Unsupported`.
+fn cpl3_sse_set_form(instruction: &long_decode::Instruction) -> bool {
+    let operation = instruction.operation;
+    sse_cpl0_form(instruction)
+        || sse_cpl0_cpl3_handler_form(&operation)
+        || sse_fp_arith_from_narrow(operation).is_some()
+        || sse_fp_misc_from_narrow(operation, instruction.prefixes.operand_override).is_some()
+        || sse_logic_from_narrow(operation).is_some()
+        || matches!(
+            operation,
+            Operation::MovapsLoadMemory { .. }
+                | Operation::MovapsStoreMemory { .. }
+                | Operation::MovdqaLoadMemory { .. }
+                | Operation::MovdquLoadMemory { .. }
+                | Operation::Sse128MemoryMove { .. }
+                | Operation::MovupsLoadMemory { .. }
+                | Operation::MovupsStoreMemory { .. }
+                | Operation::MovupdLoadMemory { .. }
+                | Operation::MovupdStoreMemory { .. }
+                | Operation::Sse3Permute { .. }
+                | Operation::Ssse3Int { .. }
+                | Operation::Sse41 { .. }
+                | Operation::Sse2Int { .. }
+                | Operation::Sse2Maskmov { .. }
+                | Operation::Sse41Fp { .. }
+                | Operation::SseLogicPermute { .. }
+                | Operation::SseMovmsk { .. }
+                | Operation::SseFpArith { .. }
+                | Operation::SseFpMisc { .. }
+                | Operation::SseCvtFromInt { .. }
+                | Operation::SseCvtToInt { .. }
+        )
+}
+
 /// S2-39n: whether the FP member of the CPL0 set runs this instruction on `state.sse` beyond the general SSE core
 /// of S2-39m. A memory form with an FS or GS override is refused: the executors address memory without a segment
 /// base.
@@ -74536,6 +74628,23 @@ fn sse_ref(state: &LongModeState) -> &crate::state::SseState {
         .expect("the CPL0 set loads the SSE state of its FP member before the run")
 }
 
+/// S2-39 (CPL3): the alignment-check exception `#AC` (SDM Vol. 3A 6.15 and Vol. 1 table of the SIMD exception
+/// classes: CPL3, RFLAGS.AC = 1 and CR0.AM = 1) is not modeled (ADR-0015 item 9 defers it). A memory operand of
+/// `bytes` bytes whose address is not aligned to its size at CPL3 with both bits set is therefore `Unsupported`,
+/// before any memory access, as in the executors of the other S2-39 forms; CR0 not carried counts as AM = 1.
+fn cpl3_ac_unmodeled(
+    state: &LongModeState,
+    context: AccessContext,
+    address: u64,
+    bytes: usize,
+) -> bool {
+    bytes > 1
+        && address & (bytes as u64 - 1) != 0
+        && context.privilege == PrivilegeLevel::Ring3
+        && state.rflags & (1 << 18) != 0
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+}
+
 fn step_cpl3_xmm(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -74569,6 +74678,19 @@ fn step_cpl3_xmm(
             destination,
             source,
         } => {
+            if let Operand::Memory(operand) = source {
+                match operand.access_address_48(state, next_rip) {
+                    Ok(address)
+                        if cpl3_ac_unmodeled(state, context, address, operand.size.bytes()) =>
+                    {
+                        return Ok(StepOutcome::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(error) => return report_memory_error(error),
+                }
+            }
             let value = match read_operand(state, memory, context, next_rip, source) {
                 Ok(value) => value,
                 Err(error) => return report_memory_error(error),
@@ -74583,6 +74705,17 @@ fn step_cpl3_xmm(
         } => {
             let source = sse_ref(state).xmm[usize::from(source)];
             let value = u64::from_le_bytes(source[..8].try_into().unwrap());
+            match destination.access_address_48(state, next_rip) {
+                Ok(address)
+                    if cpl3_ac_unmodeled(state, context, address, destination.size.bytes()) =>
+                {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => return report_memory_error(error),
+            }
             if let Err(error) = write_operand(
                 state,
                 memory,
@@ -74838,6 +74971,11 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if cpl3_ac_unmodeled(state, context, address, 8) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let mut low = [0; 8];
             if let Err(error) = memory.read(address, context, &mut low) {
                 return report_memory_error(error);
@@ -74852,6 +74990,11 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if cpl3_ac_unmodeled(state, context, address, 8) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let mut raw = [0; 8];
             if let Err(error) = memory.read(address, context, &mut raw) {
                 return report_memory_error(error);
@@ -74869,6 +75012,11 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if cpl3_ac_unmodeled(state, context, address, 8) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let raw = sse_ref(state).xmm[usize::from(source)];
             if let Err(error) = memory.write(address, context, &raw[..8]) {
                 return report_memory_error(error);
@@ -74886,6 +75034,11 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if cpl3_ac_unmodeled(state, context, address, 8) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let mut high = [0; 8];
             if let Err(error) = memory.read(address, context, &mut high) {
                 return report_memory_error(error);
@@ -75025,6 +75178,11 @@ fn step_cpl3_xmm(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            if cpl3_ac_unmodeled(state, context, address, 2) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let mut raw = [0; 2];
             if let Err(error) = memory.read(address, context, &mut raw) {
                 return report_memory_error(error);
