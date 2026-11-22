@@ -627,10 +627,22 @@ public final class FrameReader {
     /// Screen 0 (the reader the single-screen UI and the offscreen dump use).
     public var primary: ScreenReader? { screens.first }
 
-    /// Connection state while connecting or terminal; otherwise the state of screen 0 (single-screen callers).
-    public var state: FrameReaderState {
+    /// The state of screen 0 as a single-screen caller sees it: the connection state while connecting or terminal,
+    /// otherwise the state of screen 0. It says nothing about screen 1: a window of screen 1 uses `windowState(screen:)`.
+    public var state: FrameReaderState { windowState(screen: 0) }
+
+    /// The connection alone (section 11.7): `connecting` until every screen is announced, `disconnected` or `incompatible`
+    /// after a failure; while the connection runs it is reported as `noSignal`, which no window shows: a running connection
+    /// shows the state of its screen.
+    public var connection: FrameReaderState { connectionState }
+
+    /// What the window of `screen` shows (section 11.7): the connection state while it is connecting or terminal (a failure
+    /// of any screen ends every window), otherwise the state of that screen alone, never the state of another one.
+    /// A screen that was not announced has no state of its own and shows the connection state.
+    public func windowState(screen: Int) -> FrameReaderState {
         if connectionState == .connecting || connectionState.isTerminal { return connectionState }
-        return primary?.state ?? connectionState
+        guard screens.indices.contains(screen) else { return connectionState }
+        return screens[screen].state
     }
 
     public var isTerminal: Bool { connectionState.isTerminal }

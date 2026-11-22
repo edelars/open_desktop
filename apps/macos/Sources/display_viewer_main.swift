@@ -223,7 +223,7 @@ private final class ViewerSession {
     }
 
     /// State of screen 0 (the single-screen view and the dump); the connection state before any ANNOUNCE.
-    var primaryState: FrameReaderState { reader.primary?.state ?? reader.state }
+    var primaryState: FrameReaderState { reader.windowState(screen: 0) }
 
     /// One reader step: pump, then commit or discard the staged texture of each screen, and clear a screen's texture
     /// when that screen shows no frame. The cursor belongs to screen 0 (S10-14, 16.8).
@@ -256,7 +256,7 @@ private final class ViewerSession {
                 presenter.discard()
             }
             if current.state != .showing { presenter.clear() }
-            if reader.state.isTerminal || current.state.isTerminal { presenter.clear() }
+            if reader.isTerminal || current.state.isTerminal { presenter.clear() }
         }
         // The cursor is independent of the frame: an accepted update commits the cursor state (and a new texture if the
         // shape changed); a discarded one drops only the staged texture. The reader state does not clear the cursor state
@@ -266,7 +266,7 @@ private final class ViewerSession {
         } else if cursorUploaded {
             presenter.discardCursor()
         }
-        if reader.state.isTerminal { presenter.commitCursor(nil) }
+        if reader.isTerminal { presenter.commitCursor(nil) }
         return changed
     }
 
@@ -329,7 +329,7 @@ private final class ViewerSession {
     /// Pumps until the connection is announced (or failed), before any window exists (S10-15).
     func waitForAnnounce(timeoutMs: UInt64) {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutMs * 1_000_000
-        while reader.state == .connecting && !reader.state.isTerminal {
+        while reader.connection == .connecting {
             if DispatchTime.now().uptimeNanoseconds >= deadline { break }
             step(timeoutMs: 20)
         }
@@ -388,7 +388,7 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
     let presenter = session.presenters[target]
     // The state of the dumped screen; the connection state while no ANNOUNCE of it has arrived.
     func targetState() -> FrameReaderState {
-        session.reader.screens.count > target ? session.reader.screens[target].state : session.reader.state
+        session.reader.windowState(screen: target)
     }
     let deadline = DispatchTime.now().uptimeNanoseconds + config.timeoutMs * 1_000_000
     while targetState() != .showing && !targetState().isTerminal {
@@ -491,18 +491,16 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         var publishedShown: ShownFrame?
         while !isStopRequested() {
             let changed = session.step(timeoutMs: 100)
-            let connection = session.reader.state
+            let connection = session.reader.connection
             if connection.isTerminal, statusDetail == nil {
                 // section 7.2: munmap and close are done by the reader; stop and reap VMHost, keep its real status.
                 let status = session.stopChild()
                 statusDetail = "\(describe(connection)) (VMHost exit status \(status))"
                 setFailed()
             }
-            // Each window shows its own screen; before the announce of a screen, the connection state.
-            let states: [FrameReaderState] = session.presenters.indices.map { index in
-                connection.isTerminal || index >= session.reader.screens.count
-                    ? connection : session.reader.screens[index].state
-            }
+            // Each window shows its own screen (the connection state while connecting or after a failure, 11.7); the state
+            // of screen 0 never stands in for another screen.
+            let states: [FrameReaderState] = session.presenters.indices.map { session.reader.windowState(screen: $0) }
             // S10-16: the shown frame for absolute mouse positions: only while SHOWING, with the mode count of that frame.
             var shown: ShownFrame?
             if let primary = session.reader.primary, primary.state == .showing, let frame = primary.lastFrame {

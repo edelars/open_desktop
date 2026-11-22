@@ -489,8 +489,9 @@ unchanged (see the S4-27i5 section). See the
 написан и ожидает ревью.
 
 - **Ревизия.** `VERSION = 2`, `CAPS = 0x3` на момент S10-13 (бит 0 `MODE_LIST`,
-  бит 1 `EVENTS`; биты 2–3 зарезервированы, равны `0`). С блоком курсора
-  (раздел «Display device, cursor (S10-14)» ниже) `CAPS = 0x7`. Один тип `DisplayDevice` обслуживает
+  бит 1 `EVENTS`; биты 2–3 без своих блоков равны `0`). С блоком курсора
+  (раздел «Display device, cursor (S10-14)» ниже) `CAPS = 0x7`, в конфигурации с двумя
+  экранами (раздел «Display device, second screen (S10-15)» ниже) `CAPS = 0xF`. Один тип `DisplayDevice` обслуживает
   гостей обеих ревизий: регистры ревизии 1, их значения, порядок проверок,
   счётчики, backend-ошибки и host API раздела «Display device (S10-03)» не
   изменены; меняются только значения `VERSION` и `CAPS`. Новые регистры
@@ -532,7 +533,7 @@ unchanged (see the S4-27i5 section). See the
   `DRIVER_PROTOCOL <- 0` (открытый запрос → `Cancelled`), обнуляет
   `RESPONSE_SEQ_*` и `EVENT_STATUS`; `next_event_seq` и последний запрос
   сохраняются.
-- **Не реализовано.** Блок второго экрана, прерывания, snapshot,
+- **Не реализовано.** Прерывания, snapshot,
   путь запроса UI → VMHost → C ABI `od-host` (ABI в этом срезе не менялся;
   DISPLAY_DEVICE.md, 14.15.1), драйверы. Гостевой CPU-путь по-прежнему не имеет
   dword MMIO-записи (13.1), поэтому гостевой код не проверен: события и ответы
@@ -550,8 +551,8 @@ unchanged (see the S4-27i5 section). See the
 
 Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 15. Здесь записаны
 только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
-устройства написан и ожидает ревью. Display host ABI, VMHost, frame transport v2
-и UI не реализованы.
+устройства написан и ожидает ревью. Display host ABI ([DISPLAY_HOST_ABI_V1.md](DISPLAY_HOST_ABI_V1.md),
+раздел 9), публикация в VMHost (frame transport v2) и наложение в UI реализованы в S10-14.
 
 - **Блок.** Опциональный блок ревизии 2 по `CAPS` биту 2: `CAPS = 0x7`,
   `VERSION` остаётся `2`. Блок `0x200–0x2FC` существует только при этом бите
@@ -596,8 +597,8 @@ unchanged (see the S4-27i5 section). See the
   после reset, обнуляет `staging` и `active`, снимает форму (`shape_seq = 0`),
   скрывает курсор и ставит позицию `(0, 0)`; `cursor_seq` растёт на 1, если была
   форма, курсор был включён или позиция была ненулевой.
-- **Не реализовано.** Display host ABI и test-only профиль `3`, VMHost, frame
-  transport v2, наложение в UI, snapshot, драйверные последовательности курсора
+- **Не реализовано.** Test-only профиль `3` (отклонён, DISPLAY_HOST_ABI_V1.md,
+  правило 0), snapshot, драйверные последовательности курсора
   (DISPLAY_DRIVER_V1.md), гостевой CPU-путь с dword MMIO (13.1): регистры
   проверены записями через `MachineBus`.
 - **Проверено.** Unit-тесты `display_device.rs` и интеграционные
@@ -609,6 +610,85 @@ unchanged (see the S4-27i5 section). See the
   насыщение счётчика, backend-ошибки. Замер: загрузка 64×64 (4 102 записи через
   `MachineBus`) — 56–160 мкс в release и около 0,9 мс в debug; один прогон с eprintln, запуск `cargo test -p od-machine --release --offline -- --nocapture` (одна машина, без
   CPU-пути; в CPU-пути не измерено).
+
+## Display device, second screen (S10-15)
+
+Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 16; передача в UI —
+[FRAME_TRANSPORT_V1.md](../../protocols/control/FRAME_TRANSPORT_V1.md), раздел 11;
+display host ABI — [DISPLAY_HOST_ABI_V1.md](DISPLAY_HOST_ABI_V1.md), раздел 10;
+последовательность драйвера — [DISPLAY_DRIVER_V1.md](../../protocols/guest/DISPLAY_DRIVER_V1.md),
+раздел 10a. Здесь записаны только границы, реализованные в
+`crates/od-machine/src/display_device.rs`, `physical_memory.rs` и `bus.rs`. Код
+написан и ожидает ревью.
+
+- **Конфигурация.** Число экранов задаёт конструктор при создании устройства и не
+  меняется: `DisplayDevice::new_with_handle()` — один экран (`CAPS = 0x7`, блок
+  `0x300–0x3FC` целиком резерв: чтение `0`, запись игнорируется),
+  `DisplayDevice::new_two_screens_with_handle()` — два (`CAPS = 0xF`, бит 3
+  `SECOND_SCREEN`). `VERSION` остаётся `2` (толкование 14.3 вынесено на ревью,
+  DISPLAY_DEVICE.md 16.15 п. 1). Одно дисплейное устройство на шину:
+  `DisplayBindingError::MultipleDevices` не менялась.
+- **Блок экрана 1.** 17 именованных регистров (`S1_MAX_WIDTH/HEIGHT`, `S1_FORMATS`,
+  `S1_FB_BASE_LO/HI`, `S1_FB_SIZE`, `S1_WIDTH/HEIGHT/FORMAT`, `S1_MODE_COMMIT`,
+  `S1_ACTIVE_WIDTH/HEIGHT/FORMAT`, `S1_STRIDE`, `S1_STATUS`,
+  `S1_FRAME_GENERATION`, `S1_FRAME_GENERATION_HI`) по смещению `0x300 +` смещение
+  одноимённого регистра экрана 0 и 47 резервных слов; `ID`, `VERSION` и `CAPS` не
+  зеркалируются. Доступ — как у остального окна: только `Mmio`, `Dword`, выровненный,
+  иначе `DeviceError` до изменения состояния. `S1_MODE_COMMIT` принимает `1`
+  (режим, проверки раздела 5 над регистрами экрана 1) и `2` (отключить экран,
+  16.6); другое значение — `INVALID_COMMAND` в `S1_STATUS`. `S1_STATUS`: `ACTIVE`
+  (бит 0), `FRAME_SINCE_COMMIT` (1), `DISABLED` (2), `COMMIT_ERROR` (15:8),
+  `FRAME_ERROR` (23:16); новых кодов нет, ошибки исправимы гостем и не попадают в
+  `STATUS`, `EVENT_STATUS`, `CURSOR_STATUS`. Экран 0 командой `2` не отключается.
+- **Состояния и счётчики.** `NO_MODE`, `ACTIVE`, `DISABLED`; свои `generation`,
+  `mode_change_count`, `frame_mode_epoch`. Отключение (в том числе из `NO_MODE`)
+  растит `mode_change_count_1`; повтор отключения — успех без роста; doorbell на
+  отключённом экране — `FRAME_ERROR = NO_ACTIVE_MODE`. При `2^64 − 1` команды
+  `1` и `2` (кроме повторного отключения) дают `COUNTER_EXHAUSTED`, как и doorbell
+  при `generation_1 = 2^64 − 1`. Запись в блок не меняет экран 0, его `STATUS`,
+  очередь событий, `DRIVER_PROTOCOL` и курсор; запись в регистры экрана 0 не меняет
+  экран 1.
+- **Память.** Второй регион `Framebuffer` `[0xF400_0000, 0xF640_0000)` (36 MiB),
+  резерв `[0xF640_0000, 0xF800_0000)` не отображается. Правила 7.1–7.4 те же, что у
+  экрана 0: данные как RAM, без committed-write callback и page generations,
+  instruction fetch и элементы таблиц страниц в регионе — backend-ошибки. Backing
+  двух регионов (72 MiB) вне `RamLimits`. Курсор к региону отношения не имеет.
+- **Карта и шина.** `MachineMemoryMap::new` принимает не больше двух регионов
+  `Framebuffer` (`MAX_FRAMEBUFFER_REGIONS = 2`; третий —
+  `MemoryAccessError::MultipleFramebufferRegions`; каждый регион проверяется как
+  раньше, `InvalidFramebufferRegion`). Устройство отдаёт шине привязки через
+  `BusDevice::framebuffer_binding()` (экран 0) и `secondary_framebuffer_binding()`
+  (экран 1, `None` в конфигурации с одним экраном); множество регионов `Framebuffer`
+  карты должно совпасть с ними по базе и длине: иначе
+  `DisplayBindingError::FramebufferMismatch` (нет региона экрана 1, другая база или
+  длина) или `UnboundFramebufferRegion` (лишний регион у устройства с одним экраном).
+- **Reset.** `DisplayHandle::reset()` возвращает регистры блока к значениям после
+  reset и состояние экрана 1 к `NO_MODE`; `mode_change_count_1` растёт на 1, только
+  если был режим или `DISABLED` (при `2^64 − 1` не меняется); `generation_1`,
+  `frame_mode_epoch_1` и память обоих экранов сохраняются.
+- **Host API** (`DisplayHandle`, только между квантами, владельцем `MachineBus`, в его
+  потоке; только читает): `second_screen_state() -> Option<SecondScreenState>`
+  (`None` — один экран; число экранов `1 + u32::from(is_some())`; режим, `disabled`,
+  `generation`, `mode_change_count`, `frame_mode_epoch`, `has_current_frame()`) и
+  `read_second_frame_into(&bus, &mut [u8]) -> Result<FrameInfo, DisplayReadError>` с
+  правилами `read_frame_into` и отказом `DisplayReadError::NoSuchScreen`, когда
+  второго экрана нет (отдельно от `NoActiveMode`: экран есть, режима нет).
+  Функции без номера экрана описывают экран 0.
+- **Не реализовано.** Третий экран, курсор и события экрана 1, PCI-BAR (S10-12),
+  snapshot; гостевой код: probe S10-08 рисует один экран (проверка 16.13 п. 10 с
+  probe — S10-09), регистры экрана 1 проверены записями через `MachineBus`.
+- **Проверено.** Unit-тесты `display_device.rs` (`cargo test -p od-machine --offline
+  --lib display_device`, 65 тестов, из них 15 в `screen1_tests`): значения после
+  reset 17 регистров и неизменность при записи `0xFFFF_FFFF` в RO-регистры и в
+  каждое из 47 резервных слов (в конфигурации с одним экраном — во все 64 слова);
+  `S1_MODE_COMMIT` и отключение по состояниям, независимость поколений и счётчиков
+  двух экранов; `COUNTER_EXHAUSTED` (commit, disable, doorbell) и порядок проверок;
+  reset двух экранов (счётчики, поколения, память); backend-ошибки на смещениях
+  блока; правила 7.1–7.4 для региона экрана 1; построение карты и шины (72 MiB при
+  `RamLimits` 1 MiB, третий регион, регион `0x0240_1000`, перекрытия с экраном 0,
+  окном регистров и RAM, нет региона или другая база экрана 1,
+  `UnboundFramebufferRegion`); `NoSuchScreen`. Не запускались: интеграционные тесты
+  `tests/display_device.rs`, полный набор `od-machine`.
 
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 

@@ -128,7 +128,8 @@ final class DisplayProfileRunner: ProfileRunner {
         var config = od_display_session_config()
         config.abi_version = vmhost_display_abi_version_v1()
         config.struct_size = UInt32(OD_DISPLAY_SESSION_CONFIG_SIZE_V1)
-        config.profile = profile == 4 ? OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue : OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
+        config.profile = profile == OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue
+            ? OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue : OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
         var created: OpaquePointer?
         let status = od_display_session_create(&config, &created)
         guard status == OD_DISPLAY_STATUS_OK.rawValue, let created else {
@@ -138,14 +139,12 @@ final class DisplayProfileRunner: ProfileRunner {
         if displayFD != nil {
             do {
                 // Section 11.3 of the frame transport: one object per screen, all created before the first ANNOUNCE.
-                let queue = NotificationQueue()
-                for screen in 0..<screens {
-                    let mode = try DisplaySmoke.screenMode(created, screen: screen)
-                    guard mode.flags & vmhost_display_mode_flag_active() != 0 else {
-                        throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
-                    }
-                    built.append(try FrameTransportWriter(maxWidth: mode.width, maxHeight: mode.height, screen: screen, queue: queue))
+                // Screen 0 of a test-only profile always has a mode; a screen without one (screen 1) is not a refusal: its object
+                // gets the device limits and its window shows "no signal" (DISPLAY_DEVICE.md 16.2).
+                guard try DisplaySmoke.screenMode(created, screen: 0).flags & vmhost_display_mode_flag_active() != 0 else {
+                    throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
                 }
+                built = try DisplaySmoke.makeWriters(session: created, screens: screens, queue: NotificationQueue())
             } catch {
                 _ = od_display_session_destroy(created)
                 throw error

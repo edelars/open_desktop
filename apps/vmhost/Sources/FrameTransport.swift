@@ -10,11 +10,13 @@ import ODAtomics
 import ODHostABI
 #endif
 
-// Writer side of frame transport v2 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14).
+// Writer side of frame transport v3 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14;
+// section 11 is up to two screens, S10-15: one shared-memory object and one notification stream per screen).
 //
 // TEST-ONLY entry point: `--display-smoke pattern` runs a VMHost without a guest.
-// It creates a display session with OD_DISPLAY_PROFILE_TEST_PATTERN, publishes
-// the frame of that session into a shared-memory slot and notifies the reader.
+// It creates a display session with OD_DISPLAY_PROFILE_TEST_PATTERN (one screen) or, with `--screens 2`,
+// OD_DISPLAY_PROFILE_TWO_SCREENS_TEST (profile 4), publishes the frame of each screen into the shared-memory
+// slot of its object and notifies the reader.
 // It is not part of the normal VMHost path and is never selected implicitly.
 //
 // Atomics go through the C shim FrameTransportAtomics.h (section 5.3). The frame
@@ -143,6 +145,9 @@ enum Layout {
     static let cursorMaxWidth: UInt32 = 64
     static let cursorMaxHeight: UInt32 = 64
     static let cursorFormatBGRA8888Premul: UInt32 = 2
+    /// Device limits (DISPLAY_DEVICE.md 2: `MAX_WIDTH`, `MAX_HEIGHT`); the writer refuses a maximum outside them.
+    static let deviceMaxWidth: UInt32 = 4096
+    static let deviceMaxHeight: UInt32 = 2304
     static let magic: [UInt8] = Array("ODFS".utf8)
     static let pixelFormatBGRX8888: UInt32 = 1
 }
@@ -339,6 +344,8 @@ final class FrameTransportWriter {
     private var front: Int?
     private var lastPublished: UInt64 = 0
     private var queuedModeCount: UInt64 = 0
+    /// `ACTIVE` of the last queued MODE of this screen (section 11.5: no frame is published while it is 0).
+    private var queuedModeActive = false
     private let queue: NotificationQueue
     /// Screen of this object (section 11.3): 0 or 1.
     let screen: Int
@@ -355,7 +362,7 @@ final class FrameTransportWriter {
         self.screen = screen
         self.queue = queue
         guard Self.pageSizeSupported() else { throw FrameTransportError.unsupportedHostPage }
-        guard (1...4096).contains(maxWidth), (1...2304).contains(maxHeight) else {
+        guard (1...Layout.deviceMaxWidth).contains(maxWidth), (1...Layout.deviceMaxHeight).contains(maxHeight) else {
             throw FrameTransportError.hostRefusal("mode \(maxWidth)x\(maxHeight) outside device limits")
         }
         let frameBytes = Int(maxWidth) * 4 * Int(maxHeight)
@@ -553,6 +560,7 @@ final class FrameTransportWriter {
                                                      height: height, stride: stride, format: format,
                                                      screen: UInt32(screen)))
         queuedModeCount = count
+        queuedModeActive = active
     }
 
     var hasPendingOutput: Bool { !queue.isEmpty }
@@ -581,6 +589,19 @@ final class FrameTransportWriter {
     /// Returns true when a frame was published.
     func publishFrame(session: OpaquePointer, mode: od_display_mode) throws -> Bool {
         // Section 11.5: the frame of this writer's screen; screen 0 uses the same read as before.
+        let index = UInt32(screen)
+        return try publishFrame(mode: mode) { destination, length, info in
+            od_display_session_read_screen_frame(session, index, destination, length, &info)
+        }
+    }
+
+    /// The publication of `publishFrame(session:mode:)` over any frame source: `read` copies the frame into `destination`
+    /// (`length` bytes), fills `info` and returns a display status. Internal only so that apps/vmhost/Tests can play a
+    /// synthetic writer without a device (FRAME_TRANSPORT_V1.md 11.10, item 5).
+    func publishFrame(
+        mode: od_display_mode,
+        read: (UnsafeMutablePointer<UInt8>, Int, inout od_display_frame_info) -> UInt32
+    ) throws -> Bool {
         guard let slot = chooseSlot() else { return false }
         let descriptor = descriptorOffset(slot)
         // 5.1 steps 2-3: invalidate, make the mark visible before any pixel write.
@@ -598,7 +619,7 @@ final class FrameTransportWriter {
         var info = od_display_frame_info()
         info.abi_version = vmhost_display_abi_version_v1()
         info.struct_size = UInt32(OD_DISPLAY_FRAME_INFO_SIZE_V1)
-        let status = od_display_session_read_screen_frame(session, UInt32(screen), slotPixels(slot), length, &info)
+        let status = read(slotPixels(slot), length, &info)
         if status != OD_DISPLAY_STATUS_OK.rawValue {
             switch status {
             case OD_DISPLAY_STATUS_NO_FRAME.rawValue, OD_DISPLAY_STATUS_NO_ACTIVE_MODE.rawValue,
@@ -618,6 +639,9 @@ final class FrameTransportWriter {
         let generation = info.generation
         let modeCount = info.mode_change_count
         if generation <= lastPublished || modeCount < queuedModeCount { return false }
+        // 11.5: a screen whose last MODE is inactive (no signal, disabled) has no frame to publish; a frame of a newer mode
+        // queues its MODE first, below.
+        if modeCount == queuedModeCount && !queuedModeActive { return false }
         if modeCount > queuedModeCount {
             try queueMode(count: modeCount, active: true, width: info.width, height: info.height,
                           stride: info.stride, format: info.format)
@@ -739,6 +763,25 @@ enum DisplaySmoke {
         return mode
     }
 
+    /// Maximum of one screen's shared-memory object (FRAME_TRANSPORT_V1.md 11.3, test-only writer with a fixed mode): the
+    /// initial mode of a screen that has one. A screen without a mode (NO_MODE or DISABLED, for example screen 1 of a guest
+    /// that does not know it, DISPLAY_DEVICE.md 16.2) announces the device limits so that any mode set later fits. This is
+    /// not a refusal: the connection stays and the window of that screen shows "no signal" (11.7).
+    static func writerLimits(of mode: od_display_screen_mode) -> (width: UInt32, height: UInt32) {
+        let active = mode.flags & vmhost_display_mode_flag_active() != 0
+        return active ? (mode.width, mode.height) : (Layout.deviceMaxWidth, Layout.deviceMaxHeight)
+    }
+
+    /// Section 11.3: every object of the connection, created before the first ANNOUNCE, sharing one notification queue.
+    static func makeWriters(session: OpaquePointer, screens: Int, queue: NotificationQueue) throws -> [FrameTransportWriter] {
+        var writers: [FrameTransportWriter] = []
+        for screen in 0..<screens {
+            let limits = writerLimits(of: try screenMode(session, screen: screen))
+            writers.append(try FrameTransportWriter(maxWidth: limits.width, maxHeight: limits.height, screen: screen, queue: queue))
+        }
+        return writers
+    }
+
     /// Mode, flags and counters of one screen (DISPLAY_DEVICE.md 16.10). Flags: 1 ACTIVE, 2 HAS_FRAME, 4 DISABLED.
     static func screenMode(_ session: OpaquePointer, screen: Int) throws -> od_display_screen_mode {
         var mode = od_display_screen_mode()
@@ -835,14 +878,8 @@ enum DisplaySmoke {
             throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
         }
         // Section 11.3: one object per screen, all created before the first ANNOUNCE. Each screen's maximum is its
-        // initial mode (test-only writer with a fixed mode, section 3.1). The notification queue is shared.
-        let queue = NotificationQueue()
-        var writers: [FrameTransportWriter] = []
-        for screen in 0..<options.screens {
-            let mode = try DisplaySmoke.screenMode(session, screen: screen)
-            writers.append(try FrameTransportWriter(maxWidth: mode.width, maxHeight: mode.height,
-                                                    screen: screen, queue: queue))
-        }
+        // initial mode, or the device limit for a screen without a mode (`writerLimits`). The notification queue is shared.
+        let writers = try makeWriters(session: session, screens: options.screens, queue: NotificationQueue())
         let writer = writers[0]
 
         // 6.1: HELLO first (blocking), then everything is non-blocking.

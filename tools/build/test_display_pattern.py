@@ -18,6 +18,8 @@ FIXTURES = ROOT / "tests/fixtures/guest/stage10"
 FIXTURE_HASHES = {
     "bars_64x48_seed0.raw": "a738f2f35ccf34d9bca698c40fcca5cc8ab4bda80b58004f6b42a71228a5a3e2",
     "checker_64x48_seed0x204080.raw": "12779eb36b1949960129604b0f81f19cc8ec5c58d70c43240b3f744c0884d529",
+    # Screen 1 of the two-screen test profile (S10-15, DISPLAY_DEVICE.md 16.13 item 10).
+    "checker_80x60_seed0x204080.raw": "9d7970a72f5c37a0c4035d948b307dacd0b09763717aff81658bec7b0d0eccdb",
 }
 
 
@@ -52,7 +54,16 @@ class DisplayPatternTest(unittest.TestCase):
                 PATTERN_SCRIPT, "--width", "64", "--height", "48", "--pattern", "checker",
                 "--seed", "0x204080", "--output", str(checker),
             )
-            generated = {"bars_64x48_seed0.raw": bars, "checker_64x48_seed0x204080.raw": checker}
+            checker_second = Path(tmp) / "checker_second.raw"
+            run_script(
+                PATTERN_SCRIPT, "--width", "80", "--height", "60", "--pattern", "checker",
+                "--seed", "0x204080", "--output", str(checker_second),
+            )
+            generated = {
+                "bars_64x48_seed0.raw": bars,
+                "checker_64x48_seed0x204080.raw": checker,
+                "checker_80x60_seed0x204080.raw": checker_second,
+            }
             for name, expected_hash in FIXTURE_HASHES.items():
                 with self.subTest(fixture=name):
                     committed = (FIXTURES / name).read_bytes()

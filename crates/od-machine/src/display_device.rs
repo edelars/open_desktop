@@ -212,6 +212,8 @@ pub struct FrameInfo {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayReadError {
+    /// The screen does not exist: the second screen of a one-screen device (DISPLAY_DEVICE.md 16.10).
+    NoSuchScreen,
     /// No active mode.
     NoActiveMode,
     /// The mode is active but the guest has not rung the doorbell since the
@@ -1188,7 +1190,7 @@ impl DisplayHandle {
         let before = {
             let state = lock(&self.state);
             let Some(screen1) = state.screen1 else {
-                return Err(DisplayReadError::NoActiveMode);
+                return Err(DisplayReadError::NoSuchScreen);
             };
             if !screen1.mode.is_active() {
                 return Err(DisplayReadError::NoActiveMode);
@@ -4402,6 +4404,643 @@ mod screen1_tests {
         let mut primary = vec![0u8; 8];
         assert_eq!(
             handle.read_frame_into(&bus, &mut primary),
+            Err(DisplayReadError::NoActiveMode)
+        );
+    }
+
+    // --- S10-15 review: tests of DISPLAY_DEVICE.md 16.13 items 1, 2, 5, 6, 7, 8, 9 and the "no such screen" refusal (16.10) ---
+
+    const S1_NAMED: [u64; 17] = [
+        0x30C, 0x310, 0x314, 0x318, 0x31C, 0x320, 0x340, 0x344, 0x348, 0x34C, 0x360, 0x364, 0x368,
+        0x36C, 0x370, 0x380, 0x384,
+    ];
+
+    /// The 47 reserved words of the block (16.4).
+    fn s1_reserved_words() -> Vec<u64> {
+        let mut words = vec![0x300, 0x304, 0x308];
+        words.extend((0x324..=0x33C).step_by(4));
+        words.extend((0x350..=0x35C).step_by(4));
+        words.extend((0x374..=0x37C).step_by(4));
+        words.extend((0x388..=0x3FC).step_by(4));
+        words
+    }
+
+    fn fb_spec(start: u64, len: u64) -> MemoryRegionSpec {
+        MemoryRegionSpec::new(range(start, len), MemoryRegionKind::Framebuffer)
+    }
+
+    fn ram_spec() -> MemoryRegionSpec {
+        MemoryRegionSpec::new(range(0, RAM_BYTES), MemoryRegionKind::Ram)
+    }
+
+    fn mmio_spec() -> MemoryRegionSpec {
+        MemoryRegionSpec::new(
+            range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+            MemoryRegionKind::Mmio,
+        )
+    }
+
+    fn try_bus_with(
+        device: Box<dyn BusDevice>,
+        regions: Vec<MemoryRegionSpec>,
+    ) -> Result<MachineBus, crate::BusBuildError> {
+        MachineBus::new(
+            MachineMemoryMap::new(36, regions).unwrap(),
+            RamLimits::new(RAM_BYTES),
+            vec![device],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE),
+                device_index: 0,
+            }],
+            vec![],
+        )
+    }
+
+    fn setup_one() -> (MachineBus, DisplayHandle) {
+        let (device, handle) = DisplayDevice::new_with_handle();
+        let regions = vec![
+            ram_spec(),
+            fb_spec(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+            mmio_spec(),
+        ];
+        (bus_with(Box::new(device), regions), handle)
+    }
+
+    fn s1_status(bus: &mut MachineBus) -> u32 {
+        read(bus, S1 + 0x70)
+    }
+
+    fn s1_commit_error(bus: &mut MachineBus) -> u32 {
+        (s1_status(bus) >> 8) & 0xFF
+    }
+
+    fn s1_frame_error(bus: &mut MachineBus) -> u32 {
+        (s1_status(bus) >> 16) & 0xFF
+    }
+
+    /// Screen 1 in mode `width` x `height` with one frame published.
+    fn s1_show(bus: &mut MachineBus, width: u32, height: u32) {
+        write(bus, S1 + 0x40, width);
+        write(bus, S1 + 0x44, height);
+        write(bus, S1 + 0x48, 1);
+        write(bus, S1 + 0x4C, 1);
+        write(bus, S1 + 0x80, 0);
+    }
+
+    fn screen1_copy(handle: &DisplayHandle) -> Screen1 {
+        lock(&handle.state).screen1.unwrap()
+    }
+
+    #[test]
+    fn named_registers_have_their_reset_values_and_the_47_reserved_words_ignore_writes() {
+        let (mut bus, handle) = setup_two();
+        let reserved = s1_reserved_words();
+        assert_eq!(reserved.len(), 47);
+        // 17 named registers plus 47 reserved words are the 64 words of the block, each once.
+        let mut all: Vec<u64> = reserved.iter().chain(S1_NAMED.iter()).copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, (0x300..0x400).step_by(4).collect::<Vec<u64>>());
+
+        let expected: [(u64, u32); 17] = [
+            (0x30C, DISPLAY_MAX_WIDTH),
+            (0x310, DISPLAY_MAX_HEIGHT),
+            (0x314, FORMATS),
+            (0x318, 0xF400_0000),
+            (0x31C, 0),
+            (0x320, DISPLAY_FRAMEBUFFER_BYTES as u32),
+            (0x340, 0),
+            (0x344, 0),
+            (0x348, 0),
+            (0x34C, 0),
+            (0x360, 0),
+            (0x364, 0),
+            (0x368, 0),
+            (0x36C, 0),
+            (0x370, 0),
+            (0x380, 0),
+            (0x384, 0),
+        ];
+        for (offset, value) in expected {
+            assert_eq!(read(&mut bus, offset), value, "reset value of {offset:#x}");
+        }
+        for &offset in &reserved {
+            assert_eq!(read(&mut bus, offset), 0, "reserved word {offset:#x}");
+        }
+
+        // With a live mode and a frame, an all-ones write to a reserved word or to a RO register changes nothing.
+        s1_show(&mut bus, 8, 6);
+        write(&mut bus, 0x34C, 2);
+        write(&mut bus, 0x34C, 1);
+        let before = lock(&handle.state).clone();
+        let named_before: Vec<u32> = S1_NAMED.iter().map(|&o| read(&mut bus, o)).collect();
+        let status0_before = read(&mut bus, reg::STATUS);
+        let read_only = [
+            0x30C, 0x310, 0x314, 0x318, 0x31C, 0x320, 0x360, 0x364, 0x368, 0x36C, 0x370, 0x384,
+        ];
+        for &offset in reserved.iter().chain(read_only.iter()) {
+            write(&mut bus, offset, 0xFFFF_FFFF);
+            assert_eq!(
+                *lock(&handle.state),
+                before,
+                "a write to {offset:#x} changed the state"
+            );
+        }
+        for &offset in &reserved {
+            assert_eq!(
+                read(&mut bus, offset),
+                0,
+                "reserved word {offset:#x} after the write"
+            );
+        }
+        let named_after: Vec<u32> = S1_NAMED.iter().map(|&o| read(&mut bus, o)).collect();
+        assert_eq!(named_before, named_after);
+        assert_eq!(read(&mut bus, reg::STATUS), status0_before);
+        // The write-only command reads as zero and a read does not execute it.
+        assert_eq!(read(&mut bus, 0x34C), 0);
+        assert_eq!(*lock(&handle.state), before);
+    }
+
+    #[test]
+    fn one_screen_configuration_reserves_every_word_of_the_block() {
+        let (mut bus, handle) = setup_one();
+        assert_eq!(read(&mut bus, reg::CAPS), 0x7);
+        assert_eq!(handle.second_screen_state(), None);
+        let before = lock(&handle.state).clone();
+        for offset in (0x300..0x400).step_by(4) {
+            write(&mut bus, offset, 0xFFFF_FFFF);
+            assert_eq!(
+                read(&mut bus, offset),
+                0,
+                "word {offset:#x} must stay reserved"
+            );
+            assert_eq!(*lock(&handle.state), before, "write to {offset:#x}");
+        }
+    }
+
+    #[test]
+    fn block_accesses_with_a_wrong_width_alignment_or_space_fail_before_any_state_change() {
+        use crate::BusAccessError;
+        let (mut bus, handle) = setup_two();
+        s1_show(&mut bus, 8, 6);
+        let before = lock(&handle.state).clone();
+        let (mut device, _h) = DisplayDevice::new_two_screens_with_handle();
+        for offset in [
+            0x300, 0x30C, 0x318, 0x320, 0x324, 0x340, 0x344, 0x348, 0x34C, 0x360, 0x36C, 0x370,
+            0x380, 0x384, 0x388, 0x3FC,
+        ] {
+            for width in [AccessWidth::Byte, AccessWidth::Word, AccessWidth::Qword] {
+                let access = DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset,
+                    width,
+                };
+                assert_eq!(device.read(access), Err(DeviceError::UnsupportedWidth));
+                assert_eq!(device.write(access, 1), Err(DeviceError::UnsupportedWidth));
+                assert!(matches!(
+                    bus.read_physical(reg(offset), width),
+                    Err(BusAccessError::Device {
+                        source: DeviceError::UnsupportedWidth,
+                        ..
+                    })
+                ));
+                assert!(matches!(
+                    bus.write_physical(reg(offset), width, 1, |_| {}),
+                    Err(BusAccessError::Device {
+                        source: DeviceError::UnsupportedWidth,
+                        ..
+                    })
+                ));
+            }
+            let misaligned = DeviceAccess {
+                space: IoSpace::Mmio,
+                offset: offset + 1,
+                width: AccessWidth::Dword,
+            };
+            assert_eq!(device.read(misaligned), Err(DeviceError::Misaligned));
+            assert_eq!(device.write(misaligned, 1), Err(DeviceError::Misaligned));
+            let pio = DeviceAccess {
+                space: IoSpace::Pio,
+                offset,
+                width: AccessWidth::Dword,
+            };
+            assert_eq!(device.read(pio), Err(DeviceError::UnsupportedSpace));
+            assert_eq!(device.write(pio, 1), Err(DeviceError::UnsupportedSpace));
+            assert!(matches!(
+                bus.write_physical(reg(offset + 2), AccessWidth::Dword, 1, |_| {}),
+                Err(BusAccessError::Device {
+                    source: DeviceError::Misaligned,
+                    ..
+                })
+            ));
+        }
+        // The rejected commands did not run: not the doorbell, not the commit.
+        assert_eq!(*lock(&handle.state), before);
+    }
+
+    #[test]
+    fn reset_takes_both_screens_down_and_keeps_generations_and_memory() {
+        let (mut bus, handle) = setup_two();
+        set_mode(&mut bus, 4, 4, 1);
+        write(&mut bus, reg::MODE_COMMIT, 1);
+        write(&mut bus, reg::FRAME_GENERATION, 0);
+        s1_show(&mut bus, 8, 6);
+        write(&mut bus, S1 + 0x80, 0);
+        let pixel = |bus: &mut MachineBus, base: u64, value: u64| {
+            bus.write_physical(
+                GuestPhysicalAddress::new(base),
+                AccessWidth::Dword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        };
+        pixel(&mut bus, DISPLAY_FRAMEBUFFER_BASE, 0x1111_1111);
+        pixel(&mut bus, DISPLAY_SECOND_FRAMEBUFFER_BASE, 0x2222_2222);
+        let (generation0, count0) = (handle.frame_generation(), handle.mode_change_count());
+        let second = handle.second_screen_state().unwrap();
+        assert_eq!((generation0, second.generation), (1, 2));
+
+        handle.reset();
+
+        // Screen 0 is down and counted once.
+        assert_eq!(handle.current_mode(), DisplayMode::NONE);
+        assert_eq!(handle.mode_change_count(), count0 + 1);
+        assert_eq!(handle.frame_generation(), generation0);
+        // So is screen 1: no mode, not disabled, counted once, generation and epoch kept.
+        let after = handle.second_screen_state().unwrap();
+        assert_eq!(after.mode, DisplayMode::NONE);
+        assert!(!after.disabled);
+        assert_eq!(after.mode_change_count, second.mode_change_count + 1);
+        assert_eq!(after.generation, second.generation);
+        assert_eq!(after.frame_mode_epoch, second.frame_mode_epoch);
+        assert!(!after.has_current_frame());
+        let mut frame = vec![0u8; 8 * 6 * 4];
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut frame),
+            Err(DisplayReadError::NoActiveMode)
+        );
+        // Registers of the block are back at their reset values (the read-only constants stay).
+        for offset in [
+            0x340, 0x344, 0x348, 0x34C, 0x360, 0x364, 0x368, 0x36C, 0x370,
+        ] {
+            assert_eq!(
+                read(&mut bus, offset),
+                0,
+                "register {offset:#x} after reset"
+            );
+        }
+        assert_eq!(read(&mut bus, S1 + 0x80), after.generation as u32);
+        assert_eq!(read(&mut bus, 0x30C), DISPLAY_MAX_WIDTH);
+        assert_eq!(read(&mut bus, 0x318), 0xF400_0000);
+        // Neither framebuffer is cleared (16.3).
+        let word = |bus: &mut MachineBus, base: u64| {
+            bus.read_physical(GuestPhysicalAddress::new(base), AccessWidth::Dword)
+                .unwrap()
+        };
+        assert_eq!(word(&mut bus, DISPLAY_FRAMEBUFFER_BASE), 0x1111_1111);
+        assert_eq!(word(&mut bus, DISPLAY_SECOND_FRAMEBUFFER_BASE), 0x2222_2222);
+
+        // A reset of a machine that has nothing to take down does not move the counters.
+        handle.reset();
+        assert_eq!(handle.mode_change_count(), count0 + 1);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            second.mode_change_count + 1
+        );
+
+        // DISABLED counts as a state: reset removes it and counts once.
+        write(&mut bus, S1 + 0x4C, 2);
+        let disabled = handle.second_screen_state().unwrap();
+        assert!(disabled.disabled);
+        handle.reset();
+        let cleared = handle.second_screen_state().unwrap();
+        assert!(!cleared.disabled);
+        assert_eq!(cleared.mode_change_count, disabled.mode_change_count + 1);
+        assert_eq!(s1_status(&mut bus), 0);
+        assert_eq!(cleared.generation, disabled.generation);
+    }
+
+    #[test]
+    fn second_screen_counters_stop_with_counter_exhausted_and_leave_the_state_alone() {
+        let (mut bus, handle) = setup_two();
+        s1_show(&mut bus, 8, 6);
+        // mode_change_count_1 = 2^64 - 1: neither a commit nor a disable may count.
+        lock(&handle.state)
+            .screen1
+            .as_mut()
+            .unwrap()
+            .mode_change_count = u64::MAX;
+        let before = screen1_copy(&handle);
+        let exhausted = Screen1 {
+            commit_error: ERR_COUNTER_EXHAUSTED,
+            ..before
+        };
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_COUNTER_EXHAUSTED));
+        assert_eq!(screen1_copy(&handle), exhausted);
+        write(&mut bus, S1 + 0x4C, 2);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_COUNTER_EXHAUSTED));
+        assert_eq!(screen1_copy(&handle), exhausted);
+        // Checks of section 5 come first: an unset size is reported, not the counter.
+        write(&mut bus, S1 + 0x40, 0);
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_SIZE_NOT_SET));
+        write(&mut bus, S1 + 0x4C, 3);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_INVALID_COMMAND));
+        // Screen 0 is not affected by the exhausted counter of screen 1.
+        set_mode(&mut bus, 4, 4, 1);
+        write(&mut bus, reg::MODE_COMMIT, 1);
+        assert_eq!((read(&mut bus, reg::STATUS) >> 8) & 0xFF, 0);
+        assert_eq!(handle.mode_change_count(), 1);
+        assert_eq!(handle.current_mode().width, 4);
+
+        // The doorbell counter: generation_1 = 2^64 - 1.
+        {
+            let mut state = lock(&handle.state);
+            let screen1 = state.screen1.as_mut().unwrap();
+            screen1.mode_change_count = 1;
+            screen1.commit_error = ERR_NONE;
+            screen1.generation = u64::MAX;
+        }
+        let before = screen1_copy(&handle);
+        write(&mut bus, S1 + 0x80, 0);
+        assert_eq!(s1_frame_error(&mut bus), u32::from(ERR_COUNTER_EXHAUSTED));
+        assert_eq!(
+            screen1_copy(&handle),
+            Screen1 {
+                frame_error: ERR_COUNTER_EXHAUSTED,
+                ..before
+            }
+        );
+        assert_eq!(read(&mut bus, S1 + 0x80), 0xFFFF_FFFF);
+        assert_eq!(read(&mut bus, S1 + 0x84), 0xFFFF_FFFF);
+
+        // A disabled screen disabling again is a success even at the limit (16.6, check 1 before check 2).
+        write(&mut bus, S1 + 0x40, 8);
+        write(&mut bus, S1 + 0x4C, 2);
+        lock(&handle.state)
+            .screen1
+            .as_mut()
+            .unwrap()
+            .mode_change_count = u64::MAX;
+        let before = screen1_copy(&handle);
+        assert!(before.disabled);
+        write(&mut bus, S1 + 0x4C, 2);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_NONE));
+        assert_eq!(screen1_copy(&handle), before);
+        // ... while enabling it is refused and the screen stays disabled.
+        write(&mut bus, S1 + 0x44, 6);
+        write(&mut bus, S1 + 0x48, 1);
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(s1_commit_error(&mut bus), u32::from(ERR_COUNTER_EXHAUSTED));
+        assert!(screen1_copy(&handle).disabled);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            u64::MAX
+        );
+
+        // Reset keeps the saturated counter (the assumption of 16.9).
+        lock(&handle.state).screen1.as_mut().unwrap().disabled = false;
+        lock(&handle.state).screen1.as_mut().unwrap().mode = DisplayMode {
+            width: 8,
+            height: 6,
+            stride: 32,
+            format: 1,
+        };
+        handle.reset();
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            u64::MAX
+        );
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode,
+            DisplayMode::NONE
+        );
+    }
+
+    #[test]
+    fn second_region_follows_rules_7_1_to_7_4_like_the_first() {
+        use crate::{
+            IdentityMemoryAdapter, Long64ProbeConfig, TrackedAccessError, TrackedCodeSnapshotError,
+        };
+        use od_isa::memory::{
+            AccessContext, AccessOrigin, GuestMemory, InstructionMode, MemoryError, PrivilegeLevel,
+        };
+        let (mut bus, _handle) = setup_two();
+        let fb1 = GuestPhysicalAddress::new(DISPLAY_SECOND_FRAMEBUFFER_BASE);
+        // 7.4: no page generations for the region, RAM still has them.
+        assert_eq!(
+            bus.code_page_generation(fb1),
+            Err(MemoryAccessError::UnreadableRegion(
+                MemoryRegionKind::Framebuffer
+            ))
+        );
+        assert_eq!(
+            bus.code_page_generation(GuestPhysicalAddress::new(0x1000)),
+            Ok(1)
+        );
+
+        // 7.2: an instruction fetch through page tables that map the region is a backend error, not a snapshot.
+        for (address, value) in [
+            (0x1000u64, 0x2007u64),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4000, DISPLAY_SECOND_FRAMEBUFFER_BASE | 7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let paging =
+            Long64ProbeConfig::new(0x8001_0033, 0x1000, 1 << 5, 1 << 8 | 1 << 10 | 1 << 11)
+                .unwrap();
+        assert!(matches!(
+            bus.tracked_code_snapshot(&paging, 0, 4, AccessContext::default()),
+            Err(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::OperandPhysical {
+                    source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Framebuffer),
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(
+            bus.code_page_generation(fb1),
+            Err(MemoryAccessError::UnreadableRegion(
+                MemoryRegionKind::Framebuffer
+            ))
+        );
+
+        // 7.1 and 7.3: data reads and writes work as on RAM, with no committed-write callback; fetch is refused.
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let commits = std::cell::Cell::new(0u32);
+        let mut callback = |_: crate::GuestPhysicalRange| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        memory
+            .write(DISPLAY_SECOND_FRAMEBUFFER_BASE, context, &[0x90, 0xC3])
+            .unwrap();
+        let mut data = [0u8; 2];
+        memory
+            .read(DISPLAY_SECOND_FRAMEBUFFER_BASE, context, &mut data)
+            .unwrap();
+        assert_eq!(data, [0x90, 0xC3]);
+        assert!(matches!(
+            memory.fetch(DISPLAY_SECOND_FRAMEBUFFER_BASE, context),
+            Err(MemoryError::Backend(_))
+        ));
+        // The reserve behind the region is unmapped (16.3), as is the gap before screen 0.
+        for gap in [
+            DISPLAY_SECOND_FRAMEBUFFER_BASE + DISPLAY_FRAMEBUFFER_BYTES,
+            DISPLAY_FRAMEBUFFER_BASE - 4,
+        ] {
+            assert!(matches!(
+                memory.read(gap, context, &mut data),
+                Err(MemoryError::Backend(_))
+            ));
+        }
+        assert_eq!(commits.get(), 0);
+        // The last pixel of the 36 MiB region is reachable and the first region is a different memory.
+        let last = DISPLAY_SECOND_FRAMEBUFFER_BASE + DISPLAY_FRAMEBUFFER_BYTES - 4;
+        memory.write(last, context, &[1, 2, 3, 4]).unwrap();
+        let mut word = [0u8; 4];
+        memory
+            .read(DISPLAY_FRAMEBUFFER_BASE, context, &mut word)
+            .unwrap();
+        assert_eq!(word, [0, 0, 0, 0]);
+        memory.read(last, context, &mut word).unwrap();
+        assert_eq!(word, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn two_framebuffer_regions_are_bound_to_the_device_exactly() {
+        use crate::{BusBuildError, DisplayBindingError};
+        let fb0 = || fb_spec(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES);
+        let fb1 = || fb_spec(DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES);
+
+        // Two regions of 36 MiB build and allocate 72 MiB although RamLimits is 1 MiB (backing is outside it).
+        let (device, _h) = DisplayDevice::new_two_screens_with_handle();
+        let mut bus = try_bus_with(
+            Box::new(device),
+            vec![ram_spec(), fb0(), fb1(), mmio_spec()],
+        )
+        .unwrap();
+        for base in [DISPLAY_FRAMEBUFFER_BASE, DISPLAY_SECOND_FRAMEBUFFER_BASE] {
+            let last = GuestPhysicalAddress::new(base + DISPLAY_FRAMEBUFFER_BYTES - 4);
+            bus.write_physical(last, AccessWidth::Dword, 0xA5A5_A5A5, |_| {})
+                .unwrap();
+            assert_eq!(bus.read_physical(last, AccessWidth::Dword), Ok(0xA5A5_A5A5));
+        }
+        assert_eq!(2 * DISPLAY_FRAMEBUFFER_BYTES, 72 << 20);
+
+        // A device with two screens and no region for screen 1.
+        let (device, _h) = DisplayDevice::new_two_screens_with_handle();
+        assert!(matches!(
+            try_bus_with(Box::new(device), vec![ram_spec(), fb0(), mmio_spec()]).err(),
+            Some(BusBuildError::Display(
+                DisplayBindingError::FramebufferMismatch { .. }
+            ))
+        ));
+        // ... a region of screen 1 at another base, or of another length.
+        for (start, len) in [
+            (0xF500_0000, DISPLAY_FRAMEBUFFER_BYTES),
+            (
+                DISPLAY_SECOND_FRAMEBUFFER_BASE,
+                DISPLAY_FRAMEBUFFER_BYTES - 0x1000,
+            ),
+        ] {
+            let (device, _h) = DisplayDevice::new_two_screens_with_handle();
+            assert!(matches!(
+                try_bus_with(
+                    Box::new(device),
+                    vec![ram_spec(), fb0(), fb_spec(start, len), mmio_spec()]
+                )
+                .err(),
+                Some(BusBuildError::Display(
+                    DisplayBindingError::FramebufferMismatch { .. }
+                ))
+            ));
+        }
+        // A device with one screen and two regions: the second one is bound to nothing.
+        let (device, _h) = DisplayDevice::new_with_handle();
+        assert_eq!(
+            try_bus_with(
+                Box::new(device),
+                vec![ram_spec(), fb0(), fb1(), mmio_spec()]
+            )
+            .err(),
+            Some(BusBuildError::Display(
+                DisplayBindingError::UnboundFramebufferRegion {
+                    region_start: GuestPhysicalAddress::new(DISPLAY_SECOND_FRAMEBUFFER_BASE),
+                    region_len: DISPLAY_FRAMEBUFFER_BYTES,
+                }
+            ))
+        );
+
+        // Refusals of the map itself (16.3): a third region, a second region of 0x0240_1000 bytes, overlaps.
+        let small = |start| fb_spec(start, 0x1000);
+        assert_eq!(
+            MachineMemoryMap::new(
+                36,
+                vec![small(0x1000_0000), small(0x2000_0000), small(0x3000_0000)]
+            )
+            .err(),
+            Some(MemoryAccessError::MultipleFramebufferRegions)
+        );
+        assert_eq!(
+            MachineMemoryMap::new(
+                36,
+                vec![small(0x1000_0000), fb_spec(0x2000_0000, 0x0240_1000)]
+            )
+            .err(),
+            Some(MemoryAccessError::InvalidFramebufferRegion(range(
+                0x2000_0000,
+                0x0240_1000
+            )))
+        );
+        for (name, second) in [
+            (
+                "screen 0 memory",
+                fb_spec(DISPLAY_FRAMEBUFFER_BASE - 0x1000, 0x2000),
+            ),
+            (
+                "the register window",
+                fb_spec(DISPLAY_REGISTERS_BASE - 0x1000, 0x2000),
+            ),
+            ("RAM", fb_spec(RAM_BYTES - 0x1000, 0x2000)),
+        ] {
+            assert!(
+                matches!(
+                    MachineMemoryMap::new(36, vec![ram_spec(), fb0(), second, mmio_spec()]),
+                    Err(MemoryAccessError::OverlappingRegions { .. })
+                ),
+                "a second region over {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_the_second_frame_of_a_one_screen_device_is_no_such_screen() {
+        let (bus, handle) = setup_one();
+        let mut frame = vec![0u8; 16];
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut frame),
+            Err(DisplayReadError::NoSuchScreen)
+        );
+        // The refusal does not depend on the buffer, and it is not "no active mode" of an existing screen.
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut []),
+            Err(DisplayReadError::NoSuchScreen)
+        );
+        let (bus, handle) = setup_two();
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut frame),
             Err(DisplayReadError::NoActiveMode)
         );
     }
