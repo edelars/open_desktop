@@ -95,6 +95,8 @@ pub struct NetCounters {
     pub tcp_orphan_rst: u64,
     pub tcp_out_of_order_dropped: u64,
     pub udp_flows_opened: u64,
+    /// Datagrams of the guest handed to a host socket (S11-31c); the fate of a forwarded datagram.
+    pub udp_forwarded: u64,
     pub udp_refused: u64,
     pub udp_unreachable: u64,
     pub icmp_echo_synthetic: u64,
