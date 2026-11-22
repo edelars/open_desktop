@@ -54,6 +54,48 @@ class Analysis(unittest.TestCase):
         self.assertIsNone(result["efivars_names"])
         self.assertEqual(result["dmesg_lines"], 0)
 
+    def test_variable_dumps_are_decoded_compared_and_the_onlcr_expansion_is_undone(self) -> None:
+        # The value holds a 0x0A and a 0x0D 0x0A: on the wire the tty wrote 0D 0A and 0D 0D 0A.
+        option = b"\x01\x00\x0a\x0d\x0a\x02"
+        expected = {"BOOTORDER": b"\x01\x00", "BOOT0001": option, "ODBOOTCOUNT": b"\x03\x00\x00\x00"}
+        seven = b"\x07\x00\x00\x00"
+        wire_option = option.replace(b"\n", b"\r\n")
+        com1 = (b"OD_S7_31O_BOOTORDER_BEGIN\r\n" + seven + b"\x01\x00OD_S7_31O_BOOTORDER_END\r\n"
+                b"OD_S7_31O_BOOT0001_BEGIN\r\n" + seven + wire_option + b"OD_S7_31O_BOOT0001_END\r\n"
+                b"OD_S7_31O_ODBOOTCOUNT_BEGIN\r\n" + b"\x06\x00\x00\x00" + b"\x03\x00\x00\x00"
+                b"OD_S7_31O_ODBOOTCOUNT_END\r\n")
+        result = record.variable_values(com1, expected)
+        self.assertTrue(result["BOOTORDER"]["attributes_ok"] and result["BOOTORDER"]["value_ok"])
+        self.assertEqual(result["BOOT0001"]["value_hex"], option.hex())
+        self.assertTrue(result["BOOT0001"]["attributes_ok"] and result["BOOT0001"]["value_ok"])
+        # A wrong attribute word is reported, not accepted; the value is still read.
+        self.assertFalse(result["ODBOOTCOUNT"]["attributes_ok"])
+        self.assertEqual(result["ODBOOTCOUNT"]["attributes"], "0x00000006")
+        self.assertTrue(result["ODBOOTCOUNT"]["value_ok"])
+        # Both markers without bytes between them (openat or read failed in /init) is no dump.
+        empty = record.variable_values(com1.replace(b"OD_S7_31O_BOOT0001_BEGIN\r\n" + seven + wire_option, b"OD_S7_31O_BOOT0001_BEGIN\r\n"), expected)
+        self.assertFalse(empty["BOOT0001"]["dumped"])
+        self.assertFalse(empty["BOOT0001"].get("attributes_ok", False))
+        # A wrong value and a missing dump.
+        expected["BOOTORDER"] = b"\x02\x00"
+        again = record.variable_values(com1.replace(b"OD_S7_31O_BOOT0001_BEGIN", b"x"), expected)
+        self.assertFalse(again["BOOTORDER"]["value_ok"])
+        self.assertFalse(again["BOOT0001"]["dumped"])
+
+    def test_dmesg_severity_is_taken_from_the_level_prefix(self) -> None:
+        lines = ["<6>[    0.1] ACPI: RSDP", "<3>[    1.4] Unable to read current time from RTC",
+                 "<4>[    1.4] ACPI: setting ELCR to 0200 (from 0000)", "<0>[    2.0] panic",
+                 "<6>[    1.7] acpi PNP0A08:00: _OSC: platform retains control (AE_ERROR)",
+                 "<6>[    1.8] pci 0000:00:00.0: _OSC failed (AE_NOT_FOUND)", "<7>[    1.9] debug", "no prefix"]
+        result = record.classify_dmesg(lines)
+        self.assertEqual(result["errors_level_0_to_3"], [lines[1], lines[3]])
+        self.assertEqual(result["warnings_level_4"], [lines[2]])
+        # AE_ lines of any level and without the word acpi are kept.
+        self.assertEqual(result["ae_lines"], [lines[4], lines[5]])
+        self.assertEqual(result["levels"], {"0": 1, "3": 1, "4": 1, "6": 3, "7": 1, "none": 1})
+        # The ELCR line has no word a word filter would catch: a warning is still recorded.
+        self.assertNotRegex(lines[2], record.ACPI_ERROR_RE)
+
     def test_the_nvram_seed_carries_the_vendor_variable(self) -> None:
         image = record.snapshot([("ODBootCount", record.OD_VENDOR, b"\x03\0\0\0")])
         self.assertTrue(image.startswith(b"ODNVBANK"))

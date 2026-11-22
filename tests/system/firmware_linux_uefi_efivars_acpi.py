@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""S7-31n: efivarfs and ACPI as the Ubuntu 7.0.0-38 kernel shows them on the unified loop.
+"""S7-31n/S7-31o: efivarfs, ACPI and the kernel log as Ubuntu 7.0.0-38 shows them on the unified loop.
 
 Boots the stock kernel (and the two diagnostic variants of firmware_linux_uefi_stop_record.py) through
 our UEFI firmware on `od-runner boot-firmware --cpu-loop unified`, with the S7-31n initramfs
 (tests/fixtures/guest/s7_31n/init.S, built by tools/build/build_s7_31n_initramfs.py into work/).
 The NVRAM seed holds Boot0001, BootOrder and ODBootCount (the S7-26 test variable, vendor GUID of
-the reboot application). The /init mounts efivarfs, lists it and dumps the kernel ring buffer to
-COM1 between markers; this script reads only COM1. Diagnostic, not an acceptance test: it exits 0
+the reboot application). The /init mounts efivarfs, lists it, reads BootOrder, Boot0001 and ODBootCount
+(S7-31o: attributes and value compared with the seed) and dumps the kernel ring buffer to COM1
+between markers; this script reads only COM1. The ring buffer is classified by its <N> level
+(0-3 errors, 4 warnings, AE_ lines of any level; schema od-s7-31o-efivars-acpi-v2). Diagnostic, not an acceptance test: it exits 0
 when every variant produced identical records on every run, whatever they show. The record keeps the
-COM1 hash and excerpts (efivars names, ACPI lines), not the log.
+COM1 hash and excerpts (efivars names and values, ACPI, error, warning and RTC lines), not the log.
 """
 from __future__ import annotations
 
@@ -38,7 +40,13 @@ ODBOOTCOUNT = 3
 NAME_RE = re.compile(rb"[A-Za-z0-9_]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The coordinator's filter plus the usual severity words of the ACPI core.
 ACPI_ERROR_RE = re.compile(r"acpi.*error|ACPI BIOS Error|AE_", re.IGNORECASE)
-ACPI_WARNING_RE = re.compile(r"acpi.*(warn|fail|invalid|unable|bad|ignor|unsupported)", re.IGNORECASE)
+LEVEL_RE = re.compile(r"^<([0-7])>")
+VARIABLES = {  # file name in efivarfs -> (marker name, short name)
+    "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c": "BOOTORDER",
+    "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c": "BOOT0001",
+    "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15": "ODBOOTCOUNT",
+}
+ATTRIBUTES = 0x00000007  # EFI_VARIABLE_NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS, as seeded
 MARKERS = ("OD_S7_31N_BEGIN", "OD_S7_31N_EFIVARFS_MOUNT_OK", "OD_S7_31N_EFIVARFS_MOUNT_FAIL",
            "OD_S7_31N_EFIVARS_BEGIN", "OD_S7_31N_EFIVARS_END", "OD_S7_31N_DMESG_BEGIN",
            "OD_S7_31N_DMESG_END", "OD_S7_31N_END")
@@ -72,7 +80,52 @@ def section(raw: bytes, begin: bytes, end: bytes) -> bytes | None:
     return raw[start:stop_at] if stop_at >= 0 else None
 
 
-def analyse(com1: bytes) -> dict:
+def undo_onlcr(data: bytes) -> bytes:
+    """The console tty turned every 0x0A written by /init into 0D 0A (ONLCR, unconditional): undo it."""
+    return data.replace(b"\r\n", b"\n")
+
+
+def variable_values(com1: bytes, expected: dict[str, bytes]) -> dict:
+    """Read the efivarfs files /init dumped (4 attribute bytes, then the value) and compare them."""
+    result = {}
+    for file_name, short in VARIABLES.items():
+        payload = section(com1, f"OD_S7_31O_{short}_BEGIN\n".encode().replace(b"\n", b"\r\n"),
+                          f"OD_S7_31O_{short}_END".encode())
+        # Both markers are written even when openat or read failed: an empty payload is no dump.
+        entry = {"file": file_name, "dumped": bool(payload)}
+        if payload:
+            data = undo_onlcr(payload)
+            entry["bytes"] = len(data)
+            entry["attributes"] = f"0x{int.from_bytes(data[:4], 'little'):08x}" if len(data) >= 4 else None
+            entry["value_hex"] = data[4:].hex()
+            entry["expected_value_hex"] = expected[short].hex()
+            entry["attributes_ok"] = len(data) >= 4 and int.from_bytes(data[:4], "little") == ATTRIBUTES
+            entry["value_ok"] = data[4:] == expected[short]
+        result[short] = entry
+    return result
+
+
+def classify_dmesg(lines: list[str]) -> dict:
+    """Severity by the <N> prefix of the ring buffer: 0-3 errors, 4 warnings; AE_ lines of any level."""
+    levels: dict[str, int] = {}
+    errors, warnings = [], []
+    for line in lines:
+        match = LEVEL_RE.match(line)
+        level = match.group(1) if match else "none"
+        levels[level] = levels.get(level, 0) + 1
+        if match and int(level) <= 3:
+            errors.append(line)
+        elif match and int(level) == 4:
+            warnings.append(line)
+    return {
+        "levels": dict(sorted(levels.items())),
+        "errors_level_0_to_3": errors,
+        "warnings_level_4": warnings,
+        "ae_lines": [line for line in lines if "AE_" in line],
+    }
+
+
+def analyse(com1: bytes, expected: dict[str, bytes] | None = None) -> dict:
     markers = {name: com1.find(name.encode()) >= 0 for name in MARKERS}
     efivars = section(com1, b"OD_S7_31N_EFIVARS_BEGIN", b"OD_S7_31N_EFIVARS_END")
     names = sorted({m.decode() for m in NAME_RE.findall(efivars)}) if efivars is not None else None
@@ -86,17 +139,19 @@ def analyse(com1: bytes) -> dict:
         "markers": markers,
         "efivarfs_mounted": markers["OD_S7_31N_EFIVARFS_MOUNT_OK"] and not markers["OD_S7_31N_EFIVARFS_MOUNT_FAIL"],
         "efivars_names": names,
+        "variables": variable_values(com1, expected) if expected is not None else None,
+        "dmesg_rtc_lines": [line for line in lines if "rtc" in line.lower()],
         "dmesg_lines": len(lines),
         "dmesg_acpi_lines": acpi,
         "dmesg_acpi_error_lines": [line for line in acpi if ACPI_ERROR_RE.search(line)],
-        "dmesg_acpi_warning_like_lines": [line for line in acpi if ACPI_WARNING_RE.search(line)],
+        "dmesg_severity": classify_dmesg(lines),
         "console_acpi_lines_total": len(console_acpi),
         "console_acpi_error_lines": [line for line in console_acpi if ACPI_ERROR_RE.search(line)],
     }
 
 
 def one_run(job: tuple) -> tuple[str, int, dict]:
-    variant, run, runner, rom, esp, nvram, scratch, budget, rom_bytes, kernel_bytes, layout = job
+    variant, run, runner, rom, esp, nvram, scratch, budget, expected = job
     report, com1 = stop.boot(runner, rom, esp, nvram, scratch, f"{variant}-{run}", budget, [], "unified", None)
     record = {
         "exit": report["exit"], "exit_detail": report["exit_detail"], "rip": report["rip"],
@@ -106,9 +161,10 @@ def one_run(job: tuple) -> tuple[str, int, dict]:
         "cpl3_retired": (report.get("unified") or {}).get("cpl3_retired"),
         "com1_last_line": stop.last_line(com1),
     }
-    record.update(analyse(com1))
+    record.update(analyse(com1, expected))
     print(f"{variant} run {run}: {record['exit']} retired={record['retired']} mounted={record['efivarfs_mounted']} "
-          f"names={record['efivars_names']}", flush=True)
+          f"variables_ok={[k for k, v in (record['variables'] or {}).items() if v.get('attributes_ok') and v.get('value_ok')]}",
+          flush=True)
     return variant, run, record
 
 
@@ -145,8 +201,10 @@ def main() -> None:
             ("BootOrder", esp_smoke.GLOBAL, struct.pack("<H", 1)),
             ("ODBootCount", OD_VENDOR, struct.pack("<I", ODBOOTCOUNT)),
         ]))
+        expected = {"BOOTORDER": struct.pack("<H", 1), "BOOT0001": option,
+                    "ODBOOTCOUNT": struct.pack("<I", ODBOOTCOUNT)}
         record = {
-            "schema": "od-s7-31n-efivars-acpi-v1",
+            "schema": "od-s7-31o-efivars-acpi-v2",
             "inputs": {
                 "vmlinuz_sha256": stop.sha256(kernel_path), "initramfs_sha256": stop.sha256(args.initramfs),
                 "firmware_rom_sha256": stop.sha256(rom), "nvram_seed_sha256": stop.sha256(nvram),
@@ -165,7 +223,7 @@ def main() -> None:
                             f"INITRD.IMG={args.initramfs}", "--out", esp], check=True, cwd=ROOT)
             esps[variant] = (stop.sha256(patched), stop.sha256(esp))
             for run in range(args.runs):
-                jobs.append((variant, run, runner, rom, esp, nvram, scratch, args.budget, None, None, None))
+                jobs.append((variant, run, runner, rom, esp, nvram, scratch, args.budget, expected))
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             results = list(pool.map(one_run, jobs))
         all_equal = True
@@ -181,7 +239,12 @@ def main() -> None:
                                     for item in runs[1:]],
                 "records_identical": identical,
                 "efivars_names": first["efivars_names"],
+                "variables": first["variables"],
                 "dmesg_acpi_error_lines": first["dmesg_acpi_error_lines"],
+                "dmesg_errors_level_0_to_3": first["dmesg_severity"]["errors_level_0_to_3"],
+                "dmesg_warnings_level_4": first["dmesg_severity"]["warnings_level_4"],
+                "dmesg_ae_lines": first["dmesg_severity"]["ae_lines"],
+                "dmesg_rtc_lines": first["dmesg_rtc_lines"],
             }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")

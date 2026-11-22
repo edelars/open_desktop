@@ -65,6 +65,22 @@ fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
     Ok(config)
 }
 
+/// The explicit UTC base of the board RTC: 2024-01-01T00:00:00Z.
+const RTC_BASE_UNIX_SECONDS: u64 = 1_704_067_200;
+
+/// The board the unified loop runs the Linux profile on.
+fn apply_unified(config: &mut FirmwareBoardConfig) {
+    // The Linux profile needs the PM block, the ACPI tables and the ECAM window.
+    config.linux_profile = true;
+    config.acpi_pm = true;
+    config.acpi_tables = true;
+    config.pci_ecam = true;
+    // Without an RTC base the CMOS ports are absent (reads 0xFF, so UIP is always set) and the
+    // kernel's mc146818_get_time times out: "Unable to read current time from RTC" (S7-31o,
+    // ISSUE-641). The same explicit UTC base as the fv_app boards; never a host date.
+    config.rtc_base_unix_seconds.get_or_insert(RTC_BASE_UNIX_SECONDS);
+}
+
 fn board_config(
     fv_app: Option<FirmwareFvApp>,
     reboot: bool,
@@ -78,7 +94,7 @@ fn board_config(
         acpi_pm: acpi_present,
         acpi_tables: acpi_present,
         tpm,
-        rtc_base_unix_seconds: (rt || acpi).then_some(1_704_067_200),
+        rtc_base_unix_seconds: (rt || acpi).then_some(RTC_BASE_UNIX_SECONDS),
         pci_ecam: acpi,
         // Stable fixture identity for the diagnostic firmware-volume application.
         system_uuid: if acpi {
@@ -201,11 +217,7 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some(), tpm);
     if options.unified {
-        // The Linux profile needs the PM block, the ACPI tables and the ECAM window.
-        config.linux_profile = true;
-        config.acpi_pm = true;
-        config.acpi_tables = true;
-        config.pci_ecam = true;
+        apply_unified(&mut config);
     }
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
@@ -1270,6 +1282,20 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn the_unified_board_has_an_explicit_rtc_base_and_keeps_a_given_one() {
+        // S7-31o: without a base the CMOS ports are absent and the kernel cannot read the time.
+        let mut config = board_config(None, false, None);
+        assert_eq!(config.rtc_base_unix_seconds, None);
+        apply_unified(&mut config);
+        assert_eq!(config.rtc_base_unix_seconds, Some(1_704_067_200));
+        assert!(config.linux_profile && config.acpi_pm && config.acpi_tables && config.pci_ecam);
+        let mut given = board_config(None, false, None);
+        given.rtc_base_unix_seconds = Some(7);
+        apply_unified(&mut given);
+        assert_eq!(given.rtc_base_unix_seconds, Some(7));
     }
 
     #[test]

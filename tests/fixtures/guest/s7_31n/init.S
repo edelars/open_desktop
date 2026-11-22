@@ -12,9 +12,14 @@
  * records: the host reads the names out of them); read the kernel ring buffer with
  * syslog(SYSLOG_ACTION_READ_ALL) and write it between OD_S7_31N_DMESG_BEGIN and
  * OD_S7_31N_DMESG_END (what `dmesg` prints; the host filters it); write OD_S7_31N_END; exit(0).
- * System calls (syscall_64.tbl of linux-source-7.0.0 7.0.0-38.38): 1 write, 60 exit, 83 mkdir, 103 syslog, 165 mount, 217 getdents64, 257 openat.
+ * S7-31o: after the listing, open and read BootOrder, Boot0001 and ODBootCount through efivarfs
+ * (openat/read) and write each file (4 attribute bytes, then the value) raw between
+ * OD_S7_31O_<NAME>_BEGIN and OD_S7_31O_<NAME>_END. The console tty turns every 0x0A into 0D 0A
+ * (ONLCR); the host undoes that by replacing each CR LF with LF.
+ * System calls (syscall_64.tbl of linux-source-7.0.0 7.0.0-38.38): 0 read, 1 write, 60 exit, 83 mkdir, 103 syslog, 165 mount, 217 getdents64, 257 openat.
  */
 
+#define SYS_read       0
 #define SYS_write      1
 #define SYS_exit       60
 #define SYS_mkdir      83
@@ -25,7 +30,35 @@
 #define AT_FDCWD       (-100)
 #define O_DIRECTORY    0x10000
 #define DENT_SIZE      4096
+#define VAL_SIZE       4096
 #define LOG_SIZE       262144
+
+/* S7-31o: dump one efivarfs file (4 attribute bytes, then the value) between its own markers. */
+.macro dumpvar path, begin, end
+	say	\begin
+	movq	$AT_FDCWD, %rdi
+	lea	\path(%rip), %rsi
+	xor	%edx, %edx
+	xor	%r10d, %r10d
+	mov	$SYS_openat, %eax
+	syscall
+	test	%rax, %rax
+	js	.Lskip\@
+	mov	%rax, %rdi
+	lea	valbuf(%rip), %rsi
+	mov	$VAL_SIZE, %edx
+	mov	$SYS_read, %eax
+	syscall
+	test	%rax, %rax
+	jle	.Lskip\@
+	mov	%rax, %rdx
+	mov	$1, %edi
+	lea	valbuf(%rip), %rsi
+	mov	$SYS_write, %eax
+	syscall
+.Lskip\@:
+	say	\end
+.endm
 
 .macro say label
 	lea	\label(%rip), %rsi
@@ -97,6 +130,10 @@ dents:
 listed:
 	say	m_efivars_end
 
+	dumpvar	p_bootorder, m_v1_begin, m_v1_end
+	dumpvar	p_boot0001, m_v2_begin, m_v2_end
+	dumpvar	p_odbootcount, m_v3_begin, m_v3_end
+
 	say	m_dmesg_begin
 	/* n = syslog(SYSLOG_ACTION_READ_ALL = 3, logbuf, LOG_SIZE) */
 	mov	$3, %edi
@@ -129,6 +166,12 @@ efivarfs_name:
 	.asciz	"efivarfs"
 efivars_dir:
 	.asciz	"/sys/firmware/efi/efivars"
+p_bootorder:
+	.asciz	"/sys/firmware/efi/efivars/BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+p_boot0001:
+	.asciz	"/sys/firmware/efi/efivars/Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+p_odbootcount:
+	.asciz	"/sys/firmware/efi/efivars/ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15"
 m_begin:
 	.ascii	"OD_S7_31N_BEGIN\n"
 m_begin_end:
@@ -144,6 +187,24 @@ m_efivars_begin_end:
 m_efivars_end:
 	.ascii	"\nOD_S7_31N_EFIVARS_END\n"
 m_efivars_end_end:
+m_v1_begin:
+	.ascii	"OD_S7_31O_BOOTORDER_BEGIN\n"
+m_v1_begin_end:
+m_v1_end:
+	.ascii	"OD_S7_31O_BOOTORDER_END\n"
+m_v1_end_end:
+m_v2_begin:
+	.ascii	"OD_S7_31O_BOOT0001_BEGIN\n"
+m_v2_begin_end:
+m_v2_end:
+	.ascii	"OD_S7_31O_BOOT0001_END\n"
+m_v2_end_end:
+m_v3_begin:
+	.ascii	"OD_S7_31O_ODBOOTCOUNT_BEGIN\n"
+m_v3_begin_end:
+m_v3_end:
+	.ascii	"OD_S7_31O_ODBOOTCOUNT_END\n"
+m_v3_end_end:
 m_dmesg_begin:
 	.ascii	"OD_S7_31N_DMESG_BEGIN\n"
 m_dmesg_begin_end:
@@ -158,6 +219,8 @@ m_end_end:
 	.balign	16
 dentbuf:
 	.skip	DENT_SIZE
+valbuf:
+	.skip	VAL_SIZE
 logbuf:
 	.skip	LOG_SIZE
 
