@@ -3082,6 +3082,12 @@ pub enum Operation {
     FbldM80Rax,
     /// S2-32b: bare `DF 30` FBSTP m80bcd at [RAX], storing the rounded ST(0) as packed BCD and popping.
     FbstpM80Rax,
+    /// S2-32c: bare `D9 30` FNSTENV m28byte at [RAX] (32-bit protected-mode environment image, no prefix).
+    FnstenvRax,
+    /// S2-32c: bare `DD 30` FNSAVE m108byte at [RAX] (environment plus ST(0)..ST(7), then FNINIT).
+    FnsaveRax,
+    /// S2-32c: bare `DD 20` FRSTOR m108byte at [RAX].
+    FrstorRax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
     FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
@@ -9703,6 +9709,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::FldM64FpRax
                 } else if modrm == 0x38 {
                     Operation::FnstswM16Rax
+                } else if modrm == 0x30 {
+                    Operation::FnsaveRax
+                } else if modrm == 0x20 {
+                    Operation::FrstorRax
                 } else if modrm == 0x10 {
                     Operation::FstM64FpRax
                 } else if modrm == 0x18 {
@@ -9740,6 +9750,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
+                    0x30 => Operation::FnstenvRax,
                     0x10 => Operation::FstM32FpRax,
                     0x18 => Operation::FstpM32FpRax,
                     0xe0 => Operation::Fchs,
@@ -22284,6 +22295,10 @@ mod tests {
                     Ok(Operation::FldM64FpRax)
                 } else if modrm == 0x38 {
                     Ok(Operation::FnstswM16Rax)
+                } else if modrm == 0x30 {
+                    Ok(Operation::FnsaveRax)
+                } else if modrm == 0x20 {
+                    Ok(Operation::FrstorRax)
                 } else if modrm == 0x10 {
                     Ok(Operation::FstM64FpRax)
                 } else if modrm == 0x18 {
@@ -22400,6 +22415,8 @@ mod tests {
                     Ok(Operation::FxchSti { source: second & 7 })
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
+                } else if second == 0x30 {
+                    Ok(Operation::FnstenvRax)
                 } else if second == 0xd0 {
                     Ok(Operation::Fnop)
                 } else if second == 0xe0 {
