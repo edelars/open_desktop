@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
+mod display_probe;
 mod firmware_boot;
 mod host_stop;
 mod linux_direct;
@@ -111,6 +112,7 @@ fn main() -> ExitCode {
         Some("--stage6-smp-probe") => return stage6_smp_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         Some("boot-firmware") => return firmware_boot::run(&args[1..]),
+        Some("display-probe") => return display_probe::run(&args[1..]),
         Some("prepare-secure-boot-nvram") => {
             return firmware_boot::prepare_secure_boot_nvram(&args[1..]);
         }

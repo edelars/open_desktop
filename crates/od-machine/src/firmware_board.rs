@@ -2016,6 +2016,10 @@ impl LoadedFirmwareBoard {
         )
     }
 
+    pub fn bus(&self) -> &MachineBus {
+        &self.bus
+    }
+
     pub fn bus_mut(&mut self) -> &mut MachineBus {
         &mut self.bus
     }

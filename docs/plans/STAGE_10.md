@@ -168,7 +168,7 @@
 | S10-05 | S10-00 | Нормативный транспорт кадров VMHost → UI |
 | S10-06 | S10-04, S10-05 | Публикация кадров из VMHost |
 | S10-07 | S10-05, S10-06, S10-01 | Окно и Metal view, показ кадра из разделяемой памяти |
-| S10-08 | S10-03, S10-01; блокер: dword MMIO-запись в tracked paged-пути (см. DISPLAY_DEVICE.md §13.1) | Гостевой probe дисплея |
+| S10-08 | S10-03, S10-01; блокер §13.1 снят: probe идёт путём платы firmware (dword MMIO там есть, см. DISPLAY_DEVICE.md §13.1) | Гостевой probe дисплея |
 | S10-09 | S10-06, S10-07, S10-08 | Сквозной срез: probe → устройство → VMHost → окно |
 | S10-10 | S10-09 | Измерения пути кадра |
 | S10-11 | S10-07 | Изменение размера окна, масштабирование, Retina |
@@ -315,14 +315,14 @@
 ### S10-08. Сделать гостевой probe дисплея
 
 - [ ] Принято после ревью.
-- **Где:** `tools/build/build_stage10_display_probe.py` + тест рядом (по образцу `build_stage4_flat_probe.py`), `tests/fixtures/guest/stage10/`, загрузчик `crates/od-machine/src/stage10_display_probe.rs` по образцу `stage4_flat_probe.rs`, подкоманда в `tools/runner/`, `crates/od-host/src/display.rs` и `include/open_desktop/display_abi_v1.h` (новое значение `OD_DISPLAY_PROFILE_STAGE10_PROBE = 2` по правилу расширения S10-04).
+- **Где:** `tools/build/build_stage10_display_probe.py` + тест рядом `tools/build/test_build_stage10_display_probe.py`, `tests/fixtures/guest/stage10/` (образ `display_probe_*.img` и JSON-манифест), загрузчик `crates/od-machine/src/stage10_display_probe.rs` поверх платы firmware (`load_firmware_image`, `run_boot`; не `stage4_flat_probe`), подкоманда `display-probe` в `tools/runner/`, `crates/od-host/src/display.rs` и `include/open_desktop/display_abi_v1.h` (новое значение `OD_DISPLAY_PROFILE_STAGE10_PROBE = 2` по правилу расширения S10-04).
 - **Сделать:**
   0. Добавить профиль `OD_DISPLAY_PROFILE_STAGE10_PROBE = 2` в ABI S10-04: create с этим профилем загружает образ probe, `od_display_session_step` исполняет его квантами. Существующие значения и структуры не менять.
-  1. Probe в Long64 с теми же соглашениями, что stage4 probes: записать `WIDTH`, `HEIGHT`, `FORMAT`, `MODE_COMMIT`; прочитать `STATUS`; записать узор `bars` или `checker` из S10-01 в память framebuffer по вычисленному stride; записать `FRAME_GENERATION`; `HLT`.
-  2. Генератор пишет raw image и JSON-манифест с ожидаемым хешем кадра, размерами, узором; манифест — в fixtures.
-  3. Загрузчик размещает образ и запускает через существующий paged-probe путь; результат — отчёт с `STATUS`, поколением и хешем кадра из `read_frame_into`.
-  4. Runner подкоманда печатает отчёт и по флагу сохраняет кадр raw.
-- **Проверить:** `python3 -m unittest tools/build/test_build_stage10_display_probe.py`; `cargo test -p od-machine --offline` (тест загрузчика сравнивает хеш кадра с манифестом); runner сохраняет кадр, `display_compare.py` с эталоном даёт 0 отличий.
+  1. Probe в Long64 CPL0 с теми же соглашениями входа, что у образа платы firmware (RDI = handoff, тождественно отображённые boot-таблицы страниц; dword-записи в регистры и в framebuffer подтверждены тестами `firmware_display_mmio_*`, DISPLAY_DEVICE.md §13.1): записать `WIDTH`, `HEIGHT`, `FORMAT`, `MODE_COMMIT`; прочитать `STATUS`; записать узор `bars` или `checker` из S10-01 в память framebuffer по вычисленному stride; записать `FRAME_GENERATION`; `HLT`.
+  2. Генератор пишет образ ODFWIMG1 (хвостовые нули обрезаны; загрузчик дополняет нулями до 4 МиБ, CRC32 считается по полному образу) и JSON-манифест с ожидаемым хешем кадра, размерами, узором, числом инструкций; образ и манифест — в fixtures.
+  3. Загрузчик (`load_stage10_display_probe`) дополняет образ, загружает его `load_firmware_image` и исполняет `run_boot` квантами; результат — отчёт с `STATUS` (значения, прочитанные самим гостем), поколением и хешем кадра из `read_frame_into`.
+  4. Runner подкоманда `display-probe` печатает отчёт и по флагу `--frame-out` сохраняет кадр raw.
+- **Проверить:** `python3 -m unittest tools/build/test_build_stage10_display_probe.py`; `cargo test -p od-machine --offline --lib stage10_display_probe` (тест загрузчика сравнивает хеш кадра с манифестом); `cargo test -p od-machine --offline --lib firmware_display_mmio`; runner сохраняет кадр, `display_compare.py` с эталоном даёт 0 отличий.
 - **Готово:** собственный гостевой код без ОС рисует проверяемый узор через устройство.
 - **Не делать:** не использовать внешний ассемблер или чужой boot-код; не обходить MMIO прямой записью host в регистры «чтобы заработало».
 

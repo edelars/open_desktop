@@ -61,6 +61,15 @@ enum od_display_profile {
      * device's own registers and memory; generation is 1 right after create.
      * step has nothing to execute. This profile never changes. */
     OD_DISPLAY_PROFILE_TEST_PATTERN = 1,
+    /* S10-08. Guest probe: own x86-64 code (tests/fixtures/guest/stage10/
+     * display_probe_bars_64x48_seed0.img, built by tools/build/
+     * build_stage10_display_probe.py) on the firmware board. create only loads
+     * the image: there is no mode and no frame until od_display_session_step
+     * runs the guest. The guest programs 64x48 BGRX8888 through the registers,
+     * stores the `bars` seed 0 pattern into framebuffer memory and rings the
+     * FRAME_GENERATION doorbell, then executes HLT (25 983 instructions);
+     * generation is then 1 and the frame equals bars_64x48_seed0.raw. */
+    OD_DISPLAY_PROFILE_STAGE10_PROBE = 2,
     /* TEST-ONLY. Two screens (DISPLAY_DEVICE.md 16.2). Screen 0 is the profile-1
      * bars frame; screen 1 is a 32x24 BGRX8888 checkerboard (8x8 cells, black
      * at cell (0,0)) programmed through its mirror registers at create. */
@@ -80,7 +89,10 @@ enum od_display_format {
 
 /* od_display_step_report.outcome. Values are appended by profiles. */
 enum od_display_step_outcome {
-    OD_DISPLAY_STEP_NOTHING_TO_EXECUTE = 1 /* profile has no guest; budget unused */
+    OD_DISPLAY_STEP_NOTHING_TO_EXECUTE = 1, /* profile has no guest; budget unused */
+    OD_DISPLAY_STEP_BUDGET_EXHAUSTED = 2,   /* (STAGE10_PROBE) the guest is still running; instructions_executed == budget, or 0 for budget 0 */
+    OD_DISPLAY_STEP_HALTED = 3,             /* (STAGE10_PROBE) the guest executed HLT; final: later steps execute nothing */
+    OD_DISPLAY_STEP_FAILED = 4              /* (STAGE10_PROBE) the guest ended abnormally (fault, unsupported opcode or access); final */
 };
 
 /* od_display_cursor_state.flags bits; other bits are reserved and read as zero. */
@@ -205,7 +217,9 @@ uint32_t od_display_session_read_frame(od_display_session *session,
 
 /* Executes at most `budget` guest instructions of the profile. Profile
  * TEST_PATTERN has no guest: returns OK with outcome NOTHING_TO_EXECUTE and
- * instructions_executed 0 for any budget. out_report is set up as above and is
+ * instructions_executed 0 for any budget. Profile STAGE10_PROBE resumes where
+ * the previous step stopped and returns OK with outcome BUDGET_EXHAUSTED,
+ * HALTED or FAILED; a guest failure is an outcome, not a status. out_report is set up as above and is
  * written only on OK. Not concurrent with read_frame on the same handle. */
 uint32_t od_display_session_step(od_display_session *session, uint64_t budget,
                                  od_display_step_report *out_report);
