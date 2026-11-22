@@ -24807,10 +24807,25 @@ Physical oracle (Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8
 `cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`; derived from the S2-55 slice A oracle with seven byte-mask register shapes and SIGFPE added): 2014 cases byte for byte;
 two runs of the hardware side are identical. Result: 1799 equal (1083 retirements, 358 `SIGSEGV/SI_KERNEL` (`#GP`), 110 ACCERR, 123 MAPERR, 30 `SIGBUS`, 65 `SIGILL`,
 30 `SIGFPE` (pending x87 exception)), 175 refused by the model (84 FS/GS, repeated and mismatched prefixes, the no-prefix MOVNTQ/MASKMOVQ; 91 `#AC` cases of MASKMOVDQU),
-24 range overflow of the shared access check (`AddressOverflow` at the top of the address space, as in S2-54/S2-55), 16 MASKMOVDQU cases whose 16 bytes straddle an
-inaccessible (`PROT_NONE`) page and an unmapped one: the hardware reports the unmapped (MAPERR) page, the fixture memory of the runner the first page (ACCERR); the
-ordering of two failing pages belongs to the memory backend, not to the instruction (a 16-byte MOVUPS store reports the first page, S2-34), 0 other. Not checkable on
+24 range overflow of the shared access check (`AddressOverflow` at the top of the address space, as in S2-54/S2-55), 16 MASKMOVDQU cases (`mmed_m5_p2_cross_p3`) whose 16 bytes straddle an
+inaccessible (`PROT_NONE`) page and an unmapped one: the hardware reports the unmapped (MAPERR) second page, the fixture memory of the runner the first page (ACCERR). Known
+divergence of the model from the hardware, not an agreement: the page the hardware reports depends on the instruction (MASKMOVDQU reports the second page, a 16-byte MOVUPS
+store the first page, S2-34), while the memory backend of the model reports the first failing page of the range for both; it is recorded as ISSUE-649, 0 other. Not checkable on
 the physical side from user mode: the CR0.EM/TS and CR4.OSFXSR gates (SDM only), CR0.NE = 0 of the MMX moves, CPL0 behaviour of `#AC`.
+
+Known limitations of the model of this slice (open, not closed by the oracle comparison; ISSUE-649 and ISSUE-650 in `docs/KNOWN_ISSUES.md`):
+(1) MASKMOVDQU with a partial mask reads the 16 bytes and writes the merged bytes as one 16-byte store (`step_sse2_maskmov`). The hardware writes only the bytes
+whose mask bit is set. Observable differences: the bytes that are not selected are rewritten with the value that was read, which is visible on MMIO (a read with side
+effects and a write that the device never saw), with another CPU in SMP (a store of an unselected byte between the read and the write is lost) and in JIT invalidation
+(a write into a code page invalidates its blocks even when no selected byte lies in it); a mask of zero reads and writes the 16 bytes (the dirty and accessed state of
+the page changes) where the SDM says "No data will be written"; the read-first path uses `GuestMemory::read` and the `write_intent` recoding, not
+`GuestMemory::read_integer_for_write`, which validates all translated spans for a write before it reads but is bounded to integer sizes up to 8 bytes. The fault rule
+(a fault of any of the 16 bytes is taken whatever the mask, nothing is written) is the one measured on the oracle and is kept. The memory contract (a masked-write
+operation of `GuestMemory`, or a write-intent read of 16 bytes) is a decision for the owner and stays open; the code is unchanged. The order of two failing pages of
+one access (16 cases above) is part of the same open item.
+(2) `canonical_fault` of `long_decode.rs` (shared by every memory operand, so by the MOVNT stores and MASKMOVDQU) chooses `#SS(0)` only by an RSP/RBP base and does not
+look at a segment override: with the `36` (SS) prefix and a non-canonical RDI the model gives `#GP(0)`, the SDM `#SS(0)`; with the `3E` (DS) prefix and an RBP base the
+other way round. Not covered by a test of this slice; the shared code is unchanged.
 
 ## S2-42n — bounded MOV qword memory reducer
 
