@@ -861,6 +861,28 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
             "FNSTENV with x87 state: {outcome:?}"
         );
     }
+    // The same three forms through the set (x87 = None): refused with no state change and with the 108-byte
+    // image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR loads nothing).
+    for code in [&[0xd9u8, 0x30][..], &[0xdd, 0x30], &[0xdd, 0x20]] {
+        let mut cpu = cpu();
+        cpu.x87 = None;
+        cpu.gpr[Register::Rax as usize] = DATA;
+        let mut ram = Ram::with_code(code);
+        ram.bytes[DATA as usize..DATA as usize + 108].fill(0xa5);
+        let before = cpu.clone();
+        let image = ram.bytes[DATA as usize..DATA as usize + 108].to_vec();
+        let outcome = step_outcome(code, &mut cpu, &mut ram);
+        assert!(
+            matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+            "{code:02x?} with x87 = None: {outcome:?}"
+        );
+        assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
+        assert_eq!(
+            ram.bytes[DATA as usize..DATA as usize + 108],
+            image[..],
+            "{code:02x?}: the image area is untouched"
+        );
+    }
     // MSR: RDMSR of IA32_APIC_BASE (0x1B) and WRMSR of IA32_PAT (0x277) in the bare run.
     unsupported(&[0x0f, 0x32], &|cpu| cpu.gpr[Register::Rcx as usize] = 0x1b);
     unsupported(&[0x0f, 0x30], &|cpu| {
