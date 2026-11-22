@@ -615,7 +615,8 @@ final class TwoScreenTransportXCTests: XCTestCase {
     }
 
     func testAFrameWithAnOldModeChangeCountIsAProtocolErrorOfTheReader() throws {
-        // After MODE(DISABLED), a FRAME of the old mode (count 1) breaks the connection ...
+        // After MODE(DISABLED), a FRAME breaks the connection: this case is caught by "FRAME while the mode is inactive"
+        // (the stale count is not what triggers it) ...
         let disabled = try TwoScreenRig()
         try disabled.publish(screen: 1, generation: 1, modeCount: 1, width: 80, height: 60)
         try disabled.writers[1].queueMode(count: 2, active: false, disabled: true, width: 0, height: 0, stride: 0, format: 0)
@@ -624,7 +625,8 @@ final class TwoScreenTransportXCTests: XCTestCase {
         send(frameMessage(generation: 7, count: 1, slot: 0, screen: 1), on: disabled.hostFD)
         disabled.drain()
         if case .disconnected = disabled.reader.connection {} else { XCTFail("FRAME after MODE(DISABLED): \(disabled.reader.connection)") }
-        // ... and so does a FRAME with the old count after a new active MODE.
+        // ... and so does a FRAME with the old count after a new active MODE: the mode is active here, so only the
+        // counter check can fire, which isolates this case.
         let renewed = try TwoScreenRig()
         try renewed.writers[1].queueMode(count: 2, active: true, width: 40, height: 30, stride: 160, format: 1)
         renewed.drain()

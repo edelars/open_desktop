@@ -135,7 +135,7 @@ python3 tests/system/cursor_overlay_smoke.py [VIEWER [VMHOST]]
 apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --screens 2 --dump-screen 1 --dump-frame /private/tmp/screen1.raw
 ```
 
-Экран 1 в тестовом профиле 4 (test-only, без гостя) — `checker` 80×60, seed `0x204080`, проверяется побайтно эталоном `tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw` (допуск 0; `--screens 2 --dump-screen 1`). Окна глазами не проверены; сквозной путь «регистры гостя → VMHost» для экрана 1 не проверен (нужен probe с двумя экранами, S10-09).
+Экран 1 в тестовом профиле 4 (test-only, без гостя) — `checker` 80×60, seed `0x204080`, сравнивается с эталоном `tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw` побайтно (допуск 0) только в тесте транспорта `TwoScreenTransportTests.swift` и одним ручным прогоном `--screens 2 --dump-screen 1`; автоматической проверки дампа окна нет (ISSUE-654). Окна глазами не проверены; сквозной путь «регистры гостя → VMHost» для экрана 1 не проверен (нужен probe с двумя экранами, S10-09).
 
 ## User-facing errors (S11-09)
 

@@ -4321,22 +4321,34 @@ mod screen1_tests {
     #[test]
     fn disable_hides_the_mode_counts_and_refuses_the_doorbell() {
         let (mut bus, handle) = setup_two();
+        // NO_MODE -> DISABLED is a state change and grows the counter (16.6).
+        let before = handle.second_screen_state().unwrap().mode_change_count;
+        write(&mut bus, S1 + 0x4C, 2);
+        assert_eq!(read(&mut bus, S1 + 0x70) & 4, 4, "DISABLED from NO_MODE");
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, before + 1);
         write(&mut bus, S1 + 0x40, 64);
         write(&mut bus, S1 + 0x44, 48);
         write(&mut bus, S1 + 0x48, 1);
         write(&mut bus, S1 + 0x4C, 1);
         write(&mut bus, S1 + 0x80, 0);
         assert_eq!(handle.second_screen_state().unwrap().generation, 1);
+        let counted = handle.second_screen_state().unwrap().mode_change_count;
 
         write(&mut bus, S1 + 0x4C, 2);
         let state = read(&mut bus, S1 + 0x70);
         assert_eq!(state & 1, 0, "not active");
         assert_eq!(state & 4, 4, "DISABLED");
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 2);
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 1);
+        let mut frame = vec![0u8; 64 * 48 * 4];
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut frame),
+            Err(DisplayReadError::NoActiveMode),
+            "a disabled screen has no frame to read"
+        );
 
         // Repeating the disable is a success without another count step.
         write(&mut bus, S1 + 0x4C, 2);
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 2);
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 1);
 
         write(&mut bus, S1 + 0x80, 0);
         assert_eq!(
@@ -4348,7 +4360,7 @@ mod screen1_tests {
         // Re-enabling is an ordinary commit.
         write(&mut bus, S1 + 0x4C, 1);
         assert_eq!(read(&mut bus, S1 + 0x70) & 4, 0);
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 3);
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 2);
     }
 
     #[test]
@@ -4408,7 +4420,7 @@ mod screen1_tests {
         );
     }
 
-    // --- S10-15 review: tests of DISPLAY_DEVICE.md 16.13 items 1, 2, 5, 6, 7, 8, 9 and the "no such screen" refusal (16.10) ---
+    // --- S10-15 review: tests of DISPLAY_DEVICE.md 16.13 items 1, 2, 5, 6, 7, 8, 9 (item 5: disable_hides_the_mode_counts_and_refuses_the_doorbell) and the "no such screen" refusal (16.10) ---
 
     const S1_NAMED: [u64; 17] = [
         0x30C, 0x310, 0x314, 0x318, 0x31C, 0x320, 0x340, 0x344, 0x348, 0x34C, 0x360, 0x364, 0x368,

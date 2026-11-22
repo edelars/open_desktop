@@ -602,6 +602,9 @@ final class FrameTransportWriter {
         mode: od_display_mode,
         read: (UnsafeMutablePointer<UInt8>, Int, inout od_display_frame_info) -> UInt32
     ) throws -> Bool {
+        // 11.5: a screen whose last MODE is inactive (no signal, disabled) has no frame to publish; nothing is chosen,
+        // invalidated or read for it. A frame of a newer mode queues its MODE first, below.
+        if !queuedModeActive && mode.mode_change_count == queuedModeCount { return false }
         guard let slot = chooseSlot() else { return false }
         let descriptor = descriptorOffset(slot)
         // 5.1 steps 2-3: invalidate, make the mark visible before any pixel write.
@@ -639,9 +642,6 @@ final class FrameTransportWriter {
         let generation = info.generation
         let modeCount = info.mode_change_count
         if generation <= lastPublished || modeCount < queuedModeCount { return false }
-        // 11.5: a screen whose last MODE is inactive (no signal, disabled) has no frame to publish; a frame of a newer mode
-        // queues its MODE first, below.
-        if modeCount == queuedModeCount && !queuedModeActive { return false }
         if modeCount > queuedModeCount {
             try queueMode(count: modeCount, active: true, width: info.width, height: info.height,
                           stride: info.stride, format: info.format)
