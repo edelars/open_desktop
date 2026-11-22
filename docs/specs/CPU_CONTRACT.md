@@ -16344,7 +16344,7 @@ declaration (S2-57/S2-58).
 
 ## S2-25n — exact PAE refusal of the long-mode entries and the board PAE adapter (bounded slice)
 
-Normative source: Intel SDM Rev. 093 Vol. 3A §4.1.1 (the paging modes are selected by CR0.PG, CR4.PAE and IA32_EFER.LME; PAE
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 "Five Paging Modes" (the paging modes are selected by CR0.PG, CR4.PAE and IA32_EFER.LME; PAE
 paging is CR0.PG = 1, CR4.PAE = 1, LME = 0) and §5.4.2 (PAE translation), as in S2-25g/S2-25k/S2-25l. Text only: no hardware oracle
 (a user-space process on the Oracle machine cannot enable PAE paging), no oracle counters, no CPUID bit declared.
 
@@ -16356,9 +16356,14 @@ paging is CR0.PG = 1, CR4.PAE = 1, LME = 0) and §5.4.2 (PAE translation), as in
 | Not changed | the Long64 path (`PagedMovMemoryAdapter`, the 4-level walk and its profiles), the adapter itself, the PAE walk, every locked / vector / descriptor refusal of S2-25l. |
 
 Tests: `od-machine` `ap_legacy_exec::tests::the_board_pae_memory_adapter_equals_the_board_operand_access_on_identical_tables`: two boards with
-identical PAE tables, the same ten dword operands (RAM store and load, Local APIC ID read, TPR write and read back, a store and a load of a 36-bit page no region covers, `#PF`
-error codes 2 (not-present PDPTE, write) and 5 (CPL 3 on a supervisor page), a second RAM store); per step the result, the committed writes in order and
-the table, RAM and device bytes are equal; a crossing operand into the APIC page is a typed refusal that sets no dirty bit. The S2-25l tests (`paged_pae_adapter`
+identical PAE tables, the same ten dword operands (RAM store and load, Local APIC ID read, TPR write and read back, a store and a load of a 36-bit page no region covers, a store to a not-present PDPTE
+(`#PF`, error code 2 by the case) and a CPL 3 load of a supervisor page (`#PF`, error code 5 by the case), a second RAM store); per step the result
+(the read value, the write, the `#PF` error code, CR2 and the EIP of the record, or the physical address of the refused operand), the committed writes in
+order and the bytes of the page directory, page table and marker RAM page are equal (the device state is not compared: the Local APIC is checked by the
+TPR read back); the `#PF` codes 2 and 5 are not asserted literally, the adapter equals the board access. A dword that crosses from a RAM page into the
+Local APIC page is a typed refusal for a load (the MMIO byte, `OperandPhysical`) and for a store (the walk of the crossing page, `DeviceUnavailable`),
+both at the APIC base; after either the committed writes are empty, the RAM bytes before the boundary and the table bytes are unchanged (the store
+refuses before the first byte is written). The S2-25l tests (`paged_pae_adapter`
 probe, shared probe and CPL0 set loop; `od-host` `s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`) and `page_walk` expect `PaeProtectedMode`.
 The adapter against `ProtectedCpu` on identical tables is the existing S2-25l differential (31 scenarios, unchanged).
 
