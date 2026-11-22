@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates the operand list of the S2-32 x87 oracle (op fcw sw0 x y per line, binary80 as 20 hex digits
-in memory order). Run: gen_golden.py > in.txt; feed it to x87_oracle on the Core i5-3210M."""
+in memory order). Run: x87_oracle_gen.py > in.txt; feed it to x87_oracle on the Core i5-3210M."""
 import random
 random.seed(20261122)
 FCWS = [0x007f,0x047f,0x087f,0x0c7f,0x027f,0x067f,0x0a7f,0x0e7f,0x037f,0x077f,0x0b7f,0x0f7f]

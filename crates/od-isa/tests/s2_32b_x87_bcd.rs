@@ -1,7 +1,7 @@
 //! S2-32b: FBLD and FBSTP (bare `DF 20` / `DF 30` with the operand at [RAX]) in the bounded local x87 profile.
 //!
-//! Sources: Intel SDM combined 325462-093US (cdrdv2.intel.com/v1/dl/getContent/671200): Vol. 2A "FBLD" and
-//! Vol. 2B "FBSTP" (packed BCD: 18 digits, sign in bit 7 of byte 9, bits 6:0 of byte 9 ignored on the oracle; the
+//! Sources: Intel SDM combined 325462-093US (cdrdv2.intel.com/v1/dl/getContent/671200): Vol. 2A "FBLD" (p. 3-314)
+//! and "FBSTP" (p. 3-316) (packed BCD: 18 digits, sign in bit 7 of byte 9, bits 6:0 of byte 9 ignored on the oracle; the
 //! rounding control rounds the stored integer; FBSTP pops), Vol. 1 section 4.7 (packed BCD integers) and 8.3.4.
 //! The physical oracle is the Core i5-3210M (`data/x87_bcd_oracle.c`, operands from
 //! `data/x87_bcd_oracle_gen.py`); `data/x87_bcd_oracle_i5_3210m.txt` holds 335 answers, one per line:

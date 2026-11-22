@@ -3,8 +3,8 @@
 //!
 //! Sources: Intel SDM combined 325462-093US (cdrdv2.intel.com/v1/dl/getContent/671200): Vol. 2A/2B, the
 //! instruction page of every mnemonic above ("Operation", "FPU Flags Affected"); Vol. 1 section 8.3.10
-//! (transcendental instructions, the argument range |x| < 2^63 of the trigonometric forms) and section
-//! 8.5.1 (the condition codes C0-C3). The physical oracle is a Core i5-3210M (Ivy Bridge, Ubuntu x86-64,
+//! (transcendental instructions, the argument range |x| < 2^63 of the trigonometric forms), section
+//! 8.3.8 (the 66-bit approximation of pi) and section 8.1.3.2 (condition code flags C0-C3). The physical oracle is a Core i5-3210M (Ivy Bridge, Ubuntu x86-64,
 //! user space): `data/x87_oracle.c` runs each case between FNINIT/FLDENV and FNSTENV/FSTP, and
 //! `data/x87_oracle_i5_3210m.txt` holds its 1,800 answers, one line per case:
 //! `op fcw sw0 x y ST0 ST1 fsw ftw` (binary80 in memory order; the operand list comes from
@@ -181,8 +181,8 @@ fn oracle_rows_match_the_interpreter() {
         entry.rows += 1;
         let context = line.to_string();
         if !matches!(outcome, StepOutcome::Advanced) {
-            // Only FYL2XP1 operands outside -(1 - sqrt(2)/2) < x < sqrt(2) - 1 (undefined in the SDM) are
-            // refused here; the refusal changes nothing.
+            // Only FYL2XP1 operands outside -(1 - sqrt(2)/2) <= x <= 1 - sqrt(2)/2 (the SDM range of ST(0);
+            // outside it the result is undefined in the SDM) are refused here; the refusal changes nothing.
             assert_eq!(op, "fyl2xp1", "{context}");
             assert_eq!(
                 outcome,
@@ -498,7 +498,7 @@ fn bounded_profile_refuses_everything_else_without_a_trace() {
         }
     }
     // Domain and range limits.
-    let refused: [(&str, [u8; 10], [u8; 10], &str); 14] = [
+    let refused: [(&str, [u8; 10], [u8; 10], &str); 18] = [
         (
             "f2xm1",
             b80(false, 1, 0x8000_0000_0000_0000),
@@ -529,7 +529,31 @@ fn bounded_profile_refuses_everything_else_without_a_trace() {
             "fyl2xp1",
             b80(false, -1, 0xc000_0000_0000_0000),
             normal,
-            "x above sqrt(2) - 1",
+            "x above 1 - sqrt(2)/2 (0.75)",
+        ),
+        (
+            "fyl2xp1",
+            b80(false, -2, 0xd413_cccf_e779_9211),
+            normal,
+            "x = sqrt(2) - 1, the former upper limit",
+        ),
+        (
+            "fyl2xp1",
+            b80(false, -2, 0xa000_0000_0000_0000),
+            normal,
+            "x = 0.3125, between 1 - sqrt(2)/2 and sqrt(2) - 1",
+        ),
+        (
+            "fyl2xp1",
+            b80(false, -2, 0x95f6_1998_0c43_36f8),
+            normal,
+            "x one unit above 1 - sqrt(2)/2",
+        ),
+        (
+            "fyl2xp1",
+            b80(true, -2, 0x95f6_1998_0c43_36f8),
+            normal,
+            "x one unit below -(1 - sqrt(2)/2)",
         ),
         (
             "fyl2xp1",
@@ -562,6 +586,42 @@ fn bounded_profile_refuses_everything_else_without_a_trace() {
     for (op, x, y, why) in refused {
         assert_refused(op, fresh(op, x, y), why);
     }
+}
+
+#[test]
+fn fyl2xp1_admits_exactly_the_sdm_range() {
+    // 1 - sqrt(2)/2 = 0x1.95F619980C4336F7...p-2 (irrational): the largest binary80 value not above it
+    // is admitted for both signs; ST(0) must be 1.0 * log2(1 +- 0.2929...).
+    let limit = 0x95f6_1998_0c43_36f7_u64;
+    for neg in [false, true] {
+        let state = run("fyl2xp1", b80(neg, -2, limit), ONE);
+        let x87 = state.x87.as_ref().unwrap();
+        assert_eq!(x87.top(), 2, "popped, neg {neg}");
+        let result = x87.registers[usize::from(x87.top())];
+        let (mant, se) = (mantissa(result), sign_exponent(result));
+        // log2(1.2929) = 0.3690 has exponent -2 and is positive; log2(0.7071) = -0.5 (exactly -1/2 up to
+        // the last bits, because 1 - (1 - sqrt(2)/2) = sqrt(2)/2) has exponent -1 (or -2 just below) and is negative.
+        assert_eq!(se >> 15 == 1, neg, "sign, neg {neg}");
+        assert!(mant >> 63 == 1, "normal, neg {neg}");
+        let exponent = i32::from(se & 0x7fff) - 0x3fff;
+        assert!(
+            if neg {
+                (-2..=-1).contains(&exponent)
+            } else {
+                exponent == -2
+            },
+            "exponent {exponent}, neg {neg}"
+        );
+        // One unit above the limit is outside the SDM range and refused.
+        assert_refused(
+            "fyl2xp1",
+            fresh("fyl2xp1", b80(neg, -2, limit + 1), ONE),
+            "just above the limit",
+        );
+    }
+    // Zero stays the exact +-0 and is not subject to the range.
+    let state = run("fyl2xp1", ZERO, ONE);
+    assert_eq!(state.x87.as_ref().unwrap().registers[2], ZERO);
 }
 
 #[test]
