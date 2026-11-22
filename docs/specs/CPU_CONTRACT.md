@@ -12046,8 +12046,9 @@ FSAVE/FNSAVE p. 3-375 (the mnemonics with F are the non-waiting form preceded by
 - **Saved RIP of a fault.** Intel SDM (FSTENV/FSAVE, "Description"): the assembler issues two instructions, FWAIT and then FNSTENV/FNSAVE, and "if an exception is generated for either
   of these instructions, the save EIP points to the instruction that caused the exception". Rule: an error of the FWAIT part leaves RIP at `9B` (#NM for CR0.MP with CR0.TS, #MF of a
   pending unmasked exception); an error after the FWAIT part retired leaves RIP at the FNSTENV/FNSAVE byte, `9B` + 1 (the #NM of CR0.EM, or of CR0.TS with CR0.MP clear, which is no
-  condition of FWAIT; the faults of the store: non-canonical or wrapping address, page fault, unmapped memory). Nothing but RIP changes on a fault (the x87 state, the memory and the
-  cell stay as they were). Without a fault RIP advances by 3.
+  condition of FWAIT; the architectural faults of the store: #GP for a non-canonical address or last byte, #PF; SDM, RIP of the point of the exception). Nothing but RIP changes on such a fault (the x87 state, the memory and the
+  cell stay as they were). A model error of the store (unmapped memory, wrapping address past 2^64, backend failure) is not an x86 exception: as in FLDENV/FNSTENV it is returned as an error, the state is
+  untouched and RIP stays at the first byte (`9B`). Without a fault RIP advances by 3.
 - **Bounded profile.** FWAIT is a no-op: the admission of the environment forms (control word one of the twelve all-masked words, ES and B clear) leaves no pending unmasked
   exception. The rest is the non-waiting form (image, one write, state), RIP advances by 3. A state that the SDM would answer with `#MF` at the FWAIT (unmasked control word,
   ES, B) is refused, `Unsupported` with opcode `9B`, no state change, no memory access (carried over). The refusal of the other `D8..DF` forms while a selector is represented
@@ -12058,7 +12059,7 @@ FSAVE/FNSAVE p. 3-375 (the mnemonics with F are the non-waiting form preceded by
   EM is no condition of FWAIT, so a pending exception is `#MF`, not `#NM`. The `#NM` of the gates (EM, or TS with MP clear) has RIP `9B` + 1; nothing else changes on a fault.
 - **Oracle.** 324 Core i5-3210M rows (`data/x87_fwait_oracle.c`; `data/x87_fwait_oracle_i5_3210m.txt`): the images of S2-32c through `FNINIT; FRSTOR; FSTENV; FSAVE; FSTENV`, the assembler
   emitting `9B D9 30` and `9B DD 30` (objdump). The answers are byte-identical to those of the non-waiting forms; all 324 rows (28 + 108 + 28 bytes) are reproduced from two starting selector states.
-- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (12), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page` (paged adapter); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
+- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (14), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page` (paged adapter); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
 - **Not covered.** `#MF` delivery in the bounded profile, 16-bit images, FWAIT before other forms, #AC, JIT and native (closed).
 
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)

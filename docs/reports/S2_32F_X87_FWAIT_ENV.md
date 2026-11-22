@@ -15,11 +15,11 @@ Slice of S2-32 (the task checkbox stays open). Branch `s2-32-fwait` (from `stage
 ## Saved RIP of a fault, look-ahead (review fixes)
 * Intel SDM (FSTENV/FSAVE): the assembler issues two instructions, FWAIT and FNSTENV/FNSAVE; "if an exception is generated for either of these instructions, the save EIP points to the instruction that
   caused the exception". Rule: an error of the FWAIT part (#NM for CR0.MP with CR0.TS, #MF) leaves RIP at `9B`; an error after the FWAIT part retired leaves RIP at `9B` + 1: the #NM of CR0.EM (EM, or TS with
-  MP clear, is no condition of FWAIT, it gates the non-waiting form), and every fault of the store (non-canonical or wrapping address, #PF, unmapped). Only RIP changes on a fault. CR0.EM with a pending
+  MP clear, is no condition of FWAIT, it gates the non-waiting form), and every architectural fault of the store (non-canonical last byte, #GP, #PF); only RIP changes on a fault. Model errors of the store (unmapped memory, wrapping address past 2^64, backend failure) are not x86 exceptions: as in FLDENV/FNSTENV they return `Err` with the state untouched and RIP at the first byte of the instruction (`9B`); the SDM rule about the saved EIP does not apply to them. CR0.EM with a pending
   unmasked exception is #MF at RIP `9B` (the FWAIT part is checked first); a test fails when the check order is swapped (checked by a mutation).
 * The look-ahead after `9B` stays on the 4 KiB page of `9B`: when `9B` or the next byte is the last byte of its page nothing after `9B` is fetched (bare FWAIT). Test of the decoder (fetch log) and of the
   paged adapter in `od-machine` (no page fault, memory error or access error record, the accessed bit of the next page stays clear). Limitation: a spelling across a page boundary is two instructions
-  (the bounded profile refuses the bare FWAIT).
+  (the bounded profile refuses the bare FWAIT; in the CPL0 set the split spelling runs as two instructions, FWAIT and then the non-waiting form, with the same effect).
 
 ## Physical oracle
 
@@ -29,7 +29,7 @@ two starting selector states (648 runs of the three-instruction sequence).
 
 ## Validation
 
-`tests/s2_32f_x87_fwait_env.rs` (12 tests), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page`, `s2_32c_x87_env` (8; decoder test updated), `s2_32d_x87_fldenv` (8), `s2_32e_cpl0_x87` (13; the `9B D9 30` pair is one instruction), `s2_57_cpuid_windows` (19),
+`tests/s2_32f_x87_fwait_env.rs` (14 tests; two added: model error keeps RIP `9B`, architectural #GP is `9B` + 1), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page`, `s2_32c_x87_env` (8; decoder test updated), `s2_32d_x87_fldenv` (8), `s2_32e_cpl0_x87` (13; the `9B D9 30` pair is one instruction), `s2_57_cpuid_windows` (19),
 `cpl0_profile_set` (1 626), `s2_37_cvt_int` (36), `--lib long_decode` (431), `--lib x87` (103), `--lib fwait` (4), `s2_32_x87_transcend` (6), `s2_32b_x87_bcd` (3), `cargo fmt --all -- --check`, `git diff --check`.
 
 ## Not done (rest of S2-32)
