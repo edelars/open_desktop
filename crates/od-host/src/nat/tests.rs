@@ -2,6 +2,7 @@
 //! L2/L3 queues, the counters, and a deterministic fuzz of garbage input.
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use od_machine::{
     Dropped, NET_MAX_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT, NetBackend, NetCounters,
@@ -16,7 +17,7 @@ use super::{NatBackend, record_drop};
 
 const EXTERNAL: Ipv4Addr = Ipv4Addr::new(93, 184, 216, 34);
 
-fn policy() -> Policy {
+pub(super) fn policy() -> Policy {
     Policy::new(GUEST_MAC).unwrap()
 }
 
@@ -715,16 +716,17 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-fn backend() -> NatBackend {
-    NatBackend::new(GUEST_MAC).unwrap()
+/// A backend whose DNS lookups never touch the network: every name is unknown.
+pub(super) fn backend() -> NatBackend {
+    NatBackend::with_parts(policy(), Arc::new(NotFoundResolver))
 }
 
-fn run(backend: &mut NatBackend, frame: &[u8]) {
+pub(super) fn run(backend: &mut NatBackend, frame: &[u8]) {
     backend.transmit(frame).unwrap();
     backend.process_pending();
 }
 
-fn drain(backend: &mut NatBackend) -> Vec<Vec<u8>> {
+pub(super) fn drain(backend: &mut NatBackend) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; NET_MAX_FRAME];
     while let Some(len) = backend.poll_receive(&mut buf) {
@@ -1026,7 +1028,7 @@ fn every_silent_drop_row_increases_exactly_its_counter() {
 }
 
 /// Sum of every counter that accounts for the fate of one processed frame.
-fn total_accounted(c: &NetCounters) -> u64 {
+pub(super) fn total_accounted(c: &NetCounters) -> u64 {
     c.drop_bad_src_mac
         + c.drop_bad_dst_mac
         + c.drop_unsupported_ethertype
@@ -1040,6 +1042,16 @@ fn total_accounted(c: &NetCounters) -> u64 {
         + c.drop_l4_malformed
         + c.drop_arp_other
         + c.drop_unhandled_l4
+        + c.dhcp_offers
+        + c.dhcp_acks
+        + c.dhcp_naks
+        + c.dhcp_ignored
+        + c.dhcp_malformed
+        + c.dns_queries
+        + c.dns_malformed
+        + c.dns_formerr
+        + c.dns_dropped_busy
+        + c.drop_host_resource
         + c.arp_replies
         + c.arp_probe_ignored
         + c.drop_rx_queue_full
@@ -1047,21 +1059,35 @@ fn total_accounted(c: &NetCounters) -> u64 {
 
 #[test]
 fn well_formed_transport_packets_are_counted_unhandled_until_the_handlers_exist() {
+    // DHCP and DNS are served since S11-31b: the rest waits for S11-31c (UDP, ICMP) and S11-31d (TCP).
     let mut b = backend();
     for frame in [
         udp_frame(EXTERNAL, 9, b"x"),
-        udp_frame(DNS_IP, 53, b"x"),
+        udp_frame(DNS_IP, 9, b"x"),
+        udp_frame(GATEWAY_IP, 9, b"x"),
         tcp_syn_frame(EXTERNAL, 80),
         tcp_syn_frame(GATEWAY_IP, 80),
         echo_frame(EXTERNAL),
         echo_frame(GATEWAY_IP),
-        dhcp_like_frame(),
     ] {
         run(&mut b, &frame);
     }
     let c = b.counters();
     assert_eq!(c.drop_unhandled_l4, 7);
     assert_eq!(total_accounted(&c), 7);
+    assert!(drain(&mut b).is_empty());
+}
+
+#[test]
+fn dhcp_and_dns_frames_are_no_longer_unhandled() {
+    let mut b = backend();
+    // The 0x55-filled DHCP-like frame is a malformed DHCP message; a 1-byte DNS query is malformed too.
+    run(&mut b, &dhcp_like_frame());
+    run(&mut b, &udp_frame(DNS_IP, 53, b"x"));
+    let c = b.counters();
+    assert_eq!((c.dhcp_malformed, c.dns_malformed), (1, 1));
+    assert_eq!(c.drop_unhandled_l4, 0);
+    assert_eq!(total_accounted(&c), 2);
     assert!(drain(&mut b).is_empty());
 }
 
@@ -1196,6 +1222,15 @@ fn base_frames() -> Vec<Vec<u8>> {
         tcp_syn_frame(EXTERNAL, 443),
         echo_frame(EXTERNAL),
         dhcp_like_frame(),
+        dhcp_broadcast(&DhcpMsg::new(DHCP_DISCOVER)),
+        dhcp_unicast(&DhcpMsg::new(DHCP_REQUEST).ciaddr(GUEST_IP)),
+        dns_frame(5353, &DnsMsg::query(7, "example.test", TYPE_A).build()),
+        dns_frame(
+            5353,
+            &DnsMsg::query(8, "example.test", TYPE_A)
+                .opt(0, &[0, 10, 0, 1, 7])
+                .build(),
+        ),
         udp_frame(Ipv4Addr::LOCALHOST, 9, b"loop"),
     ]
 }

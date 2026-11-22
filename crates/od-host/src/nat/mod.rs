@@ -3,25 +3,41 @@
 //! Contract: docs/specs/NETWORK.md. [`NatBackend`] implements [`od_machine::NetBackend`]: the NIC
 //! calls `transmit`/`poll_receive` from the device thread, [`NatBackend::process_pending`] takes the
 //! frames out of the L2 queue, checks them ([`frame::classify`]) and answers ARP for the gateway.
-//! Everything else that passes the checks is counted as `drop_unhandled_l4` until S11-31b (DHCP,
-//! DNS), S11-31c (UDP, ICMP echo) and S11-31d (TCP) serve it. This task opens no sockets.
+//! DHCP ([`dhcp`]) and DNS ([`dns`], [`resolver`]) are served here (S11-31b). Everything else that passes the
+//! checks is counted as `drop_unhandled_l4` until S11-31c (UDP, ICMP echo) and S11-31d (TCP) serve it.
+//! The backend opens no sockets; the DNS lookups run on worker threads through the system resolver.
 //!
 //! Threads: the backend is a plain value. S11-31b..d run `process_pending` on the I/O thread of the
 //! contract (NETWORK.md section 4) and decide how the device thread and that thread share it; the
 //! shape of that sharing is not fixed here.
 
+pub mod dhcp;
+pub mod dns;
 pub mod flow;
 pub mod frame;
+pub mod resolver;
 #[cfg(test)]
 mod test_frames;
+
+use std::sync::Arc;
+use std::time::Instant;
 
 use od_machine::{
     Dropped, FrameQueue, NET_MAX_FRAME, NET_MIN_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT,
     NetBackend, NetCounters, PushError,
 };
 
+use self::dns::{DnsService, Parsed, Plan, SubmitError};
 use self::flow::{FlowError, FlowKey, FlowProto, FlowTable};
-use self::frame::{DropReason, GuestMacError, Inbound, Mac, Policy, build_arp_reply, classify};
+use self::frame::{
+    DNS_IP, DropReason, DstClass, GATEWAY_IP, GUEST_IP, GuestMacError, Inbound, Ipv4Packet, L4,
+    Mac, Policy, UdpDatagram, build_arp_reply, build_udp_ipv4_frame, classify,
+};
+use self::resolver::{Resolver, SystemResolver};
+
+/// The Ethernet destination of a DHCP NAK.
+const BROADCAST_MAC: Mac = [0xFF; 6];
+const DNS_PORT: u16 = 53;
 
 fn bump(counter: &mut u64) {
     *counter = counter.saturating_add(1);
@@ -53,6 +69,9 @@ pub struct NatBackend {
     /// L3: frames for the guest, not yet taken by the NIC.
     rx_queue: FrameQueue,
     flows: FlowTable<()>,
+    dns: DnsService,
+    /// Identification field of the next IPv4 packet built for the guest (modulo 2^16).
+    ip_id: u16,
     counters: NetCounters,
 }
 
@@ -64,11 +83,17 @@ impl NatBackend {
     }
 
     fn with_policy(policy: Policy) -> Self {
+        Self::with_parts(policy, Arc::new(SystemResolver))
+    }
+
+    fn with_parts(policy: Policy, resolver: Arc<dyn Resolver>) -> Self {
         Self {
             policy,
             tx_queue: FrameQueue::new(NET_TX_QUEUE_LIMIT),
             rx_queue: FrameQueue::new(NET_RX_QUEUE_LIMIT),
             flows: FlowTable::new(),
+            dns: DnsService::new(resolver),
+            ip_id: 0,
             counters: NetCounters::default(),
         }
     }
@@ -87,19 +112,26 @@ impl NatBackend {
         result
     }
 
-    /// Takes every frame out of the L2 queue and handles it. Never blocks. Returns the number of
-    /// frames handled.
+    /// Takes every frame out of the L2 queue and handles it, and delivers the DNS answers that have
+    /// arrived. Never blocks. Returns the number of frames handled.
     pub fn process_pending(&mut self) -> usize {
+        self.process_pending_at(Instant::now())
+    }
+
+    /// [`Self::process_pending`] with the time given by the caller (the five-second DNS timeout
+    /// counts from the `now` of the call that took the query).
+    pub fn process_pending_at(&mut self, now: Instant) -> usize {
+        self.poll_dns(now);
         let mut frame = [0u8; NET_MAX_FRAME];
         let mut handled = 0;
         while let Some(len) = self.tx_queue.pop_into(&mut frame) {
-            self.handle_frame(&frame[..len]);
+            self.handle_frame(&frame[..len], now);
             handled += 1;
         }
         handled
     }
 
-    fn handle_frame(&mut self, frame: &[u8]) {
+    fn handle_frame(&mut self, frame: &[u8], now: Instant) {
         match classify(frame, &self.policy) {
             Err(reason) => record_drop(&mut self.counters, reason),
             Ok(Inbound::ArpIgnored) => bump(&mut self.counters.arp_probe_ignored),
@@ -118,8 +150,128 @@ impl NatBackend {
                     bump(&mut self.counters.arp_replies);
                 }
             }
-            // No handler yet: S11-31b..d replace this arm protocol by protocol.
-            Ok(Inbound::Ipv4(_)) => bump(&mut self.counters.drop_unhandled_l4),
+            Ok(Inbound::Ipv4(packet)) => self.handle_ipv4(&packet, now),
+        }
+    }
+
+    fn handle_ipv4(&mut self, packet: &Ipv4Packet<'_>, now: Instant) {
+        match packet.l4 {
+            L4::Udp(udp)
+                if udp.dst_port == dhcp::SERVER_PORT
+                    && matches!(
+                        packet.dst_class,
+                        DstClass::Gateway | DstClass::LimitedBroadcast
+                    ) =>
+            {
+                self.handle_dhcp(&udp);
+            }
+            L4::Udp(udp) if udp.dst_port == DNS_PORT && packet.dst_class == DstClass::Dns => {
+                self.handle_dns(&udp, now);
+            }
+            // No handler yet: S11-31c (UDP, ICMP echo) and S11-31d (TCP) replace this arm.
+            _ => bump(&mut self.counters.drop_unhandled_l4),
+        }
+    }
+
+    fn handle_dhcp(&mut self, udp: &UdpDatagram<'_>) {
+        let mut message = [0u8; dhcp::REPLY_CAPACITY];
+        let outcome = if udp.src_port == dhcp::CLIENT_PORT {
+            dhcp::respond(self.policy.guest_mac(), udp.data, &mut message)
+        } else {
+            dhcp::Outcome::Malformed
+        };
+        match outcome {
+            dhcp::Outcome::Malformed => bump(&mut self.counters.dhcp_malformed),
+            dhcp::Outcome::Ignored => bump(&mut self.counters.dhcp_ignored),
+            dhcp::Outcome::Reply {
+                kind,
+                len,
+                destination,
+            } => {
+                let dst_mac = if destination.broadcast_mac {
+                    BROADCAST_MAC
+                } else {
+                    self.policy.guest_mac()
+                };
+                let sent = self.send_udp(
+                    dst_mac,
+                    (GATEWAY_IP, dhcp::SERVER_PORT),
+                    (destination.ip, dhcp::CLIENT_PORT),
+                    &message[..len],
+                );
+                if sent {
+                    bump(match kind {
+                        dhcp::ReplyKind::Offer => &mut self.counters.dhcp_offers,
+                        dhcp::ReplyKind::Ack => &mut self.counters.dhcp_acks,
+                        dhcp::ReplyKind::Nak => &mut self.counters.dhcp_naks,
+                    });
+                }
+            }
+        }
+    }
+
+    fn handle_dns(&mut self, udp: &UdpDatagram<'_>, now: Instant) {
+        match dns::parse(udp.data) {
+            Parsed::Malformed => bump(&mut self.counters.dns_malformed),
+            Parsed::Formerr { id, rd } => {
+                bump(&mut self.counters.dns_formerr);
+                self.send_dns(udp.src_port, &dns::build_formerr(id, rd));
+            }
+            Parsed::Query(query) => match dns::plan(&query) {
+                Plan::Immediate(response, kind) => {
+                    bump(&mut self.counters.dns_queries);
+                    self.count_dns_reply(kind);
+                    self.send_dns(udp.src_port, &response);
+                }
+                Plan::Resolve(name) => match self.dns.submit(query, name, udp.src_port, now) {
+                    Ok(()) => bump(&mut self.counters.dns_queries),
+                    Err(SubmitError::Busy) => bump(&mut self.counters.dns_dropped_busy),
+                    Err(SubmitError::NoWorker) => bump(&mut self.counters.drop_host_resource),
+                },
+            },
+        }
+    }
+
+    /// Delivers the DNS answers that are ready: finished lookups and queries that timed out.
+    fn poll_dns(&mut self, now: Instant) {
+        for done in self.dns.poll(now) {
+            self.count_dns_reply(done.kind);
+            self.send_dns(done.dst_port, &done.response);
+        }
+    }
+
+    fn count_dns_reply(&mut self, kind: dns::ReplyKind) {
+        match kind {
+            dns::ReplyKind::NxDomain => bump(&mut self.counters.dns_nxdomain),
+            dns::ReplyKind::ServFail => bump(&mut self.counters.dns_servfail),
+            dns::ReplyKind::Plain | dns::ReplyKind::Formerr => {}
+        }
+    }
+
+    fn send_dns(&mut self, guest_port: u16, response: &[u8]) {
+        let mac = self.policy.guest_mac();
+        self.send_udp(mac, (DNS_IP, DNS_PORT), (GUEST_IP, guest_port), response);
+    }
+
+    /// Builds a UDP datagram for the guest and puts it into the L3 queue. Returns whether it was queued.
+    fn send_udp(
+        &mut self,
+        dst_mac: Mac,
+        (src_ip, src_port): (std::net::Ipv4Addr, u16),
+        (dst_ip, dst_port): (std::net::Ipv4Addr, u16),
+        data: &[u8],
+    ) -> bool {
+        let mut out = [0u8; NET_MAX_FRAME];
+        let id = self.ip_id;
+        self.ip_id = self.ip_id.wrapping_add(1);
+        match build_udp_ipv4_frame(
+            dst_mac, src_ip, dst_ip, src_port, dst_port, id, data, &mut out,
+        ) {
+            Some(len) => self.enqueue_for_guest(&out[..len]),
+            None => {
+                bump(&mut self.counters.drop_oversize_reply);
+                false
+            }
         }
     }
 
@@ -179,11 +331,16 @@ impl NetBackend for NatBackend {
 
     fn reset(&mut self) {
         self.flows.clear();
+        self.dns.reset();
         self.tx_queue.clear();
         self.rx_queue.clear();
         bump(&mut self.counters.resets);
     }
 }
 
+#[cfg(test)]
+mod dhcp_tests;
+#[cfg(test)]
+mod dns_tests;
 #[cfg(test)]
 mod tests;
