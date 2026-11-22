@@ -6,6 +6,8 @@ mod commands;
 mod contexts;
 mod controller;
 mod device;
+mod hid;
+mod hid_descriptors;
 mod ports;
 mod regs;
 mod ring;
@@ -16,9 +18,11 @@ mod transfers;
 mod trb;
 
 pub use controller::{
-    HseCause, InvalidPort, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
+    HidDevices, HseCause, InvalidPort, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction,
+    XhciServiceReport,
 };
-pub use device::{ControlResponse, InterruptStatus, UsbDevice};
+pub use device::{ControlResponse, InputEvent, InputQueueFull, InterruptStatus, UsbDevice};
+pub use hid::HidHandle;
 
 /// BAR0 of PCI function 00:05.0: 64-bit non-prefetchable memory, 16 KiB, programmed at board
 /// creation (contract section 2).

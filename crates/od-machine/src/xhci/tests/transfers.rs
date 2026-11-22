@@ -12,21 +12,21 @@ use crate::{ControlResponse, InterruptStatus, UsbDevice};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-const IOC: u32 = 1 << 5;
-const ISP: u32 = 1 << 2;
-const CH: u32 = 1 << 4;
-const BEI: u32 = 1 << 9;
-const IDT: u32 = 1 << 6;
+pub(super) const IOC: u32 = 1 << 5;
+pub(super) const ISP: u32 = 1 << 2;
+pub(super) const CH: u32 = 1 << 4;
+pub(super) const BEI: u32 = 1 << 9;
+pub(super) const IDT: u32 = 1 << 6;
 
-const EP0_RING: u64 = 0x7_0000;
-const INTERRUPT_RING: u64 = 0x7_1000;
-const BUF: u64 = 0x9_0000;
-const BUF2: u64 = 0xA_0000;
-const BIG_RING: u64 = 0xB_0000;
-const INPUT: u64 = 0x5_0000;
-const OUTPUT_BASE: u64 = 0x6_0000;
-const EP0: u32 = 1;
-const EP3: u32 = 3;
+pub(super) const EP0_RING: u64 = 0x7_0000;
+pub(super) const INTERRUPT_RING: u64 = 0x7_1000;
+pub(super) const BUF: u64 = 0x9_0000;
+pub(super) const BUF2: u64 = 0xA_0000;
+pub(super) const BIG_RING: u64 = 0xB_0000;
+pub(super) const INPUT: u64 = 0x5_0000;
+pub(super) const OUTPUT_BASE: u64 = 0x6_0000;
+pub(super) const EP0: u32 = 1;
+pub(super) const EP3: u32 = 3;
 
 #[derive(Default)]
 struct Script {
@@ -42,7 +42,7 @@ struct Script {
 
 /// A device whose answers the test scripts; clones share the script.
 #[derive(Clone, Default)]
-struct TestDevice(Arc<Mutex<Script>>);
+pub(super) struct TestDevice(Arc<Mutex<Script>>);
 
 impl TestDevice {
     fn with<R>(&self, f: impl FnOnce(&mut Script) -> R) -> R {
@@ -94,15 +94,15 @@ impl UsbDevice for TestDevice {
     }
 }
 
-fn output(slot: u32) -> u64 {
+pub(super) fn output(slot: u32) -> u64 {
     OUTPUT_BASE + u64::from(slot) * 0x1000
 }
 
-fn slot_ctx(port: u32, entries: u32) -> [u32; 8] {
+pub(super) fn slot_ctx(port: u32, entries: u32) -> [u32; 8] {
     [entries << 27, port << 16, 0, 0, 0, 0, 0, 0]
 }
 
-fn ep_ctx(kind: u32, mps: u32, dequeue: u64, interval: u32) -> [u32; 8] {
+pub(super) fn ep_ctx(kind: u32, mps: u32, dequeue: u64, interval: u32) -> [u32; 8] {
     let raw = dequeue | 1;
     [
         interval << 16,
@@ -116,7 +116,7 @@ fn ep_ctx(kind: u32, mps: u32, dequeue: u64, interval: u32) -> [u32; 8] {
     ]
 }
 
-fn pointer_command(kind: u32, pointer: u64, slot: u32, flags: u32) -> [u32; 4] {
+pub(super) fn pointer_command(kind: u32, pointer: u64, slot: u32, flags: u32) -> [u32; 4] {
     [
         pointer as u32,
         (pointer >> 32) as u32,
@@ -125,11 +125,11 @@ fn pointer_command(kind: u32, pointer: u64, slot: u32, flags: u32) -> [u32; 4] {
     ]
 }
 
-fn endpoint_command(kind: u32, slot: u32, dci: u32) -> [u32; 4] {
+pub(super) fn endpoint_command(kind: u32, slot: u32, dci: u32) -> [u32; 4] {
     [0, 0, 0, (slot << 24) | (dci << 16) | (kind << 10)]
 }
 
-fn set_dequeue_command(slot: u32, dci: u32, pointer: u64) -> [u32; 4] {
+pub(super) fn set_dequeue_command(slot: u32, dci: u32, pointer: u64) -> [u32; 4] {
     [
         (pointer | 1) as u32,
         ((pointer | 1) >> 32) as u32,
@@ -140,7 +140,7 @@ fn set_dequeue_command(slot: u32, dci: u32, pointer: u64) -> [u32; 4] {
 
 // ---- TRB builders (cycle bit 1)
 
-fn setup_trb(
+pub(super) fn setup_trb(
     request_type: u8,
     request: u8,
     value: u16,
@@ -157,7 +157,7 @@ fn setup_trb(
     ]
 }
 
-fn data_trb(buffer: u64, length: u32, dir_in: bool, flags: u32) -> [u32; 4] {
+pub(super) fn data_trb(buffer: u64, length: u32, dir_in: bool, flags: u32) -> [u32; 4] {
     [
         buffer as u32,
         (buffer >> 32) as u32,
@@ -166,7 +166,7 @@ fn data_trb(buffer: u64, length: u32, dir_in: bool, flags: u32) -> [u32; 4] {
     ]
 }
 
-fn normal_trb(buffer: u64, length: u32, flags: u32) -> [u32; 4] {
+pub(super) fn normal_trb(buffer: u64, length: u32, flags: u32) -> [u32; 4] {
     [
         buffer as u32,
         (buffer >> 32) as u32,
@@ -175,38 +175,38 @@ fn normal_trb(buffer: u64, length: u32, flags: u32) -> [u32; 4] {
     ]
 }
 
-fn status_trb(dir_in: bool, flags: u32) -> [u32; 4] {
+pub(super) fn status_trb(dir_in: bool, flags: u32) -> [u32; 4] {
     [0, 0, 0, (4 << 10) | (u32::from(dir_in) << 16) | flags | 1]
 }
 
 /// GET_DESCRIPTOR(device) of `length` bytes: setup (TRT IN).
-fn get_descriptor(length: u16, flags: u32) -> [u32; 4] {
+pub(super) fn get_descriptor(length: u16, flags: u32) -> [u32; 4] {
     setup_trb(0x80, 6, 0x0100, 0, length, 3, flags)
 }
 
-fn set_configuration(flags: u32) -> [u32; 4] {
+pub(super) fn set_configuration(flags: u32) -> [u32; 4] {
     setup_trb(0x00, 9, 1, 0, 0, 0, flags)
 }
 
-struct Fixture {
-    rig: Rig,
-    device: TestDevice,
-    slot: u32,
+pub(super) struct Fixture {
+    pub(super) rig: Rig,
+    pub(super) device: TestDevice,
+    pub(super) slot: u32,
 }
 
 impl Rig {
-    fn put_ring(&mut self, base: u64, trbs: &[[u32; 4]]) {
+    pub(super) fn put_ring(&mut self, base: u64, trbs: &[[u32; 4]]) {
         for (index, trb) in trbs.iter().enumerate() {
             self.put_trb(base + 16 * index as u64, *trb);
         }
     }
 
-    fn ring_endpoint(&mut self, slot: u32, dci: u32) {
+    pub(super) fn ring_endpoint(&mut self, slot: u32, dci: u32) {
         self.set_dword(doorbell(u64::from(slot)), dci);
     }
 
     /// Transfer Events and nothing else, in ring order; ERDP follows.
-    fn transfer_events(&mut self) -> Vec<Event> {
+    pub(super) fn transfer_events(&mut self) -> Vec<Event> {
         let events = self.events();
         assert!(
             events.iter().all(|e| e.kind == TRB_TYPE_TRANSFER_EVENT),
@@ -215,7 +215,7 @@ impl Rig {
         events
     }
 
-    fn out_ep_context(&mut self, slot: u32, dci: u32) -> [u32; 8] {
+    pub(super) fn out_ep_context(&mut self, slot: u32, dci: u32) -> [u32; 8] {
         let raw = self.mem_read(output(slot) + 32 * u64::from(dci), 32);
         let mut context = [0u32; 8];
         for (dword, chunk) in context.iter_mut().zip(raw.chunks_exact(4)) {
@@ -225,19 +225,19 @@ impl Rig {
     }
 
     /// Stop Endpoint: both of its events are consumed.
-    fn stop_endpoint(&mut self, slot: u32, dci: u32) {
+    pub(super) fn stop_endpoint(&mut self, slot: u32, dci: u32) {
         self.push_command(endpoint_command(TRB_TYPE_STOP_ENDPOINT, slot, dci));
         self.ring_command_doorbell();
         self.service();
         assert_eq!(self.events().len(), 2);
     }
 
-    fn command_ok(&mut self, trb: [u32; 4]) {
+    pub(super) fn command_ok(&mut self, trb: [u32; 4]) {
         assert_eq!(self.command(trb).code, CC_SUCCESS);
     }
 }
 
-fn write_input(rig: &mut Rig, add: u32, slot: [u32; 8], ep0: [u32; 8], ep3: [u32; 8]) {
+pub(super) fn write_input(rig: &mut Rig, add: u32, slot: [u32; 8], ep0: [u32; 8], ep3: [u32; 8]) {
     let mut put = |address: u64, context: [u32; 8]| {
         let mut raw = Vec::new();
         for dword in context {
@@ -253,16 +253,26 @@ fn write_input(rig: &mut Rig, add: u32, slot: [u32; 8], ep0: [u32; 8], ep3: [u32
 
 /// A running controller with a scripted device on `port`, the port reset, a slot Addressed
 /// (BSR = 0) whose EP0 ring is at [`EP0_RING`].
-fn addressed(port: u32) -> Fixture {
+pub(super) fn addressed(port: u32) -> Fixture {
     addressed_with_ring(port, EP0_RING)
 }
 
-fn addressed_with_ring(port: u32, ep0_ring: u64) -> Fixture {
+pub(super) fn addressed_with_ring(port: u32, ep0_ring: u64) -> Fixture {
+    addressed_with(port, ep0_ring, |xhci, device| {
+        xhci.attach_device(port as usize, Box::new(device.clone()))
+            .unwrap();
+    })
+}
+
+/// Like [`addressed`]; `attach` puts the device behind the port (the scripted one is passed in).
+pub(super) fn addressed_with(
+    port: u32,
+    ep0_ring: u64,
+    attach: impl FnOnce(&XhciHandle, &TestDevice),
+) -> Fixture {
     let mut rig = running_rig();
     let device = TestDevice::default();
-    rig.xhci
-        .attach_device(port as usize, Box::new(device.clone()))
-        .unwrap();
+    attach(&rig.xhci, &device);
     rig.set_dword(portsc(u64::from(port)), PORTSC_PR);
     rig.advance_ns(XHCI_USB_PORT_RESET_NS);
     rig.set_dword(portsc(u64::from(port)), PORTSC_PRC);
@@ -283,8 +293,11 @@ fn addressed_with_ring(port: u32, ep0_ring: u64) -> Fixture {
 }
 
 /// An Addressed slot with the interrupt endpoint configured (ring at [`INTERRUPT_RING`]).
-fn configured(port: u32) -> Fixture {
-    let mut f = addressed(port);
+pub(super) fn configured(port: u32) -> Fixture {
+    add_interrupt_endpoint(addressed(port), port)
+}
+
+pub(super) fn add_interrupt_endpoint(mut f: Fixture, port: u32) -> Fixture {
     let mps = if port == 1 { 8 } else { 6 };
     write_input(
         &mut f.rig,
@@ -305,10 +318,10 @@ fn configured(port: u32) -> Fixture {
 use crate::xhci::trb::{TRB_TYPE_ADDRESS_DEVICE, TRB_TYPE_CONFIGURE_ENDPOINT};
 
 impl Fixture {
-    fn state(&self, dci: u32) -> EndpointState {
+    pub(super) fn state(&self, dci: u32) -> EndpointState {
         self.rig.xhci.endpoint_state(self.slot as usize, dci)
     }
-    fn ring(&mut self, dci: u32) {
+    pub(super) fn ring(&mut self, dci: u32) {
         self.rig.ring_endpoint(self.slot, dci);
         self.rig.service();
     }

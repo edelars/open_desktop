@@ -25,6 +25,21 @@ pub enum InterruptStatus {
     Stall,
 }
 
+/// An event from the host's input devices (contract sections 10.3, 10.4 and 16). Keyboard keys are
+/// USB HID Usage IDs of the Keyboard/Keypad page (0x07), not PS/2 scan codes; the pointer is
+/// absolute, 0..=32767 on both axes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputEvent {
+    Key { usage: u8, pressed: bool },
+    PointerAbs { x: u16, y: u16 },
+    Buttons { mask: u8 },
+    Wheel { delta: i8 },
+}
+
+/// The bounded input queue of the machine is full (contract section 16).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputQueueFull;
+
 /// A device on a root port. Every method is called by the controller only; none may block.
 pub trait UsbDevice: Send {
     /// The USB address the device answers to: 0 in the Default state.
@@ -36,6 +51,27 @@ pub trait UsbDevice: Send {
     /// Port reset, HCRST or Reset Device: back to the Default state (address 0, not configured,
     /// halt and queued reports cleared).
     fn reset(&mut self);
+
+    /// HCRST: like [`Self::reset`], and the device also forgets the input it holds (keys up,
+    /// buttons released).
+    fn host_controller_reset(&mut self) {
+        self.reset();
+    }
+
+    /// The Interrupt IN endpoint of the device is Running or not (the controller tells before it
+    /// hands over input). A device keeps no reports for an endpoint that is not running.
+    fn set_interrupt_endpoint_active(&mut self, _active: bool) {}
+
+    /// An input event of the host; devices ignore the events that are not theirs.
+    fn input(&mut self, _event: &InputEvent) {}
+
+    /// Whether the device can take this event now. A device that queues reports for events
+    /// that are its own says no when that queue is full, so that the machine's input queue
+    /// holds the events instead of the device merging them (contract section 10.5 is for a
+    /// guest that does not read at all).
+    fn input_ready(&self, _event: &InputEvent) -> bool {
+        true
+    }
 
     /// A control transfer: the 8 setup bytes (bmRequestType, bRequest, wValue, wIndex, wLength)
     /// and the OUT data of the data stage (empty without one). SET_ADDRESS never arrives here.

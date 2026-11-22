@@ -10,7 +10,9 @@
 //! virtual clock handed in at construction: port reset (50 ms) and `MFINDEX`.
 
 use super::commands::{self, CommandEnv};
-use super::device::{InterruptStatus, NullDevice, UsbDevice};
+use super::device::{InputEvent, InputQueueFull, InterruptStatus, NullDevice, UsbDevice};
+use super::hid::{HidDevice, HidHandle};
+use super::hid_descriptors::HidKind;
 use super::ports::Port;
 use super::regs::{self, MAX_PORTS, MAX_SLOTS};
 use super::ring::{EventRing, MAX_SEGMENT_TRBS, MIN_SEGMENT_TRBS};
@@ -31,7 +33,13 @@ use crate::{
     AccessWidth, BusDevice, DeviceAccess, DeviceError, GuestPhysicalRange, IoSpace, MachineBus,
     VirtualClockHandle,
 };
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+
+/// Input events the machine queues for the controller (contract section 16), and the ones one
+/// `service` call hands to the devices (contract section 3).
+const INPUT_QUEUE_CAPACITY: usize = 256;
+const INPUT_EVENTS_PER_SERVICE: usize = 64;
 
 /// At most this many command TRBs (Link TRBs included) are consumed per `service` call.
 const COMMAND_BUDGET: u32 = 256;
@@ -156,6 +164,10 @@ pub(crate) struct XhciState {
     events_written: u64,
     hse_cause: Option<HseCause>,
     devices: Devices,
+    /// Input events of the host waiting for `service` (bounded, contract section 16).
+    input: VecDeque<InputEvent>,
+    /// Last Interrupt IN endpoint state told to each device.
+    endpoint_active: [bool; MAX_PORTS],
 }
 
 /// The devices behind the root ports (they outlive HCRST; HCRST resets them).
@@ -210,6 +222,8 @@ impl XhciState {
             devices: Devices(std::array::from_fn(|_| {
                 Box::new(NullDevice::default()) as Box<dyn UsbDevice>
             })),
+            input: VecDeque::new(),
+            endpoint_active: [false; MAX_PORTS],
         }
     }
 
@@ -502,7 +516,11 @@ impl XhciState {
             // HCRST resets the whole controller state; the rest of the write is moot. The PCI
             // configuration, the configuration of the model and the diagnostics stay.
             self.hw = Hw::new();
-            self.devices.0.iter_mut().for_each(|device| device.reset());
+            self.devices
+                .0
+                .iter_mut()
+                .for_each(|device| device.host_controller_reset());
+            self.input.clear();
             return;
         }
         let hw = &mut self.hw;
@@ -759,6 +777,61 @@ impl XhciState {
         }
     }
 
+    /// Tells each device whether its Interrupt IN endpoint is Running (a Configured slot on its
+    /// port), then hands over up to [`INPUT_EVENTS_PER_SERVICE`] queued input events.
+    fn dispatch_input(&mut self) {
+        self.sync_endpoint_activity();
+        let mut delivered = 0;
+        let mut index = 0;
+        // Events a device cannot take yet stay queued (in order per device); the others go on.
+        while delivered < INPUT_EVENTS_PER_SERVICE && index < self.input.len() {
+            let event = self.input[index];
+            if !self
+                .devices
+                .0
+                .iter()
+                .all(|device| device.input_ready(&event))
+            {
+                index += 1;
+                continue;
+            }
+            self.input.remove(index);
+            for device in &mut self.devices.0 {
+                device.input(&event);
+            }
+            delivered += 1;
+        }
+    }
+
+    /// Some queued input event can be handed over now.
+    fn input_deliverable(&self) -> bool {
+        self.input.iter().any(|event| {
+            self.devices
+                .0
+                .iter()
+                .all(|device| device.input_ready(event))
+        })
+    }
+
+    /// Tells each device whether its Interrupt IN endpoint is in use: a Configured slot on its
+    /// port with the endpoint Running (or Halted: a report waits for the recovery).
+    fn sync_endpoint_activity(&mut self) {
+        for port in 0..MAX_PORTS {
+            let active = self.hw.slots.iter().any(|slot| {
+                usize::from(slot.port) == port + 1
+                    && slot.state == SlotState::Configured
+                    && matches!(
+                        slot.interrupt_in.state,
+                        EndpointState::Running | EndpointState::Halted
+                    )
+            });
+            if active != self.endpoint_active[port] {
+                self.endpoint_active[port] = active;
+                self.devices.0[port].set_interrupt_endpoint_active(active);
+            }
+        }
+    }
+
     fn work_pending(&self) -> bool {
         let hw = &self.hw;
         if hw.hse {
@@ -806,6 +879,8 @@ impl XhciState {
         if !self.hw.hse {
             self.mirror_endpoint_states(dma);
         }
+        // An endpoint a command stopped must not keep reports until the next call.
+        self.sync_endpoint_activity();
     }
 
     /// Executes the transfer rings of every endpoint with pending work.
@@ -1038,6 +1113,13 @@ impl XhciDevice {
     }
 }
 
+/// Host-side handles of the two HID devices.
+#[derive(Clone, Debug)]
+pub struct HidDevices {
+    pub keyboard: HidHandle,
+    pub pointer: HidHandle,
+}
+
 /// A port number outside `1..=2`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidPort(pub usize);
@@ -1054,7 +1136,36 @@ impl XhciHandle {
             return Err(InvalidPort(port));
         }
         device.reset();
-        lock(&self.state).devices.0[port - 1] = device;
+        let mut state = lock(&self.state);
+        state.devices.0[port - 1] = device;
+        state.endpoint_active[port - 1] = false;
+        Ok(())
+    }
+
+    /// Attaches the keyboard (port 1) and the absolute pointer (port 2); returns their host-side
+    /// handles (LED state, counters).
+    pub fn attach_hid_devices(&self) -> HidDevices {
+        let (keyboard, keyboard_handle) = HidDevice::new(HidKind::Keyboard);
+        let (pointer, pointer_handle) = HidDevice::new(HidKind::Pointer);
+        let mut state = lock(&self.state);
+        state.devices.0[0] = Box::new(keyboard);
+        state.devices.0[1] = Box::new(pointer);
+        state.endpoint_active = [false; MAX_PORTS];
+        HidDevices {
+            keyboard: keyboard_handle,
+            pointer: pointer_handle,
+        }
+    }
+
+    /// Queues an input event for the devices (USB HID Usage IDs, absolute pointer). The queue
+    /// holds 256 events; a full queue refuses the event, nothing is lost silently. `service`
+    /// hands up to 64 events per call to the devices.
+    pub fn push_input(&self, event: InputEvent) -> Result<(), InputQueueFull> {
+        let mut state = lock(&self.state);
+        if state.input.len() >= INPUT_QUEUE_CAPACITY {
+            return Err(InputQueueFull);
+        }
+        state.input.push_back(event);
         Ok(())
     }
 
@@ -1072,7 +1183,7 @@ impl XhciHandle {
     pub fn service_pending(&self) -> bool {
         let mut state = lock(&self.state);
         state.poll_ports();
-        state.dma_enabled() && state.work_pending()
+        state.input_deliverable() || state.dma_enabled() && state.work_pending()
     }
 
     /// Doorbells the controller ignored (halted, slot not enabled, DCI not 1 or 3, stream id,
@@ -1102,6 +1213,8 @@ impl XhciHandle {
     ) -> XhciServiceReport {
         let mut state = lock(&self.state);
         state.poll_ports();
+        // Input is state of the devices, not DMA: it is handed over without Command.BME.
+        state.dispatch_input();
         if !state.dma_enabled() {
             return XhciServiceReport::default();
         }
