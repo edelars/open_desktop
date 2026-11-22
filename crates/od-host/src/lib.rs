@@ -28,6 +28,8 @@ pub mod process_clock;
 mod raw_file_tests;
 pub mod session;
 mod session_abi_v1;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod shared_folders;
 #[cfg(target_os = "macos")]
 mod storage_abi_v1;
 #[cfg(target_os = "macos")]
