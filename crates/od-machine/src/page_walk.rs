@@ -94,6 +94,12 @@ impl Long64ProbeConfig {
             });
         }
         validate_mask("EFER", efer, EFER_ALLOWED)?;
+        // CR0.PG = 1, CR4.PAE = 1 and neither LME nor LMA: PAE paging of a protected-mode vCPU. Named
+        // exactly, because it is a valid architectural state that the four-level path does not run, not
+        // a missing bit (S2-25n).
+        if efer & (EFER_LME | EFER_LMA) == 0 {
+            return Err(ProbeConfigError::PaeProtectedMode { cr0, cr4, efer });
+        }
         if efer & (EFER_LME | EFER_LMA) != EFER_LME | EFER_LMA {
             return Err(ProbeConfigError::RequiredBits {
                 register: "EFER",
@@ -187,6 +193,17 @@ pub enum ProbeConfigError {
     InvalidCr3 {
         value: u64,
         offending_bits: u64,
+    },
+    /// The state is PAE paging of a protected-mode vCPU (CR0.PG = 1, CR4.PAE = 1, EFER.LME = LMA = 0;
+    /// S2-25n). A valid state, but not one of the four-level Long64 probe, the host loop or the JIT
+    /// entries: they fetch, decode and execute 64-bit code over a four-level snapshot, and no
+    /// 32-bit protected-mode executor runs on the board's PAE adapter yet
+    /// ([`crate::PagedPaeMemoryAdapter`] serves the operands once one exists). Refused before any
+    /// fetch, walk, accessed bit or retirement.
+    PaeProtectedMode {
+        cr0: u64,
+        cr4: u64,
+        efer: u64,
     },
     /// The CPL requested by the CS selector RPL of the CPU state disagrees
     /// with the CPL of the translation-context key (S4-16f).
