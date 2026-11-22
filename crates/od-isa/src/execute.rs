@@ -47253,6 +47253,33 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
     }
+    // S2-32d: the bounded x87 forms of S2-32a/b/c (FSIN..FXTRACT, FBLD/FBSTP, FNSTENV/FNSAVE/FRSTOR) at CPL0
+    // of the set run on the x87 state of the FP member's cell, through the same bounded profile as the bare run.
+    if let Some(fp_cell) = fp_cpl0
+        && control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring0
+        && state.x87.is_none()
+        && cpl0_bounded_x87_form(&instruction.operation)
+    {
+        return step_cpl0_bounded_x87::<NO_PROFILES>(
+            state,
+            memory,
+            context,
+            rflags_defined,
+            ExecutionProfiles {
+                fp_cpl0: None,
+                ..profiles
+            },
+            StepRuntime {
+                // None of these is read by the x87 forms (the STI sequence exists only under the STI profile).
+                rdtsc_source: None,
+                sti_sequence: None,
+                exact_hlt_only,
+                stop_requested: &mut *stop_requested,
+            },
+            fp_cell,
+        );
+    }
     // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
@@ -72039,6 +72066,73 @@ fn step_mmx_operation(
         Operation::Emms => Ok(step_emms(state, opcode, next_rip)),
         _ => return None,
     })
+}
+
+/// S2-32d: the x87 forms of the bounded S2-32 slices that the CPL0 set connects: the ten transcendental forms
+/// of S2-32a (`D9 F0..FF`), FBLD/FBSTP of S2-32b and FNSTENV/FNSAVE/FRSTOR of S2-32c. Every other x87 form stays
+/// refused in the set (`state.x87` is `None` there).
+fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::F2xm1
+            | Operation::Fyl2x
+            | Operation::Fptan
+            | Operation::Fpatan
+            | Operation::Fxtract
+            | Operation::Fyl2xp1
+            | Operation::Fsincos
+            | Operation::Fscale
+            | Operation::Fsin
+            | Operation::Fcos
+            | Operation::FbldM80Rax
+            | Operation::FbstpM80Rax
+            | Operation::FnstenvRax
+            | Operation::FnsaveRax
+            | Operation::FrstorRax
+    )
+}
+
+/// S2-32d: one bounded x87 instruction at CPL0 of the set. The gates come first and are the ones of
+/// `FNINIT` in the set: CR0 must be modeled (else `Unsupported`), CR0.EM or CR0.TS raise `#NM` (Intel SDM Vol. 2A
+/// "Protected Mode Exceptions" of FSIN, FBLD, FNSTENV and FRSTOR; Vol. 3A 2.5); CR4.OSFXSR is not a gate of x87
+/// instructions. Then the x87 half of the FP member's cell is moved into `state.x87` for the length of the instruction
+/// and the bounded profile of the bare run executes it unchanged (its own admission, refusals and the global refusal of
+/// a represented FCS/FDS selector included: the set admits no FCS/FDS tracking), and the state is stored back with
+/// whatever the instruction left (a fault or a refusal leaves it as it was). `profiles` has no FP member, so the
+/// nested step does not return here.
+fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+    cell: &RefCell<GuestFpState>,
+) -> Result<StepOutcome, MemoryError> {
+    let Some(cr0) = state.cr0 else {
+        return Ok(StepOutcome::Unsupported { opcode: 0xd9 });
+    };
+    if cr0 & 0xc != 0 {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    state.x87 = Some(cell.borrow().x87.clone());
+    let outcome = step_configured_with_profile_mode::<NO_PROFILES>(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        profiles,
+        runtime,
+    );
+    cell.borrow_mut().x87 = state
+        .x87
+        .take()
+        .expect("the bounded x87 step keeps the x87 state");
+    outcome
 }
 
 /// S2-39: the MMX instructions of the CPL0 set. The x87 state of the FP member lives in its cell (the
