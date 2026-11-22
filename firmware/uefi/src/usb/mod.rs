@@ -383,9 +383,29 @@ pub fn toggles() -> Option<u8> {
     }
 }
 
+/// What [`set_toggles`] did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetToggles {
+    /// The lock bits are taken and the LED update is queued.
+    Done,
+    /// A driver call is on the stack (a nested call from a timer): nothing was changed; the
+    /// caller reports EFI_NOT_READY and may repeat the request.
+    Busy,
+    /// No keyboard.
+    Absent,
+}
+
+fn classify(access: Access<()>) -> SetToggles {
+    match access {
+        Access::Done(()) => SetToggles::Done,
+        Access::Busy => SetToggles::Busy,
+        Access::Absent => SetToggles::Absent,
+    }
+}
+
 /// SetState: takes the lock bits and queues the LED update (sent by the next [`service`]).
-pub fn set_toggles(state: u8) {
-    let _ = DRIVER.with(|driver| driver.decoder.set_toggles(state));
+pub fn set_toggles(state: u8) -> SetToggles {
+    classify(DRIVER.with(|driver| driver.decoder.set_toggles(state)))
 }
 
 /// Whether a USB keyboard is enumerated and not stopped.
@@ -418,6 +438,17 @@ mod tests {
             line(UsbError::new(Step::ConfigurationDescriptor, 0xffff_fffe)),
             "OD-FW xhci: enumeration failed step=configuration-descriptor detail=0xFFFFFFFE\r\n"
         );
+    }
+
+    #[test]
+    fn set_toggles_reports_a_busy_driver_instead_of_success() {
+        let cell = Exclusive::<u8>::empty();
+        assert_eq!(classify(cell.with(|_| ())), SetToggles::Absent);
+        cell.set(0);
+        assert_eq!(classify(cell.with(|_| ())), SetToggles::Done);
+        // A nested call, as from a console timer inside a transfer wait.
+        let nested = cell.with(|_| classify(cell.with(|_| ())));
+        assert_eq!(nested, Access::Done(SetToggles::Busy));
     }
 
     #[test]

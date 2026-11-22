@@ -272,10 +272,16 @@ impl BootKeyboard {
             let caps = self.toggles & toggle_state::CAPS_LOCK != 0;
             let num = self.toggles & toggle_state::NUM_LOCK != 0;
             if let Some(key) = Self::translate(usage, shift, control, caps, num) {
+                let mut shifts = shift_state_of(modifiers);
+                // UEFI 2.11 12.3.3 (as EDK2): Shift is already in a printable character, so the
+                // shift bits are not passed along with it; keys without a character keep them.
+                if (0x20..0x7f).contains(&key.unicode_char) || key.unicode_char >= 0xa0 {
+                    shifts &= !(shift_state::LEFT_SHIFT | shift_state::RIGHT_SHIFT);
+                }
                 let data = KeyData {
                     key,
                     state: KeyState {
-                        shift_state: shift_state_of(modifiers),
+                        shift_state: shifts,
                         toggle_state: toggle_state::VALID | self.toggles,
                     },
                 };
@@ -489,15 +495,40 @@ mod tests {
             &[USAGE_CAPS_LOCK, 0x05],
         ));
         let data = keyboard.pop().unwrap();
-        assert_eq!(
-            data.state.shift_state,
-            shift_state::VALID | shift_state::RIGHT_SHIFT | shift_state::LEFT_SHIFT
-        );
+        // Shift is applied (here Shift and CapsLock cancel out: 'b'): a printable character
+        // comes without the shift bits (UEFI 2.11 12.3.3).
+        assert_eq!(data.key.unicode_char, u16::from(b'b'));
+        assert_eq!(data.state.shift_state, shift_state::VALID);
         assert_eq!(
             data.state.toggle_state,
             toggle_state::VALID | toggle_state::CAPS_LOCK
         );
         assert_eq!(shift_state_of(0), shift_state::VALID);
+    }
+
+    #[test]
+    fn shift_bits_stay_with_keys_that_have_no_printable_character() {
+        let mut keyboard = BootKeyboard::new();
+        // Shift+1 -> '!' without shift bits; Shift+F1, Shift+Up and Shift+Enter keep them; the
+        // Ctrl+Shift+letter control code keeps both.
+        keyboard.process_report(&report(MOD_LEFT_SHIFT, &[0x1e, 0x3a, 0x52, 0x28]));
+        keyboard.process_report(&report(0, &[]));
+        keyboard.process_report(&report(MOD_LEFT_SHIFT | MOD_RIGHT_CTRL, &[0x04]));
+        let mut seen = Vec::new();
+        while let Some(data) = keyboard.pop() {
+            seen.push((data.key.unicode_char, data.key.scan_code, data.state.shift_state));
+        }
+        let shifted = shift_state::VALID | shift_state::LEFT_SHIFT;
+        assert_eq!(
+            seen,
+            [
+                (u16::from(b'!'), 0, shift_state::VALID),
+                (0, scan::F1, shifted),
+                (0, scan::UP, shifted),
+                (0x0d, 0, shifted),
+                (1, 0, shifted | shift_state::RIGHT_CONTROL),
+            ]
+        );
     }
 
     #[test]

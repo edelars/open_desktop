@@ -27,6 +27,8 @@ pub mod toggle_state {
     pub const NUM_LOCK: u8 = 0x02;
     pub const CAPS_LOCK: u8 = 0x04;
     pub const VALID: u8 = 0x80;
+    /// "The keystroke state is exposed" (partial keystrokes); this firmware does not provide it.
+    pub const KEY_STATE_EXPOSED: u8 = 0x40;
     /// The lock bits a caller may set with SetState.
     pub const LOCKS: u8 = SCROLL_LOCK | NUM_LOCK | CAPS_LOCK;
 }
@@ -139,6 +141,26 @@ impl KeyQueue {
     }
 }
 
+/// Why SetState refuses a request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetStateError {
+    /// No VALID bit: not a toggle state (as EDK2's USB keyboard, EFI_UNSUPPORTED).
+    NotValid,
+    /// KEY_STATE_EXPOSED asked for: partial keystrokes are not supported (EFI_UNSUPPORTED).
+    ExposedUnsupported,
+}
+
+/// The lock bits of a SetState request, or why it is refused.
+pub const fn locks_of_set_state(requested: u8) -> Result<u8, SetStateError> {
+    if requested & toggle_state::VALID == 0 {
+        return Err(SetStateError::NotValid);
+    }
+    if requested & toggle_state::KEY_STATE_EXPOSED != 0 {
+        return Err(SetStateError::ExposedUnsupported);
+    }
+    Ok(requested & toggle_state::LOCKS)
+}
+
 impl Default for KeyQueue {
     fn default() -> Self {
         Self::new()
@@ -190,6 +212,23 @@ mod tests {
         shared.take_from(&mut staging);
         assert_eq!(shared.pop(), Some(key(5)));
         assert_eq!(shared.len(), 4);
+    }
+
+    #[test]
+    fn set_state_accepts_only_valid_requests_without_exposed_state() {
+        use toggle_state::{CAPS_LOCK, KEY_STATE_EXPOSED, NUM_LOCK, SCROLL_LOCK, VALID};
+        assert_eq!(locks_of_set_state(VALID | CAPS_LOCK | NUM_LOCK), Ok(CAPS_LOCK | NUM_LOCK));
+        assert_eq!(locks_of_set_state(VALID), Ok(0));
+        assert_eq!(locks_of_set_state(CAPS_LOCK), Err(SetStateError::NotValid));
+        assert_eq!(locks_of_set_state(0), Err(SetStateError::NotValid));
+        assert_eq!(
+            locks_of_set_state(VALID | KEY_STATE_EXPOSED),
+            Err(SetStateError::ExposedUnsupported)
+        );
+        assert_eq!(
+            locks_of_set_state(VALID | KEY_STATE_EXPOSED | SCROLL_LOCK),
+            Err(SetStateError::ExposedUnsupported)
+        );
     }
 
     #[test]
