@@ -4,7 +4,7 @@
 
 **Задача:** [S11-30](../plans/STAGE_11.md#s11-30-adr-0008-и-контракт-сети)
 
-**Статус:** принят архитектурным ревью (Opus high); подтверждение владельца по стеку — ожидается.
+**Статус:** вариант (А) выбран Opus high 2026-11-22; ревью документа — ожидает (замечания первого ревью исправлены, повторная проверка не проводилась); подтверждение владельца по стеку — ожидается.
 
 **Связанные документы:** [контракт сети](../specs/NETWORK.md), [план этапа 11](../plans/STAGE_11.md), [виртуальная плата](../specs/VIRTUAL_BOARD.md), [политика зависимостей](../policies/DEPENDENCIES.md), [ADR-0001](ADR-0001-dependencies-and-boundaries.md), [ADR-0002](ADR-0002-general-purpose-libraries.md), [apps/AGENTS.md](../../apps/AGENTS.md), [карта проекта](../PROJECT_LAYOUT.md).
 
@@ -28,13 +28,13 @@ Backend NAT находится в `od-host` (Rust), в каталоге `crates/
 
 | Вариант | Результат | Причина |
 |---|---|---|
-| `vmnet.framework` | отклонён для версии 1 | API требует entitlement `com.apple.vm.networking`; Apple указывает, что он «ограничен разработчиками программного обеспечения виртуализации», и предлагает обращаться к контактному лицу Apple. Источник: [Apple Developer Documentation, com.apple.vm.networking](https://developer.apple.com/de/documentation/bundleresources/entitlements/com.apple.vm.networking) (через Context7, 2026-11-22; немецкая версия страницы). Получение entitlement от нас не зависит и в плане этапа 11 не предполагается ([план, §3, п. 7](../plans/STAGE_11.md)). Если entitlement будет получен, vmnet может стать вторым backend за тем же trait (кадры внутрь и наружу); этот вывод — гипотеза, не проверена. |
+| `vmnet.framework` | отклонён для версии 1 | API требует entitlement `com.apple.vm.networking`; Apple указывает, что он «ограничен разработчиками программного обеспечения виртуализации», и предлагает обращаться к контактному лицу Apple. Источник: [Apple Developer Documentation, com.apple.vm.networking](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.vm.networking) (прочитана через Context7 2026-11-22 в немецкой версии страницы; формулировка выше — перевод, ссылка дана на английскую версию, её текст не сверялся). Получение entitlement от нас не зависит и в плане этапа 11 не предполагается ([план, §3, п. 7](../plans/STAGE_11.md)). Если entitlement будет получен, vmnet может стать вторым backend за тем же trait (кадры внутрь и наружу); этот вывод — гипотеза, не проверена. |
 | Backend в VMHost на Swift | отклонён | вызов Swift на каждый пакет против [apps/AGENTS.md](../../apps/AGENTS.md) («Не вызывать Swift/UI/IPC на каждой гостевой инструкции…» и «модель устройства … размещать в соответствующем Rust-компоненте»); горячий путь пакетов принадлежит Rust. |
 | Backend в приложении (UI-процесс) | отклонён | приложение не владеет ресурсами VM ([ARCHITECTURE §3](../ARCHITECTURE.md)); пакеты не идут через control-протокол ([план, §3, п. 9](../plans/STAGE_11.md)). |
 
 ## Решение 2. Реализация трансляции и TCP/IP
 
-**Принят вариант (А): собственный стек в усечённом профиле** — Ethernet, ARP, IPv4, DHCP-сервер (один lease), DNS-пересылка через системный резолвер, UDP, ICMP echo, TCP. Профиль и числа — [NETWORK.md](../specs/NETWORK.md). Решение принято архитектурным анализом (Opus high, 2026-11-22), подтверждение владельца ожидается.
+**Принят вариант (А): собственный стек в усечённом профиле** — Ethernet, ARP, IPv4, DHCP-сервер (один lease), DNS-пересылка через системный резолвер, UDP, ICMP echo, TCP. Профиль и числа — [NETWORK.md](../specs/NETWORK.md). Решение выбрано архитектурным анализом (Opus high, 2026-11-22); ревью документа и подтверждение владельца ожидаются.
 
 **Запасной вариант (Б)** — библиотека общего назначения **только для TCP**, если сработают критерии ниже. Сейчас **ничего не добавляется** в `Cargo.toml` и `Cargo.lock`: пакет, версия, лицензия, features и транзитивные зависимости фиксируются по [политике зависимостей](../policies/DEPENDENCIES.md) в момент срабатывания критериев, а не заранее. Кандидат (`smoltcp`) назван как направление исследования; его применимость к проксированию соединений гостя (завершение TCP гостя на стороне backend) **в этой задаче не исследовалась**, лицензия и версия не проверялись. Dev-оракул (сравнение своего TCP с другой реализацией на одном трафике) — позже, при доступе к сети, и сам по себе не добавляет runtime-зависимость.
 
@@ -84,7 +84,7 @@ Backend NAT находится в `od-host` (Rust), в каталоге `crates/
 
 ## Вопросы владельцу
 
-1. **Стек.** Подтверждаете ли вариант (А) — собственный TCP/IP-профиль в `od-host` с запасным вариантом (Б) только для TCP по критериям К1–К5? Ответ владельца: **ожидается** (дата не получена). Задача S11-31a (trait, очереди, разбор кадров) от ответа не зависит; S11-31b–d до ответа не начинать ([план: «не начинать 31b–d без решения 2»](../plans/STAGE_11.md)).
+1. **Стек.** Подтверждаете ли вариант (А) — собственный TCP/IP-профиль в `od-host` с запасным вариантом (Б) только для TCP по критериям К1–К5? Ответ владельца: **ожидается** (дата не получена). S11-31a (trait, очереди, разбор кадров) технически от выбора стека не зависит, но по таблице зависимостей плана (S11-31a ← S11-30, куда входит подтверждение владельца) её раннее начало — исключение: только по решению Opus high, записанному в отчёте; S11-31b–d до ответа не начинать ([план: «не начинать 31b–d без решения 2»](../plans/STAGE_11.md)).
 2. **Политика назначения.** Разрешён ли гостю доступ к локальной сети и к не-loopback адресам самого host без межсетевого экрана (так записано в NETWORK.md, раздел 5, п. 6)? Альтернативы: запретить частные диапазоны host, ограничить портами. Ответа нет; значение по умолчанию — «разрешено».
 
 ## Не проверено в этой задаче
@@ -97,7 +97,7 @@ Backend NAT находится в `od-host` (Rust), в каталоге `crates/
 
 ## Источники
 
-- Apple Developer Documentation: [`com.apple.vm.networking`](https://developer.apple.com/de/documentation/bundleresources/entitlements/com.apple.vm.networking) (Context7, 2026-11-22).
+- Apple Developer Documentation: [`com.apple.vm.networking`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.vm.networking) (Context7, 2026-11-22; прочитана немецкая версия).
 - Исходный код `ping` в [apple-oss-distributions/network_cmds](https://github.com/apple-oss-distributions/network_cmds/blob/main/ping.tproj/ping.c): при `getuid() != 0` — `SOCK_DGRAM`/`IPPROTO_ICMP`, иначе `SOCK_RAW` (прочитан 2026-11-22; это исходник утилиты, не документация API).
 - [RFC 4787](https://www.rfc-editor.org/rfc/rfc4787), REQ-5: таймер соответствия UDP не менее двух минут. [RFC 5382](https://www.rfc-editor.org/rfc/rfc5382), REQ-5: установленное TCP-соединение не менее 2 ч 4 мин, переходное не менее 4 мин (обе цитаты проверены 2026-11-22).
 - [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) (частные адреса), [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131) и [RFC 2132](https://www.rfc-editor.org/rfc/rfc2132) (DHCP), [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035) (DNS), [RFC 6891](https://www.rfc-editor.org/rfc/rfc6891) (EDNS), [RFC 792](https://www.rfc-editor.org/rfc/rfc792) (ICMP), [RFC 826](https://www.rfc-editor.org/rfc/rfc826) (ARP), [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293) (TCP): назначение названо в тексте; полнотекстовая сверка каждого пункта в этой задаче не выполнялась.
