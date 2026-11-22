@@ -657,7 +657,7 @@ pub fn access_pae_ram(
 /// 4-level path), ROM, reserved ranges and holes are `OperandPhysical` errors.
 ///
 /// The physical address is not limited to 4 GiB: PAE entries carry 36 address bits (`MAXPHYADDR` of
-/// the profile, bits 51:36 are reserved) and the board's memory map decides what lies there, RAM,
+/// the profile; bits 62:36 are reserved, bit 63 is XD) and the board's memory map decides what lies there, RAM,
 /// MMIO or nothing (`OperandPhysical`, a model refusal and not a guest fault). The `od_isa`
 /// protected-mode model refuses a page above 4 GiB (`PhysicalBeyond4GiB`): it addresses its memory
 /// with 32 bits.

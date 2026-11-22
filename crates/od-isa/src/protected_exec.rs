@@ -322,6 +322,10 @@ pub enum ProtectedRefusal {
     DataUnreadable { eip: u32, linear: u32 },
     /// A data byte at `linear` of a store is not writable in memory (S2-25j): nothing was written.
     DataUnwritable { eip: u32, linear: u32 },
+    /// A store through a DS that is not a writable data segment (`W = 0` or a code segment): the
+    /// hardware raises `#GP(0)` (SDM Vol. 2B, MOV, Protected Mode Exceptions); refused before any
+    /// page walk, nothing changes.
+    DataSegmentReadOnly { eip: u32, access: u8 },
     /// A segment load was refused for `reason`.
     SegmentLoadRefused {
         eip: u32,
@@ -867,8 +871,8 @@ impl ProtectedCpu {
         Ok(u32::from_le_bytes(bytes))
     }
 
-    /// Writes the DWORD `value` at `DS:disp` (S2-25j): the operand must lie under the DS limit, every
-    /// byte is translated as a write and checked writable before the first byte is stored, so a
+    /// Writes the DWORD `value` at `DS:disp` (S2-25j): DS must be a writable data segment (refused
+    /// before any page walk otherwise), the operand must lie under the DS limit, every byte is translated as a write and checked writable before the first byte is stored, so a
     /// refused store leaves the memory unchanged. The accessed bits of the walks that completed stay
     /// in `touches` also when a later byte is refused; the dirty bit is kept only when the whole store
     /// is done (the hardware sets it with the write, a refused store does not dirty the page).
@@ -879,6 +883,12 @@ impl ProtectedCpu {
         value: u32,
         touches: &mut Vec<Touch>,
     ) -> Result<(), ProtectedRefusal> {
+        if self.ds.access & 0x08 != 0 || self.ds.access & 0x02 == 0 {
+            return Err(ProtectedRefusal::DataSegmentReadOnly {
+                eip: self.eip,
+                access: self.ds.access,
+            });
+        }
         if u64::from(disp) + 3 > u64::from(self.ds.limit) {
             return Err(ProtectedRefusal::DataBeyondLimit {
                 eip: self.eip,
