@@ -80,6 +80,12 @@ struct Shared {
 // only slots of its window (`tail` loaded with Acquire) and copies one out completely before the Release
 // store of `head` that hands the slot back. There is exactly one producer and one consumer
 // handle (neither is `Clone`, both methods take `&mut self`).
+//
+// Flush rule: `flush` never touches a slot or `head`. It publishes `flush_mark` (= the producer's
+// `tail`, stored with Release after the Release store of `tail`) and then bumps `flush_count` (Release).
+// Only the consumer applies it, at the start of a `fill`: it moves its own `head` forward to
+// `min(mark, tail)` (the clamp is defensive; an Acquire load of `mark` already implies `tail >= mark`)
+// and drops its partial block, so the "slots outside the window" invariant above is unchanged.
 unsafe impl Sync for Shared {}
 
 impl Shared {
@@ -159,7 +165,7 @@ impl AudioProducer {
     /// keeps running regardless, so the guest sees no difference.
     pub fn write_block(&mut self, block: &AudioBlock) -> WriteResult {
         let head = self.shared.head.load(Ordering::Acquire);
-        if self.tail - head >= RING_BLOCKS as u64 {
+        if self.tail.saturating_sub(head) >= RING_BLOCKS as u64 {
             self.shared.dropped_blocks.fetch_add(1, Ordering::Relaxed);
             return WriteResult::Dropped;
         }
@@ -179,7 +185,7 @@ impl AudioProducer {
     /// the producer never touches a slot the consumer may be reading. Until then a ring that was full
     /// still rejects new blocks as overrun; with a stopped consumer the flush takes effect when it restarts.
     pub fn flush(&mut self) {
-        self.shared.flush_mark.store(self.tail, Ordering::Relaxed);
+        self.shared.flush_mark.store(self.tail, Ordering::Release);
         self.shared.flush_count.fetch_add(1, Ordering::Release);
         self.shared.flushes.fetch_add(1, Ordering::Relaxed);
     }
@@ -222,7 +228,8 @@ impl AudioConsumer {
             return;
         }
         self.seen_flush = count;
-        let mark = self.shared.flush_mark.load(Ordering::Relaxed);
+        let mark = self.shared.flush_mark.load(Ordering::Acquire);
+        let mark = mark.min(self.shared.tail.load(Ordering::Acquire));
         if mark > self.head {
             self.head = mark;
             self.shared.head.store(mark, Ordering::Release);
@@ -233,7 +240,7 @@ impl AudioConsumer {
 
     fn load_block(&mut self) {
         let tail = self.shared.tail.load(Ordering::Acquire);
-        let queued = tail - self.head;
+        let queued = tail.saturating_sub(self.head);
         if !self.primed && queued >= PRIME_BLOCKS as u64 {
             self.primed = true;
         }
@@ -441,25 +448,27 @@ mod coreaudio {
         _flags: *mut u32,
         _timestamp: *const c_void,
         _bus: u32,
-        _frames: u32,
+        frames: u32,
         io_data: *mut AudioBufferList,
     ) -> OSStatus {
         if ref_con.is_null() || io_data.is_null() {
             return PARAM_ERR;
         }
-        // SAFETY: `io_data` is the list CoreAudio hands to the callback; the module asked for one
-        // interleaved buffer, and the first buffer is read through the prefix layout.
-        let (count, buffer) = unsafe {
-            (
-                (*io_data).number_buffers,
-                ptr::addr_of_mut!((*io_data).buffers[0]),
-            )
-        };
-        // SAFETY: `buffer` points into that list and is valid for the call.
-        let (data, bytes) = unsafe { ((*buffer).data, (*buffer).data_byte_size as usize) };
-        if count < 1 || data.is_null() || !(data as usize).is_multiple_of(align_of::<i16>()) {
+        // SAFETY: `io_data` is the list CoreAudio hands to the callback; only the count is read here.
+        if unsafe { (*io_data).number_buffers } < 1 {
             return PARAM_ERR;
         }
+        // SAFETY: the list has at least one buffer (checked above); the module asked for one interleaved
+        // buffer, and the first buffer is read through the prefix layout, valid for the call.
+        let (data, byte_size) = unsafe {
+            let buffer = ptr::addr_of_mut!((*io_data).buffers[0]);
+            ((*buffer).data, (*buffer).data_byte_size as usize)
+        };
+        if data.is_null() || !(data as usize).is_multiple_of(align_of::<i16>()) {
+            return PARAM_ERR;
+        }
+        // Never write more than the frames asked for, nor more than the buffer holds.
+        let bytes = byte_size.min(frames as usize * CHANNELS * size_of::<i16>());
         // SAFETY: `ref_con` is the `AudioConsumer` that `DeviceOutput` owns and frees only after the
         // unit has been stopped and disposed, so no callback runs after the free; `data` is a writable,
         // aligned buffer of `bytes` bytes owned by CoreAudio for this call.
@@ -850,6 +859,60 @@ mod tests {
         }
         writer.join().unwrap();
         assert_eq!(stats.snapshot().blocks_played, TOTAL as u64);
+    }
+
+    /// Parallel flushes and writes against a pulling consumer: no torn block, no reordering, bounded in
+    /// time. A flush may only drop blocks, never repeat or reorder them.
+    #[test]
+    fn concurrent_flushes_never_tear_or_reorder_blocks() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+        const TOTAL: i16 = 20_000;
+        let AudioRing {
+            mut producer,
+            mut consumer,
+            stats,
+        } = audio_ring();
+        let done = Arc::new(AtomicBool::new(false));
+        let writer_done = Arc::clone(&done);
+        let writer = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            for tag in 1..=TOTAL {
+                if Instant::now() > deadline {
+                    break;
+                }
+                if tag % 37 == 0 {
+                    producer.flush();
+                }
+                // A flushed full ring rejects until the consumer reacts; losing a block is allowed here.
+                if producer.write_block(&tagged(tag)) == WriteResult::Dropped {
+                    std::thread::yield_now();
+                }
+            }
+            writer_done.store(true, Ordering::Release);
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut last = 0;
+        let mut pulls_after_done = 0;
+        while pulls_after_done < RING_BLOCKS + 2 {
+            assert!(Instant::now() < deadline, "consumer starved");
+            if done.load(Ordering::Acquire) {
+                pulls_after_done += 1;
+            }
+            let block = pull_block(&mut consumer);
+            if block[0] == 0 {
+                assert!(block.iter().all(|s| *s == 0), "torn silence block");
+                std::thread::yield_now();
+                continue;
+            }
+            assert!(block.iter().all(|s| *s == block[0]), "torn block");
+            assert!(block[0] > last, "block repeated or reordered after a flush");
+            last = block[0];
+        }
+        writer.join().unwrap();
+        let s = stats.snapshot();
+        assert!(s.flushes > 0 && s.blocks_played > 0, "{s:?}");
+        assert!(s.blocks_played <= s.blocks_written);
     }
 
     /// Rising zero crossings of channel 0, with linear interpolation, over the whole signal.
