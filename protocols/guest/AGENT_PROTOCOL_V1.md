@@ -80,7 +80,7 @@ CRC-32 IEEE 802.3: многочлен `0x04C11DB7` в отражённой фо�
 
 ## 5. Операции
 
-**Общее правило ошибок.** Ошибка кадра (CRC верен, но тип, длина или reserved неверны, либо поле вне диапазона) — `ERROR` (раздел 8). Исключения: `CLIPBOARD_SET.text_len > 60 000` → `CLIPBOARD_ACK status 2`; `FILE_OFFER.total_size > 16 MiB` → `FILE_OFFER_REPLY status 2`; имя, нарушающее правила `name`, → `status 3`. Остальные поля вне диапазона — `ERROR invalid_payload`. Отказ операции (выключено, слишком велик, нет привилегии, занято, нет такой передачи) — `status` в ответе самой операции, не `ERROR`.
+**Общее правило ошибок.** Ошибка кадра (CRC верен, но тип, длина или reserved неверны, либо поле вне диапазона) — `ERROR` (раздел 8). Исключения: `CLIPBOARD_SET.text_len > 60 000` → `CLIPBOARD_ACK status 2`; `text` не UTF-8 или содержит NUL → `CLIPBOARD_ACK status 3`; `FILE_OFFER.total_size > 16 MiB` → `FILE_OFFER_REPLY status 2`; имя (`name_len` вне `1..255` или `name`, нарушающее правила) → `FILE_OFFER_REPLY status 3`. Остальные поля вне диапазона — `ERROR invalid_payload`. Отказ операции (выключено, слишком велик, нет привилегии, занято, нет такой передачи) — `status` в ответе самой операции, не `ERROR`.
 
 Во всех payload «reserved» — поля, которые отправитель MUST записывать нулями, а получатель MUST проверять: ненулевое значение — `ERROR invalid_payload`.
 
