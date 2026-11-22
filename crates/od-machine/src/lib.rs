@@ -60,6 +60,8 @@ mod parallel_run;
 #[cfg(test)]
 mod parallel_snapshot_tests;
 mod pci_ecam;
+mod pg32_fetch_view;
+mod pg32_operand_access;
 mod physical_memory;
 mod pic_8259;
 mod pio_step;
@@ -289,6 +291,10 @@ pub use page_walk::pae::{
     PaeAccessRequest, PaeConfigError, PaeOperandOperation, PaePageSize, PaeProbeConfig,
     PaeTranslation, access_pae_ram, load_pae_pdptes, translate_pae_ram,
     translate_pae_ram_read_only, translate_pae_ram_read_only_with_trace,
+};
+pub use page_walk::pg32::{
+    Pg32AccessRequest, Pg32PageSize, Pg32ProbeConfig, Pg32Translation, access_pg32_ram,
+    translate_pg32_ram, translate_pg32_ram_read_only, translate_pg32_ram_read_only_with_trace,
 };
 pub use page_walk::{
     AdBit, AdUpdate, EffectivePermissions, GuestLinearAddress, InstructionProbeOutcome,
