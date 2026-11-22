@@ -381,6 +381,11 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
     if unsafe { od_firmware::fs::simple_fs::install(system_pointer) } != Status::SUCCESS {
         stop(STOP_BOOT_SERVICES, 83);
     }
+    // S7-34 slice A: the USB keyboard, when the board has an xHCI function. Not connected to
+    // ConIn yet; a failure is reported on COM1 and does not stop the boot.
+    // SAFETY: Boot Services are initialized and the board's MMIO is identity mapped.
+    let usb = unsafe { od_firmware::usb::install(&handoff, system_pointer) };
+    com1_write(usb.line(&mut [0; 128]));
     let storage_boot = handoff.fv_app().is_none()
         && unsafe { od_firmware::bootmgr::storage_present(system_pointer) };
     if handoff.fv_app().is_none() && !storage_boot {

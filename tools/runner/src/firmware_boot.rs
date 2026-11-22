@@ -20,7 +20,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci] [--nvram-reboot-out <file>] \
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
@@ -45,6 +45,9 @@ struct Options {
     framebuffer_out: Option<String>,
     nvme_image: Option<String>,
     tpm: bool,
+    /// S7-34: the board gets the PCI ECAM window and the xHCI controller with the keyboard on
+    /// port 1 and the absolute pointer on port 2 (`--xhci`; XHCI_DEVICE.md).
+    xhci: bool,
     /// S7-26: boot, reset in process and boot again this many times (`--fv-app reboot`).
     reboot_cycles: Option<u64>,
     reboot_kind: PlatformResetKind,
@@ -223,6 +226,10 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     if options.nvme_image.is_some() {
         config.nvme = Some(Default::default());
+    }
+    if options.xhci {
+        config.pci_ecam = true;
+        config.xhci = Some(Default::default());
     }
     if let Some(path) = &options.nvram_in {
         let bytes = match read_nvram_snapshot(path) {
@@ -1075,6 +1082,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut framebuffer_out = None;
     let mut nvme_image = None;
     let mut tpm = false;
+    let mut xhci = false;
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
@@ -1085,6 +1093,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         let name = args[index].as_str();
         if name == "--tpm" && !tpm {
             tpm = true;
+            index += 1;
+            continue;
+        }
+        if name == "--xhci" && !xhci {
+            xhci = true;
             index += 1;
             continue;
         }
@@ -1165,6 +1178,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         index += 2;
     }
     let unified = cpu_loop == Some(true);
+    if unified && xhci {
+        return Err(
+            "--xhci is served by the firmware profile loop, not --cpu-loop unified".to_owned(),
+        );
+    }
     if unified {
         // The unified loop has no per-instruction RIP observer, and the reboot paths run the
         // firmware profile loop; refuse rather than run another loop or ignore the option.
@@ -1238,6 +1256,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         framebuffer_out,
         nvme_image,
         tpm,
+        xhci,
         reboot_cycles,
         reboot_kind,
         sample_rips,
