@@ -9,7 +9,7 @@ import ODHostABI
 // frame goes through the real `FrameTransportWriter.publishFrame(mode:read:)`, only the source of the pixels and the timing differ.
 //
 // DEBUG ONLY. The driver is compiled under `#if DEBUG` (a SwiftPM debug build, the one the smokes use); a release build has no
-// driver and `DisplayTestFault.isCompiledIn` is false, so `--display-test-fault` is a usage error there (exit status 2), like any
+// driver and `DisplayTestFault.isCompiledIn` is false, so `--display-test-fault` is a usage error there (exit status 1), like any
 // unknown flag. The shipping VMHost (`swift build -c release`, the application bundle) therefore cannot be driven into these states.
 //
 // Names (the value after the flag):
@@ -18,7 +18,8 @@ import ODHostABI
 //                 no FRAME is queued. The smoke kills the process (SIGKILL) at that point. Publication 1 is the first frame of the
 //                 connection (the UI has never shown a frame); publication 2 comes after a normal first frame (the UI shows it).
 //   flood:N       after the first frame, publishes N further synthetic frames in bursts of 500 per poll tick, whatever the reader does;
-//                 every 100th frame starts a new mode (alternating the device mode and its half size). Every pixel of a frame is
+//                 every 100th frame starts a new mode (alternating the device mode and its half size). The writer flushes after every
+//                 frame, so with a reader that does not read the socket buffer fills (EAGAIN, partial messages) and the queue must cope. Every pixel of a frame is
 //                 `[g, g >> 8, g >> 16, 0]` for its generation `g`, so a frame that mixes two generations is detectable.
 //   mode-change   after the first frame and 400 ms, queues MODE with the next `mode_change_count` (half size) without a frame, tries to
 //                 publish a frame of the replaced mode (the writer must refuse it, 6.3), waits 800 ms, then publishes the first frame
@@ -90,7 +91,7 @@ final class DisplayFaultDriver {
             try writer.flush(fd: fd) // MODE (and FRAME 1) are on the socket before the process stops
             try stallInsideSlotWrite(writer: writer, session: session)
         case let .flood(frames):
-            try flood(frames: frames, writer: writer, session: session, publishFromDevice: publishFromDevice)
+            try flood(frames: frames, writer: writer, session: session, fd: fd, publishFromDevice: publishFromDevice)
         case .modeChange:
             try modeChange(writer: writer, session: session, publishFromDevice: publishFromDevice)
         }
@@ -155,7 +156,7 @@ final class DisplayFaultDriver {
     // MARK: flood
 
     private func flood(
-        frames: Int, writer: FrameTransportWriter, session: OpaquePointer, publishFromDevice: () throws -> Void
+        frames: Int, writer: FrameTransportWriter, session: OpaquePointer, fd: Int32, publishFromDevice: () throws -> Void
     ) throws {
         if writer.lastPublishedGeneration == 0 {
             try publishFromDevice()
@@ -173,6 +174,7 @@ final class DisplayFaultDriver {
             let height = half ? device.height / 2 : device.height
             try publishSynthetic(writer, width: width, height: height, generation: generation, modeCount: firstModeCount + serial)
             floodPublished += 1
+            try writer.flush(fd: fd) // as the real loop would after each publication: a full socket shows as EAGAIN, not as one big batch
         }
         if floodPublished == frames {
             log("flood: \(frames) frames published, last generation \(writer.lastPublishedGeneration), mode_change_count \(writer.queuedMode)")

@@ -328,6 +328,7 @@ final class DisplayFailureXCTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(maxBuffered, 256, "the queue grew past its bound (11.5)")
         XCTAssertLessThanOrEqual(rig.queue.highWaterBytes, 256)
+        XCTAssertGreaterThan(rig.queue.sendWouldBlock, 0, "send never answered EAGAIN: the socket never filled")
         XCTAssertGreaterThan(rig.queue.supersededFrames, 0, "no overflow happened: the socket never filled")
         XCTAssertGreaterThan(rig.queue.supersededModes, 0)
         // Now the reader catches up; the state it ends in is the writer's latest.
@@ -343,6 +344,55 @@ final class DisplayFailureXCTests: XCTestCase {
         // Everything that was published and did not reach the reader is in the counters.
         XCTAssertGreaterThan(rig.queue.supersededFrames, Int(total) - 500)
         XCTAssertTrue(rig.queue.statistics.contains("superseded_frames=\(rig.queue.supersededFrames)"))
+    }
+
+    func testMessagesStayWholeAndInOrderWhenTheSocketFillsUp() throws {
+        // A socket with a tiny buffer, filled until EAGAIN, then freed a few bytes at a time: the stream the reader gets is whole
+        // messages in order (6.4). On this kernel `send` never took a message in parts (`partialSends` stays 0 here), so the
+        // partial-message path of the queue is NOT exercised by this test; it only has to keep the order if a kernel does that.
+        let sockets = socketPair()
+        defer { Darwin.close(sockets.host); Darwin.close(sockets.ui) }
+        var small: Int32 = 1_024
+        setsockopt(sockets.host, SOL_SOCKET, SO_SNDBUF, &small, socklen_t(MemoryLayout<Int32>.size))
+        precondition(fcntl(sockets.host, F_SETFL, fcntl(sockets.host, F_GETFL) | O_NONBLOCK) == 0)
+        var junk = 0
+        var one: UInt8 = 0
+        while send(sockets.host, &one, 1, 0) == 1 { junk += 1 }
+        XCTAssertEqual(errno, EAGAIN)
+        let queue = NotificationQueue()
+        var expected: [[UInt8]] = []
+        for generation in 1...200 {
+            let message = Array("ODFT".utf8) + [3, 0, 4, 0, 0, 0, 0, 0, 24, 0, 0, 0]
+                + withUnsafeBytes(of: UInt64(generation).littleEndian) { Array($0) } + [UInt8](repeating: 0, count: 16)
+            queue.queueFrame(screen: 0, message)
+            try queue.flush(fd: sockets.host)
+            // The reader frees a few bytes; remember the messages once they are on the wire.
+            var sink = [UInt8](repeating: 0, count: 7)
+            _ = recv(sockets.ui, &sink, 7, MSG_DONTWAIT)
+            expected.append(message)
+        }
+        XCTAssertGreaterThan(queue.sendWouldBlock, 0)
+        // Drain everything: after the junk bytes the stream is a sequence of whole messages whose generations only grow.
+        var stream: [UInt8] = []
+        var chunk = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            try queue.flush(fd: sockets.host)
+            let n = recv(sockets.ui, &chunk, chunk.count, MSG_DONTWAIT)
+            if n <= 0 { break }
+            stream += chunk[0..<n]
+        }
+        XCTAssertEqual(queue.bufferedBytes, 0)
+        guard let start = stream.firstRange(of: Array("ODFT".utf8))?.lowerBound else { return XCTFail("no message in the stream") }
+        // Junk bytes were zeros and were mostly consumed above; resynchronise on the first magic and check 40-byte frames.
+        var generations: [UInt64] = []
+        var offset = start
+        while offset + 40 <= stream.count, Array(stream[offset..<(offset + 4)]) == Array("ODFT".utf8) {
+            generations.append(stream[(offset + 16)..<(offset + 24)].enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64(8 * $1.offset) })
+            offset += 40
+        }
+        XCTAssertEqual(offset, stream.count, "the stream is not whole messages: \(stream.count - offset) bytes left over")
+        XCTAssertEqual(generations, generations.sorted())
+        XCTAssertEqual(generations.last, 200, "the newest FRAME was lost")
     }
 
     func testQueueCountersCountEveryReplacedNotification() {

@@ -115,13 +115,6 @@ def tag_pixels(generation: int, size: int) -> bytes:
 class UiModel:
     """The reader states of 7.2 that these scenarios need, with shown_once."""
 
-    LABEL = {
-        "NO_SIGNAL": "Нет сигнала",
-        "MODE_CHANGING": "Смена режима экрана",
-        "DISCONNECTED": "Нет сигнала: VMHost отключился",
-        "INCOMPATIBLE": "Несовместимая версия",
-    }
-
     def __init__(self) -> None:
         self.history = ["CONNECTING"]
         self.shown_once = False
@@ -223,11 +216,6 @@ def wait_text(read, text: str, timeout: float = 15.0) -> None:
     while text not in read():
         check(time.monotonic() < deadline, f"'{text}' did not appear in the log within {timeout} s")
         time.sleep(0.01)
-
-
-def exit_code(host: dts.Host) -> int:
-    check(host.status is not None or not alive(host), "VMHost still runs")
-    return os.waitstatus_to_exitcode(host.status)
 
 
 def messages_until_quiet(link: Link, quiet: float = 0.4, limit: float = 30.0) -> tuple[list, bool]:
@@ -643,7 +631,10 @@ def s5a_flood_with_a_silent_reader(ctx: Context) -> None:
         check(os.waitstatus_to_exitcode(host.status) == 0, f"VMHost status {host.status} after EOF")
         counters = parse_counters(host.stderr_text())
         published = last_generation  # generations 1..last_generation, one FRAME each
-        check(counters["superseded_frames"] > 0 and counters["superseded_modes"] >= 0, f"counters {counters}")
+        check(counters["superseded_frames"] > 0, f"counters {counters}")
+        # The socket really was full: send answered EAGAIN, and a message went out in parts (the partial-message path of 6.4).
+        check(counters["send_would_block"] > 0, f"the socket never filled (send_would_block = 0): the scenario does not overflow, {counters}")
+        # partial_sends is reported, not required: a Unix stream socket on this kernel accepted or refused whole 40 and 48 byte messages.
         check(len(frames) + counters["superseded_frames"] == published,
               f"{len(frames)} FRAME messages received + {counters['superseded_frames']} superseded != {published} published")
         check(0 < counters["high_water_bytes"] <= 256, f"queue high water {counters['high_water_bytes']} bytes (bound: 256)")
@@ -660,13 +651,15 @@ def s5b_flood_read_by_the_viewer(ctx: Context) -> None:
     check(run.end["state"] == "SHOWING" and int(run.end["generation"]) == FLOOD + 1, f"viewer-end {run.end}: expected the last generation {FLOOD + 1}")
     check(run.end["vmhost_status"] == "0", f"VMHost status {run.end['vmhost_status']}")
     counters = parse_counters(run.stderr)
-    check(counters["superseded_frames"] > 0 and 0 < counters["high_water_bytes"] <= 256, f"counters {counters}")
+    # A reader that keeps up may lose nothing (superseded 0 is fine); the queue must still stay inside its bound.
+    check(0 < counters["high_water_bytes"] <= 256, f"counters {counters}")
 
 
 def parse_counters(text: str) -> dict:
-    match = re.search(r"notification queue: superseded_frames=(\d+) superseded_modes=(\d+) superseded_cursors=(\d+) high_water_bytes=(\d+)", text)
+    names = ("superseded_frames", "superseded_modes", "superseded_cursors", "high_water_bytes", "send_would_block", "partial_sends")
+    match = re.search(r"notification queue: " + " ".join(f"{name}=(\\d+)" for name in names), text)
     check(match is not None, f"VMHost printed no queue counters: {text.strip()[-300:]}")
-    return dict(zip(("superseded_frames", "superseded_modes", "superseded_cursors", "high_water_bytes"), map(int, match.groups())))
+    return dict(zip(names, map(int, match.groups())))
 
 
 def rss_kib(pid: int) -> int:
@@ -692,7 +685,7 @@ def s6_second_ftruncate_is_refused(ctx: Context) -> None:
             else:
                 raise Failure(f"ftruncate({size}) of the received descriptor succeeded: the object can be cut under a mapped reader")
         check(os.fstat(link.fd).st_size == total, "the size of the object changed")
-        check(len(link.data_map[-GRANULE:]) == GRANULE and link.data_map[-1] is not None, "the last page is not readable")  # SIGBUS would end this process
+        check(len(link.data_map[-GRANULE:]) == GRANULE, "the last page is not readable")  # SIGBUS would end this process
     finally:
         if link:
             link.close()
@@ -724,11 +717,15 @@ def main() -> int:
     parser.add_argument("viewer", nargs="?", type=Path, default=DEFAULT_VIEWER)
     parser.add_argument("vmhost", nargs="?", type=Path, default=DEFAULT_VMHOST)
     args = parser.parse_args()
+    known = {name for name, _, _ in SCENARIOS}
+    selected = {item for item in args.only.split(",") if item}
+    if args.repeat < 1 or not selected <= known:
+        print(f"usage: --repeat must be at least 1; --only names are {sorted(known)}, got {sorted(selected - known)}", file=sys.stderr)
+        return 2
     for binary in (args.viewer, args.vmhost):
         if not binary.exists():
             print(f"missing {binary} (cargo build -p od-host --offline; cd apps && swift build)", file=sys.stderr)
             return 2
-    selected = {item for item in args.only.split(",") if item}
     blocked: list[str] = []
     failed = False
     for run_number in range(1, args.repeat + 1):

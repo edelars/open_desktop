@@ -293,6 +293,10 @@ final class NotificationQueue {
     private(set) var supersededCursors = 0
     /// The largest `bufferedBytes` seen after a `queue*` call; never above 256 (11.5).
     private(set) var highWaterBytes = 0
+    /// `send` answered EAGAIN: the socket buffer was full (the reader does not read). The proof that an overflow happened.
+    private(set) var sendWouldBlock = 0
+    /// `send` accepted only a part of a message: the rest stays in `partial` and goes first next time (6.4).
+    private(set) var partialSends = 0
 
     var isEmpty: Bool {
         partial.isEmpty && pendingMode.allSatisfy { $0 == nil } && pendingFrame.allSatisfy { $0 == nil }
@@ -337,7 +341,7 @@ final class NotificationQueue {
 
     /// One line for the log of the test-only display smoke (read by tests/system/display_failure_smoke.py).
     var statistics: String {
-        "superseded_frames=\(supersededFrames) superseded_modes=\(supersededModes) superseded_cursors=\(supersededCursors) high_water_bytes=\(highWaterBytes)"
+        "superseded_frames=\(supersededFrames) superseded_modes=\(supersededModes) superseded_cursors=\(supersededCursors) high_water_bytes=\(highWaterBytes) send_would_block=\(sendWouldBlock) partial_sends=\(partialSends)"
     }
 
     /// Sends as much as the non-blocking socket accepts, in the order of section 11.5.
@@ -365,12 +369,16 @@ final class NotificationQueue {
             }
             let n = partial.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, $0.count, 0) }
             if n > 0 {
+                if n < partial.count { partialSends += 1 }
                 partial.removeFirst(n)
                 continue
             }
             if n < 0 {
                 if errno == EINTR { continue }
-                if errno == EAGAIN || errno == EWOULDBLOCK { return }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    sendWouldBlock += 1
+                    return
+                }
             }
             throw FrameTransportError.channel("send failed errno \(errno)")
         }
