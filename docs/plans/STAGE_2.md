@@ -713,6 +713,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39l | Offline A/B/A/B interpreter replay against validated S2-39k evidence | Explicit-path opt-in only; existing independent comparator validates raw Linux evidence, then the interpreter profile is replayed A/B/A/B and compared only at protocol-defined bytes with E+5 progression. Focused checks passed; independent Sol/high review found no defects; ignored evidence is not a default-test dependency; physical acceptance and parent S2-39 remain open. [Protocol](../testing/S2_39L_FXSAVE64_REPLAY.md); [report](../reports/S2_39L_INTERPRETER_REPLAY.md) |
 | [ ] | S2-39m | SSE state of the CPL0 set in `LongModeState.sse` | The FP member loads the SSE half of its `GuestFpState` cell into `state.sse` for the run and stores it back at every exit; at CPL0 the general SSE core of S2-34/37/38/54/55 then runs in the set with the bare-run result, the CR0.EM/TS and CR4.OSFXSR gates and #XM/#UD; FXSAVE64/FXRSTOR64 use the same state; x87 stays in the cell. CPL3 general forms, narrow integer SSE2 forms, MMX forms, LDMXCSR/STMXCSR, the register-register forms of the raw 128-bit moves and MOVSS/MOVSD in every form stay refused (listed in the S2-39m block). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse) |
+| [ ] | S2-39n | MMX integer forms in the bare run and at CPL0 of the set | The two-operand MMX integer forms (PADD/PSUB incl. saturating, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PMULLW/PMULHW/PMADDWD, PUNPCK*, PACK*, PSLL/PSRL/PSRA by register or imm8), PSHUFW and MOVD/MOVQ mm<->GPR/m/mm run on the x87 data registers with the S2-33 gates and state effect; the CPL0 set moves the x87 half of the FP member's cell into the CPU state for one MMX instruction (also EMMS and the SSSE3 MMX forms). 18964 oracle cases, 18644 identical, 320 listed refusals. Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39n--mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
@@ -8490,6 +8491,42 @@ before the operand address checks are from memory, not checked against the PDF.
 Parent S2-39 remains open.
 
 See the [S2-39m result](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse).
+
+#### S2-39n. MMX integer forms in the bare run and at CPL0 of the set
+
+MMn is the low quadword of physical x87 data register Rn. The forms `NP 0F xx` are
+decoded as the fallback of `long_decode::decode` (new `Operation::MmxInt`,
+`MmxShiftImmediate`, `MmxMovd`, `MmxMovq`; lane arithmetic in the new
+`mmx_int.rs`) and executed by `step_mmx_*` in `execute.rs` on `state.x87`: PADDB/W/D,
+PADDSB/SW, PADDUSB/USW, PSUBB/W/D, PSUBSB/SW, PSUBUSB/USW, PAND, PANDN, POR, PXOR,
+PCMPEQB/W/D, PCMPGTB/W/D, PMULLW, PMULHW, PMADDWD, PUNPCKL/H BW/WD/DQ, PACKSSWB,
+PACKUSWB, PACKSSDW, PSLLW/D/Q, PSRLW/D/Q, PSRAW/D (count from MMs, m64 or imm8 via
+`0F 71/72/73`), PSHUFW, MOVD/MOVQ `0F 6E`/`7E` (REX.W selects the quadword), MOVQ `0F 6F`/`7F`.
+Every form takes the S2-33 gates (CR0.EM `#UD`, CR0.TS `#NM`, a pending unmasked x87
+exception `#MF`; CR4.OSFXSR is not a condition), reads a memory source or writes a memory
+destination before any state change (8 bytes, 4 for MOVD, no alignment rule;
+`#GP(0)`/`#SS(0)` for non-canonical addresses; CPL3 with AC armed and a misaligned
+operand is `Unsupported`), then sets TOP = 0 and every tag valid; a written MMX register
+also gets bits 79:64 = all ones, a source register or a register that is only read (MOVD/MOVQ
+stores) keeps its exponent field. LOCK is `#UD`; `F2`/`F3`, `66` (the 128-bit forms are not
+changed), FS/GS and repeated prefixes are not decoded as MMX forms; the memory form of the shift
+groups and the unassigned shift-group registers (`0F 71/72` /0 /1 /3 /5 /7, `0F 73` /0 /1 /3 /4 /5 /7) are `#UD`.
+At CPL0 of the CPL0 set with the FP member the x87 half of the cell is moved into
+`LongModeState.x87` for the length of one MMX instruction and stored back; the x87 forms
+stay refused in the set and `state.x87` is `None` between instructions. In the set also
+run, by the same route, EMMS and the SSSE3 MMX forms (S2-33/S2-54). Still refused in the set:
+the MMX forms at CPL3, the MMX conversions (CVTPI2PS/PD, CVT[T]PS2PI, CVT[T]PD2PI; the
+ISSUE-642 memory form of CVTPI2PS is unchanged), x87 arithmetic and the narrow integer SSE2
+forms. Not in this slice: the MMX forms of the SSE2 additions (PADDQ, PSUBQ, PMULUDQ,
+PSADBW, PAVGB/W, PMAXUB/SW, PMINUB/SW, PMULHUW, PEXTRW, PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ,
+MOVDQ2Q, MOVQ2DQ), JIT, the CPUID MMX bit (S2-57). Intel SDM Rev. 093: Vol. 2A EMMS p. 3-282;
+Vol. 2B MOVD/MOVQ pp. 4-54..4-57, MOVQ pp. 4-99..4-100, PMADDWD p. 4-313, PMULHW p. 4-383, PMULLW
+p. 4-391, POR p. 4-411, PSHUFW p. 4-436, PSLL p. 4-443, PSRA p. 4-455, PSRL p. 4-467, PSUB p. 4-479,
+PSUBS p. 4-490, PSUBUS p. 4-494, PUNPCKH p. 4-502, PUNPCKL p. 4-512, PXOR p. 4-530 (PADD, PAND, PANDN,
+PCMP, PACK pages not looked up); Vol. 1 §9.2.2, §9.4, §9.6.2; Vol. 3A §15.2 Table 15-2. Parent S2-39
+remains open.
+
+See the [S2-39n result](../reports/STAGE_2_REPORT.md#s2-39n--mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set).
 
 ### S2-40. Дополнительные обязательные расширения
 
