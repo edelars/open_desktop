@@ -23,6 +23,7 @@ fn exchange(b: &mut NatBackend, frame: &[u8]) -> UdpReply {
     let mut frames = drain(b);
     assert_eq!(frames.len(), 1, "one reply");
     let reply = udp_reply(&frames.remove(0));
+    assert_eq!(reply.data.len(), 300, "padded to the BOOTP minimum");
     assert_eq!((reply.src, reply.src_port), (GATEWAY_IP, 67));
     assert_eq!(reply.dst_port, 68);
     let m = &reply.data;
@@ -139,6 +140,29 @@ fn the_full_sequence_gives_the_one_lease_and_renewals_keep_it() {
     let c = b.counters();
     assert_eq!((c.dhcp_offers, c.dhcp_acks), (1, 5));
     assert_eq!(total_accounted(&c), 6);
+}
+
+#[test]
+fn the_reply_is_unicast_only_to_the_lease_address_in_ciaddr() {
+    let mut b = backend();
+    // An arbitrary ciaddr never steers a reply to an address outside the subnet.
+    let outside = Ipv4Addr::new(8, 8, 8, 8);
+    let discover = DhcpMsg::new(DHCP_DISCOVER).ciaddr(outside);
+    let offer = exchange(&mut b, &dhcp_broadcast(&discover));
+    assert_eq!(
+        (message_type(&offer), offer.dst),
+        (OFFER, Ipv4Addr::BROADCAST)
+    );
+    let request = DhcpMsg::new(DHCP_REQUEST)
+        .requested(GUEST_IP)
+        .ciaddr(OTHER_IP);
+    let ack = exchange(&mut b, &dhcp_broadcast(&request));
+    assert_eq!((message_type(&ack), ack.dst), (ACK, Ipv4Addr::BROADCAST));
+    assert_eq!(ack.eth_dst, GUEST_MAC);
+    // The lease address in ciaddr is answered on it (renewing).
+    let renew = DhcpMsg::new(DHCP_REQUEST).ciaddr(GUEST_IP);
+    let ack = exchange(&mut b, &dhcp_unicast(&renew));
+    assert_eq!((message_type(&ack), ack.dst), (ACK, GUEST_IP));
 }
 
 #[test]
@@ -437,7 +461,7 @@ fn pad_options_and_unknown_options_are_skipped() {
 }
 
 #[test]
-fn a_reply_that_does_not_fit_the_l3_queue_is_a_queue_drop_not_an_offer() {
+fn a_reply_that_does_not_fit_the_l3_queue_is_counted_as_an_offer_and_as_a_queue_drop() {
     let mut b = backend();
     for _ in 0..NET_RX_QUEUE_LIMIT {
         run(&mut b, &arp_request_for_gateway());
@@ -445,7 +469,8 @@ fn a_reply_that_does_not_fit_the_l3_queue_is_a_queue_drop_not_an_offer() {
     assert_eq!(b.counters().arp_replies, NET_RX_QUEUE_LIMIT as u64);
     run(&mut b, &dhcp_broadcast(&DhcpMsg::new(DHCP_DISCOVER)));
     let c = b.counters();
-    assert_eq!((c.dhcp_offers, c.drop_rx_queue_full), (0, 1));
+    // The outcome is counted whether or not the queue took the message.
+    assert_eq!((c.dhcp_offers, c.drop_rx_queue_full), (1, 1));
     assert_eq!(drain(&mut b).len(), NET_RX_QUEUE_LIMIT);
 }
 
@@ -488,10 +513,15 @@ fn garbage_messages_never_panic_and_replies_are_well_formed() {
             len, destination, ..
         } = dhcp::respond(GUEST_MAC, &data, &mut out)
         {
-            assert!((240..=REPLY_CAPACITY).contains(&len));
+            assert_eq!(len, dhcp::MIN_REPLY);
             assert_eq!(out[0], 2);
             assert_eq!(out[236..240], [0x63, 0x82, 0x53, 0x63]);
-            assert_eq!(out[len - 1], 255, "end marker");
+            // The end marker is followed by zeros (PAD) only.
+            let mut end = 240;
+            while out[end] != 255 {
+                end += 2 + usize::from(out[end + 1]);
+            }
+            assert!(out[end + 1..len].iter().all(|b| *b == 0));
             assert!(destination.ip == Ipv4Addr::BROADCAST || !destination.ip.is_unspecified());
             dhcp_options(&out[..len]);
         }

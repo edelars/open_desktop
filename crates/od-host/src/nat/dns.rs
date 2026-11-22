@@ -7,16 +7,18 @@
 //!
 //! Decisions for what the document leaves open (reported in the task result):
 //! * a message with QR set (a response) gets no answer and is counted as malformed;
-//! * a query with an opcode other than 0, or with a question that cannot be read, gets FORMERR;
+//! * a query with an opcode other than 0 gets NOTIMP (RFC 1035; the owner has not confirmed it);
+//! * a query with a question that cannot be read gets FORMERR;
 //! * a FORMERR response carries no question and no `OPT`;
 //! * a name with a byte outside printable ASCII or a dot inside a label, and the root name, cannot be
 //!   passed to the system resolver and get NXDOMAIN without calling it;
 //! * only A queries need a slot: AAAA, NOTIMP and BADVERS answers are immediate and never "busy".
 
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -86,6 +88,12 @@ pub enum Parsed {
     Formerr {
         id: u16,
         rd: bool,
+    },
+    /// An opcode other than 0 (QUERY): NOTIMP, with the opcode copied (RFC 1035, section 4.1.1).
+    Notimp {
+        id: u16,
+        rd: bool,
+        opcode: u8,
     },
     Query(Query),
 }
@@ -181,7 +189,14 @@ pub fn parse(data: &[u8]) -> Parsed {
         usize::from(be16(data, 8)),
         usize::from(be16(data, 10)),
     );
-    if opcode != 0 || qdcount != 1 {
+    if opcode != 0 {
+        return Parsed::Notimp {
+            id,
+            rd,
+            opcode: opcode as u8,
+        };
+    }
+    if qdcount != 1 {
         return formerr;
     }
     let Some((name, name_end)) = read_question_name(data, HEADER_LEN) else {
@@ -291,6 +306,15 @@ fn push_opt(out: &mut Vec<u8>, extended_rcode: u8) {
 pub fn build_formerr(id: u16, rd: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN);
     push_header(&mut out, id, rd, RCODE_FORMERR, 0, 0, 0);
+    out
+}
+
+/// NOTIMP for an opcode other than QUERY: the header only, the opcode copied from the query.
+pub fn build_notimp(id: u16, rd: bool, opcode: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN);
+    push_header(&mut out, id, rd, RCODE_NOTIMP, 0, 0, 0);
+    // The opcode sits in bits 14..11 of the flags, bits 6..3 of the first flag byte.
+    out[2] |= (opcode & 0xF) << 3;
     out
 }
 
@@ -409,7 +433,8 @@ fn build_answer(query: &Query, outcome: &ResolveOutcome) -> (Vec<u8>, ReplyKind)
 struct Job {
     token: u64,
     name: String,
-    /// Set when the slot is gone (timeout, reset): a worker that has not started yet skips the job.
+    /// Set when the slot is gone (timeout, reset): a worker that took the job just before it was
+    /// removed from the queue skips it.
     cancel: Arc<AtomicBool>,
 }
 
@@ -444,12 +469,37 @@ pub enum SubmitError {
     NoWorker,
 }
 
+/// Jobs that no worker has taken yet. A job leaves the queue when a worker takes it, when its slot
+/// times out and when the service is reset, so the queue never holds more than [`MAX_SLOTS`] jobs
+/// (L16) however long the workers hang.
+struct JobQueue {
+    jobs: VecDeque<Job>,
+    /// Workers that wait for a job, or have been started and not yet looked at the queue. A new
+    /// worker is started only when the queued jobs outnumber them (and fewer than [`MAX_WORKERS`]
+    /// exist), so a worker stuck in `getaddrinfo` never keeps a later query waiting.
+    idle: usize,
+    closed: bool,
+}
+
+struct Shared {
+    queue: Mutex<JobQueue>,
+    wake: Condvar,
+    alive: AtomicUsize,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, JobQueue> {
+        // The queue holds plain data and is never left half-updated: a poisoned lock is still usable.
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// Counts a live worker thread; the count drops when the thread ends, however it ends.
-struct AliveGuard(Arc<AtomicUsize>);
+struct AliveGuard(Arc<Shared>);
 
 impl Drop for AliveGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.alive.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -457,26 +507,29 @@ pub struct DnsService {
     resolver: Arc<dyn Resolver>,
     slots: [Option<Pending>; MAX_SLOTS],
     next_token: u64,
-    jobs: Sender<Job>,
-    job_rx: Arc<Mutex<Receiver<Job>>>,
+    shared: Arc<Shared>,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
-    alive: Arc<AtomicUsize>,
 }
 
 impl DnsService {
     pub fn new(resolver: Arc<dyn Resolver>) -> Self {
-        let (jobs, job_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         Self {
             resolver,
             slots: Default::default(),
             next_token: 0,
-            jobs,
-            job_rx: Arc::new(Mutex::new(job_rx)),
+            shared: Arc::new(Shared {
+                queue: Mutex::new(JobQueue {
+                    jobs: VecDeque::new(),
+                    idle: 0,
+                    closed: false,
+                }),
+                wake: Condvar::new(),
+                alive: AtomicUsize::new(0),
+            }),
             done_tx,
             done_rx,
-            alive: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -486,10 +539,21 @@ impl DnsService {
 
     /// Worker threads that are alive now (at most [`MAX_WORKERS`]).
     pub fn workers(&self) -> usize {
-        self.alive.load(Ordering::SeqCst)
+        self.shared.alive.load(Ordering::SeqCst)
     }
 
-    /// Takes a type A query into a slot. Never blocks.
+    /// Workers that are waiting for a job (or just started). Equal to [`Self::workers`] when no
+    /// lookup is running and every finished lookup has handed in its result.
+    pub fn idle_workers(&self) -> usize {
+        self.shared.lock().idle
+    }
+
+    /// Jobs no worker has taken yet.
+    pub fn queued(&self) -> usize {
+        self.shared.lock().jobs.len()
+    }
+
+    /// Takes a type A query into a slot. Never blocks (the queue lock is held only for a push).
     pub fn submit(
         &mut self,
         query: Query,
@@ -500,18 +564,33 @@ impl DnsService {
         let Some(free) = self.slots.iter().position(Option::is_none) else {
             return Err(SubmitError::Busy);
         };
-        self.ensure_worker(self.occupied() + 1)?;
         let token = self.next_token;
         self.next_token += 1;
         let cancel = Arc::new(AtomicBool::new(false));
-        let job = Job {
-            token,
-            name,
-            cancel: Arc::clone(&cancel),
+        let need_worker = {
+            let mut queue = self.shared.lock();
+            queue.jobs.push_back(Job {
+                token,
+                name,
+                cancel: Arc::clone(&cancel),
+            });
+            let need = queue.jobs.len() > queue.idle && self.workers() < MAX_WORKERS;
+            if need {
+                // The new worker is idle from the start.
+                queue.idle += 1;
+            }
+            need
         };
-        if self.jobs.send(job).is_err() {
-            return Err(SubmitError::NoWorker);
+        if need_worker && !self.spawn_worker() {
+            let mut queue = self.shared.lock();
+            queue.idle = queue.idle.saturating_sub(1);
+            // Without any worker the query would only wait for its timeout: refuse it.
+            if self.workers() == 0 {
+                queue.jobs.retain(|job| job.token != token);
+                return Err(SubmitError::NoWorker);
+            }
         }
+        self.shared.wake.notify_one();
         self.slots[free] = Some(Pending {
             token,
             query,
@@ -522,27 +601,27 @@ impl DnsService {
         Ok(())
     }
 
-    /// Starts a worker when more queries are in flight than workers exist (up to [`MAX_WORKERS`]).
-    fn ensure_worker(&self, in_flight: usize) -> Result<(), SubmitError> {
-        let alive = self.workers();
-        if alive >= MAX_WORKERS || in_flight <= alive {
-            return Ok(());
-        }
-        self.alive.fetch_add(1, Ordering::SeqCst);
-        let guard = AliveGuard(Arc::clone(&self.alive));
+    /// Starts one worker thread; false when the system refused.
+    fn spawn_worker(&self) -> bool {
+        self.shared.alive.fetch_add(1, Ordering::SeqCst);
+        let guard = AliveGuard(Arc::clone(&self.shared));
         let resolver = Arc::clone(&self.resolver);
-        let jobs = Arc::clone(&self.job_rx);
         let done = self.done_tx.clone();
-        let spawned = thread::Builder::new()
+        // On failure the closure (and with it the guard) is dropped: the count is back already.
+        thread::Builder::new()
             .name("od-nat-dns".into())
-            .spawn(move || worker(guard, resolver, jobs, done));
-        match spawned {
-            Ok(_) => Ok(()),
-            // The closure (and with it the guard) was dropped: the count is already back.
-            Err(_) if alive == 0 => Err(SubmitError::NoWorker),
-            // Fewer workers than wanted: the query waits for one of the running ones.
-            Err(_) => Ok(()),
-        }
+            .spawn(move || worker(guard, resolver, done))
+            .is_ok()
+    }
+
+    /// Removes a slot's job from the queue (if no worker took it yet) and tells a worker that took
+    /// it to skip it.
+    fn cancel(&self, pending: &Pending) {
+        pending.cancel.store(true, Ordering::SeqCst);
+        self.shared
+            .lock()
+            .jobs
+            .retain(|job| job.token != pending.token);
     }
 
     /// Collects finished lookups and answers the queries whose five seconds have passed with SERVFAIL.
@@ -566,11 +645,13 @@ impl DnsService {
                 });
             }
         }
-        for slot in &mut self.slots {
-            if slot.as_ref().is_some_and(|p| now >= p.deadline)
-                && let Some(pending) = slot.take()
+        for index in 0..MAX_SLOTS {
+            if self.slots[index]
+                .as_ref()
+                .is_some_and(|p| now >= p.deadline)
+                && let Some(pending) = self.slots[index].take()
             {
-                pending.cancel.store(true, Ordering::SeqCst);
+                self.cancel(&pending);
                 let (response, kind) = build_answer(&pending.query, &ResolveOutcome::Failed);
                 completed.push(Completed {
                     dst_port: pending.src_port,
@@ -585,9 +666,9 @@ impl DnsService {
     /// Forgets every query without an answer (reset of the NIC or the machine). A lookup that is
     /// still running finishes on its worker and its result is dropped.
     pub fn reset(&mut self) {
-        for slot in &mut self.slots {
-            if let Some(pending) = slot.take() {
-                pending.cancel.store(true, Ordering::SeqCst);
+        for index in 0..MAX_SLOTS {
+            if let Some(pending) = self.slots[index].take() {
+                self.cancel(&pending);
             }
         }
     }
@@ -595,25 +676,37 @@ impl DnsService {
 
 impl Drop for DnsService {
     fn drop(&mut self) {
-        // Idle workers end when the job channel closes; one inside `getaddrinfo` ends when it returns.
         self.reset();
+        // Idle workers end now; one inside `getaddrinfo` ends when it returns.
+        self.shared.lock().closed = true;
+        self.shared.wake.notify_all();
     }
 }
 
-fn worker(
-    _guard: AliveGuard,
-    resolver: Arc<dyn Resolver>,
-    jobs: Arc<Mutex<Receiver<Job>>>,
-    done: Sender<Done>,
-) {
+fn worker(guard: AliveGuard, resolver: Arc<dyn Resolver>, done: Sender<Done>) {
+    let shared = Arc::clone(&guard.0);
+    // The first pass starts idle (counted by whoever started the worker).
+    let mut counted_idle = true;
     loop {
         let job = {
-            let Ok(receiver) = jobs.lock() else {
-                return;
-            };
-            match receiver.recv() {
-                Ok(job) => job,
-                Err(_) => return,
+            let mut queue = shared.lock();
+            if !counted_idle {
+                queue.idle += 1;
+            }
+            counted_idle = false;
+            loop {
+                if let Some(job) = queue.jobs.pop_front() {
+                    queue.idle -= 1;
+                    break job;
+                }
+                if queue.closed {
+                    queue.idle -= 1;
+                    return;
+                }
+                queue = shared
+                    .wake
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
         };
         if job.cancel.load(Ordering::SeqCst) {

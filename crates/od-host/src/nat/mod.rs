@@ -245,19 +245,20 @@ impl NatBackend {
                 } else {
                     self.policy.guest_mac()
                 };
-                let sent = self.send_udp(
+                // The message is counted as sent whether or not the L3 queue had room for it (a
+                // full queue is counted separately, as `drop_rx_queue_full`).
+                bump(match kind {
+                    dhcp::ReplyKind::Offer => &mut self.counters.dhcp_offers,
+                    dhcp::ReplyKind::Ack => &mut self.counters.dhcp_acks,
+                    dhcp::ReplyKind::Nak => &mut self.counters.dhcp_naks,
+                });
+                self.send_udp(
                     dst_mac,
                     (GATEWAY_IP, dhcp::SERVER_PORT),
                     (destination.ip, dhcp::CLIENT_PORT),
                     &message[..len],
+                    false,
                 );
-                if sent {
-                    bump(match kind {
-                        dhcp::ReplyKind::Offer => &mut self.counters.dhcp_offers,
-                        dhcp::ReplyKind::Ack => &mut self.counters.dhcp_acks,
-                        dhcp::ReplyKind::Nak => &mut self.counters.dhcp_naks,
-                    });
-                }
             }
         }
     }
@@ -267,18 +268,26 @@ impl NatBackend {
             Parsed::Malformed => bump(&mut self.counters.dns_malformed),
             Parsed::Formerr { id, rd } => {
                 bump(&mut self.counters.dns_formerr);
-                self.send_dns(udp.src_port, &dns::build_formerr(id, rd));
+                self.send_dns(udp.src_port, &dns::build_formerr(id, rd), false);
+            }
+            Parsed::Notimp { id, rd, opcode } => {
+                bump(&mut self.counters.dns_queries);
+                self.send_dns(udp.src_port, &dns::build_notimp(id, rd, opcode), false);
             }
             Parsed::Query(query) => match dns::plan(&query) {
                 Plan::Immediate(response, kind) => {
                     bump(&mut self.counters.dns_queries);
                     self.count_dns_reply(kind);
-                    self.send_dns(udp.src_port, &response);
+                    self.send_dns(udp.src_port, &response, false);
                 }
                 Plan::Resolve(name) => match self.dns.submit(query, name, udp.src_port, now) {
                     Ok(()) => bump(&mut self.counters.dns_queries),
                     Err(SubmitError::Busy) => bump(&mut self.counters.dns_dropped_busy),
-                    Err(SubmitError::NoWorker) => bump(&mut self.counters.drop_host_resource),
+                    Err(SubmitError::NoWorker) => {
+                        // Accepted, then lost for want of a thread.
+                        bump(&mut self.counters.dns_queries);
+                        bump(&mut self.counters.drop_host_resource);
+                    }
                 },
             },
         }
@@ -288,7 +297,9 @@ impl NatBackend {
     fn poll_dns(&mut self, now: Instant) {
         for done in self.dns.poll(now) {
             self.count_dns_reply(done.kind);
-            self.send_dns(done.dst_port, &done.response);
+            // An answer that arrives later answers no frame of the guest that is being handled: a
+            // full L3 queue is counted apart from the one-counter-per-frame identity.
+            self.send_dns(done.dst_port, &done.response, true);
         }
     }
 
@@ -300,30 +311,43 @@ impl NatBackend {
         }
     }
 
-    fn send_dns(&mut self, guest_port: u16, response: &[u8]) {
+    fn send_dns(&mut self, guest_port: u16, response: &[u8], late: bool) {
         let mac = self.policy.guest_mac();
-        self.send_udp(mac, (DNS_IP, DNS_PORT), (GUEST_IP, guest_port), response);
+        self.send_udp(
+            mac,
+            (DNS_IP, DNS_PORT),
+            (GUEST_IP, guest_port),
+            response,
+            late,
+        );
     }
 
-    /// Builds a UDP datagram for the guest and puts it into the L3 queue. Returns whether it was queued.
+    /// Builds a UDP datagram for the guest and puts it into the L3 queue. `late` marks an answer
+    /// that is sent when a lookup finishes, not while a frame of the guest is handled: if the queue
+    /// is full it is counted as `dns_late_reply_dropped` and not as `drop_rx_queue_full`.
     fn send_udp(
         &mut self,
         dst_mac: Mac,
         (src_ip, src_port): (std::net::Ipv4Addr, u16),
         (dst_ip, dst_port): (std::net::Ipv4Addr, u16),
         data: &[u8],
-    ) -> bool {
+        late: bool,
+    ) {
         let mut out = [0u8; NET_MAX_FRAME];
         let id = self.shared.ip_id;
         self.shared.ip_id = id.wrapping_add(1);
         match build_udp_ipv4_frame(
             dst_mac, src_ip, dst_ip, src_port, dst_port, id, data, &mut out,
         ) {
-            Some(len) => self.enqueue_for_guest(&out[..len]),
-            None => {
-                bump(&mut self.counters.drop_oversize_reply);
-                false
+            Some(len) if late => {
+                if let Err(PushError::Full) = self.rx_queue.push(&out[..len]) {
+                    bump(&mut self.counters.dns_late_reply_dropped);
+                }
             }
+            Some(len) => {
+                self.enqueue_for_guest(&out[..len]);
+            }
+            None => bump(&mut self.counters.drop_oversize_reply),
         }
     }
 

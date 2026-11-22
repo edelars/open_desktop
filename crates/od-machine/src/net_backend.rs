@@ -79,6 +79,9 @@ pub struct NetCounters {
     pub dns_servfail: u64,
     pub dns_formerr: u64,
     pub dns_dropped_busy: u64,
+    /// A DNS answer that arrived after its query was handled found the L3 queue full. Not part of the
+    /// one-counter-per-frame identity: no frame of the guest is being handled at that moment.
+    pub dns_late_reply_dropped: u64,
     // Transport.
     pub tcp_segments: u64,
     pub tcp_opened: u64,

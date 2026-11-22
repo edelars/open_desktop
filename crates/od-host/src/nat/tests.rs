@@ -1031,7 +1031,11 @@ fn every_silent_drop_row_increases_exactly_its_counter() {
     }
 }
 
-/// Sum of every counter that accounts for the fate of one processed frame.
+/// Sum of every counter that accounts for the fate of one processed frame. `drop_rx_queue_full` is not
+/// in it: a reply that finds the L3 queue full is counted there in addition to the counter of the
+/// outcome (DHCP, DNS), so the identity holds while the queue does not overflow (the tests that use it
+/// drain the queue or assert `drop_rx_queue_full == 0`). The one exception is an ARP reply, which is
+/// counted as `arp_replies` only when it was queued (NETWORK.md section 12.1, L3).
 pub(super) fn total_accounted(c: &NetCounters) -> u64 {
     c.drop_bad_src_mac
         + c.drop_bad_dst_mac
@@ -1058,7 +1062,6 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.tcp_segments
         + c.arp_replies
         + c.arp_probe_ignored
-        + c.drop_rx_queue_full
 }
 
 #[test]
@@ -1417,7 +1420,8 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
         calls,
         c.tx_frames + c.drop_runt + c.drop_oversize + c.drop_tx_queue_full
     );
-    // Every accepted frame ended in exactly one counter after processing.
+    // Every accepted frame ended in exactly one counter after processing (the queue never overflowed).
+    assert_eq!(c.drop_rx_queue_full, 0);
     assert_eq!(c.tx_frames, total_accounted(&c));
 }
 

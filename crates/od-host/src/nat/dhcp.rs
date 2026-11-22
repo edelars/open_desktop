@@ -11,6 +11,10 @@
 //! * a REQUEST with a foreign server identifier gets no reply and is counted as ignored (like
 //!   DECLINE and RELEASE), so that every message is counted exactly once;
 //! * a client message from a source port other than 68 is malformed;
+//! * the reply goes to `ciaddr` only when that is the lease address, otherwise (zero or any other
+//!   value) to 255.255.255.255 (NETWORK.md says "ciaddr, otherwise broadcast"; an arbitrary `ciaddr`
+//!   must not steer a reply to an address outside the guest's subnet);
+//! * replies are padded with zeros to 300 bytes (BOOTP minimum, RFC 951/2131);
 //! * `giaddr` is copied into the reply and never used for addressing (the guest has no relay).
 
 use std::net::Ipv4Addr;
@@ -31,7 +35,11 @@ pub const T2_SECS: u32 = 75_600;
 const MTU: u16 = 1500;
 const SUBNET_MASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
 
-/// Longest reply: 240 fixed bytes, ten options and the end marker (302 bytes); the buffer has room to spare.
+/// Smallest reply: BOOTP messages are at least 300 bytes, so shorter ones are padded with zeros (PAD
+/// options) after the end marker.
+pub const MIN_REPLY: usize = 300;
+/// The buffer for a reply. The longest message is 296 bytes (240 fixed, ten options of 55 bytes and
+/// the end marker), so every reply is exactly [`MIN_REPLY`] bytes; the buffer has room to spare.
 pub const REPLY_CAPACITY: usize = 320;
 
 const COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
@@ -249,7 +257,8 @@ pub fn respond(guest_mac: Mac, request: &[u8], out: &mut [u8; REPLY_CAPACITY]) -
         put(OPT_MTU, &MTU.to_be_bytes());
     }
     out[at] = OPT_END;
-    at += 1;
+    // The buffer was zeroed: everything up to MIN_REPLY is PAD.
+    at = (at + 1).max(MIN_REPLY);
 
     let destination = if kind == ReplyKind::Nak {
         // giaddr is zero for a guest on the same link: always the limited broadcast (RFC 2131, section 4.1).
@@ -258,11 +267,13 @@ pub fn respond(guest_mac: Mac, request: &[u8], out: &mut [u8; REPLY_CAPACITY]) -
             broadcast_mac: true,
         }
     } else {
+        // Unicast to the client only when it already has the lease address in ciaddr; anything else
+        // (zero, or an address that is not the lease) is answered on the broadcast address.
         ReplyDestination {
-            ip: if ciaddr.is_unspecified() {
-                Ipv4Addr::BROADCAST
-            } else {
+            ip: if ciaddr == GUEST_IP {
                 ciaddr
+            } else {
+                Ipv4Addr::BROADCAST
             },
             broadcast_mac: false,
         }

@@ -373,9 +373,6 @@ fn formerr_cases_each_get_a_header_only_response_and_one_counter() {
         "label type 10",
         DnsMsg::question_bytes(21, vec![0x80, 0], TYPE_A, 1).build(),
     ));
-    let mut opcode = DnsMsg::query(21, "a.test", TYPE_A);
-    opcode.flags = 0x1100;
-    cases.push(("opcode 2", opcode.build()));
     let mut truncated = DnsMsg::query(21, "a.test", TYPE_A).build();
     truncated.truncate(12 + 3);
     cases.push(("name cut short", truncated));
@@ -417,6 +414,26 @@ fn formerr_cases_each_get_a_header_only_response_and_one_counter() {
         let c = b.counters();
         assert_eq!(c.dns_formerr, 1, "{what}");
         assert_eq!(total_accounted(&c), 1, "{what}: one counter");
+    }
+}
+
+#[test]
+fn an_opcode_other_than_query_gets_notimp_with_the_opcode_copied() {
+    for opcode in [1u16, 2, 4, 5, 15] {
+        let mut b = backend();
+        let mut query = DnsMsg::query(21, "a.test", TYPE_A);
+        query.flags = 0x0100 | (opcode << 11);
+        let reply = ask(&mut b, &query.build());
+        assert_eq!(reply.id, 21);
+        // QR, the opcode, RD, RA, RCODE 4; header only.
+        assert_eq!(reply.flags, 0x8000 | (opcode << 11) | 0x0100 | 0x0080 | 4);
+        assert_eq!(
+            (reply.qdcount, reply.answers.len(), reply.opt),
+            (0, 0, None)
+        );
+        let c = b.counters();
+        assert_eq!((c.dns_queries, c.dns_formerr), (1, 0), "opcode {opcode}");
+        assert_eq!(total_accounted(&c), 1);
     }
 }
 
@@ -576,6 +593,13 @@ impl Resolver for Gate {
     }
 }
 
+/// Waits until no worker is inside a lookup and every finished lookup has handed in its result.
+fn wait_idle(gate: &Gate, b: &NatBackend) {
+    gate.wait_until("every worker to be idle", || {
+        b.dns.idle_workers() == b.dns.workers()
+    });
+}
+
 fn send_slow(b: &mut NatBackend, now: Instant, index: u16) {
     let name = format!("slow{index}.test");
     let message = DnsMsg::query(100 + index, &name, TYPE_A).build();
@@ -598,14 +622,10 @@ fn eight_slots_four_workers_and_the_ninth_query_is_dropped_as_busy() {
     gate.wait_until("four lookups in flight", || {
         gate.active.load(Ordering::SeqCst) == 4
     });
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(
-        gate.max_active.load(Ordering::SeqCst),
-        4,
-        "never more than four at once"
-    );
+    // Four lookups run, four jobs wait in the queue, and no fifth worker exists.
     assert_eq!(gate.calls.load(Ordering::SeqCst), 4);
     assert_eq!(b.dns.workers(), 4);
+    assert_eq!(b.dns.queued(), 4);
     // The ninth query needs a slot: no reply, counted busy.
     send_slow(&mut b, t0, 8);
     let c = b.counters();
@@ -637,7 +657,11 @@ fn eight_slots_four_workers_and_the_ninth_query_is_dropped_as_busy() {
     // Eight slow queries and the AAAA query were counted before; this is the tenth.
     assert_eq!(b.counters().dns_queries, 10);
     assert_eq!(b.dns.occupied(), 1);
-    gate.release();
+    wait_frames(&mut b, t0, 1);
+    // Never more than four lookups at once, over the whole run.
+    wait_idle(&gate, &b);
+    assert_eq!(gate.max_active.load(Ordering::SeqCst), 4);
+    assert_eq!(gate.calls.load(Ordering::SeqCst), 9);
 }
 
 #[test]
@@ -669,10 +693,7 @@ fn a_query_that_gets_no_answer_in_five_seconds_gets_servfail_and_the_late_result
     assert_eq!((c.dns_servfail, c.dns_queries), (1, 1));
     // The lookup finally returns: its result is dropped, the guest hears nothing more.
     gate.release();
-    gate.wait_until("the worker to finish", || {
-        gate.active.load(Ordering::SeqCst) == 0
-    });
-    std::thread::sleep(Duration::from_millis(50));
+    wait_idle(&gate, &b);
     b.process_pending_at(t0 + QUERY_TIMEOUT + Duration::from_secs(1));
     assert!(drain(&mut b).is_empty());
     assert_eq!(b.counters().dns_servfail, 1);
@@ -698,12 +719,11 @@ fn queries_that_wait_for_a_free_worker_time_out_too_and_are_never_looked_up() {
     }
     assert_eq!(b.counters().dns_servfail, 8);
     assert_eq!(b.dns.occupied(), 0);
-    // The four running lookups finish; the four that never started are skipped, not run.
+    // The four jobs that no worker had taken left the queue with their slots.
+    assert_eq!(b.dns.queued(), 0);
+    // The four running lookups finish; the four that never started are not run.
     gate.release();
-    gate.wait_until("the workers to finish", || {
-        gate.active.load(Ordering::SeqCst) == 0
-    });
-    std::thread::sleep(Duration::from_millis(150));
+    wait_idle(&gate, &b);
     assert_eq!(
         gate.calls.load(Ordering::SeqCst),
         4,
@@ -712,6 +732,35 @@ fn queries_that_wait_for_a_free_worker_time_out_too_and_are_never_looked_up() {
     b.process_pending_at(t0 + Duration::from_secs(60));
     assert!(drain(&mut b).is_empty());
     assert_eq!(b.dns.workers(), 4, "the workers stay for the next queries");
+}
+
+#[test]
+fn a_hung_lookup_does_not_block_later_queries_once_its_own_slot_has_timed_out() {
+    let gate = Gate::new();
+    let mut b = backend_with(gate.clone());
+    let t0 = Instant::now();
+    send_slow(&mut b, t0, 0);
+    gate.wait_until("the lookup to start", || {
+        gate.active.load(Ordering::SeqCst) == 1
+    });
+    // After five seconds the guest gets SERVFAIL and the slot is free; the lookup still hangs.
+    b.process_pending_at(t0 + QUERY_TIMEOUT);
+    let frames = drain(&mut b);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(dns_reply(&udp_reply(&frames[0]).data).rcode(), 2);
+    assert_eq!(gate.active.load(Ordering::SeqCst), 1);
+    // A query for a fast name must be served by another worker, not wait behind the stuck one.
+    let later = t0 + QUERY_TIMEOUT;
+    b.transmit(&dns_frame(PORT + 1, &a_query("fast.test")))
+        .unwrap();
+    let frames = wait_frames(&mut b, later, 1);
+    let udp = udp_reply(&frames[0]);
+    assert_eq!(udp.dst_port, PORT + 1);
+    assert_eq!(dns_reply(&udp.data).answers, [(EXAMPLE, 30)]);
+    assert_eq!(gate.active.load(Ordering::SeqCst), 1, "slow0 still hangs");
+    assert_eq!(b.dns.workers(), 2);
+    gate.release();
+    wait_idle(&gate, &b);
 }
 
 #[test]
@@ -726,10 +775,7 @@ fn reset_forgets_pending_queries_and_their_late_results() {
     b.reset();
     assert_eq!(b.dns.occupied(), 0);
     gate.release();
-    gate.wait_until("the worker to finish", || {
-        gate.active.load(Ordering::SeqCst) == 0
-    });
-    std::thread::sleep(Duration::from_millis(50));
+    wait_idle(&gate, &b);
     b.process_pending_at(t0 + Duration::from_secs(1));
     assert!(drain(&mut b).is_empty(), "nothing is sent after a reset");
     let c = b.counters();
@@ -753,24 +799,71 @@ fn dropping_the_backend_does_not_wait_for_a_stuck_lookup() {
     });
 }
 
-#[test]
-fn a_reply_that_does_not_fit_the_l3_queue_is_a_queue_drop() {
-    let mut b = backend();
+/// A backend whose L3 queue is full of ARP replies.
+fn backend_with_full_rx_queue(resolver: Arc<dyn Resolver>) -> NatBackend {
+    let mut b = backend_with(resolver);
     for _ in 0..NET_RX_QUEUE_LIMIT {
         run(&mut b, &arp_request_for_gateway());
     }
+    assert_eq!(b.counters().arp_replies, NET_RX_QUEUE_LIMIT as u64);
+    b
+}
+
+#[test]
+fn an_immediate_answer_that_does_not_fit_the_l3_queue_is_counted_as_a_query_and_a_queue_drop() {
+    let mut b = backend_with_full_rx_queue(Arc::new(NotFoundResolver));
     run(
         &mut b,
         &dns_frame(PORT, &DnsMsg::query(1, "example.test", TYPE_AAAA).build()),
     );
     let c = b.counters();
     assert_eq!((c.dns_queries, c.drop_rx_queue_full), (1, 1));
-    // The same for a formerr and for an answer that arrives later.
+    // A NOTIMP answer likewise.
     run(
         &mut b,
         &dns_frame(PORT, &DnsMsg::query(1, "example.test", 12).build()),
     );
-    assert_eq!(b.counters().drop_rx_queue_full, 2);
+    let c = b.counters();
+    assert_eq!((c.dns_queries, c.drop_rx_queue_full), (2, 2));
+    assert_eq!(c.dns_late_reply_dropped, 0);
+}
+
+#[test]
+fn a_formerr_that_does_not_fit_the_l3_queue_is_counted_as_formerr_and_a_queue_drop() {
+    let mut b = backend_with_full_rx_queue(Arc::new(NotFoundResolver));
+    let mut query = DnsMsg::query(1, "example.test", TYPE_A);
+    query.qdcount = 0;
+    run(&mut b, &dns_frame(PORT, &query.build()));
+    let c = b.counters();
+    assert_eq!((c.dns_formerr, c.drop_rx_queue_full), (1, 1));
+}
+
+#[test]
+fn a_late_answer_that_does_not_fit_the_l3_queue_has_its_own_counter() {
+    let table = Arc::new(TableResolver::with(&[(
+        "example.test",
+        ResolveOutcome::Addrs(vec![EXAMPLE]),
+    )]));
+    let mut b = backend_with_full_rx_queue(table);
+    let now = Instant::now();
+    b.transmit(&dns_frame(PORT, &a_query("example.test")))
+        .unwrap();
+    // The query is accepted while the queue is full; its answer is ready later and finds it full.
+    let started = Instant::now();
+    while b.counters().dns_late_reply_dropped == 0 {
+        b.process_pending_at(now);
+        assert!(started.elapsed() < Duration::from_secs(5), "no late answer");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let c = b.counters();
+    assert_eq!(c.dns_queries, 1);
+    assert_eq!(
+        c.drop_rx_queue_full, 0,
+        "no frame of the guest was being handled"
+    );
+    assert_eq!(c.dns_late_reply_dropped, 1);
+    // Identity of one counter per frame: 256 ARP replies and the one query.
+    assert_eq!(total_accounted(&c), NET_RX_QUEUE_LIMIT as u64 + 1);
 }
 
 // ---- The system resolver ------------------------------------------------------------------------------
@@ -837,6 +930,11 @@ fn check_parsed(data: &[u8]) {
         Parsed::Formerr { id, rd } => {
             let reply = dns_reply(&dns::build_formerr(id, rd));
             assert_formerr(&reply, id);
+        }
+        Parsed::Notimp { id, rd, opcode } => {
+            let reply = dns_reply(&dns::build_notimp(id, rd, opcode));
+            assert_eq!((reply.id, reply.rcode()), (id, 4));
+            assert_eq!(reply.flags >> 11 & 0xF, u16::from(opcode));
         }
         Parsed::Query(query) => {
             assert!(data.len() >= 12 && data.len() <= 512);
