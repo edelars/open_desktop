@@ -22,8 +22,9 @@
 //! of the board loop: the session calls it after every guest quantum, and the host calls of
 //! [`AgentChannel::read_from_guest`] and [`AgentChannel::write_to_guest`] call it too. A session
 //! should end the quantum right after a THR write ([`AgentChannel::holding_occupied`]), as for
-//! COM1. The board loops of `firmware_board` do not pump this channel yet: the session that runs
-//! guest code with the devices (S10-09) owns that call.
+//! COM1. The Linux loop and the firmware loop of `firmware_board` pump it with COM1 and end the
+//! quantum on `holding_occupied`; the parallel loops (`thread_parts`) refuse a board that has the
+//! channel.
 //!
 //! # Locking
 //!

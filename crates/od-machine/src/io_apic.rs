@@ -40,8 +40,17 @@ impl IoApicHandle {
             .unwrap_or_else(|e| e.into_inner())
             .set_line(high)
     }
-    /// The COM2 UART line on INTIN3 (GSI 3, S11-21): the INTIN4 rules. Caller serializes complete
-    /// device operations.
+    /// Connects the COM2 UART line to INTIN3 (the board has the agent channel, S11-21): from then
+    /// on INTIN3 follows the INTIN4 rules. A board without the channel never calls this and INTIN3
+    /// stays an input without a line. Idempotent.
+    pub fn connect_com2_line(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .connect_com2_line();
+    }
+    /// The COM2 UART line on INTIN3 (GSI 3, S11-21): the INTIN4 rules; refused while the line is
+    /// not connected. Caller serializes complete device operations.
     pub fn set_intin3(&self, high: bool) -> Result<(), DeviceError> {
         self.0
             .lock()
@@ -132,17 +141,18 @@ fn register(selector: u8) -> Option<Register> {
 
 /// Fixed, physical entry: mask, level bit, vector. Masked entries may hold any vector (reset
 /// and Linux `clear_IO_APIC` leave vector 0); unmasked ones need 0x10..=0xFE. INTIN4 is
-/// active-high only. Active-low polarity (bit 13) is accepted on entries other than INTIN4
-/// while masked (the MADT declares the SCI on GSI 9 as level/active-low), and unmasked only on
-/// the SCI entry together with the level trigger (bit 15): exactly the entry form the MADT
-/// interrupt source override describes (S4-38L8e). Every other unmasked active-low entry is
-/// refused.
-fn valid_low(pin: usize, value: u64) -> bool {
+/// active-high only, and so is INTIN3 once the COM2 line is connected (`com2_wired`, the
+/// `agent_channel` board option; without the line INTIN3 is an input like any other). Active-low
+/// polarity (bit 13) is accepted on entries other than INTIN4 (and connected INTIN3) while masked
+/// (the MADT declares the SCI on GSI 9 as level/active-low), and unmasked only on the SCI entry
+/// together with the level trigger (bit 15): exactly the entry form the MADT interrupt source
+/// override describes (S4-38L8e). Every other unmasked active-low entry is refused.
+fn valid_low(pin: usize, value: u64, com2_wired: bool) -> bool {
     let masked = value & u64::from(MASK) != 0;
     let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
     let level_low_form = matches!(pin, SCI_PIN | NVME_PIN | XHCI_PIN)
         && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
-    if pin != 4 && pin != COM2_PIN && (masked || level_low_form) {
+    if pin != 4 && !(pin == COM2_PIN && com2_wired) && (masked || level_low_form) {
         allowed |= u64::from(POLARITY_LOW);
     }
     let vector = value & 0xff;
@@ -224,7 +234,9 @@ impl BusDevice for IoApic {
             Register::Redirection { pin, high: true } if value & !(0xff << 24) == 0 => {
                 state.set_dest(pin, (value >> 24) as u8)
             }
-            Register::Redirection { pin, high: false } if valid_low(pin, value) => {
+            Register::Redirection { pin, high: false }
+                if valid_low(pin, value, state.com2_wired) =>
+            {
                 let low = value as u32 & !READ_ONLY_STATUS;
                 if pin == 4 {
                     state.set_low(low)
@@ -232,7 +244,10 @@ impl BusDevice for IoApic {
                     state.set_low2(low)
                 } else if pin == SCI_PIN {
                     state.set_sci_low(low)
-                } else if pin == COM2_PIN || pin == NVME_PIN || pin == XHCI_PIN {
+                } else if (pin == COM2_PIN && state.com2_wired)
+                    || pin == NVME_PIN
+                    || pin == XHCI_PIN
+                {
                     state.set_level_low(pin, low)
                 } else {
                     state.route.pins[pin] = low;
@@ -1773,6 +1788,7 @@ mod tests {
     #[test]
     fn intin3_edge_entry_requests_its_vector_and_leaves_intin4_alone() {
         let (mut bus, io, apic) = setup();
+        io.connect_com2_line();
         write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
         route(&mut bus, 0x51);
         // A masked entry takes no edge; unmasking never replays it.
@@ -1797,6 +1813,7 @@ mod tests {
     #[test]
     fn intin3_level_entry_waits_for_eoi_and_redelivers_while_the_line_is_high() {
         let (mut bus, io, apic) = setup();
+        io.connect_com2_line();
         write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
         route3(&mut bus, u64::from(LEVEL) | 0x61);
         io.set_intin3(true).unwrap();
@@ -1815,7 +1832,8 @@ mod tests {
 
     #[test]
     fn intin3_is_active_high_and_its_level_vector_is_reserved_against_intin4() {
-        let (mut bus, _io, _apic) = setup();
+        let (mut bus, io, _apic) = setup();
+        io.connect_com2_line();
         write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
         select(&mut bus, 0x16);
         for value in [
@@ -1835,5 +1853,56 @@ mod tests {
             Err(device_error(DeviceError::UnsupportedConfiguration))
         );
         route(&mut bus, u64::from(LEVEL) | 0x62);
+    }
+
+    /// S11-21: without the COM2 line (the `agent_channel` option off, the default) INTIN3 is an
+    /// input without a line, as on a board that never had the channel: a level-form entry
+    /// reserves no vector against INTIN4 or edges, a masked active-low entry is accepted, no line
+    /// request is taken and nothing is ever delivered. With the line connected the same writes
+    /// follow the INTIN4 rules.
+    #[test]
+    fn intin3_has_no_line_semantics_unless_the_com2_line_is_connected() {
+        let (mut bus, io, apic) = setup();
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        // A level-form entry reserves nothing: INTIN4 takes the same vector.
+        route3(&mut bus, u64::from(LEVEL) | 0x61);
+        route(&mut bus, u64::from(LEVEL) | 0x61);
+        route(&mut bus, u64::from(LEVEL | MASK) | 0x62);
+        // A masked active-low entry is accepted (the generic input rule) and reads back.
+        route3(&mut bus, u64::from(MASK | POLARITY_LOW) | 0x61);
+        select(&mut bus, 0x16);
+        assert_eq!(
+            read(&mut bus, 0x10),
+            Ok(u64::from(MASK | POLARITY_LOW) | 0x61)
+        );
+        // No line: the request is refused and nothing is delivered.
+        route3(&mut bus, 0x71);
+        assert_eq!(
+            io.set_intin3(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(apic.pending(), None);
+        assert!(!io.0.lock().unwrap().route.com2_asserted);
+        // A level-form entry never takes a Remote IRR.
+        route3(&mut bus, u64::from(LEVEL) | 0x71);
+        select(&mut bus, 0x16);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        // With the line connected, the level form reserves its vector and polarity is refused.
+        io.connect_com2_line();
+        select(&mut bus, 0x18);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x71),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        select(&mut bus, 0x16);
+        assert_eq!(
+            write(
+                &mut bus,
+                IO_APIC_MMIO_BASE,
+                0x10,
+                u64::from(MASK | POLARITY_LOW) | 0x61
+            ),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
     }
 }

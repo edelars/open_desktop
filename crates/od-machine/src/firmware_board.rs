@@ -1720,7 +1720,8 @@ impl LoadedFirmwareBoard {
     /// S6-34: split the board for the vCPU threads of the parallel mode. Refused (`Config`) when
     /// the board is not in [`crate::ExecutionMode::Parallel`], has no clock owner, or has one of the
     /// diagnostic hooks that read the COM1 stream inside the pump (`console_context_parser`,
-    /// `uart_output_context`: they sample per byte on one thread). Everything but the vCPUs, the
+    /// `uart_output_context`: they sample per byte on one thread), or the agent channel (COM2,
+    /// which the parallel loops do not pump). Everything but the vCPUs, the
     /// clock owner, the interrupt source and the log is shared.
     pub(crate) fn thread_parts(&mut self) -> Result<ThreadParts<'_>, FirmwareBoardError> {
         if self.bus.execution_mode() != crate::ExecutionMode::Parallel {
@@ -1731,6 +1732,13 @@ impl LoadedFirmwareBoard {
         if self.console_context_parser.is_some() || self.uart_output_context.is_some() {
             return Err(FirmwareBoardError::Config(
                 "thread_parts: the console context hooks are single-thread diagnostics",
+            ));
+        }
+        // The vCPU threads of `host_parallel` neither pump the agent channel nor end a quantum on
+        // its THR (S11-21): a board with the channel is refused rather than run with a dead COM2.
+        if self.agent_channel.is_some() {
+            return Err(FirmwareBoardError::Config(
+                "thread_parts: the agent channel (COM2) is not pumped by the parallel loops",
             ));
         }
         let owner = match &mut self.clock_driver {
@@ -2277,8 +2285,8 @@ impl LoadedFirmwareBoard {
 
     /// The host handle of the COM2 agent channel; `None` unless
     /// `FirmwareBoardConfig::agent_channel` was set. The Linux loop and the firmware loop pump it
-    /// with COM1 and end a quantum on its occupied THR (S11-21); the multi-threaded host loops
-    /// (`host_parallel`) do not yet.
+    /// with COM1 and end a quantum on its occupied THR (S11-21); `thread_parts` (the parallel
+    /// loops) refuses a board that has it.
     pub fn agent_channel(&self) -> Option<AgentChannel> {
         self.agent_channel.clone()
     }
@@ -4517,7 +4525,8 @@ fn assemble_board_with_layout(
     };
     let display_mmio = config.display_enabled.then(|| display_device.clone());
     // Bus order: COM1, LAPIC, IOAPIC, optional display, then NVMe,
-    // the optional PCI configuration device and the optional ACPI PM block; the
+    // the optional PCI configuration device and the optional ACPI PM block, then the optional
+    // COM2 agent channel (S11-21), the RTC (or the absent CMOS) and the 0x80..; the
     // `linux_profile` devices (PIT, port B, 8259 pair, CMOS, 0xED, 0x80) are appended
     // at the very end of the list.
     let mut bus_devices: Vec<Box<dyn crate::BusDevice>> =
@@ -4632,6 +4641,11 @@ fn assemble_board_with_layout(
         });
         bus_devices.push(Box::new(device));
         agent_channel = Some(channel);
+        // The COM2 line is connected to the IOAPIC input INTIN3; without the option INTIN3 stays
+        // an input without a line, as it always was.
+        IoApic::new(lapic_handle.clone())
+            .handle()
+            .connect_com2_line();
     }
     // A configured RTC is part of the firmware board as well as the Linux
     // profile. Without an explicit UTC base, Linux-profile boards retain the
@@ -9272,6 +9286,27 @@ mod tests {
         assert_eq!(channel.stats().tx_bytes_accepted, 1);
         // COM1 saw nothing of this.
         assert!(board.com1_log.bytes.is_empty());
+    }
+
+    /// S11-21: the parallel loops do not pump the agent channel, so `thread_parts` refuses a board
+    /// that has it instead of running with a dead COM2.
+    #[test]
+    fn thread_parts_refuses_a_board_with_the_agent_channel() {
+        let mut board = load_firmware_image(
+            &minor2_image(&[0xf4]),
+            &FirmwareBoardConfig {
+                agent_channel: true,
+                ..linux_config()
+            },
+        )
+        .unwrap();
+        board.set_execution_mode(crate::ExecutionMode::Parallel);
+        assert_eq!(
+            board.thread_parts().err(),
+            Some(FirmwareBoardError::Config(
+                "thread_parts: the agent channel (COM2) is not pumped by the parallel loops"
+            ))
+        );
     }
 
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----

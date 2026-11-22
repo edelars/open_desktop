@@ -25,7 +25,9 @@ pub(crate) const NVME_PIN: usize = 16;
 /// The xHCI INTA route (XHCI_DEVICE.md section 2): level, active low, GSI 17.
 pub(crate) const XHCI_PIN: usize = 17;
 /// The COM2 UART interrupt (ISA IRQ 3 -> GSI 3, S11-21 agent channel). Like INTIN4 it is an ISA
-/// UART line: active high, edge or level as the guest programs the entry.
+/// UART line: active high, edge or level as the guest programs the entry. These rules apply only
+/// while the board has connected the line (`PairState::com2_wired`, the `agent_channel` option);
+/// otherwise INTIN3 is an input without a line, as on a board without the channel.
 pub(crate) const COM2_PIN: usize = 3;
 /// Inputs with Remote IRR and EOI-driven redelivery.
 const LEVEL_PINS: [usize; 5] = [4, COM2_PIN, SCI_PIN, NVME_PIN, XHCI_PIN];
@@ -158,6 +160,9 @@ impl WakeSink {
 pub(crate) struct PairState {
     pub cpus: Vec<CpuApic>,
     pub route: Route,
+    /// The COM2 UART line is connected to INTIN3 (the board has the agent channel). A property of
+    /// the board, not of the guest-visible route: a reset keeps it.
+    pub com2_wired: bool,
     /// The wake sink of the vCPU threads (see [`WakeSink`]).
     pub wake: WakeSink,
 }
@@ -290,6 +295,7 @@ impl PairState {
         Self {
             cpus,
             route,
+            com2_wired: false,
             wake: WakeSink::default(),
         }
     }
@@ -302,9 +308,22 @@ impl PairState {
             self.route.pins[pin]
         }
     }
+    /// The inputs with Remote IRR and EOI-driven redelivery on this board: INTIN3 only when the
+    /// COM2 line is connected.
+    fn level_pins(&self) -> impl Iterator<Item = usize> + '_ {
+        LEVEL_PINS
+            .into_iter()
+            .filter(|&pin| pin != COM2_PIN || self.com2_wired)
+    }
+    /// Connects the COM2 UART line to INTIN3 (once; the board has the agent channel). From then
+    /// on INTIN3 follows the INTIN4 rules; the entry already stored is kept.
+    pub fn connect_com2_line(&mut self) {
+        self.com2_wired = true;
+    }
+
     /// Whether `low` is an entry form with level semantics on `pin`: any level entry on the ISA
-    /// UART inputs INTIN4 and INTIN3, only the level/active-low form (as the MADT declares it) on
-    /// the others.
+    /// UART inputs INTIN4 and INTIN3 (the latter only when it is a level input, see
+    /// `level_pins`), only the level/active-low form (as the MADT declares it) on the others.
     fn is_level_form(pin: usize, low: u32) -> bool {
         if pin == 4 || pin == COM2_PIN {
             low & LEVEL != 0
@@ -348,9 +367,8 @@ impl PairState {
 
     /// Whether a level route (INTIN4 or the SCI) awaits an EOI from this very LAPIC.
     pub fn awaits_eoi(&self, cpu: usize) -> bool {
-        LEVEL_PINS
-            .iter()
-            .any(|&pin| self.level_remote_irr(pin) && usize::from(self.route.dest[pin]) == cpu)
+        self.level_pins()
+            .any(|pin| self.level_remote_irr(pin) && usize::from(self.route.dest[pin]) == cpu)
     }
 
     /// Whether the level entry `pin` reserves `vector` in the LAPIC `cpu`.
@@ -362,17 +380,15 @@ impl PairState {
 
     /// Whether a level entry other than `pin` reserves `vector` in the LAPIC `cpu`.
     fn other_level_reserves(&self, pin: usize, cpu: usize, vector: u8) -> bool {
-        LEVEL_PINS
-            .iter()
-            .any(|&other| other != pin && self.pin_level_reserves(other, cpu, vector))
+        self.level_pins()
+            .any(|other| other != pin && self.pin_level_reserves(other, cpu, vector))
     }
 
     /// Whether `vector` is reserved against edges in the LAPIC `cpu` by a level route (S4-26b:
     /// level reserves its vector, even while masked).
     pub fn level_vector_reserved(&self, cpu: usize, vector: u8) -> bool {
-        LEVEL_PINS
-            .iter()
-            .any(|&pin| self.pin_level_reserves(pin, cpu, vector))
+        self.level_pins()
+            .any(|pin| self.pin_level_reserves(pin, cpu, vector))
     }
 
     pub fn reset_local(&mut self, cpu: usize) -> Result<(), DeviceError> {
@@ -456,7 +472,7 @@ impl PairState {
     }
 
     pub fn reset_io(&mut self) -> Result<(), DeviceError> {
-        if LEVEL_PINS.into_iter().any(|pin| self.level_remote_irr(pin)) {
+        if self.level_pins().any(|pin| self.level_remote_irr(pin)) {
             return Err(DeviceError::UnsupportedConfiguration);
         }
         self.route = Route::for_vcpus(self.cpus.len());
@@ -561,6 +577,10 @@ impl PairState {
     /// INTIN3 (S11-21): the COM2 UART line, with the INTIN4 rules (edge or level entry, active
     /// high). A refused delivery does not consume the transition.
     pub fn set_line3(&mut self, high: bool) -> Result<(), DeviceError> {
+        if !self.com2_wired {
+            // No line is connected: INTIN3 never carries a request.
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
         self.set_level_line(COM2_PIN, high)
     }
     pub fn set_line(&mut self, high: bool) -> Result<(), DeviceError> {
@@ -714,7 +734,9 @@ impl PairState {
         let old = usize::from(self.route.dest[pin]);
         if new != old {
             match pin {
-                4 | COM2_PIN | SCI_PIN | NVME_PIN | XHCI_PIN if self.is_level(pin) => {
+                4 | COM2_PIN | SCI_PIN | NVME_PIN | XHCI_PIN
+                    if (pin != COM2_PIN || self.com2_wired) && self.is_level(pin) =>
+                {
                     let vector = self.level_low(pin) as u8;
                     if self.level_asserted(pin)
                         || self.level_remote_irr(pin)
@@ -746,7 +768,7 @@ impl PairState {
             return Ok(());
         };
         let (i, bit) = Self::bit(v);
-        let matching = LEVEL_PINS.into_iter().find(|&pin| {
+        let matching = self.level_pins().find(|&pin| {
             local.tmr[i] & bit != 0
                 && self.level_remote_irr(pin)
                 && usize::from(self.route.dest[pin]) == cpu

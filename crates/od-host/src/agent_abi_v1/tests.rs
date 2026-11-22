@@ -88,11 +88,34 @@ fn the_header_and_the_rust_mirror_agree() {
     ] {
         assert!(HEADER.contains(symbol), "{symbol}");
     }
-    assert_eq!(std::mem::offset_of!(OdAgentChannelStats, rx_capacity), 8);
-    assert_eq!(std::mem::offset_of!(OdAgentChannelStats, rx_queued), 24);
-    assert_eq!(
-        std::mem::offset_of!(OdAgentChannelStats, tx_overflow_bytes),
-        80
+    // Every field offset of the Rust mirror, and the same pair written in the header comment.
+    macro_rules! offsets {
+        ($($field:ident = $offset:expr),* $(,)?) => {$(
+            assert_eq!(
+                std::mem::offset_of!(OdAgentChannelStats, $field),
+                $offset,
+                stringify!($field)
+            );
+            assert!(
+                HEADER.contains(&format!("{} {}", stringify!($field), $offset)),
+                "header offset of {}",
+                stringify!($field)
+            );
+        )*};
+    }
+    offsets!(
+        abi_version = 0,
+        struct_size = 4,
+        rx_capacity = 8,
+        tx_capacity = 16,
+        rx_queued = 24,
+        tx_queued = 32,
+        rx_bytes_accepted = 40,
+        rx_bytes_delivered = 48,
+        rx_overflow_bytes = 56,
+        tx_bytes_accepted = 64,
+        tx_bytes_read = 72,
+        tx_overflow_bytes = 80,
     );
 }
 
@@ -317,13 +340,22 @@ fn two_threads_exchange_bytes_through_one_handle() {
             sent += count;
         }
     });
+    // The reader stops when it has everything, when the producer is done and a last read finds
+    // nothing, or at the deadline: a lost byte fails the test instead of hanging it.
     let mut got = Vec::new();
-    while got.len() < 1000 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while got.len() < 1000 && std::time::Instant::now() < deadline {
+        let finished = producer.is_finished();
         let (status, bytes) = read(handle, 64);
         assert_eq!(status, STATUS_OK);
+        let empty = bytes.is_empty();
         got.extend(bytes);
+        if finished && empty {
+            break;
+        }
     }
     producer.join().unwrap();
+    assert_eq!(got.len(), 1000);
     assert!(got.iter().enumerate().all(|(n, &byte)| byte == n as u8));
     assert_eq!(unsafe { od_agent_channel_release_v1(handle) }, STATUS_OK);
 }

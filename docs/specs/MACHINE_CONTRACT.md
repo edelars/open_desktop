@@ -2343,7 +2343,7 @@ See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
   pin 9 с бит 15 = 1 (level) и бит 13 = 1 (active-low) принимается и без маски (вектор
   `0x10..=0xFE`, Fixed, physical), это ровно то, что описывает ISO MADT (IRQ 9 → GSI 9,
   flags `0x000F`); INTIN4 остаётся только
-  active-high даже под маской; биты 12 и 14
+  active-high даже под маской (и INTIN3, когда плата подключила линию COM2 опцией `agent_channel`, S11-21: он получает правила INTIN4 — линия, уровень с Remote IRR, резерв вектора, active-high; без опции INTIN3 — вход без линии, как описано выше); биты 12 и 14
   (read-only) отбрасываются. Vector: для unmasked записи `0x10..=0xFE`; для masked
   записи допустим любой байт (reset-состояние уже masked с vector 0, а Linux
   маскирует входы с vector 0). Расширения относительно S4-26a: любой vector под маской и active-low под маской на входах без линии (SCI GSI 9):

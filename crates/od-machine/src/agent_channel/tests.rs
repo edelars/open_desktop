@@ -286,7 +286,8 @@ fn a_write_to_a_read_only_register_and_a_bad_access_are_device_errors() {
 
 #[test]
 fn the_interrupt_output_is_a_level_that_follows_the_receive_register() {
-    // The line is observable; routing it to the interrupt controller is not built (IRQ3).
+    // The line is observable here; the board routes it to IOAPIC INTIN3 (see the firmware_board
+    // test of the loop cycle).
     let mut rig = Rig::new(4, 4);
     rig.out(4, 0x08);
     rig.out(1, 0x01);
