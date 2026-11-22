@@ -89,6 +89,31 @@ impl Rig {
     }
 }
 
+/// S4-24f: the 8259 source takes the line from the UART's port spec. A COM2 UART (IRQ3) raises
+/// IR3 and the vector is ICW2 + 3; COM1 on IR4 is not touched.
+#[test]
+fn a_com2_uart_raises_ir3_and_not_ir4() {
+    let clock = VirtualClockHandle::new(1_000_000_000).unwrap();
+    let devices = Pit8254Devices::new(clock.clone());
+    let (mut pic_device, pic) = Pic8259::new_with_handle(Pic8259Role::Master);
+    let (mut uart_device, uart) = Uart16550PollingTx::new_with_handle_at(UartPortSpec::COM2);
+    assert_eq!(uart.port_spec(), UartPortSpec::COM2);
+    let pit_pic = PitPicIrqSource::new(devices.handle.clone(), pic.clone(), clock);
+    let source = UartPicIrqSource::new(pit_pic, uart.clone(), pic.clone());
+    for (offset, value) in [(0, 0x11), (1, 0x30), (1, 0x04), (1, 0x01), (1, 0x00)] {
+        pic_device.write(access(offset), value).unwrap();
+    }
+    // Enable RDA with OUT2 and inject one received byte: the level rises.
+    uart_device.write(access(4), 0x08).unwrap();
+    uart_device.write(access(1), 0x01).unwrap();
+    assert_eq!(source.pending_vector(), None, "nothing before a byte");
+    uart.inject_received_byte(b'a').unwrap();
+    assert_eq!(source.pending_vector(), Some(0x30 + 3));
+    assert_eq!(source.uart_edges(), 1);
+    let snapshot = pic.snapshot();
+    assert_eq!((snapshot.irr, snapshot.isr), (1 << 3, 0));
+}
+
 #[test]
 fn the_uart_line_is_isa_irq_4() {
     assert_eq!(UART_IRQ_LINE, 4);

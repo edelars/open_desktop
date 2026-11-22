@@ -200,6 +200,12 @@ impl NicState {
                     let Some(len) = backend.poll_receive(&mut self.rx_buffer) else {
                         break;
                     };
+                    // The trait promises a length within the buffer; a backend that breaks it
+                    // loses the frame, it does not make the device panic.
+                    if len > self.rx_buffer.len() {
+                        self.counters.rx_bad_backend_length += 1;
+                        continue;
+                    }
                     self.rx_staged = Some(len);
                     len
                 }
@@ -253,6 +259,11 @@ impl NicState {
             buffer_bytes,
             needed,
         } = layout;
+        if len > self.rx_buffer.len() {
+            // Unreachable through `service_rx`; the check keeps the slice below total.
+            self.counters.rx_bad_backend_length += 1;
+            return false;
+        }
         // The padded frame, then the FCS of the frame as the wire would carry it.
         let mut image = vec![0u8; total];
         image[..len].copy_from_slice(&self.rx_buffer[..len]);

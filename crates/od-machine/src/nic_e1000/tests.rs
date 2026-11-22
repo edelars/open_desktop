@@ -28,6 +28,8 @@ struct Script {
     sent: Vec<Vec<u8>>,
     to_guest: VecDeque<Vec<u8>>,
     refuse: Option<Dropped>,
+    /// Reported as the length of the next received frame, beyond the buffer (a broken backend).
+    bad_length: Option<usize>,
     polls: u32,
     resets: u32,
 }
@@ -55,6 +57,9 @@ impl NetBackend for ScriptedBackend {
         let mut script = self.script();
         script.polls += 1;
         assert!(buf.len() >= NET_MAX_FRAME);
+        if let Some(length) = script.bad_length.take() {
+            return Some(length);
+        }
         let frame = script.to_guest.pop_front()?;
         buf[..frame.len()].copy_from_slice(&frame);
         Some(frame.len())
@@ -541,11 +546,13 @@ fn phy_writes_stick_except_on_identity_registers_and_reset_self_clears() {
     assert_eq!(mdic(&mut rig, 1, 2, MDIC_OP_READ, 0) & 0xFFFF, 0x0141);
     mdic(&mut rig, 1, 0, MDIC_OP_WRITE, 1 << 15);
     assert_eq!(mdic(&mut rig, 1, 0, MDIC_OP_READ, 0) & (1 << 15), 0);
-    assert_eq!(
-        mdic(&mut rig, 1, 4, MDIC_OP_READ, 0) & 0xFFFF,
-        0x01E1,
-        "defaults back"
-    );
+    // The software reset restores only the control register; the advertisement written above
+    // survives it (NIC_DEVICE.md section 6).
+    assert_eq!(mdic(&mut rig, 1, 0, MDIC_OP_READ, 0) & 0xFFFF, 0x1140);
+    assert_eq!(mdic(&mut rig, 1, 4, MDIC_OP_READ, 0) & 0xFFFF, 0x0DE1);
+    // CTRL.PHY_RST of the device resets every register.
+    rig.set_reg(CTRL, CTRL_PHY_RST);
+    assert_eq!(mdic(&mut rig, 1, 4, MDIC_OP_READ, 0) & 0xFFFF, 0x01E1);
 }
 
 #[test]
@@ -844,6 +851,52 @@ fn a_head_or_tail_outside_the_ring_is_refused_not_walked() {
     // A zero-length ring is simply not configured.
     rig.set_reg(TDLEN, 0);
     assert_eq!(rig.service().tx_descriptors, 0);
+}
+
+#[test]
+fn reprogramming_the_ring_or_disabling_the_transmitter_drops_a_half_assembled_packet() {
+    let good = frame_to(NIC_GATEWAY_MAC, 60);
+    // Each action must discard the first descriptor of a chain that never saw its EOP.
+    let actions: [fn(&mut Rig); 5] = [
+        |rig| rig.set_reg(TDH, 1),
+        |rig| rig.set_reg(TDBAL, TX_RING as u32),
+        |rig| rig.set_reg(TDBAH, 0),
+        |rig| rig.set_reg(TDLEN, 8 * 16),
+        |rig| {
+            rig.set_reg(TCTL, 0);
+            rig.set_reg(TCTL, TCTL_EN);
+        },
+    ];
+    for (index, action) in actions.iter().enumerate() {
+        let mut rig = rig();
+        rig.init_tx(8);
+        rig.put_tx(0, &[0xEE; 100], 0); // no EOP
+        rig.set_reg(TDT, 1);
+        assert_eq!(rig.service().tx_descriptors, 1);
+        action(&mut rig);
+        rig.put_tx(1, &good, CMD_EOP | CMD_RS);
+        rig.set_reg(TDT, 2);
+        rig.service();
+        assert_eq!(
+            rig.script.script().sent,
+            vec![good.clone()],
+            "action {index}"
+        );
+    }
+}
+
+#[test]
+fn a_backend_length_beyond_the_buffer_loses_the_frame_without_a_panic() {
+    let mut rig = rig();
+    rig.init_rx(8, RCTL_ACCEPT);
+    rig.script.script().bad_length = Some(NET_MAX_FRAME + 1);
+    rig.script
+        .script()
+        .to_guest
+        .push_back(frame_to(GUEST_MAC, 60));
+    assert_eq!(rig.service().rx_frames, 1, "the next frame is still served");
+    assert_eq!(rig.nic.counters().rx_bad_backend_length, 1);
+    assert_eq!(rig.reg(RDH), 1);
 }
 
 #[test]

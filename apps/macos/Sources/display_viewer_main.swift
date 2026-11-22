@@ -9,12 +9,17 @@ import ODShared
 
 // S11-10: DisplayWindow, MetalPresenter and InputChannel are the target ODDisplay (shared with the application); this file stays the viewer.
 // S10-07 display viewer: entry point. Starts VMHost with the shared launch code (VMHostLaunch.swift) in the
-// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) and shows
+// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) or, with `--profile probe`,
+// `--display-smoke probe` (S10-09 profile OD_DISPLAY_PROFILE_STAGE10_PROBE: VMHost runs the own guest probe of S10-08) and shows
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
-// The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
+// usage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
+//
+// S10-24 `--watch-ms N` (test-only, offscreen, no window, no dump): prints one `viewer-state: ...` line for every change of the
+// reader state of screen 0 until the connection ends or N ms have passed, then stops VMHost and prints one `viewer-end: ...` line.
+// It is the observable UI state for tests/system/display_failure_smoke.py; the state names are those of FRAME_TRANSPORT_V1.md 7.2.
+// The profile flag is for smoke use only: `pattern` (default) or `probe` (one screen only; the frame appears after the guest has run).
 //
 // S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
 // margins, nearest-neighbour sampling); `--pixel-exact` draws 1 guest pixel as 1 physical pixel, centred. For the offscreen
@@ -43,7 +48,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--watch-ms N] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -60,6 +65,8 @@ private struct ViewerConfig {
     /// S10-15, test-only: which screen the offscreen dump renders (1 needs `--screens 2`).
     var dumpScreen = 0
     var dumpPath: String?
+    /// S10-24, test-only: watch the reader state for this long (see the header comment).
+    var watchMs: UInt64?
     var timeoutMs: UInt64 = 10_000
     var closeAfterMs: UInt64?
     var pixelExact = false
@@ -95,7 +102,7 @@ private struct ViewerConfig {
         }
         let known: Set<String> = [
             "vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms", "dump-size", "backing-scale", "screens", "dump-screen",
-            "dump-cursor-test",
+            "dump-cursor-test", "watch-ms",
         ]
         if let unknown = values.keys.first(where: { !known.contains($0) }) {
             throw ViewerError.usage("unknown option --\(unknown)")
@@ -114,12 +121,22 @@ private struct ViewerConfig {
             }
         }
         if let profile = values["profile"] {
-            guard profile == "pattern" else {
-                throw ViewerError.usage("unsupported --profile \(profile) (only `pattern`; `probe` arrives in S10-09)")
+            guard profile == "pattern" || profile == "probe" else {
+                throw ViewerError.usage("unsupported --profile \(profile) (`pattern` or `probe`)")
+            }
+            guard profile == "pattern" || config.screens == 1 else {
+                throw ViewerError.usage("--profile probe has one screen (no --screens 2)")
             }
             config.profile = profile
         }
         config.dumpPath = values["dump-frame"]
+        if let text = values["watch-ms"] {
+            guard let value = UInt64(text), value > 0, value <= 600_000 else { throw ViewerError.usage("bad --watch-ms (1...600000)") }
+            guard config.dumpPath == nil, !inputChannel, config.screens == 1 else {
+                throw ViewerError.usage("--watch-ms is offscreen, one screen, without --dump-frame and --input-channel")
+            }
+            config.watchMs = value
+        }
         config.pixelExact = pixelExact
         config.inputChannel = inputChannel
         if inputChannel, config.dumpPath != nil {
@@ -430,6 +447,38 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
         + "cursor=\(describe(rendered.cursor)) path=\(dumpPath)")
 }
 
+// MARK: Watch (S10-24)
+
+private func runWatch(config: ViewerConfig, watchMs: UInt64) throws {
+    let session = try ViewerSession(config: config, presenter: try MetalPresenter())
+    let deadline = DispatchTime.now().uptimeNanoseconds + watchMs * 1_000_000
+    var lastLine = ""
+    func report() {
+        let state = session.reader.windowState(screen: 0)
+        var line = "viewer-state: \(describe(state))"
+        if state == .showing, let frame = session.reader.lastFrame {
+            line += " width=\(frame.width) height=\(frame.height) mode_change_count=\(frame.modeChangeCount)"
+        }
+        if line != lastLine {
+            print(line)
+            fflush(stdout)
+            lastLine = line
+        }
+    }
+    report()
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        session.step(timeoutMs: 20)
+        report()
+        if session.reader.isTerminal { break }
+    }
+    let state = session.reader.windowState(screen: 0)
+    let frame = session.reader.lastFrame
+    let accepted = session.reader.acceptedCount
+    let status = session.shutdown()
+    print("viewer-end: state=\(state.name) generation=\(frame?.generation ?? 0) accepted=\(accepted) vmhost_status=\(status)")
+    fflush(stdout)
+}
+
 // MARK: Window
 
 private final class ViewerDelegate: NSObject, NSApplicationDelegate {
@@ -453,7 +502,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             // The windows are created after the ANNOUNCE of every screen, on the main thread, before the reader thread.
             session.waitForAnnounce(timeoutMs: config.timeoutMs)
             let title = session.presenters.count == 2 ? "Open Desktop display viewer (screen 0)"
-                : "Open Desktop display viewer (test pattern)"
+                : "Open Desktop display viewer (\(config.profile == "probe" ? "probe" : "test pattern"))"
             let first = DisplayWindow(
                 presenter: session.presenters[0], title: title,
                 contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: session.input)
@@ -567,6 +616,15 @@ struct DisplayViewerMain {
         } catch {
             fputs("display-viewer: \(error)\n", stderr)
             exit(2)
+        }
+        if let watchMs = config.watchMs {
+            do {
+                try runWatch(config: config, watchMs: watchMs)
+            } catch {
+                fputs("display-viewer: \(error)\n", stderr)
+                exit(1)
+            }
+            return
         }
         if let dumpPath = config.dumpPath {
             do {

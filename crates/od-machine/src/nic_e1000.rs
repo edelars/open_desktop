@@ -106,6 +106,8 @@ pub struct NicCounters {
     pub rx_descriptors: u64,
     /// Frames the receive filter rejected.
     pub rx_filtered: u64,
+    /// Frames dropped because the backend reported a length beyond the 1514-byte buffer.
+    pub rx_bad_backend_length: u64,
     /// Guest RAM accesses that failed (a ring or a buffer outside RAM, or an address overflow).
     pub dma_errors: u64,
     /// Servicing skipped because the head or the tail lies outside the ring.
@@ -192,6 +194,16 @@ impl Hw {
             rx_fault: false,
             tx_frame: Vec::with_capacity(NET_MAX_FRAME),
         }
+    }
+}
+
+impl Hw {
+    /// The driver reprogrammed the transmit ring: the packet assembled so far (descriptors up to
+    /// a missing EOP) and the fault latch belong to the old ring and go.
+    fn reset_tx_chain(&mut self) {
+        self.tx_frame.clear();
+        self.tx_discard = false;
+        self.tx_fault = false;
     }
 }
 
@@ -395,24 +407,28 @@ impl NicState {
             }
             RDT => self.hw.rdt = value & 0xFFFF,
             TCTL => {
+                // Disabling the transmitter abandons a half-assembled packet.
+                if self.hw.tctl & TCTL_EN != 0 && value & TCTL_EN == 0 {
+                    self.hw.reset_tx_chain();
+                }
                 self.hw.tctl = value & !1;
                 self.hw.tx_fault = false;
             }
             TDBAL => {
                 self.hw.tdba = (self.hw.tdba & !0xFFFF_FFFF) | u64::from(value & !0xF);
-                self.hw.tx_fault = false;
+                self.hw.reset_tx_chain();
             }
             TDBAH => {
                 self.hw.tdba = (self.hw.tdba & 0xFFFF_FFFF) | (u64::from(value) << 32);
-                self.hw.tx_fault = false;
+                self.hw.reset_tx_chain();
             }
             TDLEN => {
                 self.hw.tdlen = value & RING_LEN_MASK;
-                self.hw.tx_fault = false;
+                self.hw.reset_tx_chain();
             }
             TDH => {
                 self.hw.tdh = value & 0xFFFF;
-                self.hw.tx_fault = false;
+                self.hw.reset_tx_chain();
             }
             TDT => self.hw.tdt = value & 0xFFFF,
             // A 1 written to a cause bit clears it.

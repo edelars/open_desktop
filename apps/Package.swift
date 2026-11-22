@@ -39,7 +39,7 @@ let package = Package(
             path: "vmhost/Sources",
             exclude: ["ODHostABI", ".gitkeep"],
             sources: [
-                "InputChannel.swift", "FrameTransport.swift", "BundleLock.swift", "Lifecycle.swift", "LinuxDirectRunner.swift", "ControlV2Host.swift", "VMHostMain.swift",
+                "InputChannel.swift", "FrameTransport.swift", "DisplayFaultHook.swift", "BundleLock.swift", "Lifecycle.swift", "LinuxDirectRunner.swift", "ControlV2Host.swift", "VMHostMain.swift",
             ],
             linkerSettings: [
                 .unsafeFlags([hostLibrary("debug")], .when(configuration: .debug)),
@@ -47,6 +47,8 @@ let package = Package(
                 .linkedLibrary("dl"), .linkedLibrary("pthread"), .linkedLibrary("m"),
                 .linkedFramework("Security"), .linkedFramework("SystemConfiguration"),
                 .linkedFramework("CoreFoundation"), .linkedFramework("CoreServices"), .linkedFramework("Foundation"),
+                // libod_host.a (audio_output, S11-41) uses AudioToolbox; a staticlib does not pass its frameworks on (ISSUE-651).
+                .linkedFramework("AudioToolbox"),
             ]
         ),
         // The command line tool (S11-13, ADR-0006 (в), (г)). Control v2 client, catalog and error catalog of `ODShared`; no AppKit, no engine,

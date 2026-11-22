@@ -52,11 +52,14 @@ impl Phy {
         }
     }
 
-    /// Writes to the identity and status registers are ignored; the reset bit of the control
-    /// register restores the defaults and reads back as zero.
+    /// Writes to the identity and status registers are ignored. The reset bit of the control
+    /// register (a decision of the model, NIC_DEVICE.md section 6) restores the control register
+    /// to its default and reads back as zero; it does **not** touch the other registers
+    /// (advertisement, 1000BASE-T control, the vendor-specific control 0x10), which keep what the
+    /// driver wrote. `CTRL.PHY_RST` of the device resets all of them.
     pub(super) fn write(&mut self, register: usize, value: u16) {
         match register {
-            REG_CONTROL if value & CONTROL_RESET != 0 => *self = Self::new(),
+            REG_CONTROL if value & CONTROL_RESET != 0 => self.regs[REG_CONTROL] = CONTROL_DEFAULT,
             REG_CONTROL => self.regs[REG_CONTROL] = value,
             REG_STATUS | REG_ID1 | REG_ID2 | REG_PARTNER | REG_EXPANSION | REG_1000T_STATUS
             | REG_EXT_STATUS | REG_SPECIFIC_STATUS => {}

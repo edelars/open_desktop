@@ -4325,7 +4325,10 @@ mod screen1_tests {
         let before = handle.second_screen_state().unwrap().mode_change_count;
         write(&mut bus, S1 + 0x4C, 2);
         assert_eq!(read(&mut bus, S1 + 0x70) & 4, 4, "DISABLED from NO_MODE");
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, before + 1);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            before + 1
+        );
         write(&mut bus, S1 + 0x40, 64);
         write(&mut bus, S1 + 0x44, 48);
         write(&mut bus, S1 + 0x48, 1);
@@ -4338,7 +4341,10 @@ mod screen1_tests {
         let state = read(&mut bus, S1 + 0x70);
         assert_eq!(state & 1, 0, "not active");
         assert_eq!(state & 4, 4, "DISABLED");
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 1);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            counted + 1
+        );
         let mut frame = vec![0u8; 64 * 48 * 4];
         assert_eq!(
             handle.read_second_frame_into(&bus, &mut frame),
@@ -4348,7 +4354,10 @@ mod screen1_tests {
 
         // Repeating the disable is a success without another count step.
         write(&mut bus, S1 + 0x4C, 2);
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 1);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            counted + 1
+        );
 
         write(&mut bus, S1 + 0x80, 0);
         assert_eq!(
@@ -4360,7 +4369,10 @@ mod screen1_tests {
         // Re-enabling is an ordinary commit.
         write(&mut bus, S1 + 0x4C, 1);
         assert_eq!(read(&mut bus, S1 + 0x70) & 4, 0);
-        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, counted + 2);
+        assert_eq!(
+            handle.second_screen_state().unwrap().mode_change_count,
+            counted + 2
+        );
     }
 
     #[test]

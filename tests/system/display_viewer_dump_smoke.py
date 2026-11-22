@@ -81,9 +81,12 @@ def main(argv: list[str]) -> int:
             check(compare.returncode == 0, f"display_compare.py exit {compare.returncode}: {compare.stderr.strip()}")
             check("differing_pixels=0" in compare.stdout, "dump differs from the reference")
 
-            # Only `pattern` exists until S10-09: another profile is a usage error, not a silent fallback.
-            result = run([str(viewer), "--vmhost", str(vmhost), "--profile", "probe", "--dump-frame", str(dump)])
+            # Profiles are `pattern` and `probe` (S10-09, tests/system/display_end_to_end_smoke.py): another one is a usage error,
+            # not a silent fallback; `probe` has one screen only.
+            result = run([str(viewer), "--vmhost", str(vmhost), "--profile", "unknown", "--dump-frame", str(dump)])
             check(result.returncode == 2, f"unsupported profile exit {result.returncode}, expected 2")
+            result = run([str(viewer), "--vmhost", str(vmhost), "--profile", "probe", "--screens", "2", "--dump-frame", str(dump)])
+            check(result.returncode == 2, f"probe with two screens exit {result.returncode}, expected 2")
             # A VMHost that cannot start is an error, not a hang.
             result = run([str(viewer), "--vmhost", str(Path(workdir) / "missing"), "--dump-frame", str(dump), "--timeout-ms", "2000"])
             check(result.returncode == 1, f"missing VMHost exit {result.returncode}, expected 1")
