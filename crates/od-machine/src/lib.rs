@@ -44,6 +44,7 @@ mod litmus_interleaving;
 mod litmus_parallel;
 mod local_apic;
 mod lock_wait_metrics;
+mod net_backend;
 mod nvme;
 mod nvram_device;
 mod page_walk;
@@ -126,6 +127,10 @@ pub use bus::{
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
+};
+pub use net_backend::{
+    Dropped, FrameQueue, NET_MAX_FRAME, NET_MIN_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT,
+    NetBackend, NetCounters, PushError,
 };
 pub use nvram_device::{
     NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_SNAPSHOT_BYTES, NVRAM_STORE_BYTES, NvramConfig,

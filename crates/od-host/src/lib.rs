@@ -18,6 +18,7 @@ pub mod atomic_inline;
 pub mod host_threads;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod litmus_jit;
+pub mod nat;
 pub mod paged_host_loop;
 #[cfg(unix)]
 pub mod persistent_nvme;
