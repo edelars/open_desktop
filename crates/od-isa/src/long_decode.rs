@@ -3106,6 +3106,8 @@ pub enum Operation {
     FnsaveRax,
     /// S2-32c: bare `DD 20` FRSTOR m108byte at [RAX].
     FrstorRax,
+    /// S2-32d: bare `D9 20` FLDENV m28byte at [RAX] (32-bit protected-mode environment image, no prefix).
+    FldenvRax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
     FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
@@ -9769,6 +9771,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
                     0x30 => Operation::FnstenvRax,
+                    0x20 => Operation::FldenvRax,
                     0x10 => Operation::FstM32FpRax,
                     0x18 => Operation::FstpM32FpRax,
                     0xe0 => Operation::Fchs,
@@ -22473,6 +22476,8 @@ mod tests {
                     Ok(Operation::FnstcwM16Rax)
                 } else if second == 0x30 {
                     Ok(Operation::FnstenvRax)
+                } else if second == 0x20 {
+                    Ok(Operation::FldenvRax)
                 } else if second == 0xd0 {
                     Ok(Operation::Fnop)
                 } else if second == 0xe0 {
