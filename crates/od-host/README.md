@@ -90,3 +90,11 @@ thread and dropped before return; they are not stored on the C handle or shared
 with Swift workers. This is a bounded register-only integration, not persistent
 cache ownership, memory execution through the ABI, or full VM lifecycle. See
 the [S3-38a report](../../docs/reports/STAGE_3_S3-38a_2026-10-29.md).
+
+S11-41 добавил `audio_output` — host-вывод звука для будущего аудиоустройства
+([AUDIO_DEVICE.md](../../docs/specs/AUDIO_DEVICE.md) разделы 5, 6 и 10): lock-free кольцо
+из 16 блоков по 480 кадров (48 кГц, 16 бит, стерео), потребитель `AudioConsumer::fill`
+(тишина и счётчик при underrun, `flush`), вывод через Default Output audio unit
+(`DeviceOutput`) и offline-запись WAV через ExtAudioFile (`WavFileOutput`). Модели
+устройства и подключения к VMHost ещё нет, поэтому звук гостя не воспроизводится;
+проверено offline на синтетическом тоне, вывод на динамики не проверялся.
