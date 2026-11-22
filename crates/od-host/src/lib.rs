@@ -1,6 +1,7 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 pub mod audio_output;
+mod agent_abi_v1;
 mod display;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod jit_region;

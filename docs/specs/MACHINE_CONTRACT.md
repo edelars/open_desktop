@@ -409,6 +409,15 @@ unchanged (see the S4-27i5 section). See the
 [S4-24e report](../reports/STAGE_4_S4-24E_2026-11-08.md) and
 [verification method](../testing/MACHINE.md#s4-24e-uart-irq4).
 
+## Канал агента: COM2 и `UartPortSpec` (S11-21, S4-24f)
+
+Предложено ADR-0007 (ждёт подтверждения владельца). Полный контракт: [AGENT_CHANNEL_DEVICE.md](AGENT_CHANNEL_DEVICE.md), host ABI — [AGENT_HOST_ABI_V1.md](AGENT_HOST_ABI_V1.md).
+
+- **S4-24f, размещение UART.** `UartPortSpec { base_port, irq_line }` задаёт, где стоит UART: `COM1` = `0x3F8`, IRQ4; `COM2` = `0x2F8`, IRQ3. Регистровая модель не менялась и от порта не зависит; `Uart16550PollingTx::new` и `new_with_handle` по-прежнему строят COM1, `new_with_handle_at(spec)` — другое размещение. `UartPicIrqSource` берёт вход ведущего 8259 из spec handle (COM1 — IR4, как раньше); `UartIoapicIrqSource` ведёт COM1 на INTIN4 и, при `new_with_com2`, COM2 на INTIN3 (вход `COM2_PIN` в `apic_pair` с правилами INTIN4: active high, фронт или уровень, Remote IRR и повтор по EOI).
+- **Канал агента.** `AgentChannel` оборачивает UART COM2 (профиль 16450, без FIFO) ограниченной очередью host → гость (питает `inject_received_byte`) и ограниченной очередью гость → host (питается из пути THR); по 65 536 байт (гипотеза до замера). Байт, не влезший в очередь, теряется и учитывается (`rx_overflow_bytes`, `tx_overflow_bytes`). Байты движутся по `AgentChannel::pump`, который Linux-цикл и цикл прошивки `firmware_board` вызывают вместе с COM1, а `holding_occupied` канала входит в предикат остановки кванта; многопоточные циклы `host_parallel` его пока не вызывают.
+- **Плата.** `FirmwareBoardConfig::agent_channel` (по умолчанию `false`) привязывает устройство к `0x2F8..0x300` и снимает `AbsentPortRegion::Uart2` с Linux-профиля. COM3 и COM4 остаются absent (Linux-профиль) или ловушками. Handoff и манифест ACPI не меняются; IRQ3 идёт в IOAPIC INTIN3, когда включён `enable_uart_ioapic_irq4`.
+- **Не сделано.** Запись COM2 в манифесте платы (handoff, DSDT; ISSUE-659); IRQ3 через 8259 на плате; pump в `host_parallel`. См. раздел 9 спецификации устройства.
+
 ## Display device (S10-03)
 
 Нормативное guest-visible поведение — [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md);
@@ -2414,7 +2423,7 @@ See the [S4-26b report](../reports/STAGE_4_S4-26B_2026-11-07.md) and
   pin 9 с бит 15 = 1 (level) и бит 13 = 1 (active-low) принимается и без маски (вектор
   `0x10..=0xFE`, Fixed, physical), это ровно то, что описывает ISO MADT (IRQ 9 → GSI 9,
   flags `0x000F`); INTIN4 остаётся только
-  active-high даже под маской; биты 12 и 14
+  active-high даже под маской (и INTIN3, когда плата подключила линию COM2 опцией `agent_channel`, S11-21: он получает правила INTIN4 — линия, уровень с Remote IRR, резерв вектора, active-high; без опции INTIN3 — вход без линии, как описано выше); биты 12 и 14
   (read-only) отбрасываются. Vector: для unmasked записи `0x10..=0xFE`; для masked
   записи допустим любой байт (reset-состояние уже masked с vector 0, а Linux
   маскирует входы с vector 0). Расширения относительно S4-26a: любой vector под маской и active-low под маской на входах без линии (SCI GSI 9):

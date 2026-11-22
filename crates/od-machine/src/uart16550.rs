@@ -93,6 +93,34 @@ const MSR_NO_MODEM_LINES: u8 = 0x00;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
+/// Where one UART sits on the board: the I/O base of its eight registers and the ISA interrupt line
+/// its output is wired to (S4-24f). The register model itself is port-independent (it sees offsets
+/// relative to its binding); the spec names the placement for the board binding, the interrupt
+/// sources and the board manifest entry. COM1 is the diagnostic UART of board v0.1; COM2 is the
+/// agent channel (ADR-0007). Every instance is a 16450 profile: no FIFO, see the module text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UartPortSpec {
+    /// First of the eight I/O ports.
+    pub base_port: u16,
+    /// The ISA IRQ line (the 8259 master input; the IOAPIC input of the identity mapping).
+    pub irq_line: u8,
+}
+
+impl UartPortSpec {
+    /// Ports of one UART binding (the eight 16550 registers).
+    pub const PORT_BYTES: u32 = UART_REGISTER_COUNT as u32;
+    /// COM1: `0x3F8`, IRQ4 (the diagnostic UART of board v0.1).
+    pub const COM1: Self = Self {
+        base_port: 0x3f8,
+        irq_line: 4,
+    };
+    /// COM2: `0x2F8`, IRQ3 (the agent channel, ADR-0007).
+    pub const COM2: Self = Self {
+        base_port: 0x2f8,
+        irq_line: 3,
+    };
+}
+
 /// One synchronous UART polling device with a one-byte RX register and a
 /// two-stage bounded TX path.
 ///
@@ -101,6 +129,7 @@ const LSR_TEMT: u8 = 0x40;
 #[derive(Clone, Debug)]
 pub struct Uart16550PollingTx {
     state: Arc<Mutex<UartState>>,
+    spec: UartPortSpec,
 }
 
 /// A safe control handle for the state owned by [`Uart16550PollingTx`].
@@ -110,6 +139,7 @@ pub struct Uart16550PollingTx {
 #[derive(Clone, Debug)]
 pub struct Uart16550Handle {
     state: Arc<Mutex<UartState>>,
+    spec: UartPortSpec,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,32 +160,46 @@ struct UartState {
 }
 
 impl Uart16550PollingTx {
-    /// Creates a reset transmitter.
+    /// Creates a reset transmitter placed at COM1.
     pub fn new() -> Self {
-        Self::with_shared_state()
+        Self::with_shared_state(UartPortSpec::COM1)
     }
 
-    /// Creates a transmitter and a handle that aliases its state.
+    /// Creates a COM1 transmitter and a handle that aliases its state.
     pub fn new_with_handle() -> (Self, Uart16550Handle) {
+        Self::new_with_handle_at(UartPortSpec::COM1)
+    }
+
+    /// Creates a transmitter placed at `spec` and a handle that aliases its state (S4-24f). The
+    /// register behaviour does not depend on the placement.
+    pub fn new_with_handle_at(spec: UartPortSpec) -> (Self, Uart16550Handle) {
         let state = Arc::new(Mutex::new(UartState::new()));
         (
             Self {
                 state: Arc::clone(&state),
+                spec,
             },
-            Uart16550Handle { state },
+            Uart16550Handle { state, spec },
         )
+    }
+
+    /// Where this transmitter sits on the board.
+    pub const fn port_spec(&self) -> UartPortSpec {
+        self.spec
     }
 
     /// Returns a handle to this transmitter's state.
     pub fn handle(&self) -> Uart16550Handle {
         Uart16550Handle {
             state: Arc::clone(&self.state),
+            spec: self.spec,
         }
     }
 
-    fn with_shared_state() -> Self {
+    fn with_shared_state(spec: UartPortSpec) -> Self {
         Self {
             state: Arc::new(Mutex::new(UartState::new())),
+            spec,
         }
     }
 
@@ -203,13 +247,18 @@ impl Default for Uart16550PollingTx {
 
 impl PartialEq for Uart16550PollingTx {
     fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
+        self.spec == other.spec && self.snapshot() == other.snapshot()
     }
 }
 
 impl Eq for Uart16550PollingTx {}
 
 impl Uart16550Handle {
+    /// Where the shared device sits on the board; the interrupt sources take the line from it.
+    pub const fn port_spec(&self) -> UartPortSpec {
+        self.spec
+    }
+
     fn with_state<R>(&self, operation: impl FnOnce(&mut UartState) -> R) -> R {
         let mut state = self
             .state

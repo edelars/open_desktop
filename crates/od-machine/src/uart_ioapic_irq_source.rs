@@ -45,6 +45,13 @@ struct Inner {
     /// The sample state. Its lock is taken before the UART and APIC locks (MACHINE_CONTRACT.md,
     /// S6-33 lock order) and is held across the sample.
     line: Mutex<Line>,
+    /// The COM2 agent channel UART on INTIN3 (S11-21), with its own sample state.
+    com2: Option<Com2>,
+}
+
+struct Com2 {
+    uart: Uart16550Handle,
+    line: Mutex<Line>,
 }
 
 #[derive(Default)]
@@ -66,16 +73,54 @@ pub(crate) struct UartIoapicIrqSource(Arc<Inner>);
 
 impl UartIoapicIrqSource {
     /// Wraps the PIT -> INTIN2 source; `uart` and `io_apic` are the handles of the same board.
+    ///
+    /// `uart` is COM1 and drives INTIN4, so it must be placed on IRQ4; another line is a
+    /// programming error. The COM2 line (IRQ3, INTIN3, S11-21) is added by [`Self::new_with_com2`].
     pub(crate) fn new(
         pit_ioapic: PitIoapicIrqSource,
         uart: Uart16550Handle,
         io_apic: IoApicHandle,
     ) -> Self {
+        Self::build(pit_ioapic, uart, io_apic, None)
+    }
+
+    /// As [`Self::new`], and the COM2 UART (the agent channel, IRQ3) is presented to INTIN3 by the
+    /// same samples. COM1 behaves exactly as without it.
+    pub(crate) fn new_with_com2(
+        pit_ioapic: PitIoapicIrqSource,
+        uart: Uart16550Handle,
+        com2: Uart16550Handle,
+        io_apic: IoApicHandle,
+    ) -> Self {
+        assert_eq!(
+            com2.port_spec().irq_line,
+            3,
+            "the second IOAPIC UART drives INTIN3 only"
+        );
+        let com2 = Com2 {
+            uart: com2,
+            line: Mutex::new(Line::default()),
+        };
+        Self::build(pit_ioapic, uart, io_apic, Some(com2))
+    }
+
+    fn build(
+        pit_ioapic: PitIoapicIrqSource,
+        uart: Uart16550Handle,
+        io_apic: IoApicHandle,
+        com2: Option<Com2>,
+    ) -> Self {
+        assert_eq!(
+            uart.port_spec().irq_line,
+            4,
+            "the IOAPIC UART source drives INTIN4 with COM1"
+        );
         Self(Arc::new(Inner {
             pit_ioapic,
             uart,
             io_apic,
             line: Mutex::new(Line::default()),
+            com2,
         }))
     }
 
@@ -101,18 +146,41 @@ impl UartIoapicIrqSource {
         self.0.pit_ioapic.clone()
     }
 
-    /// Samples the UART interrupt output and presents a change of it to INTIN4.
+    /// Rising levels of the COM2 line accepted by INTIN3 (zero without COM2).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn com2_edges(&self) -> u64 {
+        self.0.com2.as_ref().map_or(0, |com2| {
+            com2.line.lock().unwrap_or_else(|e| e.into_inner()).edges
+        })
+    }
+
+    /// Samples the UART interrupt outputs and presents a change of each to its input: COM1 to
+    /// INTIN4, the COM2 agent channel (when present) to INTIN3.
     pub(crate) fn sample(&self) {
         let inner = &*self.0;
-        let mut state = self.line();
-        let line = inner.uart.interrupt_line();
+        Self::sample_line(&mut self.line(), inner.uart.interrupt_line(), |level| {
+            inner.io_apic.set_intin4(level)
+        });
+        if let Some(com2) = &inner.com2 {
+            let mut state = com2.line.lock().unwrap_or_else(|e| e.into_inner());
+            Self::sample_line(&mut state, com2.uart.interrupt_line(), |level| {
+                inner.io_apic.set_intin3(level)
+            });
+        }
+    }
+
+    fn sample_line(
+        state: &mut Line,
+        line: bool,
+        present: impl FnOnce(bool) -> Result<(), crate::DeviceError>,
+    ) {
         if line == state.level {
             if !line {
                 state.refusing = false;
             }
             return;
         }
-        match inner.io_apic.set_intin4(line) {
+        match present(line) {
             Ok(()) => {
                 state.level = line;
                 state.refusing = false;
