@@ -47282,6 +47282,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             },
             fp_cell,
             instruction.opcode.byte,
+            // S2-32f: the spelling `9B D9 30` / `9B DD 30` (opcode `9B`) waits first.
+            instruction.opcode.byte == 0x9b,
         );
     }
     // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
@@ -72140,7 +72142,7 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
 /// a represented FCS/FDS selector included: the set admits no FCS/FDS tracking), and the state is stored back with
 /// whatever the instruction left (a fault or a refusal leaves it as it was). `profiles` has no FP member, so the
 /// nested step does not return here. `opcode` is the opcode byte of the instruction (`D9`, `DB`, `DD` or `DF`) for the
-/// `Unsupported` of an unmodeled CR0.
+/// `Unsupported` of an unmodeled CR0. `fwait` is the three-byte spelling of FNSTENV/FNSAVE with a leading FWAIT (S2-32f).
 fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -72150,10 +72152,38 @@ fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     runtime: StepRuntime<'_, '_, '_>,
     cell: &RefCell<GuestFpState>,
     opcode: u8,
+    fwait: bool,
 ) -> Result<StepOutcome, MemoryError> {
     let Some(cr0) = state.cr0 else {
         return Ok(StepOutcome::Unsupported { opcode });
     };
+    if fwait {
+        // S2-32f: FSTENV/FSAVE is FWAIT and then the non-waiting form, with the checks of `step_cpl0_fp`
+        // for FWAIT first: CR0 and CR4 modeled, #NM for CR0.MP and CR0.TS, then a pending unmasked
+        // exception is #MF (CR0.NE set; with NE clear the FERR# path has no model: `Unsupported`).
+        if state.cr4.is_none() {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+        if cr0 & (1 << 1) != 0 && cr0 & (1 << 3) != 0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let status_word = cell.borrow().x87.status_word;
+        let control_word = cell.borrow().x87.control_word;
+        if status_word & (1 << 7) != 0 && status_word & 0x003f & !control_word != 0 {
+            if cr0 & (1 << 5) == 0 {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 16,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if cr0 & 0xc != 0 {
         return Ok(StepOutcome::Fault(ArchitecturalFault {
             vector: 7,
