@@ -1258,6 +1258,45 @@ fn the_alignment_fault_comes_before_the_backend_error_and_the_gates_before_both(
 }
 
 #[test]
+fn the_alignment_fault_comes_before_the_range_check_at_the_top_of_the_address_space() {
+    let (code, _) = mem_code(&[0x66], 0xfc, 1, Mode::Rax, None);
+    let case = case_with(1, xmm_pattern(1), None, xmm_pattern(2));
+    // PADDB xmm1, [rax] at 2^64 - 7: misaligned, and the 16 bytes would run past 2^64. The architectural
+    // #GP(0) comes first; the backend AddressOverflow of the shared range check is never reached.
+    let base = u64::MAX - 6;
+    let (observed, before, after) = in_set_with(&code, &case, 1, |state| state.gpr[0] = base);
+    let mut want = unchanged(&case, &code, gp0());
+    want.gpr[0] = base;
+    assert_eq!(observed, want);
+    assert_eq!(after, before);
+    // The same form aligned at 2^64 - 16 fits in the address space, so the access reaches the backend.
+    let base = u64::MAX - 15;
+    let (observed, _, _) = in_set_with(&code, &case, 1, |state| state.gpr[0] = base);
+    assert_eq!(
+        observed.result,
+        Result_::Memory(MemoryError::Unmapped {
+            address: base,
+            access: AccessKind::Read,
+        })
+    );
+    // MOVQ xmm0, [rax] has no alignment rule: at 2^64 - 3 the range check reports the overflow.
+    let code = [0xf3, 0x0f, 0x7e, 0x00];
+    let base = u64::MAX - 2;
+    let (observed, before, after) = in_set_with(&code, &case, 1, |state| state.gpr[0] = base);
+    let mut want = unchanged(
+        &case,
+        &code,
+        Result_::Memory(MemoryError::AddressOverflow {
+            address: base,
+            length: 8,
+        }),
+    );
+    want.gpr[0] = base;
+    assert_eq!(observed, want);
+    assert_eq!(after, before);
+}
+
+#[test]
 fn every_form_of_the_slice_is_gated_by_cr0_em_cr0_ts_and_cr4_osfxsr() {
     // One encoding of each form class; the operand (when memory) is aligned and valid, so only the gate decides.
     let forms: &[(&str, &[u8])] = &[
@@ -1732,7 +1771,7 @@ fn encodings_outside_the_slice_stay_refused_without_a_change() {
             0xd6,
         ),
         (
-            "MOVDQU memory form of the F3 6F pair needs the S2-34 prefix",
+            "MOVDQU register form with the F2 prefix (only F3 and 66 own the 6F pair)",
             &[0xf2, 0x0f, 0x6f, 0xca],
             0x6f,
         ),
