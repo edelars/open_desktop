@@ -481,6 +481,40 @@ impl BusDevice for PciEcam {
     }
 }
 
+/// The configuration device shared by two front ends: the machine bus and the firmware's exact
+/// MMIO windows (the firmware profile serves ECAM beside its other device registers). Both see
+/// one function table.
+#[derive(Clone)]
+pub(crate) struct SharedPciEcam(std::sync::Arc<std::sync::Mutex<PciEcam>>);
+
+impl SharedPciEcam {
+    pub(crate) fn new(ecam: PciEcam) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(ecam)))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PciEcam> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        BusDevice::read(&mut *self.lock(), access)
+    }
+
+    pub(crate) fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        BusDevice::write(&mut *self.lock(), access, value)
+    }
+}
+
+impl BusDevice for SharedPciEcam {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
+        self.read_mmio(access)
+    }
+
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.write_mmio(access, value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

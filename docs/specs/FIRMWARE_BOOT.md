@@ -23,6 +23,8 @@
 | `[0xF800_0000, 0xFA40_0000)` | 36 MiB | `Framebuffer` | Экран 0 (`DISPLAY_DEVICE.md` §3) | из `DISPLAY_DEVICE.md` |
 | `[0xFC00_0000, 0xFC00_1000)` | 4 KiB | `Mmio` | Регистры дисплея | из `DISPLAY_DEVICE.md` |
 | `[0xFC00_1000, 0xFC00_3000)` | 8 KiB | `Mmio` | Окно NVMe-контроллера (регистры и doorbells); только когда устройство включено конфигурацией платы (S7-16, handoff v1.1). Статус: расширение S7-16 срез A, ожидает ревью; S7-02 не меняется по существу | `NVME_DEVICE.md` §2 |
+| `[0xFC00_4000, 0xFC00_8000)` | 16 KiB | `Mmio` | BAR0/1 NVMe-контроллера в PCI-профиле (`00:04.0`, class `010802`); только когда плата собрана с PCI-режимом NVMe (S7-16); не отдельная запись handoff, окно объявляется ACPI `PCI0._CRS` | `NVME_DEVICE.md` §2, `NVME_PCI_BAR_BASE` |
+| `[0xFC00_8000, 0xFC00_C000)` | 16 KiB | `Mmio` | BAR0 xHCI-контроллера (`00:05.0`, class `0C0330`); только когда устройство включено конфигурацией платы. Статус (2026-11-22): модель реализована (S8-42, S8-43) и подключена опцией `FirmwareBoardConfig::xhci`; регион `MMIO` без владельца есть в карте платы и в таблице регионов handoff, отдельного кода устройства нет; запись в `PCI0._CRS`/`_PRT` в DSDT ещё не сделана (XHCI_DEVICE.md §14, п. 19). Окно обязано быть в `PCI0._CRS` | `XHCI_DEVICE.md` §2 |
 | `[0xFEC0_0000, 0xFEC0_1000)` | 4 KiB | `Mmio` | IOAPIC (`IO_APIC_MMIO_BASE/SIZE`) | из кода `od-machine` |
 | `[0xFED4_0000, 0xFED4_5000)` | 20 KiB | `Mmio` | TPM CRB, localities 0–4 по PC Client PTP; только когда устройство есть (S7-22) | из плана §2 |
 | `[0xFEE0_0000, 0xFEE0_1000)` | 4 KiB | `Mmio` | Local APIC (`LOCAL_APIC_MMIO_BASE/SIZE`) | из кода `od-machine` |
@@ -37,7 +39,7 @@
 - Общий объём RAM `R` кратен 2 MiB, `128 MiB ≤ R ≤ 0xF_F400_0000` (63,8125 GiB). Нижняя граница нужна для boot reservations, собственных таблиц и heap прошивки; верхняя следует из ширины 36: `high_end = 0x1_0000_0000 + (R − 0xF400_0000) ≤ 2^36`.
 - `low_end = min(R, 0xF400_0000)`, `high = R − low_end`. RAM ниже 4 GiB никогда не заходит выше `0xF400_0000` (`DISPLAY_DEVICE.md` §16.3).
 - Нижняя RAM — **один** регион `Ram` карты, а не набор смежных регионов: `PhysicalMemory` отвергает доступ, пересекающий границу регионов (`AccessCrossesRegion`), и не даёт backing регионам `Reserved`. Поэтому boot reservations ниже — поддиапазоны этого `Ram`, описанные типами в handoff block (раздел 6.2), а не отдельные `Reserved`-регионы `MachineMemoryMap`.
-- Диапазон `[0xFC00_3000, 0xFEC0_0000)` и окна HPET, ACPI fixed hardware этим документом не назначаются: их выбирает S7-14 вне перечисленных выше диапазонов (`[0xFC00_1000, 0xFC00_3000)` занят окном NVMe, S7-16). Окно ECAM `[0xFC10_0000, 0xFC20_0000)` выбрано в S4-30a (MACHINE_CONTRACT.md); запись кода 7 — `PRESENT = 0`, пока плата не собрана с opt-in флагом `pci_ecam` (S4-30c), и `PRESENT = 1` с флагом.
+- Диапазон `[0xFC00_3000, 0xFEC0_0000)` и окна HPET, ACPI fixed hardware этим документом не назначаются: их выбирает S7-14 вне перечисленных выше диапазонов (`[0xFC00_1000, 0xFC00_3000)` занят окном NVMe, S7-16; `[0xFC00_4000, 0xFC00_8000)` — BAR NVMe PCI-профиля и `[0xFC00_8000, 0xFC00_C000)` — BAR0 xHCI, см. строки таблицы выше). Окно ECAM `[0xFC10_0000, 0xFC20_0000)` выбрано в S4-30a (MACHINE_CONTRACT.md); запись кода 7 — `PRESENT = 0`, пока плата не собрана с opt-in флагом `pci_ecam` (S4-30c), и `PRESENT = 1` с флагом.
 
 Boot reservations в нижней RAM (архитектурные константы платы):
 
