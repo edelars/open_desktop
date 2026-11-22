@@ -427,6 +427,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31da | Convert Special-tagged binary80 unnormals through DF10/DF18 m16 FIST/FISTP | S2-31cz |
 | [x] | S2-31db | Convert Special-tagged binary80 unnormals through DF38 m64 FISTP | S2-31da |
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
+| [x] | S2-32a | Bare `D9 F0..FF`: FSIN, FCOS, FSINCOS, FPTAN, F2XM1, FYL2X, FYL2XP1, FPATAN, FSCALE, FXTRACT в ограниченном локальном профиле; модельная точность против Core i5-3210M | S2-31 |
+| [x] | S2-32b | `DF 20`/`DF 30` FBLD/FBSTP по [RAX]; 335 строк oracle побитово | S2-32a |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
 | [x] | S2-34.1 | Lossless local-only Long64 x87+SSE snapshot transfer: 16 raw XMM registers and raw MXCSR; no instruction semantics or hardware claim | S2-28a |
@@ -5497,6 +5499,26 @@ pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com
 3. Не вызывать host libm как автоматическую замену x87 semantics и не заявлять полный FPU feature при пропущенных обязательных формах.
 
 **Готово:** нет пустых строк обязательного x87 набора; различия моделей и допустимая accuracy документированы, проверены сложные значения и exceptions.
+
+#### S2-32a/S2-32b. Срез: FSIN, FCOS, FSINCOS, FPTAN, F2XM1, FYL2X, FYL2XP1, FPATAN, FSCALE, FXTRACT, FBLD, FBSTP (2026-11-22, не закрывает задачу, чекбокс S2-32 не отмечен)
+
+- **Сделано.** Десять bare-форм `D9 F0..FF` (S2-32a) и `DF 20`/`DF 30` по `[RAX]` (S2-32b) в ограниченном локальном x87-профиле `od-isa`;
+  значения — в `crates/od-isa/src/x87_transcend.rs` (256-битный программный float, одно округление по RC, PC игнорируется; свёртка
+  `FSIN`/`FCOS`/`FSINCOS`/`FPTAN` по 66-битному pi/2, `|x| >= 2^63` — C2 = 1 без изменений). Условия допуска, флаги и
+  правила для малых аргументов — [CPU_CONTRACT](../specs/CPU_CONTRACT.md#local-s2-32a-bounded-fsin-fcos-fsincos-fptan-f2xm1-fyl2x-fyl2xp1-fpatan-fscale-fxtract-d9-f0ff).
+  SDM 325462-093US Vol. 2A: F2XM1 с. 3-307, FBLD 3-314, FBSTP 3-316, FCOS 3-330, FPATAN 3-364, FPTAN 3-370, FSCALE 3-378, FSIN 3-380,
+  FSINCOS 3-382, FXTRACT 3-420, FYL2X 3-422, FYL2XP1 3-424; Vol. 1 §8.3.10, §8.5.1, §4.7.
+- **Модельная точность.** Результат — корректно округлённое значение; физический x87 (Core i5-3210M) не корректно округляет: из 1 702
+  сравнённых строк 1 654 побитово равны, 48 отличаются на 1 ulp (не больше), C1 отличается на 22 строках; TOP, C0/C2/C3, теги и PE
+  совпадают на всех. `FBLD`/`FBSTP` — 335 строк, побитовое равенство. Счётчики зафиксированы в тестах.
+- **Проверка.** `tests/s2_32_x87_transcend.rs` (1 800 строк oracle, литералы, отказы, декодер), `tests/s2_32b_x87_bcd.rs` (335 строк);
+  `od-isa --lib` 2 714, обе новые интеграционные группы, `cargo fmt --all -- --check`, `git diff --check`. Источник oracle:
+  `tests/data/x87_oracle.c`, `x87_bcd_oracle.c`, генераторы и ответы рядом.
+- **Не сделано (остаток S2-32).** `FNSTENV`/`FNSAVE`/`FRSTOR`/`FSTENV`/`FSAVE` (нужны образы окружения со значениями FCS/FDS, которых
+  локальный профиль не представляет); операнды-денормалы, NaN, бесконечности, недопустимая область (IE/ZE/DE), unmasked-исключения и
+  stack fault для новых форм (сейчас отказ `Unsupported`); формы с произвольной адресацией и префиксами для `FBLD`/`FBSTP`; допуск этих
+  форм в наборе CPL0 (как S2-39 для MMX); `FPREM`/`FPREM1` — только ограниченный срез S2-30cl/cm (положительные Normal, зазор < 64).
+  JIT и native остаются закрытыми. CPUID-бит FPU не объявлялся (S2-57).
 
 ### S2-33. MMX и aliasing с x87
 

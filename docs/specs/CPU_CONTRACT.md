@@ -11873,6 +11873,47 @@ source matrix but was not run on this macOS host; see ISSUE-029. See the
 [standalone report](../reports/S2_30CM_X87_FPREM1.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-32a: bounded `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FPATAN`, `FSCALE`, `FXTRACT` (`D9 F0..FF`)
+
+Status: local `od-isa` interpreter only; JIT and native admission stay closed; no CPUID bit is declared (S2-57).
+Intel SDM 325462-093US Vol. 2A: F2XM1 p. 3-307, FCOS p. 3-330, FPATAN p. 3-364, FPTAN p. 3-370, FSCALE p. 3-378, FSIN p. 3-380,
+FSINCOS p. 3-382, FXTRACT p. 3-420, FYL2X p. 3-422, FYL2XP1 p. 3-424; Vol. 1 section 8.3.10 and 8.5.1.
+
+- **Decoding.** Exactly the bare two-byte forms; every prefix (including REX), truncation and the neighbouring `D9` bytes keep
+  their previous result.
+- **Admission.** x87 state present; FCS/FDS not represented; one of the twelve all-exception-masked control words (the
+  precision control is ignored by these instructions, the rounding control is honoured); `FSW & 0x80DF == 0` (PE alone may be
+  set); canonical Valid or Zero tagged operands in the slots the form reads; an Empty slot below TOP for the pushing forms
+  (`FSINCOS`, `FPTAN`, `FXTRACT`); a result inside the normal binary80 range. Denormals, unnormals, NaN, infinity, an
+  Empty operand, an operand outside the instruction's domain (`F2XM1` |x| > 1; `FYL2X` x <= 0, y = 0; `FYL2XP1` outside
+  -(1 - sqrt(2)/2) < x < sqrt(2) - 1, y = 0; `FPATAN` a zero operand; `FXTRACT` of zero), a result that overflows or
+  would be denormal and any unmasked exception are refused (`Unsupported`, nothing changes).
+- **Values.** Evaluated in a 256-bit software float and rounded once under the RC (about 2^-250 relative error before
+  rounding, i.e. correctly rounded). `FSIN`/`FCOS`/`FSINCOS`/`FPTAN` reduce by multiples of the 66-bit approximation of
+  pi/2 (the first 66 significant bits of pi; reproduced from the Core i5-3210M); `|x| >= 2^63` is outside the reduction range
+  (C2 = 1, C1 = 0, operand and stack unchanged). `FSCALE` and `FXTRACT` are exact.
+- **Status word.** TOP follows the push or pop. Reduction forms clear C2; `F2XM1`, `FYL2X`, `FYL2XP1`, `FPATAN` keep C0/C2/C3;
+  `FSCALE`/`FXTRACT` keep C0/C2/C3 and clear C1. PE is set when the value is inexact, C1 is the round-up indicator, with the
+  oracle's rules for tiny arguments (|r| < 2^-68: sine, tangent and 1.0 are returned with PE, C1 = 0; `FPTAN` for |r| < 2^-33 behaves
+  as if tan r lay just below r; `FPATAN` for a quotient below 2^-40 returns the rounded quotient with PE) and for exactly
+  representable results of `F2XM1` (+-1) and `FYL2X` (x = 2^k), which still report PE. FIP receives the old RIP; FOP and FDP are kept.
+- **Accuracy.** The microcode is not correctly rounded: against 1,800 oracle rows (96 out-of-range operands unchanged and 2 refused `FYL2XP1` operands outside its domain)
+  the interpreter's result is bit-identical on 1,654 of the 1,702 computed rows and differs by one unit in the last place on
+  the other 48 (never more; `FSINCOS` counts both results); C1 differs on 22 rows; TOP, C0/C2/C3, tags and PE on none. The counters are pinned in `tests/s2_32_x87_transcend.rs`.
+
+## Local S2-32b: bounded `FBLD m80bcd [RAX]` (`DF 20`) and `FBSTP m80bcd [RAX]` (`DF 30`)
+
+Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM Vol. 2A: FBLD p. 3-314, FBSTP p. 3-316; Vol. 1 section 4.7.
+
+- **FBLD.** Reads the 10 bytes at `[RAX]` (canonical range, one read), takes 18 decimal digits and the sign (bit 7 of byte 9; bits 6:0
+  are ignored, as on the oracle), pushes the exact integer (Zero tag and the sign for +-0). A digit above 9 is refused before any
+  change. Needs an Empty slot below TOP and the admission of S2-32a. C1 is cleared, no PE.
+- **FBSTP.** Rounds ST(0) to an integer under the RC (PC ignored), stores the 10 BCD bytes in one write (sign bit set for negative
+  values and for a negative operand that rounds to zero) and pops (TOP + 1, tag Empty, payload kept). PE when inexact, C1 = the
+  rounded value's magnitude was increased. Values that need more than 18 digits (|x| >= 10^18 after rounding), denormals, NaN and
+  infinity (IE and the BCD indefinite) stay refused. A non-canonical operand address is #GP(0) before any change.
+- **Oracle.** 335 Core i5-3210M rows (117 FBLD, 218 FBSTP) are reproduced bit for bit: result bytes, TOP, C0-C3, PE, tags.
+
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
 
 Only exact bare Long64 `D8 F0..F7` is admitted. Require present x87 state,
