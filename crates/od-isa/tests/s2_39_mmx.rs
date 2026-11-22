@@ -1035,8 +1035,20 @@ fn lock_is_ud_for_every_form_and_unclaimed_prefixes_stop_as_unsupported_without_
             vec![0x67, 0x67],
             vec![0x2e, 0x3e],
         ] {
-            // F2/F3 with the memory forms of 0F 6F/7F are MOVDQU, not an MMX form.
+            // F2/F3 with the memory forms of 0F 6F/7F are MOVDQU, not an MMX form; its register forms are executed since
+            // S2-39 (integer SSE2 remainder).
             if prefix[0] >= 0xf2 && matches!(code[..2], [0x0f, 0x6f | 0x7f]) && code[2] < 0xc0 {
+                continue;
+            }
+            if prefix[0] == 0xf3 && matches!(code[..2], [0x0f, 0x6f | 0x7f]) {
+                continue;
+            }
+            // F2/F3 with 0F 70 are PSHUFLW/PSHUFHW (S2-39, integer SSE2 remainder), not PSHUFW.
+            if prefix[0] >= 0xf2 && matches!(code[..2], [0x0f, 0x70]) {
+                continue;
+            }
+            // F3 0F 7E is MOVQ xmm, xmm/m64 (the same slice).
+            if prefix[0] == 0xf3 && matches!(code[..2], [0x0f, 0x7e]) {
                 continue;
             }
             let mut prefixed = prefix.clone();
