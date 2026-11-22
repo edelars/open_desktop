@@ -24708,14 +24708,26 @@ program. New decoder unit test (`long_decode`, 1). `cpl3_profile_set` (CPL3 refu
 register forms left the list of unclaimed prefixes) were adjusted. Suites: `od-isa` 36 binaries, 6857 passed, 0 failed; `od-jit` 521;
 `od-machine --lib` filtered (fp linux_direct s4_38) 452 passed, 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
 
+Review fixes: the redundant clearing of the high quadword in the MOVQ xmm-to-xmm store of `step_sse2_int` was removed (the buffer starts zeroed and only the low
+quadword is copied; no behaviour change); `s2_39_int_sse2` gained a test of the order alignment fault, then range check, at the top of the address space
+(PADDB at 2^64 - 7 is `#GP(0)`, at 2^64 - 16 reaches the backend, MOVQ at 2^64 - 3 reports `AddressOverflow`), so it has 24 tests; the od-jit block builder
+test `sse2_integer_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid` was added (522 tests); the case name of F2 0F 6F CA was corrected
+(a register form with the wrong prefix).
+
 Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_int_sse2_oracle/` in the ignored area:
 `gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`, `summary.py`, `tags.py`; derived from the
 S2-55 slice A oracle, the local side runs each case as one instruction in the CPL0 set with the FP member): 46381 lines (46157 distinct case
 names; 224 lines repeat a name with another seed), byte for byte; two runs of the hardware side are identical. Result: 44732 equal (33061
 retirements, 9282 `SIGSEGV/SI_KERNEL` (#GP), 394 ACCERR, 783 MAPERR, 804 `SIGBUS` (#SS), 408 `SIGILL`), 1192 refused by the model (FS/GS
 overrides, repeated prefixes, `66` with `F2`/`F3`, the wrong mandatory prefix of an opcode, LOCK on forms owned by S2-34 and on the MMX forms), 81 range
-overflow of the shared access check (`AddressOverflow`, as in S2-54/S2-55), 152 no-prefix cases of the same opcodes excluded (MMX
-instructions; the local harness does not seed the x87 registers like the physical image, 112 of them equal), 0 other differences.
+overflow of the shared access check (`AddressOverflow`, as in S2-54/S2-55), 152 no-prefix cases of the same opcodes excluded (the MMX
+forms of the same opcode bytes on mm registers, which this slice does not own; 112 of them equal, 40 differ in three separate groups,
+recounted from `oracle_out.txt`/`local_out.txt`: (a) 26 where the model answers `Unsupported` for an MMX form that is an SSE/SSE2 addition
+on mm registers: PADDQ, PSUBQ, PMULUDQ, PMULHUW, PSADBW, PAVGB, PAVGW, PMAXUB, PMINUB, PMAXSW, PMINSW, PINSRW and PEXTRW, 2 cases each
+(register and memory form), 25 of which the hardware retires and 1 (the PEXTRW memory form, which does not exist) it kills with `SIGILL`;
+(b) 6 where the hardware gives `SIGILL` and the model `Unsupported`: 0F 6C, 0F 6D and 0F D6 without a prefix; (c) 8 that are a seeding
+artifact of the local harness (it does not seed the x87/mm registers like the physical image) with both sides retiring: MOVD/MOVQ/MOVDQU/MOVDQA
+store and load forms on mm), 0 other differences.
 The CPL3 process of the oracle cannot show the CR0.EM/TS and CR4.OSFXSR gates and does not model `#AC` (the set runs at CPL0, no alignment-check
 cases of the 2/4/8-byte forms).
 
@@ -24723,7 +24735,7 @@ Not checked: the gates against the SDM PDF and the hardware (`#UD`-over-`#NM` or
 a Windows or Linux boot, the JIT, the full suite. Not covered: the forms that keep their refusals above; the memory forms of
 PSHUFLW/PINSRW/MOVLPD/MOVHPD/PMINUB/PCMPEQB/MOVD (xmm, m) in the addressing forms the narrow profile decoder claims still use their
 `step_cpl3_xmm` handler; MMX, MASKMOVDQU, MOVNTDQ, MOVDQ2Q/MOVQ2DQ, PSLLDQ/PSRLDQ with a memory operand (they have none), CPL3. The
-interpreter does not gate on CPUID and declares no bits (S2-57). Parent S2-39 remains open.
+interpreter does not gate on CPUID and declares no new bits (SSE2 is not declared; CX8 and CMOV were declared earlier, S2-57). Parent S2-39 remains open.
 
 ## S2-42n — bounded MOV qword memory reducer
 
