@@ -40,7 +40,8 @@ impl MsrProfile {
 /// S2-26h: the Windows-boot MSR file of the CPL0 profile set (`Cpl0ProfileSet::with_msr_windows`).
 ///
 /// The list is the set of MSRs a Windows x64 kernel/loader is expected to touch during boot
-/// (hypothesis recorded in ADR-0013 W-18; no Windows binary was observed): IA32_APIC_BASE (`0x1B`),
+/// (a hypothesis: ADR-0013, Decision 2, "Consequences of variant B", the bullet on Intel kernel/loader
+/// paths says the list and numbers of MSRs are not verified; no Windows binary was observed): IA32_APIC_BASE (`0x1B`),
 /// IA32_MISC_ENABLE (`0x1A0`), IA32_PAT (`0x277`), IA32_SYSENTER_CS/ESP/EIP (`0x174..=0x176`),
 /// IA32_EFER (`0xC0000080`), IA32_STAR/LSTAR/CSTAR/FMASK (`0xC0000081..=0xC0000084`) and
 /// IA32_FS_BASE/GS_BASE/KERNEL_GS_BASE (`0xC0000100..=0xC0000102`). IA32_TSC (`0x10`) is NOT in
@@ -65,11 +66,15 @@ pub const fn windows_msr_is_cell_owned(index: u32) -> bool {
 
 /// IA32_PAT at power-up (SDM Vol. 3A 14.12.4): PA0 = WB, PA1 = WT, PA2 = UC-, PA3 = UC, repeated.
 pub const IA32_PAT_RESET: u64 = 0x0007_0406_0007_0406;
-/// IA32_MISC_ENABLE of the virtual CPU: only bit 0 (fast-string enable) is modelled; the other
-/// bits (PMU, BTS/PEBS availability, EIST, MONITOR, XD disable, ...) read as 0. The bit layout is
-/// from the SDM Vol. 4 table, which is not in the repository text: model decision, not verified.
-pub const IA32_MISC_ENABLE_RESET: u64 = 1;
+/// IA32_MISC_ENABLE of the virtual CPU (SDM Vol. 4 Table 2-2, IA32_MISC_ENABLE, 1A0H): bit 0
+/// (fast-string enable, R/W, default 1) is the only writable bit; bit 11 (BTS unavailable, R/O) and
+/// bit 12 (PEBS unavailable, R/O) read as 1 because the model has neither; the performance
+/// monitoring bit 7 (R) reads 0 (no PMU); EIST (16), MONITOR/MWAIT (18), Limit CPUID Maxval (22),
+/// xTPR disable (23), thermal control (3) and every reserved bit read as 0.
+pub const IA32_MISC_ENABLE_RESET: u64 = 0x1801;
 const IA32_MISC_ENABLE_WRITABLE: u64 = 1;
+/// The read-only bits of IA32_MISC_ENABLE that always read 1 (BTS and PEBS unavailable).
+const IA32_MISC_ENABLE_FIXED: u64 = 0x1800;
 
 /// Result of a Windows-list `WRMSR` against the current cell value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,17 +109,25 @@ const fn pat_value_valid(value: u64) -> bool {
 /// Write rules of the cell-owned Windows MSRs (SDM Vol. 2D WRMSR: reserved bits and non-canonical
 /// IA32_LSTAR/SYSENTER_ESP/SYSENTER_EIP/KERNEL_GS_BASE raise `#GP(0)`).
 ///
-/// - SYSENTER_CS: bits 63:32 reserved (the register is a 32-bit value, SDM SYSEXIT page).
+/// - SYSENTER_CS: every value is accepted; bits 63:32 are "not used, writes ignored, reads return
+///   zero" (SDM Vol. 4 Table 2-2, 174H), so the cell takes [`windows_msr_stored_value`].
 /// - SYSENTER_ESP/EIP, LSTAR, KERNEL_GS_BASE: canonical 48-bit address.
-/// - STAR, CSTAR: any value (CSTAR is not in the WRMSR canonical list).
+/// - STAR: bits 31:0 are Reserved in SDM Vol. 3A Figure 6-14 (Vol. 4 gives no bit breakdown for
+///   C000_0081H), so a non-zero low half is `#GP(0)`. The hardware behaviour was not checked: the
+///   check needs CPL0 and the oracle runs in user space.
+/// - CSTAR: any value (not in the WRMSR canonical list; Vol. 4: "not used").
 /// - FMASK: bits 63:32 reserved (SDM Vol. 3A Figure 6-14).
 /// - PAT: every entry an encodable type (Table 14-10).
-/// - MISC_ENABLE: only bit 0 may change; any other change is `Unsupported`.
+/// - MISC_ENABLE: only bit 0 may change; a write that would change any other bit (a reserved
+///   bit, or the read-only bits 11/12) is `Unsupported` with no state change. That is a deliberate
+///   fail-closed decision of the model, not `#GP(0)`: the SDM does not say what such a write does
+///   on every part, and the model does not guess.
 pub const fn windows_msr_write_decision(index: u32, current: u64, value: u64) -> WindowsMsrWrite {
     let ok = match index {
-        0x174 | 0xc000_0084 => value >> 32 == 0,
+        0x174 | 0xc000_0083 => true,
+        0xc000_0084 => value >> 32 == 0,
+        0xc000_0081 => value as u32 == 0,
         0x175 | 0x176 | 0xc000_0082 | 0xc000_0102 => canonical48(value),
-        0xc000_0081 | 0xc000_0083 => true,
         0x277 => pat_value_valid(value),
         0x1a0 => {
             return if (current ^ value) & !IA32_MISC_ENABLE_WRITABLE == 0 {
@@ -132,10 +145,26 @@ pub const fn windows_msr_write_decision(index: u32, current: u64, value: u64) ->
     }
 }
 
-/// Whether a caller-supplied cell value is a state the Windows member can hold.
+/// The value a cell takes after an accepted `WRMSR`: SYSENTER_CS keeps only bits 31:0 (bits 63:32
+/// are ignored on write and read as zero), every other cell takes the value as is.
+pub const fn windows_msr_stored_value(index: u32, value: u64) -> u64 {
+    if index == 0x174 {
+        value & 0xffff_ffff
+    } else {
+        value
+    }
+}
+
+/// Whether a caller-supplied cell value is a state the Windows member can hold. A SYSENTER_CS cell
+/// with bits 63:32 set is refused (the register never holds them), and MISC_ENABLE must be bit 0
+/// plus the two fixed read-only bits.
 pub const fn windows_msr_cell_value_valid(index: u32, value: u64) -> bool {
     match index {
-        0x1a0 => value & !IA32_MISC_ENABLE_WRITABLE == 0,
+        0x174 => value >> 32 == 0,
+        0x1a0 => {
+            value & !(IA32_MISC_ENABLE_WRITABLE | IA32_MISC_ENABLE_FIXED) == 0
+                && value & IA32_MISC_ENABLE_FIXED == IA32_MISC_ENABLE_FIXED
+        }
         _ => matches!(
             windows_msr_write_decision(index, value, value),
             WindowsMsrWrite::Accept

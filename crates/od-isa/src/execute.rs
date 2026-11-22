@@ -2235,7 +2235,8 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// With the member, at CPL0 under Long64 with the bare two-byte `0F 32`/`0F 30`: `RDMSR` of every
     /// cell-owned index returns the cell in EDX:EAX; `WRMSR` follows
     /// [`crate::msr::windows_msr_write_decision`] (reserved bits and non-canonical addresses are
-    /// `#GP(0)`, a MISC_ENABLE bit the model lacks is `Unsupported`, both without a state change);
+    /// `#GP(0)`, a MISC_ENABLE bit the model lacks is `Unsupported`, both without a state change;
+    /// SYSENTER_CS bits 63:32 are ignored on write and read as zero);
     /// `RDMSR` and `WRMSR` of any index outside the list (also IA32_TSC, `0x10`) are `#GP(0)`, and
     /// at CPL3 every `RDMSR`/`WRMSR` is `#GP(0)`. APIC_BASE, EFER, FS_BASE and GS_BASE keep the
     /// semantics of their own members. The CPUID MSR bit is not declared by this member (S2-57).
@@ -47894,7 +47895,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
                         | u64::from(state.gpr[Register::Rax as usize] as u32);
                     match crate::msr::windows_msr_write_decision(msr_index, cell.get(), value) {
-                        crate::msr::WindowsMsrWrite::Accept => cell.set(value),
+                        crate::msr::WindowsMsrWrite::Accept => {
+                            cell.set(crate::msr::windows_msr_stored_value(msr_index, value));
+                        }
                         crate::msr::WindowsMsrWrite::GeneralProtection => return gp0(),
                         crate::msr::WindowsMsrWrite::Unsupported => {
                             return Ok(StepOutcome::Unsupported {
