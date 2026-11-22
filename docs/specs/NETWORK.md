@@ -225,9 +225,9 @@ Backend завершает TCP гостя **на своей стороне** и 
 | Порт назначения закрыт (TCP) | RST | `tcp_refused` |
 | Порт назначения закрыт (UDP, host вернул ECONNREFUSED на connected-сокете) | ICMP Destination Unreachable, код 3 (порт) | `udp_refused` |
 | UDP: ENETUNREACH/EHOSTUNREACH на отправке | ICMP Destination Unreachable, код 0/1 | `udp_unreachable` |
-| Хост назначения не отвечает (TCP) | тишина 30 с, затем ничего (повторы SYN гостя игнорируются) | `tcp_connect_timeout` |
-| Соединение TCP оборвано host | RST (сброс) или FIN (закрытие) | `tcp_host_reset` |
-| Нет подтверждения сегмента к гостю: исходная отправка + 6 повторов (39 с) при работающем NIC | RST | `tcp_giveups` |
+| Хост назначения не отвечает (TCP) | тишина 30 с, затем ничего (повторы SYN гостя игнорируются); после удаления по L9 следующий SYN гостя начинает новый `connect` со своими 30 с | `tcp_connect_timeout` |
+| Соединение TCP оборвано host | RST (сброс) или FIN (закрытие) | `tcp_host_reset` — только при сбросе или ошибке сокета; при обычном EOF (FIN) счётчик не растёт |
+| Нет подтверждения сегмента к гостю (SYN-ACK, данные, FIN): исходная отправка + 6 повторов (39 с) при работающем NIC | RST | `tcp_giveups` |
 | Любая другая ошибка `connect` (`EACCES`, `EPERM`, …) | RST | `tcp_connect_error` |
 | Бездействие TCP/UDP/ICMP сверх L11/L12/L14 | flow удалён; следующий сегмент TCP получит RST | `tcp_idle_expired`, `udp_idle_expired`, `icmp_echo_timeout` |
 | Окно приёма заполнено (L7) | окно 0; передача продолжается после чтения host | `tcp_zero_window` |

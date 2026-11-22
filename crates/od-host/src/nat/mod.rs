@@ -31,7 +31,9 @@ use od_machine::{
 };
 
 use self::ctx::{Ctx, Shared, enqueue_for_guest};
-use self::flow::{FlowError, FlowKey, FlowTable};
+use self::flow::FlowTable;
+#[cfg(test)]
+use self::flow::{FlowError, FlowKey};
 use self::frame::{DropReason, GuestMacError, Inbound, L4, Mac, Policy, build_arp_reply, classify};
 use self::tcp::{TcpEngine, TcpHost};
 
@@ -108,9 +110,11 @@ impl NatBackend {
         (&mut self.tcp, ctx)
     }
 
-    /// Admission of a new flow by a handler of S11-31b..d: enforces L4, L5 and L6 and increases the
-    /// `drop_flow_limit_*` counter when the limit refuses the flow.
-    pub fn open_flow(&mut self, key: FlowKey) -> Result<(), FlowError> {
+    /// Admission of a new flow as a handler does it (through [`Ctx::open_flow`]): enforces L4, L5 and
+    /// L6 and increases the `drop_flow_limit_*` counter when the limit refuses the flow. Only the tests
+    /// use it: it would let a caller put a flow in the table that no handler owns.
+    #[cfg(test)]
+    pub(crate) fn open_flow(&mut self, key: FlowKey) -> Result<(), FlowError> {
         self.handler_parts(std::time::Duration::ZERO)
             .1
             .open_flow(key)

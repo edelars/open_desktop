@@ -884,6 +884,58 @@ fn odd_segments_inside_a_connection_do_no_harm() {
 }
 
 #[test]
+fn an_empty_segment_outside_the_sequence_is_answered_with_one_ack() {
+    let mut rig = Rig::new();
+    let mut c = rig.open();
+    // A keep-alive or window probe: no data, sequence number one behind the next expected.
+    let mut probe = c.clone();
+    probe.g_seq -= 1;
+    rig.push(&probe.frame(ACK, &[]));
+    let r = rig.tcp_replies();
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        (r[0].flags, r[0].seq, r[0].ack, r[0].window),
+        (ACK, c.h_next, c.g_seq, 65_535)
+    );
+    assert_eq!(rig.counters().tcp_out_of_order_dropped, 0);
+    // A plain ACK at the expected number still gets no answer.
+    rig.guest(&mut c, ACK, &[]);
+    assert!(rig.replies().is_empty());
+}
+
+#[test]
+fn a_window_update_that_the_full_l3_queue_refused_is_sent_later() {
+    let mut rig = Rig::new();
+    let mut c = rig.open();
+    let stream = rig.stream(0);
+    stream.lock().unwrap().write_budget = 0;
+    let data = pattern(65_536);
+    for chunk in data.chunks(1024) {
+        rig.guest(&mut c, ACK | PSH, chunk);
+        rig.replies();
+    }
+    assert_eq!(rig.counters().tcp_zero_window, 1);
+    for _ in 0..256 {
+        rig.push(&arp_request_for_gateway());
+    }
+    stream.lock().unwrap().write_budget = usize::MAX;
+    rig.tick(Duration::from_millis(1));
+    assert_eq!(
+        rig.counters().drop_rx_queue_full,
+        0,
+        "no update is tried into a full queue"
+    );
+    let mut buf = [0u8; NET_MAX_FRAME];
+    for _ in 0..256 {
+        assert!(rig.b.poll_receive(&mut buf).is_some());
+    }
+    rig.tick(Duration::from_millis(1));
+    let r = rig.tcp_replies();
+    assert_eq!((r.len(), r[0].window), (1, 65_535));
+    assert_eq!(stream.lock().unwrap().written, data);
+}
+
+#[test]
 fn a_wrong_ack_in_the_handshake_gets_rst_and_the_flow_stays() {
     let mut rig = Rig::new();
     rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);

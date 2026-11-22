@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use super::bump;
 use super::ctx::Ctx;
-use super::flow::{FlowKey, FlowProto};
+use super::flow::{FlowError, FlowKey, FlowProto};
 use super::frame::{
     DstClass, GUEST_IP, Ipv4Packet, PROTO_TCP, TcpOut, TcpSegment, build_tcp_segment,
 };
@@ -369,10 +369,6 @@ impl TcpFlow {
         data: &[u8],
     ) -> bool {
         let window = self.advertised_window();
-        if window == 0 && self.last_adv_window != 0 {
-            bump(&mut ctx.counters.tcp_zero_window);
-        }
-        self.last_adv_window = window;
         let out = TcpOut {
             src_port: key.dst_port,
             dst_port: key.guest_port,
@@ -382,7 +378,16 @@ impl TcpFlow {
             window,
             mss: with_mss.then_some(TCP_MSS),
         };
-        emit(ctx, key, &out, data)
+        let sent = emit(ctx, key, &out, data);
+        // What the guest was told changes only when the segment reached the L3 queue, so a lost
+        // window update is tried again.
+        if sent {
+            if window == 0 && self.last_adv_window != 0 {
+                bump(&mut ctx.counters.tcp_zero_window);
+            }
+            self.last_adv_window = window;
+        }
+        sent
     }
 
     fn send_ack(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) {
@@ -528,6 +533,10 @@ impl TcpFlow {
         if !seg.data.is_empty() || seg.flags & FIN != 0 {
             self.accept_data(seg, ctx.counters);
             self.send_ack(ctx, key);
+        } else if seg.seq != self.rcv_nxt {
+            // An empty segment outside the sequence (keep-alive, window probe) is answered with an ACK
+            // (RFC 9293, section 3.10.7.4); it is not counted as out of order data.
+            self.send_ack(ctx, key);
         }
         self.check_linger(now);
         Outcome::Keep
@@ -572,7 +581,7 @@ impl TcpFlow {
 
     fn host_failed(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) -> bool {
         bump(&mut ctx.counters.tcp_host_reset);
-        send_reset(ctx, key, self.snd_nxt, self.rcv_nxt, RST | ACK);
+        send_reset(ctx, key, self.snd_max, self.rcv_nxt, RST | ACK);
         false
     }
 
@@ -619,6 +628,7 @@ impl TcpFlow {
     /// A window update after the host socket drained a buffer that had closed the window.
     fn send_window_update(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) {
         if self.last_adv_window == 0
+            && ctx.rx_has_room()
             && (self.to_host.free() >= usize::from(TCP_MSS) || self.to_host.is_empty())
         {
             self.send_ack(ctx, key);
@@ -662,7 +672,7 @@ impl TcpFlow {
             self.rto_deadline = Some(now + self.rto);
         } else if self.retries >= MAX_RETRANSMITS {
             bump(&mut ctx.counters.tcp_giveups);
-            send_reset(ctx, key, self.snd_nxt, self.rcv_nxt, RST | ACK);
+            send_reset(ctx, key, self.snd_max, self.rcv_nxt, RST | ACK);
             return Outcome::Remove;
         } else if self.phase == Phase::SynReceived {
             self.back_off(ctx, now);
@@ -864,8 +874,17 @@ impl TcpEngine {
         seg: &TcpSegment<'_>,
         now: Instant,
     ) {
-        if ctx.open_flow(*key).is_err() {
-            return;
+        match ctx.open_flow(*key) {
+            Ok(()) => {}
+            // The limit refused it and the counter of L4 is already increased.
+            Err(FlowError::LimitReached(_)) => return,
+            Err(FlowError::Exists) => {
+                // The shared table holds a TCP flow this engine does not know: a handler bug, not
+                // something a guest can cause. Nothing is lost silently in a release build: the SYN
+                // still counts in `tcp_segments`.
+                debug_assert!(false, "flow table and TCP engine disagree about {key:?}");
+                return;
+            }
         }
         let mut quoted = [0u8; 28];
         let header = packet.header.len().min(20);
