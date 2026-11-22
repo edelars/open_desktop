@@ -24671,6 +24671,28 @@ completed instructions), CR0.EM/TS on the physical machine (user space cannot se
 ones, SDM and unit tests), CPL3 of the set, MMX conversions in the set, a boot, the JIT, CPUID gating (S2-57).
 Parent S2-39 remains open.
 
+## S2-39p — DAZ in the target MXCSR_MASK
+
+Decision [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md), plan block
+[S2-39p](../plans/STAGE_2.md#s2-39p-daz-in-the-target-mxcsr_mask). Code: `crates/od-isa/src/lib.rs`
+(`TARGET_FXSAVE_MXCSR_MASK = 0x0000_ffff`; FXSAVE/FXSAVE64, LDMXCSR and FXRSTOR64 use the constant and are not
+otherwise changed), `crates/od-testkit/src/v2.rs` (the S2-39h result validator expects MXCSR_MASK `0xFFFF`).
+
+Physical check (Mac mini, Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39p_daz_oracle/`,
+ignored: `daz_oracle.c`, `daz_addss.c`, `ext.py`, outputs; two runs identical): MXCSR_MASK `0x0000FFFF`; DAZ loads with
+LDMXCSR and FXRSTOR64; bits 16 and 31 give `#GP`; DAZ makes ADDSS read `0x00000001` as zero (MXCSR stays `0x1FC0`,
+`0x1FA2` without DAZ). The 40 DAZ policy differences of S2-39n (hardware `ok`, `mx` = loaded value, in
+`~/s2_39n_sse_set_oracle/oracle_out.txt` and `oracle_out2.txt` on the mini, identical) are now the model's result too.
+The model side was checked by the tests, not by the S2-39n comparator: the comparator lived in the ignored area of a
+removed worktree.
+
+Tests (all passed): `od-isa` all 35 binaries, 6833 tests (`s2_39_cpl0_sse_set` 15: LDMXCSR valid values 15 x 3,
+reserved 6, the five DAZ values in every addressing form, DAZ before ADDSS; `cpl0_profile_set` 1626; `s2_39_cpl0_sse` 11;
+the `fxsave_rip_tests` unit tests with FXRSTOR64 restoring DAZ); `od-testkit --lib` 525; `od-runner --test fixture_v2`
+filtered `fxsave|fxrstor|mxcsr|s2_39|x87_sse` 14; `od-machine --lib` filtered `fpu|fp_state|fninit|fxsave|kernel_fpu` 7;
+`cargo fmt --all -- --check` and `git diff --check` clean. Not checked: the target N5105, Windows, native paths and
+the full workspace suite. Parent S2-39 remains open.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64
