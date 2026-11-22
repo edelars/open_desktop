@@ -14,6 +14,8 @@ od-jit = { path = "../od-jit" }
 od-machine = { path = "../od-machine" }
 od-storage = { path = "../od-storage" }
 
+# Not new: the same pinned package, now for every unix host because the NAT DNS forwarder (nat/resolver.rs)
+# calls getaddrinfo; before S11-31b only the macOS arm64 modules used it.
 [target.'cfg(unix)'.dependencies]
 libc = { version = "=0.2.190", default-features = false }
 

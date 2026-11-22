@@ -6,7 +6,7 @@
 //! datagram beyond that is dropped, existing flows are never evicted.
 //!
 //! Datagrams to the backend's own addresses are not forwarded: DHCP (`10.0.2.2:67`, broadcast) and
-//! DNS (`10.0.2.3:53`) belong to S11-31b and stay in `drop_unhandled_l4` until it lands; any other
+//! DNS (`10.0.2.3:53`) belong to S11-31b (`dhcp`, `dns`) and never reach this handler; any other
 //! port there gets ICMP port unreachable (`gw_port_unreachable`).
 //!
 //! Counters. Every datagram that reaches this handler (also one for an unserved port of the gateway
@@ -647,12 +647,12 @@ mod tests {
         let c = b.counters();
         assert_eq!((c.gw_port_unreachable, c.icmp_error_sent), (4, 4));
         assert_eq!(c.udp_datagrams, 4, "the unserved gateway ports count too");
-        assert_eq!((c.udp_flows_opened, c.drop_unhandled_l4), (0, 0));
+        assert_eq!(c.udp_flows_opened, 0);
         assert_eq!(b.flows.count(FlowProto::Udp), 0, "no flow, no socket");
     }
 
     #[test]
-    fn dhcp_and_dns_datagrams_are_left_to_their_own_task() {
+    fn dhcp_and_dns_datagrams_are_served_by_their_own_modules_not_forwarded() {
         let mut b = io_backend();
         for frame in [
             guest_udp(68, GATEWAY_IP, 67, &[0; 240]),
@@ -661,9 +661,14 @@ mod tests {
             send(&mut b, &frame, Instant::now());
         }
         let c = b.counters();
-        assert_eq!(c.drop_unhandled_l4, 2);
-        assert_eq!((c.gw_port_unreachable, c.udp_flows_opened), (0, 0));
-        assert!(drain(&mut b).is_empty());
+        // The all-zero DHCP message is malformed (chaddr is not the guest MAC); the all-zero DNS message
+        // has no question and gets FORMERR. Neither is counted or forwarded as UDP.
+        assert_eq!((c.dhcp_malformed, c.dns_formerr), (1, 1));
+        assert_eq!(
+            (c.udp_datagrams, c.gw_port_unreachable, c.udp_flows_opened),
+            (0, 0, 0)
+        );
+        assert_eq!(drain(&mut b).len(), 1, "the FORMERR answer");
     }
 
     #[test]

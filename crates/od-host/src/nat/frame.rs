@@ -519,7 +519,42 @@ pub fn build_arp_reply(
     Some(ARP_REPLY_FRAME_LEN)
 }
 
-/// Writes an Ethernet frame from the gateway MAC to the guest carrying one IPv4 packet: TTL 64,
+/// Writes an Ethernet frame from the gateway MAC to `dst_mac` carrying one UDP datagram in a normal
+/// IPv4 packet (see [`build_ipv4_frame`]); the UDP checksum is computed, a computed 0 is sent as 0xFFFF
+/// (RFC 768). Returns the frame length, or `None` when the frame would exceed 1514 bytes or `out` is
+/// too short.
+#[allow(clippy::too_many_arguments)]
+pub fn build_udp_ipv4_frame(
+    dst_mac: Mac,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    identification: u16,
+    data: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let udp_len = UDP_HEADER_LEN.checked_add(data.len())?;
+    if ETH_HEADER_LEN + IPV4_HEADER_LEN + udp_len > NET_MAX_FRAME {
+        return None;
+    }
+    let mut udp = [0u8; NET_MAX_FRAME];
+    let udp = &mut udp[..udp_len];
+    udp[0..2].copy_from_slice(&src_port.to_be_bytes());
+    udp[2..4].copy_from_slice(&dst_port.to_be_bytes());
+    // The length fits: the frame is at most 1514 bytes.
+    udp[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+    udp[UDP_HEADER_LEN..].copy_from_slice(data);
+    let checksum = match l4_checksum(src, dst, PROTO_UDP, udp) {
+        0 => 0xFFFF,
+        sum => sum,
+    };
+    udp[6..8].copy_from_slice(&checksum.to_be_bytes());
+    build_ipv4_frame(dst_mac, src, dst, PROTO_UDP, identification, udp, out)
+}
+
+/// Writes an Ethernet frame from the gateway MAC to `guest_mac` (the destination of the frame; the guest, or
+/// the broadcast address for a DHCP NAK) carrying one IPv4 packet: TTL 64,
 /// Don't Fragment, header checksum computed (NETWORK.md section 5, last paragraph). `l4` is the
 /// finished transport message (its own checksum is the caller's: see [`l4_checksum`]). Returns the
 /// frame length, or `None` when the frame would exceed 1514 bytes or `out` is too short.

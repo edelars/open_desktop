@@ -2,11 +2,13 @@
 //! L2/L3 queues, the counters, and a deterministic fuzz of garbage input.
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use od_machine::{
     Dropped, NET_MAX_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT, NetBackend, NetCounters,
 };
 
+use super::dns::DnsService;
 use super::flow::{
     FlowError, FlowKey, FlowProto, MAX_ICMP_ECHO_FLOWS, MAX_TCP_FLOWS, MAX_UDP_FLOWS,
 };
@@ -16,7 +18,7 @@ use super::{NatBackend, record_drop};
 
 const EXTERNAL: Ipv4Addr = Ipv4Addr::new(93, 184, 216, 34);
 
-fn policy() -> Policy {
+pub(super) fn policy() -> Policy {
     Policy::new(GUEST_MAC).unwrap()
 }
 
@@ -715,18 +717,21 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-/// A backend whose TCP host is scripted and whose UDP and ICMP sockets cannot be created: no test of
-/// this file reaches a real network (the tests with sockets use `test_io::io_backend`).
-fn backend() -> NatBackend {
-    super::tcp_tests::scripted_backend().without_host_sockets()
+/// A backend whose TCP host is scripted, whose UDP and ICMP sockets cannot be created and whose DNS
+/// lookups never touch the network (every name is unknown): no test of this file reaches a real
+/// network (the tests with sockets use `test_io::io_backend`).
+pub(super) fn backend() -> NatBackend {
+    let mut b = super::tcp_tests::scripted_backend().without_host_sockets();
+    b.dns = DnsService::new(Arc::new(NotFoundResolver));
+    b
 }
 
-fn run(backend: &mut NatBackend, frame: &[u8]) {
+pub(super) fn run(backend: &mut NatBackend, frame: &[u8]) {
     backend.transmit(frame).unwrap();
     backend.process_pending();
 }
 
-fn drain(backend: &mut NatBackend) -> Vec<Vec<u8>> {
+pub(super) fn drain(backend: &mut NatBackend) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; NET_MAX_FRAME];
     while let Some(len) = backend.poll_receive(&mut buf) {
@@ -1027,7 +1032,11 @@ fn every_silent_drop_row_increases_exactly_its_counter() {
     }
 }
 
-/// Sum of every counter that accounts for the fate of one processed frame.
+/// Sum of every counter that accounts for the fate of one processed frame. `drop_rx_queue_full` is not
+/// in it: a reply that finds the L3 queue full is counted there in addition to the counter of the
+/// outcome (DHCP, DNS), so the identity holds while the queue does not overflow (the tests that use it
+/// drain the queue or assert `drop_rx_queue_full == 0`). The one exception is an ARP reply, which is
+/// counted as `arp_replies` only when it was queued (NETWORK.md section 12.1, L3).
 pub(super) fn total_accounted(c: &NetCounters) -> u64 {
     c.drop_bad_src_mac
         + c.drop_bad_dst_mac
@@ -1041,11 +1050,18 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.drop_unsupported_proto
         + c.drop_l4_malformed
         + c.drop_arp_other
-        + c.drop_unhandled_l4
+        + c.dhcp_offers
+        + c.dhcp_acks
+        + c.dhcp_naks
+        + c.dhcp_ignored
+        + c.dhcp_malformed
+        + c.dns_queries
+        + c.dns_malformed
+        + c.dns_formerr
+        + c.dns_dropped_busy
         + c.tcp_segments
         + c.arp_replies
         + c.arp_probe_ignored
-        + c.drop_rx_queue_full
         // S11-31c: one counter per frame for UDP and ICMP echo, bumped when the frame reaches the
         // handler. What the handler then does with it (forwarded, refused, a flow limit, a socket
         // that cannot be created, the ICMP error to the guest) is an outcome and is outside the
@@ -1056,9 +1072,10 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
 }
 
 #[test]
-fn well_formed_dhcp_and_dns_packets_are_counted_unhandled_until_their_handler_exists() {
-    // DHCP and DNS (S11-31b); TCP (S11-31d), UDP to other addresses and ICMP echo (S11-31c) are handled.
+fn dhcp_and_dns_datagrams_reach_their_servers_and_each_counts_once() {
     let mut b = backend();
+    // A 1-byte DNS query, a 1-byte DHCP message from a port that is not 68, and the 0x55-filled DHCP-like
+    // frame are all malformed: counted, never answered, and none reaches the UDP forwarder.
     for frame in [
         udp_frame(DNS_IP, 53, b"x"),
         udp_frame(GATEWAY_IP, 67, b"x"),
@@ -1067,7 +1084,8 @@ fn well_formed_dhcp_and_dns_packets_are_counted_unhandled_until_their_handler_ex
         run(&mut b, &frame);
     }
     let c = b.counters();
-    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (3, 0));
+    assert_eq!((c.dhcp_malformed, c.dns_malformed), (2, 1));
+    assert_eq!((c.udp_datagrams, c.gw_port_unreachable), (0, 0));
     assert_eq!(total_accounted(&c), 3);
     assert!(drain(&mut b).is_empty());
 }
@@ -1080,7 +1098,6 @@ fn udp_and_echo_to_external_addresses_reach_the_host_socket_layer_not_the_unhand
     run(&mut b, &udp_frame(EXTERNAL, 9, b"x"));
     run(&mut b, &echo_frame(EXTERNAL));
     let c = b.counters();
-    assert_eq!(c.drop_unhandled_l4, 0);
     assert_eq!((c.udp_datagrams, c.icmp_echo_requests), (1, 1));
     assert_eq!(c.drop_host_resource, 2);
     assert_eq!(total_accounted(&c), 2);
@@ -1093,7 +1110,7 @@ fn tcp_is_served_and_no_longer_counted_unhandled() {
     run(&mut b, &tcp_syn_frame(EXTERNAL, 80));
     run(&mut b, &tcp_syn_frame(GATEWAY_IP, 80));
     let c = b.counters();
-    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (0, 2));
+    assert_eq!(c.tcp_segments, 2);
     assert_eq!(total_accounted(&c), 2);
     // A SYN-ACK from the scripted host for the first, a refusal for the second.
     assert_eq!(drain(&mut b).len(), 2);
@@ -1243,6 +1260,15 @@ fn base_frames() -> Vec<Vec<u8>> {
         tcp_syn_frame(EXTERNAL, 443),
         echo_frame(EXTERNAL),
         dhcp_like_frame(),
+        dhcp_broadcast(&DhcpMsg::new(DHCP_DISCOVER)),
+        dhcp_unicast(&DhcpMsg::new(DHCP_REQUEST).ciaddr(GUEST_IP)),
+        dns_frame(5353, &DnsMsg::query(7, "example.test", TYPE_A).build()),
+        dns_frame(
+            5353,
+            &DnsMsg::query(8, "example.test", TYPE_A)
+                .opt(0, &[0, 10, 0, 1, 7])
+                .build(),
+        ),
         udp_frame(Ipv4Addr::LOCALHOST, 9, b"loop"),
     ]
 }
@@ -1402,7 +1428,8 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
         calls,
         c.tx_frames + c.drop_runt + c.drop_oversize + c.drop_tx_queue_full
     );
-    // Every accepted frame ended in exactly one counter after processing.
+    // Every accepted frame ended in exactly one counter after processing (the queue never overflowed).
+    assert_eq!(c.drop_rx_queue_full, 0);
     assert_eq!(c.tx_frames, total_accounted(&c));
 }
 

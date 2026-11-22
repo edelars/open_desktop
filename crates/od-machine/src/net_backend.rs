@@ -30,9 +30,6 @@ pub enum Dropped {
 
 /// Monotonic counters of a backend (NETWORK.md section 13). They survive `reset` and are
 /// only ever increased. The names follow the document; one counter per drop reason.
-///
-/// `drop_unhandled_l4` is temporary: it counts well-formed TCP/UDP/ICMP packets that no handler
-/// serves yet (S11-31a). S11-31b..d take the protocols over; the last of them removes the field.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NetCounters {
     // Frames and bytes.
@@ -64,7 +61,6 @@ pub struct NetCounters {
     pub drop_flow_limit_icmp: u64,
     pub drop_host_resource: u64,
     pub drop_oversize_reply: u64,
-    pub drop_unhandled_l4: u64,
     // ARP, DHCP, DNS.
     pub arp_replies: u64,
     pub arp_probe_ignored: u64,
@@ -79,6 +75,9 @@ pub struct NetCounters {
     pub dns_servfail: u64,
     pub dns_formerr: u64,
     pub dns_dropped_busy: u64,
+    /// A DNS answer that arrived after its query was handled found the L3 queue full. Not part of the
+    /// one-counter-per-frame identity: no frame of the guest is being handled at that moment.
+    pub dns_late_reply_dropped: u64,
     // Transport.
     pub tcp_segments: u64,
     pub tcp_opened: u64,

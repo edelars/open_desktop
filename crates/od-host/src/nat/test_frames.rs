@@ -7,10 +7,14 @@
 
 use std::net::Ipv4Addr;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use super::frame::{
     ETHERTYPE_ARP, ETHERTYPE_IPV4, GATEWAY_IP, GATEWAY_MAC, GUEST_IP, Mac, PROTO_ICMP, PROTO_TCP,
     PROTO_UDP,
 };
+use super::resolver::{ResolveOutcome, Resolver};
 
 pub const GUEST_MAC: Mac = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
 pub const BROADCAST_MAC: Mac = [0xFF; 6];
@@ -345,5 +349,374 @@ impl Rng {
         for byte in buf {
             *byte = self.next() as u8;
         }
+    }
+}
+
+// ---- Replies of the backend, read back with the reference routines ------------------------------
+
+/// A UDP datagram that the backend put into the queue for the guest, checked field by field.
+#[derive(Debug)]
+pub struct UdpReply {
+    pub eth_dst: Mac,
+    pub src: Ipv4Addr,
+    pub dst: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub ident: u16,
+    pub data: Vec<u8>,
+}
+
+/// Parses a frame for the guest as an IPv4 UDP datagram and checks everything NETWORK.md section 5
+/// promises about frames the backend builds: sent from the gateway MAC, TTL 64, Don't Fragment, no
+/// padding, valid header and UDP checksums (a UDP checksum is never 0 on the wire here).
+pub fn udp_reply(frame: &[u8]) -> UdpReply {
+    assert!(
+        frame.len() >= 42 && frame.len() <= 1514,
+        "length {}",
+        frame.len()
+    );
+    assert_eq!(frame[6..12], GATEWAY_MAC, "source MAC");
+    assert_eq!(frame[12..14], ETHERTYPE_IPV4.to_be_bytes());
+    let ip = &frame[IP..IP + 20];
+    assert_eq!(ip[0], 0x45);
+    assert_eq!(
+        usize::from(u16::from_be_bytes([ip[2], ip[3]])),
+        frame.len() - IP
+    );
+    assert_eq!(ip[6..8], 0x4000u16.to_be_bytes(), "DF only");
+    assert_eq!(ip[8], 64, "TTL");
+    assert_eq!(ip[9], PROTO_UDP);
+    assert_eq!(ref_checksum(&[ip]), 0, "IPv4 header checksum");
+    let src = Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]);
+    let dst = Ipv4Addr::new(ip[16], ip[17], ip[18], ip[19]);
+    let udp = &frame[L4..];
+    let udp_len = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
+    assert_eq!(udp_len, udp.len(), "UDP length");
+    assert_ne!(udp[6..8], [0, 0], "UDP checksum present");
+    assert_eq!(
+        ref_checksum(&[&pseudo(src, dst, PROTO_UDP, udp.len()), udp]),
+        0,
+        "UDP checksum"
+    );
+    UdpReply {
+        eth_dst: frame[0..6].try_into().unwrap(),
+        src,
+        dst,
+        src_port: u16::from_be_bytes([udp[0], udp[1]]),
+        dst_port: u16::from_be_bytes([udp[2], udp[3]]),
+        ident: u16::from_be_bytes([ip[4], ip[5]]),
+        data: udp[8..].to_vec(),
+    }
+}
+
+// ---- DHCP ------------------------------------------------------------------------------------------
+
+pub const DHCP_DISCOVER: u8 = 1;
+pub const DHCP_REQUEST: u8 = 3;
+pub const DHCP_DECLINE: u8 = 4;
+pub const DHCP_RELEASE: u8 = 7;
+pub const DHCP_INFORM: u8 = 8;
+
+/// A DHCP message of a client under construction.
+#[derive(Clone)]
+pub struct DhcpMsg {
+    pub op: u8,
+    pub chaddr: Mac,
+    pub ciaddr: Ipv4Addr,
+    pub giaddr: Ipv4Addr,
+    pub xid: u32,
+    pub flags: u16,
+    pub cookie: bool,
+    pub options: Vec<u8>,
+}
+
+impl DhcpMsg {
+    /// A client message of the given type (option 53 first).
+    pub fn new(message_type: u8) -> Self {
+        Self {
+            op: 1,
+            chaddr: GUEST_MAC,
+            ciaddr: Ipv4Addr::UNSPECIFIED,
+            giaddr: Ipv4Addr::UNSPECIFIED,
+            xid: 0x1234_5678,
+            flags: 0,
+            cookie: true,
+            options: vec![53, 1, message_type],
+        }
+    }
+
+    pub fn opt(mut self, code: u8, value: &[u8]) -> Self {
+        self.options.push(code);
+        self.options.push(value.len() as u8);
+        self.options.extend_from_slice(value);
+        self
+    }
+
+    pub fn requested(self, ip: Ipv4Addr) -> Self {
+        self.opt(50, &ip.octets())
+    }
+
+    pub fn server(self, ip: Ipv4Addr) -> Self {
+        self.opt(54, &ip.octets())
+    }
+
+    pub fn ciaddr(mut self, ip: Ipv4Addr) -> Self {
+        self.ciaddr = ip;
+        self
+    }
+
+    pub fn build(&self) -> Vec<u8> {
+        let mut m = vec![0u8; 236];
+        m[0] = self.op;
+        m[1] = 1;
+        m[2] = 6;
+        m[4..8].copy_from_slice(&self.xid.to_be_bytes());
+        m[10..12].copy_from_slice(&self.flags.to_be_bytes());
+        m[12..16].copy_from_slice(&self.ciaddr.octets());
+        m[24..28].copy_from_slice(&self.giaddr.octets());
+        m[28..34].copy_from_slice(&self.chaddr);
+        if self.cookie {
+            m.extend_from_slice(&[0x63, 0x82, 0x53, 0x63]);
+        } else {
+            m.extend_from_slice(&[0; 4]);
+        }
+        m.extend_from_slice(&self.options);
+        m.push(255);
+        m
+    }
+}
+
+/// A DHCP client frame with explicit addresses and ports.
+pub fn dhcp_client_frame(
+    eth_dst: Mac,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    message: &[u8],
+) -> Vec<u8> {
+    let ip = Ip {
+        src,
+        ..Ip::to(dst, PROTO_UDP)
+    };
+    guest_frame(
+        eth_dst,
+        ETHERTYPE_IPV4,
+        &ip_packet(&ip, &udp_segment(src, dst, src_port, 67, message)),
+    )
+}
+
+/// The usual first message of a client without an address: 0.0.0.0:68 to the broadcast address.
+pub fn dhcp_broadcast(message: &DhcpMsg) -> Vec<u8> {
+    dhcp_client_frame(
+        BROADCAST_MAC,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST,
+        68,
+        &message.build(),
+    )
+}
+
+/// A message sent to the gateway address by a client that has an address.
+pub fn dhcp_unicast(message: &DhcpMsg) -> Vec<u8> {
+    dhcp_client_frame(GATEWAY_MAC, GUEST_IP, GATEWAY_IP, 68, &message.build())
+}
+
+/// Options of a server message as (code, value) pairs, in the order they were sent.
+pub fn dhcp_options(message: &[u8]) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut at = 240;
+    while message[at] != 255 {
+        let (code, len) = (message[at], usize::from(message[at + 1]));
+        out.push((code, message[at + 2..at + 2 + len].to_vec()));
+        at += 2 + len;
+    }
+    out
+}
+
+// ---- DNS ------------------------------------------------------------------------------------------
+
+pub const TYPE_A: u16 = 1;
+pub const TYPE_AAAA: u16 = 28;
+
+/// A name in wire format from a dotted string.
+pub fn dns_name(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name.split('.').filter(|l| !l.is_empty()) {
+        out.push(label.len() as u8);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
+}
+
+/// A DNS query under construction: recursion desired, one question, class IN, no additional records.
+#[derive(Clone)]
+pub struct DnsMsg {
+    pub id: u16,
+    pub flags: u16,
+    pub qdcount: u16,
+    pub question: Vec<u8>,
+    pub arcount: u16,
+    pub additional: Vec<u8>,
+}
+
+impl DnsMsg {
+    pub fn query(id: u16, name: &str, qtype: u16) -> Self {
+        Self::question_bytes(id, dns_name(name), qtype, 1)
+    }
+
+    pub fn question_bytes(id: u16, wire_name: Vec<u8>, qtype: u16, qclass: u16) -> Self {
+        let mut question = wire_name;
+        question.extend_from_slice(&qtype.to_be_bytes());
+        question.extend_from_slice(&qclass.to_be_bytes());
+        Self {
+            id,
+            flags: 0x0100,
+            qdcount: 1,
+            question,
+            arcount: 0,
+            additional: Vec::new(),
+        }
+    }
+
+    /// Adds an OPT record: root name, type 41, UDP size 4096, extended RCODE 0, the version, flags 0.
+    pub fn opt(mut self, version: u8, rdata: &[u8]) -> Self {
+        self.additional
+            .extend_from_slice(&[0, 0, 41, 0x10, 0x00, 0, version, 0, 0]);
+        self.additional
+            .extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        self.additional.extend_from_slice(rdata);
+        self.arcount += 1;
+        self
+    }
+
+    pub fn build(&self) -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(&self.id.to_be_bytes());
+        m.extend_from_slice(&self.flags.to_be_bytes());
+        m.extend_from_slice(&self.qdcount.to_be_bytes());
+        m.extend_from_slice(&[0, 0, 0, 0]);
+        m.extend_from_slice(&self.arcount.to_be_bytes());
+        m.extend_from_slice(&self.question);
+        m.extend_from_slice(&self.additional);
+        m
+    }
+}
+
+/// A frame carrying a DNS query to 10.0.2.3:53 from the given guest port.
+pub fn dns_frame(src_port: u16, message: &[u8]) -> Vec<u8> {
+    let dst = super::frame::DNS_IP;
+    ipv4_frame(
+        &Ip::to(dst, PROTO_UDP),
+        &udp_segment(GUEST_IP, dst, src_port, 53, message),
+    )
+}
+
+/// A DNS response read back by an independent routine.
+#[derive(Debug)]
+pub struct DnsReply {
+    pub id: u16,
+    pub flags: u16,
+    pub qdcount: u16,
+    pub question: Vec<u8>,
+    /// (address, TTL) of every answer; each answer name must be the pointer to the question.
+    pub answers: Vec<(Ipv4Addr, u32)>,
+    /// The OPT record of the response, if any: (UDP size, extended RCODE, version, flags, data length).
+    pub opt: Option<(u16, u8, u8, u16, u16)>,
+}
+
+impl DnsReply {
+    pub fn rcode(&self) -> u8 {
+        (self.flags & 0xF) as u8
+    }
+}
+
+pub fn dns_reply(data: &[u8]) -> DnsReply {
+    assert!(
+        data.len() >= 12 && data.len() <= 512,
+        "response length {}",
+        data.len()
+    );
+    let u16_at = |at: usize| u16::from_be_bytes([data[at], data[at + 1]]);
+    let (qdcount, ancount, nscount, arcount) = (u16_at(4), u16_at(6), u16_at(8), u16_at(10));
+    let mut at = 12;
+    let mut question = Vec::new();
+    if qdcount == 1 {
+        let start = at;
+        while data[at] != 0 {
+            at += 1 + usize::from(data[at]);
+        }
+        at += 1 + 4;
+        question = data[start..at].to_vec();
+    }
+    let mut answers = Vec::new();
+    for _ in 0..ancount {
+        assert_eq!(data[at..at + 2], [0xC0, 0x0C], "answer name");
+        assert_eq!(u16_at(at + 2), 1, "type A");
+        assert_eq!(u16_at(at + 4), 1, "class IN");
+        let ttl = u32::from_be_bytes([data[at + 6], data[at + 7], data[at + 8], data[at + 9]]);
+        assert_eq!(u16_at(at + 10), 4, "rdlength");
+        answers.push((
+            Ipv4Addr::new(data[at + 12], data[at + 13], data[at + 14], data[at + 15]),
+            ttl,
+        ));
+        at += 16;
+    }
+    assert_eq!(nscount, 0);
+    let mut opt = None;
+    for _ in 0..arcount {
+        assert_eq!(data[at], 0, "OPT name is the root");
+        assert_eq!(u16_at(at + 1), 41, "OPT type");
+        opt = Some((
+            u16_at(at + 3),
+            data[at + 5],
+            data[at + 6],
+            u16_at(at + 7),
+            u16_at(at + 9),
+        ));
+        at += 11 + usize::from(u16_at(at + 9));
+    }
+    assert_eq!(at, data.len(), "no trailing bytes");
+    DnsReply {
+        id: u16_at(0),
+        flags: u16_at(2),
+        qdcount,
+        question,
+        answers,
+        opt,
+    }
+}
+
+/// A resolver for tests that must not touch the network: every name is unknown.
+pub struct NotFoundResolver;
+
+impl Resolver for NotFoundResolver {
+    fn resolve_a(&self, _name: &str) -> ResolveOutcome {
+        ResolveOutcome::NotFound
+    }
+}
+
+/// A resolver that answers from a table (an unknown name is NotFound).
+pub struct TableResolver(pub Mutex<HashMap<String, ResolveOutcome>>);
+
+impl TableResolver {
+    pub fn with(entries: &[(&str, ResolveOutcome)]) -> Self {
+        Self(Mutex::new(
+            entries
+                .iter()
+                .map(|(n, o)| ((*n).to_owned(), o.clone()))
+                .collect(),
+        ))
+    }
+}
+
+impl Resolver for TableResolver {
+    fn resolve_a(&self, name: &str) -> ResolveOutcome {
+        self.0
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or(ResolveOutcome::NotFound)
     }
 }
