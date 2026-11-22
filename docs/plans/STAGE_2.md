@@ -429,6 +429,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-32 | Остальные обязательные x87 формы | S2-31 |
 | [x] | S2-32a | Bare `D9 F0..FF`: FSIN, FCOS, FSINCOS, FPTAN, F2XM1, FYL2X, FYL2XP1, FPATAN, FSCALE, FXTRACT в ограниченном локальном профиле; модельная точность против Core i5-3210M | S2-31 |
 | [x] | S2-32b | `DF 20`/`DF 30` FBLD/FBSTP по [RAX]; 335 строк oracle побитово | S2-32a |
+| [x] | S2-32c | `D9 30` FNSTENV, `DD 30` FNSAVE, `DD 20` FRSTOR по [RAX]: образы 28/108 байт, политика FCS/FDS; 324 строки oracle побайтно | S2-32b |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
 | [x] | S2-34.1 | Lossless local-only Long64 x87+SSE snapshot transfer: 16 raw XMM registers and raw MXCSR; no instruction semantics or hardware claim | S2-28a |
@@ -5574,6 +5575,27 @@ pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com
   списке отказов. `FBLD` отказывает на недесятичной цифре уже после чтения 10 байт (состояние x87, RIP и регистры не меняются).
   Блокер FPU в `s2_57_cpuid_windows.rs` проверяется через набор CPL0 (`state.x87 = None` между инструкциями) и отсутствие
   `FSTENV`/`FSAVE`; исправлены ссылки SDM (§8.1.3.2 — коды условий, §8.3.8 — 66-битное pi, FBSTP — Vol. 2A, с. 3-316).
+
+#### S2-32c. Срез: FNSTENV, FNSAVE, FRSTOR (2026-11-22, не закрывает задачу, чекбокс S2-32 не отмечен)
+
+- **Сделано.** `D9 30` FNSTENV, `DD 30` FNSAVE, `DD 20` FRSTOR по `[RAX]` без префиксов в ограниченном локальном профиле `od-isa`
+  (`FSTENV`/`FSAVE` — это `FWAIT` + форма без ожидания; `FWAIT` принадлежит набору CPL0, слитной формы в профиле нет). Образ 32-битного
+  защищённого режима: 28 байт, для FNSAVE 108 (ST(0)..ST(7) в стековом порядке, затем значения FNINIT), одна запись. Тег-слово
+  пересчитывается по содержимому регистров (Empty остаётся Empty). Резервные поля — FFFFH (так на Core i5-3210M).
+- **Решение по FCS/FDS.** FIP/FDP сохраняются младшими 32 битами; FCS/FDS — как представленный селектор (`Some(v)`) или 0000H, если селектор
+  не представлен (`None`): то же сохраняет процессор с депрекацией FCS/FDS (CPUID.07H.00H:EBX[13]); отслеживание сегмента x87 не нужно,
+  CPUID-бит не объявляется (S2-57). FRSTOR загружает селектор как `Some(v)` (нулевой остаётся `None`, если был `None`); FNSAVE обнуляет
+  известные селекторы (`Some(v)` → `Some(0)`). Три формы освобождены от глобального отказа D8..DF при представленных селекторах.
+  Подробности, допуск и SDM — [CPU_CONTRACT, Local S2-32c](../specs/CPU_CONTRACT.md#local-s2-32c-bounded-fnstenv-d9-30-fnsave-dd-30-and-frstor-dd-20-at-rax).
+  SDM 325462-093US Vol. 2A: FRSTOR с. 3-373, FSAVE/FNSAVE 3-375, FSTENV/FNSTENV 3-390; Vol. 1 §8.1.8, §8.1.10, рис. 8-9.
+- **Проверка.** `tests/s2_32c_x87_env.rs` (8 тестов): 324 строки oracle Core i5-3210M (`FNINIT; FRSTOR; FNSTENV; FNSAVE; FNSTENV`) побайтно в двух
+  начальных состояниях селекторов, литерал образа, порядок ST, загрузка селекторов, классы тегов, отказы без следа, #GP и неотображённый адрес,
+  декодер и пара `9B`; `s2_57_cpuid_windows` (19), `--lib long_decode` (431), `--lib x87` (103), `s2_32_x87_transcend` (6), `s2_32b_x87_bcd` (3),
+  `cargo fmt --all -- --check`, `git diff --check`. Отчёт — [S2_32C_X87_ENV](../reports/S2_32C_X87_ENV.md).
+- **Не сделано (остаток S2-32).** `FLDENV` (`D9 20`); 16-битные образы (префикс `66`) и образы реального режима; образы с незамаскированными
+  исключениями, ES/B и X-битом (отказ `Unsupported`); #NM (CR0.EM/TS) и #AC; допуск в наборе CPL0 и написания с `FWAIT`; точное FCS/FDS после
+  выполненных инструкций (модель сохраняет 0000H, i5-3210M — реальные CS/DS); остаток S2-32a/S2-32b (денормалы, NaN, бесконечности, IE/ZE/DE,
+  unmasked-исключения, stack fault, произвольная адресация и префиксы, `FPREM`/`FPREM1` вне среза S2-30cl/cm). JIT и native закрыты, CPUID-бит FPU не объявлен.
 
 ### S2-33. MMX и aliasing с x87
 
