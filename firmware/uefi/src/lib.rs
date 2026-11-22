@@ -34,6 +34,7 @@ pub mod smbios;
 pub mod stop;
 pub mod tpm;
 pub mod uefi;
+pub mod usb;
 pub mod var;
 
 /// GPA of the handoff block passed in `RDI` at firmware entry (FIRMWARE_BOOT.md, section 5).

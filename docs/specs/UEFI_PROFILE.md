@@ -624,6 +624,10 @@ ESC с `[` или `O` и суффиксом `A…D` дают четыре scan c
 таймеры и возвращает `EFI_NOT_READY` при пустой очереди.
 [UEFI 2.11, §12](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
 
+### USB-клавиатура (S7-34, срез A)
+
+Если плата содержит xHCI (`FirmwareBoardConfig::xhci`), прошивка находит функцию класса 0x0C0330 по ECAM, сбрасывает контроллер, перечисляет клавиатуру HID boot protocol на корневом хабе и опрашивает Interrupt IN без прерываний; результат — строка COM1 `OD-FW xhci: keyboard enumerated` или `OD-FW xhci: enumeration failed step=… detail=0x…`. Плата без xHCI ничего не печатает. Клавиши пока не доходят до `ConIn` (срез B): транспорт ввода по-прежнему COM1. Таблица Usage ID страницы 0x07 → `EFI_INPUT_KEY` (раскладка US): 0x04–0x1D — буквы (Shift XOR CapsLock — прописные; Ctrl — коды 1–26), 0x1E–0x27 — цифры (с Shift — `!@#$%^&*()`), 0x28 и 0x58 — `\r`, 0x29 — scan code 0x17 (Esc), 0x2A — `\b`, 0x2B — `\t`, 0x2C — пробел, 0x2D–0x38 — знаки пунктуации с Shift-вариантами, 0x3A–0x45 — F1–F12 (scan 0x0B–0x16), 0x49–0x4E — Insert, Home, PageUp, Delete, End, PageDown (scan 0x07, 0x05, 0x09, 0x08, 0x06, 0x0A), 0x4F–0x52 — стрелки (scan 0x03, 0x04, 0x02, 0x01), 0x54–0x63 — клавиатурный блок как при включённом NumLock; остальные Usage ID, ErrorRollOver и модификаторы без символа ключей не дают. Автоповтора нет. Контракт: [XHCI_DEVICE.md](XHCI_DEVICE.md), раздел 15.
+
 ### События и TPL
 
 Диагностическая Boot Services поддерживает до 64 событий, включая
