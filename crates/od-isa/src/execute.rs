@@ -15,6 +15,7 @@ use crate::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
     MemoryError, PrivilegeLevel,
 };
+use crate::mmx_int::{MmxIntKind, mmx_int_result, mmx_shift_result};
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
 use crate::sse_fp;
@@ -2225,9 +2226,12 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// it is NOT part of `LongModeState`: `state.x87` stays `None`, and `state.sse` is `None` at the
     /// entry and at every exit. S2-39: while the set runs the SSE half (XMM0-15, MXCSR) is loaded
     /// into `state.sse` and stored back to the cell, so at CPL0 the general SSE core of S2-34, S2-37,
-    /// S2-38, S2-54 and S2-55 executes on it as in the bare run (the narrow integer SSE2 forms, the
-    /// MMX forms and every x87 form other than those below keep their refusal with their exact
-    /// opcode; CPL3 keeps its own short list). `FNINIT` applies the
+    /// S2-38, S2-54 and S2-55 executes on it as in the bare run. S2-39 (MMX): at Ring0 the MMX forms
+    /// (the two-operand integer forms, the shifts, MOVD/MOVQ, the SSSE3 forms on MMX registers and EMMS) run on
+    /// the x87 half of the cell, moved into `state.x87` for the length of one instruction (the MMX registers
+    /// are the x87 data registers). The narrow integer SSE2 forms, the MMX conversions (CVTPI2PS and the
+    /// like) and every x87 form other than those below keep their refusal with their exact opcode; CPL3 keeps
+    /// its own short list). `FNINIT` applies the
     /// architectural reset of the x87 environment (FCW `0x037F`, FSW 0, FTW `0xFFFF`, FIP/FDP/FOP
     /// and the selectors 0; register payloads survive). `FXSAVE` writes the 512-byte image through
     /// the set's memory with the S2-39c layout (16-byte alignment else `#GP(0)`; MXCSR_MASK
@@ -41660,6 +41664,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                             Operation::Sse3Permute { .. }
                                 | Operation::Ssse3Int { .. }
                                 | Operation::MmxSsse3 { .. }
+                                | Operation::MmxInt { .. }
+                                | Operation::MmxShiftImmediate { .. }
+                                | Operation::MmxMovd { .. }
+                                | Operation::MmxMovq { .. }
                                 | Operation::Emms
                                 | Operation::Sse41 { .. }
                                 | Operation::Sse41Fp { .. }
@@ -47055,6 +47063,16 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
     }
+    // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
+    if let Some(fp_cell) = fp_cpl0
+        && control_policy.is_some()
+        && context.privilege == PrivilegeLevel::Ring0
+        && state.x87.is_none()
+        && let Some(outcome) =
+            step_cpl0_mmx(state, memory, context, &instruction, next_rip, fp_cell)
+    {
+        return outcome;
+    }
     match instruction.operation {
         Operation::ReadCr0 if cr0_profile.is_some() => {
             let value = state.cr0.expect("CR0 profile state was prevalidated");
@@ -51001,7 +51019,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::FisttpMemory { .. } => state.x87.is_some(),
         // S2-33: the MMX forms and EMMS work on the MMX registers, the physical x87 data registers, so they
         // need the local x87 state (not the SSE state); CPL3 keeps its own profile list (neither is in it).
-        Operation::MmxSsse3 { .. } | Operation::Emms => state.x87.is_some(),
+        // S2-39: the integer MMX forms of two operands, the shifts by an immediate and MOVD/MOVQ likewise.
+        Operation::MmxSsse3 { .. }
+        | Operation::MmxInt { .. }
+        | Operation::MmxShiftImmediate { .. }
+        | Operation::MmxMovd { .. }
+        | Operation::MmxMovq { .. }
+        | Operation::Emms => state.x87.is_some(),
         // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`) are general-register forms with
         // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and in the
         // bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the Linux live profile
@@ -51961,6 +51985,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     if instruction.operation == Operation::Emms {
         return Ok(step_emms(state, instruction.opcode.byte, next_rip));
+    }
+    // S2-39: the other MMX forms (two-operand integer, shift by an immediate, MOVD/MOVQ) commit here too.
+    if matches!(
+        instruction.operation,
+        Operation::MmxInt { .. }
+            | Operation::MmxShiftImmediate { .. }
+            | Operation::MmxMovd { .. }
+            | Operation::MmxMovq { .. }
+    ) {
+        return step_mmx_operation(state, memory, context, &instruction, next_rip)
+            .expect("an MMX operation");
     }
     // S2-56 slice A: POPCNT and CRC32 commit here as well.
     if let Operation::Popcnt { dst, src } | Operation::Crc32 { dst, src } = instruction.operation {
@@ -63497,6 +63532,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
         | Operation::MmxSsse3 { .. }
+        | Operation::MmxInt { .. }
+        | Operation::MmxShiftImmediate { .. }
+        | Operation::MmxMovd { .. }
+        | Operation::MmxMovq { .. }
         | Operation::Emms
         | Operation::Sse41 { .. }
         | Operation::Sse41Fp { .. }
@@ -70405,6 +70444,346 @@ fn step_mmx_ssse3(
     x87.write_mmx_register(destination, result);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+/// S2-39 (MMX): the linear address of a memory operand of an MMX form, validated over its whole size
+/// ([crate::long_decode::MemoryOperand::access_address_48]: a non-canonical byte is #GP(0), #SS(0) for an
+/// RSP/RBP base). `#AC` is not modeled: an operand that is not aligned to its size at CPL3 with RFLAGS.AC = 1
+/// (and CR0.AM = 1, or CR0 not carried) is `Unsupported`, as in [`step_mmx_ssse3`]. The error is the outcome
+/// the caller returns.
+fn mmx_memory_address(
+    state: &LongModeState,
+    context: AccessContext,
+    operand: MemoryOperand,
+    opcode: u8,
+    next_rip: u64,
+) -> Result<u64, Result<StepOutcome, MemoryError>> {
+    let address = match operand.access_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(error) => return Err(report_memory_error(error)),
+    };
+    if address & (operand.size.bytes() as u64 - 1) != 0
+        && context.privilege == PrivilegeLevel::Ring3
+        && state.rflags & (1 << 18) != 0
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    {
+        return Err(Ok(StepOutcome::Unsupported { opcode }));
+    }
+    Ok(address)
+}
+
+/// S2-39 (MMX): the 64-bit source operand of an MMX form, an MMX register or eight bytes of memory (no
+/// alignment rule), read in full before any state change.
+fn mmx_source_qword(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    source: Sse3Source,
+    opcode: u8,
+    next_rip: u64,
+) -> Result<[u8; 8], Result<StepOutcome, MemoryError>> {
+    match source {
+        Sse3Source::Register(index) => Ok(state
+            .x87
+            .as_ref()
+            .expect("MMX state was prevalidated")
+            .mmx_register(index)
+            .expect("the decoder gives MM0..MM7")),
+        Sse3Source::Memory(operand) => {
+            let address = mmx_memory_address(state, context, operand, opcode, next_rip)?;
+            let mut raw = [0u8; 8];
+            memory
+                .read(address, context, &mut raw)
+                .map_err(report_memory_error)?;
+            Ok(raw)
+        }
+    }
+}
+
+/// S2-39 (MMX): the integer MMX instructions of two operands (Intel SDM Vol. 2, "Operation" of the 64-bit
+/// versions). After the [`mmx_entry_fault`] checks the source is read in full; the destination MMd gets the
+/// result with the effect of [`X87State::enter_mmx_state`] and the exponent field of
+/// [`X87State::write_mmx_register`]. No flag, MXCSR or XMM state changes.
+fn step_mmx_int(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, destination, source, immediate): (MmxIntKind, u8, Sse3Source, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return Ok(outcome);
+    }
+    let raw = match mmx_source_qword(state, memory, context, source, opcode, next_rip) {
+        Ok(raw) => raw,
+        Err(outcome) => return outcome,
+    };
+    let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+    let current = x87
+        .mmx_register(destination)
+        .expect("the decoder gives MM0..MM7");
+    let result = mmx_int_result(kind, current, raw, immediate);
+    x87.enter_mmx_state();
+    x87.write_mmx_register(destination, result);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-39 (MMX): PSRLW/PSRAW/PSLLW/PSRLD/PSRAD/PSLLD/PSRLQ/PSLLQ with an imm8 count.
+fn step_mmx_shift_immediate(
+    state: &mut LongModeState,
+    (kind, destination, immediate): (MmxIntKind, u8, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> StepOutcome {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return outcome;
+    }
+    let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+    let current = x87
+        .mmx_register(destination)
+        .expect("the decoder gives MM0..MM7");
+    let result = mmx_shift_result(kind, current, u64::from(immediate));
+    x87.enter_mmx_state();
+    x87.write_mmx_register(destination, result);
+    state.rip = next_rip;
+    StepOutcome::Advanced
+}
+
+/// S2-39 (MMX): MOVD/MOVQ between an MMX register and a general register or memory (`0F 6E/7E`). The load
+/// zero-extends a doubleword into the 64-bit register; the store writes the low doubleword (REX.W: the
+/// quadword) of the MMX register. Both set TOP = 0 and the tag word to valid; only the load rewrites the
+/// register (and its exponent field). A memory destination is written before any state change, so a faulting
+/// store leaves the CPU state untouched.
+fn step_mmx_movd(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (to_mmx, mmx, operand): (bool, u8, Operand),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return Ok(outcome);
+    }
+    let size = match operand {
+        Operand::Register(view) => view.size(),
+        Operand::Memory(operand) => operand.size,
+        Operand::Immediate(_) => unreachable!("the decoder gives a register or memory operand"),
+    };
+    let address = match operand {
+        Operand::Memory(operand) => {
+            match mmx_memory_address(state, context, operand, opcode, next_rip) {
+                Ok(address) => Some(address),
+                Err(outcome) => return outcome,
+            }
+        }
+        _ => None,
+    };
+    let mut bytes = [0u8; 8];
+    if to_mmx {
+        match (operand, address) {
+            (Operand::Memory(_), Some(address)) => {
+                if let Err(error) = memory.read(address, context, &mut bytes[..size.bytes()]) {
+                    return report_memory_error(error);
+                }
+            }
+            (Operand::Register(view), _) => bytes = state.read(view).to_le_bytes(),
+            _ => unreachable!("a memory operand has its address"),
+        }
+        let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+        x87.enter_mmx_state();
+        x87.write_mmx_register(mmx, bytes);
+    } else {
+        let value = state
+            .x87
+            .as_ref()
+            .expect("MMX state was prevalidated")
+            .mmx_register(mmx)
+            .expect("the decoder gives MM0..MM7");
+        match (operand, address) {
+            (Operand::Memory(_), Some(address)) => {
+                if let Err(error) = memory.write(address, context, &value[..size.bytes()]) {
+                    return report_memory_error(error);
+                }
+            }
+            (Operand::Register(view), _) => {
+                let mut stored = [0u8; 8];
+                stored[..size.bytes()].copy_from_slice(&value[..size.bytes()]);
+                state.write(view, u64::from_le_bytes(stored));
+            }
+            _ => unreachable!("a memory operand has its address"),
+        }
+        state
+            .x87
+            .as_mut()
+            .expect("MMX state was prevalidated")
+            .enter_mmx_state();
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-39 (MMX): MOVQ mm, mm/m64 (`0F 6F`) and MOVQ mm/m64, mm (`0F 7F`). A register destination of the
+/// store form is written like a load destination (exponent field all ones); a memory destination is
+/// written before any state change.
+fn step_mmx_movq(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (to_mmx, mmx, other): (bool, u8, Sse3Source),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return Ok(outcome);
+    }
+    if to_mmx {
+        let raw = match mmx_source_qword(state, memory, context, other, opcode, next_rip) {
+            Ok(raw) => raw,
+            Err(outcome) => return outcome,
+        };
+        let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+        x87.enter_mmx_state();
+        x87.write_mmx_register(mmx, raw);
+    } else {
+        let value = state
+            .x87
+            .as_ref()
+            .expect("MMX state was prevalidated")
+            .mmx_register(mmx)
+            .expect("the decoder gives MM0..MM7");
+        match other {
+            Sse3Source::Register(index) => {
+                let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+                x87.enter_mmx_state();
+                x87.write_mmx_register(index, value);
+            }
+            Sse3Source::Memory(operand) => {
+                let address = match mmx_memory_address(state, context, operand, opcode, next_rip) {
+                    Ok(address) => address,
+                    Err(outcome) => return outcome,
+                };
+                if let Err(error) = memory.write(address, context, &value) {
+                    return report_memory_error(error);
+                }
+                state
+                    .x87
+                    .as_mut()
+                    .expect("MMX state was prevalidated")
+                    .enter_mmx_state();
+            }
+        }
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S2-39: the MMX instruction of a decoded operation, on the x87 state of `state`; `None` for any other
+/// operation.
+fn step_mmx_operation(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    let opcode = instruction.opcode.byte;
+    Some(match instruction.operation {
+        Operation::MmxSsse3 {
+            kind,
+            destination,
+            source,
+            immediate,
+        } => step_mmx_ssse3(
+            state,
+            memory,
+            context,
+            (kind, destination, source, immediate),
+            opcode,
+            next_rip,
+        ),
+        Operation::MmxInt {
+            kind,
+            destination,
+            source,
+            immediate,
+        } => step_mmx_int(
+            state,
+            memory,
+            context,
+            (kind, destination, source, immediate),
+            opcode,
+            next_rip,
+        ),
+        Operation::MmxShiftImmediate {
+            kind,
+            destination,
+            immediate,
+        } => Ok(step_mmx_shift_immediate(
+            state,
+            (kind, destination, immediate),
+            opcode,
+            next_rip,
+        )),
+        Operation::MmxMovd {
+            to_mmx,
+            mmx,
+            operand,
+        } => step_mmx_movd(
+            state,
+            memory,
+            context,
+            (to_mmx, mmx, operand),
+            opcode,
+            next_rip,
+        ),
+        Operation::MmxMovq { to_mmx, mmx, other } => step_mmx_movq(
+            state,
+            memory,
+            context,
+            (to_mmx, mmx, other),
+            opcode,
+            next_rip,
+        ),
+        Operation::Emms => Ok(step_emms(state, opcode, next_rip)),
+        _ => return None,
+    })
+}
+
+/// S2-39: the MMX instructions of the CPL0 set. The x87 state of the FP member lives in its cell (the
+/// x87 forms stay refused there); for the length of one MMX instruction it is moved into `state.x87`,
+/// where the MMX registers are, and stored back (also when the instruction faults or refuses, with the
+/// state it had).
+fn step_cpl0_mmx(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    debug_assert!(state.x87.is_none());
+    // Only an MMX operation takes the x87 state out of the cell; any other instruction skips the clone.
+    if !matches!(
+        instruction.operation,
+        Operation::MmxInt { .. }
+            | Operation::MmxShiftImmediate { .. }
+            | Operation::MmxMovd { .. }
+            | Operation::MmxMovq { .. }
+            | Operation::MmxSsse3 { .. }
+            | Operation::Emms
+    ) {
+        return None;
+    }
+    state.x87 = Some(cell.borrow().x87.clone());
+    let outcome = step_mmx_operation(state, memory, context, instruction, next_rip);
+    let x87 = state.x87.take().expect("the MMX step keeps the x87 state");
+    if outcome.is_some() {
+        cell.borrow_mut().x87 = x87;
+    }
+    outcome
 }
 
 /// The lane arithmetic of the vector SSE4.1 forms that write the destination register (Intel SDM Vol. 2B,

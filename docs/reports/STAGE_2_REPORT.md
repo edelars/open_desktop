@@ -24627,6 +24627,50 @@ stores, MOVHLPS/MOVLHPS, PEXTRW, register-form PINSRW, MOVDQU and the register M
 addressing outside the decoder's measured encodings, LDMXCSR/STMXCSR REX.W/prefix/FS/GS forms, MMX, CPL3. The
 interpreter does not gate on CPUID and declares no bits (S2-57). Parent S2-39 remains open.
 
+## S2-39o — MMX integer forms in the bare run and at CPL0 of the set
+
+Implemented (`crates/od-isa/src/mmx_int.rs`, `long_decode.rs`, `execute.rs`): the no-prefix
+MMX forms listed in the [S2-39o plan block](../plans/STAGE_2.md#s2-39n-mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set)
+on the x87 data registers, in the bare run (state with `x87`) and at CPL0 of the CPL0 set with the FP member.
+The set loads `GuestFpState.x87` into `LongModeState.x87` only for the step of an MMX operation
+(`step_cpl0_mmx`, before the generic dispatch) and stores it back; the S2-39m SSE half is unchanged. The
+S2-37 memory form of CVTPI2PS (ISSUE-642: no change of TOP/tags) and the other MMX conversions were not
+touched and stay refused in the set.
+
+Tests (all passed): `s2_39_mmx` (20): every kind against an independent widened-lane model on several
+thousand boundary/generated operand pairs, every shift count 0..130 and 64-bit counts, literal vectors of the instruction
+pages, execution of every kind (register and memory, whole-state check: only the destination is written, exponent
+0xffff, TOP = 0, tags valid, RFLAGS/GPR/XMM unchanged), all 64 register pairs, PSHUFW for 256 immediates,
+MOVD/MOVQ loads and stores (zero extension, REX.W/R/B, store widths), alignment and faults (backend, non-canonical,
+CPL3 AC), CR0.EM/TS/pending-exception gates under the FP-init pair, LOCK/prefix refusals, shift-group #UD, decoder
+shape. `s2_39_cpl0_mmx` (7): 40 forms in the set equal to the FP-init bare run (registers, RFLAGS, memory,
+read/write log, x87, SSE half untouched), an 8-instruction program, a literal vector, EM/TS/#MF gates for all
+forms with unchanged cell and state, failing accesses, MMX + SSE + FXSAVE64 in one run (the image shows the MMX
+state), refusals of x87 forms and MMX conversions in the set. `cpl3_profile_set` 238 (seven forms added to the
+refusal table), `od-isa --lib` 2677, `cpl0_profile_set` 1626, `s2_33_mmx` 15, `s2_54_ssse3_mmx` 19,
+`s2_37_cvt_int` 36, `s2_34_sse_moves_memory` 14 (the two MMX MOVQ cases 0F 6F/0F 7F without a prefix left its refusal table: they are executed now and covered by `s2_39_mmx`), `s2_39_cpl0_sse` 11. Two mutations (cell write-back dropped, PSRAW clamp changed) fail the new tests.
+
+Oracle (Mac mini 192.168.1.14, Ubuntu x86-64, Core i5-3210M; harness derived from the S2-33 one in
+`work/stage8/s2_39_mmx_oracle/`, not in git): 18980 cases (18964 distinct names) comparing the FXSAVE64 image
+(x87/MMX state byte for byte), GPR, flags, XMM, MXCSR and the data page hash: every kind with every addressing
+form, all register pairs, prefix/REX variants, data sweeps including a shift-count pattern, PSHUFW 256 immediates,
+shifts by imm8 for counts 0..69 and larger, MOVD/MOVQ with every GPR (r10/r11 excluded: the harness clobbers
+them), memory edges, flags/AC, x87 to MMX transitions for every TOP and tag patterns, pending exception, FISTTP
+sequences. 18644 identical, 320 different: 266 where the model refuses (prefix variants the decoder does not
+claim: F2/F3, FS/GS, repeated prefixes, 92 in the `p` group, 92 FS/GS register forms, 32 in the shift-by-imm8
+group; AC-misaligned operand at CPL3, 26; FISTTP sequences that the model refuses for FCW = 0, 24), 42 non-canonical
+range overflow (`AddressOverflow` of the existing access check, as in S2-54), 12 harness artifacts (the pending
+cases whose exceptions are all masked: the local harness normalizes ES when it loads the state, as FXRSTOR does
+(`work/stage8/s2_39_mmx_oracle/src/main.rs:129`), so for a form that does not change the x87 state it prints
+`x87=same`; the physical harness loads an image with ES = 1, the FXSAVE image after the step has ES = 0, so it is
+not `same` there and the full x87 state is printed, with SW = 0x1, which is the normalized state of the local run;
+the result of the executed form is equal in all 12). No difference in the result of an executed form.
+
+Not checked: the full suite, a faulting store with the MMX state compared (the oracle prints the state only for
+completed instructions), CR0.EM/TS on the physical machine (user space cannot set them; the gates are the S2-33
+ones, SDM and unit tests), CPL3 of the set, MMX conversions in the set, a boot, the JIT, CPUID gating (S2-57).
+Parent S2-39 remains open.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64

@@ -3,6 +3,7 @@
 //! Vol.2B MOV/SUB. This is independent of the strict S0 fragment decoder.
 
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError};
+use crate::mmx_int::MmxIntKind;
 use crate::{LongModeState, OperandSize, Register, RegisterView};
 
 /// The six raw 128-bit SSE moves (Intel SDM Vol. 2B: MOVAPD pp. 4-37..4-40, MOVAPS pp. 4-41..4-44,
@@ -2851,6 +2852,39 @@ pub enum Operation {
     },
     /// S2-33: `EMMS` (`NP 0F 77`), the whole x87 tag word becomes empty (SDM Vol. 2A, EMMS).
     Emms,
+    /// S2-39 (MMX): the integer MMX instructions of two operands, `NP 0F xx /r` (and `NP 0F 70 /r ib`
+    /// PSHUFW, whose control is `immediate`; zero for the others). `destination` is MM0..MM7 (ModR/M.reg,
+    /// REX.R ignored); a register `source` is ModR/M.r/m (REX.B ignored) and a memory `source` is 64 bits
+    /// with no alignment rule. The shifts take the count from the whole source operand. Decoded only as the
+    /// fallback of [`decode`]; executed through `step_mmx_int`.
+    MmxInt {
+        kind: MmxIntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-39 (MMX): `NP 0F 71/72/73 /r ib` (PSRLW/PSRAW/PSLLW, PSRLD/PSRAD/PSLLD, PSRLQ/PSLLQ `mm, imm8`);
+    /// `destination` is ModR/M.r/m (REX.B ignored), `kind` one of the eight shifts.
+    MmxShiftImmediate {
+        kind: MmxIntKind,
+        destination: u8,
+        immediate: u8,
+    },
+    /// S2-39 (MMX): `NP 0F 6E` (`to_mmx`: MOVD mm, r/m32 or, with REX.W, MOVQ mm, r/m64, zero-extended) and
+    /// `NP 0F 7E` (MOVD r/m32, mm or MOVQ r/m64, mm); `operand` is the general register or memory operand
+    /// of the given size, `mmx` the MMX register of ModR/M.reg (REX.R ignored).
+    MmxMovd {
+        to_mmx: bool,
+        mmx: u8,
+        operand: Operand,
+    },
+    /// S2-39 (MMX): `NP 0F 6F` (`to_mmx`: MOVQ mm, mm/m64) and `NP 0F 7F` (MOVQ mm/m64, mm); `mmx` is the
+    /// ModR/M.reg register and `other` the ModR/M.r/m register (REX.B ignored) or 64-bit memory operand.
+    MmxMovq {
+        to_mmx: bool,
+        mmx: u8,
+        other: Sse3Source,
+    },
     /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx` and `66 0F 3A xx ib`). `xmm` is the ModRM.reg
     /// XMM register (destination, or the source of PEXTR*); `operand` the ModRM.r/m operand. `immediate` is
     /// zero for the forms without `imm8`. Decoded only as the fallback of [`decode`] when the profile
@@ -12834,6 +12868,132 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }))
     }
 
+    /// S2-39 (MMX): the `NP 0F xx` MMX forms of [`Operation::MmxInt`], [`Operation::MmxShiftImmediate`],
+    /// [`Operation::MmxMovd`] and [`Operation::MmxMovq`], tried by [`decode`] only after the profile decoder
+    /// returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A, every MMX instruction: "If the LOCK
+    /// prefix is used"), as is the memory form of the shift groups and an unassigned shift-group register
+    /// field. Refused (`Ok(None)`): a repeated prefix, `66` (the 128-bit forms), `F2`/`F3`, FS/GS overrides
+    /// (no segment base in this operand model). A REX prefix reaches only the memory operand and the general
+    /// register of MOVD/MOVQ (REX.W selects the 64-bit form, REX.R and REX.B do not extend MM0..MM7).
+    fn decode_mmx_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = MmxIntKind::from_opcode(opcode.byte);
+        if kind.is_none() && !matches!(opcode.byte, 0x6e | 0x6f | 0x71..=0x73 | 0x7e | 0x7f) {
+            return Ok(None);
+        }
+        if prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let invalid = |length| DecodeError::Invalid { opcode, length };
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        let register_field = (modrm >> 3) & 7;
+        let register_rm = modrm & 7;
+        if matches!(opcode.byte, 0x71..=0x73) {
+            let Some(kind) = MmxIntKind::shift_group(opcode.byte, register_field) else {
+                return Err(invalid(self.length));
+            };
+            if modrm >> 6 != 3 {
+                return Err(invalid(self.length));
+            }
+            let immediate = self.byte()?;
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation: Operation::MmxShiftImmediate {
+                    kind,
+                    destination: register_rm,
+                    immediate,
+                },
+            }));
+        }
+        let (operand_size, operation) = if matches!(opcode.byte, 0x6e | 0x7e) {
+            let size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                OperandSize::Qword
+            } else {
+                OperandSize::Dword
+            };
+            let operand = self.rm_operand(modrm, prefixes, size)?;
+            (
+                size,
+                Operation::MmxMovd {
+                    to_mmx: opcode.byte == 0x6e,
+                    mmx: register_field,
+                    operand,
+                },
+            )
+        } else {
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register(register_rm)
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            if let Some(kind) = kind {
+                let immediate = if kind.has_immediate() {
+                    self.byte()?
+                } else {
+                    0
+                };
+                (
+                    OperandSize::Qword,
+                    Operation::MmxInt {
+                        kind,
+                        destination: register_field,
+                        source,
+                        immediate,
+                    },
+                )
+            } else {
+                (
+                    OperandSize::Qword,
+                    Operation::MmxMovq {
+                        to_mmx: opcode.byte == 0x6f,
+                        mmx: register_field,
+                        other: source,
+                    },
+                )
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size,
+            address_size,
+            operation,
+        }))
+    }
+
     /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx /r`, `66 0F 3A xx /r ib`), tried by [`decode`]
     /// only after the profile decoder returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A
     /// Tables 2-18, 2-21 and 2-22, "If preceded by a LOCK prefix (F0H)"), as is the register form of
@@ -13512,8 +13672,24 @@ pub fn decode(
     // S2-54 slice C: the non-FP SSE3 forms (`0F 12/16/F0`) and x87 FISTTP (`DB/DD/DF /1`) get the
     // same fallback treatment.
     let general = match (opcode.map, opcode.byte) {
-        (OpcodeMap::Escape0f, 0x10 | 0x11 | 0x28 | 0x29 | 0x6f | 0x7f) => {
-            fetch.decode_sse128_memory_move()
+        // S2-39 (MMX): the no-prefix MOVQ mm forms (`0F 6F/7F`) are tried first, the 128-bit moves after.
+        (OpcodeMap::Escape0f, 0x6f | 0x7f) => match fetch.decode_mmx_int() {
+            Ok(None) => Fetch {
+                memory: &mut *fetch.memory,
+                start: rip,
+                length: 0,
+                context,
+            }
+            .decode_sse128_memory_move(),
+            other => other,
+        },
+        (OpcodeMap::Escape0f, 0x10 | 0x11 | 0x28 | 0x29) => fetch.decode_sse128_memory_move(),
+        // S2-39 (MMX): the rest of the no-prefix MMX forms.
+        (OpcodeMap::Escape0f, byte)
+            if MmxIntKind::from_opcode(byte).is_some()
+                || matches!(byte, 0x6e | 0x71..=0x73 | 0x7e) =>
+        {
+            fetch.decode_mmx_int()
         }
         (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
         (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),

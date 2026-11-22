@@ -1097,14 +1097,6 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
         (&[0x2e, 0x3e, 0x0f, 0x28, 0x00], "two segment overrides"),
         (&[0x48, 0x48, 0x0f, 0x28, 0x00], "duplicate REX"),
         (
-            &[0x0f, 0x6f, 0x00],
-            "MMX MOVQ mm, m64 (0F 6F without 66/F3)",
-        ),
-        (
-            &[0x0f, 0x7f, 0x00],
-            "MMX MOVQ m64, mm (0F 7F without 66/F3)",
-        ),
-        (
             &[0xf3, 0x0f, 0x6f, 0xc1],
             "MOVDQU register form (outside this slice)",
         ),

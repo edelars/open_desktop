@@ -20,6 +20,7 @@ pub mod long_decode;
 pub mod long_mode_entry;
 pub mod lretq;
 pub mod memory;
+pub mod mmx_int;
 pub mod msr;
 pub mod paging;
 pub mod port_io;
