@@ -70441,10 +70441,8 @@ fn step_sse2_int(
         }
         match operand {
             Sse41Operand::Xmm(destination) => {
-                // MOVDQU/MOVDQA copy the register; MOVQ clears the high quadword.
-                if kind == Sse2IntKind::MovqStore {
-                    bytes[8..].fill(0);
-                }
+                // MOVDQU/MOVDQA copy the register; MOVQ copies the low quadword and `bytes`
+                // starts zeroed, so the high quadword is already cleared.
                 state
                     .sse
                     .as_mut()
