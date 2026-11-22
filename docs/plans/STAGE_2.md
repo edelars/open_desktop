@@ -8887,6 +8887,41 @@ context was reproduced (ISSUE-036), modules/initramfs/userspace were not scanned
 runtime, hardware or oracle run was made. It neither proves necessity of any extension nor
 changes CPUID policy (S2-57). Per-extension decoder/state/semantics tasks under S2-40 item 2
 are created only after a necessity decision.
+
+#### S2-40: объём по ADR-0015
+
+**Статус:** документационный срез и один тест (`crates/od-isa/tests/s2_40_baseline_scope.rs`); код не менялся; родитель S2-40 не отмечен до приёмки владельцем.
+
+Объём по [ADR-0015](../decisions/ADR-0015-stage2-scope.md) п. 2: SSE2…SSE4.2 (вместе с SSE и SSE3/SSSE3, на которых они стоят), POPCNT, CMPXCHG16B, LAHF/SAHF, PREFETCHW, SYSCALL/SYSRET, CRC32. Всё остальное из инвентаризации S2-40e (она не менялась) переносится в следующий этап и не блокирует этап 8: AVX/AVX2/AVX-512 (около 5 100 мест в ядре), BMI1/BMI2, AES-NI, PCLMULQDQ, SHA, семейство XSAVE (XSAVE/XRSTOR/XGETBV, OSXSAVE), а также RDRAND, PKU, FSGSBASE, FRED и инструкции confidential computing из той же инвентаризации. Задачи «по расширению» из п. 2 родителя для них не создаются в этом этапе.
+
+**Проверка 2026-11-22.** Тест подаёт 596 кодировок базовой линии (по таблицам опкодов Intel SDM Vol. 2A–2D; регистровая и память-форма) двум исполнителям: голому `step` и одной инструкции набора CPL0 с FP-членом. Он проверяет только присутствие (не `Unsupported`); семантику держат тесты s2_51…s2_56 и модули библиотеки sse_fp, sse2_int, mmx_int (они в src, не наборы тестов). Список отказов зафиксирован в тесте и падает при любом изменении.
+
+| Семейство | Кодировок | Исполняет голый `step` | Исполняет набор CPL0 | Отказ у обоих | Бит CPUID профиля Windows |
+|---|---|---|---|---|---|
+| SSE (предпосылка) | 121 | 89 | 91 | 24 | EDX[25] не объявлен |
+| SSE2 | 265 | 244 | 249 | 10 | EDX[26] не объявлен |
+| SSE3 | 22 | 22 | 19 | 0 | ECX[0] объявлен |
+| SSSE3 (XMM и MMX) | 64 | 64 | 64 | 0 | ECX[9] объявлен |
+| SSE4.1 | 97 | 97 | 97 | 0 | ECX[19] объявлен |
+| SSE4.2, CRC32, POPCNT | 22 | 22 | 22 | 0 | ECX[20], ECX[23] объявлены; у CRC32 своего бита нет |
+| CMPXCHG16B, LAHF/SAHF, PREFETCHW | 5 | 5 | 5 | 0 | ECX[13] (лист 1), ECX[0] и ECX[8] (лист 80000001) объявлены |
+
+SYSCALL/SYSRET в тест не входят (нужны ячейки MSR набора): они исполняются членом `with_syscall` набора CPL0 с шлюзами SDM по [S2-27m](#s2-27m--syscallsysret-sdm-gates-sysretl-and-cpl3-sysret-gp) (`crates/od-isa/tests/cpl3_syscall.rs`, 41 тест, проходят). Бит `80000001` EDX[11] не объявлен: ADR-0015 ждёт приёмки S2-27. Текст пункта SYSCALL в CPU_CONTRACT (срез C задачи S2-57) устарел относительно S2-27m (там «не реализованы #UD при SCE = 0, SYSRET без REX.W»).
+
+**CPUID.** Профиль Windows объявляет ровно SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT (лист 1 ECX `0x00982201`), LAHF-SAHF и PREFETCHW (лист 80000001 ECX `0x101`); у каждого есть владелец и тест в таблице CPU_CONTRACT (S2-51…S2-56, `s2_57_cpuid_windows.rs`, 19 тестов; `s2_58_cpuid_windows.rs`, 13). SSE, SSE2, FXSR, MMX и SYSCALL не объявлены, как требует ADR-0015. У каждого объявленного бита есть реализация в ядре (голый `step`); в наборе CPL0 с FP-членом она есть для профиля платы Linux (кроме `FISTTP` бита SSE3). Для профиля Windows набор с FP-членом не собирается (расхождение 4), так что «бита без реализации нет» верно только для ядра и профиля Linux. Ни один бит не снят, код не менялся.
+
+**Расхождения (записаны, не исправлены кодом).**
+
+1. SSE/SSE2 не полны: `MOVSS`/`MOVSD` с памятью работают только с базой `[RAX]` (узкие профили S2-34.8c/9c); не исполняются `MOVNTI`, `CLFLUSH`, целочисленные формы SSE на MMX-регистрах (`PAVGB`, `PAVGW`, `PMULHUW`, `PMINUB`, `PMAXUB`, `PMINSW`, `PMAXSW`, `PSADBW`, `PINSRW`, `PEXTRW`, `PMOVMSKB`), MMX-формы SSE2 `PADDQ` (`0F D4`), `PSUBQ` (`0F FB`), `PMULUDQ` (`0F F4`) (оба исполнителя отвечают `Unsupported`). Не исполняются также `MOVNTQ` и `MASKMOVQ`, но они не блокируют: ADR-0015 п. 9 переносит их («Перенос: JIT, #AC, MOVNTQ, MASKMOVQ»). Набор CPL0 дополнительно отказывает 12 MMX-преобразованиям (`CVTPI2PS/PD`, `CVTTPS2PI`, `CVTPS2PI`, `CVTTPD2PI`, `CVTPD2PI`, обе формы), которые голый `step` исполняет. Биты SSE/SSE2 не объявлены, поэтому ложного бита нет; объявление SSE/SSE2 и приёмку S2-39 блокирует всё перечисленное, кроме перенесённых `MOVNTQ` и `MASKMOVQ`.
+2. SSE3 объявлен, а `FISTTP` (`DB/DD/DF /1`) набор CPL0 отказывает (голый `step` исполняет): в набор CPL0 форма не подключена (допуск x87-форм в наборе — S2-28…S2-32). Бит оставлен: форма реализована в ядре.
+3. Допуск CPL3 (`cpl3_profile_set.rs`, фиксированный список платы Linux). Прежняя оговорка S2-57 (пункт 0) относится к CMPXCHG16B, LAHF/SAHF и PREFETCHW: их формы CPL3 отказывает, бит не снят, потому что ADR-0013 требует эти формы для Windows 11 и в ядре они исполняются; оговорка не изменена. Для SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CRC32 и CMPXCHG8B допуск CPL3 не проверен этим срезом (`cpl3_profile_set` не исследован). ADR-0015 п. 9 («общие SSE/SSE2-формы в наборе CPL3») относится только к общим SSE/SSE2-формам и на остальные формы не распространяется.
+4. Построитель `Cpl0ProfileSet::with_fp_state` с профилем Windows отрабатывает; ошибку `FpFeaturesNotDeclared` (`Cpl0ProfileSetInputError`) возвращает вход `run_with_cpl0_profile_set` (`execute.rs`): пока FPU/FXSR не объявлены, набор с FP-членом на профиле Windows не запускается (тест использует профиль платы Linux). Снимается объявлением этих битов после приёмки S2-39. Без FP-члена набор CPL0 с профилем Windows отвечает `Unsupported` на `PSHUFB`, `PCMPGTQ`, `MOVDDUP`, `PTEST`, `FISTTP`; исполняются только `POPCNT`, `CRC32`, `CMPXCHG16B`, `LAHF`/`SAHF`, `PREFETCHW`.
+5. 19 форм отказывает только голый `step` (набор CPL0 их исполняет): `PAUSE`, `LFENCE`, `SFENCE`, `PREFETCHNTA`/`T0`/`T1`/`T2`, `LDMXCSR`, `STMXCSR`, `MOVHPS` (память), `MOVLPD`/`MOVHPD` (память), `MOVD` в xmm (регистр и память), `MOVQ` загрузка и `MOVQ` сохранение (память), `PSHUFLW` (регистр), `PCMPEQB` (память), `PINSRW` с префиксом 66 (память).
+
+**Что не проверено.** Семантика сверх существующих тестов; варианты REX.W/REX.R/REX.B и другие регистры ModRM (тест берёт одну регистровую и одну память-форму `[rdi]` без REX; исключение — 10 кодировок с REX.W, записанных в SPEC: `PEXTRQ`, `PINSRQ`, `CRC32` r64, `POPCNT` r64 (регистр и память) и `CMPXCHG16B` с LOCK и без; REX.R/REX.B в них нет): `MOVQ xmm, r64` (по замечанию ревью голый `step` отказывает, набор исполняет), `CVTSI2SD`/`CVTSI2SS` и `CVT(T)SD2SI`/`CVT(T)SS2SI` с r64, `CRC32` r32, r/m16 (префикс 66) и `CRC32` r64, r/m8 (REX.W `F0`); в SPEC есть `r8`, `r32` и `r64` (`F2 48 0F 38 F1`); новые прогоны oracle (Mac mini) не делались; JIT; допуск в наборе CPL3; SYSCALL/SYSRET на физическом oracle (его нет: CPL0-состояние недоступно из user space).
+
+**Что осталось до закрытия родителя S2-40.** (а) Решение владельца по пунктам 1–3 (закрыть формы или перенести) и приёмка S2-39 с объявлением SSE/SSE2/FXSR/MMX; (б) приёмка S2-27/S2-26 и объявление SYSCALL; (в) допуск форм в наборе CPL3; (г) приёмка владельцем родителей S2-51…S2-56 (чекбоксы открыты); (д) остальное из S2-40e остаётся «перенос: следующий этап».
+
 ## 10. Системная проверка и приёмка
 
 ### S2-41. Независимо проверить privileged/mode сценарии
