@@ -2225,7 +2225,7 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// S2-26h: admit the Windows-boot MSR file (see [`crate::msr::windows_msr_is_known`]). The member
     /// owns IA32_PAT (`0x277`, `pat`) and IA32_MISC_ENABLE (`0x1A0`, `misc_enable`) and adds read
     /// access and write rules to the cells of the other members of the set, so the set must also carry
-    /// `with_msr(EferReadOnlyV1)`, `with_msr_efer_write`, `with_msr_bases`, `with_msr_apic_base`,
+    /// `with_msr(EferReadOnlyV1)`, `with_msr_efer_write`, `with_msr_fs_gs_base`, `with_msr_apic_base`,
     /// `with_msr_star_write`, `with_msr_lstar_write`, `with_msr_cstar_write`,
     /// `with_msr_syscall_mask_write`, `with_msr_sysenter_cs_write`, `with_msr_sysenter_stack_write` and
     /// `with_msr_kernel_gs_base_write`; a set without one of them is refused at entry
@@ -30689,6 +30689,7 @@ pub fn run_with_cpl3_profile_set(
                 &instruction,
                 set.syscall,
                 lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
+                set.msr_windows.is_some(),
             ) {
                 return Ok(Cpl0ProfileSetResult {
                     exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
@@ -31047,7 +31048,24 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
 ///
 /// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
 /// exactly when the set was built with `with_syscall` (`syscall`).
-fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: bool) -> bool {
+fn cpl3_allows(
+    instruction: &long_decode::Instruction,
+    syscall: bool,
+    lea_sib: bool,
+    windows_msr: bool,
+) -> bool {
+    // S2-26h: with the Windows MSR member the bare `RDMSR`/`WRMSR` reach the step, where they are
+    // `#GP(0)` at CPL3 (SDM Vol. 2B RDMSR, 64-bit mode exceptions); nothing is read or written.
+    if windows_msr
+        && matches!(
+            instruction.operation,
+            Operation::ReadMsr | Operation::WriteMsr
+        )
+        && instruction.length == 2
+        && instruction.prefixes == Prefixes::default()
+    {
+        return true;
+    }
     // The decoder admits exact ENDBR64 and RDSSPQ forms. The set has no CET IBT or shadow stack.
     if matches!(
         instruction.operation,
@@ -227362,7 +227380,7 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[11] = [0x5a; 16];
         let mut copy_memory = Memory::new(&[0x66, 0x41, 0x0f, 0x6f, 0xd3]);
         let copy = long_decode::decode(&mut copy_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&copy, false, false));
+        assert!(cpl3_allows(&copy, false, false, false));
         assert_eq!(
             step_cpl3_xmm(
                 &mut state,
@@ -227382,7 +227400,7 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[1] = [1; 16];
         let mut add_memory = Memory::new(&[0x66, 0x44, 0x0f, 0xfc, 0xc1]);
         let add = long_decode::decode(&mut add_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&add, false, false));
+        assert!(cpl3_allows(&add, false, false, false));
         assert_eq!(
             step_cpl3_xmm(
                 &mut state,
@@ -227408,7 +227426,10 @@ mod paged_ltr_tests {
             state.rip = 0;
             let mut memory = Memory::new(code);
             let instruction = long_decode::decode(&mut memory, 0, context).unwrap();
-            assert!(cpl3_allows(&instruction, false, false), "{operation}");
+            assert!(
+                cpl3_allows(&instruction, false, false, false),
+                "{operation}"
+            );
             if operation == "paddd" {
                 state.sse.as_mut().unwrap().xmm[destination as usize] = [0xff; 16];
                 state.sse.as_mut().unwrap().xmm[source as usize] = [1; 16];
@@ -227481,7 +227502,7 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[0] = [0xa5; 16];
         let mut store_memory = Memory::new(&[0x0f, 0x29, 0x04, 0x24]);
         let store = long_decode::decode(&mut store_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&store, false, false));
+        assert!(cpl3_allows(&store, false, false, false));
         assert_eq!(
             step_cpl3_xmm(
                 &mut state,
