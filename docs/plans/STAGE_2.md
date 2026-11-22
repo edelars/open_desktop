@@ -15620,6 +15620,33 @@ LME = LMA = 0) instead of a missing `EFER.LME|LMA`; LME alone stays `RequiredBit
 PAE vCPU by the host loop/JIT), a production caller of the adapter, a hardware oracle, CPUID (S2-57/S2-58). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25n--exact-pae-refusal-of-the-long-mode-entries-and-the-board-pae-adapter-bounded-slice).
 
+#### S2-25o — 32-bit step over `GuestMemory` on PAE paging, and the host loop's PAE path (bounded slice)
+
+**Статус:** bounded slice (`od-isa`: `real_mode_exec.rs`, `protected_exec.rs`; `od-machine`: `pae_protected_step.rs`; `od-host`: `paged_host_loop.rs`,
+`host_threads.rs`) after the acceptance of the parent S2-25 (2026-11-21); the slice itself is not marked, the parent checkbox is not touched.
+
+`ProtectedCpu` is not rewritten and has no second decoder: its decoder and its instruction semantics run over a new view of `GuestMemory`
+(`RealModeMemory::walks_linear`: the model takes the address it computes as a linear address of the adapter, does not walk, and asks for an instruction byte with
+`fetch_u8` and for a DWORD operand with `read_u32_linear` / `write_u32_linear`, one adapter access each; the defaults keep every existing memory as it was) and
+`ProtectedCpu::step_admitting` (the covered set is chosen by the caller; `step` is it with everything admitted). `step_pae_protected` steps a copy of the model through
+`PagedPaeMemoryAdapter` and keeps the copy only when the instruction retired. Covered set (the forms of the trampoline that need registers and linear operands):
+`ADD ESP, imm32`, `BT m32, imm8`, `JAE/JNE/JE rel8`, `MOV EAX, moffs32`, `MOV EDX, m32`, `MOV moffs32, EAX`, `CMP EAX|EDX, m32`, `RDMSR`, `WRMSR`, `WBINVD`,
+`MOV EAX|ECX, imm32`. Everything else is a typed stop that names the instruction: `MOV Sreg, EDX` and `JMP ptr16:32` (descriptor-table reads, which the adapter refuses),
+`MOV CR0|CR3|CR4, EAX` (PDPTE reload from physical memory, paging change), the model's own refusals. A `#PF` is the adapter's record, the model unchanged.
+`LoadedFirmwareBoard::pae_step` runs it for a vCPU of the board over the whole bus (an MMIO operand reaches the device as one 4-byte access);
+`run_pae_state_step` runs it for a `LongModeState` (flat or cached CS/DS, CPL 0, PDPTEs loaded from CR3, EFER from the caller, so `WRMSR` is named, not executed).
+**Host loop:** a PAE protected-mode state (`is_pae_protected_state`) is no longer refused by configuration: on the exclusive bus each iteration is one such step (one
+retirement of the interpreter's count, `GuestFault` with the record on a `#PF`, `PagedHostLoopExit::PaeProtected(stop)` on the first instruction or state it cannot run), the
+JIT and the Long64 interpreter are not entered; a shared bus keeps the exact `PaeProtectedMode` refusal. Differential (`od-machine` `pae_protected_step`): the same tables and programs
+through `ProtectedCpu` over `BoardRam` and through the step over the adapter, lockstep (20 instructions of every covered form, taken and untaken branches, a page-crossing load and store, an
+`EFER` write that changes the next walk; state and the whole RAM image equal after every instruction), 9 page-fault cases (same error code and CR2, state and data unchanged), 6 model refusals
+equal, 5 uncovered forms named; a difference by design is pinned (the adapter keeps the accessed bit of the leaf of a faulting walk, the model records none). No hardware oracle, no CPUID bit declared.
+**Not done (the remainder, to be recorded under S2-25o before the parent closes):** the covered set is the trampoline's, not a 32-bit instruction set (no stack, ALU, string, `LOCK`, SSE/x87,
+interrupt or exception delivery, far control transfer); descriptor-table access on PAE (`MOV Sreg`, `JMP FAR`, IDT) and `MOV CRn` on the adapter; `WRMSR` in the loop (EFER is the loop
+configuration's); CPL 3, segment caches beyond CS/DS; PDPTEs kept in the state (the loop re-reads them from CR3 at every step); the shared and CPL0-set bus modes of the loop; the JIT
+(native blocks for 32-bit code); 32-bit paging (S2-25m has the walk, no adapter); hardware oracle, CPUID (S2-57/S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25o--32-bit-step-over-guestmemory-on-pae-paging-and-the-host-loops-pae-path-bounded-slice).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

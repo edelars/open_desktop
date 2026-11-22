@@ -25484,3 +25484,14 @@ gives the `PagedPaeMemoryAdapter` over the whole bus for a vCPU on PAE paging; t
 an uncovered 36-bit page). Tests run: `od-machine` lib filters `pae` (53), `page_walk` (135), `paged_pae` (19); `od-host` `s2_25l` (1);
 `cargo check --workspace --all-targets`, `cargo fmt --all -- --check`, `git diff --check`. Not run: the full suite, a hardware oracle (PAE paging cannot be enabled from a
 user-space process), CPUID.
+
+## S2-25o — 32-bit step over GuestMemory on PAE paging, and the host loop's PAE path
+
+Bounded slice after the acceptance of S2-25; S2-25 itself is not touched. `ProtectedCpu` (not rewritten) now runs over a linear view of `GuestMemory`
+(`RealModeMemory::walks_linear`, `step_admitting`), so `PagedPaeMemoryAdapter` has an executor for the trampoline's covered set (`pae_covers`: ADD ESP, BT, Jcc, MOV moffs/EDX/imm, CMP, RDMSR, WRMSR,
+WBINVD); everything else is a typed stop that names the instruction (`MOV Sreg`, `JMP FAR`, `MOV CRn`). `LoadedFirmwareBoard::pae_step` and `run_pae_state_step` drive it; the exclusive-bus host
+loop executes a PAE protected-mode state instead of refusing it with `PaeProtectedMode` (exit `PaeProtected(stop)` on the first uncovered instruction; the JIT is not entered; a shared bus keeps
+the refusal). Differential against `ProtectedCpu` over `BoardRam` on identical tables: 20-instruction lockstep, 9 `#PF` cases, 6 refusals, 5 uncovered forms. Tests run: `od-isa` `protected_exec` (163) and
+`s2_25o_linear_memory` (4); `od-machine` `pae_protected_step` (9), `pae` (63), `paged_pae` (19), `ap_legacy_exec` (37); `od-host` `s2_25` (6); `cargo fmt --all -- --check`, `git diff --check`. Not run: the full suite, a hardware
+oracle (none can exist for PAE), CPUID. Remainder (parent S2-25 stays open for it): a real 32-bit instruction set, descriptor-table access and `MOV CRn` on PAE, `WRMSR` and kept PDPTEs in the loop,
+CPL 3, the shared and CPL0-set loop modes, the JIT, an adapter for 32-bit paging.

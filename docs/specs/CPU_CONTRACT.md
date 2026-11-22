@@ -16402,6 +16402,30 @@ refuses before the first byte is written). The S2-25l tests (`paged_pae_adapter`
 probe, shared probe and CPL0 set loop; `od-host` `s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`) and `page_walk` expect `PaeProtectedMode`.
 The adapter against `ProtectedCpu` on identical tables is the existing S2-25l differential (31 scenarios, unchanged).
 
+## S2-25o — 32-bit step over GuestMemory on PAE paging, and the host loop's PAE path (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 (paging modes: CR0.PG = 1, CR4.PAE = 1, LME = 0 is PAE paging), §5.4.1 (PDPTE loading, reserved bits), §5.4.2 (PAE translation),
+§5.7 (page-fault error code), as in S2-25g..S2-25n; instruction semantics are those of `ProtectedCpu` (S6-14k..S6-14n, S2-25..S2-25k). Text only: no hardware oracle, no oracle
+counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Decoder and semantics | `ProtectedCpu`'s own; not rewritten. `RealModeMemory` gains four defaulted methods (`walks_linear` false, `fetch_u8` = `read_u8`, `read_u32_linear`, `write_u32_linear` bytewise): every existing memory behaves as before. `ProtectedCpu::step_admitting(mem, admit)` shows the decoded instruction to `admit` before any walk, read or write (`InstructionNotAdmitted { eip, instruction, length }`); `step` = `step_admitting` admitting all. |
+| Linear view | With `walks_linear` the model does not walk (`physical` returns the linear address, no `Touch` list): instruction bytes are the adapter's `fetch`, a DS DWORD is one adapter read or write (one 4-byte device access; a crossing operand is the adapter's rule). The segment base, limit and read-only checks stay the model's. |
+| Step | `step_pae_protected(cpu, memory)`: the model is a PAE one (`CR0.PE`, `CR0.PG`, `CR4.PAE`, LMA = 0) else `NotPaePaging`; a copy is stepped and replaces the model only on retirement. `Retired`, `Fault(#PF)`, `Stopped(Uncovered \| Refused \| Memory \| State \| NotPaePaging)`. |
+| Covered set (`pae_covers`) | `ADD ESP, imm32`, `BT m32, imm8`, `JAE/JNE/JE rel8`, `MOV EAX, moffs32`, `MOV EDX, m32`, `MOV moffs32, EAX`, `CMP EAX\|EDX, m32`, `RDMSR`, `WRMSR`, `WBINVD`, `MOV EAX\|ECX, imm32`. |
+| Not covered (named) | `MOV Sreg, EDX`, `JMP ptr16:32` (descriptor-table reads: refused by the adapter, S2-25l), `MOV CR0\|CR3\|CR4, EAX` (PDPTEs are reloaded from physical memory and the paging the adapter was built from changes), `JMP [rip+disp32]` (64-bit mode). |
+| Board | `LoadedFirmwareBoard::pae_step(cpu, committed_write)` over `pae_memory_adapter` (whole bus, MMIO as accesses of the vCPU). |
+| State step | `run_pae_state_step`: the model from a `LongModeState` (`EAX..EDI` = low halves of `gpr[0..8]`, `EIP` = `rip` below 4 GiB, `EFLAGS` = low half; CR0/CR3/CR4 32-bit, `state.cr3` must equal the call's; CPL 0 from the CS selector RPL; CS/DS caches or flat; PDPTEs loaded from CR3 now, reserved bit / unreadable = refusal); `WRMSR` is not covered (EFER is the caller's); on retirement the state takes the low halves and `rip` (high halves kept). |
+| Host loop | A PAE protected-mode state on the exclusive bus: one step per iteration as the interpreter's retirement (budget, `consecutive_faults`), `GuestFault` with the adapter's record on `#PF`, `PagedHostLoopExit::PaeProtected(stop)` otherwise; nothing to the JIT or the Long64 interpreter. Shared and CPL0-set buses keep `ProbeConfigError::PaeProtectedMode`. The four-level probes, shared probe and CPL0 set loop are unchanged (they refuse as in S2-25n). |
+| Differences from `ProtectedCpu` over physical memory | by design and tested: the adapter keeps the accessed bit of the leaf of a faulting walk (the model none); lookahead bytes of an unsupported-form refusal are fetched through the adapter (their accessed bits are set); a DWORD wrapping past 4 GiB is a memory refusal; an MMIO operand reaches its device (the model refuses non-RAM). |
+
+Tests (run): `od-machine` `pae_protected_step` (9): lockstep of 20 instructions (state and RAM image after each), 9 `#PF` cases with literal SDM error codes (0, 3, 0x10, 0x11, 9) and CR2,
+6 refusals equal to the model's, 5 uncovered forms named, non-PAE models refused before any fetch, an MMIO operand as one 4-byte access of a counting device (2 accesses for load and store), the state
+step against the model with kept high halves and the `WRMSR` stop, 6 state refusals, the leaf accessed-bit difference; `ap_legacy_exec::tests::the_board_pae_step_runs_covered_instructions_with_mmio_and_leaves_the_model_on_a_stop` (Local APIC ID read as MMIO, store with dirty bit and write list, `#PF`, an operand outside the map, `MOV CR3`);
+`od-isa` `tests/s2_25o_linear_memory.rs` (4) and `protected_exec` (163); `od-host` `s2_25` (6: the loop to the first uncovered instruction, budget and resume, `#PF` as `GuestFault`, `WRMSR`/unsupported/CPL 3 refusals, the shared bus). No oracle counters (PAE paging cannot be enabled from a user-space process).
+Not done: see S2-25o in the stage plan.
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
