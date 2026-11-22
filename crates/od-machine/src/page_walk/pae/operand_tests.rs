@@ -328,7 +328,7 @@ fn an_mmio_operand_reaches_the_dispatch_with_the_dirty_bit_set_first_and_a_read_
             }
         )
     );
-    // A device error is a typed backend error after the dirty bit.
+    // A device error is a typed backend error; the operation is a read, so no dirty bit is set.
     let report = access_pae_with_mmio(
         &memory,
         &config,

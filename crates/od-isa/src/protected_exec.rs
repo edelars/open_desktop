@@ -5911,6 +5911,54 @@ mod tests {
     }
 
     #[test]
+    fn store_through_a_read_only_ds_is_refused_before_any_page_walk() {
+        // SDM Vol. 2B, MOV, Protected Mode Exceptions: #GP(0) for a store into a segment that is not
+        // writable. The refusal comes before the page walk: the tables keep A and D clear.
+        for access in [0x91u8, 0x9A] {
+            let (mut cpu, mut ram) = pae_operand_setup();
+            cpu.ds.access = access;
+            cpu.gpr[EAX] = 0x1122_3344;
+            put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+            let (before, data_page) = (cpu, ram[0x6000..0x7000].to_vec());
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Err(ProtectedRefusal::DataSegmentReadOnly {
+                    eip: 0x2000,
+                    access
+                }),
+                "{access:#x}"
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(&ram[0x6000..0x7000], &data_page[..], "no byte written");
+            // The fetch walk may have set A on the code page; the data page's PTE is untouched.
+            assert_eq!(
+                get_q(&ram, PT + 40),
+                0x6000 | 3,
+                "no A, no D on the data page"
+            );
+        }
+        // Without paging the same: nothing is written.
+        let mut ram = new_ram();
+        let mut cpu = entry_cpu();
+        cpu.ds.access = 0x91;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            Err(ProtectedRefusal::DataSegmentReadOnly {
+                eip: 0x2000,
+                access: 0x91
+            })
+        );
+        assert_eq!(&ram[0x5008..0x500C], &[0; 4]);
+        // A load through a read-only data segment is not affected.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        cpu.ds.access = 0x91;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+    }
+
+    #[test]
     fn pae_operand_refusals_name_the_level_and_change_nothing() {
         let page_fault = |access, linear, reason| {
             Err(ProtectedRefusal::PageFault {
@@ -5920,7 +5968,8 @@ mod tests {
                 reason,
             })
         };
-        // Tables with A and D set: the fetch walk writes nothing, so a refusal leaves the memory.
+        // Tables with A and D set: the fetch walk writes nothing, so a refusal leaves the memory;
+        // step_one compares the whole RAM and the CPU before and after every refusal.
         let setup = || {
             let mut cpu = pae_active_cpu();
             cpu.ds = flat(0x10, 0x93);
