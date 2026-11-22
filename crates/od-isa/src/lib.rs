@@ -34,6 +34,7 @@ pub mod sti;
 pub mod swapgs;
 pub mod syscall;
 pub mod x87;
+pub mod x87_transcend;
 pub use cli::CliProfile;
 pub use execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,

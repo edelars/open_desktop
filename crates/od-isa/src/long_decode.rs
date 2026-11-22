@@ -3100,6 +3100,26 @@ pub enum Operation {
     Fprem,
     /// Bare `D9 F5` FPREM1 in the bounded local positive-Normal profile.
     Fprem1,
+    /// S2-32: bare `D9 F0` F2XM1 (2^ST(0) - 1 for -1 <= ST(0) <= 1) in the bounded local x87 profile of `x87_transcend`.
+    F2xm1,
+    /// S2-32: bare `D9 F1` FYL2X (ST(1) * log2(ST(0)), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fyl2x,
+    /// S2-32: bare `D9 F2` FPTAN (tangent of ST(0), then push 1.0) in the bounded local x87 profile of `x87_transcend`.
+    Fptan,
+    /// S2-32: bare `D9 F3` FPATAN (arctangent of ST(1)/ST(0), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fpatan,
+    /// S2-32: bare `D9 F4` FXTRACT (split ST(0) into exponent and significand) in the bounded local x87 profile of `x87_transcend`.
+    Fxtract,
+    /// S2-32: bare `D9 F9` FYL2XP1 (ST(1) * log2(ST(0) + 1), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fyl2xp1,
+    /// S2-32: bare `D9 FB` FSINCOS (sine and cosine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fsincos,
+    /// S2-32: bare `D9 FD` FSCALE (ST(0) * 2^trunc(ST(1))) in the bounded local x87 profile of `x87_transcend`.
+    Fscale,
+    /// S2-32: bare `D9 FE` FSIN (sine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fsin,
+    /// S2-32: bare `D9 FF` FCOS (cosine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fcos,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
     /// Bare `D9 00` FLD m32fp at [RAX], bounded Normal binary32 stack push.
@@ -9697,6 +9717,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xfa => Operation::Fsqrt,
                     0xf8 => Operation::Fprem,
                     0xf5 => Operation::Fprem1,
+                    0xf0 => Operation::F2xm1,
+                    0xf1 => Operation::Fyl2x,
+                    0xf2 => Operation::Fptan,
+                    0xf3 => Operation::Fpatan,
+                    0xf4 => Operation::Fxtract,
+                    0xf9 => Operation::Fyl2xp1,
+                    0xfb => Operation::Fsincos,
+                    0xfd => Operation::Fscale,
+                    0xfe => Operation::Fsin,
+                    0xff => Operation::Fcos,
                     0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -22112,6 +22142,26 @@ mod tests {
                     Ok(Operation::Fprem)
                 } else if second == 0xf5 {
                     Ok(Operation::Fprem1)
+                } else if second == 0xf0 {
+                    Ok(Operation::F2xm1)
+                } else if second == 0xf1 {
+                    Ok(Operation::Fyl2x)
+                } else if second == 0xf2 {
+                    Ok(Operation::Fptan)
+                } else if second == 0xf3 {
+                    Ok(Operation::Fpatan)
+                } else if second == 0xf4 {
+                    Ok(Operation::Fxtract)
+                } else if second == 0xf9 {
+                    Ok(Operation::Fyl2xp1)
+                } else if second == 0xfb {
+                    Ok(Operation::Fsincos)
+                } else if second == 0xfd {
+                    Ok(Operation::Fscale)
+                } else if second == 0xfe {
+                    Ok(Operation::Fsin)
+                } else if second == 0xff {
+                    Ok(Operation::Fcos)
                 } else if second == 0xfc {
                     Ok(Operation::Frndint)
                 } else {
@@ -22437,7 +22487,7 @@ mod tests {
             &[0x48, 0xd9, 0xf8][..],
             &[0x64, 0xd9, 0xf8][..],
             &[0xd9][..],
-            &[0xd9, 0xf9][..],
+            &[0xd9, 0xe2][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -22465,7 +22515,7 @@ mod tests {
             &[0x48, 0xd9, 0xf5][..],
             &[0x64, 0xd9, 0xf5][..],
             &[0xd9][..],
-            &[0xd9, 0xf4][..],
+            &[0xd9, 0xe2][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

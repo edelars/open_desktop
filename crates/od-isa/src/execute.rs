@@ -48209,6 +48209,16 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             | Operation::Fsqrt
             | Operation::Fprem
             | Operation::Fprem1
+            | Operation::F2xm1
+            | Operation::Fyl2x
+            | Operation::Fptan
+            | Operation::Fpatan
+            | Operation::Fxtract
+            | Operation::Fyl2xp1
+            | Operation::Fsincos
+            | Operation::Fscale
+            | Operation::Fsin
+            | Operation::Fcos
             | Operation::FcomSt { .. }
             | Operation::FcompSt { .. }
             | Operation::Fcompp
@@ -49497,6 +49507,19 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
+    // S2-32: the transcendental, scaling and extraction forms decide their whole effect here.
+    let x87_math = if is_x87_math_operation(instruction.operation) {
+        match bounded_x87_math_plan(state, instruction.operation) {
+            Some(plan) => Some(plan),
+            None => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        }
+    } else {
+        None
+    };
     let fst_m32fp = if matches!(
         instruction.operation,
         Operation::FstM32FpRax | Operation::FstpM32FpRax
@@ -49946,6 +49969,16 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Fsqrt
         | Operation::Fprem
         | Operation::Fprem1
+        | Operation::F2xm1
+        | Operation::Fyl2x
+        | Operation::Fptan
+        | Operation::Fpatan
+        | Operation::Fxtract
+        | Operation::Fyl2xp1
+        | Operation::Fsincos
+        | Operation::Fscale
+        | Operation::Fsin
+        | Operation::Fcos
         | Operation::FldM32FpRax
         | Operation::FldM64FpRax
         | Operation::FstM32FpRax
@@ -63787,6 +63820,27 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             x87.status_word = (x87.status_word & !0x4700) | flags;
             x87.instruction_pointer = state.rip;
         }
+        Operation::F2xm1
+        | Operation::Fyl2x
+        | Operation::Fptan
+        | Operation::Fpatan
+        | Operation::Fxtract
+        | Operation::Fyl2xp1
+        | Operation::Fsincos
+        | Operation::Fscale
+        | Operation::Fsin
+        | Operation::Fcos => {
+            let plan = x87_math.expect("x87 transcendental plan was prevalidated");
+            let x87 = state.x87.as_mut().expect("x87 state was prevalidated");
+            for (index, bytes) in plan.registers.into_iter().flatten() {
+                x87.registers[usize::from(index)] = bytes;
+            }
+            for (index, tag) in plan.tags.into_iter().flatten() {
+                let _ = x87.set_tag(index, tag);
+            }
+            x87.status_word = plan.status_word;
+            x87.instruction_pointer = state.rip;
+        }
         Operation::FcomSt { source } => {
             let condition =
                 bounded_x87_fcom_result(state, source).expect("FCOM operands were prevalidated");
@@ -66900,6 +66954,200 @@ fn bounded_x87_fprem1_result(state: &LongModeState) -> Option<([u8; 10], X87Tag,
         return None;
     }
     Some((result_raw, X87Tag::Valid, quotient_bits))
+}
+
+/// The complete architectural effect of one bounded S2-32 instruction: register payloads, tags
+/// and the final status word (TOP included). FIP is the caller's.
+struct X87MathPlan {
+    registers: [Option<(u8, [u8; 10])>; 2],
+    tags: [Option<(u8, X87Tag)>; 2],
+    status_word: u16,
+}
+
+fn is_x87_math_operation(operation: Operation) -> bool {
+    matches!(
+        operation,
+        Operation::F2xm1
+            | Operation::Fyl2x
+            | Operation::Fptan
+            | Operation::Fpatan
+            | Operation::Fxtract
+            | Operation::Fyl2xp1
+            | Operation::Fsincos
+            | Operation::Fscale
+            | Operation::Fsin
+            | Operation::Fcos
+    )
+}
+
+/// Preflight the S2-32 x87 forms `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `F2XM1`, `FYL2X`, `FYL2XP1`,
+/// `FPATAN`, `FSCALE` and `FXTRACT` (Intel SDM Vol. 2A/2B instruction pages, Vol. 1 section 8.3.10
+/// and 8.5.1). Admission: present x87 state, absent FCS/FDS selectors, one of the twelve
+/// all-exception-masked control words (the precision control is ignored by these instructions, the
+/// rounding control is honoured), no sticky exception other than PE, Valid or Zero tagged canonical
+/// operands, an Empty destination for the two pushing forms, and a result inside the normal range.
+/// Everything else (denormals, NaN, infinity, unmasked exceptions, stack faults, operands outside
+/// the instruction's domain) keeps its refusal. The values come from the modelled helpers of
+/// `x87_transcend`; C0, C2 (except the reduction forms) and C3 are preserved as on the oracle.
+fn bounded_x87_math_plan(state: &LongModeState, operation: Operation) -> Option<X87MathPlan> {
+    use crate::x87_transcend as transcend;
+    let x87 = state.x87.as_ref()?;
+    const CONTROL_WORDS: [u16; 12] = [
+        0x007f, 0x047f, 0x087f, 0x0c7f, // PC=24, four RC modes
+        0x027f, 0x067f, 0x0a7f, 0x0e7f, // PC=53, four RC modes
+        0x037f, 0x077f, 0x0b7f, 0x0f7f, // PC=64, four RC modes
+    ];
+    if x87.instruction_selector.is_some()
+        || x87.data_selector.is_some()
+        || !CONTROL_WORDS.contains(&x87.control_word)
+        || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let mode = match x87.control_word & 0x0c00 {
+        0x0000 => RationalRoundingMode::NearestTiesEven,
+        0x0400 => RationalRoundingMode::TowardNegative,
+        0x0800 => RationalRoundingMode::TowardPositive,
+        _ => RationalRoundingMode::TowardZero,
+    };
+    let top = x87.top();
+    let next = top.wrapping_add(1) & 7;
+    let below = top.wrapping_add(7) & 7;
+    let is_zero = |raw: &[u8; 10]| {
+        raw[..8].iter().all(|byte| *byte == 0) && raw[8] == 0 && raw[9] & 0x7f == 0
+    };
+    let operand = |physical: u8| -> Option<[u8; 10]> {
+        let raw = x87.registers[usize::from(physical)];
+        match x87.tag(physical)? {
+            X87Tag::Valid if !is_zero(&raw) => Some(raw),
+            X87Tag::Zero if is_zero(&raw) => Some(raw),
+            _ => None,
+        }
+    };
+    let tag_of = |raw: &[u8; 10]| {
+        if is_zero(raw) {
+            X87Tag::Zero
+        } else {
+            X87Tag::Valid
+        }
+    };
+    let status = x87.status_word;
+    let flags = |rounded: &[transcend::X87Rounded]| -> u16 {
+        let up = rounded.iter().take(1).any(|value| value.rounded_up);
+        let inexact = rounded.iter().any(|value| value.inexact);
+        (if up { 0x0200 } else { 0 }) | (if inexact { 0x0020 } else { 0 })
+    };
+    let st0 = operand(top)?;
+    match operation {
+        Operation::Fsin | Operation::Fcos | Operation::F2xm1 => {
+            let result = match operation {
+                Operation::Fsin => transcend::fsin(st0, mode)?,
+                Operation::Fcos => transcend::fcos(st0, mode)?,
+                _ => transcend::X87Trig::Done(transcend::f2xm1(st0, mode)?),
+            };
+            Some(match result {
+                transcend::X87Trig::OutOfRange => X87MathPlan {
+                    registers: [None, None],
+                    tags: [None, None],
+                    status_word: (status & !0x0200) | 0x0400,
+                },
+                transcend::X87Trig::Done(value) => {
+                    let clear = if operation == Operation::F2xm1 {
+                        0x0200
+                    } else {
+                        0x0600
+                    };
+                    X87MathPlan {
+                        registers: [Some((top, value.bytes)), None],
+                        tags: [Some((top, tag_of(&value.bytes))), None],
+                        status_word: (status & !clear) | flags(&[value]),
+                    }
+                }
+            })
+        }
+        Operation::Fsincos | Operation::Fptan => {
+            if x87.tag(below)? != X87Tag::Empty {
+                return None;
+            }
+            let (first, second, rounded): ([u8; 10], [u8; 10], [transcend::X87Rounded; 2]) =
+                if operation == Operation::Fsincos {
+                    match transcend::fsincos(st0, mode)? {
+                        transcend::X87Trig::OutOfRange => {
+                            return Some(X87MathPlan {
+                                registers: [None, None],
+                                tags: [None, None],
+                                status_word: (status & !0x0200) | 0x0400,
+                            });
+                        }
+                        // ST(1) = sine, ST(0) = cosine; the round-up indicator is the cosine's.
+                        transcend::X87Trig::Done(value) => {
+                            (value.sin.bytes, value.cos.bytes, [value.cos, value.sin])
+                        }
+                    }
+                } else {
+                    match transcend::fptan(st0, mode)? {
+                        transcend::X87Trig::OutOfRange => {
+                            return Some(X87MathPlan {
+                                registers: [None, None],
+                                tags: [None, None],
+                                status_word: (status & !0x0200) | 0x0400,
+                            });
+                        }
+                        transcend::X87Trig::Done(value) => (
+                            value.bytes,
+                            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                            [value, value],
+                        ),
+                    }
+                };
+            Some(X87MathPlan {
+                registers: [Some((top, first)), Some((below, second))],
+                tags: [Some((top, tag_of(&first))), Some((below, tag_of(&second)))],
+                status_word: (status & !((7 << 11) | 0x0600))
+                    | (u16::from(below) << 11)
+                    | flags(&rounded),
+            })
+        }
+        Operation::Fyl2x | Operation::Fyl2xp1 | Operation::Fpatan => {
+            let st1 = operand(next)?;
+            let value = match operation {
+                Operation::Fyl2x => transcend::fyl2x(st0, st1, mode)?,
+                Operation::Fyl2xp1 => transcend::fyl2xp1(st0, st1, mode)?,
+                _ => transcend::fpatan(st1, st0, mode)?,
+            };
+            Some(X87MathPlan {
+                registers: [Some((next, value.bytes)), None],
+                tags: [
+                    Some((top, X87Tag::Empty)),
+                    Some((next, tag_of(&value.bytes))),
+                ],
+                status_word: (status & !((7 << 11) | 0x0200))
+                    | (u16::from(next) << 11)
+                    | flags(&[value]),
+            })
+        }
+        Operation::Fscale => {
+            let st1 = operand(next)?;
+            let result = transcend::fscale(st0, st1)?;
+            Some(X87MathPlan {
+                registers: [Some((top, result)), None],
+                tags: [Some((top, tag_of(&result))), None],
+                status_word: status & !0x0200,
+            })
+        }
+        Operation::Fxtract => {
+            if x87.tag(below)? != X87Tag::Empty {
+                return None;
+            }
+            let (significand, exponent) = transcend::fxtract(st0)?;
+            Some(X87MathPlan {
+                registers: [Some((top, exponent)), Some((below, significand))],
+                tags: [Some((top, tag_of(&exponent))), Some((below, X87Tag::Valid))],
+                status_word: (status & !((7 << 11) | 0x0200)) | (u16::from(below) << 11),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Preflight a local bounded x87 memory-load push. The destination is the
@@ -116392,8 +116640,8 @@ mod tests {
             (&[0x66, 0xd9, 0xfa][..], 1, None, false),
             (&[0xf3, 0xd9, 0xfa][..], 1, None, false),
             (&[0x9b, 0xd9, 0xfa][..], 1, None, false),
-            (&[0xd9, 0xf9][..], 1, None, false),
-            (&[0xd9, 0xfb][..], 1, None, false),
+            (&[0xd9, 0xe2][..], 1, None, false),
+            (&[0xd9, 0xe3][..], 1, None, false),
             (&[0xd9][..], 1, None, false),
         ] {
             let mut state = LongModeState::default();
