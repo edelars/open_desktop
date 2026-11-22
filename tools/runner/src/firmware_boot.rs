@@ -1931,6 +1931,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .to_owned(),
         );
     }
+    // The run journal (`--phase-log`, `--framebuffer-dir`/`-every`) is driven only by the firmware profile loop with
+    // the quantum hook. The unified loop and the xHCI key watch (both served before the journal branch in `boot`) and
+    // the reboot cycles (which return before the diagnostics are built) never feed it: refuse rather than
+    // silently write nothing. `--stop-snapshot` is written after any single boot, so only the reboot cycles lose it.
+    let journal_requested = phase_log.is_some() || framebuffer.is_some();
+    if unified && journal_requested {
+        return Err(
+            "--cpu-loop unified does not support --phase-log or --framebuffer-dir/--framebuffer-every \
+             (the unified loop has no run journal); use --cpu-loop firmware"
+                .to_owned(),
+        );
+    }
+    if xhci_keys.is_some() && journal_requested {
+        return Err(
+            "--xhci-keys cannot be combined with --phase-log or --framebuffer-* (the journal loop \
+             does not feed the xHCI key watch)"
+                .to_owned(),
+        );
+    }
+    if reboot_cycles.is_some() && (stop_snapshot.is_some() || journal_requested) {
+        return Err(
+            "--reboot-cycles cannot be combined with --stop-snapshot, --phase-log or --framebuffer-* \
+             (the cycles run no diagnostics)"
+                .to_owned(),
+        );
+    }
     if nvram_reboot_out.is_some()
         && (stop_snapshot.is_some() || phase_log.is_some() || framebuffer.is_some())
     {
@@ -2394,6 +2420,89 @@ mod tests {
                 .unwrap()
                 .contains("requires a single boot")
         );
+    }
+
+    #[test]
+    fn diagnostics_that_the_chosen_loop_would_silently_drop_are_refused() {
+        // S8 merge review D2: the journal belongs to the firmware loop, the xHCI key watch and the reboot cycles
+        // never feed it, and the cycles run no diagnostics at all.
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]);
+            values.extend(args(extra));
+            values
+        };
+        let journal = [
+            &["--phase-log", "phase.jsonl"][..],
+            &["--framebuffer-dir", "frames", "--framebuffer-every", "1"][..],
+        ];
+        for extra in journal {
+            let mut unified = base(&["--cpu-loop", "unified"]);
+            unified.extend(args(extra));
+            assert!(
+                parse(&unified)
+                    .err()
+                    .unwrap()
+                    .contains("--cpu-loop unified does not support --phase-log"),
+                "{extra:?}"
+            );
+            let mut keys = base(&["--xhci", "--xhci-keys", "04"]);
+            keys.extend(args(extra));
+            assert!(
+                parse(&keys)
+                    .err()
+                    .unwrap()
+                    .contains("--xhci-keys cannot be combined with --phase-log"),
+                "{extra:?}"
+            );
+            // The same options alone stay valid, and so do the key watch and the unified loop without a journal.
+            assert!(parse(&base(extra)).is_ok(), "{extra:?}");
+            let mut cycles = base(&["--fv-app", "reboot", "--reboot-cycles", "2"]);
+            cycles.extend(args(extra));
+            assert!(
+                parse(&cycles)
+                    .err()
+                    .unwrap()
+                    .contains("--reboot-cycles cannot be combined with --stop-snapshot"),
+                "{extra:?}"
+            );
+        }
+        let mut cycles = base(&["--fv-app", "reboot", "--reboot-cycles", "2"]);
+        cycles.extend(args(&["--stop-snapshot", "stop.json"]));
+        assert!(
+            parse(&cycles)
+                .err()
+                .unwrap()
+                .contains("--reboot-cycles cannot be combined with --stop-snapshot")
+        );
+        assert!(parse(&base(&["--xhci", "--xhci-keys", "04"])).is_ok());
+        assert!(parse(&base(&["--cpu-loop", "unified"])).is_ok());
+        assert!(
+            parse(&base(&[
+                "--cpu-loop",
+                "unified",
+                "--stop-snapshot",
+                "stop.json"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            parse(&base(&[
+                "--xhci",
+                "--xhci-keys",
+                "04",
+                "--stop-snapshot",
+                "stop.json"
+            ]))
+            .is_ok()
+        );
+        assert!(parse(&base(&["--fv-app", "reboot", "--reboot-cycles", "2"])).is_ok());
     }
 
     #[test]
