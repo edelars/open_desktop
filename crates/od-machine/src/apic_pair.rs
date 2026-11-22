@@ -24,8 +24,11 @@ pub(crate) const SCI_LEVEL_LOW: u32 = LEVEL | POLARITY_LOW;
 pub(crate) const NVME_PIN: usize = 16;
 /// The xHCI INTA route (XHCI_DEVICE.md section 2): level, active low, GSI 17.
 pub(crate) const XHCI_PIN: usize = 17;
+/// The COM2 UART interrupt (ISA IRQ 3 -> GSI 3, S11-21 agent channel). Like INTIN4 it is an ISA
+/// UART line: active high, edge or level as the guest programs the entry.
+pub(crate) const COM2_PIN: usize = 3;
 /// Inputs with Remote IRR and EOI-driven redelivery.
-const LEVEL_PINS: [usize; 4] = [4, SCI_PIN, NVME_PIN, XHCI_PIN];
+const LEVEL_PINS: [usize; 5] = [4, COM2_PIN, SCI_PIN, NVME_PIN, XHCI_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
 /// IOAPIC ID loaded at reset on a single-vCPU board.
@@ -49,6 +52,10 @@ pub(crate) struct Route {
     pub nvme_remote_irr: bool,
     pub xhci_asserted: bool,
     pub xhci_remote_irr: bool,
+    /// The COM2 UART drives its input (INTIN3, active high): `true` while the line is high.
+    pub com2_asserted: bool,
+    /// Remote IRR of the INTIN3 entry: set by a level delivery, cleared by the destination's EOI.
+    pub com2_remote_irr: bool,
     /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
     pub id: u8,
     /// Stored low dwords of entries other than INTIN4. INTIN2 is an edge input; the
@@ -72,6 +79,8 @@ impl Default for Route {
             nvme_remote_irr: false,
             xhci_asserted: false,
             xhci_remote_irr: false,
+            com2_asserted: false,
+            com2_remote_irr: false,
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
             dest: [0; IO_APIC_PINS],
@@ -285,7 +294,7 @@ impl PairState {
         }
     }
 
-    /// Low dword of the level-capable entry `pin` (INTIN4 or the SCI).
+    /// Low dword of the level-capable entry `pin` (INTIN4, INTIN3 or another level input).
     fn level_low(&self, pin: usize) -> u32 {
         if pin == 4 {
             self.route.low
@@ -293,10 +302,11 @@ impl PairState {
             self.route.pins[pin]
         }
     }
-    /// Whether `low` is an entry form with level semantics on `pin`: any level entry on INTIN4,
-    /// only the level/active-low form (as the MADT declares it) on the SCI.
+    /// Whether `low` is an entry form with level semantics on `pin`: any level entry on the ISA
+    /// UART inputs INTIN4 and INTIN3, only the level/active-low form (as the MADT declares it) on
+    /// the others.
     fn is_level_form(pin: usize, low: u32) -> bool {
-        if pin == 4 {
+        if pin == 4 || pin == COM2_PIN {
             low & LEVEL != 0
         } else {
             low & SCI_LEVEL_LOW == SCI_LEVEL_LOW
@@ -308,6 +318,7 @@ impl PairState {
     fn level_asserted(&self, pin: usize) -> bool {
         match pin {
             4 => self.route.high_line,
+            COM2_PIN => self.route.com2_asserted,
             SCI_PIN => self.route.sci_asserted,
             NVME_PIN => self.route.nvme_asserted,
             XHCI_PIN => self.route.xhci_asserted,
@@ -317,6 +328,7 @@ impl PairState {
     fn level_remote_irr(&self, pin: usize) -> bool {
         match pin {
             4 => self.route.remote_irr,
+            COM2_PIN => self.route.com2_remote_irr,
             SCI_PIN => self.route.sci_remote_irr,
             NVME_PIN => self.route.nvme_remote_irr,
             XHCI_PIN => self.route.xhci_remote_irr,
@@ -326,6 +338,7 @@ impl PairState {
     fn set_level_remote_irr(&mut self, pin: usize, value: bool) {
         match pin {
             4 => self.route.remote_irr = value,
+            COM2_PIN => self.route.com2_remote_irr = value,
             SCI_PIN => self.route.sci_remote_irr = value,
             NVME_PIN => self.route.nvme_remote_irr = value,
             XHCI_PIN => self.route.xhci_remote_irr = value,
@@ -545,6 +558,11 @@ impl PairState {
         self.wake.notify(cpu);
         Ok(())
     }
+    /// INTIN3 (S11-21): the COM2 UART line, with the INTIN4 rules (edge or level entry, active
+    /// high). A refused delivery does not consume the transition.
+    pub fn set_line3(&mut self, high: bool) -> Result<(), DeviceError> {
+        self.set_level_line(COM2_PIN, high)
+    }
     pub fn set_line(&mut self, high: bool) -> Result<(), DeviceError> {
         self.set_level_line(4, high)
     }
@@ -585,6 +603,7 @@ impl PairState {
         }
         match pin {
             4 => self.route.high_line = high,
+            COM2_PIN => self.route.com2_asserted = high,
             SCI_PIN => self.route.sci_asserted = high,
             NVME_PIN => self.route.nvme_asserted = high,
             XHCI_PIN => self.route.xhci_asserted = high,
@@ -695,7 +714,7 @@ impl PairState {
         let old = usize::from(self.route.dest[pin]);
         if new != old {
             match pin {
-                4 | SCI_PIN | NVME_PIN | XHCI_PIN if self.is_level(pin) => {
+                4 | COM2_PIN | SCI_PIN | NVME_PIN | XHCI_PIN if self.is_level(pin) => {
                     let vector = self.level_low(pin) as u8;
                     if self.level_asserted(pin)
                         || self.level_remote_irr(pin)

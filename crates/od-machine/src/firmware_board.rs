@@ -334,8 +334,9 @@ pub struct FirmwareBoardConfig {
     /// (the default) is the board as it was: nothing is bound at `0x2F8` (a trap, or the absent
     /// UART under the Linux profile, S7-31j). `true` binds the device there instead and takes
     /// `AbsentPortRegion::Uart2` off the Linux profile. It does not change the handoff block or the
-    /// ACPI manifest (COM2 is not described to the firmware yet, see the spec) and routes no
-    /// interrupt: the IRQ3 line is observable only. Needs no other option.
+    /// ACPI manifest unless the manifest records COM2 (see the spec). The run loops pump the
+    /// channel with COM1 and end a quantum on its occupied THR; the IOAPIC board
+    /// ([`Self::enable_uart_ioapic_irq4`]) routes its IRQ3 line to INTIN3. Needs no other option.
     pub agent_channel: bool,
     /// Number of vCPUs `N` (S6-11), `1..=4`; `1` is the board as it was. Each has its own Local
     /// APIC with APIC ID equal to its index, and the IOAPIC accepts those IDs as destinations.
@@ -2275,8 +2276,9 @@ impl LoadedFirmwareBoard {
     }
 
     /// The host handle of the COM2 agent channel; `None` unless
-    /// `FirmwareBoardConfig::agent_channel` was set. The run loops of this board do not pump it:
-    /// the session that runs guest code with the devices owns `AgentChannel::pump` (S10-09).
+    /// `FirmwareBoardConfig::agent_channel` was set. The Linux loop and the firmware loop pump it
+    /// with COM1 and end a quantum on its occupied THR (S11-21); the multi-threaded host loops
+    /// (`host_parallel`) do not yet.
     pub fn agent_channel(&self) -> Option<AgentChannel> {
         self.agent_channel.clone()
     }
@@ -2448,7 +2450,16 @@ impl LoadedFirmwareBoard {
             return false;
         };
         let io_apic = IoApic::new(self.lapic.clone()).handle();
-        let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone());
+        // The agent channel (COM2, IRQ3) is presented to INTIN3 by the same source (S11-21).
+        let source = match &self.agent_channel {
+            Some(channel) => UartIoapicIrqSource::new_with_com2(
+                pit_ioapic,
+                self.uart.clone(),
+                channel.uart(),
+                io_apic.clone(),
+            ),
+            None => UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone()),
+        };
         let mut chain: Box<dyn BoardIrqSource> = match &self.nvme {
             Some(nvme) if nvme.has_pci_transport() => Box::new(NvmeIoapicIrqSource::new(
                 Box::new(source.clone()),
@@ -2782,6 +2793,11 @@ impl LoadedFirmwareBoard {
         }
         if let Some(source) = &self.uart_ioapic_source {
             source.sample();
+        }
+        // The agent channel (COM2) moves its bytes between the same two samples, so that the fall
+        // and the rise of its line are both seen (S11-21).
+        if let Some(channel) = &self.agent_channel {
+            channel.pump();
         }
         while uart.transfer_holding_to_shift() {
             if let Some(byte) = uart.complete_transmission() {
@@ -3617,6 +3633,7 @@ impl LoadedFirmwareBoard {
                 remaining = 0;
             }
             let uart = board.uart.clone();
+            let agent = board.agent_channel.clone();
             let clock_read = Cell::new(None);
             let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
                 observations.build_rdtsc_clock_trace_if_active(|| {
@@ -3670,6 +3687,7 @@ impl LoadedFirmwareBoard {
             let stop = || {
                 (scheduler_budget.is_some() && scheduler_stop())
                     || uart.holding_occupied()
+                    || agent.as_ref().is_some_and(AgentChannel::holding_occupied)
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
                         // A guest write to an xHCI register (a doorbell) ends the quantum.
                         || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
@@ -4203,12 +4221,14 @@ impl LoadedFirmwareBoard {
         }
         loop {
             let uart = self.uart.clone();
+            let agent = self.agent_channel.clone();
             let report = self.run_quantum(
                 large_ram,
                 firmware_boot_profile,
                 remaining,
                 || {
                     uart.holding_occupied()
+                        || agent.as_ref().is_some_and(AgentChannel::holding_occupied)
                         || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
                         // A guest write to an xHCI register (a doorbell) ends the quantum.
                         || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
@@ -4239,6 +4259,9 @@ impl LoadedFirmwareBoard {
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
+            if let Some(channel) = &self.agent_channel {
+                channel.pump();
+            }
             while uart.transfer_holding_to_shift() {
                 if let Some(byte) = uart.complete_transmission() {
                     self.com1_log.push(byte);
@@ -9192,6 +9215,63 @@ mod tests {
         assert_eq!(buf[0], b'Q');
         // COM1's transcript saw nothing.
         assert!(board.uart().received_byte().is_none());
+    }
+
+    /// S11-21: the board's loop cycle (`pump_uart_transmit`) pumps the agent channel and samples
+    /// the COM2 line into INTIN3, with COM1 untouched. A byte the host queues reaches the guest's
+    /// COM2 registers and raises the line; the guest's THR write reaches the host queue.
+    #[test]
+    fn the_board_cycle_pumps_the_agent_channel_and_routes_its_irq3_to_the_ioapic() {
+        let config = FirmwareBoardConfig {
+            agent_channel: true,
+            ..linux_config()
+        };
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &config).unwrap();
+        assert!(board.enable_pit_ioapic_irq());
+        assert!(board.enable_uart_ioapic_irq4());
+        let channel = board.agent_channel().expect("the channel handle");
+        let source = board.uart_ioapic_source().expect("the UART source");
+        let dword = |board: &mut LoadedFirmwareBoard, address: u64, value: u64| {
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Dword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        };
+        // The guest enables its Local APIC and routes INTIN3 (IOREGSEL 0x16) to vector 0x63 as an
+        // edge, then enables the receive interrupt of COM2 (IER bit 0, MCR OUT2).
+        dword(&mut board, crate::LOCAL_APIC_MMIO_BASE + 0xf0, 0x1ff);
+        dword(&mut board, crate::IO_APIC_MMIO_BASE, 0x16);
+        dword(&mut board, crate::IO_APIC_MMIO_BASE + 0x10, 0x63);
+        for (port, value) in [(0x2fbu16, 0x03u8), (0x2fc, 0x08), (0x2f9, 0x01)] {
+            out_ok(&mut board, port, value);
+        }
+        assert_eq!(board.lapic.pending(), None);
+        // Host to guest: the byte is in COM2's RBR; the loop cycle presents the line to INTIN3.
+        assert_eq!(channel.write_to_guest(b"R"), 1);
+        assert_eq!(board.lapic.pending(), None);
+        board.pump_uart_transmit(0);
+        assert_eq!(source.com2_edges(), 1);
+        assert_eq!(source.uart_edges(), 0);
+        assert_eq!(board.lapic.acknowledge(), Some(0x63));
+        assert_eq!(inb(&mut board, 0x2f8), Ok(u32::from(b'R')));
+        // Guest to host: a THR write is moved to the host queue by the same cycle, without any
+        // host call that would pump by itself.
+        for (port, value) in [(0x2fbu16, 0x83u8), (0x2f8, 1), (0x2f9, 0), (0x2fb, 3)] {
+            out_ok(&mut board, port, value);
+        }
+        out_ok(&mut board, 0x2f8, b'T');
+        assert!(channel.holding_occupied());
+        assert_eq!(channel.stats().tx_bytes_accepted, 0);
+        board.pump_uart_transmit(0);
+        assert!(!channel.holding_occupied());
+        assert_eq!(channel.stats().tx_bytes_accepted, 1);
+        // COM1 saw nothing of this.
+        assert!(board.com1_log.bytes.is_empty());
     }
 
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----
