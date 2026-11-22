@@ -21,45 +21,45 @@ use od_isa::real_mode_exec::TableRegister;
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
 
-const P: u64 = 1;
-const RW: u64 = 1 << 1;
-const US: u64 = 1 << 2;
-const ACCESSED: u64 = 1 << 5;
-const DIRTY: u64 = 1 << 6;
-const PS: u64 = 1 << 7;
-const XD: u64 = 1 << 63;
-const EFER_NXE: u64 = 1 << 11;
+pub(crate) const P: u64 = 1;
+pub(crate) const RW: u64 = 1 << 1;
+pub(crate) const US: u64 = 1 << 2;
+pub(crate) const ACCESSED: u64 = 1 << 5;
+pub(crate) const DIRTY: u64 = 1 << 6;
+pub(crate) const PS: u64 = 1 << 7;
+pub(crate) const XD: u64 = 1 << 63;
+pub(crate) const EFER_NXE: u64 = 1 << 11;
 /// `CR0` of a protected-mode PAE vCPU: PG, AM, WP, NE, ET, MP, PE.
-const CR0_WP_SET: u32 = 0x8005_0033;
-const CR0_WP_CLEAR: u32 = 0x8004_0033;
+pub(crate) const CR0_WP_SET: u32 = 0x8005_0033;
+pub(crate) const CR0_WP_CLEAR: u32 = 0x8004_0033;
 
-const PDPT: u64 = 0x1000;
-const PD: u64 = 0x2000;
-const PT: u64 = 0x3000;
+pub(crate) const PDPT: u64 = 0x1000;
+pub(crate) const PD: u64 = 0x2000;
+pub(crate) const PT: u64 = 0x3000;
 /// The code page: linear = physical.
-const CODE: u32 = 0x8000;
+pub(crate) const CODE: u32 = 0x8000;
 /// The physical pages behind linear pages 5, 6 and 7 (not contiguous: a crossing operand shows it).
-const DATA_A: u64 = 0x1_0000;
-const DATA_B: u64 = 0x1_8000;
-const DATA_X: u64 = 0x1_1000;
-const RAM_END: u64 = 0x2_0000;
-const ROM_AT: u64 = 0x2_0000;
-const MMIO_AT: u64 = 0x3_0000;
+pub(crate) const DATA_A: u64 = 0x1_0000;
+pub(crate) const DATA_B: u64 = 0x1_8000;
+pub(crate) const DATA_X: u64 = 0x1_1000;
+pub(crate) const RAM_END: u64 = 0x2_0000;
+pub(crate) const ROM_AT: u64 = 0x2_0000;
+pub(crate) const MMIO_AT: u64 = 0x3_0000;
 /// The framebuffer region (one page), behind PT[12].
-const FB_AT: u64 = 0x5_0000;
+pub(crate) const FB_AT: u64 = 0x5_0000;
 /// An address no region covers.
-const HOLE: u64 = 0x4_0000;
-const EAX_VALUE: u32 = 0xA1B2_C3D4;
+pub(crate) const HOLE: u64 = 0x4_0000;
+pub(crate) const EAX_VALUE: u32 = 0xA1B2_C3D4;
 
-fn at(address: u64) -> GuestPhysicalAddress {
+pub(crate) fn at(address: u64) -> GuestPhysicalAddress {
     GuestPhysicalAddress::new(address)
 }
 
-fn range(start: u64, len: u64) -> GuestPhysicalRange {
+pub(crate) fn range(start: u64, len: u64) -> GuestPhysicalRange {
     GuestPhysicalRange::new(at(start), len).unwrap()
 }
 
-fn map() -> MachineMemoryMap {
+pub(crate) fn map() -> MachineMemoryMap {
     MachineMemoryMap::new(
         36,
         vec![
@@ -90,24 +90,24 @@ fn memory_with_framebuffer() -> PhysicalMemory {
     .unwrap()
 }
 
-fn memory() -> PhysicalMemory {
+pub(crate) fn memory() -> PhysicalMemory {
     PhysicalMemory::new(&map(), RamLimits::new(1 << 20)).unwrap()
 }
 
-fn put(memory: &PhysicalMemory, address: u64, value: u64) {
+pub(crate) fn put(memory: &PhysicalMemory, address: u64, value: u64) {
     memory
         .store_bytes(at(address), &value.to_le_bytes(), |_| {})
         .unwrap();
 }
 
-fn get(memory: &PhysicalMemory, address: u64) -> u64 {
+pub(crate) fn get(memory: &PhysicalMemory, address: u64) -> u64 {
     let mut bytes = [0u8; 8];
     memory.load_bytes(at(address), &mut bytes).unwrap();
     u64::from_le_bytes(bytes)
 }
 
 /// The first differing byte of two images (offset, left, right): a readable failure instead of a dump.
-fn first_difference(left: &[u8], right: &[u8]) -> Option<(usize, u8, u8)> {
+pub(crate) fn first_difference(left: &[u8], right: &[u8]) -> Option<(usize, u8, u8)> {
     assert_eq!(left.len(), right.len());
     left.iter()
         .zip(right)
@@ -115,7 +115,7 @@ fn first_difference(left: &[u8], right: &[u8]) -> Option<(usize, u8, u8)> {
         .map(|index| (index, left[index], right[index]))
 }
 
-fn dump(memory: &PhysicalMemory) -> Vec<u8> {
+pub(crate) fn dump(memory: &PhysicalMemory) -> Vec<u8> {
     let mut image = vec![0u8; RAM_END as usize];
     memory.load_bytes(at(0), &mut image).unwrap();
     image
@@ -124,7 +124,7 @@ fn dump(memory: &PhysicalMemory) -> Vec<u8> {
 /// One case of the differential: an operand access at `disp` on tables whose entries for linear pages 5
 /// and 6 and the 2 MiB PDE are the given ones.
 #[derive(Clone)]
-struct Scenario {
+pub(crate) struct Scenario {
     name: &'static str,
     store: bool,
     disp: u32,
@@ -136,7 +136,7 @@ struct Scenario {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Expect {
+pub(crate) enum Expect {
     Ok,
     /// A `#PF` with the error code of the SDM and the CR2 value.
     Fault(u32, u32),
@@ -145,7 +145,7 @@ enum Expect {
 }
 
 impl Scenario {
-    fn new(name: &'static str, store: bool, disp: u32, expect: Expect) -> Self {
+    pub(crate) fn new(name: &'static str, store: bool, disp: u32, expect: Expect) -> Self {
         Self {
             name,
             store,
@@ -157,19 +157,19 @@ impl Scenario {
             expect,
         }
     }
-    fn pte5(mut self, entry: u64) -> Self {
+    pub(crate) fn pte5(mut self, entry: u64) -> Self {
         self.pte5 = entry;
         self
     }
-    fn pte6(mut self, entry: u64) -> Self {
+    pub(crate) fn pte6(mut self, entry: u64) -> Self {
         self.pte6 = entry;
         self
     }
-    fn pd1(mut self, entry: u64) -> Self {
+    pub(crate) fn pd1(mut self, entry: u64) -> Self {
         self.pd1 = entry;
         self
     }
-    fn wp_clear(mut self) -> Self {
+    pub(crate) fn wp_clear(mut self) -> Self {
         self.wp = false;
         self
     }
@@ -178,7 +178,7 @@ impl Scenario {
 /// PDPTE0 and PDPTE1 -> PD (PDPTE2 and 3 absent); PD[0] -> PT; PD[1] = `pd1` (a 2 MiB page at 0);
 /// PT[5], PT[6] as given, PT[7] an XD page over `DATA_X`, PT[8] the code page, PT[9] an MMIO page,
 /// PT[10] a ROM page, PT[11] a page of the hole, PT[12] a framebuffer page.
-fn fixture(memory: &PhysicalMemory, s: &Scenario) {
+pub(crate) fn fixture(memory: &PhysicalMemory, s: &Scenario) {
     for base in [DATA_A, DATA_B, DATA_X] {
         let pattern: Vec<u8> = (0..0x1000u32)
             .map(|i| (i.wrapping_mul(7).wrapping_add(base as u32 >> 12)) as u8)
@@ -204,7 +204,7 @@ fn fixture(memory: &PhysicalMemory, s: &Scenario) {
     }
 }
 
-fn segment(selector: u16, access: u8) -> ProtectedSegment {
+pub(crate) fn segment(selector: u16, access: u8) -> ProtectedSegment {
     ProtectedSegment {
         selector,
         base: 0,
@@ -216,7 +216,7 @@ fn segment(selector: u16, access: u8) -> ProtectedSegment {
 
 /// A protected-mode vCPU on PAE paging (the PDPTE registers as the fixture's tables give them) at
 /// the code page.
-fn cpu(wp: bool) -> ProtectedCpu {
+pub(crate) fn cpu(wp: bool) -> ProtectedCpu {
     ProtectedCpu {
         gpr: [0; 8],
         eip: CODE,
@@ -249,7 +249,7 @@ fn ctx(privilege: PrivilegeLevel) -> AccessContext {
     }
 }
 
-fn ring0() -> AccessContext {
+pub(crate) fn ring0() -> AccessContext {
     ctx(PrivilegeLevel::Ring0)
 }
 
@@ -858,7 +858,7 @@ fn a_framebuffer_page_serves_data_like_ram_but_an_instruction_fetch_from_it_is_a
 }
 
 /// A device that counts its accesses and stores one value.
-struct CountingDevice(Arc<Mutex<(usize, u64)>>);
+pub(crate) struct CountingDevice(pub(crate) Arc<Mutex<(usize, u64)>>);
 
 impl BusDevice for CountingDevice {
     fn read(&mut self, _access: DeviceAccess) -> Result<u64, DeviceError> {

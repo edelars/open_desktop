@@ -1851,36 +1851,6 @@ mod tests {
         use od_isa::memory::{AccessContext, AccessOrigin, GuestMemory, InstructionMode};
         const PT: u64 = 0x7000;
 
-        fn ap_on_pae() -> LoadedFirmwareBoard {
-            const PT: u64 = 0x7000;
-            const OUTSIDE: u64 = 0x8_0000_0000;
-            let mut board = board_with(2, &pae_trampoline_patches());
-            board
-                .local_apic_of(0)
-                .unwrap()
-                .write_icr(0, 1, sipi(SIPI_VECTOR))
-                .unwrap();
-            board.apply_pending_startup(1).unwrap();
-            assert_eq!(
-                run_legacy(&mut board, 1, 24, &mut || false)
-                    .unwrap()
-                    .executed
-                    .retired,
-                24
-            );
-            let (memory, _) = board.bus_mut().split_for_pio_step();
-            let put = |at: u64, value: u64| {
-                memory
-                    .store_u64(GuestPhysicalAddress::new(at), value, |_| {})
-                    .unwrap();
-            };
-            put(PD + 8, PT | 3);
-            put(PT, MARKER | 3);
-            put(PT + 8, LOCAL_APIC_MMIO_BASE | 0x13);
-            put(PT + 16, OUTSIDE | 3);
-            board
-        }
-
         /// What a step produced, in terms both paths can name.
         #[derive(Debug, PartialEq)]
         enum Seen {
@@ -2815,5 +2785,180 @@ mod tests {
                 "the race must be exercised on this host"
             );
         }
+    }
+
+    /// An AP that the trampoline put on PAE paging (24 steps), with the tables of the PAE operand tests:
+    /// PD[1] -> PT; PT[0] = the marker page, PT[1] = the Local APIC MMIO page, PT[2] = a 36-bit page that
+    /// the board's map does not cover, PT[3...] absent.
+    fn ap_on_pae() -> LoadedFirmwareBoard {
+        const PT: u64 = 0x7000;
+        const OUTSIDE: u64 = 0x8_0000_0000;
+        let mut board = board_with(2, &pae_trampoline_patches());
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        assert_eq!(
+            run_legacy(&mut board, 1, 24, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            24
+        );
+        let (memory, _) = board.bus_mut().split_for_pio_step();
+        let put = |at: u64, value: u64| {
+            memory
+                .store_u64(GuestPhysicalAddress::new(at), value, |_| {})
+                .unwrap();
+        };
+        put(PD + 8, PT | 3);
+        put(PT, MARKER | 3);
+        put(PT + 8, LOCAL_APIC_MMIO_BASE | 0x13);
+        put(PT + 16, OUTSIDE | 3);
+        board
+    }
+
+    /// S2-25o: the board runs the covered instructions of an AP on PAE paging through the adapter over the
+    /// whole bus: a Local APIC register read is one MMIO access of that vCPU (the AP's own ID), a store
+    /// lands in RAM with the dirty bit and the write list, a `#PF` leaves the model where it was with the
+    /// record of the adapter, an operand outside the map and an instruction outside the covered set are
+    /// named and change nothing.
+    #[test]
+    fn the_board_pae_step_runs_covered_instructions_with_mmio_and_leaves_the_model_on_a_stop() {
+        use crate::{
+            AccessWidth, PaeOperandOperation, PaeProtectedStop, PaeStepOutcome,
+            TrackedAccessOutcome,
+        };
+        use od_isa::memory::MemoryError;
+        use od_isa::memory::PrivilegeLevel::Ring0;
+        use od_isa::protected_exec::ProtectedInstruction;
+        const PT: u64 = 0x7000;
+        let mut board = ap_on_pae();
+        // The expected ID: the board's own operand access of the same linear address.
+        let TrackedAccessOutcome::Read(id) = board
+            .pae_operand_access(
+                1,
+                0,
+                0x20_1020,
+                Ring0,
+                PaeOperandOperation::Read {
+                    width: AccessWidth::Dword,
+                },
+            )
+            .unwrap()
+            .report
+            .outcome
+            .unwrap()
+        else {
+            panic!("a read");
+        };
+        assert_ne!(id, 0, "the AP's Local APIC ID is not the BSP's");
+        let program: [(u64, &[u8]); 3] = [
+            (
+                LONG_AT,
+                &[
+                    0xA1, 0x20, 0x10, 0x20, 0x00, // mov eax, [0x201020] (Local APIC ID, MMIO)
+                    0xA3, 0x10, 0x00, 0x20, 0x00, // mov [0x200010], eax (marker page)
+                    0xA1, 0x00, 0x30, 0x20, 0x00, // mov eax, [0x203000] (absent)
+                ],
+            ),
+            (LONG_AT + 0x40, &[0xA1, 0x00, 0x20, 0x20, 0x00]), // mov eax, [0x202000] (outside the map)
+            (LONG_AT + 0x80, &[0x0F, 0x22, 0xD8]),             // mov cr3, eax
+        ];
+        for (at, bytes) in program {
+            board
+                .bus_mut()
+                .patch_physical_ram(GuestPhysicalAddress::new(at), bytes)
+                .unwrap();
+        }
+        let model_of = |board: &LoadedFirmwareBoard| match board.vcpu(1).unwrap().legacy {
+            Some(LegacyCpu::Protected(model)) => model,
+            other => panic!("not a protected model: {other:?}"),
+        };
+        let set_eip = |board: &mut LoadedFirmwareBoard, eip: u64| {
+            let Some(LegacyCpu::Protected(model)) = &mut board.vcpu_mut(1).unwrap().legacy else {
+                panic!("a protected model");
+            };
+            model.eip = eip as u32;
+        };
+        set_eip(&mut board, LONG_AT);
+        let writes = RefCell::new(Vec::new());
+        let mut sink = |range: crate::GuestPhysicalRange| {
+            writes.borrow_mut().push((range.start().get(), range.len()));
+        };
+
+        let first = board.pae_step(1, &mut sink).unwrap();
+        assert!(matches!(
+            first.outcome,
+            PaeStepOutcome::Retired(ProtectedInstruction::MovEaxFromDs(0x20_1020))
+        ));
+        assert_eq!(model_of(&board).gpr[0], id as u32);
+        let second = board.pae_step(1, &mut sink).unwrap();
+        assert!(matches!(
+            second.outcome,
+            PaeStepOutcome::Retired(ProtectedInstruction::MovDsFromEax(0x20_0010))
+        ));
+        assert_eq!(ram(&mut board, MARKER + 0x10, 4), (id as u32).to_le_bytes());
+        assert!(
+            writes.borrow().contains(&(MARKER + 0x10, 4)),
+            "{:?}",
+            writes.borrow()
+        );
+        assert_eq!(
+            ram(&mut board, PT, 1)[0] & 0x40,
+            0x40,
+            "the leaf of the marker page is dirty"
+        );
+
+        let before = model_of(&board);
+        assert_eq!(before.eip as u64, LONG_AT + 10);
+        let third = board.pae_step(1, &mut sink).unwrap();
+        let PaeStepOutcome::Fault(fault) = third.outcome else {
+            panic!("a page fault, got {:?}", third.outcome);
+        };
+        assert_eq!(
+            (fault.vector, fault.error_code, fault.linear_address),
+            (14, Some(0), Some(0x20_3000))
+        );
+        let record = third.page_fault.expect("the record of the adapter");
+        assert_eq!(
+            (record.saved_rip(), record.cr2_value()),
+            (LONG_AT + 10, 0x20_3000)
+        );
+        assert_eq!(model_of(&board), before, "a fault leaves the model");
+
+        set_eip(&mut board, LONG_AT + 0x40);
+        let before = model_of(&board);
+        let outside = board.pae_step(1, &mut sink).unwrap();
+        assert!(
+            matches!(
+                outside.outcome,
+                PaeStepOutcome::Stopped(PaeProtectedStop::Memory(MemoryError::Backend(_)))
+            ),
+            "{:?}",
+            outside.outcome
+        );
+        assert_eq!(model_of(&board), before);
+
+        set_eip(&mut board, LONG_AT + 0x80);
+        let before = model_of(&board);
+        let uncovered = board.pae_step(1, &mut sink).unwrap();
+        assert_eq!(
+            uncovered.outcome,
+            PaeStepOutcome::Stopped(PaeProtectedStop::Uncovered {
+                eip: (LONG_AT + 0x80) as u32,
+                instruction: ProtectedInstruction::MovCr3Eax,
+                length: 3,
+            })
+        );
+        assert_eq!(model_of(&board), before);
+
+        // The BSP has no legacy model, an AP before SIPI is in real mode.
+        assert!(board.pae_step(0, &mut sink).is_err());
+        let mut fresh = board_with(2, &pae_trampoline_patches());
+        assert!(fresh.pae_step(1, &mut sink).is_err());
+        assert!(fresh.pae_step(7, &mut sink).is_err());
     }
 }

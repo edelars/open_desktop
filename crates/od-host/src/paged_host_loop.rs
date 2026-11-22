@@ -2488,14 +2488,13 @@ mod tests {
         })
     }
 
-    /// S2-25l: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run by this loop.
-    /// The loop decodes and executes Long64 instructions (the native blocks and the CPL0 set are
-    /// 64-bit code), and its translation snapshot is the 4-level one; neither would be right for a
-    /// protected-mode PAE vCPU, so the refusal is explicit and typed, with its exact reason (S2-25n:
-    /// `PaeProtectedMode`, the state is PAE paging of a protected-mode vCPU and no 32-bit executor
-    /// runs on the PAE adapter yet; before S2-25n the same refusal read as a missing EFER.LME|LMA), not a
-    /// silent 4-level walk over PAE tables. Nothing is fetched or walked: no instruction retires, RAM (accessed bits included),
-    /// registers and the write list are what they were.
+    /// S2-25l, S2-25o: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run as Long64
+    /// code (the native blocks and the CPL0 set are 64-bit code over a 4-level snapshot). Until S2-25n
+    /// the refusal was by configuration (`PaeProtectedMode`); since S2-25o the loop runs the state as a
+    /// 32-bit vCPU through the PAE adapter (`s2_25o.rs`), and a state that cannot be that vCPU is refused
+    /// with its reason. Here the state is the four-level test fixture: the PDPTEs CR3 names are PML4
+    /// entries with reserved bits, so the refusal is that. Nothing is fetched or walked: no instruction
+    /// retires, RAM (accessed bits included), registers and the write list are what they were.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block() {
@@ -2523,16 +2522,17 @@ mod tests {
             10,
             |range| writes.push((range.start().get(), range.len())),
         );
+        // S2-25o: the loop no longer refuses a PAE state by configuration; it runs it as a 32-bit vCPU.
+        // These tables are four-level ones, so the PDPTEs that CR3 names are the PML4 entries, whose
+        // bits 2:1 are reserved in a PDPTE: the state is refused with that reason (SDM Vol. 3A section
+        // 5.4.1), before any fetch or walk, and neither the JIT nor the Long64 interpreter runs it.
         assert_eq!(
             report.exit,
-            PagedHostLoopExit::Interpreter(od_machine::PagedProbeExit::Rejected(
-                od_machine::PagedProbeRejection::Configuration(
-                    od_machine::ProbeConfigError::PaeProtectedMode {
-                        cr0: state_before.cr0.unwrap(),
-                        cr4: state_before.cr4.unwrap(),
-                        efer: 1 << 11,
-                    }
-                )
+            PagedHostLoopExit::PaeProtected(od_machine::PaeProtectedStop::State(
+                od_machine::PaeStateRefusal::Paging(od_machine::PaeConfigError::PdpteReserved {
+                    index: 0,
+                    pdpte: 0x2007
+                })
             ))
         );
         assert_eq!(report.retired_total(), 0);
@@ -2551,6 +2551,8 @@ mod tests {
 
     /// S6-42: tests of several vCPU threads over the slot backend and the
     /// cross-vCPU invalidation (child module: it uses the helpers above).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s2_25o;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_42;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
