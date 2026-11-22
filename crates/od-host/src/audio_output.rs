@@ -884,8 +884,12 @@ mod tests {
                 if tag % 37 == 0 {
                     producer.flush();
                 }
-                // A flushed full ring rejects until the consumer reacts; losing a block is allowed here.
-                if producer.write_block(&tagged(tag)) == WriteResult::Dropped {
+                // A flushed full ring rejects until the consumer reacts: retry until accepted (bounded by
+                // the deadline), so the number of played blocks does not depend on the scheduler.
+                while producer.write_block(&tagged(tag)) == WriteResult::Dropped {
+                    if Instant::now() > deadline {
+                        break;
+                    }
                     std::thread::yield_now();
                 }
             }
