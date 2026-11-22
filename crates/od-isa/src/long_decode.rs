@@ -1830,6 +1830,11 @@ pub enum Operation {
     /// S4-38L9o: bare `0F AE F8` (SFENCE); a no-op for the single-vCPU model, admitted only
     /// inside the CPL0 profile set.
     Sfence,
+    /// S2-39n: `[REX] 0F AE /2` LDMXCSR m32 (mod != 11; no mandatory prefix, no REX.W). Loaded into MXCSR by the
+    /// executor of the CPL0 set only; reserved bits are `#GP(0)` there.
+    Ldmxcsr(MemoryOperand),
+    /// S2-39n: `[REX] 0F AE /3` STMXCSR m32 (mod != 11; no mandatory prefix, no REX.W); executed in the CPL0 set only.
+    Stmxcsr(MemoryOperand),
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
     FxsaveRipRelative(MemoryOperand),
     /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
@@ -9748,7 +9753,32 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0xae) => {
                 let modrm = self.byte()?;
-                if prefixes == Prefixes::default() {
+                // S2-39n: `[REX] 0F AE /2` LDMXCSR m32 and `[REX] 0F AE /3` STMXCSR m32 (memory operand, any
+                // addressing form). No 66/F2/F3/LOCK prefix and no stale REX (a REX not directly before the
+                // opcode, and no REX.W (refused, like the Linux profile refuses `48 0F AE 17`: the operand is 32 bits and the
+                // architectural effect of REX.W here is not measured).
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if modrm >> 6 != 3
+                    && matches!((modrm >> 3) & 7, 2 | 3)
+                    && prefixes.group1.is_none()
+                    && !prefixes.operand_override
+                    && !stale_rex
+                    && prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Dword)?
+                    else {
+                        unreachable!("a mod != 11 ModRM is a memory operand");
+                    };
+                    if (modrm >> 3) & 7 == 2 {
+                        Operation::Ldmxcsr(area)
+                    } else {
+                        Operation::Stmxcsr(area)
+                    }
+                } else if prefixes == Prefixes::default() {
                     match modrm {
                         0xf0 => Operation::Mfence,
                         // S4-38L9o: register-only fence encodings (SDM from memory).
@@ -24780,6 +24810,82 @@ mod tests {
     }
 
     #[test]
+    fn ldmxcsr_and_stmxcsr_decode_any_memory_form_and_nothing_else() {
+        // S2-39n: `[REX] 0F AE /2` and `/3` with a memory operand, size dword.
+        let cases: [(&[u8], bool, AddressBase, i64, u8); 5] = [
+            (
+                &[0x0f, 0xae, 0x10],
+                true,
+                AddressBase::Register(Register::Rax),
+                0,
+                3,
+            ),
+            (
+                &[0x0f, 0xae, 0x18],
+                false,
+                AddressBase::Register(Register::Rax),
+                0,
+                3,
+            ),
+            (
+                &[0x41, 0x0f, 0xae, 0x50, 0x08],
+                true,
+                AddressBase::Register(Register::R8),
+                8,
+                5,
+            ),
+            (
+                &[0x0f, 0xae, 0x1d, 0x10, 0, 0, 0],
+                false,
+                AddressBase::NextRip,
+                0x10,
+                7,
+            ),
+            (
+                &[0x40, 0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff],
+                true,
+                AddressBase::Register(Register::Rbp),
+                -16,
+                8,
+            ),
+        ];
+        for (bytes, load, base, displacement, length) in cases {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.length, length, "{bytes:02x?}");
+            let (Operation::Ldmxcsr(area) | Operation::Stmxcsr(area)) = instruction.operation
+            else {
+                panic!("{bytes:02x?}: {:?}", instruction.operation)
+            };
+            assert_eq!(
+                matches!(instruction.operation, Operation::Ldmxcsr(_)),
+                load,
+                "{bytes:02x?}"
+            );
+            assert_eq!(area.base, base, "{bytes:02x?}");
+            assert_eq!(area.displacement, displacement, "{bytes:02x?}");
+            assert_eq!(area.size, OperandSize::Dword, "{bytes:02x?}");
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0xae, 0x10][..],       // operand-size prefix
+            &[0xf3, 0x0f, 0xae, 0x10][..],       // REP
+            &[0xf2, 0x0f, 0xae, 0x18][..],       // REPNE
+            &[0xf0, 0x0f, 0xae, 0x10][..],       // LOCK
+            &[0x48, 0x0f, 0xae, 0x10][..],       // REX.W
+            &[0x48, 0x41, 0x0f, 0xae, 0x10][..], // stale REX
+            &[0x0f, 0xae, 0xd0][..],             // mod = 11, /2
+            &[0x0f, 0xae, 0xd8][..],             // mod = 11, /3
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn fxsave_rip_profile_decodes_only_plain_exact_form_and_fetches_disp32_on_demand() {
         let observed = [0x0f, 0xae, 0x05, 0x6b, 0xf9, 0x17, 0x00];
         let mut decoded = Memory::new(&observed);
@@ -24805,8 +24911,6 @@ mod tests {
             &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
-            &[0x0f, 0xae, 0x15, 0, 0, 0, 0][..],
-            &[0x0f, 0xae, 0x1d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x35, 0, 0, 0, 0][..],
