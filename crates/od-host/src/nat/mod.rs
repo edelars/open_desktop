@@ -13,6 +13,8 @@
 pub mod flow;
 pub mod frame;
 #[cfg(test)]
+mod nic_tests;
+#[cfg(test)]
 mod test_frames;
 
 use od_machine::{

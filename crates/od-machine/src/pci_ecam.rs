@@ -188,6 +188,13 @@ impl Type0Config {
         self.bar0_upper = Some((address >> 32) as u32);
     }
 
+    /// Assign a 32-bit non-prefetchable BAR to the endpoint's initial address.
+    pub(crate) fn configure_32_bit_memory_bar0(&mut self, address: u32) {
+        debug_assert!(self.bar0_mask != 0);
+        self.bar0 = address & self.bar0_mask;
+        self.bar0_upper = None;
+    }
+
     pub(crate) fn memory_bar0_address(&self) -> u64 {
         u64::from(self.bar0) | (u64::from(self.bar0_upper.unwrap_or(0)) << 32)
     }

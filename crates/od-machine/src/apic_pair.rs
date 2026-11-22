@@ -24,8 +24,10 @@ pub(crate) const SCI_LEVEL_LOW: u32 = LEVEL | POLARITY_LOW;
 pub(crate) const NVME_PIN: usize = 16;
 /// The xHCI INTA route (XHCI_DEVICE.md section 2): level, active low, GSI 17.
 pub(crate) const XHCI_PIN: usize = 17;
+/// The NIC INTA route (NIC_DEVICE.md section 3): level, active low, GSI 18.
+pub(crate) const NIC_PIN: usize = 18;
 /// Inputs with Remote IRR and EOI-driven redelivery.
-const LEVEL_PINS: [usize; 4] = [4, SCI_PIN, NVME_PIN, XHCI_PIN];
+const LEVEL_PINS: [usize; 5] = [4, SCI_PIN, NVME_PIN, XHCI_PIN, NIC_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
 /// IOAPIC ID loaded at reset on a single-vCPU board.
@@ -49,6 +51,8 @@ pub(crate) struct Route {
     pub nvme_remote_irr: bool,
     pub xhci_asserted: bool,
     pub xhci_remote_irr: bool,
+    pub nic_asserted: bool,
+    pub nic_remote_irr: bool,
     /// IOAPIC ID register bits 27:24 (4 bits); Arbitration ID mirrors it.
     pub id: u8,
     /// Stored low dwords of entries other than INTIN4. INTIN2 is an edge input; the
@@ -72,6 +76,8 @@ impl Default for Route {
             nvme_remote_irr: false,
             xhci_asserted: false,
             xhci_remote_irr: false,
+            nic_asserted: false,
+            nic_remote_irr: false,
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
             dest: [0; IO_APIC_PINS],
@@ -311,6 +317,7 @@ impl PairState {
             SCI_PIN => self.route.sci_asserted,
             NVME_PIN => self.route.nvme_asserted,
             XHCI_PIN => self.route.xhci_asserted,
+            NIC_PIN => self.route.nic_asserted,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -320,6 +327,7 @@ impl PairState {
             SCI_PIN => self.route.sci_remote_irr,
             NVME_PIN => self.route.nvme_remote_irr,
             XHCI_PIN => self.route.xhci_remote_irr,
+            NIC_PIN => self.route.nic_remote_irr,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -329,6 +337,7 @@ impl PairState {
             SCI_PIN => self.route.sci_remote_irr = value,
             NVME_PIN => self.route.nvme_remote_irr = value,
             XHCI_PIN => self.route.xhci_remote_irr = value,
+            NIC_PIN => self.route.nic_remote_irr = value,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -566,6 +575,11 @@ impl PairState {
         self.set_active_low_level_line(XHCI_PIN, asserted)
     }
 
+    /// The NIC INTA line (GSI 18), level and active low like the NVMe and xHCI ones.
+    pub fn set_nic_line(&mut self, asserted: bool) -> Result<(), DeviceError> {
+        self.set_active_low_level_line(NIC_PIN, asserted)
+    }
+
     fn set_active_low_level_line(&mut self, pin: usize, asserted: bool) -> Result<(), DeviceError> {
         if asserted && self.route.pins[pin] & MASK == 0 && !self.is_level(pin) {
             return Err(DeviceError::UnsupportedConfiguration);
@@ -588,6 +602,7 @@ impl PairState {
             SCI_PIN => self.route.sci_asserted = high,
             NVME_PIN => self.route.nvme_asserted = high,
             XHCI_PIN => self.route.xhci_asserted = high,
+            NIC_PIN => self.route.nic_asserted = high,
             _ => unreachable!("non-level pin"),
         }
         Ok(())
@@ -695,7 +710,7 @@ impl PairState {
         let old = usize::from(self.route.dest[pin]);
         if new != old {
             match pin {
-                4 | SCI_PIN | NVME_PIN | XHCI_PIN if self.is_level(pin) => {
+                4 | SCI_PIN | NVME_PIN | XHCI_PIN | NIC_PIN if self.is_level(pin) => {
                     let vector = self.level_low(pin) as u8;
                     if self.level_asserted(pin)
                         || self.level_remote_irr(pin)
