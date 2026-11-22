@@ -421,9 +421,9 @@ fn scan_interrupt_inner(
 /// The events of data that ended after `transferred` of the chain's bytes (contract 9.3).
 /// A full transfer gives Success for every TRB with IOC. A short transfer gives, for the TRB the
 /// data ended in, an event if it has ISP (or IOC), and for every later TRB with IOC an event with
-/// the same code and remaining count. Control short packets are code 13 with ISP or IOC;
-/// Interrupt IN reports short without ISP complete with Success and the remainder.
-fn data_events(chain: &[Located], transferred: u32, control: bool) -> Vec<PlannedEvent> {
+/// the same code (Short Packet, 13) and remaining count: the remainder of the TRB the data ended
+/// in (xHCI 4.10.1.1.2, 4.10.3.4). Control and Interrupt IN follow the same rules.
+fn data_events(chain: &[Located], transferred: u32) -> Vec<PlannedEvent> {
     let total: u32 = chain.iter().map(|located| located.trb.length()).sum();
     if transferred >= total {
         return chain
@@ -445,18 +445,7 @@ fn data_events(chain: &[Located], transferred: u32, control: bool) -> Vec<Planne
         before = through;
     }
     let short = &chain[short_index];
-    // Control: the remainder of the TRB the data ended in. Interrupt IN (contract 9.3): the
-    // remainder of the whole TD.
-    let remaining = if control {
-        remaining
-    } else {
-        total - transferred
-    };
-    let code = if control || short.trb.isp() {
-        CC_SHORT_PACKET
-    } else {
-        CC_SUCCESS
-    };
+    let code = CC_SHORT_PACKET;
     // TRBs that were filled completely before the short one complete normally.
     let mut events: Vec<PlannedEvent> = chain[..short_index]
         .iter()
@@ -581,7 +570,7 @@ pub(super) fn execute_control(
         }
     }
     if !td.data.is_empty() {
-        events.extend(data_events(&td.data, transferred, true));
+        events.extend(data_events(&td.data, transferred));
     }
     if status.trb.ioc() {
         events.push(PlannedEvent::new(&status, CC_SUCCESS, 0));
@@ -643,7 +632,7 @@ pub(super) fn execute_interrupt(
                 };
             }
             Execution {
-                events: data_events(&td.data, report.len() as u32, false),
+                events: data_events(&td.data, report.len() as u32),
                 disposition: Disposition::Done(td.end),
             }
         }

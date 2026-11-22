@@ -738,7 +738,7 @@ fn a_zero_length_trb_in_a_chain_takes_no_data_and_the_chain_goes_on() {
 }
 
 #[test]
-fn an_interrupt_in_chain_reports_the_remainder_of_the_whole_td() {
+fn an_interrupt_in_chain_short_report_reports_the_remainder_of_the_short_trb() {
     let mut f = configured(1);
     f.device.report(&[1; 6]);
     f.rig.put_ring(
@@ -746,10 +746,14 @@ fn an_interrupt_in_chain_reports_the_remainder_of_the_whole_td() {
         &[normal_trb(BUF, 8, CH), normal_trb(BUF2, 8, IOC)],
     );
     f.ring(EP3);
+    // The report ends in the first TRB (6 of 8 bytes, remainder 2), which has neither ISP nor
+    // IOC: only the later TRB with IOC reports, with the same code and remainder.
     let events = f.rig.transfer_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].parameter, INTERRUPT_RING + 16);
     assert_eq!(
         (events[0].code, events[0].raw[2] & 0xFF_FFFF),
-        (CC_SUCCESS, 10)
+        (CC_SHORT_PACKET, 2)
     );
 }
 
@@ -1421,7 +1425,7 @@ fn interrupt_in_short_report_with_isp_is_a_short_packet() {
 }
 
 #[test]
-fn interrupt_in_short_report_without_isp_is_a_success_with_the_remainder() {
+fn interrupt_in_short_report_with_ioc_only_is_also_a_short_packet() {
     let mut f = configured(1);
     f.device.report(&[9; 6]);
     f.rig.put_ring(INTERRUPT_RING, &[normal_trb(BUF, 8, IOC)]);
@@ -1429,7 +1433,7 @@ fn interrupt_in_short_report_without_isp_is_a_success_with_the_remainder() {
     let events = f.rig.transfer_events();
     assert_eq!(
         (events[0].code, events[0].raw[2] & 0xFF_FFFF),
-        (CC_SUCCESS, 2)
+        (CC_SHORT_PACKET, 2)
     );
 }
 
