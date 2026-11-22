@@ -780,6 +780,8 @@ const GATED_FORMS: &[(&str, &[u8])] = &[
     ("PSHUFLW xmm1,xmm2,0x1b", &[0xf2, 0x0f, 0x70, 0xca, 0x1b]),
     ("MOVLPD xmm1,[rax]", &[0x66, 0x0f, 0x12, 0x08]),
     ("PCMPEQB xmm1,[rax]", &[0x66, 0x0f, 0x74, 0x08]),
+    ("PINSRW xmm1,[rax],5", &[0x66, 0x0f, 0xc4, 0x08, 0x05]),
+    ("PMINUB xmm0,[rax+0x10]", &[0x66, 0x0f, 0xda, 0x40, 0x10]),
 ];
 
 #[test]
@@ -824,6 +826,8 @@ fn memory_operand_errors_of_the_new_memory_forms_change_nothing() {
         ("MOVSD xmm1,[rax]", &[0xf2, 0x0f, 0x10, 0x08]),
         ("LDMXCSR [rax]", &[0x0f, 0xae, 0x10]),
         ("MOVLPD xmm1,[rax]", &[0x66, 0x0f, 0x12, 0x08]),
+        ("PINSRW xmm1,[rax],5", &[0x66, 0x0f, 0xc4, 0x08, 0x05]),
+        ("PMINUB xmm0,[rax+0x10]", &[0x66, 0x0f, 0xda, 0x40, 0x10]),
     ] {
         // A non-canonical address is #GP(0); an unmapped one is the backend's error.
         let mut case = Case::new(true);
@@ -1166,6 +1170,45 @@ fn forms_with_a_handler_of_the_cpl3_profile_only_run_in_the_set_with_the_same_re
     let (observed, before, after) = with_regs(&case3, &[0x66, 0x0f, 0x74, 0x0f], &[(7, DATA + 4)]);
     assert_eq!(observed.result, gp0());
     assert_eq!((after, observed.rip), (before, CODE));
+    // PINSRW xmm1,[rax],imm8 (66 0F C4 /r m16, imm8): the word at an unaligned address replaces lane imm8 & 7 only.
+    // imm8 = 0x0d selects lane 5, so the test also covers that the lane number is taken modulo 8.
+    let (observed, _, after) = with_regs(&case2, &[0x66, 0x0f, 0xc4, 0x08, 0x0d], &[(0, DATA + 1)]);
+    assert_eq!(observed.result, Result_::Retired);
+    assert_eq!(observed.rip, CODE + 5);
+    let mut expect = case2.xmm[1];
+    expect[10..12].copy_from_slice(&[0x41, 0x42]);
+    assert_eq!(after.sse.xmm[1], expect);
+    assert_ne!(expect, case2.xmm[1], "the word must change the lane");
+    // ... lane 0 at an aligned address, the destination in ModRM.reg (xmm9 with REX.R).
+    let (observed, _, after) = with_regs(&case2, &[0x66, 0x44, 0x0f, 0xc4, 0x08, 0x00], &[]);
+    assert_eq!(observed.result, Result_::Retired);
+    let mut expect = case2.xmm[9];
+    expect[..2].copy_from_slice(&[0x40, 0x41]);
+    assert_eq!(after.sse.xmm[9], expect);
+    // PMINUB xmm0,[rax+disp8] (66 0F DA /r m128; the decoder returns xmm0 and [RAX+disp8] with disp8 in
+    // 0x10, 0x20, 0x30, 0x50, 0x60, 0x70): bytewise unsigned minimum with an aligned operand.
+    let mut case4 = case.clone();
+    case4.xmm[0] = core::array::from_fn(|i| 0x80u8.wrapping_add((i as u8).wrapping_mul(0x13)));
+    case4.memory = core::array::from_fn(|i| 0xa0u8.wrapping_sub((i as u8).wrapping_mul(0x0b)));
+    let mut data4 = expected_data.clone();
+    data4[..16].copy_from_slice(&case4.memory);
+    for disp in [0x10u8, 0x70] {
+        let pminub = [0x66, 0x0f, 0xda, 0x40, disp];
+        let base = DATA - u64::from(disp);
+        let (observed, _, after) = with_regs(&case4, &pminub, &[(0, base)]);
+        assert_eq!(observed.result, Result_::Retired, "disp {disp:#x}");
+        assert_eq!(observed.rip, CODE + 5);
+        let expect: [u8; 16] = core::array::from_fn(|i| case4.xmm[0][i].min(case4.memory[i]));
+        assert_ne!(expect, case4.xmm[0], "the operand must lower some byte");
+        assert_ne!(expect, case4.memory, "the register must lower some byte");
+        assert_eq!(after.sse.xmm[0], expect, "disp {disp:#x}");
+        assert_eq!(after.sse.xmm[1], case4.xmm[1], "no other register changes");
+        assert_eq!(observed.data, data4, "a load changes no memory");
+        // ... the same form at an unaligned address is #GP(0) with nothing changed.
+        let (observed, before, after) = with_regs(&case4, &pminub, &[(0, base + 4)]);
+        assert_eq!(observed.result, gp0(), "disp {disp:#x}");
+        assert_eq!((after, observed.rip), (before, CODE));
+    }
     // The data of every form above except the store is unchanged.
     let (observed, _, _) = with_regs(&case, &[0x66, 0x0f, 0x6e, 0xca], &[]);
     assert_eq!(observed.data, expected_data);
