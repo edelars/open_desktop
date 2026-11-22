@@ -2545,6 +2545,39 @@ and `SWAPGS`, Vol. 2B pp. 4-697–4-698, including the FRED restriction. Physica
 SSH and Mac mini checks remain deferred to the final hardware batch.
 
 
+#### S2-26h — Windows-boot MSR file in the CPL0 profile set
+
+**Статус:** interpreter slice implemented with local tests; parent S2-26 stays open. Hardware
+oracle is not applicable to the accepted-access rows: `RDMSR`/`WRMSR` raise #GP(0) in user space, so those
+rows are modelled from the SDM (Vol. 2B `RDMSR`, Vol. 2D `WRMSR`, Vol. 3A §14.12.4 and Figure 6-14,
+Vol. 4 Table 2-2). The CPL3 `#GP(0)` of a bare `RDMSR`/`WRMSR` is observable on hardware from user space
+(no oracle count was taken); every accepted CPL0 behaviour is not.
+
+`Cpl0ProfileSet::with_msr_windows(pat, misc_enable)` adds IA32_PAT (`0x277`) and IA32_MISC_ENABLE
+(`0x1A0`) and gives read access and write rules to the cells of the existing members: SYSENTER_CS/ESP/EIP
+(`0x174..=0x176`), STAR/LSTAR/CSTAR/FMASK (`0xC0000081..=0xC0000084`), KERNEL_GS_BASE (`0xC0000102`).
+APIC_BASE, EFER, FS_BASE and GS_BASE stay with their own members; the set must carry all of them
+(`WindowsMsrMembersMissing`), and every cell must hold a value its MSR can hold (`WindowsMsrCellInvalid`).
+The list is a hypothesis (ADR-0013, Decision 2, «Последствия варианта B», the bullet on Intel kernel/loader
+paths: the MSR list and numbers are «гипотеза, не сверено»; no Windows binary observed). IA32_TSC (`0x10`) is not in it: the TSC
+policy is withheld (S2-57), so it is #GP(0) like any unimplemented index; MTRR MSRs are absent because
+MTRR is not declared in CPUID. The CPUID MSR bit is not touched here (S2-57).
+
+Rules (bare Long64 `0F 32`/`0F 30`): CPL0 RDMSR returns the cell zero-extended; WRMSR: SYSENTER_CS takes any
+value but bits 63:32 are «not used, writes ignored, reads return zero» (Vol. 4 Table 2-2, 174H), so the cell
+keeps `value & 0xFFFF_FFFF` and RDMSR returns EDX = 0 (the admission check still refuses a SYSENTER_CS cell
+with bits 63:32 set); FMASK bits 63:32 reserved; STAR bits 31:0 reserved (Vol. 3A Figure 6-14; Vol. 4 gives
+no bit breakdown for C000_0081H), so a non-zero low half is #GP(0) — hardware behaviour not checked (needs
+CPL0); ESP/EIP/LSTAR/KERNEL_GS_BASE canonical48, PAT entries in {0,1,4,5,6,7}, CSTAR any value (violations
+are #GP(0), no change). MISC_ENABLE (Vol. 4 Table 2-2, 1A0H) resets to `0x1801`: bit 0 fast strings (R/W,
+the only writable bit), bit 11 BTS unavailable and bit 12 PEBS unavailable (both R/O, 1 because the model has
+neither), bit 7 performance monitoring 0. A write that changes any other bit (reserved bits 2:1, 6:4, 10:8,
+15:13, 17, 21:19, 63:24, the unmodelled R/W bits 3, 16, 18, 22, 23, or the read-only bits 11/12) is
+`Unsupported` with no state change: a deliberate fail-closed decision of the model, not #GP(0), because the
+SDM does not state the result of such a write on every part. Any index outside the list, read or write, and
+every access at CPL3 are #GP(0). Prefixed forms keep their refusal. Tests:
+`crates/od-isa/tests/s2_26_msr_windows.rs`.
+
 ### S2-27. Descriptors, события и системные переходы
 
 The bounded CPL3 GDT-only `VERW AX` form is tracked in S2-22e and is excluded

@@ -17785,6 +17785,21 @@ Sources: Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3, and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-26g-local-ia32_kernel_gs_baseswapgs-matrix-entry).
 
+## S2-26h — Windows MSR file in the CPL0 profile set
+
+Implemented `Cpl0ProfileSet::with_msr_windows`; tests `od-isa --test s2_26_msr_windows` (15 tests at acceptance, 16 after the review fixes: read of ten
+cell-owned MSRs, valid writes with read-back, reserved-bit/canonical/PAT #GP(0), MISC_ENABLE fail-closed, 24 unknown
+indexes for RDMSR and WRMSR, CPL3 #GP(0), other members unchanged, admission). Neighbouring suites pass:
+`cpl0_profile_set` 1626, `cpl3_profile_set` 238, `cpl3_syscall` 29, `s2_57_cpuid_windows` 19,
+`s2_58_cpuid_windows` 13, lib `cpl3` filter 11. No hardware oracle for the accepted CPL0 rows (privileged instructions); all of them are modelled (the CPL3 `#GP(0)` of a bare RDMSR/WRMSR is observable from user space, no oracle count was taken). Not covered: IA32_TSC (TSC policy withheld), MTRR, microcode and platform
+MSRs, MISC_ENABLE bits beyond bit 0, the CPUID MSR bit. Parent S2-26 stays open.
+
+Review fixes against the SDM text (Vol. 4 Table 2-2, Vol. 3A Figure 6-14, §14.12.4): SYSENTER_CS bits 63:32 are
+ignored on write and read as zero (the cell keeps `value & 0xFFFF_FFFF`, no `#GP(0)`); STAR bits 31:0 are reserved
+in Figure 6-14, so a non-zero low half is `#GP(0)` (Vol. 4 has no bit breakdown, hardware not checked); MISC_ENABLE
+resets to `0x1801` (BTS and PEBS unavailable, R/O) and a write changing any other bit stays a deliberate
+`Unsupported` (not `#GP(0)`). The suite now has 16 tests; the neighbouring suites are unchanged (1626, 238, 19, 13).
+
 ## S2-27h — exact Long64 `CLI`
 
 Added `CliProfile::NonPviLong64V1` and the independent schema profile
