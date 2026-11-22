@@ -167,7 +167,8 @@ impl Rig {
     pub(super) fn new() -> Self {
         let host = scripted_host();
         let policy = Policy::new(GUEST_MAC).unwrap();
-        let b = NatBackend::with_policy_and_tcp_host(policy, Box::new(FakeHost(host.clone())));
+        let b = NatBackend::with_policy_and_tcp_host(policy, Box::new(FakeHost(host.clone())))
+            .without_host_sockets();
         Self {
             b,
             host,
