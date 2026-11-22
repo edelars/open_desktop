@@ -47145,8 +47145,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
     }
 
+    // S2-32c: FNSTENV, FNSAVE and FRSTOR are exempt: none of them updates FIP/FCS/FDP/FDS from the
+    // instruction, each defines the selectors itself (saved, cleared, loaded).
     if instruction.opcode.map == long_decode::OpcodeMap::Primary
         && (0xd8..=0xdf).contains(&instruction.opcode.byte)
+        && !matches!(
+            instruction.operation,
+            Operation::FnstenvRax | Operation::FnsaveRax | Operation::FrstorRax
+        )
         && state
             .x87
             .as_ref()
@@ -48505,6 +48511,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             | Operation::FstpM80FpRax
             | Operation::FbldM80Rax
             | Operation::FbstpM80Rax
+            | Operation::FnstenvRax
+            | Operation::FnsaveRax
+            | Operation::FrstorRax
             | Operation::FfreeSti { .. }
     ) && state.x87.is_none()
     {
@@ -49832,6 +49841,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
+    // S2-32c: the environment forms are control instructions; only the control word, status word
+    // and the tag classification of the model are preflighted (see `bounded_x87_environment_admitted`).
+    if matches!(
+        instruction.operation,
+        Operation::FnstenvRax | Operation::FnsaveRax | Operation::FrstorRax
+    ) && !bounded_x87_environment_admitted(state)
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     let fstp_m80fp = if instruction.operation == Operation::FstpM80FpRax {
         match bounded_x87_m80fp_source(state) {
             Some(source) => Some(source),
@@ -50271,6 +50291,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FldM80FpRax
         | Operation::FbldM80Rax
         | Operation::FbstpM80Rax
+        | Operation::FnstenvRax
+        | Operation::FnsaveRax
+        | Operation::FrstorRax
         | Operation::FistM32IntRax
         | Operation::FistpM32IntRax
         | Operation::FistpM64IntRax
@@ -53003,6 +53026,92 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         x87.status_word |= if overflow { 0x0008 } else { 0 };
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if matches!(
+        instruction.operation,
+        Operation::FnstenvRax | Operation::FnsaveRax
+    ) {
+        // S2-32c: the 28-byte environment (FNSTENV) or the 108-byte image with ST(0)..ST(7)
+        // (FNSAVE) in one write; the state changes only after the write succeeded. FNSTENV then
+        // masks every exception, FNSAVE re-initialises like FNINIT (FIP, FCS, FDP, FDS cleared).
+        let save_registers = instruction.operation == Operation::FnsaveRax;
+        let length: u64 = if save_registers { 108 } else { 28 };
+        let destination = MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Qword,
+        };
+        let address = match destination.linear_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(MemoryError::Architectural(error)),
+        };
+        let last = address
+            .checked_add(length - 1)
+            .ok_or(MemoryError::AddressOverflow {
+                address,
+                length: length as usize,
+            })?;
+        if !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        let image = x87_save_image(
+            state
+                .x87
+                .as_ref()
+                .expect("FNSTENV/FNSAVE state was prevalidated"),
+            save_registers,
+        );
+        if let Err(error) = memory.write(address, context, &image[..length as usize]) {
+            return report_memory_error(error);
+        }
+        let x87 = state
+            .x87
+            .as_mut()
+            .expect("FNSTENV/FNSAVE state was prevalidated");
+        if save_registers {
+            x87.fninit();
+            for selector in [&mut x87.instruction_selector, &mut x87.data_selector] {
+                if selector.is_some() {
+                    *selector = Some(0);
+                }
+            }
+        } else {
+            x87.control_word |= 0x003f;
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if instruction.operation == Operation::FrstorRax {
+        // S2-32c: read the 108 bytes, validate the image (control word in the all-masked set, no
+        // ES or B bit) before any state change, then load environment and registers.
+        let address = state.gpr[Register::Rax as usize];
+        let last = match address.checked_add(107) {
+            Some(last) => last,
+            None => {
+                return Err(MemoryError::AddressOverflow {
+                    address,
+                    length: 108,
+                });
+            }
+        };
+        if !canonical(address) || !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        let mut image = [0_u8; 108];
+        if let Err(error) = memory.read(address, context, &mut image) {
+            return report_memory_error(error);
+        }
+        let x87 = state.x87.as_mut().expect("FRSTOR state was prevalidated");
+        if !x87_restore_image(x87, &image) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
@@ -64096,7 +64205,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FstpM64FpRax
         | Operation::FstpM80FpRax
         | Operation::FbldM80Rax
-        | Operation::FbstpM80Rax => {
+        | Operation::FbstpM80Rax
+        | Operation::FnstenvRax
+        | Operation::FnsaveRax
+        | Operation::FrstorRax => {
             unreachable!("FST/FSTP m32fp/m64fp commits in its prevalidated store path")
         }
         Operation::FistM32IntRax
@@ -67439,6 +67551,116 @@ fn bounded_x87_fbstp_result(state: &LongModeState) -> Option<([u8; 10], u16)> {
         bcd,
         (if inexact { 0x0020 } else { 0 }) | (if rounded_up { 0x0200 } else { 0 }),
     ))
+}
+
+/// S2-32c preflight of FNSTENV/FNSAVE/FRSTOR: x87 state present, one of the twelve all-exception-masked
+/// control words (so FNSTENV's "mask all exceptions" is the identity) and neither the exception
+/// summary (ES, bit 7) nor busy (B, bit 15) set; the sticky exception flags may be any value.
+/// Selectors are not part of the check: an unrepresented selector images as 0000H.
+fn bounded_x87_environment_admitted(state: &LongModeState) -> bool {
+    state.x87.as_ref().is_some_and(|x87| {
+        X87_ALL_MASKED_CONTROL_WORDS.contains(&x87.control_word) && x87.status_word & 0x8080 == 0
+    })
+}
+
+/// The tag the processor derives from a non-empty register's contents when it saves the tag word
+/// (Valid, Zero or Special: infinity, NaN, denormal, unnormal, pseudo-denormal; confirmed on the
+/// Core i5-3210M, which keeps only empty/non-empty between instructions).
+fn x87_content_tag(raw: [u8; 10]) -> X87Tag {
+    let mantissa = u64::from_le_bytes(raw[..8].try_into().expect("8 bytes"));
+    let exponent = u16::from_le_bytes([raw[8], raw[9]]) & 0x7fff;
+    if exponent == 0x7fff {
+        X87Tag::Special
+    } else if exponent == 0 {
+        if mantissa == 0 {
+            X87Tag::Zero
+        } else {
+            X87Tag::Special
+        }
+    } else if mantissa >> 63 == 1 {
+        X87Tag::Valid
+    } else {
+        X87Tag::Special
+    }
+}
+
+/// S2-32c: the 32-bit protected-mode environment image (SDM Vol. 1 Figure 8-9) of FNSTENV, followed
+/// by ST(0)..ST(7) for FNSAVE (the 108-byte image). FIP and FDP are saved as their low 32 bits;
+/// FCS and FDS as the represented selector, or 0000H when none is represented (the model's x87
+/// segment policy: for `None` it is the behavior of a processor with the FCS/FDS deprecation of
+/// CPUID.07H:EBX[13], for `Some(v)` after FRSTOR that of the Core i5-3210M, which keeps the selector); FOP is 11 bits. The
+/// reserved fields (upper halves of the control, status and tag words, bytes 26..28) are FFFFH as
+/// on the Core i5-3210M; the tag word is recomputed from the register contents, empty stays empty.
+fn x87_save_image(x87: &X87State, with_registers: bool) -> [u8; 108] {
+    let mut image = [0xff_u8; 108];
+    image[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
+    image[4..6].copy_from_slice(&x87.status_word.to_le_bytes());
+    let mut tag_word = 0_u16;
+    for physical in 0..8_u8 {
+        let tag = if x87.tag(physical) == Some(X87Tag::Empty) {
+            X87Tag::Empty
+        } else {
+            x87_content_tag(x87.registers[usize::from(physical)])
+        };
+        tag_word |= (tag as u16) << (2 * physical);
+    }
+    image[8..10].copy_from_slice(&tag_word.to_le_bytes());
+    image[12..16].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
+    image[16..18].copy_from_slice(&x87.instruction_selector.unwrap_or(0).to_le_bytes());
+    image[18..20].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
+    image[20..24].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
+    image[24..26].copy_from_slice(&x87.data_selector.unwrap_or(0).to_le_bytes());
+    if with_registers {
+        let top = usize::from(x87.top());
+        for logical in 0..8 {
+            image[28 + 10 * logical..38 + 10 * logical]
+                .copy_from_slice(&x87.registers[(top + logical) & 7]);
+        }
+    }
+    image
+}
+
+/// S2-32c FRSTOR: load the 108-byte image into `x87`. Returns false, with `x87` untouched, when
+/// the control word is not one of the twelve all-masked words or the status word has ES or B set.
+/// FIP and FDP take the low 32 bits (upper bits cleared), FOP 11 bits; a selector loads as
+/// `Some(value)`, except that a zero selector stays unrepresented when it was. A register whose
+/// image tag is empty stays empty, every other register is tagged from its contents; the
+/// registers are stored in ST order from the loaded TOP.
+fn x87_restore_image(x87: &mut X87State, image: &[u8; 108]) -> bool {
+    let control_word = u16::from_le_bytes([image[0], image[1]]);
+    let status_word = u16::from_le_bytes([image[4], image[5]]);
+    if !X87_ALL_MASKED_CONTROL_WORDS.contains(&control_word) || status_word & 0x8080 != 0 {
+        return false;
+    }
+    let tag_word = u16::from_le_bytes([image[8], image[9]]);
+    x87.control_word = control_word;
+    x87.status_word = status_word;
+    x87.instruction_pointer = u64::from(u32::from_le_bytes(image[12..16].try_into().expect("4")));
+    x87.data_pointer = u64::from(u32::from_le_bytes(image[20..24].try_into().expect("4")));
+    x87.last_opcode = u16::from_le_bytes([image[18], image[19]]) & 0x07ff;
+    for (selector, bytes) in [
+        (&mut x87.instruction_selector, [image[16], image[17]]),
+        (&mut x87.data_selector, [image[24], image[25]]),
+    ] {
+        let loaded = u16::from_le_bytes(bytes);
+        *selector = if loaded == 0 && selector.is_none() {
+            None
+        } else {
+            Some(loaded)
+        };
+    }
+    let top = usize::from(x87.top());
+    for logical in 0..8 {
+        let physical = (top + logical) & 7;
+        x87.registers[physical].copy_from_slice(&image[28 + 10 * logical..38 + 10 * logical]);
+        let tag = if (tag_word >> (2 * physical)) & 3 == 3 {
+            X87Tag::Empty
+        } else {
+            x87_content_tag(x87.registers[physical])
+        };
+        x87.set_tag(physical as u8, tag);
+    }
+    true
 }
 
 /// The complete architectural effect of one bounded S2-32 instruction: register payloads, tags

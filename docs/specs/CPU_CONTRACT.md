@@ -11931,6 +11931,41 @@ Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM Vol
   infinity (IE and the BCD indefinite) stay refused. A non-canonical operand address is #GP(0) before any change.
 - **Oracle.** 335 Core i5-3210M rows (117 FBLD, 218 FBSTP) are reproduced bit for bit: result bytes, TOP, C0-C3, PE, tags.
 
+## Local S2-32c: bounded `FNSTENV` (`D9 30`), `FNSAVE` (`DD 30`) and `FRSTOR` (`DD 20`) at `[RAX]`
+
+Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM 325462-093US: Vol. 2A FRSTOR p. 3-373, FSAVE/FNSAVE
+p. 3-375, FSTENV/FNSTENV p. 3-390; Vol. 1 section 8.1.8 (pointers), 8.1.10 and Figure 8-9 (the 32-bit protected-mode image).
+Bare encodings only: no prefix (so no 16-bit image and no REX.W), modrm `/6` or `/4` with the operand at `[RAX]`. `FSTENV` and
+`FSAVE` are `FWAIT` plus the non-waiting form (SDM); `FWAIT` is owned by the CPL0 set, so the bounded profile has no fused form.
+`FLDENV` (`D9 20`) is not implemented. #NM (CR0.EM/TS) and CPL3 #AC are not modeled, as in the neighbouring bounded forms.
+
+- **Image.** 28 bytes (`FNSTENV`) or 108 bytes (`FNSAVE`, then ST(0)..ST(7) in stack order, 10 bytes each), one `GuestMemory`
+  write after the canonical check of the last byte (non-canonical is #GP(0) before any change; the state changes only after the
+  write). Offsets: FCW 0, FSW 4, tag word 8, FIP[31:0] 12, FCS 16, FOP[10:0] 18, FDP[31:0] 20, FDS 24; the upper halves of the
+  control, status and tag words and bytes 26..27 are reserved and stored as FFFFH (the Core i5-3210M does so; the SDM leaves them
+  open); FOP bits 15:11 are zero.
+- **Tag word.** The processor keeps only empty/non-empty between instructions and derives the class when saving: a non-empty
+  register is Zero (exponent 0, significand 0), Special (exponent 7FFFH; exponent 0 with a non-zero significand; integer bit
+  clear) or Valid; an Empty slot stays 11. `FRSTOR` stores the same classification (not the image's claim) for non-empty slots.
+- **FCS/FDS policy (decision S2-32c).** FIP and FDP are saved as their low 32 bits. FCS and FDS are saved as the represented
+  selector (`Some(v)` in `X87State`), and as 0000H when no selector is represented (`None`). For `None` that is the behavior of a
+  processor with the FCS/FDS deprecation (CPUID.07H.00H:EBX[13]); for `Some(v)` after `FRSTOR` it is the Core i5-3210M (no deprecation,
+  the selector is kept). The model needs no x87 segment tracking and no CPUID bit is declared for it.
+  `FRSTOR` loads FIP/FDP with the upper 32 bits cleared and FOP in 11 bits; a selector loads as `Some(v)`, except that a zero
+  selector stays `None` when it was `None`. `FNSAVE` clears FIP, FDP, FOP and the known selectors (`Some` becomes `Some(0)`,
+  `None` stays) and applies the FNINIT values (FCW 037FH, FSW 0, tag word FFFFH); the data registers survive. `FNSTENV` changes
+  nothing but the control word (`| 003FH`: all exceptions masked) and RIP; FIP, FDP, FOP and the selectors are kept (control
+  instructions do not update them). All three are exempt from the refusal of every `D8..DF` opcode while a selector is represented
+  (the other bounded x87 forms still refuse then, because they would have to update FCS/FDS from an unmodeled CS).
+- **Admission.** x87 state present, one of the twelve all-exception-masked control words (so `FNSTENV`'s masking is the identity),
+  ES (bit 7) and B (bit 15) of the status word clear; the sticky exception flags may hold any value. `FRSTOR` applies the same two
+  checks to the image after the 108-byte read, refusing (`Unsupported`) with no change; an image with an unmasked exception, the X
+  bit or ES/B is therefore refused. A non-canonical address is #GP(0); an unmapped one is the memory's own error; neither changes the state.
+- **Oracle.** 324 Core i5-3210M images (`data/x87_env_oracle.c`, `x87_env_oracle_gen.py`, answers in `x87_env_oracle_i5_3210m.txt`):
+  `FNINIT; FRSTOR image; FNSTENV; FNSAVE; FNSTENV`, all 28 + 108 + 28 output bytes reproduced exactly (two starting selector states each).
+  The CPU does not deprecate FCS/FDS and saves its real CS/DS selectors after executed instructions, so the rows are images and not
+  instruction sequences: the model's FCS/FDS of an executed sequence (0000H) is the deprecation behavior, not the i5-3210M's.
+
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
 
 Only exact bare Long64 `D8 F0..F7` is admitted. Require present x87 state,
@@ -32355,7 +32390,7 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 **Не объявлены, блокеры (проверка — `the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported` и таблица `UNDECLARED` теста):**
 
 - **TSC** (`1` EDX[4]). Блокера по реализации нет (`RDTSC` работает, см. таблицу выше), но решение владельца 2026-11-21 (пункт 8): не объявлять до отдельного решения владельца; приёмка S2-26 не состоялась. Проверка — строка TSC в `UNDECLARED` теста и `feature_registers_are_exactly_the_declared_bits`.
-- **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b, локальный профиль `step`), но не подключены к набору CPL0 (там `state.x87 = None` между инструкциями, формы дают `Unsupported`); `FSTENV` и `FSAVE` не реализованы. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм при `state.x87 = None` и для `FSTENV`/`FSAVE` при чистом x87 в тесте. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (оставшиеся x87 формы: трансцендентные, `FSCALE`, `FXTRACT`, BCD, `FSTENV`/`FSAVE`) после S2-30 и S2-31.
+- **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP`, `FNSTENV`, `FNSAVE`, `FRSTOR` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b/S2-32c, локальный профиль `step`), но не подключены к набору CPL0 (там `state.x87 = None` между инструкциями, формы дают `Unsupported`); `FLDENV` и написания `FSTENV`/`FSAVE` (с `FWAIT`) в наборе не реализованы. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм при `state.x87 = None`, а для `FNSTENV` при чистом x87 тест подтверждает выполнение в ограниченном профиле. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (трансцендентные, `FSCALE`, `FXTRACT`, BCD и `FNSTENV`/`FNSAVE`/`FRSTOR` реализованы в ограниченном профиле, S2-32a/b/c; остаются `FLDENV`, написания `FSTENV`/`FSAVE` с `FWAIT` и подключение x87 к набору CPL0) после S2-30 и S2-31.
 - **MSR** (`1` EDX[5]). Моделируются отдельные MSR: EFER (S2-25d…f, NXE), `IA32_FS_BASE`/`GS_BASE`/`KERNEL_GS_BASE`, ячейки записи STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP (S4-38L7). Нет `IA32_TIME_STAMP_COUNTER` (`0x10`), `IA32_APIC_BASE` (`0x1B`), `IA32_PAT` (`0x277`), `IA32_MISC_ENABLE`, MTRR, а у STAR/LSTAR/CSTAR нет чтения. Перечень MSR, которые Windows читает и пишет при загрузке, не составлен. Задача для снятия блокера: S2-25 (CR, MSR) и S2-26 п.2 (RDMSR/WRMSR) — составить перечень и реализовать набор; до этого бит MSR означал бы поддержку набора, которого нет.
 - **SYSCALL** (`80000001` EDX[11]). `SYSCALL` с CPL3 (S4-39e) и `SYSRETQ` с CPL0 (S4-39f) реализованы только в наборах платы Linux, только простые формы (без префиксов), семантика записана «по памяти SDM» и по первоисточнику не сверена (CPU_CONTRACT, S4-39e); не реализованы `SYSRET` без REX.W (32-битный возврат), доставка `#UD` при `EFER.SCE = 0`, переходы из compatibility mode, CSTAR; физического oracle у инструкции нет. Задача для снятия блокера: S2-27 (SYSCALL/SYSRET) со сверкой с SDM Vol. 2B и S2-24 (compatibility mode).
 - **LM** (`80000001` EDX[29]). Набор CPL0 уже в длинном режиме: смена `EFER.LME`/`LMA` отказывает (`Unsupported`), переход из защищённого режима есть только в преобразовании `ProtectedCpu::into_long_mode` (S6-16b, текст SDM «по памяти»), compatibility mode (WoW64) не реализован. Задача для снятия блокера: S2-24 (protected и compatibility mode, критерий WoW64 из ADR-0013), S2-25 (`EFER.LME/LMA`), S2-41, S2-44.

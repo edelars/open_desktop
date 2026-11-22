@@ -77,7 +77,7 @@ const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
         Reg::Edx1,
         0,
         "FPU",
-        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP exist only in the bounded profile of S2-32a/S2-32b and are not connected to the CPL0 set (x87 state is None there), FSTENV and FSAVE are not implemented (S2-30, S2-31, S2-32 open)",
+        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR exist only in the bounded profile of S2-32a/S2-32b/S2-32c and are not connected to the CPL0 set (x87 state is None there), FLDENV and the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
     ),
     (Reg::Edx1, 3, "PSE", "no task"),
     (
@@ -806,9 +806,9 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
     };
     // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions (the x87 half of
     // the FP cell is lent only to MMX forms), so every x87 arithmetic form is refused in the set. The
-    // forms of S2-32a/S2-32b exist in the bounded x87 profile of `step` but are not connected to the
-    // set: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20) and
-    // FBSTP m80 [RAX] (DF 30).
+    // forms of S2-32a/S2-32b/S2-32c exist in the bounded x87 profile of `step` but are not connected to the
+    // set: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20), FBSTP m80
+    // [RAX] (DF 30), FNSTENV (D9 30), FNSAVE (DD 30) and FRSTOR (DD 20).
     for code in [
         &[0xd9u8, 0xfe][..],
         &[0xd9, 0xf3],
@@ -816,6 +816,9 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         &[0xd9, 0xfd],
         &[0xdf, 0x20],
         &[0xdf, 0x30],
+        &[0xd9, 0x30],
+        &[0xdd, 0x30],
+        &[0xdd, 0x20],
     ] {
         unsupported(code, &|cpu| {
             cpu.x87 = None;
@@ -840,9 +843,10 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
             "FSIN with x87 state: {outcome:?}"
         );
     }
-    // FPU, blocker 2: FSTENV (D9 /6) and FSAVE (DD /6) at [RAX] have no implementation even with clean x87
-    // state, whatever the set does.
-    for code in [&[0xd9u8, 0x30][..], &[0xdd, 0x30]] {
+    // FPU, blocker 2 (S2-32c): FNSTENV (D9 /6), FNSAVE (DD /6) and FRSTOR (DD /4) at [RAX] exist in the bounded
+    // profile as well, and are likewise not connected to the set (the FSTENV/FSAVE spellings add FWAIT, which
+    // only the set owns). With clean x87 state the bounded profile completes FNSTENV.
+    {
         let mut cpu = cpu();
         let mut x87 = X87State::fixture_seed();
         x87.control_word = 0x037f;
@@ -850,14 +854,34 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         x87.tag_word = 0xffff;
         cpu.x87 = Some(x87);
         cpu.gpr[Register::Rax as usize] = DATA;
+        let mut ram = Ram::with_code(&[0xd9, 0x30]);
+        let outcome = step_outcome(&[0xd9, 0x30], &mut cpu, &mut ram);
+        assert!(
+            matches!(outcome, Ok(StepOutcome::Advanced)),
+            "FNSTENV with x87 state: {outcome:?}"
+        );
+    }
+    // The same three forms through the set (x87 = None): refused with no state change and with the 108-byte
+    // image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR loads nothing).
+    for code in [&[0xd9u8, 0x30][..], &[0xdd, 0x30], &[0xdd, 0x20]] {
+        let mut cpu = cpu();
+        cpu.x87 = None;
+        cpu.gpr[Register::Rax as usize] = DATA;
         let mut ram = Ram::with_code(code);
+        ram.bytes[DATA as usize..DATA as usize + 108].fill(0xa5);
         let before = cpu.clone();
+        let image = ram.bytes[DATA as usize..DATA as usize + 108].to_vec();
         let outcome = step_outcome(code, &mut cpu, &mut ram);
         assert!(
             matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
-            "{code:02x?}: {outcome:?}"
+            "{code:02x?} with x87 = None: {outcome:?}"
         );
         assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
+        assert_eq!(
+            ram.bytes[DATA as usize..DATA as usize + 108],
+            image[..],
+            "{code:02x?}: the image area is untouched"
+        );
     }
     // MSR: RDMSR of IA32_APIC_BASE (0x1B) and WRMSR of IA32_PAT (0x277) in the bare run.
     unsupported(&[0x0f, 0x32], &|cpu| cpu.gpr[Register::Rcx as usize] = 0x1b);
