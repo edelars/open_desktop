@@ -13,8 +13,8 @@ Slice of S2-32 (the task checkbox stays open). Branch `s2-32c-env` (from `stage8
 
 ## FCS/FDS policy
 
-Saved as the represented selector (`Some(v)`) or 0000H when none is represented (`None`) — the behavior of a processor with FCS/FDS
-deprecation (CPUID.07H.00H:EBX[13]) — so no x87 segment tracking is needed and no CPUID bit is declared. FRSTOR loads `Some(v)` (a zero selector
+Saved as the represented selector (`Some(v)`) or 0000H when none is represented (`None`): for `None` that is the behavior of a processor with FCS/FDS
+deprecation (CPUID.07H.00H:EBX[13]); for `Some(v)` after FRSTOR it is the Core i5-3210M (no deprecation, the selector is kept). So no x87 segment tracking is needed and no CPUID bit is declared. FRSTOR loads `Some(v)` (a zero selector
 stays `None` when it was); FNSAVE clears known selectors. The three forms are exempt from the global refusal of `D8..DF` opcodes while a
 selector is represented; every other bounded x87 form still refuses then.
 
