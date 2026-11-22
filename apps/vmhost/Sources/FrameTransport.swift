@@ -79,6 +79,8 @@ struct DisplaySmokeOptions {
     let inputTrace: Bool
     /// S10-15, test-only: 1 (default, transport v3 with one screen) or 2 (two screens, profile 4).
     let screens: Int
+    /// S10-24, test-only fault injection (DisplayFaultHook.swift); parsed in every build, acted on only in a debug build.
+    let testFault: DisplayTestFault?
 
     /// Returns nil when `--display-smoke` is absent (normal VMHost path).
     static func parse(_ args: [String]) throws -> DisplaySmokeOptions? {
@@ -89,6 +91,7 @@ struct DisplaySmokeOptions {
         var inputFD: Int32?
         var inputTrace = false
         var screens = 1
+        var testFault: DisplayTestFault?
         var profile: DisplaySmokeProfile?
         var probeBudget: UInt64?
         var index = 0
@@ -124,6 +127,10 @@ struct DisplaySmokeOptions {
             case "--display-screens":
                 guard value == "1" || value == "2", let count = Int(value) else { throw FrameTransportError.usage }
                 screens = count
+            case "--display-test-fault":
+                // S10-24: the hook exists only in a debug build; a release build refuses the flag like any unknown one.
+                guard DisplayTestFault.isCompiledIn, let fault = DisplayTestFault.parse(value) else { throw FrameTransportError.usage }
+                testFault = fault
             default:
                 throw FrameTransportError.usage
             }
@@ -136,9 +143,11 @@ struct DisplaySmokeOptions {
         }
         // The input descriptor must be another one than the frame socket; the trace needs a channel.
         guard inputFD != socketFD, inputFD != nil || !inputTrace else { throw FrameTransportError.usage }
+        // The fault hook drives screen 0 of the test pattern; it excludes the other profiles and the gate.
+        guard testFault == nil || (profile == .pattern && screens == 1 && !hold) else { throw FrameTransportError.usage }
         return DisplaySmokeOptions(
             socketFD: socketFD, profile: profile, probeBudget: probeBudget ?? defaultProbeBudget, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace,
-            screens: screens)
+            screens: screens, testFault: testFault)
     }
 }
 
@@ -277,6 +286,14 @@ final class NotificationQueue {
     private var pendingFrame: [[UInt8]?] = [nil, nil]
     private var pendingCursor: [UInt8]?
 
+    // S10-24: what the bound costs, observable instead of silent. A notification that is replaced or dropped before it
+    // was sent is counted; the state it carried is not lost because the replacing message names a newer one (6.4, 11.5).
+    private(set) var supersededFrames = 0
+    private(set) var supersededModes = 0
+    private(set) var supersededCursors = 0
+    /// The largest `bufferedBytes` seen after a `queue*` call; never above 256 (11.5).
+    private(set) var highWaterBytes = 0
+
     var isEmpty: Bool {
         partial.isEmpty && pendingMode.allSatisfy { $0 == nil } && pendingFrame.allSatisfy { $0 == nil }
             && pendingCursor == nil
@@ -297,15 +314,31 @@ final class NotificationQueue {
 
     /// A new MODE of screen `screen` replaces its unsent MODE and drops its unsent FRAME (11.5).
     func queueMode(screen: Int, _ message: [UInt8]) {
+        if pendingMode[screen] != nil { supersededModes += 1 }
+        if pendingFrame[screen] != nil { supersededFrames += 1 }
         pendingMode[screen] = message
         pendingFrame[screen] = nil
+        highWaterBytes = max(highWaterBytes, bufferedBytes)
     }
 
     /// A new FRAME of screen `screen` replaces its unsent FRAME.
-    func queueFrame(screen: Int, _ message: [UInt8]) { pendingFrame[screen] = message }
+    func queueFrame(screen: Int, _ message: [UInt8]) {
+        if pendingFrame[screen] != nil { supersededFrames += 1 }
+        pendingFrame[screen] = message
+        highWaterBytes = max(highWaterBytes, bufferedBytes)
+    }
 
     /// A new CURSOR replaces an unsent CURSOR; MODE and FRAME do not remove it and it does not remove them.
-    func queueCursor(_ message: [UInt8]) { pendingCursor = message }
+    func queueCursor(_ message: [UInt8]) {
+        if pendingCursor != nil { supersededCursors += 1 }
+        pendingCursor = message
+        highWaterBytes = max(highWaterBytes, bufferedBytes)
+    }
+
+    /// One line for the log of the test-only display smoke (read by tests/system/display_failure_smoke.py).
+    var statistics: String {
+        "superseded_frames=\(supersededFrames) superseded_modes=\(supersededModes) superseded_cursors=\(supersededCursors) high_water_bytes=\(highWaterBytes)"
+    }
 
     /// Sends as much as the non-blocking socket accepts, in the order of section 11.5.
     func flush(fd: Int32) throws {
@@ -970,7 +1003,10 @@ enum DisplaySmoke {
         }
         // Section 11.3: one object per screen, all created before the first ANNOUNCE. Each screen's maximum is its
         // initial mode, or the device limit for a screen without a mode (`writerLimits`). The notification queue is shared.
-        let writers = try makeWriters(session: session, screens: options.screens, queue: NotificationQueue())
+        let queue = NotificationQueue()
+        // S10-24: the counters of the bounded queue are the observable side of an overflow (a reader that does not read).
+        defer { fputs("od-vmhost-smoke: notification queue: \(queue.statistics)\n", stderr) }
+        let writers = try makeWriters(session: session, screens: options.screens, queue: queue)
         let writer = writers[0]
 
         // 6.1: HELLO first (blocking), then everything is non-blocking.
@@ -1006,6 +1042,25 @@ enum DisplaySmoke {
 
         let tickMs = Int32(max(1, 1000 / options.pollHz))
         var gateOpen = !options.holdUntilClaim
+        // Each screen's frame by generation (11.5), the only place where the device is read for a frame.
+        let publishFromDevice = {
+            for (screen, current) in writers.enumerated() {
+                let mode = try DisplaySmoke.screenMode(session, screen: screen)
+                guard gateOpen, mode.flags & 1 != 0, mode.flags & 2 != 0,
+                      mode.generation > current.lastPublishedGeneration else { continue }
+                let plain = od_display_mode(abi_version: vmhost_display_abi_version_v1(),
+                                            struct_size: UInt32(OD_DISPLAY_MODE_SIZE_V1), width: mode.width,
+                                            height: mode.height, stride: mode.stride, format: mode.format,
+                                            flags: mode.flags, reserved: 0, generation: mode.generation,
+                                            mode_change_count: mode.mode_change_count)
+                if try current.publishFrame(session: session, mode: plain) {
+                    fputs("od-vmhost-smoke: display-smoke screen \(screen) published generation \(current.lastPublishedGeneration)\n", stderr)
+                }
+            }
+        }
+        #if DEBUG
+        let faultDriver = options.testFault.map { DisplayFaultDriver(fault: $0) }
+        #endif
         while true {
             // One quantum, then a check no more often than the poll rate (the wait below).
             if let probeRun {
@@ -1020,7 +1075,7 @@ enum DisplaySmoke {
                 }
             }
             // Each screen is checked on its own: its MODE by mode_change_count, its FRAME by generation (11.5).
-            for (screen, current) in writers.enumerated() {
+            for (screen, current) in writers.enumerated() where options.testFault == nil { // the fault hook owns the modes
                 let mode = try DisplaySmoke.screenMode(session, screen: screen)
                 if mode.mode_change_count != current.queuedMode {
                     try current.queueMode(count: mode.mode_change_count, active: mode.flags & 1 != 0,
@@ -1029,19 +1084,15 @@ enum DisplaySmoke {
                 }
             }
             if !gateOpen, writer.readerHasClaimed { gateOpen = true } // latched
-            for (screen, current) in writers.enumerated() {
-                let mode = try DisplaySmoke.screenMode(session, screen: screen)
-                guard gateOpen, mode.flags & 1 != 0, mode.flags & 2 != 0,
-                      mode.generation > current.lastPublishedGeneration else { continue }
-                let plain = od_display_mode(abi_version: vmhost_display_abi_version_v1(),
-                                            struct_size: UInt32(OD_DISPLAY_MODE_SIZE_V1), width: mode.width,
-                                            height: mode.height, stride: mode.stride, format: mode.format,
-                                            flags: mode.flags, reserved: 0, generation: mode.generation,
-                                            mode_change_count: mode.mode_change_count)
-                if try current.publishFrame(session: session, mode: plain) {
-                    fputs("od-vmhost-smoke: display-smoke screen \(screen) published generation \(current.lastPublishedGeneration)\n", stderr)
-                }
+            #if DEBUG
+            if let faultDriver {
+                try faultDriver.tick(writer: writer, session: session, fd: fd, publishFromDevice: publishFromDevice)
+            } else {
+                try publishFromDevice()
             }
+            #else
+            try publishFromDevice()
+            #endif
             // S10-14 (10.5): the cursor is checked at the same rate. It is published on its own and never
             // causes a frame slot write, a FRAME or a MODE.
             if let cursor = try cursorSnapshot(session),
