@@ -3,8 +3,8 @@
 //! is fed, in a register and a memory form, to two executors: the bare `step` (no control-register
 //! policy) and one instruction of the CPL0 profile set with the FP member (CR0/CR4 gates open). The
 //! encodings are from the Intel SDM Vol. 2A..2D opcode maps, not from the interpreter. This is a
-//! presence check only: semantics are covered by the per-task suites (s2_51..s2_56, sse_fp, sse2_int,
-//! mmx_int), and the CPL3 refusal of these forms by cpl3_profile_set.rs. The forms that an executor
+//! presence check only: semantics are covered by the per-task suites (s2_51..s2_56) and the sse_fp,
+//! sse2_int and mmx_int modules of the library, and the CPL3 refusal of these forms by cpl3_profile_set.rs. The forms that an executor
 //! refuses today are listed in `KNOWN_UNSUPPORTED_BARE` / `KNOWN_UNSUPPORTED_CPL0_SET`; the test fails
 //! if a form off the list is refused or a form on the list starts to execute (update the lists and the
 //! S2-40 block of the plan then).
@@ -16,8 +16,8 @@ use od_isa::execute::{
 };
 use od_isa::state::{SseState, X87State};
 use od_isa::{
-    AccessContext, AccessKind, CpuActivity, GuestMemory, LongModeState, MemoryError,
-    PrivilegeLevel, Register, StiShadow,
+    AccessContext, AccessKind, ArchitecturalFault, CpuActivity, GuestMemory, LongModeState,
+    MemoryError, PrivilegeLevel, Register, StiShadow,
 };
 use std::cell::RefCell;
 
@@ -239,6 +239,9 @@ PSUBQ|660FFB|B
 PADDB|660FFC|B
 PADDW|660FFD|B
 PADDD|660FFE|B
+PADDQ-mmx|0FD4|B
+PMULUDQ-mmx|0FF4|B
+PSUBQ-mmx|0FFB|B
 MOVQ2DQ|F30FD6|R
 MOVDQ2Q|F20FD6|R
 # SSE3
@@ -393,6 +396,12 @@ const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
     "PMAXSW-mmx (mem)",
     "PSADBW-mmx (reg)",
     "PSADBW-mmx (mem)",
+    "PADDQ-mmx (reg)",
+    "PADDQ-mmx (mem)",
+    "PMULUDQ-mmx (reg)",
+    "PMULUDQ-mmx (mem)",
+    "PSUBQ-mmx (reg)",
+    "PSUBQ-mmx (mem)",
     "MOVSD (mem)",
     "MOVSD-store (mem)",
     "MOVLPD (mem)",
@@ -413,7 +422,10 @@ const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
 /// Forms that the CPL0 profile set with the FP member refuses. Refused by both lists (no executor runs
 /// them): MOVSS/MOVSD with a base other than [RAX], MOVNTI, CLFLUSH, the SSE integer forms on MMX
 /// registers (PAVGB/PAVGW/PMULHUW/PMINUB/PMAXUB/PMINSW/PMAXSW/PSADBW/PINSRW/PEXTRW/PMOVMSKB),
-/// MOVNTQ and MASKMOVQ. None of them belongs to a family whose CPUID bit the Windows profile declares.
+/// MOVNTQ, MASKMOVQ and the MMX forms of PADDQ/PSUBQ/PMULUDQ. None of the forms refused by both belongs
+/// to a family whose CPUID bit the Windows profile declares. The forms refused only by the set are the
+/// twelve MMX conversions (SSE/SSE2, bits not declared) and FISTTP, which belongs to SSE3: the Windows
+/// profile declares that bit (discrepancy 2 of the S2-40 block of the plan).
 const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "CVTPI2PS (reg)",
     "CVTPI2PS (mem)",
@@ -445,6 +457,12 @@ const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "PMAXSW-mmx (mem)",
     "PSADBW-mmx (reg)",
     "PSADBW-mmx (mem)",
+    "PADDQ-mmx (reg)",
+    "PADDQ-mmx (mem)",
+    "PMULUDQ-mmx (reg)",
+    "PMULUDQ-mmx (mem)",
+    "PSUBQ-mmx (reg)",
+    "PSUBQ-mmx (mem)",
     "MOVSD (mem)",
     "MOVSD-store (mem)",
     "CVTPI2PD (reg)",
@@ -512,7 +530,7 @@ impl GuestMemory for Ram {
 fn cpu() -> LongModeState {
     let mut cpu = LongModeState {
         rip: CODE,
-        rflags: 0x2 | 0xcd5 | (1 << 10),
+        rflags: 0x2 | 0xcd5,
         x87: Some(X87State::fixture_seed()),
         sse: Some(SseState {
             xmm: core::array::from_fn(|index| {
@@ -641,9 +659,22 @@ fn run_cpl0_set(bytes: &[u8]) -> RunExit {
     }
 }
 
-fn survey() -> (usize, Vec<String>, Vec<String>) {
+/// Outcome of the survey. A refusal is `Unsupported`; a `#UD` (vector 6) is not expected from any form of
+/// the baseline and is collected apart, so that it is never taken for a refusal or for presence.
+struct Survey {
+    total: usize,
+    bare: Vec<String>,
+    set: Vec<String>,
+    undefined: Vec<String>,
+}
+
+fn is_undefined(fault: &ArchitecturalFault) -> bool {
+    fault.vector == 6
+}
+
+fn survey() -> Survey {
     let mut total = 0;
-    let (mut bare, mut set) = (Vec::new(), Vec::new());
+    let (mut bare, mut set, mut undefined) = (Vec::new(), Vec::new(), Vec::new());
     let verbose = std::env::var("S2_40_SURVEY").is_ok();
     for line in SPEC
         .lines()
@@ -662,19 +693,32 @@ fn survey() -> (usize, Vec<String>, Vec<String>) {
             if verbose {
                 println!("bare {tag}: {outcome:?}");
             }
-            if matches!(outcome, StepOutcome::Unsupported { .. }) {
-                bare.push(tag.clone());
+            match &outcome {
+                StepOutcome::Unsupported { .. } => bare.push(tag.clone()),
+                StepOutcome::Fault(fault) if is_undefined(fault) => {
+                    undefined.push(format!("bare {tag}"));
+                }
+                _ => {}
             }
             let exit = run_cpl0_set(&bytes);
             if verbose {
                 println!("set  {tag}: {exit:?}");
             }
-            if matches!(exit, RunExit::Unsupported { .. }) {
-                set.push(tag);
+            match &exit {
+                RunExit::Unsupported { .. } => set.push(tag),
+                RunExit::Fault(fault) if is_undefined(fault) => {
+                    undefined.push(format!("set {tag}"));
+                }
+                _ => {}
             }
         }
     }
-    (total, bare, set)
+    Survey {
+        total,
+        bare,
+        set,
+        undefined,
+    }
 }
 
 fn unexpected<'a>(refused: &'a [String], known: &[&str]) -> Vec<&'a String> {
@@ -686,7 +730,12 @@ fn unexpected<'a>(refused: &'a [String], known: &[&str]) -> Vec<&'a String> {
 
 #[test]
 fn refused_baseline_forms_are_exactly_the_recorded_list() {
-    let (total, bare, set) = survey();
+    let Survey {
+        total,
+        bare,
+        set,
+        undefined,
+    } = survey();
     println!(
         "forms checked: {total}; bare refused: {}; CPL0 set refused: {}",
         bare.len(),
@@ -698,6 +747,10 @@ fn refused_baseline_forms_are_exactly_the_recorded_list() {
     for line in &set {
         println!("SET REFUSED {line}");
     }
+    assert!(
+        undefined.is_empty(),
+        "#UD (vector 6) from a baseline form; it is neither a refusal nor presence: {undefined:#?}"
+    );
     let bare_new = unexpected(&bare, KNOWN_UNSUPPORTED_BARE);
     let set_new = unexpected(&set, KNOWN_UNSUPPORTED_CPL0_SET);
     assert!(
