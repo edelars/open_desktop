@@ -1905,4 +1905,29 @@ mod tests {
             Err(device_error(DeviceError::UnsupportedConfiguration))
         );
     }
+
+    /// S11-21: whether the COM2 line is connected belongs to the board; restoring a snapshot keeps
+    /// the board's own state in both directions.
+    #[test]
+    fn restoring_a_snapshot_keeps_the_boards_own_com2_line_connection() {
+        let (_bus, io, apic) = setup();
+        let without_channel = apic.snapshot_pair();
+        assert!(!without_channel.com2_wired);
+        io.connect_com2_line();
+        let with_channel = apic.snapshot_pair();
+        assert!(with_channel.com2_wired);
+        // A snapshot without the channel restored onto a board with it: the line stays connected.
+        apic.restore_pair(&without_channel).unwrap();
+        assert!(io.0.lock().unwrap().com2_wired);
+        io.set_intin3(true).unwrap();
+        io.set_intin3(false).unwrap();
+        // A snapshot with the channel restored onto a board without it: INTIN3 stays a plain input.
+        let (_bus2, io2, apic2) = setup();
+        apic2.restore_pair(&with_channel).unwrap();
+        assert!(!io2.0.lock().unwrap().com2_wired);
+        assert_eq!(
+            io2.set_intin3(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+    }
 }
