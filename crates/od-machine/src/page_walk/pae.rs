@@ -759,8 +759,11 @@ fn access_pae_internal(
         return fail(operand_error(source), trace, ad_updates, ad_update_count);
     }
     let is_mmio = match memory.locate_region_kind(physical, u64::from(width)) {
-        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => false,
+        Ok(MemoryRegionKind::Ram) => false,
         Ok(MemoryRegionKind::Mmio) => true,
+        // As in the 4-level access: data behaves like RAM (the region itself suppresses the
+        // committed-write callback); an instruction fetch from the framebuffer is a backend error.
+        Ok(MemoryRegionKind::Framebuffer) if operation != RamAccessOperation::Fetch => false,
         Ok(kind) => {
             let source = if access == AccessKind::Write {
                 MemoryAccessError::ReadOnlyRegion(kind)
@@ -772,13 +775,7 @@ fn access_pae_internal(
         Err(source) => return fail(operand_error(source), trace, ad_updates, ad_update_count),
     };
     // The windows of a set-loop access limit what the dispatch serves (none: every MMIO region).
-    let served = mmio_windows.is_none_or(|windows| {
-        windows.iter().any(|&(base, size)| {
-            physical.get() >= base
-                && u128::from(physical.get()) + u128::from(width)
-                    <= u128::from(base) + u128::from(size)
-        })
-    });
+    let served = mmio_window_serves(mmio_windows, physical, width);
     if is_mmio
         && (mmio.is_none()
             || !served

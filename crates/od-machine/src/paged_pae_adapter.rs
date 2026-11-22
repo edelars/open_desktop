@@ -1,8 +1,8 @@
 //! The PAE counterpart of [`crate::PagedMovMemoryAdapter`] (S2-25l): a `GuestMemory` for a vCPU that runs
 //! on PAE paging (`CR0.PG = 1`, `CR4.PAE = 1`, `EFER.LME = 0`, the legacy protected-mode models of
 //! `od-isa`), whose loads, stores and instruction bytes go through the three-level PAE walk of
-//! [`crate::page_walk::pae`] and are then served by the physical address: RAM and framebuffer bytes
-//! directly, an MMIO operand by the device of the region as an access of the vCPU.
+//! [`crate::page_walk::pae`] and are then served by the physical address: RAM and framebuffer operand
+//! bytes directly, an MMIO operand by the device of the region as an access of the vCPU.
 //!
 //! Why a sibling type and not a mode of `PagedMovMemoryAdapter`: that adapter carries a
 //! [`crate::Long64ProbeConfig`] (whose constructor *requires* `EFER.LME = 1` and `EFER.LMA = 1`) and some
@@ -13,7 +13,8 @@
 //! adapter and its profiles are not changed.
 //!
 //! What it serves, and what it refuses with a typed [`MemoryError::Backend`] (never a guess):
-//! - `fetch`: one byte, the walk of a fetch (accessed bits, `XD` with `EFER.NXE`), RAM or framebuffer only;
+//! - `fetch`: one byte, the walk of a fetch (accessed bits, `XD` with `EFER.NXE`), RAM only (an instruction fetch from the
+//!   framebuffer is a backend error, as in the 4-level access);
 //! - `read` and `write` of 1, 2, 4 and 8 bytes. An operand inside one 4 KiB page is one walk and one
 //!   access (MMIO included). An operand that crosses a page is served byte by byte with a walk of its own
 //!   per byte (as the 4-level set loop does, S4-38L5e/L4h); a read assembles the bytes and hands them over
