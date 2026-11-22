@@ -4,7 +4,8 @@
 //! policy) and one instruction of the CPL0 profile set with the FP member (CR0/CR4 gates open). The
 //! encodings are from the Intel SDM Vol. 2A..2D opcode maps, not from the interpreter. This is a
 //! presence check only: semantics are covered by the per-task suites (s2_51..s2_56) and the sse_fp,
-//! sse2_int and mmx_int modules of the library, and the CPL3 refusal of these forms by cpl3_profile_set.rs. The forms that an executor
+//! sse2_int and mmx_int modules of the library, and the CPL3 refusal of these forms by
+//! cpl3_profile_set.rs. The forms that an executor
 //! refuses today are listed in `KNOWN_UNSUPPORTED_BARE` / `KNOWN_UNSUPPORTED_CPL0_SET`; the test fails
 //! if a form off the list is refused or a form on the list starts to execute (update the lists and the
 //! S2-40 block of the plan then).
@@ -613,7 +614,8 @@ fn run_bare(bytes: &[u8]) -> StepOutcome {
         .unwrap_or_else(|error| panic!("memory error {error:?} for {bytes:02x?}"))
 }
 
-/// One instruction in the CPL0 profile set with the FP member, CR0/CR4 gates open, CPUID profile of the Linux board (the Windows profile does not declare the FP/FXSR/SSE bits that the FP member needs).
+/// One instruction in the CPL0 profile set with the FP member, CR0/CR4 gates open, CPUID profile of
+/// the Linux board (the Windows profile does not declare the FP/FXSR/SSE bits that the FP member needs).
 fn run_cpl0_set(bytes: &[u8]) -> RunExit {
     let mut ram = memory(bytes);
     let seed = cpu();
@@ -747,6 +749,10 @@ fn refused_baseline_forms_are_exactly_the_recorded_list() {
     for line in &set {
         println!("SET REFUSED {line}");
     }
+    assert_eq!(
+        total, 596,
+        "number of baseline encodings checked (SPEC changed?)"
+    );
     assert!(
         undefined.is_empty(),
         "#UD (vector 6) from a baseline form; it is neither a refusal nor presence: {undefined:#?}"
@@ -770,6 +776,6 @@ fn refused_baseline_forms_are_exactly_the_recorded_list() {
     );
     assert!(
         bare_stale.is_empty() && set_stale.is_empty(),
-        "on the list but executed now (update the list and the S2-40 plan block); bare: {bare_stale:?}\nset: {set_stale:?}"
+        "on the list but executed now (update the list and the plan block); bare: {bare_stale:?}\nset: {set_stale:?}"
     );
 }
