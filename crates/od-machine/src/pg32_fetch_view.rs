@@ -50,6 +50,9 @@ impl LoadedFirmwareBoard {
             Err(error) => return (None, Vec::new(), Some(error)),
         };
         let context = AccessContext {
+            // Only fills the AccessContext shape: the 32-bit walk does not read `mode` (address width,
+            // rights and the error code come from the paging model of the vCPU), so Long64 here does
+            // not select the long-mode path.
             mode: InstructionMode::Long64,
             privilege,
             origin: AccessOrigin::Explicit,

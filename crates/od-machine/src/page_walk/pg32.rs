@@ -6,7 +6,9 @@
 //! the PhysicalMemory counterpart of od_isa::paging::translate32_with (S2-25, S2-25j) and has the
 //! same rights model: with PSE = 0 no bit of a PDE or PTE is reserved; with PSE = 1 bits 21:13 of a
 //! 4 MiB PDE are reserved (21:17 with the PSE-36 model switch, bits 16:13 then being physical-address
-//! bits 35:32); there is no XD; a write to a page whose PDE or PTE has R/W = 0 faults at CPL 3 or with
+//! bits 35:32); PAT (limit): without PAT (the Windows profile does not declare it) PTE bit 7 and
+//! bit 12 of a 4 MiB PDE would be reserved (SDM section 5.4.2), but the model treats PAT as supported
+//! (S2-25h) and never refuses them; there is no XD; a write to a page whose PDE or PTE has R/W = 0 faults at CPL 3 or with
 //! CR0.WP = 1. What this walk adds on top of the od_isa model is what the PAE walk of this crate has
 //! (see pae.rs): the user/supervisor check for CPL 3, the page-fault error code, the walk trace and
 //! the accessed and dirty bits as one compare-and-replace (S6-25).

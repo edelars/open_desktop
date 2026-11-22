@@ -482,6 +482,8 @@ fn bits_21_to_13_of_a_4m_pde_are_reserved_and_bit_12_is_the_pat_bit() {
         assert_eq!(entry(&memory, PD) & ACCESSED, 0, "bit {bit}");
     }
     // Bit 12 (PAT) and bits 11:9 and G are ignored by the walk, not address bits of a 4 MiB page.
+    // (SDM section 5.4.2 reserves PTE bit 7 and PDE bit 12 without PAT; the model treats PAT as
+    // supported, S2-25h, so bit 12 is never refused here.)
     let mut image = tables();
     put(
         &mut image,
@@ -1096,6 +1098,14 @@ fn the_od_machine_walk_and_the_od_isa_walk_agree_on_random_tables() {
             }
         }
     }
+    // The sweep is deterministic (fixed seed, 400 table sets x 8 configurations x 5 addresses x 3
+    // kinds = 48000 walks), so its tally is pinned: a change of the generator or of either walk shows
+    // here. Numbers as of S2-25l, checked by running the test with a printout.
+    assert_eq!(
+        (counts, unreadable, mapped_large, beyond, mapped_pse36),
+        ([21498, 11172, 3942, 2352], 9036, 7816, 3112, 3112),
+        "mapped, not present, reserved, write-protected; unreadable; 4 MiB mapped; frames above 4 GiB; PSE-36 mapped"
+    );
     // The sweep reaches every outcome, 4 MiB pages and frames above 4 GiB included.
     assert!(counts.iter().all(|&n| n > 100), "{counts:?}");
     assert!(
