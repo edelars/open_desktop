@@ -7,7 +7,7 @@
 //! PUNPCKLBW/LWD/LDQ, PUNPCKHBW/HWD/HDQ, PACKSSWB, PACKUSWB, PACKSSDW, PSLLW/D/Q, PSRLW/D/Q, PSRAW/D and
 //! PSHUFW. Vol. 1 §9.4 describes the data types and the wraparound, signed and unsigned saturation modes.
 //! The MMX forms of the SSE2 additions (PADDQ, PSUBQ, PMULUDQ, PSADBW, PAVG, PMAX, PMIN, PMULHUW, PEXTRW,
-//! PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ, MOVDQ2Q) are not in this set.
+//! PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ, MOVDQ2Q, MOVQ2DQ) are not in this set.
 
 /// The MMX instructions of two operands (destination MMd, source MMs or an 8-byte memory operand) and the
 /// shifts, whose count is the source operand or an 8-bit immediate. The 128-bit versions of the same opcodes

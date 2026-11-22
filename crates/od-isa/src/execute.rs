@@ -70709,6 +70709,18 @@ fn step_cpl0_mmx(
     cell: &RefCell<GuestFpState>,
 ) -> Option<Result<StepOutcome, MemoryError>> {
     debug_assert!(state.x87.is_none());
+    // Only an MMX operation takes the x87 state out of the cell; any other instruction skips the clone.
+    if !matches!(
+        instruction.operation,
+        Operation::MmxInt { .. }
+            | Operation::MmxShiftImmediate { .. }
+            | Operation::MmxMovd { .. }
+            | Operation::MmxMovq { .. }
+            | Operation::MmxSsse3 { .. }
+            | Operation::Emms
+    ) {
+        return None;
+    }
     state.x87 = Some(cell.borrow().x87.clone());
     let outcome = step_mmx_operation(state, memory, context, instruction, next_rip);
     let x87 = state.x87.take().expect("the MMX step keeps the x87 state");
