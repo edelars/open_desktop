@@ -1100,7 +1100,7 @@ fn the_od_machine_walk_and_the_od_isa_walk_agree_on_random_tables() {
     }
     // The sweep is deterministic (fixed seed, 400 table sets x 8 configurations x 5 addresses x 3
     // kinds = 48000 walks), so its tally is pinned: a change of the generator or of either walk shows
-    // here. Numbers as of S2-25l, checked by running the test with a printout.
+    // here. Numbers as of S2-25m, checked by running the test with a printout.
     assert_eq!(
         (counts, unreadable, mapped_large, beyond, mapped_pse36),
         ([21498, 11172, 3942, 2352], 9036, 7816, 3112, 3112),

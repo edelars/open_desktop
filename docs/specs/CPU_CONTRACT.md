@@ -16237,7 +16237,7 @@ Not covered: a 32-bit instruction interpreter on the board PAE view (the only le
 RAM, which still refuses MMIO), a page-crossing operand, locked operations, the PAE path in the `PagedMovMemoryAdapter` set loop
 and the host/JIT fast paths, 32-bit paging in od-machine, hardware oracle, CPUID declaration (S2-57/S2-58). Known limitation: in `od-isa` the A/D bits of the walks are committed after the operand bytes are written; a store that changes the PTE mapping its own page gets A|D added to the value just written (hardware sets A/D in the walk, before the write).
 
-## S2-25l — 32-bit paging walk in od-machine (bounded slice)
+## S2-25m — 32-bit paging walk in od-machine (bounded slice)
 
 Normative source: Intel SDM Rev. 093 Vol. 3A §5.3 (32-bit paging, from p. 5-9; Tables 5-3..5-6 on pp. 5-12–5-13, as cited in
 S2-25h), §5.6 access rights, §5.7 and Figure 5-12 (page-fault error code), §5.8 accessed and dirty flags. Text only: no hardware

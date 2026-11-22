@@ -15522,7 +15522,7 @@ walk (`DataSegmentReadOnly`, `#GP(0)`). Known limitation: in `od-isa` the A/D bi
 bytes are written, so a store that changes the PTE mapping its own page gets A|D added to the value written. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25k--operand-access-through-pae-paging-bounded-slice).
 
-#### S2-25l — 32-bit paging walk in od-machine
+#### S2-25m — 32-bit paging walk in od-machine
 
 **Статус:** bounded slice (`od-machine`: `page_walk/pg32.rs`, `bus.rs`, `pg32_fetch_view.rs`, `pg32_operand_access.rs`) after the
 acceptance of the parent S2-25 (2026-11-21); the slice itself is not marked. The parent checkbox is not changed.
@@ -15538,7 +15538,7 @@ hardware oracle; no CPUID declaration. Decisions: a PSE-36 page above 4 GiB is t
 reports `PhysicalBeyond4GiB`); the error code has no I/D bit (no XD, `CR4.SMEP` not allowed in the snapshot). Not done:
 `CR4.SMEP` in od-machine, a 32-bit instruction interpreter on the board view, a page-crossing operand, locked operations, the
 set loop and host/JIT paths, hardware oracle, CPUID (S2-57/S2-58). See the
-[CPU contract](../specs/CPU_CONTRACT.md#s2-25l--32-bit-paging-walk-in-od-machine-bounded-slice).
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25m--32-bit-paging-walk-in-od-machine-bounded-slice).
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
