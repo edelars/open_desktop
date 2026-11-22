@@ -4107,23 +4107,39 @@ impl<M: GuestMemory> Fetch<'_, M> {
             _ => None,
         };
         if let Some(operation) = modeled_system_operation {
-            // S4-39f: only the exact `48 0F 07` (SYSRETQ) decodes; the bare `0F 07` (the 32-bit
-            // SYSRETL) and every other prefix combination stay the decoder's `Unsupported`.
+            // S4-39f / S2-27m: `48 0F 07` (SYSRETQ, return to 64-bit mode) and the bare `0F 07`
+            // (SYSRETL, return to compatibility mode) decode; `F0` with either form is `#UD`
+            // (Intel SDM, SYSRET: "#UD if the LOCK prefix is used"); every other prefix
+            // combination stays the decoder's `Unsupported`.
             if operation == Operation::Sysret {
-                if prefixes
-                    == (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
+                for (rex, operand_size) in
+                    [(Some(0x48), OperandSize::Qword), (None, OperandSize::Dword)]
                 {
-                    return Ok(Instruction {
-                        length: self.length,
-                        opcode,
-                        prefixes,
-                        operand_size: OperandSize::Qword,
-                        address_size: OperandSize::Qword,
-                        operation,
-                    });
+                    let bare = Prefixes {
+                        rex,
+                        ..Prefixes::default()
+                    };
+                    if prefixes == bare {
+                        return Ok(Instruction {
+                            length: self.length,
+                            opcode,
+                            prefixes,
+                            operand_size,
+                            address_size: OperandSize::Qword,
+                            operation,
+                        });
+                    }
+                    if prefixes
+                        == (Prefixes {
+                            group1: Some(0xf0),
+                            ..bare
+                        })
+                    {
+                        return Err(DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
                 }
                 return Err(self.unsupported(opcode));
             }
@@ -4143,13 +4159,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !prefixes.address_override
                 && prefixes.rex.is_none()
                 && self.length == 3
-                && !matches!(
-                    operation,
-                    Operation::Sysenter
-                        | Operation::Sysexit
-                        | Operation::Syscall
-                        | Operation::Sysret
-                )
+                && !matches!(operation, Operation::Sysenter | Operation::Sysexit)
             {
                 return Err(DecodeError::Invalid {
                     opcode,

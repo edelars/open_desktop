@@ -1796,6 +1796,8 @@ const EFER_SCE: u64 = 1;
 const EFER_NXE: u64 = 1 << 11;
 /// IA32_EFER.LME (bit 8) and LMA (bit 10): a change of either is not modelled by the CPL0 set.
 const EFER_LME_LMA: u64 = (1 << 8) | (1 << 10);
+/// IA32_EFER.LMA (bit 10): long mode active.
+const EFER_LMA: u64 = 1 << 10;
 /// CPUID.80000001H:EDX bit 20 (NX / EXECUTE_DIS).
 const CPUID_EXT1_EDX_NX: u32 = 1 << 20;
 const EFER_FEATURE_BITS: u64 = 0xf << 12;
@@ -31163,6 +31165,8 @@ fn cpl3_allows(instruction: &long_decode::Instruction, syscall: bool, lea_sib: b
             OperandSize::Dword | OperandSize::Qword
         ),
         (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
+        // S2-27m: `SYSRET` at CPL3 is `#GP(0)` under the same member; the step decides.
+        (OpcodeMap::Escape0f, 0x07, Operation::Sysret) => syscall,
         (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
         (OpcodeMap::Escape0f, 0xa2, Operation::Cpuid) => prefixes.rex.is_none(),
@@ -40670,14 +40674,30 @@ const fn is_set_member_msr_index(index: u32) -> bool {
     )
 }
 
-/// S4-39e: `SYSCALL` (`0F 05`) from CPL3 through the set's guest MSR cells. All semantics here are
-/// from memory of the SDM (no copy in the repository; see CPU_CONTRACT S4-39e).
+/// The CPL the SYSCALL/SYSRET members model (S2-27m): CPL0 and CPL3 only; CPL1 and CPL2 are not
+/// representable in the set's state.
+const fn syscall_cpl(privilege: PrivilegeLevel) -> Option<u16> {
+    match privilege {
+        PrivilegeLevel::Ring0 => Some(0),
+        PrivilegeLevel::Ring3 => Some(3),
+        _ => None,
+    }
+}
+
+/// S4-39e, S2-27m: `SYSCALL` (`0F 05`) through the set's guest MSR cells (Intel SDM combined
+/// revision 093, Vol. 2B 4-699..4-701, checked in S2-27m).
 ///
 /// Admitted only when the set carries `with_syscall`, under a control-register policy, in Long64
-/// at CPL3 (Ring3 context over a CS selector with RPL 3), with the bare two-byte form, all four
-/// cells present and TF clear in RFLAGS (the trap after a single-stepped `SYSCALL` is not
-/// modelled). Anything else keeps the refusal of the form (`Unsupported`, opcode `0x05`) with no
-/// change; that includes CPL0.
+/// at CPL0 or CPL3 (the context privilege equals the CS selector RPL), with the bare two-byte
+/// form, all four cells present and a loaded CS cache. The SDM allows the instruction at every
+/// CPL of 64-bit mode; the set models only CPL0 and CPL3. Anything else keeps the refusal of the
+/// form (`Unsupported`, opcode `0x05`) with no change. The `LOCK`-prefixed form is `#UD` from the
+/// decoder.
+///
+/// The SDM gate order: `EFER.LMA = 0` or `CS.L = 0` (compatibility mode, where Intel has no
+/// `SYSCALL`; IA32_CSTAR is not consumed) is `#UD`, then `EFER.SCE = 0` is `#UD`; both before any
+/// write. Only after them is TF set in RFLAGS a refusal (the trap after a single-stepped
+/// `SYSCALL` is not modelled).
 ///
 /// With EFER.SCE = 0 the instruction is `#UD` (vector 6), no change. Before any write: LSTAR must
 /// be canonical and STAR[33:32] (the RPL bits of the kernel selector) clear, else `Unsupported`.
@@ -40711,21 +40731,31 @@ fn execute_syscall(
     };
     if !cells.syscall
         || !control_policy
-        || context.privilege != PrivilegeLevel::Ring3
         || !context.mode.eq(&InstructionMode::Long64)
         || instruction.length != 2
         || instruction.prefixes != Prefixes::default()
-        || state.cs_selector.is_none_or(|selector| selector & 3 != 3)
-        || state.rflags & TF != 0
     {
         return refused;
     }
-    if efer.get() & 1 == 0 {
+    let Some(cpl) = syscall_cpl(context.privilege) else {
+        return refused;
+    };
+    let Some(cs_cache) = state.cs_cache else {
+        return refused;
+    };
+    if state.cs_selector.is_none_or(|selector| selector & 3 != cpl) {
+        return refused;
+    }
+    // SDM: `IA32_EFER.LMA = 0 OR CS.L = 0` (not in 64-bit mode) is `#UD`, then `EFER.SCE = 0`.
+    if efer.get() & EFER_LMA == 0 || cs_cache.flags & 0x2 == 0 || efer.get() & 1 == 0 {
         return StepOutcome::Fault(ArchitecturalFault {
             vector: 6,
             error_code: None,
             linear_address: None,
         });
+    }
+    if state.rflags & TF != 0 {
+        return refused;
     }
     let target = lstar.get();
     let selector = (star.get() >> 32) as u16;
@@ -40757,25 +40787,33 @@ fn execute_syscall(
     StepOutcome::Advanced
 }
 
-/// S4-39f: `SYSRETQ` (`48 0F 07`) from CPL0 back to CPL3, the pair of [`execute_syscall`]. All
-/// semantics here are from memory of the SDM (no copy in the repository; see CPU_CONTRACT S4-39f).
+/// S4-39f, S2-27m: `SYSRET` from CPL0 back to CPL3, the pair of [`execute_syscall`]: `48 0F 07`
+/// (SYSRETQ, return to 64-bit mode) and the bare `0F 07` (SYSRETL, return to compatibility mode).
+/// Semantics from Intel SDM combined revision 093, Vol. 2B 4-709..4-711 (checked in S2-27m).
 ///
 /// Admitted under the same member as `SYSCALL` (`with_syscall`: the STAR, LSTAR, SYSCALL_MASK and
 /// EFER cells are all present, and the set owns the committed-return cell), under a
-/// control-register policy, in Long64 at CPL0 (Ring0 context over a CS selector with RPL 0), with
-/// the exact three-byte form. Anything else keeps the refusal of the form (`Unsupported`, opcode
-/// `0x07`) with no change; that includes CPL3, a set without the member and the 32-bit `0F 07`.
+/// control-register policy, in Long64 at CPL0 or CPL3 (the context privilege equals the CS
+/// selector RPL; the CS cache is loaded), with one of the two exact forms. Anything else keeps the
+/// refusal of the form (`Unsupported`, opcode `0x07`) with no change; that includes a set without
+/// the member. The `LOCK`-prefixed forms are `#UD` from the decoder.
 ///
-/// With EFER.SCE = 0 the instruction is `#UD` (vector 6), no change. A non-canonical RCX is
-/// `#GP(0)` (Intel SDM, from memory), no change. Before any write: STAR[63:48] + 16 must not
-/// overflow the selector, and R11 must not carry TF, VM, VIF or VIP (not modelled, as for
-/// `IRETQ`/`POPFQ`; a refusal, `Unsupported`). The commit is one block, state last: RIP = RCX, RFLAGS
-/// = (R11 and `POPFQ_CPL0_FLAGS`) or 2 (the SDM mask `0x3C7FD7` less the unmodelled TF, VIF, VIP;
-/// RF and VM are cleared), CS = (STAR[63:48] + 16) or 3 with a flat 64-bit DPL 3 code cache (base
-/// 0, limit 4 GiB - 1, access 0xfb, flags 0xa), SS = (STAR[63:48] + 8) or 3 with a flat DPL 3 data
-/// cache (access 0xf3, flags 0xc). RSP, RCX, R11, the other registers, DS/ES/FS/GS, the GDT and
-/// memory are not touched. The retired instruction stops the run like a committed `IRETQ` to
-/// CPL3 ([`Cpl0ProfileSetExit::UserModeEntered`]); the caller continues with the CPL3 entry.
+/// The SDM gate order, all before any write: `EFER.LMA = 0`, `CS.L = 0` or `EFER.SCE = 0` is `#UD`
+/// (vector 6); CPL 3 is `#GP(0)`; for the 64-bit form a non-canonical RCX is `#GP(0)`. Then,
+/// refusals (`Unsupported`): STAR[63:48] + 16 (+ 8 for the compatibility form) overflows the
+/// selector, and R11 carries TF, VIF or VIP (not modelled, as for `IRETQ`/`POPFQ`; the SDM mask
+/// keeps them). VM in R11 is cleared, not refused (SDM: RF and VM are always 0 after SYSRET).
+/// The commit is one block, state last: RIP = RCX (the 64-bit form) or ECX zero-extended (the
+/// compatibility form: no canonical check), RFLAGS = (R11 and `POPFQ_CPL0_FLAGS`) or 2 (the SDM
+/// mask `0x3C7FD7` less the unmodelled TF, VIF, VIP), CS = (STAR[63:48] + 16) or 3 (64-bit form:
+/// flat DPL 3 code cache, base 0, limit 4 GiB - 1, access 0xfb, flags 0xa: L = 1, G = 1) or
+/// STAR[63:48] or 3 (compatibility form: the same cache with flags 0xc: D = 1, L = 0, G = 1), SS =
+/// (STAR[63:48] + 8) or 3 with a flat DPL 3 data cache (access 0xf3, flags 0xc). RSP, RCX, R11,
+/// the other registers, DS/ES/FS/GS, the GDT and memory are not touched. The retired instruction
+/// stops the run like a committed `IRETQ` to CPL3 ([`Cpl0ProfileSetExit::UserModeEntered`]); the
+/// caller continues with the CPL3 entry. That entry admits only L = 1 code, so after the
+/// compatibility form it refuses with [`Cpl0ProfileSetInputError::WrongPrivilege`]: the long-mode
+/// interpreter does not execute compatibility-mode code (S2-24).
 #[allow(clippy::too_many_arguments)]
 fn execute_sysret(
     state: &mut LongModeState,
@@ -40787,54 +40825,84 @@ fn execute_sysret(
     cells: Option<GuestMsrCells<'_>>,
     boundary: Option<&IretqUserBoundary>,
 ) -> StepOutcome {
-    const SYSRET_UNMODELED_FLAGS: u64 = IRETQ_UNMODELED_FLAGS;
+    const SYSRET_UNMODELED_FLAGS: u64 = POPFQ_CPL0_TF | (1 << 19) | (1 << 20);
     let refused = StepOutcome::Unsupported {
         opcode: instruction.opcode.byte,
     };
-    let (Some(cells), Some(efer), Some(boundary)) = (cells, efer, boundary) else {
+    let (Some(cells), Some(efer)) = (cells, efer) else {
         return refused;
     };
     let (Some(star), Some(_), Some(_)) = (cells.star, cells.lstar, cells.syscall_mask) else {
         return refused;
     };
-    if !cells.syscall
-        || !control_policy
-        || context.privilege != PrivilegeLevel::Ring0
-        || !context.mode.eq(&InstructionMode::Long64)
-        || instruction.length != 3
-        || instruction.operand_size != OperandSize::Qword
-        || instruction.prefixes
-            != (Prefixes {
-                rex: Some(0x48),
-                ..Prefixes::default()
-            })
-        || state.cs_selector.is_none_or(|selector| selector & 3 != 0)
-    {
+    let long_form = match (instruction.operand_size, instruction.length) {
+        (OperandSize::Qword, 3)
+            if instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                }) =>
+        {
+            true
+        }
+        (OperandSize::Dword, 2) if instruction.prefixes == Prefixes::default() => false,
+        _ => return refused,
+    };
+    if !cells.syscall || !control_policy || !context.mode.eq(&InstructionMode::Long64) {
         return refused;
     }
-    if efer.get() & 1 == 0 {
+    let Some(cpl) = syscall_cpl(context.privilege) else {
+        return refused;
+    };
+    let Some(cs_cache) = state.cs_cache else {
+        return refused;
+    };
+    if state.cs_selector.is_none_or(|selector| selector & 3 != cpl) {
+        return refused;
+    }
+    // The committed-return cell is needed only by the CPL0 commit; CPL3 always faults below.
+    if cpl == 0 && boundary.is_none() {
+        return refused;
+    }
+    // SDM: `(CS.L != 1) or (IA32_EFER.LMA != 1) or (IA32_EFER.SCE != 1)` is `#UD`.
+    if efer.get() & EFER_LMA == 0 || cs_cache.flags & 0x2 == 0 || efer.get() & EFER_SCE == 0 {
         return StepOutcome::Fault(ArchitecturalFault {
             vector: 6,
             error_code: None,
             linear_address: None,
         });
     }
-    let target = state.gpr[Register::Rcx as usize];
-    if !canonical(target) {
-        return StepOutcome::Fault(ArchitecturalFault {
-            vector: 13,
-            error_code: Some(0),
-            linear_address: None,
-        });
+    let general_protection = StepOutcome::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    });
+    if cpl != 0 {
+        return general_protection;
     }
+    let rcx = state.gpr[Register::Rcx as usize];
+    if long_form && !canonical(rcx) {
+        return general_protection;
+    }
+    let target = if long_form { rcx } else { rcx & 0xffff_ffff };
     let r11 = state.gpr[Register::R11 as usize];
     let base = (star.get() >> 48) as u16;
-    let (Some(cs), Some(ss)) = (base.checked_add(16), base.checked_add(8)) else {
+    let (Some(cs), Some(ss)) = (
+        if long_form {
+            base.checked_add(16)
+        } else {
+            Some(base)
+        },
+        base.checked_add(8),
+    ) else {
         return refused;
     };
     if r11 & SYSRET_UNMODELED_FLAGS != 0 {
         return refused;
     }
+    let Some(boundary) = boundary else {
+        return refused;
+    };
     let (cs, ss) = (cs | 3, ss | 3);
     let rflags = (r11 & POPFQ_CPL0_FLAGS) | 2;
     *rflags_defined |= crate::POPFQ_INTEGER_FLAGS;
@@ -40844,7 +40912,7 @@ fn execute_sysret(
         base: 0,
         limit: u32::MAX,
         access: 0xfb,
-        flags: 0xa,
+        flags: if long_form { 0xa } else { 0xc },
     });
     state.ss_selector = Some(ss);
     state.ss_cache = Some(crate::state::DataSegmentDescriptorCache {
