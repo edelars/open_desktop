@@ -24601,7 +24601,7 @@ read/write log, x87, SSE half untouched), an 8-instruction program, a literal ve
 forms with unchanged cell and state, failing accesses, MMX + SSE + FXSAVE64 in one run (the image shows the MMX
 state), refusals of x87 forms and MMX conversions in the set. `cpl3_profile_set` 238 (seven forms added to the
 refusal table), `od-isa --lib` 2677, `cpl0_profile_set` 1626, `s2_33_mmx` 15, `s2_54_ssse3_mmx` 19,
-`s2_37_cvt_int` 36, `s2_39_cpl0_sse` 11. Two mutations (cell write-back dropped, PSRAW clamp changed) fail the new tests.
+`s2_37_cvt_int` 36, `s2_34_sse_moves_memory` 14 (the two MMX MOVQ cases 0F 6F/0F 7F without a prefix left its refusal table: they are executed now and covered by `s2_39_mmx`), `s2_39_cpl0_sse` 11. Two mutations (cell write-back dropped, PSRAW clamp changed) fail the new tests.
 
 Oracle (Mac mini 192.168.1.14, Ubuntu x86-64, Core i5-3210M; harness derived from the S2-33 one in
 `work/stage8/s2_39_mmx_oracle/`, not in git): 18980 cases (18964 distinct names) comparing the FXSAVE64 image
@@ -24613,8 +24613,11 @@ sequences. 18644 identical, 320 different: 266 where the model refuses (prefix v
 claim: F2/F3, FS/GS, repeated prefixes, 92 in the `p` group, 92 FS/GS register forms, 32 in the shift-by-imm8
 group; AC-misaligned operand at CPL3, 26; FISTTP sequences that the model refuses for FCW = 0, 24), 42 non-canonical
 range overflow (`AddressOverflow` of the existing access check, as in S2-54), 12 harness artifacts (the pending
-ES cases whose exceptions are all masked: the hardware FXSAVE image reports ES = 0 while the model keeps the input
-ES = 1, the rest of the state is equal). No difference in the result of an executed form.
+cases whose exceptions are all masked: the local harness normalizes ES when it loads the state, as FXRSTOR does
+(`work/stage8/s2_39_mmx_oracle/src/main.rs:129`), so for a form that does not change the x87 state it prints
+`x87=same`; the physical harness loads an image with ES = 1, the FXSAVE image after the step has ES = 0, so it is
+not `same` there and the full x87 state is printed, with SW = 0x1, which is the normalized state of the local run;
+the result of the executed form is equal in all 12). No difference in the result of an executed form.
 
 Not checked: the full suite, a faulting store with the MMX state compared (the oracle prints the state only for
 completed instructions), CR0.EM/TS on the physical machine (user space cannot set them; the gates are the S2-33
