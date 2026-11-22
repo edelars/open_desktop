@@ -32,6 +32,9 @@ mod lapic_irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_checkpoints;
+pub use linux_checkpoints::{
+    CALL_TRACE_MAX_ENTRIES, CallTraceEntry, CallTraceReport, CallTraceTarget,
+};
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
@@ -215,8 +218,8 @@ pub use linux_direct::{
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
-    run_firmware_unified, run_firmware_unified_marked, run_linux_direct_board,
-    run_linux_direct_board_set, run_linux_direct_board_set_observed,
+    run_firmware_unified, run_firmware_unified_marked, run_firmware_unified_traced,
+    run_linux_direct_board, run_linux_direct_board_set, run_linux_direct_board_set_observed,
     run_linux_direct_board_set_user_mode, run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,

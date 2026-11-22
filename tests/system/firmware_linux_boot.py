@@ -30,6 +30,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "system"))
 import firmware_linux_uefi_efivars_acpi as rec  # noqa: E402
+import firmware_protocol_trace as ptrace  # noqa: E402
 
 stop = rec.stop
 esp_smoke = rec.esp_smoke
@@ -137,6 +138,36 @@ def evaluate(com1: bytes, report: dict, expected: dict[str, bytes]) -> tuple[lis
     return results, analysis
 
 
+def trace_checks(summary: dict | None, missing: list[str], system_table: int | None = None) -> list[Result]:
+    """The call trace checks (S7-31q). Pure: they read the folded trace, nothing else."""
+    results: list[Result] = []
+
+    def check(name: str, ok: bool, detail: str) -> None:
+        results.append(Result(name, bool(ok), detail))
+
+    if summary is None:
+        check("call trace present", False, "the runner returned no call trace")
+        return results
+    guest = [row for phase in summary["phases"].values() for row in phase if row["caller"] == "guest"]
+    check("call trace present", summary["total_calls"] > 0 and summary["dropped"] == 0 and not missing,
+          f"total={summary['total_calls']} dropped={summary['dropped']} services without a ROM symbol={missing}")
+    check("guest called GetMemoryMap and ExitBootServices",
+          any(r["call"] == "GetMemoryMap" for r in guest) and summary["exit_boot_services_at_retired"] is not None,
+          f"ExitBootServices by the guest at retired={summary['exit_boot_services_at_retired']}")
+    # The runtime services are traced through the table slots (the runtime driver replaced the ROM functions):
+    # the kernel lists the variables for efivarfs after ExitBootServices with GetNextVariableName.
+    runtime = [r for r in summary["phases"]["from_exit_boot_services"]
+               if r["caller"] == "guest" and r["call"] in ("GetNextVariableName", "GetVariable")]
+    check("runtime services traced through the table slots", system_table is not None and bool(runtime),
+          f"system table={None if system_table is None else hex(system_table)}; guest runtime calls after ExitBootServices="
+          f"{[(r['call'], r['calls']) for r in runtime]}")
+    protocols = [r for r in guest if r["call"] in ("HandleProtocol", "OpenProtocol", "LocateProtocol", "LocateHandleBuffer",
+                                                   "LocateHandle", "LocateDevicePath")]
+    check("guest asked for protocols by GUID", bool(protocols) and all("guid" in r for r in protocols),
+          f"{[(r['call'], r.get('guid_name')) for r in protocols][:12]}")
+    return results
+
+
 def write_png(data: bytes, width: int, height: int, stride: int, out: Path) -> None:
     """BGRX8888 (display format 1: byte 0 = B, 1 = G, 2 = R, 3 = X) to an RGB PNG."""
     import zlib
@@ -178,6 +209,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None, help="JSON record to write")
     parser.add_argument("--budget", type=int, default=6_000_000_000)
     parser.add_argument("--png-out", type=Path, default=None, help="write the framebuffer dump as a PNG (BGRX8888 only)")
+    parser.add_argument("--trace-out", type=Path, default=None, help="write the protocol and service call trace as JSON")
     args = parser.parse_args()
     kernel = args.stage4_dir / "linux-7.0.0-38.38" / "vmlinuz-7.0.0-38-generic"
     gate = kernel_gate(kernel, dict(os.environ))
@@ -211,10 +243,22 @@ def main() -> None:
         subprocess.run([sys.executable, stop.DISK, "--esp-fat32", "--bootx64", kernel, "--boot-file",
                         f"INITRD.IMG={rec.DEFAULT_INITRAMFS}", "--out", esp], check=True, cwd=ROOT)
         framebuffer = scratch / "framebuffer.bin"
+        elf = next((scratch / "rom").glob("fv/*/x86_64-unknown-none/release/od-firmware"))
+        trace_arguments, missing_services = ptrace.trace_arguments(stop.symbols(elf))
+        # The runtime driver replaces the ROM runtime services: the trace follows the table slots from the
+        # system table, whose address the firmware prints early (deterministic for this ROM and board).
+        _, early_com1 = stop.boot(runner, rom, esp, nvram, scratch, "early", 300_000_000, [], "unified", None)
+        system_table = ptrace.system_table_address(early_com1)
+        if system_table is not None:
+            trace_arguments += ["--trace-system-table", f"0x{system_table:x}"]
         report, com1 = stop.boot(runner, rom, esp, nvram, scratch, "stock-0", args.budget, [], "unified", None,
-                                 ("--framebuffer-out", str(framebuffer)))
+                                 ("--framebuffer-out", str(framebuffer), *trace_arguments))
         checks, analysis = evaluate(com1, report, expected)
         results += checks
+        raw_trace = (report.get("unified") or {}).get("call_trace")
+        rom_range = (stop.LINK_BASE, stop.LINK_BASE + rom.stat().st_size)
+        summary = ptrace.summarize(raw_trace, rom_range) if raw_trace else None
+        results += trace_checks(summary, missing_services, system_table)
         note = framebuffer_note(framebuffer, report)
         if args.png_out and note["taken"] and note["mode"]["format"] == 1:
             write_png(framebuffer.read_bytes(), note["mode"]["width"], note["mode"]["height"], note["mode"]["stride"],
@@ -223,9 +267,33 @@ def main() -> None:
         for result in results:
             print(result.line(), flush=True)
         print(f"INFO framebuffer: {note}")
-        print("NOT TAKEN protocol trace (LoadedImage, SimpleFileSystem, GOP, RNG, ConOut): the firmware does not log "
-              "protocol requests and the unified loop has no per-call observer")
+        print(f"INFO call trace: {None if summary is None else {k: v for k, v in summary.items() if k != 'phases'}}")
         failed = [r for r in results if not r.ok]
+        if args.trace_out and summary is not None:
+            args.trace_out.parent.mkdir(parents=True, exist_ok=True)
+            args.trace_out.write_text(json.dumps({
+                "schema": "od-s7-31q-protocol-trace-v1",
+                "inputs": {"vmlinuz_sha256": stop.sha256(kernel), "initramfs_sha256": stop.sha256(rec.DEFAULT_INITRAMFS),
+                           "firmware_rom_sha256": stop.sha256(rom), "nvram_seed_sha256": stop.sha256(nvram),
+                           "cmdline": stop.CMDLINE, "loader": "kernel EFI stub as BOOTX64.EFI (no shim or grub)"},
+                "run": {key: report.get(key) for key in ("exit", "exit_detail", "rip", "retired", "quanta")},
+                "com1_sha256": hashlib.sha256(com1).hexdigest(),
+                "method": "the runner watches the entry (first instruction) of the ROM functions in services, by physical "
+                          "address, and records the GUID and UCS-2 name the arguments point to (Microsoft x64 ABI); "
+                          "the caller is the return address at [RSP] (ROM range = firmware itself, otherwise guest code); "
+                          "values are never read",
+                "services": {name: {"rom_symbol": symbol, "runtime_table_slot": slot, "guid_arg": g, "name_arg": n}
+                             for name, (symbol, slot, g, n) in ptrace.SERVICES.items()},
+                "system_table": None if system_table is None else hex(system_table),
+                "services_without_a_rom_symbol": missing_services,
+                "rom_address_range": [hex(rom_range[0]), hex(rom_range[1])],
+                "not_traced": "fields the guest reads directly from the system table or boot services table (for example "
+                              "ConOut, ConIn, RuntimeServices) are not calls and are not recorded; services outside the list "
+                              "above are not traced",
+                "guid_names_source": "table in tests/system/firmware_protocol_trace.py (UEFI 2.11 names; the Linux initrd "
+                                     "media GUID is defined by the kernel); an unknown GUID is reported as unknown",
+                "trace": summary,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if args.out:
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps({
@@ -243,7 +311,7 @@ def main() -> None:
                 "dmesg_severity": {k: v for k, v in analysis["dmesg_severity"].items()},
                 "dmesg_rtc_lines": analysis["dmesg_rtc_lines"],
                 "framebuffer": note,
-                "protocol_trace": {"taken": False, "reason": "the firmware does not log protocol requests; the unified loop has no per-call observer"},
+                "protocol_trace": summary,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"verdict: {'FAIL' if failed else 'PASS'} ({len(results) - len(failed)}/{len(results)} checks)")
         raise SystemExit(1 if failed else 0)

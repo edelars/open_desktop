@@ -44,7 +44,9 @@ use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwa
 use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
-use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
+use crate::linux_checkpoints::{
+    CallTraceReport, CallTraceTarget, LinuxCheckpointRecord, LinuxCheckpointTable,
+};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
 use crate::vcpu::BOOT_VCPU_INDEX;
@@ -1803,6 +1805,8 @@ pub struct FirmwareUnifiedRun {
     /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
     /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
     pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+    /// The calls of the call trace (S7-31q): `None` when none was asked for.
+    pub call_trace: Option<CallTraceReport>,
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
@@ -1948,6 +1952,23 @@ pub fn run_firmware_unified_marked(
     instruction_budget: u64,
     marker_rip: Option<u64>,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_traced(board, instruction_budget, marker_rip, Vec::new(), None)
+}
+
+/// [`run_firmware_unified_marked`] with a call trace (S7-31q): every time the guest enters one of
+/// `trace` (the first instruction of a ROM function, given by physical address) the run records
+/// the name, the retired count, the CPL and the GUID and name the arguments point to (see
+/// [`CallTraceTarget`]); values are never read. With `system_table` (the guest address of
+/// `EFI_SYSTEM_TABLE`) a target with a `rt_slot` also follows the runtime services table, because
+/// the runtime driver replaces the ROM functions (see [`CallTraceTarget::rt_slot`]). Empty `trace`: no trace, the result is that of a
+/// run without it. The trace only observes: the quanta, the clock and the result are unchanged.
+pub fn run_firmware_unified_traced(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs a firmware board with the Linux profile",
@@ -2013,8 +2034,12 @@ pub fn run_firmware_unified_marked(
         board.enable_pit_pic_irq() && board.enable_uart_irq4(),
         "the PIT -> 8259 source was checked available"
     );
+    if !trace.is_empty() {
+        board.enable_call_trace(trace, system_table);
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
+    let call_trace = board.take_call_trace();
     cpu_cells.commit(
         board
             .vcpu_mut(BOOT_VCPU_INDEX)
@@ -2147,6 +2172,7 @@ pub fn run_firmware_unified_marked(
         marker_rip,
         marker,
         checkpoints,
+        call_trace,
     })
 }
 

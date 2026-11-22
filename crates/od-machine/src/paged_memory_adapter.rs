@@ -1070,6 +1070,37 @@ fn observed_fetch_view(
     (first, bytes)
 }
 
+/// Up to `length` guest bytes at the linear address `address`, read like a data read through the
+/// read-only walk (no accessed or dirty bit), RAM only; shorter when a byte does not translate
+/// (S7-31q call trace).
+fn observed_read_bytes(
+    address: u64,
+    length: usize,
+    rip: u64,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(length);
+    for offset in 0..length as u64 {
+        let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
+            memory,
+            paging,
+            rip,
+            GuestLinearAddress::new(address.wrapping_add(offset)),
+            context,
+            od_isa::memory::AccessKind::Read,
+        ) else {
+            break;
+        };
+        let Ok(byte) = memory.load_u8(physical) else {
+            break;
+        };
+        bytes.push(byte);
+    }
+    bytes
+}
+
 #[derive(Clone, Copy)]
 struct InstructionPathBefore {
     rip: u64,
@@ -2832,12 +2863,53 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         }
         // S4-38L4i: one peek serves the CPUID boundary and the recorder (no guest state is
         // written; the cache statistics move, see the doc of this function).
-        let cpuid_leaf = if cpuid_boundary || checkpoints.is_some() {
+        // S7-31q: the call trace (opt-in) looks at RIP first; a page offset filter keeps it cheap.
+        if let Some(recorder) = checkpoints.as_deref_mut()
+            && recorder.is_call_candidate(state.rip)
+            && let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
+                bus.ram(),
+                &paging,
+                state.rip,
+                GuestLinearAddress::new(state.rip),
+                context,
+                od_isa::memory::AccessKind::Fetch,
+            )
+        {
+            use od_isa::Register::{R8, R9, Rcx, Rdx};
+            let args = [Rcx, Rdx, R8, R9].map(|register| state.gpr[register as usize]);
+            let (rip, memory) = (state.rip, bus.ram());
+            recorder.note_call(
+                physical.get(),
+                args,
+                state.gpr[od_isa::Register::Rsp as usize],
+                instructions_executed,
+                state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+                &mut |address, length| {
+                    observed_read_bytes(address, length, rip, memory, &paging, context)
+                },
+                &mut |pointer| {
+                    crate::page_walk::translate_long64_2m_ram_read_only(
+                        memory,
+                        &paging,
+                        rip,
+                        GuestLinearAddress::new(pointer),
+                        context,
+                        od_isa::memory::AccessKind::Fetch,
+                    )
+                    .ok()
+                    .map(|physical| physical.get())
+                },
+            );
+        }
+        let wants_boundary = checkpoints
+            .as_deref()
+            .is_some_and(CheckpointRecorder::wants_boundary);
+        let cpuid_leaf = if cpuid_boundary || wants_boundary {
             cpuid_leaf_at_rip(state, bus.ram(), &paging, context, cache)
         } else {
             None
         };
-        if let Some(recorder) = checkpoints.as_deref_mut() {
+        if wants_boundary && let Some(recorder) = checkpoints.as_deref_mut() {
             let view = BoundaryView {
                 rip: state.rip,
                 cpl: state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
