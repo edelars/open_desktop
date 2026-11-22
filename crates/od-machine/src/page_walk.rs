@@ -6864,6 +6864,15 @@ mod tests {
         );
 
         state.cr4 = Some(CR4_PAE);
+        // PAE paging of a protected-mode vCPU (neither LME nor LMA) has its own exact reason (S2-25n).
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, 0),
+            Err(ProbeConfigError::PaeProtectedMode {
+                cr0: state.cr0.unwrap(),
+                cr4: CR4_PAE,
+                efer: 0,
+            })
+        );
         assert_eq!(
             Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME),
             Err(ProbeConfigError::RequiredBits {

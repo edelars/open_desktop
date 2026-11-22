@@ -1838,6 +1838,200 @@ mod tests {
         );
     }
 
+    /// S2-25n: the board's `PagedPaeMemoryAdapter` (`pae_memory_adapter`) against the board's own
+    /// `pae_operand_access` on two boards with identical PAE tables and the same sequence of operands:
+    /// RAM store and load, a Local APIC MMIO read and write (the device of the region, as an access of
+    /// that vCPU), a 36-bit address no region covers, and the #PF error codes. Every step has the same
+    /// result, the same committed writes in the same order and the same table, device and RAM bytes
+    /// afterwards. A vCPU that is not on PAE paging gets no adapter.
+    #[test]
+    fn the_board_pae_memory_adapter_equals_the_board_operand_access_on_identical_tables() {
+        use crate::{AccessWidth, PaeOperandOperation, TrackedAccessError, TrackedAccessOutcome};
+        use od_isa::memory::PrivilegeLevel::{self, Ring0, Ring3};
+        use od_isa::memory::{AccessContext, AccessOrigin, GuestMemory, InstructionMode};
+        const PT: u64 = 0x7000;
+
+        fn ap_on_pae() -> LoadedFirmwareBoard {
+            const PT: u64 = 0x7000;
+            const OUTSIDE: u64 = 0x8_0000_0000;
+            let mut board = board_with(2, &pae_trampoline_patches());
+            board
+                .local_apic_of(0)
+                .unwrap()
+                .write_icr(0, 1, sipi(SIPI_VECTOR))
+                .unwrap();
+            board.apply_pending_startup(1).unwrap();
+            assert_eq!(
+                run_legacy(&mut board, 1, 24, &mut || false)
+                    .unwrap()
+                    .executed
+                    .retired,
+                24
+            );
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            let put = |at: u64, value: u64| {
+                memory
+                    .store_u64(GuestPhysicalAddress::new(at), value, |_| {})
+                    .unwrap();
+            };
+            put(PD + 8, PT | 3);
+            put(PT, MARKER | 3);
+            put(PT + 8, LOCAL_APIC_MMIO_BASE | 0x13);
+            put(PT + 16, OUTSIDE | 3);
+            board
+        }
+
+        /// What a step produced, in terms both paths can name.
+        #[derive(Debug, PartialEq)]
+        enum Seen {
+            Read(u32),
+            Written,
+            PageFault { error_code: u32, cr2: u32 },
+            Operand(u64),
+        }
+        type Step = (u32, PrivilegeLevel, Option<u32>);
+        // None = a dword load, Some(v) = a dword store of v.
+        let steps: Vec<Step> = vec![
+            (0x20_0010, Ring0, Some(0x600D_F00D)),
+            (0x20_0010, Ring0, None),
+            (0x20_1020, Ring0, None),
+            (0x20_1080, Ring0, Some(0x30)),
+            (0x20_1080, Ring0, None),
+            (0x20_2000, Ring0, Some(1)),
+            (0x20_2000, Ring0, None),
+            (0x4000_0000, Ring0, Some(1)),
+            (0x20_0010, Ring3, None),
+            (0x20_0014, Ring0, Some(0xCAFE_0001)),
+        ];
+        let state_of = |board: &mut LoadedFirmwareBoard| {
+            let mut bytes = ram(board, PD, 16);
+            bytes.extend(ram(board, PT, 24));
+            bytes.extend(ram(board, MARKER, 0x40));
+            bytes
+        };
+        let mut a = ap_on_pae();
+        let mut b = ap_on_pae();
+        // Not on PAE paging: the BSP has no legacy model; the AP of a fresh board is in real mode.
+        let mut ignored = |_: crate::GuestPhysicalRange| {};
+        assert!(a.pae_memory_adapter(0, 0, &mut ignored).is_err());
+        let mut fresh = board_with(2, &pae_trampoline_patches());
+        assert!(fresh.pae_memory_adapter(1, 0, &mut ignored).is_err());
+
+        for (index, &(linear, privilege, store)) in steps.iter().enumerate() {
+            let operation = match store {
+                Some(value) => PaeOperandOperation::Write {
+                    width: AccessWidth::Dword,
+                    value: u64::from(value),
+                },
+                None => PaeOperandOperation::Read {
+                    width: AccessWidth::Dword,
+                },
+            };
+            // The board's own access.
+            let access = a
+                .pae_operand_access(1, 0x8200, linear, privilege, operation)
+                .unwrap();
+            let expected = match access.report.outcome {
+                Ok(TrackedAccessOutcome::Read(value)) => Seen::Read(value as u32),
+                Ok(TrackedAccessOutcome::Written) => Seen::Written,
+                Err(TrackedAccessError::PageFault { record, .. }) => Seen::PageFault {
+                    error_code: record.fault().error_code.unwrap(),
+                    cr2: record.cr2_value() as u32,
+                },
+                Err(TrackedAccessError::OperandPhysical { address, .. }) => {
+                    Seen::Operand(address.get())
+                }
+                other => panic!("step {index}: unexpected board outcome {other:?}"),
+            };
+            // The adapter.
+            let mut committed = Vec::new();
+            let mut record = |range| committed.push(range);
+            let mut adapter = b.pae_memory_adapter(1, 0x8200, &mut record).unwrap();
+            let context = AccessContext {
+                mode: InstructionMode::Long64,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            };
+            let result = match store {
+                Some(value) => adapter
+                    .write(u64::from(linear), context, &value.to_le_bytes())
+                    .map(|()| Seen::Written),
+                None => {
+                    let mut buffer = [0u8; 4];
+                    adapter
+                        .read(u64::from(linear), context, &mut buffer)
+                        .map(|()| Seen::Read(u32::from_le_bytes(buffer)))
+                }
+            };
+            let seen = match result {
+                Ok(seen) => seen,
+                Err(error) => {
+                    if let Some(record) = adapter.page_fault() {
+                        Seen::PageFault {
+                            error_code: record.fault().error_code.unwrap(),
+                            cr2: record.cr2_value() as u32,
+                        }
+                    } else {
+                        match adapter.memory_error() {
+                            Some(TrackedAccessError::OperandPhysical { address, .. }) => {
+                                Seen::Operand(address.get())
+                            }
+                            other => panic!("step {index}: {error:?} / {other:?}"),
+                        }
+                    }
+                }
+            };
+            drop(adapter);
+            assert_eq!(seen, expected, "step {index}: {linear:#x}");
+            assert_eq!(
+                committed, access.committed_writes,
+                "step {index}: committed writes"
+            );
+            assert_eq!(
+                state_of(&mut a),
+                state_of(&mut b),
+                "step {index}: tables, RAM and device effects"
+            );
+        }
+        // The values the sequence is meant to show.
+        let q = |board: &mut LoadedFirmwareBoard, at: u64| {
+            u64::from_le_bytes(ram(board, at, 8).try_into().unwrap())
+        };
+        assert_eq!(ram(&mut b, MARKER + 0x10, 4), 0x600D_F00Du32.to_le_bytes());
+        assert_eq!(q(&mut b, PD + 8), PT | 0x23);
+        assert_eq!(q(&mut b, PT), MARKER | 0x63);
+        assert_eq!(
+            q(&mut b, PT + 8),
+            LOCAL_APIC_MMIO_BASE | 0x73,
+            "A and D from the TPR write"
+        );
+        assert_eq!(
+            q(&mut b, PT + 16) & 0x40,
+            0,
+            "no dirty bit for the uncovered page"
+        );
+        // A dword that crosses from the RAM page into the Local APIC page is served byte by byte, and
+        // an MMIO byte of a crossing operand never reaches the device: a typed refusal.
+        let before = state_of(&mut b);
+        let mut committed = Vec::new();
+        let mut record = |range| committed.push(range);
+        let mut adapter = b.pae_memory_adapter(1, 0x8200, &mut record).unwrap();
+        let context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let mut buffer = [0u8; 4];
+        assert!(adapter.read(0x20_0ffe, context, &mut buffer).is_err());
+        assert!(adapter.memory_error().is_some());
+        drop(adapter);
+        assert_eq!(
+            state_of(&mut b)[16 + 8..16 + 16],
+            before[16 + 8..16 + 16],
+            "no D set"
+        );
+    }
+
     /// S2-25 remainder: the trampoline of the PAE tests with CR4.PSE (0x10) in place of PAE (0x20) is
     /// 32-bit paging: CR3 = the page directory (PML4's page), PD[0] a 4 MiB page at 0 (P, R/W, PS),
     /// then a load from CELLS_AT. The AP stays a legacy processor and never reaches long mode.
