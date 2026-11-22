@@ -9754,9 +9754,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0xae) => {
                 let modrm = self.byte()?;
                 // S2-39n: `[REX] 0F AE /2` LDMXCSR m32 and `[REX] 0F AE /3` STMXCSR m32 (memory operand, any
-                // addressing form). No 66/F2/F3/LOCK prefix and no stale REX (a REX not directly before the
-                // opcode, and no REX.W (refused, like the Linux profile refuses `48 0F AE 17`: the operand is 32 bits and the
-                // architectural effect of REX.W here is not measured).
+                // addressing form). No 66/F2/F3/LOCK prefix, no stale REX (a REX not directly before the opcode)
+                // and no REX.W (refused, like the Linux profile refuses `48 0F AE 17`: the operand is 32 bits and
+                // the architectural effect of REX.W here is not measured).
                 let stale_rex = prefix_bytes[..prefix_count]
                     .iter()
                     .enumerate()
