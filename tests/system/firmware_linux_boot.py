@@ -122,13 +122,36 @@ def evaluate(com1: bytes, report: dict, expected: dict[str, bytes]) -> tuple[lis
     check("ACPI without errors", not bad_acpi, f"unexpected={bad_acpi}; known and allowed={used}")
     other_ae = [line for line in severity["ae_lines"] if not known(line, KNOWN_ACPI)]
     check("no other AE_ line", not other_ae, f"unexpected={other_ae}")
-    check("no RTC read error", "Unable to read current time from RTC" not in text, "RTC line absent" if "Unable to read" not in text else "present")
+    rtc_errors = [line for line in text.splitlines() if "Unable to read" in line]
+    rtc_lines = analysis["dmesg_rtc_lines"]
+    drm = [STAMP.sub("", line) for line in text.splitlines() if "Initialized simpledrm" in line]
+    check("simpledrm bound to the GOP framebuffer", bool(drm), f"lines={drm[:2]}")
+    check("no RTC read error", not rtc_errors,
+          f"offending lines={rtc_errors}" if rtc_errors else
+          f"no line with 'Unable to read'; rtc lines in dmesg={[STAMP.sub('', line) for line in rtc_lines]}")
     err_bad = [line for line in severity["errors_level_0_to_3"] if not known(line, KNOWN_ERRORS)]
     warn_bad = [line for line in severity["warnings_level_4"] if not known(line, KNOWN_WARNINGS)]
     check("no unknown <0>-<3> lines", not err_bad, f"unexpected={err_bad}")
     check("no unknown <4> lines", not warn_bad, f"unexpected={warn_bad}")
     check("no unprefixed dmesg lines", "none" not in severity["levels"], f"levels={severity['levels']}")
     return results, analysis
+
+
+def write_png(data: bytes, width: int, height: int, stride: int, out: Path) -> None:
+    """BGRX8888 (display format 1: byte 0 = B, 1 = G, 2 = R, 3 = X) to an RGB PNG."""
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        row = data[y * stride: y * stride + width * 4]
+        for x in range(width):
+            raw += bytes((row[4 * x + 2], row[4 * x + 1], row[4 * x]))
+    out.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
 
 
 def framebuffer_note(path: Path, report: dict) -> dict:
@@ -154,6 +177,7 @@ def main() -> None:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None, help="JSON record to write")
     parser.add_argument("--budget", type=int, default=6_000_000_000)
+    parser.add_argument("--png-out", type=Path, default=None, help="write the framebuffer dump as a PNG (BGRX8888 only)")
     args = parser.parse_args()
     kernel = args.stage4_dir / "linux-7.0.0-38.38" / "vmlinuz-7.0.0-38-generic"
     gate = kernel_gate(kernel, dict(os.environ))
@@ -192,6 +216,10 @@ def main() -> None:
         checks, analysis = evaluate(com1, report, expected)
         results += checks
         note = framebuffer_note(framebuffer, report)
+        if args.png_out and note["taken"] and note["mode"]["format"] == 1:
+            write_png(framebuffer.read_bytes(), note["mode"]["width"], note["mode"]["height"], note["mode"]["stride"],
+                      args.png_out)
+            note["png"] = args.png_out.name
         for result in results:
             print(result.line(), flush=True)
         print(f"INFO framebuffer: {note}")

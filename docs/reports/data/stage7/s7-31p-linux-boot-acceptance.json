@@ -81,7 +81,12 @@
       "ok": true
     },
     {
-      "detail": "RTC line absent",
+      "detail": "lines=['[    1.176036] [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0', '[drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0']",
+      "name": "simpledrm bound to the GOP framebuffer",
+      "ok": true
+    },
+    {
+      "detail": "no line with 'Unable to read'; rtc lines in dmesg=['PM: RTC time: 00:00:02, date: 2024-01-01', 'rtc_cmos 00:01: registered as rtc0', 'rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)', 'rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram']",
       "name": "no RTC read error",
       "ok": true
     },
@@ -162,6 +167,7 @@
     },
     "nonzero_bytes": 921600,
     "note": "the display frame at the end of the run (guest console is ttyS0); not a screenshot claim",
+    "png": "s7-31p-framebuffer-640x480.png",
     "sha256": "f95c4003ef6e0c7e54eb162b5816be53c4ce7d1eb298c20939be377f88810f41",
     "taken": true,
     "top_pixel_values": [
@@ -200,7 +206,6 @@
       "KHO: Failed to reserve scratch area, disabling kexec handover": "ISSUE-644"
     }
   },
-  "post_hoc_note": "framebuffer.distinct_pixel_values and top_pixel_values added after the run from the saved framebuffer file (sha256 checked equal); the script now writes them itself",
   "protocol_trace": {
     "reason": "the firmware does not log protocol requests; the unified loop has no per-call observer",
     "taken": false

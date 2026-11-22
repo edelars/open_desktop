@@ -21,7 +21,8 @@ TABLES = [f"<6>[    0.018] ACPI: {t} 0x00000000000E0000 000024 (v02 OPNDSK)" for
 
 def good_lines(extra: list[str] | None = None) -> list[str]:
     return (["<5>[    0.000000] Linux version 7.0.0-38-generic (buildd@lcy02) #38-Ubuntu"] + TABLES
-            + ["<6>[    0.7] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            + ["<6>[    1.1] [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0",
+               "<6>[    0.7] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
                "<4>[    0.4] ACPI: setting ELCR to 0200 (from 0000)",
                "<3>[    0.0] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
                "<3>[    1.1] mce: Unable to init MCE device (rc: -5)",
@@ -56,6 +57,10 @@ class Evaluate(unittest.TestCase):
         self.assertEqual([r.name for r in results if not r.ok], [])
         self.assertGreaterEqual(len(results), 15)
 
+    def test_a_missing_simpledrm_line_fails(self) -> None:
+        lines = [line for line in good_lines() if "simpledrm" not in line]
+        self.assertEqual(failed(com1(lines)), ["simpledrm bound to the GOP framebuffer"])
+
     def test_a_run_that_stopped_fails(self) -> None:
         self.assertIn("run ends at its budget", failed(com1(), {**REPORT, "exit": "unsupported"}))
 
@@ -85,8 +90,28 @@ class Evaluate(unittest.TestCase):
     def test_the_rtc_error_and_unprefixed_lines_fail(self) -> None:
         names = failed(com1(good_lines(["<3>[    1.4] Unable to read current time from RTC"])))
         self.assertIn("no RTC read error", names)
+        results, _ = boot.evaluate(com1(good_lines(["<3>[    1.4] Unable to read current time from RTC"])), REPORT, EXPECTED)
+        detail = next(r.detail for r in results if r.name == "no RTC read error")
+        self.assertIn("Unable to read current time from RTC", detail)
+        good, _ = boot.evaluate(com1(), REPORT, EXPECTED)
+        self.assertIn("PM: RTC time", next(r.detail for r in good if r.name == "no RTC read error"))
         self.assertIn("no unknown <0>-<3> lines", names)
         self.assertIn("no unprefixed dmesg lines", failed(com1(good_lines(["[    1.4] no level prefix"]))))
+
+
+class Png(unittest.TestCase):
+    def test_a_bgrx_frame_becomes_an_rgb_png(self) -> None:
+        import zlib
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "f.png"
+            # 2x1 pixels, stride 12: B=0x50 G=0x27 R=0x5e X=0, then white.
+            boot.write_png(bytes([0x50, 0x27, 0x5E, 0, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0]), 2, 1, 12, out)
+            png = out.read_bytes()
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(struct.unpack(">II", png[16:24]), (2, 1))
+        start = png.index(b"IDAT") + 4
+        length = struct.unpack(">I", png[start - 8:start - 4])[0]
+        self.assertEqual(zlib.decompress(png[start:start + length]), bytes([0, 0x5E, 0x27, 0x50, 0xFF, 0xFF, 0xFF]))
 
 
 class Gate(unittest.TestCase):
