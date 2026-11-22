@@ -17,7 +17,8 @@
 //! Saved RIP of a fault (Intel SDM, FSTENV/FSAVE: the assembler issues two instructions, and "the save EIP points to the
 //! instruction that caused the exception"): an error of the FWAIT part (#NM for CR0.MP with CR0.TS, #MF) leaves RIP at `9B`;
 //! an error after the FWAIT part retired (the #NM of CR0.EM, or of CR0.TS with CR0.MP clear; a fault of the store) leaves
-//! RIP at the FNSTENV/FNSAVE byte, `9B` + 1. The decoder fetches no byte after `9B` across the page of `9B` (the three
+//! RIP at the FNSTENV/FNSAVE byte, `9B` + 1. A model error of the store (unmapped memory, address overflow; not an x86
+//! exception) is returned as `Err` with the state untouched, RIP at `9B`, like the non-waiting forms. The decoder fetches no byte after `9B` across the page of `9B` (the three
 //! bytes of the spelling lie on one 4 KiB page, else the instruction is the bare FWAIT of its own byte).
 //!
 //! Physical oracle: Core i5-3210M (`data/x87_fwait_oracle.c`, images of `data/x87_env_oracle_gen.py`; the assembler emits
@@ -256,17 +257,87 @@ fn memory_faults_of_the_waiting_spellings_are_those_of_the_non_waiting_forms() {
             let (waiting_result, waiting_state, waiting_before, waiting_bytes) = run(waiting);
             let (plain_result, plain_state, ..) = run(plain);
             assert_eq!(waiting_result, plain_result, "{label} {waiting:02x?}");
-            // The FWAIT part retired: the saved RIP of the fault is the FNSTENV/FNSAVE byte, 9B + 1 (Intel SDM,
-            // FSTENV/FSAVE: "the save EIP points to the instruction that caused the exception"); nothing else moved.
             let mut expected = waiting_before.0.clone();
-            expected.rip = CODE + 1;
-            assert_eq!(
-                waiting_state, expected,
-                "{label}: only RIP moved, to 9B + 1"
-            );
+            if waiting_result.starts_with("Ok(Fault") {
+                // The FWAIT part retired: the saved RIP of the fault is the FNSTENV/FNSAVE byte, 9B + 1 (Intel SDM,
+                // FSTENV/FSAVE: "the save EIP points to the instruction that caused the exception"); nothing else moved.
+                expected.rip = CODE + 1;
+                assert_eq!(
+                    waiting_state, expected,
+                    "{label}: only RIP moved, to 9B + 1"
+                );
+            } else {
+                // A model error is not an x86 exception: Err, state untouched, RIP at 9B (as FNSTENV/FLDENV).
+                assert!(
+                    waiting_result.starts_with("Err("),
+                    "{label}: {waiting_result}"
+                );
+                assert_eq!(
+                    waiting_state, expected,
+                    "{label}: model error, RIP stays 9B"
+                );
+            }
             assert_eq!(plain_state.rip, CODE, "{label}");
             assert_eq!(waiting_bytes, waiting_before.1, "{label}: memory unchanged");
         }
+    }
+}
+
+#[test]
+fn a_model_error_of_the_waiting_spellings_leaves_rip_at_the_9b_byte() {
+    let x87 = x87_seed();
+    for (label, rax, waiting, expect_overflow) in [
+        ("unmapped FSTENV", 0x1_0000_u64, &FSTENV[..], false),
+        ("unmapped FSAVE", 0x1_0000, &FSAVE[..], false),
+        ("wraps past 2^64 FSAVE", u64::MAX - 100, &FSAVE[..], true),
+    ] {
+        let mut state = cpu();
+        state.x87 = Some(x87.clone());
+        state.gpr[Register::Rax as usize] = rax;
+        let before = state.clone();
+        let mut ram = Ram::new(waiting);
+        let bytes_before = ram.bytes.clone();
+        let result = step(&mut state, &mut ram, PrivilegeLevel::Ring0);
+        match result {
+            Err(MemoryError::AddressOverflow { .. }) => assert!(expect_overflow, "{label}"),
+            Err(MemoryError::Unmapped { .. }) => assert!(!expect_overflow, "{label}"),
+            other => panic!("{label}: {other:?}"),
+        }
+        assert_eq!(state, before, "{label}: state untouched, RIP is 9B");
+        assert_eq!(state.rip, CODE, "{label}");
+        assert_eq!(ram.bytes, bytes_before, "{label}: memory untouched");
+    }
+}
+
+#[test]
+fn an_architectural_general_protection_of_the_waiting_spellings_has_rip_9b_plus_1() {
+    let x87 = x87_seed();
+    for (label, rax, waiting) in [
+        (
+            "non-canonical FSTENV",
+            0x0000_8000_0000_0000_u64,
+            &FSTENV[..],
+        ),
+        ("non-canonical FSAVE", 0x0000_8000_0000_0000, &FSAVE[..]),
+        (
+            "last byte non-canonical FSAVE",
+            0x0000_7fff_ffff_ffa0,
+            &FSAVE[..],
+        ),
+    ] {
+        let mut state = cpu();
+        state.x87 = Some(x87.clone());
+        state.gpr[Register::Rax as usize] = rax;
+        let mut before = state.clone();
+        let mut ram = Ram::new(waiting);
+        let result = step(&mut state, &mut ram, PrivilegeLevel::Ring0);
+        assert!(
+            matches!(result, Ok(StepOutcome::Fault(_))),
+            "{label}: {result:?}"
+        );
+        before.rip = CODE + 1;
+        assert_eq!(state, before, "{label}: only RIP moved, to 9B + 1");
+        assert!(ram.writes.is_empty(), "{label}");
     }
 }
 

@@ -10765,9 +10765,12 @@ mod tests {
                 "{label}: no access error record"
             );
             drop(adapter);
-            // The notifications are those of the accessed bits of the code page's own entries (below the next leaf).
+            // The notifications are those of the accessed bits of the code page's own entries: no range covers
+            // the next leaf (a start-only comparison would miss a range that begins below it and extends over it).
             assert!(
-                log.iter().all(|range| range.start().get() != 0x4008),
+                log.iter().all(|range| {
+                    !(range.start().get() as u128 <= 0x4008 && 0x4008 < range.end_exclusive())
+                }),
                 "{label}: no notification for the leaf of the next page: {log:?}"
             );
             // The walk of the code page sets the accessed bit of its own entries; the entry of the next page stays.
