@@ -8,6 +8,7 @@ use od_machine::{
     Dropped, NET_MAX_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT, NetBackend, NetCounters,
 };
 
+use super::dns::DnsService;
 use super::flow::{
     FlowError, FlowKey, FlowProto, MAX_ICMP_ECHO_FLOWS, MAX_TCP_FLOWS, MAX_UDP_FLOWS,
 };
@@ -716,9 +717,12 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-/// A backend whose DNS lookups never touch the network: every name is unknown.
+/// A backend whose TCP host is scripted and whose DNS lookups never touch the network: every name is
+/// unknown. No test of this file reaches a real network.
 pub(super) fn backend() -> NatBackend {
-    NatBackend::with_parts(policy(), Arc::new(NotFoundResolver))
+    let mut b = super::tcp_tests::scripted_backend();
+    b.dns = DnsService::new(Arc::new(NotFoundResolver));
+    b
 }
 
 pub(super) fn run(backend: &mut NatBackend, frame: &[u8]) {
@@ -1051,30 +1055,28 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.dns_malformed
         + c.dns_formerr
         + c.dns_dropped_busy
-        + c.drop_host_resource
+        + c.tcp_segments
         + c.arp_replies
         + c.arp_probe_ignored
         + c.drop_rx_queue_full
 }
 
 #[test]
-fn well_formed_transport_packets_are_counted_unhandled_until_the_handlers_exist() {
-    // DHCP and DNS are served since S11-31b: the rest waits for S11-31c (UDP, ICMP) and S11-31d (TCP).
+fn well_formed_udp_and_icmp_packets_are_counted_unhandled_until_their_handlers_exist() {
+    // DHCP and DNS are served since S11-31b, TCP since S11-31d: the rest waits for S11-31c.
     let mut b = backend();
     for frame in [
         udp_frame(EXTERNAL, 9, b"x"),
         udp_frame(DNS_IP, 9, b"x"),
         udp_frame(GATEWAY_IP, 9, b"x"),
-        tcp_syn_frame(EXTERNAL, 80),
-        tcp_syn_frame(GATEWAY_IP, 80),
         echo_frame(EXTERNAL),
         echo_frame(GATEWAY_IP),
     ] {
         run(&mut b, &frame);
     }
     let c = b.counters();
-    assert_eq!(c.drop_unhandled_l4, 7);
-    assert_eq!(total_accounted(&c), 7);
+    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (5, 0));
+    assert_eq!(total_accounted(&c), 5);
     assert!(drain(&mut b).is_empty());
 }
 
@@ -1092,15 +1094,40 @@ fn dhcp_and_dns_frames_are_no_longer_unhandled() {
 }
 
 #[test]
+fn tcp_is_served_and_no_longer_counted_unhandled() {
+    let mut b = backend();
+    run(&mut b, &tcp_syn_frame(EXTERNAL, 80));
+    run(&mut b, &tcp_syn_frame(GATEWAY_IP, 80));
+    let c = b.counters();
+    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (0, 2));
+    assert_eq!(total_accounted(&c), 2);
+    // A SYN-ACK from the scripted host for the first, a refusal for the second.
+    assert_eq!(drain(&mut b).len(), 2);
+}
+
+#[test]
 fn product_backend_never_reaches_the_host_loopback() {
-    let mut product = backend();
+    let product_host = super::tcp_tests::scripted_host();
+    let mut product = NatBackend::with_policy_and_tcp_host(
+        policy(),
+        Box::new(super::tcp_tests::FakeHost(product_host.clone())),
+    );
     run(&mut product, &tcp_syn_frame(Ipv4Addr::LOCALHOST, 80));
     assert_eq!(product.counters().drop_policy_dst, 1);
-    assert_eq!(product.counters().drop_unhandled_l4, 0);
-    let mut test_backend = NatBackend::with_policy(policy().allow_loopback_for_tests());
+    assert_eq!(product.counters().tcp_segments, 0);
+    assert!(
+        product_host.lock().unwrap().streams.is_empty(),
+        "no socket to the loopback"
+    );
+    let test_host = super::tcp_tests::scripted_host();
+    let mut test_backend = NatBackend::with_policy_and_tcp_host(
+        policy().allow_loopback_for_tests(),
+        Box::new(super::tcp_tests::FakeHost(test_host.clone())),
+    );
     run(&mut test_backend, &tcp_syn_frame(Ipv4Addr::LOCALHOST, 80));
     assert_eq!(test_backend.counters().drop_policy_dst, 0);
-    assert_eq!(test_backend.counters().drop_unhandled_l4, 1);
+    assert_eq!(test_backend.counters().tcp_segments, 1);
+    assert_eq!(test_host.lock().unwrap().streams.len(), 1);
 }
 
 #[test]

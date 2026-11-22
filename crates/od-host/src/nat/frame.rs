@@ -1,4 +1,5 @@
-//! Ethernet, ARP and IPv4 parsing and assembly for the NAT backend (S11-31a).
+//! Ethernet, ARP and IPv4 parsing and assembly for the NAT backend (S11-31a); the TCP segment and the
+//! ICMP unreachable message the TCP handler sends are built here too (S11-31d).
 //!
 //! [`classify`] applies the rules of NETWORK.md section 5 in the document's order to one frame
 //! from the guest and either returns a borrowed description of it or names the reason it is dropped.
@@ -589,4 +590,65 @@ pub fn build_ipv4_frame(
     ip[10..12].copy_from_slice(&checksum.to_be_bytes());
     ip[IPV4_HEADER_LEN..].copy_from_slice(l4);
     Some(frame_len)
+}
+
+/// Fields of a TCP segment the backend builds for the guest (see [`build_tcp_segment`]).
+#[derive(Clone, Copy, Debug)]
+pub struct TcpOut {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub flags: u8,
+    pub window: u16,
+    /// The MSS option (SYN-ACK only); the header then has 24 bytes instead of 20.
+    pub mss: Option<u16>,
+}
+
+/// Writes a TCP segment from `src` to `dst` (header, optional MSS option, `data`) with its checksum
+/// computed over the IPv4 pseudo-header (RFC 9293, section 3.1). Returns the segment length, or `None`
+/// when `out` is too short.
+pub fn build_tcp_segment(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    seg: &TcpOut,
+    data: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let header_len = TCP_MIN_HEADER_LEN + if seg.mss.is_some() { 4 } else { 0 };
+    let total = header_len.checked_add(data.len())?;
+    let out = out.get_mut(..total)?;
+    out[0..2].copy_from_slice(&seg.src_port.to_be_bytes());
+    out[2..4].copy_from_slice(&seg.dst_port.to_be_bytes());
+    out[4..8].copy_from_slice(&seg.seq.to_be_bytes());
+    out[8..12].copy_from_slice(&seg.ack.to_be_bytes());
+    // The header length is 5 or 6 words.
+    out[12] = ((header_len / 4) as u8) << 4;
+    out[13] = seg.flags;
+    out[14..16].copy_from_slice(&seg.window.to_be_bytes());
+    out[16..20].copy_from_slice(&[0; 4]);
+    if let Some(mss) = seg.mss {
+        out[20] = 2;
+        out[21] = 4;
+        out[22..24].copy_from_slice(&mss.to_be_bytes());
+    }
+    out[header_len..].copy_from_slice(data);
+    let checksum = l4_checksum(src, dst, PROTO_TCP, out);
+    out[16..18].copy_from_slice(&checksum.to_be_bytes());
+    Some(total)
+}
+
+/// Writes an ICMP Destination Unreachable message (type 3, RFC 792) with the given `code` (0 network,
+/// 1 host, 3 port) quoting `quoted` (the IP header of the packet that failed and its first 8 bytes of
+/// data). Returns the message length, or `None` when `out` is too short.
+pub fn build_icmp_dest_unreachable(code: u8, quoted: &[u8], out: &mut [u8]) -> Option<usize> {
+    let total = ICMP_HEADER_LEN.checked_add(quoted.len())?;
+    let out = out.get_mut(..total)?;
+    out[0] = 3;
+    out[1] = code;
+    out[2..8].copy_from_slice(&[0; 6]);
+    out[ICMP_HEADER_LEN..].copy_from_slice(quoted);
+    let checksum = internet_checksum(out);
+    out[2..4].copy_from_slice(&checksum.to_be_bytes());
+    Some(total)
 }

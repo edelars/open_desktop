@@ -452,7 +452,7 @@ fn a_reply_that_does_not_fit_the_l3_queue_is_a_queue_drop_not_an_offer() {
 #[test]
 fn the_ip_identification_counts_and_wraps_at_65536() {
     let mut b = backend();
-    b.ip_id = 0xFFFE;
+    b.shared.ip_id = 0xFFFE;
     let discover = dhcp_broadcast(&DhcpMsg::new(DHCP_DISCOVER));
     let ids: Vec<u16> = (0..3).map(|_| exchange(&mut b, &discover).ident).collect();
     assert_eq!(ids, [0xFFFE, 0xFFFF, 0]);

@@ -10,11 +10,17 @@ import ODAtomics
 import ODHostABI
 #endif
 
-// Writer side of frame transport v2 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14).
+// Writer side of frame transport v3 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14;
+// section 11 is up to two screens, S10-15: one shared-memory object and one notification stream per screen).
 //
 // TEST-ONLY entry point: `--display-smoke pattern` runs a VMHost without a guest.
-// It creates a display session with OD_DISPLAY_PROFILE_TEST_PATTERN, publishes
-// the frame of that session into a shared-memory slot and notifies the reader.
+// It creates a display session with OD_DISPLAY_PROFILE_TEST_PATTERN (one screen) or, with `--display-screens 2`,
+// OD_DISPLAY_PROFILE_TWO_SCREENS_TEST (profile 4), publishes the frame of each screen into the shared-memory
+// slot of its object and notifies the reader.
+// S10-09: `--display-smoke probe` creates OD_DISPLAY_PROFILE_STAGE10_PROBE instead: the session holds the own guest code of
+// S10-08 and has no mode and no frame until the guest runs. The publish loop advances the guest in quanta of
+// `ProbeGuestRun.quantum` instructions through od_display_session_step until it executes HLT (the frame is published by the
+// same loop as soon as the device reports it), or until the instruction budget is used up (a failure of this process).
 // It is not part of the normal VMHost path and is never selected implicitly.
 //
 // Atomics go through the C shim FrameTransportAtomics.h (section 5.3). The frame
@@ -34,7 +40,7 @@ enum FrameTransportError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .usage:
-            return "usage: od-vmhost-smoke --socket-fd FD --display-smoke pattern [--display-poll-hz N] [--display-hold-until-claim 1] [--input-fd FD [--input-trace 1]]"
+            return "usage: od-vmhost-smoke --socket-fd FD --display-smoke pattern|probe [--display-probe-budget N (probe only)] [--display-poll-hz N] [--display-hold-until-claim 1] [--input-fd FD [--input-trace 1]]"
         case .unsupportedHostPage: return "host page size does not divide 16384"
         case .sharedMemory(let what): return "shared memory: \(what)"
         case .channel(let what): return "frame channel: \(what)"
@@ -45,9 +51,23 @@ enum FrameTransportError: Error, CustomStringConvertible {
     }
 }
 
+/// Session profile of the test-only display smoke mode.
+enum DisplaySmokeProfile {
+    /// OD_DISPLAY_PROFILE_TEST_PATTERN (1) or, with two screens, OD_DISPLAY_PROFILE_TWO_SCREENS_TEST (4): no guest.
+    case pattern
+    /// OD_DISPLAY_PROFILE_STAGE10_PROBE (2): the guest probe of S10-08, advanced by `ProbeGuestRun`.
+    case probe
+}
+
 /// Command-line options of the test-only display smoke mode.
 struct DisplaySmokeOptions {
+    /// Default total instruction budget of the probe guest (it retires 25 983 instructions, tests/fixtures/guest/stage10/*.json).
+    static let defaultProbeBudget: UInt64 = 1_000_000
+
     let socketFD: Int32
+    let profile: DisplaySmokeProfile
+    /// Instructions the probe guest may execute in total before the run fails; used only with the probe profile.
+    let probeBudget: UInt64
     /// How often the publish loop checks the session; 60 Hz by default (S10-06).
     let pollHz: Int
     /// Test-only: hold publications back until the reader sets `reader_claim`, so a reader can
@@ -69,7 +89,8 @@ struct DisplaySmokeOptions {
         var inputFD: Int32?
         var inputTrace = false
         var screens = 1
-        var sawPattern = false
+        var profile: DisplaySmokeProfile?
+        var probeBudget: UInt64?
         var index = 0
         while index < args.count {
             let name = args[index]
@@ -80,8 +101,14 @@ struct DisplaySmokeOptions {
                 guard let fd = Int32(value), fd >= 0 else { throw FrameTransportError.usage }
                 socketFD = fd
             case "--display-smoke":
-                guard value == "pattern" else { throw FrameTransportError.usage }
-                sawPattern = true
+                switch value {
+                case "pattern": profile = .pattern
+                case "probe": profile = .probe
+                default: throw FrameTransportError.usage
+                }
+            case "--display-probe-budget":
+                guard let budget = UInt64(value), budget > 0 else { throw FrameTransportError.usage }
+                probeBudget = budget
             case "--display-poll-hz":
                 guard let hz = Int(value), (1...1000).contains(hz) else { throw FrameTransportError.usage }
                 pollHz = hz
@@ -102,11 +129,15 @@ struct DisplaySmokeOptions {
             }
             index += 2
         }
-        guard socketFD >= 0, sawPattern else { throw FrameTransportError.usage }
+        guard socketFD >= 0, let profile else { throw FrameTransportError.usage }
+        // The probe is one screen and the only profile with a guest to run; the budget has no meaning without it.
+        guard profile == .probe || probeBudget == nil, profile == .pattern || screens == 1 else {
+            throw FrameTransportError.usage
+        }
         // The input descriptor must be another one than the frame socket; the trace needs a channel.
         guard inputFD != socketFD, inputFD != nil || !inputTrace else { throw FrameTransportError.usage }
         return DisplaySmokeOptions(
-            socketFD: socketFD, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace,
+            socketFD: socketFD, profile: profile, probeBudget: probeBudget ?? defaultProbeBudget, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace,
             screens: screens)
     }
 }
@@ -143,6 +174,9 @@ enum Layout {
     static let cursorMaxWidth: UInt32 = 64
     static let cursorMaxHeight: UInt32 = 64
     static let cursorFormatBGRA8888Premul: UInt32 = 2
+    /// Device limits (DISPLAY_DEVICE.md 2: `MAX_WIDTH`, `MAX_HEIGHT`); the writer refuses a maximum outside them.
+    static let deviceMaxWidth: UInt32 = 4096
+    static let deviceMaxHeight: UInt32 = 2304
     static let magic: [UInt8] = Array("ODFS".utf8)
     static let pixelFormatBGRX8888: UInt32 = 1
 }
@@ -339,6 +373,8 @@ final class FrameTransportWriter {
     private var front: Int?
     private var lastPublished: UInt64 = 0
     private var queuedModeCount: UInt64 = 0
+    /// `ACTIVE` of the last queued MODE of this screen (section 11.5: no frame is published while it is 0).
+    private var queuedModeActive = false
     private let queue: NotificationQueue
     /// Screen of this object (section 11.3): 0 or 1.
     let screen: Int
@@ -355,7 +391,7 @@ final class FrameTransportWriter {
         self.screen = screen
         self.queue = queue
         guard Self.pageSizeSupported() else { throw FrameTransportError.unsupportedHostPage }
-        guard (1...4096).contains(maxWidth), (1...2304).contains(maxHeight) else {
+        guard (1...Layout.deviceMaxWidth).contains(maxWidth), (1...Layout.deviceMaxHeight).contains(maxHeight) else {
             throw FrameTransportError.hostRefusal("mode \(maxWidth)x\(maxHeight) outside device limits")
         }
         let frameBytes = Int(maxWidth) * 4 * Int(maxHeight)
@@ -553,6 +589,7 @@ final class FrameTransportWriter {
                                                      height: height, stride: stride, format: format,
                                                      screen: UInt32(screen)))
         queuedModeCount = count
+        queuedModeActive = active
     }
 
     var hasPendingOutput: Bool { !queue.isEmpty }
@@ -581,6 +618,22 @@ final class FrameTransportWriter {
     /// Returns true when a frame was published.
     func publishFrame(session: OpaquePointer, mode: od_display_mode) throws -> Bool {
         // Section 11.5: the frame of this writer's screen; screen 0 uses the same read as before.
+        let index = UInt32(screen)
+        return try publishFrame(mode: mode) { destination, length, info in
+            od_display_session_read_screen_frame(session, index, destination, length, &info)
+        }
+    }
+
+    /// The publication of `publishFrame(session:mode:)` over any frame source: `read` copies the frame into `destination`
+    /// (`length` bytes), fills `info` and returns a display status. Internal only so that apps/vmhost/Tests can play a
+    /// synthetic writer without a device (FRAME_TRANSPORT_V1.md 11.10, item 5).
+    func publishFrame(
+        mode: od_display_mode,
+        read: (UnsafeMutablePointer<UInt8>, Int, inout od_display_frame_info) -> UInt32
+    ) throws -> Bool {
+        // 11.5: a screen whose last MODE is inactive (no signal, disabled) has no frame to publish; nothing is chosen,
+        // invalidated or read for it. A frame of a newer mode queues its MODE first, below.
+        if !queuedModeActive && mode.mode_change_count == queuedModeCount { return false }
         guard let slot = chooseSlot() else { return false }
         let descriptor = descriptorOffset(slot)
         // 5.1 steps 2-3: invalidate, make the mark visible before any pixel write.
@@ -598,7 +651,7 @@ final class FrameTransportWriter {
         var info = od_display_frame_info()
         info.abi_version = vmhost_display_abi_version_v1()
         info.struct_size = UInt32(OD_DISPLAY_FRAME_INFO_SIZE_V1)
-        let status = od_display_session_read_screen_frame(session, UInt32(screen), slotPixels(slot), length, &info)
+        let status = read(slotPixels(slot), length, &info)
         if status != OD_DISPLAY_STATUS_OK.rawValue {
             switch status {
             case OD_DISPLAY_STATUS_NO_FRAME.rawValue, OD_DISPLAY_STATUS_NO_ACTIVE_MODE.rawValue,
@@ -727,6 +780,59 @@ final class FrameTransportWriter {
 
 // MARK: test-only display smoke (VMHost without a guest)
 
+/// S10-09: the probe guest of OD_DISPLAY_PROFILE_STAGE10_PROBE advanced in quanta through od_display_session_step.
+/// The frame loop checks the device between two quanta. HLT ends the run of the guest (final, later quanta are not issued);
+/// a guest failure or a spent budget without HLT is a failure of VMHost (exit status 1; the viewer reports a non-zero status).
+final class ProbeGuestRun {
+    /// Instructions per quantum. The probe retires 25 983 instructions, so it takes four quanta.
+    static let quantum: UInt64 = 8_192
+
+    private var remaining: UInt64
+    private var executedCount: UInt64 = 0
+    private var quanta = 0
+    private(set) var halted = false
+
+    init(budget: UInt64) { remaining = budget }
+
+    var isRunning: Bool { !halted }
+
+    /// Runs one quantum; does nothing after HLT.
+    func advance(session: OpaquePointer) throws {
+        guard !halted else { return }
+        let budget = min(Self.quantum, remaining)
+        var report = od_display_step_report()
+        report.abi_version = vmhost_display_abi_version_v1()
+        report.struct_size = UInt32(OD_DISPLAY_STEP_REPORT_SIZE_V1)
+        let status = od_display_session_step(session, budget, &report)
+        guard status == OD_DISPLAY_STATUS_OK.rawValue else {
+            throw FrameTransportError.displayABI("od_display_session_step", status)
+        }
+        guard report.instructions_executed <= budget else {
+            throw FrameTransportError.hostRefusal("probe step executed \(report.instructions_executed) of \(budget) instructions")
+        }
+        quanta += 1
+        executedCount += report.instructions_executed
+        remaining -= report.instructions_executed
+        switch report.outcome {
+        case OD_DISPLAY_STEP_HALTED.rawValue:
+            halted = true
+            fputs("od-vmhost-smoke: display-smoke probe halted after \(executedCount) instructions in \(quanta) quanta\n", stderr)
+        case OD_DISPLAY_STEP_BUDGET_EXHAUSTED.rawValue:
+            guard remaining > 0 else {
+                throw FrameTransportError.hostRefusal("probe guest did not reach HLT within \(executedCount) instructions")
+            }
+            // A quantum that executes nothing while budget remains would spin forever: no progress is a failure.
+            guard report.instructions_executed > 0 else {
+                throw FrameTransportError.hostRefusal("probe guest made no progress after \(executedCount) instructions")
+            }
+        case OD_DISPLAY_STEP_FAILED.rawValue:
+            throw FrameTransportError.hostRefusal("probe guest ended abnormally after \(executedCount) instructions")
+        default:
+            throw FrameTransportError.hostRefusal("unexpected probe step outcome \(report.outcome)")
+        }
+    }
+}
+
 enum DisplaySmoke {
     private static func currentMode(_ session: OpaquePointer) throws -> od_display_mode {
         var mode = od_display_mode()
@@ -737,6 +843,25 @@ enum DisplaySmoke {
             throw FrameTransportError.displayABI("od_display_session_mode", status)
         }
         return mode
+    }
+
+    /// Maximum of one screen's shared-memory object (FRAME_TRANSPORT_V1.md 11.3, test-only writer with a fixed mode): the
+    /// initial mode of a screen that has one. A screen without a mode (NO_MODE or DISABLED, for example screen 1 of a guest
+    /// that does not know it, DISPLAY_DEVICE.md 16.2) announces the device limits so that any mode set later fits. This is
+    /// not a refusal: the connection stays and the window of that screen shows "no signal" (11.7).
+    static func writerLimits(of mode: od_display_screen_mode) -> (width: UInt32, height: UInt32) {
+        let active = mode.flags & vmhost_display_mode_flag_active() != 0
+        return active ? (mode.width, mode.height) : (Layout.deviceMaxWidth, Layout.deviceMaxHeight)
+    }
+
+    /// Section 11.3: every object of the connection, created before the first ANNOUNCE, sharing one notification queue.
+    static func makeWriters(session: OpaquePointer, screens: Int, queue: NotificationQueue) throws -> [FrameTransportWriter] {
+        var writers: [FrameTransportWriter] = []
+        for screen in 0..<screens {
+            let limits = writerLimits(of: try screenMode(session, screen: screen))
+            writers.append(try FrameTransportWriter(maxWidth: limits.width, maxHeight: limits.height, screen: screen, queue: queue))
+        }
+        return writers
     }
 
     /// Mode, flags and counters of one screen (DISPLAY_DEVICE.md 16.10). Flags: 1 ACTIVE, 2 HAS_FRAME, 4 DISABLED.
@@ -820,9 +945,13 @@ enum DisplaySmoke {
         var config = od_display_session_config()
         config.abi_version = vmhost_display_abi_version_v1()
         config.struct_size = UInt32(OD_DISPLAY_SESSION_CONFIG_SIZE_V1)
-        // Profile 1: one screen; profile 4 (test-only): two screens (DISPLAY_DEVICE.md 16.2).
-        config.profile = options.screens == 2 ? OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue
-            : OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
+        // Profile 1: one screen; profile 4 (test-only): two screens (DISPLAY_DEVICE.md 16.2); profile 2 (S10-09): the guest probe.
+        switch options.profile {
+        case .probe: config.profile = OD_DISPLAY_PROFILE_STAGE10_PROBE.rawValue
+        case .pattern:
+            config.profile = options.screens == 2 ? OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue
+                : OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
+        }
         var created: OpaquePointer?
         let createStatus = od_display_session_create(&config, &created)
         guard createStatus == OD_DISPLAY_STATUS_OK.rawValue, let session = created else {
@@ -830,19 +959,18 @@ enum DisplaySmoke {
         }
         defer { _ = od_display_session_destroy(session) }
 
-        let initial = try currentMode(session)
-        guard initial.flags & vmhost_display_mode_flag_active() != 0 else {
-            throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
+        // The pattern profiles draw at create. The probe has no mode until its guest has run (screen 0 then announces
+        // the device limits, `writerLimits`, and the window shows "no signal" until the MODE of the guest arrives).
+        let probeRun = options.profile == .probe ? ProbeGuestRun(budget: options.probeBudget) : nil
+        if probeRun == nil {
+            let initial = try currentMode(session)
+            guard initial.flags & vmhost_display_mode_flag_active() != 0 else {
+                throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
+            }
         }
         // Section 11.3: one object per screen, all created before the first ANNOUNCE. Each screen's maximum is its
-        // initial mode (test-only writer with a fixed mode, section 3.1). The notification queue is shared.
-        let queue = NotificationQueue()
-        var writers: [FrameTransportWriter] = []
-        for screen in 0..<options.screens {
-            let mode = try DisplaySmoke.screenMode(session, screen: screen)
-            writers.append(try FrameTransportWriter(maxWidth: mode.width, maxHeight: mode.height,
-                                                    screen: screen, queue: queue))
-        }
+        // initial mode, or the device limit for a screen without a mode (`writerLimits`). The notification queue is shared.
+        let writers = try makeWriters(session: session, screens: options.screens, queue: NotificationQueue())
         let writer = writers[0]
 
         // 6.1: HELLO first (blocking), then everything is non-blocking.
@@ -880,12 +1008,16 @@ enum DisplaySmoke {
         var gateOpen = !options.holdUntilClaim
         while true {
             // One quantum, then a check no more often than the poll rate (the wait below).
-            var report = od_display_step_report()
-            report.abi_version = vmhost_display_abi_version_v1()
-            report.struct_size = UInt32(OD_DISPLAY_STEP_REPORT_SIZE_V1)
-            let stepStatus = od_display_session_step(session, 1_000_000, &report)
-            guard stepStatus == OD_DISPLAY_STATUS_OK.rawValue else {
-                throw FrameTransportError.displayABI("od_display_session_step", stepStatus)
+            if let probeRun {
+                try probeRun.advance(session: session)
+            } else {
+                var report = od_display_step_report()
+                report.abi_version = vmhost_display_abi_version_v1()
+                report.struct_size = UInt32(OD_DISPLAY_STEP_REPORT_SIZE_V1)
+                let stepStatus = od_display_session_step(session, 1_000_000, &report)
+                guard stepStatus == OD_DISPLAY_STATUS_OK.rawValue else {
+                    throw FrameTransportError.displayABI("od_display_session_step", stepStatus)
+                }
             }
             // Each screen is checked on its own: its MODE by mode_change_count, its FRAME by generation (11.5).
             for (screen, current) in writers.enumerated() {
@@ -924,7 +1056,8 @@ enum DisplaySmoke {
             let events = Int16(POLLIN) | (writer.hasPendingOutput ? Int16(POLLOUT) : 0)
             var descriptors = [pollfd(fd: fd, events: events, revents: 0)]
             if let input, input.isOpen { descriptors.append(pollfd(fd: input.fd, events: input.pollEvents, revents: 0)) }
-            var timeout = tickMs
+            // A probe guest that is still running is advanced without waiting; once it has halted (or without a guest) the wait is the poll tick.
+            var timeout = (probeRun?.isRunning ?? false) ? 0 : tickMs
             if let input, let due = input.pollTimeoutMs(nowNs: DispatchTime.now().uptimeNanoseconds) {
                 timeout = min(timeout, due)
             }

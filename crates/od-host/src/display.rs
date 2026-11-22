@@ -54,11 +54,28 @@ const PROFILE_TEST_PATTERN: u32 = 1;
 /// The guest probe of S10-08: own x86-64 code on the firmware board draws `bars` 64 x 48
 /// through the registers and the framebuffer memory of the device.
 const PROFILE_STAGE10_PROBE: u32 = 2;
-/// Test-only: two screens, screen 0 bars and screen 1 checker (DISPLAY_DEVICE.md 16.2).
+/// Test-only: two screens, screen 0 bars and screen 1 checker (DISPLAY_DEVICE.md 16.2,
+/// DISPLAY_HOST_ABI_V1.md rule 0 and section 10).
 const PROFILE_TWO_SCREENS_TEST: u32 = 4;
 const MODE_FLAG_DISABLED: u32 = 4;
-const SECOND_SCREEN_TEST_WIDTH: u32 = 32;
-const SECOND_SCREEN_TEST_HEIGHT: u32 = 24;
+/// Screen 1 of profile 4: `checker`, seed 0x204080, as in `tools/build/display_pattern.py` and
+/// `tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw` (stride 320, 19 200 bytes).
+const SECOND_SCREEN_TEST_WIDTH: u32 = 80;
+const SECOND_SCREEN_TEST_HEIGHT: u32 = 60;
+const CHECKER_CELL: u32 = 8;
+/// The non-black checker color as (B, G, R): `0xFF ^ (seed >> 16 & 0xFF)`, `0xFF ^ (seed >> 8 & 0xFF)`,
+/// `0xFF ^ (seed & 0xFF)` for seed 0x204080 (R = 0x7F, G = 0xBF, B = 0xDF).
+const CHECKER_LIGHT_BGR: [u8; 3] = [0xDF, 0xBF, 0x7F];
+
+/// Port of the `checker` pattern of `tools/build/display_pattern.py`: BGRX bytes of pixel (x, y).
+fn checker_pixel(x: u32, y: u32) -> [u8; 4] {
+    if (x / CHECKER_CELL + y / CHECKER_CELL) & 1 == 0 {
+        [0, 0, 0, 0]
+    } else {
+        let [b, g, r] = CHECKER_LIGHT_BGR;
+        [b, g, r, 0]
+    }
+}
 
 /// Mode and pattern programmed by profile 1 at create: `bars`, seed 0, as in
 /// `tools/build/display_pattern.py` and
@@ -457,7 +474,7 @@ fn build_stage10_probe_session() -> Option<Session> {
 }
 
 /// Profile 4 (test-only): two screens. Screen 0 is the profile-1 bars frame;
-/// screen 1 gets a checkerboard programmed through its mirror registers
+/// screen 1 gets the checker pattern programmed through its mirror registers
 /// (DISPLAY_DEVICE.md 16.4) and stored into its own framebuffer region.
 fn build_two_screen_session() -> Option<Session> {
     const RAM_BYTES: u64 = 0x1_0000;
@@ -503,7 +520,8 @@ fn build_two_screen_session() -> Option<Session> {
 }
 
 /// Screen 1 through its mirror registers (`0x300 + offset`) and its own
-/// framebuffer: 32 x 24 checkerboard of 8 x 8 cells, white and black.
+/// framebuffer: the 80 x 60 `checker` pattern, seed 0x204080 (reference file
+/// `checker_80x60_seed0x204080.raw`).
 fn program_second_screen_checker(session: &mut Session) -> Option<()> {
     const BASE: u64 = DISPLAY_REGISTERS_BASE + 0x300;
     const WIDTH: u64 = BASE + 0x040;
@@ -527,12 +545,10 @@ fn program_second_screen_checker(session: &mut Session) -> Option<()> {
     store(MODE_COMMIT, 1)?;
     for y in 0..SECOND_SCREEN_TEST_HEIGHT {
         for x in 0..SECOND_SCREEN_TEST_WIDTH {
-            let white = ((x / 8) + (y / 8)) % 2 == 1;
-            let byte = if white { 0xFF } else { 0x00 };
             let offset = u64::from(y * SECOND_SCREEN_TEST_WIDTH * 4 + x * 4);
             store(
                 DISPLAY_SECOND_FRAMEBUFFER_BASE + offset,
-                u32::from_le_bytes([byte, byte, byte, 0]),
+                u32::from_le_bytes(checker_pixel(x, y)),
             )?;
         }
     }
@@ -788,6 +804,7 @@ pub unsafe extern "C" fn od_display_session_read_frame(
                     }
                     STATUS_OK
                 }
+                Err(DisplayReadError::NoSuchScreen) => STATUS_NO_SUCH_SCREEN,
                 Err(DisplayReadError::NoActiveMode) => STATUS_NO_ACTIVE_MODE,
                 Err(DisplayReadError::NoFrame) => STATUS_NO_FRAME,
                 Err(DisplayReadError::BufferLength { .. }) => STATUS_BUFFER_LENGTH,
@@ -988,6 +1005,7 @@ pub unsafe extern "C" fn od_display_session_read_screen_frame(
                     }
                     STATUS_OK
                 }
+                Err(DisplayReadError::NoSuchScreen) => STATUS_NO_SUCH_SCREEN,
                 Err(DisplayReadError::NoActiveMode) => STATUS_NO_ACTIVE_MODE,
                 Err(DisplayReadError::NoFrame) => STATUS_NO_FRAME,
                 Err(DisplayReadError::BufferLength { .. }) => STATUS_BUFFER_LENGTH,
@@ -1303,6 +1321,23 @@ mod tests {
         info: &mut OdDisplayFrameInfo,
     ) -> u32 {
         unsafe { od_display_session_read_frame(handle, buffer.as_mut_ptr(), buffer.len(), info) }
+    }
+
+    /// `checker`, seed 0x204080, 80 x 60: screen 1 of profile 4
+    /// (`tools/build/display_pattern.py`, SHA-256 in tests/fixtures/guest/stage10/README.md).
+    const FIXTURE_CHECKER_80X60: &[u8] =
+        include_bytes!("../../../tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw");
+
+    #[test]
+    fn checker_port_matches_the_reference_file_byte_for_byte() {
+        assert_eq!(FIXTURE_CHECKER_80X60.len(), 80 * 60 * 4);
+        let mut port = Vec::with_capacity(FIXTURE_CHECKER_80X60.len());
+        for y in 0..SECOND_SCREEN_TEST_HEIGHT {
+            for x in 0..SECOND_SCREEN_TEST_WIDTH {
+                port.extend_from_slice(&checker_pixel(x, y));
+            }
+        }
+        assert_eq!(port.as_slice(), FIXTURE_CHECKER_80X60);
     }
 
     const FIXTURE_BARS_64X48: &[u8] =
@@ -2196,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn second_screen_frame_is_the_checkerboard_and_matches_its_own_mode() {
+    fn second_screen_frame_is_the_checker_reference_and_matches_its_own_mode() {
         let mut handle = null_mut();
         assert_eq!(
             unsafe { od_display_session_create(&config(PROFILE_TWO_SCREENS_TEST), &mut handle) },
@@ -2216,10 +2251,10 @@ mod tests {
         };
         assert_eq!(status, STATUS_OK);
         assert_eq!(info.width, SECOND_SCREEN_TEST_WIDTH);
-        // Cell (0,0) is black, cell (1,0) white (BGRX bytes).
-        assert_eq!(&buffer[0..4], &[0, 0, 0, 0]);
-        let cell1 = (8 * 4) as usize;
-        assert_eq!(&buffer[cell1..cell1 + 4], &[0xFF, 0xFF, 0xFF, 0]);
+        assert_eq!(info.height, SECOND_SCREEN_TEST_HEIGHT);
+        assert_eq!(info.stride, SECOND_SCREEN_TEST_WIDTH * 4);
+        // Byte for byte the reference file of the generator (cell (0,0) black).
+        assert_eq!(buffer.as_slice(), FIXTURE_CHECKER_80X60);
         // A wrong length is refused before any copy.
         let mut short = vec![0u8; frame_len - 1];
         assert_eq!(
