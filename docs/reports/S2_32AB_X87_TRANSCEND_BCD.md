@@ -12,7 +12,7 @@ Slice of S2-32 (the task checkbox stays open). Branch `s2-x87-windows`; commits:
 * Values: `crates/od-isa/src/x87_transcend.rs`, a 256-bit software float with one rounding to the 64-bit significand under the
   control-word RC. Admission, status-word rules and refusals: `docs/specs/CPU_CONTRACT.md`, sections Local S2-32a and S2-32b.
 * SDM 325462-093US Vol. 2A: F2XM1 3-307, FBLD 3-314, FBSTP 3-316, FCOS 3-330, FPATAN 3-364, FPTAN 3-370, FSCALE 3-378, FSIN 3-380,
-  FSINCOS 3-382, FXTRACT 3-420, FYL2X 3-422, FYL2XP1 3-424; Vol. 1 section 8.3.10, 8.5.1, 4.7.
+  FSINCOS 3-382, FXTRACT 3-420, FYL2X 3-422, FYL2XP1 3-424; Vol. 1 section 8.3.8, 8.3.10, 8.1.3.2, 4.7.
 
 ## Model accuracy and the physical oracle
 
@@ -51,3 +51,9 @@ FNSTENV/FNSAVE/FRSTOR (and the FWAIT forms): their images carry FCS/FDS, which t
 selectors absent); needs the selector decision first. Denormal, NaN, infinite and out-of-domain operands, unmasked exceptions and stack
 faults of the new forms stay `Unsupported`. CPL0 wiring of x87 arithmetic (as S2-39 did for MMX), arbitrary addressing and prefixes for
 FBLD/FBSTP, JIT/native, and the CPUID FPU bit (S2-57) are outside the slice. The parent S2-32 is open.
+
+## Review fixes (2026-11-22)
+
+* FYL2XP1 admits only the SDM range of ST(0), |x| <= 1 - sqrt(2)/2 (exact comparison on the binary80 value; the oracle has no row in (1 - sqrt(2)/2, sqrt(2) - 1], so the pinned counters are unchanged and the boundary is pinned by explicit vectors in the tests).
+* FBLD refuses a non-decimal digit after the 10-byte read and before any x87 state, RIP or register change.
+* The FPU blocker of S2-57 is checked through the CPL0 set (x87 state None) and the missing FSTENV/FSAVE; SDM references corrected (condition codes: Vol. 1 section 8.1.3.2; 66-bit pi: section 8.3.8; FBSTP: Vol. 2A p. 3-316).
