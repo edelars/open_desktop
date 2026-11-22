@@ -31,6 +31,11 @@ use super::pae::{PaeOperandOperation, access_operand_with_walk};
 use super::*;
 use od_isa::protected_exec::ProtectedCpu;
 
+#[cfg(test)]
+mod operand_tests;
+#[cfg(test)]
+mod tests;
+
 /// Bits 21:13 of a 4 MiB PDE with PSE = 1 and no PSE-36: reserved (SDM Vol. 3A Table 5-4).
 const PDE_4M_RESERVED: u64 = 0x3F_E000;
 /// Bits 21:17 of a 4 MiB PDE with the PSE-36 model switch: bits 21:M-19 with M = min(40, MAXPHYADDR) =

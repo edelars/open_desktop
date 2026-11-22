@@ -1838,6 +1838,264 @@ mod tests {
         );
     }
 
+    /// S2-25 remainder: the trampoline of the PAE tests with CR4.PSE (0x10) in place of PAE (0x20) is
+    /// 32-bit paging: CR3 = the page directory (PML4's page), PD[0] a 4 MiB page at 0 (P, R/W, PS),
+    /// then a load from CELLS_AT. The AP stays a legacy processor and never reaches long mode.
+    fn pg32_trampoline_patches() -> Vec<(u64, Vec<u8>)> {
+        let mut block = vec![0x8E, 0xD2, 0x8E, 0xDA, 0x8E, 0xC2]; // mov ss/ds/es, edx
+        block.extend([0xB8]);
+        block.extend(le32(0x10));
+        block.extend([0x0F, 0x22, 0xE0]); // mov cr4, eax (PSE)
+        block.extend([0xB8]);
+        block.extend(le32(PML4 as u32));
+        block.extend([0x0F, 0x22, 0xD8]); // mov cr3, eax (the page directory of 32-bit paging)
+        block.extend([0xB8]);
+        block.extend(le32(0x8005_0033));
+        block.extend([0x0F, 0x22, 0xC0]); // mov cr0, eax (PG, LME = 0)
+        block.extend([0xA1]);
+        block.extend(le32(CELLS_AT as u32)); // mov eax, ds:CELLS_AT (a translated load)
+        let mut patches = trampoline(CELLS_AT as u32);
+        patches.push((PROTECTED_AT, block));
+        // CR3 = PML4: here a page directory of 4-byte entries; PDE0 = a 4 MiB page at 0, P, R/W, PS.
+        patches.push((PML4, le32(0x83).to_vec()));
+        patches
+    }
+
+    fn pg32_board_after_trampoline() -> LoadedFirmwareBoard {
+        let mut board = board_with(2, &pg32_trampoline_patches());
+        board
+            .local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        board.apply_pending_startup(1).unwrap();
+        // 14 real-mode steps, 9 up to the paging write inclusive, then the load.
+        assert_eq!(
+            run_legacy(&mut board, 1, 24, &mut || false)
+                .unwrap()
+                .executed
+                .retired,
+            24
+        );
+        board
+    }
+
+    #[test]
+    fn an_ap_trampoline_with_pg_and_pse_and_no_pae_runs_on_32_bit_paging_and_stays_legacy() {
+        let mut board = board_with(2, &pg32_trampoline_patches());
+        let ap = take_ap_after_steps(&mut board, 24);
+        let Some(LegacyCpu::Protected(cpu)) = &ap.legacy else {
+            panic!("the AP is still a legacy protected-mode processor");
+        };
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        assert_eq!(cpu.cr3, PML4 as u32);
+        assert_eq!(cpu.cr4, 0x10);
+        assert_eq!(cpu.efer & 0x400, 0, "LMA stays clear");
+        assert!(cpu.paging32() && !cpu.pae_paging());
+        assert!(!cpu.target_entered);
+        assert_eq!(
+            cpu.gpr[0], 0x901,
+            "EAX: the cell read through the 32-bit walk"
+        );
+    }
+
+    /// The board's 32-bit view of an AP that the trampoline put on 32-bit paging (the od_isa model
+    /// ran the walks that got it there) reads, through the od-machine walk, the bytes the model
+    /// fetches, and sets no accessed or dirty bit; a vCPU that is not on 32-bit paging is a typed text
+    /// (and a vCPU on 32-bit paging is not on PAE paging).
+    #[test]
+    fn the_board_pg32_fetch_view_reads_the_bytes_the_model_fetches_and_writes_no_bits() {
+        use od_isa::memory::PrivilegeLevel;
+        const PT: u64 = 0x7000;
+        let mut board = board_with(2, &pg32_trampoline_patches());
+        // Before SIPI the AP has no protected model; the BSP never has a legacy one.
+        for cpu in [0, 1] {
+            let (first, bytes, error) =
+                board.fetch_vcpu_view_pg32(cpu, PROTECTED_AT as u32, 8, PrivilegeLevel::Ring0);
+            assert_eq!((first, bytes.len()), (None, 0), "cpu {cpu}");
+            assert!(error.is_some(), "cpu {cpu}");
+        }
+        let mut board = pg32_board_after_trampoline();
+        {
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            let put = |at: u64, value: u32| {
+                memory
+                    .store_bytes(GuestPhysicalAddress::new(at), &value.to_le_bytes(), |_| {})
+                    .unwrap();
+            };
+            put(PML4 + 4, (PT | 3) as u32); // PDE1 -> PT: P, R/W; A = 0 (in the high dword of its cell)
+            put(PT, ((PROTECTED_AT & !0xfff) | 3) as u32); // PT[0]: P, R/W; A = 0, D = 0
+        }
+        let pd_before = ram(&mut board, PML4, 8);
+        let pt_before = ram(&mut board, PT, 8);
+        assert_eq!(pd_before[4], 0x03, "A is clear before the view");
+        // The 4 MiB page at 0: an identity map.
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pg32(1, PROTECTED_AT as u32, 16, PrivilegeLevel::Ring0);
+        assert_eq!(error, None);
+        assert_eq!(first, Some(PROTECTED_AT));
+        assert_eq!(bytes, ram(&mut board, PROTECTED_AT, 16));
+        // The 4 KiB page through the PT: linear 0x40_0000 + the offset of PROTECTED_AT in its page.
+        let linear = 0x40_0000 + (PROTECTED_AT & 0xfff) as u32;
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pg32(1, linear, 16, PrivilegeLevel::Ring0);
+        assert_eq!(error, None);
+        assert_eq!(first, Some(PROTECTED_AT));
+        assert_eq!(bytes, ram(&mut board, PROTECTED_AT, 16));
+        assert_eq!(
+            ram(&mut board, PML4 + 4, 4),
+            pd_before[4..],
+            "no A bit in PDE1"
+        );
+        assert_eq!(ram(&mut board, PT, 8), pt_before, "no A or D bit in the PT");
+        // PDE2 is not present: the first byte already fails, with the fault named.
+        let (first, bytes, error) =
+            board.fetch_vcpu_view_pg32(1, 0x80_0000, 4, PrivilegeLevel::Ring0);
+        assert_eq!((first, bytes.len()), (None, 0));
+        assert!(error.unwrap().contains("Pd"));
+        // The snapshot is the model's own registers; it is not a PAE one.
+        let config = board.pg32_paging_of(1).unwrap();
+        assert_eq!((config.cr3(), config.cr4()), (PML4, 0x10));
+        assert!(!config.pse36());
+        assert!(board.pae_paging_of(1).is_err());
+        // And a PAE AP is not on 32-bit paging.
+        let mut pae = board_with(2, &pae_trampoline_patches());
+        pae.local_apic_of(0)
+            .unwrap()
+            .write_icr(0, 1, sipi(SIPI_VECTOR))
+            .unwrap();
+        pae.apply_pending_startup(1).unwrap();
+        run_legacy(&mut pae, 1, 24, &mut || false).unwrap();
+        assert!(pae.pae_paging_of(1).is_ok());
+        assert!(pae.pg32_paging_of(1).is_err());
+    }
+
+    /// The board's operand access of an AP on 32-bit paging: a store and a load of RAM through a PT
+    /// (A and D committed into 4-byte entries, the written page's code generation advanced), an MMIO
+    /// operand (the Local APIC window) served as an access of that vCPU with the dirty bit set first,
+    /// and the #PF error codes of 32-bit paging.
+    #[test]
+    fn the_board_pg32_operand_access_serves_ram_mmio_and_faults_of_an_ap_on_32_bit_paging() {
+        use crate::{AccessWidth, PaeOperandOperation, TrackedAccessError, TrackedAccessOutcome};
+        use od_isa::memory::PrivilegeLevel::{Ring0, Ring3};
+        const PT: u64 = 0x7000;
+        let read4 = PaeOperandOperation::Read {
+            width: AccessWidth::Dword,
+        };
+        let write4 = |value| PaeOperandOperation::Write {
+            width: AccessWidth::Dword,
+            value,
+        };
+        let mut board = board_with(2, &pg32_trampoline_patches());
+        for cpu in [0, 1] {
+            assert!(
+                board
+                    .pg32_operand_access(cpu, 0, 0x8000, Ring0, read4)
+                    .is_err(),
+                "cpu {cpu}"
+            );
+        }
+        let mut board = pg32_board_after_trampoline();
+        {
+            let (memory, _) = board.bus_mut().split_for_pio_step();
+            let put = |at: u64, value: u32| {
+                memory
+                    .store_bytes(GuestPhysicalAddress::new(at), &value.to_le_bytes(), |_| {})
+                    .unwrap();
+            };
+            put(PML4 + 4, (PT | 3) as u32); // PDE1 -> PT: P, R/W (supervisor only); A = 0
+            put(PT, (MARKER | 3) as u32); // linear 0x40_0000: RAM
+            put(PT + 4, (LOCAL_APIC_MMIO_BASE | 0x13) as u32); // 0x40_1000: the Local APIC window
+        }
+        let d = |board: &mut LoadedFirmwareBoard, at: u64| {
+            u32::from_le_bytes(ram(board, at, 4).try_into().unwrap())
+        };
+
+        // A store: A of the PDE and the PTE, D of the PTE, then the four bytes.
+        let generation_before = generation(&mut board, MARKER);
+        let stored = board
+            .pg32_operand_access(1, 0x8200, 0x40_0010, Ring0, write4(0x600D_F00D))
+            .unwrap();
+        assert_eq!(stored.report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(stored.report.ad_update_count, 3);
+        assert_eq!(
+            stored.committed_writes.last().copied(),
+            Some(
+                crate::GuestPhysicalRange::new(GuestPhysicalAddress::new(MARKER + 0x10), 4)
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            ram(&mut board, MARKER + 0x10, 4),
+            0x600D_F00Du32.to_le_bytes()
+        );
+        assert_eq!(d(&mut board, PML4 + 4), (PT | 0x23) as u32);
+        assert_eq!(d(&mut board, PT), (MARKER | 0x63) as u32);
+        assert_eq!(
+            d(&mut board, PML4),
+            0x83 | 0x20,
+            "PDE0 (A set by the model's own walks)"
+        );
+        assert!(generation(&mut board, MARKER) > generation_before);
+        // The load sees it and commits nothing more.
+        let loaded = board
+            .pg32_operand_access(1, 0x8200, 0x40_0010, Ring0, read4)
+            .unwrap();
+        assert_eq!(
+            loaded.report.outcome,
+            Ok(TrackedAccessOutcome::Read(0x600D_F00D))
+        );
+        assert_eq!(loaded.report.ad_update_count, 0);
+        assert!(loaded.committed_writes.is_empty());
+
+        // The Local APIC window: vCPU 1's own ID register, then a TPR write and read back.
+        let id = board
+            .pg32_operand_access(1, 0x8200, 0x40_1020, Ring0, read4)
+            .unwrap();
+        assert_eq!(id.report.outcome, Ok(TrackedAccessOutcome::Read(1 << 24)));
+        assert_eq!(
+            d(&mut board, PT + 4),
+            (LOCAL_APIC_MMIO_BASE | 0x33) as u32,
+            "A, no D after a read; the neighbour dword of the cell is untouched"
+        );
+        assert_eq!(d(&mut board, PT), (MARKER | 0x63) as u32);
+        let tpr = board
+            .pg32_operand_access(1, 0x8200, 0x40_1080, Ring0, write4(0x30))
+            .unwrap();
+        assert_eq!(tpr.report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(
+            d(&mut board, PT + 4),
+            (LOCAL_APIC_MMIO_BASE | 0x73) as u32,
+            "A and D"
+        );
+        let tpr = board
+            .pg32_operand_access(1, 0x8200, 0x40_1080, Ring0, read4)
+            .unwrap();
+        assert_eq!(tpr.report.outcome, Ok(TrackedAccessOutcome::Read(0x30)));
+
+        // #PF with the 32-bit error codes: PDE 2 not present (write, CPL 0 -> 2); a CPL 3 read of the
+        // supervisor-only page (present, user -> 5).
+        let fault_code = |board: &mut LoadedFirmwareBoard, linear, privilege, op| {
+            let access = board
+                .pg32_operand_access(1, 0x8200, linear, privilege, op)
+                .unwrap();
+            match access.report.outcome {
+                Err(TrackedAccessError::PageFault { record, .. }) => {
+                    (record.fault().error_code.unwrap(), record.cr2_value())
+                }
+                other => panic!("expected a page fault, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            fault_code(&mut board, 0x80_0000, Ring0, write4(1)),
+            (2, 0x80_0000)
+        );
+        assert_eq!(
+            fault_code(&mut board, 0x40_0010, Ring3, read4),
+            (5, 0x40_0010)
+        );
+    }
+
     #[test]
     fn guarded_legacy_lease_refusal_keeps_real_entry_and_retry_commits_accessed() {
         let mut board = board();
