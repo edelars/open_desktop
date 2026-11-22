@@ -696,10 +696,12 @@
 - **Готово:** S11-41 и S11-42 пишутся независимо.
 - **Не делать:** не писать аудиокод до решения; не выбирать AC'97 или VirtIO-sound без обоснования драйверами.
 
+- **Текущий статус (2026-11-22):** контракт написан в [docs/specs/AUDIO_DEVICE.md](../specs/AUDIO_DEVICE.md) (коммит `1fde12f`, правки ревью — коммит «S11-40 review fixes» той же ветки); класс (HDA-совместимый) выбран архитектурным ревью (Opus high, 2026-11-22); контракт ожидает ревью и подтверждения владельца, **не принят**. Плата не изменена: [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) сохраняет Audio в «Не включено» с пометкой; предлагаемая строка «Звук» — в §3 контракта. Место host-вывода — CoreAudio из Rust в `od-host` (предварительно, до замера S11-41).
+
 ### S11-41. Host backend звука с offline-проверкой
 
 - [ ] Принято после ревью.
-- **Где:** по решению S11-40: либо `apps/vmhost/Sources/AudioOutput.swift`, либо `crates/od-host/src/audio_output.rs`; test-only профиль `od-host` `audio-test-tone` (синусоида заданной частоты в кольцо), ABI чтения блоков (`include/open_desktop/audio_abi_v1.h`, `docs/specs/AUDIO_HOST_ABI_V1.md`), `tests/system/audio_offline_smoke.py`.
+- **Где:** по решению S11-40 (предварительно, [AUDIO_DEVICE.md](../specs/AUDIO_DEVICE.md) §6; ожидает подтверждения владельца): `crates/od-host/src/audio_output.rs`; test-only профиль `od-host` `audio-test-tone` (синусоида заданной частоты в кольцо), `tests/system/audio_offline_smoke.py`. ABI Rust ↔ Swift для данных звука не создаётся (ring-буфер и потребитель в одном crate).
 - **Сделать:**
   1. Вывод через системный API блоками ~10 мс из кольца; underrun → тишина, счётчик в `STATS`.
   2. Offline-режим: вместо устройства — запись в WAV-файл через системный API; smoke сравнивает частоту и амплитуду тона с допуском, записанным в `DESKTOP_APP.md` вместе с причиной.

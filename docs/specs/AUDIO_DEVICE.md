@@ -1,6 +1,6 @@
 # Контракт аудиоустройства платы и выбор места host-вывода (S11-40)
 
-**Дата:** 22 ноября 2026 года. **Статус S11-40:** принят архитектурным ревью (Opus high); подтверждение владельца — ожидается. Документ — контракт и решение; **ни устройства, ни host-вывода, ни PCI-размещения в коде нет**. Слова «реализовано» и «наблюдалось» к нему не применимы: всё ниже — требования к S11-41 и S11-42 либо результат статической проверки, указанный явно.
+**Дата:** 22 ноября 2026 года. **Статус S11-40:** класс выбран архитектурным ревью (Opus high, 2026-11-22); контракт ожидает ревью и подтверждения владельца. Документ — контракт и решение; **ни устройства, ни host-вывода, ни PCI-размещения в коде нет**. Слова «реализовано» и «наблюдалось» к нему не применимы: всё ниже — требования к S11-41 и S11-42 либо результат статической проверки, указанный явно.
 
 ## 1. Источники и что проверено
 
@@ -25,16 +25,19 @@
 | D. Собственный WaveRT/ACX-драйвер | Собственный драйвер | Свой модуль | Отклонён: blocked до собственных Windows-драйверов; без драйвера устройство не нужно. |
 | E. USB Audio Class | `usbaudio2.inf` есть | Есть | Отклонён: нужны isochronous-эндпоинты, которых нет в xHCI v1 (XHCI_DEVICE.md «Не входит в v1»). |
 
-## 3. Правка платы
+## 3. Предлагаемая правка платы (ожидает подтверждения владельца)
 
-[VIRTUAL_BOARD.md](VIRTUAL_BOARD.md): из строки «Не включено» убрано слово Audio; добавлена строка **«Звук: класс выбран, модель не реализована»**. Строка не заявляет реализацию и не меняет карту платы.
+План ([STAGE_11.md](../plans/STAGE_11.md), S11-40) допускает перенос Audio из строки «Не включено» в отдельную строку «Звук» **только после решения владельца**. Поэтому в [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) строка «Не включено» **сохраняет Audio**, а в её примечание добавлено: «класс выбран архитектурным ревью 2026-11-22 (HDA-совместимый), ожидает подтверждения владельца — AUDIO_DEVICE.md». Отдельной строки «Звук» в плате пока нет.
+
+**Предлагаемая правка после подтверждения владельца:** убрать Audio из «Не включено» и добавить строку «Звук: класс выбран, модель не реализована» следующего содержания: «Целевой класс — собственная модель PCI-контроллера, совместимого с Intel High Definition Audio (class `0x0403`), с одним минимальным кодеком (Audio Function Group, один стерео ЦАП 48 кГц/16 бит, один выход Line Out; только вывод). Будет выключен по умолчанию и включаться опцией платы (опции пока нет); требует PCI/ECAM (по образцу xHCI).» Строка не должна заявлять реализацию.
 
 Правила включения (контракт для S11-42, по образцу xHCI):
 
 - **Выключено по умолчанию.** Опция конфигурации платы (по образцу `FirmwareBoardConfig::xhci: Option<XhciConfig>`; имя — S11-42), **требует `pci_ecam`**. Без опции функции нет: чтение её конфигурации даёт все единицы, карта, ACPI и handoff не отличаются от текущих (golden-тест — в S11-42).
 - Одна PCI-функция, одна шина, без многофункциональности.
-- **Идентификаторы PCI (развилка, не решена здесь).** Класс — `0x040300` (base `0x04` multimedia, subclass `0x03` HD audio, programming interface `0x00`). Windows привязывает драйвер по классу (§1), vendor ему безразличен. **Linux привязывает `snd_hda_intel` только для перечисленных в §1 vendor**, поэтому проектный vendor `0xD1A6` (как у NVMe/xHCI) даст устройство без драйвера в Linux, а vendor Intel (`0x8086`) подмешивает quirk-флаги Intel ICH драйвера Linux (`AZX_DRIVER_ICH`). Выбор vendor/device — вопрос S11-42 (см. §9, вопрос 1).
-- Слот, окно BAR0 и линия прерывания — S11-42 и [FIRMWARE_BOOT.md](FIRMWARE_BOOT.md) (свободно после `0xFC00_C000`; не пересекаться с NIC S11-32). BAR0 — memory BAR размером 16 KiB (`0x4000`) по аналогии с Intel ICH; значение сверить с HDA 1.0a в S11-42.
+- **Класс.** `0x040300` (base `0x04` multimedia, subclass `0x03` HD audio, programming interface `0x00`). Windows привязывает драйвер по классу (§1), vendor ему безразличен.
+- **Идентификаторы PCI (развилка, не решена здесь).** Linux привязывает `snd_hda_intel` только для перечисленных в §1 vendor, поэтому проектный vendor `0xD1A6` (как у NVMe/xHCI) даст устройство без драйвера в Linux. Варианты и их цена — §9, п. 1.
+- **Слот, BAR0, прерывание** — S11-42 (§9, п. 3). Ограничения: не занимать слоты `00:03.0`–`00:05.0`; BAR0 — memory BAR 16 KiB (`0x4000`) по аналогии с Intel ICH, значение сверить с HDA 1.0a; окно — свободная область после `0xFC00_C000` ([FIRMWARE_BOOT.md](FIRMWARE_BOOT.md)), без пересечения с NIC S11-32; линия INTx не должна совпадать с IRQ3 (COM2) и IRQ4 (COM1).
 
 ## 4. Контракт устройства v1
 
@@ -47,9 +50,10 @@
 | Версия HDA | VMAJ `1`, VMIN `0` (по HDA 1.0a) |
 | Потоки | 1 выходной (OSS = 1), 0 входных (ISS = 0), 0 двунаправленных (BSS = 0); 1 линия SDO (NSDO = 0 — код «одна линия»); 64-битные адреса DMA (64OK = 1) |
 | Регистры | Смещения как в `hda_register.h` Linux: GCAP `0x00`, VMIN `0x02`, VMAJ `0x03`, GCTL `0x08`, STATESTS `0x0E`, INTCTL `0x20`, INTSTS `0x24`, WALLCLK `0x30`, CORB `0x40…0x4E`, RIRB `0x50…0x5E`, DPLBASE/DPUBASE `0x70/0x74`, дескрипторы потоков с `0x80` с шагом `0x20` (SDnCTL `+0x00`, STS `+0x03`, LPIB `+0x04`, CBL `+0x08`, LVI `+0x0C`, FIFOS `+0x10`, FMT `+0x12`, BDLPL `+0x18`, BDLPU `+0x1C`). Полная карта и значения сброса — S11-42 по тексту спецификации. |
-| Команды кодеку | CORB и RIRB в памяти гостя; размеры 256 записей (максимум; допускаются 2 и 16 по CORBSIZE/RIRBSIZE); ответы кладутся в RIRB, прерывание по счётчику ответов `RINTCNT`. Режим Immediate Command (ICOI/ICII/ICIS) — по требованию драйверов (§4.3). |
+| Команды кодеку | CORB и RIRB в памяти гостя; не более 256 записей; размеры (CORBSIZE/RIRBSIZE, CORBSZCAP/RIRBSZCAP) и Immediate Command (ICOI/ICII/ICIS) — S11-42 по HDA 1.0a и запросам драйверов (§9, п. 3); ответы кладутся в RIRB, прерывание по счётчику ответов `RINTCNT`. |
 | Прерывания | Глобальный бит `0x8000_0000`, контроллерный `0x4000_0000`, потоковые `0x3FFF_FFFF` (INTCTL/INTSTS); доставка (MSI или INTx) — S11-42 после прерываний этапа 4. До них устройство тестируется опросом. |
-| Сброс | Бит CRST регистра GCTL; пока CRST = 0, регистры контроллера и кодек в сбросе; после перехода 0→1 код кодека появляется в STATESTS бит 0 (кодек с адресом 0). Состояние ring-буфера host (§5) при сбросе очищается. |
+| Wall Clock | WALLCLK (`0x30`) — 32-битный счётчик 24 МГц, считается от виртуального времени; входит в v1. |
+| Сброс | Бит CRST регистра GCTL; пока CRST = 0, регистры контроллера и кодек в сбросе; после перехода 0→1 взводится бит присутствия кодека SDIN0 (STATESTS бит 0; кодек с адресом 0). При CRST модель вызывает `flush` у `AudioSink` (§5): накопленные блоки отбрасываются. |
 
 ### 4.2 Поток вывода и формат
 
@@ -64,9 +68,9 @@
 
 ### 4.3 Кодек (один, адрес 0)
 
-Топология (идентификаторы узлов — NID): корень **NID 0** → Audio Function Group **NID 1** (тип функции `0x01`) → **NID 2** Audio Output (стерео ЦАП) и **NID 3** Pin Complex (выход, класс «Line Out», соединение с NID 2). Параметр числа узлов корня: старт 1, счёт 1; AFG: старт 2, счёт 2. Усилителей (amp), входов, Digital, Mixer/Selector, GPIO, EAPD, beep и определения подключения (pin sense, unsolicited response) нет. Параметры «Supported PCM Size, Rates» (`0x0A`): биты 16 бит (бит 17) и 48 кГц (бит 6); «Supported Stream Formats» (`0x0B`): PCM (бит 0). Вывод имеет **ровно один** Pin и **ровно один** конвертер; значение Default Configuration пина — S11-42 (отправная точка: Line Out, внешний разъём, 1/8″ stereo; сверить с `hda_verbs.h` и с тем, что запрашивают драйверы).
+Топология (идентификаторы узлов — NID): корень **NID 0** → Audio Function Group **NID 1** (тип функции `0x01`) → **NID 2** Audio Output (стерео ЦАП) и **NID 3** Pin Complex (выход, класс «Line Out», соединение с NID 2). Параметр числа узлов корня: старт 1, счёт 1; AFG: старт 2, счёт 2. Усилителей (amp), входов, Digital, Mixer/Selector, GPIO, EAPD, beep и определения подключения (pin sense, unsolicited response) нет. Параметры «Supported PCM Size, Rates» (`0x0A`): биты 16 бит (бит 17) и 48 кГц (бит 6); «Supported Stream Formats» (`0x0B`): PCM (бит 0). Вывод имеет **ровно один** Pin и **ровно один** конвертер; значения Vendor/Device ID и Subsystem ID кодека (параметры `0x00`, `0x01`, verb `0xF20`), Audio FG Caps (`0x08`), Widget Caps (`0x09`), Pin Caps (`0x0C`, бит OUT) и Default Configuration пина назначает S11-42 (§9, п. 4; отправная точка для пина: Line Out, внешний разъём, 1/8″ stereo; сверить с `hda_verbs.h` и с тем, что запрашивают драйверы).
 
-Verbs, которые модель обязана принять (идентификаторы по `hda_verbs.h`): Get Parameter `0xF00` (параметры `0x00`, `0x01`, `0x02`, `0x04`, `0x05`, `0x08`, `0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0E`, `0x0F`), Get/Set Stream Format (`0xA00`/`0x200`), Get/Set Converter Stream/Channel (`0xF06`/`0x706`), Get/Set Pin Widget Control (`0xF07`/`0x707`), Get/Set Power State (`0xF05`/`0x705`), Get Connection List (`0xF02`), Get Config Default (`0xF1C`), Get Subsystem ID (`0xF20`), Get/Set Converter Channel Count (`0xF2D`/`0x72D`). **Всё остальное: ответ `0`, счётчик `unsupported_verbs`.** Набор расширяется только по фактическим запросам inbox-драйверов (трасса, как для UEFI в S7-31q), не «для полноты». Данные потока воспроизводятся, только когда Stream ID конвертера (`SET_CHANNEL_STREAMID`) совпадает со Stream Tag потока (биты `SDnCTL[23:20]`) и Pin включён на вывод (`AC_PINCTL_OUT_EN`, бит 6).
+Verbs, которые модель обязана принять (идентификаторы по `hda_verbs.h`): Get Parameter `0xF00` (параметры `0x00`, `0x01`, `0x02`, `0x04`, `0x05`, `0x08`, `0x09`, `0x0A`, `0x0B`, `0x0C`, `0x0E`, `0x0F`), Get/Set Stream Format (`0xA00`/`0x200`), Get/Set Converter Stream/Channel (`0xF06`/`0x706`), Get/Set Pin Widget Control (`0xF07`/`0x707`), Get/Set Power State (`0xF05`/`0x705`), Get Connection List (`0xF02`), Get Config Default (`0xF1C`), Get Subsystem ID (`0xF20`), Get/Set Converter Channel Count (`0xF2D`/`0x72D`). Get Parameter с неперечисленным идентификатором (в том числе `0x0D`, `0x10`, `0x11`, `0x12`) — ответ `0` без счётчика (возможность отсутствует). **Для всех остальных (неизвестных) verbs — ответ `0` и счётчик `unsupported_verbs`.** Набор расширяется только по фактическим запросам inbox-драйверов (трасса, как для UEFI в S7-31q), не «для полноты». Данные потока воспроизводятся, только когда Stream ID конвертера (`SET_CHANNEL_STREAMID`) совпадает со Stream Tag потока (биты `SDnCTL[23:20]`) и Pin включён на вывод (`AC_PINCTL_OUT_EN`, бит 6).
 
 ### 4.4 Что не входит в v1
 
@@ -77,6 +81,7 @@ Verbs, которые модель обязана принять (идентиф
 Trait `AudioSink` живёт в `od-machine` (точная сигнатура — S11-42; здесь — семантика). Модель устройства — единственный производитель; реализация (§6) — единственный потребитель.
 
 - **Единица передачи:** блок **480 кадров** (1 920 байт, `i16`, interleaved, стерео, 48 кГц). Модель отдаёт блок, когда виртуальное время потока прошло ещё 10 мс.
+- **Операции:** запись блока и `flush` (сброс). `flush` — потребитель отбрасывает все накопленные блоки и возвращается к состоянию «до накопления 4 блоков»; модель вызывает его при CRST (§4.1).
 - **Не блокирует vCPU-поток:** запись блока не ждёт host; нет аллокаций и системных вызовов на пути записи в кольцо. Результат записи: принят либо отброшен.
 - **Ring:** одно-производительное/одно-потребительское lock-free кольцо ёмкостью **16 блоков (160 мс, 7 680 кадров, 30 720 байт)**; потребитель начинает вывод, когда накоплено **4 блока (40 мс)**. Значения 16 и 4 — **гипотеза до замера** S11-41 (правило AGENTS.md о решениях на замерах); S11-41 записывает измеренную задержку «запись блока → вывод» и загрузку CPU, а при необходимости изменяет числа и этот раздел.
 - **Underrun** (потребитель просит блок, кольцо пусто): выводится блок тишины (480 нулевых кадров), счётчик `underruns` растёт; поток не останавливается.
@@ -94,16 +99,16 @@ Trait `AudioSink` живёт в `od-machine` (точная сигнатура �
 | Realtime-поток | Колбэк `extern "C"` на Rust читает кольцо; нет Swift/ObjC на пути данных | Блок рендера — Swift-замыкание. Заголовок macOS SDK 27.0: тип `AVAudioSourceNodeRenderBlockRealtimeSafe` помечен `__SWIFT_UNAVAILABLE_MSG("Swift is not supported for use with audio realtime threads")`, инициализатор `initWithRealtimeSafeRenderBlock:` доступен только с `macos(27.0)`. Минимальный хост проекта — macOS 26.7.1 ([SUPPORT_MATRIX.md](SUPPORT_MATRIX.md)), то есть там остаётся только небезопасный для realtime `initWithRenderBlock:` |
 | Граница ABI | Нет нового C ABI: кольцо и потребитель в одном crate. Не нужен `audio_abi_v1.h` и `AUDIO_HOST_ABI_V1.md` | Нужен C ABI чтения блоков из кольца (Rust → Swift) и версионирование |
 | Слои проекта | `crates/AGENTS.md`: `od-host` — «macOS host-примитивы, OS I/O»; `apps/AGENTS.md`: VMHost — только platform integration | Логика кольца и подсчёта underrun расщепляется между Rust и Swift |
-| Зависимости | Системные framework `AudioToolbox` и `CoreAudio` — разрешены [DEPENDENCIES.md](../policies/DEPENDENCIES.md) («системные framework и API macOS», «bindings системных API»); новых пакетов нет — ручные `extern "C"` объявления порядка десяти функций; `od-host` сегодня зависит только от `libc` | Системный framework `AVFAudio`; новых пакетов нет |
+| Зависимости | Системные framework `AudioToolbox` и `CoreAudio` — разрешены [DEPENDENCIES.md](../policies/DEPENDENCIES.md) («системные framework и API macOS», «bindings системных API»); новых пакетов нет — ручные `extern "C"` объявления порядка десяти функций; из внешних пакетов `od-host` зависит только от `libc` (`=0.2.190`); внутри проекта — от `od-isa`, `od-jit`, `od-machine`, `od-storage`, поэтому `AudioSink` из `od-machine` реализуется прямо в `od-host` | Системный framework `AVFAudio`; новых пакетов нет |
 | Устройство по умолчанию | `kAudioUnitSubType_DefaultOutput` — «specialization of AUHAL that is used to track the user's selection of the default device» (`AUComponent.h`) | Обработка смены конфигурации — на стороне движка (удобнее) |
 | Offline-режим (S11-41, шаг 2) | Вместо устройства — Rust-потребитель тянет блоки из кольца и пишет WAV через `ExtAudioFileCreateWithURL`/`ExtAudioFileWrite` (`ExtendedAudioFile.h`); `kAudioUnitSubType_GenericOutput` — «start/stop API … basic services to convert Linear PCM formats» | `AVAudioEngine` manual rendering mode (`enableManualRenderingMode:format:maximumFrameCount:error:`, `AVAudioEngine.h`) |
-| Проверка | `cargo test -p od-host --offline` без Swift | `swift test` с целью, зависящей от `libod_host.a` |
-| Линковка | `linkedFramework("AudioToolbox")`, `linkedFramework("CoreAudio")` в `linkerSettings` цели `od-vmhost` в `apps/Package.swift` (как уже сделано для `Security`, `SystemConfiguration`) | `linkedFramework("AVFoundation")` |
+| Проверка | `cargo test -p od-host --offline` без Swift; требует `#[link(name = "AudioToolbox", kind = "framework")]` (и `CoreAudio`, `CoreFoundation`) в самом `od-host`: `linkerSettings` в `Package.swift` на `cargo test` не влияют | `swift test` с целью, зависящей от `libod_host.a` |
+| Линковка | `#[link(name = "AudioToolbox", kind = "framework")]` и `CoreAudio` в самом `od-host` (для `cargo test` и rustc); для `libod_host.a` в `od-vmhost` дополнительно `linkedFramework("AudioToolbox")`, `linkedFramework("CoreAudio")` в `linkerSettings` (как уже сделано для `Security`, `SystemConfiguration`). `ExtAudioFileCreateWithURL` принимает `CFURLRef`: нужен `CoreFoundation` (в `apps/Package.swift` уже слинкован; в `od-host` — отдельный `#[link]`) | `linkedFramework("AVFoundation")` |
 | Недостатки | Ручной `unsafe` FFI (`unsafe_op_in_unsafe_fn = deny` в workspace — обязательно `unsafe`-блоки с комментарием); реакцию на отказ устройства и смену формата пишем сами | Больше слоёв и копий данных; Swift-замыкание на realtime-потоке на минимальном хосте |
 
 **Что решение не доказывает.** Выбор сделан по безопасности realtime-потока, числу границ и размещению по карте проекта, а не по замеру. Задержка записи блока → вывод и загрузка CPU VMHost не измерены; S11-41 измеряет их (через `nice`, итоговое значение `-5`, по AGENTS.md; повторные прогоны, разброс). **Условие пересмотра:** если замер покажет, что задержка или CPU Rust-колбэка не укладываются в значения, записанные в S11-41, решение пересматривается в пользу варианта B отдельным решением архитектурного ревью; код S11-41 не откатывается молча. Вызовы CoreAudio в этой задаче не запускались; запуск аудиоустройства и разрешения App Sandbox для вывода звука **не проверены** (ожидание: вывод не требует entitlement, ввод потребует `com.apple.security.device.audio-input` — относится к будущему входу).
 
-**Влияние на план S11-41.** Если решение принято: «Где» — `crates/od-host/src/audio_output.rs` (без `apps/vmhost/Sources/AudioOutput.swift`); ABI-файлы `include/open_desktop/audio_abi_v1.h` и `docs/specs/AUDIO_HOST_ABI_V1.md` не создаются (нет границы Rust ↔ Swift для данных звука); `linkerSettings` `od-vmhost` дополняются двумя framework.
+**Влияние на план S11-41.** Если решение принято: «Где» — `crates/od-host/src/audio_output.rs` (без `apps/vmhost/Sources/AudioOutput.swift`); ABI-файлы `include/open_desktop/audio_abi_v1.h` и `docs/specs/AUDIO_HOST_ABI_V1.md` не создаются (нет границы Rust ↔ Swift для данных звука); `linkerSettings` `od-vmhost` дополняются двумя framework; `#[link(..., kind = "framework")]` — в самом `od-host`.
 
 ## 7. Порядок и зависимости
 
@@ -113,12 +118,20 @@ Trait `AudioSink` живёт в `od-machine` (точная сигнатура �
 
 ## 8. Проверки документа (S11-40)
 
-Решение записано датой (§2); каждое поле и лимит, кроме перечисленных в §9, имеет число; плата не заявляет реализацию (§3); `python3 tools/check_layout.py` — число ошибок не выросло относительно основной ветки; ссылки документа разрешаются.
+Результаты (2026-11-22, ветка `worktree-agent-ab14967a326777038`):
 
-## 9. Открытые вопросы
+- решение записано датой (§2); плата не заявляет реализацию и **не изменена**: `VIRTUAL_BOARD.md` сохраняет Audio в «Не включено» с пометкой, предлагаемая строка «Звук» — в §3;
+- числа заданы для полей и лимитов §4–§5; значения, которых нет, перечислены в §9 с владельцем S11-42 (пп. 1, 3, 4);
+- `git diff --check` — чисто;
+- ссылки документа: 10 вхождений, 8 уникальных относительных ссылок (`VIRTUAL_BOARD.md`, `XHCI_DEVICE.md`, `FIRMWARE_BOOT.md`, `MACHINE_CONTRACT.md`, `VM_STATE.md`, `SUPPORT_MATRIX.md`, `../policies/DEPENDENCIES.md`, `../plans/STAGE_11.md`), все разрешаются;
+- `python3 tools/check_layout.py`: новых ошибок нет, затронутые файлы в списке ошибок не встречаются; в worktree 49 ошибок — все ссылки на gitignored `work/…` и `reports/data/…`, которых в worktree нет (в основной копии 4 ошибки, те же `reports/data/…` и один `work/stage5`).
 
-1. **Vendor/Device ID PCI** (§3): vendor Intel (`0x8086`, привязка в Linux по классу или по записи ICH, но с quirk-флагами Intel) или проектный (`0xD1A6`, драйвера в Linux нет). Решает S11-42 с владельцем (как для NIC).
-2. **ISS = 0 и кодек без усилителей:** inbox-драйвер Windows (`hdaudio.sys`) может потребовать входной поток или усилитель для публикации оконечного устройства — не проверено; подтверждается только S11-43. Запасной вариант (один входной поток, «заглушка» ввода) расширяет «только вывод».
-3. **Сверка с HDA 1.0a:** все значения §4 из Linux-заголовков и вывода из них; первоисточник не читан.
-4. **Прерывания:** MSI или INTx для HDA — зависит от S4-прерываний (APIC/MSI).
-5. **Подтверждение владельца:** ожидается; до него чекбокс S11-40 не ставится, S11-41/S11-42 не стартуют.
+## 9. Открытые вопросы и значения, назначаемые в S11-42
+
+1. **Vendor/Device ID PCI** (§3). Варианты: (а) vendor Intel `0x8086` — Linux привязывается по общей записи «Generic Intel» (класс + любой device) с флагами `AZX_DRIVER_ICH | AZX_DCAPS_NO_ALIGN_BUFSIZE`, то есть подмешиваются особенности драйвера Intel ICH; (б) vendor ATI/AMD с привязкой по классу — флаги `AZX_DRIVER_GENERIC | AZX_DCAPS_PRESET_ATI_HDMI`; (в) проектный `0xD1A6` — в Linux драйвера нет. Решает S11-42 с владельцем (как для NIC).
+2. **ISS = 0 и кодек без усилителей.** По результатам ревью Linux принимает ISS = 0 статически (по коду драйвера; мной в этой задаче не перепроверялось). Открытый вопрос — только Windows: может ли `hdaudio.sys` опубликовать оконечное устройство без входного потока и без усилителей; подтверждается только S11-43. Запасной вариант (один входной поток-«заглушка») расширяет «только вывод».
+3. **Размещение (S11-42):** PCI-слот, адрес BAR0 и линия прерывания (§3), имя опции платы; размеры CORB/RIRB (CORBSZCAP/RIRBSZCAP, CORBSIZE/RIRBSIZE) и необходимость Immediate Command (ICOI/ICII/ICIS) (§4.1); раскладка буфера позиций DPLBASE/DPUBASE (§4.2).
+4. **Значения кодека (S11-42):** Vendor/Device ID и Subsystem ID кодека (параметры `0x00`, `0x01`, verb `0xF20`); Audio FG Caps (`0x08`); Widget Caps (`0x09`); Pin Caps (`0x0C`, бит OUT); Default Configuration пина (§4.3). **Ограничение на Vendor ID кодека:** не совпадать с `VEN_8384` (записи `ExcludeID` в `hdaudio.inf` образа; проверено в этой задаче) и с `VEN_11D4` (по замечанию ревью, из `hdaudss.inf`; мной не перепроверялось: образ после проверки удалён), иначе Windows не отдаст кодек общему функциональному драйверу.
+5. **Сверка с HDA 1.0a:** все значения §4 взяты из Linux-заголовков; первоисточник не читан.
+6. **Прерывания:** MSI или INTx для HDA — зависит от прерываний этапа 4 (APIC/MSI).
+7. **Подтверждение владельца:** ожидается; до него чекбокс S11-40 не ставится, S11-41/S11-42 не стартуют, плата не меняется (§3).
