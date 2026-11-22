@@ -1,6 +1,6 @@
 # Эталоны дисплея этапа 10
 
-Происхождение: оба файла созданы собственным генератором [tools/build/display_pattern.py](../../../../tools/build/display_pattern.py) без внешних изображений и без скриншотов ОС. Размер каждого — 12 288 байт.
+Происхождение: файлы созданы собственным генератором [tools/build/display_pattern.py](../../../../tools/build/display_pattern.py) без внешних изображений и без скриншотов ОС. Размер первых двух — 12 288 байт, третьего — 19 200 байт.
 
 ## Формат
 
@@ -24,6 +24,7 @@
 |---|---|---|
 | `bars_64x48_seed0.raw` | `python3 tools/build/display_pattern.py --width 64 --height 48 --pattern bars --seed 0 --output tests/fixtures/guest/stage10/bars_64x48_seed0.raw` | `a738f2f35ccf34d9bca698c40fcca5cc8ab4bda80b58004f6b42a71228a5a3e2` |
 | `checker_64x48_seed0x204080.raw` | `python3 tools/build/display_pattern.py --width 64 --height 48 --pattern checker --seed 0x204080 --output tests/fixtures/guest/stage10/checker_64x48_seed0x204080.raw` | `12779eb36b1949960129604b0f81f19cc8ec5c58d70c43240b3f744c0884d529` |
+| `checker_80x60_seed0x204080.raw` | `python3 tools/build/display_pattern.py --width 80 --height 60 --pattern checker --seed 0x204080 --output tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw` | `9d7970a72f5c37a0c4035d948b307dacd0b09763717aff81658bec7b0d0eccdb` |
 
 Проверка: `python3 -m unittest tools/build/test_display_pattern.py` сравнивает эти хеши с повторной генерацией.
 
