@@ -16140,6 +16140,37 @@ Not covered: a 32-bit instruction interpreter on the board PAE view (the only le
 RAM, which still refuses MMIO), a page-crossing operand, locked operations, the PAE path in the `PagedMovMemoryAdapter` set loop
 and the host/JIT fast paths, 32-bit paging in od-machine, hardware oracle, CPUID declaration (S2-57/S2-58). Known limitation: in `od-isa` the A/D bits of the walks are committed after the operand bytes are written; a store that changes the PTE mapping its own page gets A|D added to the value just written (hardware sets A/D in the walk, before the write).
 
+## S2-25l — PAE adapter (`GuestMemory` over the PAE walk) and the explicit refusal of the long-mode loops (bounded slice)
+
+Normative source: as S2-25k (Intel SDM Rev. 093 Vol. 3A §5.4.2 PAE translation, §5.6 access rights, §5.7 page-fault
+exceptions and Figure 5-12 for the error code, §5.8 accessed and dirty flags). Text only: no hardware oracle
+(a user-space process on the Oracle machine cannot enable PAE paging), no oracle counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Type | `PagedPaeMemoryAdapter` (`paged_pae_adapter.rs`): a `GuestMemory` over `PaeProbeConfig` (control registers + the PDPTE registers of a `ProtectedCpu`). Forms: `over_memory` (RAM only, an MMIO operand is a typed refusal), `over_machine` (the whole bus: MMIO reaches the bound device as an access of the vCPU), `over_memory_and_set_mmio` (RAM + the windows of the set loop's `SetStepMmio`). A sibling of `PagedMovMemoryAdapter` and not a mode of it, on purpose: that adapter holds a `Long64ProbeConfig` (its constructor requires `EFER.LME = LMA = 1`) and about twenty four-level walk sites (fetch cache, vector, locked, descriptor, cross-page, diagnostics); as a mode, one missed site would walk four levels silently over PAE tables. By type no four-level walk is reachable from the PAE adapter, and the long-mode adapter and its profiles are not changed |
+| Served | `fetch` (one byte; the walk of a fetch: A bits, `XD` with `EFER.NXE`, error code with I/D; RAM and framebuffer only: no device, ROM and holes refused); `read`/`write` of 1, 2, 4, 8 bytes. Inside one page: one walk, then the region of the physical address decides (RAM/framebuffer bytes, MMIO to the device with the dirty bit set first on a write, ROM/reserved/hole `OperandPhysical`); the MMIO window limit of the set loop applies as in the four-level set access (outside a window: `OperandPhysical` for a read, `DeviceUnavailable` for a write, before any device and dirty bit). Crossing a page: one walk per byte for a read (value handed over after the last byte), for a write both pages are first walked with write intent (no D), and only if both pass each byte is written through its own write access; a crossing operand never reaches a device. `read_integer_for_write`/`read_for_write_integer` inside one page, RAM only (write-intent walk, no D) |
+| Order of effects | those of S2-25k (`access_pae_with_mmio`); the new `PaeOperandOperation::Fetch` and `access_pae_with_mmio_windows` are the only changes of `page_walk/pae.rs` |
+| Faults | a `#PF` is `MemoryError::Architectural` with the record of the walk (`page_fault()`: saved EIP, CR2, error code); every model refusal (`CrossesPage`, `OperandPhysical`, `DeviceUnavailable`, `MmioBackend`) is a typed `MemoryError::Backend` with the walk's error in `memory_error()` |
+| Refused with a typed error, before any walk | every locked operation (`atomic_exchange/fetch_add/compare_exchange/rmw_integer`, `atomic_rmw_u128` = CMPXCHG16B; there is no host atomic path over PAE tables), `MFENCE` (as in the long-mode adapter; `fence` is forwarded), widths other than 1/2/4/8 (16-byte vectors), a descriptor-table access (the gate and transaction belong to the long-mode adapter), a linear address above 4 GiB or an operand that wraps past it |
+| Host loop, JIT, CPL0 set loop | **explicit refusal, not execution.** The loops decode and execute Long64 instructions (native blocks and the CPL0 set are 64-bit code) over a `Long64ProbeConfig`; a PAE vCPU is a 32-bit protected-mode one, so routing it there would be wrong whichever walk served its memory. Every entry builds `Long64ProbeConfig::from_cpu_state`, which requires `EFER.LME = LMA = 1`: a PAE state (`CR0.PG = 1, CR4.PAE = 1, LME = 0`) is `ProbeConfigError::RequiredBits { register: "EFER", bits: LME | LMA }`, surfaced as `PagedProbeExit::Rejected(Configuration(..))` (`run_paged_probe`, `run_paged_probe_shared`, `run_cpl0_set_paged_2m_ram`), as `PagedHostLoopExit::Interpreter(Rejected(Configuration(..)))` from `run_paged_host_loop` and as `Paging(..)` from the JIT entries. Nothing is fetched or walked: no instruction retires, RAM (A/D bits included), registers and the write list are unchanged. Conversely `PaeProbeConfig::new` refuses IA-32e registers. A PAE-capable executor on the board stays a 32-bit interpreter (S2-25k "not done") |
+
+Tests: `od-machine` `paged_pae_adapter/tests.rs` (17): a differential of the adapter against `ProtectedCpu` (`MOV EAX, ds:disp32` / `MOV ds:disp32, EAX`
+on identical tables, 31 scenarios: read-write, A/D preset, not present, read-only with WP set and clear, reserved bit 36, XD page, 2 MiB page and
+read-only 2 MiB page, PDPTE 1 selection, absent PDPTE 2/3, page-crossing loads and stores with the second or first page absent or read-only, ROM,
+hole and MMIO without a dispatch): the outcome equals the model's and the SDM literal (error codes 0x0, 0x2, 0x3, 0x9, 0xB; CR2 of a crossing fault = first
+byte of the faulting page), loaded values equal, and on the 14 successful scenarios the whole RAM image (data, A and D bits) is byte-equal; a refused access
+changes no data byte; crossing read and write over two non-contiguous frames; order and ranges of the committed writes; MMIO through the set dispatch (device
+call, D set before the device, a read never dirties), outside the windows, a device error, crossing into MMIO, write-intent and fetch never reach a device; MMIO
+through `MachineBus` with a bound device; locked operations and CMPXCHG16B refused with nothing committed; widths, 4 GiB limit, descriptor origin; CPL 3 versus U/S;
+page-fault record and EIP; the two snapshots exclude each other; `run_paged_probe`, `run_paged_probe_shared` and the CPL0 set loop refuse a PAE state before any
+fetch. `page_walk/pae/operand_tests.rs` (+2: fetch, set-loop windows). `od-host` `paged_host_loop::tests::s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`
+(macOS arm64: the exit, zero retirements, no native block, RAM/state/write list unchanged).
+Not covered: a decoder/interpreter that drives this adapter (the legacy executor is `ProtectedCpu` over `BoardRam`; no 32-bit interpreter drives a `GuestMemory`), the fetch
+translation cache and the vector, descriptor and locked paths over PAE, a page-crossing read-modify-write destination (`CrossesPage`), 32-bit paging in
+od-machine, hardware oracle, CPUID declaration of PAE (S2-57/S2-58). The accessed bit of an entry stays set when a later entry of the same walk faults
+(the walk's rule, S2-25i); `od-isa` sets A/D only after a whole walk, so the images are compared only on successful accesses.
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
