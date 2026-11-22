@@ -9,8 +9,9 @@ use crate::ap_legacy_exec::BoardRam;
 use crate::page_walk::{MmioDispatchError, MmioWindow};
 use crate::{
     BusDevice, DeviceAccess, DeviceError, GuestPhysicalAddress, Long64ProbeConfig,
-    MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, PageFaultReason,
-    PagedProbeExit, PagedProbeRejection, ProbeConfigError, RamAccessOperation, RamLimits,
+    MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
+    PageFaultReason, PagedProbeExit, PagedProbeRejection, ProbeConfigError, RamAccessOperation,
+    RamLimits,
 };
 use od_isa::LongModeState;
 use od_isa::legacy_mode::ProtectedSegment;
@@ -44,6 +45,8 @@ const DATA_X: u64 = 0x1_1000;
 const RAM_END: u64 = 0x2_0000;
 const ROM_AT: u64 = 0x2_0000;
 const MMIO_AT: u64 = 0x3_0000;
+/// The framebuffer region (one page), behind PT[12].
+const FB_AT: u64 = 0x5_0000;
 /// An address no region covers.
 const HOLE: u64 = 0x4_0000;
 const EAX_VALUE: u32 = 0xA1B2_C3D4;
@@ -64,6 +67,25 @@ fn map() -> MachineMemoryMap {
             MemoryRegionSpec::new(range(ROM_AT, 0x1000), MemoryRegionKind::Rom),
             MemoryRegionSpec::new(range(MMIO_AT, 0x1000), MemoryRegionKind::Mmio),
         ],
+    )
+    .unwrap()
+}
+
+/// The map of `map()` plus a framebuffer page at `FB_AT` (a `MachineBus` needs a display device for
+/// such a region, so only the tests that use `PhysicalMemory` directly have it).
+fn memory_with_framebuffer() -> PhysicalMemory {
+    let mut regions = vec![
+        MemoryRegionSpec::new(range(0, RAM_END), MemoryRegionKind::Ram),
+        MemoryRegionSpec::new(range(ROM_AT, 0x1000), MemoryRegionKind::Rom),
+        MemoryRegionSpec::new(range(MMIO_AT, 0x1000), MemoryRegionKind::Mmio),
+    ];
+    regions.push(MemoryRegionSpec::new(
+        range(FB_AT, 0x1000),
+        MemoryRegionKind::Framebuffer,
+    ));
+    PhysicalMemory::new(
+        &MachineMemoryMap::new(36, regions).unwrap(),
+        RamLimits::new(1 << 20),
     )
     .unwrap()
 }
@@ -155,7 +177,7 @@ impl Scenario {
 
 /// PDPTE0 and PDPTE1 -> PD (PDPTE2 and 3 absent); PD[0] -> PT; PD[1] = `pd1` (a 2 MiB page at 0);
 /// PT[5], PT[6] as given, PT[7] an XD page over `DATA_X`, PT[8] the code page, PT[9] an MMIO page,
-/// PT[10] a ROM page, PT[11] a page of the hole.
+/// PT[10] a ROM page, PT[11] a page of the hole, PT[12] a framebuffer page.
 fn fixture(memory: &PhysicalMemory, s: &Scenario) {
     for base in [DATA_A, DATA_B, DATA_X] {
         let pattern: Vec<u8> = (0..0x1000u32)
@@ -175,6 +197,7 @@ fn fixture(memory: &PhysicalMemory, s: &Scenario) {
         (9, MMIO_AT | P | RW | US),
         (10, ROM_AT | P | RW | US),
         (11, HOLE | P | RW | US),
+        (12, FB_AT | P | RW | US),
     ];
     for (page, entry) in entries {
         put(memory, PT + 8 * page, entry);
@@ -766,6 +789,74 @@ fn a_write_intent_read_and_an_instruction_fetch_never_reach_a_device() {
     assert_eq!(get(&memory, PT + 40) & (ACCESSED | DIRTY), ACCESSED);
 }
 
+#[test]
+fn an_mmio_operand_ending_exactly_at_the_end_of_its_window_is_served_and_one_byte_more_is_not() {
+    let (memory, paging) = mmio_setup();
+    // The window is the first 0x10 bytes of the MMIO page.
+    let device = FakeMmio::new(&memory, vec![(MMIO_AT, 0x10)]);
+    let mut sink = |_: GuestPhysicalRange| {};
+    let mut adapter =
+        PagedPaeMemoryAdapter::over_memory_and_set_mmio(&memory, &device, paging, 0x77, &mut sink);
+    let mut dword = [0u8; 4];
+    // 0x900C..0x9010 is MMIO_AT + 0xC..0x10: the last four bytes of the window.
+    adapter.read(0x900C, ring0(), &mut dword).unwrap();
+    assert_eq!(u32::from_le_bytes(dword), 0xCAFE_F00D);
+    adapter.write(0x900F, ring0(), &[9]).unwrap();
+    assert_eq!(device.calls.borrow().len(), 2);
+    // One byte further the operand leaves the window: refused before any device is reached.
+    assert!(matches!(
+        adapter.read(0x900D, ring0(), &mut dword),
+        Err(MemoryError::Backend(_))
+    ));
+    assert!(matches!(
+        adapter.write(0x9010, ring0(), &[9]),
+        Err(MemoryError::Backend(_))
+    ));
+    assert_eq!(device.calls.borrow().len(), 2);
+}
+
+#[test]
+fn a_framebuffer_page_serves_data_like_ram_but_an_instruction_fetch_from_it_is_a_backend_error() {
+    let memory = memory_with_framebuffer();
+    fixture(&memory, &Scenario::new("", false, 0, Expect::Ok));
+    memory
+        .store_bytes(at(FB_AT + 0x10), &[0x11, 0x22, 0x33, 0x44], |_| {
+            panic!("framebuffer writes never notify")
+        })
+        .unwrap();
+    let paging = PaeProbeConfig::from_protected_cpu(&cpu(true)).unwrap();
+    let mut notified = Vec::new();
+    let mut sink = |range: GuestPhysicalRange| notified.push(range.start().get());
+    let mut adapter = PagedPaeMemoryAdapter::over_memory(&memory, paging, 0x77, &mut sink);
+    // Data: a read and a write behave like RAM (linear 0xC000 is PT[12]).
+    let mut dword = [0u8; 4];
+    adapter.read(0xC010, ring0(), &mut dword).unwrap();
+    assert_eq!(dword, [0x11, 0x22, 0x33, 0x44]);
+    adapter.write(0xC010, ring0(), &[0xAA, 0xBB]).unwrap();
+    assert_eq!(adapter.memory_error(), None);
+    // An instruction fetch is refused as in the 4-level access: Framebuffer is not executable memory.
+    assert!(matches!(
+        adapter.fetch(0xC010, ring0()),
+        Err(MemoryError::Backend(_))
+    ));
+    assert_eq!(
+        adapter.memory_error(),
+        Some(&TrackedAccessError::OperandPhysical {
+            address: at(FB_AT + 0x10),
+            source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Framebuffer),
+        })
+    );
+    drop(adapter);
+    // The callback saw the page-table writes (PDE A, PTE A, PTE D: RAM) and no framebuffer byte.
+    assert_eq!(notified, [PD, PT + 96, PT + 96]);
+    assert_eq!(get(&memory, FB_AT + 0x10) & 0xFFFF_FFFF, 0x4433_BBAA);
+    assert_eq!(
+        get(&memory, PT + 96) & (ACCESSED | DIRTY),
+        ACCESSED | DIRTY,
+        "the walks reached the leaf; the write dirtied it"
+    );
+}
+
 /// A device that counts its accesses and stores one value.
 struct CountingDevice(Arc<Mutex<(usize, u64)>>);
 
@@ -1021,7 +1112,7 @@ fn an_instruction_fetch_walks_as_a_fetch_with_the_xd_check_and_serves_ram_only()
         ACCESSED,
         "the walk reached the leaf"
     );
-    // A ROM byte, a hole and an MMIO byte are not fetched (the walk is the same as a read's).
+    // A ROM byte, a hole and an MMIO byte are not fetched (the walk of a fetch is the walk of a read; the region decides).
     for linear in [0xA000, 0xB000, 0x9000] {
         assert!(matches!(
             adapter.fetch(linear, ring0()),
@@ -1165,10 +1256,14 @@ fn the_cpl0_set_loop_refuses_a_pae_state_with_the_same_configuration_error() {
         |_| {},
     );
     assert_eq!(report.instructions_executed, 0);
-    assert!(
-        format!("{:?}", report.exit).contains("RequiredBits"),
-        "{:?}",
-        report.exit
+    assert_eq!(
+        report.exit,
+        crate::paged_memory_adapter::PagedCpl0SetExit::Configuration(
+            ProbeConfigError::RequiredBits {
+                register: "EFER",
+                bits: EFER_LME_LMA,
+            }
+        )
     );
     assert_eq!(first_difference(&dump(bus.physical_memory()), &image), None);
 }
