@@ -525,11 +525,13 @@ fn names_that_cannot_be_host_names_are_nxdomain_without_a_lookup() {
 
 #[test]
 fn only_port_53_of_the_dns_address_is_the_forwarder() {
-    // Another port of the DNS address and any port of the gateway are not the forwarder's business.
+    // Another port of the DNS address is not the forwarder's business: the UDP handler answers it
+    // with ICMP port unreachable.
     let mut b = backend();
     run(&mut b, &udp_frame(DNS_IP, 54, &a_query("example.test")));
-    assert_eq!(b.counters().drop_unhandled_l4, 1);
-    assert_eq!(b.counters().dns_queries, 0);
+    let c = b.counters();
+    assert_eq!((c.dns_queries, c.dns_malformed), (0, 0));
+    assert_eq!((c.udp_datagrams, c.gw_port_unreachable), (1, 1));
 }
 
 // ---- Slots, workers and timeouts ------------------------------------------------------------------

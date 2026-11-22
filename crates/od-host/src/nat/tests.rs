@@ -717,10 +717,11 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-/// A backend whose TCP host is scripted and whose DNS lookups never touch the network: every name is
-/// unknown. No test of this file reaches a real network.
+/// A backend whose TCP host is scripted, whose UDP and ICMP sockets cannot be created and whose DNS
+/// lookups never touch the network (every name is unknown): no test of this file reaches a real
+/// network (the tests with sockets use `test_io::io_backend`).
 pub(super) fn backend() -> NatBackend {
-    let mut b = super::tcp_tests::scripted_backend();
+    let mut b = super::tcp_tests::scripted_backend().without_host_sockets();
     b.dns = DnsService::new(Arc::new(NotFoundResolver));
     b
 }
@@ -1049,7 +1050,6 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.drop_unsupported_proto
         + c.drop_l4_malformed
         + c.drop_arp_other
-        + c.drop_unhandled_l4
         + c.dhcp_offers
         + c.dhcp_acks
         + c.dhcp_naks
@@ -1062,36 +1062,44 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.tcp_segments
         + c.arp_replies
         + c.arp_probe_ignored
+        // S11-31c: one counter per frame for UDP and ICMP echo, bumped when the frame reaches the
+        // handler. What the handler then does with it (forwarded, refused, a flow limit, a socket
+        // that cannot be created, the ICMP error to the guest) is an outcome and is outside the
+        // identity on purpose: some outcomes (`drop_host_resource`) are shared with TCP and others
+        // are raised later by the sockets, so summing them would count frames twice.
+        + c.udp_datagrams
+        + c.icmp_echo_requests
 }
 
 #[test]
-fn well_formed_udp_and_icmp_packets_are_counted_unhandled_until_their_handlers_exist() {
-    // DHCP and DNS are served since S11-31b, TCP since S11-31d: the rest waits for S11-31c.
+fn dhcp_and_dns_datagrams_reach_their_servers_and_each_counts_once() {
     let mut b = backend();
+    // A 1-byte DNS query, a 1-byte DHCP message from a port that is not 68, and the 0x55-filled DHCP-like
+    // frame are all malformed: counted, never answered, and none reaches the UDP forwarder.
     for frame in [
-        udp_frame(EXTERNAL, 9, b"x"),
-        udp_frame(DNS_IP, 9, b"x"),
-        udp_frame(GATEWAY_IP, 9, b"x"),
-        echo_frame(EXTERNAL),
-        echo_frame(GATEWAY_IP),
+        udp_frame(DNS_IP, 53, b"x"),
+        udp_frame(GATEWAY_IP, 67, b"x"),
+        dhcp_like_frame(),
     ] {
         run(&mut b, &frame);
     }
     let c = b.counters();
-    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (5, 0));
-    assert_eq!(total_accounted(&c), 5);
+    assert_eq!((c.dhcp_malformed, c.dns_malformed), (2, 1));
+    assert_eq!((c.udp_datagrams, c.gw_port_unreachable), (0, 0));
+    assert_eq!(total_accounted(&c), 3);
     assert!(drain(&mut b).is_empty());
 }
 
 #[test]
-fn dhcp_and_dns_frames_are_no_longer_unhandled() {
+fn udp_and_echo_to_external_addresses_reach_the_host_socket_layer_not_the_unhandled_counter() {
+    // The sockets of this backend cannot be created: each frame reaches its handler (and is counted
+    // there) and the outcome is drop_host_resource.
     let mut b = backend();
-    // The 0x55-filled DHCP-like frame is a malformed DHCP message; a 1-byte DNS query is malformed too.
-    run(&mut b, &dhcp_like_frame());
-    run(&mut b, &udp_frame(DNS_IP, 53, b"x"));
+    run(&mut b, &udp_frame(EXTERNAL, 9, b"x"));
+    run(&mut b, &echo_frame(EXTERNAL));
     let c = b.counters();
-    assert_eq!((c.dhcp_malformed, c.dns_malformed), (1, 1));
-    assert_eq!(c.drop_unhandled_l4, 0);
+    assert_eq!((c.udp_datagrams, c.icmp_echo_requests), (1, 1));
+    assert_eq!(c.drop_host_resource, 2);
     assert_eq!(total_accounted(&c), 2);
     assert!(drain(&mut b).is_empty());
 }
@@ -1102,7 +1110,7 @@ fn tcp_is_served_and_no_longer_counted_unhandled() {
     run(&mut b, &tcp_syn_frame(EXTERNAL, 80));
     run(&mut b, &tcp_syn_frame(GATEWAY_IP, 80));
     let c = b.counters();
-    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (0, 2));
+    assert_eq!(c.tcp_segments, 2);
     assert_eq!(total_accounted(&c), 2);
     // A SYN-ACK from the scripted host for the first, a refusal for the second.
     assert_eq!(drain(&mut b).len(), 2);

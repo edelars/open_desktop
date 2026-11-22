@@ -303,9 +303,13 @@ impl LocalApicHandle {
         if !same_timers {
             return Err(DeviceError::UnsupportedConfiguration);
         }
-        let wake = pair.wake.clone();
+        // The wake sink and the COM2 line are properties of this board, not of the snapshot: a
+        // snapshot taken on a board without the agent channel does not disconnect INTIN3 here, and
+        // one taken with it does not connect INTIN3 on a board that has no COM2.
+        let (wake, com2_wired) = (pair.wake.clone(), pair.com2_wired);
         *pair = state.clone();
         pair.wake = wake;
+        pair.com2_wired = com2_wired;
         Ok(())
     }
     /// Install (or with `None` remove) the wake sink of the vCPU threads (S6-34, see

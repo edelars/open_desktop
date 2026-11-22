@@ -30,9 +30,6 @@ pub enum Dropped {
 
 /// Monotonic counters of a backend (NETWORK.md section 13). They survive `reset` and are
 /// only ever increased. The names follow the document; one counter per drop reason.
-///
-/// `drop_unhandled_l4` is temporary: it counts well-formed TCP/UDP/ICMP packets that no handler
-/// serves yet (S11-31a). S11-31b..d take the protocols over; the last of them removes the field.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NetCounters {
     // Frames and bytes.
@@ -64,7 +61,6 @@ pub struct NetCounters {
     pub drop_flow_limit_icmp: u64,
     pub drop_host_resource: u64,
     pub drop_oversize_reply: u64,
-    pub drop_unhandled_l4: u64,
     // ARP, DHCP, DNS.
     pub arp_replies: u64,
     pub arp_probe_ignored: u64,
@@ -99,6 +95,17 @@ pub struct NetCounters {
     pub tcp_orphan_rst: u64,
     pub tcp_out_of_order_dropped: u64,
     pub udp_flows_opened: u64,
+    /// UDP datagrams of the guest that reached the UDP handler (S11-31c), including those for the
+    /// unserved ports of the gateway and DNS address: one per frame, so it takes part in the frame
+    /// accounting identity. The outcomes below (`udp_forwarded`, `udp_refused`, `udp_unreachable`,
+    /// `gw_port_unreachable`) and `drop_flow_limit_udp` do not.
+    pub udp_datagrams: u64,
+    /// Datagrams of the guest handed to a host socket (S11-31c); an outcome, not part of the identity.
+    pub udp_forwarded: u64,
+    /// ICMP echo requests (type 8, code 0) of the guest that reached the echo handler (S11-31c): one
+    /// per frame, part of the identity; other ICMP messages are `drop_unsupported_proto`. The outcomes
+    /// `icmp_echo_synthetic`, `icmp_echo_forwarded` and `drop_flow_limit_icmp` are not part of it.
+    pub icmp_echo_requests: u64,
     pub udp_refused: u64,
     pub udp_unreachable: u64,
     pub icmp_echo_synthetic: u64,
