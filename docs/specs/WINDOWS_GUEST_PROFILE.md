@@ -53,7 +53,7 @@
 | NVMe (носитель, системный диск, диск полезной нагрузки) | [NVME_DEVICE.md](NVME_DEVICE.md) | Один контроллер принят (S7-16); три — S8-20, не начата |
 | Экран (GOP framebuffer) | [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md) | Только framebuffer GOP; собственного WDDM нет (S10-22) |
 | TPM 2.0 (CRB) | [VTPM.md](VTPM.md#crb), [ADR-0009](../decisions/ADR-0009-vtpm-placement-and-crypto.md) | CRB принят (S7-22); фаза B — S7-23, не принята |
-| Клавиатура и указатель (xHCI + USB HID) | [XHCI_DEVICE.md](XHCI_DEVICE.md) | Контракт подготовлен, модель не реализована (S8-42, S8-43) |
+| Клавиатура и указатель (xHCI + USB HID) | [XHCI_DEVICE.md](XHCI_DEVICE.md) | Контракт принят, модель реализована в main (S8-42, S8-43: `540a1b8`, `c745e24`) |
 | COM1 | [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) «Диагностика», [MACHINE_CONTRACT.md](MACHINE_CONTRACT.md#bounded-com1-polling-uart) | Только polling; IRQ4 для `serial.sys` — S4-24, не принят. Для гостя Windows COM1 не обещается |
 | Сеть (82540EM-совместимая) | план этапа 11, S11-32 | Не реализована; до S8-40 гость без сети |
 

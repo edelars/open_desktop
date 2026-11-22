@@ -8790,6 +8790,8 @@ and the rest of `od-isa` (35 test targets (34 binaries and the doc-test target w
 reserved-bit cases use bits 31:16 instead of bit 6. Not checked: N5105, Windows, native paths, full workspace suite.
 Parent S2-39 remains open.
 
+**Superseded by the main priority (merge 56c60c9, 2026-11-22).** The owner's rule "main has priority" restored `TARGET_FXSAVE_MXCSR_MASK = 0x0000_ffbf` (S7-31i) and made `Operation::LdmxcsrMemory` of main the only LDMXCSR form (no `Operation::Ldmxcsr`); DAZ now raises `#GP(0)` in LDMXCSR and FXRSTOR64, the FXSAVE image carries `0xFFBF`, the DAZ expectations of the S2-39n/p tests and the `s2_39f`/`s2_39h` fixtures went back to main's values. The oracle difference (the i5-3210M accepts DAZ) is the open question [ISSUE-663](../KNOWN_ISSUES.md), the narrower LDMXCSR forms (no REX/67/segment prefix) are ISSUE-664. [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md) and the S2-39n/S2-39p blocks of `CPU_CONTRACT.md` are marked superseded.
+
 See the [S2-39p result](../reports/STAGE_2_REPORT.md#s2-39p--daz-in-the-target-mxcsr_mask).
 
 ### S2-40. Дополнительные обязательные расширения
