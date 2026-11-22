@@ -690,6 +690,7 @@ fn access_pae_internal(
         request.operation,
         committed_write,
         mmio,
+        &mut compare_replace_table_entry,
         |access, committed_write| {
             walk_pae_with_writer(
                 memory,
@@ -708,13 +709,15 @@ fn access_pae_internal(
 /// The operand access of a 32-bit linear address after its page walk, shared by PAE paging and 32-bit
 /// paging (S2-25 remainder): the crossing check, `walk` (given the access kind and the committed-write
 /// callback; it is where the paging mode differs), the physical region of the operand, the dirty bit
-/// of the leaf and the bytes or the device dispatch.
+/// of the leaf (written through `table_writer`, the entry writer of the paging mode: 8-byte entries or
+/// 4-byte ones) and the bytes or the device dispatch.
 pub(super) fn access_operand_with_walk(
     memory: &PhysicalMemory,
     linear: u32,
     operation: PaeOperandOperation,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
     mut mmio: Option<&mut MmioDispatch<'_>>,
+    table_writer: &mut TrackedTableWriter<'_>,
     walk: impl FnOnce(AccessKind, &mut dyn FnMut(GuestPhysicalRange)) -> WalkResult,
 ) -> TrackedAccessReport {
     let operation = operation.ram_operation();
@@ -789,7 +792,7 @@ pub(super) fn access_operand_with_walk(
         // The dirty bit goes first (also before a device is reached), then the operand.
         match commit_leaf_dirty(
             memory,
-            &mut compare_replace_table_entry,
+            table_writer,
             &mut *committed_write,
             translation.leaf_level,
             translation.leaf_address,

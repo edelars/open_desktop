@@ -637,6 +637,7 @@ fn access_pg32_internal(
         request.operation,
         committed_write,
         mmio,
+        &mut compare_replace_entry32,
         |access, committed_write| {
             walk_pg32_with_writer(
                 memory,
