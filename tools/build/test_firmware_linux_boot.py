@@ -99,6 +99,76 @@ class Evaluate(unittest.TestCase):
         self.assertIn("no unprefixed dmesg lines", failed(com1(good_lines(["[    1.4] no level prefix"]))))
 
 
+import firmware_protocol_trace as ptrace  # noqa: E402
+
+ROM = (0x200000, 0x300000)
+LOADED_IMAGE = "5b1b31a1-9562-11d2-8e3f-00a0c969723b"
+
+
+def raw_guid(text: str) -> str:
+    import uuid
+    return uuid.UUID(text).bytes_le.hex()
+
+
+def call(name: str, retired: int, caller: int, guid: str | None = None, variable: str | None = None) -> dict:
+    return {"name": name, "retired": retired, "cpl": 0, "caller": hex(caller),
+            "guid": None if guid is None else raw_guid(guid), "variable_name": variable}
+
+
+class Trace(unittest.TestCase):
+    def test_arguments_come_from_the_rom_symbols_and_missing_services_are_named(self) -> None:
+        symbols = [(0x22aa90, "od_firmware::bs::protocol::locate_protocol"),
+                   (0x22ff00, "od_firmware::rt::variable::get_variable")]
+        arguments, missing = ptrace.trace_arguments(symbols)
+        self.assertIn("LocateProtocol=0x22aa90:guid=0", arguments)
+        self.assertIn("GetVariable=0x22ff00:guid=1:name=0:slot=72", arguments)
+        # Services that exist only as a runtime table slot need no ROM symbol.
+        self.assertIn("GetTime=0x0:slot=24", arguments)
+        self.assertIn("ExitBootServices", missing)
+        self.assertNotIn("GetTime", missing)
+        self.assertEqual(ptrace.system_table_address(b"OD-FW S7-05 Boot Services utilities verified ST=0x0000000007F7FEF0\r\n"), 0x7F7FEF0)
+        self.assertIsNone(ptrace.system_table_address(b"no table"))
+
+    def test_calls_fold_by_caller_phase_guid_and_name(self) -> None:
+        trace = {"total": 6, "dropped": 0, "calls": [
+            call("HandleProtocol", 10, 0x200100, LOADED_IMAGE),          # the firmware's own call
+            call("HandleProtocol", 20, 0x7000000, LOADED_IMAGE),         # the stub
+            call("HandleProtocol", 21, 0x7000000, LOADED_IMAGE),
+            call("GetVariable", 30, 0x7000000, "8be4df61-93ca-11d2-aa0d-00e098032b8c", "SecureBoot"),
+            call("ExitBootServices", 40, 0x7000000),
+            call("GetVariable", 50, 0xffffffff80000000, "8be4df61-93ca-11d2-aa0d-00e098032b8c", "BootOrder"),
+        ]}
+        summary = ptrace.summarize(trace, ROM)
+        self.assertEqual(summary["exit_boot_services_at_retired"], 40)
+        self.assertEqual(summary["calls_by_service_and_caller"]["HandleProtocol"], {"firmware": 1, "guest": 2})
+        before = {(r["call"], r["caller"]): r for r in summary["phases"]["before_exit_boot_services"]}
+        self.assertEqual(before[("HandleProtocol", "guest")]["calls"], 2)
+        self.assertEqual(before[("HandleProtocol", "guest")]["guid_name"], "EFI_LOADED_IMAGE_PROTOCOL")
+        after = summary["phases"]["from_exit_boot_services"]
+        self.assertEqual([(r["call"], r["variable_name"]) for r in after if r["call"] == "GetVariable"], [("GetVariable", "BootOrder")])
+
+    def test_an_unknown_guid_is_reported_as_unknown(self) -> None:
+        summary = ptrace.summarize({"total": 1, "dropped": 0, "calls": [
+            call("LocateProtocol", 5, 0x7000000, "12345678-1234-1234-1234-123456789abc")]}, ROM)
+        self.assertTrue(summary["phases"]["before_exit_boot_services"][0]["guid_name"].startswith("unknown"))
+
+    def test_the_trace_checks_fail_without_a_guest_call_a_trace_or_a_symbol(self) -> None:
+        trace = {"total": 5, "dropped": 0, "calls": [
+            call("GetMemoryMap", 10, 0x7000000), call("HandleProtocol", 11, 0x7000000, LOADED_IMAGE),
+            call("ExitBootServices", 40, 0x7000000)]}
+        trace["calls"] += [call("GetNextVariableName", 60, 0xffffffff80000000, "8be4df61-93ca-11d2-aa0d-00e098032b8c", "A")]
+        good = boot.trace_checks(ptrace.summarize(trace, ROM), [], 0x7F7FEF0)
+        self.assertTrue(all(r.ok for r in good), [r.line() for r in good])
+        # No runtime calls (or no system table) means the slots were not followed.
+        self.assertFalse(all(r.ok for r in boot.trace_checks(ptrace.summarize(trace, ROM), [])))
+        self.assertFalse(boot.trace_checks(None, [])[0].ok)
+        self.assertFalse(boot.trace_checks(ptrace.summarize(trace, ROM), ["LocateProtocol"])[0].ok)
+        firmware_only = {"total": 1, "dropped": 0, "calls": [call("HandleProtocol", 11, 0x200100, LOADED_IMAGE)]}
+        self.assertFalse(all(r.ok for r in boot.trace_checks(ptrace.summarize(firmware_only, ROM), [])))
+        dropped = {**trace, "dropped": 3}
+        self.assertFalse(boot.trace_checks(ptrace.summarize(dropped, ROM), [])[0].ok)
+
+
 class Png(unittest.TestCase):
     def test_a_bgrx_frame_becomes_an_rgb_png(self) -> None:
         import zlib

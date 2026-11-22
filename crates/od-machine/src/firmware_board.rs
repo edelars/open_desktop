@@ -2503,6 +2503,28 @@ impl LoadedFirmwareBoard {
             .and_then(CheckpointRecorder::first_page_fault)
     }
 
+    /// S7-31q: watch the entry of the given functions through the CPL0-set loop (opt-in, observation
+    /// only; with no checkpoint table the per-boundary predicates stay off).
+    pub(crate) fn enable_call_trace(
+        &mut self,
+        targets: Vec<crate::linux_checkpoints::CallTraceTarget>,
+        system_table: Option<u64>,
+    ) {
+        match self.checkpoints.as_mut() {
+            Some(recorder) => recorder.set_call_trace(targets, system_table),
+            None => {
+                self.checkpoints = Some(CheckpointRecorder::call_trace_only(targets, system_table))
+            }
+        }
+    }
+
+    /// The calls traced so far and the trace removed; `None` when none was started.
+    pub(crate) fn take_call_trace(&mut self) -> Option<crate::linux_checkpoints::CallTraceReport> {
+        self.checkpoints
+            .as_mut()
+            .and_then(CheckpointRecorder::take_call_trace)
+    }
+
     pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
         self.checkpoints.take().map(|recorder| recorder.records())
     }
@@ -8411,6 +8433,157 @@ mod tests {
             crate::run_firmware_unified_marked(&mut unreached, 1_000, Some(0x1234)).unwrap();
         assert_eq!(never.marker, None);
         assert_eq!(never.run, without.run);
+    }
+
+    /// S7-31q: the call trace names a function, the GUID and the UCS-2 name its arguments point to
+    /// (RDX and RCX, as the Microsoft x64 ABI passes the 2nd and 1st argument), and only observes.
+    #[test]
+    fn a_call_trace_records_the_call_with_its_guid_and_name_and_changes_nothing() {
+        const FUNCTION: usize = 0x40;
+        const GUID: usize = 0x80;
+        const NAME: usize = 0xA0;
+        let mut code = vec![0x90u8; 0xC0];
+        let guid: [u8; 16] = [
+            0x91, 0x6e, 0x57, 0x09, 0x3f, 0x6d, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69,
+            0x72, 0x3b,
+        ];
+        code[GUID..GUID + 16].copy_from_slice(&guid);
+        code[NAME..NAME + 6].copy_from_slice(&[b'A', 0, b'b', 0, 0, 0]);
+        code[FUNCTION] = 0xC3; // ret
+        let image = minor2_image(&code);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        // mov edx, GUID; mov ecx, NAME; call FUNCTION; hlt
+        let mut program = vec![0xBA];
+        program.extend_from_slice(&((entry as u32) + GUID as u32).to_le_bytes());
+        program.push(0xB9);
+        program.extend_from_slice(&((entry as u32) + NAME as u32).to_le_bytes());
+        program.push(0xE8);
+        program.extend_from_slice(&((FUNCTION as i32) - 15).to_le_bytes());
+        program.push(0xF4);
+        let mut image = image;
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let mut traced = load_firmware_image(&image, &linux_config()).unwrap();
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let target = crate::CallTraceTarget {
+            name: "svc".to_owned(),
+            physical: entry + FUNCTION as u64,
+            guid_arg: Some(1),
+            name_arg: Some(0),
+            rt_slot: None,
+        };
+        let with = crate::run_firmware_unified_traced(&mut traced, 1_000, None, vec![target], None)
+            .unwrap();
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        let trace = with.call_trace.expect("a trace was asked for");
+        assert_eq!(trace.total, 1);
+        assert_eq!(trace.entries.len(), 1);
+        let call = &trace.entries[0];
+        assert_eq!((call.name.as_str(), call.cpl), ("svc", 0));
+        assert_eq!(
+            call.caller,
+            Some(entry + 15),
+            "the return address: the instruction after the call"
+        );
+        assert_eq!(call.guid, Some(guid));
+        assert_eq!(call.variable_name.as_deref(), Some("Ab"));
+        assert_eq!(
+            call.retired, 3,
+            "mov, mov, call retired before the first instruction of svc"
+        );
+        assert!(without.call_trace.is_none());
+        // Observation only: retired, quanta, exit and the state are those of the run without it.
+        assert_eq!(with.run, without.run);
+        assert_eq!(traced.state(), plain.state());
+    }
+
+    /// S7-31q: a runtime services table slot is followed once a traced call refreshed it, a NULL
+    /// GUID pointer is no GUID, and the function behind the slot is traced under the slot's name.
+    #[test]
+    fn a_call_trace_follows_a_runtime_services_slot_and_skips_a_null_guid() {
+        let (service, dynamic, system_table, runtime_table) =
+            (0x40usize, 0x60usize, 0x100usize, 0x140usize);
+        let mut code = vec![0x90u8; 0x200];
+        code[service] = 0xC3;
+        code[dynamic] = 0xC3;
+        code[0x1C0..0x1D0].copy_from_slice(&[7; 16]);
+        code[0x1E0..0x1E6].copy_from_slice(&[b'A', 0, b'b', 0, 0, 0]);
+        let image = minor2_image(&code);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let put = |code: &mut Vec<u8>, at: usize, value: u64| {
+            code[at..at + 8].copy_from_slice(&value.to_le_bytes())
+        };
+        put(&mut code, system_table + 0x58, entry + runtime_table as u64);
+        put(&mut code, runtime_table + 72, entry + dynamic as u64);
+        // mov edx, GUID; mov ecx, NAME; call service; call dynamic; xor edx, edx; call dynamic; hlt
+        let mut program = vec![0xBA];
+        program.extend_from_slice(&((entry as u32) + 0x1C0).to_le_bytes());
+        program.push(0xB9);
+        program.extend_from_slice(&((entry as u32) + 0x1E0).to_le_bytes());
+        for (target, next) in [(service, 15usize), (dynamic, 20)] {
+            program.push(0xE8);
+            program.extend_from_slice(&((target as i32) - next as i32).to_le_bytes());
+        }
+        program.extend_from_slice(&[0x31, 0xD2, 0xE8]);
+        program.extend_from_slice(&((dynamic as i32) - 27).to_le_bytes());
+        program.push(0xF4);
+        code[..program.len()].copy_from_slice(&program);
+        let mut image = minor2_image(&code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        let targets = vec![
+            crate::CallTraceTarget {
+                name: "service".into(),
+                physical: entry + service as u64,
+                guid_arg: None,
+                name_arg: None,
+                rt_slot: None,
+            },
+            crate::CallTraceTarget {
+                name: "GetVariable".into(),
+                physical: 0,
+                guid_arg: Some(1),
+                name_arg: Some(0),
+                rt_slot: Some(72),
+            },
+        ];
+        let run = crate::run_firmware_unified_traced(
+            &mut board,
+            1_000,
+            None,
+            targets,
+            Some(entry + system_table as u64),
+        )
+        .unwrap();
+        let trace = run.call_trace.unwrap();
+        let calls: Vec<_> = trace
+            .entries
+            .iter()
+            .map(|call| {
+                (
+                    call.name.as_str(),
+                    call.guid.is_some(),
+                    call.variable_name.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("service", false, None),
+                ("GetVariable", true, Some("Ab")),
+                ("GetVariable", false, Some("Ab"))
+            ],
+            "{trace:?}"
+        );
+        assert_eq!(trace.entries[1].guid, Some([7; 16]));
+        assert_eq!(trace.total, 3);
     }
 
     /// S7-31m (ISSUE-640): the kernel's idle loop in miniature. The code programs the 8259

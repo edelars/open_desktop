@@ -161,9 +161,125 @@ pub(crate) struct BoundaryView {
 /// bytes there.
 pub(crate) type FetchView = (Option<u64>, Vec<u8>);
 
+/// One function whose entry the call trace watches (S7-31q): the physical address of its first
+/// instruction and which of the first four arguments (Microsoft x64: RCX, RDX, R8, R9, numbered
+/// 0..=3) point to a GUID and to a NUL-terminated UCS-2 name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallTraceTarget {
+    pub name: String,
+    pub physical: u64,
+    pub guid_arg: Option<u8>,
+    pub name_arg: Option<u8>,
+    /// Byte offset of this service in `EFI_RUNTIME_SERVICES` (UEFI 2.11 table 4.5: `GetTime` 24,
+    /// `SetVirtualAddressMap` 56, `GetVariable` 72, `GetNextVariableName` 80, `SetVariable` 88). With
+    /// a system table address the recorder reads the table at every traced call and also watches the
+    /// function the slot points to (the runtime driver replaces the ROM functions after the boot).
+    pub rt_slot: Option<u16>,
+}
+
+/// One traced call: the name of the function, when it happened and what its GUID and name
+/// arguments pointed to. Values are never read, only the GUID and the name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallTraceEntry {
+    pub name: String,
+    /// Instructions retired in the run before the first instruction of the call.
+    pub retired: u64,
+    pub cpl: u8,
+    /// The return address at the entry (`[RSP]`): where the call came from (ROM or guest code).
+    pub caller: Option<u64>,
+    pub guid: Option<[u8; 16]>,
+    pub variable_name: Option<String>,
+}
+
+/// The entries kept at most; `total` still counts every call.
+pub const CALL_TRACE_MAX_ENTRIES: usize = 50_000;
+const CALL_TRACE_NAME_CHARS: usize = 64;
+
+#[derive(Debug)]
+struct CallTrace {
+    targets: Vec<CallTraceTarget>,
+    /// Guest address of `EFI_SYSTEM_TABLE`; `RuntimeServices` is at offset 0x58.
+    system_table: Option<u64>,
+    /// `(physical, retired)` of the last recorded call of each target: a boundary revisited without a
+    /// retired instruction in between (a retried instruction) is not a second call.
+    last_hit: Vec<(u64, u64)>,
+    /// The targets that came with a runtime services table slot (resolved at every traced call).
+    slots: Vec<CallTraceTarget>,
+    /// Bit set of the page offsets (RIP & 0xFFF) of the targets: the cheap filter of every boundary.
+    offsets: [u64; 64],
+    entries: Vec<CallTraceEntry>,
+    total: u64,
+}
+
+fn read_u64(read: &mut dyn FnMut(u64, usize) -> Vec<u8>, address: u64) -> Option<u64> {
+    <[u8; 8]>::try_from(read(address, 8).as_slice())
+        .ok()
+        .map(u64::from_le_bytes)
+}
+
+impl CallTrace {
+    fn add_target(&mut self, target: CallTraceTarget) {
+        let offset = (target.physical & 0xFFF) as usize;
+        self.offsets[offset / 64] |= 1 << (offset % 64);
+        self.targets.push(target);
+    }
+
+    /// The runtime driver replaces the ROM runtime services after the boot, so the table slots are
+    /// followed: `EFI_SYSTEM_TABLE.RuntimeServices` (offset 0x58), then each slot. Targets are only
+    /// added, never removed: a function keeps its physical address when the table is converted to
+    /// virtual addresses, and a pointer that does not translate (another address space) is skipped.
+    fn refresh_runtime_slots(
+        &mut self,
+        read: &mut dyn FnMut(u64, usize) -> Vec<u8>,
+        translate: &mut dyn FnMut(u64) -> Option<u64>,
+    ) {
+        let Some(system_table) = self.system_table else {
+            return;
+        };
+        if self.slots.is_empty() {
+            return;
+        }
+        let Some(table) =
+            read_u64(read, system_table.wrapping_add(0x58)).filter(|table| *table != 0)
+        else {
+            return;
+        };
+        for slot in self.slots.clone() {
+            let Some(offset) = slot.rt_slot else { continue };
+            let Some(pointer) = read_u64(read, table.wrapping_add(u64::from(offset)))
+                .filter(|pointer| *pointer != 0)
+            else {
+                continue;
+            };
+            let Some(physical) = translate(pointer) else {
+                continue;
+            };
+            if !self
+                .targets
+                .iter()
+                .any(|target| target.physical == physical && target.name == slot.name)
+            {
+                self.add_target(CallTraceTarget { physical, ..slot });
+            }
+        }
+    }
+}
+
+/// What [`CheckpointRecorder::take_call_trace`] returns.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CallTraceReport {
+    pub entries: Vec<CallTraceEntry>,
+    /// Every call seen, also those past [`CALL_TRACE_MAX_ENTRIES`].
+    pub total: u64,
+}
+
 /// The recorder the board owns while checkpoints are enabled.
 #[derive(Debug)]
 pub(crate) struct CheckpointRecorder {
+    /// The recorder only traces calls: the per-boundary checkpoint predicates (and their peek at
+    /// the instruction bytes) are off.
+    trace_only: bool,
+    call_trace: Option<CallTrace>,
     /// Address checkpoints not recorded yet.
     pending: Vec<LinuxCheckpointTarget>,
     records: Vec<Option<LinuxCheckpointRecord>>,
@@ -185,6 +301,8 @@ impl CheckpointRecorder {
     pub(crate) fn new(table: LinuxCheckpointTable) -> Result<Self, LinuxCheckpointTableError> {
         table.validate()?;
         Ok(Self {
+            trace_only: false,
+            call_trace: None,
             pending: table.targets,
             records: vec![None; LINUX_CHECKPOINT_COUNT],
             started: false,
@@ -198,6 +316,136 @@ impl CheckpointRecorder {
         })
     }
 
+    /// A recorder that only traces calls (no checkpoint table).
+    pub(crate) fn call_trace_only(
+        targets: Vec<CallTraceTarget>,
+        system_table: Option<u64>,
+    ) -> Self {
+        let mut recorder =
+            Self::new(LinuxCheckpointTable::default()).expect("an empty table is valid");
+        recorder.trace_only = true;
+        recorder.set_call_trace(targets, system_table);
+        recorder
+    }
+
+    /// Start (or replace) the call trace of this recorder.
+    pub(crate) fn set_call_trace(
+        &mut self,
+        targets: Vec<CallTraceTarget>,
+        system_table: Option<u64>,
+    ) {
+        let mut trace = CallTrace {
+            targets: Vec::new(),
+            system_table,
+            last_hit: Vec::new(),
+            slots: Vec::new(),
+            offsets: [0u64; 64],
+            entries: Vec::new(),
+            total: 0,
+        };
+        for target in targets {
+            if target.rt_slot.is_some() {
+                trace.slots.push(target.clone());
+            }
+            if target.physical != 0 {
+                trace.add_target(target);
+            }
+        }
+        self.call_trace = Some(trace);
+    }
+
+    /// Whether the loop must show this recorder the checkpoint predicates at every boundary.
+    pub(crate) fn wants_boundary(&self) -> bool {
+        !self.trace_only
+    }
+
+    /// Cheap filter of every boundary: could an instruction at `rip` be the entry of a traced
+    /// function (by its page offset)? Always false without a call trace.
+    pub(crate) fn is_call_candidate(&self, rip: u64) -> bool {
+        self.call_trace.as_ref().is_some_and(|trace| {
+            let offset = (rip & 0xFFF) as usize;
+            trace.offsets[offset / 64] & (1 << (offset % 64)) != 0
+        })
+    }
+
+    /// An instruction boundary whose RIP passed [`Self::is_call_candidate`]: `physical` is the
+    /// translation of RIP, `args` the four argument registers, `rsp` the stack pointer (the return
+    /// address is at `[RSP]` at the entry), `retired_in_call` the instructions retired in the current
+    /// set call; `read` reads guest bytes at a linear address (shorter when one does not
+    /// translate) and `translate` gives the physical address of a code pointer. Records the call
+    /// when `physical` is the entry of a target, then refreshes the runtime service slots.
+    pub(crate) fn note_call(
+        &mut self,
+        physical: u64,
+        args: [u64; 4],
+        rsp: u64,
+        retired_in_call: u64,
+        cpl: u8,
+        read: &mut dyn FnMut(u64, usize) -> Vec<u8>,
+        translate: &mut dyn FnMut(u64) -> Option<u64>,
+    ) {
+        let retired = self.retired_before_call.saturating_add(retired_in_call);
+        let Some(trace) = self.call_trace.as_mut() else {
+            return;
+        };
+        let Some(target) = trace
+            .targets
+            .iter()
+            .find(|target| target.physical == physical)
+            .cloned()
+        else {
+            return;
+        };
+        // The same boundary again with no instruction retired in between is a retried instruction.
+        let repeated = trace
+            .last_hit
+            .iter()
+            .any(|&(address, at)| address == physical && at == retired);
+        if !repeated {
+            trace.last_hit.retain(|&(address, _)| address != physical);
+            trace.last_hit.push((physical, retired));
+            trace.total += 1;
+            if trace.entries.len() < CALL_TRACE_MAX_ENTRIES {
+                let caller = read_u64(read, rsp);
+                // A NULL pointer argument (for example `Protocol` of `LocateHandle` with `AllHandles`)
+                // is no GUID and no name.
+                let pointer = |index: Option<u8>| {
+                    index
+                        .map(|index| args[usize::from(index) & 3])
+                        .filter(|pointer| *pointer != 0)
+                };
+                let guid = pointer(target.guid_arg)
+                    .and_then(|address| <[u8; 16]>::try_from(read(address, 16).as_slice()).ok());
+                let variable_name = pointer(target.name_arg).map(|address| {
+                    let bytes = read(address, 2 * CALL_TRACE_NAME_CHARS);
+                    let units: Vec<u16> = bytes
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .take_while(|unit| *unit != 0)
+                        .collect();
+                    String::from_utf16_lossy(&units)
+                });
+                trace.entries.push(CallTraceEntry {
+                    name: target.name.clone(),
+                    retired,
+                    cpl,
+                    caller,
+                    guid,
+                    variable_name,
+                });
+            }
+        }
+        trace.refresh_runtime_slots(read, translate);
+    }
+
+    /// The call trace and its removal; `None` when none was started.
+    pub(crate) fn take_call_trace(&mut self) -> Option<CallTraceReport> {
+        self.call_trace.take().map(|trace| CallTraceReport {
+            entries: trace.entries,
+            total: trace.total,
+        })
+    }
+
     /// The board announces a set call: the run's retired count before it, the number of the
     /// quantum (1-based) and the virtual time at its start.
     pub(crate) fn begin_call(&mut self, retired_before: u64, quantum: u64, ns_at_start: u64) {
@@ -208,16 +456,26 @@ impl CheckpointRecorder {
 
     /// A `MOV CR3` retired (the loop calls this when the set reports the context change).
     pub(crate) fn note_cr3_write(&mut self) {
+        if self.trace_only {
+            return;
+        }
         self.pending_cr3_write = true;
     }
 
     /// A `#PF` was delivered through the guest IDT.
     pub(crate) fn note_page_fault_delivered(&mut self) {
+        if self.trace_only {
+            return;
+        }
         self.pending_page_fault = true;
     }
 
     /// CR2 and the error code of a delivered `#PF`; only the first is kept (S7-31e).
     pub(crate) fn note_page_fault_detail(&mut self, cr2: u64, error_code: u32) {
+        // A recorder that only traces calls must not change what a run reports (S7-31q).
+        if self.trace_only {
+            return;
+        }
         self.first_page_fault.get_or_insert((cr2, error_code));
     }
 

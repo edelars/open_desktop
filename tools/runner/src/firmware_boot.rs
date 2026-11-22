@@ -28,6 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
+const MAX_TRACE_CALLS: usize = 64;
 const DUMP_USAGE: &str =
     "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot]";
 const PREPARE_NVRAM_USAGE: &str =
@@ -60,6 +61,60 @@ struct Options {
     unified: bool,
     /// S7-31d: `--mark-rip` (unified loop only): record the first boundary at this RIP.
     mark_rip: Option<u64>,
+    /// S7-31q: `--trace-call NAME=0xADDR[:guid=N][:name=N]` (unified loop only): watch the entry of
+    /// a ROM function (physical address); N (0..=3) is the argument that points to a GUID or to a
+    /// UCS-2 name. The report lists each call with its GUID and name, never values.
+    trace_calls: Vec<od_machine::CallTraceTarget>,
+    /// S7-31q: `--trace-system-table <hex>`: the guest address of `EFI_SYSTEM_TABLE`, for the `slot=` targets.
+    trace_system_table: Option<u64>,
+}
+
+fn parse_trace_call(value: &str) -> Result<od_machine::CallTraceTarget, String> {
+    let invalid = || {
+        format!(
+            "invalid --trace-call '{value}'; expected NAME=0xADDR[:guid=N][:name=N][:slot=OFFSET]"
+        )
+    };
+    let (name, rest) = value.split_once('=').ok_or_else(invalid)?;
+    let mut parts = rest.split(':');
+    let address = parts.next().ok_or_else(invalid)?;
+    let physical = u64::from_str_radix(address.strip_prefix("0x").unwrap_or(address), 16)
+        .map_err(|_| invalid())?;
+    let (mut guid_arg, mut name_arg, mut rt_slot) = (None, None, None);
+    for part in parts {
+        let (key, number) = part.split_once('=').ok_or_else(invalid)?;
+        match key {
+            "guid" | "name" => {
+                let index: u8 = number
+                    .parse()
+                    .ok()
+                    .filter(|index| *index < 4)
+                    .ok_or_else(invalid)?;
+                let slot = if key == "guid" {
+                    &mut guid_arg
+                } else {
+                    &mut name_arg
+                };
+                if slot.replace(index).is_some() {
+                    return Err(invalid());
+                }
+            }
+            "slot" if rt_slot.is_none() => {
+                rt_slot = Some(number.parse::<u16>().map_err(|_| invalid())?)
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    if name.is_empty() || (physical == 0 && rt_slot.is_none()) {
+        return Err(invalid());
+    }
+    Ok(od_machine::CallTraceTarget {
+        name: name.to_owned(),
+        physical,
+        guid_arg,
+        name_arg,
+        rt_slot,
+    })
 }
 
 fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
@@ -258,6 +313,8 @@ pub fn run(args: &[String]) -> ExitCode {
         &options.sample_rips,
         options.unified,
         options.mark_rip,
+        &options.trace_calls,
+        options.trace_system_table,
         &options.xhci_keys,
     ) {
         Ok(run) => run,
@@ -399,6 +456,8 @@ pub fn run(args: &[String]) -> ExitCode {
         nvme_image,
         &[],
         false,
+        None,
+        &[],
         None,
         &[],
     ) {
@@ -969,6 +1028,8 @@ fn boot(
     sample_rips: &[u64],
     unified: bool,
     mark_rip: Option<u64>,
+    trace_calls: &[od_machine::CallTraceTarget],
+    trace_system_table: Option<u64>,
     xhci_keys: &[(u8, bool)],
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
@@ -1001,7 +1062,13 @@ fn boot(
     let mut unified_run = None;
     let run = if unified {
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_marked(&mut board, budget, mark_rip).map(|run| {
+        od_machine::run_firmware_unified_traced(
+            &mut board,
+            budget,
+            mark_rip,
+            trace_calls.to_vec(),
+            trace_system_table,
+        ).map(|run| {
             let report = run.run;
             unified_run = Some(json!({
                 "set_exit_detail": run.set_exit_detail,
@@ -1078,6 +1145,18 @@ fn boot(
                     "virtual_ns": marker.virtual_ns,
                 })),
                 "rip_bytes": run.rip_bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "call_trace": run.call_trace.as_ref().map(|trace| json!({
+                    "total": trace.total,
+                    "dropped": trace.total - trace.entries.len() as u64,
+                    "calls": trace.entries.iter().map(|call| json!({
+                        "name": call.name,
+                        "retired": call.retired,
+                        "cpl": call.cpl,
+                        "caller": call.caller.map(|address| format!("0x{address:x}")),
+                        "guid": call.guid.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                        "variable_name": call.variable_name,
+                    })).collect::<Vec<_>>(),
+                })),
             }));
             report
         })
@@ -1204,6 +1283,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut sample_rips = Vec::new();
     let mut cpu_loop: Option<bool> = None;
     let mut mark_rip: Option<u64> = None;
+    let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
+    let mut trace_system_table: Option<u64> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1273,6 +1354,16 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     ));
                 }
             },
+            "--trace-system-table" if trace_system_table.is_none() => {
+                let hex = value.strip_prefix("0x").unwrap_or(value);
+                trace_system_table = Some(
+                    u64::from_str_radix(hex, 16)
+                        .map_err(|_| format!("invalid --trace-system-table '{value}'"))?,
+                );
+            }
+            "--trace-call" if trace_calls.len() < MAX_TRACE_CALLS => {
+                trace_calls.push(parse_trace_call(value)?)
+            }
             "--mark-rip" if mark_rip.is_none() => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 mark_rip = Some(
@@ -1318,6 +1409,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if mark_rip.is_some() && !unified {
         return Err("--mark-rip requires --cpu-loop unified".to_owned());
+    }
+    if !trace_calls.is_empty() && !unified {
+        return Err("--trace-call requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -1383,6 +1477,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         sample_rips,
         unified,
         mark_rip,
+        trace_calls,
+        trace_system_table,
     })
 }
 
@@ -1462,6 +1558,70 @@ mod tests {
         assert!(parse(&base(&["--xhci"])).unwrap().xhci_keys.is_empty());
         assert!(parse(&base(&["--xhci", "--xhci-keys", "04", "--xhci-keys", "05"])).is_err());
         assert!(parse(&base(&["--xhci", "--cpu-loop", "unified"])).is_err());
+    }
+
+    #[test]
+    fn trace_call_is_parsed_and_needs_the_unified_loop() {
+        let base = |extra: &[&str]| {
+            let mut values: Vec<String> = [
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(
+            parse(&base(&[
+                "--trace-call",
+                "GetVariable=0x22ff00:guid=1:name=0"
+            ]))
+            .is_err()
+        );
+        let options = parse(&base(&[
+            "--cpu-loop",
+            "unified",
+            "--trace-call",
+            "GetVariable=0x22ff00:guid=1:name=0",
+            "--trace-call",
+            "ExitBootServices=0x2223e0",
+        ]))
+        .unwrap();
+        assert_eq!(options.trace_calls.len(), 2);
+        assert_eq!(
+            (
+                options.trace_calls[0].physical,
+                options.trace_calls[0].guid_arg,
+                options.trace_calls[0].name_arg
+            ),
+            (0x22ff00, Some(1), Some(0))
+        );
+        assert_eq!(
+            (
+                options.trace_calls[1].guid_arg,
+                options.trace_calls[1].name_arg
+            ),
+            (None, None)
+        );
+        for bad in [
+            "x",
+            "=0x1",
+            "N=zz",
+            "N=0x0",
+            "N=0x1:slot=x",
+            "N=0x1:slot=1:slot=2",
+            "N=0x1:guid=4",
+            "N=0x1:guid=1:guid=2",
+            "N=0x1:other=1",
+        ] {
+            assert!(parse_trace_call(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
