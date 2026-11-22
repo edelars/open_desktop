@@ -9,12 +9,13 @@ import ODShared
 
 // S11-10: DisplayWindow, MetalPresenter and InputChannel are the target ODDisplay (shared with the application); this file stays the viewer.
 // S10-07 display viewer: entry point. Starts VMHost with the shared launch code (VMHostLaunch.swift) in the
-// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) and shows
+// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) or, with `--profile probe`,
+// `--display-smoke probe` (S10-09 profile OD_DISPLAY_PROFILE_STAGE10_PROBE: VMHost runs the own guest probe of S10-08) and shows
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
-// The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
+// usage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
+// The profile flag is for smoke use only: `pattern` (default) or `probe` (one screen only; the frame appears after the guest has run).
 //
 // S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
 // margins, nearest-neighbour sampling); `--pixel-exact` draws 1 guest pixel as 1 physical pixel, centred. For the offscreen
@@ -43,7 +44,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -114,8 +115,11 @@ private struct ViewerConfig {
             }
         }
         if let profile = values["profile"] {
-            guard profile == "pattern" else {
-                throw ViewerError.usage("unsupported --profile \(profile) (only `pattern`; `probe` arrives in S10-09)")
+            guard profile == "pattern" || profile == "probe" else {
+                throw ViewerError.usage("unsupported --profile \(profile) (`pattern` or `probe`)")
+            }
+            guard profile == "pattern" || config.screens == 1 else {
+                throw ViewerError.usage("--profile probe has one screen (no --screens 2)")
             }
             config.profile = profile
         }

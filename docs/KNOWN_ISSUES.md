@@ -7433,7 +7433,7 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Суть:** `audio_output` объявляет `#[link(name = "AudioToolbox", kind = "framework")]` и `CoreFoundation`, но staticlib не передаёт их потребителю: Swift-цели перечисляют framework вручную, `AudioToolbox` в списках нет (`CoreFoundation` есть).
 - **Основание:** в debug-сборке ссылки на `_AudioComponentFindNext`, `_ExtAudioFileWrite` лежат в объектном файле только с символами `audio_output` (`nm -A`), и линковщик его не тянет, пока C ABI не использует звук. В release/LTO объект может слиться с другими; `swift build` и release-сборка с линковкой `od-vmhost` не запускались.
 - **Последствия:** возможна ошибка линковки (неопределённые символы) Swift/harness-целей после release-сборки `od-host`; в `cargo test` не проявляется.
-- **Статус:** открыта. **Следующий шаг:** при подключении вывода к VMHost (S11-04/S11-42) добавить `.linkedFramework("AudioToolbox")` в `od-vmhost` и `-framework AudioToolbox` в harness; до этого проверить `swift build -c release --product od-vmhost`.
+- **Статус:** частично устранена в S10-09 (2026-11-22). Предположение выше опровергнуто: `swift build` (debug) `od-vmhost` на main после S11-41 **не линковался** (`Undefined symbols`: `_AudioOutputUnitStop`, `_AudioUnitInitialize`, `_ExtAudioFileWrite` и др.). В S10-09 в `apps/Package.swift` (`od-vmhost`) добавлено `.linkedFramework("AudioToolbox")`; после этого `swift build` и `swift test --filter DisplayProbeSmokeXCTests` проходят. **Остаётся:** `-framework AudioToolbox` в `tests/cpu/stage3_harness.py` и проверка `swift build -c release` (не запускались).
 
 ### ISSUE-652. S11-41: нет smoke-теста звука на VMHost, профиля `audio-test-tone`, измерения CPU и вывода на динамики
 
@@ -7470,3 +7470,14 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Условие воспроизведения:** чтение кода и ручной прогон из ISSUE-654.
 - **Статус:** открыта.
 - **Следующий шаг:** либо реализовать 11.8 (оба файла за запуск), либо привести 11.8 к `--dump-screen`; решает ревью S10-15.
+
+### ISSUE-656. S10-09: ручной скриншот окна probe не получен; `cargo fmt --check` main не чист в `display_device.rs`
+
+- **Дата обнаружения:** 2026-11-22, при проверке S10-09.
+- **Компонент:** `tests/system/display_end_to_end_smoke.py`, `crates/od-machine/src/display_device.rs`.
+- **Суть 1:** оконный режим просмотрщика с `--profile probe` запущен (VMHost: `probe halted after 25983 instructions in 4 quanta`, `published generation 1`, `window geometry: logical=640x480 physical=1280x960 scale=2.0`, выход 0), но `screencapture -x` в этой среде вернул полностью чёрный кадр 5120×2880 (экран заблокирован или нет разрешения записи экрана). Скриншот окна как «уровень 4» (DISPLAY.md) **не получен**; сквозное доказательство — уровни 2–3 скрипта (дамп offscreen, 0 отличий).
+- **Суть 2:** `cargo fmt --all -- --check` на main (до S10-09) сообщает отличия форматирования в `crates/od-machine/src/display_device.rs` (около строк 4325–4360, тестовый код S10-15). S10-09 этот файл не менял.
+- **Последствия:** п. 1 — нет глазами проверенного скриншота; п. 2 — проверка форматирования краснеет без связи с S10-09.
+- **Условие воспроизведения:** п. 1 — запустить `open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --profile probe --close-after-ms 8000` и снять экран в сессии с разблокированным экраном; п. 2 — `cargo fmt --all -- --check`.
+- **Статус:** открыта.
+- **Следующий шаг:** п. 1 — владелец делает скриншот на разблокированном экране и прикладывает к отчёту; п. 2 — `cargo fmt -p od-machine` отдельным коммитом после согласования с автором S10-15.
