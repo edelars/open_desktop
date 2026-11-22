@@ -8,6 +8,7 @@ mod controller;
 mod device;
 mod hid;
 mod hid_descriptors;
+pub(crate) mod irq_source;
 mod ports;
 mod regs;
 mod ring;

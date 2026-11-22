@@ -48,6 +48,7 @@ use crate::vcpu::{
     BOOT_VCPU_INDEX, LINUX_AP_CPUID_PROFILE, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu,
     VcpuCpuid, vcpu_set,
 };
+use crate::xhci::irq_source::XhciIoapicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, CMOS_INDEX_PORT,
@@ -66,6 +67,10 @@ use crate::{
     PortRegionBinding, RamLimits, RtcCmos, TrackedAccessError, Uart16550Handle, Uart16550PollingTx,
     VirtualClock, VirtualClockError, VirtualClockHandle, run_paged_probe,
     run_paged_probe_with_rdtsc,
+};
+use crate::{
+    HidDevices, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT, XhciConfig, XhciDevice,
+    XhciHandle,
 };
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
@@ -283,6 +288,13 @@ pub struct FirmwareBoardConfig {
     /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
     /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
     pub nvme_pci: bool,
+    /// USB xHCI controller with a keyboard on port 1 and an absolute pointer on port 2
+    /// (S8-42, S8-43; `XHCI_DEVICE.md`): PCI function 00:05.0 with BAR0 `[0xFC00_8000,
+    /// 0xFC00_C000)`, INTA on GSI 17. Requires `pci_ecam`. `None` keeps the board, the handoff
+    /// block and the ACPI manifest hash byte for byte: the controller has no handoff device
+    /// code (firmware finds it by PCI enumeration), only the memory map and its region table
+    /// gain the BAR window.
+    pub xhci: Option<XhciConfig>,
     /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
     /// over bus 0. `false` keeps handoff v1.0 byte for byte (code 7
     /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
@@ -336,6 +348,7 @@ impl Default for FirmwareBoardConfig {
             nvram: None,
             tpm: None,
             nvme_pci: false,
+            xhci: None,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
@@ -593,6 +606,16 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
+        ));
+    }
+    if config.xhci.is_some() && !config.pci_ecam {
+        return Err(FirmwareBoardError::Config("xhci needs pci_ecam"));
+    }
+    // The Linux-profile loops do not serve the controller yet (the set loop opens no BAR0
+    // window, the port reset has no wake deadline, the multi-vCPU path does not service it).
+    if config.xhci.is_some() && config.linux_profile {
+        return Err(FirmwareBoardError::Config(
+            "xhci is served by the firmware profile only (no linux_profile)",
         ));
     }
     if config.nvme_pci && !(config.nvme.is_some() && config.linux_profile) {
@@ -858,6 +881,14 @@ fn board_map(
     for device in devices.iter().filter(|device| device.is_mmio()) {
         regions.push(MemoryRegionSpec::new(
             range(device.base, device.length)?,
+            MemoryRegionKind::Mmio,
+        ));
+    }
+    // The xHCI BAR0 has no device-table entry (the firmware enumerates PCI): its window is a
+    // memory map region only, and so a region of the handoff table.
+    if config.xhci.is_some() {
+        regions.push(MemoryRegionSpec::new(
+            range(XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES)?,
             MemoryRegionKind::Mmio,
         ));
     }
@@ -1427,6 +1458,10 @@ pub struct LoadedFirmwareBoard {
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    xhci_mmio: Option<XhciDevice>,
+    ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
+    xhci: Option<XhciHandle>,
+    hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -1880,6 +1915,9 @@ impl LoadedFirmwareBoard {
         if let Some(nvme) = &self.nvme {
             nvme.platform_reset();
         }
+        if let Some(xhci) = &self.xhci {
+            xhci.platform_reset();
+        }
         if let Some(pm) = &self.acpi_pm {
             pm.platform_reset();
         }
@@ -2226,6 +2264,18 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
+    /// Handle of the xHCI controller; `None` unless `FirmwareBoardConfig::xhci` was set. The
+    /// host queues input with [`XhciHandle::push_input`]; the run loops service the controller.
+    pub fn xhci(&self) -> Option<XhciHandle> {
+        self.xhci.clone()
+    }
+
+    /// Host-side handles of the keyboard and the pointer behind the xHCI ports (LED state,
+    /// counters); `None` without `FirmwareBoardConfig::xhci`.
+    pub fn hid_devices(&self) -> Option<HidDevices> {
+        self.hid.clone()
+    }
+
     /// Both committed NVRAM banks, for the owning host between guest quanta.
     pub fn nvram_snapshot(&self) -> Option<Vec<u8>> {
         self.nvram.as_ref().map(NvramHandle::nvram_snapshot)
@@ -2362,7 +2412,8 @@ impl LoadedFirmwareBoard {
     /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
     /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
     /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. A PCI NVMe
-    /// endpoint also contributes its INTx line through the same IOAPIC source.
+    /// endpoint and the xHCI function also contribute their INTx lines (GSI 16 and 17) through
+    /// the same IOAPIC source.
     pub fn enable_uart_ioapic_irq4(&mut self) -> bool {
         if self.uart_ioapic_source.is_some() {
             return true;
@@ -2372,14 +2423,19 @@ impl LoadedFirmwareBoard {
         };
         let io_apic = IoApic::new(self.lapic.clone()).handle();
         let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone());
-        self.irq_source = match &self.nvme {
+        let mut chain: Box<dyn BoardIrqSource> = match &self.nvme {
             Some(nvme) if nvme.has_pci_transport() => Box::new(NvmeIoapicIrqSource::new(
                 Box::new(source.clone()),
                 nvme.clone(),
-                io_apic,
+                io_apic.clone(),
             )),
             _ => Box::new(source.clone()),
         };
+        // The xHCI INTA line (GSI 17) on top, when the board has the controller.
+        if let Some(xhci) = &self.xhci {
+            chain = Box::new(XhciIoapicIrqSource::new(chain, xhci.clone(), io_apic));
+        }
+        self.irq_source = chain;
         self.uart_ioapic_source = Some(source);
         true
     }
@@ -2783,6 +2839,9 @@ impl LoadedFirmwareBoard {
         if self.tpm.is_some() {
             apertures.push((crate::tpm_crb::TPM_CRB_BASE, crate::tpm_crb::TPM_CRB_LEN));
         }
+        if self.xhci.is_some() {
+            apertures.push((XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES));
+        }
         self.bus.serve_firmware_set_windows(&apertures);
     }
 
@@ -3058,6 +3117,8 @@ impl LoadedFirmwareBoard {
                     display: self.display_mmio.as_ref(),
                     nvme: self.nvme_mmio.as_ref(),
                     tpm: self.tpm.as_ref(),
+                    xhci: self.xhci_mmio.as_ref(),
+                    ecam: self.ecam_mmio.as_ref(),
                 },
                 self.page_table_root,
                 FIRMWARE_EFER,
@@ -3407,6 +3468,7 @@ impl LoadedFirmwareBoard {
             self.uart_output_context = Some(UartOutputContextCapture::default());
         }
         let nvme = self.nvme.clone();
+        let xhci = self.xhci.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -3425,6 +3487,9 @@ impl LoadedFirmwareBoard {
         }
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
+        }
+        if let Some(xhci) = &xhci {
+            xhci.service(&mut self.bus, |_| {});
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
@@ -3558,6 +3623,8 @@ impl LoadedFirmwareBoard {
                 (scheduler_budget.is_some() && scheduler_stop())
                     || uart.holding_occupied()
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                        // A guest write to an xHCI register (a doorbell) ends the quantum.
+                        || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
                     || acpi_pm
                         .as_ref()
                         .is_some_and(|pm| pm.stop_request().is_some())
@@ -3660,6 +3727,9 @@ impl LoadedFirmwareBoard {
             }
             if let Some(nvme) = &nvme {
                 nvme.service(&mut board.bus, |_| {});
+            }
+            if let Some(xhci) = &xhci {
+                xhci.service(&mut board.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -4058,6 +4128,7 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         self.com1_log.bytes.clear();
         let nvme = self.nvme.clone();
+        let xhci = self.xhci.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -4079,6 +4150,9 @@ impl LoadedFirmwareBoard {
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
         }
+        if let Some(xhci) = &xhci {
+            xhci.service(&mut self.bus, |_| {});
+        }
         loop {
             let uart = self.uart.clone();
             let report = self.run_quantum(
@@ -4088,6 +4162,8 @@ impl LoadedFirmwareBoard {
                 || {
                     uart.holding_occupied()
                         || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                        // A guest write to an xHCI register (a doorbell) ends the quantum.
+                        || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
                         || acpi_pm
                             .as_ref()
                             .is_some_and(|pm| pm.stop_request().is_some())
@@ -4109,6 +4185,9 @@ impl LoadedFirmwareBoard {
             // commands and post completions between quanta (NVME_DEVICE.md).
             if let Some(nvme) = &nvme {
                 nvme.service(&mut self.bus, |_| {});
+            }
+            if let Some(xhci) = &xhci {
+                xhci.service(&mut self.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -4208,6 +4287,10 @@ pub(crate) struct AssembledBoard {
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    xhci_mmio: Option<XhciDevice>,
+    ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
+    xhci: Option<XhciHandle>,
+    hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -4436,6 +4519,24 @@ fn assemble_board_with_layout(
         });
         nvme = Some(handle);
     }
+    // The xHCI function (S8-42): PCI 00:05.0, BAR0 on the bus, the keyboard and the pointer
+    // behind its ports; it reads the board clock for the port reset and MFINDEX.
+    let mut xhci = None;
+    let mut xhci_mmio = None;
+    let mut hid = None;
+    if let Some(xhci_config) = config.xhci {
+        let (device, handle, function) = XhciDevice::new_pci(xhci_config, clock.clone());
+        pci.add_function(0, XHCI_PCI_SLOT, 0, Box::new(function))
+            .map_err(|_| FirmwareBoardError::Config("xHCI PCI slot is occupied"))?;
+        hid = Some(handle.attach_hid_devices());
+        xhci_mmio = Some(device.mmio_endpoint());
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(XHCI_PCI_BAR_BASE),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        xhci = Some(handle);
+    }
     let com1 = PortRange::new(
         PortAddress::new(devices[DEV_COM1].base as u16),
         devices[DEV_COM1].length as u32,
@@ -4468,9 +4569,12 @@ fn assemble_board_with_layout(
     }
     // One PCI configuration device, two bindings (ECAM MMIO + conf1 PIO) with the
     // same device index, so both front ends share one function table.
+    let mut ecam_mmio = None;
     if devices[DEV_ECAM_TABLE].present() {
         let device_index = bus_devices.len();
-        bus_devices.push(Box::new(pci));
+        let shared = crate::pci_ecam::SharedPciEcam::new(pci);
+        bus_devices.push(Box::new(shared.clone()));
+        ecam_mmio = Some(shared);
         mmio.push(MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[DEV_ECAM_TABLE].base),
             device_index,
@@ -4558,6 +4662,10 @@ fn assemble_board_with_layout(
         display_mmio,
         nvme_mmio,
         nvme,
+        xhci_mmio,
+        ecam_mmio,
+        xhci,
+        hid,
         nvram,
         tpm,
         acpi_pm,
@@ -4606,6 +4714,10 @@ impl AssembledBoard {
             display_mmio,
             nvme_mmio,
             nvme,
+            xhci_mmio,
+            ecam_mmio,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4669,6 +4781,10 @@ impl AssembledBoard {
             display_mmio,
             nvme_mmio,
             nvme,
+            xhci_mmio,
+            ecam_mmio,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4732,6 +4848,8 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4752,6 +4870,10 @@ impl AssembledBoard {
             display_mmio: None,
             nvme_mmio: None,
             nvme,
+            xhci_mmio: None,
+            ecam_mmio: None,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4842,6 +4964,7 @@ mod failure_smoke_tests;
 
 #[cfg(test)]
 mod tests {
+    mod xhci_board;
     use super::*;
     use crate::{
         ACPI_PM_TMR_BLK, ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1A_CNT_BLK,

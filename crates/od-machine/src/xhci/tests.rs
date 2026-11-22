@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod hid;
+mod irq;
 mod slot_commands;
 mod transfers;
 

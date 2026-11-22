@@ -8,6 +8,7 @@ use crate::nvme::{NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeDevice};
 use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
 use crate::page_walk::MmioDispatchError;
 use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmCrbHandle};
+use crate::xhci::{XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XhciDevice};
 use crate::{
     DeviceAccess, DeviceError, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange,
     IoSpace, Long64ProbeConfig, MachineBus, RamAccessOperation, TrackedAccessError,
@@ -194,6 +195,10 @@ pub(crate) struct FirmwareMmio<'a> {
     pub(crate) display: Option<&'a DisplayDevice>,
     pub(crate) nvme: Option<&'a NvmeDevice>,
     pub(crate) tpm: Option<&'a TpmCrbHandle>,
+    /// The xHCI controller (BAR0 of PCI 00:05.0); the firmware finds it by PCI enumeration.
+    pub(crate) xhci: Option<&'a XhciDevice>,
+    /// The PCI configuration device (ECAM window): the firmware enumerates PCI through it.
+    pub(crate) ecam: Option<&'a crate::pci_ecam::SharedPciEcam>,
 }
 
 impl FirmwareMmio<'_> {
@@ -202,7 +207,12 @@ impl FirmwareMmio<'_> {
         const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
         const NVME: (u64, u64) = (NVME_MMIO_BASE, NVME_MMIO_BYTES);
         const TPM: (u64, u64) = (TPM_CRB_BASE, TPM_CRB_LEN);
-        const WINDOWS: [&[(u64, u64)]; 16] = [
+        const XHCI: (u64, u64) = (XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES);
+        const ECAM: (u64, u64) = (
+            crate::PCI_ECAM_DESCRIPTOR.base,
+            crate::PCI_ECAM_DESCRIPTOR.size,
+        );
+        const WINDOWS: [&[(u64, u64)]; 64] = [
             &[],
             &[DISPLAY],
             &[NVRAM],
@@ -219,11 +229,61 @@ impl FirmwareMmio<'_> {
             &[DISPLAY, NVME, TPM],
             &[NVRAM, NVME, TPM],
             &[DISPLAY, NVRAM, NVME, TPM],
+            &[XHCI],
+            &[DISPLAY, XHCI],
+            &[NVRAM, XHCI],
+            &[DISPLAY, NVRAM, XHCI],
+            &[NVME, XHCI],
+            &[DISPLAY, NVME, XHCI],
+            &[NVRAM, NVME, XHCI],
+            &[DISPLAY, NVRAM, NVME, XHCI],
+            &[TPM, XHCI],
+            &[DISPLAY, TPM, XHCI],
+            &[NVRAM, TPM, XHCI],
+            &[DISPLAY, NVRAM, TPM, XHCI],
+            &[NVME, TPM, XHCI],
+            &[DISPLAY, NVME, TPM, XHCI],
+            &[NVRAM, NVME, TPM, XHCI],
+            &[DISPLAY, NVRAM, NVME, TPM, XHCI],
+            &[ECAM],
+            &[DISPLAY, ECAM],
+            &[NVRAM, ECAM],
+            &[DISPLAY, NVRAM, ECAM],
+            &[NVME, ECAM],
+            &[DISPLAY, NVME, ECAM],
+            &[NVRAM, NVME, ECAM],
+            &[DISPLAY, NVRAM, NVME, ECAM],
+            &[TPM, ECAM],
+            &[DISPLAY, TPM, ECAM],
+            &[NVRAM, TPM, ECAM],
+            &[DISPLAY, NVRAM, TPM, ECAM],
+            &[NVME, TPM, ECAM],
+            &[DISPLAY, NVME, TPM, ECAM],
+            &[NVRAM, NVME, TPM, ECAM],
+            &[DISPLAY, NVRAM, NVME, TPM, ECAM],
+            &[XHCI, ECAM],
+            &[DISPLAY, XHCI, ECAM],
+            &[NVRAM, XHCI, ECAM],
+            &[DISPLAY, NVRAM, XHCI, ECAM],
+            &[NVME, XHCI, ECAM],
+            &[DISPLAY, NVME, XHCI, ECAM],
+            &[NVRAM, NVME, XHCI, ECAM],
+            &[DISPLAY, NVRAM, NVME, XHCI, ECAM],
+            &[TPM, XHCI, ECAM],
+            &[DISPLAY, TPM, XHCI, ECAM],
+            &[NVRAM, TPM, XHCI, ECAM],
+            &[DISPLAY, NVRAM, TPM, XHCI, ECAM],
+            &[NVME, TPM, XHCI, ECAM],
+            &[DISPLAY, NVME, TPM, XHCI, ECAM],
+            &[NVRAM, NVME, TPM, XHCI, ECAM],
+            &[DISPLAY, NVRAM, NVME, TPM, XHCI, ECAM],
         ];
         let index = usize::from(self.display.is_some())
             | (usize::from(self.nvram.is_some()) << 1)
             | (usize::from(self.nvme.is_some()) << 2)
-            | (usize::from(self.tpm.is_some()) << 3);
+            | (usize::from(self.tpm.is_some()) << 3)
+            | (usize::from(self.xhci.is_some()) << 4)
+            | (usize::from(self.ecam.is_some()) << 5);
         WINDOWS[index]
     }
 
@@ -265,6 +325,30 @@ impl FirmwareMmio<'_> {
                 operation,
                 |access| nvme.read_mmio(access),
                 |access, value| nvme.write_mmio(access, value),
+            );
+        }
+        if let Some(ecam) = self.ecam
+            && (crate::PCI_ECAM_DESCRIPTOR.base
+                ..crate::PCI_ECAM_DESCRIPTOR.base + crate::PCI_ECAM_DESCRIPTOR.size)
+                .contains(&address.get())
+        {
+            return access_device_registers(
+                "PCI ECAM",
+                address.get() - crate::PCI_ECAM_DESCRIPTOR.base,
+                operation,
+                |access| ecam.read_mmio(access),
+                |access, value| ecam.write_mmio(access, value),
+            );
+        }
+        if let Some(xhci) = self.xhci
+            && (XHCI_PCI_BAR_BASE..XHCI_PCI_BAR_BASE + XHCI_PCI_BAR_BYTES).contains(&address.get())
+        {
+            return access_device_registers(
+                "xHCI",
+                address.get() - XHCI_PCI_BAR_BASE,
+                operation,
+                |access| xhci.read_mmio(access),
+                |access, value| xhci.write_mmio(access, value),
             );
         }
         if let Some(tpm) = self.tpm

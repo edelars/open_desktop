@@ -34,6 +34,7 @@ use crate::{
     VirtualClockHandle,
 };
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Input events the machine queues for the controller (contract section 16), and the ones one
@@ -168,6 +169,9 @@ pub(crate) struct XhciState {
     input: VecDeque<InputEvent>,
     /// Last Interrupt IN endpoint state told to each device.
     endpoint_active: [bool; MAX_PORTS],
+    /// A guest register write or a queued input event since the last `service`. Shared with the
+    /// handle so that the run loop reads it at every instruction boundary without the state lock.
+    host_dirty: Arc<AtomicBool>,
 }
 
 /// The devices behind the root ports (they outlive HCRST; HCRST resets them).
@@ -198,22 +202,11 @@ impl GuestDma for CountingDma<'_> {
 }
 
 impl XhciState {
-    fn new(config: XhciConfig, clock: VirtualClockHandle) -> Self {
-        // Reserved project identity (as the NVMe endpoint); drivers bind by class 0x0C0330.
-        let mut pci = Type0Config::new(
-            0xD1A6,
-            0x0010,
-            0x01,
-            0x0C_03_30,
-            Some(XHCI_PCI_BAR_BYTES as u32),
-        )
-        .expect("xHCI has a valid constant class and BAR size");
-        pci.configure_64_bit_memory_bar0(XHCI_PCI_BAR_BASE);
-        pci.configure_inta();
+    fn new(config: XhciConfig, clock: VirtualClockHandle, host_dirty: Arc<AtomicBool>) -> Self {
         Self {
             config,
             clock,
-            pci,
+            pci: Self::initial_pci(),
             hw: Hw::new(),
             ignored_doorbells: 0,
             ram_accesses: 0,
@@ -224,7 +217,38 @@ impl XhciState {
             })),
             input: VecDeque::new(),
             endpoint_active: [false; MAX_PORTS],
+            host_dirty,
         }
+    }
+
+    /// The PCI configuration at board creation: reserved project identity (as the NVMe endpoint;
+    /// drivers bind by class 0x0C0330), BAR0 programmed at [`XHCI_PCI_BAR_BASE`], INTA.
+    fn initial_pci() -> Type0Config {
+        let mut pci = Type0Config::new(
+            0xD1A6,
+            0x0010,
+            0x01,
+            0x0C_03_30,
+            Some(XHCI_PCI_BAR_BYTES as u32),
+        )
+        .expect("xHCI has a valid constant class and BAR size");
+        pci.configure_64_bit_memory_bar0(XHCI_PCI_BAR_BASE);
+        pci.configure_inta();
+        pci
+    }
+
+    /// Board reset (contract section 12.2): HCRST, the devices reset, the input queue empty, and
+    /// the PCI configuration back to the values at board creation. Diagnostics stay.
+    fn platform_reset(&mut self) {
+        self.hw = Hw::new();
+        self.devices
+            .0
+            .iter_mut()
+            .for_each(|device| device.host_controller_reset());
+        self.input.clear();
+        self.sync_endpoint_activity();
+        self.pci = Self::initial_pci();
+        self.host_dirty.store(false, Ordering::Relaxed);
     }
 
     fn now_ns(&self) -> u64 {
@@ -1077,6 +1101,7 @@ pub struct XhciDevice {
 #[derive(Clone, Debug)]
 pub struct XhciHandle {
     state: Arc<Mutex<XhciState>>,
+    dirty: Arc<AtomicBool>,
 }
 
 /// The ECAM/conf1 frontend of PCI function 00:05.0. Command, BAR0 and the INTx level share
@@ -1105,9 +1130,15 @@ impl XhciDevice {
         config: XhciConfig,
         clock: VirtualClockHandle,
     ) -> (Self, XhciHandle, XhciPciFunction) {
-        let state = Arc::new(Mutex::new(XhciState::new(config, clock)));
+        let dirty = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(XhciState::new(
+            config,
+            clock,
+            Arc::clone(&dirty),
+        )));
         let handle = XhciHandle {
             state: Arc::clone(&state),
+            dirty,
         };
         (Self { state }, handle.clone(), XhciPciFunction(handle))
     }
@@ -1142,6 +1173,36 @@ impl XhciHandle {
         Ok(())
     }
 
+    /// The guest wrote an xHCI register (a doorbell, ERDP, USBCMD, a port) or the host queued an
+    /// input event since the last [`Self::service`]: the machine owner ends the guest quantum and
+    /// services the controller, as for an NVMe doorbell. Unlike [`Self::service_pending`] it
+    /// goes false after the call even while an Interrupt IN endpoint polls for a report.
+    pub fn wakeup_pending(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Board reset: the controller returns to its power-on state (HCRST, devices reset, input
+    /// queue empty, PCI configuration as at board creation). The devices stay attached.
+    pub fn platform_reset(&self) {
+        lock(&self.state).platform_reset();
+    }
+
+    /// The INTx level without waiting for a worker that holds the controller (`None` then).
+    pub fn try_sample_pci_interrupts(&self) -> Option<bool> {
+        match self.state.try_lock() {
+            Ok(mut state) => {
+                state.poll_ports();
+                Some(state.interrupt_level())
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let mut state = error.into_inner();
+                state.poll_ports();
+                Some(state.interrupt_level())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Attaches the keyboard (port 1) and the absolute pointer (port 2); returns their host-side
     /// handles (LED state, counters).
     pub fn attach_hid_devices(&self) -> HidDevices {
@@ -1166,6 +1227,7 @@ impl XhciHandle {
             return Err(InputQueueFull);
         }
         state.input.push_back(event);
+        state.host_dirty.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1213,6 +1275,7 @@ impl XhciHandle {
     ) -> XhciServiceReport {
         let mut state = lock(&self.state);
         state.poll_ports();
+        state.host_dirty.store(false, Ordering::Relaxed);
         // Input is state of the devices, not DMA: it is handed over without Command.BME.
         state.dispatch_input();
         if !state.dma_enabled() {
@@ -1234,7 +1297,14 @@ impl XhciHandle {
 }
 
 impl XhciDevice {
-    fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
+    /// A second device on the same controller state, for the firmware's exact-window MMIO path.
+    pub(crate) fn mmio_endpoint(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    pub(crate) fn read_mmio(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -1246,7 +1316,7 @@ impl XhciDevice {
         state.read_register(access.offset, access.width)
     }
 
-    fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+    pub(crate) fn write_mmio(&self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         if access.space != IoSpace::Mmio {
             return Err(DeviceError::UnsupportedSpace);
         }
@@ -1255,6 +1325,7 @@ impl XhciDevice {
             return Ok(());
         }
         state.poll_ports();
+        state.host_dirty.store(true, Ordering::Relaxed);
         state.write_register(access.offset, access.width, value)
     }
 }
