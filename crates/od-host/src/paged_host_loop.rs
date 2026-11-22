@@ -326,6 +326,12 @@ pub enum PagedHostLoopExit {
     DeviceBoundary,
     /// The board latched a shutdown or reset request from the guest.
     MachineStop(od_machine::MachineStopReason),
+    /// S2-25o: the state is PAE paging of a protected-mode vCPU and its instruction was not executed:
+    /// outside the covered set of `od_machine::pae_covers` (the stop names the instruction), a refusal of
+    /// the 32-bit model, a memory refusal that is no guest fault, or a state that cannot be the model
+    /// (`od_machine::run_pae_state_step`). Nothing of the instruction retired and the state is as it
+    /// was; nothing was handed to the JIT or to the Long64 interpreter.
+    PaeProtected(od_machine::PaeProtectedStop),
 }
 
 /// Counters and exit of one call of [`run_paged_host_loop`].
@@ -728,6 +734,49 @@ fn try_atomic_step(
     }
 }
 
+/// S2-25o: one instruction of a PAE protected-mode state (`od_machine::run_pae_state_step`). `None`: it
+/// retired (one instruction of the interpreter's count) and the loop goes on; `Some`: the exit of the loop.
+/// Only the exclusive bus runs it (vCPU 0, the whole bus: an MMIO operand reaches its device); a shared
+/// bus (the parallel mode) has no `&mut MachineBus` for the adapter and keeps the S2-25n refusal
+/// `ProbeConfigError::PaeProtectedMode`, named exactly, before any fetch or walk. A `#PF` is
+/// `GuestFault` with the record of the adapter (no delivery in this path).
+fn pae_protected_step(
+    report: &mut PagedHostLoopReport,
+    state: &mut od_isa::LongModeState,
+    bus: &mut LoopBusRef<'_, '_>,
+    config: PagedHostLoopConfig,
+    consecutive_faults: &mut u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> Option<PagedHostLoopExit> {
+    let LoopBusRef::Exclusive(machine) = bus else {
+        return Some(PagedHostLoopExit::Interpreter(
+            od_machine::PagedProbeExit::Rejected(od_machine::PagedProbeRejection::Configuration(
+                od_machine::ProbeConfigError::PaeProtectedMode {
+                    cr0: state.cr0.unwrap_or(0),
+                    cr4: state.cr4.unwrap_or(0),
+                    efer: config.efer,
+                },
+            )),
+        ));
+    };
+    let (outcome, page_fault) =
+        od_machine::run_pae_state_step(state, machine, 0, config.cr3, config.efer, committed_write);
+    match outcome {
+        od_machine::PaeStepOutcome::Retired(_) => {
+            report.retired_interpreter += 1;
+            report.steps_interpreter += 1;
+            report.remaining_budget -= 1;
+            *consecutive_faults = 0;
+            None
+        }
+        od_machine::PaeStepOutcome::Fault(fault) => {
+            report.page_fault = page_fault;
+            Some(PagedHostLoopExit::GuestFault(fault))
+        }
+        od_machine::PaeStepOutcome::Stopped(stop) => Some(PagedHostLoopExit::PaeProtected(stop)),
+    }
+}
+
 pub(crate) fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
@@ -834,6 +883,24 @@ pub(crate) fn run_paged_host_loop_core(
         }
         before_step(control, steps_started);
         steps_started += 1;
+
+        // S2-25o: PAE paging of a protected-mode vCPU. The native blocks and the Long64 interpreter run
+        // 64-bit code over a four-level snapshot; this state is a 32-bit one, executed by the covered
+        // set of the 32-bit model over the PAE adapter, one instruction per iteration.
+        if od_machine::is_pae_protected_state(state, config.efer) {
+            if let Some(exit) = pae_protected_step(
+                &mut report,
+                state,
+                &mut bus,
+                config,
+                consecutive_faults,
+                &mut committed_write,
+            ) {
+                report.exit = exit;
+                return report;
+            }
+            continue;
+        }
 
         // JIT path for the admitted forms; a native block gets the caller's byte.
         let attempt = native_allowed.then(|| {

@@ -420,6 +420,9 @@ impl JitHostQuantum {
                     Some(format!("{exit:?}; page_fault: {:?}", report.page_fault))
                 }
                 PagedHostLoopExit::AtomicHostFailure(error) => Some(format!("{error:?}")),
+                PagedHostLoopExit::PaeProtected(stop) => {
+                    Some(format!("{stop:?}; rip {:#x}", call.state.rip))
+                }
                 _ => None,
             };
             if let Some(detail) = detail {
@@ -469,6 +472,9 @@ impl JitHostQuantum {
                 }
                 PagedHostLoopExit::InvalidRflagsDefined { .. } => {
                     Err("host JIT quantum: invalid definedness mask")
+                }
+                PagedHostLoopExit::PaeProtected(_) => {
+                    Err("host JIT quantum: a PAE protected-mode instruction was not executed")
                 }
             };
             let device_ns = if self.cpl0_set && (account_failure || exit.is_ok()) {
