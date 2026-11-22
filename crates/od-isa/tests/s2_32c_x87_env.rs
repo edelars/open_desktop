@@ -526,12 +526,18 @@ fn decoder_and_the_fwait_pairs() {
             );
         }
     }
-    // FSTENV and FSAVE are FWAIT followed by the non-waiting form; FWAIT is the CPL0 set's, so the
-    // bounded profile refuses the first byte and the pair is not a form of its own.
-    let fwait = decode(&[0x9b, 0xd9, 0x30]).unwrap();
+    // FSTENV and FSAVE are FWAIT followed by the non-waiting form: since S2-32f the exact spellings
+    // `9B D9 30` and `9B DD 30` are one instruction of three bytes with the operation of the
+    // non-waiting form (tests/s2_32f_x87_fwait_env.rs); any other byte after `9B` is a bare FWAIT.
+    let fstenv = decode(&[0x9b, 0xd9, 0x30]).unwrap();
+    assert_eq!(
+        (fstenv.operation, fstenv.length),
+        (Operation::FnstenvRax, 3)
+    );
+    let fwait = decode(&[0x9b, 0xd9, 0x20]).unwrap();
     assert_eq!((fwait.operation, fwait.length), (Operation::Fwait, 1));
     let mut state = state_with(Some(X87State::fixture_seed()), ENV);
-    let mut ram = Ram::new(&[0x9b, 0xd9, 0x30]);
+    let mut ram = Ram::new(&[0x9b, 0xd9, 0x20]);
     assert_eq!(
         run(&mut state, &mut ram).unwrap(),
         StepOutcome::Unsupported { opcode: 0x9b }

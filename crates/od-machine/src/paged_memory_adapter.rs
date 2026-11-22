@@ -10675,6 +10675,113 @@ mod tests {
         }
     }
 
+    /// S2-32f: the decoder looks one or two bytes past `9B` for the spellings `9B D9 30` and `9B DD 30` of
+    /// FSTENV/FSAVE. A bare FWAIT on the last byte of its page must not reach into the next page: no fetch,
+    /// no walk of the next page (its accessed bit stays clear), no recorded page fault or memory error of the
+    /// adapter. The next page holds `D9 30` (mapped case) or nothing (unmapped case); either way the FWAIT
+    /// retires alone and RIP is the first byte of the next page.
+    #[test]
+    fn a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page() {
+        use od_isa::execute::{
+            ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, GuestFpState, RunConfig,
+            run_with_cpl0_profile_set,
+        };
+        use od_isa::{CpuActivity, StiShadow};
+        const LAST_BYTE: u64 = 0x0040_0fff;
+        // The leaf of linear 0x401000 (the second entry of the page table at 0x4000): unmapped, or frame 0x8000.
+        for next_leaf in [0u64, 0x8007] {
+            let memory = lock_memory(0, 0x7007);
+            memory
+                .store_u8(GuestPhysicalAddress::new(0x7fff), 0x9b, |_| {})
+                .unwrap();
+            memory
+                .store_u64(GuestPhysicalAddress::new(0x4008), next_leaf, |_| {})
+                .unwrap();
+            for (offset, byte) in [0xd9u8, 0x30].into_iter().enumerate() {
+                memory
+                    .store_u8(
+                        GuestPhysicalAddress::new(0x8000 + offset as u64),
+                        byte,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            let leaf_before = memory.load_u64(GuestPhysicalAddress::new(0x4008)).unwrap();
+            assert_eq!(leaf_before, next_leaf);
+            let mut fp = GuestFpState::initial();
+            // The member of the set refuses a cell whose FCS/FDS are not represented.
+            fp.x87.instruction_selector = Some(0);
+            fp.x87.data_selector = Some(0);
+            let cell = std::cell::RefCell::new(fp);
+            let mut log = Vec::new();
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let mut state = LongModeState {
+                rip: LAST_BYTE,
+                rflags: 0x2,
+                cr0: Some(CR0),
+                cr4: Some(CR4),
+                activity: Some(CpuActivity::Running),
+                sti_shadow: Some(StiShadow::Clear),
+                ..LongModeState::default()
+            };
+            let result = run_with_cpl0_profile_set(
+                &mut state,
+                &mut adapter,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: context(),
+                },
+                od_isa::INTEGER_FLAGS,
+                &Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                    .with_cpuid(&od_isa::cpuid::CpuidProfile::X8664V1Stage4A)
+                    .with_fp_state(&cell),
+                None,
+                || false,
+            )
+            .unwrap();
+            let label = format!("next leaf {next_leaf:#x}");
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert!(
+                matches!(
+                    result.exit,
+                    Cpl0ProfileSetExit::Run(od_isa::execute::RunExit::InstructionBudgetExhausted)
+                ),
+                "{label}: {:?}",
+                result.exit
+            );
+            assert_eq!(state.rip, 0x0040_1000, "{label}: the bare FWAIT retired");
+            assert!(
+                adapter.page_fault.is_none(),
+                "{label}: no page fault record"
+            );
+            assert!(
+                adapter.memory_error.is_none(),
+                "{label}: no memory error record"
+            );
+            assert!(
+                adapter.access_error.is_none(),
+                "{label}: no access error record"
+            );
+            drop(adapter);
+            // The notifications are those of the accessed bits of the code page's own entries: no range covers
+            // the next leaf (a start-only comparison would miss a range that begins below it and extends over it).
+            assert!(
+                log.iter().all(|range| {
+                    !(range.start().get() as u128 <= 0x4008 && 0x4008 < range.end_exclusive())
+                }),
+                "{label}: no notification for the leaf of the next page: {log:?}"
+            );
+            // The walk of the code page sets the accessed bit of its own entries; the entry of the next page stays.
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x4008)).unwrap(),
+                leaf_before,
+                "{label}: the leaf of the next page is untouched"
+            );
+        }
+    }
+
     /// S6-32, the instruction level: the interpreter's CPL0 set runs real `MFENCE`, `SFENCE`
     /// and `LFENCE` bytes (and an ordinary store and load around them) through the adapter. The
     /// final state, the retired count and every byte of RAM are the same in both modes; the

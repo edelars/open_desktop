@@ -3101,8 +3101,10 @@ pub enum Operation {
     /// S2-32b: bare `DF 30` FBSTP m80bcd at [RAX], storing the rounded ST(0) as packed BCD and popping.
     FbstpM80Rax,
     /// S2-32c: bare `D9 30` FNSTENV m28byte at [RAX] (32-bit protected-mode environment image, no prefix).
+    /// S2-32f: also the three-byte spelling `9B D9 30` (FSTENV; opcode `9B`, length 3).
     FnstenvRax,
     /// S2-32c: bare `DD 30` FNSAVE m108byte at [RAX] (environment plus ST(0)..ST(7), then FNINIT).
+    /// S2-32f: also the three-byte spelling `9B DD 30` (FSAVE; opcode `9B`, length 3).
     FnsaveRax,
     /// S2-32c: bare `DD 20` FRSTOR m108byte at [RAX].
     FrstorRax,
@@ -11820,12 +11822,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if duplicate {
                     return Err(self.unsupported(opcode));
                 }
-                if prefixes == Prefixes::default()
-                    || prefixes
-                        == (Prefixes {
-                            group1: Some(0xf0),
-                            ..Prefixes::default()
-                        })
+                if prefixes == Prefixes::default() {
+                    // S2-32f: the spellings `9B D9 30` (FSTENV) and `9B DD 30` (FSAVE) are one
+                    // instruction of three bytes, FWAIT and then the non-waiting form; any other
+                    // byte after `9B` leaves it a bare FWAIT of its own byte.
+                    self.fwait_environment_spelling()
+                        .unwrap_or(Operation::Fwait)
+                } else if prefixes
+                    == (Prefixes {
+                        group1: Some(0xf0),
+                        ..Prefixes::default()
+                    })
                 {
                     Operation::Fwait
                 } else {
@@ -12567,6 +12574,39 @@ impl<M: GuestMemory> Fetch<'_, M> {
             opcode,
             length: self.length,
         }
+    }
+
+    /// S2-32f: after a bare `9B`, the exact bytes `D9 30` (FSTENV m28byte at [RAX]) or `DD 30` (FSAVE
+    /// m108byte at [RAX]) are consumed and give the operation of the non-waiting form; the instruction
+    /// then keeps opcode `9B` and length 3. Any other next byte, a prefix between FWAIT and the escape
+    /// byte included, or a fetch error on one of the two bytes consumes nothing (the length is
+    /// restored and the error is left to the decode of the next instruction).
+    fn fwait_environment_spelling(&mut self) -> Option<Operation> {
+        // The look-ahead never leaves the 4 KiB page of the `9B` byte: `9B` is at `start + length - 1`,
+        // so when it or the byte after it is the last byte of its page no byte after `9B` is fetched
+        // (a bare FWAIT of its own byte: no fetch, no page walk and no recorded error of an adapter
+        // for the next page). A spelling across a page boundary is FWAIT and the non-waiting form
+        // as two instructions; the second faults with the same RIP, `9B` + 1.
+        let next = self.start.wrapping_add(u64::from(self.length));
+        if next % 0x1000 == 0 || next % 0x1000 == 0xfff {
+            return None;
+        }
+        let start = self.length;
+        let operation = (|| {
+            let escape = self.byte().ok()?;
+            if self.byte().ok()? != 0x30 {
+                return None;
+            }
+            match escape {
+                0xd9 => Some(Operation::FnstenvRax),
+                0xdd => Some(Operation::FnsaveRax),
+                _ => None,
+            }
+        })();
+        if operation.is_none() {
+            self.length = start;
+        }
+        operation
     }
 
     /// S2-34 (m128 addressing): general decode of the memory forms of the six raw 128-bit SSE

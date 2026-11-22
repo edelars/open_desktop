@@ -47282,6 +47282,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             },
             fp_cell,
             instruction.opcode.byte,
+            // S2-32f: the spelling `9B D9 30` / `9B DD 30` (opcode `9B`) waits first.
+            instruction.opcode.byte == 0x9b,
         );
     }
     // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
@@ -53092,6 +53094,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // masks every exception, FNSAVE re-initialises like FNINIT (FIP, FCS, FDP, FDS cleared).
         let save_registers = instruction.operation == Operation::FnsaveRax;
         let length: u64 = if save_registers { 108 } else { 28 };
+        let start_rip = state.rip;
+        if instruction.opcode.byte == 0x9b {
+            // S2-32f: the spelling `9B D9 30` / `9B DD 30` is FWAIT and then the non-waiting form. The
+            // FWAIT part has retired (the bounded profile admits no pending exception, so it raised
+            // nothing), so a fault of the store points at the FNSTENV/FNSAVE byte, `9B` + 1 (Intel SDM,
+            // FSTENV/FSAVE: "if an exception is generated for either of these instructions, the save EIP
+            // points to the instruction that caused the exception"). Success sets RIP to `next_rip` below.
+            // A model error (unmapped memory, address overflow, backend failure) is not an x86
+            // exception: it restores RIP to the `9B` byte and changes no state, like FNSTENV/FLDENV.
+            state.rip = state.rip.wrapping_add(1);
+        }
         let destination = MemoryOperand {
             base: AddressBase::Register(Register::Rax),
             index: None,
@@ -53102,16 +53115,22 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         };
         let address = match destination.linear_address_48(state, next_rip) {
             Ok(address) => address,
-            Err(error) => return report_memory_error(MemoryError::Architectural(error)),
+            Err(error) => {
+                return report_memory_error_at(state, start_rip, MemoryError::Architectural(error));
+            }
         };
-        let last = address
-            .checked_add(length - 1)
-            .ok_or(MemoryError::AddressOverflow {
-                address,
-                length: length as usize,
-            })?;
+        let Some(last) = address.checked_add(length - 1) else {
+            return report_memory_error_at(
+                state,
+                start_rip,
+                MemoryError::AddressOverflow {
+                    address,
+                    length: length as usize,
+                },
+            );
+        };
         if !canonical(last) {
-            return report_memory_error(general_protection());
+            return report_memory_error_at(state, start_rip, general_protection());
         }
         let image = x87_save_image(
             state
@@ -53121,7 +53140,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             save_registers,
         );
         if let Err(error) = memory.write(address, context, &image[..length as usize]) {
-            return report_memory_error(error);
+            return report_memory_error_at(state, start_rip, error);
         }
         let x87 = state
             .x87
@@ -70886,6 +70905,23 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
     }
 }
 
+/// S2-32f: like `report_memory_error`, for a path that already moved RIP (the `9B` prefix of the
+/// spelled-apart FSTENV/FSAVE). An architectural fault keeps the moved RIP; a model error is not an
+/// x86 exception, so RIP goes back to `start_rip` (the first byte of the instruction).
+fn report_memory_error_at(
+    state: &mut LongModeState,
+    start_rip: u64,
+    error: MemoryError,
+) -> Result<StepOutcome, MemoryError> {
+    match error {
+        MemoryError::Architectural(fault) => Ok(StepOutcome::Fault(fault)),
+        error => {
+            state.rip = start_rip;
+            Err(error)
+        }
+    }
+}
+
 /// S2-34 (m128 addressing): the kind, direction, XMM register and memory operand of every memory
 /// form of the six raw 128-bit moves, from the general operation and from each narrower profile
 /// operation (so one executor, one set of exception checks, serves them all).
@@ -72140,7 +72176,7 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
 /// a represented FCS/FDS selector included: the set admits no FCS/FDS tracking), and the state is stored back with
 /// whatever the instruction left (a fault or a refusal leaves it as it was). `profiles` has no FP member, so the
 /// nested step does not return here. `opcode` is the opcode byte of the instruction (`D9`, `DB`, `DD` or `DF`) for the
-/// `Unsupported` of an unmodeled CR0.
+/// `Unsupported` of an unmodeled CR0. `fwait` is the three-byte spelling of FNSTENV/FNSAVE with a leading FWAIT (S2-32f).
 fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -72150,11 +72186,44 @@ fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     runtime: StepRuntime<'_, '_, '_>,
     cell: &RefCell<GuestFpState>,
     opcode: u8,
+    fwait: bool,
 ) -> Result<StepOutcome, MemoryError> {
     let Some(cr0) = state.cr0 else {
         return Ok(StepOutcome::Unsupported { opcode });
     };
+    if fwait {
+        // S2-32f: FSTENV/FSAVE is FWAIT and then the non-waiting form, with the checks of `step_cpl0_fp`
+        // for FWAIT first: CR0 and CR4 modeled, #NM for CR0.MP and CR0.TS, then a pending unmasked
+        // exception is #MF (CR0.NE set; with NE clear the FERR# path has no model: `Unsupported`).
+        if state.cr4.is_none() {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+        if cr0 & (1 << 1) != 0 && cr0 & (1 << 3) != 0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let status_word = cell.borrow().x87.status_word;
+        let control_word = cell.borrow().x87.control_word;
+        if status_word & (1 << 7) != 0 && status_word & 0x003f & !control_word != 0 {
+            if cr0 & (1 << 5) == 0 {
+                return Ok(StepOutcome::Unsupported { opcode });
+            }
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 16,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if cr0 & 0xc != 0 {
+        if fwait {
+            // S2-32f: CR0.EM, or CR0.TS with MP clear, is no condition of FWAIT: the #NM is that of the
+            // FNSTENV/FNSAVE part, after the FWAIT part retired, so the saved RIP is `9B` + 1.
+            state.rip = state.rip.wrapping_add(1);
+        }
         return Ok(StepOutcome::Fault(ArchitecturalFault {
             vector: 7,
             error_code: None,
