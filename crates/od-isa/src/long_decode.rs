@@ -4,6 +4,7 @@
 
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError};
 use crate::mmx_int::MmxIntKind;
+use crate::sse2_int::{Sse2IntKind, Sse2Prefix};
 use crate::{LongModeState, OperandSize, Register, RegisterView};
 
 /// The six raw 128-bit SSE moves (Intel SDM Vol. 2B: MOVAPD pp. 4-37..4-40, MOVAPS pp. 4-41..4-44,
@@ -2891,6 +2892,21 @@ pub enum Operation {
     /// decoder is `Unsupported` for the opcode; executed through `step_sse41`.
     Sse41 {
         kind: Sse41Kind,
+        xmm: u8,
+        operand: Sse41Operand,
+        immediate: u8,
+    },
+    /// S2-39 (integer SSE2 remainder): the integer SSE2 forms the narrow register profile does not carry (see
+    /// [`Sse2IntKind`]): the packed integer arithmetic, logic, compare, pack/unpack, shift-by-XMM-count and shuffle
+    /// forms with an XMM or any 16-byte aligned memory source, MOVD/MOVQ between XMM and general registers or memory,
+    /// MOVLPS/MOVLPD/MOVHPS/MOVHPD, MOVHLPS/MOVLHPS, PEXTRW, PINSRW and the register forms of MOVDQU/MOVDQA. `xmm`
+    /// is the ModRM.reg XMM register (the destination of a load, the source of a store; for PEXTRW the XMM
+    /// register is the ModRM.r/m source and `operand` the general destination from ModRM.reg); `operand` is the other
+    /// operand. `immediate` is the imm8 of the shuffles, PINSRW and PEXTRW and zero elsewhere. Decoded only as the
+    /// fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode; executed through
+    /// `step_sse2_int`.
+    Sse2Int {
+        kind: Sse2IntKind,
         xmm: u8,
         operand: Sse41Operand,
         immediate: u8,
@@ -13082,6 +13098,102 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }))
     }
 
+    /// S2-39 (integer SSE2 remainder): the forms of [`Sse2IntKind`], tried by [`decode`] only after the profile
+    /// decoder returned `Unsupported` for the opcode and no other general decoder claimed it. The mandatory prefix
+    /// (none, `66`, `F2`, `F3`) selects the instruction; LOCK is #UD (SDM Vol. 2A, each instruction: "If the LOCK
+    /// prefix is used"). Refused (`Ok(None)`): a repeated prefix, `66` together with `F2`/`F3`, FS/GS overrides (no
+    /// segment base in this operand model), a prefix other than the mandatory one of the opcode, and the
+    /// register or memory form the instruction does not have (PEXTRW with a memory operand, MOVLPS/MOVHPS stores and
+    /// loads with a register operand other than MOVHLPS/MOVLHPS, the memory forms of MOVDQU/MOVDQA, which are the S2-34
+    /// raw moves).
+    fn decode_sse2_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let prefix = match (prefixes.operand_override, prefixes.group1) {
+            (false, None) => Sse2Prefix::None,
+            (true, None) => Sse2Prefix::P66,
+            (false, Some(0xf2)) => Sse2Prefix::F2,
+            (false, Some(0xf3)) => Sse2Prefix::F3,
+            _ => return Ok(None),
+        };
+        if !Sse2IntKind::owns(prefix, opcode.byte) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        let rex = prefixes.rex.unwrap_or(0);
+        let Some(kind) = Sse2IntKind::decode(prefix, opcode.byte, register_form, rex & 8 != 0)
+        else {
+            if Sse2IntKind::undefined_form(prefix, opcode.byte, register_form) {
+                return Err(DecodeError::Invalid {
+                    opcode,
+                    length: self.length,
+                });
+            }
+            return Ok(None);
+        };
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rm = (modrm & 7) | ((rex & 1) << 3);
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let operand = if register_form {
+            if kind.rm_is_general() {
+                Sse41Operand::Gpr(rm)
+            } else {
+                Sse41Operand::Xmm(rm)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        // PEXTRW: ModRM.reg is the general destination and ModRM.r/m the XMM source.
+        let (xmm, operand) = if kind == Sse2IntKind::Pextrw {
+            let Sse41Operand::Xmm(source) = operand else {
+                return Ok(None);
+            };
+            (source, Sse41Operand::Gpr(reg))
+        } else {
+            (reg, operand)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse2Int {
+                kind,
+                xmm,
+                operand,
+                immediate,
+            },
+        }))
+    }
+
     /// S2-56 slice A: POPCNT (`F3 [REX.W] 0F B8 /r`) and CRC32 (`F2 [REX.W] 0F 38 F0/F1 /r`), tried by
     /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2B
     /// POPCNT pp. 4-405..4-406, Vol. 2A CRC32 pp. 3-205..3-207). The mandatory prefix (`F3` for POPCNT, `F2` for
@@ -13743,7 +13855,19 @@ pub fn decode(
         }
         // S2-37 (remainder): CVTSI2SS/SD and CVT[T]SS2SI/SD2SI.
         (OpcodeMap::Escape0f, 0x2a | 0x2c | 0x2d) => fetch.decode_sse_int_convert(),
-        _ => return profile,
+        _ => Ok(None),
+    };
+    // S2-39 (integer SSE2 remainder): the forms of `Sse2IntKind` that no earlier general decoder claimed (the
+    // MMX arm above answers `Ok(None)` for the `66`-prefixed forms of its opcodes).
+    let general = match general {
+        Ok(None) if opcode.map == OpcodeMap::Escape0f => Fetch {
+            memory: &mut *fetch.memory,
+            start: rip,
+            length: 0,
+            context,
+        }
+        .decode_sse2_int(),
+        other => other,
     };
     match general {
         Ok(Some(instruction)) => Ok(instruction),
@@ -14712,6 +14836,140 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    /// S2-39 (integer SSE2 remainder): the forms of `Sse2IntKind` decode through the general decode only.
+    #[test]
+    fn integer_sse2_remainder_forms_decode_through_the_general_decode() {
+        use crate::sse2_int::Sse2IntKind as Kind;
+        // (bytes, kind, xmm, operand register or memory base, immediate)
+        let register = |number| Sse41Operand::Xmm(number);
+        let general = |number| Sse41Operand::Gpr(number);
+        let forms: [(&[u8], Kind, u8, Option<Sse41Operand>, u8); 9] = [
+            (
+                &[0x66, 0x0f, 0xc5, 0xca, 0x03],
+                Kind::Pextrw,
+                2,
+                Some(general(1)),
+                3,
+            ),
+            (
+                &[0x66, 0x44, 0x0f, 0xc5, 0xc2, 0x07],
+                Kind::Pextrw,
+                2,
+                Some(general(8)),
+                7,
+            ),
+            (
+                &[0x66, 0x48, 0x0f, 0x7e, 0xc9],
+                Kind::MovqToGeneral,
+                1,
+                Some(general(1)),
+                0,
+            ),
+            (
+                &[0x66, 0x0f, 0x7e, 0xc9],
+                Kind::MovdStore,
+                1,
+                Some(general(1)),
+                0,
+            ),
+            (
+                &[0xf3, 0x0f, 0x7e, 0xca],
+                Kind::MovqLoad,
+                1,
+                Some(register(2)),
+                0,
+            ),
+            (&[0x0f, 0x12, 0xca], Kind::Movhlps, 1, Some(register(2)), 0),
+            (
+                &[0xf3, 0x0f, 0x70, 0xca, 0x1b],
+                Kind::Pshufhw,
+                1,
+                Some(register(2)),
+                0x1b,
+            ),
+            (
+                &[0x66, 0x0f, 0xe5, 0xca],
+                Kind::Pmulhw,
+                1,
+                Some(register(2)),
+                0,
+            ),
+            // A memory operand: the operand is compared by kind below.
+            (&[0x66, 0x0f, 0xfc, 0x08], Kind::Paddb, 1, None, 0),
+        ];
+        for (bytes, kind, xmm, operand, immediate) in forms {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory
+                .decode_general()
+                .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            let Operation::Sse2Int {
+                kind: decoded_kind,
+                xmm: decoded_xmm,
+                operand: decoded_operand,
+                immediate: decoded_immediate,
+            } = decoded.operation
+            else {
+                panic!("{bytes:02x?}: {:?}", decoded.operation);
+            };
+            assert_eq!(
+                (decoded_kind, decoded_xmm, decoded_immediate),
+                (kind, xmm, immediate),
+                "{bytes:02x?}"
+            );
+            match operand {
+                Some(operand) => assert_eq!(decoded_operand, operand, "{bytes:02x?}"),
+                None => assert!(
+                    matches!(
+                        decoded_operand,
+                        Sse41Operand::Memory(MemoryOperand {
+                            base: AddressBase::Register(Register::Rax),
+                            index: None,
+                            displacement: 0,
+                            ..
+                        })
+                    ),
+                    "{bytes:02x?}"
+                ),
+            }
+        }
+        // Undefined forms are #UD (LOCK, PEXTRW with memory, the register form of the half-register stores).
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0xf0, 0x66, 0x0f, 0xfc, 0xca][..],
+            &[0x66, 0x0f, 0xc5, 0x08, 0x00][..],
+            &[0x0f, 0x13, 0xca][..],
+            &[0x0f, 0x17, 0xca][..],
+            &[0x66, 0x0f, 0x12, 0xca][..],
+            &[0x66, 0x0f, 0x16, 0xca][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode_general(), Err(DecodeError::Invalid { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        // Refused: FS/GS, repeated and mixed prefixes, the wrong mandatory prefix, truncation without the opcode.
+        for bytes in [
+            &[0x64, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0x65, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0xf3, 0x0f, 0xfc, 0x08][..],
+            &[0xf3, 0x0f, 0xfc, 0x08][..],
+            &[0xf2, 0x0f, 0x7e, 0xca][..],
+            &[0x66, 0x0f, 0x30][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode_general(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
         }
     }
 

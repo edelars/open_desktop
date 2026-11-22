@@ -19,6 +19,7 @@ use crate::mmx_int::{MmxIntKind, mmx_int_result, mmx_shift_result};
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
 use crate::sse_fp;
+use crate::sse2_int::{self, Sse2IntKind};
 use crate::state::{X87State, X87Tag};
 use crate::swapgs::SwapgsProfile;
 #[cfg(test)]
@@ -51255,6 +51256,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Sse3Permute { .. }
         | Operation::Ssse3Int { .. }
         | Operation::Sse41 { .. }
+        // S2-39 (integer SSE2 remainder): the same local SSE state; CPL3 keeps its own profile list.
+        | Operation::Sse2Int { .. }
         | Operation::Sse41Fp { .. }
         // S2-38 (logic and permute remainder): the same local SSE state; CPL3 keeps its own profile list.
         | Operation::SseLogicPermute { .. }
@@ -52409,6 +52412,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
         }
         return Ok(outcome);
+    }
+    // S2-39 (integer SSE2 remainder): the forms of `Sse2IntKind` commit here as well; they define no flag.
+    if let Operation::Sse2Int {
+        kind,
+        xmm,
+        operand,
+        immediate,
+    } = instruction.operation
+    {
+        return step_sse2_int(
+            state,
+            memory,
+            context,
+            (kind, xmm, operand, immediate),
+            instruction.opcode.byte,
+            next_rip,
+        );
     }
     if let Operation::FisttpMemory { memory: operand } = instruction.operation {
         return step_fisttp(
@@ -63793,6 +63813,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MmxMovq { .. }
         | Operation::Emms
         | Operation::Sse41 { .. }
+        | Operation::Sse2Int { .. }
         | Operation::Sse41Fp { .. }
         | Operation::SseFpArith { .. }
         | Operation::SseFpMisc { .. }
@@ -70586,6 +70607,176 @@ fn step_ssse3_int(
     *slot = ssse3_int_result(kind, *slot, raw, immediate);
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+/// S2-39 (integer SSE2 remainder): the forms of [`Sse2IntKind`] on `state.sse` (Intel SDM Vol. 2A/2B, each
+/// instruction; exception types 4 and 5 of Vol. 2A Tables 2-21/2-22). In order: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0
+/// (wins), `#NM` for CR0.TS = 1 (both only on a state that carries the control registers), the canonical check of a
+/// memory operand, `#GP(0)` for a 16-byte operand that is not 16-byte aligned (the packed forms; the 2-, 4- and 8-byte
+/// operands of the moves have no alignment rule), the range check and then the access; a memory fault changes
+/// nothing. A misaligned 2/4/8-byte operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1 or CR0 not carried) is
+/// `Unsupported` (`#AC` is not modeled), as in the S2-55 forms. No flag and no MXCSR bit changes, no SIMD floating-point
+/// exception is possible.
+fn step_sse2_int(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (kind, xmm, operand, immediate): (Sse2IntKind, u8, Sse41Operand, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    let length = kind.memory_bytes();
+    let mut address = 0;
+    if let Sse41Operand::Memory(memory_operand) = operand {
+        address = match memory_operand.linear_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(fault) => return Ok(StepOutcome::Fault(fault)),
+        };
+        if kind.requires_alignment() && address & 15 != 0 {
+            return fault_with_code(13, 0);
+        }
+        if let Err(error) = memory_operand.access_range_address_48(state, next_rip, length) {
+            return report_memory_error(error);
+        }
+        if length > 1
+            && address & (length as u64 - 1) != 0
+            && context.privilege == PrivilegeLevel::Ring3
+            && state.rflags & (1 << 18) != 0
+            && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+        {
+            return Ok(StepOutcome::Unsupported { opcode });
+        }
+    }
+    let general = |encoding: u8| {
+        Register::from_encoding(encoding).expect("a REX-extended register number") as usize
+    };
+    let source_xmm = state
+        .sse
+        .as_ref()
+        .expect("SSE2 integer state was prevalidated")
+        .xmm[usize::from(xmm)];
+    if kind == Sse2IntKind::Pextrw {
+        let Sse41Operand::Gpr(destination) = operand else {
+            unreachable!("PEXTRW decodes a general destination");
+        };
+        let lane = usize::from(immediate & 7);
+        let value = u16::from_le_bytes([source_xmm[2 * lane], source_xmm[2 * lane + 1]]);
+        state.gpr[general(destination)] = u64::from(value);
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if kind.stores_to_rm() {
+        let mut bytes = [0u8; 16];
+        match kind {
+            Sse2IntKind::MovdqRegisterStore => bytes = source_xmm,
+            Sse2IntKind::MovqStore | Sse2IntKind::MovdStore | Sse2IntKind::MovqToGeneral => {
+                bytes[..8].copy_from_slice(&source_xmm[..8]);
+            }
+            Sse2IntKind::MovlStore => bytes[..8].copy_from_slice(&source_xmm[..8]),
+            Sse2IntKind::MovhStore => bytes[..8].copy_from_slice(&source_xmm[8..]),
+            _ => unreachable!("not a store form"),
+        }
+        match operand {
+            Sse41Operand::Xmm(destination) => {
+                // MOVDQU/MOVDQA copy the register; MOVQ copies the low quadword and `bytes`
+                // starts zeroed, so the high quadword is already cleared.
+                state
+                    .sse
+                    .as_mut()
+                    .expect("SSE2 integer state was prevalidated")
+                    .xmm[usize::from(destination)] = bytes;
+            }
+            Sse41Operand::Gpr(destination) => {
+                // MOVD writes the zero-extended low dword, MOVQ the whole register.
+                if kind == Sse2IntKind::MovdStore {
+                    bytes[4..8].fill(0);
+                }
+                state.gpr[general(destination)] =
+                    u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            }
+            Sse41Operand::Memory(_) => {
+                if let Err(error) = memory.write(address, context, &bytes[..length]) {
+                    return report_memory_error(error);
+                }
+            }
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    let mut raw = [0u8; 16];
+    match operand {
+        Sse41Operand::Xmm(index) => {
+            raw = state
+                .sse
+                .as_ref()
+                .expect("SSE2 integer state was prevalidated")
+                .xmm[usize::from(index)];
+        }
+        Sse41Operand::Gpr(encoding) => {
+            raw[..8].copy_from_slice(&state.gpr[general(encoding)].to_le_bytes());
+        }
+        Sse41Operand::Memory(_) => {
+            if let Err(error) = memory.read(address, context, &mut raw[..length]) {
+                return report_memory_error(error);
+            }
+        }
+    }
+    let sse = state
+        .sse
+        .as_mut()
+        .expect("SSE2 integer state was prevalidated");
+    let destination = sse.xmm[usize::from(xmm)];
+    let mut result = destination;
+    match kind {
+        // MOVQ xmm, xmm/m64 and MOVD/MOVQ xmm, r/m: the value is zero-extended into the whole register.
+        Sse2IntKind::MovqLoad | Sse2IntKind::MovqFromGeneral => {
+            result = [0; 16];
+            result[..8].copy_from_slice(&raw[..8]);
+        }
+        Sse2IntKind::MovdLoad => {
+            result = [0; 16];
+            result[..4].copy_from_slice(&raw[..4]);
+        }
+        Sse2IntKind::Pinsrw => {
+            let lane = usize::from(immediate & 7);
+            result[2 * lane..2 * lane + 2].copy_from_slice(&raw[..2]);
+        }
+        Sse2IntKind::MovlLoad => result[..8].copy_from_slice(&raw[..8]),
+        Sse2IntKind::MovhLoad => result[8..].copy_from_slice(&raw[..8]),
+        Sse2IntKind::Movhlps => result[..8].copy_from_slice(&raw[8..]),
+        Sse2IntKind::Movlhps => result[8..].copy_from_slice(&raw[..8]),
+        Sse2IntKind::MovdqRegisterLoad => result = raw,
+        _ => result = sse2_int::apply(kind, destination, raw, immediate),
+    }
+    sse.xmm[usize::from(xmm)] = result;
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+fn fault_with_code(vector: u8, error_code: u32) -> Result<StepOutcome, MemoryError> {
+    Ok(StepOutcome::Fault(ArchitecturalFault {
+        vector,
+        error_code: Some(error_code),
+        linear_address: None,
+    }))
 }
 
 /// The checks that precede every MMX instruction, EMMS included (Intel SDM Vol. 1 `9.6.1 and Vol. 2A

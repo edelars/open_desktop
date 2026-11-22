@@ -11681,13 +11681,23 @@ fn cpl3_issue576_observed_rip_relative_movsd_load_uses_the_vcpu_fp_cell() {
 /// the member keeps its own short profile list, so the general forms stay `Unsupported` with nothing changed.
 #[test]
 fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
-    let forms: [(&str, &[u8], u8); 6] = [
+    let forms: [(&str, &[u8], u8); 15] = [
         ("addps xmm1,xmm2", &[0x0f, 0x58, 0xca], 0x58),
         ("addps xmm1,[rax]", &[0x0f, 0x58, 0x08], 0x58),
         ("movaps xmm1,[rax]", &[0x0f, 0x28, 0x08], 0x28),
         ("pminsd xmm1,xmm2", &[0x66, 0x0f, 0x38, 0x39, 0xca], 0x39),
         ("haddps xmm1,xmm2", &[0xf2, 0x0f, 0x7c, 0xca], 0x7c),
         ("andps xmm1,xmm2", &[0x0f, 0x54, 0xca], 0x54),
+        // S2-39 (integer SSE2 remainder): the forms of `s2_39_int_sse2` run at CPL0 of the set only.
+        ("paddb xmm1,[rax]", &[0x66, 0x0f, 0xfc, 0x08], 0xfc),
+        ("pmulhw xmm1,xmm2", &[0x66, 0x0f, 0xe5, 0xca], 0xe5),
+        ("psllw xmm1,xmm2", &[0x66, 0x0f, 0xf1, 0xca], 0xf1),
+        ("pshufhw xmm1,xmm2,1", &[0xf3, 0x0f, 0x70, 0xca, 0x01], 0x70),
+        ("movd ecx,xmm1", &[0x66, 0x0f, 0x7e, 0xc9], 0x7e),
+        ("movq xmm1,xmm2", &[0xf3, 0x0f, 0x7e, 0xca], 0x7e),
+        ("movlps [rax],xmm1", &[0x0f, 0x13, 0x08], 0x13),
+        ("movhlps xmm1,xmm2", &[0x0f, 0x12, 0xca], 0x12),
+        ("pextrw ecx,xmm2,3", &[0x66, 0x0f, 0xc5, 0xca, 0x03], 0xc5),
     ];
     for (name, code, opcode) in forms {
         let mut state = user_state();

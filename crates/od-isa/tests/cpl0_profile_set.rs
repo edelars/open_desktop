@@ -43293,7 +43293,8 @@ fn the_fp_member_admission_requires_declared_fpu_and_fxsr_and_known_selectors() 
 fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member() {
     // xorps and movups (and the rest of the general SSE core) are no longer refused under the member:
     // S2-39 runs them on `state.sse` (tests/s2_39_cpl0_sse.rs), and S2-39n runs the register moves, MOVSS/MOVSD,
-    // LDMXCSR/STMXCSR and the integer SSE2 forms there too (tests/s2_39_cpl0_sse_set.rs).
+    // LDMXCSR/STMXCSR and the integer SSE2 forms there too (tests/s2_39_cpl0_sse_set.rs); S2-39 (integer SSE2
+    // remainder) adds the memory forms, the shifts by an XMM count and the moves of tests/s2_39_int_sse2.rs.
     let rip_forms: [(&str, &[u8], u8); 12] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),

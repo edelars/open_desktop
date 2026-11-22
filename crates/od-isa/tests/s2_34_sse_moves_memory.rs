@@ -1096,18 +1096,8 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
         (&[0x67, 0x67, 0x0f, 0x28, 0x00], "duplicate 67"),
         (&[0x2e, 0x3e, 0x0f, 0x28, 0x00], "two segment overrides"),
         (&[0x48, 0x48, 0x0f, 0x28, 0x00], "duplicate REX"),
-        (
-            &[0xf3, 0x0f, 0x6f, 0xc1],
-            "MOVDQU register form (outside this slice)",
-        ),
-        (
-            &[0xf3, 0x0f, 0x7f, 0xc1],
-            "MOVDQU register form, store direction",
-        ),
-        (
-            &[0x66, 0x0f, 0x7f, 0xc1],
-            "MOVDQA reverse register form (outside this slice)",
-        ),
+        // The register forms of MOVDQU (F3 0F 6F/7F) and the MOVDQA store (66 0F 7F) are executed since S2-39
+        // (integer SSE2 remainder, `s2_39_int_sse2`).
     ];
     for (code, name) in refused {
         let mut cpu = cpu();

@@ -4615,6 +4615,52 @@ mod tests {
     }
 
     #[test]
+    fn sse2_integer_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-39 (integer SSE2 remainder): the interpreter executes these forms through the general core; the
+        // JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4fa0;
+        for bytes in [
+            &[0x66, 0x0f, 0xd4, 0x00][..],   // PADDQ xmm0, [rax]
+            &[0x66, 0x0f, 0xf4, 0x43, 0x10], // PMULUDQ xmm0, [rbx+0x10]
+            &[0x66, 0x0f, 0xf6, 0x08],       // PSADBW xmm1, [rax]
+            &[0x66, 0x0f, 0x70, 0x00, 0x1b], // PSHUFD xmm0, [rax], 0x1b
+            &[0x66, 0x0f, 0xc5, 0xc1, 0x03], // PEXTRW eax, xmm1, 3
+            &[0x66, 0x0f, 0xc4, 0xc1, 0x03], // PINSRW xmm0, ecx, 3
+            &[0x66, 0x0f, 0x6c, 0x03],       // PUNPCKLQDQ xmm0, [rbx]
+            &[0x66, 0x45, 0x0f, 0xfb, 0x08], // PSUBQ xmm9, [r8]
+            &[0x66, 0x0f, 0xd6, 0xca],       // MOVQ xmm2, xmm1 (66 0F D6)
+            &[0xf3, 0x0f, 0x6f, 0xca],       // MOVDQU xmm1, xmm2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse2Int { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xf4, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xd4, 0x00],
+            &[0xf0, 0x66, 0x0f, 0x70, 0xc1, 0x1b],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn string_compares_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
         // S2-56 slice B: the interpreter executes PCMPESTRI/PCMPESTRM/PCMPISTRI/PCMPISTRM; the JIT has no
         // lowering for them, so the block is not built.
