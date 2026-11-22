@@ -5,8 +5,9 @@ Boots the ROM with the xHCI controller (runner --xhci: PCI ECAM, controller at 0
 on port 1, absolute pointer on port 2) and checks that COM1 carries the single line
 'OD-FW xhci: keyboard enumerated' and, apart from it and the memory map (the controller adds its
 MMIO windows), the transcript of the same boot without the controller. A failed enumeration
-prints 'OD-FW xhci: enumeration failed step=... detail=...'; it is reported here verbatim and
-fails the check. A board without the controller must stay silent. The ebs application leaves
+prints 'OD-FW xhci: enumeration failed step=... detail=...' (likewise 'stop at exit failed' and
+'ConInEx install failed'); it is reported here verbatim and fails the check. Key input (slice B)
+is covered by host tests; feeding HID events into the ROM needs the echo application (slice C). A board without the controller must stay silent. The ebs application leaves
 through ExitBootServices, which runs the handler that stops the controller.
 """
 
@@ -26,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "tools" / "build" / "build_firmware.py"
 
 ENUMERATED = b"OD-FW xhci: keyboard enumerated\r\n"
-FAILED = re.compile(rb"OD-FW xhci: enumeration failed[^\r\n]*")
+FAILED = re.compile(rb"OD-FW xhci: (?:enumeration failed|stop at exit failed|ConInEx install failed)[^\r\n]*")
 # The port reset takes 50 ms of virtual time (50e6 instructions at 1 ns each) plus the enumeration.
 BUDGET = 400_000_000
 LAYOUT_CRC_LINE = re.compile(

@@ -604,9 +604,11 @@ Simple File System, сохраняя фактический `DeviceHandle`, от
 Прошивка публикует `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` и
 `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` на одном handle и пересчитывает CRC
 System Table. `ConOut` и `StdErr` используют один интерфейс вывода.
-Транспорт ввода до подключения USB-клавиатуры в S7-34 — COM1.
-Текущий перечень консольных протоколов состоит из Simple Text Input
-и Simple Text Output.
+Транспорт ввода — COM1 и, если плата содержит xHCI и клавиатура
+перечислена (S7-34), USB-клавиатура: оба источника пишут в одну
+очередь на 256 ключей (раздел «USB-клавиатура»). Перечень консольных
+протоколов: Simple Text Input и Simple Text Output; при USB-клавиатуре
+на handle ввода добавляется Simple Text Input Ex.
 
 Вывод поддерживает режим 0 с 80 столбцами и 25 строками. Позиция
 курсора, видимость, цвета и очистка передаются терминалу ANSI.
@@ -626,7 +628,7 @@ ESC с `[` или `O` и суффиксом `A…D` дают четыре scan c
 
 ### USB-клавиатура (S7-34, срез A)
 
-Если плата содержит xHCI (`FirmwareBoardConfig::xhci`), прошивка находит функцию класса 0x0C0330 по ECAM, сбрасывает контроллер, перечисляет клавиатуру HID boot protocol на корневом хабе и опрашивает Interrupt IN без прерываний; результат — строка COM1 `OD-FW xhci: keyboard enumerated` или `OD-FW xhci: enumeration failed step=… detail=0x…`. Плата без xHCI ничего не печатает. Клавиши пока не доходят до `ConIn` (срез B): транспорт ввода по-прежнему COM1. Таблица Usage ID страницы 0x07 → `EFI_INPUT_KEY` (раскладка US): 0x04–0x1D — буквы (Shift XOR CapsLock — прописные; Ctrl — коды 1–26), 0x1E–0x27 — цифры (с Shift — `!@#$%^&*()`), 0x28 и 0x58 — `\r`, 0x29 — scan code 0x17 (Esc), 0x2A — `\b`, 0x2B — `\t`, 0x2C — пробел, 0x2D–0x38 — знаки пунктуации с Shift-вариантами, 0x3A–0x45 — F1–F12 (scan 0x0B–0x16), 0x49–0x4E — Insert, Home, PageUp, Delete, End, PageDown (scan 0x07, 0x05, 0x09, 0x08, 0x06, 0x0A), 0x4F–0x52 — стрелки (scan 0x03, 0x04, 0x02, 0x01), 0x54–0x63 — клавиатурный блок как при включённом NumLock; остальные Usage ID, ErrorRollOver и модификаторы без символа ключей не дают. Автоповтора нет. Контракт: [XHCI_DEVICE.md](XHCI_DEVICE.md), раздел 15.
+Если плата содержит xHCI (`FirmwareBoardConfig::xhci`), прошивка находит функцию класса 0x0C0330 по ECAM, сбрасывает контроллер, перечисляет клавиатуру HID boot protocol на корневом хабе и опрашивает Interrupt IN без прерываний; результат — строка COM1 `OD-FW xhci: keyboard enumerated` или `OD-FW xhci: enumeration failed step=… detail=0x…`. Плата без xHCI ничего не печатает. Клавиши идут в ту же очередь на 256 ключей, что и COM1 (срез B): за один цикл опроса сначала байты COM1, затем накопленные клавиши USB, внутри источника порядок сохраняется; полная очередь оставляет байты в UART и отчёты в кольце xHCI. `ReadKeyStroke`/`ReadKeyStrokeEx`, `WaitForKey`/`WaitForKeyEx` и `Reset` работают над этой очередью; `EFI_KEY_STATE`: `KeyShiftState` = VALID плюс биты Shift, Ctrl, Alt, Logo (левые и правые), `KeyToggleState` = VALID плюс Scroll, Num, Caps Lock; у ключей COM1 состояние нулевое; нажатия одних модификаторов ключа не дают. `SetState` меняет замки и LED (без VALID — `EFI_UNSUPPORTED`); `RegisterKeyNotify` и `UnregisterKeyNotify` — `EFI_UNSUPPORTED`. CapsLock, NumLock и ScrollLock переключают замки и LED. Таблица Usage ID страницы 0x07 → `EFI_INPUT_KEY` (раскладка US): 0x04–0x1D — буквы (Shift XOR CapsLock — прописные; Ctrl — коды 1–26), 0x1E–0x27 — цифры (с Shift — `!@#$%^&*()`), 0x28 и 0x58 — `\r`, 0x29 — scan code 0x17 (Esc), 0x2A — `\b`, 0x2B — `\t`, 0x2C — пробел, 0x2D–0x38 — знаки пунктуации с Shift-вариантами, 0x3A–0x45 — F1–F12 (scan 0x0B–0x16), 0x49–0x4E — Insert, Home, PageUp, Delete, End, PageDown (scan 0x07, 0x05, 0x09, 0x08, 0x06, 0x0A), 0x4F–0x52 — стрелки (scan 0x03, 0x04, 0x02, 0x01), 0x54–0x57 — знаки клавиатурного блока, 0x59–0x63 — цифры и точка при включённом NumLock, без него End, Down, PgDn, Left, Right, Home, Up, PgUp, Insert, Delete; остальные Usage ID, ErrorRollOver и модификаторы без символа ключей не дают. Автоповтора нет. Контракт: [XHCI_DEVICE.md](XHCI_DEVICE.md), раздел 15.
 
 ### События и TPL
 

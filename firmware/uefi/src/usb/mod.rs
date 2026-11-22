@@ -12,18 +12,20 @@ use core::{ffi::c_void, ptr};
 use crate::{
     acpi::manifest::device_type,
     bs::event::{EVT_SIGNAL_EXIT_BOOT_SERVICES, Event, TPL_NOTIFY},
-    console::text_in::InputKey,
+    console::key_queue::{KeyQueue, toggle_state},
     handoff::Handoff,
     paging::PAGE_BYTES,
     uefi::{status::Status, system_table::SystemTable},
 };
 
 mod desc;
+mod exclusive;
 mod hid_keyboard;
 mod pci;
 mod trb;
 mod xhci;
 
+use exclusive::{Access, Exclusive};
 use pci::{COMMAND_BUS_MASTER, COMMAND_INTX_DISABLE, COMMAND_MEMORY_SPACE, COMMAND_REGISTER};
 use xhci::Xhci;
 
@@ -65,6 +67,8 @@ pub enum Step {
     SetReport,
     /// Registering the ExitBootServices handler (detail: EFI_STATUS).
     ExitHandler,
+    /// ExitBootServices found the driver in use (a driver call that cannot be nested).
+    ExitBusy,
 }
 
 impl Step {
@@ -89,6 +93,7 @@ impl Step {
             Self::SetIdle => "set-idle",
             Self::SetReport => "set-report",
             Self::ExitHandler => "exit-handler",
+            Self::ExitBusy => "exit-busy",
         }
     }
 }
@@ -141,8 +146,9 @@ fn format_line(prefix: &[u8], error: UsbError, out: &mut [u8; 128]) -> usize {
     length
 }
 
-/// The driver after a successful bring-up (one controller, one keyboard).
-static mut DRIVER: Option<Xhci> = None;
+/// The driver after a successful bring-up (one controller, one keyboard). Every entry goes
+/// through [`Exclusive::with`]: callbacks that run inside a driver call cannot reach it twice.
+static DRIVER: Exclusive<Xhci> = Exclusive::empty();
 
 /// The ECAM base of the board, when the handoff carries the window.
 fn ecam_window(handoff: &Handoff<'_>) -> Result<Option<u64>, UsbError> {
@@ -231,9 +237,12 @@ unsafe fn start(handoff: &Handoff<'_>) -> Result<Option<Xhci>, UsbError> {
 
 /// ExitBootServices handler (XHCI_DEVICE.md section 12.3).
 unsafe extern "efiapi" fn exit_boot_services(_: Event, _: *mut c_void) {
-    // SAFETY: BSP; the handler runs at TPL_NOTIFY, so no other code holds the driver.
-    if let Some(driver) = unsafe { (*ptr::addr_of_mut!(DRIVER)).as_mut() }
-        && let Err(error) = driver.quiesce()
+    let error = match DRIVER.with(Xhci::quiesce) {
+        Access::Absent | Access::Done(Ok(())) => return,
+        Access::Done(Err(error)) => error,
+        // A driver call is on the stack above ExitBootServices: it cannot be stopped from here.
+        Access::Busy => UsbError::new(Step::ExitBusy, 0),
+    };
     {
         // The controller may still own its DMA pages when the OS takes the memory: say so.
         #[cfg(any(target_os = "none", target_os = "uefi"))]
@@ -335,25 +344,56 @@ pub unsafe fn install(handoff: &Handoff<'_>, system: *mut SystemTable) -> Outcom
                 }
                 return Outcome::Failed(UsbError::new(Step::ExitHandler, status.raw() as u32));
             }
-            // SAFETY: BSP, single writer; nothing else reads `DRIVER` yet.
-            unsafe { *ptr::addr_of_mut!(DRIVER) = Some(controller) };
+            DRIVER.set(controller);
             Outcome::Enumerated
         }
         Err(error) => Outcome::Failed(error),
     }
 }
 
-/// Polls the keyboard's event ring and returns the next decoded key (slice B hooks this into
-/// `ConIn`). `None` without a keyboard or without a pending key.
-///
-/// # Safety
-/// BSP only.
-#[allow(dead_code)]
-pub(crate) unsafe fn next_key() -> Option<InputKey> {
-    // SAFETY: BSP, no other reference to `DRIVER` is live.
-    let driver = unsafe { (*ptr::addr_of_mut!(DRIVER)).as_mut()? };
-    driver.poll();
-    driver.decoder.pop()
+// The console's USB entry points (S7-34 slice B). All of them are no-ops without a keyboard
+// and while a driver call is on the stack (a timer callback inside a transfer wait): the
+// console just polls again at the next tick.
+
+/// Polls the event ring (reports into the staging queue) and sends a queued LED update. Call
+/// it before the console takes its own state: it may wait for a control transfer and run
+/// callbacks.
+pub fn service() {
+    let _ = DRIVER.with(|driver| {
+        driver.poll();
+        driver.flush_led();
+    });
+}
+
+/// Moves staged keys into the console queue while it has room; keeps the order.
+pub fn take_keys(queue: &mut KeyQueue) {
+    let _ = DRIVER.with(|driver| driver.decoder.drain_into(queue));
+}
+
+/// ConIn Reset: forgets pressed and staged keys.
+pub fn reset_keys() {
+    let _ = DRIVER.with(|driver| driver.decoder.reset());
+}
+
+/// Lock toggles for EFI_KEY_STATE (VALID set) or `None` without a keyboard.
+pub fn toggles() -> Option<u8> {
+    match DRIVER.with(|driver| driver.decoder.toggles()) {
+        Access::Done(toggles) => Some(toggle_state::VALID | toggles),
+        _ => None,
+    }
+}
+
+/// SetState: takes the lock bits and queues the LED update (sent by the next [`service`]).
+pub fn set_toggles(state: u8) {
+    let _ = DRIVER.with(|driver| driver.decoder.set_toggles(state));
+}
+
+/// Whether a USB keyboard is enumerated and not stopped.
+pub fn present() -> bool {
+    matches!(
+        DRIVER.with(|driver| driver.keyboard.is_some()),
+        Access::Done(true)
+    )
 }
 
 const _: () = assert!(PAGE_BYTES == 4096);
@@ -416,6 +456,7 @@ mod tests {
             Step::SetIdle,
             Step::SetReport,
             Step::ExitHandler,
+            Step::ExitBusy,
         ];
         let mut names: Vec<&str> = steps.iter().map(|step| step.name()).collect();
         names.sort_unstable();
