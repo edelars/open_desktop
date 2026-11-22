@@ -67587,7 +67587,8 @@ fn x87_content_tag(raw: [u8; 10]) -> X87Tag {
 /// S2-32c: the 32-bit protected-mode environment image (SDM Vol. 1 Figure 8-9) of FNSTENV, followed
 /// by ST(0)..ST(7) for FNSAVE (the 108-byte image). FIP and FDP are saved as their low 32 bits;
 /// FCS and FDS as the represented selector, or 0000H when none is represented (the model's x87
-/// segment policy, equal to the FCS/FDS deprecation of CPUID.07H:EBX[13]); FOP is 11 bits. The
+/// segment policy: for `None` it is the behavior of a processor with the FCS/FDS deprecation of
+/// CPUID.07H:EBX[13], for `Some(v)` after FRSTOR that of the Core i5-3210M, which keeps the selector); FOP is 11 bits. The
 /// reserved fields (upper halves of the control, status and tag words, bytes 26..28) are FFFFH as
 /// on the Core i5-3210M; the tag word is recomputed from the register contents, empty stays empty.
 fn x87_save_image(x87: &X87State, with_registers: bool) -> [u8; 108] {
