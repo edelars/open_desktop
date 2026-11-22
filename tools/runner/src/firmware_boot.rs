@@ -20,7 +20,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci [--xhci-keys <list>]] [--nvram-reboot-out <file>] \
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
@@ -48,6 +48,9 @@ struct Options {
     /// S7-34: the board gets the PCI ECAM window and the xHCI controller with the keyboard on
     /// port 1 and the absolute pointer on port 2 (`--xhci`; XHCI_DEVICE.md).
     xhci: bool,
+    /// S7-34 slice C: HID key events (Usage ID, pressed) fed to the keyboard behind the xHCI
+    /// controller while the ROM runs (`--xhci-keys`, see [`parse_xhci_keys`]).
+    xhci_keys: Vec<(u8, bool)>,
     /// S7-26: boot, reset in process and boot again this many times (`--fv-app reboot`).
     reboot_cycles: Option<u64>,
     reboot_kind: PlatformResetKind,
@@ -255,6 +258,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &options.sample_rips,
         options.unified,
         options.mark_rip,
+        &options.xhci_keys,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -396,6 +400,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &[],
         false,
         None,
+        &[],
     ) {
         Ok(run) => run,
         Err((mut value, code)) => {
@@ -854,6 +859,107 @@ fn run_reboot_cycles(
     emit(report, code)
 }
 
+/// First injected key event: after the keyboard is enumerated (the port reset alone takes 50 ms of
+/// virtual time, 50e6 instructions) and well before an application waits for input.
+const XHCI_KEYS_START: u64 = 60_000_000;
+/// Virtual time between two injected events, in instructions (1 ns each): 2 ms.
+const XHCI_KEYS_SPACING: u64 = 2_000_000;
+
+/// `--xhci-keys`: comma-separated HID Usage IDs (hex, page 0x07, 0xE0..=0xE7 modifiers). `HH` is a
+/// press followed by a release, `HH+` a press only, `HH-` a release only. Example: `e1+,04,e1-`
+/// types a capital A with the left Shift key.
+fn parse_xhci_keys(value: &str) -> Result<Vec<(u8, bool)>, String> {
+    let mut keys = Vec::new();
+    for item in value.split(',') {
+        let (digits, action) = match item.as_bytes().last() {
+            Some(b'+') => (&item[..item.len() - 1], Some(true)),
+            Some(b'-') => (&item[..item.len() - 1], Some(false)),
+            _ => (item, None),
+        };
+        let usage = u8::from_str_radix(digits, 16)
+            .ok()
+            .filter(|usage| matches!(usage, 0x04..=0xdd | 0xe0..=0xe7) && !digits.is_empty())
+            .ok_or_else(|| {
+                format!("invalid --xhci-keys item '{item}'; expected a hex Usage ID 04..DD or E0..E7 with optional + or -")
+            })?;
+        match action {
+            Some(pressed) => keys.push((usage, pressed)),
+            None => keys.extend([(usage, true), (usage, false)]),
+        }
+    }
+    Ok(keys)
+}
+
+/// Feeds the `--xhci-keys` events and watches the controller while the run is observed: whether
+/// it ran and, at the first quantum boundary after it stopped (the firmware stops it at
+/// ExitBootServices, XHCI_DEVICE.md 12.3), how many guest RAM accesses it had made.
+struct XhciWatch<'a> {
+    keys: &'a [(u8, bool)],
+    injected: usize,
+    refused: usize,
+    last_quanta: u64,
+    seen_running: bool,
+    ram_accesses_at_stop: Option<u64>,
+}
+
+impl<'a> XhciWatch<'a> {
+    fn new(keys: &'a [(u8, bool)]) -> Self {
+        Self {
+            keys,
+            injected: 0,
+            refused: 0,
+            last_quanta: u64::MAX,
+            seen_running: false,
+            ram_accesses_at_stop: None,
+        }
+    }
+
+    fn step(&mut self, handle: &od_machine::XhciHandle, retired: u64, quanta: u64) {
+        if let Some(&(usage, pressed)) = self.keys.get(self.injected)
+            && retired >= XHCI_KEYS_START + self.injected as u64 * XHCI_KEYS_SPACING
+        {
+            if handle
+                .push_input(od_machine::InputEvent::Key { usage, pressed })
+                .is_err()
+            {
+                self.refused += 1;
+            }
+            self.injected += 1;
+        }
+        if quanta == self.last_quanta {
+            return;
+        }
+        self.last_quanta = quanta;
+        let snapshot = handle.snapshot();
+        if snapshot.usbcmd & 1 != 0 {
+            self.seen_running = true;
+        } else if self.seen_running && self.ram_accesses_at_stop.is_none() {
+            self.ram_accesses_at_stop = Some(snapshot.ram_accesses);
+        }
+    }
+
+    fn report(&self, last: &od_machine::XhciSnapshot) -> Value {
+        json!({
+            "keys_total": self.keys.len(),
+            "keys_injected": self.injected,
+            "keys_refused": self.refused,
+            "ran": self.seen_running,
+            "ram_accesses_at_stop": self.ram_accesses_at_stop,
+            "final": {
+                "usbcmd": format!("0x{:08x}", last.usbcmd),
+                "usbsts": format!("0x{:08x}", last.usbsts),
+                "crcr": format!("0x{:016x}", last.crcr),
+                "dcbaap": format!("0x{:016x}", last.dcbaap),
+                "iman": format!("0x{:08x}", last.iman),
+                "erstba": format!("0x{:016x}", last.erstba),
+                "pci_command": format!("0x{:04x}", last.pci_command),
+                "bar0": format!("0x{:016x}", last.bar0),
+                "ram_accesses": last.ram_accesses,
+            },
+        })
+    }
+}
+
 fn boot(
     image: &[u8],
     config: &FirmwareBoardConfig,
@@ -863,6 +969,7 @@ fn boot(
     sample_rips: &[u64],
     unified: bool,
     mark_rip: Option<u64>,
+    xhci_keys: &[(u8, bool)],
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -889,6 +996,8 @@ fn boot(
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let mut samples = Vec::with_capacity(sample_rips.len());
+    let xhci = board.xhci();
+    let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
     let run = if unified {
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
@@ -972,13 +1081,16 @@ fn boot(
             }));
             report
         })
-    } else if sample_rips.is_empty() {
+    } else if sample_rips.is_empty() && xhci.is_none() {
         board.run_boot(budget)
     } else {
         let start = Instant::now();
         board.run_boot_observed(budget, |rip, retired, quanta| {
             if sample_rips.get(samples.len()) == Some(&rip) {
                 samples.push((rip, start.elapsed().as_nanos(), retired, quanta));
+            }
+            if let Some(handle) = &xhci {
+                watch.step(handle, retired, quanta);
             }
         })
     };
@@ -1047,6 +1159,9 @@ fn boot(
             MachineStopReason::Shutdown => "Shutdown",
         }));
     }
+    if let Some(handle) = &xhci {
+        result["xhci"] = watch.report(&handle.snapshot());
+    }
     if let Some(unified_run) = unified_run {
         result["cpu_loop"] = json!("unified");
         result["unified"] = unified_run;
@@ -1083,6 +1198,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut nvme_image = None;
     let mut tpm = false;
     let mut xhci = false;
+    let mut xhci_keys: Option<Vec<(u8, bool)>> = None;
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
@@ -1109,6 +1225,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
             "--nvme-image" if nvme_image.is_none() => nvme_image = Some(value.clone()),
+            "--xhci-keys" if xhci_keys.is_none() => xhci_keys = Some(parse_xhci_keys(value)?),
             "--nvram-in" if nvram_in.is_none() => nvram_in = Some(value.clone()),
             "--nvram-out" if nvram_out.is_none() => nvram_out = Some(value.clone()),
             "--framebuffer-out" if framebuffer_out.is_none() => {
@@ -1178,6 +1295,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         index += 2;
     }
     let unified = cpu_loop == Some(true);
+    if xhci_keys.is_some() && !xhci {
+        return Err("--xhci-keys requires --xhci".to_owned());
+    }
     if unified && xhci {
         return Err(
             "--xhci is served by the firmware profile loop, not --cpu-loop unified".to_owned(),
@@ -1257,6 +1377,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         nvme_image,
         tpm,
         xhci,
+        xhci_keys: xhci_keys.unwrap_or_default(),
         reboot_cycles,
         reboot_kind,
         sample_rips,
@@ -1304,6 +1425,43 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn xhci_keys_expand_to_press_release_pairs_and_explicit_edges() {
+        assert_eq!(
+            parse_xhci_keys("e1+,04,e1-").unwrap(),
+            [(0xe1, true), (0x04, true), (0x04, false), (0xe1, false)]
+        );
+        assert_eq!(
+            parse_xhci_keys("28").unwrap(),
+            [(0x28, true), (0x28, false)]
+        );
+        for bad in ["", "04,", "zz", "03", "de", "e8", "+", "04++", "104"] {
+            assert!(parse_xhci_keys(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn xhci_keys_need_the_controller_and_the_firmware_loop() {
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]);
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(parse(&base(&["--xhci-keys", "04"])).is_err());
+        let options = parse(&base(&["--xhci", "--xhci-keys", "04"])).unwrap();
+        assert_eq!(options.xhci_keys, [(0x04, true), (0x04, false)]);
+        assert!(parse(&base(&["--xhci"])).unwrap().xhci_keys.is_empty());
+        assert!(parse(&base(&["--xhci", "--xhci-keys", "04", "--xhci-keys", "05"])).is_err());
+        assert!(parse(&base(&["--xhci", "--cpu-loop", "unified"])).is_err());
     }
 
     #[test]

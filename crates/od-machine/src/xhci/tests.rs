@@ -2277,3 +2277,29 @@ fn service_pending_covers_the_erst_load_and_owed_port_events() {
     rig.advance_ns(XHCI_USB_PORT_RESET_NS);
     assert!(rig.xhci.service_pending());
 }
+
+#[test]
+fn snapshot_reports_the_state_that_section_12_3_describes_after_hcrst() {
+    let mut rig = running_rig();
+    let running = rig.xhci.snapshot();
+    assert_eq!(running.usbcmd & RS, RS);
+    assert_eq!(running.usbsts & HCH, 0);
+    assert_eq!(running.pci_command, (COMMAND_MSE | COMMAND_BME) as u16);
+    assert_eq!(running.bar0, XHCI_PCI_BAR_BASE);
+    assert!(
+        running.ram_accesses > 0,
+        "the rig's ring setup made the controller read RAM"
+    );
+    rig.set_dword(USBCMD, HCRST);
+    let stopped = rig.xhci.snapshot();
+    assert_eq!(stopped.usbcmd & RS, 0);
+    assert_eq!(stopped.usbsts & HCH, HCH);
+    assert_eq!((stopped.crcr, stopped.dcbaap, stopped.erstba), (0, 0, 0));
+    assert_eq!(stopped.iman & regs::IMAN_IE, 0);
+    assert_eq!(stopped.bar0, XHCI_PCI_BAR_BASE, "BAR0 is not touched");
+    // A stopped controller does not read or write guest RAM, whatever the guest rings.
+    rig.service();
+    rig.set_dword(doorbell(0) as u64, 0);
+    rig.service();
+    assert_eq!(rig.xhci.snapshot().ram_accesses, stopped.ram_accesses);
+}
