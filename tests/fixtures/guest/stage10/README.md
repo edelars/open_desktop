@@ -27,4 +27,15 @@
 
 Проверка: `python3 -m unittest tools/build/test_display_pattern.py` сравнивает эти хеши с повторной генерацией.
 
+## Гостевой probe дисплея (S10-08)
+
+Образ собственного гостевого кода, который сам программирует режим, рисует `bars` 64 × 48, seed 0, и выполняет `HLT`. Он собран генератором [tools/build/build_stage10_display_probe.py](../../../../tools/build/build_stage10_display_probe.py) вручную (без внешнего ассемблера) и лежит в контейнере `ODFWIMG1` платы firmware с обрезанными хвостовыми нулями (288 байт; загрузчик дополняет нулями до 4 МиБ, CRC32 в заголовке посчитан по полному образу). Гость считает узор по формуле `bars` выше без деления (счётчик 8 на пиксель и индекс бара по модулю 8); результат совпадает с `bars_64x48_seed0.raw` байт в байт.
+
+| Файл | Команда генерации | SHA-256 |
+|---|---|---|
+| `display_probe_bars_64x48_seed0.img` | `python3 tools/build/build_stage10_display_probe.py --pattern bars --width 64 --height 48 --seed 0 --output-dir tests/fixtures/guest/stage10` | `4ebe326b92f544575cc2d3ffbe0874c91ef6e8c37ae8070dcda86f03a2cb6a4a` |
+| `display_probe_bars_64x48_seed0.json` | та же команда | манифест: хеш кадра, размеры, число инструкций (`expected_retired` = 25 983), STATUS гостя (`0x1` после `MODE_COMMIT`, `0x3` после doorbell) |
+
+Проверки: `python3 -m unittest tools/build/test_build_stage10_display_probe.py` (повторная генерация совпадает с файлами); `cargo test -p od-machine --offline --lib stage10_display_probe` (загрузчик на плате firmware сравнивает хеш кадра из `read_frame_into` и `expected_retired` с манифестом); `od-runner display-probe --image tests/fixtures/guest/stage10/display_probe_bars_64x48_seed0.img --frame-out FILE`.
+
 Сравнение кадра с эталоном: `python3 tests/system/display_compare.py EXPECTED ACTUAL --width 64 --height 48 [--tolerance N]`.

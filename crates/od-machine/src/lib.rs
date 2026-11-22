@@ -68,6 +68,7 @@ mod pit_pic_irq_source;
 mod ram_storage;
 mod rtc_cmos;
 mod smp_scheduler;
+mod stage10_display_probe;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
@@ -474,6 +475,10 @@ pub use stage4_uart_irq_probe::{
     STAGE4_UART_IRQ_PROBE_TRACE_LIMIT, STAGE4_UART_IRQ_PROBE_VECTOR, Stage4UartIrqProbe,
     Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
     Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
+};
+pub use stage10_display_probe::{
+    LoadedStage10DisplayProbe, Stage10DisplayProbeError, Stage10DisplayProbeReport,
+    Stage10ProbeOutcome, Stage10ProbeStep, load_stage10_display_probe,
 };
 
 pub use litmus::{
