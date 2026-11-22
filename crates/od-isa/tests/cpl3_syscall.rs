@@ -1143,6 +1143,40 @@ fn lock_prefixed_syscall_and_sysret_are_ud_without_a_change() {
     }
 }
 
+/// S2-27m: the LOCK rule belongs to the decoder, not to the `with_syscall` member: a set without
+/// the member also answers `F0 0F 05`, `F0 0F 07` and `F0 48 0F 07` with `#UD` (and without a
+/// change), while the exact forms without LOCK keep the member refusal.
+#[test]
+fn lock_prefixed_forms_are_ud_in_a_set_without_the_member() {
+    let cells = Cells::linux();
+    let set = cells.cells_only();
+    let mut state = user_state();
+    let before = state.clone();
+    let result = run3(
+        &mut state,
+        &mut Memory::code(&[0xf0, 0x0f, 0x05]),
+        &set,
+        5,
+        2,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &UD);
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    for code in [
+        &[0xf0u8, 0x0f, 0x05][..],
+        &[0xf0, 0x0f, 0x07],
+        &[0xf0, 0x48, 0x0f, 0x07],
+    ] {
+        let mut state = kernel_state();
+        let before = state.clone();
+        let result = run0(&mut state, &mut Memory::code(code), &set, 5).unwrap();
+        assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
 #[test]
 fn sce_clear_is_ud_before_the_unmodelled_trap_flag_refusal() {
     // TF is a refusal only for a valid SYSCALL; the #UD gates come first.
