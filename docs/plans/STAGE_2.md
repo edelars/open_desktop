@@ -15449,7 +15449,7 @@ Host loop, JIT and the CPL0 set loop: **explicit refusal**, not execution (they 
 `Long64ProbeConfig::from_cpu_state` gives `RequiredBits { EFER, LME | LMA }` for a PAE state, surfaced as `Rejected(Configuration)` / `PagedHostLoopExit::Interpreter`,
 with no fetch, walk, A/D bit or retirement. Checked by a differential against `ProtectedCpu` on identical tables (31 scenarios, 14 byte-equal images), MMIO tests and the
 refusal tests; no hardware oracle, no CPUID bit declared. Not done: an interpreter that drives the adapter, the fetch cache/vector/descriptor/locked paths over PAE,
-a page-crossing RMW destination, 32-bit paging in od-machine, CPUID (S2-57/S2-58). See the
+a page-crossing RMW destination, 32-bit paging in od-machine, CPUID declaration of PSE-36 and the other bits (PAE is declared since S2-58). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25l--pae-adapter-guestmemory-over-the-pae-walk-and-the-explicit-refusal-of-the-long-mode-loops-bounded-slice).
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
