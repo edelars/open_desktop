@@ -182314,7 +182314,7 @@ mod fxsave_rip_tests {
         image[16..20].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
         image[20..22].copy_from_slice(&x87.data_selector.unwrap().to_le_bytes());
         image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
-        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffffu32.to_le_bytes());
         for logical in 0..8 {
             let physical = (usize::from(x87.top()) + logical) & 7;
             image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
@@ -182342,7 +182342,7 @@ mod fxsave_rip_tests {
         image[8..16].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
         image[16..24].copy_from_slice(&x87.data_pointer.to_le_bytes());
         image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
-        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffffu32.to_le_bytes());
         for logical in 0..8 {
             let physical = (usize::from(x87.top()) + logical) & 7;
             image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
@@ -182806,7 +182806,7 @@ mod fxsave_rip_tests {
         assert_eq!(&image[0..5], &[0x5a, 0xa5, 0x05, 0x00, 0b0111_0111]);
         assert_eq!(&image[6..14], &[0xff, 0x07, 0xef, 0xcd, 0xab, 0x89, 0, 0]);
         assert_eq!(&image[16..22], &[0x10, 0x32, 0x54, 0x76, 0x53, 0]);
-        assert_eq!(&image[24..32], &[0x34, 0x12, 0xa5, 0xa5, 0xbf, 0xff, 0, 0]);
+        assert_eq!(&image[24..32], &[0x34, 0x12, 0xa5, 0xa5, 0xff, 0xff, 0, 0]);
         assert_eq!(&image[464..], &[0xa5; 48]);
     }
 
@@ -183350,7 +183350,8 @@ mod fxsave_rip_tests {
         }
 
         let mut invalid = image;
-        for unsupported_mxcsr_bits in [0x0001_0000u32, 0x0000_0040] {
+        // Bits 31:16 are reserved; DAZ (bit 6) is in the target mask (ADR-0014).
+        for unsupported_mxcsr_bits in [0x0001_0000u32, 0x8000_0000] {
             invalid[24..28].copy_from_slice(&(0x0000_1f80 | unsupported_mxcsr_bits).to_le_bytes());
             let mut state = fixture_state(2, 0x2b, 0x53);
             state.gpr[Register::Rbx as usize] = area - 0x40;
@@ -183377,6 +183378,27 @@ mod fxsave_rip_tests {
             assert_eq!(memory.reads.len(), 13);
             assert_eq!(state, before);
         }
+
+        // DAZ set in the image is restored like any supported bit (i5-3210M: FXRSTOR64 with MXCSR 0x1fc0
+        // retires and STMXCSR reads 0x1fc0).
+        let mut daz = image;
+        daz[24..28].copy_from_slice(&0x0000_1fc0u32.to_le_bytes());
+        let mut state = fixture_state(2, 0x2b, 0x53);
+        state.gpr[Register::Rbx as usize] = area - 0x40;
+        let mut memory = RestoreMemory::literal(daz, area, None);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(RIP + 5),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x0000_1fc0);
 
         let mut state = fixture_state(4, 0x2b, 0x53);
         state.gpr[Register::Rbx as usize] = area - 0x40;
@@ -184229,7 +184251,7 @@ mod fxsave_rip_tests {
         }
         let mut state = state_for(12, 0);
         let mut memory = TraceMemory::cr0_cr4_fxrstor64(None);
-        memory.area[24..28].copy_from_slice(&0x1fc0u32.to_le_bytes());
+        memory.area[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes()); // bit 16 is reserved
         let result = run_with_cr4_profile(
             &mut state,
             &mut memory,
@@ -184253,7 +184275,7 @@ mod fxsave_rip_tests {
         assert_eq!(state, expected_state);
         assert_eq!(memory.reads, 13);
         let mut invalid_image = expected_image.clone();
-        invalid_image[24..28].copy_from_slice(&0x1fc0u32.to_le_bytes());
+        invalid_image[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
         assert_eq!(memory.area, invalid_image);
         for (budget, stop_rip, expected) in [(9, Some(RIP + 28), 8), (8, None, 8), (0, None, 0)] {
             let mut state = state_for(12, 0);

@@ -2404,7 +2404,7 @@ LOCK is used. This evidence slice does not implement their guest delivery.
 MXCSR is an architectural 32-bit value and FXRSTOR faults if reserved MXCSR
 bits are set. Intel describes the saved MXCSR_MASK field and its zero-field
 fallback. The selected synthetic target's immutable supported mask is
-`0x0000ffbf`; the bounded S2-39e restore profile validates MXCSR against this
+`0x0000ffff` (DAZ supported, ADR-0014 / S2-39p; it was `0x0000ffbf` before); the bounded S2-39e restore profile validates MXCSR against this
 target policy and ignores the incoming image's MXCSR_MASK field. This is
 distinct from testkit's `diagnostic_mxcsr_mask` snapshot metadata: numerical
 equality does not make that local diagnostic metadata the target capability
@@ -2483,10 +2483,9 @@ The image stores FCW/FSW raw little-endian; FTW is abridged with one bit per
 physical register and 1 for every nonempty full tag; FOP is low 11 bits with
 upper five bits zero; FIP/FDP are low 32-bit offsets with independent FCS/FDS
 selectors. MXCSR is copied raw and `state.mxcsr` is never masked. The immutable
-`od-isa::TARGET_FXSAVE_MXCSR_MASK` is `0x0000_ffbf`, a conservative DAZ-clear
-capability policy for the synthetic Generic amd64 target. It is intentionally
-separate from the testkit diagnostic mask constant, even though their current
-numeric values match. x87 slots i contain `registers[(TOP+i)&7]` low 10 raw
+`od-isa::TARGET_FXSAVE_MXCSR_MASK` is `0x0000_ffff` (DAZ supported, ADR-0014 /
+S2-39p; it was the DAZ-clear `0x0000_ffbf` before). It is intentionally
+separate from the testkit diagnostic mask constant (`0x0000ffbf`). x87 slots i contain `registers[(TOP+i)&7]` low 10 raw
 bytes; XMM0–15 are copied raw.
 
 All holes/reserved/software bytes remain unchanged. Intel explicitly preserves
@@ -27288,6 +27287,10 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
 ### MMX-формы в голом прогоне и на CPL0 набора (S2-39o)
 
 MMn — младшие 64 бита физического регистра x87 Rn. Формы `NP 0F xx` (двухоперандные целочисленные PADD/PSUB в том числе с насыщением, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PMULLW/PMULHW/PMADDWD, PUNPCK*, PACK*, сдвиги PSLL/PSRL/PSRA со счётчиком из MMs/m64 или imm8 `0F 71/72/73`, PSHUFW, MOVD/MOVQ `0F 6E`/`7E`/`6F`/`7F`) исполняются на `LongModeState.x87` с воротами S2-33: CR0.EM — `#UD`, CR0.TS — `#NM`, ожидающее немаскированное исключение x87 — `#MF` (CR4.OSFXSR не условие), до любого изменения состояния; источник из памяти читается (приёмник в память пишется) до изменения состояния; после успеха TOP = 0, все теги valid, записанный MMX-регистр получает биты 79:64 = 1 (регистр-источник и только читаемый регистр — нет). В наборе CPL0 с членом `fp_state` половина x87 ячейки на время одной MMX-инструкции переносится в `state.x87` и возвращается (также EMMS и SSSE3-формы MMX); `state.x87` между инструкциями `None`, x87-формы по-прежнему отказ. Отказ (`Unsupported`, состояние не меняется): MMX на CPL3 набора, MMX-преобразования CVTPI2PS/PD и CVT[T]PS2PI/PD2PI (ISSUE-642 не тронут), префиксы `F2`/`F3`/FS/GS/повторные у MMX-форм; LOCK — `#UD`; память в формах сдвига и невыделенные поля reg групп `0F 71/72/73` — `#UD`. Не входят: MMX-формы расширений SSE2 (PADDQ, PSUBQ, PMULUDQ, PSADBW, PAVG*, PMAX*, PMIN*, PMULHUW, PEXTRW, PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ, MOVDQ2Q, MOVQ2DQ), JIT, гейт CPUID (S2-57). Проверено по oracle Mac mini (18964 случая, 18644 совпали, 320 расхождений — 266 отказов модели, 42 `AddressOverflow` проверки доступа (неканонический диапазон адреса) и 12 артефактов стенда, см. отчёт S2-39o). Родитель S2-39 открыт.
+
+### DAZ в MXCSR_MASK цели (S2-39p)
+
+Решение [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md): `TARGET_FXSAVE_MXCSR_MASK = 0x0000FFFF`. Образ FXSAVE/FXSAVE64 содержит MXCSR_MASK `0xFFFF`. LDMXCSR и FXRSTOR64 дают `#GP(0)` только при битах 31:16; DAZ (бит 6) загружается, и общее ядро `sse_fp` исполняет его по семантике S2-37. Это заменяет `0xFFBF` и «политику DAZ» в блоках S2-39a…S2-39n и S4-38L9E выше. Не меняются маски допуска узких профилей schema-v2 (`0xffbf`, DAZ/FTZ сброшены — отказ профиля, не `#GP`) и метаданное `diagnostic_mxcsr_mask`. Физическая проверка (Intel Core i5-3210M): FXSAVE64 даёт MXCSR_MASK `0xFFFF`; LDMXCSR `0x40`/`0x1FC0`/`0x9FC0`/`0xFFFF` и FXRSTOR64 с `0x1FC0` исполняются; `0x10000` и `0x80001F80` дают `#GP`. 40 случаев DAZ oracle S2-39n: на железе `ok`, `mx` = загруженному значению; модель теперь даёт то же. SDM Vol. 1 §10.2.3.4 (с. 10-5), §11.6.3 (с. 11-20), §11.6.6 (с. 11-21); Vol. 2A FXRSTOR (с. 3-410), FXSAVE (с. 3-414), LDMXCSR (с. 3-539). Биты CPUID не объявляются (S2-57). Родитель S2-39 открыт.
 
 ### MOV r64, CR3 (`[REX] 0F 20 /3`, регистровая форма) в произвольный регистр в наборе CPL0 (S4-38L9F, mov-cr3)
 

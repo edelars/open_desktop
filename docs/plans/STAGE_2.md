@@ -713,9 +713,9 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39l | Offline A/B/A/B interpreter replay against validated S2-39k evidence | Explicit-path opt-in only; existing independent comparator validates raw Linux evidence, then the interpreter profile is replayed A/B/A/B and compared only at protocol-defined bytes with E+5 progression. Focused checks passed; independent Sol/high review found no defects; ignored evidence is not a default-test dependency; physical acceptance and parent S2-39 remain open. [Protocol](../testing/S2_39L_FXSAVE64_REPLAY.md); [report](../reports/S2_39L_INTERPRETER_REPLAY.md) |
 | [ ] | S2-39m | SSE state of the CPL0 set in `LongModeState.sse` | The FP member loads the SSE half of its `GuestFpState` cell into `state.sse` for the run and stores it back at every exit; at CPL0 the general SSE core of S2-34/37/38/54/55 then runs in the set with the bare-run result, the CR0.EM/TS and CR4.OSFXSR gates and #XM/#UD; FXSAVE64/FXRSTOR64 use the same state; x87 stays in the cell. CPL3 general forms, narrow integer SSE2 forms, MMX forms, LDMXCSR/STMXCSR, the register-register forms of the raw 128-bit moves and MOVSS/MOVSD in every form stay refused (listed in the S2-39m block). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse) |
-| [ ] | S2-39n | Narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set on `state.sse` | S2-39m. The FP member runs the register-register raw 128-bit moves, MOVSS/MOVSD (decoder forms), the integer SSE2 forms on XMM registers (executors of the plain `step`), the forms of the CPL3 handler (MOVD/MOVQ, PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS load, PCMPEQB m128, PMINUB m128 in the `[RAX+disp8]` form the decoder returns) and LDMXCSR/STMXCSR m32, behind the CR0.EM/TS and CR4.OSFXSR gates; physical oracle 5467 cases: 4642 equal, 785 forms still refused, 40 = DAZ policy (LDMXCSR with MXCSR bit 6). Narrow integer forms with a memory operand (except PCMPEQB), PSLL/PSRL/PSRA by an XMM count, MMX and the CPL3 profile stay as listed in the S2-39n block. Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39n--narrow-sse-forms-movssmovsd-and-ldmxcsrstmxcsr-of-the-cpl0-set) |
-
+| [ ] | S2-39n | Narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set on `state.sse` | S2-39m. The FP member runs the register-register raw 128-bit moves, MOVSS/MOVSD (decoder forms), the integer SSE2 forms on XMM registers (executors of the plain `step`), the forms of the CPL3 handler (MOVD/MOVQ, PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS load, PCMPEQB m128, PMINUB m128 in the `[RAX+disp8]` form the decoder returns) and LDMXCSR/STMXCSR m32, behind the CR0.EM/TS and CR4.OSFXSR gates; physical oracle 5467 cases: 4642 equal, 785 forms still refused, 40 = DAZ policy (LDMXCSR with MXCSR bit 6; resolved by S2-39p, ADR-0014). Narrow integer forms with a memory operand (except PCMPEQB), PSLL/PSRL/PSRA by an XMM count, MMX and the CPL3 profile stay as listed in the S2-39n block. Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39n--narrow-sse-forms-movssmovsd-and-ldmxcsrstmxcsr-of-the-cpl0-set) |
 | [ ] | S2-39o | MMX integer forms in the bare run and at CPL0 of the set | The two-operand MMX integer forms (PADD/PSUB incl. saturating, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PMULLW/PMULHW/PMADDWD, PUNPCK*, PACK*, PSLL/PSRL/PSRA by register or imm8), PSHUFW and MOVD/MOVQ mm<->GPR/m/mm run on the x87 data registers with the S2-33 gates and state effect; the CPL0 set moves the x87 half of the FP member's cell into the CPU state for one MMX instruction (also EMMS and the SSSE3 MMX forms). 18964 oracle cases, 18644 identical, 320 different: 266 refusals of the model, 42 `AddressOverflow` of the access check, 12 harness artifacts (no difference in the result of an executed form). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39o--mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set) |
+| [ ] | S2-39p | DAZ in the target MXCSR_MASK | Decision [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md): `TARGET_FXSAVE_MXCSR_MASK` = `0x0000FFFF` (was `0xFFBF`); FXSAVE/FXSAVE64 report it, LDMXCSR and FXRSTOR64 raise `#GP(0)` only for bits 31:16, DAZ runs through the S2-37 core. i5-3210M: MXCSR_MASK `0xFFFF`, DAZ loads by LDMXCSR and FXRSTOR64; the 40 DAZ cases of the S2-39n oracle now agree. Target N5105 and Windows not checked (SDM inference, no Microsoft source). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39p--daz-in-the-target-mxcsr_mask) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
@@ -8242,7 +8242,7 @@ canonical48 геометрию. Общего base+disp8 декодировани
 `[16,24)`, `[24,28)`, восемь `[32+16*i,42+16*i)` и `[160,416)`. Reserved,
 padding и software-available tail не читаются. Все значения сначала
 буферизуются; `MXCSR_MASK` из образа игнорируется, а загруженный MXCSR
-проверяется по immutable `TARGET_FXSAVE_MXCSR_MASK` (`0x0000_ffbf`). Любая
+проверяется по immutable `TARGET_FXSAVE_MXCSR_MASK` (`0x0000_ffbf`; значение заменено S2-39p / ADR-0014, действующая маска `0x0000_ffff`). Любая
 ошибка чтения или #GP(0) validation оставляет CPU snapshot, RIP и retirement
 без изменений; дальнейшие callbacks после первой ошибки не выполняются.
 Ошибка backend сохраняет свою категорию, а предыдущие внешние read callbacks
@@ -8547,6 +8547,9 @@ Parent S2-39 remains open.
 
 See the [S2-39n result](../reports/STAGE_2_REPORT.md#s2-39n--narrow-sse-forms-movssmovsd-and-ldmxcsrstmxcsr-of-the-cpl0-set).
 
+DAZ: resolved by [S2-39p](#s2-39p-daz-in-the-target-mxcsr_mask) (ADR-0014): the target mask is now `0xFFFF` and the 40 policy
+differences agree with the hardware.
+
 #### S2-39o. MMX integer forms in the bare run and at CPL0 of the set
 
 MMn is the low quadword of physical x87 data register Rn. The forms `NP 0F xx` are
@@ -8582,6 +8585,40 @@ PCMP, PACK pages not looked up); Vol. 1 §9.2.2, §9.4, §9.6.2; Vol. 3A §15.2 
 remains open.
 
 See the [S2-39o result](../reports/STAGE_2_REPORT.md#s2-39o--mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set).
+
+#### S2-39p. DAZ in the target MXCSR_MASK
+
+Decision: [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md) (variant A). `od_isa::TARGET_FXSAVE_MXCSR_MASK` is
+`0x0000FFFF`: FXSAVE and FXSAVE64 store it in bytes 28..32, LDMXCSR and FXRSTOR64 raise `#GP(0)` only for a set bit
+in 31:16, and DAZ (bit 6) reaches the S2-37 core (`sse_fp`, denormal source as zero, no DE). This replaces the
+`0xFFBF` target mask and the DAZ policy of S2-39n. Unchanged: the admission masks of the narrow schema-v2 profiles
+(`0xffbf`, DAZ/FTZ clear; outside them the profile refuses, no `#GP`), the `diagnostic_mxcsr_mask` fixture
+metadata, CPUID (S2-57; DAZ has no CPUID bit).
+
+Reasons: the i5-3210M reports MXCSR_MASK `0xFFFF` and loads DAZ; SDM Vol. 1 §10.2.3.4 (p. 10-5) and §11.6.3
+(p. 11-20) reserve bit 6 only on early Pentium 4 steppings, so the target Celeron N5105 (ADR-0013) is taken to have DAZ
+(inference, not measured); §11.6.6 (p. 11-21) asks software to AND with the reported mask, so the reported mask and
+the LDMXCSR/FXRSTOR check must agree; no Microsoft source on DAZ was found. Vol. 2A: FXRSTOR p. 3-410, FXSAVE
+p. 3-414, LDMXCSR p. 3-539.
+
+Oracle (Mac mini, Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39p_daz_oracle/`, ignored;
+one run of `daz_oracle`/`daz_addss` kept, no saved second run): FXSAVE64 MXCSR_MASK `0x0000FFFF` before and after a DAZ load; LDMXCSR `0x40`, `0x1FC0`, `0x9FC0`,
+`0xFFFF`, `0xFFBF` retire and STMXCSR reads them back; `0x00010000` and `0x80001F80` give SIGSEGV (`#GP`);
+FXRSTOR64 with MXCSR `0x1FC0` retires; LDMXCSR `0x1FC0` then ADDSS `0x00000001` + 1.0 gives `0x3F800000` with MXCSR
+`0x1FC0` (`0x1FA2` with `0x1F80`). The 40 DAZ cases of the S2-39n oracle (values `0x40`, `0x1FC0`, `0x8040`, `0x1F40`,
+`0xFFFF` in 8 addressing forms; both hardware runs) retire with `mx` equal to the loaded value and no other change;
+the model now retires the same five values in the seven addressing forms of that test ([rax+1], [r8+1], [rax+rcx*2+1], [rbp+0x101], [eax+1] with prefix 0x67, ds:[rax+1] and [RIP+disp32]; the oracle had 8 forms) (`s2_39_cpl0_sse_set`). The S2-39n comparator
+was not rerun (it was in the ignored area of a removed worktree).
+
+Tests: `s2_39_cpl0_sse_set` 15 (LDMXCSR valid values 15 x 3, reserved 6, five DAZ values in every addressing
+form, new test of DAZ before ADDSS), `cpl0_profile_set` 1626, `s2_39_cpl0_sse` 11, `s2_39_cpl0_mmx` 7, `s2_33_mmx` 15
+and the rest of `od-isa` (35 test targets (34 binaries and the doc-test target with 0 tests), 6833 tests in the run recorded here; `cargo test -p od-isa --offline -- --list` on the final tree of the branch lists 6834 tests (35 targets, no `#[ignore]`), a listing and not a run; the difference of one is not attributed); `od-testkit --lib` 525; `od-runner --test fixture_v2` filtered
+`fxsave|fxrstor|mxcsr|s2_39|x87_sse` 14; `od-machine --lib` filtered (FPU/FXSAVE) 7. Expected images updated: the
+`s2_39f`/`s2_39h` FXSAVE64 hex fixtures and the literal images of the FXSAVE/FXRSTOR tests (MXCSR_MASK `0xFFFF`);
+reserved-bit cases use bits 31:16 instead of bit 6. Not checked: N5105, Windows, native paths, full workspace suite.
+Parent S2-39 remains open.
+
+See the [S2-39p result](../reports/STAGE_2_REPORT.md#s2-39p--daz-in-the-target-mxcsr_mask).
 
 ### S2-40. Дополнительные обязательные расширения
 
