@@ -756,8 +756,8 @@ Intel defines the FXSR CPUID gate, CR0.EM/TS #NM gates, CR4.OSFXSR dependency
 for deterministic SSE state, 16-byte alignment, and the 32-bit-versus-64-bit
 pointer layouts. Intel specifies a fallback value when a saved MXCSR_MASK is
 zero. The local selected target uses immutable `TARGET_FXSAVE_MXCSR_MASK`
-policy `0x0000ffbf`; S2-39e ignores the incoming image field. This is not
-testkit's diagnostic mask metadata, despite the current equal numeric value. A 512-byte
+policy `0x0000ffbf` (replaced by S2-39p / ADR-0014: the mask is now `0x0000ffff`); S2-39e ignores the incoming image field. This is not
+testkit's diagnostic mask metadata, despite the equal numeric value at the time of S2-39e. A 512-byte
 instruction operand can fault on address/alignment/page conditions; neither
 this static evidence nor the cited instruction summary supports claiming a
 whole-area atomic commit or arbitrary memory-backend rollback.

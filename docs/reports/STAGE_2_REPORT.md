@@ -24679,15 +24679,15 @@ Decision [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md), plan block
 otherwise changed), `crates/od-testkit/src/v2.rs` (the S2-39h result validator expects MXCSR_MASK `0xFFFF`).
 
 Physical check (Mac mini, Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39p_daz_oracle/`,
-ignored: `daz_oracle.c`, `daz_addss.c`, `ext.py`, outputs; two runs identical): MXCSR_MASK `0x0000FFFF`; DAZ loads with
+ignored: `daz_oracle.c`, `daz_addss.c`, `ext.py`, outputs; one run of `daz_oracle`/`daz_addss` kept, no saved second run): MXCSR_MASK `0x0000FFFF`; DAZ loads with
 LDMXCSR and FXRSTOR64; bits 16 and 31 give `#GP`; DAZ makes ADDSS read `0x00000001` as zero (MXCSR stays `0x1FC0`,
 `0x1FA2` without DAZ). The 40 DAZ policy differences of S2-39n (hardware `ok`, `mx` = loaded value, in
 `~/s2_39n_sse_set_oracle/oracle_out.txt` and `oracle_out2.txt` on the mini, identical) are now the model's result too.
 The model side was checked by the tests, not by the S2-39n comparator: the comparator lived in the ignored area of a
 removed worktree.
 
-Tests (all passed): `od-isa` all 35 binaries, 6833 tests (`s2_39_cpl0_sse_set` 15: LDMXCSR valid values 15 x 3,
-reserved 6, the five DAZ values in every addressing form, DAZ before ADDSS; `cpl0_profile_set` 1626; `s2_39_cpl0_sse` 11;
+Tests (all passed): `od-isa` 35 test targets (34 binaries and the doc-test target with 0 tests), 6833 tests in the run recorded here; `cargo test -p od-isa --offline -- --list` on the final tree of the branch lists 6834 tests (35 targets, no `#[ignore]`), a listing and not a run; the difference of one is not attributed (`s2_39_cpl0_sse_set` 15: LDMXCSR valid values 15 x 3,
+reserved 6, the five DAZ values in the seven addressing forms of the test, DAZ before ADDSS; `cpl0_profile_set` 1626; `s2_39_cpl0_sse` 11;
 the `fxsave_rip_tests` unit tests with FXRSTOR64 restoring DAZ); `od-testkit --lib` 525; `od-runner --test fixture_v2`
 filtered `fxsave|fxrstor|mxcsr|s2_39|x87_sse` 14; `od-machine --lib` filtered `fpu|fp_state|fninit|fxsave|kernel_fpu` 7;
 `cargo fmt --all -- --check` and `git diff --check` clean. Not checked: the target N5105, Windows, native paths and
