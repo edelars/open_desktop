@@ -290,8 +290,9 @@ def main() -> None:
                 "not_traced": "fields the guest reads directly from the system table or boot services table (for example "
                               "ConOut, ConIn, RuntimeServices) are not calls and are not recorded; services outside the list "
                               "above are not traced",
-                "guid_names_source": "table in tests/system/firmware_protocol_trace.py (UEFI 2.11 names; the Linux initrd "
-                                     "media GUID is defined by the kernel); an unknown GUID is reported as unknown",
+                "guid_names_source": "table in tests/system/firmware_protocol_trace.py (UEFI 2.11 names; several names come from "
+                                     "the Linux kernel's include/linux/efi.h and libstub/tpm.c, marked in each name); an unknown "
+                                     "GUID is reported as unknown",
                 "trace": summary,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if args.out:

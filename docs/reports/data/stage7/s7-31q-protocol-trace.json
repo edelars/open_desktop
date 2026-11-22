@@ -1,6 +1,7 @@
 {
   "com1_sha256": "3d6b2ad1822eb16010249b22cd86004c6e20154dcbb2052f5cbc180867b21fe0",
-  "guid_names_source": "table in tests/system/firmware_protocol_trace.py (UEFI 2.11 names; the Linux initrd media GUID is defined by the kernel); an unknown GUID is reported as unknown",
+  "guid_names_source": "table in tests/system/firmware_protocol_trace.py (UEFI 2.11 names; several names come from the Linux kernel's include/linux/efi.h and libstub/tpm.c, marked in each name); an unknown GUID is reported as unknown",
+  "post_hoc_note": "the label of e20939be-32d4-41be-a150-897f85d49829 and this guid_names_source text were corrected after the run (S7-31q review); the calls, counts and hashes are as recorded",
   "inputs": {
     "cmdline": "console=ttyS0 initrd=\\EFI\\BOOT\\INITRD.IMG od.nonce=od7s31adiagnostic0001",
     "firmware_rom_sha256": "67da57d014f3fd17feaab125ab2c33ba4b74b36625de844f0b5720190e59186a",
@@ -589,7 +590,7 @@
           ],
           "first_retired": 1241655833,
           "guid": "e20939be-32d4-41be-a150-897f85d49829",
-          "guid_name": "vendor GUID of MemoryOverwriteRequestControl as used in Linux drivers/firmware/efi/libstub/tpm.c (no name there)",
+          "guid_name": "MEMORY_ONLY_RESET_CONTROL_GUID (name from Linux drivers/firmware/efi/libstub/tpm.c:20-21; vendor GUID of MemoryOverwriteRequestControl)",
           "variable_name": "MemoryOverwriteRequestControl"
         },
         {

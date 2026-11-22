@@ -704,7 +704,7 @@
           ],
           "first_retired": 1241655833,
           "guid": "e20939be-32d4-41be-a150-897f85d49829",
-          "guid_name": "vendor GUID of MemoryOverwriteRequestControl as used in Linux drivers/firmware/efi/libstub/tpm.c (no name there)",
+          "guid_name": "MEMORY_ONLY_RESET_CONTROL_GUID (name from Linux drivers/firmware/efi/libstub/tpm.c:20-21; vendor GUID of MemoryOverwriteRequestControl)",
           "variable_name": "MemoryOverwriteRequestControl"
         },
         {

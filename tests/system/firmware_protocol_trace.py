@@ -62,7 +62,7 @@ GUID_NAMES = {
     "c5a010fe-38a7-4531-8a4a-0500d2fd1649": "OVMF_SEV_MEMORY_ACCEPTANCE_PROTOCOL (OVMF, name from Linux include/linux/efi.h)",
     "d3b36f2c-d551-11d4-9a46-0090273fc14d": "EFI_CONSOLE_OUT_DEVICE_GUID (name from Linux include/linux/efi.h)",
     "1ce1e5bc-7ceb-42f2-81e5-8aadf180f57b": "LINUX_EFI_RANDOM_SEED_TABLE_GUID (name from Linux include/linux/efi.h)",
-    "e20939be-32d4-41be-a150-897f85d49829": "vendor GUID of MemoryOverwriteRequestControl as used in Linux drivers/firmware/efi/libstub/tpm.c (no name there)",
+    "e20939be-32d4-41be-a150-897f85d49829": "MEMORY_ONLY_RESET_CONTROL_GUID (name from Linux drivers/firmware/efi/libstub/tpm.c:20-21; vendor GUID of MemoryOverwriteRequestControl)",
 }
 
 
