@@ -11998,31 +11998,31 @@ prefix (so no 14-byte 16-bit image and no REX.W), modrm `/4` with the operand at
   the interpreter model, not an architectural result; no oracle row covers it (test
   `an_address_whose_28_bytes_wrap_past_u64_max_is_an_address_overflow`).
 
-## Local S2-32e: the bounded x87 forms of S2-32a/b/c at CPL0 of the set
+## Local S2-32e: the bounded x87 forms of S2-32a/b/c/d at CPL0 of the set
 
 Status: `od-isa` CPL0 profile set with the FP member (`with_fp_state`); no CPUID bit is declared (S2-57). Scope: the ten
-transcendental forms of S2-32a (`D9 F0..FF`), `FBLD`/`FBSTP` of S2-32b and `FNSTENV`/`FNSAVE`/`FRSTOR` of S2-32c. `FLDENV` (S2-32d,
-a separate branch) is not connected here. Intel SDM 325462-093US Vol. 2A: FBLD p. 3-314, FRSTOR p. 3-373, FSIN p. 3-380, FSTENV/FNSTENV
+transcendental forms of S2-32a (`D9 F0..FF`), `FBLD`/`FBSTP` of S2-32b, `FNSTENV`/`FNSAVE`/`FRSTOR` of S2-32c and `FLDENV` (`D9 20`) of S2-32d
+(connected after the merge of the S2-32d branch: `FldenvRax` is in `cpl0_bounded_x87_form`, no other change to the mechanism). Intel SDM 325462-093US Vol. 2A: FBLD p. 3-314, FRSTOR p. 3-373, FSIN p. 3-380, FSTENV/FNSTENV
 p. 3-390 (each lists `#NM` for CR0.EM[bit 2] or CR0.TS[bit 3] = 1 and no CR4.OSFXSR condition); Vol. 3A 2.5 (CR0.EM, CR0.TS).
 
 - **Mechanism.** Like S2-39o for MMX: for one instruction the x87 half of the member's cell is moved into `state.x87`, the bounded
   profile of the bare run (`step_configured_with_profile_mode`, S2-32a/b/c) executes it unchanged, and the state is stored back with
   whatever the instruction left (a refusal or a fault leaves it as it was). `state.x87` is `None` between instructions; the SSE half
-  of the cell is not touched. Only these 15 operations are routed (`cpl0_bounded_x87_form`); every other x87 form stays `Unsupported`.
+  of the cell is not touched. Only these 16 operations are routed (`cpl0_bounded_x87_form`); every other x87 form stays `Unsupported`.
 - **Gates (before the lend).** CR0 not modeled: `Unsupported`; CR0.EM or CR0.TS set: `#NM` (the gate of `FNINIT` in the set), no state
   change, no memory access. CR4.OSFXSR is not a gate of x87 forms (it is a gate of FXSAVE and the SSE forms). Pending unmasked
   exceptions: the bounded profile's own admission (all-masked control word, ES and B clear for the environment forms) applies, the
   set adds no `#MF` path to x87 forms.
 - **No FCS/FDS bypass.** The set admits only a cell with both selectors represented (`FpStateNotAdmitted`, the plain FXSAVE image carries
-  them), and the bounded profile refuses every `D8..DF` form except the three environment forms while a selector is represented (it
+  them), and the bounded profile refuses every `D8..DF` form except the four environment forms (`FNSTENV`, `FNSAVE`, `FRSTOR`, `FLDENV`) while a selector is represented (it
   would have to update FCS/FDS from an unmodeled CS). Consequence: in the set `FSIN`..`FXTRACT` and `FBLD`/`FBSTP` pass the gates and are
   then refused (`Unsupported`, opcode byte, no change), exactly as the bare run refuses them with represented selectors;
-  `FNSTENV`/`FNSAVE`/`FRSTOR` define the selectors themselves and run, with the semantics and the image of S2-32c. To make the S2-32a/b
+  `FNSTENV`/`FNSAVE`/`FRSTOR` define the selectors themselves and run, with the semantics and the image of S2-32c; `FLDENV` loads them from the image and runs with the semantics of S2-32d. To make the S2-32a/b
   forms run in the set one of two decisions is needed (open, not taken here): admit a cell without selectors (changes the FXSAVE
   admission) or model FCS/FDS of executed instructions.
-- **Tests.** `crates/od-isa/tests/s2_32e_cpl0_x87.rs` (12): set against the bare `step` on five x87 states (images of FNSTENV/FNSAVE, FRSTOR of
-  five images, programs of five forms), 324 oracle rows of S2-32c replayed through the set in two selector states (648 replays, every
-  byte of the three outputs), `#NM` for EM, TS and EM+TS on all 15 forms with no change, OSFXSR clear gives the same outcome, selector
+- **Tests.** `crates/od-isa/tests/s2_32e_cpl0_x87.rs` (13): set against the bare `step` on five x87 states (images of FNSTENV/FNSAVE, FRSTOR of
+  five images, FLDENV of the 28-byte environment of five images (one 28-byte read, register stack unchanged), programs of five forms), 324 oracle rows of S2-32c replayed through the set in two selector states (648 replays, every
+  byte of the three outputs), `#NM` for EM, TS and EM+TS on all 16 forms with no change, OSFXSR clear gives the same outcome, selector
   refusal of the 12 S2-32a/b forms with a control that the same form completes in the bare run without selectors, refusals and faults
   (unmasked control word, ES, B, unmasked or ES image, `#PF`, non-canonical) equal to the bare run, other x87 forms still refused.
   Not covered: FWAIT-prefixed forms beyond one `9B D9 30` pair, the `#MF` of pending exceptions for the S2-32a/b forms (refused by the
@@ -32477,7 +32477,7 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 **Не объявлены, блокеры (проверка — `the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported` и таблица `UNDECLARED` теста):**
 
 - **TSC** (`1` EDX[4]). Блокера по реализации нет (`RDTSC` работает, см. таблицу выше), но решение владельца 2026-11-21 (пункт 8): не объявлять до отдельного решения владельца; приёмка S2-26 не состоялась. Проверка — строка TSC в `UNDECLARED` теста и `feature_registers_are_exactly_the_declared_bits`.
-- **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP`, `FNSTENV`, `FNSAVE`, `FRSTOR` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b/S2-32c, локальный профиль `step`), и подключены к набору CPL0 в пределах ограниченного профиля (S2-32e: x87-половина ячейки FP-участника берётся на одну инструкцию; после проверки `#NM` по CR0.EM/TS `FNSTENV`/`FNSAVE`/`FRSTOR` выполняются, а `FSIN`…`FXTRACT` и `FBLD`/`FBSTP` отказывают `Unsupported`, пока в ячейке представлены FCS/FDS, а набор принимает только такие ячейки; остальные x87-формы в наборе отказывают); `FLDENV` (S2-32d, отдельная ветка) к набору не подключён, написания `FSTENV`/`FSAVE` — это `FWAIT` набора плюс форма без ожидания. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм на состоянии без x87, а для `FNSTENV` при чистом x87 тест подтверждает выполнение в ограниченном профиле; подключение к набору — `crates/od-isa/tests/s2_32e_cpl0_x87.rs`. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (трансцендентные, `FSCALE`, `FXTRACT`, BCD и `FNSTENV`/`FNSAVE`/`FRSTOR` реализованы в ограниченном профиле, S2-32a/b/c; остаются `FLDENV` (S2-32d), FCS/FDS выполненных инструкций (из-за их отсутствия `FSIN`…`FBSTP` в наборе отказывают) и остальные x87-формы в наборе CPL0) после S2-30 и S2-31.
+- **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP`, `FNSTENV`, `FNSAVE`, `FRSTOR`, `FLDENV` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b/S2-32c/S2-32d, локальный профиль `step`), и подключены к набору CPL0 в пределах ограниченного профиля (S2-32e: x87-половина ячейки FP-участника берётся на одну инструкцию; после проверки `#NM` по CR0.EM/TS `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` выполняются, а `FSIN`…`FXTRACT` и `FBLD`/`FBSTP` отказывают `Unsupported`, пока в ячейке представлены FCS/FDS, а набор принимает только такие ячейки; остальные x87-формы в наборе отказывают); `FLDENV` подключён к набору после слияния S2-32d (`FldenvRax` в `cpl0_bounded_x87_form`), написания `FSTENV`/`FSAVE` — это `FWAIT` набора плюс форма без ожидания. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм на состоянии без x87, а для `FNSTENV` при чистом x87 тест подтверждает выполнение в ограниченном профиле; подключение к набору — `crates/od-isa/tests/s2_32e_cpl0_x87.rs`. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (трансцендентные, `FSCALE`, `FXTRACT`, BCD и `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` реализованы в ограниченном профиле, S2-32a/b/c/d; остаются FCS/FDS выполненных инструкций (из-за их отсутствия `FSIN`…`FBSTP` в наборе отказывают) и остальные x87-формы в наборе CPL0) после S2-30 и S2-31.
 - **MSR** (`1` EDX[5]). Моделируются отдельные MSR: EFER (S2-25d…f, NXE), `IA32_FS_BASE`/`GS_BASE`/`KERNEL_GS_BASE`, ячейки записи STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP (S4-38L7). Нет `IA32_TIME_STAMP_COUNTER` (`0x10`), `IA32_APIC_BASE` (`0x1B`), `IA32_PAT` (`0x277`), `IA32_MISC_ENABLE`, MTRR, а у STAR/LSTAR/CSTAR нет чтения. Перечень MSR, которые Windows читает и пишет при загрузке, не составлен. Задача для снятия блокера: S2-25 (CR, MSR) и S2-26 п.2 (RDMSR/WRMSR) — составить перечень и реализовать набор; до этого бит MSR означал бы поддержку набора, которого нет.
 - **SYSCALL** (`80000001` EDX[11]). `SYSCALL` с CPL3 (S4-39e) и `SYSRETQ` с CPL0 (S4-39f) реализованы только в наборах платы Linux, только простые формы (без префиксов), семантика записана «по памяти SDM» и по первоисточнику не сверена (CPU_CONTRACT, S4-39e); не реализованы `SYSRET` без REX.W (32-битный возврат), доставка `#UD` при `EFER.SCE = 0`, переходы из compatibility mode, CSTAR; физического oracle у инструкции нет. Задача для снятия блокера: S2-27 (SYSCALL/SYSRET) со сверкой с SDM Vol. 2B и S2-24 (compatibility mode).
 - **LM** (`80000001` EDX[29]). Набор CPL0 уже в длинном режиме: смена `EFER.LME`/`LMA` отказывает (`Unsupported`), переход из защищённого режима есть только в преобразовании `ProtectedCpu::into_long_mode` (S6-16b, текст SDM «по памяти»), compatibility mode (WoW64) не реализован. Задача для снятия блокера: S2-24 (protected и compatibility mode, критерий WoW64 из ADR-0013), S2-25 (`EFER.LME/LMA`), S2-41, S2-44.

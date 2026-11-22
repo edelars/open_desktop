@@ -47256,7 +47256,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     {
         return step_cpl0_fp(state, memory, context, &instruction, next_rip, fp_cell);
     }
-    // S2-32e: the bounded x87 forms of S2-32a/b/c (FSIN..FXTRACT, FBLD/FBSTP, FNSTENV/FNSAVE/FRSTOR) at CPL0
+    // S2-32e: the bounded x87 forms of S2-32a/b/c/d (FSIN..FXTRACT, FBLD/FBSTP, FNSTENV/FNSAVE/FRSTOR/FLDENV) at CPL0
     // of the set run on the x87 state of the FP member's cell, through the same bounded profile as the bare run.
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
@@ -72108,7 +72108,7 @@ fn step_mmx_operation(
 }
 
 /// S2-32e: the x87 forms of the bounded S2-32 slices that the CPL0 set connects: the ten transcendental forms
-/// of S2-32a (`D9 F0..FF`), FBLD/FBSTP of S2-32b and FNSTENV/FNSAVE/FRSTOR of S2-32c. Every other x87 form stays
+/// of S2-32a (`D9 F0..FF`), FBLD/FBSTP of S2-32b, FNSTENV/FNSAVE/FRSTOR of S2-32c and FLDENV of S2-32d. Every other x87 form stays
 /// refused in the set (`state.x87` is `None` there).
 fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
     matches!(
@@ -72128,6 +72128,7 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
             | Operation::FnstenvRax
             | Operation::FnsaveRax
             | Operation::FrstorRax
+            | Operation::FldenvRax
     )
 }
 

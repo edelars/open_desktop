@@ -9,8 +9,8 @@
 //! represented (the plain FXSAVE image carries them), and the bounded profile refuses every x87 form that would
 //! update FIP/FCS/FDP/FDS from the instruction while a selector is represented. So in the set the ten
 //! transcendental forms of S2-32a and FBLD/FBSTP of S2-32b are gated (#NM) and then refused with no change, exactly
-//! like the bare run with represented selectors; FNSTENV, FNSAVE and FRSTOR define the selectors themselves and
-//! run. Every other x87 form stays refused in the set.
+//! like the bare run with represented selectors; FNSTENV, FNSAVE, FRSTOR and FLDENV (S2-32d, connected after its merge) define the
+//! selectors themselves and run. Every other x87 form stays refused in the set.
 
 mod mmx_common;
 
@@ -27,6 +27,7 @@ const CR4_FP: u64 = CR4_PAE | CR4_OSFXSR | (1 << 10);
 const FNSTENV: [u8; 2] = [0xd9, 0x30];
 const FNSAVE: [u8; 2] = [0xdd, 0x30];
 const FRSTOR: [u8; 2] = [0xdd, 0x20];
+const FLDENV: [u8; 2] = [0xd9, 0x20];
 
 const TRANSCENDENTAL: &[(&str, [u8; 2])] = &[
     ("f2xm1", [0xd9, 0xf0]),
@@ -45,6 +46,7 @@ const ENVIRONMENT: &[(&str, [u8; 2])] = &[
     ("fnstenv [rax]", FNSTENV),
     ("fnsave [rax]", FNSAVE),
     ("frstor [rax]", FRSTOR),
+    ("fldenv [rax]", FLDENV),
 ];
 
 fn all_forms() -> Vec<(&'static str, [u8; 2])> {
@@ -303,6 +305,41 @@ fn frstor_in_the_set_loads_the_image_like_the_bare_run() {
             assert_eq!(observed.reads, vec![(DATA, 108)], "{label} <- {index}");
             assert!(observed.writes.is_empty(), "{label} <- {index}");
             // The selectors of the image are loaded as represented values.
+            assert_eq!(
+                after.x87.data_selector,
+                Some(u16::from_le_bytes([image[24], image[25]])),
+                "{label} <- {index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fldenv_in_the_set_equals_the_bare_run_over_the_whole_environment_set() {
+    // S2-32d FLDENV (D9 /4 [RAX]) is connected like FRSTOR: the set runs the bare profile on the x87 half of the
+    // cell. The 28-byte environment image comes from FNSAVE of each state; the reads are one 28-byte read.
+    let images: Vec<Vec<u8>> = states().iter().map(|(_, x87)| image_of(x87)).collect();
+    for (label, x87) in states() {
+        for (index, image) in images.iter().enumerate() {
+            let put = |state: &mut LongModeState, ram: &mut Ram| {
+                data(state, ram);
+                ram.put(DATA, image);
+            };
+            let reference = bare(&FLDENV, &x87, &put);
+            let (observed, _, before, after) = in_set(&FLDENV, CR0_BASE, CR4_FP, &x87, &put);
+            assert_eq!(
+                reference.exit, "InstructionBudgetExhausted",
+                "{label} <- {index}"
+            );
+            assert_eq!(observed, reference, "{label} <- {index}");
+            assert_eq!(observed.reads, vec![(DATA, 28)], "{label} <- {index}");
+            assert!(observed.writes.is_empty(), "{label} <- {index}");
+            assert_eq!(
+                before.sse, after.sse,
+                "{label} <- {index}: the SSE half is untouched"
+            );
+            // The register stack is not touched by FLDENV (only the environment is loaded).
+            assert_eq!(after.x87.registers, x87.registers, "{label} <- {index}");
             assert_eq!(
                 after.x87.data_selector,
                 Some(u16::from_le_bytes([image[24], image[25]])),

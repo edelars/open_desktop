@@ -77,7 +77,7 @@ const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
         Reg::Edx1,
         0,
         "FPU",
-        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR, FLDENV exist only in the bounded profile of S2-32a/S2-32b/S2-32c/S2-32d and are not connected to the CPL0 set (x87 state is None there), the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
+        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR, FLDENV exist only in the bounded profile of S2-32a/S2-32b/S2-32c/S2-32d and run in the CPL0 set only within that profile (S2-32e: FNSTENV, FNSAVE, FRSTOR and FLDENV execute, the rest are refused while FCS/FDS are represented), the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
     ),
     (Reg::Edx1, 3, "PSE", "no task"),
     (
