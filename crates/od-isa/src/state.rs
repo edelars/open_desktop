@@ -107,6 +107,43 @@ impl X87State {
         self.last_opcode = 0;
     }
 
+    /// The MMX register view MM0..MM7 (Intel SDM Vol. 1 §9.2.2, §9.5): MMn is the low 64 bits (the
+    /// significand) of physical x87 data register Rn, not of ST(n), so TOP does not rotate the view.
+    /// There is no second copy: the value is read from `registers`. `None` for an index above 7.
+    pub fn mmx_register(&self, index: u8) -> Option<[u8; 8]> {
+        let raw = self.registers.get(usize::from(index))?;
+        Some(core::array::from_fn(|lane| raw[lane]))
+    }
+
+    /// The register-file effect of an MMX instruction other than EMMS (Intel SDM Vol. 1 §9.6.2, Vol. 3A
+    /// §15.2 Table 15-2): TOP becomes 0 and the whole tag word becomes valid (00B in every field). The data registers
+    /// and the rest of the status word are untouched.
+    pub fn enter_mmx_state(&mut self) {
+        self.status_word &= !(7 << 11);
+        self.tag_word = 0;
+    }
+
+    /// An MMX instruction that writes MMn stores the value in bits 63:0 of physical register Rn and
+    /// all ones in the exponent field and sign bit, bits 79:64 (Intel SDM Vol. 1 §9.6.2). Returns
+    /// `false` (nothing changed) for an index above 7. The TOP/tag effect is [`Self::enter_mmx_state`].
+    pub fn write_mmx_register(&mut self, index: u8, value: [u8; 8]) -> bool {
+        let Some(raw) = self.registers.get_mut(usize::from(index)) else {
+            return false;
+        };
+        raw[..8].copy_from_slice(&value);
+        raw[8] = 0xff;
+        raw[9] = 0xff;
+        true
+    }
+
+    /// EMMS (Intel SDM Vol. 2A, "Operation": `x87FPUTagWord := FFFFH`): every tag becomes empty. Vol. 3A
+    /// §15.2 Table 15-2 adds that TOS becomes 000B for EMMS as well (the physical oracle agrees); the data
+    /// registers and the other status word bits are untouched.
+    pub fn emms(&mut self) {
+        self.status_word &= !(7 << 11);
+        self.tag_word = 0xffff;
+    }
+
     /// Apply the bounded FNCLEX status-word transition. C0/C1/C2/C3 retain
     /// their concrete local values although Intel leaves them undefined.
     pub fn fnclex(&mut self) {

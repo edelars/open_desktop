@@ -36,6 +36,7 @@ pub struct BinaryRoundingResult<T> {
     inexact: bool,
     overflow: bool,
     tiny_after_precision_rounding: bool,
+    unbounded_inexact: bool,
 }
 
 impl<T> BinaryRoundingResult<T> {
@@ -50,7 +51,23 @@ impl<T> BinaryRoundingResult<T> {
             inexact,
             overflow,
             tiny_after_precision_rounding,
+            unbounded_inexact: inexact,
         }
+    }
+
+    /// Records whether rounding the exact value to the destination precision with an unbounded exponent
+    /// range lost information. `new` assumes the final encoding's `inexact`; the overflow and tiny results
+    /// differ from it (an overflow result is always inexact, but its unbounded-exponent rounding can be exact).
+    const fn with_unbounded_inexact(mut self, unbounded_inexact: bool) -> Self {
+        self.unbounded_inexact = unbounded_inexact;
+        self
+    }
+
+    /// Returns whether rounding to the destination precision with an unbounded exponent range lost
+    /// information. This is the inexactness that an unmasked SSE overflow or underflow reports as the
+    /// precision flag (the instruction delivers no result, so the bounded encoding does not exist).
+    pub const fn unbounded_inexact(&self) -> bool {
+        self.unbounded_inexact
     }
 
     /// Returns the destination-format encoding produced by the rounding.
@@ -160,6 +177,11 @@ impl<T> BinaryArithmeticResult<T> {
     /// Returns whether the precision-rounded nonzero result is below normal range.
     pub const fn tiny_after_precision_rounding(&self) -> bool {
         self.rounding.tiny_after_precision_rounding()
+    }
+
+    /// Returns whether the unbounded-exponent destination-precision rounding lost information.
+    pub const fn unbounded_inexact(&self) -> bool {
+        self.rounding.unbounded_inexact()
     }
 
     /// Returns the local invalid-operation outcome for this operation.
@@ -295,6 +317,11 @@ impl<T> BinaryDivisionResult<T> {
     /// Returns whether the precision-rounded nonzero result is below normal range.
     pub const fn tiny_after_precision_rounding(&self) -> bool {
         self.rounding.tiny_after_precision_rounding()
+    }
+
+    /// Returns whether the unbounded-exponent destination-precision rounding lost information.
+    pub const fn unbounded_inexact(&self) -> bool {
+        self.rounding.unbounded_inexact()
     }
 
     /// Returns the local invalid-operation outcome.
@@ -592,7 +619,8 @@ impl Binary32 {
                         rounded.inexact(),
                         rounded.overflow(),
                         rounded.tiny_after_precision_rounding(),
-                    ),
+                    )
+                    .with_unbounded_inexact(rounded.unbounded_inexact()),
                     false,
                 )
             }
@@ -860,12 +888,15 @@ impl Binary32 {
             0x7f80_0000,
             0x7f7f_ffff,
         )?;
-        Some(BinaryRoundingResult::new(
-            Self::from_bits(result.value as u32),
-            result.inexact,
-            result.overflow,
-            result.tiny_after_precision_rounding,
-        ))
+        Some(
+            BinaryRoundingResult::new(
+                Self::from_bits(result.value as u32),
+                result.inexact,
+                result.overflow,
+                result.tiny_after_precision_rounding,
+            )
+            .with_unbounded_inexact(result.unbounded_inexact),
+        )
     }
 
     /// Multiplies finite values and reports bounded binary32 rounding diagnostics.
@@ -945,7 +976,11 @@ impl Binary32 {
     /// unchanged, and quiets SNaN by setting its quiet bit. Normal finite
     /// values use exact same-format division of `1.0 / self`, rounded once to
     /// nearest-ties-even; a subnormal rounded result is flushed to same-sign
-    /// zero. The helper is value-only: it does not consult or update MXCSR,
+    /// zero. Every finite input with `|x| >= 2^126` (magnitude bits
+    /// `0x7e80_0000` and above) also yields same-sign zero, including
+    /// `|x| == 2^126` whose exact reciprocal would be the minimum normal; this
+    /// is the measured hardware behavior (ISSUE-025), not an Intel SDM
+    /// guarantee. The helper is value-only: it does not consult or update MXCSR,
     /// report diagnostics, or deliver SIMD floating-point exceptions. Its
     /// finite result is a deterministic reference policy, not a promise of
     /// identical hardware bits.
@@ -968,7 +1003,9 @@ impl Binary32 {
                 )
                 .expect("normal divisor is nonzero")
                 .value();
-                if rounded.class() == BinaryClass::Subnormal {
+                if rounded.class() == BinaryClass::Subnormal
+                    || self.0 & !Self::SIGN_MASK >= 0x7e80_0000
+                {
                     Self::from_bits(rounded.0 & Self::SIGN_MASK)
                 } else {
                     rounded
@@ -1777,12 +1814,15 @@ impl Binary64 {
             0x7ff0_0000_0000_0000,
             0x7fef_ffff_ffff_ffff,
         )?;
-        Some(BinaryRoundingResult::new(
-            Self::from_bits(result.value),
-            result.inexact,
-            result.overflow,
-            result.tiny_after_precision_rounding,
-        ))
+        Some(
+            BinaryRoundingResult::new(
+                Self::from_bits(result.value),
+                result.inexact,
+                result.overflow,
+                result.tiny_after_precision_rounding,
+            )
+            .with_unbounded_inexact(result.unbounded_inexact),
+        )
     }
 
     /// Multiplies finite values and reports bounded binary64 rounding diagnostics.
@@ -2624,17 +2664,20 @@ fn round_pack_quotient_bits(
             RationalRoundingMode::TowardPositive => !sign,
             RationalRoundingMode::TowardNegative => sign,
         };
-        return Some(BinaryRoundingResult::new(
-            sign_bits
-                | if to_infinity {
-                    infinity_bits
-                } else {
-                    maximum_finite_bits
-                },
-            true,
-            true,
-            tiny_after_precision_rounding,
-        ));
+        return Some(
+            BinaryRoundingResult::new(
+                sign_bits
+                    | if to_infinity {
+                        infinity_bits
+                    } else {
+                        maximum_finite_bits
+                    },
+                true,
+                true,
+                tiny_after_precision_rounding,
+            )
+            .with_unbounded_inexact(rounded_inexact),
+        );
     }
 
     if tiny_after_precision_rounding {
@@ -2649,12 +2692,10 @@ fn round_pack_quotient_bits(
             minimum_normal_exponent - (precision as i32 - 1),
             mode,
         )?;
-        return Some(BinaryRoundingResult::new(
-            sign_bits | magnitude,
-            inexact,
-            false,
-            true,
-        ));
+        return Some(
+            BinaryRoundingResult::new(sign_bits | magnitude, inexact, false, true)
+                .with_unbounded_inexact(rounded_inexact),
+        );
     }
 
     let significand = if carried {
@@ -2683,6 +2724,47 @@ mod tests {
     use crate::finite_arithmetic::integer_sqrt_u128;
 
     use core::cmp::Ordering;
+
+    /// S2-37: the precision-rounding inexactness with an unbounded exponent differs from the final `inexact`
+    /// for an overflow (the delivered infinity or maximum is always inexact; the unbounded result may be exact)
+    /// and for a tiny result (the denormalization loses bits that the precision rounding does not).
+    #[test]
+    fn unbounded_inexact_separates_the_precision_rounding_from_the_bounded_encoding() {
+        let mode = RationalRoundingMode::NearestTiesEven;
+        let max = Binary32::from_bits(0x7f7f_ffff);
+        // 2 * MAX is 1.1...1b * 2^128 with 24 ones: exact with an unbounded exponent.
+        let doubled = Binary32::add_raw_result(max, max, mode);
+        assert!(doubled.overflow() && doubled.inexact() && !doubled.unbounded_inexact());
+        // MAX + 2^127 needs 25 significant bits: inexact either way.
+        let inexact = Binary32::add_raw_result(max, Binary32::from_bits(0x7f00_0000), mode);
+        assert!(inexact.overflow() && inexact.inexact() && inexact.unbounded_inexact());
+        // min normal / 2 is exactly the denormal 2^-127: tiny, exact either way.
+        let min_normal = Binary32::from_bits(0x0080_0000);
+        let two = Binary32::from_bits(0x4000_0000);
+        let half = Binary32::divide_raw_result(min_normal, two, mode);
+        assert!(
+            half.tiny_after_precision_rounding() && !half.inexact() && !half.unbounded_inexact()
+        );
+        // 3 * 2^-149 * 0.5 = 1.5 * 2^-149 is exact with an unbounded exponent (the significand 1.1b fits) and
+        // loses a bit only when denormalized.
+        let tie = Binary32::multiply_raw_result(
+            Binary32::from_bits(0x0000_0003),
+            Binary32::from_bits(0x3f00_0000),
+            mode,
+        );
+        assert!(tie.tiny_after_precision_rounding() && tie.inexact() && !tie.unbounded_inexact());
+        // An ordinary inexact result agrees with itself.
+        let third = Binary32::divide_raw_result(
+            Binary32::from_bits(0x3f80_0000),
+            Binary32::from_bits(0x4040_0000),
+            mode,
+        );
+        assert!(third.inexact() && third.unbounded_inexact());
+        // The same for binary64: 2 * MAX is exact with an unbounded exponent.
+        let max64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff);
+        let doubled64 = Binary64::add_raw_result(max64, max64, mode);
+        assert!(doubled64.overflow() && doubled64.inexact() && !doubled64.unbounded_inexact());
+    }
 
     fn assert_sse_reciprocal_relative_bound(source_bits: u32, result_bits: u32) {
         let source = Binary32::from_bits(source_bits);
@@ -2751,7 +2833,8 @@ mod tests {
             (0x0080_0000, 0x7e80_0000),
             (0x8080_0000, 0xfe80_0000),
             (0x7e7f_ffff, 0x0080_0001),
-            (0x7e80_0000, 0x0080_0000),
+            (0x7e80_0000, 0x0000_0000),
+            (0xfe80_0000, 0x8000_0000),
             (0x7e80_0001, 0x0000_0000),
             (0xfe80_0001, 0x8000_0000),
             (0x7f7f_ffff, 0x0000_0000),

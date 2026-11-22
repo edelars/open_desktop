@@ -28,7 +28,7 @@ struct Options {
 }
 
 #[derive(Debug)]
-struct Report {
+pub(crate) struct Report {
     namespace_sectors: u64,
     write_read_flush: bool,
     data_matches: bool,
@@ -107,7 +107,7 @@ fn execute(firmware_path: &Path, disk_path: &Path) -> Result<Report, String> {
     drive_nvme(&mut board, &nvme)
 }
 
-fn drive_nvme(
+pub(crate) fn drive_nvme(
     board: &mut od_machine::LoadedFirmwareBoard,
     nvme: &od_machine::NvmeHandle,
 ) -> Result<Report, String> {
@@ -187,7 +187,7 @@ fn drive_nvme(
         create_sq,
     )?;
 
-    let pattern: Vec<u8> = (0..512).map(|index| (index * 37 + 11) as u8).collect();
+    let pattern = write_pattern();
     write_bytes(board.bus_mut(), IO_DATA, &pattern)?;
     let write = command(0x01, 0x20, 1, IO_DATA, 0, 0, 0);
     let mut io_tail = 0u32;
@@ -242,6 +242,11 @@ fn drive_nvme(
         data_matches,
         handoff_bytes: board.handoff_block().len(),
     })
+}
+
+/// The sector written to LBA 0 by [`drive_nvme`].
+pub(crate) fn write_pattern() -> Vec<u8> {
+    (0..512).map(|index| (index * 37 + 11) as u8).collect()
 }
 
 fn command(

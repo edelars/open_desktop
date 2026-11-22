@@ -782,9 +782,10 @@ pub(crate) fn validate_linux_entry(
     if state.cr4 != Some(LINUX_ENTRY_CR4) {
         return Err(LinuxLoadError::EntryCr4 { found: state.cr4 });
     }
-    // EFER is not a CPU-state field: `LoadedFirmwareBoard::efer()` is a `const fn` returning
-    // `FIRMWARE_EFER` (LME|LMA|NXE, 0xD00), so a test cannot inject another value and this check
-    // guards against a future board that makes EFER variable.
+    // EFER is not a CPU-state field: `LoadedFirmwareBoard::efer()` is `FIRMWARE_EFER` (LME|LMA, 0xD00)
+    // with the NXE bit of the boot vCPU's guest EFER (S2-25f). The entry state is the loader's, so
+    // NXE is set and the walker EFER is 0xD00; this check guards the entry handoff against a
+    // board whose guest EFER was changed before the load.
     if efer != FIRMWARE_EFER {
         return Err(LinuxLoadError::EntryEfer { found: efer });
     }

@@ -20,6 +20,7 @@ pub mod long_decode;
 pub mod long_mode_entry;
 pub mod lretq;
 pub mod memory;
+pub mod mmx_int;
 pub mod msr;
 pub mod paging;
 pub mod port_io;
@@ -27,11 +28,14 @@ pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;
 pub mod sep;
+pub mod sse2_int;
+mod sse_fp;
 pub mod state;
 pub mod sti;
 pub mod swapgs;
 pub mod syscall;
 pub mod x87;
+pub mod x87_transcend;
 pub use cli::CliProfile;
 pub use execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
@@ -95,8 +99,12 @@ const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
 pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF | 2;
 /// Profile flags writable by the implemented long-mode `POPFQ` slice.
 pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF;
-/// Selected synthetic Generic amd64 target capability used in plain FXSAVE
-/// images. This is intentionally distinct from testkit diagnostic metadata.
+/// MXCSR_MASK of the selected synthetic Generic amd64 target, stored in plain
+/// FXSAVE images and used by LDMXCSR and FXRSTOR64 to raise `#GP(0)` for a set bit
+/// outside it. By the owner's "main priority" rule (merge 56c60c9) DAZ (bit 6) is
+/// NOT in the mask: 0xFFBF is the S7-31i value and ADR-0014's 0xFFFF is
+/// superseded (the oracle i5-3210M accepts DAZ; see KNOWN_ISSUES ISSUE-680). This is
+/// intentionally distinct from testkit diagnostic metadata.
 pub const TARGET_FXSAVE_MXCSR_MASK: u32 = 0x0000_ffbf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

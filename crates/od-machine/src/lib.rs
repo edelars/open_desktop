@@ -49,11 +49,17 @@ mod net_backend;
 mod nic_e1000;
 mod nvme;
 mod nvram_device;
+mod pae_fetch_view;
+mod pae_operand_access;
+mod pae_protected_step;
 mod page_walk;
+#[cfg(test)]
+mod page_walk_2m_matrix_tests;
 mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
 mod paged_memory_adapter;
+mod paged_pae_adapter;
 mod paged_pio_step;
 mod paged_probe;
 mod paged_pump_backend;
@@ -62,6 +68,8 @@ mod parallel_run;
 #[cfg(test)]
 mod parallel_snapshot_tests;
 mod pci_ecam;
+mod pg32_fetch_view;
+mod pg32_operand_access;
 mod physical_memory;
 mod pic_8259;
 mod pio_step;
@@ -92,6 +100,7 @@ mod stage4_stack_probe;
 mod stage4_store_load_probe;
 mod stage4_uart_irq_probe;
 mod stage6_smp_probe;
+mod stop_diagnostic;
 mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
@@ -148,6 +157,10 @@ pub use nvram_device::{
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
     RtcCmosError,
+};
+pub use stop_diagnostic::{
+    DiagnosticReadError, DiagnosticReadFailure, DiagnosticTranslateError, DiagnosticTranslation,
+    VcpuDiagnosticState,
 };
 pub use tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmPlatformPort};
 
@@ -288,7 +301,7 @@ pub use firmware_board::{
     FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
     FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
     FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard, PlatformResetKind,
-    firmware_handoff_block, load_firmware_image,
+    QuantumProgress, firmware_handoff_block, load_firmware_image,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
@@ -298,6 +311,15 @@ pub use local_apic::{
     step_apic_base_msr, step_local_apic_cr8,
 };
 
+pub use page_walk::pae::{
+    PaeAccessRequest, PaeConfigError, PaeOperandOperation, PaePageSize, PaeProbeConfig,
+    PaeTranslation, access_pae_ram, load_pae_pdptes, translate_pae_ram,
+    translate_pae_ram_read_only, translate_pae_ram_read_only_with_trace,
+};
+pub use page_walk::pg32::{
+    Pg32AccessRequest, Pg32PageSize, Pg32ProbeConfig, Pg32Translation, access_pg32_ram,
+    translate_pg32_ram, translate_pg32_ram_read_only, translate_pg32_ram_read_only_with_trace,
+};
 pub use page_walk::{
     AdBit, AdUpdate, EffectivePermissions, GuestLinearAddress, InstructionProbeOutcome,
     InstructionProbeReport, Long64ProbeConfig, NonCanonicalAddress, PageFaultProbe,
@@ -319,6 +341,10 @@ pub use host_parallel::{
 };
 #[cfg(feature = "lock-wait-metrics")]
 pub use lock_wait_metrics::{BoardLockWaitMetrics, MutexAcquisitionMetrics};
+pub use pae_protected_step::{
+    PaeProtectedStop, PaeStateRefusal, PaeStepOutcome, is_pae_protected_state, pae_covers,
+    pae_covers_without_efer_write, run_pae_state_step, step_pae_protected, step_pae_protected_with,
+};
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
     PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,
@@ -347,6 +373,7 @@ pub use paged_memory_adapter::{
     step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_cpl0_set_memory,
     with_paged_mov_dword_memory, with_paged_mov_memory, with_paged_mov_store_memory,
 };
+pub use paged_pae_adapter::PagedPaeMemoryAdapter;
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
@@ -567,7 +594,10 @@ pub use agent_channel::{
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,
 };
-pub use uart16550::{Uart16550Handle, Uart16550PollingTx, UartPortSpec};
+pub use uart16550::{
+    UART_RX_ERROR_BREAK, UART_RX_ERROR_FRAMING, UART_RX_ERROR_PARITY, Uart16550Handle,
+    Uart16550PollingTx, UartPortSpec,
+};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
 pub use translation_probe_cache::{

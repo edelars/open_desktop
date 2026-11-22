@@ -46,6 +46,7 @@ use crate::pit_pic_irq_source::PitPicIrqSource;
 use crate::smp_scheduler::{
     BoardSmpHost, Executed, QuantumPolicy, SmpError, SmpScheduler, StopRequest,
 };
+use crate::stop_diagnostic::{self, VcpuDiagnosticState};
 use crate::tpm_crb::{TPM_CRB_BASE, TPM_CRB_LEN, TpmConfig, TpmCrb, TpmCrbHandle, TpmPlatformPort};
 use crate::uart_ioapic_irq_source::UartIoapicIrqSource;
 use crate::uart_pic_irq_source::UartPicIrqSource;
@@ -74,8 +75,9 @@ use crate::{
     run_paged_probe_with_rdtsc,
 };
 use crate::{
-    HidDevices, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT, XhciConfig, XhciDevice,
-    XhciHandle,
+    DiagnosticReadError, DiagnosticReadFailure, DiagnosticTranslateError, DisplayReadError,
+    FrameInfo, HidDevices, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT, XhciConfig,
+    XhciDevice, XhciHandle,
 };
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
@@ -110,6 +112,8 @@ pub const FIRMWARE_MIN_RAM_BYTES: u64 = 128 << 20;
 pub const FIRMWARE_MAX_RAM_BYTES: u64 = 0xF_F400_0000;
 pub const FIRMWARE_COM1_PORT: u16 = 0x03f8;
 pub const FIRMWARE_EFER: u64 = 0x0d00;
+/// `IA32_EFER.NXE` (bit 11).
+const EFER_NXE: u64 = 1 << 11;
 /// ACPI table area (S4-31c, `acpi_tables`): `[0xE_0000, 0xE_F000)`, an E820 ACPI
 /// reclaim range in S4-37; the RSDP will sit at its first byte.
 pub const FIRMWARE_ACPI_TABLES_BASE: u64 = 0x000E_0000;
@@ -1421,6 +1425,15 @@ pub(crate) fn set_exit_to_probe_exit(
     Ok((mapped, detail))
 }
 
+/// Where a run stands at a quantum boundary ([`LoadedFirmwareBoard::run_boot_with_quantum_hook`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuantumProgress {
+    /// Instructions retired since the run began.
+    pub retired: u64,
+    /// Quanta completed since the run began.
+    pub quanta: u64,
+}
+
 /// Result of [`LoadedFirmwareBoard::run_boot`].
 #[derive(Debug, Eq, PartialEq)]
 pub struct FirmwareRunReport {
@@ -1497,6 +1510,10 @@ pub struct LoadedFirmwareBoard {
     bus: MachineBus,
     /// The set of virtual processors (S6-10): exactly one element, index 0; every path takes it.
     vcpus: Vec<Vcpu>,
+    /// The state the loader gave the boot processor (the direct entry of the firmware image),
+    /// kept for [`Self::restart_vcpus`] (S4-21e). `None` for a Linux-profile board: its caller
+    /// sets the entry state itself and the board does not know it.
+    entry_state: Option<LongModeState>,
     uart: Uart16550Handle,
     /// The COM2 agent channel when `FirmwareBoardConfig::agent_channel` is set.
     agent_channel: Option<AgentChannel>,
@@ -1812,6 +1829,83 @@ impl LoadedFirmwareBoard {
         &mut self.vcpus[BOOT_VCPU_INDEX].state
     }
 
+    /// Registers of vCPU `vcpu` for a stop snapshot (S8-10), `None` when the board has no such
+    /// vCPU. Read-only: a copy of what the state holds. The boot processor's CR3 is the root the
+    /// board walks from; another vCPU's CR3 is the one its state carries.
+    pub fn diagnostic_vcpu_state(&self, vcpu: usize) -> Option<VcpuDiagnosticState> {
+        let cpu = self.vcpus.get(vcpu)?;
+        let state = &cpu.state;
+        let cr3 = state
+            .cr3
+            .or((vcpu == BOOT_VCPU_INDEX).then_some(self.page_table_root));
+        Some(VcpuDiagnosticState {
+            vcpu,
+            rip: state.rip,
+            rflags: state.rflags,
+            gpr: state.gpr,
+            cr0: state.cr0,
+            cr2: cpu.guest_cr2.or(state.cr2),
+            cr3,
+            cr4: state.cr4,
+            efer: cpu.guest_efer,
+            cs_selector: state.cs_selector,
+            cpl: state.cs_selector.map(|selector| (selector & 3) as u8),
+            long_mode_model: cpu.legacy.is_none(),
+            activity: state.activity,
+        })
+    }
+
+    /// Reads `output.len()` bytes of the guest-virtual space of vCPU `vcpu` (S8-10). The 4-level
+    /// tables (4 KiB, 2 MiB and 1 GiB pages) are walked from the vCPU's CR3 without setting
+    /// accessed or dirty bits, and the bytes come from RAM, ROM or framebuffer only: no device is
+    /// touched and no guest byte is written. Permissions are not checked (a diagnostic read).
+    /// On failure `read` of the error says how many leading bytes of `output` are valid.
+    pub fn diagnostic_read_virtual(
+        &self,
+        vcpu: usize,
+        linear: u64,
+        output: &mut [u8],
+    ) -> Result<(), DiagnosticReadFailure> {
+        let failure = |error| DiagnosticReadFailure {
+            read: 0,
+            linear,
+            error: DiagnosticReadError::Translate(error),
+        };
+        let state = self
+            .diagnostic_vcpu_state(vcpu)
+            .ok_or_else(|| failure(DiagnosticTranslateError::NoSuchVcpu))?;
+        let cr3 = stop_diagnostic::require_long_mode_paging(
+            state.cr0,
+            state.cr3,
+            state.cr4,
+            state.long_mode_model,
+        )
+        .map_err(failure)?;
+        stop_diagnostic::read_virtual(
+            |address| {
+                stop_diagnostic::translate_long64(
+                    |physical| {
+                        let mut entry = [0u8; 8];
+                        self.bus
+                            .read_physical_bytes_readonly(
+                                GuestPhysicalAddress::new(physical),
+                                &mut entry,
+                            )
+                            .map(|()| u64::from_le_bytes(entry))
+                    },
+                    cr3,
+                    address,
+                )
+            },
+            |physical, bytes| {
+                self.bus
+                    .read_physical_bytes_readonly(GuestPhysicalAddress::new(physical), bytes)
+            },
+            linear,
+            output,
+        )
+    }
+
     /// Owner/host handle of the board LAPIC (S4-38 pump becomes its owner); it can
     /// write (reset, `set_global_enabled`, `request_fixed_edge`, `acknowledge`,
     /// `dispatch_timer`). `has_timer()` is true only under `linux_profile`.
@@ -1910,6 +2004,32 @@ impl LoadedFirmwareBoard {
             vcpu.set_cpuid(cpuid);
         }
         Ok(())
+    }
+
+    /// Restart the processors after a stop (S4-21e, the processor half of the machine reset of
+    /// S7-26): the CPU complex goes back to the entry state the loader gave the boot processor
+    /// ([`Self::reset_cpu_complex`]: every vCPU at its power-on state, the Local APICs and the IOAPIC
+    /// route without pending events) and the guest stop that ended the run is acknowledged. The
+    /// acknowledged stop is returned: `Some(Reset)` after the guest wrote the reset register,
+    /// `Some(Shutdown)` after S5, `None` for any other end of a run (a halt, a budget, a host STOP,
+    /// a guest shutdown or a host fault: a restart is legal after all of them; the host decides).
+    ///
+    /// A host STOP flag set with [`Self::set_host_stop`] belongs to the host and is not cleared
+    /// (only the CPL0-set Linux runs look at it).
+    /// Not touched: guest RAM (the entry state is only usable on RAM the caller has put back, or
+    /// on a guest that sets up everything itself), ROM, the devices (including the PM block's
+    /// registers), NVRAM, the TPM and virtual time. Their reset, and the RAM policy of cold and
+    /// warm reset, belong to [`Self::platform_reset`] (S7-26). Without a recorded entry state (a Linux-profile board) it is a
+    /// configuration error. On an error nothing has changed.
+    pub fn restart_vcpus(&mut self) -> Result<Option<MachineStopReason>, FirmwareBoardError> {
+        let entry = self.entry_state.clone().ok_or(FirmwareBoardError::Config(
+            "restart_vcpus: the board has no recorded entry state",
+        ))?;
+        self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
+        Ok(self
+            .acpi_pm
+            .as_ref()
+            .and_then(AcpiPmHandle::take_stop_request))
     }
 
     /// The platform reset of the firmware board (S7-26): what the reset register of the board
@@ -2252,7 +2372,7 @@ impl LoadedFirmwareBoard {
             self.state().cr0.unwrap_or(CR0_LONG_PAGING),
             cr3,
             self.state().cr4.unwrap_or(CR4_PAE),
-            FIRMWARE_EFER,
+            self.efer(),
         );
         let (frames, ended) = match paging {
             Ok(paging) => capture_frame_chain(rbp, |frame_pointer| {
@@ -2289,7 +2409,7 @@ impl LoadedFirmwareBoard {
             self.state().cr0.unwrap_or(CR0_LONG_PAGING),
             cr3,
             self.state().cr4.unwrap_or(CR4_PAE),
-            FIRMWARE_EFER,
+            self.efer(),
         );
         match paging {
             Ok(paging) => crate::console_output_context::capture_frame_chain_with_limit(
@@ -2331,6 +2451,16 @@ impl LoadedFirmwareBoard {
 
     pub fn display(&self) -> DisplayHandle {
         self.display.clone()
+    }
+
+    /// Copies the current frame of the display into `output` (S8-11), read-only: the same
+    /// bytes as `self.display().read_frame_into(bus, output)` without needing the bus. Call it
+    /// only between quanta (from the hook of [`Self::run_boot_with_quantum_hook`] or after a run).
+    pub fn read_display_frame_into(
+        &self,
+        output: &mut [u8],
+    ) -> Result<FrameInfo, DisplayReadError> {
+        self.display.read_frame_into(&self.bus, output)
     }
 
     /// Handle of the NVMe controller; `None` unless `FirmwareBoardConfig::nvme` was set.
@@ -2982,9 +3112,14 @@ impl LoadedFirmwareBoard {
         self.page_table_root
     }
 
-    /// The EFER of the translation walkers (LME|LMA|NXE); the guest's `SCE` is not part of it.
-    pub const fn efer(&self) -> u64 {
-        FIRMWARE_EFER
+    /// The EFER of the translation walkers of the boot processor: `FIRMWARE_EFER` (LME|LMA) with
+    /// the NXE bit of the guest EFER (S2-25f). NXE starts set (`FIRMWARE_EFER`) and a guest
+    /// `WRMSR IA32_EFER` through the CPL0 set may clear it (or set it again when the CPU profile
+    /// declares NX), so every walker this board builds (the quantum runs, the fetch view, the
+    /// frame-chain captures, the stop record) takes it from here instead of the constant. LME and
+    /// LMA never change in the set; the guest's `SCE` is not part of it.
+    pub fn efer(&self) -> u64 {
+        (FIRMWARE_EFER & !EFER_NXE) | (self.vcpus[BOOT_VCPU_INDEX].guest_efer & EFER_NXE)
     }
 
     /// The guest-visible `IA32_EFER`: the walker EFER, plus `SCE` once the guest wrote it
@@ -3204,6 +3339,8 @@ impl LoadedFirmwareBoard {
         committed_write: impl FnMut(GuestPhysicalRange),
         observe: impl FnMut(u64, u64),
     ) -> PagedProbeQuantumReport {
+        // S2-25f: the walker EFER is the guest's current NXE, not the constant.
+        let efer = self.efer();
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: PrivilegeLevel::Ring0,
@@ -3221,7 +3358,7 @@ impl LoadedFirmwareBoard {
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -3249,7 +3386,7 @@ impl LoadedFirmwareBoard {
                     ecam: self.ecam_mmio.as_ref(),
                 },
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -3273,7 +3410,7 @@ impl LoadedFirmwareBoard {
                 &mut self.vcpus[BOOT_VCPU_INDEX].state,
                 &mut self.bus,
                 self.page_table_root,
-                FIRMWARE_EFER,
+                efer,
                 context,
                 instruction_budget,
                 INTEGER_FLAGS,
@@ -3286,7 +3423,7 @@ impl LoadedFirmwareBoard {
             &mut self.vcpus[BOOT_VCPU_INDEX].state,
             &mut self.bus,
             self.page_table_root,
-            FIRMWARE_EFER,
+            efer,
             context,
             instruction_budget,
             INTEGER_FLAGS,
@@ -3304,7 +3441,8 @@ impl LoadedFirmwareBoard {
         rip: u64,
         len: usize,
     ) -> (Option<u64>, Vec<u8>, Option<String>) {
-        self.fetch_view_2m_with_privilege(rip, len, PrivilegeLevel::Ring0, FIRMWARE_EFER)
+        let efer = self.efer();
+        self.fetch_view_2m_with_privilege(rip, len, PrivilegeLevel::Ring0, efer)
     }
 
     pub(crate) fn fetch_view_2m_with_privilege(
@@ -3423,7 +3561,26 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, FirmwareBoardError> {
-        self.run_boot_with(false, instruction_budget, |_, _, _| {})
+        self.run_boot_with(false, instruction_budget, |_, _, _| {}, |_, _| {})
+            .map_err(|failure| failure.error)
+    }
+
+    /// [`Self::run_boot`] that also calls `between_quanta` at every quantum boundary at which
+    /// the run continues (S8-11), after the quantum's COM1 bytes and its virtual-time advance are
+    /// applied. The hook gets a shared reference: it can read the COM1 transcript, the clock, the
+    /// state and a display frame ([`Self::read_display_frame_into`]). It gets no mutable reference;
+    /// the callers in this tree call only reading methods (`diagnostic_*`, `read_*`), but the type
+    /// does not forbid `&self` methods that change display state (for example through
+    /// `display()`), so "read only" is a convention of the hook, not a guarantee of the type.
+    /// Quanta are not cut: a run whose hook does nothing is identical to [`Self::run_boot`], so
+    /// the hook sees only the boundaries the guest's own I/O and the budget create. The final
+    /// boundary (the run ends) is not reported: the caller reads the machine after the run.
+    pub fn run_boot_with_quantum_hook(
+        &mut self,
+        instruction_budget: u64,
+        between_quanta: impl FnMut(&Self, QuantumProgress),
+    ) -> Result<FirmwareRunReport, FirmwareBoardError> {
+        self.run_boot_with(false, instruction_budget, |_, _, _| {}, between_quanta)
             .map_err(|failure| failure.error)
     }
 
@@ -3441,7 +3598,7 @@ impl LoadedFirmwareBoard {
                 "firmware boot observer requires the firmware profile",
             ));
         }
-        self.run_boot_with(false, instruction_budget, observe)
+        self.run_boot_with(false, instruction_budget, observe, |_, _| {})
             .map_err(|failure| failure.error)
     }
 
@@ -3454,7 +3611,7 @@ impl LoadedFirmwareBoard {
         &mut self,
         instruction_budget: u64,
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
-        self.run_boot_with(true, instruction_budget, |_, _, _| {})
+        self.run_boot_with(true, instruction_budget, |_, _, _| {}, |_, _| {})
     }
 
     /// The Linux direct boot through the CPL0 profile set instead of the base probe profile
@@ -3643,6 +3800,10 @@ impl LoadedFirmwareBoard {
             .map(|configs| std::rc::Rc::new(FetchCacheSweep::new(configs)));
         // The next call resumes a partial REP: its first boundary is inside the REP.
         let mut partial_rep = false;
+        // S2-25 NXE slice: the walker's EFER is the board's `efer()` (the NXE bit of the guest EFER;
+        // a guest `WRMSR IA32_EFER` that cleared NXE in an earlier run keeps it clear); a retired
+        // NXE write of a quantum reaches the next one through `report.efer`.
+        let mut walker_efer = self.efer();
         // S4-38L5a/c: the set models CR2 for `MOV RAX, CR2`, and a delivered `#PF` writes it
         // (S4-38L5c). Like CR3 (kept in `page_table_root` through `report.cr3` and fed back on
         // entry), the CR2 the guest left is kept in `guest_cr2` and fed back on entry,
@@ -3823,7 +3984,7 @@ impl LoadedFirmwareBoard {
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
                 board.page_table_root,
-                FIRMWARE_EFER,
+                walker_efer,
                 context,
                 quantum_budget,
                 INTEGER_FLAGS,
@@ -3853,6 +4014,7 @@ impl LoadedFirmwareBoard {
             );
             // The walker of the next quantum starts from the CR3 the guest left.
             board.page_table_root = report.cr3;
+            walker_efer = report.efer;
             changes.extend(report.translation_context_changes.iter().copied());
             exceptions_delivered += report.delivered_exceptions;
             page_faults_delivered += report.delivered_page_faults;
@@ -4260,6 +4422,7 @@ impl LoadedFirmwareBoard {
         large_ram: bool,
         instruction_budget: u64,
         mut observe: impl FnMut(u64, u64, u64),
+        mut between_quanta: impl FnMut(&Self, QuantumProgress),
     ) -> Result<FirmwareRunReport, LinuxRunFailure> {
         let firmware_boot_profile = !large_ram && !self.has_linux_profile();
         let mut remaining = instruction_budget;
@@ -4383,7 +4546,10 @@ impl LoadedFirmwareBoard {
                 // not reported as an exhausted budget.
                 PagedProbeExit::Stopped if stop_reason.is_some() => PagedProbeExit::Stopped,
                 PagedProbeExit::Stopped if remaining == 0 => PagedProbeExit::BudgetExhausted,
-                PagedProbeExit::Stopped if report.instructions_executed > 0 => continue,
+                PagedProbeExit::Stopped if report.instructions_executed > 0 => {
+                    between_quanta(self, QuantumProgress { retired, quanta });
+                    continue;
+                }
                 other => other,
             };
             return Ok(FirmwareRunReport {
@@ -4980,6 +5146,7 @@ impl AssembledBoard {
         };
         Ok(LoadedFirmwareBoard {
             bus,
+            entry_state: Some(state.clone()),
             vcpus: vcpu_set(state, lapic.cpu_count()),
             uart,
             agent_channel,
@@ -5074,6 +5241,7 @@ impl AssembledBoard {
         configure_com1(&mut bus)?;
         let mut board = LoadedFirmwareBoard {
             bus,
+            entry_state: None,
             vcpus: vcpu_set(LongModeState::default(), lapic.cpu_count()),
             uart,
             agent_channel,
@@ -7213,6 +7381,118 @@ mod tests {
         assert_ne!(Some(MachineStopReason::Shutdown), report.stop_reason);
     }
 
+    // ---- S4-21e: restart of the processors after a stop ----
+
+    fn two_vcpu_pm_config() -> FirmwareBoardConfig {
+        FirmwareBoardConfig {
+            vcpu_count: 2,
+            ..pm_config()
+        }
+    }
+
+    #[test]
+    fn restart_after_a_guest_reset_returns_the_processors_to_the_entry_state() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &two_vcpu_pm_config()).unwrap();
+        let entry = board.state().clone();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+        assert_ne!(*board.state(), entry, "the run moved the boot processor");
+        // Events the old run left for the processors: a fixed interrupt and an NMI in the
+        // boot processor's Local APIC, an INIT for the application processor.
+        board.local_apic().request_fixed_edge(0x41).unwrap();
+        let ap_apic = board.local_apic_of(1).unwrap();
+        ap_apic.write_icr(1, 0, 4 << 8).unwrap();
+        assert!(board.local_apic().pending_nmi());
+        board
+            .local_apic()
+            .write_icr(0, 1, (5 << 8) | (3 << 14))
+            .unwrap();
+        let ram = board.ram_sha256().unwrap();
+        let clock = board.clock();
+        assert_eq!(
+            board.acpi_pm().unwrap().stop_request(),
+            Some(MachineStopReason::Reset)
+        );
+
+        assert_eq!(
+            board.restart_vcpus(),
+            Ok(Some(MachineStopReason::Reset)),
+            "the acknowledged stop is the reset"
+        );
+
+        assert_eq!(*board.state(), entry);
+        let boot = board.vcpu(0).unwrap();
+        assert_eq!(boot.guest_efer, FIRMWARE_EFER);
+        assert_eq!(boot.guest_cr2, None);
+        assert!(boot.legacy.is_none());
+        let ap = board.vcpu(1).unwrap();
+        assert_eq!(ap.activity(), CpuActivity::WaitForSipi);
+        assert!(ap.real_mode().is_some());
+        // No old pending event survives, for any vCPU, and the stop is acknowledged.
+        for index in 0..2 {
+            let apic = board.local_apic_of(index).unwrap();
+            assert_eq!(apic.pending(), None, "vCPU {index}");
+            assert!(!apic.pending_nmi(), "vCPU {index}");
+            assert_eq!(apic.take_startup().unwrap(), Default::default());
+        }
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+        // Neither RAM nor virtual time moved.
+        assert_eq!(board.ram_sha256().unwrap(), ram);
+        assert_eq!(board.clock(), clock);
+
+        // The restarted processors run the entry code again on the RAM the guest left.
+        let again = board.run_boot(100).unwrap();
+        assert_eq!(again.exit, PagedProbeExit::Stopped);
+        assert_eq!(again.stop_reason, Some(MachineStopReason::Reset));
+        assert_eq!(again.retired, 3);
+    }
+
+    #[test]
+    fn restart_acknowledges_a_shutdown_once_and_any_other_end_of_a_run_returns_none() {
+        let slp = ((u16::from(ACPI_SLP_TYP_S5) << 10) | ACPI_PM1_CNT_SLP_EN) >> 8;
+        let image = out_byte_image(ACPI_PM1A_CNT_BLK + 1, slp as u8);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        assert_eq!(
+            board.run_boot(100).unwrap().stop_reason,
+            Some(MachineStopReason::Shutdown)
+        );
+        assert_eq!(board.restart_vcpus(), Ok(Some(MachineStopReason::Shutdown)));
+        // The stop was taken: a second restart has nothing to acknowledge.
+        assert_eq!(board.restart_vcpus(), Ok(None));
+
+        // A halted guest (no stop request) is restartable too and runs again from the entry.
+        let mut halted = load_firmware_image(&hlt_image(), &pm_config()).unwrap();
+        let entry = halted.state().clone();
+        let report = halted.run_boot(100).unwrap();
+        assert_eq!(report.exit, PagedProbeExit::Halted);
+        assert_eq!(halted.state().activity, Some(CpuActivity::Halted));
+        assert_eq!(halted.restart_vcpus(), Ok(None));
+        assert_eq!(*halted.state(), entry);
+        assert_eq!(halted.state().activity, Some(CpuActivity::Running));
+        assert_eq!(halted.run_boot(100).unwrap().exit, PagedProbeExit::Halted);
+
+        // Without the PM block there is nothing to acknowledge either.
+        let mut plain = load(&hlt_image());
+        plain.run_boot(100).unwrap();
+        assert_eq!(plain.restart_vcpus(), Ok(None));
+    }
+
+    #[test]
+    fn restart_leaves_the_host_stop_flag_to_the_host() {
+        let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
+        let mut board = load_firmware_image(&image, &pm_config()).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        board.set_host_stop(Arc::clone(&flag));
+        board.run_boot(100).unwrap();
+        flag.store(true, Ordering::Relaxed);
+        board.restart_vcpus().unwrap();
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "the host's STOP request stays"
+        );
+    }
+
     #[test]
     fn a_stop_on_the_last_budgeted_instruction_is_not_a_budget_exhaustion() {
         let image = out_byte_image(ACPI_RESET_REG, ACPI_RESET_VALUE);
@@ -7506,6 +7786,100 @@ mod tests {
             3_579_545,
             "the retired HLT moved the timer"
         );
+    }
+
+    /// MOV AL,'X'; MOV DX,0x3F8; OUT DX,AL; MOV AL,'Y'; OUT DX,AL; MOV AL,'Z'; OUT DX,AL; HLT.
+    fn com1_xyz_image() -> Vec<u8> {
+        test_image(
+            &[
+                0xb0, b'X', 0x66, 0xba, 0xf8, 0x03, 0xee, 0xb0, b'Y', 0xee, 0xb0, b'Z', 0xee, 0xf4,
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn quantum_hook_sees_each_boundary_and_leaves_the_run_unchanged() {
+        let plain = load(&com1_xyz_image()).run_boot(1000).unwrap();
+        assert_eq!(plain.com1, b"XYZ");
+        assert!(plain.quanta > 1, "a COM1 write ends the quantum");
+
+        let mut board = load(&com1_xyz_image());
+        let mut seen = Vec::new();
+        let hooked = board
+            .run_boot_with_quantum_hook(1000, |board, progress| {
+                // The transcript and the clock of the boundary are readable from the hook.
+                seen.push((
+                    progress,
+                    board.com1_transcript().len(),
+                    board.clock().now_ns(),
+                ));
+            })
+            .unwrap();
+        assert_eq!(hooked, plain, "the hook must not change the run");
+        // Every quantum but the last (which ends the run) is reported, in order.
+        assert_eq!(seen.len() as u64, plain.quanta - 1);
+        assert!(seen.windows(2).all(|pair| {
+            pair[0].0.quanta + 1 == pair[1].0.quanta && pair[0].0.retired < pair[1].0.retired
+        }));
+        assert!(seen.iter().all(|(progress, _, ns)| *ns == progress.retired));
+        assert!(
+            seen.last().unwrap().1 >= 2,
+            "earlier bytes were already in the transcript"
+        );
+    }
+
+    #[test]
+    fn diagnostic_reads_follow_the_boot_page_tables_and_change_nothing() {
+        let mut board = load(&hlt_image());
+        let before = board.state().clone();
+        let view = board.diagnostic_vcpu_state(BOOT_VCPU_INDEX).unwrap();
+        assert_eq!(view.rip, before.rip);
+        assert_eq!(view.cr3, Some(FIRMWARE_BOOT_PAGE_TABLES_GPA));
+        assert_eq!(view.cr0, Some(FIRMWARE_CR0));
+        assert_eq!(view.cr4, Some(FIRMWARE_CR4));
+        assert_eq!(view.efer, FIRMWARE_EFER);
+        assert!(view.long_mode_model);
+        assert!(board.diagnostic_vcpu_state(board.vcpu_count()).is_none());
+
+        // The entry code is readable through the identity-mapped boot tables.
+        let mut code = [0u8; 4];
+        board
+            .diagnostic_read_virtual(BOOT_VCPU_INDEX, view.rip, &mut code)
+            .unwrap();
+        assert_eq!(code, [0xf4, 0, 0, 0]);
+
+        // An address no boot table maps: the failure says why and how much was read.
+        let unmapped = 0x0000_7fff_0000_0000;
+        let failure = board
+            .diagnostic_read_virtual(BOOT_VCPU_INDEX, unmapped, &mut code)
+            .unwrap_err();
+        assert_eq!(failure.read, 0);
+        assert!(matches!(
+            failure.error,
+            DiagnosticReadError::Translate(DiagnosticTranslateError::NotPresent { .. })
+        ));
+        // MMIO is not read: the LAPIC window translates (identity) but has no readable backing.
+        let failure = board
+            .diagnostic_read_virtual(BOOT_VCPU_INDEX, LOCAL_APIC_MMIO_BASE, &mut code)
+            .unwrap_err();
+        assert!(matches!(
+            failure.error,
+            DiagnosticReadError::Physical { .. }
+        ));
+        let failure = board
+            .diagnostic_read_virtual(board.vcpu_count(), view.rip, &mut code)
+            .unwrap_err();
+        assert!(matches!(
+            failure.error,
+            DiagnosticReadError::Translate(DiagnosticTranslateError::NoSuchVcpu)
+        ));
+        assert_eq!(
+            board.state(),
+            &before,
+            "diagnostics do not change the CPU state"
+        );
+        assert_eq!(board.run_boot(10).unwrap().exit, PagedProbeExit::Halted);
     }
 
     #[test]

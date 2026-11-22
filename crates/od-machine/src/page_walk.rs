@@ -9,6 +9,9 @@ use od_isa::memory::{
 };
 use std::fmt;
 
+pub mod pae;
+pub mod pg32;
+
 const CR0_PE: u64 = 1 << 0;
 const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;
@@ -91,6 +94,12 @@ impl Long64ProbeConfig {
             });
         }
         validate_mask("EFER", efer, EFER_ALLOWED)?;
+        // CR0.PG = 1, CR4.PAE = 1 and neither LME nor LMA: PAE paging of a protected-mode vCPU. Named
+        // exactly, because it is a valid architectural state that the four-level path does not run, not
+        // a missing bit (S2-25n).
+        if efer & (EFER_LME | EFER_LMA) == 0 {
+            return Err(ProbeConfigError::PaeProtectedMode { cr0, cr4, efer });
+        }
         if efer & (EFER_LME | EFER_LMA) != EFER_LME | EFER_LMA {
             return Err(ProbeConfigError::RequiredBits {
                 register: "EFER",
@@ -184,6 +193,17 @@ pub enum ProbeConfigError {
     InvalidCr3 {
         value: u64,
         offending_bits: u64,
+    },
+    /// The state is PAE paging of a protected-mode vCPU (CR0.PG = 1, CR4.PAE = 1, EFER.LME = LMA = 0;
+    /// S2-25n). A valid state, but not one of the four-level Long64 probe, the host loop or the JIT
+    /// entries: they fetch, decode and execute 64-bit code over a four-level snapshot, and no
+    /// 32-bit protected-mode executor runs on the board's PAE adapter yet
+    /// ([`crate::PagedPaeMemoryAdapter`] serves the operands once one exists). Refused before any
+    /// fetch, walk, accessed bit or retirement.
+    PaeProtectedMode {
+        cr0: u64,
+        cr4: u64,
+        efer: u64,
     },
     /// The CPL requested by the CS selector RPL of the CPU state disagrees
     /// with the CPL of the translation-context key (S4-16f).
@@ -1843,6 +1863,23 @@ fn locate_atomic_target(
     }
 }
 
+/// Whether the MMIO windows of a set-loop access serve an operand of `width` bytes at `physical`:
+/// none given means every MMIO region is served; otherwise the operand must lie wholly inside one
+/// window (it may end exactly at the window's end).
+pub(crate) fn mmio_window_serves(
+    mmio_windows: Option<&[MmioWindow]>,
+    physical: GuestPhysicalAddress,
+    width: u8,
+) -> bool {
+    mmio_windows.is_none_or(|windows| {
+        windows.iter().any(|&(base, size)| {
+            physical.get() >= base
+                && u128::from(physical.get()) + u128::from(width)
+                    <= u128::from(base) + u128::from(size)
+        })
+    })
+}
+
 /// The tracked access. `mmio_windows`, when set, limits the MMIO the dispatch serves to the
 /// physical ranges `(base, size)` it lists: an operand in any other MMIO region takes the same typed
 /// error as without a dispatch, before the dirty bit or the device is touched (S4-38L9s; several
@@ -1961,13 +1998,7 @@ fn access_long64_4k_internal_windowed(
     };
     let _ = range;
 
-    let served = mmio_windows.is_none_or(|windows| {
-        windows.iter().any(|&(base, size)| {
-            physical.get() >= base
-                && u128::from(physical.get()) + u128::from(width)
-                    <= u128::from(base) + u128::from(size)
-        })
-    });
+    let served = mmio_window_serves(mmio_windows, physical, width);
     if is_mmio
         && (mmio.is_none()
             || !served
@@ -6833,6 +6864,15 @@ mod tests {
         );
 
         state.cr4 = Some(CR4_PAE);
+        // PAE paging of a protected-mode vCPU (neither LME nor LMA) has its own exact reason (S2-25n).
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, 0),
+            Err(ProbeConfigError::PaeProtectedMode {
+                cr0: state.cr0.unwrap(),
+                cr4: CR4_PAE,
+                efer: 0,
+            })
+        );
         assert_eq!(
             Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME),
             Err(ProbeConfigError::RequiredBits {

@@ -1,0 +1,1218 @@
+{
+ "schema": "open-desktop.stage2-linux-beyond-v1-static-map",
+ "version": 1,
+ "target": {
+  "distribution": "Ubuntu Generic amd64, 7.0.0-38.38",
+  "selected_cpu_profile": "od-x86-64-v1-neutral-v0.1",
+  "kernel_image_package_sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa",
+  "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "vmlinux_sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f",
+  "build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+  "matching_debug_elf_sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f"
+ },
+ "method": {
+  "tool": "Apple LLVM version 21.0.0 (llvm-objdump)",
+  "command": "xcrun llvm-objdump -d --no-show-raw-insn --section=.text --section=.init.text --section=.altinstr_aux --section=.altinstr_replacement --section=.exit.text <matching-debug-ELF>",
+  "sections_scanned": [
+   ".text",
+   ".init.text",
+   ".altinstr_aux",
+   ".altinstr_replacement",
+   ".exit.text"
+  ],
+  "classification": "exact mnemonic lists below (after stripping lock/rep/segment/notrack prefixes); every mnemonic of the two-pass distinct-mnemonic review (453 distinct in the ELF) was assigned either to a class or to the baseline set by hand; v-prefixed mnemonics other than verw/vmcall/vmmcall are classified by operand register class",
+  "class_mnemonics": {
+   "v2_cmpxchg16b": [
+    "cmpxchg16b"
+   ],
+   "v2_popcnt": [
+    "popcntl",
+    "popcntq"
+   ],
+   "v2_ssse3": [
+    "pshufb",
+    "palignr"
+   ],
+   "v2_sse41": [
+    "pblendvb",
+    "pextrd",
+    "pextrq",
+    "pinsrd",
+    "pmovzxdq",
+    "movntdqa"
+   ],
+   "v2_sse42_crc32": [
+    "crc32b",
+    "crc32l",
+    "crc32q",
+    "crc32w"
+   ],
+   "clmul_aes_sha": [
+    "pclmulqdq",
+    "aesdec",
+    "aesdeclast",
+    "aesenc",
+    "aesenclast",
+    "aesimc",
+    "sha1msg1",
+    "sha1msg2",
+    "sha1nexte",
+    "sha1rnds4",
+    "sha256msg1",
+    "sha256msg2",
+    "sha256rnds2"
+   ],
+   "bmi1_abm": [
+    "andnl",
+    "andnq",
+    "tzcntl",
+    "tzcntq",
+    "lzcntl"
+   ],
+   "bmi2": [
+    "bzhiq",
+    "rorxl",
+    "rorxq",
+    "sarxq",
+    "shlxl",
+    "shlxq",
+    "shrxl",
+    "shrxq"
+   ],
+   "xsave_family": [
+    "xsave64",
+    "xsavec64",
+    "xsaveopt64",
+    "xsaves64",
+    "xrstor64",
+    "xrstors64",
+    "xgetbv",
+    "xsetbv"
+   ],
+   "rand_misc_isa": [
+    "rdrandq",
+    "rdseedq",
+    "clflushopt",
+    "clwb",
+    "rdfsbaseq",
+    "rdgsbaseq",
+    "wrfsbaseq",
+    "wrgsbaseq",
+    "rdpkru",
+    "wrpkru",
+    "movdir64b",
+    "serialize",
+    "tpause",
+    "wrmsrns",
+    "wrussq",
+    "lkgs",
+    "wbnoinvd",
+    "invpcid",
+    "monitorx",
+    "mwaitx",
+    "rdpru",
+    "invlpgb",
+    "tlbsync",
+    "prefetchw",
+    "rdtscp",
+    "monitor",
+    "mwait"
+   ],
+   "fred_cet": [
+    "erets",
+    "eretu"
+   ],
+   "vmx_svm_tdx_sgx_snp_amx": [
+    "vmcall",
+    "vmmcall",
+    "seamcall",
+    "tdcall",
+    "encls",
+    "tilerelease",
+    "pvalidate",
+    "psmash",
+    "rmpupdate",
+    "rmpadjust"
+   ],
+   "avx512_evex_only": [
+    "vmovdqa32",
+    "vmovdqa64",
+    "vmovdqu64",
+    "vmovdqu8",
+    "vpandq",
+    "vporq",
+    "vpxord",
+    "vpxorq",
+    "vprold",
+    "vprord",
+    "vpternlogd",
+    "vpternlogq",
+    "vextracti64x4",
+    "vbroadcasti32x4",
+    "vpermi2d",
+    "kmovq",
+    "kmovw"
+   ],
+   "smap_clac_stac": [
+    "clac",
+    "stac"
+   ]
+  },
+  "baseline_notes": "Not a class: x87, MMX, SSE/SSE2 (including FXSAVE/FXRSTOR, LDMXCSR, MOVNTI, CLFLUSH, fences, PAUSE), integer, CMOV, SYSCALL/SYSRET, CPUID, RDTSC, system instructions of long mode.",
+  "limits": [
+   "static presence only: no CPUID/alternative predicate, feature gate or branch context was reproduced; source and signature artifacts remain unresolved (ISSUE-036)",
+   "loadable modules, initramfs, userspace and non-code sections not scanned",
+   "mnemonic classes were not cross-checked against a second disassembler",
+   "no runtime, physical or boot claim"
+  ]
+ },
+ "results": {
+  "instruction_totals_by_section": {
+   ".altinstr_aux": 3180,
+   ".altinstr_replacement": 10185,
+   ".exit.text": 7341,
+   ".init.text": 235458,
+   ".text": 8629609,
+   "all": 8885773
+  },
+  "classes": {
+   "avx512_evex_only": {
+    "sites": 381,
+    "by_section": {
+     ".text": 381
+    },
+    "by_mnemonic": {
+     "kmovq": 3,
+     "kmovw": 3,
+     "vbroadcasti32x4": 14,
+     "vextracti64x4": 9,
+     "vmovdqa32": 1,
+     "vmovdqa64": 31,
+     "vmovdqu64": 24,
+     "vmovdqu8": 38,
+     "vpandq": 22,
+     "vpermi2d": 2,
+     "vporq": 4,
+     "vprold": 56,
+     "vprord": 8,
+     "vpternlogd": 2,
+     "vpternlogq": 61,
+     "vpxord": 99,
+     "vpxorq": 4
+    },
+    "distinct_functions": 9,
+    "top_functions": [
+     [
+      "chacha_8block_xor_avx512vl",
+      126
+     ],
+     [
+      "chacha_4block_xor_avx512vl",
+      52
+     ],
+     [
+      "poly1305_blocks_avx512",
+      48
+     ],
+     [
+      "crc16_msb_vpclmul_avx512",
+      33
+     ],
+     [
+      "crc64_msb_vpclmul_avx512",
+      33
+     ],
+     [
+      "chacha_2block_xor_avx512vl",
+      28
+     ],
+     [
+      "crc64_lsb_vpclmul_avx512",
+      25
+     ],
+     [
+      "crc32_lsb_vpclmul_avx512",
+      24
+     ],
+     [
+      "blake2s_compress_avx512",
+      12
+     ]
+    ],
+    "description": "EVEX-only mnemonics and mask-register moves (AVX-512)"
+   },
+   "avx512_operands": {
+    "sites": 411,
+    "by_section": {
+     ".text": 411
+    },
+    "by_mnemonic": {
+     "vpaddd": 20,
+     "vpaddq": 101,
+     "vpbroadcastq": 2,
+     "vpclmulqdq": 80,
+     "vpermd": 19,
+     "vpermq": 10,
+     "vpmuludq": 75,
+     "vpshufb": 24,
+     "vpslld": 4,
+     "vpsllq": 4,
+     "vpsrlq": 36,
+     "vpunpckhdq": 8,
+     "vpunpckhqdq": 10,
+     "vpunpckldq": 8,
+     "vpunpcklqdq": 10
+    },
+    "distinct_functions": 6,
+    "top_functions": [
+     [
+      "poly1305_blocks_avx512",
+      259
+     ],
+     [
+      "chacha_8block_xor_avx512vl",
+      48
+     ],
+     [
+      "crc16_msb_vpclmul_avx512",
+      32
+     ],
+     [
+      "crc64_msb_vpclmul_avx512",
+      32
+     ],
+     [
+      "crc32_lsb_vpclmul_avx512",
+      20
+     ],
+     [
+      "crc64_lsb_vpclmul_avx512",
+      20
+     ]
+    ],
+    "description": "v-prefixed mnemonics with zmm, xmm/ymm16-31 or k-register operands (AVX-512)"
+   },
+   "avx_avx2_ymm": {
+    "sites": 2148,
+    "by_section": {
+     ".text": 2148
+    },
+    "by_mnemonic": {
+     "vbroadcasti128": 34,
+     "vextracti128": 34,
+     "vinsertf128": 8,
+     "vinserti128": 10,
+     "vmovdqa": 176,
+     "vmovdqu": 116,
+     "vmovups": 1,
+     "vpaddd": 223,
+     "vpaddq": 183,
+     "vpalignr": 48,
+     "vpand": 59,
+     "vpblendd": 4,
+     "vpbroadcastd": 48,
+     "vpclmulqdq": 96,
+     "vperm2f128": 16,
+     "vperm2i128": 36,
+     "vpermd": 18,
+     "vpermq": 10,
+     "vpmovzxbd": 2,
+     "vpmuludq": 100,
+     "vpor": 93,
+     "vpshufb": 80,
+     "vpshufd": 44,
+     "vpslld": 76,
+     "vpslldq": 8,
+     "vpsllq": 29,
+     "vpsrld": 88,
+     "vpsrldq": 28,
+     "vpsrlq": 107,
+     "vpsubq": 1,
+     "vpunpckhdq": 8,
+     "vpunpckhqdq": 13,
+     "vpunpckldq": 8,
+     "vpunpcklqdq": 18,
+     "vpxor": 325
+    },
+    "distinct_functions": 20,
+    "top_functions": [
+     [
+      "sha1_transform_avx2",
+      369
+     ],
+     [
+      "chacha_8block_xor_avx2",
+      327
+     ],
+     [
+      "poly1305_blocks_avx512",
+      276
+     ],
+     [
+      "poly1305_blocks_avx2",
+      234
+     ],
+     [
+      "sha512_transform_rorx",
+      179
+     ],
+     [
+      "sha256_transform_rorx",
+      148
+     ],
+     [
+      "chacha_4block_xor_avx2",
+      117
+     ],
+     [
+      "crc16_msb_vpclmul_avx2",
+      70
+     ],
+     [
+      "crc64_msb_vpclmul_avx2",
+      70
+     ],
+     [
+      "chacha_8block_xor_avx512vl",
+      65
+     ],
+     [
+      "chacha_2block_xor_avx2",
+      61
+     ],
+     [
+      "chacha_4block_xor_avx512vl",
+      59
+     ]
+    ],
+    "description": "VEX-encoded mnemonics with ymm operands (AVX/AVX2)"
+   },
+   "avx_xmm_vex": {
+    "sites": 2187,
+    "by_section": {
+     ".text": 2187
+    },
+    "by_mnemonic": {
+     "vmovd": 70,
+     "vmovdqa": 231,
+     "vmovdqu": 240,
+     "vmovq": 7,
+     "vpaddd": 58,
+     "vpaddq": 263,
+     "vpalignr": 24,
+     "vpand": 32,
+     "vpblendvb": 8,
+     "vpclmulqdq": 72,
+     "vpextrd": 2,
+     "vpextrq": 2,
+     "vpextrw": 2,
+     "vpmuludq": 100,
+     "vpor": 24,
+     "vpshufb": 60,
+     "vpshufd": 50,
+     "vpslld": 28,
+     "vpslldq": 12,
+     "vpsllq": 130,
+     "vpsrld": 40,
+     "vpsrldq": 23,
+     "vpsrlq": 236,
+     "vpunpckhqdq": 4,
+     "vpunpcklqdq": 10,
+     "vpxor": 427,
+     "vzeroall": 1,
+     "vzeroupper": 31
+    },
+    "distinct_functions": 24,
+    "top_functions": [
+     [
+      "sha512_transform_avx",
+      905
+     ],
+     [
+      "poly1305_blocks_avx",
+      438
+     ],
+     [
+      "sha1_transform_avx",
+      201
+     ],
+     [
+      "sha256_transform_avx",
+      141
+     ],
+     [
+      "poly1305_blocks_avx512",
+      52
+     ],
+     [
+      "chacha_4block_xor_avx2",
+      44
+     ],
+     [
+      "blake2s_compress_avx512",
+      41
+     ],
+     [
+      "crc16_msb_vpclmul_avx2",
+      37
+     ],
+     [
+      "crc64_msb_vpclmul_avx2",
+      37
+     ],
+     [
+      "poly1305_blocks_avx2",
+      35
+     ],
+     [
+      "crc16_msb_vpclmul_avx512",
+      31
+     ],
+     [
+      "crc64_lsb_vpclmul_avx2",
+      31
+     ]
+    ],
+    "description": "VEX-encoded mnemonics with xmm operands only (AVX/AVX2/VPCLMULQDQ)"
+   },
+   "bmi1_abm": {
+    "sites": 1113,
+    "by_section": {
+     ".init.text": 23,
+     ".text": 1090
+    },
+    "by_mnemonic": {
+     "andnl": 40,
+     "andnq": 3,
+     "lzcntl": 34,
+     "tzcntl": 9,
+     "tzcntq": 1027
+    },
+    "distinct_functions": 375,
+    "top_functions": [
+     [
+      "sha1_transform_avx2",
+      40
+     ],
+     [
+      "ZSTD_count_2segments",
+      16
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_4_4.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_4_5.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_4_6.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_5_4.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_5_5.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_5_6.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_6_4.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_6_5.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_RowFindBestMatch_dedicatedDictSearch_6_6.constprop.0",
+      11
+     ],
+     [
+      "ZSTD_HcFindBestMatch_dedicatedDictSearch_4.constprop.0",
+      10
+     ]
+    ],
+    "description": "ANDN/TZCNT/LZCNT. F3 0F BC is the TZCNT encoding of the baseline REP BSF idiom; it executes as BSF without BMI1"
+   },
+   "bmi2": {
+    "sites": 1192,
+    "by_section": {
+     ".text": 1192
+    },
+    "by_mnemonic": {
+     "bzhiq": 21,
+     "rorxl": 517,
+     "rorxq": 144,
+     "sarxq": 6,
+     "shlxl": 12,
+     "shlxq": 224,
+     "shrxl": 9,
+     "shrxq": 259
+    },
+    "distinct_functions": 21,
+    "top_functions": [
+     [
+      "sha1_transform_avx2",
+      320
+     ],
+     [
+      "sha256_transform_rorx",
+      192
+     ],
+     [
+      "sha512_transform_rorx",
+      144
+     ],
+     [
+      "HUF_decompress4X2_usingDTable_internal_bmi2.part.0",
+      128
+     ],
+     [
+      "HUF_compress1X_usingCTable_internal_bmi2",
+      89
+     ],
+     [
+      "HUF_decompress4X1_usingDTable_internal_bmi2.part.0",
+      72
+     ],
+     [
+      "FSE_decompress_wksp_body_bmi2",
+      35
+     ],
+     [
+      "ZSTD_encodeSequences_bmi2",
+      33
+     ],
+     [
+      "HUF_decompress1X2_usingDTable_internal_bmi2",
+      26
+     ],
+     [
+      "ZSTD_decompressSequencesLong_bmi2.constprop.0",
+      26
+     ],
+     [
+      "ZSTD_decompressSequencesSplitLitBuffer_bmi2.constprop.0",
+      26
+     ],
+     [
+      "HUF_decompress4X1_usingDTable_internal_fast_c_loop",
+      24
+     ]
+    ],
+    "description": "BZHI/RORX/SARX/SHLX/SHRX (x86-64-v3)"
+   },
+   "clmul_aes_sha": {
+    "sites": 351,
+    "by_section": {
+     ".text": 351
+    },
+    "by_mnemonic": {
+     "aesdec": 1,
+     "aesdeclast": 1,
+     "aesenc": 1,
+     "aesenclast": 4,
+     "aesimc": 2,
+     "pclmulqdq": 102,
+     "sha1msg1": 16,
+     "sha1msg2": 16,
+     "sha1nexte": 20,
+     "sha1rnds4": 20,
+     "sha256msg1": 36,
+     "sha256msg2": 36,
+     "sha256rnds2": 96
+    },
+    "distinct_functions": 12,
+    "top_functions": [
+     [
+      "sha256_ni_finup2x",
+      112
+     ],
+     [
+      "sha1_ni_transform",
+      72
+     ],
+     [
+      "sha256_ni_transform",
+      56
+     ],
+     [
+      "crc16_msb_pclmul_sse",
+      25
+     ],
+     [
+      "crc32_lsb_pclmul_sse",
+      25
+     ],
+     [
+      "crc64_lsb_pclmul_sse",
+      25
+     ],
+     [
+      "crc64_msb_pclmul_sse",
+      25
+     ],
+     [
+      "aes256_expandkey_aesni",
+      3
+     ],
+     [
+      "aes128_expandkey_aesni",
+      2
+     ],
+     [
+      "aes_decrypt_aesni",
+      2
+     ],
+     [
+      "aes_encrypt_aesni",
+      2
+     ],
+     [
+      "crc32c_x86_3way",
+      2
+     ]
+    ],
+    "description": "PCLMULQDQ, AES-NI and SHA extensions (not in any x86-64 level)"
+   },
+   "fred_cet": {
+    "sites": 3,
+    "by_section": {
+     ".altinstr_replacement": 1,
+     ".text": 2
+    },
+    "by_mnemonic": {
+     "erets": 2,
+     "eretu": 1
+    },
+    "distinct_functions": 3,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      1
+     ],
+     [
+      "asm_fred_entrypoint_kernel",
+      1
+     ],
+     [
+      "asm_fred_exit_user",
+      1
+     ]
+    ],
+    "description": "FRED ERETS/ERETU"
+   },
+   "rand_misc_isa": {
+    "sites": 150,
+    "by_section": {
+     ".altinstr_replacement": 56,
+     ".init.text": 1,
+     ".text": 93
+    },
+    "by_mnemonic": {
+     "clflushopt": 12,
+     "clwb": 6,
+     "invlpgb": 9,
+     "invpcid": 2,
+     "lkgs": 2,
+     "monitor": 8,
+     "monitorx": 1,
+     "movdir64b": 2,
+     "mwait": 9,
+     "mwaitx": 1,
+     "prefetchw": 9,
+     "rdfsbaseq": 4,
+     "rdgsbaseq": 2,
+     "rdpkru": 13,
+     "rdpru": 1,
+     "rdrandq": 6,
+     "rdseedq": 2,
+     "rdtscp": 21,
+     "serialize": 7,
+     "tlbsync": 6,
+     "tpause": 1,
+     "wbnoinvd": 1,
+     "wrfsbaseq": 2,
+     "wrgsbaseq": 4,
+     "wrmsrns": 7,
+     "wrpkru": 7,
+     "wrussq": 5
+    },
+    "distinct_functions": 60,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      56
+     ],
+     [
+      "broadcast_tlb_flush",
+      5
+     ],
+     [
+      "get_sigframe",
+      5
+     ],
+     [
+      "__switch_to",
+      4
+     ],
+     [
+      "__pkru_allows_pkey",
+      3
+     ],
+     [
+      "acpi_processor_ffh_cstate_enter",
+      3
+     ],
+     [
+      "arch_set_user_pkey_access",
+      3
+     ],
+     [
+      "arch_tlbbatch_flush",
+      2
+     ],
+     [
+      "delay_halt_mwaitx",
+      2
+     ],
+     [
+      "extract_entropy.constprop.0",
+      2
+     ],
+     [
+      "flush_tlb_all",
+      2
+     ],
+     [
+      "flush_tlb_kernel_range",
+      2
+     ]
+    ],
+    "description": "RDRAND/RDSEED/CLFLUSHOPT/CLWB/FSGSBASE/PKU/MOVDIR64B/SERIALIZE/TPAUSE/WRMSRNS/CET-WRUSS/LKGS/WBNOINVD/INVPCID/AMD MONITORX,RDPRU,INVLPGB/PREFETCHW/RDTSCP/MONITOR/MWAIT"
+   },
+   "smap_clac_stac": {
+    "sites": 411,
+    "by_section": {
+     ".altinstr_replacement": 411
+    },
+    "by_mnemonic": {
+     "clac": 263,
+     "stac": 148
+    },
+    "distinct_functions": 1,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      411
+     ]
+    ],
+    "description": "SMAP CLAC/STAC (CPUID.7.0:EBX[20]); found only in .altinstr_replacement"
+   },
+   "undecoded": {
+    "sites": 16,
+    "by_section": {
+     ".text": 16
+    },
+    "by_mnemonic": {
+     "<unknown>": 16
+    },
+    "distinct_functions": 16,
+    "top_functions": [
+     [
+      "__x86_indirect_its_thunk_r10",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r11",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r12",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r13",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r14",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r8",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_r9",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_rax",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_rbp",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_rbx",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_rcx",
+      1
+     ],
+     [
+      "__x86_indirect_its_thunk_rdi",
+      1
+     ]
+    ],
+    "description": "byte 0xD6 inside __x86_indirect_its_thunk_* padding, not an instruction of the target (invalid in 64-bit mode)"
+   },
+   "v2_cmpxchg16b": {
+    "sites": 10,
+    "by_section": {
+     ".text": 10
+    },
+    "by_mnemonic": {
+     "cmpxchg16b": 10
+    },
+    "distinct_functions": 5,
+    "top_functions": [
+     [
+      "update_dte256",
+      6
+     ],
+     [
+      "__modify_irte_ga.isra.0",
+      1
+     ],
+     [
+      "get_from_partial_node",
+      1
+     ],
+     [
+      "modify_irte.isra.0",
+      1
+     ],
+     [
+      "slab_update_freelist.isra.0",
+      1
+     ]
+    ],
+    "description": "x86-64-v2 CMPXCHG16B"
+   },
+   "v2_popcnt": {
+    "sites": 121,
+    "by_section": {
+     ".altinstr_replacement": 121
+    },
+    "by_mnemonic": {
+     "popcntl": 61,
+     "popcntq": 60
+    },
+    "distinct_functions": 1,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      121
+     ]
+    ],
+    "description": "x86-64-v2 POPCNT, only in .altinstr_replacement"
+   },
+   "v2_sse41": {
+    "sites": 14,
+    "by_section": {
+     ".text": 14
+    },
+    "by_mnemonic": {
+     "movntdqa": 5,
+     "pblendvb": 4,
+     "pextrd": 2,
+     "pextrq": 1,
+     "pinsrd": 1,
+     "pmovzxdq": 1
+    },
+    "distinct_functions": 7,
+    "top_functions": [
+     [
+      "__drm_memcpy_from_wc",
+      5
+     ],
+     [
+      "crc32_lsb_pclmul_sse",
+      2
+     ],
+     [
+      "crc64_lsb_pclmul_sse",
+      2
+     ],
+     [
+      "sha1_ni_transform",
+      2
+     ],
+     [
+      "crc16_msb_pclmul_sse",
+      1
+     ],
+     [
+      "crc32c_x86_3way",
+      1
+     ],
+     [
+      "crc64_msb_pclmul_sse",
+      1
+     ]
+    ],
+    "description": "SSE4.1 forms (x86-64-v2)"
+   },
+   "v2_sse42_crc32": {
+    "sites": 27,
+    "by_section": {
+     ".text": 27
+    },
+    "by_mnemonic": {
+     "crc32b": 3,
+     "crc32l": 2,
+     "crc32q": 20,
+     "crc32w": 2
+    },
+    "distinct_functions": 2,
+    "top_functions": [
+     [
+      "crc32c_x86_3way",
+      23
+     ],
+     [
+      "crc32c_arch",
+      4
+     ]
+    ],
+    "description": "SSE4.2 CRC32 (x86-64-v2)"
+   },
+   "v2_ssse3": {
+    "sites": 168,
+    "by_section": {
+     ".text": 168
+    },
+    "by_mnemonic": {
+     "palignr": 60,
+     "pshufb": 108
+    },
+    "distinct_functions": 15,
+    "top_functions": [
+     [
+      "sha256_ni_finup2x",
+      36
+     ],
+     [
+      "sha1_transform_ssse3",
+      24
+     ],
+     [
+      "sha256_transform_ssse3",
+      20
+     ],
+     [
+      "chacha_4block_xor_ssse3",
+      16
+     ],
+     [
+      "sha256_ni_transform",
+      16
+     ],
+     [
+      "crc16_msb_pclmul_sse",
+      15
+     ],
+     [
+      "crc64_msb_pclmul_sse",
+      15
+     ],
+     [
+      "sha512_transform_ssse3",
+      8
+     ],
+     [
+      "blake2s_compress_ssse3",
+      4
+     ],
+     [
+      "chacha_permute",
+      4
+     ],
+     [
+      "sha1_ni_transform",
+      4
+     ],
+     [
+      "crc32_lsb_pclmul_sse",
+      2
+     ]
+    ],
+    "description": "SSSE3 PSHUFB/PALIGNR (x86-64-v2)"
+   },
+   "vmx_svm_tdx_sgx_snp_amx": {
+    "sites": 84,
+    "by_section": {
+     ".altinstr_replacement": 9,
+     ".init.text": 4,
+     ".text": 71
+    },
+    "by_mnemonic": {
+     "encls": 24,
+     "psmash": 1,
+     "pvalidate": 3,
+     "rmpadjust": 6,
+     "rmpupdate": 1,
+     "seamcall": 3,
+     "tdcall": 3,
+     "tilerelease": 1,
+     "vmcall": 11,
+     "vmmcall": 31
+    },
+    "distinct_functions": 66,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      9
+     ],
+     [
+      "hv_ghcb_negotiate_protocol",
+      2
+     ],
+     [
+      "hv_snp_boot_ap",
+      2
+     ],
+     [
+      "pvalidate_pages",
+      2
+     ],
+     [
+      "sgx_enclave_etrack",
+      2
+     ],
+     [
+      "sgx_vma_access",
+      2
+     ],
+     [
+      "snp_cleanup_vmsa",
+      2
+     ],
+     [
+      "vmware_hypercall1.constprop.0",
+      2
+     ],
+     [
+      "vmware_hypercall3",
+      2
+     ],
+     [
+      "vmware_hypercall5.constprop.0",
+      2
+     ],
+     [
+      "vmware_hypercall_slow",
+      2
+     ],
+     [
+      "__pi___sev_cpuid_hv",
+      1
+     ]
+    ],
+    "description": "VMCALL/VMMCALL hypercalls, SEAMCALL/TDCALL, ENCLS, TILERELEASE, SEV-SNP PVALIDATE/PSMASH/RMPUPDATE/RMPADJUST"
+   },
+   "xsave_family": {
+    "sites": 33,
+    "by_section": {
+     ".altinstr_replacement": 11,
+     ".init.text": 2,
+     ".text": 20
+    },
+    "by_mnemonic": {
+     "xgetbv": 5,
+     "xrstor64": 8,
+     "xrstors64": 8,
+     "xsave64": 3,
+     "xsavec64": 2,
+     "xsaveopt64": 2,
+     "xsaves64": 3,
+     "xsetbv": 2
+    },
+    "distinct_functions": 18,
+    "top_functions": [
+     [
+      ".altinstr_replacement",
+      11
+     ],
+     [
+      "__restore_fpregs_from_user",
+      2
+     ],
+     [
+      "copy_fpstate_to_sigframe",
+      2
+     ],
+     [
+      "os_xrstor_booting.constprop.0",
+      2
+     ],
+     [
+      "os_xrstor_safe",
+      2
+     ],
+     [
+      "os_xsave",
+      2
+     ],
+     [
+      "__pi_snp_cpuid_postprocess",
+      1
+     ],
+     [
+      "__sev_cpuid_hv_ghcb",
+      1
+     ],
+     [
+      "fpu__clear_user_states",
+      1
+     ],
+     [
+      "fpu__init_cpu_xstate.part.0",
+      1
+     ],
+     [
+      "fpu__resume_cpu",
+      1
+     ],
+     [
+      "fpu_idle_fpregs",
+      1
+     ]
+    ],
+    "description": "XSAVE-family and XGETBV/XSETBV (excluded by the selected target)"
+   }
+  }
+ },
+ "cross_check": {
+  "stripped_vmlinux_instruction_totals": {
+   ".text": 8629603,
+   ".init.text": 235458,
+   ".exit.text": 7341,
+   ".altinstr_aux": 3180,
+   ".altinstr_replacement": 10185,
+   "all": 8885767
+  },
+  "result": "all 18 per-class site counts are identical in the stripped vmlinux (no symbols) and the debug ELF; the .text instruction total differs by 6 (8629609 vs 8629603), cause not investigated; function attribution uses the debug ELF symbols"
+ }
+}

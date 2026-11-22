@@ -194,6 +194,9 @@ pub(crate) struct NvmeState {
     /// Disk of the single namespace; `None` until `attach_backend` (I/O
     /// commands then complete with `Namespace Not Ready`).
     pub(super) backend: Option<BackendSlot>,
+    /// Host-set write protection of the namespace (`attach_backend_read_only`).
+    /// It is not guest state: a controller reset keeps it.
+    pub(super) write_protected: bool,
     pub(super) io: IoStats,
     pending: bool,
     /// First submission queue slot of the next one-command arbitration step, so that serving one
@@ -254,6 +257,7 @@ impl NvmeState {
             errors: ErrorLog::default(),
             aer: AerState::default(),
             backend: None,
+            write_protected: false,
             io: IoStats::default(),
             pending: false,
             rr_next: 0,
@@ -828,6 +832,28 @@ impl NvmeHandle {
         &self,
         backend: Box<dyn NvmeBackend + Send>,
     ) -> Result<(), NvmeAttachError> {
+        self.attach(backend, false)
+    }
+
+    /// Like [`NvmeHandle::attach_backend`], but the namespace is write
+    /// protected (S8-21, `docs/specs/NVME_DEVICE.md` 14.6): Identify Namespace
+    /// reports `NSATTR` bit 0, and Write completes with `Namespace is Write
+    /// Protected` before the guest payload is fetched or the backend is
+    /// touched. The backend should be read-only itself; the controller never
+    /// calls `write_sectors` on it. The flag belongs to the attachment: a later
+    /// `attach_backend` clears it.
+    pub fn attach_backend_read_only(
+        &self,
+        backend: Box<dyn NvmeBackend + Send>,
+    ) -> Result<(), NvmeAttachError> {
+        self.attach(backend, true)
+    }
+
+    fn attach(
+        &self,
+        backend: Box<dyn NvmeBackend + Send>,
+        write_protected: bool,
+    ) -> Result<(), NvmeAttachError> {
         let mut state = lock(&self.state);
         if state.cc & CC_EN != 0 {
             return Err(NvmeAttachError::ControllerEnabled);
@@ -838,6 +864,7 @@ impl NvmeHandle {
         }
         state.config.namespace_sectors = sectors;
         state.backend = Some(BackendSlot(backend));
+        state.write_protected = write_protected;
         Ok(())
     }
 

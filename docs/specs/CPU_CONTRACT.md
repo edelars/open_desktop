@@ -1271,6 +1271,22 @@ Implementation evidence и
 границы проверок: [план S2-26d](../plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
 [отчёт](../reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
 
+### Windows MSR file (S2-26h)
+
+`Cpl0ProfileSet::with_msr_windows` (crates/od-isa/src/msr.rs, execute.rs) is the CPL0 MSR set for a Windows x64
+boot: IA32_APIC_BASE, MISC_ENABLE, PAT, SYSENTER_CS/ESP/EIP, EFER, STAR/LSTAR/CSTAR/FMASK, FS/GS/KERNEL_GS_BASE.
+Reads of the cell-owned MSRs return the cell; writes obey the SDM reserved-bit and canonical rules (see the plan
+S2-26h); an unknown or unlisted index (including IA32_TSC `0x10`, withheld with the TSC policy) and any access
+at CPL3 raise `#GP(0)`. SYSENTER_CS bits 63:32 are ignored on write and read as zero (Vol. 4 Table 2-2); STAR
+bits 31:0 are reserved, so a non-zero low half is `#GP(0)` (Vol. 3A Figure 6-14; Vol. 4 has no breakdown, hardware
+not checked). MISC_ENABLE resets to `0x1801` (fast strings, BTS and PEBS unavailable; Vol. 4 Table 2-2) and only
+bit 0 is writable: a write changing any other bit is `Unsupported` without state change, a deliberate fail-closed
+decision, not `#GP(0)`. The member does not declare the CPUID MSR bit. The list is a hypothesis (ADR-0013,
+Decision 2, «Последствия варианта B», bullet on Intel kernel/loader paths: «гипотеза, не сверено»); sources:
+Intel SDM Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A §14.12.4, Figure 6-14, Vol. 4 Table 2-2.
+No physical oracle exists for the accepted CPL0 rows (RDMSR/WRMSR are privileged); they are model-only. Only the
+CPL3 `#GP(0)` of a bare RDMSR/WRMSR could be observed from user space; no oracle count was taken.
+
 ### Локальный профиль `RdtscSourceV1` (S2-26e)
 
 `RDTSC` исполняется только для точной bare Long64 кодировки `0F 31` в
@@ -2404,7 +2420,7 @@ LOCK is used. This evidence slice does not implement their guest delivery.
 MXCSR is an architectural 32-bit value and FXRSTOR faults if reserved MXCSR
 bits are set. Intel describes the saved MXCSR_MASK field and its zero-field
 fallback. The selected synthetic target's immutable supported mask is
-`0x0000ffbf`; the bounded S2-39e restore profile validates MXCSR against this
+`0x0000ffbf` (DAZ not supported; the `0x0000ffff` of ADR-0014 / S2-39p is superseded by the main priority of merge 56c60c9, ISSUE-680); the bounded S2-39e restore profile validates MXCSR against this
 target policy and ignores the incoming image's MXCSR_MASK field. This is
 distinct from testkit's `diagnostic_mxcsr_mask` snapshot metadata: numerical
 equality does not make that local diagnostic metadata the target capability
@@ -2483,10 +2499,9 @@ The image stores FCW/FSW raw little-endian; FTW is abridged with one bit per
 physical register and 1 for every nonempty full tag; FOP is low 11 bits with
 upper five bits zero; FIP/FDP are low 32-bit offsets with independent FCS/FDS
 selectors. MXCSR is copied raw and `state.mxcsr` is never masked. The immutable
-`od-isa::TARGET_FXSAVE_MXCSR_MASK` is `0x0000_ffbf`, a conservative DAZ-clear
-capability policy for the synthetic Generic amd64 target. It is intentionally
-separate from the testkit diagnostic mask constant, even though their current
-numeric values match. x87 slots i contain `registers[(TOP+i)&7]` low 10 raw
+`od-isa::TARGET_FXSAVE_MXCSR_MASK` is `0x0000_ffbf` (DAZ-clear; the `0x0000_ffff` of
+ADR-0014 / S2-39p is superseded by the main priority of merge 56c60c9, ISSUE-680). It is intentionally
+separate from the testkit diagnostic mask constant (`0x0000ffbf`). x87 slots i contain `registers[(TOP+i)&7]` low 10 raw
 bytes; XMM0–15 are copied raw.
 
 All holes/reserved/software bytes remain unchanged. Intel explicitly preserves
@@ -2740,7 +2755,7 @@ and [format](../testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profil
 
 | Возможность | Статус | Что нужно до объявления |
 |---|---|---|
-| Windows/Linux CPU profile | Не определён | Exact media/build, сбор boot requirements, обязательные CPUID/MSR/ISA и драйверные проверки |
+| Windows/Linux CPU profile | Linux — цель `od-x86-64-v1-neutral-v0.1` (раздел «Ubuntu Generic amd64»). Windows — [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md): принято (архитектурное решение по идентичности: вариант B, N5105; ревью 2026-11-21); профиль `od-x86-64-v2-windows-v0.1` реализован частично (S2-57: идентичность и биты принятых задач, таблица — раздел «S2-57 — профиль CPUID Windows»; остальные биты — S2-51…S2-58 этапа 2) | Exact media/build, сбор boot requirements, обязательные CPUID/MSR/ISA и драйверные проверки; для Windows — реализация пробелов ADR-0013 в этапе 2 и наблюдение на S8-24 |
 | x86-64 application baseline | Не определён | Результаты выбранных приложений и минимальные ABI/runtime requirements |
 | 32-bit compatibility | Не включена в S0-09 | Guest mode transitions, segmentation, syscall/exception behavior и тестовый набор |
 | x87/SSE/AVX | Не включены в S0-09 | State layout, exception/masking semantics, feature gating и отдельная проверка каждого расширения |
@@ -11873,6 +11888,180 @@ source matrix but was not run on this macOS host; see ISSUE-029. See the
 [standalone report](../reports/S2_30CM_X87_FPREM1.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-32a: bounded `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FPATAN`, `FSCALE`, `FXTRACT` (`D9 F0..FF`)
+
+Status: local `od-isa` interpreter only; JIT and native admission stay closed; no CPUID bit is declared (S2-57).
+Intel SDM 325462-093US Vol. 2A: F2XM1 p. 3-307, FCOS p. 3-330, FPATAN p. 3-364, FPTAN p. 3-370, FSCALE p. 3-378, FSIN p. 3-380,
+FSINCOS p. 3-382, FXTRACT p. 3-420, FYL2X p. 3-422, FYL2XP1 p. 3-424; Vol. 1 section 8.3.8, 8.3.10 and 8.1.3.2.
+
+- **Decoding.** Exactly the bare two-byte forms; every prefix (including REX), truncation and the neighbouring `D9` bytes keep
+  their previous result.
+- **Admission.** x87 state present; FCS/FDS not represented; one of the twelve all-exception-masked control words (the
+  precision control is ignored by these instructions, the rounding control is honoured); `FSW & 0x80DF == 0` (PE alone may be
+  set); canonical Valid or Zero tagged operands in the slots the form reads; an Empty slot below TOP for the pushing forms
+  (`FSINCOS`, `FPTAN`, `FXTRACT`); a result inside the normal binary80 range. Denormals, unnormals, NaN, infinity, an
+  Empty operand, an operand outside the instruction's domain (`F2XM1` |x| > 1; `FYL2X` x <= 0, y = 0; `FYL2XP1` outside
+  -(1 - sqrt(2)/2) <= x <= 1 - sqrt(2)/2 (the SDM range of ST(0); outside it the SDM calls the result undefined, the
+  comparison is exact on the binary80 value), y = 0; `FPATAN` a zero operand; `FXTRACT` of zero), a result that overflows or
+  would be denormal and any unmasked exception are refused (`Unsupported`, nothing changes).
+- **Values.** Evaluated in a 256-bit software float and rounded once under the RC (about 2^-250 relative error before
+  rounding, i.e. correctly rounded). `FSIN`/`FCOS`/`FSINCOS`/`FPTAN` reduce by multiples of the 66-bit approximation of
+  pi/2 (the first 66 significant bits of pi; reproduced from the Core i5-3210M); `|x| >= 2^63` is outside the reduction range
+  (C2 = 1, C1 = 0, operand and stack unchanged). `FSCALE` and `FXTRACT` are exact.
+- **Status word.** TOP follows the push or pop. Reduction forms clear C2; `F2XM1`, `FYL2X`, `FYL2XP1`, `FPATAN` keep C0/C2/C3;
+  `FSCALE`/`FXTRACT` keep C0/C2/C3 and clear C1. PE is set when the value is inexact, C1 is the round-up indicator, with the
+  oracle's rules for tiny arguments (|r| < 2^-68: sine, tangent and 1.0 are returned with PE, C1 = 0; `FPTAN` for |r| < 2^-33 behaves
+  as if tan r lay just below r; `FPATAN` for a quotient below 2^-40 returns the rounded quotient with PE) and for exactly
+  representable results of `F2XM1` (+-1) and `FYL2X` (x = 2^k), which still report PE. FIP receives the old RIP; FOP and FDP are kept.
+- **Accuracy.** The microcode is not correctly rounded: against 1,800 oracle rows (96 out-of-range operands unchanged and 2 refused `FYL2XP1` operands outside its domain)
+  the interpreter's result is bit-identical on 1,654 of the 1,702 computed rows and differs by one unit in the last place on
+  the other 48 (never more; `FSINCOS` counts both results); C1 differs on 22 rows; TOP, C0/C2/C3, tags and PE on none. The counters are pinned in `tests/s2_32_x87_transcend.rs`.
+
+## Local S2-32b: bounded `FBLD m80bcd [RAX]` (`DF 20`) and `FBSTP m80bcd [RAX]` (`DF 30`)
+
+Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM Vol. 2A: FBLD p. 3-314, FBSTP p. 3-316; Vol. 1 section 4.7.
+
+- **FBLD.** Reads the 10 bytes at `[RAX]` (canonical range, one read), takes 18 decimal digits and the sign (bit 7 of byte 9; bits 6:0
+  are ignored, as on the oracle), pushes the exact integer (Zero tag and the sign for +-0). A digit above 9 is refused (`Unsupported`)
+  after the 10-byte read and before any change of the x87 state, RIP or registers; the read itself has happened, so its memory-side
+  effects (for example accessed bits) are not undone. Needs an Empty slot below TOP and the admission of S2-32a. C1 is cleared, no PE.
+- **FBSTP.** Rounds ST(0) to an integer under the RC (PC ignored), stores the 10 BCD bytes in one write (sign bit set for negative
+  values and for a negative operand that rounds to zero) and pops (TOP + 1, tag Empty, payload kept). PE when inexact, C1 = the
+  rounded value's magnitude was increased. Values that need more than 18 digits (|x| >= 10^18 after rounding), denormals, NaN and
+  infinity (IE and the BCD indefinite) stay refused. A non-canonical operand address is #GP(0) before any change.
+- **Oracle.** 335 Core i5-3210M rows (117 FBLD, 218 FBSTP) are reproduced bit for bit: result bytes, TOP, C0-C3, PE, tags.
+
+## Local S2-32c: bounded `FNSTENV` (`D9 30`), `FNSAVE` (`DD 30`) and `FRSTOR` (`DD 20`) at `[RAX]`
+
+Status: local `od-isa` interpreter only; no CPUID bit is declared. Intel SDM 325462-093US: Vol. 2A FRSTOR p. 3-373, FSAVE/FNSAVE
+p. 3-375, FSTENV/FNSTENV p. 3-390; Vol. 1 section 8.1.8 (pointers), 8.1.10 and Figure 8-9 (the 32-bit protected-mode image).
+Bare encodings only: no prefix (so no 16-bit image and no REX.W), modrm `/6` or `/4` with the operand at `[RAX]`. `FSTENV` and
+`FSAVE` are `FWAIT` plus the non-waiting form (SDM); `FWAIT` is owned by the CPL0 set, so this slice has no fused form (S2-32f adds the three-byte spellings, below).
+`FLDENV` (`D9 20`) is the later slice S2-32d (below). #NM (CR0.EM/TS) and CPL3 #AC are not modeled, as in the neighbouring bounded forms.
+
+- **Image.** 28 bytes (`FNSTENV`) or 108 bytes (`FNSAVE`, then ST(0)..ST(7) in stack order, 10 bytes each), one `GuestMemory`
+  write after the canonical check of the last byte (non-canonical is #GP(0) before any change; the state changes only after the
+  write). Offsets: FCW 0, FSW 4, tag word 8, FIP[31:0] 12, FCS 16, FOP[10:0] 18, FDP[31:0] 20, FDS 24; the upper halves of the
+  control, status and tag words and bytes 26..27 are reserved and stored as FFFFH (the Core i5-3210M does so; the SDM leaves them
+  open); FOP bits 15:11 are zero.
+- **Tag word.** The processor keeps only empty/non-empty between instructions and derives the class when saving: a non-empty
+  register is Zero (exponent 0, significand 0), Special (exponent 7FFFH; exponent 0 with a non-zero significand; integer bit
+  clear) or Valid; an Empty slot stays 11. `FRSTOR` stores the same classification (not the image's claim) for non-empty slots.
+- **FCS/FDS policy (decision S2-32c).** FIP and FDP are saved as their low 32 bits. FCS and FDS are saved as the represented
+  selector (`Some(v)` in `X87State`), and as 0000H when no selector is represented (`None`). For `None` that is the behavior of a
+  processor with the FCS/FDS deprecation (CPUID.07H.00H:EBX[13]); for `Some(v)` after `FRSTOR` it is the Core i5-3210M (no deprecation,
+  the selector is kept). The model needs no x87 segment tracking and no CPUID bit is declared for it.
+  `FRSTOR` loads FIP/FDP with the upper 32 bits cleared and FOP in 11 bits; a selector loads as `Some(v)`, except that a zero
+  selector stays `None` when it was `None`. `FNSAVE` clears FIP, FDP, FOP and the known selectors (`Some` becomes `Some(0)`,
+  `None` stays) and applies the FNINIT values (FCW 037FH, FSW 0, tag word FFFFH); the data registers survive. `FNSTENV` changes
+  nothing but the control word (`| 003FH`: all exceptions masked) and RIP; FIP, FDP, FOP and the selectors are kept (control
+  instructions do not update them). All three are exempt from the refusal of every `D8..DF` opcode while a selector is represented
+  (the other bounded x87 forms still refuse then, because they would have to update FCS/FDS from an unmodeled CS).
+- **Admission.** x87 state present, one of the twelve all-exception-masked control words (so `FNSTENV`'s masking is the identity),
+  ES (bit 7) and B (bit 15) of the status word clear; the sticky exception flags may hold any value. `FRSTOR` applies the same two
+  checks to the image after the 108-byte read, refusing (`Unsupported`) with no change; an image with an unmasked exception, the X
+  bit or ES/B is therefore refused. A non-canonical address is #GP(0); an unmapped one is the memory's own error; neither changes the state.
+- **Oracle.** 324 Core i5-3210M images (`data/x87_env_oracle.c`, `x87_env_oracle_gen.py`, answers in `x87_env_oracle_i5_3210m.txt`):
+  `FNINIT; FRSTOR image; FNSTENV; FNSAVE; FNSTENV`, all 28 + 108 + 28 output bytes reproduced exactly (two starting selector states each).
+  The CPU does not deprecate FCS/FDS and saves its real CS/DS selectors after executed instructions, so the rows are images and not
+  instruction sequences: the model's FCS/FDS of an executed sequence (0000H) is the deprecation behavior, not the i5-3210M's.
+
+## Local S2-32d: bounded `FLDENV` (`D9 20`) at `[RAX]`
+
+Status: local `od-isa` interpreter only; no CPUID bit is declared; the inverse of `FNSTENV` (S2-32c). Intel SDM 325462-093US: Vol. 2A
+FLDENV p. 3-358; Vol. 1 section 8.1.8 (pointers), 8.1.10 and Figure 8-9 (the 32-bit protected-mode image). Bare encoding only: no
+prefix (so no 14-byte 16-bit image and no REX.W), modrm `/4` with the operand at `[RAX]`; `FWAIT` and the CPL0 set are not involved.
+#NM (CR0.EM/TS) and CPL3 #AC are not modeled, as in the neighbouring bounded forms.
+
+- **Effect.** One 28-byte `GuestMemory` read after the canonical check of the first and last byte (non-canonical is #GP(0) before
+  any state change); then FCW, FSW (TOP and C0..C3 included), the tag word, FIP/FDP (low 32 bits, the upper 32 cleared), FOP (11 bits)
+  and FCS/FDS are loaded; the register stack contents are not touched (SDM: only the environment is loaded). RIP advances only
+  on success; a memory error leaves the state alone.
+- **Tag word.** As `FRSTOR` (S2-32c): a slot whose image tag is 11 (empty) becomes empty; any other slot is tagged Valid, Zero or
+  Special from the contents already in the register (the processor keeps only empty/non-empty and derives the class on the next
+  save, confirmed on the Core i5-3210M by the oracle rows where the image claims a class that the contents contradict).
+- **FCS/FDS.** The S2-32c policy and the `FRSTOR` loading rule: a loaded selector is `Some(v)`, except that a zero selector stays
+  `None` when it was `None`. `FLDENV` is exempt (with the other three environment forms) from the refusal of every `D8..DF`
+  opcode while a selector is represented; every other bounded x87 form still refuses then.
+- **Admission.** Identical to `FRSTOR`: x87 state present, the current control word one of the twelve all-exception-masked words and
+  ES/B of the current status word clear (otherwise `Unsupported` before any memory access); the loaded control word one of the same
+  twelve and ES/B of the loaded status word clear (otherwise `Unsupported` after the read, nothing changed). Sticky exception flags may
+  hold any value. The SDM delivers an unmasked loaded exception at the next waiting instruction; that case is refused, not modeled.
+- **Oracle.** 324 Core i5-3210M rows (`data/x87_fldenv_oracle.c`, `x87_fldenv_oracle_gen.py`, answers in `x87_fldenv_oracle_i5_3210m.txt`):
+  `FNINIT; FRSTOR a; FLDENV b; FNSTENV; FNSAVE; FNSTENV` with `a` a 108-byte register image and `b` an independent 28-byte
+  environment (random TOP, C bits, sticky flags, tags including all-empty and all-valid, FIP/FDP/FOP, zero and non-zero selectors),
+  all 28 + 108 + 28 output bytes reproduced exactly from two starting selector states each (the rows use images, not executed
+  sequences, for the reason given in S2-32c).
+- **Address overflow (model behaviour).** As `FRSTOR`: the last byte is computed with checked arithmetic before the canonical
+  check, so `RAX` above `u64::MAX - 27` (the 28 bytes would wrap past the top of the address space) returns the model error
+  `MemoryError::AddressOverflow { length: 28 }` from `step` with nothing read and no state change, not #GP(0). This is a limit of
+  the interpreter model, not an architectural result; no oracle row covers it (test
+  `an_address_whose_28_bytes_wrap_past_u64_max_is_an_address_overflow`).
+
+## Local S2-32e: the bounded x87 forms of S2-32a/b/c/d at CPL0 of the set
+
+Status: `od-isa` CPL0 profile set with the FP member (`with_fp_state`); no CPUID bit is declared (S2-57). Scope: the ten
+transcendental forms of S2-32a (`D9 F0..FF`), `FBLD`/`FBSTP` of S2-32b, `FNSTENV`/`FNSAVE`/`FRSTOR` of S2-32c and `FLDENV` (`D9 20`) of S2-32d
+(connected after the merge of the S2-32d branch: `FldenvRax` is in `cpl0_bounded_x87_form`, no other change to the mechanism). Intel SDM 325462-093US Vol. 2A: FBLD p. 3-314, FRSTOR p. 3-373, FSIN p. 3-380, FSTENV/FNSTENV
+p. 3-390 (each lists `#NM` for CR0.EM[bit 2] or CR0.TS[bit 3] = 1 and no CR4.OSFXSR condition); Vol. 3A 2.5 (CR0.EM, CR0.TS).
+
+- **Mechanism.** Like S2-39o for MMX: for one instruction the x87 half of the member's cell is moved into `state.x87`, the bounded
+  profile of the bare run (`step_configured_with_profile_mode`, S2-32a/b/c) executes it unchanged, and the state is stored back with
+  whatever the instruction left (a refusal or a fault leaves it as it was). `state.x87` is `None` between instructions; the SSE half
+  of the cell is not touched. Only these 16 operations are routed (`cpl0_bounded_x87_form`); every other x87 form stays `Unsupported`.
+- **Gates (before the lend).** CR0 not modeled: `Unsupported`; CR0.EM or CR0.TS set: `#NM` (the gate of `FNINIT` in the set), no state
+  change, no memory access. CR4.OSFXSR is not a gate of x87 forms (it is a gate of FXSAVE and the SSE forms). Pending unmasked
+  exceptions: the bounded profile's own admission (all-masked control word, ES and B clear for the environment forms) applies, the
+  set adds no `#MF` path to x87 forms.
+- **No FCS/FDS bypass.** The set admits only a cell with both selectors represented (`FpStateNotAdmitted`, the plain FXSAVE image carries
+  them), and the bounded profile refuses every `D8..DF` form except the four environment forms (`FNSTENV`, `FNSAVE`, `FRSTOR`, `FLDENV`) while a selector is represented (it
+  would have to update FCS/FDS from an unmodeled CS). Consequence: in the set `FSIN`..`FXTRACT` and `FBLD`/`FBSTP` pass the gates and are
+  then refused (`Unsupported`, opcode byte, no change), exactly as the bare run refuses them with represented selectors;
+  `FNSTENV`/`FNSAVE`/`FRSTOR` define the selectors themselves and run, with the semantics and the image of S2-32c; `FLDENV` loads them from the image and runs with the semantics of S2-32d. To make the S2-32a/b
+  forms run in the set one of two decisions is needed (open, not taken here): admit a cell without selectors (changes the FXSAVE
+  admission) or model FCS/FDS of executed instructions.
+- **Tests.** `crates/od-isa/tests/s2_32e_cpl0_x87.rs` (13): set against the bare `step` on five x87 states (images of FNSTENV/FNSAVE, FRSTOR of
+  five images, FLDENV of the 28-byte environment of five images (one 28-byte read, register stack unchanged), programs of five forms), 324 oracle rows of S2-32c replayed through the set in two selector states (648 replays, every
+  byte of the three outputs), `#NM` for EM, TS and EM+TS on all 16 forms with no change, OSFXSR clear gives the same outcome, selector
+  refusal of the 12 S2-32a/b forms with a control that the same form completes in the bare run without selectors, refusals and faults
+  (unmasked control word, ES, B, unmasked or ES image, `#PF`, non-canonical) equal to the bare run, other x87 forms still refused.
+  Not covered: FWAIT-prefixed forms beyond one `9B D9 30` pair, the `#MF` of pending exceptions for the S2-32a/b forms (refused by the
+  selector rule before), CPL3 (the set at CPL3 has no x87), JIT and native (closed).
+
+## Local S2-32f: the FWAIT spellings of FSTENV (`9B D9 30`) and FSAVE (`9B DD 30`)
+
+Status: local `od-isa` interpreter and the CPL0 set with the FP member; no CPUID bit is declared. Decision of the owner 2026-11-22 (ADR-0015 item 8): the spellings
+with FWAIT are in scope; the `#MF` of pending exceptions and the 16-bit images (prefix `66`) are carried over. Intel SDM 325462-093US: Vol. 2A FSTENV/FNSTENV p. 3-390,
+FSAVE/FNSAVE p. 3-375 (the mnemonics with F are the non-waiting form preceded by the WAIT byte), WAIT/FWAIT in Vol. 2D, Vol. 1 section 8.7 (x87 exception synchronization).
+
+- **Decoding.** After a bare `9B` (no prefix) the decoder consumes the next two bytes only when they are exactly `D9 30` or `DD 30`: the instruction has the operation of
+  the non-waiting form (`FnstenvRax`, `FnsaveRax`), opcode `9B` (the first byte) and length 3. `9B` before any other byte, a prefix between `9B` and the escape byte,
+  a truncated fetch and a fetch error on either of the two bytes leave the bare FWAIT of one byte (the length is restored; a fetch error is left to the decode of the next instruction).
+  A prefix before `9B` is refused (`Unsupported`; `F0` keeps the bare FWAIT with LOCK, `#UD` in the set). `9B D9 20` is FWAIT and FLDENV, not a form of its own.
+  The fusion is the decoder's choice for the profile; the architecture has two instructions (no interrupt window between them in the fused form).
+  The look-ahead never leaves the 4 KiB page of the `9B` byte: when `9B`, or the byte after it, is the last byte of its page, no byte after `9B` is fetched at all and the
+  instruction is the bare FWAIT of its own byte (no fetch, no page walk, no recorded fault or memory error of the paged adapters or of the bounded fetch capture for the next page).
+  A spelling across a page boundary is therefore decoded as FWAIT and the non-waiting form as two instructions (limitation: the bounded profile refuses the bare FWAIT, `Unsupported`;
+  in the set the two instructions have the same effect and the same RIP of a fault as the fused form).
+- **Saved RIP of a fault.** Intel SDM (FSTENV/FSAVE, "Description"): the assembler issues two instructions, FWAIT and then FNSTENV/FNSAVE, and "if an exception is generated for either
+  of these instructions, the save EIP points to the instruction that caused the exception". Rule: an error of the FWAIT part leaves RIP at `9B` (#NM for CR0.MP with CR0.TS, #MF of a
+  pending unmasked exception); an error after the FWAIT part retired leaves RIP at the FNSTENV/FNSAVE byte, `9B` + 1 (the #NM of CR0.EM, or of CR0.TS with CR0.MP clear, which is no
+  condition of FWAIT; the architectural faults of the store: #GP for a non-canonical address or last byte, #PF; SDM, RIP of the point of the exception). Nothing but RIP changes on such a fault (the x87 state, the memory and the
+  cell stay as they were). A model error of the store (unmapped memory, wrapping address past 2^64, backend failure) is not an x86 exception: as in FLDENV/FNSTENV it is returned as an error, the state is
+  untouched and RIP stays at the first byte (`9B`). Without a fault RIP advances by 3.
+- **Bounded profile.** FWAIT is a no-op: the admission of the environment forms (control word one of the twelve all-masked words, ES and B clear) leaves no pending unmasked
+  exception. The rest is the non-waiting form (image, one write, state), RIP advances by 3. A state that the SDM would answer with `#MF` at the FWAIT (unmasked control word,
+  ES, B) is refused, `Unsupported` with opcode `9B`, no state change, no memory access (carried over). The refusal of the other `D8..DF` forms while a selector is represented
+  does not apply (the opcode is `9B`; the environment forms define the selectors themselves).
+- **CPL0 set.** `step_cpl0_bounded_x87` first applies the checks of the FWAIT of `step_cpl0_fp`: CR0 and CR4 modeled (else `Unsupported`), `#NM` for CR0.MP and CR0.TS, a pending unmasked
+  exception (ES set and a status exception flag unmasked by the control word) is `#MF` with CR0.NE set (NE clear is `Unsupported`; the policy of the set admits only NE set), then the gates of
+  the x87 forms (`#NM` for CR0.EM or CR0.TS) and the bounded profile. The outcome with a pending exception is that of the bare FWAIT in the set (RIP `9B`), also with CR0.EM set:
+  EM is no condition of FWAIT, so a pending exception is `#MF`, not `#NM`. The `#NM` of the gates (EM, or TS with MP clear) has RIP `9B` + 1; nothing else changes on a fault.
+- **Oracle.** 324 Core i5-3210M rows (`data/x87_fwait_oracle.c`; `data/x87_fwait_oracle_i5_3210m.txt`): the images of S2-32c through `FNINIT; FRSTOR; FSTENV; FSAVE; FSTENV`, the assembler
+  emitting `9B D9 30` and `9B DD 30` (objdump). The answers are byte-identical to those of the non-waiting forms; all 324 rows (28 + 108 + 28 bytes) are reproduced from two starting selector states.
+- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (14), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page` (paged adapter); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
+- **Not covered.** `#MF` delivery in the bounded profile, 16-bit images, FWAIT before other forms, #AC, JIT and native (closed).
+
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
 
 Only exact bare Long64 `D8 F0..F7` is admitted. Require present x87 state,
@@ -15741,6 +15930,88 @@ Rev. 093, Vol. 2B, `RET` instruction entry; exact `F0 48 CB` #UD handling is
 the source-backed LOCK-invalid rule for this profile. See the [official SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 and [S2-27l Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).
 
+### S2-27m — SYSCALL/SYSRET gates, compatibility SYSRETL and CPL3 SYSRET (Windows CPL0 set)
+
+Scope: the `with_syscall` member of `Cpl0ProfileSet` (S4-39e/S4-39f) in
+`od-isa`, now checked against Intel SDM combined revision 093, Vol. 2B,
+`SYSCALL` (4-699..4-701) and `SYSRET` (4-709..4-711) instead of memory.
+CPUID is not touched: the `80000001` EDX[11] SYSCALL bit stays a separate
+S2-57 decision. There is no oracle: `SYSCALL`/`SYSRET` need CPL0 state and
+a user-space oracle cannot provide it, so the evidence is the SDM operation
+text and the unit tests in `crates/od-isa/tests/cpl3_syscall.rs`.
+
+Behavior added:
+
+- **Gate order, both instructions, before any write:** `EFER.LMA = 0` or
+  `CS.L = 0` is #UD, then `EFER.SCE = 0` is #UD. Intel has no `SYSCALL` in
+  compatibility mode: IA32_CSTAR is not consumed (the AMD compatibility-mode
+  target does not exist in the SDM operation).
+- **LOCK:** `F0 0F 05`, `F0 0F 07` and `F0 48 0F 07` are #UD from the decoder.
+- **SYSCALL at CPL0** is executed like CPL3 (RCX, R11, FMASK, STAR CS/SS,
+  LSTAR; the SDM allows every CPL of 64-bit mode). The CPL1/CPL2 callers are
+  not representable in the set state. TF in RFLAGS remains a refusal, now
+  checked after the #UD gates.
+- **SYSRET at CPL3** is #GP(0) after the #UD gates (both operand sizes); the
+  CPL3 allow-list admits `SYSRET` only under the member so that the step
+  decides.
+- **Bare `0F 07` (SYSRETL)** returns to compatibility mode: RIP = ECX
+  (zero-extended, no canonical check), CS = STAR[63:48] or 3 (no +16) with
+  access `0xfb`, flags `0xc` (D = 1, L = 0, G = 1), SS and RFLAGS as for
+  SYSRETQ. The retired instruction ends the CPL0 run with `UserModeEntered`.
+  The CPL3 entry admits only L = 1 code, so the long-mode interpreter refuses
+  to run the compatibility code (`WrongPrivilege`): this is the state commit
+  only, not compatibility-mode execution (S2-24 stays open).
+- **R11 flags:** VM is cleared (SDM: RF and VM are always 0 after SYSRET)
+  instead of refused. TF, VIF and VIP in R11 remain refusals (the SDM mask
+  keeps them; the single-step trap and virtual-interrupt state are not
+  modelled).
+- **Selector overflow** is operand-size aware: STAR[63:48] + 16 for the 64-bit
+  form, STAR[63:48] + 8 for the compatibility form.
+
+Unchanged refusals (`Unsupported`): non-canonical LSTAR, STAR[33:32] != 0, TF
+at `SYSCALL`, all other prefix forms, and the exact forms in a set without the
+member. The decoder, not the member, decides two things for every set,
+including a set without `with_syscall`: `F0` with `0F 05`, `0F 07` or `48 0F 07`
+is #UD (test `lock_prefixed_forms_are_ud_in_a_set_without_the_member`), and a
+bare `0F 07` decodes as SYSRETL; a set without the member then refuses the
+decoded forms with `Unsupported`, unchanged.
+
+STAR[33:32] != 0 is specified by the SDM, not unknown: the `SYSCALL` operation
+(Vol. 2B, 4-700) sets `CS.Selector := IA32_STAR[47:32] AND FFFCH` (RPL forced to
+0) and `SS.Selector := IA32_STAR[47:32] + 8` (not masked, so SS.RPL =
+STAR[33:32]), and neither step checks or faults. The model refuses it
+conservatively and for one reason: the result is CPL 0 with an SS selector whose
+RPL is not 0, a segment state that no other modelled instruction produces and
+whose later consequences (stack-segment and far-return checks on that SS) have
+no test or oracle behind them. Not verified:
+the real-hardware behavior of that state, SYSCALL at CPL1/CPL2,
+shadow-stack and CET state, FRED, and any oracle comparison. Linux boot
+(S4-39) uses only the forms that were already accepted; `od-isa` (35 test
+binaries) and the `od-machine` syscall/cpl3/iretq filters pass.
+
+Board (`od-machine`) consequences, checked by two tests in
+`crates/od-machine/src/linux_direct.rs`:
+
+- **SYSRETQ at CPL3 is delivered.** The #GP(0) of `SYSRETQ` in CPL3 leaves the
+  CPL3 loop as `Run(Fault)` with vector 13 and code 0, and the board takes the
+  same path as any CPL3 #GP(0) (S4-39d/S4-39h): the IDT gate of vector 13 and
+  `TSS.RSP0`, the frame holds the RIP of the `SYSRETQ` (it did not retire), the
+  handler runs in CPL0 (`user_mode_facade_sysretq_in_cpl3_is_a_gp0_delivered_through_rsp0`).
+  The limits are those of that path: without an IDT the fault stays the fault
+  stop, and a refused or aborted delivery (a missing task register, an
+  unreadable TSS or IDT gate) is `ExceptionDeliveryFailed`.
+- **SYSRETL ends the board run as `rejected` after a committed state change.**
+  The CPL0 loop retires `0F 07` and commits the compatibility-mode state (CS =
+  STAR[63:48] or 3, L = 0, RIP = ECX, SS, RFLAGS), then returns
+  `UserModeEntered`. The board loop continues with the CPL3 entry, which admits
+  only L = 1 code and returns `Rejected(WrongPrivilege)`; the run stops with
+  `exit_kind` `rejected` while the CPU state is already the committed one (the
+  instruction counts as retired, CPL reads 3, RIP is ECX). This is a stop, not a
+  rollback and not compatibility-mode execution: Linux boot never reaches it
+  (`/init` returns with `SYSRETQ`), and S2-24 stays the owner of running
+  compatibility code
+  (`user_mode_facade_sysretl_commits_compatibility_state_then_the_loop_is_rejected`).
+
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit
@@ -15943,6 +16214,314 @@ entry snapshot/absolute-first-access limitation remain under
 [ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
 
 Normative semantics: Intel SDM Rev. 093 Vol. 2B RDMSR ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)) and Vol. 3A IA32_EFER / IA-32e paging ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+
+## S2-25f — WRMSR IA32_EFER may change NXE (CPL0 set)
+
+Bounded slice of S2-25 (the parent stays open). Under `Cpl0ProfileSet::with_msr_efer_write`
+a `WRMSR` of IA32_EFER may change NXE (bit 11) besides SCE. Setting NXE (0 to 1)
+requires NX in the set's own CPUID member (CPUID.80000001H:EDX[20], SDM Vol. 3A
+§5.1.4 p. 5-6: NXE "may be set to 1" only then); otherwise the write is
+`#GP(0)` (Vol. 2D WRMSR: value sets a reserved bit) with no state change. Clearing
+NXE needs no CPUID bit. A write that keeps NXE=1 is not a change. LME/LMA changes
+and bits 12..15 stay `Unsupported`, reserved bits `#GP(0)`.
+
+An NXE change retires, stores the cell and ends the run with
+`TranslationContextChange::EferWrite { old_efer, new_efer }`; it needs the
+`with_cpu_owned_cr3` sink (else `Unsupported`, nothing changes). The paged CPL0 loop
+rebuilds its walker for the new NXE only and reports the final walker EFER in
+`PagedCpl0SetReport::efer`; the effect is not a CR3 change. With NXE=0 bit 63 of a
+paging entry is reserved (`#PF` with RSVD), with NXE=1 it is XD (S4-08 walker).
+No profile declares NX except `OdX8664V1Neutral` (`OdX8664V2Windows` defers NX until S4-10
+is accepted, owner decision 2026-11-21); the synthetic initial EFER 0xd00 with NXE=1 under a profile without NX
+is not an architectural claim (ISSUE-027). Hardware, JIT/native, the host-thread NMI path and
+the legacy/protected path are not covered. See the [S2-25f plan note](../plans/STAGE_2.md#s2-25f--wrmsr-ia32_efer-with-nxe).
+
+Walker EFER of the board. `LoadedFirmwareBoard::efer()` is `FIRMWARE_EFER` (LME|LMA, 0xd00) with the
+NXE bit of the boot vCPU's guest EFER, not the constant: a `WRMSR` that cleared NXE (so the next
+runs see bit 63 as reserved, `#PF` code 9 for a fetch) reaches the quantum run (`run_quantum`),
+the fetch view (`fetch_view_2m`), the two frame-chain captures, the stop record
+(`LinuxStopRecord::efer`) and the CPL0 loop of the board. LME and LMA never change in the set and the
+guest's SCE is not part of the walker EFER. Test: `the_boards_own_walkers_take_nxe_from_the_guest_efer_after_a_wrmsr_cleared_it`
+(fails if one of these paths keeps NXE = 1) and `wrmsr_efer_that_clears_nxe_reaches_the_stop_record_*`.
+
+Open limits of S2-25f (paths that still do not follow a changed NXE, or were not run):
+- `MutableTranslationProbeSession` and the probes built on it (`translation_probe_cache.rs`, the CR0.WP
+  and CR3 probes) accept only the paging profile with EFER 0xd00 and reject any other EFER
+  (`UnsupportedPagingProfile`); they are not part of the board's CPL0 loop.
+- The stop record of a vCPU other than the boot processor carries the boot processor's walker EFER in
+  `efer` (`linux_direct.rs`, `boot.board.efer()`); its own value is in `guest_efer`.
+- The walkers of the host threads (`od-host`: the `efer` argument of the `execute_*` helpers) take the
+  EFER the caller passes; the board does not feed them a changed NXE, and this path was not run.
+  The NMI delivery (`deliver_pending_nmi`) reads the vCPU's `guest_efer` and was not run with a cleared NXE.
+
+## S2-25g — PAE paging, CR4.PAE policy and PDPTE rules (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 (Figure 5-1, paging mode transitions), §5.4.1
+(Tables 5-7, 5-8, PDPTE loading, p. 5-14), §5.4.2 (PAE translation and reserved bits, pp. 5-15–5-17)
+and §12.8.5 (IA-32e initialization and the 64-bit mode consistency checks); the task's older numbering
+is §4.1, §4.4, §9.8. Text read from the local `pdftotext` of the SDM, not from silicon.
+
+| State / write | Rule implemented |
+|---|---|
+| PAE paging in use | CR0.PG=1, CR4.PAE=1, EFER.LMA=0 (`ProtectedCpu::pae_paging`) |
+| `MOV CR0` PG 0->1, LME=0, PAE=1 | load PDPTE0..3 from `CR3 & 0xFFFF_FFE0`; CR0 := value|ET; LMA stays 0 |
+| same, LME=0, PAE=0 | 32-bit paging (S2-25h; was `PagingNotModelled` in S2-25g) |
+| same, LME=1, PAE=0 | #GP(0) (`LongModePagingWithoutPae`, unchanged); LME=1, PAE=1 enters IA-32e (unchanged) |
+| `MOV CR3` under PAE paging | load PDPTEs from the new value, then store CR3; reserved bit with P=1 -> #GP(0), CR3 unchanged |
+| `MOV CR4` under PAE paging | PAE/PGE/PSE changed -> reload PDPTEs from CR3 (same #GP(0)); other bits no reload |
+| `MOV CR4` clears PAE, PG=1, LMA=1 | #GP(0) (`Cr4PaeClearInLongMode`; Long64 CPL0 `MOV CR4, RAX` too) |
+| `MOV CR4` clears PAE, PG=1, LMA=0 | 32-bit paging (S2-25h; was `Cr4WriteUnmodelled` in S2-25g) |
+| PG=0 | PAE/CR3 stored, no PDPTE read |
+| PDPTE reserved bits | 2:1, 8:5, 63:36 when P=1 (P=0 entries are not checked; the SDM notes some CPUs check them) |
+| PDE/PTE (PAE) | P=0 -> not present; bits 62:36 reserved (the 4-level walk ignores 62:52); XD reserved with NXE=0; PDE PS: bits 20:13 reserved; no R/W, U/S, XD or A bit in a PDPTE |
+| PAT (limit) | SDM §5.4.2: PTE bit 7 and PDE (PS=1) bit 12 are reserved if PAT is not supported. The model treats PAT as supported (`paging.rs`: bit 12 of a 2 MiB PDE is not reserved, checked by `a_misaligned_two_mib_page_is_refused_but_pat_bit_12_is_not`), so these bits are never refused; CPUID PAT is not declared (S2-57) and a profile without PAT would refuse them |
+| `#GP(0)` on PAE clear (coverage) | closed: the `WriteCr0 \| WriteCr4` branch with a control policy (the Long64 profiles, `execute.rs`) answers `MOV CR4` without PAE with `#GP(0)`, state unchanged. Open: the `cr4_profile` branch (`WriteCr4` with an explicit `Cr4Profile`, the S2-25b fixed-domain profiles) keeps `Unsupported` for a value without PAE, not `#GP(0)` |
+
+Memory is addressed with 32 bits (entries above 4 GiB refused as in the 4-level walk); no TLB: every
+access walks and `MOV CR3` takes effect at once. A refused `MOV` changes no register or memory except the accessed/dirty bits set by walks that had completed before the refusal (the fetch walk of the `MOV` included, as `ProtectedCpu::step` commits them for any refusal after decode and as hardware does). `into_long_mode`
+still requires LMA=1, so PAE paging is not handed to the Long64 interpreter. Not covered: hardware,
+KVM/silicon oracle, JIT/native admission, CPUID PAE declaration, the `od-machine` page walker
+(4-level only; the PAE walk of the board RAM is S2-25i below).
+
+AP trampoline of `od-machine` (`ap_legacy_exec.rs`): it runs its legacy steps through `ProtectedCpu::step`,
+so a `MOV CR0` with PG=1, PAE=1, LME=0 there is now PAE paging (`translate_pae`; `load_pdptes` reads the
+PDPTEs through `BoardRam::read_u64`, which records them in `page_table_reads` for that step), no longer
+`PagingNotModelled`. Leaving for long mode stays impossible: `into_long_mode` requires LMA=1. Covered by
+the narrow test `an_ap_trampoline_with_pg_and_pae_and_no_lme_runs_on_pae_paging_and_stays_legacy`
+(CR0/CR3/PDPTE state, a fetch and a load through the PAE walk, LMA clear, no hand-over). Not checked: the
+`page_table_reads` bookkeeping for the PDPTE reads (the descriptor-alias refusal on a PDPT page), the
+parallel mode with a gate, hardware.
+
+## S2-25h — 32-bit paging, PAE/32-bit transitions, CR0 writes with paging on (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.2 (Figure 5-1, paging-mode transitions, p. 5-3), §5.3
+(32-bit paging from p. 5-9; Tables 5-3..5-6 on pp. 5-12–5-13, reserved bits and PSE-36 footnotes), §5.4.1 (PDPTE loading
+conditions, p. 5-14) and §5.10 (caching of translations; the model has no TLB). The task's older numbering is
+§4.1.2, §4.3, §4.4.1, §4.10. Text read from the local `pdftotext` of the SDM, not from silicon. The Mac mini
+oracle cannot help: a user-space process cannot write CR0/CR4, so every row is a model rule.
+
+| State / write | Rule implemented |
+|---|---|
+| 32-bit paging in use | CR0.PG=1, CR4.PAE=0 (`ProtectedCpu::paging32`; IA-32e needs PAE, so LMA=0) |
+| `MOV CR0` PG 0->1, LME=0, PAE=0 | enter 32-bit paging, CR0 := value\|ET, no PDPTE read, LMA stays 0 (the memory at CR3 is not looked at) |
+| `MOV CR0` with PG set before and after | PE clear -> #GP(0) (`PagingWithoutProtection`); else CR0 := value\|ET; under PAE paging with LMA=0 a change of CD or NW reloads the PDPTEs from CR3 (reserved bit with P=1 -> #GP(0), CR0 and registers unchanged); WP/other bits: no reload; 32-bit paging and IA-32e: no reload |
+| `MOV CR0` clears PG, LMA=0 | paging off (PE must stay set); PDPTE registers keep their value, unused |
+| `MOV CR0` clears PG with LMA=1, or clears PE, or PG stays 0 | `Cr0WriteUnmodelled` (IA-32e deactivation and the return to real mode are not modelled) |
+| `MOV CR4` clears PAE, PG=1, LMA=0 | PAE paging -> 32-bit paging (Figure 5-1 "Clear PAE"); no #GP, registers kept, unused |
+| `MOV CR4` sets PAE, PG=1, LMA=0 | 32-bit -> PAE paging; PDPTEs loaded from CR3 (the PAE bit is in the SDM list of reload triggers); reserved bit with P=1 -> #GP(0), CR4 unchanged |
+| `MOV CR4` changes PSE/PGE under 32-bit paging | stored, no PDPTE load; PSE selects whether PS means a 4 MiB page at the next walk |
+| `MOV CR4` clears PAE, LMA=1 | #GP(0) (`Cr4PaeClearInLongMode`, unchanged) |
+| `MOV CR3` under 32-bit paging | stored; bits 31:12 are the directory, bits 2:0 and 11:5 ignored, PWT/PCD not modelled; no PDPTE load |
+| 32-bit PDE (PSE=1, PS=1) | 4 MiB page: frame = PDE bits 31:22, offset = linear bits 21:0; PDE bits 21:13 reserved (PSE-36 not declared, bits 39:32 do not exist), bit 12 PAT, bit 8 G free |
+| 32-bit PDE (PSE=0 or PS=0), PTE | page-table pointer / 4 KiB page, bits 31:12; with PSE=0 no bit is reserved and PS is ignored; PTE bit 7 is PAT (not refused, same PAT assumption as S2-25g) |
+| Access rights (CPL 0) | a clear R/W in the PDE or the PTE refuses a write when CR0.WP=1; U/S is not looked at; no XD in 32-bit paging (EFER.NXE has no effect); a refusal carries the final entry |
+| Accessed/dirty | A in the PDE and the PTE used, D in the final entry of a write (the PDE of a 4 MiB page), written after the instruction by `commit_touches` |
+
+Entries are 4 bytes. Two of them share one 8-aligned cell, the unit of `RealModeMemory::read_u64` and of the
+atomic `compare_replace_entry` (`BoardRam` needs an 8-aligned cell): `Touch` gained `cell` (`Quad`,
+`LowDword`, `HighDword`); the mask is shifted into the right half and the retry on a lost race compares only
+the entry's own dword on the translation bits, so a change of the neighbouring entry does not discard the touch.
+Memory is addressed with 32 bits: no 32-bit-paging address reaches above 4 GiB, as PSE-36 is not declared.
+No TLB: `MOV CR3`, `CR0`, `CR4` take effect at once. A refused `MOV` changes no register or memory except the accessed/dirty bits set by walks that had completed before the refusal (the fetch walk of the `MOV` included, as `ProtectedCpu::step` commits them for any refusal after decode and as hardware does). Tests:
+`paging::tests::paging32_*` (10 new) and 13 new `protected_exec::tests` (enter 32-bit paging, 32-bit
+ignores PDPTE registers and CR3 low bits, `MOV CR3`, PAE<->32-bit by `MOV CR4` with and without a reserved
+PDPTE, PSE toggle, 4 MiB page A bit, CD/NW reload with and without a reserved PDPTE, no reload outside PAE
+paging, PG clear, IA-32e/PE refusals). Not covered: hardware or KVM oracle, CPUID gating of CR4.PSE (the Windows profile does not declare
+PSE, the model accepts the bit), PSE-36, the `od-machine` MMU and the Long64 interpreter (neither has 32-bit
+paging), the `page_table_reads` bookkeeping of the AP board for 4-byte entries (the cell address is recorded;
+not run), task-switch CR3, SMEP.
+
+## S2-25i — PAE walk of the board RAM in od-machine (bounded slice)
+
+Normative source: as S2-25g (Intel SDM Rev. 093 Vol. 3A §5.4.1 Tables 5-7 and 5-8, §5.4.2 PAE translation,
+pp. 5-14–5-17). Text only: there is no hardware oracle for PAE paging (the Oracle machines run long mode),
+so the walk is checked against the `od-isa` model of S2-25 and by hand against the SDM.
+
+| Item | Rule implemented (`crates/od-machine/src/page_walk/pae.rs`) |
+|---|---|
+| Configuration | `PaeProbeConfig`: CR0.PE/PG/ET and CR4.PAE set, EFER.LME and LMA clear (EFER may hold SCE and NXE), a 32-bit CR3 (bits 4:0 ignored), the four PDPTE registers. `PaeProbeConfig::load` / `load_pae_pdptes` read the PDPT (RAM only); `from_protected_cpu` takes a legacy `ProtectedCpu` as it is |
+| PDPTE | register selected by linear bits 31:30; P=0 -> `#PF` not present at `PageTableLevel::Pdpt` with no table read; reserved bits 2:1, 8:5, 63:36 refused when P=1 at load (as `load_pdptes`); no R/W, U/S, XD or accessed bit, never written, not in the walk trace |
+| PDE/PTE | as S2-25g: bits 62:36 reserved when P=1, XD reserved with NXE=0, 2 MiB PDE bits 20:13 reserved, PS honored independently of CR4.PSE; physical address bits 35:12 |
+| Rights | OR of XD and AND of R/W and U/S over the PDE and PTE only; CPL 3 needs U/S; supervisor write needs R/W when CR0.WP=1 (CPL 3 always); fetch with NXE=1 faults on XD; error code from `page_fault_error_code` (P, W/R, U/S, RSVD, I/D with NXE) |
+| Accessed/dirty | each as one compare-and-replace of the entry (`compare_replace_table_entry`, S6-25); A on every PDE/PTE the walk reaches, D on the leaf of a write (`commit_leaf_dirty`) |
+| API | `translate_pae_ram` (commits A/D), `translate_pae_ram_read_only[_with_trace]` (commits nothing); translation only, no operand access |
+| Board | `LoadedFirmwareBoard::pae_paging_of` and `fetch_vcpu_view_pae` (`pae_fetch_view.rs`): the read-only instruction-byte view of a vCPU whose `legacy` model is a `ProtectedCpu` on PAE paging. The IA-32e path (`Long64ProbeConfig`, `walk_long64_4k_with_writer`) is not changed or selected by it |
+
+Deliberate differences from the `od-isa` model (`translate_pae`): the physical address is not limited to
+4 GiB (MAXPHYADDR 36, the memory map decides); the accessed bit of an entry is set when the walk reaches it,
+also when a later entry or the rights then fault (as the IA-32e walk of this crate), `od-isa` sets A/D only
+after a successful walk; `commit_leaf_dirty` ignores a concurrent change of bits 52..=62, which are
+reserved in a PAE entry. CPL: the `od-isa` model has no U/S check; the `od-machine` walk has one and is
+tested for it separately.
+
+Tests (`page_walk/pae/tests.rs`, `ap_legacy_exec.rs`): a differential sweep of 400 random table sets
+(PDE/PTE with random P, R/W, U/S, A, D, XD, ignored bits and reserved bits; 4 KiB and 2 MiB pages) x WP x
+NXE x 6 linear addresses x Read/Write/Fetch at CPL 0 compares outcome, physical address, page size and, on
+success, the table bytes after the A/D updates with `od-isa`; unit tests for each reserved bit
+(62:36, 20:13), XD with and without NXE, WP and U/S, PDPTE selection and loading, PDPTE not touched, a
+physical address above 4 GiB; the board view of an AP that the trampoline put on PAE paging. Not covered:
+operand reads/writes and MMIO dispatch through PAE paging (S2-25k below), the PAE path in the `PagedMovMemoryAdapter` set loop
+and the host/JIT fast paths (they stay IA-32e only), 32-bit paging in od-machine (PG=1, PAE=0; the od-isa model is S2-25h), a stage-4 style probe on
+PAE tables, hardware oracle, CPUID declaration (S2-57/S2-58).
+
+## S2-25j — PSE-36 walk, SMEP, IA-32e deactivation and return to real mode (model only)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.3 (Table 5-4, reserved bits of a 32-bit PDE), §5.6.1 (access
+rights, SMEP), §5.7 (page-fault error code), §12.8.5.4 (switching out of IA-32e mode), §12.9.2 (switching back to
+real-address mode); Vol. 2B "MOV to control register" (exceptions). Text only: no hardware oracle; no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| PSE-36 | `ProtectedCpu::pse36` = false: PDE (PS=1, PSE=1) bits 21:13 reserved, frame bits 31:22. true: bits 21:17 reserved (MAXPHYADDR 36), bits 16:13 = physical bits 35:32; a frame above 4 GiB is `PhysicalBeyond4GiB` (32-bit memory), not a `#PF`, and is reported after the write-protect and SMEP faults (as in the PAE walk). CR4.PSE=0: PS ignored, nothing reserved |
+| SMEP | CR4 bit 20 in `CR4_MODELLED_MASK`; fetch through an address with U/S=1 in every entry (PDE+PTE for PAE and 32-bit, all four levels for IA-32e, 4 MiB/2 MiB leaf = PDE) is `PageRefusal::SmepFetch`, no A/D bit written; reads and writes unaffected; error code P+I/D = 0x11; SMEP change reloads PDPTEs (PAE paging) |
+| #PF error code | `paging::page_fault_error_code`: P=0 for not present, P+RSVD for reserved bits and 1 GiB pages, P for rights faults, W/R for a write, U/S=0 (CPL 0 model), I/D for a fetch when SMEP or (PAE and NXE); model limits give none |
+| IA-32e deactivation | `MOV CR0` PG 1->0 with LMA=1, CS.L=0, PE kept: `CR0 := value OR ET`, `LMA := 0`, LME/CR3/CR4/PDPTEs kept. CS.L=1: `#GP(0)` (`Cr0PgClearIn64BitMode`; the 64-bit decoder takes `0F 22 C0`, `MOV CR0, RAX`, for it, high dword of RAX taken as 0). PE also cleared with PG: `Cr0WriteUnmodelled` (not specified by the SDM sequence). PG=1 with PE=0: `PagingWithoutProtection` |
+| Real mode | `MOV CR0` PE 1->0, PG=0 before and after: `CR0 := value OR ET`, nothing else changes; next `step` `NotProtectedMode`; `to_real_mode` builds the `RealModeCpu` (caches keep selector/base/limit) and returns `None` while CS.D or SS.B is 1 (`RealModeCpu` has no default-size bit; SDM §12.9.2 steps 3 and 4 load 16-bit CS and SS before PE is cleared). PE kept with PG=0: `Cr0WriteUnmodelled` as before |
+
+Tests: `paging.rs` (`pse36_*`, `smep_*`, `page_fault_error_code_*`) and `protected_exec.rs` (`smep_*`, `mov_cr4_*smep*`, `pse36_switch_*`,
+`mov_cr0_clearing_pg_in_compatibility_mode_*`, `ia32e_*`, `clearing_pg_in_64bit_mode_*`, `mov_cr0_clearing_pe_*`, `to_real_mode_*`,
+`pe_clear_refusals_*`, `full_sequence_from_ia32e_to_real_mode`, `page_fault_error_code_reports_i_d_for_an_nx_fetch_*`). Not covered: hardware oracle, `od-machine` walks, the Long64 CPL0
+profile, SMAP/PKU/PCIDE, CPUID declaration (S2-57).
+
+## S2-25k — operand access through PAE paging (bounded slice)
+
+Normative source: as S2-25g/S2-25i (Intel SDM Rev. 093 Vol. 3A §5.4.2 PAE translation, Table 5-8 and Figure 5-12 for
+the page-fault error code, §5.6 access rights, §5.7 page-fault exceptions, §5.8 accessed and dirty flags). Text only: no hardware oracle.
+
+| Item | Rule implemented |
+|---|---|
+| `od-isa` store form | `ProtectedInstruction::MovDsFromEax`, `a3 disp32`: all four bytes are translated as writes and checked writable before the first byte is stored (`DataUnwritable` for unwritable memory, `DataBeyondLimit` under the DS limit); a DS that is not a writable data segment (`W = 0`) is refused first, before any walk (`DataSegmentReadOnly`, the hardware `#GP(0)`, SDM Vol. 2B MOV, Protected Mode Exceptions); the accessed bits of the walks that completed stay, the dirty bit only when the whole store is done. Not a form of the S6-14 trace: it exists to reach the write walk of PAE paging |
+| `od-isa` loads | `MOV EAX/EDX, ds:disp`, `CMP EAX/EDX, ds:disp`, `BT ds:disp, imm8` read through `translate_pae` (A on the PDE and PTE, no D, a PDPTE is never written); `PhysicalBeyond4GiB` for a page above 4 GiB stays (32-bit physical model) |
+| Request | `PaeAccessRequest { instruction_rip, linear: u32, context (CPL), operation }`, `PaeOperandOperation::{Read, ReadForWrite, Write}` with width 1, 2, 4 or 8 |
+| Order of effects (`access_pae_with_mmio`) | page-cross check (`CrossesPage`, before any walk), PAE walk (A of the PDE and PTE as the walk reaches them), region of the physical operand, then for a write the D bit of the leaf (also before an MMIO dispatch, as the 4-level path with a dispatch), then the bytes or the device access. `ReadForWrite`: the walk of a write without D, RAM only |
+| Physical address | the 36 bits of the PAE entries, not truncated: RAM or framebuffer is read/written, MMIO goes to the device of the region, ROM (write), a reserved range and a hole are `OperandPhysical` (a model refusal, no D bit); bits 62:MAXPHYADDR (62:36) of an entry are reserved (#PF with RSVD; bit 63 is XD) |
+| Rights and error codes | as S2-25i: CPL 3 needs U/S, a supervisor write needs R/W with `CR0.WP` (CPL 3 always); error code P (present), W/R, U/S, RSVD from `page_fault_error_code`; `CR2` = the linear address; a faulting access sets the A bits of the entries it reached and never D |
+| Without a dispatch (`access_pae_ram`) | an MMIO write is `DeviceUnavailable`, an MMIO read `OperandPhysical(UnreadableRegion(Mmio))`, before D and before any device |
+| Board | `LoadedFirmwareBoard::pae_operand_access(cpu, rip, linear, privilege, operation)` (`pae_operand_access.rs`): the PDPTE registers of the vCPU's legacy `ProtectedCpu`, the vCPU index reaches `BusDevice::read_from_cpu/write_from_cpu`, the committed write ranges are returned for code invalidation. The 4-level path is not selected by it |
+
+Tests: `od-isa` `protected_exec::tests` (`mov_ds_eax_*`, `pae_operand_*`: loads set A and never D, a store sets A and D of the leaf, 2 MiB PDE,
+PDPTE selection by bits 31:30, refusals by level and reserved bits 36/52/62, XD without NXE, bit 35 beyond 4 GiB, WP, DS limit,
+a store refused on its later byte keeps A and leaves D clear, unreadable/unwritable memory, a store through a read-only DS refused before the walk); `od-machine`
+`page_walk/pae/operand_tests.rs` (11 tests: order and ranges of the committed writes, every width, 2 MiB D, 36-bit addresses,
+MMIO dispatch with D first, refusals without a dispatch, ROM and holes, error codes 0, 2, 3, 4, 5, 6, 7, 9, 15, WP clear,
+write-intent read, `CrossesPage`) and `ap_legacy_exec.rs` `the_board_pae_operand_access_serves_ram_mmio_and_faults_of_an_ap_on_pae_paging`
+(an AP the trampoline put on PAE paging: store and load of RAM with code generation advance, the Local APIC window as vCPU 1
+with D after the write, an address outside the map, #PF codes).
+Not covered: a 32-bit instruction interpreter on the board PAE view (the only legacy executor is the closed trampoline profile on
+RAM, which still refuses MMIO), a page-crossing operand, locked operations, the PAE path in the `PagedMovMemoryAdapter` set loop
+and the host/JIT fast paths, 32-bit paging in od-machine, hardware oracle, CPUID declaration (S2-57/S2-58). Known limitation: in `od-isa` the A/D bits of the walks are committed after the operand bytes are written; a store that changes the PTE mapping its own page gets A|D added to the value just written (hardware sets A/D in the walk, before the write).
+
+## S2-25l — PAE adapter (`GuestMemory` over the PAE walk) and the explicit refusal of the long-mode loops (bounded slice)
+
+Normative source: as S2-25k (Intel SDM Rev. 093 Vol. 3A §5.4.2 PAE translation, §5.6 access rights, §5.7 page-fault
+exceptions and Figure 5-12 for the error code, §5.8 accessed and dirty flags). Text only: no hardware oracle
+(a user-space process on the Oracle machine cannot enable PAE paging), no oracle counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Type | `PagedPaeMemoryAdapter` (`paged_pae_adapter.rs`): a `GuestMemory` over `PaeProbeConfig` (control registers + the PDPTE registers of a `ProtectedCpu`). Forms: `over_memory` (RAM only, an MMIO operand is a typed refusal), `over_machine` (the whole bus: MMIO reaches the bound device as an access of the vCPU), `over_memory_and_set_mmio` (RAM + the windows of the set loop's `SetStepMmio`). A sibling of `PagedMovMemoryAdapter` and not a mode of it, on purpose: that adapter holds a `Long64ProbeConfig` (its constructor requires `EFER.LME = LMA = 1`) and about twenty four-level walk sites (fetch cache, vector, locked, descriptor, cross-page, diagnostics); as a mode, one missed site would walk four levels silently over PAE tables. By type no four-level walk is reachable from the PAE adapter, and the long-mode adapter and its profiles are not changed |
+| Served | `fetch` (one byte; the walk of a fetch: A bits, `XD` with `EFER.NXE`, error code with I/D; RAM only: a framebuffer, MMIO, ROM or a hole is refused with a typed `OperandPhysical` error (`UnreadableRegion`), the framebuffer as in the four-level access, where data behaves like RAM and an instruction fetch is a backend error); `read`/`write` of 1, 2, 4, 8 bytes. Inside one page: one walk, then the region of the physical address decides (RAM/framebuffer bytes, MMIO to the device with the dirty bit set first on a write, ROM/reserved/hole `OperandPhysical`); the MMIO window limit of the set loop applies as in the four-level set access (outside a window: `OperandPhysical` for a read, `DeviceUnavailable` for a write, before any device and dirty bit). Crossing a page: one walk per byte for a read (value handed over after the last byte), for a write both pages are first walked with write intent (no D), and only if both pass each byte is written through its own write access; a crossing operand never reaches a device. `read_integer_for_write`/`read_for_write_integer` inside one page, RAM only (write-intent walk, no D) |
+| Order of effects | those of S2-25k (`access_pae_with_mmio`); the new `PaeOperandOperation::Fetch` and `access_pae_with_mmio_windows` are the only changes of `page_walk/pae.rs` |
+| Faults | a `#PF` is `MemoryError::Architectural` with the record of the walk (`page_fault()`: saved EIP, CR2, error code); every model refusal (`CrossesPage`, `OperandPhysical`, `DeviceUnavailable`, `MmioBackend`) is a typed `MemoryError::Backend` with the walk's error in `memory_error()` |
+| Refused with a typed error, before any walk | every locked operation (`atomic_exchange/fetch_add/compare_exchange/rmw_integer`, `atomic_rmw_u128` = CMPXCHG16B; there is no host atomic path over PAE tables), `MFENCE` (as in the long-mode adapter; `fence` is forwarded), widths other than 1/2/4/8 (16-byte vectors), a descriptor-table access (the gate and transaction belong to the long-mode adapter), a linear address above 4 GiB or an operand that wraps past it |
+| Host loop, JIT, CPL0 set loop | **explicit refusal, not execution.** The loops decode and execute Long64 instructions (native blocks and the CPL0 set are 64-bit code) over a `Long64ProbeConfig`; a PAE vCPU is a 32-bit protected-mode one, so routing it there would be wrong whichever walk served its memory. Every entry builds `Long64ProbeConfig::from_cpu_state`, which requires `EFER.LME = LMA = 1`: a PAE state (`CR0.PG = 1, CR4.PAE = 1, LME = 0`) is `ProbeConfigError::RequiredBits { register: "EFER", bits: LME | LMA }`, surfaced as `PagedProbeExit::Rejected(Configuration(..))` (`run_paged_probe`, `run_paged_probe_shared`, `run_cpl0_set_paged_2m_ram`), as `PagedHostLoopExit::Interpreter(Rejected(Configuration(..)))` from `run_paged_host_loop` and as `Paging(..)` from the JIT entries that build the snapshot (`od-host` `execute_form` and its siblings) once their own admission checks have passed: the context check and the CPU-held CR3 check come first, so a state with `state.cr3 = Some(..)` is `UnsupportedCpuCr3` there, not `Paging(..)` (the JIT entries are not covered by a test of their own; the host loop is, in `od-host`). Nothing is fetched or walked: no instruction retires, RAM (A/D bits included), registers and the write list are unchanged. Conversely `PaeProbeConfig::new` refuses IA-32e registers. A PAE-capable executor on the board stays a 32-bit interpreter (S2-25k "not done") |
+
+Tests: `od-machine` `paged_pae_adapter/tests.rs` (19): a differential of the adapter against `ProtectedCpu` (`MOV EAX, ds:disp32` / `MOV ds:disp32, EAX`
+on identical tables, 31 scenarios: read-write, A/D preset, not present, read-only with WP set and clear, reserved bit 36, XD page, 2 MiB page and
+read-only 2 MiB page, PDPTE 1 selection, absent PDPTE 2/3, page-crossing loads and stores with the second or first page absent or read-only, ROM,
+hole and MMIO without a dispatch): the outcome equals the model's and the SDM literal (error codes 0x0, 0x2, 0x3, 0x9, 0xB; CR2 of a crossing fault = first
+byte of the faulting page: a convention of the model, shared with `ProtectedCpu`, not a statement of the SDM), loaded values equal, and on the 14 successful scenarios the whole RAM image (data, A and D bits) is byte-equal; a refused access
+changes no data byte; crossing read and write over two non-contiguous frames; order and ranges of the committed writes; MMIO through the set dispatch (device
+call, D set before the device, a read never dirties), outside the windows, an operand ending exactly at the end of its window (served; one byte more is not), a framebuffer page (data like RAM with no write callback, an instruction fetch a backend error), a device error, crossing into MMIO, write-intent and fetch never reach a device; MMIO
+through `MachineBus` with a bound device; locked operations and CMPXCHG16B refused with nothing committed; widths, 4 GiB limit, descriptor origin; CPL 3 versus U/S;
+page-fault record and EIP; the two snapshots exclude each other; `run_paged_probe`, `run_paged_probe_shared` and the CPL0 set loop refuse a PAE state before any
+fetch. `page_walk/pae/operand_tests.rs` (+2: fetch, set-loop windows). `od-host` `paged_host_loop::tests::s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`
+(macOS arm64: the exit, zero retirements, no native block, RAM/state/write list unchanged).
+Not covered: a decoder/interpreter that drives this adapter (the legacy executor is `ProtectedCpu` over `BoardRam`; no 32-bit interpreter drives a `GuestMemory`), the fetch
+translation cache and the vector, descriptor and locked paths over PAE, a page-crossing read-modify-write destination (`CrossesPage`), 32-bit paging in
+od-machine, hardware oracle, CPUID declaration of PSE-36 and of the other bits (PAE itself is declared since S2-58, `WINDOWS_LEAF1_EDX`; S2-57 declares nothing here). The accessed bit of an entry stays set when a later entry of the same walk faults
+(the walk's rule, S2-25i); `od-isa` sets A/D only after a whole walk, so the images are compared only on successful accesses.
+
+## S2-25m — 32-bit paging walk in od-machine (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.3 (32-bit paging, from p. 5-9; Tables 5-3..5-6 on pp. 5-12–5-13, as cited in
+S2-25h), §5.6 access rights, §5.7 and Figure 5-12 (page-fault error code), §5.8 accessed and dirty flags. Text only: no hardware
+oracle; the page references are those of S2-25h and were not re-read for this slice.
+
+| Item | Rule implemented |
+|---|---|
+| Snapshot | `Pg32ProbeConfig::new(cr0, cr3, cr4, efer, pse36)`: `CR0.PE`, `PG`, `ET` set; `CR4.PAE`, `EFER.LME`, `EFER.LMA` clear; `CR3` a 32-bit value (11:0 ignored); `CR4.SMEP` not allowed; `from_protected_cpu` takes the registers and the PSE-36 switch of a `ProtectedCpu` |
+| Walk | PDE at `CR3[31:12] + 4 * linear[31:22]`; `P = 0` is not present at either level; with `CR4.PSE = 1` and `PDE.PS = 1` a 4 MiB page (frame 31:22, offset 21:0), otherwise PTE at `PDE[31:12] + 4 * linear[21:12]`, 4 KiB page; with `PSE = 0` `PS` is ignored and no bit is reserved |
+| Reserved bits | 4 MiB PDE: 21:13 (without the PSE-36 switch), 21:17 (with it, 16:13 are physical-address bits 35:32); #PF with P and RSVD (error code 9 / 11), before the accessed bit is set || PAT (limit) | as in S2-25g: SDM §5.4.2 reserves PTE bit 7 and bit 12 of a 4 MiB PDE when PAT is not supported (the Windows profile does not declare PAT); the model treats PAT as supported (S2-25h), so these bits are never refused by the 32-bit walk (`bits_21_to_13_of_a_4m_pde_are_reserved_and_bit_12_is_the_pat_bit`); CPUID PAT is not declared (S2-57) |
+
+| Rights | as S2-25h/PAE: CPL 3 needs U/S in the PDE and the PTE; a write needs R/W in both (4 MiB: the PDE) with `CR0.WP = 1` or at CPL 3; no XD (`EFER.NXE` inert); error code P, W/R, U/S, RSVD, never I/D; `CR2` = the linear address |
+| A/D | A of the PDE and the PTE when the walk reaches them (also on a later fault), D of the leaf of a write (the PDE of a 4 MiB page); each one compare-and-replace of the 8-byte cell around the entry (`compare_replace_entry32`, the other dword carried over); the committed range is the 8-byte cell; the read-only forms write nothing |
+| Physical address | 32 bits, 36 with the PSE-36 switch and a 4 MiB page; not truncated: the memory map decides (RAM, MMIO, framebuffer; a hole or ROM write is `OperandPhysical`). `od-isa` reports `PhysicalBeyond4GiB` for such a page |
+| Operand access | `access_pg32_ram` / `access_pg32_with_mmio` with the order of effects of S2-25k (shared `access_operand_with_walk`; the dirty bit goes through the entry writer of the mode); `PaeOperandOperation` and the `Pg32AccessRequest { instruction_rip, linear, context, operation }` |
+| Board | `LoadedFirmwareBoard::pg32_paging_of`, `fetch_vcpu_view_pg32` (read-only), `pg32_operand_access` and `MachineBus::access_tracked_pg32` for a vCPU whose legacy model is on 32-bit paging; the PAE and 4-level paths are not selected by them. No production caller (as the PAE views) |
+
+Tests: `page_walk/pg32/tests.rs` (14: configuration, a model snapshot, 4 KiB and 4 MiB A/D into low and high dwords of a cell, PSE = 0
+and PS, reserved bits 13..21 and PAT, PSE-36 address bits and reserved 17..21, not-present error codes, WP/U/S matrix with error
+codes 3, 5, 7, the refused write, the entry writer, the differential below, read-only parity), the differential
+`the_od_machine_walk_and_the_od_isa_walk_agree_on_random_tables` (400 sets x 8 configurations x 5 addresses x 3 kinds = 48 000
+walks: 21 498 mapped, 7 816 of them 4 MiB, 3 112 above 4 GiB; 11 172 not present; 3 942 reserved; 2 352 write-protected; 9 036 table
+outside the memory map; tables compared after every mapped walk), `page_walk/pg32/operand_tests.rs` (11: order and ranges of the
+writes, widths, 4 MiB D, PSE-36 above 4 GiB, MMIO dispatch, refusals, ROM and holes, error codes, WP clear, write-intent read,
+`CrossesPage`) and 3 in `ap_legacy_exec.rs` (an AP the trampoline put on 32-bit paging with PSE: the model state, the fetch view with no
+A/D written, the operand access with the Local APIC window and #PF codes). The operand tests found that the dirty commit used the 8-byte
+entry writer (fixed: it is a parameter of `access_operand_with_walk`). Not covered: `CR4.SMEP` in od-machine, a 32-bit instruction
+interpreter on the board view, a page-crossing operand, locked operations, the set loop and host/JIT paths, hardware oracle, CPUID
+declaration (S2-57/S2-58).
+
+## S2-25n — exact PAE refusal of the long-mode entries and the board PAE adapter (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 "Five Paging Modes" (the paging modes are selected by CR0.PG, CR4.PAE and IA32_EFER.LME; PAE
+paging is CR0.PG = 1, CR4.PAE = 1, LME = 0) and §5.4.2 (PAE translation), as in S2-25g/S2-25k/S2-25l. Text only: no hardware oracle
+(a user-space process on the Oracle machine cannot enable PAE paging), no oracle counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Executor on the PAE adapter | **none exists.** The only 32-bit protected-mode executor is `ProtectedCpu`, a closed trampoline profile over `RealModeMemory` (it walks its own data with `translate_pae`); no decoder of 32-bit instructions runs over `GuestMemory`. The host loop, the JIT entries, the probe and the CPL0 set loop decode and execute Long64 code over a four-level `Long64ProbeConfig`, so a protected-mode PAE vCPU is **not executed** by them whichever walk served its memory. |
+| Exact reason | `Long64ProbeConfig::new` (and so `from_cpu_state`, which every four-level entry calls: probe, shared probe, CPL0 set loop, host loop, JIT sessions, exception delivery, NMI delivery) returns `ProbeConfigError::PaeProtectedMode { cr0, cr4, efer }` for CR0.PE = PG = 1, CR4.PAE = 1 and EFER.LME = LMA = 0, in place of the `RequiredBits { EFER, LME \| LMA }` of S2-25l (which read as a missing bit). LME alone, LMA alone and the long-mode states are unchanged (`RequiredBits` / accepted). The refusal is before any fetch, walk, accessed bit, native block or retirement, as before; the state, RAM and the write list are untouched. |
+| Operand path | `LoadedFirmwareBoard::pae_memory_adapter(cpu, instruction_rip, committed_write)`: the `PagedPaeMemoryAdapter` over the whole bus (`over_machine`) for a vCPU whose legacy model is a protected-mode one on PAE paging (the snapshot is the model's own registers and PDPTE registers); an error text for a missing vCPU, real mode, a vCPU without a legacy model (the BSP, a long-mode vCPU) or a model not on PAE paging. An MMIO operand reaches the bound device as an access of that vCPU with the dirty bit set first: the dispatch of `pae_operand_access`. No production caller until a 32-bit executor exists (like `pae_operand_access`). |
+| Not changed | the Long64 path (`PagedMovMemoryAdapter`, the 4-level walk and its profiles), the adapter itself, the PAE walk, every locked / vector / descriptor refusal of S2-25l. |
+
+Tests: `od-machine` `ap_legacy_exec::tests::the_board_pae_memory_adapter_equals_the_board_operand_access_on_identical_tables`: two boards with
+identical PAE tables, the same ten dword operands (RAM store and load, Local APIC ID read, TPR write and read back, a store and a load of a 36-bit page no region covers, a store to a not-present PDPTE
+(`#PF`, error code 2 by the case) and a CPL 3 load of a supervisor page (`#PF`, error code 5 by the case), a second RAM store); per step the result
+(the read value, the write, the `#PF` error code, CR2 and the EIP of the record, or the physical address of the refused operand), the committed writes in
+order and the bytes of the page directory, page table and marker RAM page are equal (the device state is not compared: the Local APIC is checked by the
+TPR read back); the `#PF` codes 2 and 5 are not asserted literally, the adapter equals the board access. A dword that crosses from a RAM page into the
+Local APIC page is a typed refusal for a load (the MMIO byte, `OperandPhysical`) and for a store (the walk of the crossing page, `DeviceUnavailable`),
+both at the APIC base; after either the committed writes are empty, the RAM bytes before the boundary and the table bytes are unchanged (the store
+refuses before the first byte is written). The S2-25l tests (`paged_pae_adapter`
+probe, shared probe and CPL0 set loop; `od-host` `s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`) and `page_walk` expect `PaeProtectedMode`.
+The adapter against `ProtectedCpu` on identical tables is the existing S2-25l differential (31 scenarios, unchanged).
+
+## S2-25o — 32-bit step over GuestMemory on PAE paging, and the host loop's PAE path (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 (paging modes: CR0.PG = 1, CR4.PAE = 1, LME = 0 is PAE paging), §5.4.1 (PDPTE loading, reserved bits), §5.4.2 (PAE translation),
+§5.7 (page-fault error code), as in S2-25g..S2-25n; instruction semantics are those of `ProtectedCpu` (S6-14k..S6-14n, S2-25..S2-25k). Text only: no hardware oracle, no oracle
+counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Decoder and semantics | `ProtectedCpu`'s own; not rewritten. `RealModeMemory` gains four defaulted methods (`walks_linear` false, `fetch_u8` = `read_u8`, `read_u32_linear`, `write_u32_linear` bytewise): every existing memory behaves as before. `ProtectedCpu::step_admitting(mem, admit)` shows the decoded instruction to `admit` before any walk, read or write (`InstructionNotAdmitted { eip, instruction, length }`); `step` = `step_admitting` admitting all. |
+| Linear view | With `walks_linear` the model does not walk (`physical` returns the linear address, no `Touch` list): instruction bytes are the adapter's `fetch`, a DS DWORD is one adapter read or write (one 4-byte device access; a crossing operand is the adapter's rule). The segment base, limit and read-only checks stay the model's. |
+| Step | `step_pae_protected(cpu, memory)`: the model is a PAE one (`CR0.PE`, `CR0.PG`, `CR4.PAE`, LMA = 0) else `NotPaePaging`; a copy is stepped and replaces the model only on retirement. `Retired`, `Fault(#PF)`, `Stopped(Uncovered \| Refused \| Memory \| State \| NotPaePaging \| Virtual8086)`. `EFLAGS.VM` = 1 (virtual-8086, SDM Vol. 3A §20.2) is `Virtual8086 { eflags }`, refused before any fetch: the model is a flat CPL 0 vCPU. The `#PF` record that `pae_step` and `run_pae_state_step` return next to the outcome is the adapter's last `#PF` of the step; it is architectural only with `Fault`, and with a `Stopped` outcome it can be the record of a faulted lookahead byte (no guest fault). |
+| Covered set (`pae_covers`) | `ADD ESP, imm32`, `BT m32, imm8`, `JAE/JNE/JE rel8`, `MOV EAX, moffs32`, `MOV EDX, m32`, `MOV moffs32, EAX`, `CMP EAX\|EDX, m32`, `RDMSR`, `WRMSR`, `WBINVD`, `MOV EAX\|ECX, imm32`. |
+| Not covered (named) | `MOV Sreg, EDX`, `JMP ptr16:32` (descriptor-table reads: refused by the adapter, S2-25l), `MOV CR0\|CR3\|CR4, EAX` (PDPTEs are reloaded from physical memory and the paging the adapter was built from changes), `JMP [rip+disp32]` (64-bit mode). |
+| Board | `LoadedFirmwareBoard::pae_step(cpu, committed_write)` over `pae_memory_adapter` (whole bus, MMIO as accesses of the vCPU). |
+| State step | `run_pae_state_step`: the model from a `LongModeState` (`EAX..EDI` = low halves of `gpr[0..8]`, `EIP` = `rip` below 4 GiB, `EFLAGS` = low half; CR0/CR3/CR4 32-bit, `state.cr3` must equal the call's; CPL 0 from the CS selector RPL; CS/DS caches or flat; PDPTEs loaded from CR3 now, reserved bit / unreadable = refusal); `WRMSR` is not covered (EFER is the caller's); on retirement the state takes the low halves and `rip` (high halves kept). |
+| Host loop | A PAE protected-mode state on the exclusive bus: one step per iteration as the interpreter's retirement (budget, `consecutive_faults`), `GuestFault` with the adapter's record on `#PF`, `PagedHostLoopExit::PaeProtected(stop)` otherwise; nothing to the JIT or the Long64 interpreter. Shared and CPL0-set buses keep the S2-25n refusal in its exact order: a failed register check of the four-level configuration (a CR0/CR4/EFER mask, `CR0.ET` clear: `Cr0EtRequired`, ...) is named first, and `ProbeConfigError::PaeProtectedMode` is the reason only for registers that pass them (the exclusive bus gives the same reason through `State(Paging(Config(..)))`). The four-level probes, shared probe and CPL0 set loop are unchanged (they refuse as in S2-25n). |
+| Differences from `ProtectedCpu` over physical memory | by design, each pinned by its own test: the adapter keeps the accessed bit of the leaf of a faulting walk (the model none); lookahead bytes of an unsupported-form refusal are fetched through the adapter (their accessed bits, also of the entries of the walk, are set where the model's refusal changes no bit; a `#PF` on a lookahead byte is a record only); a DWORD wrapping past 4 GiB is a memory refusal (`Memory(Backend)`, a load and a store; the operand ending at 4 GiB - 1 is translated); an MMIO operand reaches its device (the model refuses non-RAM). The lockstep leaves at an `Unsupported` before it compares RAM, so the lookahead difference and the 4 GiB rule are separate tests, not part of the lockstep. |
+
+Tests (run): `od-machine` `pae_protected_step` (13): lockstep of 20 instructions (state and RAM image after each), 9 `#PF` cases with literal SDM error codes (0, 3, 0x10, 0x11, 9) and CR2,
+6 refusals equal to the model's, 5 uncovered forms named, non-PAE models refused before any fetch, an MMIO operand as one 4-byte access of a counting device (2 accesses for load and store), the state
+step against the model with kept high halves and the `WRMSR` stop, 6 state refusals, the leaf accessed-bit difference, the lookahead accessed bits of an `Unsupported` (PD[0], PT[5], PT[6] set by the step, none by the model), a `#PF` on a lookahead byte (record only, the refusal stands), a DWORD past 4 GiB (load and store: `Memory(Backend)`; one dword lower: `#PF`), `EFLAGS.VM` = 1 refused before any fetch; `ap_legacy_exec::tests::the_board_pae_step_runs_covered_instructions_with_mmio_and_leaves_the_model_on_a_stop` (Local APIC ID read as MMIO, store with dirty bit and write list, `#PF`, an operand outside the map, `MOV CR3`);
+`od-isa` `tests/s2_25o_linear_memory.rs` (4) and `protected_exec` (163); `od-host` `s2_25` (8: the loop to the first uncovered instruction, budget and resume, `#PF` as `GuestFault`, `WRMSR`/unsupported/CPL 3 refusals, the shared bus, `CR0.ET` = 0 on either bus, `EFLAGS.VM` = 1). No oracle counters (PAE paging cannot be enabled from a user-space process).
+Not done: see S2-25o in the stage plan.
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
@@ -27078,6 +27657,28 @@ CR0 = `0x80050033`, CR4 = `0xb0`, CR3 = `0x3a44000`, EFER walker'а `0xd00`, г�
 
 **Открыто.** (1) Следующая граница — `0F 20 DF` (`MOV RDI, CR3`) в `swapgs_restore_regs_and_return_to_usermode+0x89`: набор исполняет чтение CR3 только в RAX (`ReadCr3`) и в произвольный регистр для CR2/CR4 (`ReadCr2Into`/`ReadCr4Into`); решение о срезе не принималось. Дальше по тому же участку ожидаются `MOV CR3, RDI`/`RAX` с PCID-битами, `SWAPGS`, `IRETQ`/`SYSRETQ` (по `objdump`, не проверялось). (2) Селекторы FCS/FDS после `FXRSTOR64` остаются прежними; по SDM (по памяти) форма с `REX.W` их не загружает, поведение железа не сверено; для Linux безвредно (селекторы 0). (3) Коды исключений при CR0.EM и CR0.TS — `#NM` по памяти SDM, первоисточник не сверён. (4) Все утверждения о проверках `#GP` и раскладке образа — по памяти SDM, первоисточник не сверялся. (5) Релизная сборка диагностики собрана до заключительной правки заимствования ячейки; диагностический прогон не пересобирался (код-поведение то же, тесты на финальном коде зелёные).
 
+### SSE-состояние члена `fp_state` в `LongModeState.sse` (S2-39m)
+
+Вход набора CPL0 с `with_fp_state` после допуска кладёт SSE-половину ячейки `GuestFpState` (XMM0-15, MXCSR) в `LongModeState.sse`, а на каждом выходе возвращает её в ячейку; вне прогона `state.sse` равно `None`, `state.x87` всегда `None` (x87-половина, `FNINIT`, `FWAIT`, селекторы остаются в ячейке). `FXSAVE64`/`FXRSTOR64` члена, список XMM на CPL3 и список скалярного FP на CPL3 работают на `state.sse`. На CPL0 под членом общее SSE-ядро S2-34/37/38/54/55 исполняется как в голом прогоне: те же регистры, MXCSR, RFLAGS, память и исход, гейты CR0.EM/TS и CR4.OSFXSR (`#UD`/`#NM`), `#XM`/`#UD` по CR4.OSXMMEXCPT. Остаются отказами: общие формы на CPL3, узкие целочисленные формы SSE2 (PSHUFD, PUNPCK*, PAND), формы MMX, LDMXCSR/STMXCSR, арифметика x87. Там же остаются отказами (простой `step` их исполняет, пара CR0/CR4 FP-init отказывает, набор следует паре): регистровые формы (mod = 3) сырых 128-битных пересылок MOVUPS, MOVUPD, MOVAPS и MOVAPD (`[66] 0F 10`, `11`, `28`, `29`, например MOVAPS xmm1,xmm2 `0F 28 /r`) и загрузки MOVDQA (`66 0F 6F /r`), а также MOVSS/MOVSD (`F3`/`F2 0F 10`, `11`) во всех формах (регистр-регистр, загрузка, запись); их формы с памятью и остальные формы S2-34 исполняются. Набор без `with_fp_state` не меняется. «Результат голого прогона» как эталон: для форм, исполняемых в наборе, он равен и результату простого `step`, и результату пары CR0/CR4 FP-init; для перечисленных отказов эталон — только прогон через пару (`Unsupported`), не `step`. Тесты: `crates/od-isa/tests/s2_39_cpl0_sse.rs`; [отчёт](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse).
+
+Интерпретатор не гейтит по CPUID: профиль `X8664V1Stage4A` объявляет только FPU, TSC и FXSR, но формы SSE/SSE2/SSE3/SSSE3/SSE4.1 на CPL0 в наборе исполняются (см. комментарий о CPUID-гейте у CMPXCHG8B в `crates/od-isa/src/execute.rs` около строки 50946 и комментарии «CPUID.SSE… gate is not modelled» у форм SSE (около строк 69806, 69892, 70171, 70559); объявление битов — S2-57). Семантика #UD/#NM/#XM и выбора по CR4.OSXMMEXCPT — по Intel SDM Rev. 093: Vol. 1 §11.5.1 и §11.5.3.2 (Handling Unmasked Exceptions); Vol. 3A §2.5 (Control Registers, Table 2-2) и статьи `Event 6` (#UD), `Event 7` (#NM), `Event 19` (#XM) Vol. 3A, глава 7; классы исключений команд — Vol. 2A §2.5 (Intel AVX and Intel SSE Instruction Exception Classification). #UD при CR4.OSFXSR = 0, приоритет #UD над #NM и порядок гейтов до проверки адреса операнда — по памяти, не сверено с PDF.
+
+### Узкие формы SSE, MOVSS/MOVSD и LDMXCSR/STMXCSR члена `fp_state` (S2-39n)
+
+> **Superseded по приоритету main (merge 56c60c9) в части LDMXCSR.** Формы `LDMXCSR` этого блока (любая адресация, REX, `#UD` по CR0.EM/CR4.OSFXSR, маска `0xFFFF`) заменены S7-31i: декодер возвращает `Operation::LdmxcsrMemory` (только без префиксов), исполняет `step_cpl0_fp` на `state.sse` (в том числе в наборе CPL3, с отказом `Unsupported` на невыровненном операнде при AC); CR0.EM = 1 или CR4.OSFXSR = 0 — `Unsupported`, CR0.TS = 1 — `#NM`, бит вне `0xFFBF` (в том числе DAZ) — `#GP(0)`. Формы с REX/`67`/сегментным префиксом — `Unsupported`. `STMXCSR` и остальные формы блока не менялись. ISSUE-680.
+
+Поверх S2-39m член `fp_state` набора CPL0 исполняет на `LongModeState.sse`: регистровые формы MOVUPS/MOVUPD/MOVAPS/MOVAPD и MOVDQA (load), MOVSS/MOVSD в тех формах, что возвращает декодер, целочисленные формы SSE2 на регистрах XMM (исполнители простого `step`), девять форм обработчика `step_cpl3_xmm` (MOVD/MOVQ в XMM, MOVQ в память, PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS load, PCMPEQB m128; PMINUB m128 — только в форме, которую вернёт декодер) и новые `LDMXCSR`/`STMXCSR` (`[REX] 0F AE /2`, `/3`, m32, любая адресация; без `66`/`F2`/`F3`/LOCK и REX.W, mod != 11 отказ; FS/GS-префикс на памяти отказ). Гейты те же: `#UD` при CR0.EM = 1 или CR4.OSFXSR = 0, затем `#NM` при CR0.TS = 1, до любого доступа к операнду. `LDMXCSR` читает dword, затем при любом бите вне `TARGET_FXSAVE_MXCSR_MASK` (`0xFFBF`, как `FXRSTOR64`) даёт `#GP(0)` без изменений; выравнивание не проверяется; сброс бита маски при поднятом флаге исключения не поднимает ничего сразу. `STMXCSR` пишет MXCSR. Бит DAZ (MXCSR бит 6) — политика цели: оракул (Intel Core i5-3210M) исполняет `LDMXCSR` с ним, набор даёт `#GP(0)`. Оракул: 5467 случаев, 4642 побайтно равны, 785 отказов модели (формы перечислены в блоке S2-39n плана), 40 расхождений политики DAZ, 0 прочих. CPUID не гейтится, биты не объявляются (S2-57). Родитель S2-39 открыт. Побочное изменение вне набора: формы `0F AE /2` и `/3` с памятью теперь декодируются везде (простой `step`, набор CPL3), декодер дочитывает SIB и смещение до отказа `Unsupported`; на кодировке, обрезанной на границе памяти, простой `step` и набор CPL3 теперь возвращают ошибку выборки вместо `Unsupported`, полная кодировка по-прежнему даёт `Unsupported` (opcode `0xae`).
+
+### MMX-формы в голом прогоне и на CPL0 набора (S2-39o)
+
+MMn — младшие 64 бита физического регистра x87 Rn. Формы `NP 0F xx` (двухоперандные целочисленные PADD/PSUB в том числе с насыщением, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PMULLW/PMULHW/PMADDWD, PUNPCK*, PACK*, сдвиги PSLL/PSRL/PSRA со счётчиком из MMs/m64 или imm8 `0F 71/72/73`, PSHUFW, MOVD/MOVQ `0F 6E`/`7E`/`6F`/`7F`) исполняются на `LongModeState.x87` с воротами S2-33: CR0.EM — `#UD`, CR0.TS — `#NM`, ожидающее немаскированное исключение x87 — `#MF` (CR4.OSFXSR не условие), до любого изменения состояния; источник из памяти читается (приёмник в память пишется) до изменения состояния; после успеха TOP = 0, все теги valid, записанный MMX-регистр получает биты 79:64 = 1 (регистр-источник и только читаемый регистр — нет). В наборе CPL0 с членом `fp_state` половина x87 ячейки на время одной MMX-инструкции переносится в `state.x87` и возвращается (также EMMS и SSSE3-формы MMX); `state.x87` между инструкциями `None`, x87-формы по-прежнему отказ. Отказ (`Unsupported`, состояние не меняется): MMX на CPL3 набора, MMX-преобразования CVTPI2PS/PD и CVT[T]PS2PI/PD2PI (ISSUE-662 не тронут), префиксы `F2`/`F3`/FS/GS/повторные у MMX-форм; LOCK — `#UD`; память в формах сдвига и невыделенные поля reg групп `0F 71/72/73` — `#UD`. Не входят: MMX-формы расширений SSE2 (PADDQ, PSUBQ, PMULUDQ, PSADBW, PAVG*, PMAX*, PMIN*, PMULHUW, PEXTRW, PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ, MOVDQ2Q, MOVQ2DQ), JIT, гейт CPUID (S2-57). Проверено по oracle Mac mini (18964 случая, 18644 совпали, 320 расхождений — 266 отказов модели, 42 `AddressOverflow` проверки доступа (неканонический диапазон адреса) и 12 артефактов стенда, см. отчёт S2-39o). Родитель S2-39 открыт.
+
+### DAZ в MXCSR_MASK цели (S2-39p)
+
+> **Superseded по приоритету main (merge 56c60c9).** Решение владельца «приоритет main» при слиянии main в stage8 (merge-коммит 56c60c9): маска `TARGET_FXSAVE_MXCSR_MASK` возвращена к `0x0000FFBF` (S7-31i, DAZ не поддерживается), `LDMXCSR` с памятью исполняется только S7-31i `Operation::LdmxcsrMemory` (`#GP(0)` на DAZ, CR0.EM/CR4.OSFXSR = 0 — `Unsupported`, без префиксов REX/66/67/сегмент). Расхождение с оракулом (Intel Core i5-3210M принимает DAZ, S2-39p) записано открытым вопросом владельцу: [ISSUE-680](../KNOWN_ISSUES.md). Текст ниже — история решения ADR-0014; действующая маска `0x0000FFBF`.
+
+Решение [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md): `TARGET_FXSAVE_MXCSR_MASK = 0x0000FFFF`. Образ FXSAVE/FXSAVE64 содержит MXCSR_MASK `0xFFFF`. LDMXCSR и FXRSTOR64 дают `#GP(0)` только при битах 31:16; DAZ (бит 6) загружается, и общее ядро `sse_fp` исполняет его по семантике S2-37. Это заменяет `0xFFBF` и «политику DAZ» в блоках S2-39a…S2-39n и S4-38L9E выше. Не меняются маски допуска узких профилей schema-v2 (`0xffbf`, DAZ/FTZ сброшены — отказ профиля, не `#GP`) и метаданное `diagnostic_mxcsr_mask`. Физическая проверка (Intel Core i5-3210M): FXSAVE64 даёт MXCSR_MASK `0xFFFF`; LDMXCSR `0x40`/`0x1FC0`/`0x9FC0`/`0xFFFF` и FXRSTOR64 с `0x1FC0` исполняются; `0x10000` и `0x80001F80` дают `#GP`. 40 случаев DAZ oracle S2-39n: на железе `ok`, `mx` = загруженному значению; модель теперь даёт то же. SDM Vol. 1 §10.2.3.4 (с. 10-5), §11.6.3 (с. 11-20), §11.6.6 (с. 11-21); Vol. 2A FXRSTOR (с. 3-410), FXSAVE (с. 3-414), LDMXCSR (с. 3-539). Биты CPUID не объявляются (S2-57). Родитель S2-39 открыт.
+
 ### MOV r64, CR3 (`[REX] 0F 20 /3`, регистровая форма) в произвольный регистр в наборе CPL0 (S4-38L9F, mov-cr3)
 
 **Основание.** Граница S4-38L9E — `Unsupported { opcode: 32 }` (`0x20`) на RIP `0xffffffff810011f9` (GPA `0x10011f9`), байты `0f 20 df eb 32 48 89 f8 …` = `movq %cr3, %rdi` (`0F 20 /r`, mod = 11, reg = 3 (CR3), rm = RDI), функция `swapgs_restore_regs_and_return_to_usermode+0x89` (символ `0xffffffff81001170`). Набор CPL0 читал CR3 только в RAX (`Operation::ReadCr3`, точные формы `0F 20 D8` и `48 0F 20 D8`); чтение CR2/CR4 в произвольный регистр (`ReadCr2Into`/`ReadCr4Into`) уже было.
@@ -27391,6 +27992,8 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 ### SYSCALL из CPL3 через STAR, LSTAR, SYSCALL_MASK и EFER.SCE (S4-39e)
 
+> Обновлено срезом [S2-27m](#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set): семантика сверена с Intel SDM Rev. 093 (а не по памяти); ниже уточнены только отказы, которые S2-27m заменил на #UD/#GP или исполнение (SYSCALL на CPL0, SYSRET на CPL3 и SYSRETL, LOCK, LMA/CS.L, VM в R11).
+
 **Основание.** Декомпозиция S4-39 (`docs/plans/STAGE_4.md`): после S4-39d под `--user-mode` прогон Linux на stage4a доходил до первого `syscall` в `/init` (RIP `0x4000c1`, байты `0f 05`) и останавливался как `user_mode_unsupported` (`Unsupported { opcode: 5 }`): форма стояла вне белого списка CPL3 (S4-39a), а декодер не называл её. Срез добавляет исполнение `SYSCALL` из CPL3 по ячейкам MSR набора (STAR, LSTAR, SYSCALL_MASK, EFER). Старый диагностический профиль `crates/od-isa/src/syscall.rs` (четыре формы, прежние STAR/FMASK/CR4) не подходит реальному ядру (STAR user base `0x23`, FMASK `0x257fd5`, CR4 `0x6b0`) и не переиспользовался и не менялся.
 
 **Что добавлено.**
@@ -27408,7 +28011,7 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 **EFER.SCE.** `SYSCALL` читает ячейку EFER набора (`with_msr_efer_write`), а не константу профиля `EferReadOnlyV1` (у которой SCE сброшен, `0xd00`): ядро Linux выставляет SCE через `WRMSR` (`guest_efer` = `0xd01` в диагностике), запись EFER набором допускает смену только SCE (S4-38L7f). Тест `an_msr_profile_does_not_change_the_instruction`.
 
-**Отказы.** Без члена (CPL3: остановка белого списка `Unsupported 0x05`, retired 0; CPL0: `Unsupported 0x05`); член без ячейки — `SyscallCellsMissing` при допуске; REX, REX.W, `66`, `67`, `F0`, `F2`, `F3`, `64`, `2e` — `Unsupported 0x05`; SCE = 0 — `#UD` (остановка `Fault`, доставка `#UD` из CPL3 в гостя не моделируется); неканонический LSTAR, RPL в STAR, TF — `Unsupported 0x05`; соседние формы `0F 07`, `48 0F 07`, `0F 34`, `0F 35`, `0F 06`, `0F 08` остаются отказами с прежним кодом.
+**Отказы.** Без члена (CPL3: остановка белого списка `Unsupported 0x05`, retired 0; CPL0: `Unsupported 0x05`); член без ячейки — `SyscallCellsMissing` при допуске; REX, REX.W, `66`, `67`, `F0`, `F2`, `F3`, `64`, `2e` — `Unsupported 0x05` [обновлено S2-27m: `F0 0F 05` теперь #UD (`Fault` вектор 6) из декодера, для любого набора, в том числе без члена; остальные префиксы без изменений]; SCE = 0 — `#UD` (остановка `Fault`, доставка `#UD` из CPL3 в гостя не моделируется); неканонический LSTAR, RPL в STAR, TF — `Unsupported 0x05`; соседние формы `0F 07`, `48 0F 07`, `0F 34`, `0F 35`, `0F 06`, `0F 08` остаются отказами с прежним кодом [обновлено S2-27m: `0F 07` и `48 0F 07` больше не отказы, а `SYSRETL` и `SYSRETQ` (см. S4-39f и S2-27m); `0F 34`, `0F 35`, `0F 06`, `0F 08` без изменений].
 
 **Проверено.** `crates/od-isa/tests/cpl3_syscall.rs` (новый, 18 тестов): исполнение из CPL3 (RCX = RIP + 2, R11 = RFLAGS, RFLAGS по FMASK ядра с RF и битом вне маски, IF сброшен, `rflags_defined`, CS `0x10`/SS `0x18` и оба кеша, `ss_unusable`, RIP = LSTAR, RSP и остальные регистры не менялись, память не трогалась, ячейки не менялись); определённость флагов при узкой маске; FMASK 32-битный и бит 1 неизменен; селекторы по другому STAR (`0x38` и `0x40`); SCE = 0 (`0xd00`, `0x500`, `0`) — `#UD` без мутации; неканонический LSTAR (две формы), RPL в STAR, TF — `Unsupported`, без мутации; канонический LSTAR нижней половины; набор с ячейками без члена и пустой набор — остановка белого списка; член без каждой из четырёх ячеек — `SyscallCellsMissing` (входы CPL3 и CPL0); SYSCALL в CPL0 с членом — прежний отказ; вход CPL0 отказывает состоянию Ring3; девять префиксованных форм; соседние формы; обрыв выборки второго байта; `mov eax, 0x53; syscall` в одном прогоне; декодер (`0F 05` — `Operation::Syscall`, длина 2; REX/REX.W/`66`/`F0`/`F2` — `Unsupported`); профиль MSR не подменяет ячейку EFER. `od-machine --lib` (+3): `user_mode_facade_syscall_enters_the_kernel_at_lstar_and_recomputes_the_cpl` (`IRETQ`, `mov`, `syscall` в CPL3, две `nop` ядра по LSTAR через вход CPL0: `cpl` 0, retired 5, `cpl3_retired` 2, RCX, R11, RSP пользователя, CS/SS, RFLAGS, `set_members` оканчивается `user_mode`, `syscall`), `user_mode_facade_syscall_with_sce_clear_is_a_ud_stop_in_cpl3` (`user_mode_fault`, `vector: 6`, `cpl` 3, CS не менялся), `user_mode_facade_syscall_member_needs_the_four_cells` (набор `minimal()` без ячеек — `user_mode_unsupported`, члена `syscall` нет). Единственная правка существующего теста: в `od-runner` (`tools/runner/src/linux_direct.rs`, `user_mode_runs_the_board_into_cpl3_and_the_record_says_so`) последний член `set_members` теперь `syscall` с `user_mode` перед ним (стенд stage4a содержит четыре члена; запись-отказ в исполнение не превращалась). Существующие отказные тесты (`0F 05` в `cpl0_profile_set.rs`, `cpl3_profile_set.rs`, `user_mode_commit.rs`, `od-testkit`, `native_v2`, `native_litmus`) не менялись и зелёные.
 
@@ -27428,19 +28031,21 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 ### SYSRETQ из ядра в CPL3, журнал системных вызовов, выход из цикла CPL3 при смене CPL (S4-39f)
 
+> Обновлено срезом [S2-27m](#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set): семантика сверена с Intel SDM Rev. 093 (а не по памяти; формулировки «по памяти SDM» и «текста SDM в репозитории нет» ниже устарели). Ниже в тексте S4-39f пометкой «[Обновлено S2-27m]» отмечены утверждения, которые срез заменил: голый `0F 07` (теперь `SYSRETL`), R11 с VM (теперь сбрасывается, не отказ), SYSRET на CPL3 (теперь #GP(0)), `F0` (теперь #UD), порядок проверок (#UD по LMA/CS.L/SCE до всех остальных).
+
 **Основание.** Декомпозиция S4-39 (`docs/plans/STAGE_4.md`): после S4-39e `SYSCALL` из CPL3 входит в ядро (`entry_SYSCALL_64`); возврат ядра в CPL3 — `SYSRETQ` (`48 0F 07`) — не декодировался и не исполнялся. Срез добавляет его, журнал системных вызовов в стоп-записи и закрывает ISSUE-087 (цикл `run_with_cpl3_profile_set` не останавливался после смены CPL).
 
 **Что добавлено.**
-- `crates/od-isa/src/long_decode.rs`: `Operation::Sysret`. Декодируется ровно `48 0F 07` (REX = `0x48` без других префиксов, длина 3, размер операнда Qword). Голый `0F 07` (32-битный `SYSRETL`), `40`/`49 0F 07`, `66`/`67`/`F0`/`F2`/`F3`/сегментные префиксы остаются прежним `DecodeError::Unsupported` (опкод `0x07`).
+- `crates/od-isa/src/long_decode.rs`: `Operation::Sysret`. Декодируется ровно `48 0F 07` (REX = `0x48` без других префиксов, длина 3, размер операнда Qword). Голый `0F 07` (32-битный `SYSRETL`), `40`/`49 0F 07`, `66`/`67`/`F0`/`F2`/`F3`/сегментные префиксы остаются прежним `DecodeError::Unsupported` (опкод `0x07`). [Обновлено S2-27m: голый `0F 07` теперь декодируется как `Operation::Sysret` с размером операнда Dword (длина 2, `SYSRETL`), `F0 0F 07` и `F0 48 0F 07` дают #UD (`DecodeError::Invalid`); `40`/`49 0F 07`, `66`/`67`/`F2`/`F3` и сегментные префиксы остаются `Unsupported`.]
 - `crates/od-isa/src/execute.rs`: шаг `execute_sysret` (вызывается из `step_configured` сразу после ветки `SYSCALL`); исправление цикла `run_with_cpl3_profile_set` (ISSUE-087). Новых членов набора нет: `SYSRETQ` исполняется под тем же членом `with_syscall()` и теми же четырьмя ячейками (EFER, STAR, LSTAR, SYSCALL_MASK), что и `SYSCALL`. Обоснование: это вторая половина одного механизма (STAR[63:48] — база пользовательских селекторов, нужная только ему), отдельный член означал бы набор, где ядро входит, но не может вернуться; `with_user_mode()` относится к `IRETQ` и к циклу платы, а `SYSRETQ` его не требует. Член `with_syscall()` сам по себе не открывает CPL3: допуск формы остаётся прежним (CPL0).
 - `crates/od-machine/src/linux_direct.rs`, `firmware_board.rs`, `paged_memory_adapter.rs`, `lib.rs`: журнал системных вызовов (см. ниже). `firmware_board.rs` и `paged_memory_adapter.rs` менялись минимально и необходимо: журнал пишется в цикле платы (там известно, какая инструкция ушла из CPL3 или вернулась в него) и переносится из отчёта прохода в `LinuxSetRunReport` и стоп-запись. `lib.rs` — публичный экспорт `SYSCALL_JOURNAL_CAPACITY`, `SyscallJournal`, `SyscallJournalEntry`.
 - `tools/runner/src/linux_direct.rs`: ключ `stop.syscall_journal` (только под `--user-mode`).
 
 **Семантика `SYSRETQ` (по памяти SDM; текста SDM в репозитории нет, сверить при появлении первоисточника).** При EFER.SCE = 0 — `#UD` (`Fault` вектор 6, как у `SYSCALL`). Неканонический RCX — `#GP(0)` (`Fault`, вектор 13, код 0; по Intel SDM, по памяти), без мутации. Иначе: RIP ← RCX (RIP + 3 не применяется); RFLAGS ← (R11 and `POPFQ_CPL0_FLAGS`) or 2; CS ← (STAR[63:48] + 16) or 3 с плоским кешем 64-битного кода DPL 3 (base 0, limit `0xFFFF_FFFF`, access `0xfb`, flags `0xa`); SS ← (STAR[63:48] + 8) or 3 с плоским кешем данных DPL 3 (access `0xf3`, flags `0xc`), `ss_unusable = false`. RSP, RCX, R11, остальные регистры, DS/ES/FS/GS, GDT и память не меняются (инструкция не читает и не пишет память). CPL становится 3. Проверки идут до записей, состояние CPU фиксируется последним внутри блока.
 
-**Маска RFLAGS (по памяти SDM).** По SDM `RFLAGS ← (R11 and 0x3C7FD7) or 2`: загружаются CF, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT, AC, VIF, VIP, ID; RF, VM и зарезервированные биты сбрасываются, бит 1 равен 1, старшая половина обнуляется. Реализовано существующей маской `POPFQ_CPL0_FLAGS` (CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC, ID) — это `0x3C7FD7` без TF, VIF и VIP. Три бита, которых нет в маске набора, не моделируются (как для `IRETQ`/`POPFQ`): R11 с TF, VM, VIF или VIP даёт отказ `Unsupported 0x07` без мутации, а не молчаливую загрузку. Значение, которое ядро кладёт в R11 (`0x202`), в маске целиком. Тест сверяет результат с литералом `0x3c_7fd7`. `rflags_defined |= POPFQ_INTEGER_FLAGS` (флаги загружены из регистра).
+**Маска RFLAGS (по памяти SDM).** По SDM `RFLAGS ← (R11 and 0x3C7FD7) or 2`: загружаются CF, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT, AC, VIF, VIP, ID; RF, VM и зарезервированные биты сбрасываются, бит 1 равен 1, старшая половина обнуляется. Реализовано существующей маской `POPFQ_CPL0_FLAGS` (CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC, ID) — это `0x3C7FD7` без TF, VIF и VIP. Три бита, которых нет в маске набора, не моделируются (как для `IRETQ`/`POPFQ`): R11 с TF, VM, VIF или VIP даёт отказ `Unsupported 0x07` без мутации, а не молчаливую загрузку. [Обновлено S2-27m: VM в R11 больше не отказ, а сбрасывается (RF и VM всегда 0 после SYSRET по SDM); TF, VIF и VIP остаются отказами.] Значение, которое ядро кладёт в R11 (`0x202`), в маске целиком. Тест сверяет результат с литералом `0x3c_7fd7`. `rflags_defined |= POPFQ_INTEGER_FLAGS` (флаги загружены из регистра).
 
-**Допуск и отказы.** `Unsupported { opcode: 0x07 }` без мутации: набор без члена `with_syscall()` (прежний отказ), контекст не Ring0 (включая CPL3), CS с RPL ≠ 0 или не загружен, голый `0F 07` и любой другой префикс, у набора нет ячейки STAR/LSTAR/SYSCALL_MASK/EFER или нет ячейки committed-возврата, STAR[63:48] + 16 переполняет селектор, TF/VM/VIF/VIP в R11. `Fault`: SCE = 0 — вектор 6; неканонический RCX — вектор 13. Ни один существующий отказной тест не ослаблен. Записи-отказы, ставшие исполнением: ни одной (в `cpl0_profile_set.rs` формы `0F 07` и `48 0F 07` проверяются на наборе без члена `with_syscall()` и остаются `Unsupported 0x07`; в `cpl3_syscall.rs` `sysenter_sysret_and_neighbours_stay_refused` — в CPL3 `48 0F 07` по-прежнему `Unsupported 0x07`, теперь потому что форма вне белого списка CPL3, а декодер её называет).
+**Допуск и отказы.** `Unsupported { opcode: 0x07 }` без мутации: набор без члена `with_syscall()` (прежний отказ), контекст не Ring0 (включая CPL3), CS с RPL ≠ 0 или не загружен, голый `0F 07` и любой другой префикс [обновлено S2-27m: SYSRET на CPL3 теперь `Fault` вектор 13, код 0 (#GP(0)) после #UD-проверок, а не отказ; голый `0F 07` исполняется как `SYSRETL`; `F0` — #UD], у набора нет ячейки STAR/LSTAR/SYSCALL_MASK/EFER или нет ячейки committed-возврата, STAR[63:48] + 16 переполняет селектор, TF/VM/VIF/VIP в R11. `Fault`: SCE = 0 — вектор 6; неканонический RCX — вектор 13. Ни один существующий отказной тест не ослаблен. Записи-отказы, ставшие исполнением: ни одной (в `cpl0_profile_set.rs` формы `0F 07` и `48 0F 07` проверяются на наборе без члена `with_syscall()` и остаются `Unsupported 0x07`; в `cpl3_syscall.rs` `sysenter_sysret_and_neighbours_stay_refused` — в CPL3 `48 0F 07` по-прежнему `Unsupported 0x07`, теперь потому что форма вне белого списка CPL3, а декодер её называет) [обновлено S2-27m: под членом `with_syscall` белый список CPL3 пропускает SYSRET, и шаг даёт #GP(0); без члена остаётся прежний отказ `Unsupported 0x07`].
 
 **Выход и продолжение.** Возврат фиксируется как committed-возврат в CPL3: цикл CPL0 останавливается сразу после retired-инструкции, до следующей выборки, исходом `Cpl0ProfileSetExit::UserModeEntered(IretqUserEntry { rip: RCX, cs, rflags, rsp, ss })` (тот же выход, что у committed `IRETQ`, S4-39b); дальше хозяин продолжает входом CPL3 на том же состоянии. Цикл платы (`paged_memory_adapter.rs`) этот выход уже обрабатывал (`UserModeEntered(_) => None`, следующая граница читает CPL из RPL CS), поэтому поведение платы не менялось.
 
@@ -28360,6 +28965,174 @@ context, size, update)` (`crates/od-isa/src/memory.rs`). Вызов читает
 [STAGE_6_REPORT.md](../reports/STAGE_6_REPORT.md), S6-20): путь `LOCK` в Linux-пути не
 изменился по числу вызовов памяти (те же `read` и `write`, добавлен один косвенный вызов
 через `&mut dyn FnMut`).
+
+### S2-51 — CMPXCHG16B (профиль Windows, ADR-0013)
+
+Форма: `[F0] REX.W 0F C7 /1` с операндом в памяти m128 (только 64-битный режим); источник — Intel SDM Vol. 2A, «CMPXCHG8B/CMPXCHG16B — Compare and Exchange Bytes», с. 3-196…3-198. RDX:RAX сравнивается с операндом; при равенстве ZF = 1 и в операнд записывается RCX:RBX, иначе ZF = 0 и RDX:RAX получает операнд; операнд записывается обратно при обоих исходах; CF, PF, AF, SF, OF не меняются. Невыровненный по 16 байт операнд и неканонический адрес — #GP(0) (#SS(0) для адреса через SS), регистровая форма — #UD. Порядок «#GP(0) раньше #PF» взят из oracle S2-51 (физический Intel, 12 случаев сигналов), текст SDM порядок проверок не задаёт.
+
+Доступность: исполняется в bare-run (без профилей CR) и в наборе CPL0 на Ring0 одним вызовом `GuestMemory::atomic_rmw_u128`. На CPL3 (профиль Linux) и в JIT форма отказывается (`Unsupported` / блок не строится), состояние не меняется. Атомарность — только последовательная (однопроцессорная, режим чередования): в параллельном режиме `PagedMovMemoryAdapter::atomic_rmw_u128` отказывает до любого обхода таблиц, потому что хостового 128-битного compare-exchange нет (политика отказа как для разделённого `LOCK` без шлюза остановки S6-34). Бит CPUID.CX16 не объявлен до S2-57. Тесты — `crates/od-isa/tests/s2_51_cmpxchg16b.rs`, `cpl3_profile_set.rs`, `paged_memory_adapter` в `od-machine`.
+
+### S2-21 — CMPXCHG8B (однопроцессорная форма)
+
+Форма: `[F0] [REX без W] 0F C7 /1` с операндом в памяти m64 (только 64-битный режим); REX.W превращает ту же кодировку в CMPXCHG16B (S2-51). Источник — Intel SDM редакция 093 (сводный том 325462-093US), Vol. 2A (253666-093US), «CMPXCHG8B/CMPXCHG16B — Compare and Exchange Bytes», с. 3-196…3-198. EDX:EAX сравнивается с операндом; при равенстве ZF = 1 и в операнд записывается ECX:EBX, иначе ZF = 0 и EDX:EAX получает операнд; операнд записывается обратно при обоих исходах (страница только для чтения даёт #PF при обоих исходах, состояние CPU не меняется); CF, PF, AF, SF, OF не меняются. Требования к выравниванию нет: невыровненный, пересекающий линию или страницу операнд — не исключение. Неканонический адрес (первый или последний байт операнда) — #GP(0), #SS(0) для адреса через SS; регистровая форма (mod = 3), с LOCK и без, — #UD (`DecodeError::Invalid`). Из oracle S2-21 (физический Intel i5-3210M, 692 случая данных и 19 случаев сигналов, побайтно): входами служат только младшие 32 бита RAX/RDX/RBX/RCX; при равенстве RAX/RDX не меняются вместе со старшими половинами; при неравенстве EAX и EDX пишутся как 32-битные регистры (старшие половины RAX/RDX обнуляются); при ошибке на странице пересечения никакой байт операнда не записывается.
+
+Доступность: исполняется в bare-run и в наборе CPL0 на Ring0 одним вызовом `GuestMemory::atomic_compare_exchange_integer` размера Qword (S6-20), то есть атомарность и разделённый `LOCK` определяются тем же контрактом, что у остальных qword-форм: в параллельном режиме `PagedMovMemoryAdapter` исполняет выровненный операнд хостовой атомарной операцией (S6-31); невыровненный (split lock) при установленном шлюзе S6-34 исполняется под остановкой всех остальных vCPU, а без шлюза отказывает (`MemoryError::Backend`, считается как split lock); в режиме чередования невыровненный операнд идёт последовательной парой S6-20 (в отличие от CMPXCHG16B, для которого хостового 16-байтного примитива нет). **Отступление от задания S2-21 — ожидает приёмки владельцем/Opus:** отдельный отказ CMPXCHG8B в параллельном режиме не добавлен, потому что выровненный 8-байтный операнд обслуживает хостовый CAS S6-31, а невыровненный — шлюз S6-34 или последовательная пара S6-20. На CPL3 (профиль Linux) и в JIT форма отказывается (`Unsupported` / блок не строится), состояние не меняется. LOCK необязателен и дополнительного эффекта не имеет. Бит CPUID.CX8 (лист 1 EDX[8]): профиль `OdX8664V1Neutral` его объявляет (`0x0781A379`, S6-14h); профиль `OdX8664V2Windows` не объявляет (инструкция реализована в S2-21, бит не объявлен до приёмки S2-57). Интерпретатор бит CPUID не проверяет. REX.R не расширяет поле ModRM.reg группы `0F C7`: `44 0F C7 0F` — тот же CMPXCHG8B (проверено на оракуле и тестом). Не проверено: #AC при EFLAGS.AC и CR0.AM (CPL3 не допускается), поведение при CX8 = 0 (в тексте SDM для этой инструкции такого условия нет; `#UD` при CX8 = 0 не подтверждено и не моделируется), настоящий SMP-порядок (этап 6). Тесты — `crates/od-isa/tests/s2_21_cmpxchg8b.rs`, `cpl3_profile_set.rs`, `crates/od-jit/src/block.rs`, `paged_memory_adapter` в `od-machine`.
+
+### S2-52 — LAHF/SAHF в 64-битном режиме (профиль Windows, ADR-0013)
+
+Формы: `9F` (LAHF) и `9E` (SAHF) без ModRM; источник — Intel SDM (редакция 325462-093US; номера страниц для неё) Vol. 2A, «LAHF — Load Status Flags Into AH Register», с. 3-532, и Vol. 2B, «SAHF — Store AH Into Flags», с. 4-601…4-602. LAHF: AH := RFLAGS(SF:ZF:0:AF:0:PF:1:CF), то есть биты 7, 6, 4, 2, 0 регистра AH — SF, ZF, AF, PF, CF, бит 1 всегда 1, биты 5 и 3 всегда 0 независимо от значения зарезервированных битов RFLAGS; остальные байты RAX и все флаги не меняются. SAHF: SF, ZF, AF, PF, CF := биты 7, 6, 4, 2, 0 регистра AH; биты 1, 3, 5 регистра AH игнорируются, зарезервированные биты 1, 3, 5 RFLAGS, а также OF, DF, IF и остальные биты сохраняют прежнее значение. Это решение модели, а не требование SDM: SDM говорит, что биты 1, 3, 5 регистра AH на флаги не влияют и значения RFLAGS 1, 0, 0 сохраняются, а модель сохраняет произвольные значения RFLAGS вне пяти флагов (тест `s2_52_lahf_sahf.rs`, строки 190–192, закрепляет выбор модели, не SDM); RAX не меняется. AH задан неявно (операндов нет), поэтому префикс REX не перенаправляет его в SPL. LOCK в 64-битном режиме — #UD (`DecodeError::Invalid`). Префиксы 66, 67, сегментные и лишний/устаревший REX декодируются в ту же инструкцию и ничего не меняют (подтверждено oracle); REP/REPNE остаются `Unsupported` (железо их игнорирует, форма не смоделирована — открытый пробел).
+
+Definedness флагов (`Instruction::flag_effects`): SAHF определяет CF, PF, AF, ZF, SF; LAHF не определяет и не снимает определённость ни одного флага. Значения, считанные LAHF из флагов с неопределённым значением, отдельно не помечаются (регистровой definedness в модели нет).
+
+Доступность: исполняются в bare-run (без профилей CR) и в наборе CPL0 на Ring0; на CPL3 (профиль Linux) формы отказываются (`Unsupported`, состояние не меняется). SDM требует #UD в 64-битном режиме при CPUID.80000001H:ECX.LAHF_SAHF_64[0] = 0: интерпретатор по этому биту не проверяет, бит не объявлен до S2-57, поведение «#UD при отсутствии бита» решается там. В JIT формы не компилируются (`BlockStopReason::UnsupportedDecoded`, LOCK-форма — граница декодирования `Invalid`), блок не строится, состояние не меняется. Тесты — `crates/od-isa/tests/s2_52_lahf_sahf.rs`, `cpl3_profile_set.rs`, `block.rs` в `od-jit`.
+
+### S2-53 — PREFETCHW (профиль Windows, ADR-0013)
+
+Форма: `0F 0D /1` с операндом в памяти m8; источник — Intel SDM (редакция 325462-093US; страницы для неё) Vol. 2B, «PREFETCHW — Prefetch Data Into Caches in Anticipation of a Write», с. 4-416…4-417. Инструкция — подсказка, «does not affect program behavior»: флаги не меняются, адрес не вычисляется и не используется, чтение и запись гостевой памяти не выполняются. Список исключений для всех режимов (включая 64-битный) содержит только «#UD If the LOCK prefix is used»: #PF, #GP и #SS не перечислены, поэтому неотображённый, неканонический и защищённый адрес не вызывает fault. Единственный эффект — RIP на длину инструкции (ModRM, SIB и смещение разбираются только ради длины). Префиксы 66, 67, сегментные и REX декодируются и ничего не меняют; LOCK (с памятью и с регистровой формой /1) — #UD (`DecodeError::Invalid`).
+
+Остальные кодировки `0F 0D` не реализованы: регистровая форма (mod = 3) /1, прочие поля /r (/2 — PREFETCHWT1, Vol. 2D, с отдельным CPUID-битом CPUID.07H.00H:ECX[0]; остальные страницами SDM для этого опкода не определены) и REP/REPNE остаются `Unsupported` без изменения состояния. SDM (Vol. 3B, §25.15 «Undefined Opcodes») говорит лишь, что неопределённые кодировки `0F 0D` ведут себя как reserved NOP; oracle (Intel без PRFCHW) исполняет все такие формы как NOP — решение о них открыто (см. отчёт этапа 8).
+
+Доступность: как у S2-52 — bare-run и набор CPL0 на Ring0; на CPL3 (профиль Linux) отказ `Unsupported`; в JIT форма не компилируется. Бит CPUID.80000001H:ECX.PREFETCHW[8] не объявлен до S2-57, интерпретатор по нему не проверяет. Тесты — `crates/od-isa/tests/s2_53_prefetchw.rs`, `cpl3_profile_set.rs`, `block.rs` в `od-jit`.
+
+### S2-34 (m128) — общая адресация m128 для шести SSE-пересылок (предпосылка S2-54…S2-56)
+
+Формы: память ↔ XMM для MOVAPS `NP 0F 28/29 /r`, MOVUPS `NP 0F 10/11 /r`, MOVAPD `66 0F 28/29 /r`, MOVUPD `66 0F 10/11 /r`, MOVDQA `66 0F 6F/7F /r`, MOVDQU `F3 0F 6F/7F /r` с любым операндом ModR/M: база, индекс и масштаб, disp8, disp32, SIB без базы, RIP-относительный disp32, REX.R/X/B (REX.W игнорируется), префикс 67 (32-битный эффективный адрес, усечение выполняет `MemoryOperand::effective_address`), переопределения CS/DS/ES/SS (в 64-битном режиме база нулевая, префикс ничего не меняет). Источник — Intel SDM (редакция 325462-093US; страницы для неё) Vol. 2B: MOVAPD с. 4-37…4-40, MOVAPS с. 4-41…4-44, MOVDQA с. 4-59…4-63, MOVDQU с. 4-64…4-71, MOVUPD с. 4-122…4-125, MOVUPS с. 4-126…4-129; классы исключений — Vol. 2A, таблица 2-18 «Type 1» (с. 2-26: MOVAPS, MOVAPD, MOVDQA) и таблица 2-21 «Type 4» (с. 2-29: MOVUPS, MOVUPD, MOVDQU); текст прочитан, а не взят по памяти.
+
+Операция (legacy SSE): DEST[127:0] := SRC[127:0]; старшие биты регистра, MXCSR, флаги и все остальные регистры не меняются, исключений SIMD с плавающей точкой нет. Исключения по SDM: #UD при CR0.EM = 1, CR4.OSFXSR = 0, при префиксе LOCK и при нулевом бите CPUID; #NM при CR0.TS = 1; #SS(0) для неканонического адреса через SS (база RSP или RBP), #GP(0) для любого другого неканонического адреса; для MOVAPS, MOVAPD и MOVDQA — #GP(0), если операнд памяти не выровнен по 16 байт; MOVUPS и MOVUPD выравнивания не требуют (таблица 2-21, примечание 1), MOVDQU тоже (описание инструкции, Vol. 2B с. 4-65: «may be unaligned to any alignment without causing a general-protection exception»; в примечании 1 таблицы 2-21 MOVDQU не перечислен); #PF — результат бэкенда памяти.
+
+Исполнение (`step_sse128_memory_move` в `od-isa`) — один путь для всех шести форм. Порядок проверок, каждая до изменения состояния: (1) #UD по EM или OSFXSR = 0, затем #NM по TS — только когда состояние несёт CR0 и CR4 (см. «Допуск»); (2) неканонический адрес — #GP(0) или #SS(0); (3) невыровненный операнд выровненной формы — #GP(0) до обращения к памяти; (4) весь 16-байтный диапазон должен быть каноничным, затем одно `read` или `write` на 16 байт; ошибка памяти оставляет CPU без изменений и не даёт частичной записи. Порядок «#GP(0) раньше #PF» совпадает с oracle (ниже). Порядок «неканонический начальный адрес раньше выравнивания» (при базе RSP/RBP — #SS(0), а не #GP(0) от выравнивания) — выбор модели: SDM перечисляет оба условия, но порядок текстом не задаёт, а на oracle нет случая с невыровненным неканоническим начальным адресом; тест `non_canonical_addresses_fault_before_alignment_and_before_memory` проверяет и выровненные, и невыровненные неканонические адреса. Oracle подтверждает другое: выравнивание раньше проверки конца 16-байтного диапазона (`edge_*_{rsp,rbp}_canon_top_cross`: MOVAPS — #GP, MOVUPS — #SS; тест `a_range_that_leaves_the_canonical_space_through_a_stack_base_is_ss_after_the_alignment_check`).
+
+Декодер. Узкие профильные декодеры S2-34.4…S2-34.6c, S2-34.21…S2-34.25 и S6-22 остались прежними и разбирают прежние формы в прежние операции (`MovupsLoadMemory`, `MovupdStoreMemory`, `MovapsStoreMemory`, `MovdqaLoadMemory` и другие). Для `0F 10/11/28/29/6F/7F`, которые профильный декодер отклонил как `Unsupported`, `long_decode::decode` повторяет разбор с начала общим декодером `decode_sse128_memory_move` и выдаёт `Operation::Sse128MemoryMove { kind, store, xmm, memory }`. Исполнитель сводит все эти операции (общую и профильные memory-формы) к одному `sse128_move_parts`, поэтому проверки и семантика одинаковы для всех. Общий декодер отклоняет (остаются `Unsupported`, состояние не меняется): повтор любого префикса и REX; сегментные префиксы FS и GS (в модели операнда нет базы сегмента); F2; 66 вместе с F3; `0F 6F/7F` без 66 и F3 (MMX); регистровые формы (mod = 3; регистровые профили S2-34.11…S2-34.16 прежние, регистровый MOVDQU и `66 0F 7F` не реализованы); REX перед legacy-префиксом отбрасывается, как для любой другой инструкции. LOCK перед memory-формой — `DecodeError::Invalid` (#UD, в том числе на CPL3: прежний отказ `Unsupported` для таких форм заменён #UD, как требует SDM); LOCK вместе с F3 (MOVDQU) остаётся `Unsupported`: два префикса группы 1 SDM (Vol. 2A, 2.1.1) оставляет неопределёнными, железо даёт #UD.
+
+Допуск. Как у прежних memory-форм MOVUPS: в bare-run при заданных локальных `x87` и `sse` состояниях (состояние CR0/CR4 тогда не несётся, предпосылки EM = 0, TS = 0, OSFXSR = 1 — допущения профилей S2-34); без `x87` или `sse` — `Unsupported` без изменений. Проверки #UD/#NM по значениям CR0/CR4 достижимы под парой профилей FP-init (`Cr0Profile::FpInitLong64V1` + `Cr4Profile::FpInitLong64V1`, `run_with_cr4_profile`): профиль разрешает эти пересылки в списке допустимых инструкций; значения CR0.EM/TS и CR4.OSFXSR берутся из состояния. В наборе CPL0 состояние `x87`/`sse` не допускается (FP-состояние лежит в ячейке `GuestFpState`), поэтому пересылки там остаются `Unsupported`, как MOVUPS: подключение SSE-состояния набора CPL0 и проверок #UD/#NM по его CR0/CR4 — следующий срез (S2-57 и интеграция Windows-профиля). Допускаемый набор форм профиля CPL3 (живой профиль Linux) не менялся: `cpl3_allows` и `cpl3_s6_22_xmm_memory_form` не расширены, общая форма на CPL3 — `Unsupported` (строки в `cpl3_profile_set.rs`). Поведение изменилось только для LOCK-форм с памятью: прежний отказ `Unsupported` заменён на #UD (`DecodeError::Invalid` декодера, допуск профиля не проверяется), тест `lock_before_a_raw_sse_memory_move_is_invalid_opcode_without_change`. CPUID-биты SSE и SSE2 не проверяются и не объявляются (S2-57). JIT: общая операция не компилируется (`BlockStopReason::UnsupportedDecoded`, LOCK-форма — граница декодирования `Invalid`).
+
+#AC не моделируется: SDM для Type 1 и Type 4 строки #AC не даёт, а для MOVUPS и MOVUPD пишет «treatment of #AC varies». Поэтому невыровненный MOVUPS, MOVUPD или MOVDQU на CPL3 при RFLAGS.AC = 1 (и CR0.AM = 1 либо CR0 не несётся) отказывается (`Unsupported`, состояние не меняется), а не угадывается. Физический oracle (Intel Core i5-3210M, Linux, CR0.AM = 1) исполняет эти формы без #AC (см. «Открытые решения»).
+
+Проверки. `crates/od-isa/tests/s2_34_sse_moves_memory.rs` (13 тестов): 288 случаев «форма × инструкция × направление» (24 формы адресации × 6 инструкций × загрузка и сохранение, все XMM0–XMM15, сравнение всего `LongModeState` и всей памяти), решения декодера, REX перед legacy-префиксом, все 16 смещений выравнивания, переход через границу страницы, неканонические адреса (#GP и #SS) до выравнивания и до памяти, диапазон, выходящий за каноническое пространство, ошибки бэкенда (неотображённая страница, #PF на второй странице), LOCK, CR0/CR4, отсутствие состояния, отказы соседних кодировок, #AC. Прежние тесты профильных границ в `long_decode.rs` переведены на вызов профильного декодера (`Memory::decode`; общий вход — `Memory::decode_general`), два теста `execute.rs` (MOVDQU в bare-run, соседи RIP-формы MOVUPS) обновлены под новый допуск. `od-jit`: `m128_sse_moves_are_refused_by_the_block_builder_and_lock_forms_are_invalid`.
+
+Oracle. Физический Mac mini (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2), ассемблерная вставка: инструкция исполняется из RWX-страницы между фиксированными прологом и эпилогом, все 16 XMM, 14 GPR, флаги, MXCSR (0x1FA5) и страница данных засеяны псевдослучайно по зерну случая; сравниваются XMM (побайтно, только изменившиеся), GPR, флаги (маска 0x40CD5), MXCSR, FNV-1a всей страницы данных (в том числе после fault, чтобы поймать частичную запись) и класс сигнала. 1872 случая: 1782 совпали побайтно (884 исполнения, 618 #GP, 108 #SS (SIGBUS), 84 MAPERR, 48 ACCERR, 40 #UD при LOCK). Все 90 расхождений — отказы модели или известное ограничение: 24 — невыровненный MOVUPS/MOVUPD/MOVDQU при EFLAGS.AC = 1 (железо исполняет, модель `Unsupported`); 18 — 16-байтный доступ с адреса 0xFFFFFFFFFFFFFFF8, выходящий за 2^64 (железо SIGSEGV/MAPERR, модель — диагностическая `AddressOverflow` прежнего `access_range_address_48`); 24 — F2/F3 без смысла для формы и LOCK вместе с F3 (железо SIGILL, модель `Unsupported`); 24 — другие инструкции или повторы префиксов (`66 66 …`, `F3 66 0F 10` = MOVSS, MMX `0F 6F/7F`, `66 F3 0F 6F`), которые железо исполняет, а модель отказывает. Файлы (`cases.txt`, `oracle.c`, `oracle_out.txt`, `local_out.txt`, `diffs.txt`) — в `work/stage8/s2_34_oracle/`, не в Git. Проверки CR0.EM/TS и CR4.OSFXSR, CPL0 и #PF с ненулевыми кодами ошибок на пользовательском oracle не снимались.
+
+Открытые решения (варианты и рекомендации — в отчёте этапа 8): #AC для невыровненных MOVUPS/MOVUPD/MOVDQU при AC = 1; FS/GS-формы; регистровый MOVDQU и `66 0F 7F`; подключение SSE-состояния к набору CPL0 и общий помощник допуска #UD/#NM + учёта MXCSR для packed FP (часть варианта A из блока S2-54 отчёта этапа 8, не выполнена этим срезом); `AddressOverflow` вместо #PF на границе 2^64.
+
+### S2-54 (срез C) — MOVSHDUP, MOVSLDUP, MOVDDUP, LDDQU и FISTTP
+
+Срез C задачи S2-54 (SSE3 без плавающей арифметики и x87 `FISTTP`). Форма поручена в ходе этапа 8; чекбокс S2-54 не поставлен: `ADDSUBPS/PD`, `HADDPS/PD`, `HSUBPS/PD` и все формы SSSE3 остаются за следующими срезами, бит CPUID.01H:ECX.SSE3[0] не объявлен и интерпретатором не проверяется (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext, а не взят по памяти): MOVSHDUP `F3 0F 16 /r` xmm1, xmm2/m128 (Vol. 2B с. 4-107…4-109), MOVSLDUP `F3 0F 12 /r` xmm1, xmm2/m128 (с. 4-110…4-112), MOVDDUP `F2 0F 12 /r` xmm1, xmm2/m64 (с. 4-47…4-49), LDDQU `F2 0F F0 /r` xmm1, mem (Vol. 2A с. 3-537…3-538; в SDM второй операнд только `mem`), FISTTP `DF /1` m16int, `DB /1` m32int, `DD /1` m64int (Vol. 2A с. 3-350…3-351). Классы исключений: MOVSHDUP, MOVSLDUP и LDDQU — Type 4 (Vol. 2A таблица 2-21, с. 2-29), MOVDDUP — Type 5 (таблица 2-22, с. 2-30).
+
+Операции (legacy SSE; биты выше 127 не меняются, MXCSR не читается и не пишется, флаги RFLAGS не меняются, исключений SIMD нет): MOVSHDUP — DEST := SRC[63:32], SRC[63:32], SRC[127:96], SRC[127:96] (32-битные полосы, младшая первой); MOVSLDUP — SRC[31:0], SRC[31:0], SRC[95:64], SRC[95:64]; MOVDDUP — обе половины DEST := SRC[63:0] (источник из памяти — 64 бита, из регистра — младшая половина xmm2); LDDQU — DEST := SRC[127:0] из памяти. FISTTP — ST(0) преобразуется в знаковое целое с усечением к нулю, пишется в память, ST(0) выталкивается; значение вне диапазона приёмника, бесконечность и NaN — недопустимая операция, пишется целое «неопределённое» (старший бит), IE; усечённая ненулевая дробная часть при допустимом результате — PE; пустой ST(0) — стековый недостаток (IE и SF), пишется целое «неопределённое».
+
+Исключения: #UD при LOCK и при регистровой форме LDDQU (у MOVSHDUP/MOVSLDUP/MOVDDUP регистровая форма определена); для SSE-форм #UD при CR0.EM = 1 или CR4.OSFXSR = 0, затем #NM при CR0.TS = 1; для FISTTP #NM при CR0.EM = 1 или CR0.TS = 1, CR4.OSFXSR на x87 не влияет; #SS(0) для неканонического адреса через SS (база RSP/RBP), иначе #GP(0); #GP(0) для операнда m128 не по 16-байтной границе — только у MOVSHDUP и MOVSLDUP (примечание 1 таблицы 2-21 исключает LDDQU, MOVDDUP — Type 5 без выравнивания); #PF — результат бэкенда памяти. Порядок проверок, каждая до изменения состояния: #UD/#NM → каноничность → выравнивание → весь диапазон (16 байт, у MOVDDUP 8, у FISTTP 2/4/8) → одно `read` или `write`. #AC не моделируется (см. «Границы»).
+
+Обновление x87 при FISTTP (`step_fisttp`): тег ST(0) становится пустым, TOP += 1 (в том числе после замаскированного стекового недостатка), C1 очищается, биты IE/PE/SF добавляются к состоянию (липкие биты и C0, C2, C3 не меняются: SDM называет C0/C2/C3 неопределёнными, физический процессор их не трогает), `instruction_pointer` и `data_pointer` получают адрес инструкции и операнда, как у FIST/FISTP; регистр последнего кода операции не моделируется ни одной x87-формой. Содержимое регистра классифицируется по битам (тег проверяется только на «пусто»): ±0 → 0; денормальные и псевдо-денормальные → 0 с PE; нормальные — усечение; unnormal, псевдо-бесконечность, псевдо-NaN, бесконечность, NaN → IE.
+
+Границы (отказ `Unsupported` без изменения состояния, не заглушка): FISTTP при ожидающем x87-исключении (взведённый флаг исключения слова состояния, чей бит маски в слове управления сброшен, — FLDENV/FRSTOR могут загрузить такое состояние без ES, и SDM требует #MF до исполнения инструкции; или ES, или B) и при исключении, которое было бы не замаскировано (IE при CW.IM = 0 для недопустимой операции и стекового недостатка, PE при CW.PM = 0 для неточного результата; доставка #MF не моделируется); невыровненный по размеру доступа операнд на CPL3 при RFLAGS.AC = 1 (и CR0.AM = 1 либо CR0 не несётся) у MOVDDUP (8 байт), LDDQU (16) и FISTTP (2/4/8). Основание: «treatment of #AC varies» SDM пишет у LDDQU (Vol. 2A с. 3-538) и у MOVUPS/MOVUPD, но не у MOVDDUP (таблица 2-22) и не у FISTTP — там #AC(0) на CPL3 определён, поэтому отказ для MOVDDUP и FISTTP — консервативный выбор модели, а не следствие текста SDM; для LDDQU отказ следует примечанию о выравнивании, а маска 16 байт (`alignment_mask` в `step_sse3_permute`) — выбор модели. Декодер (`decode_sse3_permute`, `decode_fisttp`) принимает ровно одну обязательную пару префиксов (F3 для MOVSHDUP/MOVSLDUP, F2 для MOVDDUP/LDDQU; для FISTTP 66/F2/F3 не допускаются), LOCK до или после обязательного префикса, один REX непосредственно перед кодом операции (REX.W игнорируется), префикс 67 и сегментные переопределения CS/DS/ES/SS; отказ (`Unsupported`): повтор любого префикса, 66 вместе с обязательным префиксом, FS/GS, другой или отсутствующий обязательный префикс (это MOVLPS/MOVHLPS/MOVHPS/MOVLPD/MOVHPD и недопустимые коды), регистровые формы FISTTP (mod = 3), другие значения reg у `DB/DD/DF`. Оракул показал, что процессор исполняет 66 вместе с F2/F3 как F2/F3, повтор одного префикса и «последний из F2/F3 выигрывает»; модель отказывает (решение оформлено в отчёте этапа 8).
+
+Допуск: как у S2-34 (m128): bare-run при заданных локальных `sse` (SSE-формы) или `x87` (FISTTP) состояниях и пара профилей FP-init (CR0/CR4 из состояния, проверки EM/TS/OSFXSR достижимы); без нужного состояния — `Unsupported` без изменений. На CPL3 формы не допускаются (`cpl3_allows` не расширен, бит SSE3 не объявлен), LOCK и регистровая LDDQU там дают #UD (декодер возвращает `Invalid` до списка допуска); в JIT формы не компилируются (`UnsupportedDecoded`). Узкие профильные формы `FIST/FISTP [rax]` (`FistM32IntRax`, `FistpM16IntRax` и т. д.) не менялись.
+
+Проверки. `crates/od-isa/tests/s2_54_sse3_permute.rs` (26 тестов): 96 случаев «24 формы адресации × 4 инструкции» с XMM0–XMM15, 768 пар «приёмник × источник» регистровых форм, правила полос на счётном источнике, 15 смещений выравнивания, граница конца памяти и страницы для 8- и 16-байтного чтения, неканонические адреса и #SS, диапазон через границу канонического пространства, ошибки бэкенда, LOCK во всех порядках префиксов, #UD для регистровой LDDQU (256 пар), CR0/CR4 (8 сочетаний), отказы соседних кодировок, #AC; для FISTTP — 43 класса значений × 3 ширины × 6 слов управления (774 запуска: усечение, диапазоны ±2^15, ±2^31, ±2^63, денормальные, NaN, бесконечности, unnormal; сравнение всего `LongModeState`), стековый недостаток при каждом TOP, 24 формы адресации × 3 ширины, маски исключений, #GP/#SS/#PF, LOCK, CR0.EM/TS, отсутствие состояния, #AC. Регрессия: `s2_34_sse_moves_memory`, `cpl3_profile_set` (9 строк отказа и тест LOCK/`Invalid`), тест отказа JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 3693 случая, совпало побайтно 3471 (XMM, GPR, флаги, MXCSR, FNV-1a страницы данных, слова x87 CW/SW/абревиатура тегов/ST0–ST7 после FXSAVE64, FIP/FDP относительно инструкции и операнда, класс сигнала); 222 расхождения — отказы модели (212, из них 22 AC на CPL3: 10 SSE3 и 12 FISTTP) и диагностическая `AddressOverflow` вместо SIGSEGV на границе 2^64 (10); среди случаев, которые модель исполнила, расхождений нет (12 случаев SIGFPE на железе — IE взведён при CW.IM = 0 — модель отказывает). Подробности и счётчики — в разделе «S2-54 срез C» отчёта этапа 8.
+
+### S2-54 (срез D) — целочисленная часть SSSE3 в XMM-формах
+
+Срез D задачи S2-54 (целочисленные формы SSSE3 на регистрах XMM). Форма поручена в ходе этапа 8; чекбокс S2-54 не поставлен: `ADDSUBPS/PD`, `HADDPS/PD`, `HSUBPS/PD` (нужно FP-ядро S2-37/S2-38) и MMX-формы SSSE3 (нет модели MMX-регистров, S2-33) остаются за следующими срезами; биты CPUID.01H:ECX.SSE3[0] и SSSE3[9] не объявлены и интерпретатором не проверяются (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext, а не взят по памяти; Vol. 2B): PSHUFB `66 0F 38 00 /r` (с. 4-421…4-425), PHADDW `66 0F 38 01` и PHADDD `66 0F 38 02` (с. 4-294…4-297), PHADDSW `66 0F 38 03` (с. 4-292…4-293), PMADDUBSW `66 0F 38 04` (с. 4-310…4-312), PHSUBW `66 0F 38 05` и PHSUBD `66 0F 38 06` (с. 4-302…4-304), PHSUBSW `66 0F 38 07` (с. 4-300…4-301), PSIGNB/PSIGNW/PSIGND `66 0F 38 08/09/0A` (с. 4-437…4-440), PMULHRSW `66 0F 38 0B` (с. 4-375…4-378), PABSB/PABSW/PABSD `66 0F 38 1C/1D/1E` (с. 4-177…4-182), PALIGNR `66 0F 3A 0F /r ib` (с. 4-216…4-219); приёмник xmm1 (ModRM.reg, REX.R), источник xmm2/m128 (ModRM.r/m, REX.B). Класс исключений всех форм — Type 4 (Vol. 2A таблица 2-21, с. 2-29).
+
+Операции (legacy SSE; биты выше 127 не меняются, MXCSR не читается и не пишется, флаги RFLAGS не меняются, исключений SIMD нет): PSHUFB — для каждого байта источника: бит 7 → 0, иначе байт приёмника с индексом из младших четырёх бит; PALIGNR — (приёмник:источник), источник в младшей половине, сдвиг вправо на imm8 байт (беззнаковый), счёт больше 31 даёт 0; PABS* — беззнаковый модуль знаковой полосы источника (наименьшее отрицательное значение отображается в себя); PSIGN* — полоса приёмника меняет знак (с переполнением по модулю), обнуляется или сохраняется по знаку полосы источника (0 → 0); PMADDUBSW — беззнаковые байты приёмника × знаковые байты источника, сумма пары насыщается до знакового слова; PMULHRSW — ((a × b) >> 14) + 1, биты [16:1], то есть округление a·b/2^15 к ближайшему, половина вверх; PHADDW/PHSUBW/PHADDD/PHSUBD — пары полос приёмника дают младшую половину результата, пары полос источника — старшую (разность — первая полоса минус вторая; без насыщения, по модулю); PHADDSW/PHSUBSW — то же с насыщением до знакового слова.
+
+Исключения: #UD при LOCK (в любом порядке с `66`), для всех форм #UD при CR0.EM = 1 или CR4.OSFXSR = 0, затем #NM при CR0.TS = 1; #SS(0) для неканонического адреса через SS (база RSP/RBP), иначе #GP(0); #GP(0) для операнда m128 не по 16-байтной границе — у всех шестнадцати форм (Type 4, примечание 1 таблицы 2-21 исключает только LDDQU, MOVUPD, MOVUPS и PCMP*STR*; в тексте PALIGNR и других форм это сказано прямо: «must be aligned on a 16-byte boundary or a general-protection exception (#GP) will be generated»); #PF — результат бэкенда памяти. Порядок проверок, каждая до изменения состояния: #UD/#NM → каноничность → выравнивание → весь диапазон (16 байт) → одно `read`. #AC у формы не возникает: невыровненный операнд — #GP(0) раньше, а выровненный не может его вызвать (физический процессор ведёт себя так же).
+
+Декодер (`decode_ssse3_int`, `Operation::Ssse3Int { kind, destination, source, immediate }`, `Ssse3IntKind`) вызывается из `long_decode::decode` после отказа профильного декодера для кодов карты `0F 38` и `0F 3A`. Принимает обязательный префикс `66`, LOCK (даёт `Invalid`, #UD), один REX непосредственно перед кодом операции (REX.W игнорируется: подтверждено oracle), префикс 67, сегментные переопределения CS/DS/ES/SS; PALIGNR читает imm8 после ModRM/SIB/disp, RIP-относительный адрес считается от конца всей инструкции вместе с imm8. Отказ (`Unsupported`): MMX-формы (без `66`; нет модели MMX-регистров и алиасинга с x87 по S2-33), `F2`/`F3` вместе с `66`, повтор любого префикса (включая два сегментных), FS/GS, соседние коды карт (`0F 38 0C…0F`, `1B`, `1F` и т. д.).
+
+Допуск: как у S2-34 (m128): bare-run при заданном локальном `sse` и пара профилей FP-init (CR0/CR4 из состояния, проверки EM/TS/OSFXSR достижимы); без SSE-состояния — `Unsupported` без изменений (x87-состояние не требуется). На CPL3 формы не допускаются (`cpl3_allows` не расширен, SSSE3 не объявлен), LOCK там даёт #UD (декодер возвращает `Invalid` до списка допуска); в JIT формы не компилируются (`UnsupportedDecoded`).
+
+Проверки. `crates/od-isa/tests/s2_54_ssse3_int.rs` (20 тестов): значения, вычисленные вручную по псевдокоду SDM (PSHUFB с битом 7 и индексами 0x70/0x7F; PALIGNR для счётов 0…40, 64, 127…129, 254 и 255; PABS наименьшего отрицательного значения всех ширин; PSIGN с нулём, наименьшим отрицательным значением и знаком из него; PMADDUBSW с насыщением в обе стороны и без; PMULHRSW с округлением половин, 0x8000 × 0x8000 и 0x7FFF × 0x7FFF; PHADD/PHSUB со сворачиванием и насыщением PHADDSW/PHSUBSW), второй независимый перенос псевдокода (`reference`) на 16 × 600 × 2 сгенерированных наборах (случайные байты, крайние байты/слова/двойные слова, управляющие байты), 4096 пар регистров приёмник × источник, 384 случая «24 формы адресации × 16 инструкций» (XMM0–XMM15, сравнение всего `LongModeState` и памяти, одно чтение 16 байт, RIP-относительный адрес у PALIGNR), регистровые формы с 67, CS/DS/ES/SS и REX.W, #GP для семи невыровненных адресов у всех форм (в том числе при AC = 1 на CPL3), неканонические адреса через RAX/RBP/RSP, ошибки бэкенда, LOCK в восьми вариантах для каждой формы, CR0/CR4 (8 сочетаний × регистр/память × 3 адреса), отсутствие SSE-состояния, отказы соседних кодировок, решения декодера. Регрессия: `s2_34_sse_moves_memory`, `s2_54_sse3_permute`, `cpl3_profile_set` (11 строк отказа и три строки LOCK/`Invalid` для форм SSSE3), тест отказа JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 9348 случаев (инструкция в RWX-странице между фиксированными прологом и эпилогом; XMM, GPR, флаги, MXCSR, FNV-1a страницы данных, класс сигнала), совпало побайтно 9044; 304 расхождения — отказы модели (`Unsupported`) для кодировок вне среза, ни одного расхождения среди исполненных моделью случаев. Подробности и счётчики — в разделе «S2-54 срез D» отчёта этапа 8.
+
+### S2-55 (срез A) — целочисленная часть SSE4.1 в XMM-формах
+
+Срез A задачи S2-55 (целочисленные формы SSE4.1 на регистрах XMM). Форма поручена в ходе этапа 8; чекбокс S2-55 не поставлен: формы с плавающей точкой (`ROUNDPS/PD/SS/SD`, `DPPS/DPPD`, `INSERTPS`, `EXTRACTPS`, `BLENDPS/PD`, `BLENDVPS/PD`) ждут FP-ядра S2-37/S2-38; бит CPUID.01H:ECX.SSE4_1[19] не объявлен и интерпретатором не проверяется (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext; Vol. 2B): PTEST `66 0F 38 17 /r` (с. 4-498…4-499); PMOVSXBW/BD/BQ/WD/WQ/DQ `66 0F 38 20…25 /r` (с. 4-352…4-361) и PMOVZX* `30…35` (с. 4-362…4-371); PMULDQ `38 28` (с. 4-372…4-374); PCMPEQQ `38 29` (с. 4-251…4-253); MOVNTDQA `38 2A` (с. 4-90…4-91); PACKUSDW `38 2B` (с. 4-191…4-195); PMINSB/PMINSD/PMINUW/PMINUD `38 38/39/3A/3B` (с. 4-332…4-349); PMAXSB/PMAXSD/PMAXUW/PMAXUD `38 3C/3D/3E/3F` (с. 4-316…4-331); PMULLD `38 40` (с. 4-387…4-390); PHMINPOSUW `38 41` (с. 4-298…4-299); PBLENDVB `38 10` (с. 4-231…4-234); PBLENDW `3A 0E /r ib` (с. 4-235…4-237); PEXTRB/PEXTRD/PEXTRQ `3A 14/16 /r ib` (с. 4-286…4-288) и PEXTRW `3A 15 /r ib` (с. 4-289…4-291); PINSRB/PINSRD/PINSRQ `3A 20/22 /r ib` (с. 4-305…4-307); MPSADBW `3A 42 /r ib` (с. 4-132…4-139). Все — с обязательным `66`; PEXTRQ и PINSRQ — с REX.W (у PEXTRB/PEXTRW/PINSRB и всех векторных форм REX.W игнорируется). Операнды: xmm1 (ModRM.reg, REX.R), xmm2/m128 или m64/m32/m16 (PMOVSX*, PMOVZX*) (ModRM.r/m, REX.B); у PINSR* источник r32/r64/m (ModRM.r/m), у PEXTR* приёмник r/m (регистровый приёмник записывается нулевым расширением до 64 бит), источник xmm (ModRM.reg).
+
+Операции (legacy SSE; биты выше 127 не меняются, MXCSR не читается и не пишется): PMOVSX*/PMOVZX* — расширяют младшие полосы источника со знаком или нулём (BW: 8 байт → 8 слов, BD: 4 → 4 двойных слова, BQ: 2 → 2 четверных, WD: 4 слова → 4 двойных, WQ: 2 → 2 четверных, DQ: 2 двойных → 2 четверных); память — 8, 4, 2, 8, 4, 8 байт соответственно; PMULLD — младшие 32 бита каждого произведения двойных слов; PMULDQ — знаковое 32 × 32 → 64 для двойных слов 0 и 2; PMIN*/PMAX* — поэлементно со знаком (SB, SD) или без (UW, UD); PCMPEQQ — полоса из единиц при равенстве четверных слов; PACKUSDW — знаковые двойные слова с насыщением до беззнакового слова, приёмник в младшей половине, источник в старшей; PBLENDW — слово i из источника при установленном бите i imm8; PBLENDVB — байт i из источника при установленном бите 7 байта i регистра XMM0 (неявный третий операнд); PHMINPOSUW — наименьшее беззнаковое слово (при равенстве — наименьший индекс) в биты 15:0, индекс в биты 18:16, остальное обнуляется; MPSADBW — слово i = сумма четырёх модулей разностей байтов приёмника с индексами 4·imm8[2] + i + j и байтов блока источника 4·imm8[1:0] + j, биты imm8 7:3 игнорируются; PTEST — ZF = ((источник AND приёмник) = 0), CF = ((источник AND NOT приёмник) = 0), AF, OF, PF, SF обнуляются, приёмник не меняется, остальные флаги сохраняются; PINSRB/PINSRD/PINSRQ — полоса с индексом imm8 по модулю числа полос (16, 4, 2), у регистрового источника берётся младший байт, двойное или четверное слово; PEXTRB/PEXTRW/PEXTRD/PEXTRQ — полоса с индексом imm8 по модулю (16, 8, 4, 2); MOVNTDQA — загрузка 16 байт (подсказка негенерируемая: модели типов памяти WC нет).
+
+Исключения: #UD при LOCK (в любом порядке с `66`), для всех форм #UD при CR0.EM = 1 или CR4.OSFXSR = 0, затем #NM при CR0.TS = 1; регистровая форма MOVNTDQA (операнд `m128`) — #UD; #SS(0) для неканонического адреса через SS (база RSP/RBP), иначе #GP(0), и последний байт операнда должен быть каноническим; #GP(0) для операнда m128 не по 16-байтной границе у форм Type 4 (таблица 2-21) и MOVNTDQA (Type 1, таблица 2-18); у форм Type 5 (таблица 2-22: PMOVSX*, PMOVZX*, PINSR*, PEXTR*) выравнивание не требуется, а #AC(0) при CPL3 (операнд 2, 4, 8 байт не по своему размеру, RFLAGS.AC = 1, CR0.AM = 1 или CR0 не задан) не моделируется: форма останавливается как `Unsupported` без изменений, а не угадывается (физический процессор выдаёт SIGBUS); #PF — результат бэкенда памяти (запись PEXTR — с битом записи в коде ошибки). Порядок проверок, каждая до изменения состояния: #UD/#NM → каноничность начала → выравнивание (Types 1 и 4) → весь диапазон операнда → #AC-отказ (Type 5) → одно `read` или (PEXTR*) одно `write` нужной ширины.
+
+Декодер (`decode_sse41`, `Operation::Sse41 { kind, xmm, operand, immediate }`, `Sse41Kind`, `Sse41Operand`) вызывается из `long_decode::decode` после отказа профильного декодера для кодов карт `0F 38` и `0F 3A`. Принимает обязательный `66`, LOCK (даёт `Invalid`, #UD), один REX непосредственно перед кодом операции, префикс 67, сегментные переопределения CS/DS/ES/SS; imm8 читается после ModRM/SIB/disp, RIP-относительный адрес считается от конца всей инструкции вместе с imm8. Отказ (`Unsupported`): форма без `66`, `F2`/`F3` вместе с `66`, повтор любого префикса, FS/GS, соседние коды карт, в том числе FP-формы SSE4.1 (`38 14/15`, `3A 08…0D, 17, 21, 40, 41`).
+
+Допуск: как у срезов S2-34, C и D (bare-run при заданном локальном `sse` и пара профилей FP-init; без SSE-состояния — `Unsupported` без изменений, x87-состояние не требуется). На CPL3 формы не допускаются (SSE4.1 не объявлен), LOCK там даёт #UD; в JIT формы не компилируются (`UnsupportedDecoded`).
+
+Проверки. `crates/od-isa/tests/s2_55_sse41_int.rs` (30 тестов): значения, вычисленные вручную по псевдокоду SDM; второй независимый перенос псевдокода (`reference`) на сгенерированных наборах; все пары регистров (36 × 16 × 16); все 24 формы адресации × 37 инструкций; выравнивание Types 1/4/5, #AC-отказ, неканонические адреса, ошибки бэкенда, LOCK, CR0/CR4, отсутствие SSE-состояния, отказы соседних кодировок и FP-форм, решения декодера. Регрессия: `s2_54_ssse3_int`, `s2_34_sse_moves_memory`, `s2_54_sse3_permute`, `cpl3_profile_set` (16 новых строк отказа на CPL3 и 4 строки LOCK/`Invalid`), тест отказа JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, `sse4_1` присутствует): 27181 случай (инструкция в RWX-странице между фиксированными прологом и эпилогом; XMM, GPR, флаги, MXCSR, FNV-1a страницы данных, класс сигнала), совпало побайтно 26325; 856 расхождений — отказы модели: 781 `Unsupported` (сочетания префиксов, FS/GS, невыровненные операнды Type 5 при AC = 1) и 75 диагностических `AddressOverflow`; ни одного расхождения среди исполненных моделью случаев. Подробности и счётчики — в разделе «S2-55 срез A» отчёта этапа 8.
+
+### S2-56 (срез A) — PCMPGTQ, POPCNT и CRC32
+
+Срез A задачи S2-56 (целочисленные формы SSE4.2 и POPCNT без строкового ядра). Форма поручена в ходе этапа 8; чекбокс S2-56 не поставлен: строковые формы `PCMPESTRI`, `PCMPESTRM`, `PCMPISTRI`, `PCMPISTRM` (`66 0F 3A 60…63`) — отдельный срез; биты CPUID.01H:ECX.SSE4_2[20] и POPCNT[23] не объявлены и интерпретатором не проверяются (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext): PCMPGTQ `66 0F 38 37 /r` (Vol. 2B с. 4-264…4-266); POPCNT `F3 0F B8 /r` — r16 (`66`), r32, r64 (`F3 REX.W`) с источником r/m той же ширины (Vol. 2B с. 4-405…4-406); CRC32 `F2 0F 38 F0 /r` — r32, r/m8 и r64, r/m8 (`F2 REX.W`), `F2 0F 38 F1 /r` — r32, r/m16 (`66`), r32, r/m32 и r64, r/m64 (`F2 REX.W`) (Vol. 2A с. 3-205…3-207).
+
+Операции. PCMPGTQ (legacy SSE; биты выше 127 не меняются, MXCSR не читается и не пишется): полоса из единиц, если четверное слово приёмника больше источника как знаковое целое, иначе нулевая; флаги не меняются. POPCNT: приёмник = число единичных битов источника (в пределах ширины операнда); OF, SF, AF, CF, PF обнуляются, ZF = 1 только при нулевом источнике, остальные флаги (DF, IF, …) сохраняются; приёмник r32 обнуляет биты 63:32, r16 сохраняет биты 63:16. CRC32: младшее двойное слово приёмника — начальное значение CRC, результат — накопление CRC-32C источника (полином `11EDC6F41H`, данные и CRC в обратном порядке битов; эквивалентно побайтному обновлению отражённым полиномом `82F63B78H`, байты источника от младшего), записывается в младшее двойное слово, старшее обнуляется у r32 и r64; старшее двойное слово исходного приёмника игнорируется; флаги не меняются. Источник r/m8 в регистровой форме — AH, CH, DH, BH для кодов 4…7 без REX и SPL, BPL, SIL, DIL при любом REX.
+
+Исключения: #UD при LOCK (в любом порядке с обязательным префиксом); для PCMPGTQ (Type 4, таблица 2-21) — #UD при CR0.EM = 1 или CR4.OSFXSR = 0, #NM при CR0.TS = 1, #SS(0)/#GP(0) для неканонического адреса, #GP(0) для операнда m128 не по 16-байтной границе; для POPCNT и CRC32 CR0 и CR4 не участвуют (общие регистры), #SS(0)/#GP(0) для неканонического адреса (последний байт операнда тоже должен быть каноническим), #PF — результат бэкенда памяти, выравнивания нет на CPL0, а #AC(0) при CPL3 (операнд не по своему размеру, RFLAGS.AC = 1, CR0.AM = 1 или CR0 не задан) не моделируется: форма останавливается как `Unsupported` без изменений, а не угадывается (физический процессор выдаёт SIGBUS). #UD при отсутствии бита CPUID (POPCNT, SSE4_2) не моделируется: выбор — формы исполняются без проверки бита до S2-57. Источник читается целиком до изменения регистров и флагов.
+
+Декодер (`decode_popcnt_crc32`, `Operation::Popcnt { dst, src }`, `Operation::Crc32 { dst, src }`; PCMPGTQ — `Sse41Kind::Pcmpgtq` общего `decode_sse41`) вызывается из `long_decode::decode` после отказа профильного декодера для кодов `0F B8` и `0F 38 F0/F1`. Принимает обязательный префикс (`F3` для POPCNT, `F2` для CRC32, `66` для PCMPGTQ), LOCK (`Invalid`, #UD), один REX непосредственно перед кодом, `66` (16 бит у POPCNT и CRC32 `F1`; игнорируется у CRC32 `F0`; REX.W сильнее `66`), `67`, сегментные переопределения CS/DS/ES/SS. Отказ (`Unsupported`): форма без обязательного префикса (`0F B8` без `F3`; `0F 38 F0/F1` без `F2` — это MOVBE), другой префикс группы 1, повтор любого префикса, FS/GS, соседние коды.
+
+Допуск: POPCNT и CRC32 — в наборе CPL0 на Ring0 и в bare-run без профилей CR (как CMPXCHG16B, LAHF/SAHF); в паре профилей FP-init они отказываются (`Unsupported`, профиль допускает только свои SSE-формы); на CPL3 не допускаются (SSE4.2 и POPCNT не объявлены), LOCK там даёт #UD. PCMPGTQ — как формы SSE4.1 (локальное `sse`, пара профилей FP-init). Определённость флагов (`flag_effects`): POPCNT определяет все шесть арифметических флагов, CRC32 — ни одного. В JIT формы не компилируются (`UnsupportedDecoded`).
+
+Проверки. `crates/od-isa/tests/s2_56_sse42_popcnt.rs` (30 тестов): значения, вычисленные вручную по SDM (границы знакового порядка PCMPGTQ; счёты и флаги POPCNT всех ширин, нулевой источник); примеры CRC-32C из RFC 3720 (раздел 12.1, приложение B.4: 32 нулевых байта `aa 36 91 8a`, 32 байта `ff` `43 ab a8 62`, `00…1f` `4e 79 dd 46`, `1f…00` `5c db 3f 11`, PDU Read (10) `56 3a 96 d9`) цепочкой команд CRC32 всех ширин источника, проверочная строка `123456789` = 0xE3069283, 55 значений × 4 ширины, измеренных инструкцией CRC32 физического процессора; независимый литеральный перенос «Operation» SDM (`sdm_crc32`); все пары регистров, все формы адресации, выравнивание, неканонические адреса, ошибки бэкенда, LOCK, CR0/CR4 под парой FP-init, отказы соседних кодировок, решения декодера, определённость флагов, набор CPL0. Регрессия: `cpl3_profile_set` (10 новых строк отказа на CPL3 и 5 строк LOCK/`Invalid`), `s2_55_sse41_int` (из списка соседних кодировок убрана `66 0F 38 37`), тест отказа JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; `sse4_2` и `popcnt` присутствуют): 10023 случая (PCMPGTQ — 833, POPCNT — 3150, CRC32 — 6040; инструкция в RWX-странице между фиксированными прологом и эпилогом; GPR, XMM, флаги, MXCSR, FNV-1a страницы данных, класс сигнала), совпало побайтно 9593; 430 расхождений — отказы модели: 307 сочетаний префиксов, 50 FS/GS, 36 невыровненных операндов при AC = 1 на CPL3 (`Unsupported`) и 37 диагностических `AddressOverflow`; ни одного расхождения среди исполненных моделью случаев. Подробности и счётчики — в разделе «S2-56 срез A» отчёта этапа 8.
+
+### S2-56 (срез B) — PCMPESTRI, PCMPESTRM, PCMPISTRI и PCMPISTRM
+
+Срез B задачи S2-56 (строковые формы SSE4.2). Форма поручена в ходе этапа 8; чекбокс S2-56 не поставлен: биты CPUID.01H:ECX.SSE4_2[20] и POPCNT[23] не объявлены и интерпретатором не проверяются (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext; Vol. 2B): PCMPESTRM `66 [REX.W] 0F 3A 60 /r ib` (с. 4-256…4-257), PCMPESTRI `66 [REX.W] 0F 3A 61 /r ib` (с. 4-254…4-255), PCMPISTRM `66 0F 3A 62 /r ib` (с. 4-269…4-270), PCMPISTRI `66 0F 3A 63 /r ib` (с. 4-267…4-268); операнды xmm1 (ModRM:reg) и xmm2/m128 (ModRM:r/m), imm8 управляет форматом, агрегацией, полярностью и выбором вывода — раздел 4.1, с. 4-1…4-4, таблицы 4-1…4-8. В SDM редакции 093 страницы инструкций не содержат раздела «Operation»; семантика задана разделом 4.1.
+
+Операция. Формат (imm8[1:0]): беззнаковые байты, беззнаковые слова, знаковые байты, знаковые слова (n = 16 или 8 элементов). Допустимость элементов: у явных форм (PCMPESTRx) — первые |длина| элементов, длина xmm1 — EAX, xmm2/m128 — EDX (с REX.W — RAX и RDX целиком, как 64-битные знаковые), абсолютное значение насыщается до n (поэтому 0x80000000 как EAX и любое |x| ≥ n дают n); у неявных форм (PCMPISTRx) допустимы элементы с индексом ниже первого нулевого байта или слова (по imm8[0]) своей строки; EAX и EDX не читаются. BoolRes[j, i] — результат сравнения элемента j xmm2/m128 с элементом i xmm1 (равенство; для «ranges» — «≥» с чётным и «≤» с нечётным элементом xmm1; знаковое или беззнаковое по imm8[1]); для недопустимых элементов таблица 4-7 задаёт результат: «equal any» и «ranges» — всегда «ложь» при хотя бы одном недопустимом; «equal each» — «истина», если недопустимы оба, иначе «ложь»; «equal ordered» — «истина», если недопустим элемент xmm1, «ложь», если недопустим только элемент xmm2/m128. Агрегация (imm8[3:2], таблица 4-3): equal any — ИЛИ по i; ranges — ИЛИ по парам (i, i+1); equal each — BoolRes[i, i]; equal ordered — И по BoolRes[k, k−j] для k = j…n−1 (поиск подстроки xmm1 в xmm2/m128). Полярность (imm8[5:4]): 00 и 10 — IntRes2 = IntRes1; 01 — отрицание всех n бит; 11 — отрицание только бит допустимых элементов xmm2/m128. Выбор вывода: индексные формы возвращают в ECX индекс младшего (imm8[6] = 0) или старшего (imm8[6] = 1) установленного бита IntRes2, n — если установленных нет; ECX записывается как 32-битный регистр (старшие 32 бита RCX обнуляются); масочные формы пишут IntRes2 в младшие биты XMM0 с обнулением остальных (imm8[6] = 0) или расширяют каждый бит до байта (слова) (imm8[6] = 1); индексные формы XMM0 не меняют, масочные — RCX. Флаги: CF = IntRes2 ≠ 0, ZF = число допустимых элементов xmm2/m128 меньше n (явные формы: |EDX| < n; неявные: в xmm2/m128 есть нулевой элемент), SF — то же для xmm1, OF = IntRes2[0], AF и PF сбрасываются; остальные биты RFLAGS (DF, IF, AC, …) сохраняются. imm8[7] не влияет.
+
+Исключения (Type 4, таблица 2-21, Vol. 2A с. 2-29, с примечанием 1 и повтором на страницах инструкций): #UD при LOCK (в любом порядке с `66`; декодер даёт `Invalid`), при CR0.EM = 1 и CR4.OSFXSR = 0; #NM при CR0.TS = 1; #SS(0)/#GP(0) для неканонического адреса (последний байт операнда тоже должен быть каноническим); невыровненный m128 допустим (#GP не возникает — единственные исключения из выравнивания Type 4: LDDQU, MOVUPD, MOVUPS и эти четыре); #PF — результат бэкенда памяти. #AC в Type 4 не определён: невыровненный операнд на CPL3 при RFLAGS.AC = 1 модель, как и остальные формы SSE4.1, останавливает `Unsupported` без изменений (железо не проверялось). #UD при отсутствии бита CPUID (SSE4_2) не моделируется до S2-57. Результат вычисляется после полного чтения операнда; при ошибке памяти состояние не меняется.
+
+Декодер: `Sse41Kind::Pcmpestrm/Pcmpestri/Pcmpistrm/Pcmpistri` в общем `decode_sse41` (обязательный `66`, один REX непосредственно перед `0F`; REX.R и REX.B выбирают xmm8…xmm15; REX.W значим только у явных форм и игнорируется неявными; `67` и сегменты CS/DS/ES/SS допустимы). Отказ (`Unsupported`): без `66`, `F2`/`F3`, повтор любого префикса, FS/GS, соседние коды (`0F 3A 64…`). Допуск, `flag_effects` (все шесть арифметических флагов определены), JIT — как у форм SSE4.1: набор CPL0 на Ring0, bare-run и пара профилей FP-init; на CPL3 не допускаются (SSE4.2 не объявлен), в JIT не компилируются (`UnsupportedDecoded`).
+
+Проверки: `crates/od-isa/tests/s2_56_pcmpstr.rs` (15 тестов) — известные ответы, 224 вектора физического процессора, независимый перенос таблиц раздела 4.1 (`sdm_reference`) на все 256 imm8 всех четырёх форм (без и с REX.W), граничные длины, формы адресации, неканонические адреса, `#PF`, LOCK, CR0/CR4, отказы соседних кодировок, определённость флагов; регрессия — `cpl3_profile_set` и тест JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 28460 случаев, совпало побайтно 28068; 392 расхождения — отказы модели (288 сочетаний префиксов и FS/GS, 72 `AddressOverflow`) и 32 случая с r11, зарезервированным программой oracle; среди исполненных моделью случаев расхождений нет. Подробности — в разделе «S2-56 срез B (PCMPxSTRx)» отчёта этапа 8.
+
+### S2-33 (минимальный объём) и S2-54 (MMX-формы SSSE3)
+
+S2-33 выполнена только в объёме, который нужен MMX-формам SSSE3 (регистровая модель, влияние на x87, EMMS, проверки допуска); чекбокс S2-33 не поставлен: остальные MMX-инструкции (`MOVD`/`MOVQ`, арифметика, логика, сдвиги, насыщение, упаковка, сравнения) и связь с FXSAVE/FNSAVE/FRSTOR модели не реализованы. S2-54 дополнена MMX-формами 16 целочисленных инструкций SSSE3; чекбокс S2-54 не поставлен (`ADDSUBPS/PD`, `HADDPS/PD`, `HSUBPS/PD`). Биты CPUID MMX/SSSE3 интерпретатором не проверяются (S2-57); CPUID.01H:EDX.MMX в Linux-профиле объявлен ранее без этой реализации.
+
+Регистровая модель (Intel SDM, редакция 325462-093US, текст прочитан через pdftotext; Vol. 1 `9.2.2 с. 9-2, `9.5.1 с. 9-8, `9.6.2 с. 9-9; Vol. 3A `15.2, таблицы 15-2 и 15-3, с. 15-2…15-3): MM0–MM7 — младшие 64 бита физических регистров данных x87 R0–R7 (`X87State::registers`, без второй копии; MMn — физический Rn, не ST(n), TOP вид не вращает). MMX-инструкция, кроме EMMS, после успеха: TOP (SW[13:11]) = 0, всё тег-слово = 0000h (все valid), у регистра-приёмника биты 79:64 = FFFFh (мантисса — результат), регистр-источник не переписывается; прочие биты SW, CW, FIP/FDP/FOP и остальные регистры не меняются. EMMS (`NP 0F 77`, Vol. 2A с. 3-282): тег-слово = FFFFh и TOP = 0 (Vol. 3A таблица 15-2), регистры не меняются. При ошибке (#UD, #NM, #MF, #GP, #SS, #PF) состояние x87 не меняется. Следствие для x87-кода после MMX: регистр с экспонентой FFFFh — недействительный операнд; без EMMS стек выглядит заполненным.
+
+Исключения и допуск (Vol. 2A EMMS с. 3-282, Vol. 1 `9.6.1, Vol. 2A таблица 2-21): порядок, каждая проверка до изменения состояния: #UD (CR0.EM = 1; LOCK — на уровне декодера) → #NM (CR0.TS = 1) → #MF (ES = 1 при неотменённом флаге в SW; CR0.NE = 0 даёт `Unsupported`: FERR# в модели нет) → для memory-формы каноничность (#SS(0) через RSP/RBP, иначе #GP(0)) → весь 8-байтный диапазон → одно `read` (#PF — результат бэкенда). CR4.OSFXSR MMX-форму не гейтит (таблица 2-21 указывает его для «Legacy SSE instruction»); правила выравнивания на 16 байт у 64-битного операнда нет; #AC на CPL3 при AC = 1 и невыровненном по 8 байтам операнде не моделируется — `Unsupported` без изменений (железо: SIGBUS). CPUID.MMX/SSSE3 не проверяются (S2-57). Допуск: bare-run при локальном `x87` (SSE-состояние не нужно; без `x87` — `Unsupported` без изменений) и пара профилей FP-init (CR0/CR4 из состояния); на CPL3 формы и EMMS не допускаются (`cpl3_allows` не расширен), LOCK даёт #UD; в JIT не компилируются (`UnsupportedDecoded`). MMX работает на `LongModeState.x87` (локальный снимок); отдельное состояние FP CPL0-набора (`GuestFpState`) не связано с MMX (S2-39).
+
+Формы и декодер: PSHUFB `0F 38 00`, PHADDW/PHADDD `01/02`, PHADDSW `03`, PMADDUBSW `04`, PHSUBW/PHSUBD `05/06`, PHSUBSW `07`, PSIGNB/W/D `08/09/0A`, PMULHRSW `0B`, PABSB/W/D `1C/1D/1E`, PALIGNR `0F 3A 0F /r ib` без обязательного префикса (`Operation::MmxSsse3 { kind, destination, source, immediate }`, `decode_ssse3_int` с `66` даёт `Operation::Ssse3Int`): приёмник MMX ModRM.reg, источник MMX ModRM.r/m или m64; REX.R/REX.B на номера MM не влияют, REX.X/B участвуют в адресе, REX.W игнорируется, 67 и CS/DS/ES/SS принимаются, LOCK — `Invalid` (#UD). Отказ (`Unsupported`): `F2`/`F3`, повтор любого префикса, FS/GS. EMMS (`decode_emms`): REX, 67 и любые сегментные переопределения принимаются, LOCK — #UD, `66`/`F2`/`F3` и повторы — `Unsupported` (железо даёт #UD для `66`/`F2`/`F3`).
+
+Операции — 64-битные псевдокоды SDM («With 64-bit Operands») на том же `ssse3_int_result` с шириной 8 байт: PSHUFB — бит 7 даёт 0, иначе байт приёмника по младшим трём битам; PALIGNR — склейка (приёмник:источник) 16 байт, сдвиг вправо на imm8 байт, счёт ≥ 16 даёт 0; PABS*/PSIGN*/PMADDUBSW/PMULHRSW — как у XMM-форм на четырёх словах или восьми байтах; PHADDW/PHSUBW/PHADDSW/PHSUBSW — две пары приёмника в словах 0–1, две пары источника в словах 2–3; PHADDD/PHSUBD — по одной паре. Флаги RFLAGS, MXCSR и XMM не меняются.
+
+Проверки. `crates/od-isa/tests/s2_33_mmx.rs` (15 тестов) и `s2_54_ssse3_mmx.rs` (19 тестов, независимый `reference64`, значения вручную по SDM), общие фикстуры `mmx_common/mod.rs`; `cpl3_profile_set.rs` (отказ MMX-форм и EMMS на CPL3, LOCK); `od-jit` (отказ блока). Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 7483 случая (FXRSTOR64 задаёт TOP, теги, CW, SW и 8 случайных регистров, FXSAVE64 читает результат: CW, SW, тег, регистры, FIP/FDP; плюс GPR, XMM, флаги, MXCSR, FNV-1a страницы данных, класс сигнала), совпало побайтно 7100; 383 расхождения — отказы модели (`Unsupported` или граница 2^64), ни одного расхождения среди исполненных моделью случаев. Подробности и счётчики — в разделе «S2-33 MMX и S2-54 MMX-формы» отчёта этапа 8.
+
+### S2-55 (срез B) — формы SSE4.1 с плавающей точкой
+
+Срез B задачи S2-55: `ROUNDPS/PD/SS/SD` (`66 0F 3A 08…0B /r ib`), `BLENDPS/PD` (`3A 0C/0D /r ib`), `BLENDVPS/PD` (`66 0F 38 14/15 /r`, неявный `xmm0`), `EXTRACTPS` (`3A 17 /r ib`), `INSERTPS` (`3A 21 /r ib`), `DPPS/DPPD` (`3A 40/41 /r ib`). Чекбокс S2-55 не поставлен: остаётся бит CPUID.01H:ECX.SSE4_1[19] (S2-57); интерпретатор его не проверяет.
+
+Источник: Intel SDM, редакция 325462-093US (`cdrdv2.intel.com/v1/dl/getContent/671200`, текст через pdftotext). Vol. 2A: BLENDPD с. 3-78…3-79, BLENDPS с. 3-80…3-81, BLENDVPD с. 3-82…3-83, BLENDVPS с. 3-84…3-85, DPPD с. 3-277…3-278, DPPS с. 3-279…3-281, EXTRACTPS с. 3-305…3-306, INSERTPS с. 3-464…3-466; Vol. 2B: ROUNDPD с. 4-583…4-585, ROUNDPS с. 4-586…4-587, ROUNDSD с. 4-588…4-589, ROUNDSS с. 4-590…4-591 (рис. 1-23, табл. 1-13); Vol. 1 §12.8.4, табл. 12-1.
+
+Операции (legacy SSE; биты выше 127 не меняются). ROUND*: режим округления — MXCSR.RC при imm8[2] = 1, иначе imm8[1:0]; imm8[3] = 1 снимает исключение точности независимо от маски PM; результат — целое значение той же точности (нуль сохраняет знак источника); сигнальный NaN превращается в тихий и взводит IE; денормал не сигналит ни DE, ни UE; DAZ превращает денормальный источник в нуль до округления (правило SDM, подтверждено физическим процессором; от процессора — сохранение знака нуля и отсутствие DE/UE); ROUNDSS/ROUNDSD берут элемент из источника, остальные биты — из приёмника. DPPS/DPPD: произведения, выбранные imm8[7:4] (DPPD: imm8[5:4]), иначе +0.0 без исключений; суммы попарно, затем итог, итог копируется в элементы, выбранные imm8[3:0] (DPPD: imm8[1:0]), остальные +0.0; каждое умножение и сложение — операция ядра S2-37 под MXCSR (округление, DAZ, FTZ, маски). BLENDPS/PD: элемент берётся из источника при установленном бите imm8 (старшие биты игнорируются); BLENDVPS/PD — по старшему биту элемента `xmm0`. INSERTPS: Count_S = imm8[7:6] (для источника в памяти равен 0), Count_D = imm8[5:4], затем ZMask = imm8[3:0] обнуляет элементы приёмника. EXTRACTPS: элемент imm8[1:0], в регистр — с расширением нулём до 64 бит (REX.W не влияет), в память — 4 байта. BLEND*, INSERTPS, EXTRACTPS не читают и не пишут MXCSR.
+
+Порядок исключений арифметических форм (заданный физическим процессором): ROUND* — невзведённый IE останавливает инструкцию и сообщает только IE, затем PE (при imm8[3] = 0). DPPS/DPPD — стадии: умножения, попарные суммы, итог; внутри стадии собираются флаги предвычислительных исключений всех операций, невзведённое из них останавливает инструкцию и сообщает только их; затем апостериорные флаги стадии, невзведённые OE/UE и PE останавливают до следующей стадии; значение при невзведённом исключении не записывается. Выбор NaN: пары складываются как (p1 + p0) и (p3 + p2), младшие два элемента приёмника берут (pair01 + pair23), старшие — (pair23 + pair01); DPPD: (t0 + t1) и (t1 + t0).
+
+Исключения: #UD при LOCK, при CR0.EM = 1 или CR4.OSFXSR = 0; #NM при CR0.TS = 1; #XM (вектор 19) при CR4.OSXMMEXCPT = 1 или #UD при 0 для невзведённого исключения (без CR4 в состоянии — `Unsupported` без изменений); резервные биты MXCSR у ROUND*/DPPS/DPPD — `Unsupported`; #SS(0)/#GP(0) для неканонического адреса, #GP(0) для m128 не по 16-байтной границе у Types 2 и 4 (ROUNDPS/PD, DPPS/DPPD, BLEND*); Types 3 и 5 (ROUNDSS/SD, INSERTPS, EXTRACTPS) выравнивания не требуют, а их #AC(0) на CPL3 не моделируется: невыровненный операнд при RFLAGS.AC = 1 — `Unsupported`.
+
+Декодер: `decode_sse41_fp`, `Operation::Sse41Fp { kind, xmm, operand, immediate }`, `Sse41FpKind`; правила префиксов как у `decode_sse41` (обязательный `66`, LOCK — `Invalid`, отказ при `F2`/`F3`, повторных префиксах, FS/GS). Допуск как у `Sse41`; на CPL3 формы не допускаются (SSE4.1 не объявлен), в JIT не компилируются.
+
+Проверки. `crates/od-isa/tests/s2_55_fp.rs` (33 теста и 216 векторов физического процессора), `cpl3_profile_set.rs`, тест `od-jit`. Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 203383 случая в двух прогонах (101696 и 101687), совпало побайтно 202723; 660 расхождений — отказы модели (654 `Unsupported`: #AC Types 3 и 5, сочетания префиксов, FS/GS; 6 — обёртка адреса через 2^64). Подробности — [отчёт этапа 8](../reports/STAGE_8_REPORT.md), раздел «S2-55 срез B».
 
 ### S6-21 — LOCK SUB m32, imm32
 
@@ -31631,12 +32404,169 @@ CPL3 MOV probe stops at the first byte `0x66`.
 Independent review approved with no findings. ISSUE-201 remains the unrelated CLD caveat.
 
 
+### S2-37 (общая арифметика ADD/SUB/MUL/DIV) — общее FP-ядро SSE, первый срез
+
+Первый срез общего FP-ядра SSE (S2-37/S2-38): `ADDPS/ADDPD/ADDSS/ADDSD`, `SUBPS/SUBPD/SUBSS/SUBSD`, `MULPS/MULPD/MULSS/MULSD`, `DIVPS/DIVPD/DIVSS/DIVSD` для binary32 и binary64 с MXCSR (RC, маски, флаги, DAZ, FTZ), XMM- и memory-источников (m128, m32, m64 как у S2-34), без узких профилей. Форма поручена в ходе этапа 8; чекбокс S2-37 не поставлен: остаются SQRT, общие MIN/MAX, CVT*, COMI/UCOMI, общие CMP*, DPPS/DPPD, ROUND, ADDSUB/HADD/HSUB; бит CPUID.01H:EDX.SSE[25] и SSE2[26] не объявлены и интерпретатором не проверяются (S2-57).
+
+Формы (Intel SDM, редакция 325462-093US, `cdrdv2.intel.com/v1/dl/getContent/671200`; текст прочитан через pdftotext): `[NP|66|F3|F2] 0F 58 /r` ADD (Vol. 2A с. 3-16…3-25), `0F 59` MUL (Vol. 2B с. 4-142…4-151), `0F 5C` SUB (Vol. 2B с. 4-687…4-696), `0F 5E` DIV (Vol. 2A с. 3-267…3-276); без префикса — PS (4 × binary32), `66` — PD (2 × binary64), `F3` — SS (младшая полоса binary32), `F2` — SD (младшая полоса binary64). Операнды: xmm1 (ModRM.reg, REX.R) — первый источник и приёмник, xmm2/m128 | m32 | m64 (ModRM.r/m, REX.B/X) — второй источник; результат `xmm1 := xmm1 ∘ источник` (SUB и DIV — приёмник минус источник и приёмник на источник); у scalar-форм биты приёмника выше элемента сохраняются, биты источника выше элемента игнорируются; биты выше 127 не меняются.
+
+Арифметика и MXCSR (`od-isa/src/sse_fp.rs`, Vol. 1 §4.8.3.5, §4.9, §10.2.3, §11.5): значение — единственное округление точного результата по RC (00 ближайшее чётное, 01 к −∞, 10 к +∞, 11 к нулю) целочисленной арифметикой над сырыми кодировками (`binary_float.rs`), без арифметики и режимов FPU хоста. NaN (таблица 4-8, SSE): побеждает первый источник, SNaN преобразуется в QNaN (установка старшего бита дроби); SNaN в любом операнде — IE, QNaN — без флага; недопустимые операции (∞ − ∞ одного знака, ∞ + ∞ разных знаков, 0 · ∞, 0/0, ∞/∞) — QNaN «вещественная неопределённость» (`FFC00000H`, `FFF8000000000000H`) и IE; деление ненулевого конечного на нуль — ∞ со знаком XOR и ZE. Приоритет (§4.9.2): SNaN, затем QNaN, затем IE или ZE, затем DE; поэтому DE не ставится при NaN-операнде, IE и ZE. DAZ (бит 6) превращает денормальный источник в нуль того же знака до операции и подавляет DE. Тининесс определяется после округления с неограниченным порядком; UE при масированном UM — только если результат ещё и неточен; PE — потеря точности в итоговой кодировке (у переполнения всегда). Переполнение (таблица 4-11): ±∞ или наибольшее конечное по RC. FTZ (бит 15) при масированном UM заменяет малый результат нулём знака истинного результата и ставит UE и PE (в том числе у точного денормального результата); при UM = 0 FTZ игнорируется. Флаги — OR по полосам упакованной инструкции и липкие (существующие не сбрасываются).
+
+Немасированное исключение (§11.5.3): сначала предвычислительные IE, DE, ZE по всем полосам — их флаги ставятся, а при немасированном любом из них инструкция останавливается до вычисления; затем для каждой полосы пост-вычислительные OE, UE, PE: если OE или UE немасированы, полоса останавливает инструкцию, а флаги — OE или UE и PE только при неточном округлении с неограниченным порядком (установлено oracle: для 2·MAX при OM = 0 — один OE, для MAX + 2^127 — OE|PE; текст SDM это не задаёт); иначе полоса получает масированную реакцию (флаги, результат), и инструкция останавливается, только если установлен немасированный PE. При остановке приёмник не записывается (§4.9.2), RIP не меняется, MXCSR получает обнаруженные флаги, вектор 19 (#XM) при CR4.OSXMMEXCPT = 1 или 6 (#UD) при 0; без CR4 в состоянии вектор неизвестен: `Unsupported` без изменений (в том числе MXCSR). MXCSR с ненулевыми битами 31:16 архитектурно невозможен (LDMXCSR даёт #GP): `Unsupported`.
+
+Исключения (Vol. 2A §2.5): packed-формы — Type 2 (таблица 2-19), scalar-формы — Type 3 (таблица 2-20). #UD при LOCK (в любом порядке с обязательным префиксом, и в регистровой форме), CR0.EM = 1 или CR4.OSFXSR = 0, затем #NM при CR0.TS = 1; #SS(0) для неканонического адреса через SS (база RSP/RBP), иначе #GP(0), и весь операнд должен быть каноническим; #GP(0) для packed-операнда m128 не по 16-байтной границе (на любом CPL); #PF — результат бэкенда памяти (MXCSR и состояние не меняются). Порядок проверок, каждая до изменения состояния: #UD/#NM → MXCSR → каноничность → выравнивание (packed) → диапазон → #AC-отказ (scalar) → одно `read` 16, 4 или 8 байт → арифметика и немасированные исключения. #AC(0) scalar-форм при CPL3 (операнд не по своему размеру, RFLAGS.AC = 1, CR0.AM = 1 или CR0 не задан) не моделируется: форма останавливается как `Unsupported` без изменений, а не угадывается (физический процессор — SIGBUS). RFLAGS, x87 и GPR не читаются и не пишутся.
+
+Декодер (`decode_sse_fp_arith`, `Operation::SseFpArith { kind, shape, destination, source: Sse3Source }`, `SseFpArithKind`, `SseFpShape`) вызывается из `long_decode::decode` после отказа профильного декодера для кодов `0F 58/59/5C/5E`; принимает любой ModRM/SIB/disp8/disp32, RIP-относительный адрес (от конца инструкции), REX.R/X/B (REX.W игнорируется; REX должен непосредственно предшествовать коду), префикс 67, сегментные переопределения CS/DS/ES/SS; LOCK — `Invalid` (#UD). Отказ (`Unsupported`): повтор любого префикса, FS/GS, 66 вместе с F2/F3, соседние коды. Канонические регистровые формы и `[rax]`-формы, которые забирает профильный декодер (16 + 16 узких операций и `MulsdMemory`), исполнитель переводит в ту же операцию (`sse_fp_arith_from_narrow`), если ни один профиль этих форм не задан и нет набора CPL0/CPL3; при заданном профиле набор закрыт, как раньше (общая операция там `Unsupported`).
+
+Допуск: как у S2-55 — локальное `sse` (bare-run) и пара профилей FP-init (CR0/CR4 из состояния, проверки EM/TS/OSFXSR достижимы); без SSE-состояния — `Unsupported` без изменений. На CPL3 формы не допускаются (`cpl3_allows` не расширен, SSE не объявлен), LOCK там даёт #UD; в наборе CPL0 FP-состояние лежит в ячейке `GuestFpState`, общий путь его не использует (подключение — отдельный срез); в JIT формы не компилируются (`UnsupportedDecoded`). Побочное изменение: `BinaryRoundingResult` получил диагностику `unbounded_inexact` (значение по умолчанию — `inexact`).
+
+Проверки. `crates/od-isa/tests/s2_37_fp_arith.rs` (19 тестов): 320 векторов и 128 курируемых сценариев — результаты физического процессора (форма, маски, RC, DAZ, FTZ, NaN, ∞, ±0, денормалы, переполнение, потеря значимости, ZE, порядок операндов, рисунок 11-9), для HAND — по два варианта кодировки (канонической и REX.W) и на CPL0 и CPL3, для GOLDEN — один вариант на вектор (каноническая и REX.W чередуются по индексу), только Ring0; все пары регистров × 16 форм; RN-значения против арифметики хоста (4000 пар на операцию и формат); упакованные полосы против scalar-результатов; 23 формы адресации × 16 инструкций; выравнивание, AC, неканонические адреса, ошибки бэкенда, CR0/CR4, LOCK, #XM/#UD по OSXMMEXCPT, MXCSR с зарезервированными битами, отсутствие SSE-состояния, решения декодера. Открыто для S2-38: преобразование binary64 → binary32 в `binary_float.rs` (около строки 617) пересобирает `BinaryRoundingResult::new` и теряет `unbounded_inexact`; `CVTSD2SS` с немаскированным переполнением получит лишний PE, если будет опираться на это поле. Регрессия: `cargo test -p od-isa` целиком (11 прежних unit-тестов `execute.rs` переписаны под исполнение форм без профиля), `cpl3_profile_set` (5 строк отказа на CPL3 и 2 строки LOCK/`Invalid`), тест отказа JIT в `od-jit`.
+
+Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; MXCSR каждого случая загружается `LDMXCSR`, сигнал SIGFPE — #XM): 743 536 случаев (305 408 + 438 000 + 128 курируемых); GPR, XMM, флаги, MXCSR, x87, FNV-1a страницы данных и класс сигнала — побайтно; совпало 742 948, 588 расхождений — отказы модели: 264 невыровненных scalar-операнда при AC = 1 на CPL3, 312 сочетаний префиксов и FS/GS, 12 диагностических `AddressOverflow`; ни одного расхождения среди исполненных моделью случаев. Подробности и счётчики — в разделе «S2-37 общая арифметика (ADD/SUB/MUL/DIV)» отчёта этапа 8.
+
+### S2-38 (SQRT, MIN, MAX, сравнения, COMISS/UCOMISS, CVTDQ2PS/CVTPS2DQ/CVTTPS2DQ) — общее FP-ядро SSE, второй срез
+
+Второй срез общего FP-ядра SSE (S2-37/S2-38): `SQRTPS/PD/SS/SD` (`0F 51`), `MINPS/PD/SS/SD` (`0F 5D`), `MAXPS/PD/SS/SD` (`0F 5F`), `COMISS/COMISD` (`0F 2F`), `UCOMISS/UCOMISD` (`0F 2E`), `CMPPS/CMPPD/CMPSS/CMPSD` (`0F C2 /r ib`), `CVTDQ2PS` (`0F 5B`), `CVTPS2DQ` (`66 0F 5B`), `CVTTPS2DQ` (`F3 0F 5B`) с любым XMM- или memory-источником (Intel SDM, редакция 325462-093US: Vol. 2A CMPPD 3-168…3-174, CMPPS 3-175…3-184, CMPSD 3-185…3-188, CMPSS 3-189…3-193, COMISD 3-199…3-200, COMISS 3-201…3-202, CVTDQ2PS 3-211…3-213, CVTPS2DQ 3-225…3-227, CVTTPS2DQ 3-248…3-249; Vol. 2B MAXPD…MAXSS 4-5…4-15, MINPD…MINSS 4-16…4-26, SQRTPD…SQRTSS 4-661…4-670, UCOMISD/UCOMISS 4-733…4-736).
+
+Ядро (`od-isa/src/sse_fp.rs`) общее с S2-37: политика MXCSR (предвычислительные IE/DE/ZE по всем полосам, затем пост-вычислительные OE/UE/PE, DAZ, FTZ, `commit`) не менялась. SQRT берёт только второй источник (первый даёт верхние биты scalar-результата); MIN/MAX возвращают второй источник при равных нулях и при любом NaN (SNaN не превращается в QNaN), IE для QNaN и SNaN, DE только без NaN; CMPxx — маска ширины элемента по биту 2:0 imm8 (IE для QNaN только у LT/LE/NLT/NLE; биты 7:3 зарезервированы: `Unsupported`, железо их игнорирует); COMISx/UCOMISx — ZF/PF/CF по отношению, OF/SF/AF сброшены, IE для QNaN только у COMISx, EFLAGS не меняется при немасированном исключении, `flag_effects` определяет все шесть арифметических флагов; CVTDQ2PS — округление по RC, PE; CVTPS2DQ/CVTTPS2DQ — целое «indefinite» 80000000H с IE для NaN, ∞ и выхода из диапазона, PE при потере, DE не ставится (DAZ действует).
+
+Исключения и декодер как в S2-37: Type 2 для packed (#GP(0) при невыровненном 128-битном операнде), Type 3 для scalar, #UD при LOCK, CR0.EM/CR4.OSFXSR, #NM при CR0.TS, немасированное исключение — #XM или #UD по CR4.OSXMMEXCPT (без CR4 в состоянии — `Unsupported` без изменений). `decode_sse_fp_arith` принял коды `51/5D/5F`, новый `decode_sse_fp_misc` — `2E/2F/C2/5B` (`Operation::SseFpMisc`); оба вызываются после отказа профильного декодера. Узкие профильные операции этих форм (регистровые и `[rax]`) исполнитель переписывает в общую операцию, пока не задан ни один узкий профиль этих форм и нет `control_policy`; при заданном профиле набор закрыт. `RCPSS/RCPPS/RSQRTSS/RSQRTPS` остаются узкими (S2-37a–d). Допуск — как у S2-37; на CPL3 и в JIT формы не допускаются.
+
+Проверки: `crates/od-isa/tests/s2_38_misc_fp.rs` (21 тест; 758 векторов физического процессора). Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; MXCSR каждого случая — `LDMXCSR`): 564 550 случаев (2 прогона по 282 275), совпало 562 498; 2 052 отказа модели (#AC scalar при RFLAGS.AC — 760, префиксные варианты и FS/GS — 936, зарезервированные биты предиката — 320, `AddressOverflow` — 36); расхождений по значению, MXCSR, EFLAGS и сигналу нет.
+
+### S2-54 (FP-часть) — ADDSUBPS/PD, HADDPS/PD и HSUBPS/PD
+
+Формы SSE3 на общем FP-ядре SSE (S2-37): `F2 0F D0` ADDSUBPS, `66 0F D0` ADDSUBPD, `F2 0F 7C` HADDPS, `66 0F 7C` HADDPD, `F2 0F 7D` HSUBPS, `66 0F 7D` HSUBPD (Intel SDM, редакция 325462-093US, Vol. 2A с. 3-26…3-29, 3-433…3-438, 3-442…3-447). Чекбокс S2-54 не поставлен; бит CPUID SSE3 не объявлен (S2-57).
+
+Операция (первый операнд — приёмник и первый источник): ADDSUB — элемент 0 (и 2) `dst − src`, элемент 1 (и 3) `dst + src`; HADD — `low + high` каждой пары соседних элементов, пары приёмника в младшей половине результата, пары источника — в старшей; HSUB — `low − high` тех же пар. Источник — XMM или m128 (Type 2: выравнивание 16 байт, иначе `#GP(0)`; неканонический адрес — `#GP(0)`, `#SS(0)` для базы RSP/RBP). Обязательный префикс: `F2` — binary32 (PS), `66` — binary64 (PD); без префикса и с `F3` формы нет (аппаратно `#UD`; модель отказывает как Unsupported), повторные и конфликтующие префиксы, FS/GS — Unsupported; LOCK — `#UD`; REX.W игнорируется.
+
+Арифметика, исключения и MXCSR — те же, что у ADD/SUB из S2-37 (`sse_fp::arith`): единственное округление по RC, флаги IE/DE/ZE/OE/UE/PE липкие, маски, DAZ, FTZ, неотложенное исключение — `#XM` при CR4.OSXMMEXCPT = 1 и `#UD` при 0 без записи приёмника, гейты CR0.EM/TS и CR4.OSFXSR, MXCSR с зарезервированными битами — Unsupported. Выбор NaN внутри пары (по физическому oracle, а не по тексту псевдокода SDM): первым операндом считается младший элемент пары. CPL3 и JIT отказывают для новых форм (как для общей `SseFpArith`). Проверено на физическом oracle: 102978 из 103098 случаев совпали, 120 различий — отказы по префиксам и FS/GS (подробности — [STAGE_8_REPORT.md](../reports/STAGE_8_REPORT.md), раздел «S2-54 FP-часть»).
+
+### S2-37 (остаток: CVTPS2PD, CVTPD2PS, CVTSS2SD, CVTSD2SS, RCP/RSQRT) — общее FP-ядро SSE, третий срез
+
+Третий срез общего FP-ядра SSE (S2-37/S2-38): `CVTPS2PD` (`0F 5A`), `CVTPD2PS` (`66 0F 5A`), `CVTSS2SD` (`F3 0F 5A`), `CVTSD2SS` (`F2 0F 5A`), `RCPPS` (`0F 53`), `RCPSS` (`F3 0F 53`), `RSQRTPS` (`0F 52`), `RSQRTSS` (`F3 0F 52`) с любым XMM- или memory-источником (Intel SDM, редакция 325462-093US: Vol. 2A CVTPD2PS 3-219…3-222, CVTPS2PD 3-228…3-230, CVTSD2SS 3-234…3-235, CVTSS2SD 3-240…3-241; Vol. 2B RCPPS 4-538…4-539, RCPSS 4-540…4-541, RSQRTPS 4-594…4-595, RSQRTSS 4-596…4-597).
+
+Ядро (`od-isa/src/sse_fp.rs`) общее с S2-37/S2-38; политика MXCSR (`commit`: предвычислительные IE/DE, затем OE/UE/PE, DAZ, FTZ) не менялась. CVTPS2PD и CVTSS2SD — точное расширение binary32 в binary64 (IE для SNaN, который становится QNaN; DE для денормала без DAZ); CVTPD2PS и CVTSD2SS — сужение по MXCSR.RC (переполнение, underflow, precision, FTZ; NaN сохраняет старшие 23 бита мантиссы), CVTPD2PS обнуляет старшие 64 бита приёмника, scalar-формы сохраняют биты выше элемента. RCP/RSQRT — приближения с относительной ошибкой не более 1,5·2^-12: значение каждого элемента даёт детерминированный эталон `Binary32::reciprocal_sse_raw`/`reciprocal_sqrt_sse_raw` (S2-36ab; побитовое совпадение с таблицей железа не заявляется, ISSUE-025), MXCSR не читается и не меняется, исключений нет; ноль и денормал дают бесконечность того же знака, |x| ≥ 2^126 — ноль того же знака (RCP), RSQRT отрицательного числа — default NaN. Исключения: Type 3 у CVTPS2PD (источник 8 байт без выравнивания), CVTSS2SD, CVTSD2SS и Type 5 у RCPSS/RSQRTSS; Type 2 у CVTPD2PS и Type 4 у RCPPS/RSQRTPS (#GP(0) при невыровненном 128-битном операнде); #UD при LOCK, CR0.EM/CR4.OSFXSR, #NM при CR0.TS, немасированное исключение — #XM или #UD по CR4.OSXMMEXCPT (без CR4 в состоянии — `Unsupported` без изменений). `decode_sse_fp_misc` принял коды `5A/52/53` (`SseFpMiscKind::{Cvtps2pd, Cvtpd2ps, Cvtss2sd, Cvtsd2ss, Rcp, Rsqrt}`, `source_access`). Узкие профильные операции этих форм (включая S2-37a–d) исполнитель переписывает в общую операцию, пока не задан ни один узкий профиль этих форм и нет `control_policy`; при заданном профиле набор закрыт. Допуск — как у S2-37; на CPL3 и в JIT формы не допускаются.
+
+Проверки: `crates/od-isa/tests/s2_37_cvt_rcp.rs` (23 теста; 691 вектор физического процессора). Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; MXCSR каждого случая — `LDMXCSR`): 179 976 случаев (2 прогона по 89 988). Четыре преобразования: 93 384 случая, совпало побайтно 93 014, 370 отказов модели (#AC при RFLAGS.AC — 210, префиксные варианты и FS/GS — 148, `AddressOverflow` — 12), расхождений по значению, MXCSR и сигналу нет. RCP/RSQRT: 86 592 случая, специальные значения совпадают, нормальные отличаются в младших битах внутри предела SDM (железо до 3,23·10^-4, эталон до 8,9·10^-8); |x| ≥ 2^126 железо сбрасывает в ноль со знаком источника (развёртка положительных входов), с раунда 1 ревью эталон делает так же (ISSUE-025). Подробности — в разделе «S2-37 CVTPS2PD, CVTPD2PS, CVTSS2SD, CVTSD2SS и общие RCP/RSQRT» отчёта этапа 8.
+
+### S2-37 (остаток: CVTSI2SS/SD, CVT[T]SS2SI/SD2SI, CVTDQ2PD, CVT[T]PD2DQ, MMX-преобразования) — общее FP-ядро SSE, четвёртый срез
+
+Четвёртый срез общего FP-ядра SSE (S2-37/S2-38): `CVTSI2SS` (`F3 [REX.W] 0F 2A`), `CVTSI2SD` (`F2 [REX.W] 0F 2A`), `CVTSS2SI`/`CVTTSS2SI` (`F3 [REX.W] 0F 2D/2C`), `CVTSD2SI`/`CVTTSD2SI` (`F2 [REX.W] 0F 2D/2C`), `CVTDQ2PD` (`F3 0F E6`), `CVTPD2DQ` (`F2 0F E6`), `CVTTPD2DQ` (`66 0F E6`) и MMX-формы `CVTPI2PS`/`CVTPI2PD` (`0F 2A`, `66 0F 2A`), `CVTPS2PI`/`CVTPD2PI` (`0F 2D`, `66 0F 2D`), `CVTTPS2PI`/`CVTTPD2PI` (`0F 2C`, `66 0F 2C`) с любым регистровым или memory-операндом (Intel SDM, редакция 325462-093US, Vol. 2A: CVTDQ2PD 3-208…3-210, CVTPD2DQ 3-214…3-217, CVTPD2PI 3-218, CVTPI2PD 3-223, CVTPI2PS 3-224, CVTPS2PI 3-231, CVTSD2SI 3-232…3-233, CVTSI2SD 3-236…3-237, CVTSI2SS 3-238…3-239, CVTSS2SI 3-242…3-243, CVTTPD2DQ 3-244…3-247, CVTTPD2PI 3-248, CVTTPS2PI 3-252, CVTTSD2SI 3-253…3-254, CVTTSS2SI 3-255…3-256).
+
+Ядро (`od-isa/src/sse_fp.rs`) общее с предыдущими срезами; политика MXCSR (`commit`) не менялась. Целое → float (`int_to_float_lane`): округление по MXCSR.RC, из флагов возможен только PE (32-битное целое в binary64 точно). Float → целое (`float_to_int_lane`, им же теперь считаются CVTPS2DQ/CVTTPS2DQ): округление по RC или к нулю, DAZ превращает денормал в ноль, DE не сообщается ни одной из форм; NaN, бесконечность и значение вне диапазона 32 или (REX.W) 64 бит — IE и целое «indefinite» `80000000H`/`8000000000000000H` (для упакованных форм — в каждой полосе); граница: −2^31 и −2^63 представимы, 2^31 при RC=ближайшее для 2147483647,5 (ничья, чётное) — вне диапазона. 32-битный приёмник дополняется нулями до 64 бит, при немасированном исключении (#XM) приёмник не записывается (XMM-элемент, регистр общего назначения, MMX-регистр). CVTPD2DQ/CVTTPD2DQ обнуляют старшие 64 бита приёмника; CVTSI2SS/SD сохраняют биты выше элемента; CVTPI2PS сохраняет старшие 64 бита, CVTPI2PD заменяет все 128. Исключения: Type 2 у CVTPD2DQ/CVTTPD2DQ/CVTPD2PI/CVTTPD2PI (#GP(0) при невыровненном 128-битном операнде), Type 3 у скалярных форм (4 или 8 байт), Type 5 у CVTDQ2PD (8 байт), MMX-формы читают 8 байт без выравнивания; #UD при LOCK, CR0.EM/CR4.OSFXSR, #NM при CR0.TS, #MF при ожидающем немасированном x87-исключении (MMX-формы; кроме `CVTPI2PS`/`CVTPI2PD` с memory-источником: те завершаются без #MF, исключение остаётся ожидающим, измерено на i5-3210M, ISSUE-662), #XM или #UD по CR4.OSXMMEXCPT (без CR4 в состоянии — `Unsupported` без изменений).
+
+MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита физического регистра Rn; номер задаётся тремя битами ModRM, REX.R/REX.B его не расширяют (XMM-операнд расширяют). Инструкция, которая читает или пишет MMX-регистр, переводит x87 в MMX-состояние (TOP=0, тег-слово — все valid) и делает это до немасированного #XM; приёмник-MMX получает результат в битах 63:0 и 0xFFFF в 79:64. `CVTPI2PS`/`CVTPI2PD` с memory-источником x87-состояния не трогают (TOP, теги) и не доставляют ожидающее x87-исключение: так ведёт себя i5-3210M (измерено, ISSUE-662); текст SDM (`CVTPI2PS` с. 3-224, `CVTPI2PD` с. 3-223: «causes a transition from x87 FPU to MMX technology operation»; ожидающее исключение «is handled before» инструкцией) этого различия не делает. Остальные MMX-преобразования, в том числе с memory-источником, на ожидающее x87-исключение дают #MF на самой инструкции (измерено). Адресная ошибка memory-источника проверялась только в модели (не измерена). Узкие профильные операции этих форм (включая MMX-профили `Cvtpi2ps*`) исполнитель переписывает в общую операцию, пока не задан ни один узкий профиль этих форм и нет `control_policy`; при заданном профиле набор закрыт. Допуск — как у S2-37; на CPL3 (кроме двух узких профилей, уже допущенных `cpl3_scalar_fp_form`) и в JIT формы не допускаются.
+
+Проверки: `crates/od-isa/tests/s2_37_cvt_int.rs` (36 тестов; 900 векторов физического процессора). Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42; MXCSR каждого случая — `LDMXCSR`): 116 801 случай, совпало побайтно 116 112, 689 отказов модели (#AC при RFLAGS.AC — 488, префиксные варианты и FS/GS — 168, `AddressOverflow` — 33), расхождений по значению, MXCSR, сигналу, GPR и состоянию x87 нет. Подробности — в разделе «S2-37 CVTSI2SS/SD, CVT[T]SS2SI/SD2SI, CVTDQ2PD, CVT[T]PD2DQ и MMX-преобразования» отчёта этапа 8.
+
 ### CPUID и WBINVD в загрузке UEFI (S7-13)
 
 Последовательный профиль `PagedCpl0FirmwareBootV1` исполняет непрефиксный `CPUID` (`0F A2`) с результатами `DiagnosticV1`. SMBIOS записывает `EAX` и `EDX` функции 1. Профиль сохраняет прежние маски возможностей. Номинальная скорость исполнения vCPU определена отдельно в [handoff v1.9](FIRMWARE_BOOT.md#64-правило-расширения-и-версии).
 
 `WBINVD` (`0F 09`) в последовательном интерпретаторе завершает одну инструкцию и продвигает IP. Гостевая память когерентна, кеши данных не моделируются. В Long64 обычный путь проверяет CPL, при CPL3 доставляет `#GP(0)`, а точная форма с LOCK даёт `#UD`. Профиль загрузки UEFI исполняется в CPL0. [Intel SDM, WBINVD](https://cdrdv2-public.intel.com/671110/325383-sdm-vol-2abcd.pdf).
 
+### S2-38 (остаток: ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD, SHUFPS/SHUFPD, UNPCK*, MOVMSKPS/PD) — битовые и перестановочные формы SSE
+
+Битовые и перестановочные формы SSE без SIMD-исключений: `ANDPS/ANDPD` (`0F 54`), `ANDNPS/ANDNPD` (`0F 55`), `ORPS/ORPD` (`0F 56`), `XORPS/XORPD` (`0F 57`), `SHUFPS/SHUFPD` (`0F C6 /r ib`), `UNPCKLPS/UNPCKLPD` (`0F 14`), `UNPCKHPS/UNPCKHPD` (`0F 15`) — `66` выбирает PD — с XMM- или любым m128-источником и `MOVMSKPS/MOVMSKPD` (`0F 50 /r`, регистровая форма) (Intel SDM, редакция 325462-093US: Vol. 2A ANDNPD/ANDNPS 3-63…3-68, ANDPD/ANDPS 3-69…3-74; Vol. 2B MOVMSKPD/MOVMSKPS 4-84…4-87, ORPD/ORPS 4-165…4-170, SHUFPD 4-646…4-650, SHUFPS 4-651…4-654, UNPCKHPD/UNPCKHPS 4-744…4-751, UNPCKLPD/UNPCKLPS 4-752…4-759; Vol. 2D XORPD/XORPS 6-42…6-47).
+
+Результат — побитовая функция или копия dword/qword-полос: ANDN даёт `(NOT DEST) AND SRC`; SHUFPS — младшие две полосы из DEST по imm8[1:0] и imm8[3:2], старшие две из SRC по imm8[5:4] и imm8[7:6]; SHUFPD — `DEST[63:0] := imm8[0] ? DEST[127:64] : DEST[63:0]`, `DEST[127:64] := imm8[1] ? SRC[127:64] : SRC[63:0]` (биты 7:2 игнорируются); UNPCKLPS — `DEST[0], SRC[0], DEST[1], SRC[1]`, UNPCKHPS — `DEST[2], SRC[2], DEST[3], SRC[3]`, UNPCKLPD/UNPCKHPD — `DEST[lo], SRC[lo]` и `DEST[hi], SRC[hi]`; MOVMSKPS/PD — знаковые биты полос в младшие 4 (2) бита 64-битного GPR, остальные нули. SIMD-исключений нет; MXCSR и EFLAGS не читаются и не меняются; SNaN копируется без изменений; биты выше 127 не меняются. Исключения: Type 4 (SDM таблица 2-21: #UD при CR0.EM, CR4.OSFXSR и LOCK; #NM при CR0.TS; #SS(0)/#GP(0) при неверном адресе; #GP(0) при невыровненном на 16 байт memory-операнде, #AC не бывает) и Type 7 для MOVMSKPS/PD (#UD, #NM; ModRM.MOD = 11B обязателен, memory-форма и LOCK — #UD). Порядок проверок — шлюзы, затем адрес, затем выравнивание, затем одно чтение; `#PF` backend-а оставляет состояние ЦП без изменений. Декодер: `Operation::SseLogicPermute` и `Operation::SseMovmsk` строятся только после отказа профильного декодера (`decode_sse_logic_permute`); `F2`/`F3`, повтор префикса, FS/GS и два REX — `Unsupported`. Допуск — как у S2-54/S2-55 (bare-run с локальным `sse`, пара FP-init); узкие регистровые профили S2-34.7/S2-34.17–20 сохранены, под парой FP-init исполнитель переписывает их в общую операцию. На CPL3-наборе и в JIT формы не допускаются.
+
+Проверки: `crates/od-isa/tests/s2_38_logic_permute.rs` (17 тестов; независимая модель SDM). Сверка с физическим процессором (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42): 9 552 строки (9 546 различных имён: шесть имён MOVMSKPS/MOVMSKPD повторяются, оба экземпляра совпали), совпало побайтно 9 418 строк, 134 отказа модели (`F2`/`F3` — 60, повтор `66` — 30, FS/GS — 30, два REX — 14); расхождений по значению, флагам, MXCSR, GPR, странице данных и классу сигнала нет. Сочетание «база RSP/RBP, адрес не-canonical и не выровнен» не сверялось с железом (модель даёт #SS(0)). Подробности — в разделе «S2-38 ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD, SHUFPS/SHUFPD, UNPCK* и MOVMSKPS/MOVMSKPD» отчёта этапа 8.
+
+### S2-57 — профиль CPUID Windows `od-x86-64-v2-windows-v0.1` (ограниченный срез)
+
+Вариант `CpuidProfile::OdX8664V2Windows` (`crates/od-isa/src/cpuid.rs`): отдельная таблица рядом с Linux-целью `od-x86-64-v1-neutral-v0.1`, которая не менялась и не наследуется (тесты Linux-профиля и его значения `0x0781A379` / `0x20100800` прежние). Профиль выбирается вызывающим явно, не является умолчанием и не входит в семейство Stage 4 (`is_stage4a_family` ложно). Чекбокс S2-57 не поставлен: профиль промежуточный, не контракт загрузки Windows — PAE и APIC объявлены срезом S2-58 (NX отложен до приёмки S4-10), CX8 и CMOV — срезом C (подтверждено владельцем 2026-11-21, приёмка S2-21 и S2-16), а EDX-биты FPU, TSC, MSR, MMX, FXSR, SSE, SSE2, SYSCALL и LM — своих задач или решения владельца (таблица ниже; FPU, TSC, MSR, SYSCALL и LM не объявлять до отдельного решения владельца, 2026-11-21). Интерпретатор по битам CPUID формы не проверяет (решение о #UD при нулевом бите по SDM остаётся открытым; негативная сторона контракта — бит равен 0, форма не объявлена).
+
+Идентичность (ADR-0013, решение 2, вариант B): листы возвращают нули, кроме перечисленных. Источники: бит-номера и раскладка — Intel SDM (Vol. 1, глава «Processor identification and feature determination», таблицы листа `01H` EAX/ECX/EDX, листа `80000001H`, брендовая строка), сверено с текстом PDF 325462-093US (pdftotext).
+
+| Лист | Значение | Основание |
+|---|---|---|
+| `0` | EAX = 1 (максимальный базовый лист); EBX/EDX/ECX = `Genu`/`ineI`/`ntel` (`0x756E6547`, `0x49656E69`, `0x6C65746E`) | как у Linux-цели (лист 1 — последний реализованный); порядок регистров — SDM |
+| `1` EAX | `0x000906C0` (family 6, model `0x9C`, stepping 0, type 0) | ADR-0013, UCODE 06-9c-00; раскладка по SDM; `/proc/cpuinfo` внешнего образца (OpenBenchmarking) подтверждает family 6, model 156, stepping 0 |
+| `1` EBX | `0x100` (по vCPU — `query_for_vcpu`, S6-18a: логические процессоры и APIC ID в EBX[23:16], APIC ID в EBX[31:24]) | как у Linux-цели; HTT не объявлен |
+| `1` ECX | `0x00982201` | биты ниже |
+| `1` EDX | `0x00008340` | CX8 [8], CMOV [15] (срез C, отклонение, подтверждено владельцем 2026-11-21: приёмка S2-21 и S2-16); PAE [6] и APIC [9] (S2-58, отклонение, решение владельца 2026-11-21: подтверждено); TSC [4] не объявлен (решение владельца 2026-11-21: ждёт отдельного решения); остальные биты не объявлены (ниже) |
+| `0x80000000` | EAX = `0x80000008` | как у Linux-цели |
+| `0x80000001` | ECX = `0x101`, EDX = `0`, EAX = EBX = 0 | EDX: NX [20] не объявлен, отложен до приёмки S4-10 (решение владельца 2026-11-21); EAX в SDM зарезервирован |
+| `0x80000002..4` | `Intel(R) Celeron(R) N5105 @ 2.00GHz`, добито нулями до 48 байт | ADR-0013; строка подтверждена только внешним `/proc/cpuinfo` (OpenBenchmarking) и страницей Intel ARK (имя и базовая частота 2.00 GHz); строки физического экземпляра нет |
+| `0x80000008` | EAX = `0x3024` (48 бит линейного, 36 бит физического) | как у Linux-цели; значение у настоящего N5105 не сверено (первоисточника нет), совпадает с моделью памяти платы |
+| прочие | четыре нуля при любом ECX (листы 2, 4, 7, `0xB`, `0xD`, `0x80000007` — инвариантного TSC нет, `0x4000_0000` и выше — гипервизора нет) | ADR-0013, решения 3–5 |
+
+| Лист и бит | Функция | Владелец | Состояние | Проверка |
+|---|---|---|---|---|
+| `1` ECX[0] | SSE3 | S2-54 (срезы C, FP; ADDSUB/HADD/HSUB, MOVSHDUP/SLDUP/DDUP, LDDQU, FISTTP) | объявлен | `sse3_movddup` |
+| `1` ECX[9] | SSSE3 | S2-54 (срез D, MMX-формы с S2-33 в минимальном объёме) | объявлен | `ssse3_pshufb` |
+| `1` ECX[13] | CX16 | S2-51 | объявлен | `cx16_cmpxchg16b_both_outcomes` |
+| `1` ECX[19] | SSE4_1 | S2-55 (срезы A, B) | объявлен | `sse4_1_pmulld` |
+| `1` ECX[20] | SSE4_2 | S2-56 (срезы A, B) | объявлен | `sse4_2_pcmpgtq_and_crc32` |
+| `1` ECX[23] | POPCNT | S2-56 (срез A) | объявлен | `popcnt_counts_bits_and_sets_only_zf` |
+| `80000001` ECX[0] | LAHF-SAHF | S2-52 | объявлен | `lahf_sahf_in_long64` |
+| `80000001` ECX[8] | PRFCHW | S2-53 | объявлен | `prefetchw_is_a_hint_without_fault` |
+| `1` EDX[8] | CX8 | S2-21i (`CMPXCHG8B`; приёмка S2-21 подтверждена владельцем 2026-11-21) | объявлен срезом C (подтверждено владельцем 2026-11-21) | `cx8_cmpxchg8b_both_outcomes_and_the_register_form_is_ud` |
+| `1` EDX[15] | CMOV | S2-16c (`CMOVcc`, физическая сверка слита; приёмка S2-16 подтверждена владельцем 2026-11-21) | объявлен срезом C (подтверждено владельцем 2026-11-21) | `cmov_moves_only_when_the_condition_holds` |
+| `1` EDX[4] | TSC | S2-26e (`RDTSC`; родитель S2-26 не принят) | **не объявлен, ждёт решения владельца** (решение 2026-11-21, пункт 8) | `tsc_rdtsc_splits_the_injected_counter_into_edx_eax`, `tsc_rdtsc_with_cr4_tsd_is_gp0_outside_cpl0_and_does_not_read_the_source` |
+| `1` EDX[0], [5] | FPU, MSR | S2-28…32 (x87 не полон); S2-25/S2-26 (набор MSR Windows не реализован) | **не объявлены, блокеры (срез C)** | `the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported`; `every_bit_of_a_task_that_is_not_accepted_or_has_no_task_is_clear` |
+| `1` EDX[23], [24], [25], [26] | MMX, FXSR, SSE, SSE2 | S2-33 (минимум), S2-39, S2-34…39: не завершены | не объявлены | то же |
+| `1` EDX[6] | PAE | S2-58 (зависимости S2-25g, S4-07/S4-08) | объявлен до приёмки зависимостей (отклонение, решение владельца 2026-11-21: подтверждено) | `pae_walk_maps_4k_and_2m_pages_through_the_pdpte_registers`, `cr4_pae_policy_holds_with_the_windows_cpuid_member` |
+| `1` EDX[9] | APIC | S2-58 (зависимости S4-25, S4-38L8d) | объявлен до приёмки S4-38L8d (отклонение, решение владельца 2026-11-21: подтверждено) | `apic_id_of_leaf1_ebx_is_the_vcpu_index` |
+| `80000001` EDX[20] | NX | S2-58 (зависимости S2-25f, S4-08, S4-10d) | **не объявлен**, отложен до приёмки S4-10 (решение владельца 2026-11-21) | `pae_and_apic_are_declared_at_their_sdm_positions_and_nx_is_not`, `wrmsr_efer_setting_nxe_is_gp0_with_a_member_that_does_not_declare_nx`, `wrmsr_efer_setting_nxe_is_admitted_with_a_member_that_declares_nx` |
+| `1` EDX[3], [13], [16] | PSE, PGE, PAT | задачи нет | не объявлены | то же |
+| `80000001` EDX[11], [29] | SYSCALL, LM | S2-27, S2-24/S2-25: не приняты | **не объявлены, блокеры (срез C)** | то же |
+| `1` ECX[3], [5], [26], [27], [28], [31] и др. | MONITOR, VMX, XSAVE, OSXSAVE, AVX, гипервизор | ADR-0013, решения 3 и 4; MONITOR/MWAIT не входят в S2-54 | не объявлены | то же; `windows_does_not_copy_the_linux_table_nor_declare_forbidden_bits` |
+
+Условие «принята» для S2-51…S2-56 по плану (S2-54, S2-57 п.1) — приёмка владельцем задачи; чекбоксы родителей S2-51…S2-56 открыты. **Отклонение от плана, подтверждено владельцем 2026-11-21 (вариант «1»):** 8 битов (SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT, LAHF-SAHF, PRFCHW) объявлены ДО приёмки владельцем S2-51…S2-56 по решению координатора, на основании слияния реализованных и сверенных срезов в `stage8`. Это не приёмка владельцем; если владелец не подтвердит, объявленные биты откатываются. Следствие: профиль объявляет SSE3…SSE4.2 без SSE/SSE2 (EDX[25], [26]): это промежуточное состояние, а не набор x86-64-v2; Windows не должна запускаться на нём до объявления SSE/SSE2, CMOV, CX8, LM и остальных (PAE и APIC объявлены срезом S2-58, NX отложен до приёмки S4-10, см. ниже).
+
+Оговорки. (0) Объявленные биты CMPXCHG16B, LAHF/SAHF и PREFETCHW в CPL3 не работают: профиль CPL3 (`cpl3_profile_set.rs`) эти формы не допускает, так что гостю в CPL3 бит заявлен, а команда отказывает; это надо снять до запуска Windows. (1) `CMPXCHG16B` в параллельном режиме отказывает (`atomic_rmw_u128`, S2-51), пока нет 128-битного host compare-exchange; объявлять CX16 многопроцессорной Windows-плате в параллельном режиме нельзя, пока он не появится. (2) S2-53, соседние `0F 0D /r`: вариант A (`Unsupported`) остаётся открытым решением владельца; при бите PRFCHW это значимее, чем без него. (3) Наличие у настоящего N5105 CX16, LAHF/SAHF, PrefetchW и POPCNT по первоисточнику Intel не сверено: ARK называет только SSE4.2 (подразумевает SSE3, SSSE3, SSE4.1 и POPCNT). (4) Выбор профиля платой (firmware board, этапы 4 и 7), SMBIOS Type 4 Processor ID (сейчас из DiagnosticV1) и `virtual_cpu_mhz` (1000 MHz против 2.00 GHz в строке) — не сделаны: S2-57 «Готово» (выдача по выбору платы) остаётся открытым. (5) Политика записи CR4 (п. 4 «Сделать») не менялась: S2-25 не принята.
+
+Проверки: `cargo test -p od-isa --lib cpuid` (26, из них 5 новых `windows_*`; `ALL_PROFILES` теста S6-18a расширен Windows-профилем), `crates/od-isa/tests/s2_57_cpuid_windows.rs` (14 на момент первого среза, 19 после среза C: таблица объявленных и необъявленных битов целиком, идентичность, Linux-профиль не изменился, `CPUID` в Long64 по каждому листу, по одной форме на объявленный бит; контрольное значение CRC-32C строки «123456789» `0xE3069283` — RFC 3720).
+
+
+### Срез C задачи S2-57 — CX8 и CMOV объявлены, TSC не объявлен; FPU, MSR, SYSCALL и LM остаются блокерами (подтверждено владельцем 2026-11-21)
+
+Срез задачи S2-57, не закрывает её, чекбокс не поставлен. В `OdX8664V2Windows` (`crates/od-isa/src/cpuid.rs`) объявлены CX8 (`1` EDX[8]) и CMOV (`1` EDX[15]); `1` EDX = `0x00008340` (PAE 0x40, CX8 0x100, APIC 0x200, CMOV 0x8000). TSC (`1` EDX[4]) не объявлен: решение владельца 2026-11-21 (пункт 8) — FPU, TSC, MSR, SYSCALL и LM не объявлять до отдельного решения владельца. Номера битов сверены с Intel SDM, редакция 093 (комбинированный PDF 325462-093US, pdftotext), Vol. 1, таблица 21-10: FPU — с. 21-11, TSC (не объявлен), MSR, CMPXCHG8B — с. 21-12, CMOV — с. 21-13 (у CMOV примечание: FCOMI и FCMOV поддержаны только при FPU = 1, этот бит не объявлен). Другие листы и профили не менялись.
+
+**Подтверждено владельцем 2026-11-21.** CX8 и CMOV объявлены, подтверждено приёмкой S2-21 и S2-16 (родительские чекбоксы остаются открытыми до полного закрытия задач). TSC не объявлен: бит ждёт отдельного решения владельца (S2-26 не принят); `RDTSC` реализован и проверен, бит остаётся 0. Откат CX8 и CMOV: убрать их из `WINDOWS_LEAF1_EDX` и из таблиц `DECLARED`/`UNDECLARED` теста `s2_57_cpuid_windows.rs`.
+
+| Бит | Что реализовано | Доказательства |
+|---|---|---|
+| TSC (не объявлен) | `RDTSC` (`0F 31`) с внешним источником счётчика: EAX = младшие 32 бита, EDX = старшие, верхние половины RAX и RDX обнуляются, `CR4.TSD = 1` на CPL > 0 даёт `#GP(0)` без чтения источника (SDM Vol. 2B, RDTSC, с. 4-559–4-560); исполняется в bare-run (`run_with_rdtsc_source`), в наборе CPL0 (`with_rdtsc`), в пробе с страничной памятью, на плате и в справочном CPL3 | S2-26e; `cpl0_profile_set.rs` (`rdtsc_*`), `paged_probe_profile.rs` (`paged_probe_rdtsc_*`, `firmware_rdtsc_*`), `cpl3_profile_set.rs` (`cpl3_reference_rdtsc_uses_the_injected_clock`); новые `tsc_rdtsc_splits_the_injected_counter_into_edx_eax`, `tsc_rdtsc_with_cr4_tsd_is_gp0_outside_cpl0_and_does_not_read_the_source`; профиль Stage 4A (Linux) уже объявляет TSC (S4-38L9a); в Windows-профиле бит 0 по решению владельца |
+| CX8 | `CMPXCHG8B m64` (S2-21i), обе ветки, `ZF` единственный флаг, регистровая форма `#UD` (SDM Vol. 2A, с. 3-196–3-198) | 692 случая данных и 19 случаев сбоев совпали с физическим Intel i5-3210M (`work/stage8/s2_21_cx8_oracle/`, вне git); `s2_21_cmpxchg8b.rs`; новый `cx8_cmpxchg8b_both_outcomes_and_the_register_form_is_ud` |
+| CMOV | `CMOVcc 0F 40–4F` для 16/32/64 бит, источник читается и при ложном условии, 32-битная форма обнуляет верхнюю половину приёмника, флаги не меняются (SDM Vol. 2A, с. 3-157–3-160) | S2-16c, физическая сверка 2026-11-21 (Mac mini): 5328 из 5356 случаев совпали, 28 — формы с префиксами вне профиля (отказ `Unsupported`); `cpl3_cmove_*`; новый `cmov_moves_only_when_the_condition_holds` |
+
+Оговорки. (0) `CMPXCHG8B` на CPL3 отказывает (профиль CPL3 его не допускает, как CMPXCHG16B): гостю в CPL3 бит CX8 заявлен, форма не работает; снять до запуска Windows. `CMOVcc` и `RDTSC` на CPL3 работают. (1) `CMPXCHG8B` в параллельном режиме: выровненный операнд идёт через host CAS (S6-31), невыровненный — под шлюзом S6-34, без шлюза отказ. (2) TSC (бит не объявлен): счётчик даёт плата (внешний детерминированный источник, host-часы не читаются); `IA32_TIME_STAMP_COUNTER` (MSR `0x10`), `TSC_AUX`, `RDTSCP` (80000001H EDX[27]) и инвариантный TSC не объявлены и не моделируются; `CR4.TSD` в наборе CPL0 всегда 0 (политика CR4); физического сравнения значения нет (значение — время), проверена только раскладка и право доступа. (3) Режимы real, protected и compatibility для `RDTSC` не проверялись. (4) Интерпретатор по битам CPUID формы не проверяет.
+
+**Не объявлены, блокеры (проверка — `the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported` и таблица `UNDECLARED` теста):**
+
+- **TSC** (`1` EDX[4]). Блокера по реализации нет (`RDTSC` работает, см. таблицу выше), но решение владельца 2026-11-21 (пункт 8): не объявлять до отдельного решения владельца; приёмка S2-26 не состоялась. Проверка — строка TSC в `UNDECLARED` теста и `feature_registers_are_exactly_the_declared_bits`.
+- **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP`, `FNSTENV`, `FNSAVE`, `FRSTOR`, `FLDENV` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b/S2-32c/S2-32d, локальный профиль `step`), и подключены к набору CPL0 в пределах ограниченного профиля (S2-32e: x87-половина ячейки FP-участника берётся на одну инструкцию; после проверки `#NM` по CR0.EM/TS `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` выполняются, а `FSIN`…`FXTRACT` и `FBLD`/`FBSTP` отказывают `Unsupported`, пока в ячейке представлены FCS/FDS, а набор принимает только такие ячейки; остальные x87-формы в наборе отказывают); `FLDENV` подключён к набору после слияния S2-32d (`FldenvRax` в `cpl0_bounded_x87_form`), написания `FSTENV`/`FSAVE` — это `FWAIT` набора плюс форма без ожидания. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм на состоянии без x87, а для `FNSTENV` при чистом x87 тест подтверждает выполнение в ограниченном профиле; подключение к набору — `crates/od-isa/tests/s2_32e_cpl0_x87.rs`. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (трансцендентные, `FSCALE`, `FXTRACT`, BCD и `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` реализованы в ограниченном профиле, S2-32a/b/c/d; остаются FCS/FDS выполненных инструкций (из-за их отсутствия `FSIN`…`FBSTP` в наборе отказывают) и остальные x87-формы в наборе CPL0) после S2-30 и S2-31.
+- **MSR** (`1` EDX[5]). Моделируются отдельные MSR: EFER (S2-25d…f, NXE), `IA32_FS_BASE`/`GS_BASE`/`KERNEL_GS_BASE`, ячейки записи STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP (S4-38L7). Нет `IA32_TIME_STAMP_COUNTER` (`0x10`), `IA32_APIC_BASE` (`0x1B`), `IA32_PAT` (`0x277`), `IA32_MISC_ENABLE`, MTRR, а у STAR/LSTAR/CSTAR нет чтения. Перечень MSR, которые Windows читает и пишет при загрузке, не составлен. Задача для снятия блокера: S2-25 (CR, MSR) и S2-26 п.2 (RDMSR/WRMSR) — составить перечень и реализовать набор; до этого бит MSR означал бы поддержку набора, которого нет.
+- **SYSCALL** (`80000001` EDX[11]). `SYSCALL` с CPL3 (S4-39e) и `SYSRETQ` с CPL0 (S4-39f) реализованы только в наборах платы Linux, только простые формы (без префиксов), семантика записана «по памяти SDM» и по первоисточнику не сверена (CPU_CONTRACT, S4-39e); не реализованы `SYSRET` без REX.W (32-битный возврат), доставка `#UD` при `EFER.SCE = 0`, переходы из compatibility mode, CSTAR; физического oracle у инструкции нет. Задача для снятия блокера: S2-27 (SYSCALL/SYSRET) со сверкой с SDM Vol. 2B и S2-24 (compatibility mode).
+- **LM** (`80000001` EDX[29]). Набор CPL0 уже в длинном режиме: смена `EFER.LME`/`LMA` отказывает (`Unsupported`), переход из защищённого режима есть только в преобразовании `ProtectedCpu::into_long_mode` (S6-16b, текст SDM «по памяти»), compatibility mode (WoW64) не реализован. Задача для снятия блокера: S2-24 (protected и compatibility mode, критерий WoW64 из ADR-0013), S2-25 (`EFER.LME/LMA`), S2-41, S2-44.
+
+Тесты среза: `crates/od-isa/tests/s2_57_cpuid_windows.rs` (19, было 14), `s2_58_cpuid_windows.rs` (13, значения EDX обновлены), `cargo test -p od-isa --lib cpuid` (26). Новых физических прогонов в срезе нет: основания — прежние данные oracle (S2-21i, S2-16c); для TSC физическое сравнение значения невозможно.
+
+Остаётся до закрытия S2-57: FPU, TSC, MSR, SYSCALL и LM (блокеры и решение владельца выше); MMX, FXSR, SSE, SSE2 — отдельная задача S2-39 и смежные; PSE, PGE, PAT — задачи нет; выбор профиля платой; политика CR4 (S2-25).
+
+### S2-58 — PAE, NX и APIC в Windows-профиле (ограниченный срез: PAE и APIC объявлены, NX отложен до приёмки S4-10; решение владельца 2026-11-21)
+
+Срез задачи [S2-58](../plans/STAGE_2.md#s2-58-объявить-pae-nx-и-apic-в-windows-профиле-adr-0013), не закрывает её. В `OdX8664V2Windows` (`crates/od-isa/src/cpuid.rs`) объявлены: PAE — лист 1 EDX[6] и APIC — лист 1 EDX[9] (PAE и APIC дают `0x240`; полный leaf 1 EDX после среза C S2-57 — `0x00008340`). NX (Execute Disable, лист `80000001` EDX[20]) **не объявлен**: решением владельца 2026-11-21 он отложен до приёмки S4-10 (первоначальное объявление NX отозвано, EDX листа `80000001` = 0). Номера и смысл битов сверены с Intel SDM (Vol. 2A, таблицы листа 01H EDX и `80000001H` EDX, текст из `work/stage8/s2_55_sdm/sdm.txt`). Linux-профиль `OdX8664V1Neutral`, `DiagnosticV1`, `X8664V1Stage4A` и `X8664V1Stage4AApic` не менялись (тест `the_other_profiles_are_unchanged`).
+
+**Отклонение от плана (PAE и APIC), подтверждено владельцем 2026-11-21.** План S2-58 требует принятия всех зависимостей строки; не приняты S2-25 (родитель) и S4-38L8d. PAE и APIC объявлены по оценке исполнителя, что слитые срезы достаточны, по образцу отклонения S2-57; владелец подтвердил отклонение для PAE и APIC. Это не приёмка зависимостей; откат при необходимости — значение константы `WINDOWS_LEAF1_EDX` и ожидания в `s2_57_cpuid_windows.rs` и `s2_58_cpuid_windows.rs`. **NX отложен** (решение владельца 2026-11-21): бит не объявляется до приёмки S4-10; значение `WINDOWS_EXT1_EDX` = 0. Следствие: `WRMSR IA32_EFER` с NXE = 1 в наборе с Windows-членом CPUID даёт `#GP(0)` (SDM Vol. 3A §5.1.4); принятие NXE проверяется на профиле, где NX объявлен (`OdX8664V1Neutral`). Чекбокс S2-58 не отмечен.
+
+| Бит | На чём основано | Ограничения, записанные явно |
+|---|---|---|
+| PAE (`1` EDX[6]) | S4-07 и S4-08 (4-уровневая трансляция и права, приняты; в IA-32e `CR4.PAE = 1` обязателен); S2-25g (слито, не принято): `CR4.PAE` в Long64 CPL0 при активном IA-32e — сброс даёт `#GP(0)`, PAE-обход `paging::translate_pae` (PDPTE-регистры, страницы 4 KiB и 2 MiB, reserved-биты) и загрузка PDPTE `load_pdptes`. SDM связывает бит с расширенным форматом записей, дополнительным уровнем таблиц и страницами 2 MiB. | PAE-обход protected mode — модель `od-isa` (S6-14) только по тексту SDM, без аппаратного oracle; физические адреса модели 32-битные (`PhysicalBeyond4GiB`); MMU `od-machine` (путь Windows через UEFI в long mode) остаётся 4-уровневым. Закрыто в S2-25g: 32-битный paging без PAE, сброс PAE при PAE-paging, перезагрузка PDPTE при `CR0.CD/NW`, task-switch CR3, SMEP, PSE-36. PSE (EDX[3]) не объявлен: при PAE бит PS в PDE действует независимо от `CR4.PSE`. Политика записи `CR4.PAE` от бита CPUID не зависит ни в одном профиле. Лист `80000008H` объявляет 36 бит физического адреса, а legacy PAE-обход модели отказывает выше 4 GiB (`PhysicalBeyond4GiB`, `paging.rs`): расхождение записано как ограничение. |
+| NX (`80000001` EDX[20]) — **не объявлен, отложен до приёмки S4-10 (решение владельца 2026-11-21)**; ниже основания, на которых бит будет объявлен | S4-08 (бит XD в MMU, принят; `page_walk::tracked_nx_matrix_checks_fetch_faults_reserved_bits_and_data_access`, `firmware_board::instruction_fetch_from_rom_is_a_page_fault_by_nx`); S2-25f (слито, не принято): `WRMSR IA32_EFER`, ставящая NXE, допустима только при NX в CPUID-члене набора, иначе `#GP(0)` (SDM Vol. 3A §5.1.4); XD в 2 MiB-листе — S4-10d (слито, без ревью, 1920 случаев против независимой модели, `page_walk_2m_matrix_tests`). | Оценка: открытый S4-10 не мешает объявлению NX, потому что его открытая часть (1 GiB, MMIO, системная приёмка) не относится к XD; 1 GiB не объявляется. Остаются открытые пределы S2-25f (пробы `MutableTranslationProbeSession`, стоп-запись не-boot vCPU, host-потоки с фиксированным EFER; ISSUE-027). NX объявлен без LM и SYSCALL: это промежуточный профиль. |
+| APIC (`1` EDX[9]) | S4-25 (Local APIC одного CPU, принят); S4-38L8d…i (бит в профиле `stage4a-apic`, согласованный с устройством, слито, ждёт ревью); `IA32_APIC_BASE` (S4-38L8g) фиксирован и допускает запись только того же значения (EN = 1), поэтому статический бит согласован с SDM (бит отражает `IA32_APIC_BASE[11]`). Initial APIC ID в EBX[31:24] — `query_for_vcpu` (APIC ID = индекс vCPU). | x2APIC (ECX[21]) и TSC-deadline (ECX[24]) не объявлены. `od-isa` устройства LAPIC не содержит (S2-27); плата `firmware_board` подключает xAPIC-LAPIC (`0xFEE00000`) и IOAPIC всегда, но IOAPIC-источники и `stage4a-apic` включает только `X8664V1Stage4AApic`; выбор профиля Windows платой не сделан (S2-57 «Готово»). Требование п. 4 S2-58 («только на плате с LAPIC») не применимо, пока плата не выбирает `OdX8664V2Windows`; плата Windows обязана подключать LAPIC и IOAPIC (п. 4 S2-58), иначе бит надо снять. |
+
+Остаётся до закрытия S2-58: объявление NX после приёмки S4-10 (бит `WINDOWS_EXT1_EDX` [20], обратные ожидания в `s2_57_cpuid_windows.rs` и `s2_58_cpuid_windows.rs`); принятие S2-25 и S4-38L8d; наличие PAE/NX/APIC у настоящего N5105 по первоисточнику Intel; выбор профиля платой. Решение владельца по PAE как модели без oracle принято 2026-11-21 (объявлен).
+
+Проверки: `crates/od-isa/tests/s2_58_cpuid_windows.rs` (13: биты на позициях SDM и регистры целиком, соседние необъявленные биты и x2APIC/TSC-deadline/SYSCALL/LM/Page1GB/RDTSCP/HTT равны 0, остальные профили без изменений, initial APIC ID, отдельный негативный тест `nx_is_not_declared_in_the_windows_profile`, `CPUID` в наборе CPL0 с Windows-членом, PAE-обход 4 KiB/2 MiB и reserved-биты PDPTE, XD/reserved bit 63 в PAE-записи, политика `CR4.PAE`, `WRMSR EFER.NXE`: `#GP(0)` с Windows-членом и со Stage-4A-членом (NX не объявлен), допускается с членом `OdX8664V1Neutral` (NX объявлен), XD в 2 MiB-листе при NXE = 0/1); `s2_57_cpuid_windows.rs` (19, было 14; таблицы и `CPUID` в Long64 обновлены); `cargo test -p od-isa --lib cpuid` (26, ожидания Windows-профиля обновлены).
+
+### S2-40 — проверка CPUID-битов базовой линии x86-64 (ADR-0015, профиль Windows)
+
+Срез задачи S2-40, чекбокс родителя не отмечен. Таблица выше сверена с кодом (`WINDOWS_LEAF1_ECX`, `WINDOWS_EXT1_ECX`, `WINDOWS_LEAF1_EDX`, `WINDOWS_EXT1_EDX` в `crates/od-isa/src/cpuid.rs`) и тестами `s2_57_cpuid_windows.rs` / `s2_58_cpuid_windows.rs`: объявлены ровно SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT, LAHF-SAHF, PRFCHW (и CX8, CMOV, PAE, APIC по своим задачам); SSE, SSE2, FXSR, MMX, SYSCALL, FPU, TSC, MSR, LM, NX не объявлены. У каждого объявленного бита есть реализация в голом `step`; в наборе CPL0 с FP-членом она есть для профиля платы Linux (кроме `FISTTP` бита SSE3). Для профиля Windows это не так: построитель `with_fp_state` отрабатывает, а ошибку `FpFeaturesNotDeclared` (`Cpl0ProfileSetInputError`) возвращает вход `run_with_cpl0_profile_set` (расхождение 4 в блоке «S2-40: объём по ADR-0015» плана этапа 2), без FP-члена набор отвечает `Unsupported` на `PSHUFB`, `PCMPGTQ`, `MOVDDUP`, `PTEST`, `FISTTP`, а исполняются `POPCNT`, `CRC32`, `CMPXCHG16B`, `LAHF`/`SAHF`, `PREFETCHW`. Ни один бит не снят: реализация есть в ядре, набор Windows получит XMM-формы с объявлением FPU/FXSR/SSE (S2-39). Присутствие 596 кодировок семейств SSE…SSE4.2, POPCNT, CRC32, CMPXCHG16B, LAHF/SAHF, PREFETCHW проверяет `crates/od-isa/tests/s2_40_baseline_scope.rs` (список отказов зафиксирован); отказы и остаток работ — в блоке «S2-40: объём по ADR-0015» плана этапа 2. Допуск CPL3: для CMPXCHG16B, LAHF/SAHF и PREFETCHW оговорка 0 выше не изменена; для SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CRC32 и CMPXCHG8B допуск CPL3 не проверен этим срезом (`cpl3_profile_set` не исследован). ADR-0015 п. 9 относится только к общим SSE/SSE2-формам. Пункт SYSCALL в срезе C задачи S2-57 устарел: шлюзы SDM, SYSRETL и #GP на CPL3 добавлены срезом S2-27m (`cpl3_syscall.rs`, 41 тест). AVX/AVX2/AVX-512, BMI1/BMI2, AES-NI, PCLMULQDQ, SHA, XSAVE и остальные семейства S2-40e перенесены в следующий этап (ADR-0015 п. 2), их биты равны 0.
 
 ## S7-31c / S7-31d: формы набора CPL0 для единой платы «UEFI + Linux» (ADR-0013, вариант (b))
 

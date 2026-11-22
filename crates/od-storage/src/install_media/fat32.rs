@@ -13,6 +13,13 @@ const FAT_COUNT_PER_SECTOR: u32 = SECTOR / 4;
 const FAT_EOF: u32 = 0x0fff_ffff;
 const MIN_CLUSTERS: u32 = 65_525;
 const MAX_CLUSTERS: u32 = 0x0fff_ffed;
+/// Largest FAT that the reader of this module accepts. A volume that needs a
+/// bigger one is refused when it is planned, so that the writer never makes a
+/// disk whose FAT the reader refuses. The reader has other limits (directory
+/// depth, entry count, directory size) that the writer does not check; a
+/// caller that cannot bound them has to check them itself (`make-data-disk`
+/// checks the depth of its paths).
+pub(super) const MAX_FAT_BYTES: u64 = 64 * 1024 * 1024;
 const ENTRY_BYTES: usize = 32;
 const LFN_CHARS: usize = 13;
 const DATA_CHUNK: usize = 128 * 1024;
@@ -33,6 +40,7 @@ struct Allocator {
     next: u32,
     cluster_bytes: u32,
     files: u32,
+    label: [u8; 11],
 }
 
 pub(super) struct Volume {
@@ -42,6 +50,7 @@ pub(super) struct Volume {
     cluster_count: u32,
     fat_sectors: u32,
     partition_sectors: u32,
+    label: [u8; 11],
     pub(super) files: u32,
 }
 
@@ -50,21 +59,39 @@ fn full() -> ImportError {
 }
 
 impl Volume {
-    pub(super) fn plan(input: Vec<Entry>, input_bytes: u64) -> Result<Self, ImportError> {
-        let cluster_sectors = if input_bytes < 64 * 1024 * 1024 { 1 } else { 8 };
+    /// `size_hint` only selects the cluster size; `spare_bytes` is free space
+    /// left in the volume for data written later by the guest.
+    pub(super) fn plan(
+        input: Vec<Entry>,
+        size_hint: u64,
+        label: [u8; 11],
+        spare_bytes: u64,
+    ) -> Result<Self, ImportError> {
+        let cluster_sectors = if size_hint < 64 * 1024 * 1024 { 1 } else { 8 };
         let mut allocator = Allocator {
             allocations: Vec::new(),
             next: 2,
             cluster_bytes: cluster_sectors * SECTOR,
             files: 0,
+            label,
         };
         allocator.directory(input, None)?;
         allocator.allocations.sort_by_key(|row| row.first);
-        let cluster_count = MIN_CLUSTERS.max(allocator.next - 2 + 16);
+        let spare_clusters =
+            u32::try_from(spare_bytes.div_ceil(u64::from(allocator.cluster_bytes)))
+                .map_err(|_| full())?;
+        let cluster_count = (allocator.next - 2)
+            .checked_add(16)
+            .and_then(|used| used.checked_add(spare_clusters))
+            .ok_or_else(full)?
+            .max(MIN_CLUSTERS);
         if cluster_count > MAX_CLUSTERS {
             return Err(full());
         }
         let fat_sectors = (cluster_count + 2).div_ceil(FAT_COUNT_PER_SECTOR);
+        if u64::from(fat_sectors) * u64::from(SECTOR) > MAX_FAT_BYTES {
+            return Err(full());
+        }
         let partition_sectors = cluster_count
             .checked_mul(cluster_sectors)
             .and_then(|count| count.checked_add(RESERVED + FATS * fat_sectors))
@@ -76,6 +103,7 @@ impl Volume {
             cluster_count,
             fat_sectors,
             partition_sectors,
+            label,
             files: allocator.files,
         })
     }
@@ -164,7 +192,7 @@ impl Volume {
         boot[64] = 0x80;
         boot[66] = 0x29;
         boot[67..71].copy_from_slice(&(identity as u32).to_le_bytes());
-        boot[71..82].copy_from_slice(b"OD INSTALL ");
+        boot[71..82].copy_from_slice(&self.label);
         boot[82..90].copy_from_slice(b"FAT32   ");
         boot[510..].copy_from_slice(&[0x55, 0xaa]);
         boot
@@ -230,7 +258,7 @@ impl Allocator {
             directory.extend_from_slice(&dir_entry(b".          ", 0x10, first, 0));
             directory.extend_from_slice(&dir_entry(b"..         ", 0x10, parent, 0));
         } else {
-            directory.extend_from_slice(&dir_entry(b"OD INSTALL ", 0x08, 0, 0));
+            directory.extend_from_slice(&dir_entry(&self.label, 0x08, 0, 0));
         }
         for (short, long, contents) in entries {
             let (attributes, cluster, len) = match contents {

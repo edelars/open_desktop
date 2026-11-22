@@ -3,7 +3,715 @@
 //! Vol.2B MOV/SUB. This is independent of the strict S0 fragment decoder.
 
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError};
+use crate::mmx_int::MmxIntKind;
+use crate::sse2_int::{Sse2IntKind, Sse2Prefix};
 use crate::{LongModeState, OperandSize, Register, RegisterView};
+
+/// The six raw 128-bit SSE moves (Intel SDM Vol. 2B: MOVAPD pp. 4-37..4-40, MOVAPS pp. 4-41..4-44,
+/// MOVDQA pp. 4-59..4-63, MOVDQU pp. 4-64..4-71, MOVUPD pp. 4-122..4-125, MOVUPS pp. 4-126..4-129).
+/// They differ only in the mandatory prefix and in the alignment rule; none touches MXCSR or flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse128MoveKind {
+    Movaps,
+    Movapd,
+    Movups,
+    Movupd,
+    Movdqa,
+    Movdqu,
+}
+
+impl Sse128MoveKind {
+    /// MOVAPS, MOVAPD and MOVDQA raise #GP(0) for a memory operand that is not 16-byte aligned
+    /// (SDM Vol. 2A Table 2-18, Type 1); MOVUPS and MOVUPD have no alignment requirement
+    /// (Table 2-21, Type 4, note 1), and neither has MOVDQU: its description (Vol. 2B p. 4-65) says
+    /// the operand "may be unaligned to any alignment without causing a general-protection
+    /// exception" (note 1 of Table 2-21 does not list MOVDQU).
+    pub const fn requires_alignment(self) -> bool {
+        matches!(self, Self::Movaps | Self::Movapd | Self::Movdqa)
+    }
+}
+
+/// The non-floating-point SSE3 permutations and the unaligned load (Intel SDM Vol. 2A: LDDQU
+/// pp. 3-537..3-538; Vol. 2B: MOVDDUP pp. 4-47..4-49, MOVSHDUP pp. 4-107..4-109, MOVSLDUP
+/// pp. 4-110..4-112). Each copies or duplicates raw lanes: no MXCSR bit is read or written, no flag
+/// changes and no SIMD floating-point exception exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse3PermuteKind {
+    /// `F3 0F 16 /r`: DEST := SRC[63:32], SRC[63:32], SRC[127:96], SRC[127:96] (32-bit lanes, low first).
+    Movshdup,
+    /// `F3 0F 12 /r`: DEST := SRC[31:0], SRC[31:0], SRC[95:64], SRC[95:64].
+    Movsldup,
+    /// `F2 0F 12 /r`: DEST[63:0] and DEST[127:64] := SRC[63:0]; the source memory operand is 64 bits.
+    Movddup,
+    /// `F2 0F F0 /r`: DEST[127:0] := SRC[127:0] from memory only; the register form is #UD.
+    Lddqu,
+}
+
+impl Sse3PermuteKind {
+    /// MOVSHDUP and MOVSLDUP are Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit memory operand
+    /// that is not 16-byte aligned is #GP(0). LDDQU is named in note 1 of the same table and has no
+    /// alignment fault; MOVDDUP is Type 5 (Table 2-22, a 64-bit memory operand) and has none either.
+    pub const fn requires_alignment(self) -> bool {
+        matches!(self, Self::Movshdup | Self::Movsldup)
+    }
+
+    /// Bytes read from a memory source: 8 for MOVDDUP, 16 for the others.
+    pub const fn memory_bytes(self) -> u64 {
+        match self {
+            Self::Movddup => 8,
+            _ => 16,
+        }
+    }
+}
+
+/// The source operand of [`Operation::Sse3Permute`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse3Source {
+    Register(u8),
+    Memory(MemoryOperand),
+}
+
+/// S2-38 (logic and permute remainder): the bitwise and lane-permuting packed SSE forms that signal no SIMD
+/// floating-point exception and neither read nor write MXCSR. The `PS` and `PD` spellings of the four bitwise
+/// operations share one kind (the `66` prefix, recorded in [`Instruction::prefixes`], is the only difference and
+/// the operation is bit-for-bit the same); the shuffles and unpacks differ by element width and are separate kinds.
+/// Intel SDM Vol. 2A ANDNPD/ANDNPS pp. 3-63..3-68, ANDPD/ANDPS pp. 3-69..3-74; Vol. 2B ORPD/ORPS pp. 4-165..4-170,
+/// SHUFPD pp. 4-646..4-650, SHUFPS pp. 4-651..4-654, UNPCKHPD pp. 4-744..4-747, UNPCKHPS pp. 4-748..4-751,
+/// UNPCKLPD pp. 4-752..4-755, UNPCKLPS pp. 4-756..4-759; Vol. 2D XORPD pp. 6-42..6-44, XORPS pp. 6-45..6-47 (all
+/// Exceptions Type 4, Table 2-21 p. 2-29).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseLogicPermuteKind {
+    /// `0F 54` ANDPS / `66 0F 54` ANDPD: DEST := DEST AND SRC.
+    And,
+    /// `0F 55` ANDNPS / `66 0F 55` ANDNPD: DEST := (NOT DEST) AND SRC.
+    Andn,
+    /// `0F 56` ORPS / `66 0F 56` ORPD: DEST := DEST OR SRC.
+    Or,
+    /// `0F 57` XORPS / `66 0F 57` XORPD: DEST := DEST XOR SRC.
+    Xor,
+    /// `0F C6 /r ib` SHUFPS: DEST[31:0] and DEST[63:32] select a dword of DEST by imm8[1:0] and imm8[3:2], DEST[95:64]
+    /// and DEST[127:96] a dword of SRC by imm8[5:4] and imm8[7:6].
+    Shufps,
+    /// `66 0F C6 /r ib` SHUFPD: DEST[63:0] := imm8[0] ? DEST[127:64] : DEST[63:0]; DEST[127:64] := imm8[1] ?
+    /// SRC[127:64] : SRC[63:0]; imm8[7:2] are ignored by the legacy encoding.
+    Shufpd,
+    /// `0F 14` UNPCKLPS: DEST := DEST[31:0], SRC[31:0], DEST[63:32], SRC[63:32] (low element first).
+    Unpcklps,
+    /// `0F 15` UNPCKHPS: DEST := DEST[95:64], SRC[95:64], DEST[127:96], SRC[127:96].
+    Unpckhps,
+    /// `66 0F 14` UNPCKLPD: DEST := DEST[63:0], SRC[63:0].
+    Unpcklpd,
+    /// `66 0F 15` UNPCKHPD: DEST := DEST[127:64], SRC[127:64].
+    Unpckhpd,
+}
+
+impl SseLogicPermuteKind {
+    /// The shuffles carry an imm8; the other kinds do not.
+    pub const fn has_immediate(self) -> bool {
+        matches!(self, Self::Shufps | Self::Shufpd)
+    }
+
+    /// The form that the opcode byte and the `66` prefix select, `None` for an opcode that is not in this group.
+    pub const fn from_opcode(byte: u8, double: bool) -> Option<Self> {
+        Some(match (byte, double) {
+            (0x54, _) => Self::And,
+            (0x55, _) => Self::Andn,
+            (0x56, _) => Self::Or,
+            (0x57, _) => Self::Xor,
+            (0xc6, false) => Self::Shufps,
+            (0xc6, true) => Self::Shufpd,
+            (0x14, false) => Self::Unpcklps,
+            (0x14, true) => Self::Unpcklpd,
+            (0x15, false) => Self::Unpckhps,
+            (0x15, true) => Self::Unpckhpd,
+            _ => return None,
+        })
+    }
+}
+
+/// The four arithmetic operations of the general SSE floating-point core (S2-37): Intel SDM Vol. 2A ADDPD
+/// pp. 3-16..3-18, ADDPS pp. 3-19..3-21, ADDSD pp. 3-22..3-23, ADDSS pp. 3-24..3-25, DIVPD pp. 3-267..3-269,
+/// DIVPS pp. 3-270..3-272, DIVSD pp. 3-273..3-274, DIVSS pp. 3-275..3-276; Vol. 2B MULPD pp. 4-142..4-144,
+/// MULPS pp. 4-145..4-147, MULSD pp. 4-148..4-149, MULSS pp. 4-150..4-151, SUBPD pp. 4-687..4-689, SUBPS
+/// pp. 4-690..4-692, SUBSD pp. 4-693..4-694, SUBSS pp. 4-695..4-696 (edition 325462-093US).
+///
+/// S2-54 (FP part): the SSE3 packed forms that reuse the same core, all Exceptions Type 2 (Vol. 2A
+/// Table 2-19) and only packed (`F2` = binary32, `66` = binary64): ADDSUBPD pp. 3-26..3-27 and ADDSUBPS
+/// pp. 3-28..3-29, HADDPD pp. 3-433..3-435, HADDPS pp. 3-436..3-438, HSUBPD pp. 3-442..3-444, HSUBPS
+/// pp. 3-445..3-447 (Vol. 2A, same edition).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpArithKind {
+    /// `0F 58`
+    Add,
+    /// `0F 59`
+    Mul,
+    /// `0F 5C`
+    Sub,
+    /// `0F 5E`
+    Div,
+    /// `0F 51` (S2-38): the square root of the second source; the first source only supplies the bits of a
+    /// scalar result above the element. SDM Vol. 2B SQRTPD pp. 4-661..4-663, SQRTPS pp. 4-664..4-666, SQRTSD
+    /// pp. 4-667..4-668, SQRTSS pp. 4-669..4-670.
+    Sqrt,
+    /// `0F 5D` (S2-38): the second source when either operand is a NaN or the operands are equal. SDM Vol. 2B
+    /// MINPD pp. 4-16..4-18, MINPS pp. 4-19..4-21, MINSD pp. 4-22..4-23, MINSS pp. 4-24..4-26.
+    Min,
+    /// `0F 5F` (S2-38): as [`Self::Min`] for the maximum. SDM Vol. 2B MAXPD pp. 4-5..4-7, MAXPS pp. 4-8..4-10,
+    /// MAXSD pp. 4-11..4-12, MAXSS pp. 4-13..4-15.
+    Max,
+    /// S2-54: `F2 0F D0` ADDSUBPS, `66 0F D0` ADDSUBPD: element 0 (and 2) subtracts, element 1 (and 3) adds,
+    /// `DEST[i] := DEST[i] -/+ SRC[i]`.
+    AddSub,
+    /// S2-54: `F2 0F 7C` HADDPS, `66 0F 7C` HADDPD: the sum of each adjacent pair, the pairs of the
+    /// destination first, then those of the source.
+    HAdd,
+    /// S2-54: `F2 0F 7D` HSUBPS, `66 0F 7D` HSUBPD: the low element minus the high element of each
+    /// adjacent pair, the pairs of the destination first, then those of the source.
+    HSub,
+}
+
+/// The other forms of the general SSE floating-point core (S2-38): Intel SDM Vol. 2A CMPPD pp. 3-168..3-174,
+/// CMPPS pp. 3-175..3-184, CMPSD pp. 3-185..3-188, CMPSS pp. 3-189..3-193, COMISD pp. 3-199..3-200, COMISS
+/// pp. 3-201..3-202, CVTDQ2PS pp. 3-211..3-213, CVTPS2DQ pp. 3-225..3-227, CVTTPS2DQ pp. 3-248..3-249; Vol. 2B
+/// UCOMISD pp. 4-733..4-734, UCOMISS pp. 4-735..4-736 (edition 325462-093US).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpMiscKind {
+    /// `0F C2 /r ib`: the predicate is imm8 bits 2:0 (bits 7:3 are reserved: the executor refuses them).
+    Cmp,
+    /// `0F 2F`: ordered compare of the low elements into ZF, PF, CF (a quiet NaN is invalid too).
+    Comi,
+    /// `0F 2E`: unordered compare (only a signaling NaN is invalid).
+    Ucomi,
+    /// `0F 5B`: packed signed doublewords to binary32.
+    Cvtdq2ps,
+    /// `66 0F 5B`: packed binary32 to signed doublewords, rounded by MXCSR.RC.
+    Cvtps2dq,
+    /// `F3 0F 5B`: as [`Self::Cvtps2dq`], truncating.
+    Cvttps2dq,
+    /// `0F 5A` (S2-37): the two low binary32 of the source to two binary64 (`shape` is `Packed32`; a memory source is
+    /// 8 bytes with no alignment requirement). SDM Vol. 2A CVTPS2PD pp. 3-228..3-230.
+    Cvtps2pd,
+    /// `66 0F 5A` (S2-37): two binary64 to two binary32 in the low half, the high half zero (`shape` is
+    /// `Packed64`; a memory source is 16 bytes, 16-byte aligned). SDM Vol. 2A CVTPD2PS pp. 3-219..3-222.
+    Cvtpd2ps,
+    /// `F3 0F 5A` (S2-37): element 0 binary32 to binary64 (`shape` is `Scalar32`). SDM Vol. 2A CVTSS2SD
+    /// pp. 3-240..3-241.
+    Cvtss2sd,
+    /// `F2 0F 5A` (S2-37): element 0 binary64 to binary32 (`shape` is `Scalar64`). SDM Vol. 2A CVTSD2SS
+    /// pp. 3-234..3-235.
+    Cvtsd2ss,
+    /// `0F 53` RCPPS (`Packed32`) and `F3 0F 53` RCPSS (`Scalar32`) (S2-37): the reciprocal approximation. SDM Vol. 2B
+    /// RCPPS pp. 4-538..4-539, RCPSS pp. 4-540..4-541.
+    Rcp,
+    /// `0F 52` RSQRTPS (`Packed32`) and `F3 0F 52` RSQRTSS (`Scalar32`) (S2-37): the reciprocal square root
+    /// approximation. SDM Vol. 2B RSQRTPS pp. 4-594..4-595, RSQRTSS pp. 4-596..4-597.
+    Rsqrt,
+    /// `F3 0F E6` (S2-37 remainder): the two low signed doublewords of the source to two binary64 (`shape` is
+    /// `Packed32`; a memory source is 8 bytes with no alignment requirement). The conversion is exact. SDM
+    /// Vol. 2A CVTDQ2PD pp. 3-208..3-210.
+    Cvtdq2pd,
+    /// `F2 0F E6` (S2-37 remainder): two binary64 to two signed doublewords in the low half, rounded by
+    /// MXCSR.RC, the high half zero (`shape` is `Packed64`; a memory source is 16 bytes, 16-byte aligned). SDM
+    /// Vol. 2A CVTPD2DQ pp. 3-214..3-217.
+    Cvtpd2dq,
+    /// `66 0F E6` (S2-37 remainder): as [`Self::Cvtpd2dq`], truncating. SDM Vol. 2A CVTTPD2DQ pp. 3-244..3-247.
+    Cvttpd2dq,
+    /// `0F 2A` (S2-37 MMX): the two signed doublewords of an MMX register or an 8-byte memory operand to two binary32
+    /// in the low half of the XMM destination, the high half kept (`shape` is `Packed32`; `source` names an MMX
+    /// register). SDM Vol. 2A CVTPI2PS p. 3-224.
+    Cvtpi2ps,
+    /// `66 0F 2A` (S2-37 MMX): the two signed doublewords of an MMX register or an 8-byte memory operand to two
+    /// binary64 (`shape` is `Packed64`; exact). SDM Vol. 2A CVTPI2PD p. 3-223.
+    Cvtpi2pd,
+    /// `0F 2D` (S2-37 MMX): the two low binary32 of an XMM register or an 8-byte memory operand to two signed
+    /// doublewords in an MMX register, rounded by MXCSR.RC (`shape` is `Packed32`; `destination` names an MMX
+    /// register). SDM Vol. 2A CVTPS2PI p. 3-231.
+    Cvtps2pi,
+    /// `0F 2C` (S2-37 MMX): as [`Self::Cvtps2pi`], truncating. SDM Vol. 2A CVTTPS2PI p. 3-252.
+    Cvttps2pi,
+    /// `66 0F 2D` (S2-37 MMX): two binary64 of an XMM register or a 16-byte aligned memory operand to two signed
+    /// doublewords in an MMX register (`shape` is `Packed64`). SDM Vol. 2A CVTPD2PI p. 3-218.
+    Cvtpd2pi,
+    /// `66 0F 2C` (S2-37 MMX): as [`Self::Cvtpd2pi`], truncating. SDM Vol. 2A CVTTPD2PI p. 3-248.
+    Cvttpd2pi,
+}
+
+impl SseFpMiscKind {
+    /// The MMX conversions (S2-37): one operand is an MMX register, which is the physical x87 data register of the same
+    /// number, and the instruction puts the x87 unit in MMX state.
+    pub const fn mmx(self) -> bool {
+        matches!(
+            self,
+            Self::Cvtpi2ps
+                | Self::Cvtpi2pd
+                | Self::Cvtps2pi
+                | Self::Cvttps2pi
+                | Self::Cvtpd2pi
+                | Self::Cvttpd2pi
+        )
+    }
+
+    /// Whether the source operand of an MMX conversion is the MMX register or the 8-byte memory operand (CVTPI2PS,
+    /// CVTPI2PD); for the others the destination is the MMX register.
+    pub const fn mmx_source(self) -> bool {
+        matches!(self, Self::Cvtpi2ps | Self::Cvtpi2pd)
+    }
+
+    /// The memory source of the form: its size in bytes and whether a 16-byte alignment is required (Vol. 2A
+    /// Table 2-19 Type 2 and Table 2-21 Type 4 for the 128-bit operands: `#GP(0)` when misaligned; Table 2-20
+    /// Type 3 and Table 2-22 Type 5 otherwise). It follows the shape, except that the CVTPS2PD source is 8 bytes
+    /// whatever the packed shape says.
+    pub const fn source_access(self, shape: SseFpShape) -> (u64, bool) {
+        match self {
+            Self::Cvtps2pd
+            | Self::Cvtdq2pd
+            | Self::Cvtpi2ps
+            | Self::Cvtpi2pd
+            | Self::Cvtps2pi
+            | Self::Cvttps2pi => (8, false),
+            _ => (shape.memory_bytes(), shape.is_packed()),
+        }
+    }
+}
+
+/// The operand shape selected by the mandatory prefix: none = packed binary32 (`PS`), `66` = packed
+/// binary64 (`PD`), `F3` = scalar binary32 (`SS`), `F2` = scalar binary64 (`SD`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SseFpShape {
+    Packed32,
+    Packed64,
+    Scalar32,
+    Scalar64,
+}
+
+impl SseFpShape {
+    /// Packed shapes are Exceptions Type 2 (Vol. 2A Table 2-19): a 128-bit memory operand that is not
+    /// 16-byte aligned is #GP(0). Scalar shapes are Type 3 (Table 2-20): no alignment requirement.
+    pub const fn is_packed(self) -> bool {
+        matches!(self, Self::Packed32 | Self::Packed64)
+    }
+
+    /// Whether the elements are binary64.
+    pub const fn is_double(self) -> bool {
+        matches!(self, Self::Packed64 | Self::Scalar64)
+    }
+
+    /// Bytes read from a memory source: 16 packed, 4 for SS, 8 for SD.
+    pub const fn memory_bytes(self) -> u64 {
+        match self {
+            Self::Packed32 | Self::Packed64 => 16,
+            Self::Scalar32 => 4,
+            Self::Scalar64 => 8,
+        }
+    }
+}
+
+/// The integer SSSE3 forms on XMM registers (Intel SDM Vol. 2B: PSHUFB pp. 4-421..4-425, PALIGNR
+/// pp. 4-216..4-219, PABSB/PABSW/PABSD pp. 4-177..4-182, PSIGNB/PSIGNW/PSIGND pp. 4-437..4-440,
+/// PMADDUBSW pp. 4-310..4-312, PMULHRSW pp. 4-375..4-378, PHADDW/PHADDD pp. 4-294..4-297, PHSUBW/PHSUBD
+/// pp. 4-302..4-304, PHADDSW pp. 4-292..4-293, PHSUBSW pp. 4-300..4-301). The `66` encodings are the XMM
+/// forms ([`Operation::Ssse3Int`]); the encodings without a prefix are the MMX forms on MM0..MM7
+/// ([`Operation::MmxSsse3`], S2-33). Every form is Exceptions Type 4 (Vol. 2A Table 2-21): a 128-bit
+/// memory source must be 16-byte aligned; the 64-bit memory source of an MMX form has no alignment rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssse3IntKind {
+    /// `66 0F 38 00 /r`
+    Pshufb,
+    /// `66 0F 3A 0F /r ib`
+    Palignr,
+    /// `66 0F 38 1C /r`
+    Pabsb,
+    /// `66 0F 38 1D /r`
+    Pabsw,
+    /// `66 0F 38 1E /r`
+    Pabsd,
+    /// `66 0F 38 08 /r`
+    Psignb,
+    /// `66 0F 38 09 /r`
+    Psignw,
+    /// `66 0F 38 0A /r`
+    Psignd,
+    /// `66 0F 38 04 /r`
+    Pmaddubsw,
+    /// `66 0F 38 0B /r`
+    Pmulhrsw,
+    /// `66 0F 38 01 /r`
+    Phaddw,
+    /// `66 0F 38 02 /r`
+    Phaddd,
+    /// `66 0F 38 05 /r`
+    Phsubw,
+    /// `66 0F 38 06 /r`
+    Phsubd,
+    /// `66 0F 38 03 /r`
+    Phaddsw,
+    /// `66 0F 38 07 /r`
+    Phsubsw,
+}
+
+impl Ssse3IntKind {
+    /// The form selected by the opcode map and byte (the mandatory `66` is checked by the decoder).
+    pub const fn from_opcode(map: OpcodeMap, byte: u8) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f38, 0x00) => Self::Pshufb,
+            (OpcodeMap::Escape0f3a, 0x0f) => Self::Palignr,
+            (OpcodeMap::Escape0f38, 0x1c) => Self::Pabsb,
+            (OpcodeMap::Escape0f38, 0x1d) => Self::Pabsw,
+            (OpcodeMap::Escape0f38, 0x1e) => Self::Pabsd,
+            (OpcodeMap::Escape0f38, 0x08) => Self::Psignb,
+            (OpcodeMap::Escape0f38, 0x09) => Self::Psignw,
+            (OpcodeMap::Escape0f38, 0x0a) => Self::Psignd,
+            (OpcodeMap::Escape0f38, 0x04) => Self::Pmaddubsw,
+            (OpcodeMap::Escape0f38, 0x0b) => Self::Pmulhrsw,
+            (OpcodeMap::Escape0f38, 0x01) => Self::Phaddw,
+            (OpcodeMap::Escape0f38, 0x02) => Self::Phaddd,
+            (OpcodeMap::Escape0f38, 0x05) => Self::Phsubw,
+            (OpcodeMap::Escape0f38, 0x06) => Self::Phsubd,
+            (OpcodeMap::Escape0f38, 0x03) => Self::Phaddsw,
+            (OpcodeMap::Escape0f38, 0x07) => Self::Phsubsw,
+            _ => return None,
+        })
+    }
+
+    /// Only PALIGNR carries an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        matches!(self, Self::Palignr)
+    }
+}
+
+/// The integer SSE4.1 forms (Intel SDM Vol. 2B, combined SDM 325462-093US: PTEST pp. 4-498..4-499,
+/// PMOVSX pp. 4-352..4-361, PMOVZX pp. 4-362..4-371, PMULDQ pp. 4-372..4-374, PMULLD pp. 4-387..4-390,
+/// PMINSB/PMINSD/PMINUW/PMINUD pp. 4-332..4-349, PMAXSB/PMAXSD/PMAXUW/PMAXUD pp. 4-316..4-331, PCMPEQQ
+/// pp. 4-251..4-253, PACKUSDW pp. 4-191..4-195, PBLENDW pp. 4-235..4-237, PBLENDVB pp. 4-231..4-234,
+/// PINSRB/PINSRD/PINSRQ pp. 4-305..4-307, PEXTRB/PEXTRD/PEXTRQ pp. 4-286..4-288, PEXTRW pp. 4-289..4-291,
+/// MOVNTDQA pp. 4-90..4-91, PHMINPOSUW pp. 4-298..4-299, MPSADBW pp. 4-132..4-139; S2-56 adds the SSE4.2
+/// PCMPGTQ pp. 4-264..4-266, which has the same operand model and Type 4 exception class and therefore the
+/// same decoder and executor). Only the legacy
+/// `66`-prefixed encodings exist here (no VEX/EVEX). Exceptions class by form: Type 4 (Vol. 2A Table 2-21,
+/// 16-byte aligned m128) for the register-or-m128 forms, Type 1 (Table 2-18) for MOVNTDQA, Type 5
+/// (Table 2-22, no alignment requirement) for PMOVSX/PMOVZX, PINSR* and PEXTR*.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41Kind {
+    /// `66 0F 38 17 /r`
+    Ptest,
+    /// `66 0F 38 20 /r` .. `25 /r`: sign-extend bytes to words, bytes to dwords, bytes to qwords, words to
+    /// dwords, words to qwords, dwords to qwords.
+    Pmovsxbw,
+    Pmovsxbd,
+    Pmovsxbq,
+    Pmovsxwd,
+    Pmovsxwq,
+    Pmovsxdq,
+    /// `66 0F 38 30 /r` .. `35 /r`: the zero-extending twins.
+    Pmovzxbw,
+    Pmovzxbd,
+    Pmovzxbq,
+    Pmovzxwd,
+    Pmovzxwq,
+    Pmovzxdq,
+    /// `66 0F 38 28 /r`
+    Pmuldq,
+    /// `66 0F 38 29 /r`
+    Pcmpeqq,
+    /// `66 0F 38 37 /r` (SSE4.2, S2-56): signed qword greater-than, all ones or zero per lane.
+    Pcmpgtq,
+    /// `66 0F 38 2A /r` (memory source only)
+    Movntdqa,
+    /// `66 0F 38 2B /r`
+    Packusdw,
+    /// `66 0F 38 38 /r` .. `3F /r`
+    Pminsb,
+    Pminsd,
+    Pminuw,
+    Pminud,
+    Pmaxsb,
+    Pmaxsd,
+    Pmaxuw,
+    Pmaxud,
+    /// `66 0F 38 40 /r`
+    Pmulld,
+    /// `66 0F 38 41 /r`
+    Phminposuw,
+    /// `66 0F 38 10 /r` (implicit XMM0 mask)
+    Pblendvb,
+    /// `66 0F 3A 0E /r ib`
+    Pblendw,
+    /// `66 0F 3A 14 /r ib`
+    Pextrb,
+    /// `66 0F 3A 15 /r ib`
+    Pextrw,
+    /// `66 0F 3A 16 /r ib`
+    Pextrd,
+    /// `66 REX.W 0F 3A 16 /r ib`
+    Pextrq,
+    /// `66 0F 3A 20 /r ib`
+    Pinsrb,
+    /// `66 0F 3A 22 /r ib`
+    Pinsrd,
+    /// `66 REX.W 0F 3A 22 /r ib`
+    Pinsrq,
+    /// `66 0F 3A 42 /r ib`
+    Mpsadbw,
+    /// `66 [REX.W] 0F 3A 60 /r ib` (SSE4.2, S2-56 slice B): PCMPESTRM, explicit lengths in EAX/EDX (RAX/RDX
+    /// with REX.W), the mask goes to XMM0.
+    Pcmpestrm,
+    /// `66 [REX.W] 0F 3A 61 /r ib`: PCMPESTRI, explicit lengths, the index goes to ECX.
+    Pcmpestri,
+    /// `66 0F 3A 62 /r ib`: PCMPISTRM, implicit (null-terminated) lengths, the mask goes to XMM0.
+    Pcmpistrm,
+    /// `66 0F 3A 63 /r ib`: PCMPISTRI, implicit lengths, the index goes to ECX.
+    Pcmpistri,
+}
+
+impl Sse41Kind {
+    /// The form selected by the opcode map and byte; `rex_w` only splits PEXTRD/PEXTRQ and PINSRD/PINSRQ
+    /// (every other form ignores REX.W). The mandatory `66` is checked by the decoder.
+    pub const fn from_opcode(map: OpcodeMap, byte: u8, rex_w: bool) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f38, 0x17) => Self::Ptest,
+            (OpcodeMap::Escape0f38, 0x20) => Self::Pmovsxbw,
+            (OpcodeMap::Escape0f38, 0x21) => Self::Pmovsxbd,
+            (OpcodeMap::Escape0f38, 0x22) => Self::Pmovsxbq,
+            (OpcodeMap::Escape0f38, 0x23) => Self::Pmovsxwd,
+            (OpcodeMap::Escape0f38, 0x24) => Self::Pmovsxwq,
+            (OpcodeMap::Escape0f38, 0x25) => Self::Pmovsxdq,
+            (OpcodeMap::Escape0f38, 0x30) => Self::Pmovzxbw,
+            (OpcodeMap::Escape0f38, 0x31) => Self::Pmovzxbd,
+            (OpcodeMap::Escape0f38, 0x32) => Self::Pmovzxbq,
+            (OpcodeMap::Escape0f38, 0x33) => Self::Pmovzxwd,
+            (OpcodeMap::Escape0f38, 0x34) => Self::Pmovzxwq,
+            (OpcodeMap::Escape0f38, 0x35) => Self::Pmovzxdq,
+            (OpcodeMap::Escape0f38, 0x28) => Self::Pmuldq,
+            (OpcodeMap::Escape0f38, 0x29) => Self::Pcmpeqq,
+            (OpcodeMap::Escape0f38, 0x37) => Self::Pcmpgtq,
+            (OpcodeMap::Escape0f38, 0x2a) => Self::Movntdqa,
+            (OpcodeMap::Escape0f38, 0x2b) => Self::Packusdw,
+            (OpcodeMap::Escape0f38, 0x38) => Self::Pminsb,
+            (OpcodeMap::Escape0f38, 0x39) => Self::Pminsd,
+            (OpcodeMap::Escape0f38, 0x3a) => Self::Pminuw,
+            (OpcodeMap::Escape0f38, 0x3b) => Self::Pminud,
+            (OpcodeMap::Escape0f38, 0x3c) => Self::Pmaxsb,
+            (OpcodeMap::Escape0f38, 0x3d) => Self::Pmaxsd,
+            (OpcodeMap::Escape0f38, 0x3e) => Self::Pmaxuw,
+            (OpcodeMap::Escape0f38, 0x3f) => Self::Pmaxud,
+            (OpcodeMap::Escape0f38, 0x40) => Self::Pmulld,
+            (OpcodeMap::Escape0f38, 0x41) => Self::Phminposuw,
+            (OpcodeMap::Escape0f38, 0x10) => Self::Pblendvb,
+            (OpcodeMap::Escape0f3a, 0x0e) => Self::Pblendw,
+            (OpcodeMap::Escape0f3a, 0x14) => Self::Pextrb,
+            (OpcodeMap::Escape0f3a, 0x15) => Self::Pextrw,
+            (OpcodeMap::Escape0f3a, 0x16) => {
+                if rex_w {
+                    Self::Pextrq
+                } else {
+                    Self::Pextrd
+                }
+            }
+            (OpcodeMap::Escape0f3a, 0x20) => Self::Pinsrb,
+            (OpcodeMap::Escape0f3a, 0x22) => {
+                if rex_w {
+                    Self::Pinsrq
+                } else {
+                    Self::Pinsrd
+                }
+            }
+            (OpcodeMap::Escape0f3a, 0x42) => Self::Mpsadbw,
+            (OpcodeMap::Escape0f3a, 0x60) => Self::Pcmpestrm,
+            (OpcodeMap::Escape0f3a, 0x61) => Self::Pcmpestri,
+            (OpcodeMap::Escape0f3a, 0x62) => Self::Pcmpistrm,
+            (OpcodeMap::Escape0f3a, 0x63) => Self::Pcmpistri,
+            _ => return None,
+        })
+    }
+
+    /// PBLENDW, PEXTR*, PINSR*, MPSADBW and the four string compares carry an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        matches!(
+            self,
+            Self::Pblendw
+                | Self::Pextrb
+                | Self::Pextrw
+                | Self::Pextrd
+                | Self::Pextrq
+                | Self::Pinsrb
+                | Self::Pinsrd
+                | Self::Pinsrq
+                | Self::Mpsadbw
+                | Self::Pcmpestrm
+                | Self::Pcmpestri
+                | Self::Pcmpistrm
+                | Self::Pcmpistri
+        )
+    }
+
+    /// PCMPESTRI, PCMPESTRM, PCMPISTRI and PCMPISTRM (SSE4.2): the string compares, which write ECX or XMM0
+    /// and RFLAGS and never the ModRM.reg register.
+    pub const fn is_string_compare(self) -> bool {
+        matches!(
+            self,
+            Self::Pcmpestrm | Self::Pcmpestri | Self::Pcmpistrm | Self::Pcmpistri
+        )
+    }
+
+    /// PCMPESTRI and PCMPESTRM take explicit lengths from EAX/EDX (RAX/RDX with REX.W).
+    pub const fn has_explicit_lengths(self) -> bool {
+        matches!(self, Self::Pcmpestrm | Self::Pcmpestri)
+    }
+
+    /// PEXTR* and PINSR* take a general register (or memory) as the `r/m` operand.
+    pub const fn uses_general_register(self) -> bool {
+        matches!(
+            self,
+            Self::Pextrb
+                | Self::Pextrw
+                | Self::Pextrd
+                | Self::Pextrq
+                | Self::Pinsrb
+                | Self::Pinsrd
+                | Self::Pinsrq
+        )
+    }
+
+    /// PEXTR* write their `r/m` operand; every other form only reads it.
+    pub const fn stores_to_rm(self) -> bool {
+        matches!(
+            self,
+            Self::Pextrb | Self::Pextrw | Self::Pextrd | Self::Pextrq
+        )
+    }
+
+    /// Bytes of the memory operand: 16 for the Type 4 forms and MOVNTDQA, the SDM operand width
+    /// (m64, m32, m16, m8) for the Type 5 forms.
+    pub const fn memory_bytes(self) -> usize {
+        match self {
+            Self::Pmovsxbw | Self::Pmovzxbw | Self::Pmovsxwd | Self::Pmovzxwd => 8,
+            Self::Pmovsxdq | Self::Pmovzxdq => 8,
+            Self::Pmovsxbd | Self::Pmovzxbd | Self::Pmovsxwq | Self::Pmovzxwq => 4,
+            Self::Pmovsxbq | Self::Pmovzxbq | Self::Pextrw => 2,
+            Self::Pextrb | Self::Pinsrb => 1,
+            Self::Pextrd | Self::Pinsrd => 4,
+            Self::Pextrq | Self::Pinsrq => 8,
+            _ => 16,
+        }
+    }
+
+    /// A 128-bit memory operand must be 16-byte aligned (`#GP(0)` otherwise): Table 2-21 note 1 exempts
+    /// only LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms (note 1, repeated by the four instruction pages),
+    /// and MOVNTDQA is Type 1 (Table 2-18).
+    pub const fn requires_alignment(self) -> bool {
+        self.memory_bytes() == 16 && !self.is_string_compare()
+    }
+}
+
+/// The floating-point SSE4.1 forms (S2-55 slice B; Intel SDM Vol. 2A BLENDPD pp. 3-78..3-79, BLENDPS
+/// pp. 3-80..3-81, BLENDVPD pp. 3-82..3-83, BLENDVPS pp. 3-84..3-85, DPPD pp. 3-277..3-278, DPPS
+/// pp. 3-279..3-281, EXTRACTPS pp. 3-305..3-306, INSERTPS pp. 3-464..3-466; Vol. 2B ROUNDPD pp. 4-583..4-585,
+/// ROUNDPS pp. 4-586..4-587, ROUNDSD pp. 4-588..4-589, ROUNDSS pp. 4-590..4-591; combined SDM 325462-093US).
+/// Only the legacy `66`-prefixed encodings exist here (no VEX/EVEX). Exceptions class by form: Type 2
+/// (Vol. 2A Table 2-19: 16-byte aligned m128, #XM) for ROUNDPS/ROUNDPD and DPPS/DPPD, Type 3 (Table 2-20:
+/// no alignment, #XM) for ROUNDSS/ROUNDSD, Type 4 (Table 2-21: 16-byte aligned m128, no SIMD exception) for
+/// BLENDPS/BLENDPD/BLENDVPS/BLENDVPD, Type 5 (Table 2-22) for INSERTPS and EXTRACTPS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41FpKind {
+    /// `66 0F 3A 08 /r ib`
+    Roundps,
+    /// `66 0F 3A 09 /r ib`
+    Roundpd,
+    /// `66 0F 3A 0A /r ib`
+    Roundss,
+    /// `66 0F 3A 0B /r ib`
+    Roundsd,
+    /// `66 0F 3A 0C /r ib`
+    Blendps,
+    /// `66 0F 3A 0D /r ib`
+    Blendpd,
+    /// `66 0F 38 14 /r` (implicit XMM0 mask)
+    Blendvps,
+    /// `66 0F 38 15 /r` (implicit XMM0 mask)
+    Blendvpd,
+    /// `66 0F 3A 17 /r ib` (the destination is a general register or m32)
+    Extractps,
+    /// `66 0F 3A 21 /r ib`
+    Insertps,
+    /// `66 0F 3A 40 /r ib`
+    Dpps,
+    /// `66 0F 3A 41 /r ib`
+    Dppd,
+}
+
+impl Sse41FpKind {
+    /// The form selected by the opcode map and byte; the mandatory `66` is checked by the decoder.
+    pub const fn from_opcode(map: OpcodeMap, byte: u8) -> Option<Self> {
+        Some(match (map, byte) {
+            (OpcodeMap::Escape0f3a, 0x08) => Self::Roundps,
+            (OpcodeMap::Escape0f3a, 0x09) => Self::Roundpd,
+            (OpcodeMap::Escape0f3a, 0x0a) => Self::Roundss,
+            (OpcodeMap::Escape0f3a, 0x0b) => Self::Roundsd,
+            (OpcodeMap::Escape0f3a, 0x0c) => Self::Blendps,
+            (OpcodeMap::Escape0f3a, 0x0d) => Self::Blendpd,
+            (OpcodeMap::Escape0f38, 0x14) => Self::Blendvps,
+            (OpcodeMap::Escape0f38, 0x15) => Self::Blendvpd,
+            (OpcodeMap::Escape0f3a, 0x17) => Self::Extractps,
+            (OpcodeMap::Escape0f3a, 0x21) => Self::Insertps,
+            (OpcodeMap::Escape0f3a, 0x40) => Self::Dpps,
+            (OpcodeMap::Escape0f3a, 0x41) => Self::Dppd,
+            _ => return None,
+        })
+    }
+
+    /// Every form but BLENDVPS/BLENDVPD carries an `imm8`.
+    pub const fn has_immediate(self) -> bool {
+        !matches!(self, Self::Blendvps | Self::Blendvpd)
+    }
+
+    /// Bytes of the memory operand: 16 for the packed forms, 4 for ROUNDSS, INSERTPS and EXTRACTPS, 8 for
+    /// ROUNDSD.
+    pub const fn memory_bytes(self) -> usize {
+        match self {
+            Self::Roundss | Self::Insertps | Self::Extractps => 4,
+            Self::Roundsd => 8,
+            _ => 16,
+        }
+    }
+
+    /// A 128-bit memory operand must be 16-byte aligned (`#GP(0)` otherwise): Types 2 and 4.
+    pub const fn requires_alignment(self) -> bool {
+        self.memory_bytes() == 16
+    }
+
+    /// EXTRACTPS writes its `r/m` operand (a general register or m32); every other form only reads it.
+    pub const fn stores_to_rm(self) -> bool {
+        matches!(self, Self::Extractps)
+    }
+
+    /// ROUND* and DPPS/DPPD read MXCSR, set its flags and can raise `#XM`.
+    pub const fn is_arithmetic(self) -> bool {
+        matches!(
+            self,
+            Self::Roundps | Self::Roundpd | Self::Roundss | Self::Roundsd | Self::Dpps | Self::Dppd
+        )
+    }
+
+    /// The element shape of an arithmetic form.
+    pub const fn shape(self) -> Option<SseFpShape> {
+        match self {
+            Self::Roundps | Self::Dpps => Some(SseFpShape::Packed32),
+            Self::Roundpd | Self::Dppd => Some(SseFpShape::Packed64),
+            Self::Roundss => Some(SseFpShape::Scalar32),
+            Self::Roundsd => Some(SseFpShape::Scalar64),
+            _ => None,
+        }
+    }
+}
+
+/// The `r/m` operand of [`Operation::Sse41`] and [`Operation::Sse41Fp`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Sse41Operand {
+    Xmm(u8),
+    /// General register number including REX.B (PEXTR*, PINSR*).
+    Gpr(u8),
+    Memory(MemoryOperand),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressBase {
@@ -998,6 +1706,37 @@ pub enum Operation {
         destination: MemoryOperand,
         source: RegisterView,
     },
+    /// S2-51: `[F0] REX.W 0F C7 /1` (CMPXCHG16B m128), memory destination only (SDM Vol. 2A,
+    /// CMPXCHG8B/CMPXCHG16B, pp. 3-196..3-198). The 128-bit compare of RDX:RAX with the operand
+    /// and the conditional store of RCX:RBX are one `GuestMemory::atomic_rmw_u128` call; the
+    /// destination is written on both branches. The operand's `size` is a placeholder
+    /// (`Qword`): the executor accesses 16 bytes. LOCK is optional (the SDM allows it); the
+    /// register form is #UD and is reported as `DecodeError::Invalid`.
+    Cmpxchg16b {
+        destination: MemoryOperand,
+    },
+    /// S2-21: `[F0] [REX without W] 0F C7 /1` (CMPXCHG8B m64), memory destination only (SDM Vol. 2A,
+    /// CMPXCHG8B/CMPXCHG16B, pp. 3-196..3-198). The compare of EDX:EAX with the operand and the
+    /// conditional store of ECX:EBX are one `GuestMemory::atomic_compare_exchange_integer` call of
+    /// eight bytes; the destination is written on both branches. The operand has no alignment
+    /// requirement. LOCK is optional (the SDM allows it); the register form is #UD and is reported
+    /// as `DecodeError::Invalid`. `destination.size` is `Qword` (the memory width).
+    Cmpxchg8b {
+        destination: MemoryOperand,
+    },
+    /// S2-52: `9F` (LAHF): AH := RFLAGS(SF:ZF:0:AF:0:PF:1:CF) (SDM Vol. 2A, LAHF, p. 3-532). No
+    /// operand is decoded: AH is implicit, so REX (and 66H/67H/segment prefixes) change nothing;
+    /// LOCK is #UD (`DecodeError::Invalid`). The 64-bit-mode CPUID gate (`80000001H:ECX[0]`) is
+    /// not modeled here: S2-57 declares the bit.
+    Lahf,
+    /// S2-52: `9E` (SAHF): SF, ZF, AF, PF and CF := AH bits 7, 6, 4, 2 and 0; the reserved
+    /// RFLAGS bits 1, 3 and 5 keep their values (SDM Vol. 2B, SAHF, p. 4-601). LOCK is #UD.
+    Sahf,
+    /// S2-53: `0F 0D /1 m8` (PREFETCHW), memory form only (SDM Vol. 2B, PREFETCHW, pp. 4-416..4-417):
+    /// a hint with no architectural effect: it reads and writes no guest memory, so an unmapped or
+    /// non-canonical address does not fault; LOCK is #UD. The register form and the other `/r`
+    /// members of `0F 0D` are not decoded (`Unsupported`).
+    Prefetchw,
     /// S4-38L7l: `F0 [REX] FF /0` (LOCK INC m32, and with REX.W m64), memory destination only.
     /// Executed only in the CPL0 set; the destination is always written back.
     LockIncMem {
@@ -1093,6 +1832,8 @@ pub enum Operation {
     /// S4-38L9o: bare `0F AE F8` (SFENCE); a no-op for the single-vCPU model, admitted only
     /// inside the CPL0 profile set.
     Sfence,
+    /// S2-39n: `[REX] 0F AE /3` STMXCSR m32 (mod != 11; no mandatory prefix, no REX.W); executed in the CPL0 set only.
+    Stmxcsr(MemoryOperand),
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
     FxsaveRipRelative(MemoryOperand),
     /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
@@ -2064,6 +2805,228 @@ pub enum Operation {
         destination: MemoryOperand,
         source: u8,
     },
+    /// S2-34 (m128 addressing): the memory form of any of the six raw 128-bit SSE moves
+    /// (MOVAPS `0F 28/29`, MOVUPS `0F 10/11`, MOVAPD `66 0F 28/29`, MOVUPD `66 0F 10/11`, MOVDQA
+    /// `66 0F 6F/7F`, MOVDQU `F3 0F 6F/7F`) with any ModR/M, SIB, displacement or RIP-relative operand
+    /// that the narrower profile decoders above did not claim (decoded only as the fallback of
+    /// [`decode`] when the legacy decode is `Unsupported`). `store` selects the direction:
+    /// `false` loads `xmm` from `memory`, `true` stores `xmm` to `memory`. Register forms stay with
+    /// the register operations above. Executed only through [`crate::execute`]'s shared m128 path.
+    Sse128MemoryMove {
+        kind: Sse128MoveKind,
+        store: bool,
+        xmm: u8,
+        memory: MemoryOperand,
+    },
+    /// S2-54 slice C: MOVSHDUP, MOVSLDUP, MOVDDUP (register or memory source) and LDDQU (memory
+    /// source only) with any ModR/M, SIB, displacement or RIP-relative operand. Decoded only as the
+    /// fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode. Executed
+    /// through [`crate::execute`]'s shared `step_sse3_permute`.
+    Sse3Permute {
+        kind: Sse3PermuteKind,
+        destination: u8,
+        source: Sse3Source,
+    },
+    /// S2-54 slice D: the integer SSSE3 forms (`66 0F 38 xx` and `66 0F 3A 0F ib`) with an XMM or any
+    /// ModR/M/SIB/RIP-relative m128 source (always 16-byte aligned, Type 4). `immediate` is the PALIGNR
+    /// byte shift count and zero for the other forms. Decoded only as the fallback of [`decode`] when
+    /// the profile decoder is `Unsupported` for the opcode; executed through `step_ssse3_int`.
+    Ssse3Int {
+        kind: Ssse3IntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-33 / S2-54: the MMX forms of the SSSE3 integer instructions (`0F 38 xx` and `0F 3A 0F ib` without
+    /// `66`). `destination` is the MMX register ModR/M.reg (REX.R is ignored: there are only MM0..MM7) and a
+    /// register `source` is ModR/M.r/m (REX.B ignored); a memory `source` is 64 bits with no alignment rule.
+    /// `immediate` is the PALIGNR byte count and zero for the other forms. The MMX register model is the
+    /// physical x87 data register file ([`crate::state::X87State`]). Executed through `step_mmx_ssse3`.
+    MmxSsse3 {
+        kind: Ssse3IntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-33: `EMMS` (`NP 0F 77`), the whole x87 tag word becomes empty (SDM Vol. 2A, EMMS).
+    Emms,
+    /// S2-39 (MMX): the integer MMX instructions of two operands, `NP 0F xx /r` (and `NP 0F 70 /r ib`
+    /// PSHUFW, whose control is `immediate`; zero for the others). `destination` is MM0..MM7 (ModR/M.reg,
+    /// REX.R ignored); a register `source` is ModR/M.r/m (REX.B ignored) and a memory `source` is 64 bits
+    /// with no alignment rule. The shifts take the count from the whole source operand. Decoded only as the
+    /// fallback of [`decode`]; executed through `step_mmx_int`.
+    MmxInt {
+        kind: MmxIntKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-39 (MMX): `NP 0F 71/72/73 /r ib` (PSRLW/PSRAW/PSLLW, PSRLD/PSRAD/PSLLD, PSRLQ/PSLLQ `mm, imm8`);
+    /// `destination` is ModR/M.r/m (REX.B ignored), `kind` one of the eight shifts.
+    MmxShiftImmediate {
+        kind: MmxIntKind,
+        destination: u8,
+        immediate: u8,
+    },
+    /// S2-39 (MMX): `NP 0F 6E` (`to_mmx`: MOVD mm, r/m32 or, with REX.W, MOVQ mm, r/m64, zero-extended) and
+    /// `NP 0F 7E` (MOVD r/m32, mm or MOVQ r/m64, mm); `operand` is the general register or memory operand
+    /// of the given size, `mmx` the MMX register of ModR/M.reg (REX.R ignored).
+    MmxMovd {
+        to_mmx: bool,
+        mmx: u8,
+        operand: Operand,
+    },
+    /// S2-39 (MMX): `NP 0F 6F` (`to_mmx`: MOVQ mm, mm/m64) and `NP 0F 7F` (MOVQ mm/m64, mm); `mmx` is the
+    /// ModR/M.reg register and `other` the ModR/M.r/m register (REX.B ignored) or 64-bit memory operand.
+    MmxMovq {
+        to_mmx: bool,
+        mmx: u8,
+        other: Sse3Source,
+    },
+    /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx` and `66 0F 3A xx ib`). `xmm` is the ModRM.reg
+    /// XMM register (destination, or the source of PEXTR*); `operand` the ModRM.r/m operand. `immediate` is
+    /// zero for the forms without `imm8`. Decoded only as the fallback of [`decode`] when the profile
+    /// decoder is `Unsupported` for the opcode; executed through `step_sse41`.
+    Sse41 {
+        kind: Sse41Kind,
+        xmm: u8,
+        operand: Sse41Operand,
+        immediate: u8,
+    },
+    /// S2-39 (integer SSE2 remainder): the integer SSE2 forms the narrow register profile does not carry (see
+    /// [`Sse2IntKind`]): the packed integer arithmetic, logic, compare, pack/unpack, shift-by-XMM-count and shuffle
+    /// forms with an XMM or any 16-byte aligned memory source, MOVD/MOVQ between XMM and general registers or memory,
+    /// MOVLPS/MOVLPD/MOVHPS/MOVHPD, MOVHLPS/MOVLHPS, PEXTRW, PINSRW and the register forms of MOVDQU/MOVDQA. `xmm`
+    /// is the ModRM.reg XMM register (the destination of a load, the source of a store; for PEXTRW the XMM
+    /// register is the ModRM.r/m source and `operand` the general destination from ModRM.reg); `operand` is the other
+    /// operand. `immediate` is the imm8 of the shuffles, PINSRW and PEXTRW and zero elsewhere. Decoded only as the
+    /// fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode; executed through
+    /// `step_sse2_int`.
+    Sse2Int {
+        kind: Sse2IntKind,
+        xmm: u8,
+        operand: Sse41Operand,
+        immediate: u8,
+    },
+    /// S2-39 (MASKMOVDQU, `66 0F F7 /r` with a register ModRM): the bytes of XMM `data` (ModRM.reg) whose byte of XMM `mask`
+    /// (ModRM.r/m) has its most significant bit set are stored at DS:DI/EDI/RDI. `memory` is the implicit `[rdi]` operand
+    /// (address size 32 with the `67` prefix). Decoded through [`decode_sse2_int`] (fallback of [`decode`]); executed
+    /// through `step_sse2_maskmov`.
+    Sse2Maskmov {
+        data: u8,
+        mask: u8,
+        memory: MemoryOperand,
+    },
+    /// S2-39 (MOVQ2DQ `F3 0F D6 /r` and MOVDQ2Q `F2 0F D6 /r`, register ModRM only): between the low quadword of an XMM
+    /// register and an MMX register (MM0..MM7: REX.R/REX.B do not extend it). `to_xmm` is MOVQ2DQ (`xmm` is ModRM.reg, the
+    /// destination, `mm` is ModRM.r/m); otherwise MOVDQ2Q (`mm` is ModRM.reg, `xmm` is ModRM.r/m, extended by REX.B). Both
+    /// make the x87 to MMX transition. Decoded through [`decode_sse2_int`]; executed through `step_sse2_mmx_move`.
+    Sse2MmxMove {
+        to_xmm: bool,
+        xmm: u8,
+        mm: u8,
+    },
+    /// S2-37 (general SSE floating-point core): `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` with any XMM or memory
+    /// source (`[66|F2|F3] 0F 58/59/5C/5E /r`); S2-54 adds `ADDSUBPS/PD`, `HADDPS/PD` and `HSUBPS/PD`
+    /// (`F2|66 0F D0/7C/7D /r`, packed only). `destination` is the first source and the result register;
+    /// `source` is the second source. Reached from [`decode`] in two ways: as the fallback for every form
+    /// the narrow profile decoder refuses, and by the executor, which rewrites the narrow profile operations
+    /// (`AddpsRegister`, `MulsdMemoryRax` and the like) into this operation when no narrow profile is
+    /// configured. Executed through `step_sse_fp_arith`.
+    SseFpArith {
+        kind: SseFpArithKind,
+        shape: SseFpShape,
+        destination: u8,
+        source: Sse3Source,
+    },
+    /// S2-38 (general SSE floating-point core): `CMPPS/CMPPD/CMPSS/CMPSD` (`0F C2 /r ib`), `COMISS/COMISD`
+    /// (`0F 2F`), `UCOMISS/UCOMISD` (`0F 2E`), `CVTDQ2PS` (`0F 5B`), `CVTPS2DQ` (`66 0F 5B`) and `CVTTPS2DQ`
+    /// (`F3 0F 5B`) with an XMM or any memory source. `shape` is the operand shape the prefix selects (the
+    /// compare-to-EFLAGS forms are `Scalar32`/`Scalar64`, the conversions `Packed32`); `immediate` is the CMPxx
+    /// predicate byte and zero elsewhere. Reached like [`Operation::SseFpArith`]: as the fallback of [`decode`] and
+    /// by the executor, which rewrites the narrow profile operations of these forms into it when no narrow profile
+    /// is configured. Executed through `step_sse_fp_arith`.
+    SseFpMisc {
+        kind: SseFpMiscKind,
+        shape: SseFpShape,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-37 (remainder): `CVTSI2SS` (`F3 [REX.W] 0F 2A /r`, `double` false) and `CVTSI2SD` (`F2 [REX.W] 0F 2A /r`,
+    /// `double` true): the signed integer `source` (`Dword` or, with REX.W, `Qword` register or memory) is
+    /// converted into element 0 of XMM `destination` under MXCSR.RC; the bits above the element are kept. Reached
+    /// like [`Operation::SseFpMisc`] (fallback of [`decode`] and the executor's rewrite of the narrow profile
+    /// operations) and executed through `step_sse_int_convert`.
+    SseCvtFromInt {
+        double: bool,
+        destination: u8,
+        source: Operand,
+    },
+    /// S2-37 (remainder): `CVTSS2SI`/`CVTTSS2SI` (`F3 [REX.W] 0F 2D/2C /r`, `double` false) and
+    /// `CVTSD2SI`/`CVTTSD2SI` (`F2 [REX.W] 0F 2D/2C /r`, `double` true): element 0 of an XMM register or a 4- or
+    /// 8-byte memory operand to the signed integer `dst` (`Dword` zero-extended to 64 bits or, with REX.W, `Qword`),
+    /// rounded by MXCSR.RC (`truncate` false) or toward zero. An invalid conversion delivers the integer
+    /// indefinite value. Reached like [`Operation::SseFpMisc`] and executed through `step_sse_int_convert`.
+    SseCvtToInt {
+        double: bool,
+        truncate: bool,
+        dst: RegisterView,
+        source: Sse3Source,
+    },
+    /// S2-55 slice B: the floating-point SSE4.1 forms (`66 0F 38 14/15 /r`, `66 0F 3A 08..0D/17/21/40/41 /r ib`).
+    /// `xmm` is the ModRM.reg XMM register (destination, or the source of EXTRACTPS); `operand` the ModRM.r/m
+    /// operand (`Gpr` only for the register form of EXTRACTPS). `immediate` is zero for BLENDVPS/BLENDVPD.
+    /// Decoded only as the fallback of [`decode`] when the profile decoder is `Unsupported` for the opcode;
+    /// executed through `step_sse41_fp`.
+    Sse41Fp {
+        kind: Sse41FpKind,
+        xmm: u8,
+        operand: Sse41Operand,
+        immediate: u8,
+    },
+    /// S2-38 (logic and permute remainder): ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD, XORPS/XORPD, SHUFPS/SHUFPD and
+    /// UNPCKLPS/UNPCKHPS/UNPCKLPD/UNPCKHPD (`0F 14/15/54..57/C6`, `66` selects the double forms) with an XMM or a
+    /// 128-bit memory source of any ModR/M, SIB, displacement or RIP-relative form. `immediate` is the imm8 of the
+    /// shuffles and zero elsewhere. Decoded only as the fallback of [`decode`] when the profile decoder is
+    /// `Unsupported` for the opcode (the narrow register profiles of the bitwise forms keep their own decode);
+    /// executed through `step_sse_logic_permute`.
+    SseLogicPermute {
+        kind: SseLogicPermuteKind,
+        destination: u8,
+        source: Sse3Source,
+        immediate: u8,
+    },
+    /// S2-38 (logic and permute remainder): `0F 50 /r` MOVMSKPS and `66 0F 50 /r` MOVMSKPD, register form only
+    /// (`ModRM.mod != 3` is #UD): the sign bits of the four (two) elements of XMM `source` go to the low bits of
+    /// general register `destination` (REX.R extended), the remaining bits of the 64-bit register are zero.
+    /// Decoded only as the fallback of [`decode`]; executed through `step_sse_movmsk`.
+    SseMovmsk {
+        double: bool,
+        destination: u8,
+        source: u8,
+    },
+    /// S2-56 slice A: `POPCNT r16/r32/r64, r/m` (`F3 [REX.W] 0F B8 /r`). `dst` and `src` have the operand
+    /// width; the count of set bits goes to `dst`, ZF = (source is zero), CF/OF/SF/AF/PF are cleared. Decoded
+    /// only as the fallback of [`decode`]; executed through `step_popcnt_crc32`.
+    Popcnt {
+        dst: RegisterView,
+        src: Operand,
+    },
+    /// S2-56 slice A: `CRC32 r32/r64, r/m8/r/m16/r/m32/r/m64` (`F2 [REX.W] 0F 38 F0/F1 /r`): accumulates
+    /// CRC-32C (polynomial 11EDC6F41H, reflected bit order) of the source into the low 32 bits of `dst` and
+    /// zero-extends. `dst` is a dword or (REX.W) qword register, `src.size` is the SDM source width. No
+    /// flags change. Decoded only as the fallback of [`decode`]; executed through `step_popcnt_crc32`.
+    Crc32 {
+        dst: RegisterView,
+        src: Operand,
+    },
+    /// S2-54 slice C: x87 `FISTTP m16int/m32int/m64int` (`DF /1`, `DB /1`, `DD /1`): store ST(0) as a
+    /// signed integer with truncation and pop. `memory.size` is Word, Dword or Qword. Decoded only
+    /// as the fallback of [`decode`]; executed through `step_fisttp`.
+    FisttpMemory {
+        memory: MemoryOperand,
+    },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
     /// Bare `9B` WAIT/FWAIT in the bounded CPL0 FP-state profile.
@@ -2145,6 +3108,20 @@ pub enum Operation {
     },
     /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
     FstpM80FpRax,
+    /// S2-32b: bare `DF 20` FBLD m80bcd at [RAX], pushing the exact integer of a valid packed BCD operand.
+    FbldM80Rax,
+    /// S2-32b: bare `DF 30` FBSTP m80bcd at [RAX], storing the rounded ST(0) as packed BCD and popping.
+    FbstpM80Rax,
+    /// S2-32c: bare `D9 30` FNSTENV m28byte at [RAX] (32-bit protected-mode environment image, no prefix).
+    /// S2-32f: also the three-byte spelling `9B D9 30` (FSTENV; opcode `9B`, length 3).
+    FnstenvRax,
+    /// S2-32c: bare `DD 30` FNSAVE m108byte at [RAX] (environment plus ST(0)..ST(7), then FNINIT).
+    /// S2-32f: also the three-byte spelling `9B DD 30` (FSAVE; opcode `9B`, length 3).
+    FnsaveRax,
+    /// S2-32c: bare `DD 20` FRSTOR m108byte at [RAX].
+    FrstorRax,
+    /// S2-32d: bare `D9 20` FLDENV m28byte at [RAX] (32-bit protected-mode environment image, no prefix).
+    FldenvRax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
     FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
@@ -2183,6 +3160,26 @@ pub enum Operation {
     Fprem,
     /// Bare `D9 F5` FPREM1 in the bounded local positive-Normal profile.
     Fprem1,
+    /// S2-32: bare `D9 F0` F2XM1 (2^ST(0) - 1 for -1 <= ST(0) <= 1) in the bounded local x87 profile of `x87_transcend`.
+    F2xm1,
+    /// S2-32: bare `D9 F1` FYL2X (ST(1) * log2(ST(0)), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fyl2x,
+    /// S2-32: bare `D9 F2` FPTAN (tangent of ST(0), then push 1.0) in the bounded local x87 profile of `x87_transcend`.
+    Fptan,
+    /// S2-32: bare `D9 F3` FPATAN (arctangent of ST(1)/ST(0), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fpatan,
+    /// S2-32: bare `D9 F4` FXTRACT (split ST(0) into exponent and significand) in the bounded local x87 profile of `x87_transcend`.
+    Fxtract,
+    /// S2-32: bare `D9 F9` FYL2XP1 (ST(1) * log2(ST(0) + 1), pop) in the bounded local x87 profile of `x87_transcend`.
+    Fyl2xp1,
+    /// S2-32: bare `D9 FB` FSINCOS (sine and cosine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fsincos,
+    /// S2-32: bare `D9 FD` FSCALE (ST(0) * 2^trunc(ST(1))) in the bounded local x87 profile of `x87_transcend`.
+    Fscale,
+    /// S2-32: bare `D9 FE` FSIN (sine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fsin,
+    /// S2-32: bare `D9 FF` FCOS (cosine of ST(0)) in the bounded local x87 profile of `x87_transcend`.
+    Fcos,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
     /// Bare `D9 00` FLD m32fp at [RAX], bounded Normal binary32 stack push.
@@ -2728,6 +3725,17 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
+            // S2-52: SAHF defines the five flags it loads; LAHF reads flags and defines none.
+            Operation::Sahf => FlagEffects {
+                defined: crate::CF | crate::PF | crate::AF | crate::ZF | crate::SF,
+                undefined: 0,
+            },
+            // S2-51: CMPXCHG16B defines ZF only; CF, PF, AF, SF and OF are unaffected (SDM, "Flags
+            // Affected"), so none of them is marked defined or undefined.
+            Operation::Cmpxchg16b { .. } | Operation::Cmpxchg8b { .. } => FlagEffects {
+                defined: crate::ZF,
+                undefined: 0,
+            },
             // S4-38L7bg: as the plain CMPXCHG: all six flags defined (CMP of AL with the destination).
             Operation::CmpxchgMemory { .. }
             | Operation::LockCmpxchgMem { .. }
@@ -2798,7 +3806,28 @@ impl Instruction {
                 defined: crate::CF,
                 undefined: crate::PF | crate::AF | crate::SF | crate::OF,
             },
-            Operation::BitScan { .. } => FlagEffects {
+            // PTEST: ZF and CF come from the operands, AF, OF, PF and SF are cleared (SDM), so all six
+            // arithmetic flags are defined afterwards. PCMPxSTRx (S2-56 slice B) writes CF, ZF, SF, OF and
+            // resets AF and PF: all six are defined as well.
+            Operation::BitScan { .. }
+            | Operation::Popcnt { .. }
+            | Operation::Sse41 {
+                kind:
+                    Sse41Kind::Ptest
+                    | Sse41Kind::Pcmpestrm
+                    | Sse41Kind::Pcmpestri
+                    | Sse41Kind::Pcmpistrm
+                    | Sse41Kind::Pcmpistri,
+                ..
+            } => FlagEffects {
+                defined: crate::ARITHMETIC_FLAGS,
+                undefined: 0,
+            },
+            // COMISS/COMISD/UCOMISS/UCOMISD (S2-38): ZF, PF, CF from the relation, OF, SF, AF cleared.
+            Operation::SseFpMisc {
+                kind: SseFpMiscKind::Comi | SseFpMiscKind::Ucomi,
+                ..
+            } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -3158,23 +4187,39 @@ impl<M: GuestMemory> Fetch<'_, M> {
             _ => None,
         };
         if let Some(operation) = modeled_system_operation {
-            // S4-39f: only the exact `48 0F 07` (SYSRETQ) decodes; the bare `0F 07` (the 32-bit
-            // SYSRETL) and every other prefix combination stay the decoder's `Unsupported`.
+            // S4-39f / S2-27m: `48 0F 07` (SYSRETQ, return to 64-bit mode) and the bare `0F 07`
+            // (SYSRETL, return to compatibility mode) decode; `F0` with either form is `#UD`
+            // (Intel SDM, SYSRET: "#UD if the LOCK prefix is used"); every other prefix
+            // combination stays the decoder's `Unsupported`.
             if operation == Operation::Sysret {
-                if prefixes
-                    == (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
+                for (rex, operand_size) in
+                    [(Some(0x48), OperandSize::Qword), (None, OperandSize::Dword)]
                 {
-                    return Ok(Instruction {
-                        length: self.length,
-                        opcode,
-                        prefixes,
-                        operand_size: OperandSize::Qword,
-                        address_size: OperandSize::Qword,
-                        operation,
-                    });
+                    let bare = Prefixes {
+                        rex,
+                        ..Prefixes::default()
+                    };
+                    if prefixes == bare {
+                        return Ok(Instruction {
+                            length: self.length,
+                            opcode,
+                            prefixes,
+                            operand_size,
+                            address_size: OperandSize::Qword,
+                            operation,
+                        });
+                    }
+                    if prefixes
+                        == (Prefixes {
+                            group1: Some(0xf0),
+                            ..bare
+                        })
+                    {
+                        return Err(DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
                 }
                 return Err(self.unsupported(opcode));
             }
@@ -3194,13 +4239,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !prefixes.address_override
                 && prefixes.rex.is_none()
                 && self.length == 3
-                && !matches!(
-                    operation,
-                    Operation::Sysenter
-                        | Operation::Sysexit
-                        | Operation::Syscall
-                        | Operation::Sysret
-                )
+                && !matches!(operation, Operation::Sysenter | Operation::Sysexit)
             {
                 return Err(DecodeError::Invalid {
                     opcode,
@@ -3674,8 +4713,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
-                | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x9e | 0x9f | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
+                | (OpcodeMap::Escape0f, 0x00 | 0x0d | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -3693,6 +4732,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_fwait_candidate = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0x9b
             && prefixes.group1 == Some(0xf0);
+        // S2-51/S2-21: and for CMPXCHG16B (`F0 REX.W 0F C7 /1`) and CMPXCHG8B (`F0 [REX] 0F C7 /1`);
+        // the opcode arm below refuses every other LOCK + 0F C7 form.
+        let locked_cmpxchg16b_candidate = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xc7
+            && prefixes.group1 == Some(0xf0);
+        // S2-52/S2-53: and for LAHF/SAHF (`F0 9F|9E`) and PREFETCHW (`F0 0F 0D /1`): LOCK is #UD for
+        // these forms (SDM), reported as `DecodeError::Invalid` by the opcode arms below.
+        let locked_ud_candidate = prefixes.group1 == Some(0xf0)
+            && matches!(
+                (opcode.map, opcode.byte),
+                (OpcodeMap::Primary, 0x9e | 0x9f) | (OpcodeMap::Escape0f, 0x0d)
+            );
         // S4-38L7k: and for the qword memory CMPXCHG (`F0 REX.W 0F B1 /r`); the executor admits
         // it only in the CPL0 set.
         let locked_qword_memory_cmpxchg_candidate = opcode.map == OpcodeMap::Escape0f
@@ -6187,7 +7238,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !locked_qword_memory_xchg_candidate
                 && !locked_cli
                 && !locked_hlt
-                && !locked_fwait_candidate)
+                && !locked_fwait_candidate
+                && !locked_cmpxchg16b_candidate
+                && !locked_ud_candidate)
         {
             return Err(self.unsupported(opcode));
         }
@@ -8582,6 +9635,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match modrm {
                     0x00 => Operation::FildM16IntRax,
                     0x28 => Operation::FildM64IntRax,
+                    0x20 => Operation::FbldM80Rax,
+                    0x30 => Operation::FbstpM80Rax,
                     0xe0 => Operation::FnstswAx,
                     0x10 => Operation::FistM16IntRax,
                     0x18 => Operation::FistpM16IntRax,
@@ -8688,6 +9743,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::FldM64FpRax
                 } else if modrm == 0x38 {
                     Operation::FnstswM16Rax
+                } else if modrm == 0x30 {
+                    Operation::FnsaveRax
+                } else if modrm == 0x20 {
+                    Operation::FrstorRax
                 } else if modrm >> 6 != 3 && (modrm >> 3) & 7 == 7 {
                     // S7-31d: every other memory form of `DD /7` (FNSTSW m2byte).
                     let Operand::Memory(destination) =
@@ -8733,6 +9792,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x00 => Operation::FldM32FpRax,
                     0x28 => Operation::FldcwM16Rax,
                     0x38 => Operation::FnstcwM16Rax,
+                    0x30 => Operation::FnstenvRax,
+                    0x20 => Operation::FldenvRax,
                     modrm if modrm >> 6 != 3 && (modrm >> 3) & 7 == 7 => {
                         // S7-31d: every other memory form of `D9 /7` (FNSTCW m2byte).
                         let Operand::Memory(destination) =
@@ -8751,6 +9812,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xfa => Operation::Fsqrt,
                     0xf8 => Operation::Fprem,
                     0xf5 => Operation::Fprem1,
+                    0xf0 => Operation::F2xm1,
+                    0xf1 => Operation::Fyl2x,
+                    0xf2 => Operation::Fptan,
+                    0xf3 => Operation::Fpatan,
+                    0xf4 => Operation::Fxtract,
+                    0xf9 => Operation::Fyl2xp1,
+                    0xfb => Operation::Fsincos,
+                    0xfd => Operation::Fscale,
+                    0xfe => Operation::Fsin,
+                    0xff => Operation::Fcos,
                     0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -8841,7 +9912,30 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0xae) => {
                 let modrm = self.byte()?;
-                if prefixes == Prefixes::default() {
+                // S2-39n: `[REX] 0F AE /3` STMXCSR m32 (memory operand, any addressing form). `0F AE /2`
+                // (LDMXCSR m32) is NOT decoded here: by the owner's "main priority" rule (merge 56c60c9) the
+                // S7-31i `Operation::LdmxcsrMemory` below is the only LDMXCSR form (ADR-0014 superseded for it).
+                // No 66/F2/F3/LOCK prefix, no stale REX (a REX not directly before the opcode)
+                // and no REX.W (refused, like the Linux profile refuses `48 0F AE 17`: the operand is 32 bits and
+                // the architectural effect of REX.W here is not measured).
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if modrm >> 6 != 3
+                    && (modrm >> 3) & 7 == 3
+                    && prefixes.group1.is_none()
+                    && !prefixes.operand_override
+                    && !stale_rex
+                    && prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Dword)?
+                    else {
+                        unreachable!("a mod != 11 ModRM is a memory operand");
+                    };
+                    Operation::Stmxcsr(area)
+                } else if prefixes == Prefixes::default() {
                     match modrm {
                         0xf0 => Operation::Mfence,
                         // S4-38L9o: register-only fence encodings (SDM from memory).
@@ -9130,6 +10224,46 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         destination,
                         source,
                     }
+                }
+            }
+            // S2-51: CMPXCHG16B (SDM Vol. 2A, 3-196..3-198). `[F0] REX.W 0F C7 /1 m128` decodes as
+            // CMPXCHG16B and, since S2-21, `[F0] [REX without W] 0F C7 /1 m64` as CMPXCHG8B. The REX
+            // byte must sit directly before the opcode (a stale REX is ignored by hardware, but is
+            // not modeled), and 66/67/segment/REP prefixes and the other /r members of `0F C7` stay
+            // `Unsupported`. The register form (mod = 3) is #UD ("If the destination operand is not
+            // a memory location") for both, reported as `DecodeError::Invalid`.
+            (OpcodeMap::Escape0f, 0xc7) => {
+                let rex_w = prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+                let stale_rex = prefix_bytes[..prefix_count]
+                    .iter()
+                    .enumerate()
+                    .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                if stale_rex
+                    || prefixes.group1.is_some_and(|prefix| prefix != 0xf0)
+                    || prefixes.segment.is_some()
+                    || prefixes.operand_override
+                    || prefixes.address_override
+                {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 1 {
+                    return Err(self.unsupported(opcode));
+                }
+                if modrm >> 6 == 3 {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                size = OperandSize::Qword;
+                let Operand::Memory(destination) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Err(self.unsupported(opcode));
+                };
+                if rex_w {
+                    Operation::Cmpxchg16b { destination }
+                } else {
+                    Operation::Cmpxchg8b { destination }
                 }
             }
             (OpcodeMap::Escape0f, 0xb1) if matches!(prefixes.segment, Some(0x64 | 0x65)) => {
@@ -9444,6 +10578,53 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     };
                     Operation::Cmps { size }
                 }
+            }
+            // S2-52: LAHF/SAHF (SDM Vol. 2A 3-532, Vol. 2B 4-601). No ModRM and no operand: AH is
+            // implicit, so REX, 66H, 67H and segment prefixes have no effect. LOCK is #UD (SDM, 64-bit
+            // mode exceptions); REP/REPNE never get here (refused by the prefix gate above).
+            (OpcodeMap::Primary, 0x9e | 0x9f) => {
+                if prefixes.group1 == Some(0xf0) {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                size = OperandSize::Byte;
+                if opcode.byte == 0x9f {
+                    Operation::Lahf
+                } else {
+                    Operation::Sahf
+                }
+            }
+            // S2-53: PREFETCHW (SDM Vol. 2B 4-416..4-417): `0F 0D /1 m8` only. Its effective address
+            // is never computed, so the operand is parsed for the length only. The register form
+            // (mod = 3) and the other /r members stay `Unsupported`: the SDM defines only /1 with a
+            // memory operand (PREFETCHWT1 `/2` is Vol. 2D and has its own CPUID bit). LOCK is #UD.
+            (OpcodeMap::Escape0f, 0x0d) => {
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 1 {
+                    return Err(self.unsupported(opcode));
+                }
+                let locked = prefixes.group1 == Some(0xf0);
+                if modrm >> 6 == 3 {
+                    return Err(if locked {
+                        DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        }
+                    } else {
+                        self.unsupported(opcode)
+                    });
+                }
+                size = OperandSize::Byte;
+                self.rm_operand(modrm, prefixes, size)?;
+                if locked {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                Operation::Prefetchw
             }
             (OpcodeMap::Primary, 0x9c) => {
                 // In 64-bit mode REX.W selects qword and overrides 66H;
@@ -10677,12 +11858,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if duplicate {
                     return Err(self.unsupported(opcode));
                 }
-                if prefixes == Prefixes::default()
-                    || prefixes
-                        == (Prefixes {
-                            group1: Some(0xf0),
-                            ..Prefixes::default()
-                        })
+                if prefixes == Prefixes::default() {
+                    // S2-32f: the spellings `9B D9 30` (FSTENV) and `9B DD 30` (FSAVE) are one
+                    // instruction of three bytes, FWAIT and then the non-waiting form; any other
+                    // byte after `9B` leaves it a bare FWAIT of its own byte.
+                    self.fwait_environment_spelling()
+                        .unwrap_or(Operation::Fwait)
+                } else if prefixes
+                    == (Prefixes {
+                        group1: Some(0xf0),
+                        ..Prefixes::default()
+                    })
                 {
                     Operation::Fwait
                 } else {
@@ -11425,6 +12611,1335 @@ impl<M: GuestMemory> Fetch<'_, M> {
             length: self.length,
         }
     }
+
+    /// S2-32f: after a bare `9B`, the exact bytes `D9 30` (FSTENV m28byte at [RAX]) or `DD 30` (FSAVE
+    /// m108byte at [RAX]) are consumed and give the operation of the non-waiting form; the instruction
+    /// then keeps opcode `9B` and length 3. Any other next byte, a prefix between FWAIT and the escape
+    /// byte included, or a fetch error on one of the two bytes consumes nothing (the length is
+    /// restored and the error is left to the decode of the next instruction).
+    fn fwait_environment_spelling(&mut self) -> Option<Operation> {
+        // The look-ahead never leaves the 4 KiB page of the `9B` byte: `9B` is at `start + length - 1`,
+        // so when it or the byte after it is the last byte of its page no byte after `9B` is fetched
+        // (a bare FWAIT of its own byte: no fetch, no page walk and no recorded error of an adapter
+        // for the next page). A spelling across a page boundary is FWAIT and the non-waiting form
+        // as two instructions; the second faults with the same RIP, `9B` + 1.
+        let next = self.start.wrapping_add(u64::from(self.length));
+        if next % 0x1000 == 0 || next % 0x1000 == 0xfff {
+            return None;
+        }
+        let start = self.length;
+        let operation = (|| {
+            let escape = self.byte().ok()?;
+            if self.byte().ok()? != 0x30 {
+                return None;
+            }
+            match escape {
+                0xd9 => Some(Operation::FnstenvRax),
+                0xdd => Some(Operation::FnsaveRax),
+                _ => None,
+            }
+        })();
+        if operation.is_none() {
+            self.length = start;
+        }
+        operation
+    }
+
+    /// S2-34 (m128 addressing): general decode of the memory forms of the six raw 128-bit SSE
+    /// moves, tried by [`decode`] only after the profile decoder returned `Unsupported` for
+    /// `0F 10/11/28/29/6F/7F`, so every form a narrower profile already claims keeps its
+    /// operation. Everything is re-fetched from the instruction start; `Ok(None)` means "not one
+    /// of these forms" and leaves the profile decoder's `Unsupported` result in force.
+    ///
+    /// Accepted: one optional REX immediately before the opcode (a legacy prefix after it drops it,
+    /// REX.W is ignored), the mandatory prefix of the instruction (none for MOVAPS/MOVUPS, `66` for
+    /// MOVAPD/MOVUPD/MOVDQA, `F3` for MOVDQU), an optional `67` (32-bit effective address, which
+    /// `MemoryOperand::effective_address` truncates), an optional CS/DS/ES/SS override (null base
+    /// in 64-bit mode, so ignored) and any ModR/M memory operand through the shared
+    /// `rm_operand`. Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in
+    /// this operand model), F2, a second mandatory prefix, the MMX `0F 6F/7F` without `66`/`F3`
+    /// and the register forms (mod = 3). LOCK (`F0`) before the memory form of one of the six
+    /// encodings is #UD (SDM Vol. 2A Tables 2-18 and 2-21) and is returned as
+    /// `DecodeError::Invalid`.
+    fn decode_sse128_memory_move(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let mut prefixes = Prefixes::default();
+        let mut seen = 0u8;
+        let first = loop {
+            let byte = self.byte()?;
+            let group = match byte {
+                0xf0 | 0xf2 | 0xf3 => {
+                    prefixes.group1 = Some(byte);
+                    1
+                }
+                0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 => {
+                    prefixes.segment = Some(byte);
+                    2
+                }
+                0x66 => {
+                    prefixes.operand_override = true;
+                    4
+                }
+                0x67 => {
+                    prefixes.address_override = true;
+                    8
+                }
+                0x40..=0x4f => {
+                    if prefixes.rex.is_some() {
+                        return Ok(None);
+                    }
+                    prefixes.rex = Some(byte);
+                    continue;
+                }
+                _ => break byte,
+            };
+            if seen & group != 0 {
+                return Ok(None);
+            }
+            seen |= group;
+            prefixes.rex = None;
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let locked = prefixes.group1 == Some(0xf0);
+        let mandatory = if locked { None } else { prefixes.group1 };
+        let kind = match (opcode.byte, prefixes.operand_override, mandatory) {
+            (0x10 | 0x11, false, None) => Sse128MoveKind::Movups,
+            (0x10 | 0x11, true, None) => Sse128MoveKind::Movupd,
+            (0x28 | 0x29, false, None) => Sse128MoveKind::Movaps,
+            (0x28 | 0x29, true, None) => Sse128MoveKind::Movapd,
+            (0x6f | 0x7f, true, None) => Sse128MoveKind::Movdqa,
+            (0x6f | 0x7f, false, Some(0xf3)) => Sse128MoveKind::Movdqu,
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if modrm >> 6 == 3 {
+            return Ok(None);
+        }
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)? else {
+            return Ok(None);
+        };
+        let rex = prefixes.rex.unwrap_or(0);
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse128MemoryMove {
+                kind,
+                store: matches!(opcode.byte, 0x11 | 0x29 | 0x7f),
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                memory,
+            },
+        }))
+    }
+
+    /// Legacy prefixes and at most one REX for the S2-54 slice C decoders: LOCK (`F0`, kept apart
+    /// because LOCK with a mandatory prefix is a valid two-prefix sequence), one group-1 repeat
+    /// prefix (`F2`/`F3`), CS/DS/ES/SS/FS/GS overrides, `66`, `67`, then an optional REX that must
+    /// immediately precede the opcode (a legacy prefix after it drops it). `Ok(None)` for a repeated
+    /// prefix of any group. Returns the prefixes, the LOCK flag and the first non-prefix byte.
+    fn scan_slice_c_prefixes(&mut self) -> Result<Option<(Prefixes, bool, u8)>, DecodeError> {
+        let mut prefixes = Prefixes::default();
+        let mut seen = 0u8;
+        let mut locked = false;
+        let first = loop {
+            let byte = self.byte()?;
+            let group = match byte {
+                0xf0 => {
+                    if locked {
+                        return Ok(None);
+                    }
+                    locked = true;
+                    prefixes.rex = None;
+                    continue;
+                }
+                0xf2 | 0xf3 => {
+                    prefixes.group1 = Some(byte);
+                    1
+                }
+                0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 => {
+                    prefixes.segment = Some(byte);
+                    2
+                }
+                0x66 => {
+                    prefixes.operand_override = true;
+                    4
+                }
+                0x67 => {
+                    prefixes.address_override = true;
+                    8
+                }
+                0x40..=0x4f => {
+                    if prefixes.rex.is_some() {
+                        return Ok(None);
+                    }
+                    prefixes.rex = Some(byte);
+                    continue;
+                }
+                _ => break byte,
+            };
+            if seen & group != 0 {
+                return Ok(None);
+            }
+            seen |= group;
+            prefixes.rex = None;
+        };
+        Ok(Some((prefixes, locked, first)))
+    }
+
+    /// S2-54 slice C: `F3 0F 16` MOVSHDUP, `F3 0F 12` MOVSLDUP, `F2 0F 12` MOVDDUP (xmm or memory
+    /// source) and `F2 0F F0` LDDQU (memory source), tried by [`decode`] only after the profile decoder
+    /// returned `Unsupported` for `0F 12/16/F0`. LOCK with the form is #UD (SDM Vol. 2A Tables 2-21 and
+    /// 2-22: "If preceded by a LOCK prefix"), as is the register form of LDDQU (the SDM operand is
+    /// `mem`). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this
+    /// operand model), `66` with the mandatory prefix, the opposite or no mandatory prefix (those
+    /// opcodes are MOVLPS/MOVHLPS/MOVHPS/MOVLPD/MOVHPD, owned elsewhere), and 0F F0 without `F2`.
+    fn decode_sse3_permute(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = match (opcode.byte, prefixes.group1) {
+            (0x16, Some(0xf3)) => Sse3PermuteKind::Movshdup,
+            (0x12, Some(0xf3)) => Sse3PermuteKind::Movsldup,
+            (0x12, Some(0xf2)) => Sse3PermuteKind::Movddup,
+            (0xf0, Some(0xf2)) => Sse3PermuteKind::Lddqu,
+            _ => return Ok(None),
+        };
+        if prefixes.operand_override || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (register_form && kind == Sse3PermuteKind::Lddqu) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if register_form {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse3Permute {
+                kind,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+            },
+        }))
+    }
+
+    /// S2-54 slice C: x87 `DF /1` FISTTP m16int, `DB /1` FISTTP m32int and `DD /1` FISTTP m64int with
+    /// any ModR/M memory operand, tried by [`decode`] after the profile decoder returned `Unsupported`
+    /// for `DB/DD/DF`. LOCK is #UD (SDM Vol. 2A p. 3-350). Refused (`Ok(None)`): the register forms
+    /// (mod = 3 is another instruction or undefined), other /r values, FS/GS overrides, and `66`/`F2`/`F3`
+    /// before the opcode (their effect on x87 opcodes is not asserted).
+    fn decode_fisttp(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        let size = match first {
+            0xdf => OperandSize::Word,
+            0xdb => OperandSize::Dword,
+            0xdd => OperandSize::Qword,
+            _ => return Ok(None),
+        };
+        if prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Primary,
+            byte: first,
+        };
+        let modrm = self.byte()?;
+        if modrm >> 6 == 3 || (modrm >> 3) & 7 != 1 {
+            return Ok(None);
+        }
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+            return Ok(None);
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::FisttpMemory { memory },
+        }))
+    }
+
+    /// S2-54 slice D: `66 0F 38 00..0B/1C..1E /r` and `66 0F 3A 0F /r ib` (the integer SSSE3 forms) with an
+    /// XMM or memory source, tried by [`decode`] only after the profile decoder returned `Unsupported`
+    /// for the opcode. Without `66` the same opcodes are the MMX forms (S2-33; [`Operation::MmxSsse3`]): the
+    /// register operands are MM0..MM7 (REX.R/REX.B ignored) and the memory operand is 64 bits. LOCK is #UD
+    /// (SDM Vol. 2A Table 2-21, "If preceded by a LOCK prefix (F0H)"). Refused (`Ok(None)`): a repeated
+    /// prefix, FS/GS overrides (no segment base in this operand model), `F2`/`F3` (not defined for these
+    /// opcodes) and the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored.
+    fn decode_ssse3_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let Some(kind) = Ssse3IntKind::from_opcode(opcode.map, opcode.byte) else {
+            return Ok(None);
+        };
+        if prefixes.group1.is_some() || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let mmx = !prefixes.operand_override;
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        // MM0..MM7 have no REX extension bit: REX.R and REX.B do not reach the register numbers.
+        let rex = if mmx { 0 } else { prefixes.rex.unwrap_or(0) };
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        let destination = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: if mmx {
+                Operation::MmxSsse3 {
+                    kind,
+                    destination,
+                    source,
+                    immediate,
+                }
+            } else {
+                Operation::Ssse3Int {
+                    kind,
+                    destination,
+                    source,
+                    immediate,
+                }
+            },
+        }))
+    }
+
+    /// S2-33: `NP 0F 77` EMMS, tried by [`decode`] only after the profile decoder returned `Unsupported`
+    /// for `0F 77`. LOCK is #UD (SDM Vol. 2A, EMMS: "If the LOCK prefix is used"). Refused (`Ok(None)`): a
+    /// repeated prefix and `66`, `F2`/`F3` (the SDM defines only the no-prefix form; the physical oracle gives
+    /// #UD for them). A REX prefix, `67` and any segment override have no operand to act on and are accepted.
+    fn decode_emms(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f || self.byte()? != 0x77 {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: 0x77,
+        };
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        if prefixes.operand_override || prefixes.group1.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Dword,
+            address_size: OperandSize::Qword,
+            operation: Operation::Emms,
+        }))
+    }
+
+    /// S2-39 (MMX): the `NP 0F xx` MMX forms of [`Operation::MmxInt`], [`Operation::MmxShiftImmediate`],
+    /// [`Operation::MmxMovd`] and [`Operation::MmxMovq`], tried by [`decode`] only after the profile decoder
+    /// returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A, every MMX instruction: "If the LOCK
+    /// prefix is used"), as is the memory form of the shift groups and an unassigned shift-group register
+    /// field. Refused (`Ok(None)`): a repeated prefix, `66` (the 128-bit forms), `F2`/`F3`, FS/GS overrides
+    /// (no segment base in this operand model). A REX prefix reaches only the memory operand and the general
+    /// register of MOVD/MOVQ (REX.W selects the 64-bit form, REX.R and REX.B do not extend MM0..MM7).
+    fn decode_mmx_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = MmxIntKind::from_opcode(opcode.byte);
+        if kind.is_none() && !matches!(opcode.byte, 0x6e | 0x6f | 0x71..=0x73 | 0x7e | 0x7f) {
+            return Ok(None);
+        }
+        if prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let invalid = |length| DecodeError::Invalid { opcode, length };
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        let register_field = (modrm >> 3) & 7;
+        let register_rm = modrm & 7;
+        if matches!(opcode.byte, 0x71..=0x73) {
+            let Some(kind) = MmxIntKind::shift_group(opcode.byte, register_field) else {
+                return Err(invalid(self.length));
+            };
+            if modrm >> 6 != 3 {
+                return Err(invalid(self.length));
+            }
+            let immediate = self.byte()?;
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation: Operation::MmxShiftImmediate {
+                    kind,
+                    destination: register_rm,
+                    immediate,
+                },
+            }));
+        }
+        let (operand_size, operation) = if matches!(opcode.byte, 0x6e | 0x7e) {
+            let size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                OperandSize::Qword
+            } else {
+                OperandSize::Dword
+            };
+            let operand = self.rm_operand(modrm, prefixes, size)?;
+            (
+                size,
+                Operation::MmxMovd {
+                    to_mmx: opcode.byte == 0x6e,
+                    mmx: register_field,
+                    operand,
+                },
+            )
+        } else {
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register(register_rm)
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            if let Some(kind) = kind {
+                let immediate = if kind.has_immediate() {
+                    self.byte()?
+                } else {
+                    0
+                };
+                (
+                    OperandSize::Qword,
+                    Operation::MmxInt {
+                        kind,
+                        destination: register_field,
+                        source,
+                        immediate,
+                    },
+                )
+            } else {
+                (
+                    OperandSize::Qword,
+                    Operation::MmxMovq {
+                        to_mmx: opcode.byte == 0x6f,
+                        mmx: register_field,
+                        other: source,
+                    },
+                )
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size,
+            address_size,
+            operation,
+        }))
+    }
+
+    /// S2-55 slice A: the integer SSE4.1 forms (`66 0F 38 xx /r`, `66 0F 3A xx /r ib`), tried by [`decode`]
+    /// only after the profile decoder returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A
+    /// Tables 2-18, 2-21 and 2-22, "If preceded by a LOCK prefix (F0H)"), as is the register form of
+    /// MOVNTDQA (the SDM operand is `m128`). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no
+    /// segment base in this operand model), a missing `66` (without it these opcodes are not SSE4.1),
+    /// `F2`/`F3` and the VEX/EVEX encodings. REX.W selects PEXTRQ/PINSRQ and is ignored by every other form.
+    fn decode_sse41(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let rex = prefixes.rex.unwrap_or(0);
+        let Some(kind) = Sse41Kind::from_opcode(opcode.map, opcode.byte, rex & 8 != 0) else {
+            return Ok(None);
+        };
+        if !prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (register_form && kind == Sse41Kind::Movntdqa) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let operand = if register_form {
+            let encoding = (modrm & 7) | ((rex & 1) << 3);
+            if kind.uses_general_register() {
+                Sse41Operand::Gpr(encoding)
+            } else {
+                Sse41Operand::Xmm(encoding)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse41 {
+                kind,
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                operand,
+                immediate,
+            },
+        }))
+    }
+
+    /// S2-39 (integer SSE2 remainder): the forms of [`Sse2IntKind`], tried by [`decode`] only after the profile
+    /// decoder returned `Unsupported` for the opcode and no other general decoder claimed it. The mandatory prefix
+    /// (none, `66`, `F2`, `F3`) selects the instruction; LOCK is #UD (SDM Vol. 2A, each instruction: "If the LOCK
+    /// prefix is used"). Refused (`Ok(None)`): a repeated prefix, `66` together with `F2`/`F3`, FS/GS overrides (no
+    /// segment base in this operand model), a prefix other than the mandatory one of the opcode, and the
+    /// register or memory form the instruction does not have (PEXTRW with a memory operand, MOVLPS/MOVHPS stores and
+    /// loads with a register operand other than MOVHLPS/MOVLHPS, the memory forms of MOVDQU/MOVDQA, which are the S2-34
+    /// raw moves). The register form of MOVNTPS/MOVNTPD/MOVNTDQ and the memory form of MASKMOVDQU, MOVDQ2Q and MOVQ2DQ are
+    /// `#UD` (the physical oracle gives `SIGILL`). MASKMOVDQU and MOVDQ2Q/MOVQ2DQ decode to [`Operation::Sse2Maskmov`] and
+    /// [`Operation::Sse2MmxMove`].
+    fn decode_sse2_int(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let prefix = match (prefixes.operand_override, prefixes.group1) {
+            (false, None) => Sse2Prefix::None,
+            (true, None) => Sse2Prefix::P66,
+            (false, Some(0xf2)) => Sse2Prefix::F2,
+            (false, Some(0xf3)) => Sse2Prefix::F3,
+            _ => return Ok(None),
+        };
+        if !Sse2IntKind::owns(prefix, opcode.byte) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        let rex = prefixes.rex.unwrap_or(0);
+        let Some(kind) = Sse2IntKind::decode(prefix, opcode.byte, register_form, rex & 8 != 0)
+        else {
+            if Sse2IntKind::undefined_form(prefix, opcode.byte, register_form) {
+                return Err(DecodeError::Invalid {
+                    opcode,
+                    length: self.length,
+                });
+            }
+            return Ok(None);
+        };
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rm = (modrm & 7) | ((rex & 1) << 3);
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        // MASKMOVDQU, MOVDQ2Q and MOVQ2DQ have register forms only (the memory forms are `undefined_form`).
+        if let Some(operation) = match kind {
+            Sse2IntKind::Maskmovdqu => Some(Operation::Sse2Maskmov {
+                data: reg,
+                mask: rm,
+                memory: MemoryOperand {
+                    base: AddressBase::Register(Register::Rdi),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size,
+                    size: OperandSize::Qword,
+                },
+            }),
+            Sse2IntKind::Movdq2q => Some(Operation::Sse2MmxMove {
+                to_xmm: false,
+                xmm: rm,
+                mm: reg & 7,
+            }),
+            Sse2IntKind::Movq2dq => Some(Operation::Sse2MmxMove {
+                to_xmm: true,
+                xmm: reg,
+                mm: rm & 7,
+            }),
+            _ => None,
+        } {
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation,
+            }));
+        }
+        let operand = if register_form {
+            if kind.rm_is_general() {
+                Sse41Operand::Gpr(rm)
+            } else {
+                Sse41Operand::Xmm(rm)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        // PEXTRW: ModRM.reg is the general destination and ModRM.r/m the XMM source.
+        let (xmm, operand) = if kind == Sse2IntKind::Pextrw {
+            let Sse41Operand::Xmm(source) = operand else {
+                return Ok(None);
+            };
+            (source, Sse41Operand::Gpr(reg))
+        } else {
+            (reg, operand)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size,
+            operation: Operation::Sse2Int {
+                kind,
+                xmm,
+                operand,
+                immediate,
+            },
+        }))
+    }
+
+    /// S2-56 slice A: POPCNT (`F3 [REX.W] 0F B8 /r`) and CRC32 (`F2 [REX.W] 0F 38 F0/F1 /r`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2B
+    /// POPCNT pp. 4-405..4-406, Vol. 2A CRC32 pp. 3-205..3-207). The mandatory prefix (`F3` for POPCNT, `F2` for
+    /// CRC32) is required: without it `0F B8` is not POPCNT and `0F 38 F0/F1` is MOVBE, both owned elsewhere.
+    /// LOCK is #UD (SDM: "If LOCK prefix is used"). Refused (`Ok(None)`): a repeated prefix, FS/GS overrides
+    /// (no segment base in this operand model), the other group-1 prefix and the VEX/EVEX encodings. Operand
+    /// width: REX.W selects 64 bits, else `66` selects 16 (POPCNT and CRC32 `F1` only), else 32; CRC32
+    /// `F0` has an 8-bit source (with a REX prefix the byte registers are SPL, BPL, SIL, DIL) and its
+    /// destination is r64 with REX.W, else r32; `66` does not change the destination of CRC32.
+    fn decode_popcnt_crc32(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let (opcode, mandatory) = match self.byte()? {
+            0xb8 => (
+                Opcode {
+                    map: OpcodeMap::Escape0f,
+                    byte: 0xb8,
+                },
+                0xf3,
+            ),
+            0x38 => match self.byte()? {
+                byte @ (0xf0 | 0xf1) => (
+                    Opcode {
+                        map: OpcodeMap::Escape0f38,
+                        byte,
+                    },
+                    0xf2,
+                ),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        if prefixes.group1 != Some(mandatory) || matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let wide = rex & 8 != 0;
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let general = if wide {
+            OperandSize::Qword
+        } else if prefixes.operand_override {
+            OperandSize::Word
+        } else {
+            OperandSize::Dword
+        };
+        let (dst_size, src_size) = match (opcode.map, opcode.byte) {
+            (OpcodeMap::Escape0f, _) => (general, general),
+            (_, 0xf0) => (
+                if wide {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                },
+                OperandSize::Byte,
+            ),
+            _ => (
+                if wide {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                },
+                general,
+            ),
+        };
+        let src = self.rm_operand(modrm, prefixes, src_size)?;
+        let dst = RegisterView::low(
+            Register::from_encoding(((modrm >> 3) & 7) | ((rex & 4) << 1)).unwrap(),
+            dst_size,
+        );
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: dst_size,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: if mandatory == 0xf3 {
+                Operation::Popcnt { dst, src }
+            } else {
+                Operation::Crc32 { dst, src }
+            },
+        }))
+    }
+
+    /// S2-37: `ADD/SUB/MUL/DIV` `PS/PD/SS/SD` (`[66|F2|F3] 0F 58/59/5C/5E /r`) with an XMM or any memory
+    /// source, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode.
+    /// LOCK is #UD for every form (Vol. 2A Tables 2-19 and 2-20, "If preceded by a LOCK prefix (F0H)").
+    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model),
+    /// `66` together with `F2`/`F3` (the hardware ignores the `66` there; the model does not guess) and
+    /// the VEX/EVEX encodings. REX.W is not used by the SDM operation and is ignored; REX.R/B extend the
+    /// registers, REX.X/B and `67` the address.
+    fn decode_sse_fp_arith(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let kind = match opcode.byte {
+            0x58 => SseFpArithKind::Add,
+            0x59 => SseFpArithKind::Mul,
+            0x5c => SseFpArithKind::Sub,
+            0x5e => SseFpArithKind::Div,
+            0x51 => SseFpArithKind::Sqrt,
+            0x5d => SseFpArithKind::Min,
+            0x5f => SseFpArithKind::Max,
+            0xd0 => SseFpArithKind::AddSub,
+            0x7c => SseFpArithKind::HAdd,
+            0x7d => SseFpArithKind::HSub,
+            _ => return Ok(None),
+        };
+        // The SSE3 forms are packed only and take the prefix the other way round: `F2` = PS, `66` = PD
+        // (no prefix and `F3` are not defined for them).
+        let sse3 = matches!(
+            kind,
+            SseFpArithKind::AddSub | SseFpArithKind::HAdd | SseFpArithKind::HSub
+        );
+        let shape = match (sse3, prefixes.group1, prefixes.operand_override) {
+            (true, Some(0xf2), false) => SseFpShape::Packed32,
+            (true, None, true) => SseFpShape::Packed64,
+            (true, _, _) => return Ok(None),
+            (false, None, false) => SseFpShape::Packed32,
+            (false, None, true) => SseFpShape::Packed64,
+            (false, Some(0xf3), false) => SseFpShape::Scalar32,
+            (false, Some(0xf2), false) => SseFpShape::Scalar64,
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let size = if shape == SseFpShape::Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            };
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::SseFpArith {
+                kind,
+                shape,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+            },
+        }))
+    }
+
+    /// S2-38: `CMPPS/CMPPD/CMPSS/CMPSD` (`0F C2 /r ib`), `COMISS/COMISD` (`0F 2F`), `UCOMISS/UCOMISD` (`0F 2E`),
+    /// `CVTDQ2PS` (`0F 5B`), `CVTPS2DQ` (`66 0F 5B`) and `CVTTPS2DQ` (`F3 0F 5B`) with an XMM or any memory
+    /// source, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode. The
+    /// prefix rules are those of [`Self::decode_sse_fp_arith`]: LOCK is #UD; a repeated prefix, FS/GS overrides,
+    /// `66` together with `F2`/`F3`, `F2`/`F3` on COMISx/UCOMISx and `F2` on `0F 5B` are refused. REX.W is ignored.
+    fn decode_sse_fp_misc(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let (kind, shape) = match (opcode.byte, prefixes.group1, prefixes.operand_override) {
+            (0x2e, None, false) => (SseFpMiscKind::Ucomi, SseFpShape::Scalar32),
+            (0x2e, None, true) => (SseFpMiscKind::Ucomi, SseFpShape::Scalar64),
+            (0x2f, None, false) => (SseFpMiscKind::Comi, SseFpShape::Scalar32),
+            (0x2f, None, true) => (SseFpMiscKind::Comi, SseFpShape::Scalar64),
+            (0xc2, None, false) => (SseFpMiscKind::Cmp, SseFpShape::Packed32),
+            (0xc2, None, true) => (SseFpMiscKind::Cmp, SseFpShape::Packed64),
+            (0xc2, Some(0xf3), false) => (SseFpMiscKind::Cmp, SseFpShape::Scalar32),
+            (0xc2, Some(0xf2), false) => (SseFpMiscKind::Cmp, SseFpShape::Scalar64),
+            (0x5b, None, false) => (SseFpMiscKind::Cvtdq2ps, SseFpShape::Packed32),
+            (0x5b, None, true) => (SseFpMiscKind::Cvtps2dq, SseFpShape::Packed32),
+            (0x5b, Some(0xf3), false) => (SseFpMiscKind::Cvttps2dq, SseFpShape::Packed32),
+            (0x5a, None, false) => (SseFpMiscKind::Cvtps2pd, SseFpShape::Packed32),
+            (0x5a, None, true) => (SseFpMiscKind::Cvtpd2ps, SseFpShape::Packed64),
+            (0x5a, Some(0xf3), false) => (SseFpMiscKind::Cvtss2sd, SseFpShape::Scalar32),
+            (0x5a, Some(0xf2), false) => (SseFpMiscKind::Cvtsd2ss, SseFpShape::Scalar64),
+            (0x52, None, false) => (SseFpMiscKind::Rsqrt, SseFpShape::Packed32),
+            (0x52, Some(0xf3), false) => (SseFpMiscKind::Rsqrt, SseFpShape::Scalar32),
+            (0x53, None, false) => (SseFpMiscKind::Rcp, SseFpShape::Packed32),
+            (0x53, Some(0xf3), false) => (SseFpMiscKind::Rcp, SseFpShape::Scalar32),
+            (0xe6, Some(0xf3), false) => (SseFpMiscKind::Cvtdq2pd, SseFpShape::Packed32),
+            (0xe6, Some(0xf2), false) => (SseFpMiscKind::Cvtpd2dq, SseFpShape::Packed64),
+            (0xe6, None, true) => (SseFpMiscKind::Cvttpd2dq, SseFpShape::Packed64),
+            _ => return Ok(None),
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let source = if modrm >> 6 == 3 {
+            Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+        } else {
+            let size = if shape == SseFpShape::Scalar32 {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            };
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                return Ok(None);
+            };
+            Sse3Source::Memory(memory)
+        };
+        let immediate = if kind == SseFpMiscKind::Cmp {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::SseFpMisc {
+                kind,
+                shape,
+                destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                source,
+                immediate,
+            },
+        }))
+    }
+
+    /// S2-37 (remainder): `CVTSI2SS/CVTSI2SD xmm, r/m32/64` (`F3|F2 [REX.W] 0F 2A /r`) and
+    /// `CVTSS2SI/CVTSD2SI`, `CVTTSS2SI/CVTTSD2SI r32/r64, xmm/m32|m64` (`F3|F2 [REX.W] 0F 2D|2C /r`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode (Intel SDM Vol. 2A CVTSI2SS
+    /// pp. 3-238..3-239, CVTSI2SD pp. 3-236..3-237, CVTSS2SI pp. 3-242..3-243, CVTSD2SI pp. 3-232..3-233, CVTTSS2SI
+    /// pp. 3-255..3-256, CVTTSD2SI pp. 3-253..3-254). LOCK is #UD; a repeated prefix, FS/GS overrides and `66`
+    /// together with `F2`/`F3` are refused. REX.W selects the 64-bit integer operand, else it is 32 bits; REX.R and
+    /// REX.B extend the register fields.
+    ///
+    /// Without `F2`/`F3` the same opcodes are the MMX conversions (SDM Vol. 2A CVTPI2PS p. 3-224 and CVTPI2PD
+    /// p. 3-223 [`0F 2A`, `66 0F 2A`], CVTPS2PI p. 3-231 and CVTPD2PI p. 3-218 [`0F 2D`, `66 0F 2D`], CVTTPS2PI
+    /// p. 3-252 and CVTTPD2PI p. 3-248 [`0F 2C`, `66 0F 2C`]), decoded as [`Operation::SseFpMisc`] whose MMX
+    /// register operand is numbered by the three ModRM bits (REX.R and REX.B do not extend it) and whose XMM operand
+    /// is extended by them. A memory operand is 8 bytes, except for CVTPD2PI/CVTTPD2PI (16 bytes, aligned).
+    fn decode_sse_int_convert(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        // `None`: the scalar forms (F3/F2); `Some(packed_double)`: the MMX forms without a group-1 prefix.
+        let mmx = match (prefixes.group1, prefixes.operand_override) {
+            (Some(0xf3 | 0xf2), false) => None,
+            (None, packed_double) => Some(packed_double),
+            _ => return Ok(None),
+        };
+        let double = prefixes.group1 == Some(0xf2);
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        if let Some(packed_double) = mmx {
+            use SseFpMiscKind::{Cvtpd2pi, Cvtpi2pd, Cvtpi2ps, Cvtps2pi, Cvttpd2pi, Cvttps2pi};
+            let (kind, shape) = match (opcode.byte, packed_double) {
+                (0x2a, false) => (Cvtpi2ps, SseFpShape::Packed32),
+                (0x2a, true) => (Cvtpi2pd, SseFpShape::Packed64),
+                (0x2d, false) => (Cvtps2pi, SseFpShape::Packed32),
+                (0x2d, true) => (Cvtpd2pi, SseFpShape::Packed64),
+                (_, false) => (Cvttps2pi, SseFpShape::Packed32),
+                (_, true) => (Cvttpd2pi, SseFpShape::Packed64),
+            };
+            let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+            let register_source = if kind.mmx_source() {
+                // The source MMX register: REX.B does not extend it.
+                modrm & 7
+            } else {
+                (modrm & 7) | ((rex & 1) << 3)
+            };
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register(register_source)
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            return Ok(Some(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size,
+                operation: Operation::SseFpMisc {
+                    kind,
+                    shape,
+                    // The MMX destination register: REX.R does not extend it.
+                    destination: if kind.mmx_source() { reg } else { reg & 7 },
+                    source,
+                    immediate: 0,
+                },
+            }));
+        }
+        let general = if rex & 8 != 0 {
+            OperandSize::Qword
+        } else {
+            OperandSize::Dword
+        };
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let operation = if opcode.byte == 0x2a {
+            Operation::SseCvtFromInt {
+                double,
+                destination: reg,
+                source: self.rm_operand(modrm, prefixes, general)?,
+            }
+        } else {
+            let source = if modrm >> 6 == 3 {
+                Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+            } else {
+                let size = if double {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                };
+                let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            Operation::SseCvtToInt {
+                double,
+                truncate: opcode.byte == 0x2c,
+                dst: RegisterView::low(Register::from_encoding(reg).unwrap(), general),
+                source,
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: general,
+            address_size,
+            operation,
+        }))
+    }
+
+    /// S2-55 slice B: the floating-point SSE4.1 forms (`66 0F 38 xx /r`, `66 0F 3A xx /r ib`), tried by
+    /// [`decode`] only after the profile decoder returned `Unsupported` for the opcode. LOCK is #UD (SDM Vol. 2A
+    /// Tables 2-19..2-22, "If preceded by a LOCK prefix (F0H)"). Refused (`Ok(None)`): a repeated prefix,
+    /// FS/GS overrides (no segment base in this operand model), a missing `66`, `F2`/`F3` and the VEX/EVEX
+    /// encodings. REX.W is ignored (EXTRACTPS always zero-extends a register destination to 64 bits).
+    fn decode_sse41_fp(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let map = match self.byte()? {
+            0x38 => OpcodeMap::Escape0f38,
+            0x3a => OpcodeMap::Escape0f3a,
+            _ => return Ok(None),
+        };
+        let opcode = Opcode {
+            map,
+            byte: self.byte()?,
+        };
+        let Some(kind) = Sse41FpKind::from_opcode(opcode.map, opcode.byte) else {
+            return Ok(None);
+        };
+        if !prefixes.operand_override
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let operand = if modrm >> 6 == 3 {
+            let encoding = (modrm & 7) | ((rex & 1) << 3);
+            if kind.stores_to_rm() {
+                Sse41Operand::Gpr(encoding)
+            } else {
+                Sse41Operand::Xmm(encoding)
+            }
+        } else {
+            let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+            else {
+                return Ok(None);
+            };
+            Sse41Operand::Memory(memory)
+        };
+        let immediate = if kind.has_immediate() {
+            self.byte()?
+        } else {
+            0
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation: Operation::Sse41Fp {
+                kind,
+                xmm: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                operand,
+                immediate,
+            },
+        }))
+    }
+
+    /// S2-38 (logic and permute remainder): `0F 14/15/54..57/C6` (and `66` for the double forms) and
+    /// `[66] 0F 50`, tried by [`decode`] only after the profile decoder returned `Unsupported` for the opcode.
+    /// LOCK is #UD (SDM Vol. 2A Table 2-21 and Vol. 2B Table 2-24, "If preceded by a LOCK prefix (F0H)"); MOVMSKPS and
+    /// MOVMSKPD with `ModRM.mod != 3` are #UD too (SDM MOVMSKPS operand-encoding note: ModRM.MOD = 011B required).
+    /// Refused (`Ok(None)`): a repeated prefix, FS/GS overrides (no segment base in this operand model), `F2`/`F3`
+    /// (no defined form of these opcodes) and the VEX/EVEX encodings. REX.W is ignored (the result does not depend
+    /// on it; MOVMSKPS/PD always zero-extend the mask to 64 bits).
+    fn decode_sse_logic_permute(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let movmsk = opcode.byte == 0x50;
+        let kind = SseLogicPermuteKind::from_opcode(opcode.byte, prefixes.operand_override);
+        if (!movmsk && kind.is_none())
+            || prefixes.group1.is_some()
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let modrm = self.byte()?;
+        let register_form = modrm >> 6 == 3;
+        if locked || (movmsk && !register_form) {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let reg = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let operation = if let Some(kind) = kind {
+            let source = if register_form {
+                Sse3Source::Register((modrm & 7) | ((rex & 1) << 3))
+            } else {
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    return Ok(None);
+                };
+                Sse3Source::Memory(memory)
+            };
+            let immediate = if kind.has_immediate() {
+                self.byte()?
+            } else {
+                0
+            };
+            Operation::SseLogicPermute {
+                kind,
+                destination: reg,
+                source,
+                immediate,
+            }
+        } else {
+            Operation::SseMovmsk {
+                double: prefixes.operand_override,
+                destination: reg,
+                source: (modrm & 7) | ((rex & 1) << 3),
+            }
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: if prefixes.address_override {
+                OperandSize::Dword
+            } else {
+                OperandSize::Qword
+            },
+            operation,
+        }))
+    }
 }
 
 fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
@@ -11440,13 +13955,107 @@ pub fn decode(
     rip: u64,
     context: AccessContext,
 ) -> Result<Instruction, DecodeError> {
-    Fetch {
-        memory,
+    let profile = Fetch {
+        memory: &mut *memory,
         start: rip,
         length: 0,
         context,
     }
-    .decode()
+    .decode();
+    // S2-34 (m128 addressing): the profile decoder claims only its own narrow forms of the six raw
+    // SSE moves; every other memory form of them gets the general decode below.
+    let Err(DecodeError::Unsupported { opcode, .. }) = profile else {
+        return profile;
+    };
+    let mut fetch = Fetch {
+        memory,
+        start: rip,
+        length: 0,
+        context,
+    };
+    // S2-54 slice C: the non-FP SSE3 forms (`0F 12/16/F0`) and x87 FISTTP (`DB/DD/DF /1`) get the
+    // same fallback treatment.
+    let general = match (opcode.map, opcode.byte) {
+        // S2-39 (MMX): the no-prefix MOVQ mm forms (`0F 6F/7F`) are tried first, the 128-bit moves after.
+        (OpcodeMap::Escape0f, 0x6f | 0x7f) => match fetch.decode_mmx_int() {
+            Ok(None) => Fetch {
+                memory: &mut *fetch.memory,
+                start: rip,
+                length: 0,
+                context,
+            }
+            .decode_sse128_memory_move(),
+            other => other,
+        },
+        (OpcodeMap::Escape0f, 0x10 | 0x11 | 0x28 | 0x29) => fetch.decode_sse128_memory_move(),
+        // S2-39 (MMX): the rest of the no-prefix MMX forms.
+        (OpcodeMap::Escape0f, byte)
+            if MmxIntKind::from_opcode(byte).is_some()
+                || matches!(byte, 0x6e | 0x71..=0x73 | 0x7e) =>
+        {
+            fetch.decode_mmx_int()
+        }
+        (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
+        (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),
+        // S2-33: EMMS.
+        (OpcodeMap::Escape0f, 0x77) => fetch.decode_emms(),
+        // S2-54 slice D: the integer SSSE3 forms.
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Ssse3IntKind::from_opcode(opcode.map, byte).is_some() =>
+        {
+            fetch.decode_ssse3_int()
+        }
+        // S2-55 slice A: the integer SSE4.1 forms (and, S2-56, PCMPGTQ).
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Sse41Kind::from_opcode(opcode.map, byte, false).is_some() =>
+        {
+            fetch.decode_sse41()
+        }
+        // S2-55 slice B: the floating-point SSE4.1 forms.
+        (OpcodeMap::Escape0f38 | OpcodeMap::Escape0f3a, byte)
+            if Sse41FpKind::from_opcode(opcode.map, byte).is_some() =>
+        {
+            fetch.decode_sse41_fp()
+        }
+        // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`).
+        (OpcodeMap::Escape0f, 0xb8) | (OpcodeMap::Escape0f38, 0xf0 | 0xf1) => {
+            fetch.decode_popcnt_crc32()
+        }
+        // S2-37: ADD/MUL/SUB/DIV `PS/PD/SS/SD` outside the narrow profile forms.
+        // S2-38: SQRT/MIN/MAX join them, and the compare, compare-to-EFLAGS and integer conversion forms.
+        // S2-54 (FP part): ADDSUBPS/PD (`0F D0`), HADDPS/PD (`0F 7C`) and HSUBPS/PD (`0F 7D`) share it.
+        (
+            OpcodeMap::Escape0f,
+            0x58 | 0x59 | 0x5c | 0x5e | 0x51 | 0x5d | 0x5f | 0x7c | 0x7d | 0xd0,
+        ) => fetch.decode_sse_fp_arith(),
+        (OpcodeMap::Escape0f, 0x2e | 0x2f | 0xc2 | 0x5b | 0x5a | 0x52 | 0x53 | 0xe6) => {
+            fetch.decode_sse_fp_misc()
+        }
+        // S2-38 (logic and permute remainder): the bitwise, shuffle and unpack forms and MOVMSKPS/MOVMSKPD.
+        (OpcodeMap::Escape0f, 0x14 | 0x15 | 0x50 | 0x54..=0x57 | 0xc6) => {
+            fetch.decode_sse_logic_permute()
+        }
+        // S2-37 (remainder): CVTSI2SS/SD and CVT[T]SS2SI/SD2SI.
+        (OpcodeMap::Escape0f, 0x2a | 0x2c | 0x2d) => fetch.decode_sse_int_convert(),
+        _ => Ok(None),
+    };
+    // S2-39 (integer SSE2 remainder): the forms of `Sse2IntKind` that no earlier general decoder claimed (the
+    // MMX arm above answers `Ok(None)` for the `66`-prefixed forms of its opcodes).
+    let general = match general {
+        Ok(None) if opcode.map == OpcodeMap::Escape0f => Fetch {
+            memory: &mut *fetch.memory,
+            start: rip,
+            length: 0,
+            context,
+        }
+        .decode_sse2_int(),
+        other => other,
+    };
+    match general {
+        Ok(Some(instruction)) => Ok(instruction),
+        Ok(None) => profile,
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn canonical(address: u64) -> bool {
@@ -11515,9 +14124,45 @@ mod tests {
                 fault_at: None,
             }
         }
+        /// The profile decoder alone: the narrow per-profile boundaries of the S2-34 SSE move
+        /// slices are asserted through this entry point.
         fn decode(&mut self) -> Result<Instruction, DecodeError> {
+            let start = self.base;
+            Fetch {
+                memory: self,
+                start,
+                length: 0,
+                context: AccessContext::default(),
+            }
+            .decode()
+        }
+        /// The public entry point: profile decoder first, then the S2-34 (m128 addressing)
+        /// general decode of the six raw SSE moves.
+        fn decode_general(&mut self) -> Result<Instruction, DecodeError> {
             decode(self, self.base, AccessContext::default())
         }
+    }
+    /// A form the narrow profile decoder rejects (`Unsupported`) but the S2-34 (m128 addressing)
+    /// general decode accepts as a raw 128-bit SSE move: both halves of the boundary are asserted.
+    #[track_caller]
+    fn assert_profile_rejects_general_move(bytes: &[u8]) {
+        assert!(
+            matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ),
+            "profile must reject {bytes:02x?}"
+        );
+        assert!(
+            matches!(
+                Memory::new(bytes).decode_general(),
+                Ok(Instruction {
+                    operation: Operation::Sse128MemoryMove { .. },
+                    ..
+                })
+            ),
+            "general decode must accept {bytes:02x?}"
+        );
     }
     impl GuestMemory for Memory {
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
@@ -12373,6 +15018,140 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    /// S2-39 (integer SSE2 remainder): the forms of `Sse2IntKind` decode through the general decode only.
+    #[test]
+    fn integer_sse2_remainder_forms_decode_through_the_general_decode() {
+        use crate::sse2_int::Sse2IntKind as Kind;
+        // (bytes, kind, xmm, operand register or memory base, immediate)
+        let register = |number| Sse41Operand::Xmm(number);
+        let general = |number| Sse41Operand::Gpr(number);
+        let forms: [(&[u8], Kind, u8, Option<Sse41Operand>, u8); 9] = [
+            (
+                &[0x66, 0x0f, 0xc5, 0xca, 0x03],
+                Kind::Pextrw,
+                2,
+                Some(general(1)),
+                3,
+            ),
+            (
+                &[0x66, 0x44, 0x0f, 0xc5, 0xc2, 0x07],
+                Kind::Pextrw,
+                2,
+                Some(general(8)),
+                7,
+            ),
+            (
+                &[0x66, 0x48, 0x0f, 0x7e, 0xc9],
+                Kind::MovqToGeneral,
+                1,
+                Some(general(1)),
+                0,
+            ),
+            (
+                &[0x66, 0x0f, 0x7e, 0xc9],
+                Kind::MovdStore,
+                1,
+                Some(general(1)),
+                0,
+            ),
+            (
+                &[0xf3, 0x0f, 0x7e, 0xca],
+                Kind::MovqLoad,
+                1,
+                Some(register(2)),
+                0,
+            ),
+            (&[0x0f, 0x12, 0xca], Kind::Movhlps, 1, Some(register(2)), 0),
+            (
+                &[0xf3, 0x0f, 0x70, 0xca, 0x1b],
+                Kind::Pshufhw,
+                1,
+                Some(register(2)),
+                0x1b,
+            ),
+            (
+                &[0x66, 0x0f, 0xe5, 0xca],
+                Kind::Pmulhw,
+                1,
+                Some(register(2)),
+                0,
+            ),
+            // A memory operand: the operand is compared by kind below.
+            (&[0x66, 0x0f, 0xfc, 0x08], Kind::Paddb, 1, None, 0),
+        ];
+        for (bytes, kind, xmm, operand, immediate) in forms {
+            let mut memory = Memory::new(bytes);
+            let decoded = memory
+                .decode_general()
+                .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            let Operation::Sse2Int {
+                kind: decoded_kind,
+                xmm: decoded_xmm,
+                operand: decoded_operand,
+                immediate: decoded_immediate,
+            } = decoded.operation
+            else {
+                panic!("{bytes:02x?}: {:?}", decoded.operation);
+            };
+            assert_eq!(
+                (decoded_kind, decoded_xmm, decoded_immediate),
+                (kind, xmm, immediate),
+                "{bytes:02x?}"
+            );
+            match operand {
+                Some(operand) => assert_eq!(decoded_operand, operand, "{bytes:02x?}"),
+                None => assert!(
+                    matches!(
+                        decoded_operand,
+                        Sse41Operand::Memory(MemoryOperand {
+                            base: AddressBase::Register(Register::Rax),
+                            index: None,
+                            displacement: 0,
+                            ..
+                        })
+                    ),
+                    "{bytes:02x?}"
+                ),
+            }
+        }
+        // Undefined forms are #UD (LOCK, PEXTRW with memory, the register form of the half-register stores).
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0xf0, 0x66, 0x0f, 0xfc, 0xca][..],
+            &[0x66, 0x0f, 0xc5, 0x08, 0x00][..],
+            &[0x0f, 0x13, 0xca][..],
+            &[0x0f, 0x17, 0xca][..],
+            &[0x66, 0x0f, 0x12, 0xca][..],
+            &[0x66, 0x0f, 0x16, 0xca][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(memory.decode_general(), Err(DecodeError::Invalid { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        // Refused: FS/GS, repeated and mixed prefixes, the wrong mandatory prefix, truncation without the opcode.
+        for bytes in [
+            &[0x64, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0x65, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0x66, 0x0f, 0xfc, 0x08][..],
+            &[0x66, 0xf3, 0x0f, 0xfc, 0x08][..],
+            &[0xf3, 0x0f, 0xfc, 0x08][..],
+            &[0xf2, 0x0f, 0x7e, 0xca][..],
+            &[0x66, 0x0f, 0x30][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                matches!(
+                    memory.decode_general(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
         }
     }
 
@@ -18022,8 +20801,8 @@ mod tests {
             }
         }
 
+        assert_profile_rejects_general_move(&[0x0f, 0x28, 0x00]); // memory
         for bytes in [
-            &[0x0f, 0x28, 0x00][..], // memory
             &[0xf2, 0x0f, 0x28, 0xc1][..],
             &[0xf3, 0x0f, 0x28, 0xc1][..],
             &[0x64, 0x0f, 0x28, 0xc1][..],
@@ -18155,8 +20934,8 @@ mod tests {
                 source: 1
             }
         );
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x28, 0x00]); // memory
         for bytes in [
-            &[0x66, 0x0f, 0x28, 0x00][..],
             &[0x66, 0xf2, 0x0f, 0x28, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x28, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x28, 0xc1][..],
@@ -18270,13 +21049,13 @@ mod tests {
             );
         }
         for bytes in [
-            &[0x66, 0x48, 0x0f, 0x10, 0x00][..],
-            &[0x66, 0x42, 0x0f, 0x10, 0x00][..],
-            &[0x67, 0x66, 0x0f, 0x10, 0x00][..],
-            &[0x66, 0x0f, 0x10][..],
+            &[0x66, 0x48, 0x0f, 0x10, 0x00][..], // REX.W
+            &[0x66, 0x42, 0x0f, 0x10, 0x00][..], // REX.X
+            &[0x67, 0x66, 0x0f, 0x10, 0x00][..], // address-size override
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert_profile_rejects_general_move(bytes);
         }
+        assert!(Memory::new(&[0x66, 0x0f, 0x10]).decode().is_err());
         let decoded = Memory::new(&[0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0])
             .decode()
             .unwrap();
@@ -18366,8 +21145,8 @@ mod tests {
                 }
             );
         }
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x29, 0x00]); // memory
         for bytes in [
-            &[0x66, 0x0f, 0x29, 0x00][..], // memory
             &[0x66, 0xf2, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],
@@ -18428,10 +21207,14 @@ mod tests {
         for bytes in [
             &[0x42, 0x0f, 0x10, 0x00][..], // REX.X
             &[0x48, 0x0f, 0x10, 0x00][..], // REX.W
+            &[0x67, 0x0f, 0x10, 0x00][..], // address-size override
+            &[0x2e, 0x0f, 0x10, 0x00][..], // CS override
+        ] {
+            assert_profile_rejects_general_move(bytes);
+        }
+        for bytes in [
             &[0xf2, 0x0f, 0x10, 0x01][..], // other-base MOVSD load remains out of this form
             &[0xf0, 0x0f, 0x10, 0x00][..],
-            &[0x67, 0x0f, 0x10, 0x00][..],
-            &[0x2e, 0x0f, 0x10, 0x00][..],
             &[0x40, 0x41, 0x0f, 0x10, 0x00][..],
             &[0xc5, 0xf8, 0x10, 0x00][..],
             &[0xc4, 0xe1, 0x78, 0x10, 0x00][..],
@@ -18469,9 +21252,13 @@ mod tests {
         for bytes in [
             &[0x42, 0x0f, 0x11, 0x00][..], // REX.X
             &[0x48, 0x0f, 0x11, 0x00][..], // REX.W
+            &[0x67, 0x0f, 0x11, 0x00][..], // address-size override
+            &[0x2e, 0x0f, 0x11, 0x00][..], // CS override
+        ] {
+            assert_profile_rejects_general_move(bytes);
+        }
+        for bytes in [
             &[0xf0, 0x0f, 0x11, 0x00][..],
-            &[0x67, 0x0f, 0x11, 0x00][..],
-            &[0x2e, 0x0f, 0x11, 0x00][..],
             &[0x40, 0x41, 0x0f, 0x11, 0x00][..],
             &[0xc5, 0xf8, 0x11, 0x00][..],
             &[0xc4, 0xe1, 0x78, 0x11, 0x00][..],
@@ -18536,8 +21323,8 @@ mod tests {
             }
         }
 
+        assert_profile_rejects_general_move(&[0x42, 0x0f, 0x10, 0x01]); // REX.X without SIB
         for bytes in [
-            &[0x42, 0x0f, 0x10, 0x01][..],    // REX.X is rejected without SIB
             &[0x0f, 0x10, 0x04][..],          // truncated SIB
             &[0x0f, 0x10, 0x44, 0x00][..],    // truncated disp8 after SIB
             &[0x0f, 0x10, 0x84, 0x00, 0][..], // truncated disp32 after SIB
@@ -18617,11 +21404,9 @@ mod tests {
                 ..
             }
         ));
-        assert!(
-            Memory::new(&[0x66, 0x41, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00])
-                .decode()
-                .is_err()
-        );
+        assert_profile_rejects_general_move(&[
+            0x66, 0x41, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00,
+        ]);
 
         for (bytes, base, vector) in [
             (&[0x66, 0x0f, 0x10, 0x45, 0][..], Register::Rbp, 12),
@@ -18755,7 +21540,7 @@ mod tests {
             &[0x66, 0x48, 0x0f, 0x10, 0x04, 0x08][..], // REX.W
             &[0x67, 0x66, 0x0f, 0x10, 0x04, 0x08],     // address size override
         ] {
-            assert!(Memory::new(bad).decode().is_err(), "{bad:02x?}");
+            assert_profile_rejects_general_move(bad);
         }
     }
 
@@ -18909,7 +21694,7 @@ mod tests {
             &[0x66, 0x48, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // REX.W is outside the profile.
             &[0x67, 0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..], // Address-size override.
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert_profile_rejects_general_move(bytes);
         }
     }
 
@@ -18961,11 +21746,7 @@ mod tests {
             &[0x41, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x45, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
         ] {
-            let mut memory = Memory::new(bytes);
-            assert!(matches!(
-                memory.decode(),
-                Err(DecodeError::Unsupported { .. })
-            ));
+            assert_profile_rejects_general_move(bytes);
         }
     }
 
@@ -19332,6 +22113,8 @@ mod tests {
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
                     0x10 => Ok(Operation::FistM16IntRax),
+                    0x20 => Ok(Operation::FbldM80Rax),
+                    0x30 => Ok(Operation::FbstpM80Rax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -19417,6 +22200,8 @@ mod tests {
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
                     0x10 => Ok(Operation::FistM16IntRax),
+                    0x20 => Ok(Operation::FbldM80Rax),
+                    0x30 => Ok(Operation::FbstpM80Rax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -19533,6 +22318,10 @@ mod tests {
                     Ok(Operation::FistpM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x38 {
                     Ok(Operation::FistpM64IntRax)
+                } else if opcode == 0xdf && modrm == 0x20 {
+                    Ok(Operation::FbldM80Rax)
+                } else if opcode == 0xdf && modrm == 0x30 {
+                    Ok(Operation::FbstpM80Rax)
                 } else if let Some(operation) = indexed_x87_compare(opcode, modrm) {
                     Ok(operation)
                 } else {
@@ -19653,6 +22442,10 @@ mod tests {
                     Ok(Operation::FldM64FpRax)
                 } else if modrm == 0x38 {
                     Ok(Operation::FnstswM16Rax)
+                } else if modrm == 0x30 {
+                    Ok(Operation::FnsaveRax)
+                } else if modrm == 0x20 {
+                    Ok(Operation::FrstorRax)
                 } else if modrm == 0x10 {
                     Ok(Operation::FstM64FpRax)
                 } else if modrm == 0x18 {
@@ -19862,6 +22655,10 @@ mod tests {
                     Ok(Operation::FxchSti { source: second & 7 })
                 } else if second == 0x38 {
                     Ok(Operation::FnstcwM16Rax)
+                } else if second == 0x30 {
+                    Ok(Operation::FnstenvRax)
+                } else if second == 0x20 {
+                    Ok(Operation::FldenvRax)
                 } else if second == 0xd0 {
                     Ok(Operation::Fnop)
                 } else if second == 0xe0 {
@@ -19886,6 +22683,26 @@ mod tests {
                     Ok(Operation::Fprem)
                 } else if second == 0xf5 {
                     Ok(Operation::Fprem1)
+                } else if second == 0xf0 {
+                    Ok(Operation::F2xm1)
+                } else if second == 0xf1 {
+                    Ok(Operation::Fyl2x)
+                } else if second == 0xf2 {
+                    Ok(Operation::Fptan)
+                } else if second == 0xf3 {
+                    Ok(Operation::Fpatan)
+                } else if second == 0xf4 {
+                    Ok(Operation::Fxtract)
+                } else if second == 0xf9 {
+                    Ok(Operation::Fyl2xp1)
+                } else if second == 0xfb {
+                    Ok(Operation::Fsincos)
+                } else if second == 0xfd {
+                    Ok(Operation::Fscale)
+                } else if second == 0xfe {
+                    Ok(Operation::Fsin)
+                } else if second == 0xff {
+                    Ok(Operation::Fcos)
                 } else if second == 0xfc {
                     Ok(Operation::Frndint)
                 } else {
@@ -20211,7 +23028,7 @@ mod tests {
             &[0x48, 0xd9, 0xf8][..],
             &[0x64, 0xd9, 0xf8][..],
             &[0xd9][..],
-            &[0xd9, 0xf9][..],
+            &[0xd9, 0xe2][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -20239,7 +23056,7 @@ mod tests {
             &[0x48, 0xd9, 0xf5][..],
             &[0x64, 0xd9, 0xf5][..],
             &[0xd9][..],
-            &[0xd9, 0xf4][..],
+            &[0xd9, 0xe2][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -22760,6 +25577,86 @@ mod tests {
     }
 
     #[test]
+    fn ldmxcsr_and_stmxcsr_decode_any_memory_form_and_nothing_else() {
+        // S2-39n: `[REX] 0F AE /3` STMXCSR with a memory operand, size dword; `0F AE /2` is the S7-31i
+        // `LdmxcsrMemory` (no prefix at all; by the "main priority" rule no REX form of LDMXCSR is decoded).
+        let cases: [(&[u8], bool, AddressBase, i64, u8); 5] = [
+            (
+                &[0x0f, 0xae, 0x10],
+                true,
+                AddressBase::Register(Register::Rax),
+                0,
+                3,
+            ),
+            (
+                &[0x0f, 0xae, 0x18],
+                false,
+                AddressBase::Register(Register::Rax),
+                0,
+                3,
+            ),
+            (
+                &[0x41, 0x0f, 0xae, 0x58, 0x08],
+                false,
+                AddressBase::Register(Register::R8),
+                8,
+                5,
+            ),
+            (
+                &[0x0f, 0xae, 0x1d, 0x10, 0, 0, 0],
+                false,
+                AddressBase::NextRip,
+                0x10,
+                7,
+            ),
+            (
+                &[0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff],
+                true,
+                AddressBase::Register(Register::Rbp),
+                -16,
+                7,
+            ),
+        ];
+        for (bytes, load, base, displacement, length) in cases {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(instruction.length, length, "{bytes:02x?}");
+            let (Operation::LdmxcsrMemory { source: area } | Operation::Stmxcsr(area)) =
+                instruction.operation
+            else {
+                panic!("{bytes:02x?}: {:?}", instruction.operation)
+            };
+            assert_eq!(
+                matches!(instruction.operation, Operation::LdmxcsrMemory { .. }),
+                load,
+                "{bytes:02x?}"
+            );
+            assert_eq!(area.base, base, "{bytes:02x?}");
+            assert_eq!(area.displacement, displacement, "{bytes:02x?}");
+            assert_eq!(area.size, OperandSize::Dword, "{bytes:02x?}");
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0xae, 0x10][..],       // operand-size prefix
+            &[0xf3, 0x0f, 0xae, 0x10][..],       // REP
+            &[0xf2, 0x0f, 0xae, 0x18][..],       // REPNE
+            &[0xf0, 0x0f, 0xae, 0x10][..],       // LOCK
+            &[0x48, 0x0f, 0xae, 0x10][..],       // REX.W
+            &[0x48, 0x41, 0x0f, 0xae, 0x10][..], // stale REX
+            &[0x41, 0x0f, 0xae, 0x50, 0x08][..], // REX LDMXCSR (S7-31i has no REX form)
+            &[0x40, 0x0f, 0xae, 0x95, 0xf0, 0xff, 0xff, 0xff][..], // REX LDMXCSR
+            &[0x0f, 0xae, 0xd0][..],             // mod = 11, /2
+            &[0x0f, 0xae, 0xd8][..],             // mod = 11, /3
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn fxsave_rip_profile_decodes_only_plain_exact_form_and_fetches_disp32_on_demand() {
         let observed = [0x0f, 0xae, 0x05, 0x6b, 0xf9, 0x17, 0x00];
         let mut decoded = Memory::new(&observed);
@@ -22785,8 +25682,7 @@ mod tests {
             &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
-            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i, no longer refused.)
-            &[0x0f, 0xae, 0x1d, 0, 0, 0, 0][..],
+            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i and `0F AE 1D` is `STMXCSR` since S2-39n, no longer refused.)
             &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x35, 0, 0, 0, 0][..],
@@ -34975,8 +37871,6 @@ mod tests {
             &[0x66, 0x66, 0x0f, 0x6f, 0xd3][..], // duplicate mandatory prefix
             &[0x66, 0xf3, 0x0f, 0x6f, 0xd3][..],
             &[0xf3, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
-            &[0x66, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
-            &[0x48, 0x0f, 0x29, 0x44, 0x24, 0x20][..],
             &[0x0f, 0x29, 0x44, 0x24][..], // truncated displacement
         ] {
             assert!(
@@ -34984,6 +37878,9 @@ mod tests {
                 "unexpected decode for {bytes:02x?}"
             );
         }
+        // Memory forms of MOVAPD/MOVAPS: outside the profile, taken by the general S2-34 decode.
+        assert_profile_rejects_general_move(&[0x66, 0x0f, 0x29, 0x44, 0x24, 0x20]);
+        assert_profile_rejects_general_move(&[0x48, 0x0f, 0x29, 0x44, 0x24, 0x20]);
     }
 
     #[test]

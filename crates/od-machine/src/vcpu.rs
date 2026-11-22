@@ -183,9 +183,12 @@ pub(crate) struct Vcpu {
     /// as CR2 on entry the way the board's page-table root is for CR3. `None` until the first
     /// CPL0-set run.
     pub(crate) guest_cr2: Option<u64>,
-    /// The guest-visible `IA32_EFER` (S4-38L7f): `FIRMWARE_EFER` until a guest `WRMSR` of EFER
-    /// changed `SCE` (the only bit the set lets change). The walkers keep using the constant
-    /// `FIRMWARE_EFER` (LME/LMA/NXE never change), so the board's `efer()` stays the walker's EFER.
+    /// The guest-visible `IA32_EFER` (S4-38L7f, S2-25f): `FIRMWARE_EFER` until a guest `WRMSR` of EFER
+    /// changed `SCE` or `NXE` (the only bits the set lets change; LME and LMA never change). The
+    /// boot processor's walkers take their EFER from the board's `efer()`: `FIRMWARE_EFER` with the
+    /// NXE bit of this field, so a cleared NXE reaches every walker the board builds. The walkers
+    /// of the other vCPUs and of the host threads are separate (see the S2-25 open limits in the
+    /// CPU contract).
     pub(crate) guest_efer: u64,
     /// The guest `IA32_STAR` (S4-38L7ao): `0` until a guest `WRMSR`. Only stored.
     pub(crate) guest_star: u64,
@@ -1111,5 +1114,21 @@ mod tests {
         let one = assembled(1).unwrap();
         assert_eq!(one.cpuid_profile(), LINUX_AP_CPUID_PROFILE);
         assert!(one.vcpu(0).unwrap().legacy.is_none());
+    }
+
+    #[test]
+    fn a_board_without_a_recorded_entry_state_refuses_a_restart_and_changes_nothing() {
+        // S4-21e: the Linux-profile assembly leaves the entry state to its caller.
+        let mut board = assembled(2).unwrap();
+        board.state_mut().rip = 0x1234;
+        board.local_apic().request_fixed_edge(0x41).unwrap();
+        assert_eq!(
+            board.restart_vcpus(),
+            Err(FirmwareBoardError::Config(
+                "restart_vcpus: the board has no recorded entry state"
+            ))
+        );
+        assert_eq!(board.state().rip, 0x1234);
+        assert_eq!(board.local_apic().pending(), Some(0x41));
     }
 }

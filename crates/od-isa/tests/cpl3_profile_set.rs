@@ -413,6 +413,310 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("lldt ax", &[0x0f, 0x00, 0xd0], 0x00),
         ("invlpg [rax]", &[0x0f, 0x01, 0x38], 0x01),
         ("int3", &[0xcc], 0xcc),
+        // S2-51: CMPXCHG16B executes in the bare run and in the CPL0 set at Ring0 only; the CPL3
+        // profile (the Linux live profile) does not list it, and CX16 stays refused at CPL3 even though the Windows CPUID profile (S2-57 slice) declares it.
+        ("cmpxchg16b [rdi]", &[0x48, 0x0f, 0xc7, 0x0f], 0xc7),
+        (
+            "lock cmpxchg16b [rdi]",
+            &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+            0xc7,
+        ),
+        // S2-21: CMPXCHG8B follows CMPXCHG16B: bare run and CPL0 set at Ring0 only, refused at CPL3.
+        ("cmpxchg8b [rdi]", &[0x0f, 0xc7, 0x0f], 0xc7),
+        ("lock cmpxchg8b [rdi]", &[0xf0, 0x0f, 0xc7, 0x0f], 0xc7),
+        // S2-52/S2-53: LAHF, SAHF and PREFETCHW execute in the bare run and in the CPL0 set at Ring0
+        // only; the CPL3 profile (the Linux live profile) does not list them, and they stay refused at
+        // CPL3 even though the Windows CPUID profile (S2-57 slice) declares LAHF_SAHF_64 and PREFETCHW.
+        ("lahf", &[0x9f], 0x9f),
+        ("sahf", &[0x9e], 0x9e),
+        ("prefetchw [rdi]", &[0x0f, 0x0d, 0x0f], 0x0d),
+        // S2-34 (m128 addressing): the general decode of the six raw 128-bit moves is never admitted at
+        // CPL3; the live profile keeps exactly its own MOVUPS/MOVAPS/MOVDQA/MOVDQU forms.
+        (
+            "movaps xmm0,[rdi] (general form)",
+            &[0x0f, 0x28, 0x07],
+            0x28,
+        ),
+        ("movapd xmm0,[rdi]", &[0x66, 0x0f, 0x28, 0x07], 0x28),
+        ("movapd [rdi],xmm0", &[0x66, 0x0f, 0x29, 0x07], 0x29),
+        ("movdqa [rdi],xmm0", &[0x66, 0x0f, 0x7f, 0x07], 0x7f),
+        ("movdqu [rdi],xmm0", &[0xf3, 0x0f, 0x7f, 0x07], 0x7f),
+        // S2-54 slice C: SSE3 is not declared (S2-57), so the live profile never admits the non-FP
+        // SSE3 forms or FISTTP.
+        ("movshdup xmm0,[rdi]", &[0xf3, 0x0f, 0x16, 0x07], 0x16),
+        ("movshdup xmm0,xmm1", &[0xf3, 0x0f, 0x16, 0xc1], 0x16),
+        ("movsldup xmm0,[rdi]", &[0xf3, 0x0f, 0x12, 0x07], 0x12),
+        ("movddup xmm0,[rdi]", &[0xf2, 0x0f, 0x12, 0x07], 0x12),
+        ("movddup xmm0,xmm1", &[0xf2, 0x0f, 0x12, 0xc1], 0x12),
+        ("lddqu xmm0,[rdi]", &[0xf2, 0x0f, 0xf0, 0x07], 0xf0),
+        ("fisttp word [rdi]", &[0xdf, 0x0f], 0xdf),
+        ("fisttp dword [rdi]", &[0xdb, 0x0f], 0xdb),
+        ("fisttp qword [rdi]", &[0xdd, 0x0f], 0xdd),
+        // S2-38 (logic and permute remainder): the general bitwise, shuffle and unpack forms and MOVMSKPS/MOVMSKPD are
+        // not in the live profile (its bitwise register forms are the narrow profile forms above).
+        ("andps xmm0,[rdi]", &[0x0f, 0x54, 0x07], 0x54),
+        ("andpd xmm0,[rdi]", &[0x66, 0x0f, 0x54, 0x07], 0x54),
+        ("andnps xmm0,[rdi]", &[0x0f, 0x55, 0x07], 0x55),
+        ("orps xmm0,[rdi]", &[0x0f, 0x56, 0x07], 0x56),
+        ("xorps xmm0,[rdi]", &[0x0f, 0x57, 0x07], 0x57),
+        ("xorpd xmm0,[rdi]", &[0x66, 0x0f, 0x57, 0x07], 0x57),
+        ("shufps xmm0,xmm1,0x1b", &[0x0f, 0xc6, 0xc1, 0x1b], 0xc6),
+        ("shufpd xmm0,[rdi],1", &[0x66, 0x0f, 0xc6, 0x07, 0x01], 0xc6),
+        ("unpcklps xmm0,xmm1", &[0x0f, 0x14, 0xc1], 0x14),
+        ("unpckhpd xmm0,[rdi]", &[0x66, 0x0f, 0x15, 0x07], 0x15),
+        ("movmskps eax,xmm1", &[0x0f, 0x50, 0xc1], 0x50),
+        ("movmskpd eax,xmm1", &[0x66, 0x0f, 0x50, 0xc1], 0x50),
+        // S2-54 slice D: SSSE3 is not declared either (S2-57); the integer SSSE3 forms are refused at CPL3.
+        ("pshufb xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x00, 0x07], 0x00),
+        ("pshufb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x00, 0xc1], 0x00),
+        ("phaddw xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x01, 0x07], 0x01),
+        ("phaddsw xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x03, 0xc1], 0x03),
+        (
+            "pmaddubsw xmm0,[rdi]",
+            &[0x66, 0x0f, 0x38, 0x04, 0x07],
+            0x04,
+        ),
+        ("psignb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x08, 0xc1], 0x08),
+        ("pmulhrsw xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x0b, 0x07], 0x0b),
+        ("pabsb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x1c, 0xc1], 0x1c),
+        ("pabsd xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x1e, 0x07], 0x1e),
+        // S2-33: the MMX forms (no 66) and EMMS are not in the Linux live profile either; refused at CPL3.
+        ("pshufb mm0,mm1", &[0x0f, 0x38, 0x00, 0xc1], 0x00),
+        ("pabsw mm0,[rdi]", &[0x0f, 0x38, 0x1d, 0x07], 0x1d),
+        ("palignr mm0,mm1,4", &[0x0f, 0x3a, 0x0f, 0xc1, 0x04], 0x0f),
+        ("emms", &[0x0f, 0x77], 0x77),
+        // S2-39 (MMX): the two-operand integer forms, the shifts, PSHUFW and MOVD/MOVQ work on the x87 state of the
+        // FP member, which exists only at CPL0 of the set; refused at CPL3 too.
+        ("paddw mm0,mm1", &[0x0f, 0xfd, 0xc1], 0xfd),
+        ("pxor mm0,[rdi]", &[0x0f, 0xef, 0x07], 0xef),
+        ("psllq mm0,4", &[0x0f, 0x73, 0xf0, 0x04], 0x73),
+        ("pshufw mm0,mm1,0x1b", &[0x0f, 0x70, 0xc1, 0x1b], 0x70),
+        ("movd mm0,eax", &[0x0f, 0x6e, 0xc0], 0x6e),
+        ("movq mm0,[rdi]", &[0x0f, 0x6f, 0x07], 0x6f),
+        ("movq [rdi],mm0", &[0x0f, 0x7f, 0x07], 0x7f),
+        (
+            "palignr xmm0,xmm1,4",
+            &[0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x04],
+            0x0f,
+        ),
+        (
+            "palignr xmm0,[rdi],1",
+            &[0x66, 0x0f, 0x3a, 0x0f, 0x07, 0x01],
+            0x0f,
+        ),
+        // S2-55 slice A: SSE4.1 is not declared either (S2-57); the integer SSE4.1 forms are refused at CPL3.
+        ("ptest xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x17, 0xc1], 0x17),
+        ("ptest xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x17, 0x07], 0x17),
+        ("pmovsxbw xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x20, 0xc1], 0x20),
+        ("pmovzxdq xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x35, 0x07], 0x35),
+        ("pmuldq xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x28, 0xc1], 0x28),
+        ("movntdqa xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x2a, 0x07], 0x2a),
+        ("pminsb xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x38, 0x07], 0x38),
+        ("pmaxud xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x3f, 0xc1], 0x3f),
+        ("pmulld xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x40, 0x07], 0x40),
+        (
+            "phminposuw xmm0,xmm1",
+            &[0x66, 0x0f, 0x38, 0x41, 0xc1],
+            0x41,
+        ),
+        ("pblendvb xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x10, 0xc1], 0x10),
+        (
+            "pblendw xmm0,xmm1,5",
+            &[0x66, 0x0f, 0x3a, 0x0e, 0xc1, 0x05],
+            0x0e,
+        ),
+        (
+            "pextrd eax,xmm0,1",
+            &[0x66, 0x0f, 0x3a, 0x16, 0xc0, 0x01],
+            0x16,
+        ),
+        (
+            "pextrb [rdi],xmm0,3",
+            &[0x66, 0x0f, 0x3a, 0x14, 0x07, 0x03],
+            0x14,
+        ),
+        (
+            "pinsrq xmm0,rax,1",
+            &[0x66, 0x48, 0x0f, 0x3a, 0x22, 0xc0, 0x01],
+            0x22,
+        ),
+        (
+            "mpsadbw xmm0,xmm1,2",
+            &[0x66, 0x0f, 0x3a, 0x42, 0xc1, 0x02],
+            0x42,
+        ),
+        // S2-37: the general ADD/SUB/MUL/DIV forms (any memory source, REX.W, the two-byte REX forms) are not in the
+        // Linux live profile either; only the exact narrow forms of that profile run at CPL3.
+        ("addps xmm0,[rdi]", &[0x0f, 0x58, 0x07], 0x58),
+        ("subpd xmm1,[rsi]", &[0x66, 0x0f, 0x5c, 0x0e], 0x5c),
+        (
+            "mulss xmm0,[rdi+0x10]",
+            &[0xf3, 0x0f, 0x59, 0x47, 0x10],
+            0x59,
+        ),
+        ("divsd xmm2,[rbx]", &[0xf2, 0x0f, 0x5e, 0x13], 0x5e),
+        (
+            "addpd xmm1,xmm2 (REX.W)",
+            &[0x66, 0x48, 0x0f, 0x58, 0xca],
+            0x58,
+        ),
+        // S2-38: SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the integer conversions through the general core
+        // are not in the Linux live profile either.
+        ("sqrtps xmm0,[rdi]", &[0x0f, 0x51, 0x07], 0x51),
+        ("sqrtsd xmm1,[rsi]", &[0xf2, 0x0f, 0x51, 0x0e], 0x51),
+        ("minss xmm0,[rdi]", &[0xf3, 0x0f, 0x5d, 0x07], 0x5d),
+        ("maxpd xmm2,[rbx]", &[0x66, 0x0f, 0x5f, 0x13], 0x5f),
+        ("comiss xmm0,[rdi]", &[0x0f, 0x2f, 0x07], 0x2f),
+        ("ucomisd xmm1,[rsi]", &[0x66, 0x0f, 0x2e, 0x0e], 0x2e),
+        ("cmpltps xmm0,[rdi]", &[0x0f, 0xc2, 0x07, 0x01], 0xc2),
+        (
+            "cmpeqsd xmm0,xmm1 (REX.W)",
+            &[0xf2, 0x48, 0x0f, 0xc2, 0xc1, 0x00],
+            0xc2,
+        ),
+        ("cvtdq2ps xmm0,[rdi]", &[0x0f, 0x5b, 0x07], 0x5b),
+        ("cvtps2dq xmm0,[rdi]", &[0x66, 0x0f, 0x5b, 0x07], 0x5b),
+        ("cvttps2dq xmm0,[rdi]", &[0xf3, 0x0f, 0x5b, 0x07], 0x5b),
+        // S2-37 (remainder): the precision conversions and the reciprocal approximations are not in it either.
+        ("cvtps2pd xmm0,[rdi]", &[0x0f, 0x5a, 0x07], 0x5a),
+        ("cvtpd2ps xmm0,[rdi]", &[0x66, 0x0f, 0x5a, 0x07], 0x5a),
+        ("cvtss2sd xmm0,[rdi]", &[0xf3, 0x0f, 0x5a, 0x07], 0x5a),
+        ("cvtsd2ss xmm1,[rsi]", &[0xf2, 0x0f, 0x5a, 0x0e], 0x5a),
+        ("rcpps xmm0,[rdi]", &[0x0f, 0x53, 0x07], 0x53),
+        ("rcpss xmm0,[rdi]", &[0xf3, 0x0f, 0x53, 0x07], 0x53),
+        ("rsqrtps xmm0,[rdi]", &[0x0f, 0x52, 0x07], 0x52),
+        ("rsqrtss xmm0,[rdi]", &[0xf3, 0x0f, 0x52, 0x07], 0x52),
+        // S2-37 (remainder): the integer conversions are not in it either.
+        ("cvtsi2ss xmm0,[rdi]", &[0xf3, 0x0f, 0x2a, 0x07], 0x2a),
+        (
+            "cvtsi2sd xmm1,qword [rsi]",
+            &[0xf2, 0x48, 0x0f, 0x2a, 0x0e],
+            0x2a,
+        ),
+        ("cvtss2si eax,[rdi]", &[0xf3, 0x0f, 0x2d, 0x07], 0x2d),
+        ("cvttsd2si rax,[rdi]", &[0xf2, 0x48, 0x0f, 0x2c, 0x07], 0x2c),
+        ("cvtdq2pd xmm0,[rdi]", &[0xf3, 0x0f, 0xe6, 0x07], 0xe6),
+        ("cvtpd2dq xmm0,[rdi]", &[0xf2, 0x0f, 0xe6, 0x07], 0xe6),
+        ("cvttpd2dq xmm1,[rsi]", &[0x66, 0x0f, 0xe6, 0x0e], 0xe6),
+        ("cvtpi2ps xmm0,[rdi]", &[0x0f, 0x2a, 0x07], 0x2a),
+        ("cvtps2pi mm0,[rdi]", &[0x0f, 0x2d, 0x07], 0x2d),
+        ("cvttpd2pi mm1,[rsi]", &[0x66, 0x0f, 0x2c, 0x0e], 0x2c),
+        ("cvtpi2pd xmm1,mm2", &[0x66, 0x0f, 0x2a, 0xca], 0x2a),
+        // S2-54 (FP part): ADDSUB/HADD/HSUB PS/PD are SSE3 and not declared (S2-57); refused at CPL3 as well.
+        ("addsubps xmm0,xmm1", &[0xf2, 0x0f, 0xd0, 0xc1], 0xd0),
+        ("addsubpd xmm1,[rdi]", &[0x66, 0x0f, 0xd0, 0x0f], 0xd0),
+        ("haddps xmm0,xmm1", &[0xf2, 0x0f, 0x7c, 0xc1], 0x7c),
+        ("haddpd xmm2,[rbx]", &[0x66, 0x0f, 0x7c, 0x13], 0x7c),
+        ("hsubps xmm3,xmm4", &[0xf2, 0x0f, 0x7d, 0xdc], 0x7d),
+        ("hsubpd xmm1,[rsi]", &[0x66, 0x0f, 0x7d, 0x0e], 0x7d),
+        // S2-55 slice B: the floating-point SSE4.1 forms are not declared either (S2-57); they are refused at CPL3.
+        (
+            "roundps xmm0,xmm1,1",
+            &[0x66, 0x0f, 0x3a, 0x08, 0xc1, 0x01],
+            0x08,
+        ),
+        (
+            "roundpd xmm0,[rdi],2",
+            &[0x66, 0x0f, 0x3a, 0x09, 0x07, 0x02],
+            0x09,
+        ),
+        (
+            "roundss xmm0,xmm1,9",
+            &[0x66, 0x0f, 0x3a, 0x0a, 0xc1, 0x09],
+            0x0a,
+        ),
+        (
+            "roundsd xmm0,[rdi],4",
+            &[0x66, 0x0f, 0x3a, 0x0b, 0x07, 0x04],
+            0x0b,
+        ),
+        (
+            "blendps xmm0,xmm1,5",
+            &[0x66, 0x0f, 0x3a, 0x0c, 0xc1, 0x05],
+            0x0c,
+        ),
+        (
+            "blendpd xmm0,[rdi],1",
+            &[0x66, 0x0f, 0x3a, 0x0d, 0x07, 0x01],
+            0x0d,
+        ),
+        ("blendvps xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x14, 0xc1], 0x14),
+        ("blendvpd xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x15, 0x07], 0x15),
+        (
+            "extractps eax,xmm0,1",
+            &[0x66, 0x0f, 0x3a, 0x17, 0xc0, 0x01],
+            0x17,
+        ),
+        (
+            "extractps [rdi],xmm0,2",
+            &[0x66, 0x0f, 0x3a, 0x17, 0x07, 0x02],
+            0x17,
+        ),
+        (
+            "insertps xmm0,xmm1,0x10",
+            &[0x66, 0x0f, 0x3a, 0x21, 0xc1, 0x10],
+            0x21,
+        ),
+        (
+            "insertps xmm0,[rdi],0",
+            &[0x66, 0x0f, 0x3a, 0x21, 0x07, 0x00],
+            0x21,
+        ),
+        (
+            "dpps xmm0,xmm1,0xff",
+            &[0x66, 0x0f, 0x3a, 0x40, 0xc1, 0xff],
+            0x40,
+        ),
+        (
+            "dppd xmm0,[rdi],0x33",
+            &[0x66, 0x0f, 0x3a, 0x41, 0x07, 0x33],
+            0x41,
+        ),
+        // S2-56 slice A: POPCNT, SSE4.2 and CRC32 are not declared either (S2-57); the forms are refused at CPL3.
+        ("pcmpgtq xmm0,xmm1", &[0x66, 0x0f, 0x38, 0x37, 0xc1], 0x37),
+        ("pcmpgtq xmm0,[rdi]", &[0x66, 0x0f, 0x38, 0x37, 0x07], 0x37),
+        ("popcnt ecx,edx", &[0xf3, 0x0f, 0xb8, 0xca], 0xb8),
+        ("popcnt rcx,[rdi]", &[0xf3, 0x48, 0x0f, 0xb8, 0x0f], 0xb8),
+        ("popcnt cx,dx", &[0x66, 0xf3, 0x0f, 0xb8, 0xca], 0xb8),
+        ("crc32 ecx,dl", &[0xf2, 0x0f, 0x38, 0xf0, 0xca], 0xf0),
+        (
+            "crc32 rcx,[rdi] (byte)",
+            &[0xf2, 0x48, 0x0f, 0x38, 0xf0, 0x0f],
+            0xf0,
+        ),
+        ("crc32 ecx,dx", &[0x66, 0xf2, 0x0f, 0x38, 0xf1, 0xca], 0xf1),
+        (
+            "crc32 ecx,[rdi] (dword)",
+            &[0xf2, 0x0f, 0x38, 0xf1, 0x0f],
+            0xf1,
+        ),
+        ("crc32 rcx,rdx", &[0xf2, 0x48, 0x0f, 0x38, 0xf1, 0xca], 0xf1),
+        // S2-56 slice B: the string compares are SSE4.2 forms and are refused at CPL3 as well.
+        (
+            "pcmpestri xmm0,xmm1,0",
+            &[0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00],
+            0x61,
+        ),
+        (
+            "pcmpestrm xmm0,[rdi],0x44",
+            &[0x66, 0x0f, 0x3a, 0x60, 0x07, 0x44],
+            0x60,
+        ),
+        (
+            "pcmpistri xmm0,xmm1,0x0c",
+            &[0x66, 0x0f, 0x3a, 0x63, 0xc1, 0x0c],
+            0x63,
+        ),
+        (
+            "pcmpistrm xmm0,[rdi],0x40",
+            &[0x66, 0x0f, 0x3a, 0x62, 0x07, 0x40],
+            0x62,
+        ),
+        (
+            "pcmpestri xmm0,xmm1,0 (REX.W)",
+            &[0x66, 0x48, 0x0f, 0x3a, 0x61, 0xc1, 0x00],
+            0x61,
+        ),
         // Forms outside the allow-list. `xor eax, eax` / `xor r10d, r10d` / `xor r8d, r8d` of
         // S4-39f2 and S6-22 allow register XOR `31 /r` at dword and qword widths.
         // Memory operands, word width, and other XOR opcodes retain their form-specific gates.
@@ -990,6 +1294,114 @@ fn lea_with_a_register_operand_is_invalid_opcode_without_change() {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(memory.accesses, 0);
+    }
+}
+
+#[test]
+fn lock_before_a_raw_sse_memory_move_is_invalid_opcode_without_change() {
+    // S2-34 (m128 addressing): LOCK on MOVAPS/MOVUPS/MOVAPD/MOVUPD/MOVDQA/MOVDQU with a memory
+    // operand is #UD (SDM). Before S2-34 these stopped as `Unsupported`; the decoder now reports
+    // `Invalid`, so the live CPL3 profile gives #UD, not a refusal. The allow-list is not consulted.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bytes in [
+        &[0xf0, 0x0f, 0x28, 0x07][..],       // lock movaps xmm0, [rdi]
+        &[0xf0, 0x0f, 0x29, 0x07][..],       // lock movaps [rdi], xmm0
+        &[0xf0, 0x0f, 0x10, 0x07][..],       // lock movups xmm0, [rdi]
+        &[0xf0, 0x0f, 0x11, 0x07][..],       // lock movups [rdi], xmm0
+        &[0x66, 0xf0, 0x0f, 0x28, 0x07][..], // lock movapd xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x7f, 0x07][..], // lock movdqa [rdi], xmm0
+    ] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+        assert_eq!(memory.accesses, 0, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn lock_before_an_sse3_form_or_fisttp_is_invalid_opcode_without_change() {
+    // S2-54 slice C: LOCK on the non-FP SSE3 forms and FISTTP, and the register form of LDDQU, are
+    // #UD (SDM); the decoder reports `Invalid` before the CPL3 allow-list is consulted.
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for bytes in [
+        &[0xf0, 0x0f, 0x54, 0x07][..],       // lock andps xmm0, [rdi] (S2-38)
+        &[0xf0, 0x66, 0x0f, 0x57, 0xc1][..], // lock xorpd xmm0, xmm1 (S2-38)
+        &[0xf0, 0x0f, 0xc6, 0x07, 0x01][..], // lock shufps xmm0, [rdi], 1 (S2-38)
+        &[0x0f, 0x50, 0x07][..],             // movmskps with a memory operand (S2-38)
+        &[0xf0, 0x0f, 0x50, 0xc1][..],       // lock movmskps eax, xmm1 (S2-38)
+        &[0xf0, 0xf3, 0x0f, 0x16, 0x07][..], // lock movshdup xmm0, [rdi]
+        &[0xf3, 0xf0, 0x0f, 0x12, 0x07][..], // movsldup with LOCK after the prefix
+        &[0xf0, 0xf2, 0x0f, 0x12, 0xc1][..], // lock movddup xmm0, xmm1
+        &[0xf0, 0xf2, 0x0f, 0xf0, 0x07][..], // lock lddqu xmm0, [rdi]
+        &[0xf2, 0x0f, 0xf0, 0xc1][..],       // lddqu xmm0, xmm1 (register form)
+        &[0xf0, 0xdf, 0x0f][..],             // lock fisttp word [rdi]
+        &[0xf0, 0xdd, 0x0f][..],             // lock fisttp qword [rdi]
+        &[0xf0, 0x66, 0x0f, 0x38, 0x00, 0x07][..], // lock pshufb xmm0, [rdi]
+        &[0xf0, 0x0f, 0x38, 0x00, 0x07][..], // lock pshufb mm0, [rdi]
+        &[0xf0, 0x0f, 0x3a, 0x0f, 0xc1, 0x04][..], // lock palignr mm0, mm1, 4
+        &[0xf0, 0x0f, 0x77][..],             // lock emms
+        &[0x66, 0xf0, 0x0f, 0x38, 0x1c, 0xc1][..], // pabsb with LOCK after 66
+        &[0xf0, 0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x04][..], // lock palignr xmm0, xmm1, 4
+        &[0xf0, 0x66, 0x0f, 0x38, 0x17, 0x07][..], // lock ptest xmm0, [rdi]
+        &[0x66, 0xf0, 0x0f, 0x38, 0x40, 0xc1][..], // pmulld with LOCK after 66
+        &[0xf0, 0x66, 0x0f, 0x3a, 0x16, 0xc0, 0x01][..], // lock pextrd eax, xmm0, 1
+        &[0x66, 0x0f, 0x38, 0x2a, 0xc1][..], // movntdqa xmm0, xmm1 (register form)
+        &[0xf0, 0x0f, 0x58, 0x07][..],       // lock addps xmm0, [rdi]
+        &[0xf0, 0xf2, 0x0f, 0x5e, 0x13][..], // lock divsd xmm2, [rbx]
+        &[0xf0, 0x0f, 0x51, 0x07][..],       // lock sqrtps xmm0, [rdi]
+        &[0xf0, 0xf3, 0x0f, 0x5d, 0x07][..], // lock minss xmm0, [rdi]
+        &[0xf0, 0x0f, 0x2f, 0x07][..],       // lock comiss xmm0, [rdi]
+        &[0xf0, 0x0f, 0xc2, 0x07, 0x01][..], // lock cmpltps xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x5b, 0x07][..], // lock cvtps2dq xmm0, [rdi]
+        &[0xf0, 0x0f, 0x5a, 0x07][..],       // lock cvtps2pd xmm0, [rdi]
+        &[0xf0, 0xf2, 0x0f, 0x5a, 0x07][..], // lock cvtsd2ss xmm0, [rdi]
+        &[0xf0, 0x0f, 0x53, 0x07][..],       // lock rcpps xmm0, [rdi]
+        &[0xf0, 0xf3, 0x0f, 0x52, 0x07][..], // lock rsqrtss xmm0, [rdi]
+        &[0xf0, 0xf3, 0x0f, 0x2a, 0x07][..], // lock cvtsi2ss xmm0, [rdi]
+        &[0xf0, 0xf2, 0x0f, 0x2d, 0x07][..], // lock cvtsd2si eax, [rdi]
+        &[0xf0, 0xf3, 0x0f, 0xe6, 0x07][..], // lock cvtdq2pd xmm0, [rdi]
+        &[0xf0, 0x0f, 0x2a, 0x07][..],       // lock cvtpi2ps xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x2d, 0x07][..], // lock cvtpd2pi mm0, [rdi]
+        &[0xf0, 0xf2, 0x0f, 0x7c, 0x07][..], // lock haddps xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0xd0, 0x0f][..], // lock addsubpd xmm1, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x3a, 0x0b, 0x07, 0x01][..], // lock roundsd xmm0, [rdi], 1
+        &[0x66, 0xf0, 0x0f, 0x3a, 0x40, 0xc1, 0xff][..], // dpps with LOCK after 66
+        &[0xf0, 0x66, 0x0f, 0x38, 0x14, 0x07][..], // lock blendvps xmm0, [rdi]
+        &[0xf0, 0x66, 0x0f, 0x3a, 0x17, 0x07, 0x01][..], // lock extractps [rdi], xmm0, 1
+        &[0xf0, 0x66, 0x0f, 0x38, 0x37, 0x07][..], // lock pcmpgtq xmm0, [rdi]
+        &[0xf0, 0xf3, 0x0f, 0xb8, 0x07][..], // lock popcnt eax, [rdi]
+        &[0xf3, 0xf0, 0x48, 0x0f, 0xb8, 0xc1][..], // popcnt with LOCK after F3
+        &[0xf0, 0xf2, 0x0f, 0x38, 0xf0, 0x07][..], // lock crc32 eax, byte [rdi]
+        &[0xf2, 0xf0, 0x0f, 0x38, 0xf1, 0xc1][..], // crc32 with LOCK after F2
+    ] {
+        let mut state = user_state();
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{bytes:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(state, before, "{bytes:02x?}");
+        assert_eq!(memory.accesses, 0, "{bytes:02x?}");
     }
 }
 
@@ -8231,11 +8643,11 @@ fn cpl3_glibc_xmm_controls_fault_before_touching_guest_memory() {
 
 #[test]
 fn cpl3_glibc_xmm_keeps_neighbouring_encodings_refused() {
+    // S2-39 (CPL3): the MMX spelling (no mandatory prefix) and the repeated-prefix spelling stay refused; the
+    // address-size spelling and the register MOVQ now run through the general core (s2_39_cpl3_sse).
     for (code, opcode) in [
         (&[0x0f, 0x6e, 0xc0][..], 0x6e),
         (&[0xf2, 0x66, 0x48, 0x0f, 0x6e, 0xc0][..], 0x6e),
-        (&[0x67, 0x66, 0x0f, 0x6e, 0x07][..], 0x6e),
-        (&[0x66, 0x0f, 0xd6, 0xc0][..], 0xd6),
     ] {
         let mut state = user_state();
         state.cr0 = Some(0x8005_0033);
@@ -8610,10 +9022,11 @@ fn cpl3_issue571_movdqa_alignment_fault_precedes_memory_read() {
 
 #[test]
 fn cpl3_issue571_neighboring_6f_and_7e_spellings_are_typed_unsupported() {
+    // S2-39 (CPL3): the legacy MOVD/MOVQ store direction (66 0F 7E /r) now runs through the general core; the MMX
+    // spellings and the wrong register prefix stay refused.
     for code in [
         &[0x0f, 0x6f, 0x07][..],       // unprefixed MOVQ form
         &[0xf2, 0x0f, 0x6f, 0xc0][..], // unsupported register prefix
-        &[0x66, 0x0f, 0x7e, 0x07][..], // legacy MOVD/MOVQ store direction
         &[0x0f, 0x7e, 0x07][..],
     ] {
         let mut state = user_state();
@@ -11329,4 +11742,68 @@ fn cpl3_issue576_observed_rip_relative_movsd_load_uses_the_vcpu_fp_cell() {
         ]
     );
     assert_eq!(memory.read_widths, [(target, 8)]);
+}
+
+/// S2-39: the general SSE core runs in the CPL0 set at CPL0 on `state.sse` (tests/s2_39_cpl0_sse.rs) and, since the
+/// CPL3 slice, at CPL3 too (tests/s2_39_cpl3_sse.rs): these forms retire with the FP member. The forms that need the
+/// MMX registers (MOVDQ2Q, MOVQ2DQ: the x87 half stays in the cell at CPL3) stay `Unsupported` with nothing changed.
+#[test]
+fn cpl3_general_sse_forms_run_with_the_fp_member_and_the_mmx_moves_stay_refused() {
+    let forms: [(&str, &[u8], u8); 21] = [
+        ("addps xmm1,xmm2", &[0x0f, 0x58, 0xca], 0x58),
+        ("addps xmm1,[rax]", &[0x0f, 0x58, 0x08], 0x58),
+        ("movaps xmm1,[rax]", &[0x0f, 0x28, 0x08], 0x28),
+        ("pminsd xmm1,xmm2", &[0x66, 0x0f, 0x38, 0x39, 0xca], 0x39),
+        ("haddps xmm1,xmm2", &[0xf2, 0x0f, 0x7c, 0xca], 0x7c),
+        ("andps xmm1,xmm2", &[0x0f, 0x54, 0xca], 0x54),
+        // S2-39 (integer SSE2 remainder): the forms of `s2_39_int_sse2` run at CPL0 of the set only.
+        ("paddb xmm1,[rax]", &[0x66, 0x0f, 0xfc, 0x08], 0xfc),
+        ("pmulhw xmm1,xmm2", &[0x66, 0x0f, 0xe5, 0xca], 0xe5),
+        ("psllw xmm1,xmm2", &[0x66, 0x0f, 0xf1, 0xca], 0xf1),
+        ("pshufhw xmm1,xmm2,1", &[0xf3, 0x0f, 0x70, 0xca, 0x01], 0x70),
+        ("movd ecx,xmm1", &[0x66, 0x0f, 0x7e, 0xc9], 0x7e),
+        ("movq xmm1,xmm2", &[0xf3, 0x0f, 0x7e, 0xca], 0x7e),
+        ("movlps [rax],xmm1", &[0x0f, 0x13, 0x08], 0x13),
+        ("movhlps xmm1,xmm2", &[0x0f, 0x12, 0xca], 0x12),
+        ("pextrw ecx,xmm2,3", &[0x66, 0x0f, 0xc5, 0xca, 0x03], 0xc5),
+        // S2-39 (non-temporal stores, MASKMOVDQU, MOVDQ2Q/MOVQ2DQ): CPL0 of the set only, `s2_39_rest`.
+        ("movntdq [rax],xmm1", &[0x66, 0x0f, 0xe7, 0x08], 0xe7),
+        ("movntps [rax],xmm1", &[0x0f, 0x2b, 0x08], 0x2b),
+        ("movntpd [rax],xmm1", &[0x66, 0x0f, 0x2b, 0x08], 0x2b),
+        ("maskmovdqu xmm1,xmm2", &[0x66, 0x0f, 0xf7, 0xca], 0xf7),
+        ("movdq2q mm1,xmm2", &[0xf2, 0x0f, 0xd6, 0xca], 0xd6),
+        ("movq2dq xmm1,mm2", &[0xf3, 0x0f, 0xd6, 0xca], 0xd6),
+    ];
+    for (name, code, opcode) in forms {
+        let mut state = user_state();
+        state.cr0 = Some(0x8005_0033);
+        state.cr4 = Some(0x6b0);
+        state.gpr[Register::Rax as usize] = DATA;
+        state.gpr[Register::Rdi as usize] = DATA;
+        let expected = state.clone();
+        let mut initial_fp = od_isa::GuestFpState::initial();
+        initial_fp.sse.xmm[1] = [0x11; 16];
+        initial_fp.sse.xmm[2] = [0x22; 16];
+        let fp = std::cell::RefCell::new(initial_fp.clone());
+        let mut memory = DataMemory::new(code);
+        for offset in 0..16 {
+            memory = memory.with_user(DATA + offset, 0x33);
+        }
+        let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
+        if matches!(opcode, 0xd6) && matches!(code[0], 0xf2 | 0xf3) {
+            assert_eq!(exit(&result), &RunExit::Unsupported { opcode }, "{name}");
+            assert_eq!(result.instructions_executed, 0, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(*fp.borrow(), initial_fp, "{name}");
+            assert!(memory.writes.is_empty(), "{name}");
+        } else {
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state.rip, expected.rip + code.len() as u64, "{name}");
+        }
+    }
 }

@@ -59,6 +59,9 @@ impl Status {
     // Internal Error 0x06 for a backend failure); DNR (0 here, because the
     // condition may pass) and the conditions: NOT VERIFIED against NVMe Base 2.4.
     pub(crate) const INTERNAL_ERROR: Self = Self::generic(0x06, false);
+    // Namespace is Write Protected (generic 0x20, DNR = 1 because a retry cannot
+    // help): value and DNR NOT VERIFIED against NVMe Base 2.4 (NVME_DEVICE.md 14.6).
+    pub(crate) const NAMESPACE_WRITE_PROTECTED: Self = Self::generic(0x20, true);
     pub(crate) const NAMESPACE_NOT_READY: Self = Self::generic(0x82, false);
     pub(crate) const PRP_OFFSET_INVALID: Self = Self::generic(0x13, true);
     pub(crate) const COMPLETION_QUEUE_INVALID: Self = Self::command_specific(0x00);

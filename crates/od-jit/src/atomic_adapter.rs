@@ -690,6 +690,26 @@ mod tests {
             lower(&[0x48, 0x89, 0xd8]),
             Err(AtomicAdapterError::NotAnAtomicForm)
         );
+        // S2-51: CMPXCHG16B m128 (with and without LOCK) is not an atomic form of this adapter: the
+        // IR has no 128-bit atomic effect, so the form is refused, not lowered to two 64-bit ones.
+        assert_eq!(
+            lower(&[0x48, 0x0f, 0xc7, 0x0f]),
+            Err(AtomicAdapterError::NotAnAtomicForm)
+        );
+        assert_eq!(
+            lower(&[0xf0, 0x48, 0x0f, 0xc7, 0x0f]),
+            Err(AtomicAdapterError::NotAnAtomicForm)
+        );
+        // S2-21: CMPXCHG8B m64 (with and without LOCK) is not an atomic form of this adapter either:
+        // the IR has no two-register compare-exchange effect, so the form is refused.
+        assert_eq!(
+            lower(&[0x0f, 0xc7, 0x0f]),
+            Err(AtomicAdapterError::NotAnAtomicForm)
+        );
+        assert_eq!(
+            lower(&[0xf0, 0x0f, 0xc7, 0x0f]),
+            Err(AtomicAdapterError::NotAnAtomicForm)
+        );
         // LOCK XADD with RSI as the data register is outside the RAX..RBX profile.
         assert_eq!(
             lower(&[0xf0, 0x48, 0x0f, 0xc1, 0x34, 0x25, 0, 0x10, 0, 0]),

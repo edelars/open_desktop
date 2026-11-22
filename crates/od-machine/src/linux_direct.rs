@@ -8880,6 +8880,36 @@ mod tests {
         assert_eq!(boot.board.guest_efer(), 0xD00);
     }
 
+    #[test]
+    fn wrmsr_efer_that_clears_nxe_reaches_the_stop_record_and_the_board_walker_efer() {
+        // S2-25f review. MOV ECX,0xC0000080; MOV EAX,0x501; XOR EDX,EDX; WRMSR; HLT. Clearing NXE
+        // needs no CPUID bit; the record and `board.efer()` carry the walker EFER (NXE clear), the
+        // guest EFER is the stored value.
+        let code = [
+            0xB9, 0x80, 0x00, 0x00, 0xC0, 0xB8, 0x01, 0x05, 0x00, 0x00, 0x31, 0xD2, 0x0F, 0x30,
+            0xF4,
+        ];
+        let (mut boot, file) = boot_with_entry(&code);
+        assert_eq!(boot.board.efer(), 0xD00);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.guest_efer, 0x501);
+        assert_eq!(boot.board.guest_efer(), 0x501);
+        assert_eq!(
+            record.efer, 0x500,
+            "the stop record carries the walker EFER"
+        );
+        assert_eq!(boot.board.efer(), 0x500);
+    }
+
     // ---- S4-38L7ao: WRMSR IA32_STAR through the board facade (write-only) ----
 
     #[test]
@@ -10828,7 +10858,7 @@ mod tests {
         assert_eq!(record.cr0.expect("cr0") & 0xc, 0);
         assert_eq!(record.cr4.expect("cr4") & 0x600, 0x600);
         // Oracle (SDM FXSAVE layout): FCW 0x037F, FSW 0, abridged FTW 0, FOP/FIP/FCS/FDP/FDS 0,
-        // MXCSR 0x1F80, MXCSR_MASK 0xFFBF, registers and XMM zero; the holes are untouched.
+        // MXCSR 0x1F80, MXCSR_MASK 0xFFBF (S7-31i, ADR-0014 superseded), registers and XMM zero; the holes are untouched.
         let after = read_area(&mut boot);
         let mut expected = before;
         expected[0..2].copy_from_slice(&[0x7F, 0x03]);
@@ -13435,6 +13465,91 @@ mod tests {
         assert_eq!(state.cs_selector, Some(0x08));
         assert_eq!((state.ss_selector, state.ss_unusable), (Some(0), true));
         assert_eq!(state.rflags & (1 << 9), 0, "interrupt gate clears IF");
+    }
+
+    /// S2-27m: `SYSRETQ` executed in CPL3 is `#GP(0)` (the SDM operation, after the #UD gates). The
+    /// board delivers it as any CPL3 `#GP(0)`: through the IDT gate of vector 13 and `TSS.RSP0`,
+    /// the instruction did not retire, the frame holds its own RIP and the handler runs in CPL0.
+    #[test]
+    fn user_mode_facade_sysretq_in_cpl3_is_a_gp0_delivered_through_rsp0() {
+        let (mut boot, file) = user_mode_board(&[0x48, 0x0f, 0x07], true);
+        write_phys(
+            &mut boot,
+            USER_GDT + 0x08,
+            &0x00af_9b00_0000_ffff_u64.to_le_bytes(),
+        );
+        write_phys(&mut boot, USER_HANDLER_AT, &[0x90, 0x90, 0x90]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(USER_HANDLER_AT as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((USER_HANDLER_AT >> 16) as u16).to_le_bytes());
+        write_phys(&mut boot, USER_IDT_AT + 13 * 16, &gate);
+        write_phys(&mut boot, USER_TSS_AT + 4, &USER_RSP0.to_le_bytes());
+        let state = boot.board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: USER_IDT_AT,
+            limit: 0xFF,
+        });
+        state.tr = Some(od_isa::TaskRegisterCache {
+            selector: 0x20,
+            base: USER_TSS_AT,
+            limit: 0x67,
+            access: 0x8B,
+            flags: 0,
+        });
+        // `IRETQ` (CPL0), `sysretq` (CPL3, #GP(0), not retired), two handler NOPs (CPL0).
+        let record = run_syscall_facade(&mut boot, &file, 3, 0xd01);
+        assert_eq!(record.exit_kind, "budget_exhausted", "{record:?}");
+        assert_eq!(record.exceptions_delivered, 1, "{record:?}");
+        assert_eq!(record.cpl, 0, "{record:?}");
+        assert_eq!((record.retired, record.cpl3_retired), (3, 0), "{record:?}");
+        assert_eq!(record.rip, USER_HANDLER_AT + 2);
+        let frame = USER_RSP0 & !15;
+        assert_eq!(record.gpr[Register::Rsp as usize], frame - 48);
+        let words = [
+            (frame - 8, 0x1b),           // SS
+            (frame - 16, ENTRY + 0x800), // RSP
+            (frame - 32, 0x13),          // CS
+            (frame - 40, USER_CODE_AT),  // RIP: the SYSRETQ itself
+            (frame - 48, 0),             // error code of #GP(0)
+        ];
+        for (address, expected) in words {
+            assert_eq!(read_qword(&mut boot, address), expected, "{address:#x}");
+        }
+        assert_eq!(boot.board.state().cs_selector, Some(0x08));
+    }
+
+    /// S2-27m: the bare `SYSRETL` (`0F 07`) retires in CPL0 and commits the compatibility-mode
+    /// state (CS.L = 0), but the CPL3 entry admits only L = 1 code, so the board loop stops with
+    /// `Rejected(WrongPrivilege)` on the next iteration, with the state already changed.
+    #[test]
+    fn user_mode_facade_sysretl_commits_compatibility_state_then_the_loop_is_rejected() {
+        let (mut boot, file) = user_mode_board(&[0x0f, 0x05], true);
+        write_phys(&mut boot, SYSCALL_KERNEL_AT, &[0x0f, 0x07]);
+        boot.board.set_guest_efer(0xd01);
+        boot.board.set_guest_star(0x0023_0010_0000_0000);
+        boot.board.set_guest_lstar(SYSCALL_KERNEL_AT);
+        boot.board.set_guest_syscall_mask(0x25_7fd5);
+        let result = run_linux_direct_board_set_user_mode(
+            &mut boot,
+            &input(&file, &[], BLOB, board_hash()),
+            8,
+            syscall_members(),
+        );
+        let record = result.expect("the rejection is a stop record");
+        assert_eq!(record.exit_kind, "rejected", "{record:?}");
+        // `IRETQ`, `syscall`, `sysretl` retired; RIP = ECX = the instruction after `syscall`.
+        assert_eq!(record.retired, 3, "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 2, "{record:?}");
+        assert_eq!(record.cpl, 3, "{record:?}");
+        let state = boot.board.state();
+        assert_eq!(state.cs_selector, Some(0x23), "STAR[63:48] | 3, no + 16");
+        assert_eq!(
+            state.cs_cache.map(|cache| cache.flags),
+            Some(0xc),
+            "D = 1, L = 0"
+        );
     }
 
     #[test]

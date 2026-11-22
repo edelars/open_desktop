@@ -2155,6 +2155,9 @@ pub(crate) struct PagedCpl0SetReport {
     /// `Cr3EffectMismatch` and `Cr3SnapshotRejected` the instruction retired, so this is
     /// already the new CR3 although the walker was not rebuilt for it.
     pub(crate) cr3: u64,
+    /// The walker's EFER at the end of the call: the `efer` handed in, with `NXE` as a retired
+    /// `WRMSR IA32_EFER` of this call left it (S2-25 NXE slice).
+    pub(crate) efer: u64,
     /// `#PF` and `#GP(0)` exceptions the loop delivered through the guest IDT. A delivery is not
     /// a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
@@ -2692,7 +2695,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     split_gate: Option<&dyn crate::bus::SplitLockGate>,
     vcpu: usize,
     cr3: u64,
-    efer: u64,
+    mut efer: u64,
     context: AccessContext,
     instruction_budget: u64,
     rflags_defined: u64,
@@ -2743,6 +2746,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 memory_error: None,
                 translation_context_changes: Vec::new(),
                 cr3,
+                efer,
                 delivered_exceptions: 0,
                 delivered_page_faults: 0,
                 delivered_general_protection_faults: 0,
@@ -3469,7 +3473,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             result.exit,
             result.instructions_executed,
             state,
-            efer,
+            &mut efer,
             &mut paging,
             &mut reported_cr3,
             &mut changes,
@@ -3497,6 +3501,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         memory_error,
         translation_context_changes: changes,
         cr3: reported_cr3,
+        efer,
         delivered_exceptions,
         delivered_page_faults,
         delivered_general_protection_faults,
@@ -4224,7 +4229,7 @@ fn handle_set_exit(
     exit: Cpl0ProfileSetExit<crate::BusAccessError>,
     instructions_executed: u64,
     state: &LongModeState,
-    efer: u64,
+    efer: &mut u64,
     paging: &mut Long64ProbeConfig,
     reported_cr3: &mut u64,
     changes: &mut Vec<TranslationContextChange>,
@@ -4243,9 +4248,30 @@ fn handle_set_exit(
                     effect_new_cr3: new_cr3,
                 });
             }
-            match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
+            match Long64ProbeConfig::from_cpu_state(state, new_cr3, *efer) {
                 Ok(candidate) => {
                     *paging = candidate;
+                    None
+                }
+                Err(error) => Some(PagedCpl0SetExit::Cr3SnapshotRejected { effect, error }),
+            }
+        }
+        // S2-25 NXE slice: a retired `WRMSR IA32_EFER` changed NXE. Only that bit of the walker's
+        // EFER follows (SCE and the rest of the loop's value stay); the effect is not a CR3 change
+        // and is not added to `changes`. A rebuild failure reuses `Cr3SnapshotRejected`, whose
+        // `effect` names the EFER write.
+        Cpl0ProfileSetExit::TranslationContextChange(
+            effect @ TranslationContextChange::EferWrite { old_efer, new_efer },
+        ) => {
+            const NXE: u64 = 1 << 11;
+            if (old_efer ^ *efer) & NXE != 0 || (old_efer ^ new_efer) & NXE == 0 {
+                return Some(PagedCpl0SetExit::UnexpectedContextChange { effect });
+            }
+            let candidate_efer = (*efer & !NXE) | (new_efer & NXE);
+            match Long64ProbeConfig::from_cpu_state(state, paging.cr3(), candidate_efer) {
+                Ok(candidate) => {
+                    *paging = candidate;
+                    *efer = candidate_efer;
                     None
                 }
                 Err(error) => Some(PagedCpl0SetExit::Cr3SnapshotRejected { effect, error }),
@@ -5957,6 +5983,35 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         self.locked_finish(physical, |memory, committed| {
             memory.atomic_rmw(physical, width, update, committed)
         })
+    }
+
+    /// S2-51: `CMPXCHG16B`. There is no host 128-bit compare-exchange behind this adapter, so the
+    /// parallel mode refuses the operation before any walk (nothing is written, no accessed or
+    /// dirty bit, no notification), as it refuses a split `LOCK` without the stop-all gate
+    /// (S6-34): the serial read and write pair of the trait default is not atomic across host
+    /// threads. The interleaving mode keeps the serial pair of the trait default (the scheduler
+    /// switches vCPUs only on instruction boundaries); this adapter's `read` does not serve a
+    /// 16-byte operand yet, so that pair ends in the "read width" refusal before any effect.
+    /// CX16 is not declared until S2-57.
+    fn atomic_rmw_u128(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        update: &mut dyn FnMut(u128) -> u128,
+    ) -> Result<u128, MemoryError> {
+        if self.bus.locked_memory().execution_mode() == crate::ExecutionMode::Parallel {
+            return Err(MemoryError::Backend(format!(
+                "CMPXCHG16B at {address:#x} is refused in the parallel mode: there is no host \
+                 128-bit compare-exchange, and the serial read and write pair is not atomic \
+                 across vCPU threads (S2-51; CX16 is not declared until S2-57)"
+            )));
+        }
+        let mut bytes = [0u8; 16];
+        self.read(address, context, &mut bytes)?;
+        let old = u128::from_le_bytes(bytes);
+        let new = update(old);
+        self.write(address, context, &new.to_le_bytes())?;
+        Ok(old)
     }
 
     fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
@@ -8247,6 +8302,7 @@ mod tests {
     /// nothing reported yet.
     struct SetLoop {
         paging: Long64ProbeConfig,
+        efer: u64,
         reported_cr3: u64,
         changes: Vec<TranslationContextChange>,
     }
@@ -8255,6 +8311,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+                efer: EFER,
                 reported_cr3: ROOT,
                 changes: Vec::new(),
             }
@@ -8270,7 +8327,7 @@ mod tests {
                 exit,
                 instructions_executed,
                 state,
-                EFER,
+                &mut self.efer,
                 &mut self.paging,
                 &mut self.reported_cr3,
                 &mut self.changes,
@@ -8388,6 +8445,67 @@ mod tests {
             "the walker was not replaced"
         );
         assert_eq!((run.reported_cr3, run.changes), (new_cr3, vec![effect]));
+    }
+
+    #[test]
+    fn set_loop_an_efer_write_rebuilds_the_walker_for_nxe_only_and_is_not_a_cr3_change() {
+        // S2-25 NXE slice: the guest value carries SCE, the loop's walker EFER does not; only the
+        // NXE bit follows, and nothing is added to the CR3 changes.
+        let mut run = SetLoop::new();
+        let nxe = 1u64 << 11;
+        let effect = TranslationContextChange::EferWrite {
+            old_efer: EFER | 1,
+            new_efer: (EFER | 1) & !nxe,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(exit, None);
+        assert_eq!(run.efer, EFER & !nxe);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER & !nxe).unwrap()
+        );
+        assert_eq!((run.reported_cr3, run.changes.clone()), (ROOT, Vec::new()));
+        // Setting it again follows the same way.
+        let effect = TranslationContextChange::EferWrite {
+            old_efer: EFER & !nxe,
+            new_efer: EFER,
+        };
+        let exit = run.handle(
+            Cpl0ProfileSetExit::TranslationContextChange(effect),
+            1,
+            &set_loop_state(ROOT),
+        );
+        assert_eq!(exit, None);
+        assert_eq!(
+            run.paging,
+            Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap()
+        );
+        // An effect whose old NXE is not the walker's, or that changes no NXE, is unexpected.
+        for effect in [
+            TranslationContextChange::EferWrite {
+                old_efer: EFER & !nxe,
+                new_efer: EFER,
+            },
+            TranslationContextChange::EferWrite {
+                old_efer: EFER,
+                new_efer: EFER | 1,
+            },
+        ] {
+            let exit = run.handle(
+                Cpl0ProfileSetExit::TranslationContextChange(effect),
+                1,
+                &set_loop_state(ROOT),
+            );
+            assert_eq!(
+                exit,
+                Some(PagedCpl0SetExit::UnexpectedContextChange { effect })
+            );
+            assert_eq!(run.efer, EFER, "the walker EFER was not replaced");
+        }
     }
 
     #[test]
@@ -9726,6 +9844,135 @@ mod tests {
         assert_eq!(memory.split_lock_refusals(), 3);
     }
 
+    /// S2-51: `atomic_rmw_u128` (CMPXCHG16B) has no host 128-bit primitive, so the parallel mode
+    /// refuses it before any walk: memory, tables and notifications stay untouched and the
+    /// update closure is never called. The interleaving mode keeps the trait's serial pair, which
+    /// this adapter's `read` does not serve for 16 bytes: a refusal before any effect too.
+    #[test]
+    fn a_locked_u128_operation_is_refused_in_the_parallel_mode_and_changes_nothing() {
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
+        let before = split_state(&memory);
+        let mut log = Vec::new();
+        {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let mut called = false;
+            let result = adapter.atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| {
+                called = true;
+                old
+            });
+            assert!(
+                matches!(&result, Err(MemoryError::Backend(m)) if m.contains("parallel mode")),
+                "{result:?}"
+            );
+            assert!(!called);
+        }
+        assert_eq!(split_state(&memory), before);
+        assert!(log.is_empty());
+
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Interleaved);
+        let before = split_state(&memory);
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        let result = adapter.atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| !old);
+        assert!(
+            matches!(&result, Err(MemoryError::Backend(m)) if m.contains("read")),
+            "{result:?}"
+        );
+        assert_eq!(split_state(&memory), before);
+    }
+
+    /// S2-21: `CMPXCHG8B` reaches this adapter as an eight-byte `atomic_compare_exchange_integer`,
+    /// which has a host primitive: unlike `CMPXCHG16B` it is not refused in the parallel mode.
+    /// An aligned operand runs on the host atomic (equal: replaced; unequal: the old value is
+    /// returned and the data is unchanged), a misaligned one (a split lock) keeps the S6-31
+    /// refusal in the parallel mode without the stop-all gate and runs as the serial S6-20 pair
+    /// in the interleaving mode.
+    #[test]
+    fn an_eight_byte_compare_exchange_is_a_host_atomic_when_aligned_and_a_split_follows_s6_31() {
+        use od_isa::OperandSize::Qword;
+        let pattern = |offset: u64| -> u64 {
+            (0..8u64).fold(0, |acc, i| {
+                acc | (u64::from(((offset + i) * 7 + 3) as u8) << (8 * i))
+            })
+        };
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
+        let mut log = Vec::new();
+        {
+            let mut note = |r| log.push(r);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let old = pattern(0x40);
+            // Unequal: the old value comes back, the data is unchanged.
+            let observed = adapter
+                .atomic_compare_exchange_integer(DATA_LINEAR + 0x40, context(), Qword, !old, 7)
+                .unwrap();
+            assert_eq!(observed, old);
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+                old
+            );
+            // Equal: the replacement is stored.
+            let observed = adapter
+                .atomic_compare_exchange_integer(
+                    DATA_LINEAR + 0x40,
+                    context(),
+                    Qword,
+                    old,
+                    0x0123_4567_89ab_cdef,
+                )
+                .unwrap();
+            assert_eq!(observed, old);
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x7040)).unwrap(),
+                0x0123_4567_89ab_cdef
+            );
+        }
+        assert_eq!(memory.split_lock_refusals(), 0);
+        // A misaligned operand in the parallel mode: refused before any effect, counted.
+        let before = split_state(&memory);
+        {
+            let mut note = |_| {};
+            let mut adapter = lock_adapter(&memory, &mut note);
+            for offset in [1u64, 4, 0x3c] {
+                let result = adapter.atomic_compare_exchange_integer(
+                    DATA_LINEAR + 0x40 + offset,
+                    context(),
+                    Qword,
+                    0,
+                    1,
+                );
+                assert!(
+                    matches!(&result, Err(MemoryError::Backend(m)) if m.contains("not naturally aligned")),
+                    "+{offset:#x}: {result:?}"
+                );
+            }
+        }
+        assert_eq!(memory.split_lock_refusals(), 3);
+        assert_eq!(split_state(&memory), before);
+        // The interleaving mode runs the same misaligned operand as the serial pair.
+        let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Interleaved);
+        let mut note = |_| {};
+        let mut adapter = lock_adapter(&memory, &mut note);
+        let old = pattern(0x41);
+        let observed = adapter
+            .atomic_compare_exchange_integer(
+                DATA_LINEAR + 0x41,
+                context(),
+                Qword,
+                old,
+                0x1122_3344_5566_7788,
+            )
+            .unwrap();
+        assert_eq!(observed, old);
+        assert_eq!(memory.split_lock_refusals(), 0);
+        assert_eq!(
+            (0..8u64)
+                .map(|i| u64::from(data_byte(&memory, 0x41 + i)) << (8 * i))
+                .fold(0, |a, b| a | b),
+            0x1122_3344_5566_7788
+        );
+    }
+
     #[test]
     fn cpl3_aligned_qword_atomic_rmw_walks_for_write_and_commits_data_last() {
         use od_isa::OperandSize::Qword;
@@ -10504,6 +10751,113 @@ mod tests {
                 memory.code_page_generation(GuestPhysicalAddress::new(0x7000)),
                 generation,
                 "{mode:?}"
+            );
+        }
+    }
+
+    /// S2-32f: the decoder looks one or two bytes past `9B` for the spellings `9B D9 30` and `9B DD 30` of
+    /// FSTENV/FSAVE. A bare FWAIT on the last byte of its page must not reach into the next page: no fetch,
+    /// no walk of the next page (its accessed bit stays clear), no recorded page fault or memory error of the
+    /// adapter. The next page holds `D9 30` (mapped case) or nothing (unmapped case); either way the FWAIT
+    /// retires alone and RIP is the first byte of the next page.
+    #[test]
+    fn a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page() {
+        use od_isa::execute::{
+            ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, GuestFpState, RunConfig,
+            run_with_cpl0_profile_set,
+        };
+        use od_isa::{CpuActivity, StiShadow};
+        const LAST_BYTE: u64 = 0x0040_0fff;
+        // The leaf of linear 0x401000 (the second entry of the page table at 0x4000): unmapped, or frame 0x8000.
+        for next_leaf in [0u64, 0x8007] {
+            let memory = lock_memory(0, 0x7007);
+            memory
+                .store_u8(GuestPhysicalAddress::new(0x7fff), 0x9b, |_| {})
+                .unwrap();
+            memory
+                .store_u64(GuestPhysicalAddress::new(0x4008), next_leaf, |_| {})
+                .unwrap();
+            for (offset, byte) in [0xd9u8, 0x30].into_iter().enumerate() {
+                memory
+                    .store_u8(
+                        GuestPhysicalAddress::new(0x8000 + offset as u64),
+                        byte,
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+            let leaf_before = memory.load_u64(GuestPhysicalAddress::new(0x4008)).unwrap();
+            assert_eq!(leaf_before, next_leaf);
+            let mut fp = GuestFpState::initial();
+            // The member of the set refuses a cell whose FCS/FDS are not represented.
+            fp.x87.instruction_selector = Some(0);
+            fp.x87.data_selector = Some(0);
+            let cell = std::cell::RefCell::new(fp);
+            let mut log = Vec::new();
+            let mut note = |range| log.push(range);
+            let mut adapter = lock_adapter(&memory, &mut note);
+            let mut state = LongModeState {
+                rip: LAST_BYTE,
+                rflags: 0x2,
+                cr0: Some(CR0),
+                cr4: Some(CR4),
+                activity: Some(CpuActivity::Running),
+                sti_shadow: Some(StiShadow::Clear),
+                ..LongModeState::default()
+            };
+            let result = run_with_cpl0_profile_set(
+                &mut state,
+                &mut adapter,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: context(),
+                },
+                od_isa::INTEGER_FLAGS,
+                &Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                    .with_cpuid(&od_isa::cpuid::CpuidProfile::X8664V1Stage4A)
+                    .with_fp_state(&cell),
+                None,
+                || false,
+            )
+            .unwrap();
+            let label = format!("next leaf {next_leaf:#x}");
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert!(
+                matches!(
+                    result.exit,
+                    Cpl0ProfileSetExit::Run(od_isa::execute::RunExit::InstructionBudgetExhausted)
+                ),
+                "{label}: {:?}",
+                result.exit
+            );
+            assert_eq!(state.rip, 0x0040_1000, "{label}: the bare FWAIT retired");
+            assert!(
+                adapter.page_fault.is_none(),
+                "{label}: no page fault record"
+            );
+            assert!(
+                adapter.memory_error.is_none(),
+                "{label}: no memory error record"
+            );
+            assert!(
+                adapter.access_error.is_none(),
+                "{label}: no access error record"
+            );
+            drop(adapter);
+            // The notifications are those of the accessed bits of the code page's own entries: no range covers
+            // the next leaf (a start-only comparison would miss a range that begins below it and extends over it).
+            assert!(
+                log.iter().all(|range| {
+                    !(range.start().get() as u128 <= 0x4008 && 0x4008 < range.end_exclusive())
+                }),
+                "{label}: no notification for the leaf of the next page: {log:?}"
+            );
+            // The walk of the code page sets the accessed bit of its own entries; the entry of the next page stays.
+            assert_eq!(
+                memory.load_u64(GuestPhysicalAddress::new(0x4008)).unwrap(),
+                leaf_before,
+                "{label}: the leaf of the next page is untouched"
             );
         }
     }

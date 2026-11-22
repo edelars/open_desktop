@@ -19,6 +19,20 @@
 //! `OdX8664V1Neutral` (S6-14h) is the full CPUID table of that target (leaves 0, 1, 0x80000000,
 //! 0x80000001 and 0x80000008). It is selected only explicitly and declares feature bits whose
 //! behaviour the engine does not implement yet, so no existing path uses it.
+//!
+//! `OdX8664V2Windows` (S2-57) is the Windows profile `od-x86-64-v2-windows-v0.1` (ADR-0013,
+//! `CPU_CONTRACT.md`): the identity of an Intel Celeron N5105 and, in leaves 1 and 0x80000001,
+//! only the feature bits whose implementing tasks are done (not the table of
+//! `OdX8664V1Neutral`, which is never inherited). It is an intermediate profile, not yet a Windows
+//! boot contract: SSE/SSE2, FXSR, FPU, MMX, TSC, MSR, SYSCALL and LM stay clear until their tasks
+//! are accepted (owner decision of 2026-11-21: FPU, TSC, MSR, SYSCALL and LM are not declared until
+//! a separate owner decision). S2-57 (slice C) declares CX8 (EDX[8]) and CMOV (EDX[15]), whose forms
+//! are implemented and tested and whose tasks S2-21 and S2-16 the owner accepted (confirmed
+//! 2026-11-21; `CPU_CONTRACT.md`). S2-58 declares PAE (EDX[6]) and APIC (EDX[9]) before the owner
+//! accepted S2-25 and S4-38L8d (deviation, confirmed by the owner 2026-11-21; `CPU_CONTRACT.md`). NX
+//! (80000001H EDX[20]) is NOT declared: the owner deferred it until S4-10 is accepted (decision of
+//! 2026-11-21). The interpreter does not gate a form on these bits except one: `WRMSR` setting
+//! `EFER.NXE` needs NX in the set's own CPUID member (S2-25f), so with this profile it is #GP(0).
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -63,6 +77,12 @@ pub enum CpuidProfile {
     /// leaf 1 ECX 0, and 0x80000001 EDX `0x20100800` (SYSCALL, NX, LM). Never the default; the
     /// Stage 4 board gates (`is_stage4a_family`) do not treat it as a member of that family.
     OdX8664V1Neutral,
+    /// S2-57: the Windows profile `od-x86-64-v2-windows-v0.1` (ADR-0013, `CPU_CONTRACT.md`). Never the
+    /// default and not a member of the Stage 4 family. Leaf 1 ECX declares SSE3, SSSE3, CMPXCHG16B,
+    /// SSE4.1, SSE4.2 and POPCNT, leaf 0x80000001 ECX declares LAHF/SAHF and PREFETCHW; leaf 1 EDX
+    /// declares PAE, CX8, APIC and CMOV (`0x8340`; S2-58 and S2-57 slice C) and leaf 0x80000001 EDX stays zero
+    /// (NX deferred until S4-10). The Linux target `OdX8664V1Neutral` is unchanged.
+    OdX8664V2Windows,
 }
 
 /// CPUID.01H:EDX bit 9 (APIC), declared by `X8664V1Stage4AApic` since S4-38L8d. From the Intel SDM,
@@ -88,6 +108,116 @@ const NEUTRAL_LEAF1_EDX: u32 = 0x0781_A379;
 /// CPUID.80000001H:EDX of the full target table (S6-14h), the contract's `0x20100800`: bits 11
 /// SYSCALL, 20 NX, 29 LM.
 const NEUTRAL_EXT1_EDX: u32 = 0x2010_0800;
+
+/// CPUID.01H:EAX of the Windows profile (ADR-0013, decision 2): the signature of Intel family 6,
+/// model 0x9C, stepping 0 (extended model 9, model 0xC, family 6, processor type 0, extended family
+/// 0). Layout from the Intel SDM (Vol. 1, "Leaf 01H Version and Features Returned in EAX").
+const WINDOWS_LEAF1_EAX: u32 = 0x0009_06C0;
+/// CPUID.01H:ECX of the Windows profile: SSE3 [0] (S2-54), SSSE3 [9] (S2-54), CMPXCHG16B [13]
+/// (S2-51), SSE4_1 [19] (S2-55), SSE4_2 [20] (S2-56) and POPCNT [23] (S2-56); bit numbers from the
+/// Intel SDM (Vol. 1, "Leaf 01H Version and Features Returned in ECX"). Not declared: MONITOR [3],
+/// VMX [5], AES [25], XSAVE [26], OSXSAVE [27], AVX [28], the hypervisor bit [31] and every other
+/// bit (ADR-0013, decisions 3 and 4).
+const WINDOWS_LEAF1_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
+/// CPUID.01H:EDX of the Windows profile: PAE [6], CX8 [8], APIC [9] and CMOV [15] (`0x8340`; bit
+/// numbers from the Intel SDM rev. 093, Vol. 1, Table 21-10, pp. 21-12, 21-13). PAE and APIC (S2-58)
+/// were declared before the owner accepted S2-25 (PAE paging beyond IA-32e is a model without a
+/// hardware oracle), S4-10 and S4-38L8d (deviation, confirmed by the owner 2026-11-21). CX8
+/// (CMPXCHG8B, S2-21i) and CMOV (CMOVcc, S2-16c) are declared by S2-57 slice C, confirmed by the
+/// owner 2026-11-21 (acceptance of S2-21 and S2-16). TSC [4] is NOT declared: the owner decision of
+/// 2026-11-21 holds it (with FPU, MSR, SYSCALL and LM) until a separate owner decision. MMX, FXSR,
+/// SSE and SSE2 wait for their tasks (`CPU_CONTRACT.md`, S2-57); PSE, PGE and PAT have no task.
+const WINDOWS_LEAF1_EDX: u32 = (1 << 6) | (1 << 8) | LEAF1_EDX_APIC | (1 << 15);
+/// CPUID.80000001H:ECX of the Windows profile: LAHF/SAHF in 64-bit mode [0] (S2-52) and PREFETCHW
+/// [8] (S2-53), from the Intel SDM (Vol. 1, "Leaf 80000001H"). LZCNT [5] is not declared.
+const WINDOWS_EXT1_ECX: u32 = (1 << 0) | (1 << 8);
+/// CPUID.80000001H:EDX of the Windows profile: zero. NX (Execute Disable) [20] is NOT declared: the
+/// owner deferred it until S4-10 is accepted (decision of 2026-11-21, withdrawing the S2-58
+/// declaration; the bit number is from the Intel SDM rev. 093, Vol. 1, Table 21-90). SYSCALL [11] and
+/// LM [29] wait for S2-27 and S2-24/S2-25; Page1GB [26] is never declared.
+const WINDOWS_EXT1_EDX: u32 = 0;
+/// CPUID.80000002H..80000004H of the Windows profile: the brand string of an Intel Celeron N5105
+/// (ADR-0013, decision 2), NUL-padded to 48 bytes (Intel SDM, Vol. 1, "Methods for Returning
+/// Branding Information Using CPUID").
+const WINDOWS_BRAND: [u8; 48] = {
+    let text = b"Intel(R) Celeron(R) N5105 @ 2.00GHz";
+    let mut out = [0u8; 48];
+    let mut index = 0;
+    while index < text.len() {
+        out[index] = text[index];
+        index += 1;
+    }
+    out
+};
+
+/// One little-endian 32-bit word of [`WINDOWS_BRAND`].
+const fn windows_brand_word(index: usize) -> u32 {
+    u32::from_le_bytes([
+        WINDOWS_BRAND[4 * index],
+        WINDOWS_BRAND[4 * index + 1],
+        WINDOWS_BRAND[4 * index + 2],
+        WINDOWS_BRAND[4 * index + 3],
+    ])
+}
+
+/// The brand-string leaf `0x8000_0002 + part` (`part` 0..=2): four consecutive words.
+const fn windows_brand_leaf(part: usize) -> CpuidResult {
+    CpuidResult {
+        eax: windows_brand_word(4 * part),
+        ebx: windows_brand_word(4 * part + 1),
+        ecx: windows_brand_word(4 * part + 2),
+        edx: windows_brand_word(4 * part + 3),
+    }
+}
+
+/// CPUID of `OdX8664V2Windows`: leaves 0, 1, 0x80000000, 0x80000001, 0x80000002..=0x80000004 and
+/// 0x80000008; every other leaf is four zeros. The maximum basic leaf is 1 (as for the Linux
+/// target: leaves 2, 4, 7, 0xB, 0xD are not implemented), the maximum extended leaf is 0x80000008.
+/// Leaf 1 EBX is the Linux target's `0x100` (topology per vCPU by [`CpuidProfile::query_for_vcpu`],
+/// S6-18); leaf 0x80000008 EAX is the Linux target's `0x3024` (48-bit linear, 36-bit physical).
+const fn windows_query(leaf: u32) -> CpuidResult {
+    match leaf {
+        0 => CpuidResult {
+            eax: 1,
+            ebx: u32::from_le_bytes(*b"Genu"),
+            ecx: u32::from_le_bytes(*b"ntel"),
+            edx: u32::from_le_bytes(*b"ineI"),
+        },
+        1 => CpuidResult {
+            eax: WINDOWS_LEAF1_EAX,
+            ebx: 0x100,
+            ecx: WINDOWS_LEAF1_ECX,
+            edx: WINDOWS_LEAF1_EDX,
+        },
+        0x8000_0000 => CpuidResult {
+            eax: 0x8000_0008,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        },
+        0x8000_0001 => CpuidResult {
+            eax: 0,
+            ebx: 0,
+            ecx: WINDOWS_EXT1_ECX,
+            edx: WINDOWS_EXT1_EDX,
+        },
+        0x8000_0002 => windows_brand_leaf(0),
+        0x8000_0003 => windows_brand_leaf(1),
+        0x8000_0004 => windows_brand_leaf(2),
+        0x8000_0008 => CpuidResult {
+            eax: 0x3024,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        },
+        _ => CpuidResult {
+            eax: 0,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        },
+    }
+}
 
 impl CpuidProfile {
     /// Whether the profile is `X8664V1Stage4A` or a variant of it (`X8664V1Stage4AApic`): the family
@@ -120,6 +250,9 @@ impl CpuidProfile {
 
     /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
     pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
+        if matches!(self, Self::OdX8664V2Windows) {
+            return windows_query(leaf);
+        }
         let leaf1_edx = match self {
             Self::DiagnosticV1 => 0,
             Self::X8664V1Stage4A | Self::X8664V1Stage4AExt1 => {
@@ -132,6 +265,7 @@ impl CpuidProfile {
                 LEAF1_EDX_FPU | LEAF1_EDX_TSC | LEAF1_EDX_APIC | LEAF1_EDX_FXSR
             }
             Self::OdX8664V1Neutral => NEUTRAL_LEAF1_EDX,
+            Self::OdX8664V2Windows => WINDOWS_LEAF1_EDX,
         };
         match leaf {
             0 => CpuidResult {
@@ -589,11 +723,12 @@ mod tests {
         assert!(!CpuidProfile::OdX8664V1Neutral.is_stage4a_family());
     }
 
-    const ALL_PROFILES: [CpuidProfile; 4] = [
+    const ALL_PROFILES: [CpuidProfile; 5] = [
         CpuidProfile::DiagnosticV1,
         CpuidProfile::X8664V1Stage4A,
         CpuidProfile::X8664V1Stage4AApic,
         CpuidProfile::OdX8664V1Neutral,
+        CpuidProfile::OdX8664V2Windows,
     ];
 
     /// S6-18a: for one vCPU the per-vCPU query is `query`, byte for byte, on every leaf (the
@@ -665,5 +800,192 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// S2-57. Oracles written by hand from the Intel SDM tables (Vol. 1, chapter "Processor
+    /// identification and feature determination"): GenuineIntel in EBX, EDX, ECX order; the
+    /// signature of family 6 model 0x9C stepping 0; ECX bits 0, 9, 13, 19, 20, 23 (0x982201);
+    /// EDX bits 6, 8, 9, 15 (0x8340); 80000001H ECX bits 0 and 8 (0x101).
+    #[test]
+    fn windows_declares_the_identity_and_only_the_accepted_bits() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        let leaf0 = p.query(0, 0);
+        assert_eq!(leaf0.eax, 1, "maximum basic leaf");
+        assert_eq!(leaf0.ebx, 0x756E_6547, "ASCII Genu");
+        assert_eq!(leaf0.edx, 0x4965_6E69, "ASCII ineI");
+        assert_eq!(leaf0.ecx, 0x6C65_746E, "ASCII ntel");
+        let leaf1 = p.query(1, 0);
+        assert_eq!(leaf1.eax, 0x0009_06C0);
+        assert_eq!(leaf1.ebx, 0x0000_0100);
+        assert_eq!(
+            leaf1.ecx,
+            0x1 + 0x200 + 0x2000 + 0x8_0000 + 0x10_0000 + 0x80_0000
+        );
+        assert_eq!(leaf1.ecx, 0x0098_2201);
+        // PAE (bit 6), CX8 (8), APIC (9) and CMOV (15) only, by hand from the Intel SDM.
+        assert_eq!(
+            leaf1.edx,
+            0x40 + 0x100 + 0x200 + 0x8000,
+            "only PAE, CX8, APIC and CMOV in leaf 1 EDX"
+        );
+        assert_eq!(leaf1.edx, 0x8340);
+        assert_eq!(leaf1.edx & (1 << 4), 0, "TSC (bit 4) is not declared");
+        let ext = p.query(0x8000_0000, 0);
+        assert_eq!(ext.eax, 0x8000_0008);
+        assert_eq!((ext.ebx, ext.ecx, ext.edx), (0, 0, 0));
+        let ext1 = p.query(0x8000_0001, 0);
+        assert_eq!((ext1.eax, ext1.ebx), (0, 0));
+        assert_eq!(
+            ext1.edx, 0,
+            "80000001H EDX is zero: NX is deferred until S4-10"
+        );
+        assert_eq!(ext1.edx & (1 << 20), 0, "NX (bit 20) is not declared");
+        assert_eq!(ext1.ecx, 0x1 + 0x100);
+        let widths = p.query(0x8000_0008, 0);
+        assert_eq!(widths.eax, 0x0000_3024);
+        assert_eq!((widths.ebx, widths.ecx, widths.edx), (0, 0, 0));
+    }
+
+    #[test]
+    fn windows_brand_string_is_the_celeron_n5105_text_nul_padded() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        assert_eq!(p.query(0x8000_0002, 0).eax, 0x6574_6E49, "ASCII Inte");
+        let mut bytes = Vec::new();
+        for leaf in [0x8000_0002, 0x8000_0003, 0x8000_0004] {
+            let r = p.query(leaf, 0);
+            for word in [r.eax, r.ebx, r.ecx, r.edx] {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        let mut expected = b"Intel(R) Celeron(R) N5105 @ 2.00GHz".to_vec();
+        assert_eq!(expected.len(), 35);
+        expected.resize(48, 0);
+        assert_eq!(bytes, expected);
+    }
+
+    /// S2-57 negative: the bits of the Linux table and the bits that ADR-0013 forbids stay clear.
+    #[test]
+    fn windows_does_not_copy_the_linux_table_nor_declare_forbidden_bits() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        let linux = CpuidProfile::OdX8664V1Neutral;
+        // The declared EDX bits (PAE, CX8, APIC, CMOV) are a strict subset of the Linux table's; every
+        // other Linux bit (FPU, PSE, TSC, MSR, PGE, PAT, MMX, FXSR, SSE, SSE2, SYSCALL, NX, LM) stays
+        // clear.
+        let leaf1_edx = p.query(1, 0).edx;
+        assert_eq!(leaf1_edx, 0x8340);
+        for (bit, name) in [
+            (0, "FPU"),
+            (3, "PSE"),
+            (4, "TSC"),
+            (5, "MSR"),
+            (13, "PGE"),
+            (16, "PAT"),
+            (23, "MMX"),
+            (24, "FXSR"),
+            (25, "SSE"),
+            (26, "SSE2"),
+        ] {
+            assert_eq!(leaf1_edx & (1 << bit), 0, "{name}");
+        }
+        assert_ne!(leaf1_edx, linux.query(1, 0).edx);
+        assert_eq!(leaf1_edx & !linux.query(1, 0).edx, 0);
+        let ext1_edx = p.query(0x8000_0001, 0).edx;
+        assert_eq!(ext1_edx, 0, "SYSCALL, NX and LM stay clear");
+        assert_ne!(ext1_edx, linux.query(0x8000_0001, 0).edx);
+        let ecx = p.query(1, 0).ecx;
+        for (bit, name) in [
+            (3, "MONITOR"),
+            (5, "VMX"),
+            (6, "SMX"),
+            (12, "FMA"),
+            (21, "x2APIC"),
+            (24, "TSC-deadline"),
+            (25, "AES"),
+            (26, "XSAVE"),
+            (27, "OSXSAVE"),
+            (28, "AVX"),
+            (31, "hypervisor"),
+        ] {
+            assert_eq!(ecx & (1 << bit), 0, "{name}");
+        }
+        assert_eq!(
+            p.query(0x8000_0007, 0),
+            CpuidResult::default(),
+            "no invariant TSC"
+        );
+        assert_eq!(p.query(0x4000_0000, 0), CpuidResult::default());
+        assert_eq!(p.query(0x8000_0001, 0).ecx & (1 << 5), 0, "no LZCNT");
+    }
+
+    #[test]
+    fn windows_unlisted_leaves_are_zero_and_ecx_is_ignored() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        for leaf in [
+            2,
+            4,
+            7,
+            0xB,
+            0x0D,
+            0x1F,
+            0x8000_0005,
+            0x8000_0006,
+            0x8000_0007,
+            0x8000_0009,
+            0x8000_0026,
+            0x4000_0000,
+            u32::MAX,
+        ] {
+            for subleaf in [0, 1, u32::MAX] {
+                assert_eq!(p.query(leaf, subleaf), CpuidResult::default(), "{leaf:#x}");
+            }
+        }
+        for leaf in [
+            0,
+            1,
+            0x8000_0000,
+            0x8000_0001,
+            0x8000_0002,
+            0x8000_0003,
+            0x8000_0004,
+            0x8000_0008,
+        ] {
+            for subleaf in [1, 7, u32::MAX] {
+                assert_eq!(p.query(leaf, subleaf), p.query(leaf, 0), "{leaf:#x}");
+            }
+        }
+    }
+
+    /// S2-57: the Linux target and the earlier profiles are unchanged, and the Windows profile is
+    /// explicit and not a member of the Stage 4 family.
+    #[test]
+    fn windows_is_explicit_and_leaves_the_other_profiles_unchanged() {
+        assert_eq!(CpuidProfile::OdX8664V1Neutral.query(1, 0).edx, 0x0781_A379);
+        assert_eq!(CpuidProfile::OdX8664V1Neutral.query(1, 0).ecx, 0);
+        assert_eq!(CpuidProfile::OdX8664V1Neutral.query(1, 0).eax, 0x600);
+        assert_eq!(
+            CpuidProfile::OdX8664V1Neutral.query(0x8000_0001, 0).edx,
+            0x2010_0800
+        );
+        assert_eq!(CpuidProfile::OdX8664V1Neutral.query(0x8000_0001, 0).ecx, 0);
+        assert_eq!(
+            CpuidProfile::OdX8664V1Neutral.query(0x8000_0002, 0),
+            CpuidResult::default()
+        );
+        assert_eq!(CpuidProfile::X8664V1Stage4A.query(1, 0).edx, 0x0100_0011);
+        assert_eq!(
+            CpuidProfile::X8664V1Stage4AApic.query(1, 0).edx,
+            0x0100_0211
+        );
+        assert_eq!(CpuidProfile::DiagnosticV1.query(1, 0).ecx, 0);
+        for p in [
+            CpuidProfile::DiagnosticV1,
+            CpuidProfile::X8664V1Stage4A,
+            CpuidProfile::X8664V1Stage4AApic,
+            CpuidProfile::OdX8664V1Neutral,
+        ] {
+            assert_ne!(p, CpuidProfile::OdX8664V2Windows);
+            assert_eq!(p.query(0x8000_0002, 0), CpuidResult::default());
+        }
+        assert!(!CpuidProfile::OdX8664V2Windows.is_stage4a_family());
     }
 }

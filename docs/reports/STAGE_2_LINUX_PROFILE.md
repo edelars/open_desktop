@@ -756,8 +756,8 @@ Intel defines the FXSR CPUID gate, CR0.EM/TS #NM gates, CR4.OSFXSR dependency
 for deterministic SSE state, 16-byte alignment, and the 32-bit-versus-64-bit
 pointer layouts. Intel specifies a fallback value when a saved MXCSR_MASK is
 zero. The local selected target uses immutable `TARGET_FXSAVE_MXCSR_MASK`
-policy `0x0000ffbf`; S2-39e ignores the incoming image field. This is not
-testkit's diagnostic mask metadata, despite the current equal numeric value. A 512-byte
+policy `0x0000ffbf` (replaced by S2-39p / ADR-0014: the mask is now `0x0000ffff`); S2-39e ignores the incoming image field. This is not
+testkit's diagnostic mask metadata, despite the equal numeric value at the time of S2-39e. A 512-byte
 instruction operand can fault on address/alignment/page conditions; neither
 this static evidence nor the cited instruction summary supports claiming a
 whole-area atomic commit or arbitrary memory-backend rollback.
@@ -1066,3 +1066,52 @@ Static mapping used the authenticated `linux-image-7.0.0-38-generic` 7.0.0-38.38
 `xcrun llvm-objdump` from Apple LLVM 21.0.0 scanned `.text`, `.init.text`, `.altinstr_aux`, `.altinstr_replacement` and `.exit.text` with line tables enabled. All 62 required S2-37 inventory mnemonics and all 68 mandatory-prefix/opcode byte signatures had zero sites in those sections (A–L: 36/36; M–Z: 26/26). The byte-signature pass is independent of disassembler mnemonic aliases. The parser sanity check found `FNINIT` at `ffffffff813b3931`, bytes `DB E3`, function `fpu__init_cpu_generic`, source `arch/x86/kernel/fpu/init.c:44`. With no S2-37 sites, there are no source/DWARF locations or branch contexts to report for those forms.
 
 This is static non-observation in the selected built-in kernel ELF only. It does not establish that any target-required form is unnecessary, absent from loadable modules, initramfs or userspace, or unreachable at runtime. Runtime observation and physical acceptance remain `not_run`. Exact per-mnemonic inventory status and hashes are preserved in the [versioned manifest](data/stage2/s2-37-linux-vmlinux-map-v1.json). The target inventory remains normative; the next bounded local candidate is `CVTPS2PI MM0,XMM1` (`0F 2D C1`), subject to the [Stage 2 plan](../plans/STAGE_2.md#s2-37bi--static-mapping-of-the-s2-37-inventory-in-the-selected-ubuntu-kernel).
+
+
+## S2-40e — Static inventory of beyond-v1 instruction forms in the Ubuntu kernel ELF
+
+This slice extends the S2-37bi method (same five code sections of the same built-in
+kernel ELF, same hashes and build ID as above) from the S2-37 SSE/SSE2 list to every
+instruction family outside the selected `od-x86-64-v1-neutral-v0.1` target. The
+[versioned manifest](data/stage2/s2-40e-linux-beyond-v1-map-v1.json) records the
+exact class-to-mnemonic lists, per-section and per-mnemonic site counts, distinct
+function counts and the largest functions per class. `xcrun llvm-objdump` (Apple LLVM
+21.0.0) disassembled `.text`, `.init.text`, `.altinstr_aux`, `.altinstr_replacement`
+and `.exit.text` of the matching debug ELF (symbols for attribution): 8,885,773
+instruction lines, 453 distinct mnemonics (counted on the stripped ELF). Per-class
+site counts are identical in the stripped `vmlinux`; the `.text` line total differs
+by 6 (8,629,609 versus 8,629,603), cause not investigated.
+
+| Class | Sites | Where | Representative functions |
+|---|---|---|---|
+| AVX-512 (EVEX-only mnemonics, zmm/k operands) | 381 + 411 | `.text` | `chacha_*_avx512vl`, `poly1305_blocks_avx512`, `crc*_vpclmul_avx512` |
+| AVX/AVX2 (VEX, ymm) | 2,148 | `.text` | `sha1_transform_avx2`, `chacha_*_avx2`, `poly1305_blocks_avx2` |
+| AVX (VEX, xmm only) | 2,187 | `.text` | `sha512_transform_avx`, `poly1305_blocks_avx`, `sha256_transform_avx` |
+| BMI2 (RORX/SHLX/SHRX/SARX/BZHI) | 1,192 | `.text` | `sha*_transform_rorx`, `HUF_*_bmi2`, `FSE_*_bmi2` |
+| ANDN/TZCNT/LZCNT | 1,113 | `.text` 1,090, `.init.text` 23 | generic kernel code and ZSTD (TZCNT encoding is the `rep bsf` idiom), `*_bmi2` (LZCNT), `sha1_transform_avx2` (ANDN) |
+| PCLMULQDQ/AES-NI/SHA | 351 | `.text` | `sha256_ni_*`, `sha1_ni_transform`, `crc*_pclmul_sse` |
+| SSSE3 / SSE4.1 / SSE4.2 CRC32 | 168 / 14 / 27 | `.text` | `sha*_ssse3`, `chacha_*_ssse3`, `crc32c_x86_3way` |
+| CMPXCHG16B | 10 | `.text` | `slab_update_freelist`, `update_dte256`, IRTE modify |
+| POPCNT | 121 | `.altinstr_replacement` only | alternative replacements |
+| XSAVE family, XGETBV/XSETBV | 33 | `.text` 20, `.altinstr_replacement` 11, `.init.text` 2 | `os_xsave`, `os_xrstor_safe`, `fpu__init_cpu_xstate` |
+| RDRAND/RDSEED/FSGSBASE/PKU/CLFLUSHOPT/CLWB/WRMSRNS/MONITOR-MWAIT/etc. | 150 | `.text` 93, `.altinstr_replacement` 56, `.init.text` 1 | see manifest |
+| VMCALL/VMMCALL/TDX/SGX/SEV-SNP/AMX | 84 | mostly `.text` | hypervisor and confidential-computing paths |
+| FRED ERETS/ERETU | 3 | `.text` 2, `.altinstr_replacement` 1 | `asm_fred_*` |
+| SMAP CLAC/STAC | 411 | `.altinstr_replacement` only | alternative replacements |
+
+The byte `0xD6` (16 sites) inside the `__x86_indirect_its_thunk_*` padding is not decoded and
+is invalid in 64-bit mode; it is not part of the target ISA. No `ENDBR`, `MOVBE`, `ADCX/ADOX`,
+`LAHF/SAHF` or `CMPXCHG8B` sites were found.
+
+What this shows: the selected kernel ELF contains code for every extension family above, so
+the x86-64-v1 floor is not a statement about the image content. The code that is vector-ISA
+specific sits in feature-suffixed functions (`_avx2`, `_ni`, `_bmi2`, `_ssse3`) and in
+`.altinstr_replacement`, which is consistent with run-time dispatch, but no CPUID or alternative
+predicate, call-site gate or branch context was reproduced; source and signature artifacts are
+still unavailable (ISSUE-036). So this is static presence only. It does not establish that any
+family is required, unreachable or selected at boot, and it does not change the CPUID policy
+(S2-57). The `F3 0F BC` (TZCNT encoding) sites are expected to be `REP BSF` under the target,
+which the interpreter already decodes as BSF without BMI1 (S4-38L4g); `F3 0F BD` (LZCNT
+encoding) appears only in `*_bmi2` ZSTD/HUF/FSE functions and `REP BSR` is not admitted. Loadable modules,
+initramfs and userspace were not scanned; no hardware, oracle or boot result is claimed.
+S2-40 stays open.

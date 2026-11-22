@@ -214,6 +214,17 @@ impl AcpiPmHandle {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stop
     }
 
+    /// Acknowledge the latched stop and return it (S4-21e): the board's restart of the processors
+    /// ([`crate::LoadedFirmwareBoard::restart_vcpus`]) is the only caller. Nothing else of the
+    /// PM block changes; resetting its registers is [`Self::platform_reset`] (S7-26).
+    pub(crate) fn take_stop_request(&self) -> Option<MachineStopReason> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stop
+            .take()
+    }
+
     /// The PM block after a platform reset (S7-26): `PM1_STS`, `PM1_EN` and `PM1_CNT` go back
     /// to zero (`SCI_EN` is constant), the latched stop request and the PM timer time not yet
     /// taken by the clock owner are dropped. The PM timer itself is not reset: it reads the
@@ -448,6 +459,21 @@ mod tests {
         pm.write(acc(4, WORD), (3u64 << 10) | 0b110).unwrap();
         assert_eq!(pm.read(acc(4, WORD)), Ok((3u64 << 10) | 0b011));
         assert_eq!(handle.stop_request(), None);
+    }
+
+    #[test]
+    fn take_stop_request_acknowledges_the_latch_and_a_later_stop_can_latch_again() {
+        let (mut pm, handle, _) = device();
+        assert_eq!(handle.take_stop_request(), None);
+        pm.write(acc(0xC, BYTE), u64::from(ACPI_RESET_VALUE))
+            .unwrap();
+        assert_eq!(handle.take_stop_request(), Some(MachineStopReason::Reset));
+        assert_eq!(handle.stop_request(), None);
+        assert_eq!(handle.take_stop_request(), None);
+        // The registers are not touched by the acknowledgement; a new stop latches.
+        pm.write(acc(4, WORD), u64::from(ACPI_PM1_CNT_SLP_EN | (5 << 10)))
+            .unwrap();
+        assert_eq!(handle.stop_request(), Some(MachineStopReason::Shutdown));
     }
 
     #[test]

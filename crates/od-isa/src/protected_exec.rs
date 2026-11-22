@@ -41,26 +41,57 @@
 //! `DS` operands, GDT descriptors and their accessed-bit write) is translated by the 4-level
 //! walk of [`crate::paging`] with `CR3`, `CR0.WP` and `EFER.NXE`; a walk that would fault is the
 //! refusal [`ProtectedRefusal::PageFault`] (the `#PF`, never delivered). `PG = 1` without `PAE`,
-//! without `PE`, with `CS.L = 1`, or with reserved `CR0` bits, `NW` without `CD` and a second `PG`
-//! write are refusals (`#GP` in hardware). `PG = 1` with `LME = 0` (32-bit and PAE paging) is
-//! [`ProtectedRefusal::PagingNotModelled`]; any `CR0` write with `PG = 0` is
-//! [`ProtectedRefusal::Cr0WriteUnmodelled`]. While paging is on, `WRMSR` may not change `LME`
-//! and `MOV CR4` may not clear `PAE` (`#GP`). The far jump `JMP ptr16:32` (CPL 0) follows the SDM
-//! Vol. 3A direct far jump rules, by memory: the descriptor must be a present code segment with
+//! without `PE`, with `CS.L = 1`, or with reserved `CR0` bits and `NW` without `CD` are refusals
+//! (`#GP` in hardware). `PG = 1` with `LME = 0` and `PAE = 0` is 32-bit paging and with `PAE = 1` PAE
+//! paging (S2-25, below); a `CR0` write with `PG` clear before and after that keeps `PE` is
+//! [`ProtectedRefusal::Cr0WriteUnmodelled`] (clearing `PE` is the return to real mode, S2-25j below). While paging is on, `WRMSR` may not change `LME` and
+//! `MOV CR4` may not clear `PAE` in IA-32e mode (`#GP`, [`ProtectedRefusal::Cr4PaeClearInLongMode`]).
+//! The far jump `JMP ptr16:32` (CPL 0) follows the SDM Vol. 3A direct far jump rules, by memory:
+//! the descriptor must be a present code segment with
 //! `DPL = 0` (conforming: `DPL <= 0`) and `RPL = 0` for a non-conforming one; in IA-32e mode a
 //! descriptor with `L = 1` and `D = 1` is refused, `L = 1`, `D = 0` selects 64-bit mode (no limit
 //! check, `RIP` is the zero-extended offset) and `L = 0` the compatibility mode (offset under the
 //! limit); outside IA-32e mode `L = 1` is a model refusal. The model does not execute in 64-bit
-//! mode beyond block 8 (S6-14n, below). `MOV CR3, EAX` stores the value (no PDPTR load, no TLB); `MOV CR4, EAX`
-//! stores a value whose bits above bit 10 are clear and refuses any other as
+//! mode beyond block 8 (S6-14n, below). `MOV CR3, EAX` stores the value (no TLB; the PDPTEs of PAE
+//! paging are loaded while it is in use, see S2-25 below); `MOV CR4, EAX`
+//! stores a value whose bits above bit 10 are clear (except `SMEP`, bit 20, S2-25j) and refuses any other as
 //! [`ProtectedRefusal::Cr4WriteUnmodelled`] (a model refusal, not a hardware effect: per the SDM,
 //! from memory, a reserved or unsupported CR4 bit is `#GP(0)`, bits 11.. name features
 //! (`UMIP`, `LA57`, `VMXE`, `PCIDE`, `OSXSAVE`, ...) that the profile does not enable, and the
 //! model does not gate bits 0..10 by CPUID).
 //!
+//! PAE paging (S2-25, model only: the SDM Vol. 3A §5.4 rules, no hardware oracle). It is in use while
+//! `CR0.PG = 1`, `CR4.PAE = 1` and `EFER.LMA = 0` ([`ProtectedCpu::pae_paging`]). `MOV CR0` that sets
+//! `PG` with `LME = 0` and `PAE = 1` loads the four PDPTE registers ([`ProtectedCpu::pdptes`]) from
+//! `CR3 & 0xFFFF_FFE0` and stays in protected mode (`LMA` is not set); a PDPTE with `P = 1` and a
+//! reserved bit (2:1, 8:5, 63:36) is `#GP(0)` ([`ProtectedRefusal::PdpteReservedBits`]) with `CR0` and
+//! the registers unchanged. While PAE paging is in use `MOV CR3` loads them from the new value (the
+//! same `#GP(0)`, `CR3` unchanged) and `MOV CR4` reloads them when it changes `PAE`, `PGE` or `PSE`
+//! (clearing `PAE` with `LMA = 0` selects 32-bit paging, below). Translation is
+//! [`crate::paging::translate_pae`] (PDPTE register, PDE, PTE; 4 KiB and 2 MiB pages; bits 62:36 of a
+//! PDE/PTE reserved; no accessed bit in a PDPTE). The enabling order of IA-32e (PAE, then CR3, then
+//! `LME`, then `PG`) is the SDM Vol. 3A §12.8.5 sequence; `LME = 1` with `PG` and no `PAE` is
+//! `#GP(0)`, and `LME` cannot change while `PG = 1`. A `MOV CR0` while PAE paging stays in use that
+//! modifies `CD` or `NW` (`PG` cannot change while it stays set) reloads the PDPTEs from `CR3` (the
+//! same `#GP(0)` and unchanged `CR0`); one that changes only other bits (`WP`, ...) does not.
+//!
+//! 32-bit paging (S2-25, model only, SDM Vol. 3A §5.3 and §5.1.2 Figure 5-1 in the Rev. 093
+//! numbering; there is no hardware oracle: a user-space process cannot write `CR0`/`CR4`). It is in
+//! use while `CR0.PG = 1` and `CR4.PAE = 0` ([`ProtectedCpu::paging32`]); `MOV CR0` that sets `PG`
+//! with `LME = 0` and `PAE = 0` enters it and loads no PDPTE. Translation is
+//! [`crate::paging::translate32`] (`CR3` bits 31:12, 4-byte entries, `CR4.PSE` for 4 MiB pages). `MOV
+//! CR4` that clears `PAE` while `PG = 1` and `LMA = 0` leaves PAE paging for 32-bit paging (the
+//! PDPTE registers keep their value and are not used); one that sets `PAE` again reloads them from
+//! `CR3`. `MOV CR0` that clears `PG` with `LMA = 0` turns paging off (the PDPTE registers keep their
+//! value, unused); with `LMA = 1` it deactivates IA-32e mode in compatibility mode (`#GP(0)` in 64-bit
+//! mode) and with `PE` cleared together with `PG` it is a refusal (S2-25j below).
+//! `MOV CR3` outside PAE paging stores the value: `CR3` bits 31:12 locate the page directory, the
+//! other bits are ignored by the walk.
+//!
 //! 64-bit mode, block 8 (S6-14n, CPU_CONTRACT.md "S6-14n"). With `EFER.LMA = 1` and `CS.L = 1` the
-//! closed set is the one instruction of the linked path at `0x20f0`: `ff 25 disp32`, `JMP
-//! QWORD PTR [rip+disp32]` (no prefix, no REX). `RIP` is 64 bits ([`ProtectedCpu::rip`]; the low
+//! closed set is the instruction of the linked path at `0x20f0`, `ff 25 disp32`, `JMP
+//! QWORD PTR [rip+disp32]` (no prefix, no REX), and, from S2-25j, `0f 22 c0`, `MOV CR0, RAX` (to apply
+//! the 64-bit mode rules of `MOV CR0`: clearing `PG` is `#GP(0)`; the high dword of `RAX` is taken as 0). `RIP` is 64 bits ([`ProtectedCpu::rip`]; the low
 //! half stays in `eip`, the high half in `rip_high`, nonzero only after this jump). Segmentation is
 //! off: the instruction bytes and the pointer cell are at the linear address itself (the CS and DS
 //! bases and limits are ignored, so a 64-bit `CS` with a nonzero base behaves like base 0); the
@@ -73,9 +104,27 @@
 //! instruction byte above is [`ProtectedRefusal::LinearBeyond4GiB`]. After the jump `RIP` is the
 //! target (`secondary_startup_64` in the linked path, `0xffffffff8139c090`) and the next step is
 //! [`ProtectedRefusal::Mode64TargetEntered`]: the target is neither fetched nor executed (the
-//! `CALL verify_cpu` there is only the boundary of the slice). Any other 64-bit instruction is
+//! `CALL verify_cpu` there is only the boundary of the slice). Any other 64-bit instruction (not the two
+//! above) is
 //! [`ProtectedRefusal::Unsupported`]; a `RIP` above 4 GiB that was not reached by this jump is
 //! [`ProtectedRefusal::Mode64NotModelled`].
+//!
+//! S2-25j (model only, no hardware oracle; none of the CPUID bits is declared, S2-57). *PSE-36*:
+//! [`ProtectedCpu::pse36`] (default `false`) selects [`crate::paging::translate32_with`] with the PSE-36
+//! layout of a 4 MiB PDE (bits 16:13 are physical-address bits 35:32, bits 21:17 reserved at
+//! `MAXPHYADDR` 36); a frame above 4 GiB is the model limit `PhysicalBeyond4GiB` of the 32-bit memory.
+//! *SMEP*: `CR4.SMEP` (bit 20, settable by `MOV CR4`, not gated by CPUID) makes an instruction fetch of
+//! the CPL 0 model through a user-mode address (`U/S = 1` in every entry of the walk) a `#PF`
+//! ([`PageRefusal::SmepFetch`], error code `P | I/D` from [`ProtectedCpu::page_fault_error_code`]);
+//! data accesses are not affected (no SMAP); changing `SMEP` reloads the PDPTEs of PAE paging.
+//! *IA-32e deactivation* (SDM Vol. 3A §12.8.5.4): `MOV CR0` clearing `PG` with `LMA = 1` in compatibility
+//! mode keeps `PE`, stores `CR0`, clears `LMA` (`LME`, `CR3`, `CR4` and the PDPTE registers are kept)
+//! and turns paging off; in 64-bit mode (`CS.L = 1`) it is `#GP(0)`
+//! ([`ProtectedRefusal::Cr0PgClearIn64BitMode`]); `PE` cleared together with `PG` stays
+//! [`ProtectedRefusal::Cr0WriteUnmodelled`]. *Return to real mode* (SDM Vol. 3A §12.9.2): `MOV CR0`
+//! clearing `PE` with paging already off stores the value; every later [`ProtectedCpu::step`] is
+//! [`ProtectedRefusal::NotProtectedMode`] and [`ProtectedCpu::to_real_mode`] gives the [`RealModeCpu`]
+//! (segment caches kept as selector, base and limit).
 //!
 //! Segment loads (`MOV Sreg, r32` uses the low 16 bits of the register) follow the SDM Vol. 3A
 //! chapter 5 rules, from memory, with CPL = 0: a null selector, TI = 1 (the LDT is not modelled)
@@ -102,8 +151,11 @@
 //! silicon under VMX, except where the S6-14i note on `CR0.ET` applies; `RDMSR`/`WRMSR` of EFER are
 //! emulated by KVM, so the oracle shows KVM's guest-visible behaviour).
 
-use crate::legacy_mode::{CR0_ET, ProtectedSegment};
-use crate::paging::{self, AccessKind, PageRefusal, PagingParams, Touch};
+use crate::legacy_mode::{CR0_ET, ProtectedSegment, RealModeState, RealSegment};
+use crate::paging::{
+    self, AccessKind, PaeParams, PageRefusal, Paging32Params, PagingParams, PdpteRefusal, Touch,
+    WalkFeatures,
+};
 use crate::real_mode_exec::{
     CR0_PE, EAX, ECX, EDX, ESP, RealModeCpu, RealModeMemory, TableRegister, UNSUPPORTED_BYTES_MAX,
     logic_flags, sub_flags,
@@ -120,8 +172,15 @@ const CR0_NW: u32 = 0x2000_0000;
 const CR0_CD: u32 = 0x4000_0000;
 /// CR4.PAE.
 pub const CR4_PAE: u32 = 1 << 5;
-/// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`): the only bits `MOV CR4, EAX` may set in this slice.
-pub const CR4_MODELLED_MASK: u32 = 0x7FF;
+/// CR4.SMEP (bit 20, S2-25j): with it set an instruction fetch through a user-mode address is a `#PF`
+/// (see [`paging::WalkFeatures::smep`]). Not gated by CPUID (`CPUID.07H:EBX[7]` is not declared, S2-57).
+pub const CR4_SMEP: u32 = 1 << 20;
+/// CR4 bits 0..10 (`VME` .. `OSXMMEXCPT`) and `SMEP` (bit 20): the only bits `MOV CR4, EAX` may set.
+pub const CR4_MODELLED_MASK: u32 = 0x7FF | CR4_SMEP;
+/// CR4.PSE.
+const CR4_PSE: u32 = 1 << 4;
+/// CR4.PGE.
+const CR4_PGE: u32 = 1 << 7;
 /// MSR index of `IA32_EFER`, the only MSR of the model.
 pub const MSR_EFER: u32 = 0xC000_0080;
 /// EFER.SCE (`SYSCALL` enable).
@@ -137,6 +196,9 @@ pub const EFER_WRITABLE_MASK: u64 = EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE;
 /// Access byte of a real-mode data segment register (present, DPL 0, `S = 1`, read/write,
 /// accessed), as the KVM oracle reports it (`type 3`, `P 1`, `DPL 0`).
 pub const REAL_MODE_DATA_ACCESS: u8 = 0x93;
+
+/// The dirty bit (bit 6) in the mask of a [`Touch`].
+const TOUCH_DIRTY: u8 = 1 << 6;
 
 const EFLAGS_CF: u32 = 1;
 const EFLAGS_ZF: u32 = 1 << 6;
@@ -175,6 +237,9 @@ pub enum ProtectedInstruction {
     MovEaxFromDs(u32),
     /// `8b 15 disp32`: `MOV EDX, DWORD PTR ds:disp32`.
     MovEdxFromDs(u32),
+    /// `a3 disp32`: `MOV DWORD PTR ds:disp32, EAX`. Not a form of the Linux trampoline trace: the
+    /// store of the operand slice of PAE paging (S2-25k), where a write walk sets `D`.
+    MovDsFromEax(u32),
     /// `3b 05 disp32`: `CMP EAX, DWORD PTR ds:disp32`.
     CmpEaxWithDs(u32),
     /// `3b 15 disp32`: `CMP EDX, DWORD PTR ds:disp32`.
@@ -279,6 +344,12 @@ pub enum ProtectedRefusal {
     DataBeyondLimit { eip: u32, disp: u32, limit: u32 },
     /// A data byte at `linear` is not readable in memory.
     DataUnreadable { eip: u32, linear: u32 },
+    /// A data byte at `linear` of a store is not writable in memory (S2-25k): nothing was written.
+    DataUnwritable { eip: u32, linear: u32 },
+    /// A store through a DS that is not a writable data segment (`W = 0` or a code segment): the
+    /// hardware raises `#GP(0)` (SDM Vol. 2B, MOV, Protected Mode Exceptions); refused before any
+    /// page walk, nothing changes.
+    DataSegmentReadOnly { eip: u32, access: u8 },
     /// A segment load was refused for `reason`.
     SegmentLoadRefused {
         eip: u32,
@@ -291,14 +362,31 @@ pub enum ProtectedRefusal {
     /// `WRMSR` of EFER with a bit outside [`EFER_WRITABLE_MASK`] in `EDX:EAX` (`value`): the
     /// hardware raises `#GP(0)`.
     EferWriteReservedBits { eip: u32, value: u64 },
-    /// `MOV CR4, EAX` with a bit above bit 10 set (`value` is EAX).
+    /// `MOV CR4, EAX` with a bit above bit 10 set (a model refusal: the profile enables none of
+    /// those features); `value` is EAX.
     Cr4WriteUnmodelled { eip: u32, value: u32 },
-    /// `MOV CR0, EAX` with `PG = 1` and `EFER.LME = 0`: 32-bit and PAE paging are not modelled
-    /// (`value` is EAX).
-    PagingNotModelled { eip: u32, value: u32 },
-    /// `MOV CR0, EAX` with `PG = 0`, a second `PG` write, reserved bits or `NW` without `CD`:
-    /// not modelled (the reserved-bit and `NW` cases are `#GP(0)` in hardware).
+    /// `MOV CR4, EAX` that clears `PAE` while IA-32e mode is active (`LMA = 1`): `#GP(0)` (S2-25;
+    /// SDM Vol. 3A §12.8.5, "IA-32e mode is active and an attempt is made to disable
+    /// physical-address extensions"). `value` is EAX.
+    Cr4PaeClearInLongMode { eip: u32, value: u32 },
+    /// A `MOV` to `CR0`, `CR3` or `CR4` that loads the PDPTEs of PAE paging found a PDPTE with
+    /// `P = 1` and a reserved bit: `#GP(0)`, the PDPTEs and the control register keep their value
+    /// (S2-25; SDM Vol. 3A §5.4.1). `index` is the PDPTE number.
+    PdpteReservedBits { eip: u32, index: u8, pdpte: u64 },
+    /// The PDPTE at `phys` could not be read from memory (a model limit, S2-25).
+    PdpteUnreadable { eip: u32, phys: u32 },
+    /// `MOV CR0, EAX` that the model does not take: `PG` and `PE` clear before and `PE` kept (a write
+    /// of the other bits with paging off), `PE` cleared together with `PG` while paging is on, reserved
+    /// bits, or `NW` without `CD` (the last two are `#GP(0)` in hardware). `value` is EAX.
     Cr0WriteUnmodelled { eip: u32, value: u32 },
+    /// `MOV CR0, EAX` clearing `PG` in 64-bit mode (`LMA = 1`, `CS.L = 1`): `#GP(0)` (S2-25j; SDM Vol. 2B
+    /// "MOV to control register", 64-Bit Mode Exceptions; Vol. 3A §12.8.5.4: IA-32e mode is left from
+    /// compatibility mode). `value` is EAX; nothing changes.
+    Cr0PgClearIn64BitMode { eip: u32, value: u32 },
+    /// The step was refused because `CR0.PE = 0`: the processor is in real-address mode (S2-25j,
+    /// after a `MOV CR0` that cleared `PE`). This model executes protected mode only; continue with
+    /// [`ProtectedCpu::to_real_mode`] and [`RealModeCpu`]. Nothing changes.
+    NotProtectedMode { eip: u32 },
     /// `MOV CR0, EAX` with `PG = 1` and `PE = 0`: `#GP(0)`.
     PagingWithoutProtection { eip: u32, value: u32 },
     /// `MOV CR0, EAX` with `PG = 1`, `EFER.LME = 1` and `CR4.PAE = 0`: `#GP(0)`.
@@ -314,6 +402,13 @@ pub enum ProtectedRefusal {
         linear: u32,
         access: AccessKind,
         reason: PageRefusal,
+    },
+    /// [`ProtectedCpu::step_admitting`]: the decoded `instruction` (of `length` bytes at `eip`) is not
+    /// one the caller admits (S2-25o). Nothing was executed.
+    InstructionNotAdmitted {
+        eip: u32,
+        instruction: ProtectedInstruction,
+        length: u32,
     },
     /// The far jump `JMP ptr16:32` was refused for `reason`.
     FarJumpRefused {
@@ -380,11 +475,20 @@ pub struct ProtectedCpu {
     pub cr0: u32,
     /// Stored by `MOV CR3, EAX`; the PML4 base of the walk once `CR0.PG` is set.
     pub cr3: u32,
-    /// Stored by `MOV CR4, EAX` (bits 0..10 only).
+    /// Stored by `MOV CR4, EAX` (bits 0..10 and `SMEP`, bit 20, only).
     pub cr4: u32,
     /// `IA32_EFER`, the only MSR: 0 at entry; `WRMSR` stores `SCE`, `LME`, `NXE`. `LMA` is never
     /// changed by `WRMSR`; it becomes 1 at `MOV CR0` with `PG = 1` while `LME` and `PAE` are set.
     pub efer: u64,
+    /// The PDPTE registers of PAE paging (S2-25): loaded at `MOV CR0` (enabling paging), `MOV CR3`
+    /// and `MOV CR4` (changing PAE, PGE or PSE) while `CR0.PG = 1`, `CR4.PAE = 1` and `LMA = 0`;
+    /// 0 and unused otherwise.
+    pub pdptes: [u64; 4],
+    /// Model switch of the PSE-36 mechanism of 32-bit paging (S2-25j): `false` by default and after
+    /// [`Self::from_real_entry`], as `CPUID.01H:EDX[17]` is clear in every profile (declaring it is
+    /// S2-57). `true`: bits 16:13 of a 4 MiB PDE are physical-address bits 35:32 (see
+    /// [`paging::translate32_with`]).
+    pub pse36: bool,
     pub cs: ProtectedSegment,
     pub ds: ProtectedSegment,
     pub es: ProtectedSegment,
@@ -451,6 +555,8 @@ impl ProtectedCpu {
             cr3: 0,
             cr4: 0,
             efer: 0,
+            pdptes: [0; 4],
+            pse36: false,
             cs,
             ds: real_data_segment(real.mode.ds),
             es: real_data_segment(real.mode.es),
@@ -461,6 +567,46 @@ impl ProtectedCpu {
             idtr: real.idtr,
             mov_ss_shadow: real.mov_ss_shadow,
         })
+    }
+
+    /// The real-address mode state after a `MOV CR0` cleared `PE` (S2-25j; SDM Vol. 3A §12.9.2): the
+    /// general registers, `EIP`, EFLAGS, CR0, GDTR/IDTR and the segment registers come from `self`; every
+    /// segment keeps its selector, base and limit (the descriptor caches survive the switch, §12.9.2
+    /// step 4) and is not attributed (a real-mode segment has no attributes in [`RealModeCpu`]); `CS.D`
+    /// and `SS.B` must be 0 (see below).
+    /// `base` supplies what this model does not carry (the `CPUID` source): the real state the
+    /// protected run was entered from. CR3, CR4, EFER and the PDPTE registers are not part of
+    /// [`RealModeCpu`] and are not carried (they keep their value in `self`). `None` while `PE` is 1,
+    /// and when `CS.D` or `SS.B` is 1: until the far jump of §12.9.2 step 7 the segments keep their
+    /// attributes (steps 3 and 4 load 16-bit ones before `PE` is cleared), and [`RealModeCpu`] has
+    /// no default-size bit, so a 32-bit code or stack segment would run as 16-bit.
+    pub fn to_real_mode(&self, base: &RealModeCpu) -> Option<RealModeCpu> {
+        if self.cr0 & CR0_PE != 0 || self.cs.flags & 0x4 != 0 || self.ss.flags & 0x4 != 0 {
+            return None;
+        }
+        let seg = |s: ProtectedSegment| RealSegment {
+            selector: s.selector,
+            base: s.base,
+            limit: s.limit,
+        };
+        let mut real = *base;
+        real.gpr = self.gpr;
+        real.mov_ss_shadow = self.mov_ss_shadow;
+        real.gdtr = self.gdtr;
+        real.idtr = self.idtr;
+        real.cs_protected = None;
+        real.mode = RealModeState {
+            cs: seg(self.cs),
+            ds: seg(self.ds),
+            es: seg(self.es),
+            ss: seg(self.ss),
+            fs: seg(self.fs),
+            gs: seg(self.gs),
+            eip: self.eip,
+            eflags: self.eflags,
+            cr0: self.cr0,
+        };
+        Some(real)
     }
 
     /// The 64-bit `RIP`.
@@ -496,13 +642,66 @@ impl ProtectedCpu {
             self.cs.base.wrapping_add(offset as u32)
         };
         let phys = self.physical(mem, linear, AccessKind::Fetch, &mut Vec::new())?;
-        mem.read_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
+        mem.fetch_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
             eip: self.eip,
             linear,
         })
     }
 
-    /// Paging control state, `None` while `CR0.PG` is clear.
+    /// PAE paging is in use: `CR0.PG = 1`, `CR4.PAE = 1`, `EFER.LMA = 0` (SDM Vol. 3A §5.4).
+    pub fn pae_paging(&self) -> bool {
+        self.cr0 & CR0_PG != 0 && self.cr4 & CR4_PAE != 0 && self.efer & EFER_LMA == 0
+    }
+
+    /// 32-bit paging is in use: `CR0.PG = 1` and `CR4.PAE = 0` (SDM Vol. 3A §5.3; IA-32e mode needs
+    /// `PAE`, so `EFER.LMA` is clear), S2-25.
+    pub fn paging32(&self) -> bool {
+        self.cr0 & CR0_PG != 0 && self.cr4 & CR4_PAE == 0
+    }
+
+    /// The optional features of the walk (S2-25j): `CR4.SMEP` and the PSE-36 model switch.
+    fn walk_features(&self) -> WalkFeatures {
+        WalkFeatures {
+            smep: self.cr4 & CR4_SMEP != 0,
+            pse36: self.pse36,
+        }
+    }
+
+    /// The `#PF` error code (SDM Vol. 3A §5.7) of a [`ProtectedRefusal::PageFault`] of this state
+    /// (S2-25j), for the supervisor access of the model: `P`, `W/R`, `RSVD` and `I/D` (bit 4: fetch with
+    /// `CR4.SMEP = 1`, or with `CR4.PAE = 1` and `EFER.NXE = 1`); `U/S` is 0. `None` for another
+    /// refusal and for a model limit of the walk that is no architectural fault.
+    pub fn page_fault_error_code(&self, refusal: &ProtectedRefusal) -> Option<u32> {
+        let ProtectedRefusal::PageFault { access, reason, .. } = refusal else {
+            return None;
+        };
+        let id_reporting =
+            self.cr4 & CR4_SMEP != 0 || (self.cr4 & CR4_PAE != 0 && self.efer & EFER_NXE != 0);
+        paging::page_fault_error_code(*reason, *access, id_reporting)
+    }
+
+    /// The PDPTEs of the table `cr3` names (`MOV` to `CR0`/`CR3`/`CR4` of PAE paging); a refusal
+    /// changes nothing.
+    fn load_pdptes<M: RealModeMemory>(
+        &self,
+        mem: &M,
+        cr3: u32,
+    ) -> Result<[u64; 4], ProtectedRefusal> {
+        paging::load_pdptes(mem, cr3).map_err(|refusal| match refusal {
+            PdpteRefusal::Reserved { index, pdpte } => ProtectedRefusal::PdpteReservedBits {
+                eip: self.eip,
+                index,
+                pdpte,
+            },
+            PdpteRefusal::Unreadable { phys } => ProtectedRefusal::PdpteUnreadable {
+                eip: self.eip,
+                phys,
+            },
+        })
+    }
+
+    /// Paging control state of the 4-level walk, `None` while `CR0.PG` is clear. PAE paging and
+    /// 32-bit paging use [`Self::pae_paging`] and [`Self::paging32`] instead.
     fn paging_params(&self) -> Option<PagingParams> {
         (self.cr0 & CR0_PG != 0).then_some(PagingParams {
             cr3: self.cr3,
@@ -522,10 +721,30 @@ impl ProtectedCpu {
         access: AccessKind,
         touches: &mut Vec<Touch>,
     ) -> Result<u32, ProtectedRefusal> {
-        let Some(params) = self.paging_params() else {
+        // S2-25o: the memory walks the linear address itself (a `GuestMemory` adapter).
+        if mem.walks_linear() {
+            return Ok(linear);
+        }
+        let walk = if self.pae_paging() {
+            let params = PaeParams {
+                pdptes: self.pdptes,
+                wp: self.cr0 & CR0_WP != 0,
+                nxe: self.efer & EFER_NXE != 0,
+            };
+            paging::translate_pae_with(mem, params, self.walk_features(), linear, access)
+        } else if self.paging32() {
+            let params = Paging32Params {
+                cr3: self.cr3,
+                wp: self.cr0 & CR0_WP != 0,
+                pse: self.cr4 & CR4_PSE != 0,
+            };
+            paging::translate32_with(mem, params, self.walk_features(), linear, access)
+        } else if let Some(params) = self.paging_params() {
+            paging::translate_with(mem, params, self.walk_features(), linear, access)
+        } else {
             return Ok(linear);
         };
-        match paging::translate(mem, params, linear, access) {
+        match walk {
             Ok(t) => {
                 touches.extend(t.touches);
                 Ok(t.phys)
@@ -563,7 +782,7 @@ impl ProtectedCpu {
         }
     }
 
-    /// Decodes the closed 64-bit set (block 8, S6-14n) at `RIP`.
+    /// Decodes the closed 64-bit set at `RIP`: `ff 25 disp32` (block 8, S6-14n) and `0f 22 c0` (S2-25j).
     fn decode64<M: RealModeMemory>(
         &self,
         mem: &M,
@@ -577,6 +796,15 @@ impl ProtectedCpu {
         if self.cs.flags & 0x4 != 0 {
             // The far jump refuses L = 1 with D = 1, so this state is not reachable by the model.
             return Err(self.unsupported(mem));
+        }
+        // S2-25j: `0f 22 c0`, `MOV CR0, RAX` (the registers of the model are 32-bit: the high dword
+        // of RAX is taken as 0). Only to apply the 64-bit mode rules of `MOV CR0` (clearing `PG` is
+        // `#GP(0)`).
+        if self.fetch(mem, 0)? == 0x0F {
+            if self.fetch(mem, 1)? != 0x22 || self.fetch(mem, 2)? != 0xC0 {
+                return Err(self.unsupported(mem));
+            }
+            return Ok((ProtectedInstruction::MovCr0Eax, 3));
         }
         // `ff /4` with `mod = 00`, `rm = 101`: the RIP-relative memory operand.
         if self.fetch(mem, 0)? != 0xFF || self.fetch(mem, 1)? != 0x25 {
@@ -718,6 +946,10 @@ impl ProtectedCpu {
                 ProtectedInstruction::MovEaxFromDs(self.fetch_u32(mem, 1)?),
                 5,
             )),
+            0xA3 => Ok((
+                ProtectedInstruction::MovDsFromEax(self.fetch_u32(mem, 1)?),
+                5,
+            )),
             0xB8 => Ok((
                 ProtectedInstruction::MovEaxImm32(self.fetch_u32(mem, 1)?),
                 5,
@@ -745,6 +977,15 @@ impl ProtectedCpu {
                 limit: self.ds.limit,
             });
         }
+        if mem.walks_linear() {
+            let linear = self.ds.base.wrapping_add(disp);
+            return mem
+                .read_u32_linear(linear)
+                .ok_or(ProtectedRefusal::DataUnreadable {
+                    eip: self.eip,
+                    linear,
+                });
+        }
         let mut bytes = [0u8; 4];
         for (i, slot) in bytes.iter_mut().enumerate() {
             let linear = self.ds.base.wrapping_add(disp).wrapping_add(i as u32);
@@ -755,6 +996,71 @@ impl ProtectedCpu {
             })?;
         }
         Ok(u32::from_le_bytes(bytes))
+    }
+
+    /// Writes the DWORD `value` at `DS:disp` (S2-25j): DS must be a writable data segment (refused
+    /// before any page walk otherwise), the operand must lie under the DS limit, every byte is translated as a write and checked writable before the first byte is stored, so a
+    /// refused store leaves the memory unchanged. The accessed bits of the walks that completed stay
+    /// in `touches` also when a later byte is refused; the dirty bit is kept only when the whole store
+    /// is done (the hardware sets it with the write, a refused store does not dirty the page).
+    fn write_ds_u32<M: RealModeMemory>(
+        &self,
+        mem: &mut M,
+        disp: u32,
+        value: u32,
+        touches: &mut Vec<Touch>,
+    ) -> Result<(), ProtectedRefusal> {
+        if self.ds.access & 0x08 != 0 || self.ds.access & 0x02 == 0 {
+            return Err(ProtectedRefusal::DataSegmentReadOnly {
+                eip: self.eip,
+                access: self.ds.access,
+            });
+        }
+        if u64::from(disp) + 3 > u64::from(self.ds.limit) {
+            return Err(ProtectedRefusal::DataBeyondLimit {
+                eip: self.eip,
+                disp,
+                limit: self.ds.limit,
+            });
+        }
+        if mem.walks_linear() {
+            let linear = self.ds.base.wrapping_add(disp);
+            return if mem.write_u32_linear(linear, value) {
+                Ok(())
+            } else {
+                Err(ProtectedRefusal::DataUnwritable {
+                    eip: self.eip,
+                    linear,
+                })
+            };
+        }
+        let mut walked = Vec::new();
+        let mut targets = [0u32; 4];
+        for (i, target) in targets.iter_mut().enumerate() {
+            let linear = self.ds.base.wrapping_add(disp).wrapping_add(i as u32);
+            let walk = self.physical(mem, linear, AccessKind::Write, &mut walked);
+            let refusal = match walk {
+                Ok(phys) if mem.can_write(phys) => {
+                    *target = phys;
+                    continue;
+                }
+                Ok(_) => ProtectedRefusal::DataUnwritable {
+                    eip: self.eip,
+                    linear,
+                },
+                Err(refusal) => refusal,
+            };
+            touches.extend(walked.into_iter().filter_map(|touch| {
+                let mask = touch.mask & !TOUCH_DIRTY;
+                (mask != 0).then_some(Touch { mask, ..touch })
+            }));
+            return Err(refusal);
+        }
+        touches.extend(walked);
+        for (&phys, byte) in targets.iter().zip(value.to_le_bytes()) {
+            assert!(mem.write_u8(phys, byte), "can_write was true");
+        }
+        Ok(())
     }
 
     /// Target of a taken `Jcc rel8` whose next instruction is at `next_eip`: the 32-bit EIP wraps
@@ -1018,9 +1324,25 @@ impl ProtectedCpu {
         mem: &mut M,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
         let mut touches: Vec<Touch> = Vec::new();
-        let result = self.step_collecting(mem, &mut touches);
+        let result = self.step_collecting(mem, &mut touches, &|_| true);
         // S6-31b: a touch whose entry changed its translation bits meanwhile is discarded (the
         // instruction is not repeated: its effects are already committed); the count is not used.
+        let _discarded = paging::commit_touches(mem, &touches);
+        result
+    }
+
+    /// [`Self::step`] that executes only the instructions `admit` accepts (S2-25o): the decoded
+    /// instruction is shown to `admit` before anything of it is walked, read or written, and a
+    /// refusal is [`ProtectedRefusal::InstructionNotAdmitted`] with the state and memory unchanged
+    /// (the fetch walks of the decode excepted, as for any decode refusal). `step` is this with every
+    /// decoded instruction admitted.
+    pub fn step_admitting<M: RealModeMemory>(
+        &mut self,
+        mem: &mut M,
+        admit: &dyn Fn(&ProtectedInstruction) -> bool,
+    ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        let mut touches: Vec<Touch> = Vec::new();
+        let result = self.step_collecting(mem, &mut touches, admit);
         let _discarded = paging::commit_touches(mem, &touches);
         result
     }
@@ -1029,8 +1351,19 @@ impl ProtectedCpu {
         &mut self,
         mem: &mut M,
         touches: &mut Vec<Touch>,
+        admit: &dyn Fn(&ProtectedInstruction) -> bool,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        if self.cr0 & CR0_PE == 0 {
+            return Err(ProtectedRefusal::NotProtectedMode { eip: self.eip });
+        }
         let (insn, len) = self.decode(mem)?;
+        if !admit(&insn) {
+            return Err(ProtectedRefusal::InstructionNotAdmitted {
+                eip: self.eip,
+                instruction: insn,
+                length: len,
+            });
+        }
         // Accessed/dirty updates of the paging structures walked by this instruction (the fetch
         // walks come first, as in hardware), written by `step` at the end.
         if self.cr0 & CR0_PG != 0 {
@@ -1096,6 +1429,9 @@ impl ProtectedCpu {
             ProtectedInstruction::MovEdxFromDs(disp) => {
                 self.gpr[EDX] = self.read_ds_u32(mem, disp, touches)?;
             }
+            ProtectedInstruction::MovDsFromEax(disp) => {
+                self.write_ds_u32(mem, disp, self.gpr[EAX], touches)?;
+            }
             ProtectedInstruction::CmpEaxWithDs(disp) => {
                 let rhs = self.read_ds_u32(mem, disp, touches)?;
                 self.eflags = (self.eflags & !EFLAGS_ARITH) | sub_flags(self.gpr[EAX], rhs);
@@ -1134,43 +1470,107 @@ impl ProtectedCpu {
             }
             ProtectedInstruction::MovCr4Eax => {
                 let value = self.gpr[EAX];
-                // Clearing PAE while paging is on is `#GP(0)`: refused with the same variant.
-                if value & !CR4_MODELLED_MASK != 0
-                    || (self.cr0 & CR0_PG != 0 && value & CR4_PAE == 0)
+                let eip = self.eip;
+                if value & !CR4_MODELLED_MASK != 0 {
+                    return Err(ProtectedRefusal::Cr4WriteUnmodelled { eip, value });
+                }
+                let paging = self.cr0 & CR0_PG != 0;
+                if paging && value & CR4_PAE == 0 && self.efer & EFER_LMA != 0 {
+                    // IA-32e active: `#GP(0)` (SDM Vol. 3A §12.8.5). Without IA-32e mode the write
+                    // selects 32-bit paging (S2-25; SDM Vol. 3A §5.1.2, Figure 5-1): the PDPTE
+                    // registers are no longer used and keep their value, unseen.
+                    return Err(ProtectedRefusal::Cr4PaeClearInLongMode { eip, value });
+                }
+                // PAE paging is in use after this write (paging on, PAE set, no IA-32e): a change
+                // of PAE, PGE, PSE or SMEP reloads the PDPTEs from CR3 (SDM Vol. 3A §5.4.1).
+                let mut pdptes = self.pdptes;
+                if paging
+                    && value & CR4_PAE != 0
+                    && self.efer & EFER_LMA == 0
+                    && (value ^ self.cr4) & (CR4_PAE | CR4_PGE | CR4_PSE | CR4_SMEP) != 0
                 {
-                    return Err(ProtectedRefusal::Cr4WriteUnmodelled {
-                        eip: self.eip,
-                        value,
-                    });
+                    pdptes = self.load_pdptes(mem, self.cr3)?;
                 }
                 self.cr4 = value;
+                self.pdptes = pdptes;
             }
-            ProtectedInstruction::MovCr3Eax => self.cr3 = self.gpr[EAX],
+            ProtectedInstruction::MovCr3Eax => {
+                let value = self.gpr[EAX];
+                // PAE paging: the PDPTEs are loaded from the address being loaded into CR3; a
+                // reserved bit is `#GP(0)` and CR3 keeps its value.
+                if self.pae_paging() {
+                    self.pdptes = self.load_pdptes(mem, value)?;
+                }
+                self.cr3 = value;
+            }
             ProtectedInstruction::MovCr0Eax => {
                 let value = self.gpr[EAX];
                 let eip = self.eip;
-                if self.cr0 & CR0_PG != 0
-                    || value & CR0_PG == 0
-                    || value & !CR0_VALID_MASK != 0
+                let (paging_before, paging_after) = (self.cr0 & CR0_PG != 0, value & CR0_PG != 0);
+                if value & !CR0_VALID_MASK != 0
                     || (value & CR0_NW != 0 && value & CR0_CD == 0)
+                    // Paging off before and after with `PE` kept: no other CR0 write is modelled.
+                    || (!paging_before && !paging_after && value & CR0_PE != 0)
                 {
                     return Err(ProtectedRefusal::Cr0WriteUnmodelled { eip, value });
                 }
-                if value & CR0_PE == 0 {
+                if paging_after && value & CR0_PE == 0 {
                     return Err(ProtectedRefusal::PagingWithoutProtection { eip, value });
                 }
-                if self.efer & EFER_LME == 0 {
-                    return Err(ProtectedRefusal::PagingNotModelled { eip, value });
+                if !paging_before && !paging_after {
+                    // Return to real-address mode (S2-25j; SDM Vol. 3A §12.9.2 step 6): `PE` is
+                    // cleared with paging already off (so `LMA` is 0). Nothing else changes: the
+                    // segment caches keep their descriptors, EFER, CR3 and CR4 keep their value. The
+                    // next `step` is [`ProtectedRefusal::NotProtectedMode`]; the real-mode state is
+                    // [`ProtectedCpu::to_real_mode`].
+                    self.cr0 = value | CR0_ET;
+                } else if paging_before {
+                    // Paging is on (S2-25, SDM Vol. 3A §5.1.2 and §5.4.1). Clearing PG in 64-bit
+                    // mode is `#GP(0)` (SDM Vol. 2B "MOV to control register", 64-Bit Mode
+                    // Exceptions). `PE` cleared together with `PG` is not modelled.
+                    if !paging_after && self.is_64bit() {
+                        return Err(ProtectedRefusal::Cr0PgClearIn64BitMode { eip, value });
+                    }
+                    if value & CR0_PE == 0 {
+                        return Err(ProtectedRefusal::Cr0WriteUnmodelled { eip, value });
+                    }
+                    // PAE paging stays in use and the write modifies CD, NW or PG: the PDPTEs are
+                    // reloaded from CR3 (a reserved bit is `#GP(0)`, CR0 keeps its value). Clearing
+                    // PG turns paging off: no PDPTE is loaded and none is used.
+                    let mut pdptes = self.pdptes;
+                    if paging_after
+                        && self.pae_paging()
+                        && (value ^ self.cr0) & (CR0_CD | CR0_NW) != 0
+                    {
+                        pdptes = self.load_pdptes(mem, self.cr3)?;
+                    }
+                    self.cr0 = value | CR0_ET;
+                    self.pdptes = pdptes;
+                    if !paging_after {
+                        // Deactivating IA-32e mode from compatibility mode (S2-25j; SDM Vol. 3A
+                        // §12.8.5.4 step 2): PG cleared, the processor sets `LMA` to 0; `LME` keeps
+                        // its value (only `WRMSR` changes it).
+                        self.efer &= !EFER_LMA;
+                    }
+                } else if self.efer & EFER_LME == 0 {
+                    // PG set with LME clear. Without PAE: 32-bit paging, no PDPTE (S2-25). With
+                    // PAE: PAE paging, the PDPTEs are loaded from CR3 by this write (a reserved bit
+                    // is `#GP(0)`); IA-32e mode is not activated, LMA stays 0 (SDM Vol. 3A §5.4.1).
+                    if self.cr4 & CR4_PAE != 0 {
+                        self.pdptes = self.load_pdptes(mem, self.cr3)?;
+                    }
+                    self.cr0 = value | CR0_ET;
+                } else {
+                    if self.cr4 & CR4_PAE == 0 {
+                        return Err(ProtectedRefusal::LongModePagingWithoutPae { eip, value });
+                    }
+                    if self.cs.flags & 0x2 != 0 {
+                        return Err(ProtectedRefusal::LongModeActivationFromLongCs { eip, value });
+                    }
+                    // PG with LME and PAE: the processor activates IA-32e mode (LMA := 1).
+                    self.cr0 = value | CR0_ET;
+                    self.efer |= EFER_LMA;
                 }
-                if self.cr4 & CR4_PAE == 0 {
-                    return Err(ProtectedRefusal::LongModePagingWithoutPae { eip, value });
-                }
-                if self.cs.flags & 0x2 != 0 {
-                    return Err(ProtectedRefusal::LongModeActivationFromLongCs { eip, value });
-                }
-                // PG with LME and PAE: the processor activates IA-32e mode (LMA := 1).
-                self.cr0 = value | CR0_ET;
-                self.efer |= EFER_LMA;
             }
             ProtectedInstruction::JmpFarPtr { selector, offset } => {
                 let (segment, write_at) = self.check_far_jump(mem, selector, offset, touches)?;
@@ -1268,6 +1668,8 @@ mod tests {
             cr3: 0,
             cr4: 0,
             efer: 0,
+            pdptes: [0; 4],
+            pse36: false,
             cs: flat(0x08, 0x9B),
             ds: real,
             es: real,
@@ -1419,25 +1821,30 @@ mod tests {
     }
 
     #[test]
-    fn mov_cr0_with_paging_without_lme_is_not_modelled_and_changes_nothing() {
-        // S6-14l refused here for every EFER; S6-14m models PG with LME and PAE (below), so the
-        // entry state (EFER = 0, LME clear: 32-bit/PAE paging) is the refusal that remains.
+    fn mov_cr0_with_paging_without_lme_and_pae_enters_32bit_paging() {
+        // S6-14l refused here for every EFER; S6-14m models PG with LME and PAE (below); S2-25
+        // models the entry state (EFER = 0, CR4 = 0: 32-bit paging), which loads no PDPTE. CR3 = 0
+        // holds no page directory, so the next fetch is the `#PF` that stops the run.
         // The linked tail `mov eax, 0x80050033; mov cr0, eax` (0x205d, 0x2062).
         let mut ram = new_ram();
         put_linked_block6(&mut ram);
         let mut cpu = entry_cpu();
         cpu.eip = 0x205D;
         let run = cpu.run(&mut mem(&mut ram), 10);
-        assert_eq!(run.steps, 1);
+        assert_eq!(run.steps, 2);
         assert_eq!(
             run.stop,
-            Some(ProtectedRefusal::PagingNotModelled {
-                eip: 0x2062,
-                value: 0x8005_0033
+            Some(ProtectedRefusal::PageFault {
+                eip: 0x2065,
+                linear: 0x2065,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 2, entry: 0 }
             })
         );
-        assert_eq!(cpu.eip, 0x2062);
-        assert_eq!(cpu.cr0, 0x0005_0033);
+        assert_eq!(cpu.eip, 0x2065);
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        assert!(cpu.paging32() && !cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [0; 4]);
         assert_eq!(cpu.gpr[EAX], 0x8005_0033);
     }
 
@@ -2224,19 +2631,32 @@ mod tests {
         // EFER = header: rdmsr, cmp, jne (not taken), cmp, je (taken) to 0x205d, mov eax.
         for efer in [0u64, 0x901] {
             let (cpu, run) = run_linked_with_header(efer, efer as u32, 0);
-            assert_eq!(run.steps, 13 + 6);
-            // S6-14l: PagingNotModelled for both. S6-14m: EFER 0 has no LME (32-bit paging, still
-            // not modelled); 0x901 has LME, and CR4 = 0 in this test has no PAE (`#GP`).
+            // S6-14l: PagingNotModelled for both. S6-14m: 0x901 has LME, and CR4 = 0 in this test has
+            // no PAE (`#GP`). S2-25: EFER 0 has no LME either: the write enters 32-bit paging and
+            // the next fetch (CR3 = 0x4000 holds no page directory) is the `#PF` that stops the run.
             let value = 0x8005_0033;
-            let expected = if efer == 0 {
-                ProtectedRefusal::PagingNotModelled { eip: 0x2062, value }
+            if efer == 0 {
+                assert_eq!(run.steps, 13 + 7);
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::PageFault {
+                        eip: 0x2065,
+                        linear: 0x2065,
+                        access: AccessKind::Fetch,
+                        reason: PageRefusal::NotPresent { level: 2, entry: 0 }
+                    })
+                );
+                assert_eq!((cpu.efer, cpu.eip, cpu.cr0), (0, 0x2065, value));
             } else {
-                ProtectedRefusal::LongModePagingWithoutPae { eip: 0x2062, value }
-            };
-            assert_eq!(run.stop, Some(expected));
-            assert_eq!((cpu.efer, cpu.eip), (efer, 0x2062));
+                assert_eq!(run.steps, 13 + 6);
+                assert_eq!(
+                    run.stop,
+                    Some(ProtectedRefusal::LongModePagingWithoutPae { eip: 0x2062, value })
+                );
+                assert_eq!((cpu.efer, cpu.eip), (efer, 0x2062));
+                assert_eq!(cpu.cr0, 0x0005_0033, "CR0 untouched");
+            }
             assert_eq!((cpu.gpr[EAX], cpu.gpr[EDX]), (0x8005_0033, 0));
-            assert_eq!(cpu.cr0, 0x0005_0033, "CR0 untouched");
         }
     }
 
@@ -2948,13 +3368,6 @@ mod tests {
             refused(&|c| c.cr4 = 0x690, value),
             ProtectedRefusal::LongModePagingWithoutPae { eip, value }
         );
-        // PG without LME (EFER 0, or NXE only): 32-bit paging, not modelled.
-        for efer in [0, 0x800, 0x001] {
-            assert_eq!(
-                refused(&|c| c.efer = efer, value),
-                ProtectedRefusal::PagingNotModelled { eip, value }
-            );
-        }
         // PG without PE: #GP(0).
         assert_eq!(
             refused(&|_| {}, 0x8005_0032),
@@ -2968,7 +3381,7 @@ mod tests {
             refused(&|c| c.cs.flags |= 2, value),
             ProtectedRefusal::LongModeActivationFromLongCs { eip, value }
         );
-        // Reserved bits, NW without CD, a second PG write, a write without PG.
+        // Reserved bits, NW without CD, a write without PG (a write that keeps PG set is S2-25).
         for (setup, eax) in [
             (
                 &(|_: &mut ProtectedCpu| {}) as &dyn Fn(&mut ProtectedCpu),
@@ -2976,7 +3389,6 @@ mod tests {
             ),
             (&|_| {}, 0x9005_0033),
             (&|_| {}, 0xA005_0033),
-            (&|c| c.cr0 = 0x8005_0033, 0x8005_0033),
             (&|_| {}, 0x0005_0033),
         ] {
             assert_eq!(
@@ -3029,6 +3441,1372 @@ mod tests {
         assert_eq!(get_q(&ram, PT + 16), 0x3000 | 0x23);
         assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23);
         assert_eq!(get_q(&ram, PT + 8), 0x1003, "page 1 was not used");
+    }
+
+    // ---- S2-25: PAE paging, CR4.PAE and CR3/PDPTE rules (model only: no hardware oracle) -------
+
+    /// PDPT[0] -> PD (`P` only), PD[0] -> PT, PT[i] = identity of page i (i < 10), A and D clear;
+    /// the PDPT is the 32-byte table at `PDPT`.
+    fn pae_tables_4k(ram: &mut [u8]) {
+        put_q(ram, PDPT, PD as u64 | 1);
+        put_q(ram, PD, PT as u64 | 3);
+        for page in 0..10u64 {
+            put_q(ram, PT + 8 * page as usize, (page << 12) | 3);
+        }
+    }
+
+    /// The paged RAM of the S6-14m images with PAE tables instead of the 4-level ones.
+    fn pae_ram() -> Vec<u8> {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        pae_tables_4k(&mut ram);
+        ram
+    }
+
+    /// As `pae_ram` with A and D preset in the PDE and the PTEs: a walk then writes nothing, so a
+    /// refused instruction leaves the memory as it was (the fetch walk completed before it).
+    fn pae_ram_ad() -> Vec<u8> {
+        let mut ram = pae_ram();
+        put_q(&mut ram, PD, PT as u64 | 0x63);
+        for page in 0..10usize {
+            let e = get_q(&ram, PT + 8 * page);
+            put_q(&mut ram, PT + 8 * page, e | 0x60);
+        }
+        ram
+    }
+
+    /// Ready to execute the `MOV CR0, EAX` at 0x2062 that enables PAE paging: PAE set, EFER = NXE
+    /// (no LME), CR3 = the PDPT.
+    fn pae_cpu() -> ProtectedCpu {
+        let mut cpu = ia32e_cpu();
+        cpu.cr3 = PDPT as u32;
+        cpu.efer = EFER_NXE;
+        cpu
+    }
+
+    /// PAE paging already active at 0x2000 (the PDPTEs as `pae_ram` gives them).
+    fn pae_active_cpu() -> ProtectedCpu {
+        let mut cpu = pae_cpu();
+        cpu.eip = 0x2000;
+        cpu.cr0 = 0x8005_0033;
+        cpu.pdptes = [PD as u64 | 1, 0, 0, 0];
+        cpu
+    }
+
+    #[test]
+    fn mov_cr0_with_pg_and_pae_without_lme_enters_pae_paging() {
+        let mut ram = pae_ram();
+        // Page 5 -> physical 0x6000 for the data read at the end.
+        put_q(&mut ram, PT + 40, 0x6000 | 3);
+        put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+        put(&mut ram, 0x20F0, &[0xA1, 0x08, 0x50, 0, 0]); // mov eax, ds:0x5008
+        let before = ram.clone();
+        let mut cpu = pae_cpu();
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr0Eax));
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        // PAE paging is not IA-32e mode: LMA stays clear, the PDPTE registers are loaded from CR3.
+        assert_eq!(cpu.efer, EFER_NXE);
+        assert!(cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [PD as u64 | 1, 0, 0, 0]);
+        assert_eq!(cpu.eip, 0x2065);
+        assert!(!cpu.is_64bit());
+        assert_eq!(
+            ram, before,
+            "the fetch before the write was physical: no walk, no touch"
+        );
+        let m = &mut mem(&mut ram);
+        // From here every access walks PDPTE -> PDE -> PTE.
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::JmpFarPtr {
+                selector: 0x10,
+                offset: 0x20F0
+            })
+        );
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxFromDs(0x5008)));
+        assert_eq!((cpu.gpr[EAX], cpu.eip), (0x1234_5678, 0x20F5));
+        // A on the PDE and the PTEs of page 2 (fetch), page 0 (GDT) and page 5 (data); the PDPTE
+        // has no accessed bit and is never written.
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT), 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x2000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23);
+        assert_eq!(get_q(&ram, PT + 8), 0x1003, "page 1 was not used");
+    }
+
+    #[test]
+    fn pae_paging_two_mib_page_sets_a_in_the_pde_and_d_for_the_descriptor_write() {
+        // PD[0] = 2 MiB page at 0 (tables_2m); the far jump loads an A-clear descriptor, so the
+        // model writes its access byte through the walk: D on the PDE, none on the PDPTE.
+        let mut ram = paged_ram([0xFF, 0xFF, 0, 0, 0, 0x9A, 0xCF, 0]);
+        put_q(&mut ram, PDPT, PD as u64 | 1);
+        let mut cpu = pae_cpu();
+        let m = &mut mem(&mut ram);
+        cpu.step(m).unwrap();
+        cpu.step(m).unwrap();
+        assert_eq!(get_q(&ram, PD), 0xE3, "A and D on the 2 MiB PDE");
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+        assert_eq!(ram[0x4D], 0x9B, "the accessed bit of the descriptor");
+        assert_eq!(cpu.cs.selector, 0x10);
+    }
+
+    #[test]
+    fn pae_paging_enable_refusals_change_nothing() {
+        let eip = 0x2062;
+        let value = 0x8005_0033u32;
+        let run = |setup: &dyn Fn(&mut ProtectedCpu, &mut Vec<u8>)| {
+            let (mut cpu, mut ram) = (pae_cpu(), pae_ram());
+            setup(&mut cpu, &mut ram);
+            step_one_at(&mut cpu, &mut ram)
+        };
+        // A PDPTE with P = 1 and a reserved bit: #GP(0), CR0 and the PDPTEs unchanged, LMA clear.
+        for (index, bad) in [
+            (0usize, PD as u64 | 3),
+            (1, PD as u64 | 1 | 1 << 5),
+            (2, PD as u64 | 1 | 1 << 36),
+            (3, PD as u64 | 1 | 1 << 63),
+        ] {
+            assert_eq!(
+                run(&|_, ram| put_q(ram, PDPT + 8 * index, bad)),
+                Err(ProtectedRefusal::PdpteReservedBits {
+                    eip,
+                    index: index as u8,
+                    pdpte: bad
+                })
+            );
+        }
+        // Reserved bits with P = 0 are not checked.
+        assert_eq!(
+            run(&|_, ram| put_q(ram, PDPT + 8, 0xFFFF_FFFF_FFFF_FFFE)),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        // The PDPT must be readable (a model limit).
+        assert_eq!(
+            run(&|cpu, _| cpu.cr3 = RAM_PAGED as u32),
+            Err(ProtectedRefusal::PdpteUnreadable {
+                eip,
+                phys: RAM_PAGED as u32
+            })
+        );
+        // PG without PE is #GP(0) before any PDPTE is read.
+        assert_eq!(
+            run(&|cpu, ram| {
+                put_q(ram, PDPT, PD as u64 | 3);
+                cpu.gpr[EAX] = value & !1;
+            }),
+            Err(ProtectedRefusal::PagingWithoutProtection {
+                eip,
+                value: value & !1
+            })
+        );
+    }
+
+    /// Runs the `MOV CR0, EAX` already placed at 0x2062 (the S6-14m images) from `cpu`.
+    fn step_one_at(
+        cpu: &mut ProtectedCpu,
+        ram: &mut Vec<u8>,
+    ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        let (before, ram_before) = (*cpu, ram.clone());
+        let result = cpu.step(&mut mem(ram));
+        if result.is_err() {
+            assert_eq!(*cpu, before, "state unchanged by a refusal");
+            assert_eq!(*ram, ram_before, "memory unchanged by a refusal");
+        }
+        result
+    }
+
+    #[test]
+    fn lme_with_pg_and_without_pae_is_gp_and_pae_first_then_lme_enters_ia32e() {
+        // SDM Vol. 3A §12.8.5: IA-32e enabled and paging enabled before PAE is #GP(0).
+        let (mut cpu, mut ram) = (ia32e_cpu(), pae_ram());
+        cpu.cr4 = 0x690;
+        let value = 0x8005_0033;
+        assert_eq!(
+            step_one_at(&mut cpu, &mut ram),
+            Err(ProtectedRefusal::LongModePagingWithoutPae { eip: 0x2062, value })
+        );
+        assert_eq!(
+            (cpu.cr0, cpu.efer, cpu.pdptes),
+            (0x0005_0033, 0x901, [0; 4])
+        );
+        // PAE set (CR4 written first), LME written after: the same MOV CR0 now enters IA-32e mode
+        // (4-level walk from CR3 = PML4), LMA set, and no PDPTE register is loaded.
+        let (mut cpu, mut ram) = (ia32e_cpu(), paged_ram(CODE32_COMPAT));
+        assert_eq!(
+            step_one_at(&mut cpu, &mut ram),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!(cpu.efer & EFER_LMA, EFER_LMA);
+        assert!(!cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [0; 4]);
+    }
+
+    #[test]
+    fn pae_set_without_paging_loads_no_pdptes_and_cr3_takes_any_value() {
+        // PG = 0: MOV CR4 with PAE and MOV CR3 only store; memory at CR3 is not looked at.
+        let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+        cpu.gpr[EAX] = 0x20;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).unwrap();
+        cpu.eip = 0x2000;
+        cpu.gpr[EAX] = 0xFFFF_FFFF;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xD8]).unwrap();
+        assert_eq!((cpu.cr4, cpu.cr3, cpu.pdptes), (0x20, 0xFFFF_FFFF, [0; 4]));
+    }
+
+    #[test]
+    fn mov_cr3_in_pae_paging_loads_the_pdptes_from_the_new_address() {
+        let mut ram = pae_ram();
+        // A second table at 0xA020 (bits 4:0 of the CR3 value are ignored): PDPTE0 not present,
+        // PDPTE1 present.
+        put_q(&mut ram, 0xA028, PD as u64 | 1);
+        put(
+            &mut ram,
+            0x2000,
+            &[0xB8, 0x3F, 0xA0, 0, 0, 0x0F, 0x22, 0xD8, 0x90],
+        );
+        let mut cpu = pae_active_cpu();
+        let m = &mut mem(&mut ram);
+        cpu.step(m).unwrap();
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr3Eax));
+        assert_eq!(cpu.cr3, 0xA03F);
+        assert_eq!(cpu.pdptes, [0, PD as u64 | 1, 0, 0]);
+        // No TLB: the next fetch walks the new PDPTE0 at once.
+        assert_eq!(
+            cpu.step(m),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2008,
+                linear: 0x2008,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 3, entry: 0 }
+            })
+        );
+    }
+
+    #[test]
+    fn mov_cr3_and_mov_cr4_with_a_reserved_pdpte_are_gp_and_change_nothing() {
+        for (index, bad) in [
+            (0usize, PD as u64 | 3),
+            (1, PD as u64 | 1 | 1 << 8),
+            (2, PD as u64 | 1 | 1 << 36),
+            (3, PD as u64 | 1 | 1 << 63),
+        ] {
+            let expected = |eip| {
+                Err(ProtectedRefusal::PdpteReservedBits {
+                    eip,
+                    index: index as u8,
+                    pdpte: bad,
+                })
+            };
+            // MOV CR3 to a table with the bad PDPTE: CR3 and the registers keep their value.
+            let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+            put_q(&mut ram, 0xA020 + 8 * index, bad);
+            cpu.gpr[EAX] = 0xA020;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xD8]),
+                expected(0x2000)
+            );
+            // MOV CR4 that changes PGE reloads the PDPTEs from the (now bad) table at CR3.
+            let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+            put_q(&mut ram, 0xA020 + 8 * index, bad);
+            cpu.cr3 = 0xA020;
+            cpu.cr4 = 0x6B0;
+            cpu.gpr[EAX] = 0x630; // PGE cleared
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]),
+                expected(0x2000)
+            );
+        }
+    }
+
+    #[test]
+    fn mov_cr4_in_pae_paging_reloads_the_pdptes_only_for_pae_pge_and_pse() {
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram());
+        cpu.cr4 = 0x6B0;
+        // The table in memory changes under the registers (no TLB, but the PDPTEs are registers).
+        put_q(&mut ram, PDPT, PD as u64 | 0x19); // PWT, PCD: allowed bits
+        let stale = cpu.pdptes;
+        // OSFXSR toggled: no reload.
+        cpu.gpr[EAX] = 0x4B0;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).unwrap();
+        assert_eq!((cpu.cr4, cpu.pdptes), (0x4B0, stale));
+        // PGE, then PSE toggled: reload each time.
+        for (value, pdpte0) in [(0x430u32, PD as u64 | 0x19), (0x420, PD as u64 | 0x19)] {
+            cpu.eip = 0x2000;
+            cpu.pdptes = stale;
+            cpu.gpr[EAX] = value;
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).unwrap();
+            assert_eq!((cpu.cr4, cpu.pdptes[0]), (value, pdpte0), "{value:#x}");
+        }
+        // Same value written again: nothing changes, no reload.
+        cpu.eip = 0x2000;
+        cpu.pdptes = stale;
+        cpu.gpr[EAX] = 0x420;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).unwrap();
+        assert_eq!(cpu.pdptes, stale);
+    }
+
+    #[test]
+    fn mov_cr4_clearing_pae_while_paging_is_gp_in_ia32e() {
+        // (PAE paging with LMA = 0: leaving PAE selects 32-bit paging, S2-25.)
+        // IA-32e mode active (LMA = 1): #GP(0), whatever else the value holds.
+        for value in [0u32, 0x690, 0x7C0] {
+            let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+            preset_accessed_dirty(&mut ram, false);
+            cpu.gpr[EAX] = value;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]),
+                Err(ProtectedRefusal::Cr4PaeClearInLongMode { eip: 0x2000, value })
+            );
+        }
+        // With paging off PAE may be cleared and set freely.
+        let (mut cpu, mut ram) = (entry_cpu(), new_ram());
+        cpu.cr4 = 0x20;
+        cpu.gpr[EAX] = 0;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]).unwrap();
+        assert_eq!(cpu.cr4, 0);
+    }
+
+    // ---- S2-25: 32-bit paging, PAE <-> 32-bit transitions, CR0 writes with paging on -----------
+    // Model only (no hardware oracle: user space cannot write CR0/CR4).
+
+    fn put_d(ram: &mut [u8], at: usize, value: u32) {
+        put(ram, at, &value.to_le_bytes());
+    }
+
+    fn get_d(ram: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(ram[at..at + 4].try_into().unwrap())
+    }
+
+    /// The paged RAM of the S6-14m images with 32-bit tables: the page directory at `PML4`, PDE[0]
+    /// -> PT, PT[i] = identity of page i (i < 10) as 4-byte entries; A and D clear.
+    fn ram32() -> Vec<u8> {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        for at in [PML4, PDPT, PD] {
+            ram[at..at + 8].fill(0);
+        }
+        put_d(&mut ram, PML4, PT as u32 | 3);
+        for page in 0..10u32 {
+            put_d(&mut ram, PT + 4 * page as usize, page << 12 | 3);
+        }
+        ram
+    }
+
+    /// As `ram32` with A and D preset in the PDE and the PTEs (a walk then writes nothing).
+    fn ram32_ad() -> Vec<u8> {
+        let mut ram = ram32();
+        put_d(&mut ram, PML4, PT as u32 | 0x63);
+        for page in 0..10usize {
+            let e = get_d(&ram, PT + 4 * page);
+            put_d(&mut ram, PT + 4 * page, e | 0x60);
+        }
+        ram
+    }
+
+    /// 32-bit paging already active at 0x2000: CR3 = the directory, CR4 = 0x690 (PSE, no PAE),
+    /// EFER = NXE (no LME), CR0 = 0x80050033.
+    fn cpu32_active() -> ProtectedCpu {
+        let mut cpu = ia32e_cpu();
+        cpu.eip = 0x2000;
+        cpu.cr0 = 0x8005_0033;
+        cpu.cr4 = 0x690;
+        cpu.efer = EFER_NXE;
+        cpu
+    }
+
+    const MOV_CR0_EAX: [u8; 3] = [0x0F, 0x22, 0xC0];
+    const MOV_CR3_EAX: [u8; 3] = [0x0F, 0x22, 0xD8];
+    const MOV_CR4_EAX: [u8; 3] = [0x0F, 0x22, 0xE0];
+
+    #[test]
+    fn mov_cr0_with_pg_and_no_pae_and_no_lme_enters_32bit_paging() {
+        let mut ram = ram32();
+        put_d(&mut ram, PT + 20, 0x6000 | 3); // page 5 -> physical 0x6000
+        put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+        put(&mut ram, 0x20F0, &[0xA1, 0x08, 0x50, 0, 0]); // mov eax, ds:0x5008
+        let before = ram.clone();
+        let mut cpu = ia32e_cpu();
+        cpu.cr4 = 0x690; // PSE, no PAE; CR3 = the directory, whose bytes are no valid PDPT
+        cpu.efer = EFER_NXE;
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr0Eax));
+        assert_eq!(cpu.cr0, 0x8005_0033);
+        // Not IA-32e mode, and no PDPTE is loaded (a load would be #GP(0): bit 1 of PDE[0]).
+        assert_eq!(cpu.efer, EFER_NXE);
+        assert!(cpu.paging32() && !cpu.pae_paging() && !cpu.is_64bit());
+        assert_eq!(cpu.pdptes, [0; 4]);
+        assert_eq!(cpu.eip, 0x2065);
+        assert_eq!(ram, before, "the fetch before the write was physical");
+        let m = &mut mem(&mut ram);
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::JmpFarPtr {
+                selector: 0x10,
+                offset: 0x20F0
+            })
+        );
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxFromDs(0x5008)));
+        assert_eq!((cpu.gpr[EAX], cpu.eip), (0x1234_5678, 0x20F5));
+        // A on the PDE and on the PTEs of page 2 (fetch), page 0 (GDT) and page 5 (data).
+        assert_eq!(get_d(&ram, PML4), PT as u32 | 0x23);
+        assert_eq!(get_d(&ram, PT), 0x23);
+        assert_eq!(get_d(&ram, PT + 8), 0x2000 | 0x23);
+        assert_eq!(get_d(&ram, PT + 20), 0x6000 | 0x23);
+        assert_eq!(get_d(&ram, PT + 4), 0x1003, "page 1 was not used");
+    }
+
+    #[test]
+    fn paging32_ignores_the_pdpte_registers_and_cr3_bits_11_0() {
+        let mut ram = ram32_ad();
+        let mut cpu = cpu32_active();
+        cpu.pdptes = [u64::MAX; 4];
+        cpu.cr3 = PML4 as u32 | 0x18; // PWT, PCD
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0xB8, 1, 0, 0, 0]),
+            Ok(ProtectedInstruction::MovEaxImm32(1))
+        );
+        assert_eq!((cpu.gpr[EAX], cpu.pdptes), (1, [u64::MAX; 4]));
+    }
+
+    #[test]
+    fn mov_cr3_in_32bit_paging_stores_the_value_and_loads_no_pdptes() {
+        let mut ram = ram32_ad();
+        // The new directory at 0xA000: PDE[0] -> a page table of zeros, and bit 1 set, so a PDPTE
+        // load of the same bytes would be #GP(0). Bits 11:0 of the value are ignored by the walk.
+        put_d(&mut ram, 0xA000, 0x8003);
+        let mut cpu = cpu32_active();
+        cpu.gpr[EAX] = 0xA01F;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR3_EAX),
+            Ok(ProtectedInstruction::MovCr3Eax)
+        );
+        assert_eq!((cpu.cr3, cpu.pdptes), (0xA01F, [0; 4]));
+        // No TLB: the next fetch walks the new directory at once (PT[2] at 0x8008 is zero).
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2003,
+                linear: 0x2003,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+    }
+
+    #[test]
+    fn mov_cr4_clearing_pae_in_pae_paging_selects_32bit_paging() {
+        let mut ram = pae_ram_ad();
+        // The page at PD holds the PAE page directory and, read as 4-byte entries, the 32-bit page
+        // table: PAE PD[1] is PTE[2] of the 32-bit view (linear page 2 -> physical page 2). The
+        // PDPT page is also the 32-bit directory: PDE[0] is the low dword of PDPTE0 (PD | 1).
+        put_q(&mut ram, PD + 8, 0x2003);
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xE0, 0xB8, 1, 0, 0, 0]);
+        let mut cpu = pae_active_cpu();
+        cpu.cr4 = 0x6B0;
+        cpu.gpr[EAX] = 0x690;
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr4Eax));
+        assert_eq!(cpu.cr4, 0x690);
+        assert!(cpu.paging32() && !cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [PD as u64 | 1, 0, 0, 0], "kept, no longer used");
+        assert_eq!((cpu.efer, cpu.cr0), (EFER_NXE, 0x8005_0033));
+        // The fetch of the next instruction is a 32-bit walk: PDE (A set on it), PTE[2].
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxImm32(1)));
+        assert_eq!(cpu.eip, 0x2008);
+        assert_eq!(get_d(&ram, PDPT), PD as u32 | 0x21);
+        assert_eq!(get_d(&ram, PD + 8), 0x2000 | 0x23);
+    }
+
+    /// 32-bit paging active at the linear address 0x02002000 (PDE index 8, beyond the first 32
+    /// bytes of the directory, so the directory also holds a valid PDPT): linear page 0x02002 ->
+    /// physical page 2 through PDE[8] -> the 32-bit table at 0x5000, and, in PAE paging, through
+    /// PDPTE0 -> the page directory at `PD` (entry 0x10) -> the table at `PT` (entry 2). All with
+    /// A and D set. The PDPTE0 is `pdpte0`.
+    fn cpu_and_ram_32_to_pae(pdpte0: u32) -> (ProtectedCpu, Vec<u8>) {
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PML4 + 0x20, 0x5000 | 0x63);
+        put_d(&mut ram, 0x5008, 0x2000 | 0x63);
+        put_d(&mut ram, PML4, pdpte0);
+        put_d(&mut ram, PML4 + 4, 0);
+        put_q(&mut ram, PD + 8 * 0x10, PT as u64 | 0x63);
+        put_q(&mut ram, PT + 16, 0x2000 | 0x63);
+        let mut cpu = cpu32_active();
+        cpu.eip = 0x0200_2000;
+        cpu.gpr[EAX] = 0x6B0;
+        (cpu, ram)
+    }
+
+    #[test]
+    fn mov_cr4_setting_pae_in_32bit_paging_loads_the_pdptes_from_cr3() {
+        let (mut cpu, mut ram) = cpu_and_ram_32_to_pae(PD as u32 | 1);
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xE0, 0xB8, 2, 0, 0, 0]);
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr4Eax));
+        assert_eq!(cpu.cr4, 0x6B0);
+        assert!(cpu.pae_paging() && !cpu.paging32());
+        assert_eq!(cpu.pdptes, [PD as u64 | 1, 0, 0, 0]);
+        // The next fetch is a PAE walk through the registers just loaded.
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxImm32(2)));
+        assert_eq!(cpu.eip, 0x0200_2008);
+    }
+
+    #[test]
+    fn mov_cr4_setting_pae_with_a_reserved_pdpte_is_gp_and_changes_nothing() {
+        for (bad, index) in [(PD as u32 | 3, 0u8), (PD as u32 | 1 | 1 << 5, 0)] {
+            let (mut cpu, mut ram) = cpu_and_ram_32_to_pae(bad);
+            let expected = Err(ProtectedRefusal::PdpteReservedBits {
+                eip: 0x0200_2000,
+                index,
+                pdpte: u64::from(bad),
+            });
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &MOV_CR4_EAX),
+                expected,
+                "{bad:#x}"
+            );
+            assert_eq!(cpu.cr4, 0x690);
+        }
+    }
+
+    #[test]
+    fn mov_cr4_pse_in_32bit_paging_changes_the_walk_and_reloads_nothing() {
+        // PDE[0] = 4 MiB page at 0 (P, R/W, A, D, PS): every address maps to itself.
+        let mut ram = ram32();
+        put_d(&mut ram, PML4, 0xE3);
+        let mut cpu = cpu32_active();
+        cpu.pdptes = [u64::MAX; 4];
+        cpu.gpr[EAX] = 0x680; // PSE cleared
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xE0, 0xB8, 1, 0, 0, 0]);
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr4Eax));
+        assert_eq!((cpu.cr4, cpu.pdptes), (0x680, [u64::MAX; 4]));
+        // PSE = 0: the same PDE is a page table at 0 (PS ignored); PT[2] at 0x8 is zero.
+        assert_eq!(
+            cpu.step(m),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2003,
+                linear: 0x2003,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 }
+            })
+        );
+        // PSE set again: the 4 MiB page is back.
+        cpu.gpr[EAX] = 0x690;
+        cpu.cr4 = 0x690;
+        cpu.eip = 0x2000;
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr4Eax));
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxImm32(1)));
+    }
+
+    #[test]
+    fn a_four_mib_page_sets_a_in_the_pde_and_reads_through_the_offset() {
+        let mut ram = ram32();
+        put_d(&mut ram, PML4, 0x83); // 4 MiB page at 0, A and D clear
+        put(&mut ram, 0x2000, &[0xA1, 0x08, 0x50, 0, 0]); // mov eax, ds:0x5008
+        put(&mut ram, 0x5008, &0xCAFE_F00Du32.to_le_bytes());
+        let mut cpu = cpu32_active();
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+        assert_eq!(cpu.gpr[EAX], 0xCAFE_F00D);
+        assert_eq!(get_d(&ram, PML4), 0xA3, "A, no D: nothing was written");
+    }
+
+    #[test]
+    fn mov_cr0_cd_and_nw_in_pae_paging_reload_the_pdptes_and_other_bits_do_not() {
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+        // The table in memory changes under the registers.
+        put_q(&mut ram, PDPT, PD as u64 | 0x19);
+        let stale = cpu.pdptes;
+        // WP cleared only: no reload.
+        cpu.gpr[EAX] = 0x8004_0033;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!((cpu.cr0, cpu.pdptes), (0x8004_0033, stale));
+        // CD set, then NW set on top, each time a reload.
+        for value in [0xC004_0033u32, 0xE004_0033] {
+            cpu.eip = 0x2000;
+            cpu.pdptes = stale;
+            cpu.gpr[EAX] = value;
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+            assert_eq!(
+                (cpu.cr0, cpu.pdptes[0]),
+                (value, PD as u64 | 0x19),
+                "{value:#x}"
+            );
+        }
+        // The same value again modifies nothing: no reload.
+        cpu.eip = 0x2000;
+        cpu.pdptes = stale;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.pdptes, stale);
+        // NW without CD is refused (and changes nothing).
+        cpu.eip = 0x2000;
+        cpu.gpr[EAX] = 0xA005_0033;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+            Err(ProtectedRefusal::Cr0WriteUnmodelled {
+                eip: 0x2000,
+                value: 0xA005_0033
+            })
+        );
+    }
+
+    #[test]
+    fn mov_cr0_cd_in_pae_paging_with_a_reserved_pdpte_is_gp_and_changes_nothing() {
+        for (index, bad) in [(0usize, PD as u64 | 3), (2, PD as u64 | 1 | 1 << 63)] {
+            let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+            put_q(&mut ram, PDPT + 8 * index, bad);
+            cpu.gpr[EAX] = 0xC005_0033;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+                Err(ProtectedRefusal::PdpteReservedBits {
+                    eip: 0x2000,
+                    index: index as u8,
+                    pdpte: bad
+                })
+            );
+            assert_eq!(cpu.cr0, 0x8005_0033);
+        }
+    }
+
+    #[test]
+    fn mov_cr0_cd_outside_pae_paging_loads_no_pdptes() {
+        // 32-bit paging: the registers are stale garbage and stay.
+        let (mut cpu, mut ram) = (cpu32_active(), ram32_ad());
+        cpu.pdptes = [u64::MAX; 4];
+        cpu.gpr[EAX] = 0xC005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!((cpu.cr0, cpu.pdptes), (0xC005_0033, [u64::MAX; 4]));
+        // IA-32e mode (4-level paging): none either.
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.gpr[EAX] = 0xC005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!((cpu.cr0, cpu.pdptes), (0xC005_0033, [0; 4]));
+    }
+
+    #[test]
+    fn mov_cr0_clearing_pg_turns_paging_off_when_lma_is_clear() {
+        // From 32-bit paging: the next fetch is physical again.
+        let (mut cpu, mut ram) = (cpu32_active(), ram32_ad());
+        cpu.gpr[EAX] = 0x0005_0033;
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0, 0xB8, 7, 0, 0, 0]);
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr0Eax));
+        assert_eq!(cpu.cr0, 0x0005_0033);
+        assert!(!cpu.paging32() && !cpu.pae_paging());
+        // Page 2 is not present any more: only a physical fetch can still run.
+        put_d(&mut ram, PT + 8, 0);
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovEaxImm32(7))
+        );
+        // From PAE paging: the PDPTE registers keep their value, unused.
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+        cpu.gpr[EAX] = 0x0005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.cr0, 0x0005_0033);
+        assert!(!cpu.paging32() && !cpu.pae_paging());
+        assert_eq!(cpu.pdptes, [PD as u64 | 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn mov_cr0_with_paging_on_refuses_pe_clear() {
+        let expect = |value| Err(ProtectedRefusal::Cr0WriteUnmodelled { eip: 0x2000, value });
+        // Leaving protected mode with paging on: PG without PE is #GP(0); PG and PE both cleared
+        // is a return to real mode through the paged state, not modelled.
+        for (value, refusal) in [
+            (
+                0x8005_0032u32,
+                Err(ProtectedRefusal::PagingWithoutProtection {
+                    eip: 0x2000,
+                    value: 0x8005_0032,
+                }),
+            ),
+            (0x0005_0032, expect(0x0005_0032)),
+            (0x0005_0073, expect(0x0005_0073)),
+        ] {
+            let (mut cpu, mut ram) = (cpu32_active(), ram32_ad());
+            cpu.gpr[EAX] = value;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+                refusal,
+                "{value:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn efer_lme_cannot_change_in_pae_paging_but_nxe_can() {
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+        cpu.gpr[ECX] = MSR_EFER;
+        cpu.gpr[EDX] = 0;
+        // LME 0 -> 1 with PG = 1 is #GP(0) (SDM Vol. 3A §12.8.5), as is PG = 1 with LME = 1 later.
+        cpu.gpr[EAX] = (EFER_NXE | EFER_LME) as u32;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0x0F, 0x30]),
+            Err(ProtectedRefusal::EferLmeChangeWithPaging {
+                eip: 0x2000,
+                value: EFER_NXE | EFER_LME
+            })
+        );
+        cpu.gpr[EAX] = 0;
+        assert!(step_one(&mut cpu, &mut ram, &[0x0F, 0x30]).is_ok());
+        assert_eq!(cpu.efer, 0, "NXE cleared, LMA still clear");
+        assert!(cpu.pae_paging());
+    }
+
+    // S2-25j. Model only (no hardware oracle: user space cannot write CR0/CR4); the rules are the SDM
+    // Vol. 3A §5.3, §5.6, §5.7, §12.8.5.4 and §12.9.2 text, no CPUID bit is declared.
+
+    const MOV_EAX_1: [u8; 5] = [0xB8, 1, 0, 0, 0];
+
+    #[test]
+    fn mov_cr4_sets_smep_and_still_refuses_the_other_high_bits() {
+        let (mut cpu, mut ram) = (cpu32_active(), ram32_ad());
+        cpu.gpr[EAX] = 0x690 | CR4_SMEP;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR4_EAX),
+            Ok(ProtectedInstruction::MovCr4Eax)
+        );
+        assert_eq!(cpu.cr4, 0x690 | CR4_SMEP);
+        for bit in [11u32, 21, 22] {
+            cpu.eip = 0x2000;
+            cpu.gpr[EAX] = 0x690 | 1 << bit;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &MOV_CR4_EAX),
+                Err(ProtectedRefusal::Cr4WriteUnmodelled {
+                    eip: 0x2000,
+                    value: 0x690 | 1 << bit
+                }),
+                "bit {bit}"
+            );
+        }
+        assert_eq!(cpu.cr4, 0x690 | CR4_SMEP);
+    }
+
+    #[test]
+    fn smep_32bit_paging_fetch_of_a_user_page_is_a_page_fault_with_p_and_i_d() {
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PML4, PT as u32 | 0x67); // PDE: user
+        put_d(&mut ram, PT + 8, 0x2000 | 0x67); // page 2 (the code): user
+        let mut cpu = cpu32_active();
+        // SMEP clear: the fetch of a user page from CPL 0 is fine.
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_EAX_1),
+            Ok(ProtectedInstruction::MovEaxImm32(1))
+        );
+        cpu.eip = 0x2000;
+        cpu.cr4 |= CR4_SMEP;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::SmepFetch { entry: 0x2067 }
+            }
+        );
+        // P = 1 (protection), W/R = 0, U/S = 0 (supervisor), RSVD = 0, I/D = 1.
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+    }
+
+    #[test]
+    fn smep_does_not_touch_data_accesses_or_supervisor_pages() {
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PML4, PT as u32 | 0x67); // PDE: user
+        put_d(&mut ram, PT + 20, 0x5000 | 0x67); // page 5 (data): user; the code page 2 is supervisor
+        put(&mut ram, 0x5008, &0x1357_9BDFu32.to_le_bytes());
+        let mut cpu = cpu32_active();
+        cpu.cr4 |= CR4_SMEP;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &[0xA1, 0x08, 0x50, 0, 0]),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+        assert_eq!(cpu.gpr[EAX], 0x1357_9BDF);
+        // The same user page as code is refused; with the PDE supervisor it would not be.
+        put_d(&mut ram, PT + 8, 0x2000 | 0x67);
+        cpu.eip = 0x2000;
+        assert!(matches!(
+            step_one(&mut cpu, &mut ram, &MOV_EAX_1),
+            Err(ProtectedRefusal::PageFault {
+                reason: PageRefusal::SmepFetch { .. },
+                ..
+            })
+        ));
+        put_d(&mut ram, PML4, PT as u32 | 0x63);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_EAX_1),
+            Ok(ProtectedInstruction::MovEaxImm32(1))
+        );
+    }
+
+    #[test]
+    fn mov_cr4_setting_smep_takes_effect_at_the_next_fetch() {
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PML4, PT as u32 | 0x67);
+        put_d(&mut ram, PT + 8, 0x2000 | 0x67);
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xE0, 0xB8, 7, 0, 0, 0]);
+        let mut cpu = cpu32_active();
+        cpu.gpr[EAX] = 0x690 | CR4_SMEP;
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr4Eax));
+        let refusal = cpu.step(m).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2003,
+                linear: 0x2003,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::SmepFetch { entry: 0x2067 }
+            }
+        );
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+        // Clearing SMEP again lets it run.
+        cpu.cr4 &= !CR4_SMEP;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovEaxImm32(7))
+        );
+    }
+
+    #[test]
+    fn smep_in_pae_paging_and_in_ia32e_mode() {
+        // PAE paging (the PDPTE has no U/S): PDE and PTE of the code page user.
+        let mut ram = pae_ram_ad();
+        put_q(&mut ram, PD, PT as u64 | 0x67);
+        put_q(&mut ram, PT + 16, 0x2067);
+        let mut cpu = pae_active_cpu();
+        cpu.cr4 |= CR4_SMEP;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::SmepFetch { entry: 0x2067 }
+            }
+        );
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+        put_q(&mut ram, PT + 16, 0x2063); // the PTE supervisor: allowed
+        assert!(step_one(&mut cpu, &mut ram, &MOV_EAX_1).is_ok());
+        // IA-32e (4-level) with a 2 MiB page: user in PML4E, PDPTE and PDE.
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.cr4 |= CR4_SMEP;
+        for at in [PML4, PDPT] {
+            cpu.eip = 0x2000;
+            let e = get_q(&ram, at);
+            put_q(&mut ram, at, e | 4);
+            let r = step_one(&mut cpu, &mut ram, &MOV_EAX_1);
+            assert!(r.is_ok(), "{at:#x} {r:?}");
+        }
+        let pde = get_q(&ram, PD) | 4;
+        put_q(&mut ram, PD, pde);
+        cpu.eip = 0x2000;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::SmepFetch { entry: pde }
+            }
+        );
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+    }
+
+    /// The `I/D` flag of the `#PF` error code (SDM Vol. 3A §5.7) without SMEP: set for a fetch with
+    /// `CR4.PAE = 1` and `EFER.NXE = 1`, clear with `NXE = 0` or without `PAE`.
+    #[test]
+    fn page_fault_error_code_reports_i_d_for_an_nx_fetch_in_pae_paging_without_smep() {
+        let mut ram = pae_ram_ad();
+        put_q(&mut ram, PT + 16, 0x2063 | 1 << 63); // the code page: XD
+        let mut cpu = pae_active_cpu();
+        assert_eq!((cpu.cr4 & CR4_SMEP, cpu.efer & EFER_NXE), (0, EFER_NXE));
+        assert_ne!(cpu.cr4 & CR4_PAE, 0);
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NoExecute {
+                    entry: 0x2063 | 1 << 63
+                }
+            }
+        );
+        // P = 1 (protection), I/D = 1.
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+        // NXE = 0: XD is a reserved bit, the fetch faults with P | RSVD and no I/D.
+        cpu.efer = 0;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert!(matches!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                reason: PageRefusal::ReservedBits { .. },
+                ..
+            }
+        ));
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x9));
+        // 32-bit paging (PAE = 0) with NXE = 1: a not-present fetch has no I/D either.
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PT + 8, 0);
+        let mut cpu = cpu32_active();
+        assert_eq!(
+            (cpu.cr4 & (CR4_SMEP | CR4_PAE), cpu.efer & EFER_NXE),
+            (0, EFER_NXE)
+        );
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert!(matches!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { .. },
+                ..
+            }
+        ));
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0));
+    }
+
+    #[test]
+    fn mov_cr4_changing_smep_in_pae_paging_reloads_the_pdptes() {
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+        put_q(&mut ram, PDPT, PD as u64 | 0x19); // changed under the registers
+        let stale = cpu.pdptes;
+        cpu.gpr[EAX] = cpu.cr4 | CR4_SMEP;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR4_EAX),
+            Ok(ProtectedInstruction::MovCr4Eax)
+        );
+        assert_ne!(stale, cpu.pdptes);
+        assert_eq!(cpu.pdptes[0], PD as u64 | 0x19);
+        // A reserved bit: #GP(0), CR4 unchanged (step_one checks the whole state).
+        let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
+        put_q(&mut ram, PDPT, PD as u64 | 3);
+        cpu.gpr[EAX] = cpu.cr4 | CR4_SMEP;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR4_EAX),
+            Err(ProtectedRefusal::PdpteReservedBits {
+                eip: 0x2000,
+                index: 0,
+                pdpte: PD as u64 | 3
+            })
+        );
+    }
+
+    #[test]
+    fn pse36_switch_selects_the_pse36_layout_of_a_four_mib_pde() {
+        let mut ram = ram32();
+        let mut cpu = cpu32_active();
+        assert!(
+            !cpu.pse36,
+            "off by default: CPUID.01H:EDX[17] is not declared"
+        );
+        // PDE[0]: 4 MiB identity (P, R/W, A, D, PS).
+        put_d(&mut ram, PML4, 0xE3);
+        assert!(step_one(&mut cpu, &mut ram, &MOV_EAX_1).is_ok());
+        cpu.eip = 0x2000;
+        // PA[35:32] = 1 (PDE bit 13): reserved without PSE-36 (#PF, P | RSVD; no I/D: no SMEP, PAE
+        // clear); with it the frame is above 4 GiB: a limit of the 32-bit memory, no #PF.
+        put_d(&mut ram, PML4, 0xE3 | 1 << 13);
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::ReservedBits {
+                    level: 2,
+                    entry: 0x20E3
+                }
+            }
+        );
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x9));
+        cpu.pse36 = true;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::PhysicalBeyond4GiB {
+                    phys: 0x1_0000_2000
+                }
+            }
+        );
+        assert_eq!(cpu.page_fault_error_code(&refusal), None);
+        // Bits 21:17 stay reserved with PSE-36 (MAXPHYADDR 36).
+        for bit in 17..=21u32 {
+            put_d(&mut ram, PML4, 0xE3 | 1 << bit);
+            assert!(
+                matches!(
+                    step_one(&mut cpu, &mut ram, &MOV_EAX_1),
+                    Err(ProtectedRefusal::PageFault {
+                        reason: PageRefusal::ReservedBits { level: 2, .. },
+                        ..
+                    })
+                ),
+                "bit {bit}"
+            );
+        }
+        // The entry state of a real-mode handoff does not have the switch.
+        assert!(
+            !ProtectedCpu::from_real_entry(&real_entered())
+                .unwrap()
+                .pse36
+        );
+    }
+
+    /// A real-mode state that has done the block 5 far jump into the flat protected CS.
+    fn real_entered() -> RealModeCpu {
+        let mut real = RealModeCpu::after_sipi(0, 0, 0);
+        real.mode.cr0 |= CR0_PE;
+        real.cs_protected = Some(flat(0x08, 0x9B));
+        real
+    }
+
+    #[test]
+    fn mov_cr0_clearing_pg_in_compatibility_mode_deactivates_ia32e() {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        preset_accessed_dirty(&mut ram, false);
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0, 0xB8, 9, 0, 0, 0]);
+        let mut cpu = active_cpu();
+        assert_eq!(cpu.efer, 0xD01);
+        let (cr3, cr4) = (cpu.cr3, cpu.cr4);
+        cpu.gpr[EAX] = 0x0005_0033; // PG cleared, PE kept
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!(cpu.cr0, 0x0005_0033);
+        // LMA cleared by the processor, LME (and SCE, NXE) kept; CR3 and CR4 keep their value.
+        assert_eq!(cpu.efer, 0x901);
+        assert_eq!((cpu.cr3, cpu.cr4), (cr3, cr4));
+        assert!(!cpu.paging32() && !cpu.pae_paging() && !cpu.is_64bit());
+        // The next fetch is physical: the tables may disappear.
+        ram[PML4..PML4 + 8].fill(0);
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovEaxImm32(9))
+        );
+    }
+
+    #[test]
+    fn ia32e_can_be_left_and_entered_again_in_the_sdm_order() {
+        // SDM Vol. 3A §12.8.5.4: PG = 0 (LMA = 0), LME = 0, then PG = 1 again: PAE paging.
+        let mut ram = paged_ram(CODE32_COMPAT);
+        preset_accessed_dirty(&mut ram, false);
+        let mut cpu = active_cpu();
+        cpu.gpr[EAX] = 0x0005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.efer & (EFER_LMA | EFER_LME), EFER_LME);
+        // Paging is off: the PAE tables may replace the 4-level ones (they share the PDPT page).
+        pae_tables_4k(&mut ram);
+        cpu.cr3 = PDPT as u32;
+        // WRMSR EFER with LME clear is allowed while PG = 0.
+        cpu.eip = 0x2000;
+        cpu.gpr[ECX] = MSR_EFER;
+        cpu.gpr[EDX] = 0;
+        cpu.gpr[EAX] = (cpu.efer & !EFER_LME) as u32;
+        step_one(&mut cpu, &mut ram, &[0x0F, 0x30]).unwrap();
+        assert_eq!(cpu.efer & (EFER_LMA | EFER_LME), 0);
+        // PG = 1 with LME = 0 and PAE = 1: PAE paging, LMA stays clear.
+        cpu.eip = 0x2000;
+        cpu.gpr[EAX] = 0x8005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert!(cpu.pae_paging());
+        assert_eq!(cpu.efer & EFER_LMA, 0);
+        // The other way: PG = 0, LME kept, PG = 1 again: IA-32e is activated again.
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.gpr[EAX] = 0x0005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        cpu.eip = 0x2000;
+        cpu.gpr[EAX] = 0x8005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.efer, 0xD01);
+        assert!(!cpu.paging32() && !cpu.pae_paging());
+    }
+
+    #[test]
+    fn mov_cr4_may_clear_pae_after_ia32e_was_left() {
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.gpr[EAX] = 0x0005_0033;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        cpu.eip = 0x2000;
+        cpu.gpr[EAX] = 0x690;
+        step_one(&mut cpu, &mut ram, &MOV_CR4_EAX).unwrap();
+        assert_eq!(cpu.cr4, 0x690);
+    }
+
+    #[test]
+    fn clearing_pg_in_64bit_mode_is_gp_and_the_other_writes_still_work() {
+        let mut ram = block8_ram(0, false);
+        put(&mut ram, 0x20F0, &MOV_CR0_EAX);
+        let mut cpu = cpu64();
+        assert!(cpu.is_64bit());
+        // PG cleared (PE kept or cleared): #GP(0), nothing changes.
+        for value in [0x0005_0033u32, 0x0005_0032, 0] {
+            cpu.gpr[EAX] = value;
+            let before = cpu;
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Err(ProtectedRefusal::Cr0PgClearIn64BitMode { eip: 0x20F0, value })
+            );
+            assert_eq!(cpu, before, "{value:#x}");
+        }
+        // PG kept and PE cleared: the invalid combination of the SDM, #GP(0) as well.
+        cpu.gpr[EAX] = 0x8005_0032;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PagingWithoutProtection {
+                eip: 0x20F0,
+                value: 0x8005_0032
+            })
+        );
+        // PG kept (CD set): fine, as in compatibility mode.
+        cpu.gpr[EAX] = 0xC005_0033;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!((cpu.cr0, cpu.efer), (0xC005_0033, 0xD01));
+        // Any other 0f-opcode in 64-bit mode is still not decoded.
+        cpu.eip = 0x20F0;
+        put(&mut ram, 0x20F0, &[0x0F, 0x22, 0xD8]);
+        assert!(matches!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn ia32e_deactivation_refusals_in_compatibility_mode() {
+        // PG kept with PE cleared: #GP(0) (invalid combination); PG and PE both cleared: not modelled.
+        let expect = |value| Err(ProtectedRefusal::Cr0WriteUnmodelled { eip: 0x2000, value });
+        let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
+        preset_accessed_dirty(&mut ram, false);
+        cpu.gpr[EAX] = 0x8005_0032;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+            Err(ProtectedRefusal::PagingWithoutProtection {
+                eip: 0x2000,
+                value: 0x8005_0032
+            })
+        );
+        cpu.gpr[EAX] = 0x0005_0032;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+            expect(0x0005_0032)
+        );
+        // NW without CD while leaving IA-32e: #GP(0) first.
+        cpu.gpr[EAX] = 0x2005_0033;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+            expect(0x2005_0033)
+        );
+        assert_eq!(cpu.efer, 0xD01);
+    }
+
+    #[test]
+    fn mov_cr0_clearing_pe_with_paging_off_returns_to_real_mode() {
+        let mut ram = new_ram();
+        let mut cpu = entry_cpu();
+        cpu.cr3 = 0x4000;
+        cpu.cr4 = 0x20;
+        cpu.efer = 0x901; // LME set, no paging: LMA = 0
+        cpu.eflags = 0x46;
+        cpu.gpr[EBX] = 0xDEAD_BEEF;
+        cpu.gpr[EAX] = 0x0005_0032;
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0, 0xFA]);
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovCr0Eax)
+        );
+        assert_eq!(cpu.cr0, 0x0005_0032);
+        assert_eq!(cpu.eip, 0x2003);
+        // Nothing else changes: EFER (LME), CR3, CR4 and the registers keep their value.
+        assert_eq!((cpu.efer, cpu.cr3, cpu.cr4), (0x901, 0x4000, 0x20));
+        assert_eq!(cpu.gpr[EBX], 0xDEAD_BEEF);
+        // This model executes protected mode only.
+        let before = cpu;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::NotProtectedMode { eip: 0x2003 })
+        );
+        assert_eq!(cpu, before);
+    }
+
+    #[test]
+    fn to_real_mode_hands_the_state_over_with_the_segment_caches() {
+        let mut ram = new_ram();
+        let mut cpu = ProtectedCpu::from_real_entry(&real_entered()).unwrap();
+        cpu.eip = 0x2000;
+        cpu.eflags = 0x246;
+        cpu.gpr[EBX] = 0x1234_5678;
+        cpu.gdtr = TableRegister {
+            base: 0x38,
+            limit: 0x1F,
+        };
+        cpu.ds = flat(0x10, 0x93);
+        let base = RealModeCpu::after_sipi(0, 0, 0x0001_0661);
+        // Still protected: no real-mode state.
+        assert_eq!(cpu.to_real_mode(&base), None);
+        cpu.gpr[EAX] = 0x0005_0032;
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0]);
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        // The flat 32-bit CS (D = 1) of the entry would run as 16-bit code in the real-mode model: no
+        // hand-over until CS and SS are 16-bit segments (SDM Vol. 3A §12.9.2 steps 3 and 4). Each of
+        // CS.D and SS.B refuses on its own; G and the limit do not matter.
+        assert_eq!((cpu.cs.flags, cpu.ss.flags), (0xC, 0));
+        for (cs_flags, ss_flags, handed_over) in [
+            (0xC, 0x0, false),
+            (0x8, 0xC, false),
+            (0x8, 0x4, false),
+            (0x4, 0x8, false),
+            (0x8, 0x8, true),
+            (0x0, 0x0, true),
+        ] {
+            let mut c = cpu;
+            c.cs.flags = cs_flags;
+            c.ss.flags = ss_flags;
+            assert_eq!(
+                c.to_real_mode(&base).is_some(),
+                handed_over,
+                "CS flags {cs_flags:#x}, SS flags {ss_flags:#x}"
+            );
+        }
+        // 16-bit CS (G = 1, D = 0) with the 4 GiB limit kept, and a 16-bit SS.
+        cpu.cs.flags = 0x8;
+        cpu.ss.flags = 0x8;
+        let mut real = cpu.to_real_mode(&base).unwrap();
+        assert_eq!(real.mode.cr0, 0x0005_0032);
+        assert_eq!((real.mode.eip, real.mode.eflags), (0x2003, 0x246));
+        assert_eq!(real.gpr[EBX], 0x1234_5678);
+        assert_eq!(real.gdtr, cpu.gdtr);
+        assert_eq!(real.cs_protected, None);
+        assert_eq!(real.cpuid, base.cpuid);
+        // The caches survive: CS keeps the flat 4 GiB limit of the descriptor, DS its selector 0x10.
+        assert_eq!(
+            real.mode.cs,
+            RealSegment {
+                selector: 0x08,
+                base: 0,
+                limit: 0xFFFF_FFFF
+            }
+        );
+        assert_eq!(real.mode.ds.selector, 0x10);
+        assert_eq!(real.mode.ds.limit, 0xFFFF_FFFF);
+        // And the real-mode model runs on from there (CS base 0): `66 B8 imm32` is MOV EAX, imm32 (6
+        // bytes) with the operand-size prefix of a 16-bit CS; with a 32-bit CS the same bytes would
+        // be MOV AX, imm16 followed by other bytes. Then CLI.
+        put(
+            &mut ram,
+            0x2003,
+            &[0x66, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xFA],
+        );
+        assert!(real.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!((real.gpr[EAX], real.mode.eip), (0x1234_5678, 0x2009));
+        assert!(real.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!(real.mode.eflags & 0x200, 0);
+        assert_eq!(real.mode.eip, 0x200A);
+    }
+
+    #[test]
+    fn pe_clear_refusals_and_invalid_combinations_with_paging_off() {
+        let mut ram = new_ram();
+        let cases = [
+            // PE kept: no other CR0 write is modelled with paging off.
+            (
+                0x0005_0033u32,
+                Err(ProtectedRefusal::Cr0WriteUnmodelled {
+                    eip: 0x2000,
+                    value: 0x0005_0033,
+                }),
+            ),
+            // NW without CD, reserved bits: refused even when PE is cleared.
+            (
+                0x2005_0032,
+                Err(ProtectedRefusal::Cr0WriteUnmodelled {
+                    eip: 0x2000,
+                    value: 0x2005_0032,
+                }),
+            ),
+            (
+                0x0805_0032,
+                Err(ProtectedRefusal::Cr0WriteUnmodelled {
+                    eip: 0x2000,
+                    value: 0x0805_0032,
+                }),
+            ),
+            // PG set with PE cleared: #GP(0).
+            (
+                0x8005_0032,
+                Err(ProtectedRefusal::PagingWithoutProtection {
+                    eip: 0x2000,
+                    value: 0x8005_0032,
+                }),
+            ),
+        ];
+        for (value, expected) in cases {
+            let mut cpu = entry_cpu();
+            cpu.gpr[EAX] = value;
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &MOV_CR0_EAX),
+                expected,
+                "{value:#x}"
+            );
+            assert_eq!(cpu.cr0, 0x0005_0033);
+        }
+        // Cleared PE with other bits changed (TS set, WP cleared) is a return to real mode too.
+        let mut cpu = entry_cpu();
+        cpu.gpr[EAX] = 0x0004_003A;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.cr0, 0x0004_003A);
+        // ET is forced to 1 as for every write.
+        let mut cpu = entry_cpu();
+        cpu.gpr[EAX] = 0x0005_0022;
+        step_one(&mut cpu, &mut ram, &MOV_CR0_EAX).unwrap();
+        assert_eq!(cpu.cr0, 0x0005_0032);
+    }
+
+    #[test]
+    fn full_sequence_from_ia32e_to_real_mode() {
+        // Compatibility mode, IA-32e active: PG = 0 (LMA = 0), then PE = 0 (SDM §12.8.5.4, §12.9.2).
+        let mut ram = paged_ram(CODE32_COMPAT);
+        preset_accessed_dirty(&mut ram, false);
+        put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0, 0x0F, 0x22, 0xC0]);
+        let mut cpu = active_cpu();
+        cpu.gpr[EAX] = 0x0005_0033;
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr0Eax));
+        cpu.gpr[EAX] = 0x0005_0032;
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovCr0Eax));
+        assert_eq!((cpu.cr0, cpu.efer), (0x0005_0032, 0x901));
+        assert_eq!(
+            cpu.step(m),
+            Err(ProtectedRefusal::NotProtectedMode { eip: 0x2006 })
+        );
+        // The compatibility CS is 32-bit (D = 1): no hand-over; with 16-bit CS and SS (§12.9.2
+        // steps 3 and 4, set directly) there is.
+        let base = RealModeCpu::after_sipi(0, 0, 0);
+        assert_eq!(cpu.to_real_mode(&base), None);
+        cpu.cs.flags = 0x8;
+        cpu.ss.flags = 0x8;
+        let real = cpu.to_real_mode(&base).unwrap();
+        assert_eq!(real.mode.cr0 & CR0_PE, 0);
     }
 
     /// Memory that lets "another vCPU" change one entry right before the first replace of the
@@ -3422,13 +5200,13 @@ mod tests {
                 reason: PageRefusal::NotPresent { level: 4, entry: 0 }
             })
         );
-        // MOV CR4 clearing PAE is refused, others are stored.
+        // MOV CR4 clearing PAE is #GP(0) with IA-32e active, others are stored.
         let (mut cpu, mut ram) = (active_cpu(), paged_ram(CODE32_COMPAT));
         tables(&mut ram);
         cpu.gpr[EAX] = 0x690;
         assert_eq!(
             step_one(&mut cpu, &mut ram, &[0x0F, 0x22, 0xE0]),
-            Err(ProtectedRefusal::Cr4WriteUnmodelled {
+            Err(ProtectedRefusal::Cr4PaeClearInLongMode {
                 eip: 0x2000,
                 value: 0x690
             })
@@ -4802,5 +6580,376 @@ mod tests {
         }
         let i = leaves.iter().position(|l| *l == 0x8000_0002).unwrap();
         assert_eq!([reg(i, 0), reg(i, 1), reg(i, 2), reg(i, 3)], [0; 4]);
+    }
+    // ---- S2-25k: operand access through PAE paging (model only: no hardware oracle) --------------
+
+    /// PAE paging active at 0x2000 on the tables of `pae_ram` (A and D clear); page 5 -> 0x6000.
+    fn pae_operand_setup() -> (ProtectedCpu, Vec<u8>) {
+        let mut ram = pae_ram();
+        put_q(&mut ram, PT + 40, 0x6000 | 3);
+        (pae_active_cpu(), ram)
+    }
+
+    /// `MOV DS:disp32, EAX` (`a3 disp32`).
+    fn mov_ds_eax(disp: u32) -> [u8; 5] {
+        let d = disp.to_le_bytes();
+        [0xA3, d[0], d[1], d[2], d[3]]
+    }
+
+    /// `MOV EAX, DS:disp32` (`a1 disp32`).
+    fn mov_eax_ds(disp: u32) -> [u8; 5] {
+        let d = disp.to_le_bytes();
+        [0xA1, d[0], d[1], d[2], d[3]]
+    }
+
+    #[test]
+    fn mov_ds_eax_stores_without_paging_and_stops_at_the_ds_limit() {
+        let mut ram = new_ram();
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        let mut cpu = entry_cpu();
+        cpu.gpr[EAX] = 0xCAFE_BABE;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x5008..0x500C], &0xCAFE_BABEu32.to_le_bytes());
+        assert_eq!(cpu.eip, 0x2005);
+        // The last byte of the operand is beyond the limit: refused, nothing written.
+        let mut ram = new_ram();
+        let mut cpu = entry_cpu();
+        cpu.ds.limit = 0x5FFF;
+        let result = step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5FFD));
+        assert_eq!(
+            result,
+            Err(ProtectedRefusal::DataBeyondLimit {
+                eip: 0x2000,
+                disp: 0x5FFD,
+                limit: 0x5FFF
+            })
+        );
+    }
+
+    #[test]
+    fn pae_operand_loads_set_a_in_the_pde_and_pte_and_never_d_or_a_pdpte_bit() {
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put(&mut ram, 0x6008, &0x1234_5678u32.to_le_bytes());
+        // mov eax, ds:0x5008 ; mov edx, ds:0x5008 ; cmp eax, ds:0x5008 ; bt ds:0x5008, 3
+        let code: &[u8] = &[
+            0xA1, 0x08, 0x50, 0, 0, 0x8B, 0x15, 0x08, 0x50, 0, 0, 0x3B, 0x05, 0x08, 0x50, 0, 0,
+            0x0F, 0xBA, 0x25, 0x08, 0x50, 0, 0, 3,
+        ];
+        put(&mut ram, 0x2000, code);
+        let m = &mut mem(&mut ram);
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEaxFromDs(0x5008)));
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::MovEdxFromDs(0x5008)));
+        assert_eq!(cpu.step(m), Ok(ProtectedInstruction::CmpEaxWithDs(0x5008)));
+        assert_eq!(cpu.eflags & EFLAGS_ZF, EFLAGS_ZF);
+        assert_eq!(
+            cpu.step(m),
+            Ok(ProtectedInstruction::BtDsImm8 {
+                disp: 0x5008,
+                bit: 3
+            })
+        );
+        assert_eq!(
+            (cpu.gpr[EAX], cpu.gpr[EDX], cpu.eip),
+            (0x1234_5678, 0x1234_5678, 0x2019)
+        );
+        assert_eq!(cpu.eflags & EFLAGS_CF, EFLAGS_CF, "bit 3 of 0x78 is set");
+        assert_eq!(
+            get_q(&ram, PDPT),
+            PD as u64 | 1,
+            "a PDPTE has no accessed bit"
+        );
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+        assert_eq!(get_q(&ram, PT + 16), 0x2000 | 0x23, "the code page: A");
+        assert_eq!(
+            get_q(&ram, PT + 40),
+            0x6000 | 0x23,
+            "the data page: A, no D"
+        );
+        assert_eq!(get_q(&ram, PT), 3, "page 0 was not used");
+    }
+
+    #[test]
+    fn pae_operand_store_sets_a_and_d_of_the_leaf_and_a_of_the_pde() {
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        cpu.gpr[EAX] = 0xCAFE_BABE;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x6008..0x600C], &0xCAFE_BABEu32.to_le_bytes());
+        assert_eq!(
+            &ram[0x5008..0x500C],
+            &[0; 4],
+            "the identity address is another page"
+        );
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23, "A on the PDE, D never");
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x63, "A and D on the PTE");
+        assert_eq!(
+            get_q(&ram, PT + 16),
+            0x2000 | 0x23,
+            "the fetch page: A only"
+        );
+        assert_eq!(cpu.eip, 0x2005);
+    }
+
+    #[test]
+    fn pae_operand_store_through_a_two_mib_page_sets_d_in_the_pde() {
+        let mut ram = paged_ram(CODE32_COMPAT);
+        put_q(&mut ram, PDPT, PD as u64 | 1);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        let mut cpu = pae_active_cpu();
+        cpu.gpr[EAX] = 0x0102_0304;
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(&ram[0x5008..0x500C], &0x0102_0304u32.to_le_bytes());
+        assert_eq!(get_q(&ram, PD), 0xE3, "A and D on the 2 MiB PDE");
+        assert_eq!(get_q(&ram, PDPT), PD as u64 | 1);
+    }
+
+    #[test]
+    fn pae_operand_bits_31_30_select_the_pdpte_register() {
+        // PDPTE register 1 names the same page directory: 0x4000_5010 is the page of 0x5010.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        cpu.ds = flat(0x10, 0x93);
+        cpu.pdptes[1] = PD as u64 | 1;
+        put(&mut ram, 0x2000, &mov_ds_eax(0x4000_5010));
+        cpu.gpr[EAX] = 0x1111_2222;
+        cpu.step(&mut mem(&mut ram)).unwrap();
+        assert_eq!(&ram[0x6010..0x6014], &0x1111_2222u32.to_le_bytes());
+        // PDPTE register 2 is not present: the walk stops at level 3, reading no table.
+        put(&mut ram, 0x2005, &mov_eax_ds(0x8000_0000));
+        let before = ram.clone();
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2005,
+                linear: 0x8000_0000,
+                access: AccessKind::Read,
+                reason: PageRefusal::NotPresent { level: 3, entry: 0 },
+            })
+        );
+        assert_eq!(ram, before);
+    }
+
+    #[test]
+    fn store_through_a_read_only_ds_is_refused_before_any_page_walk() {
+        // SDM Vol. 2B, MOV, Protected Mode Exceptions: #GP(0) for a store into a segment that is not
+        // writable. The refusal comes before the page walk: the tables keep A and D clear.
+        for access in [0x91u8, 0x9A] {
+            let (mut cpu, mut ram) = pae_operand_setup();
+            cpu.ds.access = access;
+            cpu.gpr[EAX] = 0x1122_3344;
+            put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+            let (before, data_page) = (cpu, ram[0x6000..0x7000].to_vec());
+            assert_eq!(
+                cpu.step(&mut mem(&mut ram)),
+                Err(ProtectedRefusal::DataSegmentReadOnly {
+                    eip: 0x2000,
+                    access
+                }),
+                "{access:#x}"
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(&ram[0x6000..0x7000], &data_page[..], "no byte written");
+            // The fetch walk may have set A on the code page; the data page's PTE is untouched.
+            assert_eq!(
+                get_q(&ram, PT + 40),
+                0x6000 | 3,
+                "no A, no D on the data page"
+            );
+        }
+        // Without paging the same: nothing is written.
+        let mut ram = new_ram();
+        let mut cpu = entry_cpu();
+        cpu.ds.access = 0x91;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            Err(ProtectedRefusal::DataSegmentReadOnly {
+                eip: 0x2000,
+                access: 0x91
+            })
+        );
+        assert_eq!(&ram[0x5008..0x500C], &[0; 4]);
+        // A load through a read-only data segment is not affected.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        cpu.ds.access = 0x91;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+    }
+
+    #[test]
+    fn pae_operand_refusals_name_the_level_and_change_nothing() {
+        let page_fault = |access, linear, reason| {
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear,
+                access,
+                reason,
+            })
+        };
+        // Tables with A and D set: the fetch walk writes nothing, so a refusal leaves the memory;
+        // step_one compares the whole RAM and the CPU before and after every refusal.
+        let setup = || {
+            let mut cpu = pae_active_cpu();
+            cpu.ds = flat(0x10, 0x93);
+            (cpu, pae_ram_ad())
+        };
+        // PDE with P = 0 (PD[1]).
+        let (mut cpu, mut ram) = setup();
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x0020_0000)),
+            page_fault(
+                AccessKind::Write,
+                0x0020_0000,
+                PageRefusal::NotPresent { level: 2, entry: 0 }
+            )
+        );
+        // PTE with P = 0 (PT[10]).
+        let (mut cpu, mut ram) = setup();
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0xA000)),
+            page_fault(
+                AccessKind::Read,
+                0xA000,
+                PageRefusal::NotPresent { level: 1, entry: 0 }
+            )
+        );
+        // Bit 36 of a PTE is reserved with PAE paging (MAXPHYADDR = 36), bits 62:52 too.
+        for entry in [
+            0x6000 | 0x63 | 1 << 36,
+            0x6000 | 0x63 | 1 << 52,
+            0x6000 | 0x63 | 1 << 62,
+        ] {
+            let (mut cpu, mut ram) = setup();
+            put_q(&mut ram, PT + 40, entry);
+            assert_eq!(
+                step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+                page_fault(
+                    AccessKind::Read,
+                    0x5008,
+                    PageRefusal::ReservedBits { level: 1, entry }
+                ),
+                "{entry:#x}"
+            );
+        }
+        // XD is reserved while EFER.NXE = 0.
+        let (mut cpu, mut ram) = setup();
+        cpu.efer = 0;
+        let entry = 0x6000 | 0x63 | 1 << 63;
+        put_q(&mut ram, PT + 40, entry);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            page_fault(
+                AccessKind::Read,
+                0x5008,
+                PageRefusal::ReservedBits { level: 1, entry }
+            )
+        );
+        // Bit 35 is a valid address bit of a PTE; the model addresses memory with 32 bits.
+        let (mut cpu, mut ram) = setup();
+        put_q(&mut ram, PT + 40, 1 << 35 | 0x6000 | 0x63);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            page_fault(
+                AccessKind::Read,
+                0x5008,
+                PageRefusal::PhysicalBeyond4GiB {
+                    phys: 1 << 35 | 0x6008
+                }
+            )
+        );
+        // A page with R/W = 0: a load works, a store is #PF with WP = 1 and works with WP = 0.
+        let entry = 0x6000 | 0x61;
+        let (mut cpu, mut ram) = setup();
+        put_q(&mut ram, PT + 40, entry);
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            page_fault(
+                AccessKind::Write,
+                0x5008,
+                PageRefusal::WriteProtected { entry }
+            )
+        );
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_eax_ds(0x5008)),
+            Ok(ProtectedInstruction::MovEaxFromDs(0x5008))
+        );
+        let (mut cpu, mut ram) = setup();
+        cpu.cr0 &= !CR0_WP;
+        put_q(&mut ram, PT + 40, entry);
+        cpu.gpr[EAX] = 0x0A0B_0C0D;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5008)),
+            Ok(ProtectedInstruction::MovDsFromEax(0x5008))
+        );
+        assert_eq!(&ram[0x6008..0x600C], &0x0A0B_0C0Du32.to_le_bytes());
+        // The operand is beyond the DS limit.
+        let (mut cpu, mut ram) = setup();
+        cpu.ds.limit = 0x5FFF;
+        assert_eq!(
+            step_one(&mut cpu, &mut ram, &mov_ds_eax(0x5FFD)),
+            Err(ProtectedRefusal::DataBeyondLimit {
+                eip: 0x2000,
+                disp: 0x5FFD,
+                limit: 0x5FFF
+            })
+        );
+    }
+
+    #[test]
+    fn pae_operand_store_refused_on_a_later_byte_keeps_a_and_leaves_d_clear() {
+        // Bytes 0 and 1 are on page 5, bytes 2 and 3 on page 6 (PT[6] absent): the walk of the page
+        // 5 completed (A in the PDE and the PTE), the store did not happen (no D, no byte).
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 48, 0);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5FFE));
+        cpu.gpr[EAX] = 0xFFFF_FFFF;
+        let before = cpu;
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x6000,
+                access: AccessKind::Write,
+                reason: PageRefusal::NotPresent { level: 1, entry: 0 },
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(&ram[0x6FFE..0x7000], &[0; 2]);
+        assert_eq!(get_q(&ram, PT + 40), 0x6000 | 0x23, "A, no D");
+        assert_eq!(get_q(&ram, PD), PT as u64 | 0x23);
+    }
+
+    #[test]
+    fn pae_operand_to_memory_that_is_not_there_is_a_data_refusal_with_a_but_no_d() {
+        // PT[5] -> 0xB000, beyond the 0xA100 bytes of the image.
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 40, 0xB000 | 3);
+        put(&mut ram, 0x2000, &mov_eax_ds(0x5008));
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::DataUnreadable {
+                eip: 0x2000,
+                linear: 0x5008
+            })
+        );
+        assert_eq!(get_q(&ram, PT + 40), 0xB000 | 0x23);
+        let (mut cpu, mut ram) = pae_operand_setup();
+        put_q(&mut ram, PT + 40, 0xB000 | 3);
+        put(&mut ram, 0x2000, &mov_ds_eax(0x5008));
+        assert_eq!(
+            cpu.step(&mut mem(&mut ram)),
+            Err(ProtectedRefusal::DataUnwritable {
+                eip: 0x2000,
+                linear: 0x5008
+            })
+        );
+        assert_eq!(get_q(&ram, PT + 40), 0xB000 | 0x23, "A, no D");
     }
 }

@@ -5,10 +5,14 @@
 //! time (`retired * 1 ns` per quantum) live in `od-machine`
 //! (`docs/specs/FIRMWARE_BOOT.md` sections 8 and 11).
 
+use crate::run_journal::{
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, FrameDumpConfig, JournalConfig, RunJournal, StopInfo,
+};
+use crate::stop_snapshot::{self, BoardMemory};
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    NvramDevice, PagedProbeExit, PlatformResetKind, SecureBootKeys, TpmConfig,
+    NvramDevice, PagedProbeExit, PlatformResetKind, QuantumProgress, SecureBootKeys, TpmConfig,
     firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
@@ -23,8 +27,17 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci [--xhci-keys <list>]] [--nvram-reboot-out <file>] \
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
-                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw>] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...]";
+                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] \
+                    [--stop-snapshot <file>] [--phase-log <file>] \
+                    [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
+                    [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
+\x20\x20--disk <path>,ro: the file is opened read-only under a shared lock and the namespace is \
+write protected: the guest sees NSATTR bit 0 and every Write is refused with Namespace is Write \
+Protected (docs/specs/NVME_DEVICE.md 14.6); the file is never modified.\n\
+\x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
+board is dropped, so the writer lock (LOCK_EX) is released between the two boots \
+(limitation until S8-23).";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -44,7 +57,15 @@ struct Options {
     nvram_out: Option<String>,
     acpi_out: Option<String>,
     framebuffer_out: Option<String>,
+    /// Smoke-suite input: the whole file is copied into memory and attached as
+    /// a volatile namespace. Guest writes never reach the file.
     nvme_image: Option<String>,
+    /// S8-21: RAW file attached through the stage 5 persistent backend (locked,
+    /// durable flush after each write), or read-only with `disk_read_only`.
+    /// Mutually exclusive with `nvme_image`.
+    disk: Option<String>,
+    /// S8-21: `--disk <path>,ro`: shared read lease and a write-protected namespace.
+    disk_read_only: bool,
     tpm: bool,
     /// S7-34: the board gets the PCI ECAM window and the xHCI controller with the keyboard on
     /// port 1 and the absolute pointer on port 2 (`--xhci`; XHCI_DEVICE.md).
@@ -56,6 +77,12 @@ struct Options {
     reboot_cycles: Option<u64>,
     reboot_kind: PlatformResetKind,
     sample_rips: Vec<u64>,
+    /// S8-10: JSON snapshot of the stopped machine (any stop except machine `Shutdown`).
+    stop_snapshot: Option<String>,
+    /// S8-11: JSON lines, one per phase event.
+    phase_log: Option<String>,
+    /// S8-11: periodic raw screen dumps of any boot.
+    framebuffer: Option<FramebufferDumps>,
     /// S7-31c: `--cpu-loop unified` runs the ROM and the guest it starts in the CPL0 profile set
     /// loop on a board with the Linux profile (ADR-0013 variant (b)).
     unified: bool,
@@ -67,6 +94,38 @@ struct Options {
     trace_calls: Vec<od_machine::CallTraceTarget>,
     /// S7-31q: `--trace-system-table <hex>`: the guest address of `EFI_SYSTEM_TABLE`, for the `slot=` targets.
     trace_system_table: Option<u64>,
+}
+
+/// `--framebuffer-every`, `--framebuffer-dir` and the limits.
+struct FramebufferDumps {
+    dir: String,
+    every_ns: u64,
+    max_files: u64,
+    max_bytes: u64,
+}
+
+/// Where the single NVMe namespace of the board comes from.
+#[derive(Clone, Copy)]
+enum NvmeSource<'a> {
+    Memory(&'a str),
+    Disk { path: &'a str, read_only: bool },
+}
+
+impl Options {
+    fn nvme_path(&self) -> Option<&str> {
+        self.disk.as_deref().or(self.nvme_image.as_deref())
+    }
+
+    fn nvme_source(&self) -> Option<NvmeSource<'_>> {
+        match (&self.disk, &self.nvme_image) {
+            (Some(path), _) => Some(NvmeSource::Disk {
+                path,
+                read_only: self.disk_read_only,
+            }),
+            (None, Some(path)) => Some(NvmeSource::Memory(path)),
+            (None, None) => None,
+        }
+    }
 }
 
 fn parse_trace_call(value: &str) -> Result<od_machine::CallTraceTarget, String> {
@@ -248,12 +307,15 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
-    if let Some(path) = &options.nvme_image
+    if let Some(path) = options.nvme_path()
         && let Err(error) = validate_nvme_paths(path, &options)
     {
         return emit(failure("invalid_input", "paths", error), 3);
     }
     if let Err(error) = validate_nvram_paths(&options) {
+        return emit(failure("invalid_input", "paths", error), 3);
+    }
+    if let Err(error) = validate_diagnostic_paths(&options) {
         return emit(failure("invalid_input", "paths", error), 3);
     }
     let mut image = Vec::with_capacity(FIRMWARE_IMAGE_BYTES + 1);
@@ -282,7 +344,7 @@ pub fn run(args: &[String]) -> ExitCode {
     if options.unified {
         apply_unified(&mut config);
     }
-    if options.nvme_image.is_some() {
+    if options.nvme_path().is_some() {
         config.nvme = Some(Default::default());
     }
     if options.xhci {
@@ -296,21 +358,31 @@ pub fn run(args: &[String]) -> ExitCode {
         };
         config.nvram = Some(NvramConfig::Snapshot(bytes));
     } else if options.nvram_out.is_some()
-        || (options.nvme_image.is_some() && options.fv_app.is_none())
+        || (options.nvme_path().is_some() && options.fv_app.is_none())
     {
         config.nvram.get_or_insert(NvramConfig::Empty);
     }
     if let Some(cycles) = options.reboot_cycles {
         return run_reboot_cycles(&options, &image, &config, cycles);
     }
-    let nvme_image = options.nvme_image.as_deref();
+    // The journal creates its files (the phase log and the dump directory), so only its
+    // configuration is built here; `boot` creates it once the image is loaded and the NVMe
+    // controller is attached. A run refused before that point (bad arguments or paths, an
+    // unreadable image or NVRAM snapshot, a loader or NVMe refusal) leaves neither file behind.
+    let mut diagnostics = Diagnostics {
+        stop_snapshot: options.stop_snapshot.clone(),
+        journal_config: journal_config(&options),
+        journal: None,
+    };
+    let nvme = options.nvme_source();
     let mut first = match boot(
         &image,
         &config,
         options.budget,
         &options.com1_out,
-        nvme_image,
+        nvme,
         &options.sample_rips,
+        &mut diagnostics,
         options.unified,
         options.mark_rip,
         &options.trace_calls,
@@ -400,7 +472,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return emit(failure("invalid_input", "paths", error), 3);
         }
     }
-    let Some(reboot_out) = options.nvram_reboot_out else {
+    let Some(reboot_out) = options.nvram_reboot_out.clone() else {
         return emit(first.report, first.code);
     };
     if !first.returned_to_firmware() {
@@ -442,6 +514,10 @@ pub fn run(args: &[String]) -> ExitCode {
             return emit(value, 4);
         }
     };
+    // Known limitation (until S8-23): the board owns the persistent disk backend
+    // and its writer lock (LOCK_EX). Dropping it releases the lock, and the second
+    // boot below opens the --disk file again, so between the two boots another
+    // process can take the lock and write the image.
     drop(board);
     let restored = FirmwareBoardConfig {
         nvram: Some(NvramConfig::Snapshot(snapshot)),
@@ -453,8 +529,9 @@ pub fn run(args: &[String]) -> ExitCode {
         &restored,
         options.budget,
         &reboot_out,
-        nvme_image,
+        nvme,
         &[],
+        &mut Diagnostics::default(),
         false,
         None,
         &[],
@@ -595,6 +672,38 @@ struct RebootPath {
 }
 
 impl RebootPath {
+    /// Like `resolve`, for a directory the run may still create (`create_dir_all`): the part
+    /// that does not exist yet is appended to the resolved nearest existing ancestor, so a dump
+    /// directory under missing parents is judged the same with and without `--phase-log`.
+    fn resolve_creatable_dir(path: &Path) -> io::Result<Self> {
+        let mut existing = path;
+        let mut missing = Vec::new();
+        loop {
+            match fs::symlink_metadata(existing) {
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let Some(name) = existing.file_name() else {
+                        return Err(error);
+                    };
+                    missing.push(name);
+                    existing = existing
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let mut resolved = Self::resolve(existing)?;
+        if !missing.is_empty() {
+            for name in missing.into_iter().rev() {
+                resolved.absolute.push(name);
+            }
+            resolved.metadata = None;
+        }
+        Ok(resolved)
+    }
+
     fn resolve(path: &Path) -> io::Result<Self> {
         let mut path = path.to_path_buf();
         for _ in 0..40 {
@@ -689,6 +798,29 @@ fn validate_nvme_paths(image: &str, options: &Options) -> Result<(), String> {
             return Err("the NVMe input and all output paths must be distinct".to_owned());
         }
     }
+    if options.disk.is_some() {
+        // A disk can be written by the guest (and a read-only one is not a
+        // reason to share a file with the ROM or NVRAM), so it must not be any
+        // other file the runner reads or writes (the in-memory `--nvme-image`
+        // is only read).
+        for other in [
+            Some(options.image.as_str()),
+            options.nvram_in.as_deref(),
+            options.nvram_out.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let target = RebootPath::resolve(Path::new(other))
+                .map_err(|error| format!("{other}: {error}"))?;
+            if input.aliases(&target) {
+                return Err(
+                    "the --disk file must be distinct from the firmware image and NVRAM files"
+                        .to_owned(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -718,7 +850,7 @@ fn validate_nvram_paths(options: &Options) -> Result<(), String> {
         let output = resolve(output)?;
         for other in outputs
             .into_iter()
-            .chain([Some(options.image.as_str()), options.nvme_image.as_deref()])
+            .chain([Some(options.image.as_str()), options.nvme_path()])
             .flatten()
         {
             if output.aliases(&resolve(other)?) {
@@ -747,6 +879,117 @@ fn validate_distinct_paths(
     Ok(())
 }
 
+/// `--stop-snapshot` and `--phase-log` must not alias another file of the run, nor each other,
+/// and must not lie inside (or be) the `--framebuffer-dir` directory of the screen dumps.
+fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
+    let new = [
+        ("--stop-snapshot", options.stop_snapshot.as_deref()),
+        ("--phase-log", options.phase_log.as_deref()),
+    ];
+    if new.iter().all(|(_, path)| path.is_none()) {
+        return Ok(());
+    }
+    let all = [
+        ("--image", Some(options.image.as_str())),
+        ("--com1-out", Some(options.com1_out.as_str())),
+        ("the NVMe file", options.nvme_path()),
+        ("--nvram-in", options.nvram_in.as_deref()),
+        ("--nvram-out", options.nvram_out.as_deref()),
+        ("--acpi-out", options.acpi_out.as_deref()),
+        ("--framebuffer-out", options.framebuffer_out.as_deref()),
+        new[0],
+        new[1],
+    ];
+    let resolved = all
+        .iter()
+        .filter_map(|(name, path)| path.map(|path| (*name, path)))
+        .map(|(name, path)| {
+            RebootPath::resolve(Path::new(path))
+                .map(|resolved| (name, resolved))
+                .map_err(|error| format!("{path}: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index, (name, path)) in resolved.iter().enumerate() {
+        if !matches!(*name, "--stop-snapshot" | "--phase-log") {
+            continue;
+        }
+        if let Some((other, _)) = resolved
+            .iter()
+            .enumerate()
+            .find(|(other_index, (_, other))| *other_index != index && path.aliases(other))
+            .map(|(_, entry)| entry)
+        {
+            return Err(format!("{name} and {other} must be distinct files"));
+        }
+    }
+    if let Some(dumps) = &options.framebuffer {
+        let dir = RebootPath::resolve_creatable_dir(Path::new(&dumps.dir))
+            .map_err(|error| format!("{}: {error}", dumps.dir))?;
+        for (name, path) in &resolved {
+            if matches!(*name, "--stop-snapshot" | "--phase-log")
+                && path.absolute.starts_with(&dir.absolute)
+            {
+                return Err(format!(
+                    "{name} must not be the --framebuffer-dir directory or a file inside it"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn journal_config(options: &Options) -> Option<JournalConfig> {
+    if options.phase_log.is_none() && options.framebuffer.is_none() {
+        return None;
+    }
+    Some(JournalConfig {
+        phase_log: options.phase_log.as_ref().map(PathBuf::from),
+        frames: options.framebuffer.as_ref().map(|dumps| FrameDumpConfig {
+            dir: PathBuf::from(&dumps.dir),
+            every_ns: dumps.every_ns,
+            max_files: dumps.max_files,
+            max_bytes: dumps.max_bytes,
+        }),
+    })
+}
+
+/// The optional diagnostics of one boot (S8-10, S8-11). Both only read the machine.
+#[derive(Default)]
+struct Diagnostics {
+    stop_snapshot: Option<String>,
+    /// What `boot` builds the journal from; taken when the journal is created.
+    journal_config: Option<JournalConfig>,
+    journal: Option<RunJournal>,
+}
+
+/// The vCPU the single-processor firmware boot runs on.
+const BOOT_VCPU: usize = 0;
+
+/// Writes the snapshot of the stopped machine and says what happened. Never changes the machine:
+/// it reads the vCPU registers and guest-virtual memory through the board's diagnostic API.
+fn write_stop_snapshot(
+    path: &str,
+    board: &LoadedFirmwareBoard,
+    reason: Value,
+    counters: Value,
+    inputs: Value,
+) -> Value {
+    let Some(state) = board.diagnostic_vcpu_state(BOOT_VCPU) else {
+        return json!({"path": path, "written": false, "error": "the board has no boot vCPU"});
+    };
+    let memory = BoardMemory {
+        board,
+        vcpu: BOOT_VCPU,
+    };
+    let snapshot = stop_snapshot::snapshot(&state, &memory, reason, counters, inputs);
+    let mut text = serde_json::to_string_pretty(&snapshot).expect("a JSON value serializes");
+    text.push('\n');
+    match fs::write(path, text) {
+        Ok(()) => json!({"path": path, "written": true}),
+        Err(error) => json!({"path": path, "written": false, "error": error.to_string()}),
+    }
+}
+
 struct BootRun {
     board: LoadedFirmwareBoard,
     report: Value,
@@ -767,6 +1010,80 @@ impl BootRun {
                 .windows(success_line.len())
                 .any(|line| line == success_line)
     }
+}
+
+/// With `read_only` (`--disk <path>,ro`) the file is opened read-only under a
+/// shared lock (`LOCK_SH`) and the namespace is write protected (NVME_DEVICE.md
+/// 14.6): a writer is refused while it lives and the file is never modified.
+///
+/// Otherwise attaches an existing RAW file through the stage 5 persistent backend: the
+/// writer lock (`LOCK_EX`) is held until the backend is dropped, so a second
+/// runner (or a second boot in this process while the first board is alive)
+/// cannot write the same image, and every guest write is flushed durably
+/// before it completes. The file is neither created, resized nor copied into
+/// memory.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn attach_disk(
+    nvme: &od_machine::NvmeHandle,
+    path: &str,
+    read_only: bool,
+) -> Result<(), (Value, u8)> {
+    use od_host::persistent_nvme::{
+        AttachPersistentNvmeError, PersistentNvmeOpenError, attach_persistent_nvme,
+        attach_read_only_nvme,
+    };
+    use od_host::storage_io::{LeaseOpenError, WriterOpenError};
+    let attached = if read_only {
+        attach_read_only_nvme(nvme, Path::new(path))
+    } else {
+        attach_persistent_nvme(nvme, Path::new(path))
+    };
+    attached.map_err(|error| match error {
+        AttachPersistentNvmeError::Open(PersistentNvmeOpenError::WriterOpen(
+            WriterOpenError::WriterBusy,
+        )) => (
+            failure(
+                "invalid_input",
+                "disk",
+                format!("{path}: the disk image is locked by another writer or by a read-only run"),
+            ),
+            3,
+        ),
+        AttachPersistentNvmeError::Open(PersistentNvmeOpenError::ReadLease(
+            LeaseOpenError::LeaseBusy,
+        )) => (
+            failure(
+                "invalid_input",
+                "disk",
+                format!("{path}: the disk image is locked by a writer"),
+            ),
+            3,
+        ),
+        AttachPersistentNvmeError::Open(error) => (
+            failure("invalid_input", "disk", format!("{path}: {error}")),
+            3,
+        ),
+        AttachPersistentNvmeError::Attach(error) => (
+            failure("loader_error", "nvme_attach", format!("{error:?}")),
+            4,
+        ),
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn attach_disk(
+    _nvme: &od_machine::NvmeHandle,
+    _path: &str,
+    _read_only: bool,
+) -> Result<(), (Value, u8)> {
+    Err((
+        failure(
+            "invalid_input",
+            "disk",
+            "--disk needs the macOS arm64 host backend (od-host)".to_owned(),
+        ),
+        3,
+    ))
 }
 
 fn exit_label(exit: &PagedProbeExit) -> &'static str {
@@ -1024,8 +1341,9 @@ fn boot(
     config: &FirmwareBoardConfig,
     budget: u64,
     com1_out: &str,
-    nvme_image: Option<&str>,
+    nvme: Option<NvmeSource<'_>>,
     sample_rips: &[u64],
+    diagnostics: &mut Diagnostics,
     unified: bool,
     mark_rip: Option<u64>,
     trace_calls: &[od_machine::CallTraceTarget],
@@ -1034,9 +1352,36 @@ fn boot(
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
-    if let Some(path) = nvme_image {
+    if let Some(NvmeSource::Disk { path, read_only }) = nvme {
+        attach_disk(
+            &board.nvme().expect("runner enabled the NVMe controller"),
+            path,
+            read_only,
+        )?;
+    }
+    // Hashes of the inputs the stop snapshot records (only computed when it is requested).
+    let snapshot_wanted = diagnostics.stop_snapshot.is_some();
+    let mut nvme_input = Value::Null;
+    if let Some(NvmeSource::Disk { path, read_only }) = nvme
+        && snapshot_wanted
+    {
+        // A writable disk is written by the guest (a read-only one cannot be) and can be tens of
+        // GiB: path, read_only and size, no hash.
+        nvme_input = json!({
+            "kind": "disk", "path": path, "read_only": read_only,
+            "bytes": fs::metadata(path).ok().map(|metadata| metadata.len()),
+            "sha256": null,
+        });
+    }
+    if let Some(NvmeSource::Memory(path)) = nvme {
         let bytes = fs::read(path)
             .map_err(|error| (failure("invalid_input", "nvme_image", error.to_string()), 3))?;
+        if snapshot_wanted {
+            nvme_input = json!({
+                "kind": "nvme_image", "path": path,
+                "bytes": bytes.len(), "sha256": sha256_hex(&bytes),
+            });
+        }
         let backend = InMemoryBackend::from_bytes(bytes).map_err(|error| {
             (
                 failure("invalid_input", "nvme_image", format!("{error:?}")),
@@ -1053,6 +1398,13 @@ fn boot(
                     4,
                 )
             })?;
+    }
+    // Every refusal of `boot` is behind us: only now do the journal's files appear.
+    if let Some(config) = diagnostics.journal_config.take() {
+        diagnostics.journal = Some(
+            RunJournal::new(config)
+                .map_err(|error| (failure("invalid_input", "diagnostics", error), 3))?,
+        );
     }
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
@@ -1160,6 +1512,10 @@ fn boot(
             }));
             report
         })
+    } else if let Some(journal) = &mut diagnostics.journal {
+        board.run_boot_with_quantum_hook(budget, |board, progress| {
+            journal.at_boundary(board, progress)
+        })
     } else if sample_rips.is_empty() && xhci.is_none() {
         board.run_boot(budget)
     } else {
@@ -1173,11 +1529,45 @@ fn boot(
             }
         })
     };
+    let inputs = || {
+        json!({
+            "image_sha256": sha256_hex(image),
+            "handoff_sha256": handoff_sha256,
+            "budget": budget,
+            "fv_app": config.fv_app.map(|app| format!("{app:?}")),
+            "tpm": config.tpm.is_some(),
+            "nvram_in_sha256": match &config.nvram {
+                Some(NvramConfig::Snapshot(bytes)) => json!(sha256_hex(bytes)),
+                _ => Value::Null,
+            },
+            "nvme": nvme_input,
+        })
+    };
     let report = match run {
         Ok(report) => report,
         Err(error) => {
             // Keep the bytes the guest already wrote (even an empty transcript).
             let mut value = failure("run_error", "run", format!("{error:?}"));
+            // The machine stays as the failed run left it; the diagnostics only read it.
+            if let Some(journal) = &mut diagnostics.journal {
+                value["journal"] = journal.finish(
+                    &board,
+                    StopInfo {
+                        exit: "run_error".to_owned(),
+                        stop_reason: Value::Null,
+                        progress: None,
+                    },
+                );
+            }
+            if let Some(path) = &diagnostics.stop_snapshot {
+                value["stop_snapshot"] = write_stop_snapshot(
+                    path,
+                    &board,
+                    json!({"exit": "run_error", "exit_detail": format!("{error:?}")}),
+                    Value::Null,
+                    inputs(),
+                );
+            }
             if let Err(write_error) = std::fs::write(com1_out, board.com1_transcript()) {
                 value["com1_out_error"] = json!(write_error.to_string());
             }
@@ -1258,6 +1648,46 @@ fn boot(
                 .collect::<Vec<_>>()
         );
     }
+    if let Some(journal) = &mut diagnostics.journal {
+        result["journal"] = journal.finish(
+            &board,
+            StopInfo {
+                exit: exit.to_owned(),
+                stop_reason: result["stop_reason"].clone(),
+                progress: Some(QuantumProgress {
+                    retired: report.retired,
+                    quanta: report.quanta,
+                }),
+            },
+        );
+    }
+    if let Some(path) = &diagnostics.stop_snapshot {
+        // A machine `Shutdown` (ACPI S5) is the clean power-off; every other stop is described.
+        result["stop_snapshot"] = if report.stop_reason == Some(MachineStopReason::Shutdown) {
+            json!({"path": path, "written": false, "skipped": "stop reason Shutdown"})
+        } else {
+            let reason = json!({
+                "exit": result["exit"],
+                "exit_detail": result["exit_detail"],
+                "unsupported_opcode": match &report.exit {
+                    PagedProbeExit::Unsupported { opcode } => json!(format!("0x{opcode:02x}")),
+                    _ => Value::Null,
+                },
+                "stop_reason": result["stop_reason"],
+                "page_fault": result["page_fault"],
+                "memory_error": result["memory_error"],
+                "fw_stop": result["fw_stop"],
+            });
+            let counters = json!({
+                "retired": report.retired,
+                "quanta": report.quanta,
+                "virtual_ns": report.virtual_ns,
+                "tsc_hz": report.tsc_hz,
+                "budget": budget,
+            });
+            write_stop_snapshot(path, &board, reason, counters, inputs())
+        };
+    }
     Ok(BootRun {
         board,
         report: result,
@@ -1275,12 +1705,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut acpi_out = None;
     let mut framebuffer_out = None;
     let mut nvme_image = None;
+    let mut disks: Vec<&String> = Vec::new();
     let mut tpm = false;
     let mut xhci = false;
     let mut xhci_keys: Option<Vec<(u8, bool)>> = None;
     let mut reboot_cycles = None;
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
+    let mut stop_snapshot = None;
+    let mut phase_log = None;
+    let mut framebuffer_dir = None;
+    let mut framebuffer_every = None;
+    let mut framebuffer_max_files = None;
+    let mut framebuffer_max_bytes = None;
     let mut cpu_loop: Option<bool> = None;
     let mut mark_rip: Option<u64> = None;
     let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
@@ -1306,6 +1743,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--com1-out" if com1_out.is_none() => com1_out = Some(value.clone()),
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
             "--nvme-image" if nvme_image.is_none() => nvme_image = Some(value.clone()),
+            "--disk" => disks.push(value),
             "--xhci-keys" if xhci_keys.is_none() => xhci_keys = Some(parse_xhci_keys(value)?),
             "--nvram-in" if nvram_in.is_none() => nvram_in = Some(value.clone()),
             "--nvram-out" if nvram_out.is_none() => nvram_out = Some(value.clone()),
@@ -1344,6 +1782,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--fv-app" if fv_app.is_none() => {
                 fv_app = Some(parse_app(value)?);
+            }
+            "--stop-snapshot" if stop_snapshot.is_none() => stop_snapshot = Some(value.clone()),
+            "--phase-log" if phase_log.is_none() => phase_log = Some(value.clone()),
+            "--framebuffer-dir" if framebuffer_dir.is_none() => {
+                framebuffer_dir = Some(value.clone())
+            }
+            "--framebuffer-every" if framebuffer_every.is_none() => {
+                framebuffer_every = Some(parse_virtual_seconds(value)?);
+            }
+            "--framebuffer-max-files" if framebuffer_max_files.is_none() => {
+                framebuffer_max_files = Some(parse_positive(name, value)?);
+            }
+            "--framebuffer-max-bytes" if framebuffer_max_bytes.is_none() => {
+                framebuffer_max_bytes = Some(parse_positive(name, value)?);
             }
             "--cpu-loop" if cpu_loop.is_none() => match value.as_str() {
                 "unified" => cpu_loop = Some(true),
@@ -1440,13 +1892,80 @@ fn parse(args: &[String]) -> Result<Options, String> {
         Some(FirmwareFvApp::Fs) => Some("fs"),
         _ => None,
     };
+    let (disk, disk_read_only) = match parse_disks(&disks)? {
+        Some((path, read_only)) => (Some(path), read_only),
+        None => (None, false),
+    };
+    if disk.is_some() && nvme_image.is_some() {
+        return Err("--disk and --nvme-image are mutually exclusive".to_owned());
+    }
     if let Some(app) = storage_app
         && nvme_image.is_none()
+        && disk.is_none()
     {
-        return Err(format!("--fv-app {app} requires --nvme-image"));
+        return Err(format!("--fv-app {app} requires --nvme-image or --disk"));
     }
     let image = image.ok_or_else(|| format!("--image is required; usage: {USAGE}"))?;
     let com1_out = com1_out.ok_or_else(|| format!("--com1-out is required; usage: {USAGE}"))?;
+    let framebuffer = match (framebuffer_dir, framebuffer_every) {
+        (Some(dir), Some(every_ns)) => Some(FramebufferDumps {
+            dir,
+            every_ns,
+            max_files: framebuffer_max_files.unwrap_or(DEFAULT_MAX_FILES),
+            max_bytes: framebuffer_max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
+        }),
+        (None, None) if framebuffer_max_files.is_none() && framebuffer_max_bytes.is_none() => None,
+        _ => {
+            return Err(
+                "--framebuffer-every and --framebuffer-dir go together, and the \
+                 --framebuffer-max-* limits need them"
+                    .to_owned(),
+            );
+        }
+    };
+    if (stop_snapshot.is_some() || phase_log.is_some() || framebuffer.is_some())
+        && !sample_rips.is_empty()
+    {
+        return Err(
+            "--sample-rip cannot be combined with --stop-snapshot, --phase-log or --framebuffer-*"
+                .to_owned(),
+        );
+    }
+    // The run journal (`--phase-log`, `--framebuffer-dir`/`-every`) is driven only by the firmware profile loop with
+    // the quantum hook. The unified loop and the xHCI key watch (both served before the journal branch in `boot`) and
+    // the reboot cycles (which return before the diagnostics are built) never feed it: refuse rather than
+    // silently write nothing. `--stop-snapshot` is written after any single boot, so only the reboot cycles lose it.
+    let journal_requested = phase_log.is_some() || framebuffer.is_some();
+    if unified && journal_requested {
+        return Err(
+            "--cpu-loop unified does not support --phase-log or --framebuffer-dir/--framebuffer-every \
+             (the unified loop has no run journal); use --cpu-loop firmware"
+                .to_owned(),
+        );
+    }
+    if xhci_keys.is_some() && journal_requested {
+        return Err(
+            "--xhci-keys cannot be combined with --phase-log or --framebuffer-* (the journal loop \
+             does not feed the xHCI key watch)"
+                .to_owned(),
+        );
+    }
+    if reboot_cycles.is_some() && (stop_snapshot.is_some() || journal_requested) {
+        return Err(
+            "--reboot-cycles cannot be combined with --stop-snapshot, --phase-log or --framebuffer-* \
+             (the cycles run no diagnostics)"
+                .to_owned(),
+        );
+    }
+    if nvram_reboot_out.is_some()
+        && (stop_snapshot.is_some() || phase_log.is_some() || framebuffer.is_some())
+    {
+        return Err(
+            "--stop-snapshot, --phase-log and --framebuffer-* describe one boot and cannot be \
+             combined with --nvram-reboot-out (restarts are S8-23)"
+                .to_owned(),
+        );
+    }
     if let Some(reboot_out) = &nvram_reboot_out {
         if !sample_rips.is_empty() {
             return Err("--sample-rip requires a single boot".to_owned());
@@ -1469,17 +1988,73 @@ fn parse(args: &[String]) -> Result<Options, String> {
         acpi_out,
         framebuffer_out,
         nvme_image,
+        disk,
+        disk_read_only,
         tpm,
         xhci,
         xhci_keys: xhci_keys.unwrap_or_default(),
         reboot_cycles,
         reboot_kind,
         sample_rips,
+        stop_snapshot,
+        phase_log,
+        framebuffer,
         unified,
         mark_rip,
         trace_calls,
         trace_system_table,
     })
+}
+
+/// Virtual seconds (decimals allowed) as nanoseconds; positive and finite.
+fn parse_virtual_seconds(value: &str) -> Result<u64, String> {
+    let seconds = value
+        .parse::<f64>()
+        .ok()
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .ok_or_else(|| {
+            format!("invalid --framebuffer-every '{value}': a positive number of seconds")
+        })?;
+    // At least 1 ns, so the period is never zero.
+    Ok(((seconds * 1e9).round() as u64).max(1))
+}
+
+fn parse_positive(name: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|number| *number > 0)
+        .ok_or_else(|| format!("invalid {name} '{value}': a positive integer"))
+}
+
+/// `--disk <path>[,ro]`, repeatable; the order is the order of NVMe
+/// controllers. The board has one controller (S8-20 adds more), so exactly one
+/// disk is accepted; a second one is refused rather than ignored.
+fn parse_disks(values: &[&String]) -> Result<Option<(String, bool)>, String> {
+    let [value] = values else {
+        return if values.is_empty() {
+            Ok(None)
+        } else {
+            Err(format!(
+                "{} --disk options given, but the board has one NVMe controller; \
+                 several disks need the multi-controller board (S8-20)",
+                values.len()
+            ))
+        };
+    };
+    let (path, read_only) = match value.strip_suffix(",ro") {
+        Some(path) => (path, true),
+        None => (value.as_str(), false),
+    };
+    if path.is_empty() {
+        return Err("--disk needs a file path".to_owned());
+    }
+    if path.contains(',') {
+        return Err(format!(
+            "--disk '{value}': only the ',ro' option exists and a path must not contain ','"
+        ));
+    }
+    Ok(Some((path.to_owned(), read_only)))
 }
 
 /// `(code, detail)` of the `OD-FW STOP code=0xNN detail=0xDDDDDDDDDDDDDDDD`
@@ -1518,6 +2093,35 @@ fn emit(value: Value, code: u8) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unique per-test directory (pid + nanoseconds) removed on drop, also
+    /// after a panic; a leftover of an earlier run cannot make creation fail.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("{tag}-{}-{nanos}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
@@ -1819,6 +2423,89 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_that_the_chosen_loop_would_silently_drop_are_refused() {
+        // S8 merge review D2: the journal belongs to the firmware loop, the xHCI key watch and the reboot cycles
+        // never feed it, and the cycles run no diagnostics at all.
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]);
+            values.extend(args(extra));
+            values
+        };
+        let journal = [
+            &["--phase-log", "phase.jsonl"][..],
+            &["--framebuffer-dir", "frames", "--framebuffer-every", "1"][..],
+        ];
+        for extra in journal {
+            let mut unified = base(&["--cpu-loop", "unified"]);
+            unified.extend(args(extra));
+            assert!(
+                parse(&unified)
+                    .err()
+                    .unwrap()
+                    .contains("--cpu-loop unified does not support --phase-log"),
+                "{extra:?}"
+            );
+            let mut keys = base(&["--xhci", "--xhci-keys", "04"]);
+            keys.extend(args(extra));
+            assert!(
+                parse(&keys)
+                    .err()
+                    .unwrap()
+                    .contains("--xhci-keys cannot be combined with --phase-log"),
+                "{extra:?}"
+            );
+            // The same options alone stay valid, and so do the key watch and the unified loop without a journal.
+            assert!(parse(&base(extra)).is_ok(), "{extra:?}");
+            let mut cycles = base(&["--fv-app", "reboot", "--reboot-cycles", "2"]);
+            cycles.extend(args(extra));
+            assert!(
+                parse(&cycles)
+                    .err()
+                    .unwrap()
+                    .contains("--reboot-cycles cannot be combined with --stop-snapshot"),
+                "{extra:?}"
+            );
+        }
+        let mut cycles = base(&["--fv-app", "reboot", "--reboot-cycles", "2"]);
+        cycles.extend(args(&["--stop-snapshot", "stop.json"]));
+        assert!(
+            parse(&cycles)
+                .err()
+                .unwrap()
+                .contains("--reboot-cycles cannot be combined with --stop-snapshot")
+        );
+        assert!(parse(&base(&["--xhci", "--xhci-keys", "04"])).is_ok());
+        assert!(parse(&base(&["--cpu-loop", "unified"])).is_ok());
+        assert!(
+            parse(&base(&[
+                "--cpu-loop",
+                "unified",
+                "--stop-snapshot",
+                "stop.json"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            parse(&base(&[
+                "--xhci",
+                "--xhci-keys",
+                "04",
+                "--stop-snapshot",
+                "stop.json"
+            ]))
+            .is_ok()
+        );
+        assert!(parse(&base(&["--fv-app", "reboot", "--reboot-cycles", "2"])).is_ok());
+    }
+
+    #[test]
     fn reboot_cycles_need_the_reboot_app_and_exclude_the_other_modes() {
         let required = [
             "--image",
@@ -1953,9 +2640,7 @@ mod tests {
     #[test]
     fn nvram_reboot_resolves_rom_and_output_aliases_before_writing() {
         use std::os::unix::fs::symlink;
-        let dir =
-            std::env::temp_dir().join(format!("od-nvram-reboot-paths-{}", std::process::id()));
-        fs::create_dir(&dir).unwrap();
+        let dir = TempDir::new("od-nvram-reboot-paths");
         let rom = dir.join("rom.bin");
         let first = dir.join("first.com1");
         let second = dir.join("second.com1");
@@ -1979,7 +2664,6 @@ mod tests {
         assert!(check(&first, &second).is_err());
         assert_eq!(fs::read(&rom).unwrap(), b"original ROM");
         assert_eq!(fs::read(&first).unwrap(), b"first transcript");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2059,5 +2743,260 @@ mod tests {
         ] {
             assert!(parse(&bad).is_err(), "{bad:?}");
         }
+    }
+    fn disks(values: &[&str]) -> Result<Option<(String, bool)>, String> {
+        let owned: Vec<String> = values.iter().map(|value| value.to_string()).collect();
+        parse_disks(&owned.iter().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn disk_option_accepts_one_file_with_an_optional_ro_and_refuses_everything_else() {
+        assert_eq!(disks(&[]), Ok(None));
+        assert_eq!(
+            disks(&["work/stage8/target.raw"]),
+            Ok(Some(("work/stage8/target.raw".to_owned(), false)))
+        );
+        assert_eq!(
+            disks(&["work/stage8/media.raw,ro"]),
+            Ok(Some(("work/stage8/media.raw".to_owned(), true)))
+        );
+        assert!(disks(&["a.raw", "b.raw"]).unwrap_err().contains("S8-20"));
+        assert!(disks(&[",ro"]).unwrap_err().contains("file path"));
+        assert!(
+            disks(&["a,b.raw"])
+                .unwrap_err()
+                .contains("must not contain")
+        );
+        assert!(
+            disks(&["a.raw,rw"])
+                .unwrap_err()
+                .contains("must not contain")
+        );
+    }
+
+    #[test]
+    fn disk_and_nvme_image_are_exclusive_and_satisfy_storage_apps() {
+        let required = ["--image", "rom.bin", "--com1-out", "c", "--budget", "1"];
+        let parsed = |extra: &[&str]| parse(&args(&[&required[..], extra].concat()));
+        let both = parsed(&["--nvme-image", "a.raw", "--disk", "b.raw"]);
+        assert!(both.err().unwrap().contains("mutually exclusive"));
+        let disk = parsed(&["--disk", "b.raw", "--fv-app", "blk"]).unwrap();
+        assert_eq!(disk.disk.as_deref(), Some("b.raw"));
+        assert_eq!(disk.nvme_image, None);
+        assert!(matches!(
+            disk.nvme_source(),
+            Some(NvmeSource::Disk {
+                path: "b.raw",
+                read_only: false
+            })
+        ));
+        let read_only = parsed(&["--disk", "b.raw,ro", "--fv-app", "blk"]).unwrap();
+        assert!(matches!(
+            read_only.nvme_source(),
+            Some(NvmeSource::Disk {
+                path: "b.raw",
+                read_only: true
+            })
+        ));
+        let memory = parsed(&["--nvme-image", "a.raw"]).unwrap();
+        assert!(matches!(
+            memory.nvme_source(),
+            Some(NvmeSource::Memory("a.raw"))
+        ));
+        let missing = parsed(&["--fv-app", "fs"]).err().unwrap();
+        assert!(missing.contains("--fv-app fs requires --nvme-image"));
+    }
+
+    #[test]
+    fn disk_must_not_alias_firmware_or_nvram_files() {
+        let dir = TempDir::new("od-disk-paths");
+        let (rom, nvram, disk) = (dir.join("rom.bin"), dir.join("vars.bin"), dir.join("d.raw"));
+        for path in [&rom, &nvram, &disk] {
+            fs::write(path, b"x").unwrap();
+        }
+        let mut options = parse(&args(&[
+            "--image",
+            rom.to_str().unwrap(),
+            "--com1-out",
+            dir.join("c").to_str().unwrap(),
+            "--budget",
+            "1",
+            "--disk",
+            disk.to_str().unwrap(),
+        ]))
+        .unwrap();
+        assert!(validate_nvme_paths(disk.to_str().unwrap(), &options).is_ok());
+        assert!(validate_nvme_paths(rom.to_str().unwrap(), &options).is_err());
+        options.nvram_in = Some(nvram.to_str().unwrap().to_owned());
+        assert!(validate_nvme_paths(nvram.to_str().unwrap(), &options).is_err());
+        // The read-only in-memory input keeps its old rules: only outputs conflict.
+        options.disk = None;
+        options.nvme_image = Some(rom.to_str().unwrap().to_owned());
+        assert!(validate_nvme_paths(rom.to_str().unwrap(), &options).is_ok());
+    }
+
+    /// Boots a halting synthetic ROM with the file attached through the same
+    /// `boot` path as the CLI, then drives a real NVMe write by MMIO.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_with_disk(rom: &[u8], com1: &Path, disk: &str) -> Result<BootRun, (Value, u8)> {
+        boot_with_disk_mode(rom, com1, disk, false)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_with_disk_mode(
+        rom: &[u8],
+        com1: &Path,
+        disk: &str,
+        read_only: bool,
+    ) -> Result<BootRun, (Value, u8)> {
+        let config = FirmwareBoardConfig {
+            nvme: Some(Default::default()),
+            ..board_config(None, false, None)
+        };
+        boot(
+            rom,
+            &config,
+            4,
+            com1.to_str().unwrap(),
+            Some(NvmeSource::Disk {
+                path: disk,
+                read_only,
+            }),
+            &[],
+            &mut Diagnostics::default(),
+            false,
+            None,
+            &[],
+            None,
+            &[],
+        )
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn halting_rom() -> Vec<u8> {
+        const HANDOFF_MINOR_MAX: u16 = 12;
+        const IMAGE_BYTES: usize = 0x40_0000;
+        let mut image = vec![0u8; IMAGE_BYTES];
+        image[..8].copy_from_slice(b"ODFWIMG1");
+        image[0x08..0x0C].copy_from_slice(&1u32.to_le_bytes());
+        image[0x0C..0x10].copy_from_slice(&0x40u32.to_le_bytes());
+        image[0x10..0x18].copy_from_slice(&(IMAGE_BYTES as u64).to_le_bytes());
+        image[0x18..0x20].copy_from_slice(&0x0020_0000u64.to_le_bytes());
+        image[0x20..0x28].copy_from_slice(&0x40u64.to_le_bytes());
+        image[0x28..0x2A].copy_from_slice(&1u16.to_le_bytes());
+        // The NVMe handoff descriptor needs a ROM that declares its minor version.
+        image[0x2a..0x2c].copy_from_slice(&HANDOFF_MINOR_MAX.to_le_bytes());
+        image[0x40] = 0xf4; // hlt
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in &image {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        image[0x30..0x34].copy_from_slice(&(!crc).to_le_bytes());
+        image
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn disk_backend_keeps_guest_writes_across_restart_and_locks_the_file() {
+        let dir = TempDir::new("od-disk-restart");
+        let (disk_path, com1) = (dir.join("disk.raw"), dir.join("c1"));
+        let disk = disk_path.to_str().unwrap();
+        let rom = halting_rom();
+        // A sparse 1 MiB image: set_len only, no data written.
+        let file = File::create(&disk_path).unwrap();
+        file.set_len(1 << 20).unwrap();
+        drop(file);
+
+        let mut first = boot_with_disk(&rom, &com1, disk)
+            .unwrap_or_else(|(value, _)| panic!("first boot: {value}"));
+        // A second writer on the same file is refused while the first lives.
+        let (busy, code) = boot_with_disk(&rom, &com1, disk)
+            .err()
+            .expect("second writer");
+        assert_eq!(code, 3);
+        assert_eq!(busy["error"]["kind"], "disk");
+        assert!(busy["error"]["detail"].as_str().unwrap().contains("locked"));
+        // The guest-visible write goes through the controller to the file.
+        let nvme = first.board.nvme().unwrap();
+        crate::s5_nvme_stand::drive_nvme(&mut first.board, &nvme).unwrap();
+        drop(nvme);
+        drop(first);
+
+        // Restart: the lock is gone and the sector written before is in the file.
+        let bytes = fs::read(&disk_path).unwrap();
+        assert_eq!(bytes.len(), 1 << 20);
+        assert_eq!(
+            &bytes[..512],
+            crate::s5_nvme_stand::write_pattern().as_slice()
+        );
+        assert!(bytes[512..].iter().all(|byte| *byte == 0));
+        let again = boot_with_disk(&rom, &com1, disk).ok().expect("restart");
+        drop(again);
+        assert_eq!(fs::read(&disk_path).unwrap(), bytes);
+        // The runner never creates the image.
+        let missing = dir.join("missing.raw");
+        let error = boot_with_disk(&rom, &com1, missing.to_str().unwrap())
+            .err()
+            .expect("missing image");
+        assert_eq!(error.0["error"]["kind"], "disk");
+        assert!(!missing.exists());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn read_only_disk_refuses_guest_writes_and_leaves_the_file_unchanged() {
+        let dir = TempDir::new("od-disk-ro");
+        let (disk_path, com1) = (dir.join("media.raw"), dir.join("c1"));
+        let disk = disk_path.to_str().unwrap();
+        let rom = halting_rom();
+        // Content that the stand's write pattern at LBA 0 would visibly change.
+        let content: Vec<u8> = (0..1usize << 20).map(|index| (index % 251) as u8).collect();
+        fs::write(&disk_path, &content).unwrap();
+        let hash_before = sha256_hex(&content);
+
+        let mut first = boot_with_disk_mode(&rom, &com1, disk, true)
+            .unwrap_or_else(|(value, _)| panic!("read-only boot: {value}"));
+        // Readers share the file; a writer is refused while a reader lives.
+        let second = boot_with_disk_mode(&rom, &com1, disk, true)
+            .ok()
+            .expect("a second read-only run shares the file");
+        drop(second);
+        let (busy, code) = boot_with_disk(&rom, &com1, disk)
+            .err()
+            .expect("a writer next to a reader");
+        assert_eq!(code, 3);
+        assert_eq!(busy["error"]["kind"], "disk");
+        assert!(busy["error"]["detail"].as_str().unwrap().contains("locked"));
+        // The stand writes sector 0: the controller refuses it with Namespace is
+        // Write Protected (generic 0x20, DNR = 1).
+        let nvme = first.board.nvme().unwrap();
+        let error = crate::s5_nvme_stand::drive_nvme(&mut first.board, &nvme)
+            .err()
+            .expect("the guest write must be refused");
+        let status = error
+            .strip_prefix("NVMe command completed with status 0x")
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .unwrap_or_else(|| panic!("unexpected error: {error}"));
+        assert_eq!(status & 0x07FF, 0x020, "SCT 0, SC 0x20: {error}");
+        assert_ne!(status & 0x4000, 0, "DNR is set: {error}");
+        drop(nvme);
+        drop(first);
+
+        let after = fs::read(&disk_path).unwrap();
+        assert_eq!(sha256_hex(&after), hash_before);
+        assert_eq!(after, content);
+        // Once the reader is gone a writer can lock the file again.
+        drop(
+            boot_with_disk(&rom, &com1, disk)
+                .ok()
+                .expect("writer after the reader"),
+        );
     }
 }

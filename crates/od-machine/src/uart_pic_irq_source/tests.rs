@@ -273,3 +273,58 @@ fn a_halted_cpu_is_woken_by_a_pending_uart_interrupt() {
     assert_eq!(rig.source.wake_ns(), Some(0), "deliverable now");
     assert_eq!(rig.source.uart_edges(), 1);
 }
+
+#[test]
+fn rls_from_an_overrun_raises_ir4_and_the_lsr_read_drops_the_line() {
+    // S4-24f: IER bit 2 alone (no RDA, no THRE) and an OE make one IR4 edge; reading LSR clears
+    // the error bits and the condition; the next error is the next edge.
+    let mut rig = Rig::new(0x00, 0x08);
+    rig.uart_write(1, 0x04);
+    assert_eq!(rig.uart.deliver_received_byte(0x41, 0), Ok(false));
+    assert_eq!(
+        rig.source.pending_vector(),
+        None,
+        "a received byte alone is no RLS"
+    );
+    assert_eq!(rig.uart.deliver_received_byte(0x42, 0), Ok(true));
+    assert_eq!(rig.source.pending_vector(), Some(VECTOR));
+    assert_eq!(rig.source.uart_edges(), 1);
+    assert_eq!(rig.irr_isr(), (IR4, 0));
+    assert_eq!(rig.uart.peek_iir(), 0x06);
+    // The RBR read does not clear RLS; the LSR read does.
+    assert_eq!(rig.uart_read(0), 0x42);
+    rig.source.sample();
+    assert!(rig.uart.interrupt_line());
+    assert_eq!(rig.uart_read(5) & 0x1e, 0x02);
+    rig.source.sample();
+    assert!(!rig.uart.interrupt_line());
+    assert_eq!(rig.uart.peek_iir(), 0x01);
+    assert_eq!(rig.uart.deliver_received_byte(0x43, 0x08), Ok(false));
+    rig.source.sample();
+    assert_eq!(
+        rig.source.uart_edges(),
+        2,
+        "a framing error is the next edge"
+    );
+}
+
+#[test]
+fn rls_without_ier_bit_2_or_out2_makes_no_edge() {
+    let mut rig = Rig::new(0x00, 0x00);
+    rig.uart_write(1, 0x04);
+    rig.uart.deliver_received_byte(0x01, 0x10).unwrap();
+    rig.source.sample();
+    assert_eq!(
+        rig.uart.peek_iir(),
+        0x06,
+        "the condition is there, OUT2 holds the line"
+    );
+    assert_eq!(rig.source.uart_edges(), 0);
+    rig.uart_write(4, 0x08);
+    rig.source.sample();
+    assert_eq!(rig.source.uart_edges(), 1);
+    let mut quiet = Rig::new(0x00, 0x08);
+    quiet.uart_write(1, 0x03);
+    quiet.uart.deliver_received_byte(0x01, 0x10).unwrap();
+    assert_eq!(quiet.uart.peek_iir(), 0x04, "IER bit 2 = 0: RDA, not RLS");
+}

@@ -4210,6 +4210,773 @@ mod tests {
     }
 
     #[test]
+    fn cmpxchg16b_is_refused_by_the_block_builder_and_the_register_form_is_an_invalid_boundary() {
+        // S2-51: the interpreter executes `[F0] REX.W 0F C7 /1 m128`; the JIT admits no 16-byte
+        // atomic form, so the block is not built (the entry instruction is left to the interpreter,
+        // no state is touched: the builder only reads the code bytes).
+        const ENTRY: u64 = 0x4d00;
+        for bytes in [
+            &[0x48, 0x0f, 0xc7, 0x0f][..],
+            &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            assert!(
+                matches!(
+                    refused.stop_reason,
+                    BlockStopReason::UnsupportedDecoded {
+                        guest_rip: ENTRY,
+                        decoded: Instruction {
+                            operation: Operation::Cmpxchg16b { .. },
+                            ..
+                        },
+                    }
+                ),
+                "{bytes:02x?}: {:?}",
+                refused.stop_reason
+            );
+        }
+        // The register form is #UD: a decode boundary, never a block.
+        let invalid = no_block(
+            build(
+                &[0x48, 0x0f, 0xc7, 0xcf],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert!(matches!(boundary.error, DecodeError::Invalid { .. }));
+    }
+
+    #[test]
+    fn lahf_sahf_and_prefetchw_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-52/S2-53: the interpreter executes them; the JIT has no lowering for them, so the block
+        // is not built (the entry instruction is left to the interpreter, no state is touched: the
+        // builder only reads the code bytes).
+        const ENTRY: u64 = 0x4d00;
+        for (bytes, expected) in [
+            (&[0x9f][..], "lahf"),
+            (&[0x9e], "sahf"),
+            (&[0x48, 0x9f], "lahf"),
+            (&[0x0f, 0x0d, 0x0f], "prefetchw"),
+            (&[0x48, 0x0f, 0x0d, 0x4f, 0x10], "prefetchw"),
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            let matched = match (expected, decoded.operation) {
+                ("lahf", Operation::Lahf) | ("sahf", Operation::Sahf) => true,
+                ("prefetchw", Operation::Prefetchw) => true,
+                _ => false,
+            };
+            assert!(matched, "{bytes:02x?}: {:?}", decoded.operation);
+        }
+        // LOCK is #UD: a decode boundary, never a block.
+        for bytes in [&[0xf0, 0x9f][..], &[0xf0, 0x9e], &[0xf0, 0x0f, 0x0d, 0x0f]] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn m128_sse_moves_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-34 (m128 addressing): the interpreter executes the six raw 128-bit moves with any
+        // memory operand; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4d40;
+        for bytes in [
+            &[0x0f, 0x28, 0x00][..],               // MOVAPS xmm0, [rax]
+            &[0x66, 0x0f, 0x29, 0x4b, 0x10],       // MOVAPD [rbx+0x10], xmm1
+            &[0x66, 0x0f, 0x7f, 0x04, 0x88],       // MOVDQA [rax+rcx*4], xmm0
+            &[0xf3, 0x0f, 0x7f, 0x05, 1, 0, 0, 0], // MOVDQU [rip+1], xmm0
+            &[0x66, 0x0f, 0x10, 0x00],             // MOVUPD xmm0, [rax]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse128MemoryMove { .. }
+                        | Operation::MovapsLoadMemory { .. }
+                        | Operation::MovupdLoadMemory { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK is #UD: a decode boundary, never a block.
+        let invalid = no_block(
+            build(
+                &[0xf0, 0x0f, 0x28, 0x00],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert!(matches!(boundary.error, DecodeError::Invalid { .. }));
+    }
+
+    #[test]
+    fn sse3_permutes_and_fisttp_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-54 slice C: the interpreter executes MOVSHDUP/MOVSLDUP/MOVDDUP/LDDQU and FISTTP; the JIT has
+        // no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4e40;
+        for bytes in [
+            &[0xf3, 0x0f, 0x16, 0x00][..],   // MOVSHDUP xmm0, [rax]
+            &[0xf3, 0x0f, 0x12, 0xc1],       // MOVSLDUP xmm0, xmm1
+            &[0xf2, 0x0f, 0x12, 0x4b, 0x10], // MOVDDUP xmm1, [rbx+0x10]
+            &[0xf2, 0x0f, 0xf0, 0x04, 0x88], // LDDQU xmm0, [rax+rcx*4]
+            &[0xdf, 0x08],                   // FISTTP word [rax]
+            &[0xdb, 0x4b, 0x10],             // FISTTP dword [rbx+0x10]
+            &[0xdd, 0x0d, 1, 0, 0, 0],       // FISTTP qword [rip+1]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse3Permute { .. } | Operation::FisttpMemory { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK and the register form of LDDQU are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0xf3, 0x0f, 0x16, 0x00][..],
+            &[0xf0, 0xdf, 0x08],
+            &[0xf2, 0x0f, 0xf0, 0xc1],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_ssse3_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-54 slice D: the interpreter executes the integer SSSE3 forms; the JIT has no lowering for
+        // them, so the block is not built.
+        const ENTRY: u64 = 0x4e80;
+        for bytes in [
+            &[0x66, 0x0f, 0x38, 0x00, 0x00][..],        // PSHUFB xmm0, [rax]
+            &[0x66, 0x0f, 0x38, 0x04, 0xc1],            // PMADDUBSW xmm0, xmm1
+            &[0x66, 0x0f, 0x38, 0x1e, 0x4b, 0x10],      // PABSD xmm1, [rbx+0x10]
+            &[0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x04],      // PALIGNR xmm0, xmm1, 4
+            &[0x66, 0x0f, 0x3a, 0x0f, 0x04, 0x88, 0x1], // PALIGNR xmm0, [rax+rcx*4], 1
+            &[0x66, 0x0f, 0x38, 0x03, 0xd3],            // PHADDSW xmm2, xmm3
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Ssse3Int { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x38, 0x00, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x0f, 0xc1, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mmx_forms_and_emms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-33: the interpreter executes EMMS and the MMX forms of the SSSE3 integer instructions on the
+        // x87 data registers; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4e80;
+        for bytes in [
+            &[0x0f, 0x38, 0x00, 0x00][..],   // PSHUFB mm0, [rax]
+            &[0x0f, 0x38, 0x04, 0xc1],       // PMADDUBSW mm0, mm1
+            &[0x0f, 0x3a, 0x0f, 0xc1, 0x04], // PALIGNR mm0, mm1, 4
+            &[0x0f, 0x77],                   // EMMS
+            &[0x48, 0x0f, 0x77],             // REX.W EMMS
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::MmxSsse3 { .. } | Operation::Emms
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [&[0xf0, 0x0f, 0x38, 0x00, 0x00][..], &[0xf0, 0x0f, 0x77]] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-55 slice A: the interpreter executes the integer SSE4.1 forms; the JIT has no lowering for
+        // them, so the block is not built.
+        const ENTRY: u64 = 0x4e80;
+        for bytes in [
+            &[0x66, 0x0f, 0x38, 0x17, 0xc1][..],         // PTEST xmm0, xmm1
+            &[0x66, 0x0f, 0x38, 0x20, 0x00],             // PMOVSXBW xmm0, [rax]
+            &[0x66, 0x0f, 0x38, 0x40, 0x4b, 0x10],       // PMULLD xmm1, [rbx+0x10]
+            &[0x66, 0x0f, 0x38, 0x2a, 0x00],             // MOVNTDQA xmm0, [rax]
+            &[0x66, 0x0f, 0x38, 0x10, 0xd3],             // PBLENDVB xmm2, xmm3
+            &[0x66, 0x0f, 0x3a, 0x0e, 0xc1, 0x05],       // PBLENDW xmm0, xmm1, 5
+            &[0x66, 0x0f, 0x3a, 0x16, 0xc0, 0x01],       // PEXTRD eax, xmm0, 1
+            &[0x66, 0x48, 0x0f, 0x3a, 0x22, 0xc0, 0x01], // PINSRQ xmm0, rax, 1
+            &[0x66, 0x0f, 0x3a, 0x42, 0xc1, 0x02],       // MPSADBW xmm0, xmm1, 2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41 { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms (and the register form of MOVNTDQA) is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x38, 0x17, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x0e, 0xc1, 0x00],
+            &[0x66, 0x0f, 0x38, 0x2a, 0xc1],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn popcnt_crc32_and_pcmpgtq_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-56 slice A: the interpreter executes POPCNT, CRC32 and PCMPGTQ; the JIT has no lowering for
+        // them, so the block is not built.
+        const ENTRY: u64 = 0x4f00;
+        for bytes in [
+            &[0x66, 0x0f, 0x38, 0x37, 0xc1][..],   // PCMPGTQ xmm0, xmm1
+            &[0x66, 0x0f, 0x38, 0x37, 0x00],       // PCMPGTQ xmm0, [rax]
+            &[0xf3, 0x0f, 0xb8, 0xca],             // POPCNT ecx, edx
+            &[0xf3, 0x48, 0x0f, 0xb8, 0x08],       // POPCNT rcx, [rax]
+            &[0x66, 0xf3, 0x0f, 0xb8, 0xca],       // POPCNT cx, dx
+            &[0xf2, 0x0f, 0x38, 0xf0, 0xca],       // CRC32 ecx, dl
+            &[0xf2, 0x48, 0x0f, 0x38, 0xf1, 0xca], // CRC32 rcx, rdx
+            &[0x66, 0xf2, 0x0f, 0x38, 0xf1, 0x08], // CRC32 ecx, word [rax]
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse41 { .. } | Operation::Popcnt { .. } | Operation::Crc32 { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x38, 0x37, 0x00][..],
+            &[0xf0, 0xf3, 0x0f, 0xb8, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0x38, 0xf0, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sse_fp_arithmetic_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-37: the interpreter executes ADD/SUB/MUL/DIV PS/PD/SS/SD through the general core; the JIT has
+        // no lowering for them, so the block is not built, whether the decoder returns the general
+        // operation or one of the narrow profile operations for the same encoding.
+        const ENTRY: u64 = 0x4f40;
+        for bytes in [
+            &[0x0f, 0x58, 0xc1][..],   // ADDPS xmm0, xmm1 (narrow profile operation)
+            &[0x66, 0x0f, 0x5c, 0xd1], // SUBPD xmm2, xmm1 (narrow profile operation)
+            &[0xf3, 0x0f, 0x59, 0xc1], // MULSS xmm0, xmm1
+            &[0xf2, 0x0f, 0x5e, 0x00], // DIVSD xmm0, [rax]
+            &[0x0f, 0x58, 0x03],       // ADDPS xmm0, [rbx] (general operation)
+            &[0x66, 0x44, 0x0f, 0x5e, 0xcf], // DIVPD xmm9, xmm7 (REX.R)
+            &[0xf3, 0x0f, 0x5c, 0x4b, 0x10], // SUBSS xmm1, [rbx+0x10]
+            &[0xf2, 0x41, 0x0f, 0x59, 0x00], // MULSD xmm0, [r8]
+            // S2-54 (FP part): the SSE3 packed forms take the same general operation.
+            &[0xf2, 0x0f, 0x7c, 0xc1],       // HADDPS xmm0, xmm1
+            &[0x66, 0x0f, 0x7d, 0x03],       // HSUBPD xmm0, [rbx]
+            &[0xf2, 0x0f, 0xd0, 0xc1],       // ADDSUBPS xmm0, xmm1
+            &[0x66, 0x44, 0x0f, 0xd0, 0xcf], // ADDSUBPD xmm9, xmm7 (REX.R)
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseFpArith { .. }
+                        | Operation::AddpsRegister { .. }
+                        | Operation::SubpdRegister { .. }
+                        | Operation::MulssRegister { .. }
+                        | Operation::DivpdRegister { .. }
+                        | Operation::DivsdMemoryRax
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x58, 0x03][..],
+            &[0xf0, 0x66, 0x0f, 0x5e, 0xc1],
+            &[0xf2, 0xf0, 0x0f, 0x5c, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0x7c, 0x00], // LOCK HADDPS xmm0, [rax]
+            &[0xf0, 0x66, 0x0f, 0xd0, 0xc1], // LOCK ADDSUBPD xmm0, xmm1
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sse2_integer_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-39 (integer SSE2 remainder): the interpreter executes these forms through the general core; the
+        // JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4fa0;
+        for bytes in [
+            &[0x66, 0x0f, 0xd4, 0x00][..],   // PADDQ xmm0, [rax]
+            &[0x66, 0x0f, 0xf4, 0x43, 0x10], // PMULUDQ xmm0, [rbx+0x10]
+            &[0x66, 0x0f, 0xf6, 0x08],       // PSADBW xmm1, [rax]
+            &[0x66, 0x0f, 0x70, 0x00, 0x1b], // PSHUFD xmm0, [rax], 0x1b
+            &[0x66, 0x0f, 0xc5, 0xc1, 0x03], // PEXTRW eax, xmm1, 3
+            &[0x66, 0x0f, 0xc4, 0xc1, 0x03], // PINSRW xmm0, ecx, 3
+            &[0x66, 0x0f, 0x6c, 0x03],       // PUNPCKLQDQ xmm0, [rbx]
+            &[0x66, 0x45, 0x0f, 0xfb, 0x08], // PSUBQ xmm9, [r8]
+            &[0x66, 0x0f, 0xd6, 0xca],       // MOVQ xmm2, xmm1 (66 0F D6)
+            &[0xf3, 0x0f, 0x6f, 0xca],       // MOVDQU xmm1, xmm2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse2Int { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xf4, 0xc1][..],
+            &[0x66, 0xf0, 0x0f, 0xd4, 0x00],
+            &[0xf0, 0x66, 0x0f, 0x70, 0xc1, 0x1b],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_temporal_stores_maskmovdqu_and_the_mmx_xmm_moves_are_refused_by_the_block_builder() {
+        // S2-39 (rest): the interpreter executes these forms in the CPL0 set; the JIT has no lowering for them.
+        const ENTRY: u64 = 0x4fa0;
+        for bytes in [
+            &[0x66, 0x0f, 0xe7, 0x00][..], // MOVNTDQ [rax], xmm0
+            &[0x0f, 0x2b, 0x08],           // MOVNTPS [rax], xmm1
+            &[0x66, 0x0f, 0x2b, 0x08],     // MOVNTPD [rax], xmm1
+            &[0x66, 0x0f, 0xf7, 0xca],     // MASKMOVDQU xmm1, xmm2
+            &[0xf2, 0x0f, 0xd6, 0xca],     // MOVDQ2Q mm1, xmm2
+            &[0xf3, 0x0f, 0xd6, 0xca],     // MOVQ2DQ xmm1, mm2
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::Sse2Int { .. }
+                        | Operation::Sse2Maskmov { .. }
+                        | Operation::Sse2MmxMove { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK and the undefined register or memory forms are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0xe7, 0x00][..],
+            &[0x66, 0x0f, 0xe7, 0xc1],
+            &[0x0f, 0x2b, 0xc1],
+            &[0x66, 0x0f, 0xf7, 0x00],
+            &[0xf3, 0x0f, 0xd6, 0x00],
+            &[0xf0, 0xf2, 0x0f, 0xd6, 0xca],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_compares_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-56 slice B: the interpreter executes PCMPESTRI/PCMPESTRM/PCMPISTRI/PCMPISTRM; the JIT has no
+        // lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x4f80;
+        for bytes in [
+            &[0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00][..], // PCMPESTRI xmm0, xmm1, 0
+            &[0x66, 0x0f, 0x3a, 0x60, 0x00, 0x44],     // PCMPESTRM xmm0, [rax], 0x44
+            &[0x66, 0x0f, 0x3a, 0x63, 0xc1, 0x0c],     // PCMPISTRI xmm0, xmm1, 0x0c
+            &[0x66, 0x0f, 0x3a, 0x62, 0x00, 0x40],     // PCMPISTRM xmm0, [rax], 0x40
+            &[0x66, 0x48, 0x0f, 0x3a, 0x61, 0xc1, 0x00], // PCMPESTRI xmm0, xmm1, 0 (REX.W)
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41 { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x3a, 0x61, 0xc1, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x63, 0x00, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sse_fp_misc_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-38: the interpreter executes SQRT, MIN, MAX, the compares, COMISS/UCOMISS and the integer
+        // conversions through the general core; the JIT has no lowering for them, so the block is not built,
+        // whether the decoder returns the general operation or one of the narrow profile operations. Each
+        // entry: the bytes, the opcode byte after the prefixes, and whether the decoder returns the general
+        // operation (`SseFpArith`/`SseFpMisc`) rather than a narrow profile one.
+        const ENTRY: u64 = 0x4f80;
+        for (bytes, opcode, general) in [
+            (&[0x0f, 0x51, 0x03][..], 0x51, true), // SQRTPS xmm0, [rbx]
+            (&[0xf3, 0x0f, 0x51, 0xc1][..], 0x51, false), // SQRTSS xmm0, xmm1 (narrow profile operation)
+            (&[0xf2, 0x0f, 0x5d, 0x4b, 0x10][..], 0x5d, true), // MINSD xmm1, [rbx+0x10]
+            (&[0x66, 0x44, 0x0f, 0x5f, 0xcf][..], 0x5f, false), // MAXPD xmm9, xmm7 (narrow profile operation)
+            (&[0x0f, 0x2f, 0x03][..], 0x2f, true),              // COMISS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x2e, 0xc1][..], 0x2e, false), // UCOMISD xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0xc2, 0x0b, 0x01][..], 0xc2, true),  // CMPLTPS xmm1, [rbx]
+            (&[0xf3, 0x0f, 0xc2, 0xc1, 0x00][..], 0xc2, false), // CMPEQSS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x5b, 0x03][..], 0x5b, true),              // CVTDQ2PS xmm0, [rbx]
+            (&[0x66, 0x0f, 0x5b, 0xc1][..], 0x5b, false), // CVTPS2DQ xmm0, xmm1 (narrow profile operation)
+            (&[0xf3, 0x0f, 0x5b, 0x4b, 0x10][..], 0x5b, true), // CVTTPS2DQ xmm1, [rbx+0x10]
+            // S2-37 (remainder): the precision conversions and the reciprocal approximations.
+            (&[0x0f, 0x5a, 0x03][..], 0x5a, true), // CVTPS2PD xmm0, [rbx]
+            (&[0x66, 0x0f, 0x5a, 0x4b, 0x10][..], 0x5a, true), // CVTPD2PS xmm1, [rbx+0x10]
+            (&[0xf3, 0x4d, 0x0f, 0x5a, 0xca][..], 0x5a, true), // CVTSS2SD xmm9, xmm10 (REX.W)
+            (&[0xf2, 0x0f, 0x5a, 0xc1][..], 0x5a, false), // CVTSD2SS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x53, 0x03][..], 0x53, true),        // RCPPS xmm0, [rbx]
+            (&[0xf3, 0x0f, 0x53, 0xc1][..], 0x53, false), // RCPSS xmm0, xmm1 (narrow profile operation)
+            (&[0x0f, 0x52, 0xc1][..], 0x52, false), // RSQRTPS xmm0, xmm1 (narrow profile operation)
+            (&[0xf3, 0x0f, 0x52, 0x4b, 0x10][..], 0x52, true), // RSQRTSS xmm1, [rbx+0x10]
+            // S2-37 (remainder): the integer conversions.
+            (&[0xf3, 0x0f, 0x2a, 0x03][..], 0x2a, true), // CVTSI2SS xmm0, dword [rbx]
+            (&[0xf2, 0x48, 0x0f, 0x2a, 0x4b, 0x10][..], 0x2a, true), // CVTSI2SD xmm1, qword [rbx+0x10]
+            (&[0xf3, 0x0f, 0x2a, 0xc1][..], 0x2a, false), // CVTSI2SS xmm0, ecx (narrow profile operation)
+            (&[0xf3, 0x0f, 0x2d, 0x03][..], 0x2d, true),  // CVTSS2SI eax, [rbx]
+            (&[0xf2, 0x48, 0x0f, 0x2c, 0xc1][..], 0x2c, false), // CVTTSD2SI rax, xmm1 (narrow profile operation)
+            (&[0xf2, 0x4c, 0x0f, 0x2d, 0x4b, 0x08][..], 0x2d, true), // CVTSD2SI r9, [rbx+8]
+            (&[0xf3, 0x0f, 0xe6, 0x03][..], 0xe6, true),        // CVTDQ2PD xmm0, [rbx]
+            (&[0xf2, 0x0f, 0xe6, 0xc1][..], 0xe6, false), // CVTPD2DQ xmm0, xmm1 (narrow profile operation)
+            (&[0x66, 0x0f, 0xe6, 0x4b, 0x10][..], 0xe6, true), // CVTTPD2DQ xmm1, [rbx+0x10]
+            (&[0x0f, 0x2a, 0x03][..], 0x2a, true),        // CVTPI2PS xmm0, [rbx]
+            (&[0x0f, 0x2a, 0xc1][..], 0x2a, false), // CVTPI2PS xmm0, mm1 (narrow profile operation)
+            (&[0x0f, 0x2c, 0xc1][..], 0x2c, false), // CVTTPS2PI mm0, xmm1 (narrow profile operation)
+            (&[0x66, 0x0f, 0x2d, 0x4b, 0x10][..], 0x2d, true), // CVTPD2PI mm1, [rbx+0x10]
+            (&[0x66, 0x44, 0x0f, 0x2a, 0xec][..], 0x2a, true), // CVTPI2PD xmm13, mm4
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert_eq!(decoded.opcode.byte, opcode, "{bytes:02x?}");
+            assert_eq!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseFpArith { .. }
+                        | Operation::SseFpMisc { .. }
+                        | Operation::SseCvtFromInt { .. }
+                        | Operation::SseCvtToInt { .. }
+                ),
+                general,
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x51, 0x03][..],
+            &[0xf0, 0xf3, 0x0f, 0x2a, 0x03],
+            &[0xf0, 0xf2, 0x0f, 0x2d, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0xe6, 0x03],
+            &[0xf0, 0x0f, 0x2a, 0x03],
+            &[0xf0, 0x66, 0x0f, 0x2d, 0x03],
+            &[0xf0, 0x66, 0x0f, 0x5d, 0xc1],
+            &[0xf0, 0x0f, 0x2f, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0xc2, 0x03, 0x01],
+            &[0xf0, 0x66, 0x0f, 0x5b, 0x03],
+            &[0xf0, 0x0f, 0x5a, 0x03],
+            &[0xf0, 0xf3, 0x0f, 0x53, 0x03],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn floating_point_sse41_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid() {
+        // S2-55 slice B: the interpreter executes ROUND*, DPPS/DPPD, BLEND*, INSERTPS and EXTRACTPS; the JIT
+        // has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x5040;
+        for bytes in [
+            &[0x66, 0x0f, 0x3a, 0x08, 0xc1, 0x01][..], // ROUNDPS xmm0, xmm1, 1
+            &[0x66, 0x0f, 0x3a, 0x09, 0x00, 0x02],     // ROUNDPD xmm0, [rax], 2
+            &[0x66, 0x0f, 0x3a, 0x0a, 0xd3, 0x09],     // ROUNDSS xmm2, xmm3, 9
+            &[0x66, 0x0f, 0x3a, 0x0b, 0x4b, 0x10, 0x04], // ROUNDSD xmm1, [rbx+0x10], 4
+            &[0x66, 0x0f, 0x3a, 0x0c, 0xc1, 0x05],     // BLENDPS xmm0, xmm1, 5
+            &[0x66, 0x0f, 0x3a, 0x0d, 0x00, 0x01],     // BLENDPD xmm0, [rax], 1
+            &[0x66, 0x0f, 0x38, 0x14, 0xd3],           // BLENDVPS xmm2, xmm3
+            &[0x66, 0x0f, 0x38, 0x15, 0x00],           // BLENDVPD xmm0, [rax]
+            &[0x66, 0x0f, 0x3a, 0x17, 0xc0, 0x01],     // EXTRACTPS eax, xmm0, 1
+            &[0x66, 0x0f, 0x3a, 0x21, 0xc1, 0x10],     // INSERTPS xmm0, xmm1, 0x10
+            &[0x66, 0x0f, 0x3a, 0x40, 0xc1, 0xff],     // DPPS xmm0, xmm1, 0xff
+            &[0x66, 0x44, 0x0f, 0x3a, 0x41, 0xcf, 0x33], // DPPD xmm9, xmm7, 0x33
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::Sse41Fp { .. }),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms is #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x66, 0x0f, 0x3a, 0x0b, 0x00, 0x01][..],
+            &[0x66, 0xf0, 0x0f, 0x3a, 0x40, 0xc1, 0xff],
+            &[0xf0, 0x66, 0x0f, 0x38, 0x14, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmpxchg8b_is_refused_by_the_block_builder_and_the_register_form_is_an_invalid_boundary() {
+        // S2-21: the interpreter executes `[F0] [REX] 0F C7 /1 m64`; the JIT admits no CMPXCHG8B
+        // form (the IR has no two-register compare-exchange effect), so the block is not built
+        // (the entry instruction is left to the interpreter, no state is touched).
+        const ENTRY: u64 = 0x4d00;
+        for bytes in [
+            &[0x0f, 0xc7, 0x0f][..],
+            &[0xf0, 0x0f, 0xc7, 0x0f],
+            &[0x40, 0x0f, 0xc7, 0x0f],
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            assert!(
+                matches!(
+                    refused.stop_reason,
+                    BlockStopReason::UnsupportedDecoded {
+                        guest_rip: ENTRY,
+                        decoded: Instruction {
+                            operation: Operation::Cmpxchg8b { .. },
+                            ..
+                        },
+                    }
+                ),
+                "{bytes:02x?}: {:?}",
+                refused.stop_reason
+            );
+        }
+        // The register form is #UD: a decode boundary, never a block.
+        let invalid =
+            no_block(build(&[0x0f, 0xc7, 0xcb], ENTRY, ENTRY, BlockLimits::default()).unwrap());
+        let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert!(matches!(boundary.error, DecodeError::Invalid { .. }));
+    }
+
+    #[test]
+    fn sse_logic_shuffle_unpack_and_movmsk_forms_are_refused_by_the_block_builder() {
+        // S2-38 (logic and permute remainder): the interpreter executes the general bitwise, shuffle and unpack forms
+        // and MOVMSKPS/MOVMSKPD; the JIT has no lowering for them, so the block is not built.
+        const ENTRY: u64 = 0x5240;
+        for bytes in [
+            &[0x0f, 0x54, 0x00][..],         // ANDPS xmm0, [rax]
+            &[0x66, 0x0f, 0x55, 0x4b, 0x10], // ANDNPD xmm1, [rbx+0x10]
+            &[0x0f, 0x56, 0x00],             // ORPS xmm0, [rax]
+            &[0x66, 0x0f, 0x57, 0x00],       // XORPD xmm0, [rax]
+            &[0x0f, 0xc6, 0xc1, 0x1b],       // SHUFPS xmm0, xmm1, 0x1b
+            &[0x66, 0x0f, 0xc6, 0x00, 0x01], // SHUFPD xmm0, [rax], 1
+            &[0x0f, 0x14, 0xc1],             // UNPCKLPS xmm0, xmm1
+            &[0x66, 0x0f, 0x14, 0x00],       // UNPCKLPD xmm0, [rax]
+            &[0x0f, 0x15, 0x00],             // UNPCKHPS xmm0, [rax]
+            &[0x66, 0x44, 0x0f, 0x15, 0xcf], // UNPCKHPD xmm9, xmm7
+            &[0x0f, 0x50, 0xc1],             // MOVMSKPS eax, xmm1
+            &[0x66, 0x44, 0x0f, 0x50, 0xfb], // MOVMSKPD r15d, xmm3
+        ] {
+            let refused = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::UnsupportedDecoded { guest_rip, decoded } = refused.stop_reason
+            else {
+                panic!("{bytes:02x?}: {:?}", refused.stop_reason);
+            };
+            assert_eq!(guest_rip, ENTRY, "{bytes:02x?}");
+            assert!(
+                matches!(
+                    decoded.operation,
+                    Operation::SseLogicPermute { .. } | Operation::SseMovmsk { .. }
+                ),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // LOCK on these forms, and MOVMSKPS with a memory operand, are #UD: a decode boundary, never a block.
+        for bytes in [
+            &[0xf0, 0x0f, 0x54, 0x00][..],
+            &[0x66, 0xf0, 0x0f, 0xc6, 0x00, 0x01],
+            &[0xf0, 0x0f, 0x50, 0xc1],
+            &[0x0f, 0x50, 0x00],
+        ] {
+            let invalid = no_block(build(bytes, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+            let BlockStopReason::DecodeBoundary(boundary) = invalid.stop_reason else {
+                panic!("{bytes:02x?}: expected invalid decode boundary");
+            };
+            assert!(
+                matches!(boundary.error, DecodeError::Invalid { .. }),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_instruction_stops_after_the_valid_prefix() {
         let mut bytes = mov_rax_imm(3).to_vec();
         bytes.push(0x90);

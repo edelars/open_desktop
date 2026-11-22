@@ -17785,6 +17785,21 @@ Sources: Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3, and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-26g-local-ia32_kernel_gs_baseswapgs-matrix-entry).
 
+## S2-26h — Windows MSR file in the CPL0 profile set
+
+Implemented `Cpl0ProfileSet::with_msr_windows`; tests `od-isa --test s2_26_msr_windows` (15 tests at acceptance, 16 after the review fixes: read of ten
+cell-owned MSRs, valid writes with read-back, reserved-bit/canonical/PAT #GP(0), MISC_ENABLE fail-closed, 24 unknown
+indexes for RDMSR and WRMSR, CPL3 #GP(0), other members unchanged, admission). Neighbouring suites pass:
+`cpl0_profile_set` 1626, `cpl3_profile_set` 238, `cpl3_syscall` 29, `s2_57_cpuid_windows` 19,
+`s2_58_cpuid_windows` 13, lib `cpl3` filter 11. No hardware oracle for the accepted CPL0 rows (privileged instructions); all of them are modelled (the CPL3 `#GP(0)` of a bare RDMSR/WRMSR is observable from user space, no oracle count was taken). Not covered: IA32_TSC (TSC policy withheld), MTRR, microcode and platform
+MSRs, MISC_ENABLE bits beyond bit 0, the CPUID MSR bit. Parent S2-26 stays open.
+
+Review fixes against the SDM text (Vol. 4 Table 2-2, Vol. 3A Figure 6-14, §14.12.4): SYSENTER_CS bits 63:32 are
+ignored on write and read as zero (the cell keeps `value & 0xFFFF_FFFF`, no `#GP(0)`); STAR bits 31:0 are reserved
+in Figure 6-14, so a non-zero low half is `#GP(0)` (Vol. 4 has no bit breakdown, hardware not checked); MISC_ENABLE
+resets to `0x1801` (BTS and PEBS unavailable, R/O) and a write changing any other bit stays a deliberate
+`Unsupported` (not `#GP(0)`). The suite now has 16 tests; the neighbouring suites are unchanged (1626, 238, 19, 13).
+
 ## S2-27h — exact Long64 `CLI`
 
 Added `CliProfile::NonPviLong64V1` and the independent schema profile
@@ -18239,6 +18254,34 @@ first-access order remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--f
 
 Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and Vol. 3A IA32_EFER /
 IA-32e paging ([official Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf), [official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [plan](../plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [Linux profile](STAGE_2_LINUX_PROFILE.md#s2-25e-local-read-only-ia32_efer-rdmsr), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-25e-ia32_efer-rdmsr).
+
+## S2-25g — PAE paging, CR4.PAE policy and PDPTE rules (model only)
+
+Implemented in `od-isa`: `paging::{load_pdptes, translate_pae, PaeParams, PdpteRefusal}`, PAE-paging state
+(`ProtectedCpu::pdptes`, `pae_paging`) in the protected-mode model, new refusals
+`Cr4PaeClearInLongMode`, `PdpteReservedBits`, `PdpteUnreadable`, and #GP(0) for `MOV CR4, RAX`
+clearing PAE in the Long64 CPL0 profile (previously `Unsupported`). Rules and SDM references are in
+the [CPU contract](../specs/CPU_CONTRACT.md#s2-25g--pae-paging-cr4pae-policy-and-pdpte-rules-model-only).
+
+Evidence: 5 new walk tests in `paging.rs` (4 KiB, 2 MiB, PDPTE selection, reserved bits, WP/NX,
+PDPTE loading), 10 new tests in `protected_exec.rs` (enable PAE without LME, 2 MiB A/D, enable
+refusals, LME with PG and no PAE, PAE without PG, CR3 reload, reserved PDPTE at CR3/CR4, CR4 reload set,
+CR4 PAE clear, LME lock) and one in `cpl0_profile_set.rs`. Existing tests updated: PAE clear in IA-32e
+(`Cr4PaeClearInLongMode`), the PG-without-LME refusal now with PAE clear, and the second-PG-write case
+with LMA set. Run: `cargo test -p od-isa --lib` (2654 passed, new tests included), `--test cpl0_profile_set`, `--test cpl3_profile_set --test cpl3_syscall`,
+`od-testkit --test cpl0_set_differential`, `od-machine --lib ap_legacy`. Hardware / oracle: `not_run`;
+the PAE walk cannot be checked against the KVM oracle of S6-14 here, so it is a model of the SDM text.
+The parent S2-25 stays open (32-bit paging, CR0.CD/NW PDPTE reload, task-switch CR3, remaining MSR and
+mode transitions).
+
+Review follow-up. (1) The AP trampoline of `od-machine` steps through `ProtectedCpu::step`, so its `MOV CR0`
+with PG=1, PAE=1, LME=0 now enters PAE paging instead of `PagingNotModelled`; long mode stays unreachable
+(`into_long_mode` requires LMA=1). Covered by one narrow test in `ap_legacy_exec.rs`; the `page_table_reads`
+bookkeeping of the PDPTE reads, the guarded parallel mode and hardware are not checked. (2) PAT: SDM §5.4.2
+makes PTE bit 7 / PDE(PS) bit 12 reserved when PAT is unsupported; the model treats PAT as supported (limit,
+listed in the contract). (3) `#GP(0)` on clearing PAE is closed in the `WriteCr0 | WriteCr4` branch with a
+control policy (`execute.rs`), open in the `cr4_profile` branch, which still answers `Unsupported`.
+
 ## S2-38f — exact Long64 MAXSS with bounded unmasked IM/DM exits
 
 **Status:** local implementation and focused validation complete; independent
@@ -24497,6 +24540,341 @@ concrete defects. The [S2-39l report](S2_39L_INTERPRETER_REPLAY.md) records the
 Graphify refresh and repository layout check's pre-existing missing ignored
 artifact links in this isolated worktree.
 
+## S2-39m — SSE state of the CPL0 set in `LongModeState.sse`
+
+The FP member of the CPL0 profile set now runs on `LongModeState.sse`:
+`run_cpl0_profile_set_inner` loads the SSE half of the `GuestFpState` cell after
+admission and stores it back at every exit (`state.sse` is `None` outside the
+run; the x87 half stays in the cell and `state.x87` stays `None`).
+`FXSAVE64`/`FXRSTOR64` of the member, the CPL3 XMM list (`step_cpl3_xmm`) and the
+CPL3 scalar FP list read and write `state.sse`. At CPL0 under the member the
+narrow register forms that S2-37/S2-38 convert to the general operations
+(arithmetic, compares, conversions, bitwise) and the memory forms of the S2-34 raw
+128-bit moves take the general core, exactly as in the bare run; the S2-54/S2-55 forms and the
+[RAX] forms already reached it once `state.sse` existed. CPL3 keeps its own short
+list (a new test pins the general forms as refused), and a set without
+`with_fp_state` is unchanged.
+
+Tests (all passed): the new `s2_39_cpl0_sse` (11): 45 forms (S2-34, S2-37,
+S2-38, S2-54, S2-55) equal to the bare `step` and to the FP-init CR0/CR4 pair on
+both operand sets (registers, MXCSR, RFLAGS, memory, outcome), one program of the
+45 forms in one run, CR0.EM/TS and CR4.OSFXSR gates before any address check
+(five control combinations, three RAX values), unmasked `#XM`/`#UD` with the
+MXCSR flag kept and the destination unchanged, reserved MXCSR bits, misaligned,
+non-canonical and unmapped operands, `FXRSTOR64` then `FXSAVE64` round trip,
+an SSE form between them, `FXRSTOR64` with reserved MXCSR bits, `FNINIT` around
+SSE forms, and no change without the member. `cpl0_profile_set` 1626,
+`cpl3_profile_set` 238 (one new), `cpl3_syscall` 29, `od-isa --lib` filtered
+(cpl0 fxsave fxrstor sse fp_state cpl3 s6_22) 174, `od-machine --lib` filtered
+(fp linux_direct s4_38) 452 passed and 4 ignored; `cargo check --workspace
+--all-targets`, `cargo fmt --all -- --check`, `git diff --check` clean. The
+refusal test of the member dropped `xorps` and `movups`, which now execute, and the
+S6-22 unit test of `step_cpl3_xmm` now seeds `state.sse`.
+
+Not checked: the full suite, a new oracle run (the reference is the bare run
+validated by the S2-37/38/54/55 hardware tables), a Windows or Linux boot on the
+board, the JIT. Still refused in the set: general forms at CPL3, narrow integer
+SSE2 forms (PSHUFD, PUNPCK*, PAND, ...), MMX forms (need x87 in the state),
+LDMXCSR/STMXCSR, x87 arithmetic. Parent S2-39 remains open.
+
+Review corrections (documents only, no code change). Complete list of the S2-34 forms and
+of MOVSS/MOVSD that stay refused at CPL0 in the set although the plain `step` retires
+them: the register-register (mod = 3) forms of the raw 128-bit moves MOVUPS, MOVUPD, MOVAPS and MOVAPD (`[66] 0F 10`, `11`, `28`, `29`; for example MOVAPS xmm1,xmm2 `0F 28 /r`) and of the MOVDQA load (`66 0F 6F /r`), and MOVSS/MOVSD (`F3`/`F2 0F 10`, `11`) in every form (register-register, load, store); the plain `step` retires all of these, the FP-init CR0/CR4 pair refuses them, and the set follows the pair (their memory forms and the other S2-34 forms execute in both). "Bare-run result" for these forms is the
+result of the FP-init CR0/CR4 pair (`Unsupported`), not of `step`; for the 45 forms of the
+test both references are equal. The list was measured, not assumed: a temporary probe
+(not committed) ran every `0F xx`, `0F 38 xx` and `0F 3A xx` opcode of the SSE ranges
+with no prefix and with `66`, `F2`, `F3`, and ModRM `CA` (register) and `08` ([RAX]),
+through `step`, the FP-init pair and the set, and listed every form that `step` retires
+and the set refuses; outside the narrow integer SSE2, MMX and SSSE3-MMX forms listed
+above, only the forms named here appeared, and the set equalled the pair in all of
+them. The interpreter does not gate on CPUID: `X8664V1Stage4A` declares only FPU, TSC
+and FXSR, yet the SSE/SSE2/SSE3/SSSE3/SSE4.1 forms execute at CPL0 in the set (S2-57
+owns the bits). Semantics follow Intel SDM Rev. 093: Vol. 1 §11.5.1 and §11.5.3.2
+(`#XM` or `#UD` by CR4.OSXMMEXCPT), Vol. 3A §2.5 and the `Event 6`, `Event 7`,
+`Event 19` entries of Vol. 3A chapter 7 (`#UD`, `#NM`, `#XM`), Vol. 2A §2.5 (exception
+classes); the CR4.OSFXSR = 0 `#UD`, the `#UD`-over-`#NM` precedence and the gate order
+before the address checks are from memory, not checked against the PDF.
+
+## S2-39n — narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set
+
+Code (`execute.rs`, `long_decode.rs`): in the FP member of the CPL0 set the register forms of the narrow
+profile decoder (raw 128-bit register moves, MOVSS/MOVSD, the integer SSE2 forms) run on `state.sse` through the
+executors of the plain `step` (`sse_cpl0_form` admits them; the S2-39m admission is not widened for any other
+form); the nine forms of `step_cpl3_xmm` that the plain `step` refuses run through that handler; new decoder
+operations `Ldmxcsr`/`Stmxcsr` (`[REX] 0F AE /2`, `/3`, m32; no mandatory prefix, no REX.W, mod != 11) and their
+executor (`#GP(0)` for a bit outside `TARGET_FXSAVE_MXCSR_MASK`, read before the check, no alignment check). One
+gate (`sse_cpl0_gate`): `#UD` for CR0.EM or CR4.OSFXSR = 0, `#NM` for CR0.TS, before any operand access; an
+FS/GS override on a memory form is refused (the executors do not add a segment base). The plain `step`, the
+FP-init CR0/CR4 pair and CPL3 are unchanged.
+
+Tests (all passed): the new `s2_39_cpl0_sse_set` (14): 75 register forms x 8 register pairs x 4 operand patterns
+equal to the plain `step` (registers, MXCSR, RFLAGS, memory, outcome, x87 untouched); MOVSS/MOVSD exact widths and
+zero extension, the `[RBP-24]` and `[RIP+disp32]` decoder forms and the refused addressing forms; the five gate
+combinations with four RAX values; memory errors; LDMXCSR valid values (9 x 3 MXCSR) and reserved bits (7),
+every addressing form with an unaligned operand, STMXCSR, `#XM`/`#UD` after an LDMXCSR that unmasks DIVPS and
+the masked retirement after the restore; refused prefix/mod = 11/REX.W/FS/GS forms; CPL3-handler forms with values
+computed in the test; a 12-form program against the plain `step`. New decoder unit test (`long_decode`, 1). `cpl0_profile_set` 1626
+(LDMXCSR/STMXCSR left the refusal list), `cpl3_profile_set` 238, `s2_39_cpl0_sse` 11, `s2_34_sse_moves_memory` 14, `s2_37_fp_arith` 19,
+`s2_38_misc_fp` 21, `s2_54_fp_hadd` 20, `s2_55_fp` 33, `od-isa --lib` 2678, `od-testkit` 525+3+2, `od-machine --lib` 1950 (18 ignored);
+`cargo check --workspace --tests`, `cargo fmt --all -- --check`, `git diff --check` clean. One decoder test (`long_decode`) and one test of the set (`every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member`
+in `cpl0_profile_set.rs`) dropped `0F AE 15`/`1D` (LDMXCSR/STMXCSR RIP-relative) from their lists of refused forms; the REX.W forms stay refused.
+
+Behaviour change outside the set: the forms `0F AE /2` and `/3` with a memory operand now decode everywhere (the plain `step`
+and the CPL3 set included); the decoder reads the SIB byte and displacement before it returns `Unsupported`. On an
+encoding truncated at a memory boundary the plain `step` and the CPL3 set now report the fetch error of the missing byte
+instead of `Unsupported`; a complete encoding still ends in `Unsupported` there, with the same opcode (`0xae`).
+
+Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_sse_set_oracle/`, in the
+ignored area: `gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`; derived from the S2-37
+oracle, the local side runs each case as one instruction in the CPL0 set): 5467 cases (2960 register-register forms, 1596
+shift-immediate and shuffle forms, 180 MOVSS/MOVSD cases, 269 LDMXCSR/STMXCSR, 462 CPL3-handler and not-covered
+forms, with fault, page-boundary and unaligned operands), byte for byte; two runs of the hardware side are
+identical. Result: 4642 equal (4455 retirements, 103 `SIGSEGV/SI_KERNEL` (#GP), 66 ACCERR, 18 MAPERR), 785 refused by the
+model (register forms: 480; MOVSS/MOVSD: 21; LDMXCSR/STMXCSR: 7; CPL3-handler class: 277), 40 policy differences, 0 other differences.
+Policy: this hardware executes LDMXCSR with MXCSR bit 6 (DAZ) set (values `0x40`, `0x1FC0`, `0x8040`, `0x1F40`,
+`0xFFFF`, 8 addressing forms); the target mask is `0xFFBF`, so the model raises `#GP(0)`, as for FXRSTOR64.
+Not checked on the oracle: the CR0.EM/TS and CR4.OSFXSR gates and `#XM` (CPL3 process), a Windows or Linux boot, the JIT, the
+full suite.
+
+Not covered, with the forms listed in the S2-39n block of the plan: integer SSE2 forms with a memory operand except
+PCMPEQB, PSLL/PSRL/PSRA by an XMM count, PMULHW, PSHUFHW, MOVQ/MOVD from an XMM register, MOVLPS, MOVLPD/MOVHPD
+stores, MOVHLPS/MOVLHPS, PEXTRW, register-form PINSRW, MOVDQU and the register MOVDQA store, MOVSS/MOVSD
+addressing outside the decoder's measured encodings, LDMXCSR/STMXCSR REX.W/prefix/FS/GS forms, MMX, CPL3. The
+interpreter does not gate on CPUID and declares no bits (S2-57). Parent S2-39 remains open.
+
+## S2-39o — MMX integer forms in the bare run and at CPL0 of the set
+
+Implemented (`crates/od-isa/src/mmx_int.rs`, `long_decode.rs`, `execute.rs`): the no-prefix
+MMX forms listed in the [S2-39o plan block](../plans/STAGE_2.md#s2-39n-mmx-integer-forms-in-the-bare-run-and-at-cpl0-of-the-set)
+on the x87 data registers, in the bare run (state with `x87`) and at CPL0 of the CPL0 set with the FP member.
+The set loads `GuestFpState.x87` into `LongModeState.x87` only for the step of an MMX operation
+(`step_cpl0_mmx`, before the generic dispatch) and stores it back; the S2-39m SSE half is unchanged. The
+S2-37 memory form of CVTPI2PS (ISSUE-662: no change of TOP/tags) and the other MMX conversions were not
+touched and stay refused in the set.
+
+Tests (all passed): `s2_39_mmx` (20): every kind against an independent widened-lane model on several
+thousand boundary/generated operand pairs, every shift count 0..130 and 64-bit counts, literal vectors of the instruction
+pages, execution of every kind (register and memory, whole-state check: only the destination is written, exponent
+0xffff, TOP = 0, tags valid, RFLAGS/GPR/XMM unchanged), all 64 register pairs, PSHUFW for 256 immediates,
+MOVD/MOVQ loads and stores (zero extension, REX.W/R/B, store widths), alignment and faults (backend, non-canonical,
+CPL3 AC), CR0.EM/TS/pending-exception gates under the FP-init pair, LOCK/prefix refusals, shift-group #UD, decoder
+shape. `s2_39_cpl0_mmx` (7): 40 forms in the set equal to the FP-init bare run (registers, RFLAGS, memory,
+read/write log, x87, SSE half untouched), an 8-instruction program, a literal vector, EM/TS/#MF gates for all
+forms with unchanged cell and state, failing accesses, MMX + SSE + FXSAVE64 in one run (the image shows the MMX
+state), refusals of x87 forms and MMX conversions in the set. `cpl3_profile_set` 238 (seven forms added to the
+refusal table), `od-isa --lib` 2677, `cpl0_profile_set` 1626, `s2_33_mmx` 15, `s2_54_ssse3_mmx` 19,
+`s2_37_cvt_int` 36, `s2_34_sse_moves_memory` 14 (the two MMX MOVQ cases 0F 6F/0F 7F without a prefix left its refusal table: they are executed now and covered by `s2_39_mmx`), `s2_39_cpl0_sse` 11. Two mutations (cell write-back dropped, PSRAW clamp changed) fail the new tests.
+
+Oracle (Mac mini 192.168.1.14, Ubuntu x86-64, Core i5-3210M; harness derived from the S2-33 one in
+`work/stage8/s2_39_mmx_oracle/`, not in git): 18980 cases (18964 distinct names) comparing the FXSAVE64 image
+(x87/MMX state byte for byte), GPR, flags, XMM, MXCSR and the data page hash: every kind with every addressing
+form, all register pairs, prefix/REX variants, data sweeps including a shift-count pattern, PSHUFW 256 immediates,
+shifts by imm8 for counts 0..69 and larger, MOVD/MOVQ with every GPR (r10/r11 excluded: the harness clobbers
+them), memory edges, flags/AC, x87 to MMX transitions for every TOP and tag patterns, pending exception, FISTTP
+sequences. 18644 identical, 320 different: 266 where the model refuses (prefix variants the decoder does not
+claim: F2/F3, FS/GS, repeated prefixes, 92 in the `p` group, 92 FS/GS register forms, 32 in the shift-by-imm8
+group; AC-misaligned operand at CPL3, 26; FISTTP sequences that the model refuses for FCW = 0, 24), 42 non-canonical
+range overflow (`AddressOverflow` of the existing access check, as in S2-54), 12 harness artifacts (the pending
+cases whose exceptions are all masked: the local harness normalizes ES when it loads the state, as FXRSTOR does
+(`work/stage8/s2_39_mmx_oracle/src/main.rs:129`), so for a form that does not change the x87 state it prints
+`x87=same`; the physical harness loads an image with ES = 1, the FXSAVE image after the step has ES = 0, so it is
+not `same` there and the full x87 state is printed, with SW = 0x1, which is the normalized state of the local run;
+the result of the executed form is equal in all 12). No difference in the result of an executed form.
+
+Not checked: the full suite, a faulting store with the MMX state compared (the oracle prints the state only for
+completed instructions), CR0.EM/TS on the physical machine (user space cannot set them; the gates are the S2-33
+ones, SDM and unit tests), CPL3 of the set, MMX conversions in the set, a boot, the JIT, CPUID gating (S2-57).
+Parent S2-39 remains open.
+
+## S2-39p — DAZ in the target MXCSR_MASK
+
+Decision [ADR-0014](../decisions/ADR-0014-mxcsr-daz-mask.md), plan block
+[S2-39p](../plans/STAGE_2.md#s2-39p-daz-in-the-target-mxcsr_mask). Code: `crates/od-isa/src/lib.rs`
+(`TARGET_FXSAVE_MXCSR_MASK = 0x0000_ffff`; FXSAVE/FXSAVE64, LDMXCSR and FXRSTOR64 use the constant and are not
+otherwise changed), `crates/od-testkit/src/v2.rs` (the S2-39h result validator expects MXCSR_MASK `0xFFFF`).
+
+Physical check (Mac mini, Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39p_daz_oracle/`,
+ignored: `daz_oracle.c`, `daz_addss.c`, `ext.py`, outputs; one run of `daz_oracle`/`daz_addss` kept, no saved second run): MXCSR_MASK `0x0000FFFF`; DAZ loads with
+LDMXCSR and FXRSTOR64; bits 16 and 31 give `#GP`; DAZ makes ADDSS read `0x00000001` as zero (MXCSR stays `0x1FC0`,
+`0x1FA2` without DAZ). The 40 DAZ policy differences of S2-39n (hardware `ok`, `mx` = loaded value, in
+`~/s2_39n_sse_set_oracle/oracle_out.txt` and `oracle_out2.txt` on the mini, identical) are now the model's result too.
+The model side was checked by the tests, not by the S2-39n comparator: the comparator lived in the ignored area of a
+removed worktree.
+
+Tests (all passed): `od-isa` 35 test targets (34 binaries and the doc-test target with 0 tests), 6833 tests in the run recorded here; `cargo test -p od-isa --offline -- --list` on the final tree of the branch lists 6834 tests (35 targets, no `#[ignore]`), a listing and not a run; the difference of one is not attributed (`s2_39_cpl0_sse_set` 15: LDMXCSR valid values 15 x 3,
+reserved 6, the five DAZ values in the seven addressing forms of the test, DAZ before ADDSS; `cpl0_profile_set` 1626; `s2_39_cpl0_sse` 11;
+the `fxsave_rip_tests` unit tests with FXRSTOR64 restoring DAZ); `od-testkit --lib` 525; `od-runner --test fixture_v2`
+filtered `fxsave|fxrstor|mxcsr|s2_39|x87_sse` 14; `od-machine --lib` filtered `fpu|fp_state|fninit|fxsave|kernel_fpu` 7;
+`cargo fmt --all -- --check` and `git diff --check` clean. Not checked: the target N5105, Windows, native paths and
+the full workspace suite. Parent S2-39 remains open.
+
+## S2-39q — integer SSE2 remainder at CPL0 of the set
+
+Code (`sse2_int.rs` new, `long_decode.rs`, `execute.rs`): a new decoder operation `Operation::Sse2Int { kind, xmm, operand, immediate }`
+(`decode_sse2_int`, tried by `decode` after the profile decoder and every other general decoder answered `Unsupported`/`None`; the
+narrow profile still claims the forms it claimed, so the plain `step`, `step_cpl3_xmm` and the CPL3 profile are unchanged) and one
+executor `step_sse2_int`, admitted wherever `state.sse` exists (the FP member of the CPL0 set at CPL0 and the bare run with SSE state;
+the FP-init CR0/CR4 pair and CPL3 refuse it). The executor has the gates of `step_sse41`: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, `#NM`
+for CR0.TS = 1, before any operand access, then the canonical check, `#GP(0)` for a 16-byte operand that is not 16-byte aligned (exception
+type 4; the 2-, 4- and 8-byte operands of the moves have no alignment rule), the range check, the access. Forms (Intel SDM Vol. 2B, pages
+4-54 MOVD/MOVQ, 4-72..4-83 MOVHLPS/MOVHPD/MOVHPS/MOVLHPS/MOVLPD/MOVLPS, 4-99 MOVQ, 4-183..4-196 PACK*, 4-201..4-208 PADD*, 4-220 PAND,
+4-223 PANDN, 4-227 PAVG, 4-245 PCMPEQ, 4-258 PCMPGT, 4-289 PEXTRW, 4-308 PINSRW, 4-313 PMADDWD, 4-316..4-341 PMAX/PMIN, 4-379 PMULHUW,
+4-383 PMULHW, 4-391 PMULLW, 4-395 PMULUDQ, 4-411 POR, 4-418 PSADBW, 4-426..4-433 PSHUFD/PSHUFHW/PSHUFLW, 4-443 PSLL, 4-455 PSRA,
+4-467 PSRL, 4-479..4-494 PSUB*, 4-502 PUNPCK*, 4-530 PXOR): 57 packed forms of `66 0F xx /r` with an XMM or m128 source (PADDB/W/D/Q,
+PSUBB/W/D/Q, PADDSB/W, PADDUSB/W, PSUBSB/W, PSUBUSB/W, PAND, PANDN, POR, PXOR, PCMPEQB/W/D, PCMPGTB/W/D, PMULLW, PMULHW, PMULHUW,
+PMADDWD, PMULUDQ, PSADBW, PAVGB/W, PMAXUB, PMINUB, PMAXSW, PMINSW, PUNPCK{L,H}{BW,WD,DQ,QDQ}, PACKSSWB, PACKUSWB, PACKSSDW, and
+PSLLW/D/Q, PSRLW/D/Q, PSRAW/D by the low quadword of an XMM or m128 count), PSHUFD (`66`), PSHUFHW (`F3`), PSHUFLW (`F2`) with imm8,
+MOVD/MOVQ xmm, r/m (`66 [REX.W] 0F 6E`), MOVD/MOVQ r/m, xmm (`66 [REX.W] 0F 7E`), MOVQ xmm, xmm/m64 (`F3 0F 7E`), MOVQ xmm/m64, xmm
+(`66 0F D6`), MOVLPS/MOVLPD/MOVHPS/MOVHPD loads (`0F/66 0F 12, 16`) and stores (`0F/66 0F 13, 17`), MOVHLPS and MOVLHPS (`0F 12/16`
+register), PEXTRW r32, xmm, imm8 (`66 0F C5`), PINSRW xmm, r32/m16, imm8 (`66 0F C4`), the register forms of MOVDQU (`F3 0F 6F/7F`) and
+MOVDQA (`66 0F 7F`; the memory forms are the S2-34 raw moves). Undefined encodings are `#UD` at decode time: LOCK on any of them, PEXTRW with
+a memory operand, the register form of `0F 13/17` and of `66 0F 12/16` (the physical oracle gives `SIGILL` for all of them). Refused
+(`Unsupported`, nothing changes), as in S2-54/S2-55: FS/GS overrides, repeated prefixes, `66` together with `F2`/`F3`, the wrong mandatory
+prefix. The decoder reads the ModRM byte only for an opcode it owns (a truncated encoding of another opcode keeps its `Unsupported`).
+
+Tests (all passed): the new `s2_39_int_sse2` (23): every packed form x 4 register pairs x 10 operand patterns and in 5 addressing forms
+(`[rax]`, `[rax+disp8]`, RIP-relative, SIB, `67`) against a reference written in the test from the SDM definitions on wide integers; 48 forms
+whose register form the plain `step` already retires (narrow profile) equal to it in the memory form; the 8 shifts x 18 counts x 4 values
+(including counts above the lane width, in the high quadword, `u64::MAX`); hand-computed values (saturation, PMULHW 0x8000*0x8000, PMADDWD
+overflow, PSADBW, PACK*, PUNPCK*, PMULUDQ, PSRAW by 20); PSHUFD/PSHUFHW/PSHUFLW with all 256 immediates in register and memory form;
+misalignment (7 offsets, all forms), the backend error, non-canonical bases (`#GP`, `#SS` for RBP), the order alignment, range, gates;
+the five gate combinations and the CR4.OSXMMEXCPT independence for 22 forms; the moves (widths, zero extension, REX.R/B, unaligned addresses,
+all 256 imm8 of PEXTRW and PINSRW); `#UD` and refused encodings; the set without the FP member; set equal to the plain `step`; one 8-form
+program. New decoder unit test (`long_decode`, 1). `cpl3_profile_set` (CPL3 refusal list +9 forms), `cpl0_profile_set` (comment only),
+`s2_34_sse_moves_memory` (the three register forms of MOVDQU/MOVDQA left its refusal list) and `s2_39_mmx` (F3 0F 70, F3 0F 7E, F3 0F 6F/7F
+register forms left the list of unclaimed prefixes) were adjusted. Suites: `od-isa` 36 binaries, 6857 passed, 0 failed; `od-jit` 521;
+`od-machine --lib` filtered (fp linux_direct s4_38) 452 passed, 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
+
+Review fixes: the redundant clearing of the high quadword in the MOVQ xmm-to-xmm store of `step_sse2_int` was removed (the buffer starts zeroed and only the low
+quadword is copied; no behaviour change); `s2_39_int_sse2` gained a test of the order alignment fault, then range check, at the top of the address space
+(PADDB at 2^64 - 7 is `#GP(0)`, at 2^64 - 16 reaches the backend, MOVQ at 2^64 - 3 reports `AddressOverflow`), so it has 24 tests; the od-jit block builder
+test `sse2_integer_forms_are_refused_by_the_block_builder_and_lock_forms_are_invalid` was added (522 tests); the case name of F2 0F 6F CA was corrected
+(a register form with the wrong prefix).
+
+Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_int_sse2_oracle/` in the ignored area:
+`gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`, `summary.py`, `tags.py`; derived from the
+S2-55 slice A oracle, the local side runs each case as one instruction in the CPL0 set with the FP member): 46381 lines (46157 distinct case
+names; 224 lines repeat a name with another seed), byte for byte; two runs of the hardware side are identical. Result: 44732 equal (33061
+retirements, 9282 `SIGSEGV/SI_KERNEL` (#GP), 394 ACCERR, 783 MAPERR, 804 `SIGBUS` (#SS), 408 `SIGILL`), 1192 refused by the model (FS/GS
+overrides, repeated prefixes, `66` with `F2`/`F3`, the wrong mandatory prefix of an opcode, LOCK on forms owned by S2-34 and on the MMX forms), 81 range
+overflow of the shared access check (`AddressOverflow`, as in S2-54/S2-55), 152 no-prefix cases of the same opcodes excluded (the MMX
+forms of the same opcode bytes on mm registers, which this slice does not own; 112 of them equal, 40 differ in three separate groups,
+recounted from `oracle_out.txt`/`local_out.txt`: (a) 26 where the model answers `Unsupported` for an MMX form that is an SSE/SSE2 addition
+on mm registers: PADDQ, PSUBQ, PMULUDQ, PMULHUW, PSADBW, PAVGB, PAVGW, PMAXUB, PMINUB, PMAXSW, PMINSW, PINSRW and PEXTRW, 2 cases each
+(register and memory form), 25 of which the hardware retires and 1 (the PEXTRW memory form, which does not exist) it kills with `SIGILL`;
+(b) 6 where the hardware gives `SIGILL` and the model `Unsupported`: 0F 6C, 0F 6D and 0F D6 without a prefix; (c) 8 that are a seeding
+artifact of the local harness (it does not seed the x87/mm registers like the physical image) with both sides retiring: MOVD/MOVQ/MOVDQU/MOVDQA
+store and load forms on mm), 0 other differences.
+The CPL3 process of the oracle cannot show the CR0.EM/TS and CR4.OSFXSR gates and does not model `#AC` (the set runs at CPL0, no alignment-check
+cases of the 2/4/8-byte forms).
+
+Not checked: the gates against the SDM PDF and the hardware (`#UD`-over-`#NM` order and the CR4.OSFXSR = 0 `#UD` are from memory, as in S2-39m),
+a Windows or Linux boot, the JIT, the full suite. Not covered: the forms that keep their refusals above; the memory forms of
+PSHUFLW/PINSRW/MOVLPD/MOVHPD/PMINUB/PCMPEQB/MOVD (xmm, m) in the addressing forms the narrow profile decoder claims still use their
+`step_cpl3_xmm` handler; MMX, MASKMOVDQU, MOVNTDQ, MOVDQ2Q/MOVQ2DQ, PSLLDQ/PSRLDQ with a memory operand (they have none), CPL3. The
+interpreter does not gate on CPUID and declares no new bits (SSE2 is not declared; CX8 and CMOV were declared earlier, S2-57). Parent S2-39 remains open.
+
+## S2-39r — MOVNT stores, MASKMOVDQU, MOVDQ2Q and MOVQ2DQ at CPL0 of the set
+
+Code (`sse2_int.rs`, `long_decode.rs`, `execute.rs`): `Sse2IntKind::Movnt128` (MOVNTPS `0F 2B`, MOVNTPD `66 0F 2B`, MOVNTDQ `66 0F E7`, memory form
+only: the whole source register to a 16-byte aligned operand; Intel SDM Vol. 2B pp. 4-88 MOVNTDQ, 4-94 MOVNTPD, 4-96 MOVNTPS, exception type 1) is a form of
+`Operation::Sse2Int`; MASKMOVDQU (`66 0F F7`, pp. 4-1..4-2) is the new `Operation::Sse2Maskmov { data, mask, memory }` (`step_sse2_maskmov`; the implicit operand is
+`[rdi]`, `[edi]` with `67`; DS/ES/CS/SS overrides have the zero base, FS/GS stay refused) and MOVQ2DQ (`F3 0F D6`, p. 4-102) / MOVDQ2Q (`F2 0F D6`, p. 4-58) the new
+`Operation::Sse2MmxMove { to_xmm, xmm, mm }` (`step_sse2_mmx_move`). The three come out of `decode_sse2_int` (the same fallback and prefix rules as S2-39q). Gates of
+all of them: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, `#NM` for CR0.TS = 1 before any operand access (`sse2_gate_fault`, now shared with `step_sse2_int`); the MMX
+moves add the pending x87 exception (`#MF`, `mmx_entry_fault`) and make the x87 to MMX transition (TOP = 0, tag word all valid); MOVDQ2Q writes MMn with 0xFFFF in bits 79:64,
+MOVQ2DQ zero-extends and does not rewrite its source; REX.R/REX.B extend only the XMM operand. Undefined encodings are `#UD` at decode time (physical oracle:
+`SIGILL`): the register form of the MOVNT stores, the memory form of MASKMOVDQU, MOVDQ2Q and MOVQ2DQ, LOCK. Refused (`Unsupported`, nothing changes): FS/GS overrides,
+repeated prefixes, `66` with `F2`/`F3`, other mandatory prefixes (`F2/F3 0F 2B`, `F2/F3 0F E7`, the no-prefix MOVNTQ/MASKMOVQ and `0F D6`). In the CPL0 set the MMX moves reuse
+the mechanism of the MMX forms (`step_cpl0_mmx`: the x87 half leaves the member's cell for one instruction); MASKMOVDQU and MOVNT need the SSE state only. CPL3, the
+FP-init CR0/CR4 pair and the CPUID bits (S2-57) are unchanged. The MASKMOVDQU memory rules come from the oracle, not from the SDM text: (a) a fault of any of the 16
+bytes is taken whatever the mask (a mask of zero included) and nothing is written, so the model reads the 16 bytes when the mask is partial (the fault of that read is
+reported as the write fault: W bit of the page-fault error code, `AccessKind::Write`) and writes the merged 16 bytes once; (b) the alignment check of CPL3 with
+RFLAGS.AC = 1 is on 8 bytes (offsets 0, 8 and 16 retire, all others are `SIGBUS/ADRALN`); `#AC` is not modeled, so that case is `Unsupported` before any access.
+
+The task statement also listed the memory forms of PADDB/W/D/Q, PSUBB/W/D/Q, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PSHUFD, PSLL/PSRL/PSRA by an m128 count and
+PMULHW/PMULHUW/PMULUDQ as refused; in this tree they are executed by S2-39q (`s2_39_int_sse2`, 5 addressing forms each), so this slice has no change for them.
+
+Tests (all passed): the new `s2_39_rest` (22: the three MOVNT stores in 5 addressing forms x 5 source registers, misalignment at 15 offsets, the gate/alignment order,
+backend, non-canonical and RBP bases, undefined and refused encodings; MASKMOVDQU with 10 mask shapes x 17 offsets, 6 register pairs, 67 and segment overrides, gates,
+canonical and range rules, the whole-range fault rule, the 8-byte `#AC` rule; MOVQ2DQ/MOVDQ2Q for all 8 MMX registers x 5 XMM registers with the exact x87 transition,
+REX bits, the 8 TOP values, the gates and the pending exception, register-form-only and LOCK; the set without the FP member; one four-instruction program); every
+form runs in the set and in the bare run and both must agree. `cpl3_profile_set` (CPL3 refusal list +6 forms), `cpl0_profile_set` (comment only), `s2_39_int_sse2` (the
+`F3 0F D6` entry of the refusal list, which is MOVQ2DQ now, became `F2 0F D4`), `od-jit` block builder (1 test, 523). Suites: `od-isa` + `od-jit` 7445 passed, 0 failed;
+`od-machine --lib` filtered (fp linux_direct s4_38) 454 passed, 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
+
+Physical oracle (Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_rest_oracle/` in the ignored area: `gen_cases.py`, `oracle.c`, `src/main.rs`,
+`cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`; derived from the S2-55 slice A oracle with seven byte-mask register shapes and SIGFPE added): 2014 cases byte for byte;
+two runs of the hardware side are identical. Result: 1799 equal (1083 retirements, 358 `SIGSEGV/SI_KERNEL` (`#GP`), 110 ACCERR, 123 MAPERR, 30 `SIGBUS`, 65 `SIGILL`,
+30 `SIGFPE` (pending x87 exception)), 175 refused by the model (84 FS/GS, repeated and mismatched prefixes, the no-prefix MOVNTQ/MASKMOVQ; 91 `#AC` cases of MASKMOVDQU),
+24 range overflow of the shared access check (`AddressOverflow` at the top of the address space, as in S2-54/S2-55), 16 MASKMOVDQU cases (`mmed_m5_p2_cross_p3`) whose 16 bytes straddle an
+inaccessible (`PROT_NONE`) page and an unmapped one: the hardware reports the unmapped (MAPERR) second page, the fixture memory of the runner the first page (ACCERR). Known
+divergence of the model from the hardware, not an agreement: the page the hardware reports depends on the instruction (MASKMOVDQU reports the second page, a 16-byte MOVUPS
+store the first page, S2-34), while the memory backend of the model reports the first failing page of the range for both; it is recorded as ISSUE-649, 0 other. Not checkable on
+the physical side from user mode: the CR0.EM/TS and CR4.OSFXSR gates (SDM only), CR0.NE = 0 of the MMX moves, CPL0 behaviour of `#AC`.
+
+Known limitations of the model of this slice (open, not closed by the oracle comparison; ISSUE-649 and ISSUE-650 in `docs/KNOWN_ISSUES.md`):
+(1) MASKMOVDQU with a partial mask reads the 16 bytes and writes the merged bytes as one 16-byte store (`step_sse2_maskmov`). The hardware writes only the bytes
+whose mask bit is set. Observable differences: the bytes that are not selected are rewritten with the value that was read, which is visible on MMIO (a read with side
+effects and a write that the device never saw), with another CPU in SMP (a store of an unselected byte between the read and the write is lost) and in JIT invalidation
+(a write into a code page invalidates its blocks even when no selected byte lies in it); a mask of zero reads and writes the 16 bytes (the dirty and accessed state of
+the page changes) where the SDM says "No data will be written"; the read-first path uses `GuestMemory::read` and the `write_intent` recoding, not
+`GuestMemory::read_integer_for_write`, which validates all translated spans for a write before it reads but is bounded to integer sizes up to 8 bytes. The fault rule
+(a fault of any of the 16 bytes is taken whatever the mask, nothing is written) is the one measured on the oracle and is kept. The memory contract (a masked-write
+operation of `GuestMemory`, or a write-intent read of 16 bytes) is a decision for the owner and stays open; the code is unchanged. The order of two failing pages of
+one access (16 cases above) is part of the same open item.
+(2) `canonical_fault` of `long_decode.rs` (shared by every memory operand, so by the MOVNT stores and MASKMOVDQU) chooses `#SS(0)` only by an RSP/RBP base and does not
+look at a segment override: with the `36` (SS) prefix and a non-canonical RDI the model gives `#GP(0)`, the SDM `#SS(0)`; with the `3E` (DS) prefix and an RBP base the
+other way round. Not covered by a test of this slice; the shared code is unchanged.
+
+## S2-39s — general SSE/SSE2 forms at CPL3 of the set
+
+ADR-0015 item 9: the general SSE/SSE2 forms (S2-34, S2-37, S2-38, S2-54, S2-55 and the S2-39 slices m, n, q, r) execute at CPL3
+of the profile set with the FP member, on `LongModeState.sse`, with the results of the bare run and of the CPL0 set.
+
+Code (`crates/od-isa/src/execute.rs`): (1) `run_with_cpl3_profile_set` hands an instruction to the step when `cpl3_allows` accepts
+it or when the set has the FP member and `cpl3_sse_set_form` does (the register forms and MOVSS/MOVSD/LDMXCSR/STMXCSR of
+`sse_cpl0_form`, the handler forms of `step_cpl3_xmm`, the raw 128-bit moves, the narrow forms the step converts, and every
+operation of the general core); the step still decides (the MMX forms and MOVDQ2Q/MOVQ2DQ need the x87 registers, which stay in the cell at CPL3, so
+they are `Unsupported`). (2) `sse_cpl0` became `sse_set` (CPL0 or CPL3 of the set with the FP member): the conversions of the narrow
+forms to the general operations, the S2-39n gate and the admission arms apply at CPL3. (3) The early redirect of a long list of narrow
+operations to `step_cpl3_xmm` is kept without the FP member and, with it, only for the nine forms that have no other executor
+(`sse_cpl0_cpl3_handler_form`: MOVD/MOVQ to and from XMM, PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS load, PMINUB/PCMPEQB m128); every other
+narrow form of that list now runs through the executors of the plain `step`, as at CPL0. (4) `#AC` stays deferred (ADR-0015): a new
+helper `cpl3_ac_unmodeled` makes a misaligned operand at CPL3 with RFLAGS.AC = 1 and CR0.AM = 1 `Unsupported` (before any access, nothing changed)
+in the forms that did not have the check: MOVSS and MOVSD load and store, LDMXCSR, STMXCSR, and the handler forms (MOVD/MOVQ, PINSRW, MOVLPD, MOVHPD, MOVHPS).
+The other executors already had it. Without the FP member the CPL3 entry is unchanged (every SSE form `Unsupported`).
+
+Tests (all passed): the new `s2_39_cpl3_sse` (15): 126 forms (S2-34 raw moves, MOVSS/MOVSD, LDMXCSR/STMXCSR, S2-37/38/54/55, integer SSE2, MOVNT*,
+MASKMOVDQU, the former handler forms and their `67` spellings) at CPL3 equal to the bare `step` (where it decodes the form) and to the CPL0 set (registers,
+MXCSR, RFLAGS, memory, outcome, x87 half untouched), on pattern and ordinary operands; one program of all forms; a sweep of the SSE opcode space
+(52940 cases: `0F`, `0F 38`, `0F 3A` with no, `66`, `F2`, `F3` prefix, register forms with REX variants, `[RAX]` memory forms aligned, odd and 8-aligned, with and
+without AC) of the CPL3 set against the CPL0 set: 51070 equal (2647 retired), 968 refusals by the AC rule, 876 MMX-class refusals, 26 CRC32 refusals, 0 other differences, and every
+misaligned retirement with AC is aligned to its operand size (81 form/offset pairs checked by rule); the gates for five CR0/CR4 combinations and four operand
+cases (before any address check); unmasked `#XM`/`#UD` with MXCSR flag kept; LDMXCSR valid values and reserved bits, STMXCSR; non-canonical `[RAX]` (`#GP`), `[RBP]`/`[RSP]` (`#SS`), misaligned
+aligned forms (`#GP` whatever AC is), unmapped operands; 20 forms on a supervisor-only page (`#PF` with P and U, W for stores, nothing changed; the CPL0 set reaches the page) and one access
+across into it; 30 forms with a misaligned operand and AC (refusal, nothing changed; AM = 0 runs as CPL0; CPL0 ignores AC; aligned operand runs); 20 MMX forms and MOVDQ2Q/MOVQ2DQ refused; FS/GS overrides refused; LOCK is `#UD`; no FP member refuses every form;
+ordinary CPL3 instructions around SSE forms with the budget per instruction. `cpl3_profile_set` (238): the refusal test of the 21 general forms now asserts that they retire
+(MOVDQ2Q/MOVQ2DQ stay refused), two neighbouring-encoding tests dropped the `67` MOVD, the register MOVQ and the legacy MOVD store (they run now). Suites:
+`cpl0_profile_set` 1626, `cpl3_syscall` 41, `s2_39_cpl0_sse` 11, `s2_39_cpl0_sse_set` 15, `s2_39_cpl0_mmx` 7, `s2_39_rest` 23, `s2_39_int_sse2` 24, `s2_39_mmx` 20, `s2_34_sse_moves_memory` 14, `user_mode_commit` 15,
+`od-isa --lib` filtered (cpl0 fxsave fxrstor sse fp_state cpl3 s6_22) 178, `od-machine --lib` filtered (fp linux_direct s4_38) 454 passed and 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
+
+Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc; `work/stage8/s2_39_cpl3_oracle/` in the ignored area: `gen_cases.py`, `oracle.c`,
+`src/main.rs`, `compare.py`, `summary.py`, `cases.txt`, `out_*.txt`, `local_*.txt`; derived from the S2-55 slice A oracle; the hardware side is a user process, the local side runs each case as one
+instruction in the CPL3 set with the FP member, CR0.AM = 1, CR4.OSFXSR/OSXMMEXCPT): 163950 cases (`0F`, `0F 38`, `0F 3A` map x no/`66`/`F2`/`F3` prefix, register and 12 addressing forms, three operand offsets,
+AC, page edges, protections, non-canonical addresses, `[RSP]`/`[RBP]` bases, 80 LDMXCSR and 30 STMXCSR cases), byte for byte; two runs of the hardware side are identical (`cmp`). Result: 15348 equal (8024 retirements,
+5648 `#GP`, 468 `#SS`, 309 MAPERR, 278 ACCERR, 621 `SIGILL`; LDMXCSR 80 of 80, STMXCSR 30 of 30, stack-base cases equal), 100 RCPSS/RCPPS/RSQRTSS/RSQRTPS cases whose low result bits differ (the
+approximation envelope of ISSUE-025, not an exact table), 0 other differences, and the rest refused by the model as `Unsupported`: 141092 undefined encodings (hardware `SIGILL`), 5159 MMX class
+(x87 state; 4511 of them change the x87 state on the hardware), 537 hardware `#AC` (`SIGBUS/ADRALN`), 334 FS/GS overrides, 125 CRC32, 1255 forms the model does not run (compare predicates above 7 of CMPPS/CMPSS/CMPPD/CMPSD, which the hardware
+accepts; MOVSS/MOVSD addressing outside the decoder's measured encodings; REX.W and `67` spellings of the narrow register forms; LDMXCSR/STMXCSR with REX.W; AES-NI, PCLMULQDQ, SSE4.2 string compares, LDDQU, MOVNTI,
+INVEPT/INVVPID and VMREAD/VMWRITE; 16-byte MOVUPS/MOVDQU at a misaligned operand with AC, which the hardware executes without `#AC` and the executors refuse as before). The refused forms are the same as at CPL0 by the sweep above for the register forms and for the `[RAX]` addressing form, which are what the sweep covers; the other 12 addressing forms are not covered by the sweep and are not claimed equal. The `#AC` refusal is tested per operand size (a misaligned operand is refused, one aligned to its own size at an offset that is not a multiple of 16 runs as at CPL0) in `s2_39_cpl3_sse`.
+Intel SDM Vol. 2A section 2.5.3 to 2.5.5 (Tables 2-20 to 2-22; Table 2-21 note 1: LDDQU, MOVUPD, MOVUPS and the PCMP*STR* forms have no alignment `#GP`) was checked for the alignment and `#AC` rules; the CPL3 gate and
+`#SS` behavior follows the executors of S2-39m..r and was confirmed by the oracle, not re-derived from the PDF.
+
+Not checked: the full suite, a Windows or Linux boot with SSE at CPL3 on the board, the JIT (unchanged, refuses these forms), `#AC` (deferred by ADR-0015), CPUID bits (S2-57; SSE, SSE2, FXSR and MMX are declared only after owner
+acceptance of S2-39), FXSAVE/FXRSTOR and x87 forms at CPL3 (not in the CPL3 allow-list), MMX at CPL3 (outside the scope), the `#XM` path on the physical side (the oracle MXCSR masks every exception). Parent S2-39 remains open: the slices m..s await coordinator
+review and owner acceptance.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64
@@ -25145,3 +25523,23 @@ high review found no remaining issues after the exit-status documentation was
 corrected; the reviewer reran the focused suite (4/4), formatting, workspace
 check, and boundary probes. S2-43a is a verified partial slice; S2-43 remains
 open.
+
+## S2-25n — exact PAE refusal and the board PAE adapter
+
+Bounded slice after the acceptance of S2-25; S2-25 itself is not touched. No 32-bit executor runs on `GuestMemory`, so the long-mode host loop, JIT entries and
+probes keep refusing a protected-mode PAE vCPU, now with `ProbeConfigError::PaeProtectedMode` instead of a missing `EFER.LME|LMA`. `LoadedFirmwareBoard::pae_memory_adapter`
+gives the `PagedPaeMemoryAdapter` over the whole bus for a vCPU on PAE paging; the board adapter equals `pae_operand_access` on identical tables (RAM, Local APIC MMIO,
+an uncovered 36-bit page). Tests run: `od-machine` lib filters `pae` (53), `page_walk` (135), `paged_pae` (19); `od-host` `s2_25l` (1);
+`cargo check --workspace --all-targets`, `cargo fmt --all -- --check`, `git diff --check`. Not run: the full suite, a hardware oracle (PAE paging cannot be enabled from a
+user-space process), CPUID.
+
+## S2-25o — 32-bit step over GuestMemory on PAE paging, and the host loop's PAE path
+
+Bounded slice after the acceptance of S2-25; S2-25 itself is not touched. `ProtectedCpu` (not rewritten) now runs over a linear view of `GuestMemory`
+(`RealModeMemory::walks_linear`, `step_admitting`), so `PagedPaeMemoryAdapter` has an executor for the trampoline's covered set (`pae_covers`: ADD ESP, BT, Jcc, MOV moffs/EDX/imm, CMP, RDMSR, WRMSR,
+WBINVD); everything else is a typed stop that names the instruction (`MOV Sreg`, `JMP FAR`, `MOV CRn`). `LoadedFirmwareBoard::pae_step` and `run_pae_state_step` drive it; the exclusive-bus host
+loop executes a PAE protected-mode state instead of refusing it with `PaeProtectedMode` (exit `PaeProtected(stop)` on the first uncovered instruction; the JIT is not entered; a shared bus keeps
+the refusal). Differential against `ProtectedCpu` over `BoardRam` on identical tables: 20-instruction lockstep, 9 `#PF` cases, 6 refusals, 5 uncovered forms. Tests run: `od-isa` `protected_exec` (163) and
+`s2_25o_linear_memory` (4); `od-machine` `pae_protected_step` (13), `pae` (63), `paged_pae` (19), `ap_legacy_exec` (37); `od-host` `s2_25` (8); `cargo fmt --all -- --check`, `git diff --check`. Not run: the full suite, a hardware
+oracle (none can exist for PAE), CPUID. Review corrections: `EFLAGS.VM` = 1 stops with `Virtual8086` before any fetch; the shared bus names the failed register check (`Cr0EtRequired`, ...) before `PaeProtectedMode`; `PaeBoardStep::page_fault` is architectural only with `Fault`; the four differences from `ProtectedCpu` by design each have their own test (the lookahead and 4 GiB cases are outside the lockstep, which leaves at an `Unsupported`). Remainder (carried under S2-25o; the parent S2-25 was accepted by the owner 2026-11-21 and is not reopened by it): a real 32-bit instruction set, descriptor-table access and `MOV CRn` on PAE, `WRMSR` and kept PDPTEs in the loop,
+CPL 3, the shared and CPL0-set loop modes, the JIT, an adapter for 32-bit paging.

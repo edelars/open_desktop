@@ -8,6 +8,49 @@
 //! `import-install-media` converts the supported ISO subset to a new raw disk
 //! after storage verifies the generated GPT, FAT32 and copied file bytes.
 //!
+//! # `make-data-disk` and `add-install-file` (S8-27, S8-22)
+//!
+//! Both build a new raw disk with the same GPT and FAT32 writer and publish
+//! it like `import-install-media` (`<out>.partial`, read-back, no-replace
+//! link; an existing output or `.partial` is refused before any input is
+//! read). Inputs are only read, under share locks held until publication.
+//!
+//! * `make-data-disk <manifest.json> <out.raw> [--nonce VALUE]` builds the
+//!   payload disk: one Microsoft Basic Data partition (not an ESP, so Windows
+//!   assigns a drive letter) with a FAT32 volume labelled `OD8PAYLOAD` and the
+//!   directory `OD8\`: `nonce.txt` (the value of `--nonce`, which must be
+//!   exactly 32 lowercase hex digits, else exit 3 `nonce_invalid` and nothing
+//!   is created; empty without `--nonce`),
+//!   an empty `markers.txt` and the manifest's files. The SHA-256 of every
+//!   input is checked against the manifest before the output is created and
+//!   again before it is published; a mismatch is exit 2
+//!   (`input_hash_mismatch`, `detail` is the index in the manifest). A
+//!   mismatch in the first check creates nothing (`partial_left=false`); a
+//!   mismatch in the second check, which happens after `<out>.partial` was
+//!   written, leaves that file behind (`partial_left=true`, `published=false`)
+//!   and the caller deletes it. The manifest format is described in
+//!   `tests/compat/payloads/` (example) terms: `version` (1), optional
+//!   `comment`, optional `spare_mib` (free space left for the guest, default
+//!   512), and `files`: `path` (inside `OD8/`), `source` (relative to the
+//!   manifest), `sha256`, optional `origin`. A malformed manifest is exit 3.
+//!   `spare_mib` is 1 to 65535 (`manifest_spare` otherwise). The reader of
+//!   the storage crate accepts a FAT of at most 64 MiB (about 64 GiB of 4 KiB
+//!   clusters) and directories at most 16 deep (`OD8` counts as the first);
+//!   both are checked before anything is created: a path deeper than that is
+//!   `manifest_depth` and a volume whose FAT would be larger (a big payload
+//!   next to a big `spare_mib`) is `fat_capacity`, both exit 3. The writer
+//!   does not check the reader's other limits (entry count, directory size),
+//!   which the manifest limit of 128 files keeps far away.
+//! * `add-install-file <in.raw> <out.raw> <path> <file>` writes a new disk
+//!   that is the converted installation disk `<in.raw>` plus `<file>` at
+//!   `<path>` (for example `sources\Autounattend.xml`; the directory must
+//!   exist, the file must not). `<in.raw>` is never changed; the output is
+//!   laid out again by the writer, not patched in place. The output reports
+//!   `input_sha256`, `added_file_sha256` and `output_sha256`, and fails
+//!   (`input_changed`, exit 2) when an input changed during the run; as with
+//!   the hash check above, a change found only before publication leaves
+//!   `<out>.partial` (`partial_left=true`).
+//!
 //! # Exit statuses
 //!
 //! | code | meaning |
@@ -95,9 +138,11 @@ use od_storage::cow_export::{ExportOptions, ImportError, StateSelection, export_
 use od_storage::cow_inspect::{InspectMode, InspectReport, Outcome, inspect_storage};
 use od_storage::cow_salvage::{CopyStatus, SalvageError, SalvageOptions, salvage_to_copy};
 use od_storage::cow_snapshot::{ParentRef, ParentResolver, ResolveError};
-use od_storage::install_media::{ImportError as InstallMediaImportError, InstallMedia};
+use od_storage::install_media::InstallMedia;
 use od_storage::io::{BackendError, CheckedStorage, StorageBackend, StorageCapabilities};
 use od_storage::testing::rng::SplitMix64;
+mod media;
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -201,7 +246,7 @@ pub fn check_file(path: &Path, parents: &[(u64, PathBuf)]) -> InspectReport {
     inspect_file(path, InspectMode::Check, parents)
 }
 
-const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool import <in.raw> <new.img>\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n       od-image-tool import-install-media <image.iso> <out.raw>\n";
+const USAGE: &str = "usage: od-image-tool info <image>\n       od-image-tool check <image> [--parent UID=PATH]...\n       od-image-tool export <image> <out.raw> [--snapshot ID] [--parent UID=PATH]...\n       od-image-tool salvage <image> <new.img> <report.txt> [--snapshot ID] [--parent UID=PATH]... [--accept-partial]\n       od-image-tool import <in.raw> <new.img>\n       od-image-tool create-raw <directory> <name> <capacity-bytes> (macOS)\n       od-image-tool import-install-media <image.iso> <out.raw>\n       od-image-tool make-data-disk <manifest.json> <out.raw> [--nonce VALUE]\n       od-image-tool add-install-file <in.raw> <out.raw> <path-in-media> <file>\n";
 
 /// Result of one invocation: the status and what to print.
 #[derive(Debug, Eq, PartialEq)]
@@ -228,6 +273,8 @@ enum Command {
     Salvage,
     CreateRaw,
     ImportInstallMedia,
+    MakeDataDisk,
+    AddInstallFile,
 }
 
 impl Command {
@@ -236,6 +283,8 @@ impl Command {
             Self::Info | Self::Check => 1,
             Self::Export | Self::Import | Self::ImportInstallMedia => 2,
             Self::Salvage | Self::CreateRaw => 3,
+            Self::MakeDataDisk => 2,
+            Self::AddInstallFile => 4,
         }
     }
 
@@ -254,6 +303,7 @@ struct Parsed<'a> {
     parents: Vec<(u64, PathBuf)>,
     snapshot: Option<u64>,
     accept_partial: bool,
+    nonce: Option<&'a str>,
 }
 
 fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
@@ -267,6 +317,8 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         "salvage" => Command::Salvage,
         "import" => Command::Import,
         "import-install-media" => Command::ImportInstallMedia,
+        "make-data-disk" => Command::MakeDataDisk,
+        "add-install-file" => Command::AddInstallFile,
         #[cfg(target_os = "macos")]
         "create-raw" => Command::CreateRaw,
         _ => return Err(usage("unknown command")),
@@ -277,6 +329,7 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
         parents: Vec::new(),
         snapshot: None,
         accept_partial: false,
+        nonce: None,
     };
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
@@ -308,6 +361,12 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
             Some("--accept-partial") if command == Command::Salvage => {
                 parsed.accept_partial = true;
             }
+            Some("--nonce") if command == Command::MakeDataDisk => {
+                match rest.next().and_then(|s| s.to_str()) {
+                    Some(nonce) if parsed.nonce.is_none() => parsed.nonce = Some(nonce),
+                    _ => return Err(usage("--nonce needs a value and may not repeat")),
+                }
+            }
             Some(a) if a.starts_with("--") => return Err(usage("unexpected argument")),
             _ => {
                 if parsed.paths.len() >= command.positionals() {
@@ -325,6 +384,10 @@ fn parse(args: &[OsString]) -> Result<Parsed<'_>, Run> {
             Command::Salvage => "salvage needs an image, a new image path and a report path",
             Command::CreateRaw => "create-raw needs a directory, name and capacity-bytes",
             Command::ImportInstallMedia => "import-install-media needs an ISO and an output path",
+            Command::MakeDataDisk => "make-data-disk needs a manifest and an output path",
+            Command::AddInstallFile => {
+                "add-install-file needs an input disk, an output path, a path in the media and a file"
+            }
         }));
     }
     Ok(parsed)
@@ -368,6 +431,18 @@ pub fn run(args: &[OsString]) -> Run {
         (Command::ImportInstallMedia, [src, out]) => {
             import_install_media(Path::new(src), Path::new(out))
         }
+        (Command::MakeDataDisk, [manifest, out]) => {
+            media::make_data_disk(Path::new(manifest), Path::new(out), parsed.nonce)
+        }
+        (Command::AddInstallFile, [input, out, media_path, file]) => match media_path.to_str() {
+            Some(media_path) => media::add_install_file(
+                Path::new(input),
+                Path::new(out),
+                media_path,
+                Path::new(file),
+            ),
+            None => usage("path in the media must be UTF-8"),
+        },
         #[cfg(target_os = "macos")]
         (Command::CreateRaw, [directory, name, capacity]) => {
             create_raw_file(Path::new(directory), name, capacity)
@@ -557,93 +632,21 @@ fn fresh_uid() -> u64 {
 
 fn import_install_media(input: &Path, target: &Path) -> Run {
     const COMMAND: &str = "import-install-media";
+    match convert_install_media(input, target) {
+        Ok(lines) => run_of(lines, Outcome::Ok),
+        Err(refusal) => refusal.run(COMMAND),
+    }
+}
+
+fn convert_install_media(input: &Path, target: &Path) -> Result<Lines, media::Refusal> {
     let partial = with_suffix(target, ".partial");
-    let fail = |outcome, reason, partial_left, target_left| {
-        let mut lines = failure(COMMAND, outcome, reason, None);
-        lines
-            .put("published", false)
-            .put("partial_left", partial_left)
-            .put("target_left", target_left);
-        run_of(lines, outcome)
-    };
-    for (path, exists) in [
-        (target, "target_exists"),
-        (partial.as_path(), "partial_exists"),
-    ] {
-        match name_taken(path) {
-            Ok(false) => {}
-            Ok(true) => return fail(Outcome::Io, exists, path == partial, false),
-            Err(error) => return fail(Outcome::Io, io_reason(&error), false, false),
-        }
-    }
-    let lease = match ReadLease::open(input) {
-        Ok(lease) => lease,
-        Err(LeaseOpenError::LeaseBusy) => return fail(Outcome::Busy, "busy", false, false),
-        Err(LeaseOpenError::IdentityMismatch) => {
-            return fail(Outcome::Io, "path_changed", false, false);
-        }
-        Err(LeaseOpenError::Io(error)) => {
-            return fail(Outcome::Io, io_reason(&error), false, false);
-        }
-    };
-    let Ok(source) = CheckedStorage::new(lease) else {
-        return fail(Outcome::Io, "io_error", false, false);
-    };
-    let plan = match InstallMedia::from_iso(&source) {
-        Ok(plan) => plan,
-        Err(InstallMediaImportError::Corrupt(reason)) => {
-            return fail(Outcome::Corrupt, reason, false, false);
-        }
-        Err(InstallMediaImportError::Unsupported(reason)) => {
-            return fail(Outcome::Unsupported, reason, false, false);
-        }
-        Err(_) => return fail(Outcome::Io, "io_error", false, false),
-    };
-    let writer = match HostFileStorage::create_new_exclusive(&partial, 0) {
-        Ok(writer) => writer,
-        Err(error) => {
-            let reason = match &error {
-                WriterOpenError::WriterBusy => "busy",
-                WriterOpenError::IdentityMismatch => "path_changed",
-                WriterOpenError::Io(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    "partial_exists"
-                }
-                WriterOpenError::Io(e) => io_reason(e),
-            };
-            return fail(
-                Outcome::Io,
-                reason,
-                name_taken(&partial).unwrap_or(false),
-                false,
-            );
-        }
-    };
-    let Ok(mut destination) = CheckedStorage::new(writer) else {
-        return fail(Outcome::Io, "io_error", true, false);
-    };
-    if let Err(error) = plan.write_and_verify(&source, &mut destination, fresh_uid()) {
-        let reason = match error {
-            InstallMediaImportError::Output(reason) => reason,
-            _ => "io_error",
-        };
-        return fail(Outcome::Io, reason, true, false);
-    }
-    let Ok(writer) = destination.into_backend() else {
-        return fail(Outcome::Io, "io_error", true, false);
-    };
-    let published = match publish_no_replace(&partial, target, &writer) {
-        Ok(published) => published,
-        Err(error) => {
-            let reason = match error {
-                PublishError::TargetExists => "target_exists",
-                PublishError::PartialChanged => "partial_changed",
-                PublishError::TargetUnverified(_) => "target_unverified",
-                PublishError::Io(_) => "publish_failed",
-            };
-            return fail(Outcome::Io, reason, true, reason == "target_unverified");
-        }
-    };
-    let mut lines = Lines::new(COMMAND);
+    media::refuse_existing(target, &partial)?;
+    let lease = ReadLease::open(input).map_err(media::lease_refusal)?;
+    let source =
+        CheckedStorage::new(lease).map_err(|_| media::Refusal::new(Outcome::Io, "io_error"))?;
+    let plan = InstallMedia::from_iso(&source).map_err(|e| media::plan_refusal(&e))?;
+    let written = media::write_and_publish(&plan, &source, target, fresh_uid(), false, || Ok(()))?;
+    let mut lines = Lines::new("import-install-media");
     lines
         .put("outcome", "ok")
         .put("reason", "ok")
@@ -653,8 +656,8 @@ fn import_install_media(input: &Path, target: &Path) -> Run {
         .put("file_durable", true)
         .put("published", true)
         .put("namespace_durable", false)
-        .put("partial_removed", published.partial_removed);
-    run_of(lines, Outcome::Ok)
+        .put("partial_removed", written.partial_removed);
+    Ok(lines)
 }
 
 // ------------------------------------------------------------------ export

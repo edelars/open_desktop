@@ -18,6 +18,8 @@
 
 macOS 26.7.1/build 25G241 и сведения об основном Mac сняты с локального хоста 22 октября 2026 года. Владелец указал базовый M1 Pro с 16 GB RAM и Mac mini (Late 2012) с 16 GB RAM и Ubuntu. По выбранному порядку M1 Pro инвентаризируется после контрольного Windows запуска в стороннем гипервизоре на M3 Max; Mac mini и физический x86 oracle вынесены за этап вместе с S0-12/E03. Это порядок работ, а не подтверждение совместимости на дополнительных машинах.
 
+Поддерживаемая конфигурация Windows-гостя этапа 8 (редакция, build, ресурсы, устройства, Secure Boot, TPM, BitLocker, неподдерживаемые функции, лицензия) — [WINDOWS_GUEST_PROFILE.md](WINDOWS_GUEST_PROFILE.md) (S8-05; принято, см. WINDOWS_GUEST_PROFILE.md). CPU-профиль Windows — [ADR-0013](../decisions/ADR-0013-windows-cpu-profile.md).
+
 ## Failed Linux probe (not support evidence)
 
 | Evidence без support acceptance | Run/input fingerprint | Статус |

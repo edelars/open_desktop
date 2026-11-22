@@ -25,6 +25,84 @@ impl Name {
     }
 }
 
+impl Name {
+    pub(super) fn display(&self) -> String {
+        match self {
+            Name::Long(long) => long.clone(),
+            Name::Short(short) => {
+                let base = String::from_utf8_lossy(short[..8].trim_ascii_end());
+                let extension = String::from_utf8_lossy(short[8..].trim_ascii_end());
+                if extension.is_empty() {
+                    base.into_owned()
+                } else {
+                    format!("{base}.{extension}")
+                }
+            }
+        }
+    }
+}
+
+/// Adds the file at `path` (components separated by `/`). Missing parent
+/// directories are created only with `create_dirs`; an existing entry of the
+/// same name (compared case-insensitively) is refused.
+pub(super) fn insert_file(
+    entries: &mut Vec<Entry>,
+    path: &str,
+    file: File,
+    create_dirs: bool,
+) -> Result<(), ImportError> {
+    let components: Vec<&str> = path.split('/').collect();
+    if !components.iter().all(|part| valid_component(part)) {
+        return Err(ImportError::Unsupported("media_path"));
+    }
+    let Some((name, directories)) = components.split_last() else {
+        return Err(ImportError::Unsupported("media_path"));
+    };
+    let mut level = entries;
+    for directory in directories {
+        let index = match level
+            .iter()
+            .position(|entry| entry.name.eq_ignore_ascii_case(directory))
+        {
+            Some(index) => index,
+            None if create_dirs => {
+                level.push(Entry {
+                    name: Name::Long((*directory).to_owned()),
+                    contents: Contents::Directory(Vec::new()),
+                });
+                level.len() - 1
+            }
+            None => return Err(ImportError::Unsupported("media_directory_missing")),
+        };
+        level = match &mut level[index].contents {
+            Contents::Directory(children) => children,
+            Contents::File(_) => return Err(ImportError::Unsupported("media_path_conflict")),
+        };
+    }
+    if level
+        .iter()
+        .any(|entry| entry.name.eq_ignore_ascii_case(name))
+    {
+        return Err(ImportError::Unsupported("media_file_exists"));
+    }
+    level.push(Entry {
+        name: Name::Long((*name).to_owned()),
+        contents: Contents::File(FileData::Source(file)),
+    });
+    Ok(())
+}
+
+fn valid_component(part: &str) -> bool {
+    !part.is_empty()
+        && part.len() <= 255
+        && part != "."
+        && part != ".."
+        && !part.ends_with([' ', '.'])
+        && part
+            .bytes()
+            .all(|byte| (0x20..0x7f).contains(&byte) && !b"\"*/:<>?\\|".contains(&byte))
+}
+
 pub(super) struct Entry {
     pub(super) name: Name,
     pub(super) contents: Contents,

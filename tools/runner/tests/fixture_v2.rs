@@ -2856,7 +2856,8 @@ fn s2_39i_cr0_cr4_fxrstor64_composition_is_strict_and_restores_literal_image() {
     .unwrap();
     let image = invalid["memory"][1]["initial_bytes_hex"].as_str().unwrap();
     let mut image_bytes = od_testkit::v2::decode_bytes(image).unwrap();
-    image_bytes[24..28].copy_from_slice(&0x1fc0u32.to_le_bytes());
+    // Bit 16 is reserved; DAZ (bit 6) is in the target mask (ADR-0014).
+    image_bytes[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
     invalid["memory"][1]["initial_bytes_hex"] =
         serde_json::json!(od_testkit::memory::encode_bytes(&image_bytes));
     assert!(Fixture::from_json(&serde_json::to_vec(&invalid).unwrap()).is_err());
