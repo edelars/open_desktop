@@ -47278,6 +47278,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 stop_requested: &mut *stop_requested,
             },
             fp_cell,
+            instruction.opcode.byte,
         );
     }
     // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
@@ -72099,7 +72100,8 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
 /// and the bounded profile of the bare run executes it unchanged (its own admission, refusals and the global refusal of
 /// a represented FCS/FDS selector included: the set admits no FCS/FDS tracking), and the state is stored back with
 /// whatever the instruction left (a fault or a refusal leaves it as it was). `profiles` has no FP member, so the
-/// nested step does not return here.
+/// nested step does not return here. `opcode` is the opcode byte of the instruction (`D9`, `DB`, `DD` or `DF`) for the
+/// `Unsupported` of an unmodeled CR0.
 fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -72108,9 +72110,10 @@ fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
     cell: &RefCell<GuestFpState>,
+    opcode: u8,
 ) -> Result<StepOutcome, MemoryError> {
     let Some(cr0) = state.cr0 else {
-        return Ok(StepOutcome::Unsupported { opcode: 0xd9 });
+        return Ok(StepOutcome::Unsupported { opcode });
     };
     if cr0 & 0xc != 0 {
         return Ok(StepOutcome::Fault(ArchitecturalFault {
