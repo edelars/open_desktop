@@ -20,7 +20,7 @@ mod trb;
 
 pub use controller::{
     HidDevices, HseCause, InvalidPort, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction,
-    XhciServiceReport,
+    XhciServiceReport, XhciSnapshot,
 };
 pub use device::{ControlResponse, InputEvent, InputQueueFull, InterruptStatus, UsbDevice};
 pub use hid::HidHandle;

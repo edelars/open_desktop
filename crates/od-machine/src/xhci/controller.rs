@@ -61,6 +61,22 @@ impl Default for XhciConfig {
     }
 }
 
+/// Registers and counters of the controller at one moment ([`XhciHandle::snapshot`]): USBCMD,
+/// USBSTS, CRCR (CRR bit only: the pointer reads 0), DCBAAP, IMAN, ERSTBA, PCI Command, BAR0
+/// and the guest RAM accesses made by the controller since creation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XhciSnapshot {
+    pub usbcmd: u32,
+    pub usbsts: u32,
+    pub crcr: u64,
+    pub dcbaap: u64,
+    pub iman: u32,
+    pub erstba: u64,
+    pub pci_command: u16,
+    pub bar0: u64,
+    pub ram_accesses: u64,
+}
+
 /// Why the controller raised Host System Error (USBSTS.HSE), kept for diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HseCause {
@@ -1257,6 +1273,24 @@ impl XhciHandle {
     /// Guest RAM accesses (each read or write) made by the controller since creation.
     pub fn ram_accesses(&self) -> u64 {
         lock(&self.state).ram_accesses
+    }
+
+    /// Read-only copy of the registers and counters that the check of XHCI_DEVICE.md section 12.3
+    /// (state after the firmware stopped the controller at ExitBootServices) inspects.
+    pub fn snapshot(&self) -> XhciSnapshot {
+        let state = lock(&self.state);
+        let dword = |offset| u64::from(state.read_dword(offset));
+        XhciSnapshot {
+            usbcmd: state.read_dword(regs::USBCMD),
+            usbsts: state.read_dword(regs::USBSTS),
+            crcr: dword(regs::CRCR),
+            dcbaap: dword(regs::DCBAAP) | dword(0x54) << 32,
+            iman: state.read_dword(regs::IMAN),
+            erstba: dword(regs::ERSTBA) | dword(0x1034) << 32,
+            pci_command: state.pci.command(),
+            bar0: state.pci.memory_bar0_address(),
+            ram_accesses: state.ram_accesses,
+        }
     }
 
     /// The cause of the last Host System Error, if any since creation.

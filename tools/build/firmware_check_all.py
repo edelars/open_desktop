@@ -52,6 +52,7 @@ class Context:
         self.apps_rom = work / "apps.bin"
         self.apps_target = work / "apps-target"
         self.tpm_app = self.apps_target / "test-apps" / TARGET / "release" / "tpm.efi"
+        self.echo_app = self.apps_target / "test-apps" / TARGET / "release" / "echo.efi"
         self.sb_work = work / "secure-boot"
 
 
@@ -92,8 +93,9 @@ def build_apps_rom(context, log):
     # its own ROM: the flag shifts the memory map of every COM1 fixture (ISSUE-624).
     call([PYTHON, BUILDER, "--with-test-apps", "--out", context.apps_rom,
           "--target-dir", context.apps_target], log)
-    if not context.tpm_app.is_file():
-        raise StepFailed(1, [f"missing {context.tpm_app}"])
+    for app in (context.tpm_app, context.echo_app):
+        if not app.is_file():
+            raise StepFailed(1, [f"missing {app}"])
 
 
 def host_tests(context, log):
@@ -150,7 +152,7 @@ def steps():
                                "--work", c.work / "tpm"),
                     needs=("build-runner", "build-rom-test-apps")),
         script_step("firmware_xhci_smoke", "firmware_xhci_smoke.py",
-                    lambda c: ("--runner", c.runner, "--rom", c.apps_rom),
+                    lambda c: ("--runner", c.runner, "--rom", c.apps_rom, "--echo-app", c.echo_app),
                     needs=("build-runner", "build-rom-test-apps")),
         script_step("firmware_reset_smoke", "firmware_reset_smoke.py",
                     lambda c: ("--cycles", str(c.reset_cycles))),
