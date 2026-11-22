@@ -70,7 +70,9 @@ const O_EXCL: i32 = 0x0800;
 const O_DIRECTORY: i32 = 0x0010_0000;
 const O_SYMLINK: i32 = 0x0020_0000;
 const O_CLOEXEC: i32 = 0x0100_0000;
+const F_GETFL: i32 = 3;
 const F_SETFD: i32 = 2;
+const O_ACCMODE: i32 = 0x0003;
 const FD_CLOEXEC: i32 = 1;
 const RENAME_EXCL: u32 = 0x4;
 const PC_CASE_SENSITIVE: i32 = 11;
@@ -109,6 +111,11 @@ struct Dirent {
     d_name: [u8; 1024],
 }
 
+/// Offset of `d_name` in `Dirent` (verified with the C probe) and the capacity
+/// of that field.
+const D_NAME_OFFSET: usize = 21;
+const DIRENT_NAME_CAPACITY: usize = 1024;
+
 /// Opaque `DIR`.
 #[repr(C)]
 struct Dir {
@@ -124,7 +131,6 @@ unsafe extern "C" {
     fn unlinkat(fd: i32, path: *const c_char, flag: i32) -> i32;
     // SAFETY contract: both descriptors open directories, both names
     // NUL-terminated strings that outlive the call.
-    fn renameat(from_fd: i32, from: *const c_char, to_fd: i32, to: *const c_char) -> i32;
     fn renameatx_np(
         from_fd: i32,
         from: *const c_char,
@@ -154,7 +160,7 @@ unsafe extern "C" {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SharedFolderError {
     /// Malformed or forbidden path: absolute, `.`/`..`, empty component,
-    /// ``, `:`, NUL or control character, invalid UTF-8, too deep.
+    /// `\`, `:`, NUL or control character, invalid UTF-8, too deep.
     InvalidPath,
     /// A name longer than [`MAX_NAME_BYTES`] (also reported when the host refuses a
     /// name as too long).
@@ -433,6 +439,15 @@ impl SharedFolder {
         if !metadata.file_type().is_dir() {
             return Err(SharedFolderError::NotADirectory);
         }
+        // The root descriptor must be read-only (control v2 section 8).
+        // SAFETY: `root` is open; `F_GETFL` reads no memory.
+        let status_flags = unsafe { fcntl(root.as_raw_fd(), F_GETFL) };
+        if status_flags < 0 {
+            return Err(from_io(io::Error::last_os_error()));
+        }
+        if status_flags & O_ACCMODE != O_RDONLY {
+            return Err(SharedFolderError::PermissionDenied);
+        }
         // SAFETY: `root` is open; `F_SETFD` takes an int and reads no memory.
         if unsafe { fcntl(root.as_raw_fd(), F_SETFD, FD_CLOEXEC) } != 0 {
             return Err(from_io(io::Error::last_os_error()));
@@ -661,8 +676,9 @@ impl SharedFolder {
     }
 
     /// Renames `from` to `to`; never replaces an existing entry
-    /// (`RENAME_EXCL`). A change of case only, on a case-insensitive volume, is
-    /// allowed: it names the same file under a new name.
+    /// (`RENAME_EXCL`, `AlreadyExists`), also when both names are hard links
+    /// to one file. Whether a change of case only is accepted on a
+    /// case-insensitive volume is decided by `renameatx_np` (it is on APFS).
     pub fn rename(&self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> Result<()> {
         if self.info.read_only {
             return Err(SharedFolderError::ReadOnly);
@@ -689,30 +705,12 @@ impl SharedFolder {
         if rc == 0 {
             return Ok(());
         }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(EEXIST) {
-            return Err(from_io(error));
-        }
-        // EEXIST: refused unless the target is the same object under another
-        // spelling (case-only rename on a case-insensitive volume).
-        let same = same_identity(from_dir, &from_name, to_dir, &to_name);
-        if !same || from_name == to_name {
-            return Err(SharedFolderError::AlreadyExists);
-        }
-        // SAFETY: as above.
-        let rc = unsafe {
-            renameat(
-                from_dir.as_raw_fd(),
-                from_name.as_ptr(),
-                to_dir.as_raw_fd(),
-                to_name.as_ptr(),
-            )
-        };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(from_io(io::Error::last_os_error()))
-        }
+        // EEXIST (the target exists) maps to `AlreadyExists` like every other
+        // error; there is deliberately no fallback to a plain `renameat`. A
+        // case-only rename is handled by `renameatx_np` itself on APFS, and
+        // two hard links to one inode must stay refused: POSIX `rename`
+        // returns 0 for them without doing anything.
+        Err(from_io(io::Error::last_os_error()))
     }
 
     /// Removes a file or a symlink (the link itself). A directory is refused;
@@ -745,21 +743,6 @@ impl SharedFolder {
     }
 }
 
-fn same_identity(
-    a_dir: BorrowedFd<'_>,
-    a_name: &CStr,
-    b_dir: BorrowedFd<'_>,
-    b_name: &CStr,
-) -> bool {
-    let identity = |dir, name: &CStr| {
-        open_entry(dir, name)
-            .and_then(|file| file.metadata())
-            .map(|m| (m.dev(), m.ino()))
-            .ok()
-    };
-    matches!((identity(a_dir, a_name), identity(b_dir, b_name)), (Some(a), Some(b)) if a == b)
-}
-
 /// Reads every entry of an open directory (consumes the descriptor).
 fn list_directory(dir: OwnedFd) -> Result<(Vec<DirEntry>, u32)> {
     let raw = dir.as_raw_fd();
@@ -789,12 +772,24 @@ fn list_directory(dir: OwnedFd) -> Result<(Vec<DirEntry>, u32)> {
                 Err(from_io(io::Error::from_raw_os_error(errno)))
             };
         }
-        // SAFETY: a non-null `readdir` result points to a valid `dirent` until
-        // the next call; it is copied out before then.
+        // SAFETY: a non-null `readdir` result points to a `dirent` of
+        // `d_reclen` bytes that stays valid until the next `readdir` or
+        // `closedir`; the entry is variable length (shorter than
+        // `size_of::<Dirent>()`), so no `&Dirent` is created: the fixed header
+        // fields are read through raw pointers (they lie within the first 21
+        // bytes, which every entry has) and the name only up to
+        // `min(d_namlen, d_reclen - D_NAME_OFFSET, size of d_name)` bytes, copied
+        // out before the next call.
         let (name_bytes, d_type) = unsafe {
-            let entry = &*entry;
-            let len = (entry.d_namlen as usize).min(entry.d_name.len());
-            (entry.d_name[..len].to_vec(), entry.d_type)
+            let reclen = std::ptr::addr_of!((*entry).d_reclen).read_unaligned() as usize;
+            let namlen = std::ptr::addr_of!((*entry).d_namlen).read_unaligned() as usize;
+            let d_type = std::ptr::addr_of!((*entry).d_type).read();
+            let len = namlen
+                .min(reclen.saturating_sub(D_NAME_OFFSET))
+                .min(DIRENT_NAME_CAPACITY);
+            let name =
+                std::slice::from_raw_parts(std::ptr::addr_of!((*entry).d_name).cast::<u8>(), len);
+            (name.to_vec(), d_type)
         };
         if name_bytes == b"." || name_bytes == b".." {
             continue;

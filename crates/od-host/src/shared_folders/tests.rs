@@ -227,8 +227,12 @@ fn symlinks_to_outside_objects_are_refused_for_read_write_and_create() {
         folder.readdir("dir_link", 0, 8).unwrap_err(),
         SharedFolderError::SymlinkRefused
     );
-    // A dangling link must not make CreateNew create its target.
-    assert!(folder.open("dangling", OpenMode::CreateNew).is_err());
+    // A dangling link must not make CreateNew create its target: O_EXCL
+    // sees the link itself as an existing name (EEXIST, not ELOOP).
+    assert_eq!(
+        folder.open("dangling", OpenMode::CreateNew).unwrap_err(),
+        SharedFolderError::AlreadyExists
+    );
     assert!(!tree.base.join("outside/new.txt").exists());
     tree.assert_secret_intact();
 }
@@ -577,6 +581,22 @@ fn file_lifecycle_stat_read_write_truncate_rename_unlink() {
 }
 
 #[test]
+fn rename_between_hard_links_of_one_file_is_refused() {
+    // POSIX rename() of two links to one inode returns 0 and does nothing;
+    // the service must refuse and leave both names in place.
+    let tree = Tree::new();
+    let mut folder = tree.folder(false);
+    create(&mut folder, "h1", b"linked");
+    std::fs::hard_link(tree.root().join("h1"), tree.root().join("h2")).unwrap();
+    assert_eq!(
+        folder.rename("h1", "h2").unwrap_err(),
+        SharedFolderError::AlreadyExists
+    );
+    assert_eq!(read_all(&mut folder, "h1"), b"linked");
+    assert_eq!(read_all(&mut folder, "h2"), b"linked");
+}
+
+#[test]
 fn io_limits_are_enforced() {
     let tree = Tree::new();
     let mut folder = tree.folder(false);
@@ -616,7 +636,7 @@ fn open_file_limit_and_close_all() {
     );
     folder.close(handles[0]).unwrap();
     let again = folder.open("f", OpenMode::Read).unwrap();
-    assert!(!handles.contains(&again) || again != handles[1]);
+    assert!(!handles[1..].contains(&again));
     folder.close_all();
     assert_eq!(folder.open_file_count(), 0);
     assert_eq!(
