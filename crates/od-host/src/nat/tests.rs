@@ -715,9 +715,10 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-/// A backend whose TCP host is scripted: no test of this file reaches a real network.
+/// A backend whose TCP host is scripted and whose UDP and ICMP sockets cannot be created: no test of
+/// this file reaches a real network (the tests with sockets use `test_io::io_backend`).
 fn backend() -> NatBackend {
-    super::tcp_tests::scripted_backend()
+    super::tcp_tests::scripted_backend().without_host_sockets()
 }
 
 fn run(backend: &mut NatBackend, frame: &[u8]) {
@@ -1045,23 +1046,44 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.arp_replies
         + c.arp_probe_ignored
         + c.drop_rx_queue_full
+        // S11-31c: one counter per frame for UDP and ICMP echo, bumped when the frame reaches the
+        // handler. What the handler then does with it (forwarded, refused, a flow limit, a socket
+        // that cannot be created, the ICMP error to the guest) is an outcome and is outside the
+        // identity on purpose: some outcomes (`drop_host_resource`) are shared with TCP and others
+        // are raised later by the sockets, so summing them would count frames twice.
+        + c.udp_datagrams
+        + c.icmp_echo_requests
 }
 
 #[test]
-fn well_formed_udp_and_icmp_packets_are_counted_unhandled_until_their_handlers_exist() {
+fn well_formed_dhcp_and_dns_packets_are_counted_unhandled_until_their_handler_exists() {
+    // DHCP and DNS (S11-31b); TCP (S11-31d), UDP to other addresses and ICMP echo (S11-31c) are handled.
     let mut b = backend();
     for frame in [
-        udp_frame(EXTERNAL, 9, b"x"),
         udp_frame(DNS_IP, 53, b"x"),
-        echo_frame(EXTERNAL),
-        echo_frame(GATEWAY_IP),
+        udp_frame(GATEWAY_IP, 67, b"x"),
         dhcp_like_frame(),
     ] {
         run(&mut b, &frame);
     }
     let c = b.counters();
-    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (5, 0));
-    assert_eq!(total_accounted(&c), 5);
+    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (3, 0));
+    assert_eq!(total_accounted(&c), 3);
+    assert!(drain(&mut b).is_empty());
+}
+
+#[test]
+fn udp_and_echo_to_external_addresses_reach_the_host_socket_layer_not_the_unhandled_counter() {
+    // The sockets of this backend cannot be created: each frame reaches its handler (and is counted
+    // there) and the outcome is drop_host_resource.
+    let mut b = backend();
+    run(&mut b, &udp_frame(EXTERNAL, 9, b"x"));
+    run(&mut b, &echo_frame(EXTERNAL));
+    let c = b.counters();
+    assert_eq!(c.drop_unhandled_l4, 0);
+    assert_eq!((c.udp_datagrams, c.icmp_echo_requests), (1, 1));
+    assert_eq!(c.drop_host_resource, 2);
+    assert_eq!(total_accounted(&c), 2);
     assert!(drain(&mut b).is_empty());
 }
 

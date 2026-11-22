@@ -1,11 +1,12 @@
-//! Network backend with NAT in user space: queues, frame checks, ARP (S11-31a) and TCP (S11-31d).
+//! Network backend with NAT in user space: queues, frame checks, ARP (S11-31a), TCP (S11-31d), UDP and ICMP echo (S11-31c).
 //!
 //! Contract: docs/specs/NETWORK.md. [`NatBackend`] implements [`od_machine::NetBackend`]: the NIC
 //! calls `transmit`/`poll_receive` from the device thread, [`NatBackend::process_pending`] takes the
 //! frames out of the L2 queue, checks them ([`frame::classify`]) and answers ARP for the gateway.
-//! TCP is served by [`tcp::TcpEngine`] (S11-31d): a proxy at connection level over non-blocking host
-//! sockets. Everything else that passes the checks is counted as `drop_unhandled_l4` until S11-31b
-//! (DHCP, DNS) and S11-31c (UDP, ICMP echo) serve it.
+//! UDP to external addresses ([`udp`]) and ICMP echo ([`icmp`]) are served over host sockets too
+//! (S11-31c). TCP is served by [`tcp::TcpEngine`] (S11-31d): a proxy at connection level over non-blocking host
+//! sockets. Everything else that passes the checks (DHCP and DNS datagrams) is counted as
+//! `drop_unhandled_l4` until S11-31b serves it.
 //!
 //! Threads: the backend is a plain value with no thread of its own. The I/O thread of the contract
 //! (NETWORK.md section 4) calls [`NatBackend::run_at`] in a loop: it handles the frames of the guest
@@ -17,13 +18,17 @@ pub mod flow;
 pub mod frame;
 #[cfg(unix)]
 mod host_tcp;
+mod icmp;
 pub mod tcp;
 #[cfg(test)]
 mod tcp_tests;
 #[cfg(test)]
 mod test_frames;
+#[cfg(test)]
+mod test_io;
+mod udp;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use od_machine::{
     Dropped, FrameQueue, NET_MAX_FRAME, NET_MIN_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT,
@@ -35,7 +40,9 @@ use self::flow::FlowTable;
 #[cfg(test)]
 use self::flow::{FlowError, FlowKey};
 use self::frame::{DropReason, GuestMacError, Inbound, L4, Mac, Policy, build_arp_reply, classify};
+use self::icmp::EchoEngine;
 use self::tcp::{TcpEngine, TcpHost};
+use self::udp::UdpEngine;
 
 fn bump(counter: &mut u64) {
     *counter = counter.saturating_add(1);
@@ -71,6 +78,15 @@ pub struct NatBackend {
     counters: NetCounters,
     shared: Shared,
     tcp: TcpEngine,
+    udp: UdpEngine,
+    echo: EchoEngine,
+}
+
+/// The protocol handlers of the backend, each with its own state (see [`NatBackend::handler_parts`]).
+struct Handlers<'a> {
+    tcp: &'a mut TcpEngine,
+    udp: &'a mut UdpEngine,
+    echo: &'a mut EchoEngine,
 }
 
 impl NatBackend {
@@ -94,11 +110,23 @@ impl NatBackend {
             counters: NetCounters::default(),
             shared: Shared::new(),
             tcp: TcpEngine::new(host),
+            udp: UdpEngine::new(),
+            echo: EchoEngine::new(),
         }
     }
 
+    /// Test-only: the UDP and ICMP sockets of this backend cannot be created (as with exhausted
+    /// descriptors), so that tests that feed arbitrary frames never reach the network of the
+    /// machine they run on.
+    #[cfg(test)]
+    fn without_host_sockets(mut self) -> Self {
+        self.udp.deny_sockets();
+        self.echo.deny_sockets();
+        self
+    }
+
     /// The handlers' view of the backend: a handler's own state and the shared context.
-    fn handler_parts(&mut self, rx_stalled_for: std::time::Duration) -> (&mut TcpEngine, Ctx<'_>) {
+    fn handler_parts(&mut self, rx_stalled_for: Duration) -> (Handlers<'_>, Ctx<'_>) {
         let ctx = Ctx {
             guest_mac: self.policy.guest_mac(),
             rx_queue: &mut self.rx_queue,
@@ -107,7 +135,12 @@ impl NatBackend {
             shared: &mut self.shared,
             rx_stalled_for,
         };
-        (&mut self.tcp, ctx)
+        let handlers = Handlers {
+            tcp: &mut self.tcp,
+            udp: &mut self.udp,
+            echo: &mut self.echo,
+        };
+        (handlers, ctx)
     }
 
     /// Admission of a new flow as a handler does it (through [`Ctx::open_flow`]): enforces L4, L5 and
@@ -115,9 +148,7 @@ impl NatBackend {
     /// use it: it would let a caller put a flow in the table that no handler owns.
     #[cfg(test)]
     pub(crate) fn open_flow(&mut self, key: FlowKey) -> Result<(), FlowError> {
-        self.handler_parts(std::time::Duration::ZERO)
-            .1
-            .open_flow(key)
+        self.handler_parts(Duration::ZERO).1.open_flow(key)
     }
 
     /// Takes every frame out of the L2 queue and handles it. Never blocks. Returns the number of
@@ -144,8 +175,10 @@ impl NatBackend {
             .shared
             .rx_progress
             .stalled_for(now, self.rx_queue.is_empty());
-        let (tcp, mut ctx) = self.handler_parts(stalled);
-        tcp.service(&mut ctx, now);
+        let (handlers, mut ctx) = self.handler_parts(stalled);
+        handlers.tcp.service(&mut ctx, now);
+        handlers.udp.service(&mut ctx, now);
+        handlers.echo.service(&mut ctx, now);
     }
 
     /// One turn of the I/O loop: the frames of the guest, then the sockets and the timers.
@@ -173,14 +206,24 @@ impl NatBackend {
                     bump(&mut self.counters.arp_replies);
                 }
             }
-            Ok(Inbound::Ipv4(packet)) => match packet.l4 {
-                L4::Tcp(segment) => {
-                    let (tcp, mut ctx) = self.handler_parts(std::time::Duration::ZERO);
-                    tcp.handle_segment(&mut ctx, &packet, &segment, now);
+            Ok(Inbound::Ipv4(packet)) => {
+                let (handlers, mut ctx) = self.handler_parts(Duration::ZERO);
+                match packet.l4 {
+                    L4::Tcp(segment) => {
+                        handlers
+                            .tcp
+                            .handle_segment(&mut ctx, &packet, &segment, now);
+                    }
+                    L4::Udp(datagram) if !udp::is_dhcp_or_dns(&packet, &datagram) => {
+                        handlers.udp.handle(&mut ctx, &packet, &datagram, now);
+                    }
+                    L4::Icmp(message) => {
+                        handlers.echo.handle(&mut ctx, &packet, &message, now);
+                    }
+                    // DHCP and DNS: no handler yet, S11-31b replaces this arm.
+                    L4::Udp(_) => bump(&mut ctx.counters.drop_unhandled_l4),
                 }
-                // No handler yet: S11-31b and S11-31c replace this arm protocol by protocol.
-                L4::Udp(_) | L4::Icmp(_) => bump(&mut self.counters.drop_unhandled_l4),
-            },
+            }
         }
     }
 
@@ -231,6 +274,9 @@ impl NetBackend for NatBackend {
 
     fn reset(&mut self) {
         self.tcp.clear();
+        // Dropping the flows closes their sockets; the guest is told nothing (NETWORK.md section 4).
+        self.udp.clear();
+        self.echo.clear();
         self.flows.clear();
         self.shared.clear();
         self.tx_queue.clear();
