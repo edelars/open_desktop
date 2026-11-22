@@ -127,7 +127,7 @@ def window(rip: int, rom: bytes, kernel: bytes, layout: dict, base: int | None) 
 
 def boot(runner: Path, rom: Path, esp: Path, nvram: Path, scratch: Path, name: str,
          budget: int, samples: list[int], cpu_loop: str = "firmware",
-         mark_rip: int | None = None) -> tuple[dict, bytes]:
+         mark_rip: int | None = None, extra_args: tuple = ()) -> tuple[dict, bytes]:
     trace = scratch / f"{name}.com1"
     args = [runner, "boot-firmware", "--image", rom, "--nvme-image", esp, "--budget", str(budget),
             "--com1-out", trace, "--nvram-in", nvram, "--nvram-out", scratch / f"{name}-after.nv"]
@@ -135,6 +135,7 @@ def boot(runner: Path, rom: Path, esp: Path, nvram: Path, scratch: Path, name: s
         args += ["--cpu-loop", cpu_loop]
     if mark_rip is not None:  # unified loop only: the first boundary at this RIP is reported
         args += ["--mark-rip", f"0x{mark_rip:x}"]
+    args += list(extra_args)
     for address in samples:
         args += ["--sample-rip", f"0x{address:x}"]
     result = subprocess.run(args, capture_output=True, text=True, check=False, cwd=ROOT)

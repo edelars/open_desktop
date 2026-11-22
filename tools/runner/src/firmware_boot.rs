@@ -78,7 +78,9 @@ fn apply_unified(config: &mut FirmwareBoardConfig) {
     // Without an RTC base the CMOS ports are absent (reads 0xFF, so UIP is always set) and the
     // kernel's mc146818_get_time times out: "Unable to read current time from RTC" (S7-31o,
     // ISSUE-641). The same explicit UTC base as the fv_app boards; never a host date.
-    config.rtc_base_unix_seconds.get_or_insert(RTC_BASE_UNIX_SECONDS);
+    config
+        .rtc_base_unix_seconds
+        .get_or_insert(RTC_BASE_UNIX_SECONDS);
 }
 
 fn board_config(
@@ -272,7 +274,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     if let Some(path) = &options.framebuffer_out {
-        if !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
+        // The unified loop has no FV application: the frame is whatever the guest left (S7-31p).
+        if !options.unified && !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
             first.report["status"] = json!("error");
             first.report["error"] = json!({
                 "kind": "framebuffer_out",
@@ -1197,8 +1200,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if acpi_out.is_some() && fv_app != Some(FirmwareFvApp::Acpi) {
         return Err("--acpi-out requires --fv-app acpi".to_owned());
     }
-    if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) {
-        return Err("--framebuffer-out requires --fv-app gop".to_owned());
+    if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) && !unified {
+        return Err("--framebuffer-out requires --fv-app gop or --cpu-loop unified".to_owned());
     }
     let storage_app = match fv_app {
         Some(FirmwareFvApp::Blk) => Some("blk"),
@@ -1282,6 +1285,36 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn framebuffer_out_needs_the_gop_app_or_the_unified_loop() {
+        // S7-31p: the unified loop dumps the display the guest left; no FV application finishes there.
+        let base = |extra: &[&str]| {
+            let mut values: Vec<String> = [
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(parse(&base(&["--framebuffer-out", "fb.bin"])).is_err());
+        let options = parse(&base(&[
+            "--framebuffer-out",
+            "fb.bin",
+            "--cpu-loop",
+            "unified",
+        ]))
+        .unwrap();
+        assert!(options.unified && options.framebuffer_out.as_deref() == Some("fb.bin"));
+        assert!(parse(&base(&["--framebuffer-out", "fb.bin", "--fv-app", "gop"])).is_ok());
     }
 
     #[test]
