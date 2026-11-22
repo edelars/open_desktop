@@ -29085,7 +29085,7 @@ impl RunResult {
                             [
                                 (sse.mxcsr.get() as u32).to_le_bytes().as_slice(),
                                 // MXCSR_MASK of the target (ADR-0014).
-                                &0x0000_ffffu32.to_le_bytes(),
+                                &od_isa::TARGET_FXSAVE_MXCSR_MASK.to_le_bytes(),
                             ]
                             .concat(),
                         ),
