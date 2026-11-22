@@ -67190,8 +67190,8 @@ fn is_x87_math_operation(operation: Operation) -> bool {
 }
 
 /// Preflight the S2-32 x87 forms `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `F2XM1`, `FYL2X`, `FYL2XP1`,
-/// `FPATAN`, `FSCALE` and `FXTRACT` (Intel SDM Vol. 2A/2B instruction pages, Vol. 1 section 8.3.10
-/// and 8.5.1). Admission: present x87 state, absent FCS/FDS selectors, one of the twelve
+/// `FPATAN`, `FSCALE` and `FXTRACT` (Intel SDM Vol. 2A/2B instruction pages, Vol. 1 section 8.3.8,
+/// 8.3.10 and 8.1.3.2). Admission: present x87 state, absent FCS/FDS selectors, one of the twelve
 /// all-exception-masked control words (the precision control is ignored by these instructions, the
 /// rounding control is honoured), no sticky exception other than PE, Valid or Zero tagged canonical
 /// operands, an Empty destination for the two pushing forms, and a result inside the normal range.

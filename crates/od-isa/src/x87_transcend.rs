@@ -14,8 +14,8 @@
 //! the project oracle) is not correctly rounded: it agrees on most operands and differs by one
 //! unit in the last place on the rest. The only reproduced hardware property beyond rounding is the
 //! argument reduction of FSIN/FCOS/FSINCOS/FPTAN, which subtracts multiples of the 66-bit
-//! approximation of pi/2 (Intel SDM Vol. 1 section 8.3.10 and Vol. 2A "FSIN"); the 66-bit constant is
-//! the first 66 significant bits of pi. Operands with |x| >= 2^63 are outside the reduction range
+//! approximation of pi/2 (Intel SDM Vol. 1 section 8.3.8 "Approximation of Pi", 8.3.10 and Vol. 2A "FSIN"); the
+//! 66-bit constant is the first 66 significant bits of pi. Operands with |x| >= 2^63 are outside the reduction range
 //! (C2 is set by the caller and the operand is left unchanged).
 
 use crate::rational_rounding::RationalRoundingMode;
@@ -914,18 +914,23 @@ pub fn fyl2x(x_raw: [u8; 10], y_raw: [u8; 10], mode: RationalRoundingMode) -> Op
     Some(out)
 }
 
-/// y * log2(x + 1) for -(1 - sqrt(2)/2) < x < sqrt(2) - 1 (FYL2XP1 pops).
+/// The largest binary80 significand (explicit integer bit, exponent -2) not above 1 - sqrt(2)/2, i.e.
+/// floor((4 - 2*sqrt(2)) * 2^63); 1 - sqrt(2)/2 is irrational, so the SDM range bound is never reached exactly.
+const FYL2XP1_LIMIT_MANT: u64 = 0x95f6_1998_0c43_36f7;
+
+/// y * log2(x + 1) for -(1 - sqrt(2)/2) <= x <= 1 - sqrt(2)/2 (FYL2XP1 pops; Intel SDM Vol. 2A, FYL2XP1,
+/// the range of ST(0)). Outside it the SDM calls the result undefined, so the model refuses the operand.
 pub fn fyl2xp1(x_raw: [u8; 10], y_raw: [u8; 10], mode: RationalRoundingMode) -> Option<X87Rounded> {
     let x = parse(x_raw, true)?;
     let y = parse(y_raw, false)?;
     if x.is_zero() {
         return Some(exact(zero_bytes(x.neg != y.neg)));
     }
-    let xb = x.big();
-    let xf = xb.to_f64();
-    if !(-0.292_893_218_8..=0.414_213_562_4).contains(&xf) {
+    // Exact comparison of |x| with 1 - sqrt(2)/2 = 0x1.95f6..p-2 (no floating-point rounding at the bound).
+    if x.exp > -2 || (x.exp == -2 && x.mant > FYL2XP1_LIMIT_MANT) {
         return None;
     }
+    let xb = x.big();
     let two = Big::from_i64(2);
     let z = xb.div(two.add(xb));
     let ln1p = atanh_series(z).scaled(1);
