@@ -56446,6 +56446,250 @@ fn firmware_boot_tcg2_setcc_stores_exactly_one_byte_or_leaves_state_on_fault() {
     }
 }
 
+/// Intel SDM Vol. 2, SETcc: the condition tests written out per encoding (0 O, 1 NO, 2 B, 3 AE,
+/// 4 E, 5 NE, 6 BE, 7 A, 8 S, 9 NS, A P, B NP, C L, D GE, E LE, F G), independent of the decoder.
+fn sdm_condition(encoding: u8, cf: bool, pf: bool, zf: bool, sf: bool, of: bool) -> bool {
+    match encoding {
+        0x0 => of,
+        0x1 => !of,
+        0x2 => cf,
+        0x3 => !cf,
+        0x4 => zf,
+        0x5 => !zf,
+        0x6 => cf || zf,
+        0x7 => !cf && !zf,
+        0x8 => sf,
+        0x9 => !sf,
+        0xa => pf,
+        0xb => !pf,
+        0xc => sf != of,
+        0xd => sf == of,
+        0xe => zf || sf != of,
+        0xf => !zf && sf == of,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn firmware_boot_setcc_memory_stores_every_condition_for_every_addressing_form() {
+    // The registers are chosen so the effective address is DATA + 0x10 + offset in every case.
+    // The displacement is relative to the RIP after the whole 7-byte instruction.
+    let rip_relative_disp = (DATA + 0x30).wrapping_sub(RIP + 7) as u32;
+    let mut rip_relative = vec![0x0f, 0x90, 0x05];
+    rip_relative.extend(rip_relative_disp.to_le_bytes());
+    let mut rsp_disp32 = vec![0x0f, 0x90, 0x84, 0x24];
+    rsp_disp32.extend(0x80_u32.to_le_bytes());
+    // (code with the condition byte at index 1 or 2, registers, effective address)
+    let forms: Vec<(Vec<u8>, Vec<(Register, u64)>, u64)> = vec![
+        // The ROM form that stopped the boot: SETE byte ptr [RSP+0x70] (0F 94 44 24 70).
+        (
+            vec![0x0f, 0x90, 0x44, 0x24, 0x70],
+            vec![(Register::Rsp, DATA + 8)],
+            DATA + 8 + 0x70,
+        ),
+        (rsp_disp32, vec![(Register::Rsp, DATA + 8)], DATA + 8 + 0x80),
+        (
+            vec![0x0f, 0x90, 0x04, 0x24],
+            vec![(Register::Rsp, DATA + 8)],
+            DATA + 8,
+        ),
+        (
+            vec![0x0f, 0x90, 0x00],
+            vec![(Register::Rax, DATA + 0x20)],
+            DATA + 0x20,
+        ),
+        (
+            vec![0x0f, 0x90, 0x45, 0xfe],
+            vec![(Register::Rbp, DATA + 0x40)],
+            DATA + 0x3e,
+        ),
+        (
+            vec![0x0f, 0x90, 0x04, 0x88],
+            vec![(Register::Rax, DATA + 0x40), (Register::Rcx, 3)],
+            DATA + 0x4c,
+        ),
+        (
+            vec![0x41, 0x0f, 0x90, 0x40, 0xf0],
+            vec![(Register::R8, DATA + 0x60)],
+            DATA + 0x50,
+        ),
+        (
+            vec![0x42, 0x0f, 0x90, 0x04, 0x20],
+            vec![(Register::Rax, DATA + 0x80), (Register::R12, 0x10)],
+            DATA + 0x90,
+        ),
+        (rip_relative, vec![], DATA + 0x30),
+        // 0x66 is ignored by SETcc; 0x67 truncates the effective address to 32 bits.
+        (
+            vec![0x66, 0x0f, 0x90, 0x45, 0x00],
+            vec![(Register::Rbp, DATA + 0x70)],
+            DATA + 0x70,
+        ),
+        (
+            vec![0x67, 0x0f, 0x90, 0x03],
+            vec![(Register::Rbx, 0xdead_0000_0000_0000 | (DATA + 0x58))],
+            DATA + 0x58,
+        ),
+    ];
+    let mut stores = 0;
+    for (template, registers, address) in &forms {
+        let condition_index = template.iter().position(|byte| *byte == 0x90).unwrap();
+        for encoding in 0..16_u8 {
+            for flag_bits in 0..32_u8 {
+                let (cf, pf, zf, sf, of) = (
+                    flag_bits & 1 != 0,
+                    flag_bits & 2 != 0,
+                    flag_bits & 4 != 0,
+                    flag_bits & 8 != 0,
+                    flag_bits & 16 != 0,
+                );
+                let mut code = template.clone();
+                code[condition_index] = 0x90 + encoding;
+                let mut memory = Memory::new(&code);
+                let mut cpu = state();
+                for (register, value) in registers {
+                    cpu.gpr[*register as usize] = *value;
+                }
+                cpu.rflags = (cpu.rflags & !0x8c5)
+                    | u64::from(cf)
+                    | (u64::from(pf) << 2)
+                    | (u64::from(zf) << 6)
+                    | (u64::from(sf) << 7)
+                    | (u64::from(of) << 11);
+                let index = DATA_PHYSICAL + (*address - DATA) as usize;
+                memory.bytes[index - 1..index + 2].fill(0xa5);
+                let mut expected = cpu.clone();
+                expected.rip += code.len() as u64;
+                let result = execute::step_paged_firmware_probe(
+                    PagedCpl0FirmwareBootV1,
+                    &mut cpu,
+                    &mut memory,
+                    &mut Pio::default(),
+                    ring0(),
+                    DEFINED,
+                );
+                let label = format!("{code:02x?} flags={:#x}", expected.rflags);
+                assert_eq!(result.exit, PagedProbeExit::Retired, "{label}");
+                assert_eq!(result.instructions_executed, 1, "{label}");
+                assert_eq!(result.rflags_defined, DEFINED, "{label}");
+                // Exactly the condition byte changed; flags, registers and neighbours did not.
+                assert_eq!(cpu, expected, "{label}");
+                let value = u8::from(sdm_condition(encoding, cf, pf, zf, sf, of));
+                assert_eq!(
+                    memory.bytes[index - 1..index + 2],
+                    [0xa5, value, 0xa5],
+                    "{label}"
+                );
+                assert_eq!(memory.write_addresses, [*address], "{label}");
+                assert_eq!((memory.reads, memory.writes), (0, 1), "{label}");
+                stores += 1;
+            }
+        }
+    }
+    assert_eq!(stores, forms.len() * 16 * 32);
+}
+
+#[test]
+fn firmware_boot_setcc_memory_faults_do_not_commit_and_the_base_profile_stays_bounded() {
+    let code = [0x0f, 0x94, 0x44, 0x24, 0x70]; // SETE byte ptr [RSP+0x70]
+    let address = DATA + 8 + 0x70;
+    let index = DATA_PHYSICAL + 8 + 0x70;
+
+    // A faulting store retires nothing and leaves the byte, RIP and flags unchanged.
+    let fault = od_isa::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(address),
+    };
+    let mut memory = Memory::new(&code);
+    memory.bytes[index] = 0xa5;
+    memory.fail_write = Some(MemoryError::Architectural(fault.clone()));
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA + 8;
+    cpu.rflags |= 1 << 6;
+    let before = cpu.clone();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!(memory.bytes[index], 0xa5);
+
+    // A non-canonical address is a #SS for an RSP base, and #GP for another base; nothing is stored.
+    for (code, register, vector) in [
+        (&code[..], Register::Rsp, 12),
+        (&[0x0f, 0x94, 0x00][..], Register::Rax, 13),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = 0x0001_0000_0000_0000;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+
+    // LOCK and a segment override are not valid SETcc prefixes: nothing is executed or stored.
+    for code in [
+        &[0xf0, 0x0f, 0x94, 0x44, 0x24, 0x70][..],
+        &[0x64, 0x0f, 0x94, 0x44, 0x24, 0x70][..],
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA + 8;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert!(
+            !matches!(result.exit, PagedProbeExit::Retired),
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
+    }
+
+    // The base profile keeps only its own exact forms: SETE [RSP+0x70] stays unsupported there.
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA + 8;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0x94 }
+    );
+    assert_eq!(cpu, before);
+    assert_eq!(memory.writes, 0);
+}
+
 #[test]
 fn firmware_boot_cmp_byte_registers_sets_flags_without_writing_operands() {
     let code = [0x41, 0x38, 0xf8]; // CMP R8B,DIL
@@ -57712,61 +57956,61 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x66, 0x0b, 0x03][..], 0x0b),             // address override OR AX,word [EBX]
         (&[0x0f, 0xaf, 0x10][..], 0xaf),                   // IMUL EDX,dword [RAX]
         (&[0x67, 0x89, 0x70, 0x48][..], 0x89),             // address32 dword store
-        (&[0x0f, 0x93, 0x01][..], 0x93),                   // SETAE byte [RCX]
-        (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93),             // address prefix on SETAE CL
-        (&[0xc7, 0x48, 0x28, 0x20, 0, 0, 0][..], 0xc7),    // reserved C7 /1
+        // SETAE byte [RCX] is no longer a neighbour: every SETcc memory store is in the set now.
+        (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93), // address prefix on SETAE CL
+        (&[0xc7, 0x48, 0x28, 0x20, 0, 0, 0][..], 0xc7), // reserved C7 /1
         (&[0x67, 0x48, 0xc7, 0x40, 0x28, 0x20, 0, 0, 0][..], 0xc7), // address32 store
-        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3),             // BT CX,BX
-        (&[0x0f, 0xab, 0xd9][..], 0xab),                   // BTS ECX,EBX
-        (&[0x0f, 0xa3, 0x13][..], 0xa3),                   // BT [RBX],EDX
-        (&[0x67, 0x85, 0xc0][..], 0x85),                   // address override on TEST
-        (&[0xf6, 0x16][..], 0xf6),                         // NOT byte [RSI]
-        (&[0x48, 0xf7, 0x16][..], 0xf7),                   // NOT qword [RSI]
-        (&[0x48, 0xf7, 0xea][..], 0xf7),                   // IMUL RDX
-        (&[0xf7, 0xe2][..], 0xf7),                         // MUL EDX
-        (&[0x48, 0xf7, 0x22][..], 0xf7),                   // MUL qword [RDX]
-        (&[0x49, 0xf7, 0xf9][..], 0xf7),                   // IDIV R9
-        (&[0x66, 0x41, 0xf7, 0xf1][..], 0xf7),             // DIV R9W
-        (&[0x48, 0xf7, 0x32][..], 0xf7),                   // DIV qword [RDX]
-        (&[0x45, 0x69, 0xd9, 3, 0, 0, 0][..], 0x69),       // IMUL R11D,R9D,3
-        (&[0x45, 0x6b, 0xd9, 3][..], 0x6b),                // IMUL R11D,R9D,imm8
-        (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69),       // IMUL RDX,[RDX],3
-        (&[0x45, 0x19, 0xd8][..], 0x19),                   // SBB R8D,R11D
-        (&[0x1b, 0x03][..], 0x1b),                         // SBB EAX,[RBX]
-        (&[0x67, 0x48, 0x1b, 0x03][..], 0x1b),             // address32 SBB RAX,[EBX]
-        (&[0x45, 0x0f, 0xac, 0xca, 0x17][..], 0xac),       // SHRD R10D,R9D,23
-        (&[0x48, 0x0f, 0xac, 0x0a, 0x17][..], 0xac),       // SHRD qword [RDX],RCX,23
-        (&[0x4d, 0x0f, 0xad, 0xca][..], 0xad),             // SHRD R10,R9,CL
-        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6),          // address override on TEST
-        (&[0x48, 0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7),       // TEST RDX,imm32
-        (&[0xff, 0x03][..], 0xff),                         // INC dword [RBX]
-        (&[0xfe, 0x03][..], 0xfe),                         // INC byte ptr [RBX]
-        (&[0x41, 0xfe, 0xca][..], 0xfe),                   // DEC R10B
-        (&[0xfe, 0xcc][..], 0xfe),                         // DEC AH
-        (&[0x67, 0x48, 0xff, 0x0b][..], 0xff),             // address32 DEC qword [EBX]
-        (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1),             // SHL qword [RBX],21
-        (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1),             // SHR CX,21
-        (&[0x66, 0xc1, 0xc1, 1][..], 0xc1),                // ROL CX,1
-        (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1),       // address override on SHR
-        (&[0x41, 0xd3, 0xee][..], 0xd3),                   // SHR R14D,CL
-        (&[0x49, 0xd3, 0x2e][..], 0xd3),                   // SHR qword [R14],CL
-        (&[0x49, 0xd3, 0xe6][..], 0xd3),                   // SHL R14,CL
-        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80),       // address32 CMP
-        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6),    // address32 store
-        (&[0x48, 0x83, 0x12, 0x28][..], 0x83),             // ADC qword [RDX],0x28
-        (&[0x48, 0x83, 0x03, 0x28][..], 0x83),             // ADD qword [RBX],0x28
-        (&[0x66, 0x03, 0x13][..], 0x03),                   // ADD DX,[RBX]
-        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),             // ADC SI,-1
-        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // segment override
-        (&[0x67, 0x88, 0x58, 0x4c][..], 0x88),             // address32 byte store
-        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),       // address32 store
-        (&[0x44, 0x88, 0xc0][..], 0x88),                   // MOV AL,R8B
-        (&[0x67, 0x44, 0x88, 0xc1][..], 0x88),             // address32 MOV CL,R8B
-        (&[0x84, 0x84, 0x24, 0x4d, 1, 0, 0][..], 0x84),    // TEST [RSP+0x14d],AL
-        (&[0x8a, 0x3c, 0x24][..], 0x8a),                   // byte load
-        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),       // address32 LEA
-        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),       // FS override on NOP
-        (&[0x0f, 0x18, 0x00][..], 0x18),                   // PREFETCHNTA
+        (&[0x66, 0x0f, 0xa3, 0xd9][..], 0xa3), // BT CX,BX
+        (&[0x0f, 0xab, 0xd9][..], 0xab),       // BTS ECX,EBX
+        (&[0x0f, 0xa3, 0x13][..], 0xa3),       // BT [RBX],EDX
+        (&[0x67, 0x85, 0xc0][..], 0x85),       // address override on TEST
+        (&[0xf6, 0x16][..], 0xf6),             // NOT byte [RSI]
+        (&[0x48, 0xf7, 0x16][..], 0xf7),       // NOT qword [RSI]
+        (&[0x48, 0xf7, 0xea][..], 0xf7),       // IMUL RDX
+        (&[0xf7, 0xe2][..], 0xf7),             // MUL EDX
+        (&[0x48, 0xf7, 0x22][..], 0xf7),       // MUL qword [RDX]
+        (&[0x49, 0xf7, 0xf9][..], 0xf7),       // IDIV R9
+        (&[0x66, 0x41, 0xf7, 0xf1][..], 0xf7), // DIV R9W
+        (&[0x48, 0xf7, 0x32][..], 0xf7),       // DIV qword [RDX]
+        (&[0x45, 0x69, 0xd9, 3, 0, 0, 0][..], 0x69), // IMUL R11D,R9D,3
+        (&[0x45, 0x6b, 0xd9, 3][..], 0x6b),    // IMUL R11D,R9D,imm8
+        (&[0x48, 0x69, 0x12, 3, 0, 0, 0][..], 0x69), // IMUL RDX,[RDX],3
+        (&[0x45, 0x19, 0xd8][..], 0x19),       // SBB R8D,R11D
+        (&[0x1b, 0x03][..], 0x1b),             // SBB EAX,[RBX]
+        (&[0x67, 0x48, 0x1b, 0x03][..], 0x1b), // address32 SBB RAX,[EBX]
+        (&[0x45, 0x0f, 0xac, 0xca, 0x17][..], 0xac), // SHRD R10D,R9D,23
+        (&[0x48, 0x0f, 0xac, 0x0a, 0x17][..], 0xac), // SHRD qword [RDX],RCX,23
+        (&[0x4d, 0x0f, 0xad, 0xca][..], 0xad), // SHRD R10,R9,CL
+        (&[0x67, 0x41, 0xf6, 0xc2, 2][..], 0xf6), // address override on TEST
+        (&[0x48, 0xf7, 0xc2, 2, 0, 0, 0][..], 0xf7), // TEST RDX,imm32
+        (&[0xff, 0x03][..], 0xff),             // INC dword [RBX]
+        (&[0xfe, 0x03][..], 0xfe),             // INC byte ptr [RBX]
+        (&[0x41, 0xfe, 0xca][..], 0xfe),       // DEC R10B
+        (&[0xfe, 0xcc][..], 0xfe),             // DEC AH
+        (&[0x67, 0x48, 0xff, 0x0b][..], 0xff), // address32 DEC qword [EBX]
+        (&[0x48, 0xc1, 0x23, 0x15][..], 0xc1), // SHL qword [RBX],21
+        (&[0x66, 0xc1, 0xe9, 0x15][..], 0xc1), // SHR CX,21
+        (&[0x66, 0xc1, 0xc1, 1][..], 0xc1),    // ROL CX,1
+        (&[0x67, 0x48, 0xc1, 0xe9, 0x15][..], 0xc1), // address override on SHR
+        (&[0x41, 0xd3, 0xee][..], 0xd3),       // SHR R14D,CL
+        (&[0x49, 0xd3, 0x2e][..], 0xd3),       // SHR qword [R14],CL
+        (&[0x49, 0xd3, 0xe6][..], 0xd3),       // SHL R14,CL
+        (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
+        (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
+        (&[0x48, 0x83, 0x12, 0x28][..], 0x83), // ADC qword [RDX],0x28
+        (&[0x48, 0x83, 0x03, 0x28][..], 0x83), // ADD qword [RBX],0x28
+        (&[0x66, 0x03, 0x13][..], 0x03),       // ADD DX,[RBX]
+        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83), // ADC SI,-1
+        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
+        (&[0x67, 0x88, 0x58, 0x4c][..], 0x88), // address32 byte store
+        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
+        (&[0x44, 0x88, 0xc0][..], 0x88),       // MOV AL,R8B
+        (&[0x67, 0x44, 0x88, 0xc1][..], 0x88), // address32 MOV CL,R8B
+        (&[0x84, 0x84, 0x24, 0x4d, 1, 0, 0][..], 0x84), // TEST [RSP+0x14d],AL
+        (&[0x8a, 0x3c, 0x24][..], 0x8a),       // byte load
+        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
+        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // FS override on NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),       // PREFETCHNTA
         (&[0xc7, 0x54, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // reserved C7 /2
         (&[0x64, 0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // segment override on dword immediate store
         (&[0x67, 0x48, 0x89, 0xc9][..], 0x89), // address override on qword register MOV

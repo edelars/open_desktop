@@ -15,8 +15,9 @@ use od_machine::{
     AccessWidth, CursorReadError, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
     DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
     DISPLAY_SECOND_FRAMEBUFFER_BASE, DisplayDevice, DisplayHandle, DisplayReadError,
-    GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryRegionKind,
-    MemoryRegionSpec, MmioBinding, RamLimits,
+    GuestPhysicalAddress, GuestPhysicalRange, LoadedStage10DisplayProbe, MachineBus,
+    MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
+    Stage10ProbeOutcome, load_stage10_display_probe,
 };
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
@@ -50,6 +51,9 @@ const CURSOR_FLAG_ENABLED: u32 = 1;
 const CURSOR_FLAG_HAS_SHAPE: u32 = 2;
 
 const PROFILE_TEST_PATTERN: u32 = 1;
+/// The guest probe of S10-08: own x86-64 code on the firmware board draws `bars` 64 x 48
+/// through the registers and the framebuffer memory of the device.
+const PROFILE_STAGE10_PROBE: u32 = 2;
 /// Test-only: two screens, screen 0 bars and screen 1 checker (DISPLAY_DEVICE.md 16.2).
 const PROFILE_TWO_SCREENS_TEST: u32 = 4;
 const MODE_FLAG_DISABLED: u32 = 4;
@@ -75,6 +79,14 @@ const BARS_BGR: [[u8; 3]; 8] = [
 ];
 
 const STEP_NOTHING_TO_EXECUTE: u32 = 1;
+const STEP_BUDGET_EXHAUSTED: u32 = 2;
+const STEP_HALTED: u32 = 3;
+const STEP_FAILED: u32 = 4;
+
+/// Profile 2 image: `tools/build/build_stage10_display_probe.py --width 64 --height 48 --seed 0`,
+/// manifest next to it. The reference frame is `bars_64x48_seed0.raw`.
+const STAGE10_PROBE_IMAGE: &[u8] =
+    include_bytes!("../../../tests/fixtures/guest/stage10/display_probe_bars_64x48_seed0.img");
 
 const MODE_FLAG_ACTIVE: u32 = 1;
 const MODE_FLAG_HAS_FRAME: u32 = 2;
@@ -239,12 +251,37 @@ const _: () = {
     assert!(offset_of!(OdDisplayCursorState, reserved1) == 60);
 };
 
-/// Machine behind one handle: a display device on a `MachineBus`.
+/// What runs behind a handle.
+enum Machine {
+    /// Profiles 1 and 4: a display device on a bare `MachineBus`, no guest code.
+    Bare(MachineBus),
+    /// Profile 2: the Stage 10 guest probe on the firmware board (S10-08).
+    Probe(Box<LoadedStage10DisplayProbe>),
+}
+
+impl Machine {
+    fn bus(&self) -> &MachineBus {
+        match self {
+            Machine::Bare(bus) => bus,
+            Machine::Probe(probe) => probe.bus(),
+        }
+    }
+
+    /// The writable bus of a bare machine. The probe machine has none: its memory is written
+    /// only by the guest, so the host cannot store into it by accident.
+    fn bare_bus_mut(&mut self) -> Option<&mut MachineBus> {
+        match self {
+            Machine::Bare(bus) => Some(bus),
+            Machine::Probe(_) => None,
+        }
+    }
+}
+
+/// Machine behind one handle: a display device and the bus that owns it.
 struct Session {
-    // Kept for the profile-specific stepping of later profiles; profile 1 has
-    // no guest.
+    /// Selects the stepping rule (`od_display_session_step`).
     profile: u32,
-    bus: MachineBus,
+    machine: Machine,
     display: DisplayHandle,
 }
 
@@ -262,7 +299,9 @@ struct Entry {
 // accesses are serialized and ordered across threads. `Session` contains only
 // `DisplayDevice` (state behind `Arc<Mutex<_>>`), `DisplayHandle` and the
 // `MachineBus` that owns that device: plain owned data without thread-local
-// state or `Rc`. It may therefore be moved to and dropped on any thread.
+// state or `Rc`. It may therefore be moved to and dropped on any thread. The same holds for
+// the profile-2 `LoadedStage10DisplayProbe` (a firmware board); a test in `od-machine` pins
+// that it is `Send`.
 unsafe impl Send for Entry {}
 // SAFETY: see `Send`; shared references only reach the atomics and, through
 // `Guard`, the `UnsafeCell` under the `busy` flag.
@@ -356,7 +395,7 @@ fn build_test_pattern_session() -> Option<Session> {
     .ok()?;
     let mut session = Session {
         profile: PROFILE_TEST_PATTERN,
-        bus,
+        machine: Machine::Bare(bus),
         display,
     };
     program_test_pattern(&mut session)?;
@@ -372,7 +411,7 @@ fn program_test_pattern(session: &mut Session) -> Option<()> {
     const FORMAT: u64 = DISPLAY_REGISTERS_BASE + 0x048;
     const MODE_COMMIT: u64 = DISPLAY_REGISTERS_BASE + 0x04C;
     const FRAME_GENERATION: u64 = DISPLAY_REGISTERS_BASE + 0x080;
-    let bus = &mut session.bus;
+    let bus = session.machine.bare_bus_mut()?;
     let mut store = |address: u64, value: u32| {
         bus.write_physical(
             GuestPhysicalAddress::new(address),
@@ -403,6 +442,18 @@ fn program_test_pattern(session: &mut Session) -> Option<()> {
         && mode.height == TEST_PATTERN_HEIGHT
         && session.display.has_current_frame())
     .then_some(())
+}
+
+/// Profile 2: the probe image on the firmware board. Nothing is programmed here: the display
+/// has no mode and no frame until the guest runs (`od_display_session_step`).
+fn build_stage10_probe_session() -> Option<Session> {
+    let probe = load_stage10_display_probe(STAGE10_PROBE_IMAGE).ok()?;
+    let display = probe.display();
+    Some(Session {
+        profile: PROFILE_STAGE10_PROBE,
+        machine: Machine::Probe(Box::new(probe)),
+        display,
+    })
 }
 
 /// Profile 4 (test-only): two screens. Screen 0 is the profile-1 bars frame;
@@ -443,7 +494,7 @@ fn build_two_screen_session() -> Option<Session> {
     .ok()?;
     let mut session = Session {
         profile: PROFILE_TWO_SCREENS_TEST,
-        bus,
+        machine: Machine::Bare(bus),
         display,
     };
     program_test_pattern(&mut session)?;
@@ -460,7 +511,7 @@ fn program_second_screen_checker(session: &mut Session) -> Option<()> {
     const FORMAT: u64 = BASE + 0x048;
     const MODE_COMMIT: u64 = BASE + 0x04C;
     const FRAME_GENERATION: u64 = BASE + 0x080;
-    let bus = &mut session.bus;
+    let bus = session.machine.bare_bus_mut()?;
     let mut store = |address: u64, value: u32| {
         bus.write_physical(
             GuestPhysicalAddress::new(address),
@@ -567,6 +618,10 @@ pub unsafe extern "C" fn od_display_session_create(
         }
         let session = match config.profile {
             PROFILE_TEST_PATTERN => match build_test_pattern_session() {
+                Some(session) => session,
+                None => return STATUS_INTERNAL_ERROR,
+            },
+            PROFILE_STAGE10_PROBE => match build_stage10_probe_session() {
                 Some(session) => session,
                 None => return STATUS_INTERNAL_ERROR,
             },
@@ -711,7 +766,10 @@ pub unsafe extern "C" fn od_display_session_read_frame(
             // caller guarantees `buffer_len` writable bytes exclusive to this
             // call (checked non-overlapping with `out_info`).
             let output = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_len) };
-            match session.display.read_frame_into(&session.bus, output) {
+            match session
+                .display
+                .read_frame_into(session.machine.bus(), output)
+            {
                 Ok(info) => {
                     // SAFETY: pointer shape checked above.
                     unsafe {
@@ -903,9 +961,13 @@ pub unsafe extern "C" fn od_display_session_read_screen_frame(
             // SAFETY: as in `od_display_session_read_frame`.
             let output = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_len) };
             let result = if screen == 0 {
-                session.display.read_frame_into(&session.bus, output)
+                session
+                    .display
+                    .read_frame_into(session.machine.bus(), output)
             } else {
-                session.display.read_second_frame_into(&session.bus, output)
+                session
+                    .display
+                    .read_second_frame_into(session.machine.bus(), output)
             };
             match result {
                 Ok(info) => {
@@ -953,24 +1015,35 @@ pub unsafe extern "C" fn od_display_session_step(
             return STATUS_ABI_MISMATCH;
         }
         with_session(handle, |session| {
-            // Profile 1 has no guest: any budget, including zero, executes nothing.
-            let _ = budget;
-            match session.profile {
-                PROFILE_TEST_PATTERN | PROFILE_TWO_SCREENS_TEST => {
-                    // SAFETY: pointer shape checked above.
-                    unsafe {
-                        out_report.write(OdDisplayStepReport {
-                            abi_version: ABI_VERSION,
-                            struct_size: size_of::<OdDisplayStepReport>() as u32,
-                            outcome: STEP_NOTHING_TO_EXECUTE,
-                            reserved: 0,
-                            instructions_executed: 0,
-                        });
-                    }
-                    STATUS_OK
+            let (outcome, instructions_executed) = match (session.profile, &mut session.machine) {
+                // Profiles 1 and 4 have no guest: any budget, including zero, executes nothing.
+                (PROFILE_TEST_PATTERN | PROFILE_TWO_SCREENS_TEST, _) => {
+                    (STEP_NOTHING_TO_EXECUTE, 0)
                 }
-                _ => STATUS_INTERNAL_ERROR,
+                (PROFILE_STAGE10_PROBE, Machine::Probe(probe)) => match probe.step(budget) {
+                    Ok(step) => {
+                        let outcome = match step.outcome {
+                            Stage10ProbeOutcome::BudgetExhausted => STEP_BUDGET_EXHAUSTED,
+                            Stage10ProbeOutcome::Halted => STEP_HALTED,
+                            Stage10ProbeOutcome::Failed => STEP_FAILED,
+                        };
+                        (outcome, step.retired)
+                    }
+                    Err(_) => return STATUS_INTERNAL_ERROR,
+                },
+                _ => return STATUS_INTERNAL_ERROR,
+            };
+            // SAFETY: pointer shape checked above.
+            unsafe {
+                out_report.write(OdDisplayStepReport {
+                    abi_version: ABI_VERSION,
+                    struct_size: size_of::<OdDisplayStepReport>() as u32,
+                    outcome,
+                    reserved: 0,
+                    instructions_executed,
+                });
             }
+            STATUS_OK
         })
     })
 }
@@ -1108,7 +1181,10 @@ fn with_machine_for_test<R>(
     let entry = lookup(handle).expect("live handle");
     let mut guard = entry.enter().expect("not busy");
     let session = guard.session();
-    body(&mut session.bus, &session.display)
+    body(
+        session.machine.bare_bus_mut().expect("bare machine"),
+        &session.display,
+    )
 }
 
 #[cfg(test)]
@@ -1403,6 +1479,97 @@ mod tests {
         assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
     }
 
+    fn create_probe() -> *mut OdDisplaySession {
+        let mut handle = null_mut();
+        let status =
+            unsafe { od_display_session_create(&config(PROFILE_STAGE10_PROBE), &mut handle) };
+        assert_eq!(status, STATUS_OK);
+        assert!(!handle.is_null());
+        handle
+    }
+
+    fn step(handle: *mut OdDisplaySession, budget: u64) -> OdDisplayStepReport {
+        let mut report = report_out();
+        assert_eq!(
+            unsafe { od_display_session_step(handle, budget, &mut report) },
+            STATUS_OK
+        );
+        assert_eq!(report.reserved, 0);
+        report
+    }
+
+    #[test]
+    fn stage10_probe_profile_has_no_frame_until_the_guest_runs() {
+        let handle = create_probe();
+        let mut mode = mode_out();
+        assert_eq!(
+            unsafe { od_display_session_mode(handle, &mut mode) },
+            STATUS_OK
+        );
+        assert_eq!((mode.width, mode.flags, mode.generation), (0, 0, 0));
+        let mut frame = [0u8; 64 * 48 * 4];
+        let mut info = info_out();
+        assert_eq!(
+            unsafe {
+                od_display_session_read_frame(handle, frame.as_mut_ptr(), frame.len(), &mut info)
+            },
+            STATUS_NO_ACTIVE_MODE
+        );
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn stage10_probe_profile_steps_the_guest_to_the_reference_frame() {
+        const REFERENCE: &[u8] =
+            include_bytes!("../../../tests/fixtures/guest/stage10/bars_64x48_seed0.raw");
+        let handle = create_probe();
+        assert_eq!(step(handle, 0).outcome, STEP_BUDGET_EXHAUSTED);
+        let mut total = 0;
+        let mut quanta = 0;
+        loop {
+            let report = step(handle, 5000);
+            total += report.instructions_executed;
+            quanta += 1;
+            assert!(quanta < 100, "the probe must reach HLT");
+            if report.outcome == STEP_HALTED {
+                break;
+            }
+            assert_eq!(report.outcome, STEP_BUDGET_EXHAUSTED);
+            assert_eq!(report.instructions_executed, 5000);
+        }
+        assert!(quanta > 1);
+        assert_eq!(total, 25983, "expected_retired of the manifest");
+        // HLT is final.
+        let again = step(handle, 5000);
+        assert_eq!(
+            (again.outcome, again.instructions_executed),
+            (STEP_HALTED, 0)
+        );
+
+        let mut mode = mode_out();
+        assert_eq!(
+            unsafe { od_display_session_mode(handle, &mut mode) },
+            STATUS_OK
+        );
+        assert_eq!(
+            (mode.width, mode.height, mode.stride, mode.format),
+            (64, 48, 256, 1)
+        );
+        assert_eq!(mode.flags, MODE_FLAG_ACTIVE | MODE_FLAG_HAS_FRAME);
+        assert_eq!(mode.generation, 1);
+        let mut frame = vec![0u8; REFERENCE.len()];
+        let mut info = info_out();
+        assert_eq!(
+            unsafe {
+                od_display_session_read_frame(handle, frame.as_mut_ptr(), frame.len(), &mut info)
+            },
+            STATUS_OK
+        );
+        assert_eq!(frame, REFERENCE);
+        assert_eq!(info.generation, 1);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
     #[test]
     fn destroying_twice_and_using_a_destroyed_handle_are_rejected() {
         let handle = create();
@@ -1479,7 +1646,7 @@ mod tests {
             unsafe { od_display_session_create(&config(1), null_mut()) },
             STATUS_INVALID_ARGUMENT
         );
-        for profile in [0, 2, 99, u32::MAX] {
+        for profile in [0, 3, 99, u32::MAX] {
             assert_eq!(
                 unsafe { od_display_session_create(&config(profile), &mut handle) },
                 STATUS_UNSUPPORTED_PROFILE,

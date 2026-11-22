@@ -15,6 +15,17 @@ pub enum LoadError {
     Relocation(RelocationError),
 }
 
+/// Whether an image may be placed at an address other than its ImageBase.
+///
+/// An image with a base relocation directory can always move. An image without
+/// one moves only when it declares itself position independent: ImageBase 0
+/// (the Linux EFI stub layout) and RELOCS_STRIPPED clear. Such an image needs no
+/// fixups at any aligned address. RELOCS_STRIPPED, or a non-zero ImageBase
+/// without a directory, pins the image to its ImageBase.
+pub(crate) fn is_relocatable(image: &PeImage<'_>) -> bool {
+    image.relocation_data().is_some() || (image.image_base() == 0 && !image.relocations_stripped())
+}
+
 pub(crate) fn runtime_fixup_count(image: &PeImage<'_>) -> Result<usize, LoadError> {
     let (rva, data) = image
         .relocation_data()
@@ -70,7 +81,7 @@ pub fn load_into(
     if image.relocations_stripped() && relocation_data.is_some() {
         return Err(LoadError::ConflictingRelocationFlag);
     }
-    if delta != 0 && relocation_data.is_none() {
+    if delta != 0 && !is_relocatable(image) {
         return Err(LoadError::RelocationsRequired);
     }
     if let Some((rva, bytes)) = relocation_data {

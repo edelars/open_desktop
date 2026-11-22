@@ -187,7 +187,7 @@ Delete I/O SQ сначала обслуживает команды, уже по�
 
 ### 8.2. Identify Namespace (NSID 1)
 
-`NSZE = NCAP = NUSE = namespace_sectors` (поддержки thin provisioning нет); `NSFEAT = 0`; `NSATTR = 0` (бит 0 «Write Protected» = 1 только у защищённого namespace, раздел 14.5; S8-21); `NLBAF = 0` (один формат LBA); `FLBAS = 0`; `NVMCAP = namespace_sectors · 512`; `NGUID = namespace_uuid`; `EUI64 = 0`; `LBAF0`: `MS = 0`, `LBADS = 9` (512 байт), `RP = 0`. **Решение о 4 KiB LBA:** в v1 формат один, 512 байт; формат 4096 не объявляется (сектор 512 байт — единица `od-storage` и размер, который принимают `stornvme`, прошивка и GPT S7-17). Расширение — отдельное решение до среза B.
+`NSZE = NCAP = NUSE = namespace_sectors` (поддержки thin provisioning нет); `NSFEAT = 0`; `NSATTR = 0` (бит 0 «Write Protected» = 1 только у защищённого namespace, раздел 14.6; S8-21); `NLBAF = 0` (один формат LBA); `FLBAS = 0`; `NVMCAP = namespace_sectors · 512`; `NGUID = namespace_uuid`; `EUI64 = 0`; `LBAF0`: `MS = 0`, `LBADS = 9` (512 байт), `RP = 0`. **Решение о 4 KiB LBA:** в v1 формат один, 512 байт; формат 4096 не объявляется (сектор 512 байт — единица `od-storage` и размер, который принимают `stornvme`, прошивка и GPT S7-17). Расширение — отдельное решение до среза B.
 
 ## 9. Features и log pages
 
@@ -295,9 +295,9 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | `CDW13` | `DSM[7:0]` содержит подсказки, которые контроллер не использует для оптимизации. `AF[3:0]` допустим от 0 до 8 для `Read` и от 0 до 6 для `Write`. Для `Write` `DSPEC[31:16]` игнорируется при выключенных директивах. Остальные биты должны быть нулевыми |
 | `CDW14`, `CDW15`, `MPTR` | игнорируются: защиты данных (`PRINFO = 0`) и метаданных (`MS = 0`) нет |
 
-`Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются; на защищённом namespace (раздел 14.5) — успех без обращения к backend. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
+`Flush`: `NSID = 1`; `PRP`, `CDW10..15` игнорируются; на защищённом namespace (раздел 14.6) — успех без обращения к backend. `NSID = 0xFFFF_FFFF` (все пространства имён) не принимается: `Invalid Namespace or Format`.
 
-**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) недопустимые биты в `CDW12`/`CDW13` или зарезервированное значение `AF` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → (Write на защищённом namespace, раздел 14.5) `Namespace is Write Protected` → передача.
+**Порядок проверок** (первая ошибка — статус команды): opcode (`Invalid Command Opcode`) → `FUSE ≠ 0` или `PSDT ≠ 0` (`Invalid Field`) → `NSID ≠ 1` (`Invalid Namespace or Format`) → backend не подключён (`Namespace Not Ready`) → (Read/Write) недопустимые биты в `CDW12`/`CDW13` или зарезервированное значение `AF` (`Invalid Field`) → `NLB + 1 > 2048` (`Invalid Field`) → `SLBA + NLB + 1 > NSZE` с проверкой переполнения 64 бит (`LBA Out of Range`) → (Write на защищённом namespace, раздел 14.6) `Namespace is Write Protected` → передача.
 
 **Передача.** `Read`: чтение из backend, затем запись в память гостя по PRP. `Write`: сначала весь буфер читается из памяти гостя по PRP, потом пишется в backend; при ошибке PRP диск не меняется. Память гостя — только RAM (раздел 3).
 
@@ -314,15 +314,15 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | LBA Out of Range | 0/`0x80` | 1 | выход за `NSZE` | значение `nvme.h`; DNR и условие NOT VERIFIED |
 | Internal Error | 0/`0x06` | 0 | `BackendError` любого вида при обращении к диску | значение `nvme.h`; DNR и условие NOT VERIFIED (медиа-ошибки SCT 2 `Write Fault`/`Unrecovered Read Error` не используются) |
 | Namespace Not Ready | 0/`0x82` | 0 | backend не подключён | значение `nvme.h`; DNR и условие NOT VERIFIED |
-| Namespace is Write Protected | 0/`0x20` | 1 | `Write` на namespace, подключённом через `attach_backend_read_only` (раздел 14.5, S8-21) | значение `nvme.h` по памяти; DNR и условие NOT VERIFIED против NVMe Base 2.4 |
+| Namespace is Write Protected | 0/`0x20` | 1 | `Write` на namespace, подключённом через `attach_backend_read_only` (раздел 14.6, S8-21) | значение `nvme.h` по памяти; DNR и условие NOT VERIFIED против NVMe Base 2.4 |
 
 Каждая неуспешная команда попадает в Error Information log (раздел 9.2). Паник нет: любая ошибка PRP, диапазона, поля или backend — статус.
 
 ### 13.3. Backend и namespace
 
 - `trait NvmeBackend`: `sector_count`, `read_sectors(lba, &mut [u8])`, `write_sectors(lba, &[u8])`, `flush`; буфер — целое число секторов по 512 байт; ошибки — `BackendError` (`OutOfRange`, `Io`, `InvalidSize`), не паника. Контроллер проверяет диапазон сам, но реализация обязана отвергать выход за пределы.
-- `InMemoryBackend` (`new(sectors)`, `from_bytes`, `as_bytes`, `flush_count`) — нулевой вектор фиксированного размера для тестов и мини-образов. **Точка интеграции host-файла:** владелец машины реализует `NvmeBackend` над контрактами `od-storage` (`STORAGE_FORMAT.md`) и передаёт его в `NvmeHandle::attach_backend(Box<dyn NvmeBackend + Send>)`; host-контракт Stage 5 описан в §14. Файлового ввода-вывода в `od-machine` нет. Для текущего `VWC.VWCP = 0` Stage 5 выбирает write-through: каждый успешный `write_sectors` имеет durable file-data ack до `Ok(())`. `Flush` остаётся поддержанным и вызывает `NvmeBackend::flush`, в том числе при `VWC.VWCP = 0` (кроме защищённого namespace, раздел 14.5: там backend не вызывается). Это фиксирует политику host-интеграции и не меняет регистры, Identify или команды контроллера, которыми владеет `S7-16`.
-- `attach_backend_read_only` (S8-21): то же подключение с признаком защиты от записи, раздел 14.5.
+- `InMemoryBackend` (`new(sectors)`, `from_bytes`, `as_bytes`, `flush_count`) — нулевой вектор фиксированного размера для тестов и мини-образов. **Точка интеграции host-файла:** владелец машины реализует `NvmeBackend` над контрактами `od-storage` (`STORAGE_FORMAT.md`) и передаёт его в `NvmeHandle::attach_backend(Box<dyn NvmeBackend + Send>)`; host-контракт Stage 5 описан в §14. Файлового ввода-вывода в `od-machine` нет. Для текущего `VWC.VWCP = 0` Stage 5 выбирает write-through: каждый успешный `write_sectors` имеет durable file-data ack до `Ok(())`. `Flush` остаётся поддержанным и вызывает `NvmeBackend::flush`, в том числе при `VWC.VWCP = 0` (кроме защищённого namespace, раздел 14.6: там backend не вызывается). Это фиксирует политику host-интеграции и не меняет регистры, Identify или команды контроллера, которыми владеет `S7-16`.
+- `attach_backend_read_only` (S8-21): то же подключение с признаком защиты от записи, раздел 14.6.
 - `attach_backend`: допустим только пока `CC.EN = 0` (`NvmeAttachError::ControllerEnabled`), backend с нулём секторов — `EmptyBackend`. `NSZE = NCAP = NUSE`, `NVMCAP`, `TNVMCAP` становятся `sector_count()` backend и заменяют `NvmeConfig::namespace_sectors`; Identify Namespace/Controller и проверка диапазона используют одно и то же значение. Заменить backend можно только при выключенном контроллере.
 - **Решение: устройство существует и без backend.** До `attach_backend` контроллер работает (регистры, admin, Identify с размером из `NvmeConfig`), а любая `Read`/`Write`/`Flush` завершается `Namespace Not Ready` (после проверки NSID). Альтернатива — не создавать устройство без backend — отвергнута: `FirmwareBoardConfig::nvme` и handoff остаются как в срезе A, а владелец машины подключает диск позже.
 - **Решение: один формат LBA, 512 байт** (`LBAF0`, `LBADS = 9`). 4 KiB LBA не поддержан и не объявляется (`NLBAF = 0`): 512 байт — единица `od-storage`, GPT S7-17 и размер, который ждут прошивка и `stornvme`.
@@ -339,7 +339,7 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 | Файловый/CoW backend | вне `od-machine` (`od-storage`) |
 | Прерывания | Firmware MMIO опрашивает CQ. PCI использует `IEN` для INTx или MSI-X в границах раздела 3.1 |
 | PCI-привязка | Opt-in Linux direct boot использует класс `010802`, BAR0/1, INTx и MSI-X. FLR отслеживается отдельно в [ISSUE-591](../KNOWN_ISSUES.md#issue-591) |
-| Атомарность записи (`AWUN`/`AWUPF`), `Write Atomicity` | команда в `service` исполняется целиком; гарантии для гостя нет в обозначенных границах, поля не объявлены |
+| Атомарность записи (`AWUN`/`AWUPF`), `Write Atomicity` | Identify Controller возвращает `AWUN = AWUPF = 0` (поля не заполняются; значение 0 в формате 0-based формально означает атомарность одного логического блока, соответствие реализации — NOT VERIFIED). Многосекторная `Write` может быть записана backend не целиком при отказе; гарантии атомарности для гостя нет, реализация её не проверяет |
 | Время исполнения, ограничение скорости | нет |
 | I/O без созданной SQ | `Invalid Queue Identifier` невозможна: doorbell несозданной SQ даёт событие среза A (invalid doorbell register); `Invalid Queue Identifier` проверяется на Delete SQ несозданной очереди |
 
@@ -350,10 +350,11 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 3. `Flush` с `NSID = 0` и поведение `Flush` без volatile write cache (`VWC.VWCP = 0`). Отказ для `NSID = 0xFFFF_FFFF` сверён с объявленным `VWC.FB = 10b`.
 4. Порядок проверок (`Namespace Not Ready` после `NSID`, до полей), `MDTS`: статус при превышении (`Invalid Field`).
 5. Округление `Data Units Read/Written` сверено с Figure 213. `Write Zeroes` и `Dataset Management` — необязательные команды выбранного NVM-профиля. Проверка операционной системы Windows относится к S7-32.
+6. `AWUN`/`AWUPF` — NOT VERIFIED, расхождение ОТКРЫТО. `AWUPF = 0` формально объявляет атомарность одного логического блока при сбое питания, тогда как §13.4 говорит, что гарантии атомарности для гостя нет. Feature `Write Atomicity` (FID `0x0A`) принимается и хранится (`admin.rs`, около строк 863 и 942), но на поведение контроллера не влияет. Решение (объявить иное значение или обеспечить атомарность блока в backend) не принято; проверка при потере питания относится к S9-39/ISSUE-055.
 
 ## 14. Постоянный backend на стороне host (S5-02)
 
-**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Приёмка минимального S7-16 описана в начале документа. Сквозная проверка guest storage и `Flush` относится к [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
+**Статус:** host contract S5-02 принят; host-side реализация `NvmeBackend` в S5-03 принята после независимого ревью кода и контрактов; проверенный исходный коммит S5-03 — `c20e3d6`. Этот раздел задаёт только host-side prerequisite для S5-03/S5-04. Приёмка минимального S7-16 описана в начале документа. Сквозная проверка guest storage и `Flush` относится к [S9-13](../plans/STAGE_9.md#s9-13-подключить-guest-storage-и-flush); её срез и его границы — [§14.5](#145-сквозной-срез-s9-13-guest-doorbell--persistent-backend). Stage 9 владеет storage format/durability evidence (`STORAGE_FORMAT.md`), snapshots, capacity/explicit-zero/discard ([S9-18](../plans/STAGE_9.md#s9-18-capacity-explicit-zero-и-discard)) и power-loss testing ([S9-39](../plans/STAGE_9.md#s9-39-контролируемые-power-loss-испытания)); этап 5 не дублирует эти области.
 
 ### 14.1. Состав и владение
 
@@ -394,7 +395,35 @@ Controller-scoped FID требуют `NSID = 0`; `Error Recovery (0x05)` про�
 - `NvmeHandle::attach_backend` вызывается только при `CC.EN = 0`; Attach при включённом контроллере остаётся `ControllerEnabled`. До старта гостевого исполнения host adapter проверяет nonzero 512-byte geometry, секторную ёмкость и file-durability capability. Контракт не меняет `VWC`, Identify Namespace/Controller, командный набор, LBA format или error status table, принадлежащие `S7-16`.
 - `VWC.VWCP = 0` и per-Write ack не гарантируют atomicity многосекторной записи, guest filesystem consistency, namespace persistence или power-loss recovery. Indeterminate flush error либо любой failure после возможной guest mutation переводит backend в terminal failed state и RAW в quarantine до отдельно определённой inspection/reconcile; normal reopen или retry не доказывает, какие bytes durable. Explicit `UnsupportedDurability` до guest mutation тоже terminally fails adapter, но RAW остаётся unchanged и не quarantined. Это согласуется с неизвестным durability scope [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed). Отдельная строка `S9-13` проверяет сквозной guest-storage/flush contract; S5-02/S5-03 описывают и реализуют только host-side prerequisite.
 
-### 14.5. Диск только для чтения (S8-21)
+### 14.5. Сквозной срез S9-13: guest doorbell → persistent backend
+
+**Статус (2026-11-20): срез реализован и проверен, gate guest-level остаётся ОТКРЫТЫМ.** Тесты — `crates/od-host/src/paged_host_loop/tests/s9_13.rs` (только macOS/aarch64, как остальные тесты JIT host loop); тестовый хелпер — `s9_13_support` в `crates/od-host/src/persistent_nvme.rs` (`Send`-хранилище со счётчиками и отказом n-го `flush_file_durable` под настоящим `PersistentStorage`: `FaultBackend` из `od-storage` основан на `Rc` и не может быть подключён к контроллеру).
+
+**Что в срезе настоящее.** Гостевой машинный код (включение Local APIC, store в doorbell через гостевые таблицы страниц, `HLT`, IDT с обработчиками, считающими прерывания и подтверждающими EOI), контроллер с DMA/PRP, запись CQE и MSI-X, производственный автомат durable-записи/flush (`PersistentNvmeBackend` на файле; `PersistentStorage` на тестовом хранилище).
+
+**Чего в срезе нет.** Гостевого NVMe-драйвера нет. Admin-очереди (Create I/O CQ/SQ), SQE, PRP-буферы и запись таблицы MSI-X подготавливает хост-тест; гость только включает LAPIC и звонит в doorbell. Поэтому условие «guest-visible completion с документированной durability» из S9-13 проверено на уровне контроллера и host loop, но не доказано гостевым драйвером или ОС. Сценарий (c) ниже управляется doorbell-записью хоста, а не гостем, и это указано в тесте.
+
+**Сценарии (все выполнены, 3 теста, `cargo test -p od-host --offline --lib s9_13`).**
+
+| Сценарий | Что проверено |
+|---|---|
+| (a) `s9_13_guest_doorbells_on_three_queues_persist_writes_and_flush` | Гость звонит в doorbell трёх очередей: `Write` A (2 сектора, PRP1 = последний сектор страницы + PRP2), `Write` B (2 сектора за PRP1), `Flush`. На каждую команду ровно один CQE (во втором слоте CQ пусто, SQHD/SQID/CID/phase/status 0) и один запуск обработчика прерывания гостя (счётчики 1/1/1, `irqs_delivered = 3`; см. ограничение счёта прерываний ниже). Порядок на backend: Write A, Write B, Flush. После drop машины (снимается writer lock) `PersistentNvmeBackend::open` читает файл побайтно ожидаемым |
+| (b) `s9_13_failed_durable_flush_gives_the_guest_internal_error_and_quarantines_raw` | Отказ первого `flush_file_durable` после `Write`: гость получает SCT 0 / SC `0x06` / DNR 0 для этой `Write`, для следующей `Write` и для `Flush`; по одному CQE и одному запуску обработчика на команду. Адаптер terminal и quarantined; в хранилище была одна запись и один flush (`write_calls`, `flush_calls`), повторных обращений к хранилищу нет. Неизменность durable-байтов в тесте — свойство скриптованной фикстуры (отказ происходит до того, как flush что-либо сделал durable), а не независимая проверка |
+| (c) `s9_13_write_cqe_follows_the_backend_write_and_flush_runs_one_durable_flush` | Обёртка пишет порядок событий backend и диапазонов, которые контроллер сообщает как записи в память гостя: `WriteEnter` → `WriteReturn` (после него уже один durable flush) → запись CQE → `FlushEnter` → `FlushReturn` (ровно один дополнительный durable flush, всего 2) → запись CQE. CQE `Write` не публикуется до возврата `write_sectors` |
+
+**Ограничение счёта прерываний.** У каждой очереди свой вектор и свой счётчик обработчика. Тест проверяет: один запуск обработчика на команду, отсутствие пропущенного прерывания и отсутствие лишней доставки после обработки. Утверждение «контроллер выдал ровно один MSI на команду» тест не доказывает: повторный MSI того же вектора до доставки сливается в IRR Local APIC и не отличается от одного. Счётчик MSI на стороне контроллера не добавлялся.
+
+**Документированная durability CQE.** При `VWC.VWCP = 0` успешный CQE `Write` означает: backend вернул `Ok` из `write_sectors`, то есть получен `DurableAck` на file data (§14.2; на macOS — `F_FULLFSYNC`, сам вызов не проверен испытаниями носителя, ISSUE-055). Успешный CQE `Flush` означает успешный отдельный `flush_file_durable`. CQE с ошибкой (`Internal Error`) не означает ни сохранённых, ни потерянных байтов: адаптер terminal, RAW quarantined до отдельной процедуры inspection/reconcile. Прерывание вектора очереди публикуется для любого CQE, в том числе с ошибкой (проверено по запуску обработчика, см. ограничение выше).
+
+**Не проверено и границы.**
+
+- Реальный гостевой NVMe-драйвер (Linux/Windows) поверх persistent backend и guest filesystem consistency.
+- Per-Write ack `F_FULLFSYNC` на реальном файле не считался (подсчёт вызовов выполнен на тестовом хранилище под тем же `PersistentStorage`, а не на `HostFileStorage`).
+- Power loss, потеря питания и поведение носителя (S9-39, ISSUE-055); namespace durability; атомарность многосекторной `Write` (`AWUN/AWUPF`, §13.4); FUA/barrier как отдельное свойство не отличается от обычной `Write` при write-through.
+- Порядок завершения при одновременно поданных командах разных очередей не проверялся: тесты подают doorbell по одному, порядок между очередями определяется round robin (§6).
+- Фикстура `s9_13.rs` намеренно копирует часть вспомогательного кода `s6_42c.rs` (его функции приватны): вынос общей фикстуры — открытый пункт (ссылка на отчёт этапа удалена: в отчёте его нет).
+
+### 14.6. Диск только для чтения (S8-21)
 
 Статус: **реализовано в коде, поведение гостевых драйверов не проверено (NOT VERIFIED).** `od-runner boot-firmware --disk <path>,ro` подключает файл только для чтения, а namespace объявляет защищённым от записи. Значения NSATTR (байт 99, бит 0) и статуса (SC `0x20`, generic) взяты по памяти исполнителя (Linux `nvme.h`: `NVME_NS_ATTR_RO`, `NVME_SC_NS_WRITE_PROTECTED`); в этой работе источники не открывались, по тексту NVMe Base 2.4 они **не сверены**, поведение Windows Setup и `stornvme` на защищённый namespace не проверялось.
 

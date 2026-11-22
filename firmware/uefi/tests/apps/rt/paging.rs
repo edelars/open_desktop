@@ -60,6 +60,9 @@ impl Tables {
                 }
                 table = bits & ADDRESS;
             }
+            // The leaf bits of the firmware's tables are carried unchanged: ExitBootServices has
+            // made the runtime images writable there (S7-31l), and the driver writes its fixups
+            // through these mappings without touching CR0.WP.
             entry(table, linear, 12).write_volatile(bits);
         }
         true

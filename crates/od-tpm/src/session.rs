@@ -5,7 +5,7 @@
 //! - session type `TPM_SE_HMAC`; slice C2 adds `TPM_SE_POLICY` and `TPM_SE_TRIAL` (the policy
 //!   state and the policy commands are in `policy.rs`; a policy session has no binding, `bind`
 //!   only feeds the session key, and a trial session cannot authorize anything);
-//! - `tpmKey` = `TPM_RH_NULL` (no salt, so `encryptedSalt` must be empty) or a loaded RSA or ECC
+//! - `tpmKey` = `TPM_RH_NULL` (no salt, so `encryptedSalt` must be empty) or a loaded RSA, ECC or ML-KEM
 //!   decrypt key (a salted session, slice 4): `encryptedSalt` is opened like the seed of a credential
 //!   with the label "SECRET" (`decrypt_session_salt`);
 //! - `bind` = `TPM_RH_NULL` (an unbound, unsalted session: the session key is the Empty Buffer) or
@@ -63,12 +63,12 @@
 use zeroize::Zeroizing;
 
 use crate::codes::{handle, object_attr, se, session_attr};
-use crate::credential::{SeedError, recover_seed};
+use crate::credential::{SeedError, encrypted_secret_limit, recover_seed};
 use crate::crypto::{DIGEST, HashAlg, TpmDigest, hash, hmac, hmac_verify, kdfa};
 use crate::da::DaClass;
 use crate::dispatch::{Invocation, handle_name};
 use crate::hash::{AuthValue, password_matches};
-use crate::marshal::{MAX_RSA_BYTES, Reader, Writer, limits};
+use crate::marshal::{Reader, Writer, limits};
 use crate::object::find_object;
 use crate::paramenc::SessionSym;
 use crate::policy::PolicyState;
@@ -370,9 +370,15 @@ impl Tpm {
         // read up to the largest digest and check the size once `authHash` is known.
         let nonce_caller = p.tpm2b(limits::MAX_HASH_SIZE)?;
         let oversized = nonce_caller.len() > DIGEST;
+        // `encryptedSalt` is at most a ciphertext of the `tpmKey`: 1088 octets for ML-KEM-768.
+        let salt_limit = self
+            .object(inv.handles[0])
+            .map_or(limits::MAX_2B_BUFFER_SIZE, |key| {
+                limits::MAX_2B_BUFFER_SIZE.max(encrypted_secret_limit(key))
+            });
         let rest = (|| -> Result<_, Rc> {
             p.set_param(2);
-            let encrypted_salt = p.tpm2b(limits::MAX_2B_BUFFER_SIZE)?;
+            let encrypted_salt = p.tpm2b(salt_limit)?;
             p.set_param(3);
             let session_type = p.u8()?;
             p.set_param(4);
@@ -523,7 +529,7 @@ impl Tpm {
             return Err(Rc::KEY.in_handle(1));
         }
         let name_hash = HashAlg::from_alg(key.public.name_alg).ok_or(Rc::HASH.in_handle(1))?;
-        if encrypted_salt.len() > MAX_RSA_BYTES {
+        if encrypted_salt.len() > encrypted_secret_limit(key) {
             return Err(Rc::SIZE.in_param(2));
         }
         if encrypted_salt.is_empty() {

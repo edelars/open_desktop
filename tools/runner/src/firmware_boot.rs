@@ -12,7 +12,7 @@ use crate::stop_snapshot::{self, BoardMemory};
 use od_machine::{
     FIRMWARE_EXECUTION_CYCLE_NS, FIRMWARE_IMAGE_BYTES, FirmwareBoardConfig, FirmwareFvApp,
     InMemoryBackend, LoadedFirmwareBoard, MachineStopReason, NVRAM_SNAPSHOT_BYTES, NvramConfig,
-    NvramDevice, PagedProbeExit, QuantumProgress, SecureBootKeys, TpmConfig,
+    NvramDevice, PagedProbeExit, PlatformResetKind, QuantumProgress, SecureBootKeys, TpmConfig,
     firmware_handoff_block, load_firmware_image,
 };
 use od_testkit::sha256_hex;
@@ -24,23 +24,26 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
 const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <steps> \
-                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm] [--tpm] [--nvram-reboot-out <file>] \
+                    [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci [--xhci-keys <list>]] [--nvram-reboot-out <file>] \
+                    [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--sample-rip <hex> ...] [--stop-snapshot <file>] [--phase-log <file>] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] \
+                    [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
 \x20\x20--disk <path>,ro: the file is opened read-only under a shared lock and the namespace is \
 write protected: the guest sees NSATTR bit 0 and every Write is refused with Namespace is Write \
-Protected (docs/specs/NVME_DEVICE.md 14.5); the file is never modified.\n\
+Protected (docs/specs/NVME_DEVICE.md 14.6); the file is never modified.\n\
 \x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
 board is dropped, so the writer lock (LOCK_EX) is released between the two boots \
 (limitation until S8-23).";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
+const MAX_TRACE_CALLS: usize = 64;
 const DUMP_USAGE: &str =
-    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm]";
+    "dump-handoff-block --out <file> [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot]";
 const PREPARE_NVRAM_USAGE: &str =
     "prepare-secure-boot-nvram setup|defaults --out <new file> [--nvram-in <protected snapshot>]";
 
@@ -64,6 +67,15 @@ struct Options {
     /// S8-21: `--disk <path>,ro`: shared read lease and a write-protected namespace.
     disk_read_only: bool,
     tpm: bool,
+    /// S7-34: the board gets the PCI ECAM window and the xHCI controller with the keyboard on
+    /// port 1 and the absolute pointer on port 2 (`--xhci`; XHCI_DEVICE.md).
+    xhci: bool,
+    /// S7-34 slice C: HID key events (Usage ID, pressed) fed to the keyboard behind the xHCI
+    /// controller while the ROM runs (`--xhci-keys`, see [`parse_xhci_keys`]).
+    xhci_keys: Vec<(u8, bool)>,
+    /// S7-26: boot, reset in process and boot again this many times (`--fv-app reboot`).
+    reboot_cycles: Option<u64>,
+    reboot_kind: PlatformResetKind,
     sample_rips: Vec<u64>,
     /// S8-10: JSON snapshot of the stopped machine (any stop except machine `Shutdown`).
     stop_snapshot: Option<String>,
@@ -71,6 +83,17 @@ struct Options {
     phase_log: Option<String>,
     /// S8-11: periodic raw screen dumps of any boot.
     framebuffer: Option<FramebufferDumps>,
+    /// S7-31c: `--cpu-loop unified` runs the ROM and the guest it starts in the CPL0 profile set
+    /// loop on a board with the Linux profile (ADR-0013 variant (b)).
+    unified: bool,
+    /// S7-31d: `--mark-rip` (unified loop only): record the first boundary at this RIP.
+    mark_rip: Option<u64>,
+    /// S7-31q: `--trace-call NAME=0xADDR[:guid=N][:name=N]` (unified loop only): watch the entry of
+    /// a ROM function (physical address); N (0..=3) is the argument that points to a GUID or to a
+    /// UCS-2 name. The report lists each call with its GUID and name, never values.
+    trace_calls: Vec<od_machine::CallTraceTarget>,
+    /// S7-31q: `--trace-system-table <hex>`: the guest address of `EFI_SYSTEM_TABLE`, for the `slot=` targets.
+    trace_system_table: Option<u64>,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -105,6 +128,54 @@ impl Options {
     }
 }
 
+fn parse_trace_call(value: &str) -> Result<od_machine::CallTraceTarget, String> {
+    let invalid = || {
+        format!(
+            "invalid --trace-call '{value}'; expected NAME=0xADDR[:guid=N][:name=N][:slot=OFFSET]"
+        )
+    };
+    let (name, rest) = value.split_once('=').ok_or_else(invalid)?;
+    let mut parts = rest.split(':');
+    let address = parts.next().ok_or_else(invalid)?;
+    let physical = u64::from_str_radix(address.strip_prefix("0x").unwrap_or(address), 16)
+        .map_err(|_| invalid())?;
+    let (mut guid_arg, mut name_arg, mut rt_slot) = (None, None, None);
+    for part in parts {
+        let (key, number) = part.split_once('=').ok_or_else(invalid)?;
+        match key {
+            "guid" | "name" => {
+                let index: u8 = number
+                    .parse()
+                    .ok()
+                    .filter(|index| *index < 4)
+                    .ok_or_else(invalid)?;
+                let slot = if key == "guid" {
+                    &mut guid_arg
+                } else {
+                    &mut name_arg
+                };
+                if slot.replace(index).is_some() {
+                    return Err(invalid());
+                }
+            }
+            "slot" if rt_slot.is_none() => {
+                rt_slot = Some(number.parse::<u16>().map_err(|_| invalid())?)
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    if name.is_empty() || (physical == 0 && rt_slot.is_none()) {
+        return Err(invalid());
+    }
+    Ok(od_machine::CallTraceTarget {
+        name: name.to_owned(),
+        physical,
+        guid_arg,
+        name_arg,
+        rt_slot,
+    })
+}
+
 fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
     let mut config = TpmConfig {
         entropy: vec![0; 48],
@@ -112,6 +183,24 @@ fn tpm_config(snapshot: Option<Vec<u8>>) -> io::Result<TpmConfig> {
     };
     File::open("/dev/urandom")?.read_exact(&mut config.entropy)?;
     Ok(config)
+}
+
+/// The explicit UTC base of the board RTC: 2024-01-01T00:00:00Z.
+const RTC_BASE_UNIX_SECONDS: u64 = 1_704_067_200;
+
+/// The board the unified loop runs the Linux profile on.
+fn apply_unified(config: &mut FirmwareBoardConfig) {
+    // The Linux profile needs the PM block, the ACPI tables and the ECAM window.
+    config.linux_profile = true;
+    config.acpi_pm = true;
+    config.acpi_tables = true;
+    config.pci_ecam = true;
+    // Without an RTC base the CMOS ports are absent (reads 0xFF, so UIP is always set) and the
+    // kernel's mc146818_get_time times out: "Unable to read current time from RTC" (S7-31o,
+    // ISSUE-641). The same explicit UTC base as the fv_app boards; never a host date.
+    config
+        .rtc_base_unix_seconds
+        .get_or_insert(RTC_BASE_UNIX_SECONDS);
 }
 
 fn board_config(
@@ -127,7 +216,7 @@ fn board_config(
         acpi_pm: acpi_present,
         acpi_tables: acpi_present,
         tpm,
-        rtc_base_unix_seconds: (rt || acpi).then_some(1_704_067_200),
+        rtc_base_unix_seconds: (rt || acpi).then_some(RTC_BASE_UNIX_SECONDS),
         pci_ecam: acpi,
         // Stable fixture identity for the diagnostic firmware-volume application.
         system_uuid: if acpi {
@@ -140,7 +229,8 @@ fn board_config(
         } else {
             Vec::new()
         },
-        nvram: (rt || reboot).then_some(NvramConfig::Empty),
+        nvram: (rt || reboot || fv_app == Some(FirmwareFvApp::Reboot))
+            .then_some(NvramConfig::Empty),
         nvme: matches!(fv_app, Some(FirmwareFvApp::Blk | FirmwareFvApp::Fs)).then(Default::default),
         ..FirmwareBoardConfig::default()
     }
@@ -157,8 +247,9 @@ fn parse_app(value: &str) -> Result<FirmwareFvApp, String> {
         "blk" => Ok(FirmwareFvApp::Blk),
         "fs" => Ok(FirmwareFvApp::Fs),
         "tpm" => Ok(FirmwareFvApp::Tpm),
+        "reboot" => Ok(FirmwareFvApp::Reboot),
         _ => Err(format!(
-            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk, fs or tpm"
+            "invalid --fv-app '{value}'; expected hello, ebs, vars, rt, acpi, gop, blk, fs, tpm or reboot"
         )),
     }
 }
@@ -178,10 +269,11 @@ pub fn dump_handoff(args: &[String]) -> ExitCode {
         }
         let path = out.ok_or_else(|| format!("usage: {DUMP_USAGE}"))?;
         // Only the descriptor is serialized. No TPM is created by this command.
-        let tpm = (app == Some(FirmwareFvApp::Tpm)).then(|| TpmConfig {
-            entropy: Vec::new(),
-            snapshot: None,
-        });
+        let tpm =
+            matches!(app, Some(FirmwareFvApp::Tpm | FirmwareFvApp::Reboot)).then(|| TpmConfig {
+                entropy: Vec::new(),
+                snapshot: None,
+            });
         let block = firmware_handoff_block(&board_config(app, false, tpm))
             .map_err(|error| format!("{error:?}"))?;
         fs::write(path, block).map_err(|error| format!("{path}: {error}"))
@@ -234,7 +326,11 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(error) = read {
         return emit(failure("invalid_input", "image_file", error.to_string()), 3);
     }
-    let tpm = if options.tpm || options.fv_app == Some(FirmwareFvApp::Tpm) {
+    let tpm = if options.tpm
+        || matches!(
+            options.fv_app,
+            Some(FirmwareFvApp::Tpm | FirmwareFvApp::Reboot)
+        ) {
         match tpm_config(None) {
             Ok(config) => Some(config),
             Err(error) => {
@@ -245,8 +341,15 @@ pub fn run(args: &[String]) -> ExitCode {
         None
     };
     let mut config = board_config(options.fv_app, options.nvram_reboot_out.is_some(), tpm);
+    if options.unified {
+        apply_unified(&mut config);
+    }
     if options.nvme_path().is_some() {
         config.nvme = Some(Default::default());
+    }
+    if options.xhci {
+        config.pci_ecam = true;
+        config.xhci = Some(Default::default());
     }
     if let Some(path) = &options.nvram_in {
         let bytes = match read_nvram_snapshot(path) {
@@ -258,6 +361,9 @@ pub fn run(args: &[String]) -> ExitCode {
         || (options.nvme_path().is_some() && options.fv_app.is_none())
     {
         config.nvram.get_or_insert(NvramConfig::Empty);
+    }
+    if let Some(cycles) = options.reboot_cycles {
+        return run_reboot_cycles(&options, &image, &config, cycles);
     }
     // The journal creates its files (the phase log and the dump directory), so only its
     // configuration is built here; `boot` creates it once the image is loaded and the NVMe
@@ -277,6 +383,11 @@ pub fn run(args: &[String]) -> ExitCode {
         nvme,
         &options.sample_rips,
         &mut diagnostics,
+        options.unified,
+        options.mark_rip,
+        &options.trace_calls,
+        options.trace_system_table,
+        &options.xhci_keys,
     ) {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
@@ -303,7 +414,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     if let Some(path) = &options.framebuffer_out {
-        if !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
+        // The unified loop has no FV application: the frame is whatever the guest left (S7-31p).
+        if !options.unified && !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
             first.report["status"] = json!("error");
             first.report["error"] = json!({
                 "kind": "framebuffer_out",
@@ -420,6 +532,11 @@ pub fn run(args: &[String]) -> ExitCode {
         nvme,
         &[],
         &mut Diagnostics::default(),
+        false,
+        None,
+        &[],
+        None,
+        &[],
     ) {
         Ok(run) => run,
         Err((mut value, code)) => {
@@ -897,7 +1014,7 @@ impl BootRun {
 
 /// With `read_only` (`--disk <path>,ro`) the file is opened read-only under a
 /// shared lock (`LOCK_SH`) and the namespace is write protected (NVME_DEVICE.md
-/// 14.5): a writer is refused while it lives and the file is never modified.
+/// 14.6): a writer is refused while it lives and the file is never modified.
 ///
 /// Otherwise attaches an existing RAW file through the stage 5 persistent backend: the
 /// writer lock (`LOCK_EX`) is held until the backend is dropped, so a second
@@ -969,6 +1086,256 @@ fn attach_disk(
     ))
 }
 
+fn exit_label(exit: &PagedProbeExit) -> &'static str {
+    match exit {
+        PagedProbeExit::Halted => "halted",
+        PagedProbeExit::Shutdown => "shutdown",
+        PagedProbeExit::BudgetExhausted => "budget_exhausted",
+        PagedProbeExit::Stopped => "stopped",
+        PagedProbeExit::Rejected(_) => "rejected",
+        PagedProbeExit::Unsupported { .. } => "unsupported",
+        PagedProbeExit::Fault(_) => "fault",
+        PagedProbeExit::Backend(_) => "backend_error",
+        PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
+    }
+}
+
+/// Resident set of this process in KiB, from `ps` (the same on macOS and Linux).
+fn rss_kib() -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Physical footprint of this process in KiB, from the macOS `footprint` tool: unlike RSS it
+/// counts memory the compressor holds, so it does not shrink when idle pages are compressed.
+/// `None` where the tool does not exist.
+fn footprint_kib() -> Option<u64> {
+    let output = Command::new("footprint")
+        .args([
+            "-p",
+            &std::process::id().to_string(),
+            "--format",
+            "bytes",
+            "--noCategories",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let rest = &text[text.find("Footprint: ")? + "Footprint: ".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some(digits.parse::<u64>().ok()? / 1024)
+}
+
+/// S7-26: `cycles` boots of one board in one process. Every boot of `--fv-app reboot` ends
+/// with `ResetSystem`, which the machine reports as a `Reset` stop; the board is then reset by
+/// `LoadedFirmwareBoard::platform_reset` (RAM, CPU and devices; NVRAM and the persistent TPM state
+/// stay) and runs again. Nothing is rebuilt, so the memory of this process must stay flat. COM1
+/// of all cycles goes to `--com1-out` in order; `boots[i].com1_offset` says where cycle `i`
+/// begins. `rss_kib_*` (from `ps`) and `footprint_kib_*` (macOS `footprint`, which also counts
+/// compressed memory) are the memory of this process at the start, after each cycle and at the end.
+fn run_reboot_cycles(
+    options: &Options,
+    image: &[u8],
+    config: &FirmwareBoardConfig,
+    cycles: u64,
+) -> ExitCode {
+    let mut board = match load_firmware_image(image, config) {
+        Ok(board) => board,
+        Err(error) => return emit(failure("loader_error", "loader", format!("{error:?}")), 4),
+    };
+    let rss_start = rss_kib();
+    let footprint_start = footprint_kib();
+    let started = Instant::now();
+    let mut com1: Vec<u8> = Vec::new();
+    let mut boots = Vec::new();
+    let mut rss_samples = Vec::new();
+    let mut footprint_samples = Vec::new();
+    let mut failed: Option<(&str, String)> = None;
+    for cycle in 1..=cycles {
+        let run = match board.run_boot(options.budget) {
+            Ok(run) => run,
+            Err(error) => {
+                failed = Some(("run", format!("cycle {cycle}: {error:?}")));
+                break;
+            }
+        };
+        let reset = run.exit == PagedProbeExit::Stopped
+            && run.stop_reason == Some(MachineStopReason::Reset);
+        boots.push(json!({
+            "cycle": cycle,
+            "exit": exit_label(&run.exit),
+            "stop_reason": run.stop_reason.map(|reason| format!("{reason:?}")),
+            "retired": run.retired,
+            "quanta": run.quanta,
+            "virtual_ns": run.virtual_ns,
+            "com1_offset": com1.len(),
+            "com1_bytes": run.com1.len(),
+        }));
+        com1.extend_from_slice(&run.com1);
+        if !reset {
+            failed = Some((
+                "reboot",
+                format!(
+                    "cycle {cycle} did not end with a Reset stop: {:?}",
+                    run.exit
+                ),
+            ));
+            break;
+        }
+        if let Err(error) = board.platform_reset(options.reboot_kind) {
+            failed = Some(("platform_reset", format!("cycle {cycle}: {error:?}")));
+            break;
+        }
+        rss_samples.push(rss_kib());
+        footprint_samples.push(footprint_kib());
+        // Progress for a long run; the report on stdout is written once, at the end.
+        eprintln!(
+            "reboot cycle {cycle}/{cycles}: retired {} wall_ms {} rss_kib {:?} footprint_kib {:?}",
+            run.retired,
+            started.elapsed().as_millis(),
+            rss_samples.last().copied().flatten(),
+            footprint_samples.last().copied().flatten(),
+        );
+    }
+    let rss_end = rss_kib();
+    let footprint_end = footprint_kib();
+    if let Err(error) = fs::write(&options.com1_out, &com1) {
+        return emit(failure("invalid_input", "com1_out", error.to_string()), 3);
+    }
+    let mut report = json!({
+        "schema_version": 1,
+        "command": "boot-firmware",
+        "status": if failed.is_none() { "completed" } else { "error" },
+        "reboot_cycles": cycles,
+        "reboot_kind": format!("{:?}", options.reboot_kind),
+        "image_sha256": sha256_hex(image),
+        "budget": options.budget,
+        "com1_bytes": com1.len(),
+        "com1_out": options.com1_out,
+        "rss_kib_start": rss_start,
+        "rss_kib_end": rss_end,
+        "rss_kib_after_cycle": rss_samples,
+        "footprint_kib_start": footprint_start,
+        "footprint_kib_end": footprint_end,
+        "footprint_kib_after_cycle": footprint_samples,
+        "wall_ms": started.elapsed().as_millis() as u64,
+        "boots": boots,
+    });
+    let code = match failed {
+        None => 0,
+        Some((kind, detail)) => {
+            report["error"] = json!({"kind": kind, "detail": detail});
+            5
+        }
+    };
+    emit(report, code)
+}
+
+/// First injected key event: after the keyboard is enumerated (the port reset alone takes 50 ms of
+/// virtual time, 50e6 instructions) and well before an application waits for input.
+const XHCI_KEYS_START: u64 = 60_000_000;
+/// Virtual time between two injected events, in instructions (1 ns each): 2 ms.
+const XHCI_KEYS_SPACING: u64 = 2_000_000;
+
+/// `--xhci-keys`: comma-separated HID Usage IDs (hex, page 0x07, 0xE0..=0xE7 modifiers). `HH` is a
+/// press followed by a release, `HH+` a press only, `HH-` a release only. Example: `e1+,04,e1-`
+/// types a capital A with the left Shift key.
+fn parse_xhci_keys(value: &str) -> Result<Vec<(u8, bool)>, String> {
+    let mut keys = Vec::new();
+    for item in value.split(',') {
+        let (digits, action) = match item.as_bytes().last() {
+            Some(b'+') => (&item[..item.len() - 1], Some(true)),
+            Some(b'-') => (&item[..item.len() - 1], Some(false)),
+            _ => (item, None),
+        };
+        let usage = u8::from_str_radix(digits, 16)
+            .ok()
+            .filter(|usage| matches!(usage, 0x04..=0xdd | 0xe0..=0xe7) && !digits.is_empty())
+            .ok_or_else(|| {
+                format!("invalid --xhci-keys item '{item}'; expected a hex Usage ID 04..DD or E0..E7 with optional + or -")
+            })?;
+        match action {
+            Some(pressed) => keys.push((usage, pressed)),
+            None => keys.extend([(usage, true), (usage, false)]),
+        }
+    }
+    Ok(keys)
+}
+
+/// Feeds the `--xhci-keys` events and watches the controller while the run is observed: whether
+/// it ran and, at the first quantum boundary after it stopped (the firmware stops it at
+/// ExitBootServices, XHCI_DEVICE.md 12.3), how many guest RAM accesses it had made.
+struct XhciWatch<'a> {
+    keys: &'a [(u8, bool)],
+    injected: usize,
+    refused: usize,
+    last_quanta: u64,
+    seen_running: bool,
+    ram_accesses_at_stop: Option<u64>,
+}
+
+impl<'a> XhciWatch<'a> {
+    fn new(keys: &'a [(u8, bool)]) -> Self {
+        Self {
+            keys,
+            injected: 0,
+            refused: 0,
+            last_quanta: u64::MAX,
+            seen_running: false,
+            ram_accesses_at_stop: None,
+        }
+    }
+
+    fn step(&mut self, handle: &od_machine::XhciHandle, retired: u64, quanta: u64) {
+        if let Some(&(usage, pressed)) = self.keys.get(self.injected)
+            && retired >= XHCI_KEYS_START + self.injected as u64 * XHCI_KEYS_SPACING
+        {
+            if handle
+                .push_input(od_machine::InputEvent::Key { usage, pressed })
+                .is_err()
+            {
+                self.refused += 1;
+            }
+            self.injected += 1;
+        }
+        if quanta == self.last_quanta {
+            return;
+        }
+        self.last_quanta = quanta;
+        let snapshot = handle.snapshot();
+        if snapshot.usbcmd & 1 != 0 {
+            self.seen_running = true;
+        } else if self.seen_running && self.ram_accesses_at_stop.is_none() {
+            self.ram_accesses_at_stop = Some(snapshot.ram_accesses);
+        }
+    }
+
+    fn report(&self, last: &od_machine::XhciSnapshot) -> Value {
+        json!({
+            "keys_total": self.keys.len(),
+            "keys_injected": self.injected,
+            "keys_refused": self.refused,
+            "ran": self.seen_running,
+            "ram_accesses_at_stop": self.ram_accesses_at_stop,
+            "final": {
+                "usbcmd": format!("0x{:08x}", last.usbcmd),
+                "usbsts": format!("0x{:08x}", last.usbsts),
+                "crcr": format!("0x{:016x}", last.crcr),
+                "dcbaap": format!("0x{:016x}", last.dcbaap),
+                "iman": format!("0x{:08x}", last.iman),
+                "erstba": format!("0x{:016x}", last.erstba),
+                "pci_command": format!("0x{:04x}", last.pci_command),
+                "bar0": format!("0x{:016x}", last.bar0),
+                "ram_accesses": last.ram_accesses,
+            },
+        })
+    }
+}
+
 fn boot(
     image: &[u8],
     config: &FirmwareBoardConfig,
@@ -977,6 +1344,11 @@ fn boot(
     nvme: Option<NvmeSource<'_>>,
     sample_rips: &[u64],
     diagnostics: &mut Diagnostics,
+    unified: bool,
+    mark_rip: Option<u64>,
+    trace_calls: &[od_machine::CallTraceTarget],
+    trace_system_table: Option<u64>,
+    xhci_keys: &[(u8, bool)],
 ) -> Result<BootRun, (Value, u8)> {
     let mut board = load_firmware_image(image, config)
         .map_err(|error| (failure("loader_error", "loader", format!("{error:?}")), 4))?;
@@ -1037,17 +1409,123 @@ fn boot(
     let handoff_sha256 = sha256_hex(board.handoff_block());
     let handoff_bytes = board.handoff_block().len();
     let mut samples = Vec::with_capacity(sample_rips.len());
-    let run = if let Some(journal) = &mut diagnostics.journal {
+    let xhci = board.xhci();
+    let mut watch = XhciWatch::new(xhci_keys);
+    let mut unified_run = None;
+    let run = if unified {
+        // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
+        od_machine::run_firmware_unified_traced(
+            &mut board,
+            budget,
+            mark_rip,
+            trace_calls.to_vec(),
+            trace_system_table,
+        ).map(|run| {
+            let report = run.run;
+            unified_run = Some(json!({
+                "set_exit_detail": run.set_exit_detail,
+                "members": run.members,
+                "exceptions_delivered": run.exceptions_delivered,
+                "page_faults_delivered": run.page_faults_delivered,
+                "cr3_changes": run.cr3_changes,
+                "cpl3_retired": run.cpl3_retired,
+                "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
+                "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
+                "rip_fetch_error": run.rip_fetch_error,
+                "final_state": {
+                    "rflags": format!("0x{:x}", run.final_state.rflags),
+                    "rax": format!("0x{:x}", run.final_state.rax),
+                    "rsp": format!("0x{:x}", run.final_state.rsp),
+                    "gdtr": run.final_state.gdtr.map(|(base, limit)| json!({
+                        "base": format!("0x{base:x}"),
+                        "limit": format!("0x{limit:x}"),
+                    })),
+                    "cs_selector": run.final_state.cs_selector.map(|selector| format!("0x{selector:x}")),
+                    "ss_selector": run.final_state.ss_selector.map(|selector| format!("0x{selector:x}")),
+                    "ss_cache": run.final_state.ss_cache,
+                    "sti_shadow": run.final_state.sti_shadow,
+                },
+                "interrupts": {
+                    "interrupt_flag": run.interrupts.interrupt_flag,
+                    "activity": run.interrupts.activity,
+                    "source": run.interrupts.source,
+                    "pic_imr": run.interrupts.pic_imr.map(|value| format!("0x{value:02x}")),
+                    "pic_irr": run.interrupts.pic_irr.map(|value| format!("0x{value:02x}")),
+                    "pic_isr": run.interrupts.pic_isr.map(|value| format!("0x{value:02x}")),
+                    "pic_icw2": run.interrupts.pic_icw2.map(|value| format!("0x{value:02x}")),
+                    "pic": run.interrupts.pic,
+                    "pit_channel0": run.interrupts.pit_channel0,
+                    "pit_channel0_programmed": run.interrupts.pit_channel0_programmed,
+                    "halt_stop": run.interrupts.halt_stop,
+                    "apic_declared": run.interrupts.apic_declared,
+                    "irqs_delivered": run.interrupts.irqs_delivered,
+                    "irq0_edges": run.interrupts.irq0_edges,
+                    "irq_refused_masked": run.interrupts.irq_refused_masked,
+                    "irq_refused_shadow": run.interrupts.irq_refused_shadow,
+                    "halt_wakes": run.interrupts.halt_wakes,
+                    "halt_idle_ns": run.interrupts.halt_idle_ns,
+                },
+                "rip_walk": run.rip_walk.iter().map(|entry| json!({
+                    "level": entry.level,
+                    "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                    "raw": format!("0x{:016x}", entry.raw),
+                })).collect::<Vec<_>>(),
+                "first_page_fault": run.first_page_fault.as_ref().map(|fault| json!({
+                    "cr2": format!("0x{:x}", fault.cr2),
+                    "error_code": format!("0x{:x}", fault.error_code),
+                    "translation_error": fault.translation_error,
+                    "walk": fault.walk.iter().map(|entry| json!({
+                        "level": entry.level,
+                        "entry_gpa": format!("0x{:x}", entry.entry_gpa),
+                        "raw": format!("0x{:016x}", entry.raw),
+                    })).collect::<Vec<_>>(),
+                })),
+                "marker_rip": run.marker_rip.map(|rip| format!("0x{rip:x}")),
+                "checkpoints": run.checkpoints.iter().map(|record| json!({
+                    "id": record.id,
+                    "name": record.name,
+                    "kind": record.kind,
+                    "rip": format!("0x{:x}", record.rip),
+                    "retired": record.retired,
+                    "quanta": record.quanta,
+                    "virtual_ns": record.virtual_ns,
+                    "cpl": record.cpl,
+                })).collect::<Vec<_>>(),
+                "marker": run.marker.map(|marker| json!({
+                    "retired": marker.retired,
+                    "quanta": marker.quanta,
+                    "virtual_ns": marker.virtual_ns,
+                })),
+                "rip_bytes": run.rip_bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "call_trace": run.call_trace.as_ref().map(|trace| json!({
+                    "total": trace.total,
+                    "dropped": trace.total - trace.entries.len() as u64,
+                    "calls": trace.entries.iter().map(|call| json!({
+                        "name": call.name,
+                        "retired": call.retired,
+                        "cpl": call.cpl,
+                        "caller": call.caller.map(|address| format!("0x{address:x}")),
+                        "guid": call.guid.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+                        "variable_name": call.variable_name,
+                    })).collect::<Vec<_>>(),
+                })),
+            }));
+            report
+        })
+    } else if let Some(journal) = &mut diagnostics.journal {
         board.run_boot_with_quantum_hook(budget, |board, progress| {
             journal.at_boundary(board, progress)
         })
-    } else if sample_rips.is_empty() {
+    } else if sample_rips.is_empty() && xhci.is_none() {
         board.run_boot(budget)
     } else {
         let start = Instant::now();
         board.run_boot_observed(budget, |rip, retired, quanta| {
             if sample_rips.get(samples.len()) == Some(&rip) {
                 samples.push((rip, start.elapsed().as_nanos(), retired, quanta));
+            }
+            if let Some(handle) = &xhci {
+                watch.step(handle, retired, quanta);
             }
         })
     };
@@ -1102,18 +1580,7 @@ fn boot(
         return Err((failure("invalid_input", "com1_out", error.to_string()), 3));
     }
     let fw_stop = parse_fw_stop(&report.com1);
-    let exit = match report.exit {
-        PagedProbeExit::Halted => "halted",
-        PagedProbeExit::Shutdown => "shutdown",
-        PagedProbeExit::BudgetExhausted => "budget_exhausted",
-        PagedProbeExit::Stopped => "stopped",
-        PagedProbeExit::Rejected(_) => "rejected",
-        PagedProbeExit::Unsupported { .. } => "unsupported",
-        PagedProbeExit::Fault(_) => "fault",
-        PagedProbeExit::Backend(_) => "backend_error",
-        PagedProbeExit::PortIo(_) => "pio_error",
-        PagedProbeExit::IntegrationError(_) => "integration_error",
-    };
+    let exit = exit_label(&report.exit);
     let halted = matches!(report.exit, PagedProbeExit::Halted);
     let rt = config.fv_app == Some(FirmwareFvApp::Rt);
     let hardware_stop =
@@ -1160,6 +1627,13 @@ fn boot(
             MachineStopReason::Reset => "Reset",
             MachineStopReason::Shutdown => "Shutdown",
         }));
+    }
+    if let Some(handle) = &xhci {
+        result["xhci"] = watch.report(&handle.snapshot());
+    }
+    if let Some(unified_run) = unified_run {
+        result["cpu_loop"] = json!("unified");
+        result["unified"] = unified_run;
     }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
@@ -1233,6 +1707,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut nvme_image = None;
     let mut disks: Vec<&String> = Vec::new();
     let mut tpm = false;
+    let mut xhci = false;
+    let mut xhci_keys: Option<Vec<(u8, bool)>> = None;
+    let mut reboot_cycles = None;
+    let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
     let mut stop_snapshot = None;
     let mut phase_log = None;
@@ -1240,11 +1718,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut framebuffer_every = None;
     let mut framebuffer_max_files = None;
     let mut framebuffer_max_bytes = None;
+    let mut cpu_loop: Option<bool> = None;
+    let mut mark_rip: Option<u64> = None;
+    let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
+    let mut trace_system_table: Option<u64> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
         if name == "--tpm" && !tpm {
             tpm = true;
+            index += 1;
+            continue;
+        }
+        if name == "--xhci" && !xhci {
+            xhci = true;
             index += 1;
             continue;
         }
@@ -1257,10 +1744,31 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--acpi-out" if acpi_out.is_none() => acpi_out = Some(value.clone()),
             "--nvme-image" if nvme_image.is_none() => nvme_image = Some(value.clone()),
             "--disk" => disks.push(value),
+            "--xhci-keys" if xhci_keys.is_none() => xhci_keys = Some(parse_xhci_keys(value)?),
             "--nvram-in" if nvram_in.is_none() => nvram_in = Some(value.clone()),
             "--nvram-out" if nvram_out.is_none() => nvram_out = Some(value.clone()),
             "--framebuffer-out" if framebuffer_out.is_none() => {
                 framebuffer_out = Some(value.clone())
+            }
+            "--reboot-cycles" if reboot_cycles.is_none() => {
+                reboot_cycles = Some(
+                    value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|cycles| *cycles > 0)
+                        .ok_or_else(|| format!("invalid --reboot-cycles '{value}'"))?,
+                );
+            }
+            "--reboot-kind" => {
+                reboot_kind = match value.as_str() {
+                    "cold" => PlatformResetKind::Cold,
+                    "warm" => PlatformResetKind::Warm,
+                    _ => {
+                        return Err(format!(
+                            "invalid --reboot-kind '{value}'; expected cold or warm"
+                        ));
+                    }
+                };
             }
             "--nvram-reboot-out" if nvram_reboot_out.is_none() => {
                 nvram_reboot_out = Some(value.clone())
@@ -1289,6 +1797,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--framebuffer-max-bytes" if framebuffer_max_bytes.is_none() => {
                 framebuffer_max_bytes = Some(parse_positive(name, value)?);
             }
+            "--cpu-loop" if cpu_loop.is_none() => match value.as_str() {
+                "unified" => cpu_loop = Some(true),
+                "firmware" => cpu_loop = Some(false),
+                _ => {
+                    return Err(format!(
+                        "invalid --cpu-loop '{value}'; expected firmware or unified"
+                    ));
+                }
+            },
+            "--trace-system-table" if trace_system_table.is_none() => {
+                let hex = value.strip_prefix("0x").unwrap_or(value);
+                trace_system_table = Some(
+                    u64::from_str_radix(hex, 16)
+                        .map_err(|_| format!("invalid --trace-system-table '{value}'"))?,
+                );
+            }
+            "--trace-call" if trace_calls.len() < MAX_TRACE_CALLS => {
+                trace_calls.push(parse_trace_call(value)?)
+            }
+            "--mark-rip" if mark_rip.is_none() => {
+                let hex = value.strip_prefix("0x").unwrap_or(value);
+                mark_rip = Some(
+                    u64::from_str_radix(hex, 16)
+                        .map_err(|_| format!("invalid --mark-rip '{value}'"))?,
+                );
+            }
             "--sample-rip" if sample_rips.len() < MAX_RIP_SAMPLES => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 let rip = u64::from_str_radix(hex, 16)
@@ -1303,11 +1837,55 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         index += 2;
     }
+    let unified = cpu_loop == Some(true);
+    if xhci_keys.is_some() && !xhci {
+        return Err("--xhci-keys requires --xhci".to_owned());
+    }
+    if unified && xhci {
+        return Err(
+            "--xhci is served by the firmware profile loop, not --cpu-loop unified".to_owned(),
+        );
+    }
+    if unified {
+        // The unified loop has no per-instruction RIP observer, and the reboot paths run the
+        // firmware profile loop; refuse rather than run another loop or ignore the option.
+        if !sample_rips.is_empty() {
+            return Err("--cpu-loop unified does not support --sample-rip".to_owned());
+        }
+        if reboot_cycles.is_some() || nvram_reboot_out.is_some() {
+            return Err(
+                "--cpu-loop unified does not combine with --reboot-cycles or --nvram-reboot-out"
+                    .to_owned(),
+            );
+        }
+    }
+    if mark_rip.is_some() && !unified {
+        return Err("--mark-rip requires --cpu-loop unified".to_owned());
+    }
+    if !trace_calls.is_empty() && !unified {
+        return Err("--trace-call requires --cpu-loop unified".to_owned());
+    }
+    if reboot_cycles.is_some() {
+        if fv_app != Some(FirmwareFvApp::Reboot) {
+            return Err("--reboot-cycles requires --fv-app reboot".to_owned());
+        }
+        if nvram_reboot_out.is_some()
+            || nvram_in.is_some()
+            || nvram_out.is_some()
+            || nvme_image.is_some()
+            || !sample_rips.is_empty()
+        {
+            return Err(
+                "--reboot-cycles does not combine with the NVRAM, NVMe and sample options"
+                    .to_owned(),
+            );
+        }
+    }
     if acpi_out.is_some() && fv_app != Some(FirmwareFvApp::Acpi) {
         return Err("--acpi-out requires --fv-app acpi".to_owned());
     }
-    if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) {
-        return Err("--framebuffer-out requires --fv-app gop".to_owned());
+    if framebuffer_out.is_some() && fv_app != Some(FirmwareFvApp::Gop) && !unified {
+        return Err("--framebuffer-out requires --fv-app gop or --cpu-loop unified".to_owned());
     }
     let storage_app = match fv_app {
         Some(FirmwareFvApp::Blk) => Some("blk"),
@@ -1387,10 +1965,18 @@ fn parse(args: &[String]) -> Result<Options, String> {
         disk,
         disk_read_only,
         tpm,
+        xhci,
+        xhci_keys: xhci_keys.unwrap_or_default(),
+        reboot_cycles,
+        reboot_kind,
         sample_rips,
         stop_snapshot,
         phase_log,
         framebuffer,
+        unified,
+        mark_rip,
+        trace_calls,
+        trace_system_table,
     })
 }
 
@@ -1516,6 +2102,254 @@ mod tests {
     }
 
     #[test]
+    fn xhci_keys_expand_to_press_release_pairs_and_explicit_edges() {
+        assert_eq!(
+            parse_xhci_keys("e1+,04,e1-").unwrap(),
+            [(0xe1, true), (0x04, true), (0x04, false), (0xe1, false)]
+        );
+        assert_eq!(
+            parse_xhci_keys("28").unwrap(),
+            [(0x28, true), (0x28, false)]
+        );
+        for bad in ["", "04,", "zz", "03", "de", "e8", "+", "04++", "104"] {
+            assert!(parse_xhci_keys(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn xhci_keys_need_the_controller_and_the_firmware_loop() {
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]);
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(parse(&base(&["--xhci-keys", "04"])).is_err());
+        let options = parse(&base(&["--xhci", "--xhci-keys", "04"])).unwrap();
+        assert_eq!(options.xhci_keys, [(0x04, true), (0x04, false)]);
+        assert!(parse(&base(&["--xhci"])).unwrap().xhci_keys.is_empty());
+        assert!(parse(&base(&["--xhci", "--xhci-keys", "04", "--xhci-keys", "05"])).is_err());
+        assert!(parse(&base(&["--xhci", "--cpu-loop", "unified"])).is_err());
+    }
+
+    #[test]
+    fn trace_call_is_parsed_and_needs_the_unified_loop() {
+        let base = |extra: &[&str]| {
+            let mut values: Vec<String> = [
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(
+            parse(&base(&[
+                "--trace-call",
+                "GetVariable=0x22ff00:guid=1:name=0"
+            ]))
+            .is_err()
+        );
+        let options = parse(&base(&[
+            "--cpu-loop",
+            "unified",
+            "--trace-call",
+            "GetVariable=0x22ff00:guid=1:name=0",
+            "--trace-call",
+            "ExitBootServices=0x2223e0",
+        ]))
+        .unwrap();
+        assert_eq!(options.trace_calls.len(), 2);
+        assert_eq!(
+            (
+                options.trace_calls[0].physical,
+                options.trace_calls[0].guid_arg,
+                options.trace_calls[0].name_arg
+            ),
+            (0x22ff00, Some(1), Some(0))
+        );
+        assert_eq!(
+            (
+                options.trace_calls[1].guid_arg,
+                options.trace_calls[1].name_arg
+            ),
+            (None, None)
+        );
+        for bad in [
+            "x",
+            "=0x1",
+            "N=zz",
+            "N=0x0",
+            "N=0x1:slot=x",
+            "N=0x1:slot=1:slot=2",
+            "N=0x1:guid=4",
+            "N=0x1:guid=1:guid=2",
+            "N=0x1:other=1",
+        ] {
+            assert!(parse_trace_call(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn framebuffer_out_needs_the_gop_app_or_the_unified_loop() {
+        // S7-31p: the unified loop dumps the display the guest left; no FV application finishes there.
+        let base = |extra: &[&str]| {
+            let mut values: Vec<String> = [
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "com1.txt",
+                "--budget",
+                "10",
+            ]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+            values.extend(extra.iter().map(|value| (*value).to_owned()));
+            values
+        };
+        assert!(parse(&base(&["--framebuffer-out", "fb.bin"])).is_err());
+        let options = parse(&base(&[
+            "--framebuffer-out",
+            "fb.bin",
+            "--cpu-loop",
+            "unified",
+        ]))
+        .unwrap();
+        assert!(options.unified && options.framebuffer_out.as_deref() == Some("fb.bin"));
+        assert!(parse(&base(&["--framebuffer-out", "fb.bin", "--fv-app", "gop"])).is_ok());
+    }
+
+    #[test]
+    fn the_unified_board_has_an_explicit_rtc_base_and_keeps_a_given_one() {
+        // S7-31o: without a base the CMOS ports are absent and the kernel cannot read the time.
+        let mut config = board_config(None, false, None);
+        assert_eq!(config.rtc_base_unix_seconds, None);
+        apply_unified(&mut config);
+        assert_eq!(config.rtc_base_unix_seconds, Some(1_704_067_200));
+        assert!(config.linux_profile && config.acpi_pm && config.acpi_tables && config.pci_ecam);
+        let mut given = board_config(None, false, None);
+        given.rtc_base_unix_seconds = Some(7);
+        apply_unified(&mut given);
+        assert_eq!(given.rtc_base_unix_seconds, Some(7));
+    }
+
+    #[test]
+    fn cpu_loop_selects_the_unified_loop_and_defaults_to_the_firmware_profile() {
+        let required = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        assert!(!parse(&required).unwrap().unified);
+        for (value, unified) in [("unified", true), ("firmware", false)] {
+            let mut given = required.clone();
+            given.extend(args(&["--cpu-loop", value]));
+            assert_eq!(parse(&given).unwrap().unified, unified);
+        }
+        let mut invalid = required;
+        invalid.extend(args(&["--cpu-loop", "kvm"]));
+        assert!(
+            parse(&invalid)
+                .err()
+                .unwrap()
+                .contains("invalid --cpu-loop")
+        );
+    }
+
+    #[test]
+    fn cpu_loop_is_refused_where_it_would_be_ignored_or_run_another_loop() {
+        let base = |extra: &[&str]| {
+            let mut values = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "out.com1",
+                "--budget",
+                "10",
+            ]);
+            values.extend(args(extra));
+            values
+        };
+        // A repeated option is refused, as for the other options.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--cpu-loop", "firmware"]))
+                .err()
+                .unwrap()
+                .contains("unexpected or duplicate option --cpu-loop")
+        );
+        // RIP samples need the observer of the firmware profile loop.
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--sample-rip", "200040"]))
+                .err()
+                .unwrap()
+                .contains("does not support --sample-rip")
+        );
+        // The reboot paths run the firmware profile loop.
+        for extra in [
+            &["--fv-app", "reboot", "--reboot-cycles", "2"][..],
+            &["--fv-app", "vars", "--nvram-reboot-out", "second.com1"][..],
+        ] {
+            let mut values = base(&["--cpu-loop", "unified"]);
+            values.extend(args(extra));
+            assert!(
+                parse(&values)
+                    .err()
+                    .unwrap()
+                    .contains("does not combine with --reboot-cycles"),
+                "{extra:?}"
+            );
+        }
+        // A marker belongs to the unified loop, and is taken once.
+        assert!(
+            parse(&base(&["--mark-rip", "200040"]))
+                .err()
+                .unwrap()
+                .contains("--mark-rip requires --cpu-loop unified")
+        );
+        assert_eq!(
+            parse(&base(&["--cpu-loop", "unified", "--mark-rip", "0x200040"]))
+                .unwrap()
+                .mark_rip,
+            Some(0x200040)
+        );
+        assert!(
+            parse(&base(&[
+                "--cpu-loop",
+                "unified",
+                "--mark-rip",
+                "200040",
+                "--mark-rip",
+                "200041"
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&base(&["--cpu-loop", "unified", "--mark-rip", "zz"]))
+                .err()
+                .unwrap()
+                .contains("invalid --mark-rip")
+        );
+        // The firmware loop with the same options stays accepted.
+        assert!(parse(&base(&["--cpu-loop", "firmware", "--sample-rip", "200040"])).is_ok());
+    }
+
+    #[test]
     fn firmware_boot_samples_allow_ordered_repeats_in_one_boot_only() {
         let required = args(&[
             "--image",
@@ -1560,6 +2394,98 @@ mod tests {
                 .unwrap()
                 .contains("requires a single boot")
         );
+    }
+
+    #[test]
+    fn reboot_cycles_need_the_reboot_app_and_exclude_the_other_modes() {
+        let required = [
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "first.com1",
+            "--budget",
+            "4000000",
+        ];
+        for (extra, expected) in [
+            (
+                &["--reboot-cycles", "5"][..],
+                Some("requires --fv-app reboot"),
+            ),
+            (
+                &["--reboot-cycles", "5", "--fv-app", "vars"][..],
+                Some("requires --fv-app reboot"),
+            ),
+            (
+                &["--reboot-cycles", "0", "--fv-app", "reboot"][..],
+                Some("invalid --reboot-cycles"),
+            ),
+            (
+                &["--reboot-cycles", "x", "--fv-app", "reboot"][..],
+                Some("invalid --reboot-cycles"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--reboot-kind",
+                    "tepid",
+                    "--fv-app",
+                    "reboot",
+                ][..],
+                Some("invalid --reboot-kind"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--fv-app",
+                    "reboot",
+                    "--nvram-out",
+                    "x.nv",
+                ][..],
+                Some("does not combine"),
+            ),
+            (
+                &[
+                    "--reboot-cycles",
+                    "5",
+                    "--fv-app",
+                    "reboot",
+                    "--sample-rip",
+                    "0x200040",
+                ][..],
+                Some("does not combine"),
+            ),
+            (&["--reboot-cycles", "5", "--fv-app", "reboot"][..], None),
+        ] {
+            let input = args(&[&required[..], extra].concat());
+            match expected {
+                Some(error) => assert!(parse(&input).err().unwrap().contains(error)),
+                None => {
+                    let options = parse(&input).unwrap();
+                    assert_eq!(options.reboot_cycles, Some(5));
+                    assert_eq!(options.reboot_kind, PlatformResetKind::Cold);
+                }
+            }
+        }
+        let warm = args(
+            &[
+                &required[..],
+                &[
+                    "--reboot-cycles",
+                    "2",
+                    "--reboot-kind",
+                    "warm",
+                    "--fv-app",
+                    "reboot",
+                ][..],
+            ]
+            .concat(),
+        );
+        assert_eq!(parse(&warm).unwrap().reboot_kind, PlatformResetKind::Warm);
+        // Without the flag the app runs once and stops on its reset.
+        let single = args(&[&required[..], &["--fv-app", "reboot"][..]].concat());
+        assert_eq!(parse(&single).unwrap().reboot_cycles, None);
     }
 
     #[test]
@@ -1829,6 +2755,11 @@ mod tests {
             }),
             &[],
             &mut Diagnostics::default(),
+            false,
+            None,
+            &[],
+            None,
+            &[],
         )
     }
 

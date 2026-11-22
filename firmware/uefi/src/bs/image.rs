@@ -7,7 +7,10 @@ use super::{
     state,
 };
 use crate::device_path::{DevicePathNode, END_PATH_BYTES, path_bytes};
-use crate::mem::{map::MemoryType, pages::ImageMemoryRange};
+use crate::mem::{
+    map::MemoryType,
+    pages::{ImageMemoryRange, ImagePlacement},
+};
 use crate::paging::PAGE_BYTES;
 use crate::pe::{self, MappedImage, PageLayout, PeImage, Subsystem};
 use crate::rt::virt::{MAX_IMAGES, RuntimeImage};
@@ -367,9 +370,16 @@ unsafe fn load(
                 return Status::OUT_OF_RESOURCES;
             }
             let alignment = u64::from(pe.section_alignment()).max(PAGE_BYTES);
+            let placement = if !pe::is_relocatable(&pe) {
+                ImagePlacement::Pinned
+            } else if pe.image_base() == 0 && pe.base_relocations().is_none() {
+                ImagePlacement::LowestAligned
+            } else {
+                ImagePlacement::Highest
+            };
             let Ok(plan) = state.allocator.plan_image(
                 pe.image_base(),
-                pe.base_relocations().is_some(),
+                placement,
                 alignment,
                 &regions[..region_count],
             ) else {

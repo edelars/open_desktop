@@ -8746,7 +8746,7 @@ At CPL0 of the CPL0 set with the FP member the x87 half of the cell is moved int
 stay refused in the set and `state.x87` is `None` between instructions. In the set also
 run, by the same route, EMMS and the SSSE3 MMX forms (S2-33/S2-54). Still refused in the set:
 the MMX forms at CPL3, the MMX conversions (CVTPI2PS/PD, CVT[T]PS2PI, CVT[T]PD2PI; the
-ISSUE-642 memory form of CVTPI2PS is unchanged), x87 arithmetic and the narrow integer SSE2
+ISSUE-662 memory form of CVTPI2PS is unchanged), x87 arithmetic and the narrow integer SSE2
 forms. Not in this slice: the MMX forms of the SSE2 additions (PADDQ, PSUBQ, PMULUDQ,
 PSADBW, PAVGB/W, PMAXUB/SW, PMINUB/SW, PMULHUW, PEXTRW, PINSRW, PMOVMSKB, MASKMOVQ, MOVNTQ,
 MOVDQ2Q, MOVQ2DQ), JIT, the CPUID MMX bit (S2-57). Intel SDM Rev. 093: Vol. 2A EMMS p. 3-282;

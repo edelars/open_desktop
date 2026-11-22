@@ -1496,7 +1496,8 @@
 - **Компонент:** `tests/system/` (runner stress mode), `crates/od-jit/src/dispatch.rs` (executable cache), runner (`--reboot-cycles`), guest RAM.
 - **Владелец:** S4-44; далее `docs/plans/STAGE_7.md` (S7-26) для boot/STOP/reset и `--reboot-cycles`.
 - **Статус:** открыта.
-- **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles`, явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
+- **Обновление 2026-11-21 (S7-26a):** `--reboot-cycles` в runner реализован для прошивки (`boot-firmware --fv-app reboot --reboot-cycles N`, сброс платы в процессе); повторные STOP/boot и reset устройств и прошивки проверены `tests/system/firmware_reset_smoke.py`. Остальное ниже остаётся открытым; reset путей Linux-платы и Linux-профиля не сделан ([ISSUE-627](#issue-627)).
+- **Суть и последствия:** не сделаны runner stress mode, `--reboot-cycles` (для Linux-платы), явный лимит guest RAM (проверены только host heap/RSS, RAM фиксирована 1 MiB в тестах S4-43; Linux-плата использует 128 MiB) и лимит executable cache. Повторные STOP/boot в runner, timer reprogramming и старые IRQ/handles после reset не проверены. Все пункты записаны в NOT RUN сводки S4-44b.
 - **Следующий шаг:** S4-44 назначает исполнителя по каждому пункту; остаток до STAGE_7.
 
 ### ISSUE-095 — Linux direct boot не запускался с JIT (0 %)
@@ -6260,6 +6261,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 - **Суть и последствия:** В фазе A отсутствовал `TPM2_PCR_Allocate`. S7-23 добавил команду и подтвердил выделение банков SHA-256 и SHA-384 через CRB и нативную загрузку; `TPM_CAP_PCR_PROPERTIES` реализована в S7-22 для locality 0, включая `RESET_L0` и пагинацию. Этот ответ сверен по опубликованной TPM Library Part 2 v185. Проверки исходного среза S7-21 опирались на v184 и частично сверенный PTP 1.07; TCG/TPM compliance не подтверждена. HMAC_DRBG совпадает с независимыми Python vectors, но его соответствие тексту SP 800-90A и NIST CAVP vectors не проверялось. Исходная самописная HMAC на SHA-256 была заменена на `hmac` в S7-23; эта замена не подтверждает соответствие DRBG стандартным validation vectors.
 - **Основание:** S7-21 phase-A report and review record in [STAGE_7_REPORT.md](reports/STAGE_7_REPORT.md#s7-21-процессор-команд-tpm-20-фаза-a); implementation contract, limitations, source availability and `NOT VERIFIED` list in [VTPM.md](specs/VTPM.md#источники-и-сверка); plan acceptance is explicitly scoped in [STAGE_7.md](plans/STAGE_7.md).
 - **Следующий шаг:** Перед расширением PCR bank/profile сверить требования с PTP и гостевыми проверками S7-30. По доступной Library v185 проверить оставшиеся области `NOT VERIFIED`. При доработке DRBG выполнить проверку по SP 800-90A и применимым NIST vectors либо явно оставить ограничение и основание. Не представлять scoped phase-A acceptance как compliance, и не закрывать эту запись без решения по перечисленным требованиям/ограничениям.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: S7-21/S7-23 (`od-tpm`); исполнитель не назначен. Условие закрытия: оставшиеся области `NOT VERIFIED` сверены по TPM Library v185, DRBG проверен по SP 800-90A и NIST vectors либо ограничение оставлено явным решением владельца.
 
 <a id="issue-511-s7-30-windows-media-unavailable-for-guid-scan"></a>
 
@@ -6267,7 +6269,7 @@ ISSUE-201 remains open: two full `od-machine` tests still expect CLD to be unsup
 
 - **Дата обнаружения:** 2026-11-18, при повторной проверке deliverables S7-30.
 - **Компонент:** аудит Windows firmware boot path и fixture `tests/fixtures/firmware/windows_media_manifest.json`.
-- **Статус:** открытая блокировка доказательств; S7-30 остаётся `in_progress`.
+- **Статус:** решена (обновлено 2026-11-21, S7-41; заголовок записи уже содержал «resolved», а статус не был обновлён). Блокировка снята: S7-30 принят независимым ревью 2026-11-18 (чекбокс плана [x]), статический поиск известных UEFI GUID выполнен по 18 кандидатам, включая `winload.efi` обоих индексов WIM ([отчёт](reports/STAGE_7_REPORT.md), [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md)). Остаётся вне записи: runtime-использование протоколов, переменных и команд TPM Windows не наблюдалось и назначено S7-32 (пропущена по решению владельца 2026-11-21).
 - **Суть и последствия:** выбранный Windows ISO и файлы `bootx64.efi`, `bootmgfw.efi`, `winload.efi` отсутствуют в текущем workspace. Ранее сохранённые размер/хеш ISO и `bootmgfw.efi` есть в `SUPPORT_MATRIX.md`/audit item A7, но не были пересчитаны в этом срезе. `windows_media_manifest.json` явно помечает их `available=false`/`reverified=false`; static known-GUID search имеет статус `not_performed`. Нельзя делать выводы о GUID, протоколах или runtime использовании.
 - **Основание:** targeted file search в `tests/fixtures/firmware`, `work` и tracked workspace не нашёл Windows ISO/WIM/boot binaries; найден только собственный EFI probe, не являющийся компонентом Windows. Audit item A8 и §10.2/10.12 [WINDOWS_PLATFORM_REQUIREMENTS.md](specs/WINDOWS_PLATFORM_REQUIREMENTS.md) уже фиксировали, что GUID scan не выполнялся.
 - **Следующий шаг:** предоставить/получить выбранный официальный ISO вне Git, записать независимо проверяемый URL/дату/размер/SHA-256, выполнить только статический поиск известных UEFI GUID в boot binaries без дизассемблирования или запуска, сохранить воспроизводимые результаты и обновить manifest/аудит. После этого повторить S7-30 review. Не хранить ISO или чужие Windows binaries в Git.
@@ -6928,6 +6930,7 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Дата и компонент.** 2026-11-18, `od-machine`, PCI-профиль NVMe. Открыто.
 - **Основание и последствие.** Цепочка PCI capabilities содержит MSI-X. PCI Express Device Capabilities для FLR и обработка Initiate FLR отсутствуют. Для полного NVMe over PCIe Transport 1.4 требуется Function Level Reset. Принятый S7-16 охватывает минимальную модель регистров, очередей и прерываний. [PCIe Transport 1.4, §3.8.5.3](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVMe-over-PCIe-Transport-Specification-Revision-1.4-Ratified-2026.07.31.pdf#page=26).
 - **Следующий шаг.** Реализовать capability и согласовать сброс PCI-функции с очередями, MSI-X и backend при расширении PCIe-профиля. Проверить чтение capability и reset через обычный гостевой путь PCI.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: S7-16 (расширение PCIe-профиля, `NVME_DEVICE.md`); исполнитель не назначен. Условие закрытия: FLR capability реализована, сброс функции согласован с очередями, MSI-X и backend, чтение capability и reset проверены через гостевой путь PCI.
 
 <a id="issue-592"></a>
 
@@ -6984,7 +6987,9 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 
 - **Дата и компонент.** 2026-11-19, `od-tpm`, Windows TPM provisioning и attestation (T-04, K-05…K-10).
 - **Наблюдение.** Новый `Tpm::new` оставляет EK certificate NV-индексы неопределёнными. Host-проверка обоих legacy EK подтвердила цепочку временного тестового CA и сохранение DER. Для применения в Windows нужен издатель с доверенной целевой средой цепочкой, а для новых профилей требуется определить требования к High Range и алгоритмам PTP. До первого Windows TBS trace фактический набор команд provisioning, BitLocker, Windows Hello и attestation неизвестен. [Проверки EK](reports/STAGE_7_REPORT.md#s7-23--шаблоны-ek-и-nv), [Windows T-04](specs/WINDOWS_PLATFORM_REQUIREMENTS.md).
-- **Статус и следующий шаг.** Открыто. Определить допустимого издателя и нужные шаблоны для целевого Windows-профиля, выпустить и проверить соответствие сертификата фактическому EK в host provisioning. При запуске S7-32 зафиксировать коды команд и результаты Windows TBS, включая использование `ActivateCredential`/`MakeCredential` и потребность в командах вне реализованного профиля. Проверить, что Windows получает сертификат и доверяет цепочке.
+- **Статус и следующий шаг.** Открыто. Определить допустимого издателя и нужные шаблоны для целевого Windows-профиля, выпустить и проверить соответствие сертификата фактическому EK в host provisioning. При запуске S7-32 зафиксировать коды команд и результаты Windows TBS, включая использование `ActivateCredential`/`MakeCredential` и потребность в командах вне реализованного профиля. Проверить, что Windows получает сертификат и доверяет цепочке. Шаблоны High Range H-3 (P-384), H-6 (RSA-3072) и H-27 (ML-KEM-768) уже есть (`HighRangeEk`, `crates/od-tpm/src/ek.rs`); открыты выдача сертификатов, предустановка и выбор профиля.
+- **Blocked (2026-11-20, [ADR-0009, решение 7](decisions/ADR-0009-vtpm-placement-and-crypto.md#решение-7-приёмка-s7-23-открытые-пункты)).** Трасса Windows TBS и совместимость `ContextSave`/`ContextLoad` с менеджером ресурсов TBS — до S7-32 (WinPE и Setup). Provisioning TPM, BitLocker, Windows Hello и attestation — этап 8 по roadmap. Производственная цепочка доверия EK ждёт решения владельца об издателе. Запись сертификата при создании VM — S9-26, проверка доверия Windows — S7-32 и этап 8. Причина: эти пункты наблюдаются только в Windows-госте или требуют решения владельца. Host-часть закрыта в S7-23: шаблоны L-1/L-2, H-3/H-6/H-27, запись DER и совпадение `SubjectPublicKeyInfo` с тестовым CA, формат и окно контекстов.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (S7-32 пропущена). Условие закрытия: выбран издатель и шаблоны EK для Windows-профиля, сертификат выпущен и проверен на фактическом EK, трасса Windows TBS записана; возможно только после запуска Windows (S7-32 или этап 8).
 
 <a id="issue-599"></a>
 
@@ -6992,7 +6997,7 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 
 - **Дата и компонент.** 2026-11-19, `od-tpm`, `TPM_CAP_COMMANDS` и приёмка фазы B.
 - **Основание.** Независимое ревью сравнило объявленные 60 команд с §5.2, таблица 16 PC Client PTP 1.07. В исходном наборе отсутствовали `ActivateCredential`/`MakeCredential`, `Duplicate`/`Import`, `ObjectChangeAuth`, `PolicySigned`, `PolicyTicket`, `PolicyNV` и `PolicyNameHash`. `PCR_Allocate` в текущем профиле отклоняется. [PC Client PTP 1.07](https://medias.cdn.trustedcomputinggroup.org/production/PC_Client_Specific_Platform_TPM_Profile_for_TPM_2p0_v1p07_Pub_5643562943.pdf), [ADR-0009](decisions/ADR-0009-vtpm-placement-and-crypto.md), [VTPM](specs/VTPM.md).
-- **Статус и следующий шаг.** Открыто. 2026-11-19 владелец подтвердил расширение ADR до PTP 1.07. Из исходных 41 отсутствующей команды добавлены `TestParms`, `ECC_Parameters`, `ECDH_KeyGen`, `GetSessionAuditDigest`, `CertifyCreation`, `HMAC_Start`, `PolicyCpHash`, `PolicyLocality`, `PolicyPassword`, `NV_Certify`, `ClockSet`, `MakeCredential`, `ActivateCredential`, `ObjectChangeAuth`, `PolicyNameHash`, `PolicyAuthorize`, `PolicyTemplate`, `PolicyParameters`, `SetPrimaryPolicy`, `PolicyCounterTimer` и `PolicyNV`. Добавлены `PolicyNvWritten`, `PolicyAuthorizeNV`, `NV_ChangeAuth`, `NV_UndefineSpaceSpecial` и `ClockRateAdjust`. Включена собственная policy-авторизация NV через `POLICYREAD`/`POLICYWRITE`. `PolicySecret` реализует оба знака `expiration`, а `PolicyTicket` проверяет выданные билеты. Snapshot v5 сохраняет `totalResetCount`. `PolicySigned` добавлена для RSA-2048 и P-256. `IncrementalSelfTest` возвращает список оставшихся проверок текущего профиля, которые завершаются при `Startup`. TPM и TCG2 используют SHA-256 и SHA-384. `PCR_Allocate` меняет выделение целых банков после `_TPM_Init`, сохраняет его в snapshot v6 и проверен при загрузке с каждым банком. `Import` проверен с внешним RSA-OAEP и ECC/KDFe, включая канонический RSA-дубликат с одним множителем. `Duplicate` требует политику роли DUP и прошёл проверку с NULL, RSA и ECC родителями. `PolicyDuplicationSelect` проверен через CRB с привязкой двух Name, восстановлением контекста и `PolicyAuthorize`. `VerifyDigestSignature` и приём `DIGEST_VERIFIED` в `PolicyAuthorize` проверены по внешним подписям и HMAC. `SignDigest` и `HASHCHECK` проверены с restricted RSA-2048 и P-256. Реализована потоковая подпись `SignSequenceStart`/`SignSequenceComplete` с авторизацией последовательности и ключа. Реализованы потоковая проверка подписи и билет `MESSAGE_VERIFIED`. Смена proof выбранной иерархии во время потока ограничивает завершение под этой иерархией. Платформенный H-CRTM измеряет PCR0 и PCR17 и сохраняет establishment в snapshot v7. Гостевой запуск D-RTM требует доверенного производителя сигналов. В snapshot v8 расширены Primary Seeds для целевых AES-256/PQC. Размер proof для новых профилей требует отдельной сверки с Part 1 §11.5 и совместимостью билетов. Объявлены все 101 кода. ML-KEM-768 проверен для unrestricted объектов, включая ACVP и OpenSSL. Остаются restricted ML-KEM Storage parent, labeled KEM, ML-DSA и глубокая проверка объявленных команд, включая сохранение и восстановление sequence-контекстов. Аудит дополнительной HMAC-сессией и аттестация проверены через CRB. Совмещение аудита и авторизации одной HMAC-сессией реализовано (срез S7-23): сессия с `audit` может авторизовать handle в любой позиции, policy- и trial-сессия с `audit` остаётся `TPM_RC_ATTRIBUTES`. Первый аудит привязанной сессии отвечает ключом команды, затем привязка снимается и `authValue` входит в ключ. Правила сверены с Part 1 rev 01.83 §§18.6.1, 18.6.4, 19.6.1, 19.6.10, 20.1 и Errata 1.5, п. 2.15; тесты `session_audit_*` в `crates/od-tpm/src/tests_session_audit.rs`, раздел [VTPM](specs/VTPM.md#аудит-сессий-и-аттестация). NOT VERIFIED: нумерация в v185, Part 2 Table 38 и ключ ответа при первом аудите привязанной сессии (текст не определяет его однозначно). Дополнительные сессии шифрования проверены для `ECDH_KeyGen` и общего dispatcher. Целевая DA-проверка выполняется перед проверкой роли и условий политики по Part 3 §5.6. Проверено через CRB. Для привязки к иерархиям сессия сохраняет DA-класс, включая использование policy и аудит. Через CRB проверены отдельные условия Lockout и целевой сущности. Привязка к объектам и NV, salted-сессии и проверка DA с ними остаются открытыми. AES-256-CFB проверен для сессий, Storage keys, дублирования и credential. Срез hash agility, шаги A–B: SHA-384/SHA-512 закрыты как криптопримитивы, в `TPM_CAP_ALGS`, `Hash`/`HashSequenceStart`/`SequenceComplete`, `GetRandom` (до 64 октетов) и `TPM_PT_MAX_DIGEST` = 64; открыты шаги C–E (`nameAlg`, объекты, `authHash` сессий, контексты, политики, snapshot), salted-сессии, P-384, RSA-3072, SYMCIPHER, ML-DSA, §4.10, EK High Range, реальное отслеживание `TPM_PT_CONTEXT_GAP_MAX` и `TPM_PT_CLOCK_UPDATE` (сейчас 0 означает «не поддерживается/не отслеживается», а не «всегда актуально»). Доработать обязательные варианты алгоритмов, включая самостоятельные объекты SYMCIPHER, RSA-3072, P-384, SHA-384/512, restricted ML-KEM и ML-DSA, переключение банков PCR и upgrade. CRB revision 3 и EFI TCG2 поддерживают кадры до 8192 байт. Полные ответы с ML-DSA предстоит проверить в рамках поддержки алгоритма. Отдельно сверить `TPM_PT_CLOCK_UPDATE` (интервал фиксации NV в миллисекундах), который публикуется как 0. Для остальных путей генерации P-256 сверить требование дополнительных случайных битов из Library v185 Part 1 §44.6. Текущая генерация вне MakeCredential использует rejection sampling. Срез 3 (2026-11-20): ORDERLY-счётчики, PIN_FAIL/PIN_PASS и перечисленные свойства Table 2 реализованы; `TPM_PT_CLOCK_UPDATE` публикуется как 0 (интервал фиксации NV на стороне TPM не моделируется), как и `CONTEXT_GAP_MAX`, `SPLIT_MAX`, `MODES`, `NV_WRITE_RECOVERY`, `AUDIT_COUNTER_0/1`; 0 означает «не поддерживается/не отслеживается», а не «всегда актуально»; сверка значений остаётся открытой. Ревью среза 3 исправило два дефекта: приращение ORDERLY-счётчика после `Shutdown` пишется в NV сразу (иначе снимок после `Shutdown` откатывал счётчик к значению `Shutdown`), а у PIN_FAIL/PIN_PASS `DefineSpace` отклоняет `AUTHWRITE` и `WRITEDEFINE` (иначе владелец PIN переписывал `passCount`). Риск совместимости: снимок с ORDERLY-счётчиком или PIN-индексом старая сборка не читает (отвергает как `BadField`), а версия снимка не менялась (v8). [Инвентарь и проверки](specs/VTPM.md#целевой-профиль-pc-client-ptp-107).
+- **Статус и следующий шаг.** **Закрыт 2026-11-21** после независимого ревью фазы B ([отчёт](reports/STAGE_7_REPORT.md#s7-23--независимое-ревью-фазы-b-2026-11-21)): остатки записаны ниже как NOT VERIFIED, принятые отклонения и blocked-пункты. До закрытия запись обновлена 2026-11-20 по [ADR-0009, решение 7](decisions/ADR-0009-vtpm-placement-and-crypto.md#решение-7-приёмка-s7-23-открытые-пункты). Набор объявляет все 101 код, исходные 41 отсутствующая команда добавлены. Сделанное из записи убрано: hash agility (SHA-384/SHA-512 в `nameAlg`, сессиях, политиках, подписях, NV и snapshot), salted-сессии и привязка к объектам и NV, ECC P-384, RSA-3072, SYMCIPHER, ML-DSA-65, EK High Range, §4.10 (решение 6: host lifecycle, `FieldUpgrade*` и `FirmwareRead` не реализованы), ORDERLY-счётчики и PIN-индексы, сохранение sequence-контекстов и окно `contextID`. Подробности — [VTPM](specs/VTPM.md#целевой-профиль-pc-client-ptp-107) и [отчёт](reports/STAGE_7_REPORT.md). Пункты записи на момент закрытия: (1) **Закрыт по существу в проверенной части.** Ключ ответа при первом аудите привязанной сессии записан как неоднозначность текста ([VTPM, A-1](specs/VTPM.md#неоднозначность-a-1-ключ-ответа-при-первом-аудите-привязанной-сессии)): выбран `sessionKey` без `authValue`, выбор закреплён тестом `first_audit_of_a_bound_session_answers_with_the_session_key_alone` в `od-tpm`. Сверено: текст Part 1 rev 01.83 §§18.6.1 (Table 6), 18.6.4, 19.6.1, 19.6.10, 20.1 и Errata 1.5, п. 2.15. **NOT VERIFIED:** нумерация этих пунктов в v185 и Part 2 v185 Table 38. Причина: сетевой доступ к TCG в сессии ревью 2026-11-21 был недоступен; Part 4 не читалась. Из v185 подтверждено чтение только Part 1 §44.6 и §11.5 и Part 2 Table 6 и Table 42, к ключу ответа аудита они не относятся. Ожидается, что на поведение сверка не влияет (не подтверждено). Поведение референсной реализации TCG и Windows TBS на этом случае не наблюдалось (трасса TBS — S7-32). (2) **Принятые отклонения** (решение 7, пп. 3–4; обоснование в [VTPM, «Отклонения»](specs/VTPM.md#отклонения-от-ptp-107-и-плана-записаны-не-скрыты)): `TPM_PT_CLOCK_UPDATE` = 0, потому что у TPM нет собственной NV, а копию `Clock` фиксирует снимок host; S7-33 передаёт S9-27 требование писать снимок не реже нормы Part 1 и публиковать этот интервал вместо 0. Нули `SPLIT_MAX`, `MODES`, `NV_WRITE_RECOVERY`, `AUDIT_COUNTER_0/1` — фактические значения. Размер proof 256 бит меньше рекомендации Part 1 §11.5 (512 бит при SHA-512), потому что рекомендация не обязательна, а смена размера обесценит выданные билеты и сохранённые контексты. (3) **Blocked (Windows):** трасса команд TBS и совместимость `ContextSave`/`ContextLoad` с TBS — до S7-32, provisioning, BitLocker, Windows Hello и attestation — этап 8; обе позиции ведёт [ISSUE-598](#issue-598). (4) **Закрыт.** Независимое ревью фазы B выполнено 2026-11-21 (Opus, effort high, вердикт «с замечаниями», код и тесты подтверждены), чекбокс S7-23 отмечен 2026-11-21 ([отчёт](reports/STAGE_7_REPORT.md#s7-23--независимое-ревью-фазы-b-2026-11-21)). Замечания были документальными и исправлены тем же коммитом. Не проверено ревью: `od-machine` `tpm_crb` — только по отчёту; v185 Part 4 не читалась. Пункты (2) и (3) остаются записанными отклонениями и blocked-пунктами; их ведут [ISSUE-598](#issue-598) и S7-32.
 
 <a id="issue-600"></a>
 
@@ -7033,62 +7038,467 @@ LinuxDirect с двумя vCPU, принятым RAW и seed `24301` запус�
 - **Дата и компонент.** 2026-11-20, профиль исполнения EFI-приложений в `od-isa`.
 - **Основание.** В прогоне новой CRB-пробы из FV runner подтвердил доставку кадра на 4991 байт и проверку event log, затем остановился на RIP `0x7F50514` с `Unsupported { opcode: 51 }`. В `tpm.efi` по RVA `0x2514` находятся байты `48 33 94 24 7A 01 00 00` для `xor rdx, qword ptr [rsp + 0x17a]`. LLVM выбрал эту форму для сравнения полей ответа `TPM2_PCR_Read`.
 - **Статус и следующий шаг.** Открыто для декодера. EFI-проба сравнивает поля ответа отдельными байтовыми чтениями. Прогоны из FV и с ESP завершились успешно. При расширении набора инструкций проверить обычную форму `REX.W 33 /r` с источником из памяти в профиле EFI. [Отчёт CRB](reports/STAGE_7_REPORT.md#s7-23--crb-chunking).
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (профиль EFI в `od-isa`). Условие закрытия: форма `REX.W 33 /r` с источником из памяти допущена в профиле EFI и покрыта тестом либо запись закрыта решением, что EFI-пробы её не используют.
 
-<a id="issue-605"></a>
+### ISSUE-605 — S9-13: guest-level gate открыт (нет настоящего гостевого NVMe-драйвера)
 
-### ISSUE-605 — S8-21: блокировка файлового диска снимается между перезапусками прошивки
+- **Дата обнаружения:** 2026-11-20 (срез S9-13).
+- **Компонент:** guest NVMe (`od-machine/src/nvme/`) и persistent backend (`od-host/src/persistent_nvme.rs`), задача S9-13.
+- **Статус:** открыта.
+- **Суть и последствия:** сквозной тест guest → контроллер → persistent backend → completion → reopen построен на фикстуре хоста: гостевой машинный код звонит в doorbell, а очереди, SQE и PRP готовит хост. Настоящий гостевой драйвер (Linux/Windows) не проверен, поэтому guest-level gate S9-13 не закрыт.
+- **Основание:** [NVME_DEVICE.md §14.5](specs/NVME_DEVICE.md); тесты `paged_host_loop/tests/s9_13.rs`.
+- **Следующий шаг:** прогон настоящего гостевого драйвера поверх `PersistentNvmeBackend` с проверкой файла после reopen; durability связать с ISSUE-055 и S9-39.
+
+### ISSUE-606 — S9-13: объявленная атомарность записи не согласована с текстом (AWUN/AWUPF = 0)
+
+- **Дата обнаружения:** 2026-11-20 (ревью S9-13).
+- **Компонент:** NVMe Identify Controller (`od-machine/src/nvme/admin.rs`), спецификация [NVME_DEVICE.md §13.4–13.5](specs/NVME_DEVICE.md).
+- **Статус:** открыта, NOT VERIFIED.
+- **Суть и последствия:** AWUN и AWUPF объявлены нулём (минимум: атомарность одного блока), но §13.4 говорит, что атомарности для гостя нет. Feature Write Atomicity (FID 0x0A) принимается и хранится, на поведение не влияет. Гость может опираться на объявленную атомарность при сбое питания, которой нет.
+- **Основание:** код `admin.rs` (байты 526–529 не заполняются; FID 0x0A принимается), ревью S9-13.
+- **Следующий шаг:** решение владельца: объявить 0 с явным «атомарность не гарантируется» либо реализовать и проверить; проверка при сбое питания — через S9-39 и ISSUE-055.
+
+### ISSUE-607 — image-tool: отмена export отключена
+
+- **Дата обнаружения:** 2026-11-20 (ревью S9-37).
+- **Компонент:** `tools/image-tool/src/lib.rs` (отмена export).
+- **Статус:** открыта.
+- **Суть и последствия:** отмена export в CLI отключена жёстко (условие около строки 726), поэтому отмена проверена только через библиотечный `export_raw` (тесты S9-37, сценарий 4).
+- **Основание:** чтение кода, ревью S9-37.
+- **Следующий шаг:** включить отмену в CLI и повторить сценарий 4 на CLI.
+
+### ISSUE-608 — S9-37: lease блокирует весь файл, а не generation; delete и compaction под exclusive lock есть только в тестах
+
+- **Дата обнаружения:** 2026-11-20 (срез S9-37).
+- **Компонент:** `od-host/src/storage_io.rs` (ReadLease), `od-host/src/storage_policy.rs` (ParentLease, delete и compaction).
+- **Статус:** открыта как предел v1.
+- **Суть и последствия:** (1) lease блокирует весь файл через `flock`, а не выбранную generation; критерий S9-37 «lease удерживает именно выбранную generation» не выполнен. (2) Функции delete и compaction под exclusive lock существуют только как тестовые хелперы (`storage_policy.rs`, тестовый модуль); production-пути нет. Удаление снимка, на который ссылается закрытый child, даёт `SnapshotMissing`.
+- **Основание:** код; ревью S9-37 ([STORAGE_RECOVERY.md §4.3](testing/STORAGE_RECOVERY.md)).
+- **Следующий шаг:** решение владельца по lease на файл против lease на generation; вынести production delete и compaction под lock до интеграции с VMHost и каталогом.
+
+### ISSUE-609 — S9-20: недостроенный partial после отмены не очищается
+
+- **Дата обнаружения:** 2026-11-20 (срез S9-37).
+- **Компонент:** `od-host` (отменённый export), задача S9-20.
+- **Статус:** открыта.
+- **Суть и последствия:** после отмены export временный partial-файл остаётся на диске; его очистка нигде не реализована. Публикация не происходит (конечного имени нет), но место занято.
+- **Основание:** тест сценария 4 S9-37.
+- **Следующий шаг:** безопасная очистка partial по известному имени без удаления по неподтверждённой identity (см. ISSUE-055 о namespace).
+
+### ISSUE-610 — S9-23: открытые решения формата контейнера VM v1
+
+- **Дата обнаружения:** 2026-11-20 (срез S9-23).
+- **Компонент:** `od-storage/src/vm_container.rs`, [STORAGE_FORMAT.md §13.5](specs/STORAGE_FORMAT.md).
+- **Статус:** открыта; формат не нормативен до архитектурного ревью и принятия.
+- **Суть и последствия:** (1) источник 16-байтового `file_uid` для reference-секций не определён: в CoW v1 и RAW постоянного идентификатора файла нет; (2) числовые `kind` и `schema_id` назначены только для UEFI (S9-26, [NVRAM_DEVICE.md](specs/NVRAM_DEVICE.md)); остальные задают S9-24…27; (3) лимиты `MAX_SECTIONS`, `MAX_SECTION_BYTES`, `MAX_TOTAL_BYTES` не измерены; (4) CRC-32 обнаруживает повреждения и не аутентифицирует; (5) правило порядка блокировок (S9-37) — рекомендация, не решение.
+- **Основание:** код и документ; ревью S9-23.
+- **Следующий шаг:** архитектурное решение по идентификатору файла и kind; замеры лимитов после S9-24/25.
+
+<a id="issue-611"></a>
+
+### ISSUE-611. `firmware_boot_smoke.py` не совпадал с эталоном COM1 на текущем HEAD
+
+- **Компонент:** прошивка S7-05/S7-22 (`firmware/uefi`, диагностика ядра), `tests/system/firmware_boot_smoke.py` и `firmware_esp_boot_smoke.py`, эталоны `tests/fixtures/firmware/*_com1.txt`, `manifest.json`.
+- **Статус:** закрыта 2026-11-20 (ветка `worktree-agent-a3af8fdd6a84f1fa0`, коммит с этой записью). По разовой сверке полей таблиц по именам (см. ниже) это не регрессия поведения: эталоны отражали старую раскладку образа, а сравнение CRC таблиц зависело от раскладки. Независимое ревью — за ревьюером S7-23. Проверки — [отчёт S7-23](reports/STAGE_7_REPORT.md#s7-23--закрытие-issue-611-и-пункта-1-issue-599-2026-11-20), методика — [FIRMWARE.md](testing/FIRMWARE.md#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
+- **Что расходилось на самом деле.** Не только CRC: в каждом из 17 транскриптов отличались четыре строки — три строки карты памяти `OD-FW MEM type=0x3/0x4` (регион кода ядра 0x4F страниц в эталоне, 0x55 в сборке, следующие регионы сдвинуты) и строка `OD-FW S7-05 table CRC`. Остальные строки совпадают (`diff` по 17 файлам: 51 строка MEM и 17 строк CRC, больше ничего).
+- **Бисект при одном и том же пути сборки** (`build_firmware.py --out` без приложений, `boot-firmware --budget 6000000`, путь `<tmp>/a`; эталон был получен на `cee17ee`):
+
+  | Коммит | Страниц кода (MEM) | CRC BS | CRC RT | Совпадает с прежним эталоном |
+  |---|---|---|---|---|
+  | `cee17ee` | 0x4F | `E419FB7C` | `D9AEA82F` | да, байт в байт |
+  | `e2278dc` | 0x4F | `E419FB7C` | `D9AEA82F` | да |
+  | `8dcf484` | 0x55 | `A716B2D3` | `CDB150AF` | нет |
+  | `717b23c` | 0x55 | `A716B2D3` | `CDB150AF` | нет (без изменения кода прошивки) |
+  | `a341282` | 0x55 | `1FC7EB72` | `6DBBAFA8` | нет |
+  | `505269f`, `2d1ad64` | 0x55 | `1FC7EB72` | `6DBBAFA8` | нет (без изменения кода прошивки) |
+
+  Раскладку меняют два коммита, оба меняют код `firmware/uefi/src/tpm`: `8dcf484` (банки SHA-384, event log, TCG2: +6 страниц кода и сдвиг 43 из 44 указателей Boot Services) и `a341282` (CRB chunking в `crb_driver.rs`: сдвиг указателей без нового страничного размера). `e2278dc`, `717b23c` и `505269f` образ ядра не меняют.
+- **Поля таблиц по именам не изменились.** Boot Services (376 байт) прочитаны из физической RAM после останова (временная копия runner с чтением RAM, в репозиторий не входит), Runtime Services восстановлены из ELF. Для шести сборок (`cee17ee`, `e2278dc`, `8dcf484`, `a341282` и `2d1ad64` в двух путях) проверено: подпись, редакция `0x2006E`, размер и нулевое поле reserved равны; в Boot Services у всех 44 полей функция-назначение та же по имени символа ELF, `UNKNOWN` нет, CRC из RAM равен напечатанному и пересчитанному `zlib.crc32` с нулевым полем CRC; у 43 полей адрес сдвинут (в `8dcf484` и далее), поле `reserved` равно нулю. Runtime Services после останова указывают на таблицу драйвера RT (адреса не из ядра), поэтому исходная таблица ядра собрана из исходника (`RuntimeServices::diagnostic`: поле → символ) и адресов символов ELF: рассчитанный CRC равен напечатанному для восьми сборок (`cee17ee`, `e2278dc`, `8dcf484`, `717b23c`, `a341282`, `505269f`, `2d1ad64` в двух путях). Поле `set_time` указывает на тот же адрес, что и `get_next_high_monotonic_count` (одинаковые заглушки сведены в один адрес; это подтверждает совпадение CRC). CRC System Table в напечатанной строке во всех сборках одинаков (`14CB0AB4`).
+- **Чистые сборки и путь.** Две чистые сборки одного коммита в одном каталоге дают побайтно одинаковые образ и CRC (`cee17ee` и `e2278dc`, обе по два раза). Но CRC Runtime Services зависит от абсолютного пути каталога сборки: те же исходники `2d1ad64` дали `6DBBAFA8` в одних каталогах и `5709727A` в других (шесть каталогов с именами длиной 1–6: четыре и два), а `cee17ee` — `D9AEA82F` и `E31C75FD`. Все прочие строки COM1 в разных каталогах совпали. Различие — положение `diagnostic_reset_system` (сдвиг на 0x20 байт; в таблицах символов `rust_begin_unwind` стоит в разных местах), то есть порядок элементов единственного codegen-unit, а не поведение; причину внутри toolchain глубже не исследовали. CRC Boot Services в этих проверках от пути не зависел, но гарантии нет.
+- **Что сделано.** (1) Регенерированы 17 эталонов (по четыре строки) и пересчитаны SHA-256 в `manifest.json`. (2) `firmware_boot_smoke.py` (и через `check_transcript` `firmware_nvram_smoke.py`, `firmware_esp_boot_smoke.py`) при сравнении маскирует только значения `BS=` и `RT=` строки `OD-FW S7-05 table CRC` (`mask_layout_crcs`); CRC System Table, число строк и все остальные байты сравниваются точно, а отсутствие строки или нечисловое значение отвергаются; это закреплено самотестом `tests/system/test_firmware_boot_smoke_mask.py` (`python3 tests/system/test_firmware_boot_smoke_mask.py`, 5 тестов). Без этого эталон проходил бы только в каталоге, где он снят. (3) Команда `cmp` в FIRMWARE.md заменена сравнением с той же маской.
+- **Результат проверки (2026-11-20).** `firmware_boot_smoke.py`, `firmware_nvram_smoke.py`, `firmware_esp_boot_smoke.py` и `firmware_tpm_smoke.py` (FV и ESP) завершились с кодом 0 на ветке `worktree-agent-a3af8fdd6a84f1fa0` в каталоге `.claude/worktrees/…`, то есть не в том каталоге, где снят эталон.
+- **Остаётся.** Сами значения CRC BS и RT больше ничего не проверяют: поля таблиц сверены по именам однократно (способ выше), постоянной проверки на RAM или ELF нет. Постоянные проверки (самопроверка CRC в `verify_boot_services` и host unit-тест полей по именам) описаны в [ISSUE-612](#issue-612) и не реализованы. Зависимость раскладки от каталога сборки — свойство toolchain; воспроизводимость образа между каталогами не заявляется.
+
+
+<a id="issue-612"></a>
+
+### ISSUE-612 — постоянная проверка таблиц Boot Services и Runtime Services по полям
+
+- **Компонент:** `firmware/uefi` (`verify_boot_services` в `src/main.rs`, `src/uefi/system_table.rs`), `tests/system/firmware_boot_smoke.py`. Продолжение [ISSUE-611](#issue-611).
+- **Суть.** После ISSUE-611 значения CRC Boot Services и Runtime Services в эталонах COM1 маскируются, а поля таблиц по именам сверены только разово (чтение RAM временной копией runner и восстановление RT из ELF; скриптов в репозитории нет). Постоянной проверки целостности и состава таблиц нет.
+- **Нужные проверки (не реализованы).** (1) Самопроверка в `verify_boot_services`: гость пересчитывает CRC заголовков System Table, Boot Services и Runtime Services с нулевым полем `crc32` и останавливается кодом `STOP_BOOT_SERVICES`, если результат не равен полю заголовка. Проверка не зависит от раскладки образа и заменяет сравнение напечатанных значений. (2) Host unit-тест в `firmware/uefi` (`cargo test --manifest-path firmware/uefi/Cargo.toml --offline`): для `BootServices::diagnostic()` и `RuntimeServices::diagnostic()` каждое поле сравнивается по имени с указателем на ожидаемую функцию (`misc::calculate_crc32`, `rt::variable::set_variable` и так далее), а также проверяются подпись, редакция, размер и нулевые поля; тест ловит подмену или перестановку полей, которую маска CRC в смоке не видит.
+- **Статус.** Открыто. Следующий шаг: реализовать обе проверки отдельным срезом S7 и обновить [FIRMWARE.md](testing/FIRMWARE.md#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (отдельный срез S7). Условие закрытия: обе проверки из «Нужных проверок» реализованы, `FIRMWARE.md` обновлён, host-тест и самопроверка проходят.
+
+<a id="issue-620"></a>
+
+### ISSUE-620. S7-31a: LoadImage не загружает PE без `.reloc` с ImageBase 0 (EFI stub ядра Ubuntu)
+
+- **Компонент:** прошивка, `firmware/uefi/src/mem/pages/image.rs` (`plan_image`), `firmware/uefi/src/pe/loader.rs` (`load_into`), [UEFI_PROFILE.md](specs/UEFI_PROFILE.md).
+- **Суть:** образ с ImageBase 0, без каталога базовых перемещений и без флага `RELOCS_STRIPPED` (так собран EFI stub ядра Ubuntu 7.0.0-38) считается нерелоцируемым. `plan_image` пытается разместить его по адресу 0, места под 16,9 МиБ (`SizeOfImage=0x10f0000`) там нет, LoadImage должен вернуть `OUT_OF_RESOURCES`. `load_into` независимо отвергает такой образ при ненулевой разности между базовым адресом и ImageBase (`RelocationsRequired`, поведение закреплено в `loader_tests.rs`). Менеджер загрузки пропускает вариант и печатает «no bootable option». Источник ограничения — [UEFI_PROFILE.md](specs/UEFI_PROFILE.md), около строки 102: «При отсутствии каталога требуется предпочитаемый ImageBase». Образ без перемещений и без флага «перемещения удалены» допустим по PE format: перемещать нечего. Ядро Ubuntu собрано без `.reloc` сознательно: setup header объявляет `relocatable_kernel=1`, `xloadflags=0x7f`, `kernel_alignment=0x200000`, stub самоперемещается.
+- **Воспроизведение (неизменённый артефакт):** ESP с `vmlinuz-7.0.0-38-generic` как `\EFI\BOOT\BOOTX64.EFI` и Boot0001 с OptionalData; `python3 tests/system/firmware_linux_uefi_stop_record.py --stage4-dir <work/stage4> --out <json> --variants stock`. Ожидаемо: `exit=halted`, RIP `0x20ac02`, COM1 заканчивается `OD-FW STOP code=0x21 detail=0x0000000000000001`, 187 595 596 инструкций, отметка `plan_image #2` есть, `load_into #2` нет. Запись: [JSON](reports/data/stage7/s7-31a-linux-uefi-stop-record.json), [отчёт](reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20).
+- **Последствия:** блокирует S7-31 при любом загрузчике, у которого нет перемещений (EFI stub ядра; для shim/GRUB не проверялось). Внутренний тест «нерелоцируемый образ загружается только по своему ImageBase» верен для образов с фиксированной базой, но не для образа с ImageBase 0.
+- **Статус:** исправлено в срезе S7-31b (2026-11-21), проверено host-тестами; end-to-end загрузка Linux не запускалась (P0-динамика — отдельный срез). Политика (`pe::is_relocatable`, `ImagePlacement` в `mem/pages/image.rs`): образ без каталога перемещений с ImageBase 0 и сброшенным `RELOCS_STRIPPED` позиционно-независим (fixups нет) и получает самый нижний свободный адрес не ниже 1 МиБ, выровненный на 2 МиБ; образ с каталогом — самый верхний; ImageBase 0 никогда не даёт нулевую страницу. Закреплённый образ (`RELOCS_STRIPPED` либо ненулевой ImageBase без каталога; в том числе с ImageBase 0) при недоступном диапазоне получает `EFI_OUT_OF_RESOURCES` (в `plan_image`, до проверки нулевой страницы в `bs/image.rs`, которая раньше давала `DEVICE_ERROR`), без паники. Тесты: `pe::loader::tests` (синтетика; образ с раскладкой заголовков stub, собранный с нуля; реальные заголовки `vmlinuz-7.0.0-38-generic` — при `OD_REQUIRE_UBUNTU_VMLINUZ=1` отсутствие файла валит тест), `mem::pages::image::tests` (модель карты платы 128 МиБ: образ `0x10f0000` встаёт в `0x800000..0x18f0000`, выше остаётся окно `0x6600000` от `0x1a00000`). Политика записана в [UEFI_PROFILE.md](specs/UEFI_PROFILE.md), переменная — в [FIRMWARE.md](testing/FIRMWARE.md). Независимое ревью Opus high: замечания учтены в этом исправлении, повторное ревью ожидается. Оставшееся: ISSUE-621 и ISSUE-622 блокируют загрузку Linux независимо.
+
+<a id="issue-621"></a>
+
+### ISSUE-621. S7-31a: ROM и профиль прошивки не согласованы: компилятор породил из `load_into` форму вне профиля
+
+- **Компонент:** `crates/od-isa` (`PagedCpl0FirmwareBootV1`), `firmware/uefi/src/pe/loader.rs`.
+- **Суть:** это остановка CPU на инструкции, а не отказ загрузчика PE: `load_into` не отвергает SizeOfHeaders. Компилятор по коду ROM (копирование заголовков кусками `MEMORY_CHUNK` по 1024 байта) выдал `48 83 64 24 08 fe` (`and qword ptr [rsp+8], -2`), а профиль прошивки её не допускает (`Unsupported { opcode: 131 }`). Ветка исполняется, только если заголовки занимают больше 1024 байт; прежние образы (`SizeOfHeaders=0x400`) её не затрагивали, у ядра Ubuntu `SizeOfHeaders=0x1000`. Это дефект пары «ROM и профиль», не политики PE: тот же риск повторяется при любой пересборке ROM или смене компилятора, потому что допуск привязан к выводу компилятора.
+- **Воспроизведение:** диагностическая копия ядра с `ImageBase=0x1000000` (вариант `rebased` скрипта `tests/system/firmware_linux_uefi_stop_record.py`): `exit=unsupported`, RIP `0x22f236` (`od_firmware::pe::loader::load_into+0x276`), 96 739 774 инструкций. Дизассемблирование: `llvm-objdump -d` ELF прошивки по адресу `0x22f236`.
+- **Последствия:** любой образ с заголовками больше 1 KiB останавливает прошивку внутри собственного кода; это не ошибка гостя. Показывает, что допуск точных кодировок не покрывает ветки собственного кода ROM, не пройденные прежними системными проверками.
+- **Статус:** закрыто для платы «UEFI + Linux» в срезе S7-31c (2026-11-21), вариант (b) ADR-0013. Факт: набор `Cpl0ProfileSet` исполняет `and qword ptr [rsp+8], -2` (`tests/s7_31c_firmware_forms.rs`, точные байты и флаги); единый цикл (`boot-firmware --cpu-loop unified`) на тех же образах (stock, rebased, rebased-hdr) проходит `load_into` со SizeOfHeaders 0x1000 и входит в EFI stub, [запись остановки](reports/data/stage7/s7-31c-linux-uefi-stop-record.json). Цикл профиля прошивки (`run_boot`) форму по-прежнему не допускает и останавливается так же (`Unsupported { opcode: 131 }`, RIP `0x22f3c1` после пересборки ROM, 96 740 001 инструкций); для Linux он не используется, а риск той же природы для прочих кодировок ROM в этом цикле не снят. Что было записано до решения: следующий шаг (добавить точную кодировку или изменить код `load_into`) не выбран; выбор — в рамках решения по ADR-0013 (вариант (b) снимает вопрос для кода ROM, если набор CPL0 допускает форму). Инвентарь форм ROM (S7-31b, режим `--rom-elf` инструмента `tools/build/s7_31a_efi_stub_isa_inventory.py`): [JSON](reports/data/stage7/s7-31b-rom-isa-inventory.json). В коде функций ROM (83 095 инструкций) вне профиля прошивки в контексте платы 68 инструкций (35 кодировок), включая форму этой записи в `load_into`; ещё 13 инструкций (4 кодировки: `mov cr3`, `rdtsc`, `fxsave64`, `fxrstor64`) отвергает только голый `step_paged_firmware_probe`, плата их исполняет. Среди этих 68 — формы из `od_fw_install_gdt` (`mov es/ss/ds/fs/gs`, `retfq`, start.S:142–160); достижимость этой функции на плате не проверена, поэтому они не отнесены ни к дефектам, ни к артефактам. Остальные формы ROM в записи не разобраны: отдельный риск той же природы, решение по ADR-0013. Подробности — раздел S7-31b [отчёта](reports/STAGE_7_REPORT.md).
+
+<a id="issue-622"></a>
+
+### ISSUE-622. S7-31a: EFI stub ядра Ubuntu начинается с `endbr64` и содержит около 3,4 % инструкций вне профиля прошивки
+
+- **Компонент:** `PagedCpl0FirmwareBootV1`, CPL0-набор ([CPU_CONTRACT.md](specs/CPU_CONTRACT.md)), путь `run_paged_firmware_probe`.
+- **Суть:** первая инструкция `efi_pe_entry` — `f3 0f 1e fa` (`endbr64`, ядро собрано с CET); у профиля прошивки это `Unsupported { opcode: 30 }`, в CPU_CONTRACT форма помечена «absent». Статическая оценка ([JSON](reports/data/stage7/s7-31a-efi-stub-isa-inventory.json)): из 7 474 инструкций только EFI stub профиль прошивки не допускает 252 (119 различных кодировок), из них `endbr64` 43, `rol` 80, `mov` 49; вне CPU_CONTRACT 14 форм (67 экземпляров). Оценка статическая и приблизительная (157 косвенных переходов не прослежены, невзятые ветки включены).
+- **Воспроизведение:** вариант `rebased-hdr` скрипта `tests/system/firmware_linux_uefi_stop_record.py`: `exit=unsupported`, `Unsupported { opcode: 30 }`, RIP `0x2075f78`, 97 505 008 инструкций, байты `f3 0f 1e fa`. Инвентарь: `cargo build --release -p od-isa --example firmware_profile_probe --offline`, затем `python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz> --out <json>`.
+- **Последствия:** чужой EFI-код упирается в первую незнакомую инструкцию; добавление кодировок по одной (как ISSUE-385/386) потребует десятков срезов только для stub, а после ExitBootServices ядро всё равно исполняется CPL0-набором. Дальше ExitBootServices прогон не доходил.
+- **Статус:** закрыто в срезе S7-31d (2026-11-21) по факту: в едином цикле (`boot-firmware --cpu-loop unified`) прогон дошёл до входа в `exit_boot_services` ROM во всех трёх вариантах (stock, rebased, rebased-hdr; отметка RIP `0x222420`, 1 239 734 209 / 1 239 734 448 / 1 239 734 350 инструкций до входа, два одинаковых прогона на вариант), [запись остановки](reports/data/stage7/s7-31d-linux-uefi-stop-record.json). Для этого набору CPL0 понадобились общие формы `FNSTSW m16` и `FNSTCW m16` (S7-31d). Остановка после входа — другая и вынесена в [ISSUE-632](#issue-632). История записи: обновлено в срезе S7-31c (2026-11-21), [ADR-0013](decisions/ADR-0013-uefi-linux-cpu-profile.md) принят (вариант (b)). Остановка `Unsupported { opcode: 30 }` на `endbr64` снята: в едином цикле (`boot-firmware --cpu-loop unified`) набор CPL0 исполняет `endbr64` как NOP (тест `s7_31c_firmware_forms`), stub входит в работу и останавливается дальше. Новая остановка во всех трёх вариантах (stock, rebased, rebased-hdr): `Unsupported { opcode: 0xdd }`, RVA `0x68eb0` образа (RIP `0x1668eb0` у stock, `0x2068eb0` у rebased), байты `dd 7c 24 0e d9 7c 24 0c 66 83 7c 24 0e 00` — `fnstsw word ptr [rsp+0xe]`, `fnstcw word ptr [rsp+0xc]`, `cmp word ptr [rsp+0xe], 0`; набор допускает `DD /7` и `D9 /7` только с адресом `[rax]`. Прошли также `3E FF E0` (`NOTRACK JMP r64`, открыто на CPL0) и `F3 A6` (`REPE CMPSB` из любого состояния флагов). Запись: [JSON](reports/data/stage7/s7-31c-linux-uefi-stop-record.json). До ExitBootServices прогон не дошёл; статическая оценка 252 инструкций вне профиля прошивки остаётся оценкой для цикла профиля прошивки, для набора CPL0 по stub такого счёта нет. (Запись S7-31c заканчивалась так: закрывать нельзя, пока stub не доходит до ExitBootServices; условие выполнено в S7-31d, см. статус выше.)
+
+<a id="issue-623"></a>
+
+### ISSUE-623 — S7-22/S7-26: один загрузочный цикл с TPM стоит около 3,66·10⁸ инструкций гостя (около 160 с)
+
+- **Дата обнаружения:** 2026-11-21 (срез S7-26a).
+- **Компонент:** `firmware/uefi/src/tpm/measure.rs` (`platform`: измерение всего образа ROM в PCR0), интерпретатор paged-пути `od-machine`.
+- **Статус:** открыта как предел текущей реализации; не дефект корректности.
+- **Суть и последствия:** при загрузке с TPM прошивка хеширует 4 MiB ROM в двух банках (SHA-256 и SHA-384) программно в госте; `boot-firmware --fv-app reboot` на M3 Max (release, без LTO) выполняет такой цикл за 160–165 с (`retired` около 3,657·10⁸, около 2,3 млн инструкций в секунду). Пятьдесят циклов занимают около 2,3 часа, поэтому такой прогон запускают в фоне. Сборка с `lto=fat`, `codegen-units=1`, `target-cpu=native` скорость не изменила (2,03–2,13 с на загрузке обычного ROM в обеих сборках).
+- **Основание:** измерения S7-26a ([FIRMWARE.md](testing/FIRMWARE.md#сброс-и-перезагрузка-s7-26a)); код `measure.rs`.
+- **Следующий шаг:** решение по скорости принимать только по замерам (AGENTS.md): профилировать путь, на который уходят инструкции (хеши в госте или интерпретатор), и сравнить варианты; база для этого — S7-27. Не ослаблять измерение ROM ради времени.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (S7-26 принят; база — S7-27). Условие закрытия: по замерам (AGENTS.md) выбран вариант: ускорение гостевого хеширования ROM либо принятый предел с записью решения; измерение ROM не ослаблено.
+
+
+<a id="issue-624"></a>
+
+### ISSUE-624 — S7-26a: эталоны COM1 зависят от суммарного размера тестовых приложений в FV
+
+- **Дата обнаружения:** 2026-11-21 (срез S7-26a).
+- **Компонент:** `tests/fixtures/firmware/*_com1.txt`, `manifest.json`, `tools/build/build_firmware.py` (`TEST_APPS`), раскладка памяти прошивки (`OD-FW MEM`).
+- **Статус:** открыта; не закрывать до выбора пути.
+- **Суть и последствия:** добавление приложения `reboot` в `TEST_APPS` увеличило встроенный FV на две страницы и сдвинуло две записи `OD-FW MEM type=0x4` (`base=0x255000 pages=0x2B` → `pages=0x2D`; `base=0x280000 pages=0x380` → `base=0x282000 pages=0x37E`) в 11 эталонах с приложениями (`acpi`, `blk`, `blk_no_gpt`, `ebs`, `fs`, `gop`, `hello`, `nvram_first`, `nvram_second`, `rt`, `vars`); `firmware_boot_smoke.py` падал на `hello #1`. Любое новое приложение в наборе по умолчанию делает то же самое. Для S7-26a приложение вынесено из набора по умолчанию (флаг `--with-reboot-app`, [FIRMWARE.md](testing/FIRMWARE.md)).
+- **Основание:** запуск `firmware_boot_smoke.py` на объединённом дереве 2026-11-21; разница строк выше.
+- **Следующий шаг (два пути):** (1) собирать группы приложений по опциям, как сейчас `--with-reboot-app`, и закреплять эталон каждой группы; (2) сделать раскладку, не зависящую от размера FV (карта памяти не должна менять `base`/`pages` соседних записей при росте архива), либо маскировать эти строки так же, как `BS=`/`RT=` ([ISSUE-611](#issue-611)).
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (S7-26a принят; затрагивает `tools/build/build_firmware.py`). Условие закрытия: выбран и реализован один из двух путей из «Следующего шага»; добавление тестового приложения не ломает эталоны COM1 в `firmware_boot_smoke.py`.
+
+
+<a id="issue-625"></a>
+
+### ISSUE-625 — S7-26a: `ResetSystem` не посылает `TPM2_Shutdown`, поведение TPM после неупорядоченного сброса не описано
+
+- **Дата обнаружения:** 2026-11-21 (ревью S7-26a).
+- **Компонент:** `firmware/uefi/src/rt/reset.rs`, `crates/od-machine/src/tpm_crb.rs` (`TpmCrbHandle::platform_reset`), `crates/od-tpm/src/state.rs` (`Tpm::init_at`, `orderly`, `reset_count`).
+- **Статус:** открыта; не дефект корректности, пробел в проверке и описании.
+- **Суть и последствия:** сброс платы выполняет `_TPM_Init` без предшествующего `TPM2_Shutdown`: прошивка при `ResetSystem` его не шлёт. Как при этом ведут себя DA (защита от перебора), `resetCount`/`restartCount` и сохранённое состояние (`Shutdown(STATE)`) после следующего `Startup(CLEAR)`, не описано; единичный тест `tpm_crb::tests::platform_reset_*` проверяет PCR, постоянное состояние и `TPM_RC_INITIALIZE`, но не эти счётчики.
+- **Основание:** ревью S7-26a; код `reset.rs` и `Tpm::init_at`.
+- **Следующий шаг:** решить, должна ли прошивка посылать `Shutdown(CLEAR)` перед сбросом (как требует TCG PC Client для упорядоченного выключения), описать ожидаемые `resetCount` и DA в VTPM.md и добавить проверку.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (S7-26 принят). Условие закрытия: решение «слать ли `Shutdown(CLEAR)` перед сбросом» принято и описано в `VTPM.md`, добавлена проверка `resetCount` и DA после сброса.
+
+<a id="issue-626"></a>
+
+### ISSUE-626 — S7-26a: CMOS и маска NMI переживают сброс платы; `host_stop` не сбрасывается
+
+- **Дата обнаружения:** 2026-11-21 (ревью S7-26a).
+- **Компонент:** `crates/od-machine/src/rtc_cmos.rs` (`RtcCmos`), `crates/od-machine/src/firmware_board.rs` (`platform_reset`, `host_stop`).
+- **Статус:** открыта как записанное поведение; не закрывать, пока не принято решение по гостям, которым нужен чистый CMOS.
+- **Суть и последствия:** (1) RTC/CMOS (индекс, маска NMI, `Status A/B`, 128 байт CMOS RAM) не сбрасывается: у MC146818 CMOS питается от батареи, а время считается от несбрасываемых часов платы. Прошивка CMOS не использует, но гость, включивший маску NMI или записавший в CMOS, увидит это после сброса. (2) `host_stop` (`Arc<AtomicBool>`) не сбрасывается, снимается только `host_stop_honoured`; владелец платы обязан снять флаг сам.
+- **Основание:** ревью S7-26a; [FIRMWARE_BOOT.md, раздел 12.1](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a).
+- **Следующий шаг:** решение владельца платы: оставить как есть для Linux/Windows профилей или добавить сброс индекса и маски NMI (CMOS RAM оставить); `host_stop` — зафиксировать в API платы, кто его снимает.
+
+<a id="issue-627"></a>
+
+### ISSUE-627 — S7-26a: сброс платы Linux и платы с Linux-профилем (PIT, пара 8259) не реализован
+
+- **Дата обнаружения:** 2026-11-21 (сверка документов по итогам ревью S7-26a).
+- **Компонент:** `crates/od-machine/src/firmware_board.rs` (`LoadedFirmwareBoard::platform_reset`), модели PIT и пары 8259 платы Linux.
+- **Владелец:** этап 9 (жизненный цикл и снимок VM); номер задачи этапа 9 не назначен.
+- **Статус:** открыта; вне объёма S7-26.
+- **Суть и последствия:** `platform_reset` отклоняет плату Linux и плату с Linux-профилем ошибкой `Config` до любых изменений: сброс PIT, пары 8259 и связанных линий IRQ не описан и не проверен. Перезагрузка внутри процесса и `--reboot-cycles` для Linux-платы недоступны; повторный запуск возможен только новым процессом runner. Раньше этот остаток в [FIRMWARE_BOOT.md](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a) был записан как «задача этапа 9» без номера.
+- **Основание:** [FIRMWARE_BOOT.md, раздел 12.1](specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a); ревью S7-26a; ISSUE-096 (общий остаток `--reboot-cycles` для Linux-платы).
+- **Следующий шаг:** при планировании этапа 9 назначить задачу: определить сброс PIT/8259 и IRQ-маршрута, снять отказ `Config` для этих плат, добавить проверку по образцу `tests/system/firmware_reset_smoke.py`.
+
+<a id="issue-631"></a>
+
+### ISSUE-631 — регрессия прошивки: SETcc с операндом в памяти не исполнялся (закрыт 2026-11-21)
+
+- **Компонент:** `crates/od-isa` (профиль прошивки, `execute.rs`), ROM прошивки.
+- **Суть.** После S7-31b (0e5aeb1) ROM из main останавливался на `sete byte ptr [rsp+0x70]` (`Unsupported { opcode: 148 }`, RIP 0x227cae): профиль принимал SETcc в память только из списка точных форм.
+- **Исправление.** Профиль прошивки исполняет любой `0F 90..9F /r` с операндом-приёмником в памяти по Intel SDM Vol. 2 (все 16 условий, любая адресация; флаги не меняются; RIP фиксируется только после записи). Список точных форм удалён. Базовый профиль `PagedCpl0ProbeV1` не расширен.
+- **Проверка.** `crates/od-isa/tests/paged_probe_profile.rs`: 11 форм адресации × 16 условий × 32 комбинации флагов; сбои записи, неканонические адреса, LOCK и FS-префикс. `tests/system/firmware_boot_smoke.py` — exit 0 (до исправления падал на `boot_core #1`).
+- **Не проверено.** Инвентарь docs/reports/data/stage7/s7-31b-rom-isa-inventory.json — снимок до исправления; другие неподдержанные кодировки в нём не трогались.
+- **Статус.** Исправлено. Регрессия введена при смене `bool` на `ImagePlacement` в `plan_image` (S7-31b).
+
+<a id="issue-628"></a>
+
+### ISSUE-628 — S7-40: UEFI_PROFILE.md без столбца «тест»; четыре слота Runtime Services с `EFI_UNSUPPORTED` без гостевой проверки
+
+- **Дата обнаружения:** 2026-11-21 (независимое итоговое ревью S7-40, замечание 5).
+- **Компонент:** [UEFI_PROFILE.md](specs/UEFI_PROFILE.md); `firmware/uefi/src/uefi/runtime.rs` (заглушки `get_wakeup_time`, `set_wakeup_time`, `update_capsule`, `query_capsule_capabilities`).
+- **Важность:** низкая.
+- **Владелец:** не назначен; кандидат — S7-41 или поддержка профиля на следующих ступенях этапа 7.
+- **Статус:** закрыта 2026-11-21 (коммит `50cf40a`). Независимое ревью S7-40 (Opus, high, 2026-11-21): принято с замечаниями.
+- **Суть и последствия:** таблицы сервисов в UEFI_PROFILE.md не имеют столбца, который связывает каждый сервис с проверяющим его тестом, поэтому покрытие профиля нельзя прочитать из документа. Слоты `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и `QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED` (описано в разделе Runtime Services профиля), но ни одно гостевое приложение не проверяет этот код возврата; регрессия (например, ненулевой возврат с побочным эффектом) останется незамеченной.
+- **Основание:** замечание 5 ревью S7-40; чтение `UEFI_PROFILE.md` и `firmware/uefi/src/uefi/runtime.rs`.
+- **Следующий шаг (выполнен):** добавить столбец «тест» в таблицы профиля и гостевое приложение (или проверку в существующем), вызывающее четыре слота и сверяющее `EFI_UNSUPPORTED`.
+- **Результат.** (1) Гостевая проверка: `firmware/uefi/tests/apps/rt/main.rs`, `check_unsupported_slots` вызывает `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и `QueryCapsuleCapabilities` через таблицу Runtime Services до и после `SetVirtualAddressMap`, сверяет `EFI_UNSUPPORTED` и то, что буферы вызывающего (`Enabled`, `Pending`, `Time`, `MaximumCapsuleSize`, `ResetType`) остались нетронутыми; при расхождении приложение печатает `OD-UEFI rt failure U`. На успехе печатает `OD-UEFI rt unsupported slots`; строка добавлена в эталон `tests/fixtures/firmware/rt_com1.txt` и его sha256 в `manifest.json`. Первая версия проверки (сравнение массивов `[u64; 2]` и `[Status; 4]`) останавливала машину с `Unsupported { opcode: 51 }` (инструкция, которой нет в профиле CPU прошивки; какая именно, не выяснялось); проверка переписана на скалярные volatile-обращения. (2) Столбец «тест»: раздел «Покрытие слотов сервисов тестами» в [UEFI_PROFILE.md](specs/UEFI_PROFILE.md#покрытие-слотов-сервисов-тестами) — таблица всех 43 слотов Boot Services (внутренние проверки `OD-FW S7-05 …` и гостевые приложения) и 14 слотов Runtime Services. Столбец «вызывает», а не «проверяет все ветви статуса»: слоты, которые вызываются только в проверке границ ABI с NULL-аргументами, помечены так же, как остальные; это границы покрытия, а не доказательство каждой ветви. Слотов без теста нет: `GetWakeupTime` покрыт новой проверкой. (3) Проверки: `python3 tests/system/firmware_boot_smoke.py` — exit 0 (строка `rt` совпала с обновлённым эталоном), сборка `build_firmware.py --with-test-apps` — exit 0; отчёт — [S7-40 — итог ревью](reports/STAGE_7_REPORT.md#s7-40--итог-ревью-2026-11-21).
+
+<a id="issue-629"></a>
+
+### ISSUE-629 — S7-40: FIRMWARE_BOOT.md превышает 3000 строк из-за срезов ISSUE-257…
+
+- **Дата обнаружения:** 2026-11-21 (независимое итоговое ревью S7-40, замечание 9).
+- **Компонент:** [FIRMWARE_BOOT.md](specs/FIRMWARE_BOOT.md) (около 3078 строк на 2026-11-21).
+- **Важность:** низкая.
+- **Владелец:** S7-41 (передана владельцем по итогам ревью S7-40).
+- **Статус:** открыта; по ревью S7-40 не обязательна для приёмки (замечание 9, низкая); остаётся открытой после приёмки S7-41 (2026-11-21).
+- **Суть и последствия:** после раздела 16 «Current S7-04 runner boundary» (с около строки 530) идёт длинная последовательность записей «S7-04 CPU-profile slice: exact helper …» (с ISSUE-257, около строки 559), каждая — история одного среза профиля CPU. Нормативная часть контракта прошивки теряется среди журнала срезов, файл трудно читать и ревьюить срезами.
+- **Основание:** замечание 9 ревью S7-40; `grep -n "CPU-profile slice" docs/specs/FIRMWARE_BOOT.md` (42 записи).
+- **Следующий шаг:** вынести журнал срезов ISSUE-257… в [CPU_CONTRACT.md](specs/CPU_CONTRACT.md) или в [отчёт этапа](reports/STAGE_7_REPORT.md), оставив в FIRMWARE_BOOT.md ссылку и итоговое состояние профиля.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: задача S7-40 (замечание 9 итогового ревью); исполнитель не назначен. Условие закрытия: читаемость и возможность ревью срезами (нормативная часть отделена от журнала срезов; 3000 строк — ориентир, не норма), журнал срезов при переносе — с рабочими ссылками, `python3 tools/check_layout.py` без новых ошибок.
+
+<a id="issue-630"></a>
+
+### ISSUE-630 — S7-40: нет полного пересчёта журнала событий (Event03) по обоим банкам для PCR0–7 против TPM2_PCR_Read
+
+- **Дата обнаружения:** 2026-11-21 (независимое итоговое ревью S7-40, ограничение, пункт 2).
+- **Компонент:** измеренная загрузка (S7-22), `od-tpm`, `od-machine`; тесты измерений.
+- **Важность:** низкая или средняя (не блокирует приёмку S7-40; снижает уверенность в целостности журнала).
+- **Владелец:** не назначен.
+- **Статус:** закрыта 2026-11-21 (коммит `50cf40a`). Независимое ревью S7-40 (Opus, high, 2026-11-21): принято с замечаниями. Остаётся граница теста (см. «Результат»).
+- **Суть и последствия:** в репозитории нет проверки, которая пересчитывает журнал событий TCG (Event03) по обоим банкам для PCR0–7 и сравнивает результат с значениями `TPM2_PCR_Read`. Есть только пересчёт PCR7 в ignored-тесте и гостевая проверка SHA-256 для PCR0, PCR1, PCR4 и PCR5. Расхождение журнала и PCR в остальных PCR и во втором банке может остаться незамеченным.
+- **Основание:** пункт 2 итогового ревью S7-40; поиск тестов по репозиторию.
+- **Следующий шаг (выполнен):** host-тест, который проходит журнал Event03 после загрузки, пересчитывает PCR0–7 для каждого банка и сверяет с `TPM2_PCR_Read`.
+- **Результат.** `crates/od-machine/src/firmware_board/tcg_log_replay_tests.rs`: `replay_log` расширяет каждое событие журнала в PCR0–7 обоих банков (SHA-256 и SHA-384), `read_pcrs` читает PCR0–7 обоих банков через `TPM2_PCR_Read` (по команде на банк: `TPML_DIGEST` ограничен 8 дайджестами). (1) Живой прогон: ignored-тест PCR7 теперь сверяет полный пересчёт с `TPM2_PCR_Read` для всех трёх загрузок (`unsigned`, `enroll`, `revoke`), результат `ok`, 1306,62 с. (2) Всегда выполняемый тест `recorded_boot_logs_replay_to_the_recorded_pcr0_to_7_in_both_banks` пересчитывает три журнала, сохранённых этим прогоном (`tests/fixtures/firmware/tcg_log_{unsigned,enroll,revoke}.bin`, 20812, 23817 и 25317 октетов; в каждой загрузке расширены все PCR0–7), и сверяет с записанными PCR; `a_corrupted_log_no_longer_replays_to_the_recorded_pcrs` показывает, что повреждение дайджеста в одном банке, потеря события и испорченный заголовок обнаруживаются. Результат: 2 теста `ok`. Происхождение фикстур и перезапись — [FIRMWARE.md](testing/FIRMWARE.md#полный-пересчёт-журнала-event03-для-pcr07-issue-630). (3) **Граница.** Дайджесты событий типов `0x8000000a`, `0x8000000b` и `0x80000003` (PCR0, PCR1, PCR4) не равны хешу данных события, поэтому берутся из журнала как есть: тест доказывает согласованность журнала с PCR, но не правильность этих дайджестов (для остальных типов, где профиль TCG задаёт дайджест как хеш данных, тест его проверяет). Живой прогон занимает около 22 минут, поэтому остаётся ignored-тестом в `firmware_check_all.py` (шаг `ignored-secure-boot-pcr7`). Отчёт — [S7-40 — итог ревью](reports/STAGE_7_REPORT.md#s7-40--итог-ревью-2026-11-21).
+
+
+<a id="issue-632"></a>
+
+### ISSUE-632. S7-31d: после входа в ExitBootServices гость прыгает на адрес, который не транслируется; прошивка останавливается по #PF
+
+- **Компонент:** единая плата «UEFI + Linux» ([ADR-0013](decisions/ADR-0013-uefi-linux-cpu-profile.md), вариант (b)), таблицы страниц прошивки, `od_firmware::bs::exit::exit_boot_services`, EFI stub ядра Ubuntu 7.0.0-38.
+- **Суть:** в едином цикле (`firmware_linux_uefi_stop_record.py --cpu-loop unified`, [запись](reports/data/stage7/s7-31d-linux-uefi-stop-record.json)) во всех трёх вариантах образа (stock, rebased, rebased-hdr) прогон входит в `exit_boot_services` (RIP `0x222420`), а через 4 991 инструкцию (stock) в гостя доставляется первый `#PF` (вектор 14) в IDT прошивки; заглушка `od_fw_exception_stubs+0x8c` ведёт к `od_firmware::stop`, прошивка печатает `OD-FW STOP code=0x10 detail=0x000000000000000E` и исполняет `HLT` (`0xf4`, RIP `0x20ac21`, `od_firmware::stop+0x71`). Набор не имеет члена `halt`, поэтому прогон заканчивается `Unsupported { opcode: 244 }`; это остановка самой прошивки, а не CPU. Для stock измерено отдельным прогоном (бюджет 1 239 739 200 инструкций, RIP на границе до доставки): `#PF` возникает на выборке инструкции по адресу `0x59253e0` (байты по RIP не читаются: трансляция выборки не даёт RAM). Измерено в S7-31e для всех трёх вариантов (запись [s7-31e](reports/data/stage7/s7-31e-linux-uefi-stop-record.json)): первый доставленный `#PF` — выборка инструкции (`error_code = 0x11`: P = 1, I/D = 1) по CR2 `0x59253e0` (stock), `0x69253e0` (rebased), `0x67253e0` (rebased-hdr); PTE страницы (по живому CR3 `0x150000`): `0x8000000005925063`, `0x8000000006925063`, `0x8000000006725063` — P = 1, W = 1, A = 1, D = 1, **XD (бит 63) = 1**; PML4E `0x151023` и PDPTE `0x152023` с XD = 0, PDE (4 КиБ-таблица) `0x17f023`, `0x187023`, `0x186023`. Трансляция 2 МиБ-обходом даёт `Protection { execute_denied: true }`. Причина — нарушение NX при выборке из страницы RAM, которую прошивка отобразила как `PRESENT | WRITABLE | NO_EXECUTE` (`firmware/uefi/src/paging.rs::build`, регионы RAM).
+- **Не установлено:** вернулся ли `ExitBootServices` с `EFI_SUCCESS`; является ли `0x59253e0` входом ядра после передачи управления stub; какого типа регион карты памяти покрывает `0x5925000` в момент выхода из Boot Services. Известно только начальное состояние: в карте S7-04 (печать на COM1) адрес лежит в `EfiConventionalMemory` (тип 7) `[0x65c000, 0x7ffe000)`; карта на момент выхода (после `AllocatePages` стаба) не измерялась, потому что распределитель страниц прошивки не отдаёт её наружу.
+- **Последствия:** до запуска ядра и `init` единый цикл не доходит; ISSUE-622 закрыт (stub добрался до ExitBootServices), но цель S7-31 (строка `init` на COM1) не достигнута.
+- **Статус:** закрыто в срезе S7-31f (2026-11-21). Диагноз S7-31e (P = 1, XD = 1, выборка) подтверждён исправлением: `AllocatePages` с типами `EfiLoaderCode` и `EfiBootServicesCode` теперь делает страницы исполняемыми (`firmware/uefi/src/bs/memory.rs`, правило в UEFI_PROFILE.md и FIRMWARE_BOOT.md). В едином цикле на трёх вариантах (два одинаковых прогона на вариант, [запись](reports/data/stage7/s7-31f-linux-uefi-stop-record.json)) первый `#PF` не доставляется (`exceptions_delivered = 0`, `first_page_fault = null`), PTE страницы остановки без XD (`0x…4713063` и т. д.), а остановка переехала на другую причину: `Unsupported { opcode: 0x8e }` (`MOV SS, EAX`, `8E D0`) в коде, исполняемом после выхода из Boot Services (см. отчёт S7-31f). Это уже не ISSUE-632; вынесено в [ISSUE-633](#issue-633). Оговорка: вернул ли `ExitBootServices` `EFI_SUCCESS`, напрямую не измерено; косвенный признак — управление дошло до кода ядра в выделенных страницах.
+
+
+<a id="issue-633"></a>
+
+### ISSUE-633. S7-31f: гость после выхода из Boot Services останавливается на `MOV SS, EAX` (`8E D0`): набор CPL0 не допускает форму
+
+- **Компонент:** набор `Cpl0ProfileSet` (`crates/od-isa`, допуск `MOV SS`), единая плата «UEFI + Linux».
+- **Суть:** в едином цикле ([запись](reports/data/stage7/s7-31f-linux-uefi-stop-record.json)) во всех трёх вариантах прогон доходит до кода в выделенных страницах (по-видимому, ядро) и останавливается на первой же инструкции `8E D0` (`mov ss, eax`), за которой идут `8E C0` (`mov es, eax`), `48 8D 3D 9B 22 01 00` (`lea rdi, [rip+0x1229b]`) и `E8 …` (`call`). RIP: `0x4713304` (stock), `0x6713304` (rebased), `0x5913304` (rebased-hdr); отчёт набора: `Unsupported { opcode: 142 }`; 5 007 (stock) инструкций после входа в `exit_boot_services`; исключений не доставлено, `#PF` нет, PTE страницы без XD. Страница исполняема.
+- **Причина не установлена.** Допуск `MOV SS` в наборе требует: член CPL0, CPL0, селектор 0 или (TI = 0 при смоделированном GDTR), смоделированные `ss_cache` и `ss_selector`, чистый `sti_shadow` и IF = 0 (`crates/od-isa/src/execute.rs`, ветка `LoadNullSsSelector`). Какое из условий не выполнено (подозрение: IF = 1 при входе в ядро; значение селектора в EAX), в записи не измерено.
+- **Статус:** закрыто в срезе S7-31g (2026-11-21) по факту прохождения. Измерено на остановке (stock): RFLAGS `0x206` (IF = 1, TF = 0), RAX `0x18`, GDTR (base `0x4c0f000`, limit `0x7f`), `ss_selector 0x10`, `ss_cache` плоский (access 0x93, flags 0xc), `sti_shadow = Clear`, CS `0x8`, RSP `0x4203f28`: единственное невыполненное условие допуска — IF = 0. Условие IF = 0 снято: `MOV SS` на CPL0 допускается при IF = 0 и 1, тень `Blocking` переносится с IF = 1 для любого набора CPL0 (CPU_CONTRACT.md, раздел S7-31g), TF = 1 остаётся отказом. После этого в едином цикле (три варианта, по два одинаковых прогона, [запись](reports/data/stage7/s7-31g-linux-uefi-stop-record.json)) инструкция `8E D0` проходит, остановки по CPU нет: ядро Ubuntu загружается через собственную UEFI и печатает журнал на COM1, прогон кончается исчерпанием бюджета 2·10⁹ инструкций (RIP в адресах ядра, `0xffffffff…`).
+
+<a id="issue-634"></a>
+
+### ISSUE-634. S7-31g: ядро печатает `efi: Error mapping PA … -> VA …` и `efi: Error ident-mapping new memmap` (runtime-области не отображаются)
+
+- **Компонент:** единая плата «UEFI + Linux», карта памяти UEFI и её атрибуты (`EFI_MEMORY_RUNTIME`), CPU-модель набора CPL0.
+- **Суть:** в журнале ядра на COM1 (`[ 1.453…]`, одинаково у stock, rebased и rebased-hdr) подряд идут ошибки отображения для областей `0xff000000`, `0x7f7d000`, `0x7f75000`, `0x7f74000`, `0x7f6f000`, `0x7f6d000`, `0x7f5c000`, `0x7f10000`, `0x255000`, `0x200000`, `0x1ad000`, `0x110000` (и для их виртуальных адресов `0xfffffffeff…`), затем `efi: Error ident-mapping new memmap (0x1314000)!`. После этой ошибки ядро уходило в `goto err` (сброс бита `EFI_RUNTIME_SERVICES`), поэтому журнал S7-31g шёл без Runtime Services. Ядро после этого продолжает загрузку (`Freeing SMP alternatives memory`, `rcu: …`). Побочно: `CPU: vendor_id 'OpenDesktop ' unknown`, `efi: EFI v2.11 by Open Desktop`, `RTPROP=0x7f7e0fc`.
+- **Причина не установлена:** возможные направления — атрибуты областей в карте (`EFI_MEMORY_RUNTIME`, WB/UC), выравнивание, выбор страниц таблиц ядра при `efi_map_region`, модель CPU; ни одно не проверено.
+- **Последствия:** Runtime Services через ядро (`efivarfs`) для критерия S7-31 не доказаны; журнал ядра доходит до `rcu: Hierarchical SRCU implementation` в пределах бюджета 2·10⁹ инструкций, строка `init` не достигнута.
+- **Статус:** закрыто в срезе S7-31h (2026-11-21) по факту. Причина: в журнале ядра (`[ 0.000000] Notice: NX (Execute Disable) protection missing in CPU!`) NX не объявлен в CPUID 0x80000001 EDX у профиля `X8664V1Stage4A`; ядро снимает `_PAGE_NX` из маски и `efi_map_region` отказывает. Единый цикл теперь берёт профиль `X8664V1Stage4AExt1` (Stage4A плюс SYSCALL, NX, LM, `0x20100800`; CPU_CONTRACT.md, S7-31h). Измерено (три варианта, два прогона на вариант, [запись](reports/data/stage7/s7-31h-linux-uefi-stop-record.json)): `NX (Execute Disable) protection: active`, строк `efi: Error` — 0, `ident-mapping` — 0 (было 25 и 1 в каждом варианте). Остановка уехала дальше: ISSUE-636.
+
+<a id="issue-635"></a>
+
+### ISSUE-635. Набор CPL0 принимает TF = 1 на входе и исполняет инструкции без одношагового #DB
+
+- **Компонент:** `Cpl0ProfileSet` (`crates/od-isa/src/execute.rs`), единая плата и Linux direct.
+- **Суть:** ловушка одиночного шага (RFLAGS.TF) в наборе не моделируется: состояние с TF = 1 принимается на входе, инструкции выполняются, #DB после них не доставляется (тест `mov_ss_stays_closed_under_a_shadow_or_with_tf` сам выполняет `xor` при TF = 1 до отказа `MOV SS`). Единственная защита — местная проверка в допуске `MOV SS` (`LoadNullSsSelector`, `LoadSegmentSelectorReg` с SS): при TF = 1 форма остаётся `Unsupported` (S7-31g). Остальные инструкции TF не проверяют.
+- **Риск:** гость, взводящий TF (отладчик, `ptrace` в пользовательском режиме, `pushf; popf` с TF), получит выполнение без одношаговых прерываний, а не отказ; до S7-31g риск записан не был. На CPL0 ядра Linux TF не взводится в наблюдавшихся прогонах; полнота этого утверждения не проверена.
+- **Статус:** открыто. Следующий шаг: либо отказ набора на входе при TF = 1 (с тестами старых прогонов), либо модель #DB после каждой инструкции; выбор — решение ревью.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (кандидат — S7-31: единая плата использует набор CPL0). Условие закрытия: набор отказывает при TF = 1 на входе (с тестами прежних прогонов) либо моделирует #DB после каждой инструкции; выбор — решение ревью.
+
+<a id="issue-636"></a>
+
+### ISSUE-636. S7-31h: ядро в инициализации FPU останавливается на `LDMXCSR` (`0F AE /2`): набор CPL0 не допускает форму
+
+- **Компонент:** набор `Cpl0ProfileSet` (`crates/od-isa`, FP-член), единая плата «UEFI + Linux».
+- **Суть:** в едином цикле ([запись](reports/data/stage7/s7-31h-linux-uefi-stop-record.json), бюджет 6·10⁹, три варианта, два одинаковых прогона) прогон останавливается: `Unsupported { opcode: 174 }` (0xae), байты `0F AE 55 EC` — `ldmxcsr dword ptr [rbp-0x14]`, за ними `83 E3 01 75 46 48 8B 45 F0 65 48 2B …`. RIP `0xffffffff8afb4957` (stock, 1 662 148 713 инструкций), `0xffffffff963b4957` (rebased, 1 661 136 793), `0xffffffffa67b4957` (rebased-hdr, 1 662 038 937). Последняя строка журнала: `x86/fpu: x87 FPU will use FXSAVE` (`[ 1.458694]` у stock, `[ 1.457491]` у rebased, `[ 1.458412]` у rebased-hdr). RFLAGS `0x202`, `sti_shadow` Clear; доставлено 7 `#PF` (ядро их обработало).
+- **Разбор по исходникам ядра (диагноз ревью Opus, не измерение):** строку `x86/fpu: x87 FPU will use FXSAVE` печатает `fpu__init_system`; дальше `start_kernel` → `efi_enter_virtual_mode` → `efi_set_virtual_address_map` → `efi_fpu_begin`/`kernel_fpu_begin` → `kernel_fpu_begin_mask`: при `kfpu_mask & KFPU_MXCSR` и `boot_cpu_has(X86_FEATURE_XMM)` ядро выполняет `ldmxcsr(MXCSR_DEFAULT)`; XMM входит в `REQUIRED_MASK`, поэтому условие CPUID не проверяет и инструкция исполняется при необъявленных SSE/SSE2. Это Runtime Services: ядро добралось до них только после S7-31h (до того ISSUE-634 отключал их).
+- **Статус:** закрыто в срезе S7-31i (2026-11-21) по факту прохождения. Решение: профиль CPUID `X8664V1Stage4AExt2` (Ext1 плюс SSE и SSE2 в листе 1) и форма `LDMXCSR m32` в FP-члене набора (CPU_CONTRACT.md, S7-31i; `s7_31i_ldmxcsr.rs`). В едином цикле (три варианта, по два одинаковых прогона, бюджет 6·10⁹, [запись](reports/data/stage7/s7-31i-linux-uefi-stop-record.json)) `0F AE 55 EC` проходит; ядро вызывает `SetVirtualAddressMap`: ISSUE-637; следующая остановка — ISSUE-638.
+
+<a id="issue-637"></a>
+
+### ISSUE-637. S7-31i: `SetVirtualAddressMap` возвращает `EFI_NOT_FOUND`, ядро печатает `efi: Unable to switch EFI into virtual mode (status=800000000000000e)!`
+
+- **Компонент:** Runtime Services прошивки (`SetVirtualAddressMap`, `firmware/uefi/src/rt`), карта памяти и дескрипторы, переданные ядром.
+- **Суть:** после прохождения `LDMXCSR` (ISSUE-636) ядро доходит до `efi_set_virtual_address_map`; во всех трёх вариантах журнал содержит `[ 1.458113] efi: Unable to switch EFI into virtual mode (status=800000000000000e)!` (stock; `1.459517` rebased, `1.457665` rebased-hdr). Код `0x800000000000000e` — `EFI_ERROR | 14`, то есть `EFI_NOT_FOUND` (значение кода по UEFI 2.11 не сверялось по спецификации в этом срезе). Ядро после этого работает без Runtime Services.
+- **Причина не установлена.** Не проверено: какие дескрипторы передало ядро и какой из них прошивка не нашла в своей карте (`NOT_FOUND` у прошивки возвращают, судя по коду, ветки несовпадения областей; точная ветка не разобрана).
+- **Статус:** закрыто в срезе S7-31j (2026-11-21) по факту: `EFI_NOT_FOUND` больше не возвращается. Разбор: ветка `NOT_FOUND` — `VirtualMap::new` (`firmware/uefi/src/rt/virt.rs`), runtime-дескриптор ядра, которого нет среди runtime-регионов прошивки с тем же началом, числом страниц и типом. По UEFI 2.11 `EFI_NOT_FOUND` — виртуальный адрес задан для адреса, которого нет в карте памяти; `EFI_NO_MAPPING` — виртуальный адрес не задан для диапазона, требующего отображения (реализация это различала верно). Строгое совпадение с одним регионом карты было слишком жёстким: ядро склеивает соседние регионы одного типа и помечает как runtime регионы, которые сохраняет (в журнале S7-31g — Boot Services-области `0x110000`, `0x1ad000`, `0x200000`, `0x255000` среди отображаемых). Проверка теперь: диапазон дескриптора лежит в регионах карты того же типа (любое число регионов подряд), перекрытия физических диапазонов — `EFI_INVALID_PARAMETER`; тест `accepts_merged_and_os_marked_runtime_ranges_and_rejects_ranges_outside_the_map`. Оговорка: точные дескрипторы ядра не выводились, склейка и пометка — вывод из кода ядра и журнала; доказательство — исчезновение отказа (строки `Unable to switch EFI` нет в шести прогонах, [запись](reports/data/stage7/s7-31j-linux-uefi-stop-record.json)). Возврат `SetVirtualAddressMap` успехом не наблюдался: прогон останавливается внутри вызова (ISSUE-639).
+
+<a id="issue-638"></a>
+
+### ISSUE-638. S7-31i: ядро обращается к порту `0x2F9`, которого нет на плате: `PortIo(UnmappedPort(761))`
+
+- **Компонент:** плата «UEFI + Linux» (порты ввода-вывода `linux_profile`, поглотители отсутствующих портов).
+- **Суть:** в едином цикле ([запись](reports/data/stage7/s7-31i-linux-uefi-stop-record.json)) все три варианта (два одинаковых прогона) останавливаются ошибкой ввода-вывода, а не CPU: `PortIo(UnmappedPort(PortAddress(761)))` на инструкции `EC` (`in al, dx`), RIP `0xffffffff8bbee6eb` (stock, 2 320 423 449 инструкций), `0xffffffff96fee6eb` (rebased, 2 322 198 372), `0xffffffffa73ee6eb` (rebased-hdr, 2 320 445 556). Порт 761 = `0x2F9` (второй последовательный порт, регистр IER; предположение о драйвере 8250 по номеру порта, не проверено). Последняя строка журнала: `rcu: Max phase no-delay instances is 400.` (`[ 1.458718]` у stock). RFLAGS `0x6`, `/init` не достигнут.
+- **Статус:** закрыто в срезе S7-31k (2026-11-21) по факту: решение S7-31j (отсутствующие UART COM2–COM4 читаются как 0xFF, запись игнорируется, под `linux_profile`; общий 0xFF для необъявленных портов не введён, MACHINE_CONTRACT.md, раздел S7-31j) реализовано, тесты платы проходят; в шести прогонах S7-31k ядро проходит обращение к порту `0x2F9` (прежняя остановка `PortIo(UnmappedPort(761))` на 2 320 423 449 инструкциях не наступает, прогон идёт до 2,797·10⁹), [запись](reports/data/stage7/s7-31k-linux-uefi-stop-record.json).
+
+<a id="issue-639"></a>
+
+### ISSUE-639. S7-31j: Runtime-драйвер прошивки в `SetVirtualAddressMap` исполняет `mov cr0, rax` (`0F 22 C0`): набор CPL0 не допускает форму
+
+- **Компонент:** набор `Cpl0ProfileSet` (допуск `MOV CR0`, политика CR0), Runtime-драйвер (`firmware/uefi/src/rt/driver.rs`, `suspend_write_protection`/`resume_write_protection`).
+- **Суть:** после исправления ISSUE-637 единый цикл ([запись](reports/data/stage7/s7-31j-linux-uefi-stop-record.json), бюджет 6·10⁹, три варианта, два одинаковых прогона) входит в `SetVirtualAddressMap` и останавливается на `Unsupported { opcode: 34 }` (0x22): байты `0F 22 C0 48 8D 8C 24 A0 00 00 00 …` — `mov cr0, rax`; RIP `0x7f6179e` (код Runtime-драйвера в identity-отображении), RAX `0x80040033` (CR0 ядра без WP: PG, AM, NE, MP, PE, ET). Инструкций: 1 661 498 058 (stock), 1 663 088 791 (rebased), 1 661 261 633 (rebased-hdr). Последняя строка журнала: `x86/fpu: x87 FPU will use FXSAVE`.
+- **Не установлено:** какое именно условие набора отказывает (в наборе есть `MOV CR0, RDI` с FP-членом и `MOV CR0` под профилем CR0; форма `MOV CR0, RAX` в политике CPL0 может быть закрыта по значению CR0).
+- **Статус:** закрыто в срезе S7-31k (2026-11-21) по решению ревью Opus, вариант (б): `mov cr0` исполнял не ядро, а наш Runtime-драйвер (`suspend_write_protection`, `and rax,-65537; mov cr0, rax`). Снимать WP не нужно: по решению ревью Opus, Linux отображает runtime-регионы с RW на время `SetVirtualAddressMap` (в журнале ядра не проверялось), а на таблицах прошивки образы делаются записываемыми при `ExitBootServices`, как в EDK2 (S7-31l). Подвешивание и возврат WP удалены из `firmware/uefi/src/rt/driver.rs`; условие записано в UEFI_PROFILE.md и FIRMWARE_BOOT.md; при `ExitBootServices` прошивка делает страницы RT-образов записываемыми с сохранением исполняемости (S7-31l, `unlock_runtime_images`, тест `exit_makes_runtime_image_pages_writable_and_keeps_executability`); гостевой RT-тест (`tests/apps/rt`) переносит флаги листьев таблиц прошивки без изменений, и `SetVirtualAddressMap` на таблицах, унаследованных от прошивки, не даёт #PF на записи fixup; тест `driver_code_does_not_write_control_registers`. `MOV CR0` в набор не допускался (вариант (а) отклонён). В прогонах S7-31k остановки на `0F 22 C0` нет. Успешный возврат `SetVirtualAddressMap` под Linux не заявляется: он не наблюдался; в прогонах S7-31k нет остановки на `mov cr0` и строки `Unable to switch EFI`.
+
+<a id="issue-640"></a>
+
+### ISSUE-640. S7-31k: ядро доходит до `HLT` на CPL0 (RFLAGS.IF = 1); набор CPL0 единого цикла не содержит члена `halt`
+
+- **Компонент:** набор `Cpl0ProfileSet` (допуск `HLT`, `with_halt`), единый цикл (`run_firmware_unified*`).
+- **Суть:** после ISSUE-637/639 единый цикл ([запись](reports/data/stage7/s7-31k-linux-uefi-stop-record.json), бюджет 6·10⁹, три варианта, два одинаковых прогона) останавливается на `Unsupported { opcode: 244 }` (0xF4, `HLT`) на CPL0: байты `F4 C3 CC CC CC CC 90 90 …` (`hlt; ret`, холостой ход ядра), RFLAGS `0x246` (IF = 1), RIP `0xffffffff8b728f0a` (stock; `0xffffffff94528f0a` rebased; `0xffffffffa5528f0a` rebased-hdr), физический `0x3128f0a` (stock), инструкций 2 797 399 885 (stock), 2 797 263 955 (rebased), 2 797 546 729 (rebased-hdr). В списке членов набора единого цикла члена `halt` нет. Последняя строка журнала COM1: `rcu: Max phase no-delay instances is 400.` (журнал может отставать: консоль 8250 печатает асинхронно); `cpl3_retired` = 751 (в S7-31j было 0: впервые исполнен код пользовательского режима, чей именно — не установлено).
+- **Причина (S7-31m, измерено):** ядро ждало прерывания таймера. На остановке: IF = 1; 8259 ведущий инициализирован ядром (ICW2 `0x30`, ICW3 `0x04`), IMR `0xEA` (IR0, IR2, IR4 размаскированы), IRR = ISR = 0; канал 0 PIT запрограммирован (режим 2, LSB+MSB, перезагрузка 1193, то есть 1 кГц); APIC в CPUID профиля не объявлен (`CPUID.1:EDX[9]` = 0, режим «APIC: Keep in PIC mode(8259)»), значит таймера LAPIC нет; в едином цикле не было ни члена `halt`, ни источника прерываний (доставлено 0 IRQ). По исходному коду ядра причина не проверялась (в `work/stage4` распакован не весь исходник); вывод опирается на состояние устройств при остановке и на результат включения источника (ядро идёт дальше).
+- **Исправление (S7-31m):** единый цикл `run_firmware_unified` получил член `halt`, источник PIT -> 8259 IR0 и UART THRE -> IR4 (те же, что у пользовательского прогона Linux, S4-39g и S4-39i) и хук прерываний цикла (`irq_hook`): `HLT` при IF = 1 пробуждается на ближайшем ребре таймера, `HLT` при IF = 0 завершает прогон как `halted` с причиной `halt_stop = if_clear` (по SDM `HLT` ждёт прерывание, NMI, SMI или сброс; маскируемое прерывание при IF = 0 его не будит). Новых форм ISA не добавлялось: `HLT` и его семантика (тень `STI`, пробуждение, IF = 0) уже были в `od-isa` (`hlt.rs`).
+- **Проверка:** единый цикл, release, бюджет 6·10⁹, три варианта × 2 прогона, прогоны идентичны ([запись](reports/data/stage7/s7-31m-linux-uefi-stop-record.json)): остановки на `HLT` нет, прогон исчерпывает бюджет; ядро доходит до `Run /init as init process`, `/init` печатает `OD_NONCE=od7s31adiagnostic0001` и вызывает `exit(0)`, ядро печатает `Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000` (штатный конец сценария init, как в этапе 4). `efivarfs` в журнале нет: тестовый `/init` его не монтирует (`efivars: Registered efivars operations` в журнале есть). Подробности: [отчёт этапа 7, S7-31m](reports/STAGE_7_REPORT.md).
+- **Статус:** закрыто в срезе S7-31m (2026-11-21).
+
+### ISSUE-641. S7-31m: ядро в едином цикле печатает `Unable to read current time from RTC`
+
+- **Компонент:** единый цикл, плата с `linux_profile` (CMOS/RTC, EFI Runtime Services `GetTime`).
+- **Суть:** в журнале COM1 всех вариантов (S7-31m: `<3>[    1.450183] Unable to read current time from RTC`; это `pr_err`, уровень 3, а не предупреждение, как сказано ранее) ядро не получало время.
+- **Причина (установлена, S7-31o):** исходник ядра 7.0 (`linux-source-7.0.0.tar.bz2` из `work/stage4`): `arch/x86/kernel/rtc.c:69–72` (`mach_get_cmos_time`: `mc146818_get_time(&tm, 1000)` вернул ненулевое — `pr_err("Unable to read current time from RTC")`); `drivers/rtc/rtc-mc146818-lib.c:29–45` (`mc146818_avoid_UIP`: цикл читает `RTC_SECONDS` и `RTC_FREQ_SELECT`, при `RTC_UIP` (бит 7 регистра A) повторяет до 10 000 раз по `udelay(100)`) и `:160–162` (`return -ETIMEDOUT`). Трасса портов `0x70/0x71` (временная трасса в `AbsentPorts`, не в коммите; [файл](reports/data/stage7/s7-31o-cmos-port-trace-before-fix.txt)): запись индекса `0x00`, чтение `0xff`, запись индекса `0x0a`, чтение `0xff`, и так 35 000–40 000 обращений (10 000 итераций по 4): регистр A читается как `0xff`, то есть UIP всегда взведён. Источник ответа `0xff`: плата единого цикла из раннера не имела явной базы RTC (`rtc_base_unix_seconds` задавался только для `fv_app` `rt`/`acpi`), поэтому порты CMOS обслуживал `AbsentPorts` (`crates/od-machine/src/absent_ports.rs`: чтение `0xFF`, запись игнорируется; `firmware_board.rs`: «без явной базы RTC Linux-профиль оставляет поведение отсутствующих портов»). Это конфигурация платы в раннере, не дефект модели `RtcCmos`.
+- **Исправление (S7-31o):** `apply_unified` в `tools/runner/src/firmware_boot.rs` задаёт ту же явную базу UTC `1 704 067 200` (2024-01-01T00:00:00Z, не дата хоста) для единого цикла; тест `the_unified_board_has_an_explicit_rtc_base_and_keeps_a_given_one`. Код прошивки не менялся, но при явной базе RTC (S7-31o) меняются её выходы: плата добавляет устройство RTC_CMOS в handoff, прошивка включает службу времени (`GetTime` активна; из гостя не проверялась); DSDT вырастает с `0x111` до `0x135` байт (устройство `RTC0`, `_HID` `PNP0B00`, `firmware/uefi/src/acpi/dsdt.rs` `emit_rtc`); FADT: `CENTURY` = `0x32`, в `IAPC_BOOT_ARCH` снят бит «CMOS RTC отсутствует» (`fadt.rs`, ветка `rtc_present`); таблицы сдвигаются: FACP `0xE01C0` -> `0xE01E0`, XSDT `0xE0320` -> `0xE0340`, APIC `0xE0160` -> `0xE0180`, MCFG `0xE02E0` -> `0xE0300` (по журналу ядра S7-31n и S7-31o). Вывод «ACPI без ошибок разбора» опирается на запись S7-31o (таблицы после этих изменений), а не на S7-31n.
+- **Проверка:** единый цикл, release, бюджет 6·10⁹, три варианта × 2 прогона, идентичны ([запись](reports/data/stage7/s7-31o-linux-uefi-efivars-acpi.json)): строки `Unable to read current time from RTC` нет; в журнале `PM: RTC time: 00:00:02, date: 2024-01-01`, `rtc_cmos 00:01: registered as rtc0`, `rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)`.
+- **Статус:** закрыто в срезе S7-31o (2026-11-21).
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: S7-31 (срез S7-31o, в работе). Условие закрытия: установлен источник чтения времени ядром (CMOS `0x70/0x71` или EFI `GetTime`) и ответ модели; предупреждение либо исчезло из журнала единого цикла (измерено), либо поведение записано решением владельца с датой. Выполнено в S7-31o (2026-11-21): источник установлен (порты CMOS обслуживал AbsentPorts), строка исчезла из журнала единого цикла (измерено), запись закрыта.
+
+### ISSUE-642. S7-31n: ядро печатает `acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)`; в DSDT нет метода `_OSC`
+
+- **Компонент:** `firmware/uefi/src/acpi/dsdt.rs` (корневой мост `PCI0`, `_HID` `PNP0A08`): метода `_OSC` в DSDT нет; AML-построитель умеет `Method` (`method()`, `begin_method()`), но в `opcodes.rs` нет опкодов, нужных настоящему `_OSC` (If, LEqual, CreateDWordField, Arg, Local).
+- **Суть:** в журнале ядра (dmesg, уровень `<6>`; все три варианта и все прогоны; время ядра: stock 1,736960 с, rebased 1,740929 с, rebased-hdr 1,737884 с) стоит строка `acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)`. Она попадает под фильтр `acpi.*error|ACPI BIOS Error|AE_` записи [s7-31n](reports/data/stage7/s7-31n-linux-uefi-efivars-acpi.json) (единственное совпадение; `ACPI Error` и `ACPI BIOS Error` нет; строка уровня `<4>` в той же записи — [ISSUE-643](#issue-643)). Это сообщение согласования `_OSC` ядром, а не строка разбора таблиц: строки разбора (`RSDP`, `XSDT`, `FACP`, `DSDT`, `FACS`, `APIC`, `MCFG`) чистые.
+- **Последствия:** ядро не получает управление функциями PCIe через `_OSC` (нативный hotplug, AER, PME остаются «за платформой»); на загрузку, `/init` и `efivarfs` не влияет (проверено в S7-31n).
+- **Причина (установлена по исходнику ядра 7.0, `work/stage4/linux-7.0.0-38.38/source/linux-source-7.0.0.tar.bz2`):** `drivers/acpi/bus.c:224–226` (`acpi_eval_osc`: сбой `acpi_evaluate_object(handle, "_OSC", …)` даёт `-ENODATA`) и `bus.c:303–304` (`acpi_run_osc`: любой ненулевой возврат `acpi_eval_osc` превращается в `AE_ERROR`), поэтому отсутствие `_OSC` выглядит как `AE_ERROR`, а не `AE_NOT_FOUND`. `drivers/acpi/pci_root.c:620–635`: отсутствие `_OSC` допустимо молча только для корня без PCIe (`status == AE_NOT_FOUND && !is_pcie(root)`); для PCIe-корня ядро печатает `_OSC: platform retains control of PCIe features (…)`. У нашего моста `_HID` `PNP0A08` (`firmware/uefi/src/acpi/dsdt.rs:289`), то есть PCIe-корень, а `_OSC` в DSDT нет; AML-построитель умеет `Method`, но в `opcodes.rs` нет опкодов настоящего `_OSC` (If, LEqual, CreateDWordField, Arg, Local).
+- **Решение (Opus high, 2026-11-21):** `_OSC` не реализовывать: это штатное поведение ядра для PCIe-корня без `_OSC`, платформа оставляет управление функциями PCIe за собой.
+- **Статус:** не дефект, отложено. Условие возобновления: корневые порты PCIe, hotplug, AER или требование S7-32; тогда нужны недостающие опкоды в AML-построителе, метод `_OSC` с проверкой PCI-UUID `33DB4D5B-1FF7-401C-9657-7441C03DD766` и тесты DSDT.
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: не назначен (S7-32 пропущена; возобновление — новым решением владельца или задачей по корневым портам PCIe, hotplug, AER). Условие закрытия: запись остаётся «не дефект, отложено» до условия возобновления выше; закрывается реализацией `_OSC` с тестами DSDT либо решением владельца.
+
+### ISSUE-643. S7-31n: ядро печатает `ACPI: setting ELCR to 0200 (from 0000)` (уровень `<4>`)
+
+- **Компонент:** прошивка (инициализация ELCR 8259, порты `0x4D0`/`0x4D1`), таблицы ACPI (FADT, SCI).
+- **Суть:** в dmesg всех вариантов и прогонов записи [s7-31n](reports/data/stage7/s7-31n-linux-uefi-efivars-acpi.json) есть предупреждение `<4>[    1.458183] ACPI: setting ELCR to 0200 (from 0000)` (stock). Это `pr_warn` ядра (`arch/x86/kernel/acpi/boot.c:635`): ядро выставляет бит 9 ELCR (уровневый режим IRQ9, линия SCI), потому что прошивка его не выставила. Предыдущая формулировка этой записи и отчёта S7-31n «предупреждений нет» была неверной.
+- **Последствия:** на загрузку не влияет (ядро исправляет ELCR само); значение SCI IRQ и режим ELCR прошивка не согласует с ядром.
+- **Не установлено:** какое значение SCI_INT объявляет наш FADT и нужен ли прошивке код, выставляющий ELCR (и нужно ли это по ACPI 6.6 и `ACPI_SMBIOS_TABLES.md`).
+- **Статус:** открыто. Следующий шаг: сверка FADT (SCI_INT) и ELCR с `docs/specs/ACPI_SMBIOS_TABLES.md`, затем решение (выставлять ELCR в прошивке или принять поведение ядра).
+- **Владелец и условие закрытия (S7-41, 2026-11-21).** Владелец: S7-31 (срез S7-31o, в работе). Условие закрытия: сверка FADT (SCI_INT) и ELCR с `ACPI_SMBIOS_TABLES.md` и ACPI 6.6 завершена и принято решение (ELCR выставляет прошивка или принято поведение ядра); строка исчезла из dmesg единого цикла либо решение записано.
+
+### ISSUE-644. S7-31o: в dmesg есть строки уровня `<3>` и `<4>`, кроме закрытых и описанных записей
+
+- **Компонент:** единый цикл, профиль CPUID и плата (`linux_profile`), kexec handover ядра.
+- **Суть:** классификация по уровню (S7-31o) показывает в записи [s7-31o](reports/data/stage7/s7-31o-linux-uefi-efivars-acpi.json) (stock; три варианта различаются только временем) шесть сообщений ядра `<3>`/`<4>`, не относящихся к ACPI, и одну ACPI-строку (ELCR, [ISSUE-643](#issue-643)); строка с `AE_` — [ISSUE-642](#issue-642). Исходник ядра 7.0 (`linux-source-7.0.0.tar.bz2` из `work/stage4`):
+  - `<3>` `CPU: vendor_id 'OpenDesktop ' unknown, using generic init.` и `<3>` `CPU: Your system may be unstable.`: `arch/x86/kernel/cpu/common.c:933–934` (`pr_err_once`, строка вендора из `CPUID` лист 0 не известна ядру; вендор задан CPUID-профилем модели).
+  - `<3>` `mce: Unable to init MCE device (rc: -5)`: `arch/x86/kernel/cpu/mce/core.c:2868`; `-5` = `-EIO` из `mce_available(&boot_cpu_data)` ложно (`core.c:2830–2833`); от чего именно зависит `mce_available` (признаки MCE/MCA в CPUID профиля), не проверялось.
+  - `<3>` `microcode: no support for this CPU vendor`: `arch/x86/kernel/cpu/microcode/core.c:897` (вендор не Intel и не AMD).
+  - `<3>` `KHO: Failed to reserve lowmem scratch buffer` (`kernel/liveupdate/kexec_handover.c:684`: `memblock_phys_alloc_range` в `[0, ARCH_LOW_ADDRESS_LIMIT)` не нашёл места) и следом `<4>` `KHO: Failed to reserve scratch area, disabling kexec handover` (`kexec_handover.c:731`): следствие карты памяти платы; почему не нашлось места, не проверялось.
+  - `<4>` `ACPI: setting ELCR to 0200 (from 0000)`: `arch/x86/kernel/acpi/boot.c:635` — ACPI-строка, это ISSUE-643, здесь только для полноты.
+- **Классификация:** не ACPI; следствие CPUID-профиля (вендор, MCE) и карты памяти (KHO); на загрузку, `/init`, `efivarfs` и RTC не влияет (S7-31o), на S7-31 не влияет.
+- **Статус:** не дефект, отложено. Условие возобновления: смена вендора/признаков CPUID-профиля (S7-32 и далее) или требование kexec/MCE; тогда проверить `mce_available` и причину отказа выделения в низкой памяти.
+
+### ISSUE-645. S7-31p: FADT задаёт и `FIRMWARE_CTRL`, и `X_FIRMWARE_CTRL`; ядро печатает `ACPI: FACS` дважды
+
+- **Компонент:** `firmware/uefi/src/acpi/fadt.rs` (запись полей на строках 182–186, проверка на 315–318 требует равенства обоих).
+- **Суть:** в журнале ядра (S7-31n, S7-31o, S7-31p) таблица `FACS 0x00000000000EF000 000040` перечислена и зарезервирована дважды. Причина двойного вывода установлена по исходнику ядра: `drivers/acpi/acpica/tbfadt.c:318–330` ставит FACS отдельно по `FIRMWARE_CTRL` и по `X_FIRMWARE_CTRL`, если заполнены оба. Возможное отклонение от спецификации ACPI: `X_FIRMWARE_CTRL` должен быть 0 при ненулевом `FIRMWARE_CTRL` (утверждение ревью, спецификация по нему не перечитывалась); `ACPI_SMBIOS_TABLES.md` описывает FADT с обоими полями.
+- **Последствия:** на загрузку, `/init` и `efivarfs` не влияет (S7-31p).
+- **Не установлено:** требует ли спецификация ACPI (версия платы) нулевого `X_FIRMWARE_CTRL` и что изменится в журнале ядра при этом.
+- **Статус:** открыто. Следующий шаг: сверка по тексту спецификации ACPI и решение (оставить оба поля либо обнулять `FIRMWARE_CTRL`/`X_FIRMWARE_CTRL`; изменение FADT меняет ROM и эталоны COM1).
+
+### ISSUE-647. S7-34: вызов `next_key` из таймера `ConIn` во время управляющего трансфера драйвера xHCI (запись LED)
+
+- **Компонент:** прошивка (`firmware/uefi/src/usb/`, интеграция `ConIn` — срез B).
+- **Суть:** драйвер xHCI однопоточный и опрашивающий: `wait_event` и `next_key` разбирают одно кольцо событий и общее состояние (кольца, `BootKeyboard`). Если таймер опроса `ConIn` (событие уровня TPL_NOTIFY/CALLBACK, `stall` и `WaitForEvent` диспетчеризуют события) вызовет `next_key` в тот момент, когда драйвер ждёт завершения управляющего трансфера (SET_REPORT для LED по смене CapsLock, срез B), будут два параллельных потребителя кольца событий и два владельца указателя dequeue/ERDP; событие Interrupt IN может быть отдано не тому разборщику (в срезе A `wait_event` отдаёт их декодеру, но повторный вход не защищён).
+- **Последствия:** в срезе A не проявляется: `next_key` никто не вызывает, а трансферы идут только при перечислении. Станет реальным с записью LED и подключением `ConIn`.
+- **Статус:** закрыто в срезе B (2026-11-22). Решение: драйвер хранится в `usb::exclusive::Exclusive` и выдаётся только через `with` (флаг занятости): вложенный вызов из таймера внутри `stall` получает `Busy` и пропускает опрос, второй `&mut` не создаётся; запись LED — очередь из одного отложенного состояния в `BootKeyboard` (`take_led`), её отправляет `usb::service` из собственной точки входа драйвера, не вложенно в другой трансфер; консоль вызывает `service` до того, как берёт своё состояние. Проверено host-тестами (`usb::exclusive`, `hid_keyboard`) и прогоном в ROM с подачей клавиш (CapsLock → запись LED, затем клавиши доходят до ConInEx; тот прогон был одноразовым и временным); с среза C та же цепочка проверяется постоянно: `firmware_xhci_smoke.py` входит в `firmware_check_all.py`, см. XHCI_DEVICE.md раздел 15).
+- **Владелец и условие закрытия:** S7-34, срез B (выполнено): правило повторного входа описано в [XHCI_DEVICE.md](specs/XHCI_DEVICE.md) раздел 15; тест в ROM с подачей клавиш в смоуке — срез C.
+
+### ISSUE-648. S7-34: остановка контроллера при выходе из Boot Services не проверена по регистрам модели
+
+- **Компонент:** прошивка (`usb::exit_boot_services`), тесты S7-34 (срез C).
+- **Суть:** обработчик выхода из Boot Services (R/S = 0, HCH, HCRST, восстановление Command; [XHCI_DEVICE.md](specs/XHCI_DEVICE.md) 12.3) реализован в срезе A, но смоук `tests/system/firmware_xhci_smoke.py` только запускает приложение `ebs` с контроллером и не читает регистры модели после выхода: не проверены HCH = 1, DCBAAP = 0, CRR = 0, IMAN.IE = 0, неизменный BAR0 и отсутствие обращений модели к RAM гостя (`XhciHandle::ram_accesses`) после выхода; runner не выдаёт состояние контроллера в отчёте.
+- **Последствия:** регрессия обработчика (не вызван, ошибка сброса, контроллер продолжает DMA в освобождённые страницы) не будет замечена смоуком; сбой остановки печатается строкой `OD-FW xhci: stop at exit failed …`, но не проверяется.
+- **Статус:** закрыто в срезе C (2026-11-22). Модель получила `XhciHandle::snapshot` (регистры, PCI Command, BAR0, счётчик `ram_accesses`; тест `snapshot_reports_the_state_that_section_12_3_describes_after_hcrst`), runner печатает блок `xhci` отчёта (снимок в конце, счётчик на первой границе кванта после остановки), `firmware_xhci_smoke.py` на приложении `ebs` проверяет HCH = 1, R/S = 0, CRR = 0, DCBAAP = 0, ERSTBA = 0, IMAN.IE = 0, BAR0 без изменений, PCI Command восстановлен и `ram_accesses` на остановке равен конечному (371 обращение до остановки, после — ни одного); контроль — `hello` (выхода нет, контроллер работает). Оговорка: после выхода приложение `ebs` останавливает прогон сразу, поэтому «ни одного обращения» подтверждено счётчиком на коротком хвосте и тестом модели (остановленный контроллер не читает и не пишет RAM при doorbell и `service`), а не длительной работой гостя после выхода.
+- **Владелец и условие закрытия:** S7-34, срез C (обязательно, по пункту «Проверить» S7-34: «после EBS контроллер остановлен (регистры модели)»). Условие: смоук проверяет значения раздела 12.3 по регистрам модели и `ram_accesses` до и после выхода.
+
+### ISSUE-651. S11-41: линковка `AudioToolbox` из `libod_host.a` в Swift-цели не проверена
+
+- **Дата обнаружения:** 2026-11-22, при проверке S11-41 (`nm -A` на `target/debug/libod_host.a`).
+- **Компонент:** `crates/od-host/src/audio_output.rs`, [apps/Package.swift](../apps/Package.swift) (`od-vmhost`), `tests/cpu/stage3_harness.py` (список `-framework`).
+- **Суть:** `audio_output` объявляет `#[link(name = "AudioToolbox", kind = "framework")]` и `CoreFoundation`, но staticlib не передаёт их потребителю: Swift-цели перечисляют framework вручную, `AudioToolbox` в списках нет (`CoreFoundation` есть).
+- **Основание:** в debug-сборке ссылки на `_AudioComponentFindNext`, `_ExtAudioFileWrite` лежат в объектном файле только с символами `audio_output` (`nm -A`), и линковщик его не тянет, пока C ABI не использует звук. В release/LTO объект может слиться с другими; `swift build` и release-сборка с линковкой `od-vmhost` не запускались.
+- **Последствия:** возможна ошибка линковки (неопределённые символы) Swift/harness-целей после release-сборки `od-host`; в `cargo test` не проявляется.
+- **Статус:** открыта. **Следующий шаг:** при подключении вывода к VMHost (S11-04/S11-42) добавить `.linkedFramework("AudioToolbox")` в `od-vmhost` и `-framework AudioToolbox` в harness; до этого проверить `swift build -c release --product od-vmhost`.
+
+### ISSUE-652. S11-41: нет smoke-теста звука на VMHost, профиля `audio-test-tone`, измерения CPU и вывода на динамики
+
+- **Дата обнаружения:** 2026-11-22, при завершении S11-41.
+- **Компонент:** VMHost, `crates/od-host/src/audio_output.rs`, `tests/system/audio_offline_smoke.py` (не создан).
+- **Суть:** S11-41 проверен unit-тестами `od-host` (offline WAV, кольцо, ручной запуск Default Output на тишине); `audio_offline_smoke.py`, профиль VMHost `audio-test-tone`, 5 прогонов smoke, загрузка CPU VMHost при выводе и измерение задержки на реальном устройстве не сделаны: профиль требует режима VMHost S11-04, формат строки `STATS` не определён.
+- **Основание:** пункты «Сделать» и «Проверить» S11-41 в [STAGE_11.md](plans/STAGE_11.md) против фактического набора тестов; результаты — [AUDIO_DEVICE.md](specs/AUDIO_DEVICE.md) раздел 10.
+- **Последствия:** задержка кольца 16/4 блока подтверждена только имитацией двух потоков по 10 мс (10.2); реальный вывод не слышали.
+- **Статус:** открыта. **Следующий шаг:** после S11-04 добавить профиль и smoke, записать CPU и задержку устройства (S11-43 измеряет сквозную задержку).
+
+<a id="issue-656"></a>
+
+### ISSUE-656 — S8-21: блокировка файлового диска снимается между перезапусками прошивки
 
 - **Дата и компонент.** 2026-11-20, `tools/runner/src/firmware_boot.rs` (`boot-firmware --disk` вместе с `--nvram-reboot-out`).
 - **Основание.** Второй запуск прошивки открывает диск заново после `drop(board)` первого запуска, поэтому блокировка записи (`LOCK_EX`) между двумя запусками снимается. Ограничение описано в справке runner (`USAGE`). Найдено независимым ревью S8-21.
 - **Последствия.** В окне между запусками другой процесс может открыть тот же файл и записать в него; гарантия «файл заблокирован на время прогона» ([WINDOWS.md §12](testing/WINDOWS.md#12-файловый-диск-в-boot-firmware-s8-21)) действует только внутри одного запуска.
 - **Статус и следующий шаг.** Открыта. Не проверялось, что запись в окне действительно возможна: проверена только схема открытия по коду. Следующий шаг — держать блокировку и backend через перезапуск (S8-23, холодный перезапуск runner'ом).
 
-<a id="issue-606"></a>
+<a id="issue-657"></a>
 
-### ISSUE-606 — S8-21: runner не сообщает об отказе backend'а постоянного NVMe-диска
+### ISSUE-657 — S8-21: runner не сообщает об отказе backend'а постоянного NVMe-диска
 
 - **Дата и компонент.** 2026-11-20, `tools/runner` (`boot-firmware --disk`) и `crates/od-host/src/persistent_nvme.rs`.
 - **Основание.** `PersistentNvmeBackend` отдаёт `is_terminal_failed()` и `is_quarantined()`, но runner эти признаки не читает и не печатает (поиск по `tools/runner/src` совпадений не даёт). [NVME_DEVICE.md §14.3 и §14.4](specs/NVME_DEVICE.md#143-host-failure--guest-completion) требуют, чтобы образ после terminal failure или карантина не использовался до проверки; следующий запуск runner открывает такой образ как обычно. Найдено независимым ревью S8-21.
 - **Последствия.** Файл диска после отказа backend'а может содержать недописанные данные и быть принят за исправный в следующем прогоне.
 - **Статус и следующий шаг.** Открыта. Проверено чтением кода; прогона с отказом backend'а не было. Следующий шаг — сообщать признаки отказа в выводе и коде выхода runner и отказывать в открытии образа до проверки (компоненты runner и od-host; владелец — этап 5 по контракту backend'а, интеграция — S8-23).
 
-<a id="issue-607"></a>
+<a id="issue-658"></a>
 
-### ISSUE-607 — S8-22: порядок RunSynchronous и DiskConfiguration в windowsPE не подтверждён
+### ISSUE-658 — S8-22: порядок RunSynchronous и DiskConfiguration в windowsPE не подтверждён
 
 - **Дата и компонент.** 2026-11-20, `tools/build/make_windows_unattend.py` (проход windowsPE ответ-файла).
 - **Основание.** Справочник Microsoft описывает порядок только внутри `RunSynchronous` и то, что он идёт раньше `RunAsynchronous`; порядок `RunSynchronous` и `DiskConfiguration` внутри windowsPE в найденных страницах не описан. Это записано в docstring генератора.
 - **Последствия.** Если разметка выполняется раньше проверки размера диска, защита от стирания не того диска (`wpeutil shutdown` при несовпадении размера) не работает.
 - **Статус и следующий шаг.** Открыта. Владелец — этап 8. Проверить на S8-24 по `setupact.log` Windows Setup (порядок выполнения шагов); до проверки защита диска считается непроверенной, а целевым должен быть только пустой образ прогона.
 
-<a id="issue-608"></a>
+<a id="issue-659"></a>
 
-### ISSUE-608 — S8-12: NTFS средствами macOS не проверен
+### ISSUE-659 — S8-12: NTFS средствами macOS не проверен
 
 - **Дата и компонент.** 2026-11-20, `tests/compat/windows_collect_logs.py`.
 - **Основание.** Сборщик проверен на образе GPT+FAT: сбор, неизменность образа, идемпотентность. Монтирование NTFS средствами macOS (`diskutil mount readOnly`) на реальном образе Windows не проверялось; код выхода 3 («том не смонтирован») для этого случая реализован, но не наблюдался.
 - **Последствия.** Журналы целевого диска Windows (`Windows\Panther`, `setupapi`, дампы) могут не извлекаться; уровень 4 методики ([WINDOWS.md §1](testing/WINDOWS.md#1-уровни-доказательств)) для NTFS не подтверждён.
 - **Статус и следующий шаг.** Открыта. Проверить на реальном образе S7-32; при отказе macOS — гостевая запись журналов на FAT-диск полезной нагрузки (гостевая часть не реализована).
 
-<a id="issue-609"></a>
+<a id="issue-660"></a>
 
-### ISSUE-609 — S8-11: нет события exit_boot_services в журнале фаз
+### ISSUE-660 — S8-11: нет события exit_boot_services в журнале фаз
 
 - **Дата и компонент.** 2026-11-20, `tools/runner` (журнал фаз `--phase-log`) и прошивка (трасса вызова `ExitBootServices`).
 - **Основание.** Прошивка при вызове `ExitBootServices` ничего не пишет в COM1, а определять вызов по адресам или сигнатурам нельзя ([WINDOWS.md §16](testing/WINDOWS.md#16-журнал-фаз-и-дампы-экрана-s8-11), §4.4 плана этапа 8). План требует событие «первый вызов `ExitBootServices` по трассе прошивки» ([STAGE_8.md, S8-11 п. 2](plans/STAGE_8.md)); трассы нет, поэтому в журнале фаз события `exit_boot_services` нет. Найдено при приёмке S8-11.
 - **Последствия.** В журнале нельзя отделить фазу «прошивка» от фазы «загрузчик Windows»; при разборе сбоя ([WINDOWS.md §7](testing/WINDOWS.md#7-разбор-сбоев)) не видно, вызвал ли загрузчик `ExitBootServices` до остановки.
 - **Статус и следующий шаг.** Открыта. Проверено при S8-11 ([WINDOWS.md §16](testing/WINDOWS.md#16-журнал-фаз-и-дампы-экрана-s8-11)); прогона с `ExitBootServices` на Windows не было. Следующий шаг — строка COM1 в `exit_boot_services` прошивки (владелец — этап 7) и одна строка в таблице событий runner'а (этап 8).
 
-<a id="issue-610"></a>
+<a id="issue-661"></a>
 
-### ISSUE-610 — S8-11: кванты не режутся без ввода-вывода гостя, периодические дампы редки
+### ISSUE-661 — S8-11: кванты не режутся без ввода-вывода гостя, периодические дампы редки
 
 - **Дата и компонент.** 2026-11-20, `od-machine` (`run_boot_with_quantum_hook`) и `tools/runner` (`--framebuffer-every`).
 - **Основание.** Хук журнала вызывается только на границах квантов, а границы создают ввод-вывод гостя и бюджет; хук квант не режет ([WINDOWS.md §16](testing/WINDOWS.md#16-журнал-фаз-и-дампы-экрана-s8-11)). Границы в `boot-firmware` создают только запись в COM1, doorbell NVMe, чтение таймера ACPI PM и бюджет (`rdtsc_tick` и PIT включаются только при `linux_profile`, который runner `boot-firmware` не включает). Гость, который долго исполняет код без этих обращений, не даёт границ, и `--framebuffer-every` означает «не чаще чем раз в N виртуальных секунд», а не период. Запрос остановки через ACPI PM не граница кванта, а причина остановки прогона (хост-запроса остановки в `boot-firmware` нет); кадр на остановке снимается, только если он есть, новее записанного, пределы не превышены и не было ошибки записи кадра.
 - **Последствия.** На длинных участках кода без ввода-вывода дампов и событий журнала мало, точность событий хуже одного кванта; по каталогу прогона можно неверно определить, что было на экране перед остановкой. Кадр на остановке снимается, только если он есть, новее записанного и пределы дампов не превышены.
 - **Статус и следующий шаг.** Открыта. Проверено на тестовом госте и `--fv-app gop`; поведение на длинных прогонах (рост журнала, десятки тысяч границ) не измерялось. Следующий шаг — ограничивать длину кванта по виртуальному времени при включённом хуке (владелец — этап 4, API кванта; интеграция — этап 8), с проверкой, что отчёт прогона не меняется.
 
-### ISSUE-642 — S2-37: CVTPI2PS/CVTPI2PD с memory-источником не переводят x87 в MMX-состояние и не доставляют ожидающее x87-исключение на i5-3210M, SDM говорит иначе
+### ISSUE-662 — S2-37: CVTPI2PS/CVTPI2PD с memory-источником не переводят x87 в MMX-состояние и не доставляют ожидающее x87-исключение на i5-3210M, SDM говорит иначе
 
 - **Дата обнаружения:** 2026-11-21.
 - **Компонент:** `od-isa`, общее FP-ядро SSE (`step_sse_mmx_convert`), MMX-преобразования S2-37.

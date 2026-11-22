@@ -21,6 +21,22 @@ impl ActivePageTables {
         }
     }
 
+    /// Adds write permission to present leaves of `span`, keeping every other bit (NX included).
+    ///
+    /// # Safety
+    /// `span` passed `verify` under the same BSP guard; flush before relying on it.
+    #[cfg(any(target_os = "none", test))]
+    pub(crate) unsafe fn make_writable(&self, span: Range<u64>) {
+        for page in span.step_by(PAGE_BYTES as usize) {
+            let pte = unsafe { self.leaf(page, true) }.expect("preflighted image leaf");
+            let current = unsafe { pte.read_volatile() };
+            // The firmware profile of the CPU model has no read-modify-write `OR m64, imm8`: keep
+            // the new value in a register so that the store is a plain `MOV`.
+            let writable = core::hint::black_box(current | WRITABLE);
+            unsafe { pte.write_volatile(writable) };
+        }
+    }
+
     /// # Safety
     /// The arena must remain identity-mapped and reserved to firmware.
     pub(crate) unsafe fn verify(&self, span: Range<u64>, staging: bool) -> bool {

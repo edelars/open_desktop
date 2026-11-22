@@ -13,7 +13,7 @@
 3. Чекбокс `- [ ]` ставится в `- [x]` только после ревью по правилам `AGENTS.md`. Исполнитель сам чекбокс не отмечает; он добавляет строку **Текущий статус (дата):** с фактами и ссылками на коммит и отчёт.
 4. Слово «реализовано» означает: код есть, тесты проходят, ревью пройдено, отчёт записан. Слово «подготовлено» означает: есть документ или каркас без доказанного поведения. Не путать.
 5. Если в задаче сказано «blocked до X», а X не существует, задача не выполняется. Записать blocker в `KNOWN_ISSUES.md` только если это найденный дефект; будущую функциональность туда не писать.
-6. Пока в проекте нет загружающейся гостевой ОС (этапы 5, 7, 8 не начаты), единственные «машины», которые может запускать VMHost, — **test-only** профили дисплея этапа 10 без гостевого кода: `OD_DISPLAY_PROFILE_TEST_PATTERN` (1) и `OD_DISPLAY_PROFILE_TWO_SCREENS_TEST` (4) из [display_abi_v1.h](../../include/open_desktop/display_abi_v1.h). У них нет гостя, нет дисков и нет persistent root. Все проверки оболочки на них честно помечаются «на test-only профиле без гостя». Это не продуктовая VM.
+6. Пока в проекте нет загружающейся гостевой ОС (этапы 5, 7, 8 не начаты), единственные «машины», которые может запускать VMHost, — **test-only** профили дисплея этапа 10 без гостевого кода: `OD_DISPLAY_PROFILE_TEST_PATTERN` (1) и `OD_DISPLAY_PROFILE_TWO_SCREENS_TEST` (4) из [display_abi_v1.h](../../include/open_desktop/display_abi_v1.h) (профиль 2 OD_DISPLAY_PROFILE_STAGE10_PROBE — собственный probe без ОС, не продуктовая VM; VMHost этапа 11 его не использует). У них нет гостя, нет дисков и нет persistent root. Все проверки оболочки на них честно помечаются «на test-only профиле без гостя». Это не продуктовая VM.
 7. Durability: по [VM_STATE.md §3](../specs/VM_STATE.md) до закрытия ISSUE-055 (S9-06) все mutating операции VM и durable operation record недоступны, ответ — `unsupported_durability`. В этом плане это правило встроено в S11-03: остановка сессии test-only профиля без persistent root не является forced stop из §3.4 и под правило не попадает; любая операция над машиной с диском и guest `SHUTDOWN` отвечают `unsupported_durability` до S9-06; создание файлов bundle и диска durability **не заявляет**.
 8. Все пути ниже даны от корня репозитория. Команды выполнять из корня репозитория.
 
@@ -512,15 +512,15 @@
 
 ### S11-21. Устройство канала агента в `od-machine` и ABI
 
-- [ ] Принято после ревью. До начала: проверить статус S4-24 в [STAGE_4.md](STAGE_4.md); если она в работе — согласовать разделение (регистровая модель и IRQ — S4-24; второй экземпляр, RX FIFO и host-очереди — здесь) и записать в отчёт; иначе blocked.
-- **Где:** `docs/specs/AGENT_CHANNEL_DEVICE.md` (новый), `crates/od-machine/src/uart16550.rs` (второй экземпляр с параметрами порта, RX FIFO поверх существующей `inject_received_byte`; не копировать файл), `crates/od-machine/src/bus.rs` (привязка `0x2F8–0x2FF`), `crates/od-host/src/agent_abi_v1.rs` (новый), `include/open_desktop/agent_abi_v1.h`, `docs/specs/AGENT_HOST_ABI_V1.md`, раздел в [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md), строка «Диагностика» в [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) (один UART → два, второй — канал агента; только после ответа владельца в ADR-0007).
+- [ ] Принято после ревью. До начала: проверить статус S4-24 в [STAGE_4.md](STAGE_4.md); если она в работе — согласовать разделение (регистровая модель и IRQ — S4-24; второй экземпляр и ограниченные host-очереди RX/TX — здесь) и записать в отчёт; иначе blocked.
+- **Где:** `docs/specs/AGENT_CHANNEL_DEVICE.md` (новый), `crates/od-machine/src/uart16550.rs` (второй экземпляр с параметрами порта, ограниченная host-очередь RX поверх существующей `inject_received_byte`; не копировать файл), `crates/od-machine/src/bus.rs` (привязка `0x2F8–0x2FF`), `crates/od-machine/src/absent_ports.rs` и `crates/od-machine/src/firmware_board.rs` (снять `AbsentPortRegion::Uart2` на платах с COM2), `crates/od-host/src/agent_abi_v1.rs` (новый), `include/open_desktop/agent_abi_v1.h`, `docs/specs/AGENT_HOST_ABI_V1.md`, раздел в [MACHINE_CONTRACT.md](../specs/MACHINE_CONTRACT.md), строка «Диагностика» в [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) (один UART → два, второй — канал агента; только после ответа владельца в ADR-0007).
 - **Сделать:**
-  1. Контракт устройства: регистры подмножества 16550 (RBR/THR, IER без IRQ до APIC этапа 4, LSR с битами data ready/THR empty/overrun, LCR/DLL/DLM принимаются и игнорируются по записанному правилу), FIFO 16 байт с обеих сторон, host-очереди ограничены (число), переполнение — потеря байта со счётчиком и флагом LSR OE; классы ошибок как в [DISPLAY_DEVICE.md](../specs/DISPLAY_DEVICE.md).
+  1. Контракт устройства: регистры подмножества 16550 (RBR/THR, IER без IRQ до APIC этапа 4, LSR с битами data ready/THR empty (overrun — только если его введёт S4-24), LCR/DLL/DLM принимаются и игнорируются по записанному правилу), профиль 16450 без FIFO (ADR-0007 п.2), host-очереди ограничены (число), переполнение — потеря байта со счётчиком; LSR.OE — только через S4-24; классы ошибок как в [DISPLAY_DEVICE.md](../specs/DISPLAY_DEVICE.md).
   2. Привязка к сессии: канал принадлежит сессии `od-host`, которая исполняет гостевой код с шиной и устройствами (появляется в S10-09); ABI принимает handle этой сессии. До S10-09 ABI проверяется тестовым harness `od-host`, который строит шину с устройством без CPU (unit-уровень), и это записано.
   3. ABI: `od_agent_channel_read_v1(session, buf, len)` (байты гость → host, неблокирующий), `od_agent_channel_write_v1(session, buf, len)` (host → гость, возвращает принятое число байт), `od_agent_channel_stats_v1`; test-only `od_agent_channel_test_inject_v1` (байты «от гостя» без CPU) — помечен test-only в заголовке и документе; владение и потоки — явно.
-  4. Unit-тесты: регистры, FIFO, переполнение, запись в read-only, доступ неподдержанной ширины — `DeviceError`; тесты COM1 проходят без изменений.
-- **Проверить:** `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --offline`; `cargo test -p od-machine --offline`; `cargo test -p od-host --offline`; `python3 tools/check_layout.py` без новых ошибок.
-- **Готово:** VMHost может обмениваться байтами с гостевой стороной через устройство платы, как только появится сессия S10-09.
+  4. Unit-тесты: регистры, ограниченные host-очереди RX и TX, переполнение каждой (счётчик), запись в read-only, доступ неподдержанной ширины — `DeviceError`; тесты COM1 проходят без изменений; тесты S7-31j/k (`firmware_board.rs:8977-8981`, `:9022-9026`) обновлены под COM2, COM3/COM4 остаются absent.
+- **Проверить:** `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --offline`; `cargo test -p od-machine --offline` (включая обновлённые тесты S7-31j/k `firmware_board`); `cargo test -p od-host --offline`; `python3 tools/check_layout.py` без новых ошибок.
+- **Готово:** VMHost может обмениваться байтами с гостевой стороной через устройство платы, как только появится сессия S10-09; тесты S7-31j/k обновлены под COM2.
 - **Не делать:** не реализовывать IRQ (нет APIC); не делать «быстрый» транспорт заранее; не трогать семантику COM1; не менять плату без ответа владельца.
 
 ### S11-22. Сервис агента в VMHost: handshake, время, shutdown
@@ -649,7 +649,7 @@
 
 - [ ] Принято после ревью.
 - **Где:** `crates/od-host/src/nat/tcp.rs`, тесты.
-- **Сделать:** SYN → неблокирующий `connect()`, данные в обе стороны с окнами и буферами по лимитам, FIN/RST, повторные передачи по записанной политике; тесты: тестовый TCP-сервер на `127.0.0.1` → SYN от «гостя» → данные → эхо → FIN; RST при недоступном порте; переполнение буферов; сломанные сегменты.
+- **Сделать:** SYN → неблокирующий `connect()`, данные в обе стороны с окнами и буферами по лимитам, FIN/RST, повторные передачи по записанной политике; тесты: тестовый TCP-сервер на `127.0.0.1` → SYN от «гостя» → данные → эхо → FIN; RST при недоступном порте; переполнение буферов; сломанные сегменты; удалить временный счётчик `drop_unhandled_l4` (S11-31a) вместе с его веткой в `NatBackend::handle_frame` и тестами, если S11-31b и S11-31c уже закрыты (иначе это делает последняя из S11-31b–d).
 - **Проверить:** `cargo test -p od-host --offline`.
 - **Готово:** TCP работает для синтетических кадров.
 - **Не делать:** не открывать слушающие сокеты на host; не поднимать интерфейсы/`utun`.
@@ -696,10 +696,12 @@
 - **Готово:** S11-41 и S11-42 пишутся независимо.
 - **Не делать:** не писать аудиокод до решения; не выбирать AC'97 или VirtIO-sound без обоснования драйверами.
 
+- **Текущий статус (2026-11-22):** контракт написан в [docs/specs/AUDIO_DEVICE.md](../specs/AUDIO_DEVICE.md) (коммит `1fde12f`, правки ревью — коммит «S11-40 review fixes» той же ветки); класс (HDA-совместимый) выбран архитектурным ревью (Opus high, 2026-11-22); контракт ожидает ревью и подтверждения владельца, **не принят**. Плата не изменена: [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) сохраняет Audio в «Не включено» с пометкой; предлагаемая строка «Звук» — в §3 контракта. Место host-вывода — CoreAudio из Rust в `od-host` (предварительно, до замера S11-41).
+
 ### S11-41. Host backend звука с offline-проверкой
 
 - [ ] Принято после ревью.
-- **Где:** по решению S11-40: либо `apps/vmhost/Sources/AudioOutput.swift`, либо `crates/od-host/src/audio_output.rs`; test-only профиль `od-host` `audio-test-tone` (синусоида заданной частоты в кольцо), ABI чтения блоков (`include/open_desktop/audio_abi_v1.h`, `docs/specs/AUDIO_HOST_ABI_V1.md`), `tests/system/audio_offline_smoke.py`.
+- **Где:** по решению S11-40 (предварительно, [AUDIO_DEVICE.md](../specs/AUDIO_DEVICE.md) §6; ожидает подтверждения владельца): `crates/od-host/src/audio_output.rs`; test-only профиль `od-host` `audio-test-tone` (синусоида заданной частоты в кольцо), `tests/system/audio_offline_smoke.py`. ABI Rust ↔ Swift для данных звука не создаётся (ring-буфер и потребитель в одном crate).
 - **Сделать:**
   1. Вывод через системный API блоками ~10 мс из кольца; underrun → тишина, счётчик в `STATS`.
   2. Offline-режим: вместо устройства — запись в WAV-файл через системный API; smoke сравнивает частоту и амплитуду тона с допуском, записанным в `DESKTOP_APP.md` вместе с причиной.

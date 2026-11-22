@@ -114,6 +114,59 @@ fn ek_uses_eps_and_the_exact_template_across_auth_change_clear_and_restore() {
     assert_ne!(recreate_ek(&mut other_tpm, b"", &templates[1]), expected[1]);
 }
 
+/// The snapshot of `version` (3 through 8) that the writer of that version produced for the same
+/// state, cut from a current snapshot of a TPM without NV indices, persistent objects or primary
+/// policies: each later version only appended fields (the NULL policies of v4, `totalResetCount`
+/// of v5, the PCR allocation of v6, the establishment flag of v7, the seed tails of v8).
+fn snapshot_as_version(current: &[u8], version: u16) -> Vec<u8> {
+    let payload = &current[16..current.len() - 32];
+    let appended = match version {
+        8 => 0,
+        7 => 96,
+        6 => 96 + 1,
+        5 => 96 + 1 + 1,
+        4 => 96 + 1 + 1 + 8,
+        3 => 96 + 1 + 1 + 8 + 6,
+        _ => unreachable!(),
+    };
+    let body = &payload[..payload.len() - appended];
+    let mut bytes = b"ODTPMSTA".to_vec();
+    bytes.extend_from_slice(&version.to_be_bytes());
+    bytes.extend_from_slice(&[0; 2]);
+    bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(body);
+    bytes.extend_from_slice(&Sha256::digest(body));
+    bytes
+}
+
+#[test]
+fn old_snapshot_versions_migrate_to_the_current_one_and_keep_the_ek() {
+    // ADR-0009, decision 6: every readable version is restored, saved again as the current one and
+    // restored once more; the EK of template L-1 is the same before and after.
+    let current = tpm_new().persistent_snapshot();
+    assert_eq!(current[8..10], crate::SNAPSHOT_VERSION.to_be_bytes());
+    let template = LowRangeEk::Rsa2048.template();
+    for version in 3..=7 {
+        let old = snapshot_as_version(&current, version);
+        assert_eq!(old[8..10], version.to_be_bytes());
+        let mut first = Tpm::restore(&old, &[6; 48]).unwrap();
+        let migrated = first.persistent_snapshot();
+        assert_eq!(
+            migrated[8..10],
+            crate::SNAPSHOT_VERSION.to_be_bytes(),
+            "v{version}"
+        );
+        // Written only as the current version, and stable: a second round changes nothing.
+        let mut second = Tpm::restore(&migrated, &[7; 48]).unwrap();
+        assert_eq!(second.persistent_snapshot(), migrated, "v{version}");
+        startup(&mut first, 0);
+        startup(&mut second, 0);
+        let before = recreate_ek(&mut first, b"", &template);
+        let after = recreate_ek(&mut second, b"", &template);
+        assert_eq!(before, after, "v{version}");
+    }
+}
+
 #[test]
 fn ek_certificate_nv_indices_are_opt_in_platform_storage() {
     const PLATFORM: u32 = handle::RH_PLATFORM;

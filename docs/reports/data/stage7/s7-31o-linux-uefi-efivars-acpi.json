@@ -1,0 +1,747 @@
+{
+  "inputs": {
+    "cmdline": "console=ttyS0 initrd=\\EFI\\BOOT\\INITRD.IMG od.nonce=od7s31adiagnostic0001",
+    "firmware_rom_sha256": "fb4b56989b3d4b734e0d280a003fd461b5581b6e36068ce351c817259ee9e979",
+    "initramfs_sha256": "b88cd99616611124e4616aea4274d49b4bb48bf421ae798215390e251a499ac9",
+    "nvram_seed_sha256": "f7b6171c32fd268f2b34b144f097967c1abb8b00e1cc3ae1ac7bc119f5d365fb",
+    "nvram_seed_variables": [
+      "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+      "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+      "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15 (u32 = 3)"
+    ],
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "s7_31o_note": "dmesg_rtc_lines added after the measurement by m.analyse() over the saved COM1 logs of the first run of each variant (sha256 checked equal to com1_sha256); later runs of the script write the field themselves",
+  "schema": "od-s7-31o-efivars-acpi-v2",
+  "variants": {
+    "rebased": {
+      "dmesg_acpi_error_lines": [
+        "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_ae_lines": [
+        "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_errors_level_0_to_3": [
+        "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+        "<3>[    0.000000] CPU: Your system may be unstable.",
+        "<3>[    0.023518] KHO: Failed to reserve lowmem scratch buffer",
+        "<3>[    1.181143] mce: Unable to init MCE device (rc: -5)",
+        "<3>[    1.181349] microcode: no support for this CPU vendor"
+      ],
+      "dmesg_rtc_lines": [
+        "<6>[    0.584372] PM: RTC time: 00:00:02, date: 2024-01-01",
+        "<6>[    1.173423] rtc_cmos 00:01: registered as rtc0",
+        "<6>[    1.173458] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+        "<6>[    1.173462] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+      ],
+      "dmesg_warnings_level_4": [
+        "<4>[    0.023551] KHO: Failed to reserve scratch area, disabling kexec handover",
+        "<4>[    0.438887] ACPI: setting ELCR to 0200 (from 0000)"
+      ],
+      "efivars_names": [
+        "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+        "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+        "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+      ],
+      "esp_sha256": "7625d0450b8dc6597f4d7b17752acdb80a36fa86df6cff35542823bde79063a8",
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "com1_bytes": 61119,
+          "com1_last_line": "[    1.690867] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---",
+          "com1_sha256": "360f3c113a12b909801877316566443b88869a31a93bc7eb546ee0be870f6b89",
+          "console_acpi_error_lines": [
+            "[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "console_acpi_lines_total": 92,
+          "cpl3_retired": 190,
+          "dmesg_acpi_error_lines": [
+            "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "dmesg_acpi_lines": [
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000e0000-0x00000000000eefff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000ef000-0x00000000000effff]  ACPI NVS",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f0b000-0x0000000007f0bfff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f7c000-0x0000000007f7cfff]  ACPI data",
+            "<6>[    0.000000] efi: ACPI 2.0=0xe0000 SMBIOS 3.0=0x7f7c000 RTPROP=0x7f7e0fc INITRD=0x7f0c028 ",
+            "<6>[    0.017531] ACPI: Early table checksum verification disabled",
+            "<6>[    0.017546] ACPI: RSDP 0x00000000000E0000 000024 (v02 OPNDSK)",
+            "<6>[    0.017559] ACPI: XSDT 0x00000000000E0340 00003C (v01 OPNDSK ODFWXSDT 00000001 ODFW 00000001)",
+            "<6>[    0.017577] ACPI: FACP 0x00000000000E01E0 000114 (v06 OPNDSK ODFWFACP 00000001 ODFW 00000001)",
+            "<6>[    0.017598] ACPI: DSDT 0x00000000000E0040 000135 (v02 OPNDSK ODFWDSDT 00000001 ODFW 00000001)",
+            "<6>[    0.017621] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.017638] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.017654] ACPI: APIC 0x00000000000E0180 000054 (v05 OPNDSK ODFWAPIC 00000001 ODFW 00000001)",
+            "<6>[    0.017675] ACPI: MCFG 0x00000000000E0300 00003C (v01 OPNDSK ODFWMCFG 00000001 ODFW 00000001)",
+            "<6>[    0.017695] ACPI: Reserving FACP table memory at [mem 0xe01e0-0xe02f3]",
+            "<6>[    0.017700] ACPI: Reserving DSDT table memory at [mem 0xe0040-0xe0174]",
+            "<6>[    0.017707] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.017714] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.017720] ACPI: Reserving APIC table memory at [mem 0xe0180-0xe01d3]",
+            "<6>[    0.017727] ACPI: Reserving MCFG table memory at [mem 0xe0300-0xe033b]",
+            "<6>[    0.018546] ACPI: PM-Timer IO Port: 0x608",
+            "<6>[    0.437300] ACPI: Core revision 20251212",
+            "<4>[    0.438887] ACPI: setting ELCR to 0200 (from 0000)",
+            "<6>[    0.576728] ACPI: PM: Registering ACPI NVS region [mem 0x000ef000-0x000effff] (4096 bytes)",
+            "<6>[    0.592457] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5",
+            "<6>[    0.707248] ACPI: Added _OSI(Module Device)",
+            "<6>[    0.707269] ACPI: Added _OSI(Processor Device)",
+            "<6>[    0.707274] ACPI: Added _OSI(Processor Aggregator Device)",
+            "<6>[    0.707441] ACPI: 1 ACPI AML tables successfully acquired and loaded",
+            "<6>[    0.712214] ACPI: \\_SB_: platform _OSC: OS support mask [006e7eff]",
+            "<6>[    0.712361] ACPI: Interpreter enabled",
+            "<6>[    0.712611] ACPI: PM: (supports S0 S5)",
+            "<6>[    0.712642] ACPI: Using PIC for interrupt routing",
+            "<6>[    0.712646] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug",
+            "<6>[    0.718672] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00])",
+            "<6>[    0.718750] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI EDR HPX-Type3]",
+            "<6>[    0.718765] acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.718787] acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.729145] ACPI: bus type USB registered",
+            "<6>[    0.736575] PCI: Using ACPI for IRQ routing",
+            "<6>[    0.758249] acpi PNP0C02:00: Reserved [mem 0xfc100000-0xfc1fffff]",
+            "<6>[    0.758303] pnp: PnP ACPI init",
+            "<6>[    0.758356] pnp: PnP ACPI: found 2 devices",
+            "<6>[    0.797679] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns",
+            "<6>[    1.171138] ACPI: bus type drm_connector registered"
+          ],
+          "dmesg_lines": 386,
+          "dmesg_rtc_lines": [
+            "<6>[    0.584372] PM: RTC time: 00:00:02, date: 2024-01-01",
+            "<6>[    1.173423] rtc_cmos 00:01: registered as rtc0",
+            "<6>[    1.173458] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+            "<6>[    1.173462] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+          ],
+          "dmesg_severity": {
+            "ae_lines": [
+              "<6>[    0.718799] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+            ],
+            "errors_level_0_to_3": [
+              "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+              "<3>[    0.000000] CPU: Your system may be unstable.",
+              "<3>[    0.023518] KHO: Failed to reserve lowmem scratch buffer",
+              "<3>[    1.181143] mce: Unable to init MCE device (rc: -5)",
+              "<3>[    1.181349] microcode: no support for this CPU vendor"
+            ],
+            "levels": {
+              "3": 5,
+              "4": 2,
+              "5": 33,
+              "6": 332,
+              "7": 14
+            },
+            "warnings_level_4": [
+              "<4>[    0.023551] KHO: Failed to reserve scratch area, disabling kexec handover",
+              "<4>[    0.438887] ACPI: setting ELCR to 0200 (from 0000)"
+            ]
+          },
+          "efivarfs_mounted": true,
+          "efivars_names": [
+            "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+            "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+            "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+          ],
+          "exit": "budget_exhausted",
+          "exit_detail": "BudgetExhausted",
+          "markers": {
+            "OD_S7_31N_BEGIN": true,
+            "OD_S7_31N_DMESG_BEGIN": true,
+            "OD_S7_31N_DMESG_END": true,
+            "OD_S7_31N_EFIVARFS_MOUNT_FAIL": false,
+            "OD_S7_31N_EFIVARFS_MOUNT_OK": true,
+            "OD_S7_31N_EFIVARS_BEGIN": true,
+            "OD_S7_31N_EFIVARS_END": true,
+            "OD_S7_31N_END": true
+          },
+          "nvram_snapshot_sha256": "74e0ae4a182cad0492e0501f594df4c3f27ec01384728c1ed66f90537afc6e4c",
+          "quanta": 156454832,
+          "retired": 6000000000,
+          "rip": "0xffffffff9c84e139",
+          "runner_exit_code": 5,
+          "variables": {
+            "BOOT0001": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 224,
+              "dumped": true,
+              "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "value_ok": true
+            },
+            "BOOTORDER": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 6,
+              "dumped": true,
+              "expected_value_hex": "0100",
+              "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "0100",
+              "value_ok": true
+            },
+            "ODBOOTCOUNT": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 8,
+              "dumped": true,
+              "expected_value_hex": "03000000",
+              "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+              "value_hex": "03000000",
+              "value_ok": true
+            }
+          }
+        },
+        {
+          "com1_sha256": "360f3c113a12b909801877316566443b88869a31a93bc7eb546ee0be870f6b89",
+          "exit": "budget_exhausted",
+          "retired": 6000000000,
+          "rip": "0xffffffff9c84e139"
+        }
+      ],
+      "variables": {
+        "BOOT0001": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 224,
+          "dumped": true,
+          "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "value_ok": true
+        },
+        "BOOTORDER": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 6,
+          "dumped": true,
+          "expected_value_hex": "0100",
+          "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "0100",
+          "value_ok": true
+        },
+        "ODBOOTCOUNT": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 8,
+          "dumped": true,
+          "expected_value_hex": "03000000",
+          "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+          "value_hex": "03000000",
+          "value_ok": true
+        }
+      },
+      "variant_file_sha256": "6edb37f06ab7af065fc852db05b243d3ef3357b246837c1c75423fc51c2bf63c"
+    },
+    "rebased-hdr": {
+      "dmesg_acpi_error_lines": [
+        "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_ae_lines": [
+        "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_errors_level_0_to_3": [
+        "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+        "<3>[    0.000000] CPU: Your system may be unstable.",
+        "<3>[    0.023490] KHO: Failed to reserve lowmem scratch buffer",
+        "<3>[    1.181536] mce: Unable to init MCE device (rc: -5)",
+        "<3>[    1.181766] microcode: no support for this CPU vendor"
+      ],
+      "dmesg_rtc_lines": [
+        "<6>[    0.584451] PM: RTC time: 00:00:02, date: 2024-01-01",
+        "<6>[    1.173821] rtc_cmos 00:01: registered as rtc0",
+        "<6>[    1.173856] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+        "<6>[    1.173860] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+      ],
+      "dmesg_warnings_level_4": [
+        "<4>[    0.023523] KHO: Failed to reserve scratch area, disabling kexec handover",
+        "<4>[    0.438876] ACPI: setting ELCR to 0200 (from 0000)"
+      ],
+      "efivars_names": [
+        "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+        "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+        "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+      ],
+      "esp_sha256": "8b3ccfc6390087f1672106df2d86f6b2ec7f5c7486e02e47a144e6352f6d067c",
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "com1_bytes": 61482,
+          "com1_last_line": "[    1.691435] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---",
+          "com1_sha256": "0121cce421888f2a32b603df0bb51c27c6e24066321ea1af79e3ccae5bee0c99",
+          "console_acpi_error_lines": [
+            "[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "console_acpi_lines_total": 92,
+          "cpl3_retired": 190,
+          "dmesg_acpi_error_lines": [
+            "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "dmesg_acpi_lines": [
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000e0000-0x00000000000eefff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000ef000-0x00000000000effff]  ACPI NVS",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f0b000-0x0000000007f0bfff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f7c000-0x0000000007f7cfff]  ACPI data",
+            "<6>[    0.000000] efi: ACPI 2.0=0xe0000 SMBIOS 3.0=0x7f7c000 RTPROP=0x7f7e0fc INITRD=0x7f0c028 ",
+            "<6>[    0.017503] ACPI: Early table checksum verification disabled",
+            "<6>[    0.017518] ACPI: RSDP 0x00000000000E0000 000024 (v02 OPNDSK)",
+            "<6>[    0.017531] ACPI: XSDT 0x00000000000E0340 00003C (v01 OPNDSK ODFWXSDT 00000001 ODFW 00000001)",
+            "<6>[    0.017549] ACPI: FACP 0x00000000000E01E0 000114 (v06 OPNDSK ODFWFACP 00000001 ODFW 00000001)",
+            "<6>[    0.017569] ACPI: DSDT 0x00000000000E0040 000135 (v02 OPNDSK ODFWDSDT 00000001 ODFW 00000001)",
+            "<6>[    0.017593] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.017610] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.017626] ACPI: APIC 0x00000000000E0180 000054 (v05 OPNDSK ODFWAPIC 00000001 ODFW 00000001)",
+            "<6>[    0.017646] ACPI: MCFG 0x00000000000E0300 00003C (v01 OPNDSK ODFWMCFG 00000001 ODFW 00000001)",
+            "<6>[    0.017667] ACPI: Reserving FACP table memory at [mem 0xe01e0-0xe02f3]",
+            "<6>[    0.017672] ACPI: Reserving DSDT table memory at [mem 0xe0040-0xe0174]",
+            "<6>[    0.017679] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.017686] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.017692] ACPI: Reserving APIC table memory at [mem 0xe0180-0xe01d3]",
+            "<6>[    0.017699] ACPI: Reserving MCFG table memory at [mem 0xe0300-0xe033b]",
+            "<6>[    0.018518] ACPI: PM-Timer IO Port: 0x608",
+            "<6>[    0.437190] ACPI: Core revision 20251212",
+            "<4>[    0.438876] ACPI: setting ELCR to 0200 (from 0000)",
+            "<6>[    0.576782] ACPI: PM: Registering ACPI NVS region [mem 0x000ef000-0x000effff] (4096 bytes)",
+            "<6>[    0.592408] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5",
+            "<6>[    0.711307] ACPI: Added _OSI(Module Device)",
+            "<6>[    0.711328] ACPI: Added _OSI(Processor Device)",
+            "<6>[    0.711334] ACPI: Added _OSI(Processor Aggregator Device)",
+            "<6>[    0.711562] ACPI: 1 ACPI AML tables successfully acquired and loaded",
+            "<6>[    0.714201] ACPI: \\_SB_: platform _OSC: OS support mask [006e7eff]",
+            "<6>[    0.714279] ACPI: Interpreter enabled",
+            "<6>[    0.714530] ACPI: PM: (supports S0 S5)",
+            "<6>[    0.714561] ACPI: Using PIC for interrupt routing",
+            "<6>[    0.714616] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug",
+            "<6>[    0.720693] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00])",
+            "<6>[    0.720728] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI EDR HPX-Type3]",
+            "<6>[    0.720743] acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.720766] acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.731131] ACPI: bus type USB registered",
+            "<6>[    0.738189] PCI: Using ACPI for IRQ routing",
+            "<6>[    0.757217] acpi PNP0C02:00: Reserved [mem 0xfc100000-0xfc1fffff]",
+            "<6>[    0.757271] pnp: PnP ACPI init",
+            "<6>[    0.761506] pnp: PnP ACPI: found 2 devices",
+            "<6>[    0.797073] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns",
+            "<6>[    1.171646] ACPI: bus type drm_connector registered"
+          ],
+          "dmesg_lines": 386,
+          "dmesg_rtc_lines": [
+            "<6>[    0.584451] PM: RTC time: 00:00:02, date: 2024-01-01",
+            "<6>[    1.173821] rtc_cmos 00:01: registered as rtc0",
+            "<6>[    1.173856] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+            "<6>[    1.173860] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+          ],
+          "dmesg_severity": {
+            "ae_lines": [
+              "<6>[    0.720778] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+            ],
+            "errors_level_0_to_3": [
+              "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+              "<3>[    0.000000] CPU: Your system may be unstable.",
+              "<3>[    0.023490] KHO: Failed to reserve lowmem scratch buffer",
+              "<3>[    1.181536] mce: Unable to init MCE device (rc: -5)",
+              "<3>[    1.181766] microcode: no support for this CPU vendor"
+            ],
+            "levels": {
+              "3": 5,
+              "4": 2,
+              "5": 33,
+              "6": 332,
+              "7": 14
+            },
+            "warnings_level_4": [
+              "<4>[    0.023523] KHO: Failed to reserve scratch area, disabling kexec handover",
+              "<4>[    0.438876] ACPI: setting ELCR to 0200 (from 0000)"
+            ]
+          },
+          "efivarfs_mounted": true,
+          "efivars_names": [
+            "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+            "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+            "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+          ],
+          "exit": "budget_exhausted",
+          "exit_detail": "BudgetExhausted",
+          "markers": {
+            "OD_S7_31N_BEGIN": true,
+            "OD_S7_31N_DMESG_BEGIN": true,
+            "OD_S7_31N_DMESG_END": true,
+            "OD_S7_31N_EFIVARFS_MOUNT_FAIL": false,
+            "OD_S7_31N_EFIVARFS_MOUNT_OK": true,
+            "OD_S7_31N_EFIVARS_BEGIN": true,
+            "OD_S7_31N_EFIVARS_END": true,
+            "OD_S7_31N_END": true
+          },
+          "nvram_snapshot_sha256": "74e0ae4a182cad0492e0501f594df4c3f27ec01384728c1ed66f90537afc6e4c",
+          "quanta": 156432649,
+          "retired": 6000000000,
+          "rip": "0xffffffffb4f75d71",
+          "runner_exit_code": 5,
+          "variables": {
+            "BOOT0001": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 224,
+              "dumped": true,
+              "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "value_ok": true
+            },
+            "BOOTORDER": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 6,
+              "dumped": true,
+              "expected_value_hex": "0100",
+              "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "0100",
+              "value_ok": true
+            },
+            "ODBOOTCOUNT": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 8,
+              "dumped": true,
+              "expected_value_hex": "03000000",
+              "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+              "value_hex": "03000000",
+              "value_ok": true
+            }
+          }
+        },
+        {
+          "com1_sha256": "0121cce421888f2a32b603df0bb51c27c6e24066321ea1af79e3ccae5bee0c99",
+          "exit": "budget_exhausted",
+          "retired": 6000000000,
+          "rip": "0xffffffffb4f75d71"
+        }
+      ],
+      "variables": {
+        "BOOT0001": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 224,
+          "dumped": true,
+          "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "value_ok": true
+        },
+        "BOOTORDER": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 6,
+          "dumped": true,
+          "expected_value_hex": "0100",
+          "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "0100",
+          "value_ok": true
+        },
+        "ODBOOTCOUNT": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 8,
+          "dumped": true,
+          "expected_value_hex": "03000000",
+          "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+          "value_hex": "03000000",
+          "value_ok": true
+        }
+      },
+      "variant_file_sha256": "08274984c35fd60dce78c001b62aa84cca4504d0bb9972169a5183cc2bd7f70f"
+    },
+    "stock": {
+      "dmesg_acpi_error_lines": [
+        "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_ae_lines": [
+        "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+      ],
+      "dmesg_errors_level_0_to_3": [
+        "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+        "<3>[    0.000000] CPU: Your system may be unstable.",
+        "<3>[    0.024182] KHO: Failed to reserve lowmem scratch buffer",
+        "<3>[    1.182095] mce: Unable to init MCE device (rc: -5)",
+        "<3>[    1.182301] microcode: no support for this CPU vendor"
+      ],
+      "dmesg_rtc_lines": [
+        "<6>[    0.585073] PM: RTC time: 00:00:02, date: 2024-01-01",
+        "<6>[    1.174388] rtc_cmos 00:01: registered as rtc0",
+        "<6>[    1.174423] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+        "<6>[    1.174572] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+      ],
+      "dmesg_warnings_level_4": [
+        "<4>[    0.024215] KHO: Failed to reserve scratch area, disabling kexec handover",
+        "<4>[    0.439751] ACPI: setting ELCR to 0200 (from 0000)"
+      ],
+      "efivars_names": [
+        "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+        "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+        "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+        "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+      ],
+      "esp_sha256": "0ed612b4a46cb2bc0ed406fd84e1a907f59dd826db8d323dc8a608ff842485b6",
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "com1_bytes": 61955,
+          "com1_last_line": "[    1.692484] ---[ end Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000 ]---",
+          "com1_sha256": "bc6f0e3ae831893dd6d48a933167e4e597ed2d39a86488b970f13cc32f2329a2",
+          "console_acpi_error_lines": [
+            "[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "console_acpi_lines_total": 92,
+          "cpl3_retired": 190,
+          "dmesg_acpi_error_lines": [
+            "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+          ],
+          "dmesg_acpi_lines": [
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000e0000-0x00000000000eefff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x00000000000ef000-0x00000000000effff]  ACPI NVS",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f0b000-0x0000000007f0bfff]  ACPI data",
+            "<6>[    0.000000] BIOS-e820: [mem 0x0000000007f7c000-0x0000000007f7cfff]  ACPI data",
+            "<6>[    0.000000] efi: ACPI 2.0=0xe0000 SMBIOS 3.0=0x7f7c000 RTPROP=0x7f7e0fc INITRD=0x7f0c028 ",
+            "<6>[    0.018196] ACPI: Early table checksum verification disabled",
+            "<6>[    0.018210] ACPI: RSDP 0x00000000000E0000 000024 (v02 OPNDSK)",
+            "<6>[    0.018223] ACPI: XSDT 0x00000000000E0340 00003C (v01 OPNDSK ODFWXSDT 00000001 ODFW 00000001)",
+            "<6>[    0.018241] ACPI: FACP 0x00000000000E01E0 000114 (v06 OPNDSK ODFWFACP 00000001 ODFW 00000001)",
+            "<6>[    0.018262] ACPI: DSDT 0x00000000000E0040 000135 (v02 OPNDSK ODFWDSDT 00000001 ODFW 00000001)",
+            "<6>[    0.018285] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.018302] ACPI: FACS 0x00000000000EF000 000040",
+            "<6>[    0.018318] ACPI: APIC 0x00000000000E0180 000054 (v05 OPNDSK ODFWAPIC 00000001 ODFW 00000001)",
+            "<6>[    0.018339] ACPI: MCFG 0x00000000000E0300 00003C (v01 OPNDSK ODFWMCFG 00000001 ODFW 00000001)",
+            "<6>[    0.018359] ACPI: Reserving FACP table memory at [mem 0xe01e0-0xe02f3]",
+            "<6>[    0.018364] ACPI: Reserving DSDT table memory at [mem 0xe0040-0xe0174]",
+            "<6>[    0.018371] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.018378] ACPI: Reserving FACS table memory at [mem 0xef000-0xef03f]",
+            "<6>[    0.018385] ACPI: Reserving APIC table memory at [mem 0xe0180-0xe01d3]",
+            "<6>[    0.018391] ACPI: Reserving MCFG table memory at [mem 0xe0300-0xe033b]",
+            "<6>[    0.019210] ACPI: PM-Timer IO Port: 0x608",
+            "<6>[    0.437967] ACPI: Core revision 20251212",
+            "<4>[    0.439751] ACPI: setting ELCR to 0200 (from 0000)",
+            "<6>[    0.577484] ACPI: PM: Registering ACPI NVS region [mem 0x000ef000-0x000effff] (4096 bytes)",
+            "<6>[    0.593228] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5",
+            "<6>[    0.710499] ACPI: Added _OSI(Module Device)",
+            "<6>[    0.710520] ACPI: Added _OSI(Processor Device)",
+            "<6>[    0.710525] ACPI: Added _OSI(Processor Aggregator Device)",
+            "<6>[    0.714962] ACPI: 1 ACPI AML tables successfully acquired and loaded",
+            "<6>[    0.715388] ACPI: \\_SB_: platform _OSC: OS support mask [006e7eff]",
+            "<6>[    0.715553] ACPI: Interpreter enabled",
+            "<6>[    0.715776] ACPI: PM: (supports S0 S5)",
+            "<6>[    0.715807] ACPI: Using PIC for interrupt routing",
+            "<6>[    0.715811] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug",
+            "<6>[    0.723962] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00])",
+            "<6>[    0.723974] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI EDR HPX-Type3]",
+            "<6>[    0.723988] acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.724011] acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug SHPCHotplug PME AER PCIeCapability LTR DPC]",
+            "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)",
+            "<6>[    0.732341] ACPI: bus type USB registered",
+            "<6>[    0.743140] PCI: Using ACPI for IRQ routing",
+            "<6>[    0.763378] acpi PNP0C02:00: Reserved [mem 0xfc100000-0xfc1fffff]",
+            "<6>[    0.763432] pnp: PnP ACPI init",
+            "<6>[    0.767498] pnp: PnP ACPI: found 2 devices",
+            "<6>[    0.802499] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns",
+            "<6>[    1.172211] ACPI: bus type drm_connector registered"
+          ],
+          "dmesg_lines": 386,
+          "dmesg_rtc_lines": [
+            "<6>[    0.585073] PM: RTC time: 00:00:02, date: 2024-01-01",
+            "<6>[    1.174388] rtc_cmos 00:01: registered as rtc0",
+            "<6>[    1.174423] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+            "<6>[    1.174572] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+          ],
+          "dmesg_severity": {
+            "ae_lines": [
+              "<6>[    0.724023] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+            ],
+            "errors_level_0_to_3": [
+              "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+              "<3>[    0.000000] CPU: Your system may be unstable.",
+              "<3>[    0.024182] KHO: Failed to reserve lowmem scratch buffer",
+              "<3>[    1.182095] mce: Unable to init MCE device (rc: -5)",
+              "<3>[    1.182301] microcode: no support for this CPU vendor"
+            ],
+            "levels": {
+              "3": 5,
+              "4": 2,
+              "5": 33,
+              "6": 332,
+              "7": 14
+            },
+            "warnings_level_4": [
+              "<4>[    0.024215] KHO: Failed to reserve scratch area, disabling kexec handover",
+              "<4>[    0.439751] ACPI: setting ELCR to 0200 (from 0000)"
+            ]
+          },
+          "efivarfs_mounted": true,
+          "efivars_names": [
+            "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+            "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+            "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+          ],
+          "exit": "budget_exhausted",
+          "exit_detail": "BudgetExhausted",
+          "markers": {
+            "OD_S7_31N_BEGIN": true,
+            "OD_S7_31N_DMESG_BEGIN": true,
+            "OD_S7_31N_DMESG_END": true,
+            "OD_S7_31N_EFIVARFS_MOUNT_FAIL": false,
+            "OD_S7_31N_EFIVARFS_MOUNT_OK": true,
+            "OD_S7_31N_EFIVARS_BEGIN": true,
+            "OD_S7_31N_EFIVARS_END": true,
+            "OD_S7_31N_END": true
+          },
+          "nvram_snapshot_sha256": "74e0ae4a182cad0492e0501f594df4c3f27ec01384728c1ed66f90537afc6e4c",
+          "quanta": 156380310,
+          "retired": 6000000000,
+          "rip": "0xffffffff9c31b359",
+          "runner_exit_code": 5,
+          "variables": {
+            "BOOT0001": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 224,
+              "dumped": true,
+              "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+              "value_ok": true
+            },
+            "BOOTORDER": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 6,
+              "dumped": true,
+              "expected_value_hex": "0100",
+              "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+              "value_hex": "0100",
+              "value_ok": true
+            },
+            "ODBOOTCOUNT": {
+              "attributes": "0x00000007",
+              "attributes_ok": true,
+              "bytes": 8,
+              "dumped": true,
+              "expected_value_hex": "03000000",
+              "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+              "value_hex": "03000000",
+              "value_ok": true
+            }
+          }
+        },
+        {
+          "com1_sha256": "bc6f0e3ae831893dd6d48a933167e4e597ed2d39a86488b970f13cc32f2329a2",
+          "exit": "budget_exhausted",
+          "retired": 6000000000,
+          "rip": "0xffffffff9c31b359"
+        }
+      ],
+      "variables": {
+        "BOOT0001": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 224,
+          "dumped": true,
+          "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+          "value_ok": true
+        },
+        "BOOTORDER": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 6,
+          "dumped": true,
+          "expected_value_hex": "0100",
+          "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "value_hex": "0100",
+          "value_ok": true
+        },
+        "ODBOOTCOUNT": {
+          "attributes": "0x00000007",
+          "attributes_ok": true,
+          "bytes": 8,
+          "dumped": true,
+          "expected_value_hex": "03000000",
+          "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+          "value_hex": "03000000",
+          "value_ok": true
+        }
+      },
+      "variant_file_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  }
+}

@@ -3088,6 +3088,21 @@ pub enum Operation {
     FldcwM16Rax,
     /// Bare `DD 38` FNSTSW m2byte at [RAX], preserving the x87 snapshot.
     FnstswM16Rax,
+    /// S7-31i: `0F AE /2` LDMXCSR m32 (no prefix, memory operand only). Executed only in the FP member
+    /// of the CPL0 set, over a CPUID profile that declares SSE.
+    LdmxcsrMemory {
+        source: MemoryOperand,
+    },
+    /// S7-31d: `DD /7` FNSTSW m2byte with any memory operand other than the exact `[RAX]` form
+    /// (no prefix). Executed only in the CPL0 profile set that owns the FP state.
+    FnstswM16 {
+        destination: MemoryOperand,
+    },
+    /// S7-31d: `D9 /7` FNSTCW m2byte with any memory operand other than the exact `[RAX]` form
+    /// (no prefix). Executed only in the CPL0 profile set that owns the FP state.
+    FnstcwM16 {
+        destination: MemoryOperand,
+    },
     /// Bare `DD 18` FSTP m64fp at [RAX], bounded finite profile.
     FstpM64FpRax,
     /// Bare `DD C0..C7` FFREE ST(i), marking one indexed physical cell Empty.
@@ -9735,6 +9750,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::FnsaveRax
                 } else if modrm == 0x20 {
                     Operation::FrstorRax
+                } else if modrm >> 6 != 3 && (modrm >> 3) & 7 == 7 {
+                    // S7-31d: every other memory form of `DD /7` (FNSTSW m2byte).
+                    let Operand::Memory(destination) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Word)?
+                    else {
+                        unreachable!("mod != 3 is a memory operand")
+                    };
+                    Operation::FnstswM16 { destination }
                 } else if modrm == 0x10 {
                     Operation::FstM64FpRax
                 } else if modrm == 0x18 {
@@ -9774,6 +9797,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0x38 => Operation::FnstcwM16Rax,
                     0x30 => Operation::FnstenvRax,
                     0x20 => Operation::FldenvRax,
+                    modrm if modrm >> 6 != 3 && (modrm >> 3) & 7 == 7 => {
+                        // S7-31d: every other memory form of `D9 /7` (FNSTCW m2byte).
+                        let Operand::Memory(destination) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Word)?
+                        else {
+                            unreachable!("mod != 3 is a memory operand")
+                        };
+                        Operation::FnstcwM16 { destination }
+                    }
                     0x10 => Operation::FstM32FpRax,
                     0x18 => Operation::FstpM32FpRax,
                     0xe0 => Operation::Fchs,
@@ -9921,6 +9953,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                                 unreachable!("ModRM 05 is a memory operand");
                             };
                             Operation::FxsaveRipRelative(area)
+                        }
+                        // S7-31i: `0F AE /2` with a memory operand (LDMXCSR m32).
+                        modrm if modrm >> 6 != 3 && (modrm >> 3) & 7 == 2 => {
+                            let Operand::Memory(source) =
+                                self.rm_operand(modrm, prefixes, OperandSize::Dword)?
+                            else {
+                                unreachable!("mod != 3 is a memory operand")
+                            };
+                            Operation::LdmxcsrMemory { source }
                         }
                         _ => return Err(self.unsupported(opcode)),
                     }
@@ -22380,6 +22421,18 @@ mod tests {
 
         for modrm in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xdd, modrm]).decode();
+            if modrm >> 6 != 3 && (modrm >> 3) & 7 == 7 && modrm != 0x38 {
+                // S7-31d: every other memory form of DD /7 is FNSTSW m2byte; the two bytes
+                // alone decode it only when the operand needs no SIB or displacement byte.
+                assert!(
+                    matches!(
+                        decoded.map(|instruction| instruction.operation),
+                        Ok(Operation::FnstswM16 { .. }) | Err(DecodeError::Memory(_))
+                    ),
+                    "DD {modrm:02x}"
+                );
+                continue;
+            }
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 if (0xd0..=0xd7).contains(&modrm) {
@@ -22488,6 +22541,88 @@ mod tests {
     }
 
     #[test]
+    fn fnstsw_and_fnstcw_m16_decode_any_memory_operand_without_prefixes() {
+        fn decoded(bytes: &[u8]) -> (Operation, u8, Prefixes) {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            (
+                instruction.operation,
+                instruction.length,
+                instruction.prefixes,
+            )
+        }
+        let word = |base, index, scale, displacement| MemoryOperand {
+            base,
+            index,
+            scale,
+            displacement,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Word,
+        };
+        // DD 7C 24 0E: fnstsw word ptr [rsp+0xe]; D9 7C 24 0C: fnstcw word ptr [rsp+0xc].
+        let rsp = AddressBase::Register(Register::Rsp);
+        assert_eq!(
+            decoded(&[0xdd, 0x7c, 0x24, 0x0e]),
+            (
+                Operation::FnstswM16 {
+                    destination: word(rsp, None, 1, 0x0e)
+                },
+                4,
+                Prefixes::default()
+            )
+        );
+        assert_eq!(
+            decoded(&[0xd9, 0x7c, 0x24, 0x0c]),
+            (
+                Operation::FnstcwM16 {
+                    destination: word(rsp, None, 1, 0x0c)
+                },
+                4,
+                Prefixes::default()
+            )
+        );
+        // SIB with scale: DD 3C 8B = [rbx + rcx*4]; disp32: DD BB 40 00 00 00 = [rbx + 0x40].
+        let rbx = AddressBase::Register(Register::Rbx);
+        assert_eq!(
+            decoded(&[0xdd, 0x3c, 0x8b]).0,
+            Operation::FnstswM16 {
+                destination: word(rbx, Some(Register::Rcx), 4, 0)
+            }
+        );
+        assert_eq!(
+            decoded(&[0xdd, 0xbb, 0x40, 0x00, 0x00, 0x00]).0,
+            Operation::FnstswM16 {
+                destination: word(rbx, None, 1, 0x40)
+            }
+        );
+        // The exact [rax] forms keep their own operations.
+        assert_eq!(decoded(&[0xdd, 0x38]).0, Operation::FnstswM16Rax);
+        assert_eq!(decoded(&[0xd9, 0x38]).0, Operation::FnstcwM16Rax);
+        // A prefix of any kind, and the register form, stay unsupported.
+        for prefix in [
+            0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67,
+        ]
+        .into_iter()
+        .chain(0x40..=0x4f)
+        {
+            for opcode in [0xdd, 0xd9] {
+                assert!(
+                    matches!(
+                        Memory::new(&[prefix, opcode, 0x7c, 0x24, 0x0e]).decode(),
+                        Err(DecodeError::Unsupported { .. })
+                    ),
+                    "{prefix:02x} {opcode:02x}"
+                );
+            }
+        }
+        for modrm in 0xf8u8..=0xff {
+            assert!(matches!(
+                Memory::new(&[0xdd, modrm]).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn d9_accepts_only_bare_fldcw_fst_fstp_fxch_constants_and_other_bounded_forms() {
         let mut memory = Memory::new(&[0xd9, 0xe0]);
         let instruction = memory.decode().unwrap();
@@ -22498,6 +22633,17 @@ mod tests {
 
         for second in 0u8..=u8::MAX {
             let decoded = Memory::new(&[0xd9, second]).decode();
+            if second >> 6 != 3 && (second >> 3) & 7 == 7 && second != 0x38 {
+                // S7-31d: every other memory form of D9 /7 is FNSTCW m2byte.
+                assert!(
+                    matches!(
+                        decoded.map(|instruction| instruction.operation),
+                        Ok(Operation::FnstcwM16 { .. }) | Err(DecodeError::Memory(_))
+                    ),
+                    "D9 {second:02x}"
+                );
+                continue;
+            }
             assert_eq!(
                 decoded.map(|instruction| instruction.operation),
                 if second == 0x00 {
@@ -25537,6 +25683,7 @@ mod tests {
             &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
+            // (`0F AE 15` is `LDMXCSR [rip+disp32]` since S7-31i and `0F AE 1D` is `STMXCSR` since S4, no longer refused.)
             &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
             &[0x0f, 0xae, 0x35, 0, 0, 0, 0][..],

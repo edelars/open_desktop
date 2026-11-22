@@ -39,6 +39,7 @@ pub mod hash;
 pub mod hierarchy;
 mod kem;
 pub mod marshal;
+mod mldsa;
 pub mod nv;
 pub mod object;
 mod object_cmd;

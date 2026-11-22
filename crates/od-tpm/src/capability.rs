@@ -13,9 +13,9 @@
 //! `NV_COUNTERS_AVAIL` (counters that can still be defined, limited by the index slots and the data
 //! pool), `ORDERLY_COUNT` (`nv.rs`: `MAX_ORDERLY_COUNT`), `CONTEXT_HASH` (SHA-256), `CONTEXT_SYM` (AES)
 //! and `CONTEXT_SYM_SIZE` (128), `MAX_OBJECT_CONTEXT` and `MAX_SESSION_CONTEXT` (the largest context
-//! `TPM2_ContextLoad` takes), `LOADED_CURVES` (1: NIST P-256). Reported as 0 because the feature is
-//! absent or has no TPM-side interval (recorded deviations): `CONTEXT_GAP_MAX` (no context gap is
-//! tracked, `TPM_RC_CONTEXT_GAP` does not exist), `CLOCK_UPDATE` (`Clock` reaches NV only with the
+//! `TPM2_ContextLoad` takes), `CONTEXT_GAP_MAX` (the window of session `contextID`s of `context.rs`,
+//! slice 8), `LOADED_CURVES` (2: NIST P-256 and NIST P-384). Reported as 0 because the feature is
+//! absent or has no TPM-side interval (recorded deviations): `CLOCK_UPDATE` (`Clock` reaches NV only with the
 //! snapshot the host writes), `SPLIT_MAX` (no `TPM2_Commit`), `MODES` (no FIPS mode),
 //! `NV_WRITE_RECOVERY` (no NV wear model) and `AUDIT_COUNTER_0/1` (no
 //! `TPM2_SetCommandCodeAuditStatus`: no command audit). NOT VERIFIED against Part 2, Table 23 and
@@ -23,7 +23,7 @@
 //!
 //! `TPM_CAP_ALGS` lists SHA-256 and, with slice B of phase B, RSA, KEYEDHASH, RSASSA, ECDSA and
 //! ECC, with slice C1 also RSAES, OAEP and ECDH, with the RSA-3072 slice RSAPSS, with slice C2 HMAC, with slice C3 XOR (the
-//! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256. Slice C1 adds the
+//! `TPMA_ALGORITHM` bits follow the type column of Part 2, Table 11, NOT VERIFIED); `TPM_CAP_ECC_CURVES` lists NIST P-256 and NIST P-384. Slice C1 adds the
 //! dictionary-attack properties `TPM_PT_LOCKOUT_COUNTER`, `TPM_PT_MAX_AUTH_FAIL`,
 //! `TPM_PT_LOCKOUT_INTERVAL` and `TPM_PT_LOCKOUT_RECOVERY`.
 //!
@@ -42,7 +42,7 @@
 //! capacity of this implementation (16), the PTP 1.07 minimum was not checked; the transient
 //! availability counts the free sequence and object slots (an estimate, as the text allows).
 
-use crate::codes::{alg, cap, curve, handle, pt, spec};
+use crate::codes::{FIRMWARE_VERSION, alg, cap, curve, handle, pt, spec};
 use crate::context::MAX_CONTEXT_SIZE;
 use crate::crypto::supported_rsa_exponent;
 use crate::dispatch::COMMANDS;
@@ -57,6 +57,9 @@ use crate::pcr::{PcrAttr, pcr_attr};
 use crate::response::{Output, Rc};
 use crate::session::MAX_SESSIONS;
 use crate::state::Tpm;
+
+/// The curves of `TPM_CAP_ECC_CURVES`, in ascending order of their identifiers.
+const ECC_CURVES: [u16; 2] = [curve::NIST_P256, curve::NIST_P384];
 
 /// Maximum size of the capability data in one response (`TPM_PT_MAX_CAP_BUFFER`).
 const MAX_CAP_BUFFER: usize = 1024;
@@ -100,7 +103,7 @@ impl Entries {
 // algorithms. NOT VERIFIED against Part 2 v184 (Tables 8 and 11 were not available):
 // the codes follow Table 8 as used elsewhere, the attribute bits of AES and CFB
 // are our reading of the "S O" and "E" types.
-pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
+pub(crate) const ALGORITHMS: [(u16, u32); 19] = [
     (alg::RSA, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
     // `TPM_ALG_HMAC` (0x0005, "H K X" in Table 11): a hash-based signing scheme.
     (alg::HMAC, TPMA_ALGORITHM_HASH | TPMA_ALGORITHM_SIGNING),
@@ -134,10 +137,19 @@ pub(crate) const ALGORITHMS: [(u16, u32); 17] = [
     ),
     (alg::ECDH, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_METHOD),
     (alg::ECC, TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT),
+    // `TPM_ALG_SYMCIPHER` (0x0025): the object type of a symmetric block cipher key (slice 5).
+    // NOT VERIFIED: the attribute bits are our reading of the registry's object type "O".
+    (alg::SYMCIPHER, TPMA_ALGORITHM_OBJECT),
     (alg::CFB, TPMA_ALGORITHM_ENCRYPTING),
     (
         alg::MLKEM,
         TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT,
+    ),
+    // `TPM_ALG_MLDSA` (0x00A1): an asymmetric signing object type (slice 7). NOT VERIFIED: the
+    // attribute bits are our reading of the registry (object type "O", signing "X").
+    (
+        alg::MLDSA,
+        TPMA_ALGORITHM_ASYMMETRIC | TPMA_ALGORITHM_OBJECT | TPMA_ALGORITHM_SIGNING,
     ),
 ];
 
@@ -152,7 +164,7 @@ impl Tpm {
             (pt::FAMILY_INDICATOR, spec::FAMILY),
             (pt::LEVEL, spec::LEVEL),
             (pt::REVISION, spec::REVISION),
-            (pt::DAY_OF_YEAR, spec::DAY_OF_YEAR),
+            (pt::ERRATA, spec::ERRATA),
             (pt::YEAR, spec::YEAR),
             (pt::MANUFACTURER, VENDOR_ID),
             (pt::VENDOR_STRING_1, 0x4F70_656E),
@@ -160,8 +172,8 @@ impl Tpm {
             (pt::VENDOR_STRING_3, 0x5450_4D00),
             (pt::VENDOR_STRING_4, 0),
             (pt::VENDOR_TPM_TYPE, 0),
-            (pt::FIRMWARE_VERSION_1, 0x0001_0000),
-            (pt::FIRMWARE_VERSION_2, 0),
+            (pt::FIRMWARE_VERSION_1, (FIRMWARE_VERSION >> 32) as u32),
+            (pt::FIRMWARE_VERSION_2, FIRMWARE_VERSION as u32),
             (pt::INPUT_BUFFER, limits::MAX_2B_BUFFER_SIZE as u32),
             (pt::HR_TRANSIENT_MIN, crate::hash::MAX_SEQUENCES as u32),
             (pt::HR_PERSISTENT_MIN, MAX_PERSISTENT as u32),
@@ -169,10 +181,15 @@ impl Tpm {
             (pt::ACTIVE_SESSIONS_MAX, MAX_SESSIONS as u32),
             (pt::PCR_COUNT, limits::PCR_COUNT as u32),
             (pt::PCR_SELECT_MIN, limits::PCR_SELECT_SIZE as u32),
-            // No context gap is tracked (`context.rs`): 0, a recorded deviation.
-            (pt::CONTEXT_GAP_MAX, 0),
+            // The window of session contextIDs (`context.rs`, `TPM_RC_CONTEXT_GAP`).
+            (pt::CONTEXT_GAP_MAX, crate::context::CONTEXT_GAP_MAX),
             (pt::NV_COUNTERS_MAX, MAX_NV_COUNTERS as u32),
             (pt::NV_INDEX_MAX, MAX_NV_INDEX_SIZE as u32),
+            // TPMA_MEMORY (Part 2 v185, Table 42): all three bits CLEAR. Sessions, transient objects
+            // (and sequences) have separate pools (sharedRAM), persistent objects and NV indices
+            // have separate stores (sharedNV), and a persistent object is used in place, without a
+            // transient slot (objectCopiedToRam).
+            (pt::MEMORY, 0),
             // `Clock` reaches NV only with the snapshot, which the host writes: no interval (0).
             (pt::CLOCK_UPDATE, 0),
             // Contexts are AES-128-CFB under a SHA-256 integrity HMAC (`context.rs`).
@@ -200,7 +217,11 @@ impl Tpm {
             // `TPMA_MODES`: not FIPS 140 evaluated.
             (pt::MODES, 0),
             (pt::MAX_CAP_BUFFER, MAX_CAP_BUFFER as u32),
-            (pt::ML_PARAMETER_SETS, 1 << 1), // TPMA_ML_PARAMETER_SET.mlKem_768.
+            // No SVN-limited hierarchies (`TPM_RH_SVN_*`) and no firmware update: SVN 0, no future SVN.
+            (pt::FIRMWARE_SVN, 0),
+            (pt::FIRMWARE_MAX_SVN, 0),
+            // TPMA_ML_PARAMETER_SET: mlKem_768 (bit 1), mlDsa_65 (bit 4) and extMu (bit 6).
+            (pt::ML_PARAMETER_SETS, (1 << 1) | (1 << 4) | (1 << 6)),
             (pt::PERMANENT, self.permanent_attributes()),
             (pt::STARTUP_CLEAR, self.startup_clear_attributes()),
             (pt::HR_NV_INDEX, self.persistent.nv.count() as u32),
@@ -215,9 +236,11 @@ impl Tpm {
                 pt::HR_ACTIVE_AVAIL,
                 (MAX_SESSIONS - self.active_sessions()) as u32,
             ),
+            // Not more than the free slots of either pool: a value of at least 1 means that an
+            // object of any type (key, sealed data, sequence) can be loaded (Part 2 v185, TPM_PT).
             (
                 pt::HR_TRANSIENT_AVAIL,
-                (self.sequences.free_slots() + self.objects.free_slots()) as u32,
+                self.sequences.free_slots().min(self.objects.free_slots()) as u32,
             ),
             (pt::HR_PERSISTENT, self.persistent.objects.len() as u32),
             (
@@ -229,8 +252,10 @@ impl Tpm {
                 pt::NV_COUNTERS_AVAIL,
                 self.persistent.nv.counters_avail() as u32,
             ),
-            // NIST P-256, the one curve of `TPM_CAP_ECC_CURVES`.
-            (pt::LOADED_CURVES, 1),
+            // No algorithm set is selected (`TPM2_SetAlgorithmSet` is not implemented): 0.
+            (pt::ALGORITHM_SET, 0),
+            // NIST P-256 and NIST P-384, the curves of `TPM_CAP_ECC_CURVES`.
+            (pt::LOADED_CURVES, ECC_CURVES.len() as u32),
             // Dictionary attack (slice C1, `da.rs`).
             (pt::LOCKOUT_COUNTER, self.persistent.da.failed_tries),
             (pt::MAX_AUTH_FAIL, self.persistent.da.max_tries),
@@ -254,11 +279,6 @@ impl Tpm {
             && !supported_rsa_exponent(exponent)
         {
             return Err(p.err(Rc::RANGE));
-        }
-        if let PublicParams::MlKem { symmetric, .. } = params
-            && symmetric != crate::marshal::SymDef::Null
-        {
-            return Err(p.err(Rc::SYMMETRIC));
         }
         Ok(Output::default())
     }
@@ -287,9 +307,12 @@ impl Tpm {
             }
             cap::ECC_CURVES => {
                 entry_size = 2;
-                // `TPML_ECC_CURVE`: NIST P-256 only.
-                if u32::from(curve::NIST_P256) >= property {
-                    entries.push(|w| w.u16(curve::NIST_P256));
+                // `TPML_ECC_CURVE`: NIST P-256 and NIST P-384, in ascending order.
+                for id in ECC_CURVES
+                    .into_iter()
+                    .filter(|id| u32::from(*id) >= property)
+                {
+                    entries.push(|w| w.u16(id));
                 }
             }
             cap::HANDLES => {

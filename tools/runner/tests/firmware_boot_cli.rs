@@ -76,7 +76,7 @@ fn fv_app_rejects_invalid_selection_before_launch() {
     for (extra, error) in [
         (
             &["--fv-app", "other"][..],
-            "expected hello, ebs, vars, rt, acpi, gop, blk, fs or tpm",
+            "expected hello, ebs, vars, rt, acpi, gop, blk, fs, tpm or reboot",
         ),
         (
             &["--fv-app", "hello", "--fv-app", "ebs"][..],

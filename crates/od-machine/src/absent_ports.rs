@@ -36,6 +36,14 @@ pub const IO_DELAY_PORT_BYTES: u32 = 1;
 pub const POST_PORT: u16 = 0x80;
 /// Ports of the `0x80` binding.
 pub const POST_PORT_BYTES: u32 = 1;
+/// Base ports of the three legacy UART positions the board does not declare (COM2 `0x2F8`, COM3
+/// `0x3E8`, COM4 `0x2E8`), bound only under the Linux profile (S7-31j): the kernel's 8250 driver
+/// probes all four legacy positions, and an absent UART reads `0xFF` there.
+pub const UART2_PORT: u16 = 0x2F8;
+pub const UART3_PORT: u16 = 0x3E8;
+pub const UART4_PORT: u16 = 0x2E8;
+/// Ports of each of those bindings (the eight 8250 registers).
+pub const ABSENT_UART_PORT_BYTES: u32 = 8;
 /// What a read of an absent port returns.
 pub const ABSENT_PORT_READ_VALUE: u8 = 0xFF;
 
@@ -48,6 +56,12 @@ pub enum AbsentPortRegion {
     IoDelay,
     /// `0x80` (S4-37a1, Linux profile only).
     Post,
+    /// `0x2F8..0x300`: COM2, not declared by the board (S7-31j, Linux profile only).
+    Uart2,
+    /// `0x3E8..0x3F0`: COM3, not declared by the board (S7-31j, Linux profile only).
+    Uart3,
+    /// `0x2E8..0x2F0`: COM4, not declared by the board (S7-31j, Linux profile only).
+    Uart4,
 }
 
 impl AbsentPortRegion {
@@ -57,6 +71,9 @@ impl AbsentPortRegion {
             Self::Cmos => CMOS_INDEX_PORT,
             Self::IoDelay => IO_DELAY_PORT,
             Self::Post => POST_PORT,
+            Self::Uart2 => UART2_PORT,
+            Self::Uart3 => UART3_PORT,
+            Self::Uart4 => UART4_PORT,
         }
     }
 
@@ -66,6 +83,7 @@ impl AbsentPortRegion {
             Self::Cmos => CMOS_PORT_BYTES,
             Self::IoDelay => IO_DELAY_PORT_BYTES,
             Self::Post => POST_PORT_BYTES,
+            Self::Uart2 | Self::Uart3 | Self::Uart4 => ABSENT_UART_PORT_BYTES,
         }
     }
 }
@@ -128,10 +146,13 @@ mod tests {
     const BYTE: AccessWidth = AccessWidth::Byte;
     /// Every region, including `Post`, which the board binds only under the
     /// Linux profile; these tests use the devices directly or on a private bus.
-    const ALL_REGIONS: [AbsentPortRegion; 3] = [
+    const ALL_REGIONS: [AbsentPortRegion; 6] = [
         AbsentPortRegion::Cmos,
         AbsentPortRegion::IoDelay,
         AbsentPortRegion::Post,
+        AbsentPortRegion::Uart2,
+        AbsentPortRegion::Uart3,
+        AbsentPortRegion::Uart4,
     ];
 
     fn acc(offset: u64, width: AccessWidth) -> DeviceAccess {

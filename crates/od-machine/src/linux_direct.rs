@@ -44,7 +44,9 @@ use crate::firmware_board::{FirmwareBoardConfig, FirmwareRunReport, LoadedFirmwa
 use crate::irq_source::IrqCounters;
 use crate::linux_boot::{LinuxBzImageHeader, LinuxHeaderError, parse_linux_bzimage_header};
 use crate::linux_boot_params::{LINUX_E820_MAX_ENTRIES, LinuxBootParamsError};
-use crate::linux_checkpoints::{LinuxCheckpointRecord, LinuxCheckpointTable};
+use crate::linux_checkpoints::{
+    CallTraceReport, CallTraceTarget, LinuxCheckpointRecord, LinuxCheckpointTable,
+};
 use crate::linux_load::{LinuxLoadError, LinuxLoadInput, load_linux_direct};
 use crate::linux_placement::LinuxPlacementError;
 use crate::vcpu::BOOT_VCPU_INDEX;
@@ -1753,6 +1755,425 @@ fn run_linux_direct_board_set_with_post_iret_index(
             diagnostic_past_c7: members.diagnostic_past_c7,
         },
     ))
+}
+
+/// The checkpoint slot of the marked RIP (an address slot of the Linux table, 1..=17).
+const MARKER_CHECKPOINT_ID: u8 = 1;
+
+/// What [`run_firmware_unified`] reports besides the usual run report.
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedRun {
+    /// The run report; `exit` is the set's exit in `PagedProbeExit` terms.
+    pub run: FirmwareRunReport,
+    /// The `Debug` text of the set's own final exit.
+    pub set_exit_detail: String,
+    /// The members of the instruction set the run used, in binding order.
+    pub members: Vec<String>,
+    /// `#PF`/`#GP(0)` exceptions delivered to the guest through its IDT (not retired instructions).
+    pub exceptions_delivered: u64,
+    /// Successfully delivered guest `#PF` exceptions.
+    pub page_faults_delivered: u64,
+    /// Retired `MOV CR3` instructions.
+    pub cr3_changes: u64,
+    /// Instructions retired at CPL3 (part of `run.retired`).
+    pub cpl3_retired: u64,
+    /// The leaf of the `CPUID` the run stopped before, if it did.
+    pub cpuid_divergence_leaf: Option<u32>,
+    /// The guest-physical address of the final RIP, when it translates (read-only walk with the
+    /// board CR3; no accessed or dirty bit is set).
+    pub rip_physical: Option<u64>,
+    /// Up to 32 bytes at the final RIP as a fetch would see them (they stop at the first byte
+    /// that does not translate or is not RAM).
+    pub rip_bytes: Vec<u8>,
+    /// Why the bytes at the final RIP could not be read in full (the text of the first failed
+    /// translation of `fetch_view_2m`), or `None` when all 32 were read (S7-31e).
+    pub rip_fetch_error: Option<String>,
+    /// The raw paging-structure entries of the final RIP from the live CR3 (S7-31e).
+    pub rip_walk: Vec<FirmwareUnifiedWalkEntry>,
+    /// CR2 and the error code of the first `#PF` delivered to the guest, recorded only with a
+    /// marker (S7-31e).
+    pub first_page_fault: Option<FirmwareUnifiedPageFault>,
+    /// The CPU state the run stopped in (S7-31g, diagnostics).
+    pub final_state: FirmwareUnifiedState,
+    /// The interrupt state the run stopped in (S7-31m).
+    pub interrupts: FirmwareUnifiedInterrupts,
+    /// The RIP that was asked to be marked (S7-31d), if any.
+    pub marker_rip: Option<u64>,
+    /// The first boundary at which RIP was `marker_rip`: `None` when none was asked for or the
+    /// run never got there.
+    pub marker: Option<FirmwareUnifiedMarker>,
+    /// Every event the checkpoint recorder noted (S7-31d, only with a marker): its own loop
+    /// events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID` leaf 0) and the marker.
+    pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
+    /// The calls of the call trace (S7-31q): `None` when none was asked for.
+    pub call_trace: Option<CallTraceReport>,
+}
+
+/// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
+/// admits the next instruction (`MOV SS` needs a clear interrupt shadow, TF = 0 and
+/// modeled SS state; since S7-31g IF may be 0 or 1).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedState {
+    pub rflags: u64,
+    pub rax: u64,
+    pub rsp: u64,
+    /// GDTR as (base, limit).
+    pub gdtr: Option<(u64, u16)>,
+    pub cs_selector: Option<u16>,
+    pub ss_selector: Option<u16>,
+    /// `Debug` text of the SS hidden cache.
+    pub ss_cache: Option<String>,
+    /// `Debug` text of the interrupt shadow.
+    pub sti_shadow: Option<String>,
+}
+
+/// The interrupt state a unified run stopped in (S7-31m, ISSUE-640): whether the guest can still
+/// be woken at the stop, and what the board did with interrupts during the run. Read after the
+/// run; it only observes.
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedInterrupts {
+    /// RFLAGS.IF at the stop.
+    pub interrupt_flag: bool,
+    /// `Debug` text of the vCPU activity state (`Running`, `Halted`, ...).
+    pub activity: Option<String>,
+    /// The board interrupt source of the run: `none` (no source, the run delivers nothing) or
+    /// `pit_pic` (PIT channel 0 -> 8259 master IR0, UART THRE -> IR4).
+    pub source: &'static str,
+    /// 8259 master: interrupt mask, request and in-service registers; `None` without the Linux
+    /// profile. The vector base is the accepted ICW2.
+    pub pic_imr: Option<u8>,
+    pub pic_irr: Option<u8>,
+    pub pic_isr: Option<u8>,
+    pub pic_icw2: Option<u8>,
+    /// `Debug` text of the whole 8259 master snapshot.
+    pub pic: Option<String>,
+    /// `Debug` text of the PIT channel 0 snapshot (mode, access, reload, loaded-by-reset).
+    pub pit_channel0: Option<String>,
+    /// Whether a control word programmed PIT channel 0 since reset (the unified run starts from reset).
+    pub pit_channel0_programmed: Option<bool>,
+    /// `CPUID.1:EDX.APIC` as the run's CPUID profile declares it: without it the guest has no
+    /// Local APIC timer to use.
+    pub apic_declared: bool,
+    /// Why a halted CPU was not resumed (SDM: `HLT` waits for an interrupt, NMI, SMI or reset), or
+    /// `None` when the CPU is not halted: `if_clear` (IF = 0: no maskable interrupt can wake it;
+    /// the wait is forever), `no_wake_time` (IF = 1, but the source reports no edge to wait for:
+    /// its line is masked or in service, or the timer has no further edge), or
+    /// `run_ended_with_a_wake_pending` (IF = 1 and the source has an edge to wait for: the run
+    /// ended for another reason, the budget or a stop request).
+    pub halt_stop: Option<&'static str>,
+    /// External interrupts delivered through the guest IDT.
+    pub irqs_delivered: u64,
+    /// IRQ 0 edges the source reported.
+    pub irq0_edges: u64,
+    /// Boundaries at which a pending vector was held back by IF = 0.
+    pub irq_refused_masked: u64,
+    /// The same because of the one-instruction STI shadow.
+    pub irq_refused_shadow: u64,
+    /// Times a halted CPU was woken from the source's wake time.
+    pub halt_wakes: u64,
+    /// Virtual nanoseconds the clock skipped while the CPU was halted.
+    pub halt_idle_ns: u64,
+}
+
+/// One raw paging-structure entry of the walk of the final RIP (S7-31e).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedWalkEntry {
+    pub level: &'static str,
+    /// Guest-physical address of the entry.
+    pub entry_gpa: u64,
+    pub raw: u64,
+}
+
+/// CR2 and the error code of a delivered `#PF` (S7-31e).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedPageFault {
+    pub cr2: u64,
+    pub error_code: u32,
+    /// The raw paging-structure entries of `cr2` from the live CR3 at the end of the run.
+    pub walk: Vec<FirmwareUnifiedWalkEntry>,
+    /// The text of the failed translation of the 2 MiB read-only walk at `cr2`, or `None` if it
+    /// translates to RAM.
+    pub translation_error: Option<String>,
+}
+
+/// One checkpoint record of a unified run (S7-31d).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedCheckpoint {
+    pub id: u8,
+    pub name: String,
+    pub kind: &'static str,
+    pub rip: u64,
+    pub retired: u64,
+    pub quanta: u64,
+    pub virtual_ns: u64,
+    pub cpl: u8,
+}
+
+/// The first instruction boundary of a run at the marked RIP (S7-31d).
+#[derive(Debug, Eq, PartialEq)]
+pub struct FirmwareUnifiedMarker {
+    /// Instructions retired in the run before the instruction at the marked RIP.
+    pub retired: u64,
+    /// Quanta of the run up to and including the one the boundary is in.
+    pub quanta: u64,
+    /// Virtual time at the boundary, ns.
+    pub virtual_ns: u64,
+}
+
+/// S7-31c (ADR-0013 variant (b)): run a firmware board with the Linux profile through the CPL0
+/// profile set, one loop for the ROM and for the guest it starts (the EFI stub, then the kernel).
+///
+/// The board is a firmware board (loaded from a ROM image) built with `linux_profile`. The
+/// firmware device apertures (NVRAM, display registers, the firmware NVMe window, TPM CRB) are
+/// bound to the machine bus for the set loop, so the ROM's Runtime Services and boot services
+/// reach the same devices as in `run_boot`. The instruction set is the Linux set of the stage 4
+/// runs on the `X8664V1Stage4AExt2` CPUID subset (Stage4A plus SYSCALL, NX and LM in leaf
+/// 0x80000001, plus SSE and SSE2; FPU and FXSR members included: the ROM uses
+/// `FXSAVE`/`FXRSTOR`) with the CPL3 entry, so the kernel can reach user space. Nothing is
+/// executed that the set does not admit: the first inadmissible instruction is the stop.
+///
+/// Not a replacement of `run_boot` (the firmware profile loop, which stays as it was) nor of
+/// `run_linux_direct_board_set` (Linux without firmware).
+pub fn run_firmware_unified(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_marked(board, instruction_budget, None)
+}
+
+/// [`run_firmware_unified`] with one marked RIP (S7-31d): the run records the first boundary at
+/// which RIP equals `marker_rip` (an address in the ROM, for example the entry of
+/// `exit_boot_services`), through the existing checkpoint recorder of the set loop. It only
+/// observes: the quanta, the clock and the result are those of a run without a marker. The
+/// recorder also notes its own loop events (entry, `LIDT`, `MOV CR3`, a delivered `#PF`, `CPUID`
+/// leaf 0); only the marked RIP is reported.
+pub fn run_firmware_unified_marked(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_traced(board, instruction_budget, marker_rip, Vec::new(), None)
+}
+
+/// [`run_firmware_unified_marked`] with a call trace (S7-31q): every time the guest enters one of
+/// `trace` (the first instruction of a ROM function, given by physical address) the run records
+/// the name, the retired count, the CPL and the GUID and name the arguments point to (see
+/// [`CallTraceTarget`]); values are never read. With `system_table` (the guest address of
+/// `EFI_SYSTEM_TABLE`) a target with a `rt_slot` also follows the runtime services table, because
+/// the runtime driver replaces the ROM functions (see [`CallTraceTarget::rt_slot`]). Empty `trace`: no trace, the result is that of a
+/// run without it. The trace only observes: the quanta, the clock and the result are unchanged.
+pub fn run_firmware_unified_traced(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    if !board.has_firmware_entry() || !board.has_linux_profile() {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified needs a firmware board with the Linux profile",
+        ));
+    }
+    if board.vcpu_count() != 1 {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified runs one vCPU",
+        ));
+    }
+    if !board.pit_pic_irq_available() {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified needs the Linux-profile PIT and 8259",
+        ));
+    }
+    // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
+    crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
+
+    // `X8664V1Stage4AExt2` (S7-31i): Stage4A plus SYSCALL, NX and LM in CPUID.80000001H:EDX (S7-31h:
+    // without NX the kernel strips `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE
+    // and SSE2 in leaf 1 (the kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636).
+    let members = LinuxCpl0SetMembers {
+        cpuid_profile: CpuidProfile::X8664V1Stage4AExt2,
+        msr_tdx_keyid_partitioning_read: true,
+        fp_state: true,
+        int3: true,
+        halt: true,
+        ..LinuxCpl0SetMembers::linux_default()
+    };
+    let profile = LinuxCpl0Profile::new(members, true, board.efer());
+    let cpu_cells = LinuxVcpuCells::from_vcpu(
+        board
+            .vcpu(BOOT_VCPU_INDEX)
+            .expect("a firmware board has a boot vCPU"),
+    );
+    let pci_cell = Cell::new(board.pci_config_address());
+    let mut names = Vec::new();
+    let set = profile.bind(&cpu_cells, &pci_cell, |member| {
+        names.push(member.to_string())
+    });
+    board.serve_firmware_set_windows();
+    if let Some(rip) = marker_rip {
+        board
+            .enable_checkpoints(crate::linux_checkpoints::LinuxCheckpointTable {
+                targets: vec![crate::linux_checkpoints::LinuxCheckpointTarget {
+                    id: MARKER_CHECKPOINT_ID,
+                    name: "marker".to_owned(),
+                    va: Some(rip),
+                    pa: None,
+                    cpl3: false,
+                    after: None,
+                }],
+            })
+            .map_err(|_| crate::FirmwareBoardError::Config("run_firmware_unified: bad marker"))?;
+    }
+    // S7-31m (ISSUE-640): the kernel programs the PIT (channel 0, mode 2) and unmasks IR0 of the
+    // 8259, then idles in `sti; hlt` until the timer interrupt (the S7-31m measurement). The
+    // board source is the one of the user-mode Linux run (S4-39g, S4-39i): PIT channel 0 -> IR0
+    // and the UART THRE line -> IR4 through the 8259. With `halt` and the interrupt hook a
+    // `HLT` at IF = 1 is woken at the next timer edge; `HLT` at IF = 0 ends the run as halted.
+    // `pit_pic_irq_available` was checked with the refusals at the top, so both installs succeed.
+    assert!(
+        board.enable_pit_pic_irq() && board.enable_uart_irq4(),
+        "the PIT -> 8259 source was checked available"
+    );
+    if !trace.is_empty() {
+        board.enable_call_trace(trace, system_table);
+    }
+    let result =
+        board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
+    let call_trace = board.take_call_trace();
+    cpu_cells.commit(
+        board
+            .vcpu_mut(BOOT_VCPU_INDEX)
+            .expect("a firmware board has a boot vCPU"),
+    );
+    board.set_pci_config_address(pci_cell.get());
+    let first_page_fault = board.first_delivered_page_fault().map(|(cr2, error_code)| {
+        let walk = board
+            .raw_page_walk(cr2)
+            .into_iter()
+            .map(|(level, entry_gpa, raw)| FirmwareUnifiedWalkEntry {
+                level,
+                entry_gpa,
+                raw,
+            })
+            .collect();
+        let (_, _, translation_error) = board.fetch_view_2m(cr2, 1);
+        FirmwareUnifiedPageFault {
+            cr2,
+            error_code,
+            walk,
+            translation_error,
+        }
+    });
+    let records = board.take_checkpoints().unwrap_or_default();
+    let marker = records
+        .iter()
+        .find(|record| record.id == MARKER_CHECKPOINT_ID)
+        .map(|record| FirmwareUnifiedMarker {
+            retired: record.retired,
+            quanta: record.quanta,
+            virtual_ns: record.virtual_ns,
+        });
+    let checkpoints = records
+        .into_iter()
+        .map(|record| FirmwareUnifiedCheckpoint {
+            id: record.id,
+            name: record.name,
+            kind: record.kind,
+            rip: record.rip,
+            retired: record.retired,
+            quanta: record.quanta,
+            virtual_ns: record.virtual_ns,
+            cpl: record.cpl,
+        })
+        .collect();
+    let report = result.map_err(|failure| failure.error)?;
+    let rip = board.state().rip;
+    let final_state = {
+        let state = board.state();
+        FirmwareUnifiedState {
+            rflags: state.rflags,
+            rax: state.gpr[Register::Rax as usize],
+            rsp: state.gpr[Register::Rsp as usize],
+            gdtr: state.gdtr.map(|gdtr| (gdtr.base, gdtr.limit)),
+            cs_selector: state.cs_selector,
+            ss_selector: state.ss_selector,
+            ss_cache: state.ss_cache.map(|cache| format!("{cache:?}")),
+            sti_shadow: state.sti_shadow.map(|shadow| format!("{shadow:?}")),
+        }
+    };
+    let interrupts = {
+        // Asked first: `irq_wake_ns` brings the sources up to the clock, so the snapshots below
+        // are taken after it.
+        let halt_stop = (board.state().activity == Some(od_isa::CpuActivity::Halted)).then(|| {
+            if final_state.rflags & (1 << 9) == 0 {
+                "if_clear"
+            } else if board.irq_wake_ns().is_none() {
+                "no_wake_time"
+            } else {
+                "run_ended_with_a_wake_pending"
+            }
+        });
+        let pic = board.pic_master().map(|pic| pic.snapshot());
+        let pit_channel0 = board.pit_channel0_snapshot();
+        FirmwareUnifiedInterrupts {
+            interrupt_flag: final_state.rflags & (1 << 9) != 0,
+            activity: board
+                .state()
+                .activity
+                .map(|activity| format!("{activity:?}")),
+            source: if board.pit_pic_source().is_some() {
+                "pit_pic"
+            } else {
+                "none"
+            },
+            pic_imr: pic.map(|pic| pic.imr),
+            pic_irr: pic.map(|pic| pic.irr),
+            pic_isr: pic.map(|pic| pic.isr),
+            pic_icw2: pic.and_then(|pic| pic.icw2),
+            pic: pic.map(|pic| format!("{pic:?}")),
+            pit_channel0: pit_channel0.map(|channel| format!("{channel:?}")),
+            pit_channel0_programmed: pit_channel0.map(|channel| !channel.loaded_by_reset),
+            halt_stop,
+            apic_declared: members.cpuid_profile.query(1, 0).edx & (1 << 9) != 0,
+            irqs_delivered: report.irq.irqs_delivered,
+            irq0_edges: report.irq.irq0_edges,
+            irq_refused_masked: report.irq.irq_refused_masked,
+            irq_refused_shadow: report.irq.irq_refused_shadow,
+            halt_wakes: report.irq.halt_wakes,
+            halt_idle_ns: report.irq.halt_idle_ns,
+        }
+    };
+    let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
+    let rip_walk = board
+        .raw_page_walk(rip)
+        .into_iter()
+        .map(|(level, entry_gpa, raw)| FirmwareUnifiedWalkEntry {
+            level,
+            entry_gpa,
+            raw,
+        })
+        .collect();
+    Ok(FirmwareUnifiedRun {
+        run: report.run,
+        set_exit_detail: report.set_exit_detail,
+        members: names,
+        exceptions_delivered: report.exceptions_delivered,
+        page_faults_delivered: report.page_faults_delivered,
+        cr3_changes: report.translation_context_changes.len() as u64,
+        cpl3_retired: report.cpl3_retired,
+        cpuid_divergence_leaf: report.cpuid_divergence_leaf,
+        rip_physical,
+        rip_bytes,
+        rip_fetch_error,
+        rip_walk,
+        first_page_fault,
+        final_state,
+        interrupts,
+        marker_rip,
+        marker,
+        checkpoints,
+        call_trace,
+    })
 }
 
 /// Reads the E820 table out of a `boot_params` page. The count byte comes from guest memory

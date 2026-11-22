@@ -99,7 +99,11 @@ EFI Application (10), Boot Service Driver (11) и Runtime Driver (12).
 проверяет вместимость, адресный диапазон и весь каталог base relocations,
 затем обнуляет SizeOfImage,
 копирует заголовки и raw-данные секций, затем возвращает адрес точки
-входа. При отсутствии каталога требуется предпочитаемый ImageBase.
+входа. При отсутствии каталога образ может иметь другую базу только если
+он позиционно-независим: ImageBase равен 0 (раскладка EFI stub ядра
+Linux) и RELOCS_STRIPPED сброшен; fixups тогда нет, байты копируются без
+изменений. С RELOCS_STRIPPED, либо с ненулевым ImageBase без каталога
+образ загружается только по своему ImageBase (иначе `RelocationsRequired`).
 Флаг RELOCS_STRIPPED с непустым каталогом отклоняется. У блоков
 проверяются границы, выравнивание и страничный RVA. Записи DIR64
 прибавляют разность баз по модулю 2⁶⁴, ABSOLUTE пропускаются, остальные
@@ -107,8 +111,18 @@ EFI Application (10), Boot Service Driver (11) и Runtime Driver (12).
 поэтому записи применяются в порядке таблицы даже при ссылках на сам
 каталог.
 
-`LoadImage` сначала пробует предпочитаемый ImageBase. При наличии
-relocations загрузчик может выбрать другой выровненный диапазон.
+`LoadImage` сначала пробует предпочитаемый ImageBase. Если образ
+перемещаем (есть каталог relocations либо он позиционно-независим, см.
+выше), загрузчик может выбрать другой выровненный диапазон. Образ с
+каталогом получает самый верхний свободный диапазон. Позиционно-независимый
+образ с ImageBase 0 (EFI stub ядра Linux) получает самый нижний свободный
+диапазон не ниже 1 МиБ, выровненный на 2 МиБ (kernel_alignment x86 Linux);
+выше образа остаётся окно для распаковки ядра. ImageBase 0 не считается
+запросом адреса ни для какого образа: нулевая страница не выдаётся.
+Закреплённый за своей базой образ (RELOCS_STRIPPED или ненулевой ImageBase
+без каталога), включая закреплённый образ с ImageBase 0, при недоступном
+диапазоне получает `EFI_OUT_OF_RESOURCES`, без паники; `EFI_LOAD_ERROR`
+остаётся для конфликта RELOCS_STRIPPED с непустым каталогом.
 Отсутствие подходящих страниц даёт `EFI_OUT_OF_RESOURCES`. Точка входа
 должна находиться в исполняемой секции. До публикации образа загрузчик
 копирует PE в RW/NX страницы и применяет права секций к существующим
@@ -190,7 +204,15 @@ PKCS#7, цепочки и политики загрузки относится �
 может использовать физические адреса или один раз вызвать
 `SetVirtualAddressMap`. Карта должна содержать отображение каждого
 runtime-дескриптора из последней карты Boot Services. Драйвер проверяет
-версию, шаг массива, отсутствие коллизий и каноничность адресов. Затем он
+версию, шаг массива, отсутствие коллизий и каноничность адресов. Диапазон каждого
+переданного runtime-дескриптора должен лежать в карте прошивки в регионах того же
+типа (`EFI_NOT_FOUND` — по UEFI 2.11 «виртуальный адрес задан для адреса, которого нет
+в карте памяти»); он не обязан совпадать с одним регионом карты: ОС вправе склеить
+соседние регионы одного типа и пометить как runtime регион, который она сохраняет
+(например, память Boot Services) — S7-31j. Runtime-регион прошивки, у которого
+хотя бы одна страница не покрыта переданными runtime-дескрипторами, даёт `EFI_NO_MAPPING`
+(S7-31k), нулевая длина, переполнение и перекрытие диапазонов — `EFI_INVALID_PARAMETER`.
+Драйвер не пишет CR0 (S7-31k): запись fixup идёт через физические алиасы образов, поэтому они должны быть записываемыми. Linux отображает runtime-регионы с правом записи на время `SetVirtualAddressMap` (итоговые права применяет после возврата); на собственных таблицах прошивки образы записываемы, потому что при `ExitBootServices` прошивка снимает с них защиту от записи, сохраняя исполняемость (так же поступает EDK2; S7-31l). Затем он
 сигналит события смены адресов, применяет PE fixup, обновляет указатели
 и пересчитывает CRC обеих таблиц. `ConvertPointer` работает внутри
 уведомлений, а `EFI_OPTIONAL_PTR` разрешает NULL.
@@ -202,7 +224,9 @@ runtime-дескриптора из последней карты Boot Services.
 `SetTime` сбрасывает её дробную часть. TimeZone и Daylight остаются в
 runtime-памяти текущей загрузки. RTC отсутствует в базовой конфигурации
 платы. `GetWakeupTime`, `SetWakeupTime`, `UpdateCapsule` и
-`QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED`.
+`QueryCapsuleCapabilities` возвращают `EFI_UNSUPPORTED` и не пишут в буферы
+вызывающего; гостевая проверка — `rt`, `check_unsupported_slots`
+([таблица покрытия](#покрытие-слотов-сервисов-тестами)).
 [UEFI 2.11, §8.3](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#time-services).
 
 При наличии ACPI fixed hardware `ResetSystem` выполняет аппаратный
@@ -221,6 +245,87 @@ register и reset value, FADT скрывает возможность reset, а 
 защищённую переменную `ODMonotonicHigh` до возврата нового значения.
 Сервис требует подключённого NVRAM. При сбое записи он возвращает
 `EFI_DEVICE_ERROR`. [UEFI 2.11, §8.5](https://uefi.org/specs/UEFI/2.11/08_Services_Runtime_Services.html#miscellaneous-runtime-services).
+
+### Покрытие слотов сервисов тестами
+
+Столбец «проверки» связывает каждый слот с тестами, которые его вызывают.
+«Вызывает» означает, что слот выполняется в проверке; перечень проверенных
+ветвей статуса остаётся в описании сервиса выше и в самом тесте.
+Строка «—» в столбце означает, что в этой категории слот не вызывается.
+
+**Boot Services.** Маркеры `OD-FW S7-05 …` печатает внутренняя диагностика
+прошивки (`firmware/uefi/src/main.rs`) после проверки; они входят в байтовые
+фикстуры COM1 `tests/fixtures/firmware/*_com1.txt`, которые сверяет
+`tests/system/firmware_boot_smoke.py`. Гостевые приложения лежат в
+`firmware/uefi/tests/apps/`.
+Каждый из 43 слотов вызывается минимум в одной внутренней проверке;
+слот `Reserved` вызова не имеет.
+
+| Слот | Внутренние проверки прошивки | Гостевые приложения |
+|---|---|---|
+| `RaiseTpl` | `S7-05 event dispatch verified`, `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified` | — |
+| `RestoreTpl` | `S7-05 event dispatch verified`, `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified` | — |
+| `AllocatePages` | `S7-05 Boot Services memory verified`, `S7-05 exit boot services verified` | `rt` |
+| `FreePages` | `S7-05 Boot Services memory verified` | — |
+| `GetMemoryMap` | `S7-05 Boot Services memory verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | `rt`, `ebs`, `tpm`, `failure-probe` |
+| `AllocatePool` | `S7-05 Boot Services utilities verified`, `S7-05 Boot Services memory verified`, `S7-05 Boot Services protocol registry verified`, `S7-05 exit boot services verified` | `failure-probe` |
+| `FreePool` | `S7-05 Boot Services memory verified`, `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `gop`, `fs`, `failure-probe`, `blk` |
+| `CreateEvent` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `SetTimer` | `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `WaitForEvent` | `S7-05 boot timers and waits verified` | `echo` |
+| `SignalEvent` | `S7-05 event dispatch verified` | — |
+| `CloseEvent` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 boot timers and waits verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | `gop`, `fs`, `blk` |
+| `CheckEvent` | `S7-05 event dispatch verified`, `S7-05 boot timers and waits verified` | — |
+| `InstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified`, `S7-05 exit boot services verified` | — |
+| `ReinstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `UninstallProtocolInterface` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified`, `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | — |
+| `HandleProtocol` | `S7-05 Boot Services protocol registry verified`, `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `esp-boot-probe`, `gop`, `fs`, `hello`, `failure-probe`, `blk`, `enroll`, `tpm` |
+| `RegisterProtocolNotify` | `S7-05 protocol notifications verified` | — |
+| `LocateHandle` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `LocateDevicePath` | `S7-05 event dispatch verified` | `esp-boot-probe` |
+| `InstallConfigurationTable` | `S7-05 configuration tables verified` | — |
+| `LoadImage` | `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | `failure-probe`, `enroll` |
+| `StartImage` | `S7-05 service ABI boundaries verified`, `S7-05 watchdog service verified` | `enroll` |
+| `Exit` | `S7-05 service ABI boundaries verified` | — |
+| `UnloadImage` | `S7-05 service ABI boundaries verified` | `failure-probe`, `enroll` |
+| `ExitBootServices` | `S7-05 exit boot services verified` | `ebs`, `rt` |
+| `GetNextMonotonicCount` | `S7-05 service ABI boundaries verified` | `rt`, `vars` |
+| `Stall` | `S7-05 watchdog service verified`, `S7-05 boot timers and waits verified`, `S7-05 exit boot services verified` | — |
+| `SetWatchdogTimer` | `S7-05 watchdog service verified` | — |
+| `ConnectController` | `S7-05 service ABI boundaries verified` | — |
+| `DisconnectController` | `S7-05 event dispatch verified`, `S7-05 service ABI boundaries verified` | — |
+| `OpenProtocol` | `S7-05 event dispatch verified` | — |
+| `CloseProtocol` | `S7-05 event dispatch verified` | — |
+| `OpenProtocolInformation` | `S7-05 event dispatch verified` | — |
+| `ProtocolsPerHandle` | `S7-05 event dispatch verified` | — |
+| `LocateHandleBuffer` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | `gop`, `fs`, `blk` |
+| `LocateProtocol` | `S7-05 Boot Services protocol registry verified`, `S7-05 protocol notifications verified` | `ebs`, `tpm`, `reboot`, `enroll`, `tpm-absent`, `pkcs7-probe` |
+| `InstallMultipleProtocolInterfaces` | `S7-05 event dispatch verified`, `S7-05 protocol notifications verified` | — |
+| `UninstallMultipleProtocolInterfaces` | `S7-05 event dispatch verified` | — |
+| `CalculateCrc32` | `S7-05 Boot Services utilities verified` | — |
+| `CopyMem` | `S7-05 Boot Services utilities verified` | — |
+| `SetMem` | `S7-05 Boot Services utilities verified` | `rt` |
+| `CreateEventEx` | `S7-05 event dispatch verified`, `S7-05 configuration tables verified`, `S7-05 exit boot services verified` | — |
+
+**Runtime Services.** Гостевое приложение `rt` проверяет таблицу до и после
+`SetVirtualAddressMap`; итог `OD-UEFI rt …` сверяет `rt_com1.txt`.
+
+| Слот | Тест |
+|---|---|
+| `GetTime` | `rt`: `check_time` (виртуальный режим); host: `rt::time::tests` |
+| `SetTime` | `rt`: `check_time` (виртуальный режим, запись и чтение обратно); host: `rt::time::tests` |
+| `GetWakeupTime` | `rt`: `check_unsupported_slots` (физический и виртуальный режим), маркер `OD-UEFI rt unsupported slots`; host: `uefi::system_table::tests::runtime_status_slots_report_unavailable_without_accessing_arguments` |
+| `SetWakeupTime` | то же, что `GetWakeupTime` |
+| `SetVirtualAddressMap` | `rt`: `finish` (ошибочный размер, успех, повторный вызов); host: `rt::virt::tests` |
+| `ConvertPointer` | `rt`: `finish` (вызов вне уведомления даёт `EFI_UNSUPPORTED`); host: `rt::virt::tests` |
+| `GetVariable` | `rt`, `vars`, `reboot`, `enroll`, `esp-boot-probe`; host: `var::tests` |
+| `GetNextVariableName` | `rt`, `vars`; host: `var::tests` |
+| `SetVariable` | `rt`, `vars`, `reboot`, `enroll`, `esp-boot-probe`; host: `var::tests` |
+| `QueryVariableInfo` | `rt`, `vars`; host: `var::tests` |
+| `GetNextHighMonotonicCount` | `rt` (виртуальный режим, проверка значения старшего слова), `vars` |
+| `ResetSystem` | `rt` (Shutdown), `reboot` (Cold); `tests/system/firmware_reset_smoke.py` |
+| `UpdateCapsule` | `rt`: `check_unsupported_slots` (как `GetWakeupTime`) |
+| `QueryCapsuleCapabilities` | `rt`: `check_unsupported_slots` (как `GetWakeupTime`) |
 
 ### Конфигурационные таблицы
 
@@ -250,8 +355,8 @@ register и reset value, FADT скрывает возможность reset, а 
 
 | Boot Service | Поведение диагностической реализации |
 |---|---|
-| `AllocatePages` | Поддерживает `AnyPages`, `MaxAddress` и `Address`. Записывает адрес при успехе. Отсутствие подходящего адресного диапазона при `Address` или `MaxAddress` даёт `EFI_NOT_FOUND`, нехватка памяти при `AnyPages` или места в карте даёт `EFI_OUT_OF_RESOURCES`. |
-| `FreePages` | Освобождает только страницы из `AllocatePages`. Невыровненный адрес или недопустимое число страниц дают `EFI_INVALID_PARAMETER`, отсутствие владения даёт `EFI_NOT_FOUND`. |
+| `AllocatePages` | Поддерживает `AnyPages`, `MaxAddress` и `Address`. Записывает адрес при успехе. **Права страниц (S7-31f):** страницы выделения типа `EfiLoaderCode`, `EfiBootServicesCode` или `EfiRuntimeServicesCode` (UEFI 2.11 относит все три к коду) становятся исполняемыми (XD сбрасывается, запись остаётся) в активных таблицах страниц прошивки, и эти права действуют и после `ExitBootServices`; страницы остальных типов (`EfiLoaderData`, `EfiBootServicesData`, `EfiConventionalMemory`, прочие) остаются `RW/NX`; стек не затрагивается. Основание: UEFI 2.11 различает типы памяти для кода и для данных, но не требует от прошивки выдавать права исполнения; правило выбрано по практике: загрузчик ОС кладёт исполняемый код в страницы, выделенные как Code, не вызывая протокол атрибутов памяти (EFI stub ядра Ubuntu 7.0.0-38 так и делает, ISSUE-632; согласованность с практикой EDK2 по замечанию ревью, в этом срезе не проверялась). **Известное ограничение:** страницы кода получают `RWX` (запись нужна загрузчику, исполнение — ядру); раздельные `RW` и `RX` потребуют протокола атрибутов памяти (отдельный срез). Страница без present-листа в таблицах прошивки: выделение откатывается и возвращается стандартный код: `EFI_NOT_FOUND` при `Address`, иначе `EFI_OUT_OF_RESOURCES` (`EFI_DEVICE_ERROR` в списке кодов `AllocatePages` UEFI 2.11 нет). `AllocatePool` с типами Code права не меняет (отдельное решение), протокол атрибутов памяти (`EFI_MEMORY_ATTRIBUTE_PROTOCOL`) не публикуется. Отсутствие подходящего адресного диапазона при `Address` или `MaxAddress` даёт `EFI_NOT_FOUND`, нехватка памяти при `AnyPages` или места в карте даёт `EFI_OUT_OF_RESOURCES`. |
+| `FreePages` | Освобождает только страницы из `AllocatePages`; освобождённые страницы снова `RW/NX` (S7-31f). Невыровненный адрес или недопустимое число страниц дают `EFI_INVALID_PARAMETER`, отсутствие владения даёт `EFI_NOT_FOUND`. |
 | `GetMemoryMap` | Возвращает согласованный снимок без выделения памяти. При `EFI_BUFFER_TOO_SMALL` записывает нужный размер в байтах и запрошенные размер и версию дескриптора. Буфер карты и `MapKey` сохраняются. При достаточном размере NULL-буфер карты даёт `EFI_INVALID_PARAMETER`. Запрошенный `MapKey` выдаётся при успешном снимке. |
 | `AllocatePool` | Выделяет выровненный на 8 байт блок и записывает указатель при успехе. |
 | `FreePool` | Освобождает блок по точному указателю `AllocatePool`. NULL, смещённый и уже освобождённый указатели дают `EFI_INVALID_PARAMETER`. |
@@ -499,9 +604,11 @@ Simple File System, сохраняя фактический `DeviceHandle`, от
 Прошивка публикует `EFI_SIMPLE_TEXT_INPUT_PROTOCOL` и
 `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` на одном handle и пересчитывает CRC
 System Table. `ConOut` и `StdErr` используют один интерфейс вывода.
-Транспорт ввода до подключения USB-клавиатуры в S7-34 — COM1.
-Текущий перечень консольных протоколов состоит из Simple Text Input
-и Simple Text Output.
+Транспорт ввода — COM1 и, если плата содержит xHCI и клавиатура
+перечислена (S7-34), USB-клавиатура: оба источника пишут в одну
+очередь на 256 ключей (раздел «USB-клавиатура»). Перечень консольных
+протоколов: Simple Text Input и Simple Text Output; при USB-клавиатуре
+на handle ввода добавляется Simple Text Input Ex.
 
 Вывод поддерживает режим 0 с 80 столбцами и 25 строками. Позиция
 курсора, видимость, цвета и очистка передаются терминалу ANSI.
@@ -518,6 +625,10 @@ ESC с `[` или `O` и суффиксом `A…D` дают четыре scan c
 `WaitForKey` сигналится при готовом ключе. `ReadKeyStroke` продвигает
 таймеры и возвращает `EFI_NOT_READY` при пустой очереди.
 [UEFI 2.11, §12](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html).
+
+### USB-клавиатура (S7-34)
+
+Если плата содержит xHCI (`FirmwareBoardConfig::xhci`), прошивка находит функцию класса 0x0C0330 по ECAM, сбрасывает контроллер, перечисляет клавиатуру HID boot protocol на корневом хабе и опрашивает Interrupt IN без прерываний; результат — строка COM1 `OD-FW xhci: keyboard enumerated` или `OD-FW xhci: enumeration failed step=… detail=0x…`. Плата без xHCI ничего не печатает. Клавиши идут в ту же очередь на 256 ключей, что и COM1 (срез B): за один цикл опроса сначала байты COM1, затем накопленные клавиши USB, внутри источника порядок сохраняется; полная очередь оставляет байты в UART и отчёты в кольце xHCI. `ReadKeyStroke`/`ReadKeyStrokeEx`, `WaitForKey`/`WaitForKeyEx` и `Reset` работают над этой очередью; `EFI_KEY_STATE`: `KeyShiftState` = VALID плюс биты Shift, Ctrl, Alt, Logo (левые и правые), `KeyToggleState` = VALID плюс Scroll, Num, Caps Lock; у ключей COM1 состояние нулевое; нажатия одних модификаторов ключа не дают; для печатного символа биты Shift не передаются (UEFI 2.11 12.3.3). `SetState` меняет замки и LED (без VALID или с KEY_STATE_EXPOSED — `EFI_UNSUPPORTED`, при занятом драйвере — `EFI_NOT_READY`); `RegisterKeyNotify` и `UnregisterKeyNotify` — `EFI_UNSUPPORTED`. CapsLock, NumLock и ScrollLock переключают замки и LED. Таблица Usage ID страницы 0x07 → `EFI_INPUT_KEY` (раскладка US): 0x04–0x1D — буквы (Shift XOR CapsLock — прописные; Ctrl — коды 1–26), 0x1E–0x27 — цифры (с Shift — `!@#$%^&*()`), 0x28 и 0x58 — `\r`, 0x29 — scan code 0x17 (Esc), 0x2A — `\b`, 0x2B — `\t`, 0x2C — пробел, 0x2D–0x38 — знаки пунктуации с Shift-вариантами, 0x3A–0x45 — F1–F12 (scan 0x0B–0x16), 0x49–0x4E — Insert, Home, PageUp, Delete, End, PageDown (scan 0x07, 0x05, 0x09, 0x08, 0x06, 0x0A), 0x4F–0x52 — стрелки (scan 0x03, 0x04, 0x02, 0x01), 0x54–0x57 — знаки клавиатурного блока, 0x59–0x63 — цифры и точка при включённом NumLock, без него End, Down, PgDn, Left, Right, Home, Up, PgUp, Insert, Delete; остальные Usage ID, ErrorRollOver и модификаторы без символа ключей не дают. Автоповтора нет. Контракт: [XHCI_DEVICE.md](XHCI_DEVICE.md), раздел 15.
 
 ### События и TPL
 

@@ -54,6 +54,7 @@ use crate::marshal::{
     TpmsSensitiveCreate, TpmtPublic, TpmtSignature, TpmtTicket, TpmtTkHashcheck, Writer,
     digest_size, limits,
 };
+use crate::mldsa;
 use crate::object::{
     MAX_PRIVATE, Object, ParentKey, Secret, check_creation, check_external_public, check_public,
     creation_pcr_digest, derive_object, find_object, is_object_hierarchy, name_hash_alg,
@@ -103,7 +104,19 @@ pub(crate) fn select_signing_scheme(
 ) -> Result<Scheme, Rc> {
     let key_scheme = match params {
         PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => *scheme,
-        PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => {
+        // An ML-DSA key has no signing scheme and no hash (Part 2 v185, Table 230): it signs the
+        // message, and `inScheme` can only be NULL (`TPMU_SIG_SCHEME` has no ML-DSA member). The NULL
+        // scheme returned tells the caller to sign the message itself.
+        PublicParams::MlDsa { .. } => {
+            return if in_scheme.alg == alg::NULL {
+                Ok(Scheme::NULL)
+            } else {
+                Err(Rc::SCHEME.in_param(param))
+            };
+        }
+        PublicParams::KeyedHash { .. }
+        | PublicParams::MlKem { .. }
+        | PublicParams::SymCipher { .. } => {
             return Err(Rc::SCHEME.in_param(param));
         }
     };
@@ -132,7 +145,7 @@ pub(crate) fn signature_digest_size(signature: &TpmtSignature) -> Option<usize> 
         TpmtSignature::Rsassa { hash, .. }
         | TpmtSignature::Rsapss { hash, .. }
         | TpmtSignature::Ecdsa { hash, .. } => digest_size(*hash),
-        TpmtSignature::Null => None,
+        TpmtSignature::MlDsa { .. } | TpmtSignature::Null => None,
     }
 }
 
@@ -142,6 +155,7 @@ fn signature_alg(signature: &TpmtSignature) -> u16 {
         TpmtSignature::Rsassa { .. } => alg::RSASSA,
         TpmtSignature::Rsapss { .. } => alg::RSAPSS,
         TpmtSignature::Ecdsa { .. } => alg::ECDSA,
+        TpmtSignature::MlDsa { .. } => alg::MLDSA,
         TpmtSignature::Null => alg::NULL,
     }
 }
@@ -155,7 +169,9 @@ pub(crate) fn check_signature_scheme(
         TpmtSignature::Rsassa { hash, .. }
         | TpmtSignature::Rsapss { hash, .. }
         | TpmtSignature::Ecdsa { hash, .. } => (signature_alg(signature), *hash),
-        TpmtSignature::Null => return Err(Rc::SCHEME.in_param(param)),
+        TpmtSignature::MlDsa { .. } | TpmtSignature::Null => {
+            return Err(Rc::SCHEME.in_param(param));
+        }
     };
     if sig_scheme != (scheme.alg, scheme.hash) {
         return Err(Rc::SCHEME.in_param(param));
@@ -180,7 +196,9 @@ pub(crate) fn sign_digest_output(
                 s,
             }
         }
-        Secret::Data(_) | Secret::MlKem(_) => return Err(Rc::KEY.in_handle(1)),
+        Secret::Data(_) | Secret::MlKem(_) | Secret::MlDsa(_) => {
+            return Err(Rc::KEY.in_handle(1));
+        }
     };
     let mut w = Writer::new();
     signature.marshal(&mut w);
@@ -188,6 +206,36 @@ pub(crate) fn sign_digest_output(
         handles: Vec::new(),
         params: w.finish(),
     })
+}
+
+/// The ML-DSA private key of a signing object, or the reason it cannot sign:
+/// `TPM_RC_AUTH_UNAVAILABLE` for a public-only object, `TPM_RC_KEY` for another type.
+fn mldsa_key(object: &Object) -> Result<&mldsa::MlDsaPrivate, Rc> {
+    let sensitive = object.sensitive.as_ref().ok_or(Rc::AUTH_UNAVAILABLE)?;
+    match &sensitive.secret {
+        Secret::MlDsa(key) => Ok(key),
+        _ => Err(Rc::KEY.in_handle(1)),
+    }
+}
+
+/// The ML-DSA signature of `message` under `context` (an attestation, the message of a sign
+/// sequence).
+pub(crate) fn mldsa_message_signature(
+    object: &Object,
+    message: &[u8],
+    context: &[u8],
+) -> Result<TpmtSignature, Rc> {
+    let sig = mldsa::sign_message(mldsa_key(object)?, message, context).ok_or(Rc::FAILURE)?;
+    Ok(TpmtSignature::MlDsa { sig })
+}
+
+pub(crate) fn signature_output(signature: &TpmtSignature) -> Output {
+    let mut w = Writer::new();
+    signature.marshal(&mut w);
+    Output {
+        handles: Vec::new(),
+        params: w.finish(),
+    }
 }
 
 /// The RSASSA or RSAPSS signature of `digest` under `scheme` (the scheme selects the padding).
@@ -426,7 +474,10 @@ impl Tpm {
             _ => &self.hv.null_seed[..],
         };
         match params {
-            PublicParams::MlKem { .. } => seed,
+            // New types, no legacy identity: the whole Primary Seed.
+            PublicParams::MlKem { .. }
+            | PublicParams::MlDsa { .. }
+            | PublicParams::SymCipher { .. } => seed,
             PublicParams::Rsa { .. }
             | PublicParams::Ecc { .. }
             | PublicParams::KeyedHash { .. } => &seed[..LEGACY_SEED_BYTES],
@@ -621,12 +672,13 @@ impl Tpm {
         // A primary's parent is the hierarchy: fixedTPM, not encryptedDuplication.
         check_public(&template, true, false)?;
         check_creation(&template, &sens)?;
-        if self.objects.free_slots() == 0 {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let seed = self.hierarchy_seed(hierarchy, &template.params);
         let mut drbg = primary_drbg(seed, &template, &sens.data)?;
-        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut drbg)?;
+        // A Primary keeps the rejection sampling: its entropy is a vendor option (Part 1 §25.6.3).
+        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut drbg, false)?;
         let hierarchy_handle = hierarchy.to_be_bytes();
         let obj = Object::new(d.public, Some(d.sensitive), hierarchy, &hierarchy_handle);
         let (creation, creation_hash, ticket) = self.creation_artifacts(
@@ -680,7 +732,8 @@ impl Tpm {
                 return Err(Rc::SYMMETRIC.in_param(2));
             }
         }
-        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut self.drbg)?;
+        // An ordinary ECC key uses extra random bits (Part 1 v185 §44.6).
+        let d = derive_object(&template, &sens.user_auth, &sens.data, &mut self.drbg, true)?;
         let mut iv = [0u8; 16];
         self.drbg.generate(&mut iv).ok_or(Rc::FAILURE)?;
         let obj = Object::new(
@@ -729,7 +782,7 @@ impl Tpm {
         let public = TpmtPublic::unmarshal_sized(p)?;
         p.finish()?;
         check_public(&public, parent.fixed_tpm, parent.enc_dup)?;
-        if self.objects.free_slots() == 0 {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let sensitive = open_private(&public, parent.key(), blob)?;
@@ -827,7 +880,7 @@ impl Tpm {
         if !self.permanent_enabled(hierarchy) {
             return Err(Rc::HIERARCHY.in_param(3));
         }
-        if self.objects.free_slots() == 0 {
+        if !self.objects.accepts() {
             return Err(Rc::OBJECT_MEMORY);
         }
         let obj = Object::new(public, None, hierarchy, &[]);
@@ -983,9 +1036,16 @@ impl Tpm {
         }
         if matches!(
             o.public.params,
-            PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. }
+            PublicParams::KeyedHash { .. }
+                | PublicParams::MlKem { .. }
+                | PublicParams::SymCipher { .. }
         ) {
             return Err(Rc::KEY.in_handle(1));
+        }
+        // ML-DSA signs a message, not a digest: the deprecated `TPM2_Sign` does not support it
+        // (Part 3 v185, Table 115), the scheme of the key cannot sign a digest.
+        if matches!(o.public.params, PublicParams::MlDsa { .. }) {
+            return Err(Rc::SCHEME.in_handle(1));
         }
         // The key's scheme wins; inScheme must repeat it or be NULL. A key with a NULL scheme
         // signs with inScheme.
@@ -1019,6 +1079,25 @@ impl Tpm {
         if o.has(object_attr::X509_SIGN) {
             return Err(Rc::ATTRIBUTES.in_handle(1));
         }
+        if let PublicParams::MlDsa {
+            allow_external_mu, ..
+        } = o.public.params
+        {
+            // The digest is the external mu (Part 2 v185, Table 230), which needs
+            // `allowExternalMu`; a restricted key cannot sign a digest (Part 3, clause 20.7).
+            if !o.has(object_attr::SIGN) {
+                return Err(Rc::KEY.in_handle(1));
+            }
+            if !allow_external_mu || o.has(object_attr::RESTRICTED) {
+                return Err(Rc::SCHEME.in_handle(1));
+            }
+            if digest.len() != mldsa::MU_BYTES {
+                return Err(Rc::SIZE.in_param(2));
+            }
+            self.check_signing_ticket(o, digest, &validation)?;
+            let sig = mldsa::sign_mu(mldsa_key(o)?, digest).ok_or(Rc::FAILURE)?;
+            return Ok(signature_output(&TpmtSignature::MlDsa { sig }));
+        }
         let scheme = fixed_digest_scheme(o, 1)?;
         if digest_size(scheme.hash) != Some(digest.len()) {
             return Err(Rc::SIZE.in_param(2));
@@ -1039,8 +1118,11 @@ impl Tpm {
         {
             return Ok(());
         }
-        // Currently every hash produces a different digest width. The preceding length check and
-        // the HASHCHECK over those bytes therefore bind the digest to the signing scheme's hash.
+        // SHA-256, SHA-384 and SHA-512 produce digests of different widths (32, 48 and 64 octets),
+        // so for the hash schemes the preceding length check and the HASHCHECK over those bytes
+        // bind the digest to the signing scheme's hash. This does not hold for ML-DSA: its digest
+        // is mu of 64 octets, the width of SHA-512, so the ticket binds the bytes, not the hash
+        // that made them.
         if !self.valid_hashcheck_ticket(digest, ticket) {
             return Err(Rc::TICKET.in_param(3));
         }
@@ -1074,7 +1156,10 @@ impl Tpm {
         // A key with a signing scheme verifies signatures of that scheme only (RSASSA or RSAPSS).
         let key_scheme_alg = match &o.public.params {
             PublicParams::Rsa { scheme, .. } | PublicParams::Ecc { scheme, .. } => scheme.alg,
-            PublicParams::KeyedHash { .. } | PublicParams::MlKem { .. } => alg::NULL,
+            PublicParams::KeyedHash { .. }
+            | PublicParams::MlKem { .. }
+            | PublicParams::MlDsa { .. }
+            | PublicParams::SymCipher { .. } => alg::NULL,
         };
         if !type_ok || (key_scheme_alg != alg::NULL && key_scheme_alg != signature_alg(&signature))
         {
@@ -1106,6 +1191,33 @@ impl Tpm {
         p.finish()?;
 
         let o = self.object(inv.handles[0]).ok_or(Rc::reference_handle(0))?;
+        if let PublicParams::MlDsa {
+            allow_external_mu, ..
+        } = o.public.params
+        {
+            // The digest is the external mu; see `cmd_sign_digest`.
+            if !o.has(object_attr::SIGN) {
+                return Err(Rc::KEY.in_handle(1));
+            }
+            if !allow_external_mu || o.has(object_attr::RESTRICTED) {
+                return Err(Rc::SCHEME.in_handle(1));
+            }
+            if !matches!(signature, TpmtSignature::MlDsa { .. }) {
+                return Err(Rc::SCHEME.in_param(3));
+            }
+            if digest.len() != mldsa::MU_BYTES {
+                return Err(Rc::SIZE.in_param(2));
+            }
+            if !o.verify_mldsa_mu(digest, &signature) {
+                return Err(Rc::SIGNATURE);
+            }
+            // A ticket over an external mu names no hash: `TPM_ALG_NULL`.
+            return Ok(self.verified_signature_output(
+                o,
+                digest,
+                VerifiedKind::Digest { hash: alg::NULL },
+            ));
+        }
         let key_scheme = fixed_digest_scheme(o, 1)?;
         check_signature_scheme(&signature, key_scheme, 3)?;
         if digest_size(key_scheme.hash) != Some(digest.len()) {

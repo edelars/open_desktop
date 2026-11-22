@@ -1,7 +1,10 @@
 //! UEFI Simple Text Input and its bounded COM1 byte parser.
 
+use core::ffi::c_void;
+
 use crate::{
     bs::event::Event,
+    console::key_queue::KeyData,
     uefi::{guid::Guid, status::Status, types::Char16},
 };
 
@@ -10,6 +13,14 @@ pub const SIMPLE_TEXT_INPUT_PROTOCOL_GUID: Guid = Guid {
     data2: 0x69c7,
     data3: 0x11d2,
     data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+};
+
+/// EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID (UEFI 2.11, 12.2.1).
+pub const SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID: Guid = Guid {
+    data1: 0xdd9e_7534,
+    data2: 0x7762,
+    data3: 0x4698,
+    data4: [0x8c, 0x14, 0xf5, 0x85, 0x17, 0xa6, 0x25, 0xaa],
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +35,18 @@ pub struct SimpleTextInputProtocol {
     pub reset: unsafe extern "efiapi" fn(*mut Self, u8) -> Status,
     pub read_key_stroke: unsafe extern "efiapi" fn(*mut Self, *mut InputKey) -> Status,
     pub wait_for_key: Event,
+}
+
+/// EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL.
+#[repr(C)]
+pub struct SimpleTextInputExProtocol {
+    pub reset: unsafe extern "efiapi" fn(*mut Self, u8) -> Status,
+    pub read_key_stroke_ex: unsafe extern "efiapi" fn(*mut Self, *mut KeyData) -> Status,
+    pub wait_for_key_ex: Event,
+    pub set_state: unsafe extern "efiapi" fn(*mut Self, *mut u8) -> Status,
+    pub register_key_notify:
+        unsafe extern "efiapi" fn(*mut Self, *mut KeyData, *mut c_void, *mut *mut c_void) -> Status,
+    pub unregister_key_notify: unsafe extern "efiapi" fn(*mut Self, *mut c_void) -> Status,
 }
 
 #[cfg(any(target_os = "none", test))]
@@ -170,30 +193,108 @@ mod decoder {
     }
 }
 
+#[cfg(any(target_os = "none", test))]
+mod shared {
+    use super::decoder::Decoder;
+    use crate::console::key_queue::{KeyData, KeyQueue};
+
+    /// The console input state behind ConIn and ConInEx: the COM1 byte parser, the one bounded
+    /// key queue every source feeds, and the COM1 fault flag. Keys from COM1 enter the queue
+    /// as the parser completes them; the USB keyboard's staged keys are appended right after
+    /// ([`KeyQueue::take_from`]), so one poll cycle keeps COM1 keys ahead of USB keys and each
+    /// source keeps its own order.
+    pub(super) struct Shared {
+        decoder: Decoder,
+        pub(super) queue: KeyQueue,
+        pub(super) fault: bool,
+    }
+
+    impl Shared {
+        pub(super) const fn new() -> Self {
+            Self {
+                decoder: Decoder::new(),
+                queue: KeyQueue::new(),
+                fault: false,
+            }
+        }
+
+        pub(super) fn has_key(&self) -> bool {
+            !self.queue.is_empty()
+        }
+
+        pub(super) fn pop(&mut self) -> Option<KeyData> {
+            self.queue.pop()
+        }
+
+        /// ConIn Reset: forget parsed and queued keys.
+        pub(super) fn clear(&mut self) {
+            *self = Self::new();
+        }
+
+        fn move_decoded(&mut self) {
+            while self.queue.room() != 0 {
+                let Some(key) = self.decoder.pop() else {
+                    break;
+                };
+                self.queue
+                    .push(KeyData::plain(key.scan_code, key.unicode_char));
+            }
+        }
+
+        /// Reads up to `budget` bytes from COM1 while the parser and the queue have room: a
+        /// full queue leaves the bytes in the UART (backpressure, nothing is dropped).
+        pub(super) fn poll_bytes(
+            &mut self,
+            budget: usize,
+            mut next: impl FnMut() -> Result<Option<u8>, ()>,
+        ) {
+            for _ in 0..budget {
+                self.move_decoded();
+                if !self.decoder.can_receive() {
+                    break;
+                }
+                match next() {
+                    Ok(Some(byte)) => self.decoder.feed(byte),
+                    Ok(None) => break,
+                    Err(()) => {
+                        self.fault = true;
+                        break;
+                    }
+                }
+            }
+            self.move_decoded();
+        }
+
+        /// Timer tick of the single-ESC rule.
+        pub(super) fn tick(&mut self) {
+            self.decoder.tick();
+            self.move_decoded();
+        }
+    }
+}
+
 #[cfg(target_os = "none")]
-pub(super) use terminal::{prepare, release};
+pub(super) use terminal::{install_ex, prepare, release};
 
 #[cfg(target_os = "none")]
 mod terminal {
-    use super::{decoder::Decoder, *};
+    use super::{shared::Shared, *};
     use crate::bs::event::{
         EVT_NOTIFY_SIGNAL, EVT_NOTIFY_WAIT, EVT_TIMER, TIMER_PERIODIC, TPL_CALLBACK, TPL_NOTIFY,
         check_event, close_event, create_event, poll_due_events, set_timer, signal_event,
     };
+    use crate::console::key_queue::locks_of_set_state;
     use crate::console::serial_term::receive_checked;
+    use crate::uefi::system_table::SystemTable;
     use core::{cell::UnsafeCell, ffi::c_void, ptr};
 
     const POLL_100NS: u64 = 100_000;
     const POLL_BYTES: usize = 32;
 
-    struct InputState {
-        decoder: Decoder,
-        fault: bool,
-    }
-
     struct ConsoleInput {
         protocol: UnsafeCell<SimpleTextInputProtocol>,
-        state: UnsafeCell<InputState>,
+        extended: UnsafeCell<SimpleTextInputExProtocol>,
+        state: UnsafeCell<Shared>,
     }
 
     // Only BSP code can access these cells. Event dispatch runs after input
@@ -206,10 +307,15 @@ mod terminal {
             read_key_stroke,
             wait_for_key: ptr::null_mut(),
         }),
-        state: UnsafeCell::new(InputState {
-            decoder: Decoder::new(),
-            fault: false,
+        extended: UnsafeCell::new(SimpleTextInputExProtocol {
+            reset: reset_ex,
+            read_key_stroke_ex,
+            wait_for_key_ex: ptr::null_mut(),
+            set_state,
+            register_key_notify,
+            unregister_key_notify,
         }),
+        state: UnsafeCell::new(Shared::new()),
     };
 
     pub(in super::super) unsafe fn prepare() -> Result<(*mut SimpleTextInputProtocol, Event), Status>
@@ -258,16 +364,82 @@ mod terminal {
         }
     }
 
-    unsafe extern "efiapi" fn reset(this: *mut SimpleTextInputProtocol, _: u8) -> Status {
-        if this != INPUT.protocol.get() {
-            return Status::INVALID_PARAMETER;
+    /// Publishes EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL on the console input handle, next to the
+    /// Simple Text Input protocol and over the same key queue.
+    ///
+    /// # Safety
+    /// BSP, after `install` published the console; `system` is the live System Table.
+    pub(in super::super) unsafe fn install_ex(system: *mut SystemTable) -> Status {
+        let boot = unsafe { &*(*system).boot_services };
+        let mut handle = unsafe { (*system).console_in_handle() };
+        if handle.is_null() {
+            return Status::NOT_READY;
         }
-        unsafe {
-            INPUT.state.get().write(InputState {
-                decoder: Decoder::new(),
-                fault: false,
-            })
+        let mut wait = ptr::null_mut();
+        let status = unsafe {
+            create_event(
+                EVT_NOTIFY_WAIT,
+                TPL_NOTIFY,
+                Some(notify_wait),
+                ptr::null_mut(),
+                &mut wait,
+            )
         };
+        if status != Status::SUCCESS {
+            return status;
+        }
+        let extended = INPUT.extended.get();
+        unsafe { ptr::addr_of_mut!((*extended).wait_for_key_ex).write(wait) };
+        let status = unsafe {
+            (boot.install_protocol_interface)(
+                &mut handle,
+                &SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID,
+                0,
+                extended.cast(),
+            )
+        };
+        if status != Status::SUCCESS {
+            unsafe {
+                ptr::addr_of_mut!((*extended).wait_for_key_ex).write(ptr::null_mut());
+                close_event(wait);
+            }
+        }
+        status
+    }
+
+    fn wait_events() -> [Event; 2] {
+        unsafe {
+            [
+                ptr::addr_of!((*INPUT.protocol.get()).wait_for_key).read(),
+                ptr::addr_of!((*INPUT.extended.get()).wait_for_key_ex).read(),
+            ]
+        }
+    }
+
+    /// One poll cycle: the USB keyboard's event ring and LED update first (that may wait for a
+    /// control transfer and run callbacks, so no console state is borrowed meanwhile), then
+    /// COM1, then the USB keys behind the COM1 keys.
+    unsafe fn refresh(timer_tick: bool) {
+        crate::usb::service();
+        let state = unsafe { &mut *INPUT.state.get() };
+        state.poll_bytes(POLL_BYTES, receive_checked);
+        crate::usb::take_keys(&mut state.queue);
+        if timer_tick {
+            state.tick();
+        }
+    }
+
+    unsafe fn clear_stale_signal() {
+        for wait in wait_events() {
+            if !wait.is_null() {
+                unsafe { check_event(wait) };
+            }
+        }
+    }
+
+    unsafe fn do_reset() -> Status {
+        unsafe { (*INPUT.state.get()).clear() };
+        crate::usb::reset_keys();
         let mut drained = false;
         for _ in 0..POLL_BYTES {
             if receive_checked() == Ok(None) {
@@ -275,13 +447,41 @@ mod terminal {
                 break;
             }
         }
-        let wait = unsafe { ptr::addr_of!((*this).wait_for_key).read() };
-        unsafe { check_event(wait) };
+        unsafe { clear_stale_signal() };
         if drained {
             Status::SUCCESS
         } else {
             Status::DEVICE_ERROR
         }
+    }
+
+    /// Next key for either protocol; `NOT_READY` on an empty queue, `DEVICE_ERROR` once after a
+    /// COM1 fault.
+    unsafe fn next_key() -> Result<KeyData, Status> {
+        unsafe { poll_due_events() };
+        unsafe { refresh(false) };
+        let (result, empty) = unsafe {
+            let state = &mut *INPUT.state.get();
+            let result = if let Some(value) = state.pop() {
+                Ok(value)
+            } else if core::mem::take(&mut state.fault) {
+                Err(Status::DEVICE_ERROR)
+            } else {
+                Err(Status::NOT_READY)
+            };
+            (result, !state.has_key())
+        };
+        if empty && result.is_ok() {
+            unsafe { clear_stale_signal() };
+        }
+        result
+    }
+
+    unsafe extern "efiapi" fn reset(this: *mut SimpleTextInputProtocol, _: u8) -> Status {
+        if this != INPUT.protocol.get() {
+            return Status::INVALID_PARAMETER;
+        }
+        unsafe { do_reset() }
     }
 
     unsafe extern "efiapi" fn read_key_stroke(
@@ -291,61 +491,94 @@ mod terminal {
         if this != INPUT.protocol.get() || key.is_null() {
             return Status::INVALID_PARAMETER;
         }
-        unsafe { poll_due_events() };
-        let (status, empty) = unsafe {
-            let state = &mut *INPUT.state.get();
-            poll(state);
-            let status = if let Some(value) = state.decoder.pop() {
-                key.write(value);
+        match unsafe { next_key() } {
+            Ok(data) => {
+                unsafe { key.write(data.key) };
                 Status::SUCCESS
-            } else if core::mem::take(&mut state.fault) {
-                Status::DEVICE_ERROR
-            } else {
-                Status::NOT_READY
-            };
-            (status, !state.decoder.has_key())
-        };
-        if empty && status == Status::SUCCESS {
-            let wait = unsafe { ptr::addr_of!((*this).wait_for_key).read() };
-            unsafe { check_event(wait) };
+            }
+            Err(status) => status,
         }
-        status
     }
 
-    unsafe extern "efiapi" fn notify_wait(_: Event, _: *mut c_void) {
-        unsafe { poll_and_signal(false) };
+    unsafe extern "efiapi" fn reset_ex(this: *mut SimpleTextInputExProtocol, _: u8) -> Status {
+        if this != INPUT.extended.get() {
+            return Status::INVALID_PARAMETER;
+        }
+        unsafe { do_reset() }
+    }
+
+    unsafe extern "efiapi" fn read_key_stroke_ex(
+        this: *mut SimpleTextInputExProtocol,
+        key_data: *mut KeyData,
+    ) -> Status {
+        if this != INPUT.extended.get() || key_data.is_null() {
+            return Status::INVALID_PARAMETER;
+        }
+        match unsafe { next_key() } {
+            Ok(data) => {
+                unsafe { key_data.write(data) };
+                Status::SUCCESS
+            }
+            Err(status) => status,
+        }
+    }
+
+    /// SetState: the lock bits go to the keyboard and its LEDs (UEFI 2.11, 12.2.5). Without the
+    /// VALID bit, or with KEY_STATE_EXPOSED (partial keystrokes, not provided), the request is
+    /// refused as EFI_UNSUPPORTED, as EDK2's USB keyboard does. While a driver call is on the
+    /// stack (a nested call from the console timer) nothing is changed and EFI_NOT_READY says
+    /// so: the status is not in the list of 12.2.5, it marks a transient refusal.
+    unsafe extern "efiapi" fn set_state(
+        this: *mut SimpleTextInputExProtocol,
+        state: *mut u8,
+    ) -> Status {
+        if this != INPUT.extended.get() || state.is_null() {
+            return Status::INVALID_PARAMETER;
+        }
+        let requested = unsafe { state.read() };
+        if locks_of_set_state(requested).is_err() {
+            return Status::UNSUPPORTED;
+        }
+        match crate::usb::set_toggles(requested) {
+            crate::usb::SetToggles::Done => {
+                crate::usb::service();
+                Status::SUCCESS
+            }
+            crate::usb::SetToggles::Busy => Status::NOT_READY,
+            crate::usb::SetToggles::Absent => Status::UNSUPPORTED,
+        }
+    }
+
+    /// Key notification is not supported (UEFI_PROFILE.md): applications poll ReadKeyStrokeEx.
+    unsafe extern "efiapi" fn register_key_notify(
+        _: *mut SimpleTextInputExProtocol,
+        _: *mut KeyData,
+        _: *mut c_void,
+        _: *mut *mut c_void,
+    ) -> Status {
+        Status::UNSUPPORTED
+    }
+
+    unsafe extern "efiapi" fn unregister_key_notify(
+        _: *mut SimpleTextInputExProtocol,
+        _: *mut c_void,
+    ) -> Status {
+        Status::UNSUPPORTED
+    }
+
+    unsafe extern "efiapi" fn notify_wait(event: Event, _: *mut c_void) {
+        unsafe { refresh(false) };
+        if unsafe { (*INPUT.state.get()).has_key() } {
+            unsafe { signal_event(event) };
+        }
     }
 
     unsafe extern "efiapi" fn notify_timer(_: Event, _: *mut c_void) {
-        unsafe { poll_and_signal(true) };
-    }
-
-    unsafe fn poll_and_signal(timer_tick: bool) {
-        let ready = unsafe {
-            let state = &mut *INPUT.state.get();
-            poll(state);
-            if timer_tick {
-                state.decoder.tick();
-            }
-            state.decoder.has_key()
-        };
-        if ready {
-            let wait = unsafe { ptr::addr_of!((*INPUT.protocol.get()).wait_for_key).read() };
-            unsafe { signal_event(wait) };
-        }
-    }
-
-    fn poll(state: &mut InputState) {
-        for _ in 0..POLL_BYTES {
-            if !state.decoder.can_receive() {
-                break;
-            }
-            match receive_checked() {
-                Ok(Some(byte)) => state.decoder.feed(byte),
-                Ok(None) => break,
-                Err(()) => {
-                    state.fault = true;
-                    break;
+        unsafe { refresh(true) };
+        if unsafe { (*INPUT.state.get()).has_key() } {
+            for wait in wait_events() {
+                if !wait.is_null() {
+                    unsafe { signal_event(wait) };
                 }
             }
         }
@@ -354,7 +587,98 @@ mod terminal {
 
 #[cfg(test)]
 mod tests {
-    use super::{decoder::Decoder, *};
+    use super::{decoder::Decoder, shared::Shared, *};
+    use crate::console::key_queue::{KEY_QUEUE_CAPACITY, KeyQueue};
+
+    fn bytes(input: &[u8]) -> impl FnMut() -> Result<Option<u8>, ()> + '_ {
+        let mut index = 0;
+        move || {
+            let byte = input.get(index).copied();
+            index += 1;
+            Ok(byte)
+        }
+    }
+
+    fn drain(shared: &mut Shared) -> Vec<(u16, u16)> {
+        std::iter::from_fn(|| shared.pop())
+            .map(|data| (data.key.scan_code, data.key.unicode_char))
+            .collect()
+    }
+
+    #[test]
+    fn com1_keys_come_first_then_usb_keys_and_each_source_keeps_its_order() {
+        let mut shared = Shared::new();
+        shared.poll_bytes(32, bytes(b"ab"));
+        let mut staging = KeyQueue::new();
+        staging.push(KeyData::plain(0, u16::from(b'X')));
+        staging.push(KeyData::plain(0, u16::from(b'Y')));
+        shared.queue.take_from(&mut staging);
+        shared.poll_bytes(32, bytes(b"c"));
+        assert_eq!(
+            drain(&mut shared),
+            [b'a', b'b', b'X', b'Y', b'c'].map(|c| (0, u16::from(c)))
+        );
+        assert!(!shared.has_key());
+    }
+
+    #[test]
+    fn a_full_queue_stops_reading_com1_and_loses_nothing() {
+        let mut shared = Shared::new();
+        let input = [b'q'; 600];
+        let index = std::cell::Cell::new(0usize);
+        let mut source = || {
+            let byte = input.get(index.get()).copied();
+            if byte.is_some() {
+                index.set(index.get() + 1);
+            }
+            Ok(byte)
+        };
+        for _ in 0..40 {
+            shared.poll_bytes(32, &mut source);
+        }
+        // The queue holds 256, the parser's own queue a few more, the rest stays in the UART.
+        assert!(index.get() < input.len());
+        assert_eq!(shared.queue.room(), 0);
+        let consumed = index.get();
+        let mut seen = 0;
+        while let Some(data) = shared.pop() {
+            assert_eq!(data.key.unicode_char, u16::from(b'q'));
+            seen += 1;
+        }
+        assert!(seen >= KEY_QUEUE_CAPACITY);
+        // After the reader made room, polling resumes where it stopped.
+        for _ in 0..40 {
+            shared.poll_bytes(32, &mut source);
+            while shared.pop().is_some() {
+                seen += 1;
+            }
+        }
+        assert_eq!(index.get(), input.len());
+        assert_eq!(seen, input.len());
+        assert!(consumed < input.len());
+    }
+
+    #[test]
+    fn a_fault_is_reported_once_and_clear_resets_everything() {
+        let mut shared = Shared::new();
+        shared.poll_bytes(32, || Err(()));
+        assert!(shared.fault);
+        shared.poll_bytes(32, bytes(b"z"));
+        shared.clear();
+        assert!(!shared.fault);
+        assert!(!shared.has_key());
+        assert_eq!(drain(&mut shared), []);
+    }
+
+    #[test]
+    fn the_escape_timer_key_reaches_the_queue() {
+        let mut shared = Shared::new();
+        shared.poll_bytes(32, bytes(&[0x1b]));
+        assert!(!shared.has_key());
+        shared.tick();
+        shared.tick();
+        assert_eq!(drain(&mut shared), [(0x17, 0)]);
+    }
 
     #[test]
     fn split_unicode_and_escape_sequences_produce_only_complete_keys() {

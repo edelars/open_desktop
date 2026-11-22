@@ -368,6 +368,11 @@ impl SystemTable {
         self.firmware_vendor
     }
 
+    /// Handle that carries the console input protocols (null before the console is published).
+    pub fn console_in_handle(&self) -> Handle {
+        self.console_in_handle
+    }
+
     pub fn console_in(&self) -> *mut c_void {
         self.con_in
     }

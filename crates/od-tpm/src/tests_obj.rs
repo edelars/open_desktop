@@ -307,6 +307,7 @@ pub(super) fn secret_of(t: &Tpm, h: u32) -> Vec<u8> {
         Secret::Rsa(k) => crate::crypto::rsa_primes(k).unwrap().to_vec(),
         Secret::Ecc(k) => crate::crypto::ecc_scalar(k).to_vec(),
         Secret::MlKem(k) => crate::kem::private_seed(k).unwrap().to_vec(),
+        Secret::MlDsa(k) => crate::mldsa::private_seed(k).to_vec(),
         Secret::Data(d) => d.to_vec(),
     }
 }
@@ -416,9 +417,11 @@ fn tpmt_public_layout_matches_hand_written_bytes() {
 fn tpmt_public_unmarshal_codes() {
     let good = ecc_sign().to_bytes();
     let parse = |b: &[u8]| TpmtPublic::unmarshal(&mut Reader::new(b)).unwrap_err();
-    // Object type SYMCIPHER (0x0025) is not implemented: TPM_RC_TYPE (Table 211).
+    // Object type HashML-DSA (0x00A2) is not implemented: TPM_RC_TYPE (Table 211). ML-DSA
+    // (0x00A1) is implemented since slice 7 (`tests_mldsa.rs`).
     let mut b = good.clone();
-    b[1] = 0x25;
+    b[0] = 0x00;
+    b[1] = 0xA2;
     assert_eq!(parse(&b), Rc::TYPE);
     // nameAlg SHA-1: TPM_RC_HASH (Table 78).
     let mut b = good.clone();
@@ -428,9 +431,10 @@ fn tpmt_public_unmarshal_codes() {
     let mut b = good.clone();
     b[7] |= 1;
     assert_eq!(parse(&b), Rc::RESERVED_BITS);
-    // Curve NIST P-384: TPM_RC_CURVE; KDF other than NULL: TPM_RC_KDF.
+    // Curve NIST P-521 (5; NIST P-384, 4, is supported since slice 6): TPM_RC_CURVE; KDF other
+    // than NULL: TPM_RC_KDF.
     let mut b = good.clone();
-    b[17] = 0x04;
+    b[17] = 0x05;
     assert_eq!(parse(&b), Rc::CURVE);
     let mut b = good.clone();
     b[19] = 0x20;
@@ -475,7 +479,7 @@ fn create_primary_ecc_returns_a_loaded_object_with_consistent_artifacts() {
         panic!("not an ECC unique")
     };
     assert_eq!((x.len(), y.len()), (32, 32));
-    assert!(crate::crypto::ecc_point_valid(x, y));
+    assert!(crate::crypto::ecc_point_valid(curve::NIST_P256, x, y));
     assert_eq!(public.attributes, ecc_sign().attributes);
     // Name = nameAlg || SHA-256(TPMT_PUBLIC); Qualified Name of a primary = H(hierarchy handle
     // || Name) (Part 1, clause 24.5).
@@ -911,7 +915,7 @@ fn create_load_sign_verify_ecc() {
     let Unique::Ecc { x, y } = &public.unique else {
         panic!()
     };
-    assert!(crate::crypto::ecc_point_valid(x, y));
+    assert!(crate::crypto::ecc_point_valid(curve::NIST_P256, x, y));
     assert_eq!(child.hash, Sha256::digest(&child.creation).to_vec());
     assert_eq!((child.ticket.0, child.ticket.1), (0x8021, OWNER));
     // Not loaded yet: the new object occupies no slot.
@@ -2442,11 +2446,15 @@ fn startup_and_power_cycle_flush_transient_objects() {
 #[test]
 fn capability_lists_algorithms_curves_and_object_handles() {
     let mut t = started();
-    // TPM_CAP_ECC_CURVES: NIST P-256 only (TPML_ECC_CURVE).
+    // TPM_CAP_ECC_CURVES: NIST P-256 and NIST P-384 (TPML_ECC_CURVE; P-384 since slice 6).
     let (more, c, body, count) = cap_list(&get_cap(&mut t, cap::ECC_CURVES, 0, 10));
     assert!(!more && c == cap::ECC_CURVES);
-    assert_eq!((count, body), (1, u16b(curve::NIST_P256)));
-    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 4, 10)).3, 0);
+    assert_eq!(
+        (count, body),
+        (2, [u16b(curve::NIST_P256), u16b(curve::NIST_P384)].concat())
+    );
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 4, 10)).3, 1);
+    assert_eq!(cap_list(&get_cap(&mut t, cap::ECC_CURVES, 5, 10)).3, 0);
     // Transient handles: loaded sequence and key objects, ascending.
     ok(&run(
         &mut t,
@@ -2461,14 +2469,15 @@ fn capability_lists_algorithms_curves_and_object_handles() {
     assert_eq!(count, 2);
     assert_eq!(body, [&u32b(0x8000_0000)[..], &u32b(k)].concat());
     // The handles of the loaded objects are in the command table's response of GetCapability and
-    // free transient slots shrink (3 sequence + 8 object slots).
+    // free transient slots shrink (3 sequence and 8 object slots; the estimate is the smaller pool:
+    // 2 free sequence slots after one sequence, 7 free object slots after one key).
     let (_, _, v, _) = cap_list(&get_cap(
         &mut t,
         cap::TPM_PROPERTIES,
         pt::HR_TRANSIENT_AVAIL,
         1,
     ));
-    assert_eq!(&v[4..8], &u32b(11 - 2)[..]);
+    assert_eq!(&v[4..8], &u32b(2)[..]);
 }
 
 // ========================================================================= robustness

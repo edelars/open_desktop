@@ -1772,7 +1772,7 @@ bash tools/stage4/run_local_set.sh
 | `guest-firmware-artifacts-build` | not_run | отдельная сборка `tools/build/*.py`, `firmware/uefi` и их `tools/build/test_*.py` (toolchain `x86_64-unknown-none`/uefi; не входит в S4-44a/b) |
 | `vmhost-system-smokes` | not_run | собранный VMHost app bundle и desktop-сессия (`tests/system/*.py`, `*.swift`, `*.c`; scope этапа 3) |
 | `runner-stress-mode` | not_run | stress mode runner в `tests/system/` (передано из S4-43; владелец S4-44) |
-| `reboot-cycles` | not_run | `--reboot-cycles`: повторные boot/STOP/reset в runner (передано из S4-43; S4-44, затем STAGE_7, S7-26) |
+| `reboot-cycles` | partial | `--reboot-cycles` для прошивки реализован в S7-26a (`boot-firmware --fv-app reboot --reboot-cycles N`, `tests/system/firmware_reset_smoke.py`, [FIRMWARE.md](FIRMWARE.md)); для Linux-платы и режима stress не сделан |
 | `guest-ram-limit` | not_run | явный лимит guest RAM (в S4-43 проверены только host heap/RSS; владелец S4-44) |
 | `executable-cache-limit` | not_run | лимит executable cache (`crates/od-jit/src/dispatch.rs`; S4-42 или S4-44) |
 

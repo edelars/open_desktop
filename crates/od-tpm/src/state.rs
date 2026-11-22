@@ -289,6 +289,17 @@ impl Tpm {
         self.da_v = DaVolatile::default();
     }
 
+    /// `_TPM_Init` delivered by a platform that keeps running (a machine reset, S7-26) at the
+    /// owner's time `now_ms`: the powered time up to the reset is folded into `Clock` first,
+    /// and the calibration of the owner's clock starts at `now_ms`, so the next command at
+    /// `now_ms + d` advances the power time by `d`, not by `now_ms + d`. Everything else is
+    /// [`Self::init`]; the next command must be `TPM2_Startup`.
+    pub fn init_at(&mut self, now_ms: u64) {
+        self.advance_power_time(now_ms);
+        self.init();
+        self.time_calibration.reference_ms = now_ms;
+    }
+
     /// Runs one command. `command` is the complete command buffer, `locality` the locality of the
     /// caller (only 0 is served, ADR-0009), and `now_ms` the owner's uncalibrated milliseconds since
     /// `_TPM_Init` (non-decreasing; a smaller value is ignored). Returns the complete response.
@@ -360,7 +371,7 @@ impl Tpm {
         self.da_tick();
     }
 
-    /// Bytes of the persistent state (format `ODTPMSTA` v6). **Sensitive data**: they contain the
+    /// Bytes of the persistent state (format `ODTPMSTA`, `SNAPSHOT_VERSION`). **Sensitive data**: they contain the
     /// seeds, the authorization values, the NV data and the private keys in clear text (S9-27
     /// protects them); do not log or store them unprotected. In the unreachable case that a
     /// private part cannot be marshaled the result is empty, which `restore` rejects.
@@ -550,6 +561,66 @@ mod tests {
         Tpm::new(&[7u8; 48]).unwrap()
     }
 
+    /// A snapshot of the given version around a payload formed by the test.
+    fn wrap_snapshot(version: u16, body: &[u8]) -> Vec<u8> {
+        let mut bytes = b"ODTPMSTA".to_vec();
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(&Sha256::digest(body));
+        bytes
+    }
+
+    /// The payload of a version 3 snapshot written independently of the current writer: three
+    /// 32-octet seeds of 0x42, Clock 1234, `resetCount`, restart count 5, owner auth "old", the
+    /// DA parameters, no NV index and no persistent object.
+    fn payload_v3(reset_count: u32) -> Vec<u8> {
+        let mut payload = vec![0x42; 96];
+        payload.extend_from_slice(&1234u64.to_be_bytes());
+        payload.extend_from_slice(&reset_count.to_be_bytes());
+        payload.extend_from_slice(&5u32.to_be_bytes());
+        payload.extend_from_slice(&[1, 3, b'o', b'l', b'd', 0, 0, 1]);
+        for word in [2u32, 32, 600, 86_400] {
+            payload.extend_from_slice(&word.to_be_bytes());
+        }
+        payload.push(1); // Lockout auth enabled.
+        payload.extend_from_slice(&[0; 11]); // NV count, counter maximum and object count.
+        payload
+    }
+
+    /// The payload of `version` (3 through 8): each version appends its fields to the previous
+    /// one (three NULL primary policies, `totalResetCount`, the PCR allocation mask, the
+    /// establishment flag and the 96 octets of seed tails).
+    fn payload_of(
+        version: u16,
+        reset_count: u32,
+        total_reset_count: u64,
+        pcr_mask: u8,
+        established: u8,
+        seed_tails: &[u8; 96],
+    ) -> Vec<u8> {
+        let mut payload = payload_v3(reset_count);
+        if version >= 4 {
+            payload.extend_from_slice(&[0, 0x10, 0, 0x10, 0, 0x10]);
+        }
+        if version >= 5 {
+            payload.extend_from_slice(&total_reset_count.to_be_bytes());
+        }
+        if version >= 6 {
+            payload.push(pcr_mask);
+        }
+        if version >= 7 {
+            payload.push(established);
+        }
+        if version >= 8 {
+            payload.extend_from_slice(seed_tails);
+        }
+        payload
+    }
+
+    const NO_TAILS: [u8; 96] = [0; 96];
+
     #[test]
     fn new_requires_entropy() {
         assert_eq!(
@@ -607,15 +678,7 @@ mod tests {
         }
         payload.push(1); // Lockout auth enabled.
         payload.extend_from_slice(&[0; 11]); // NV count, counter maximum and object count.
-        let wrap = |version: u16, body: &[u8]| {
-            let mut bytes = b"ODTPMSTA".to_vec();
-            bytes.extend_from_slice(&version.to_be_bytes());
-            bytes.extend_from_slice(&[0; 2]);
-            bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-            bytes.extend_from_slice(body);
-            bytes.extend_from_slice(&Sha256::digest(body));
-            bytes
-        };
+        let wrap = wrap_snapshot;
         let legacy = wrap(3, &payload);
         let t = Tpm::restore(&legacy, &[9; 48]).unwrap();
         assert_eq!(t.persistent.clock_base_ms, 1234);
@@ -692,6 +755,107 @@ mod tests {
         assert_eq!(
             Tpm::restore(&wrap(6, &payload), &[9; 48]).unwrap_err(),
             StateError::BadField
+        );
+    }
+
+    #[test]
+    fn restore_v5_reads_the_total_reset_count_and_defaults_the_rest() {
+        let body = payload_of(5, 0, 0, 0, 0, &NO_TAILS);
+        let t = Tpm::restore(&wrap_snapshot(5, &body), &[9; 48]).unwrap();
+        assert_eq!(t.persistent.reset_count, 0);
+        assert_eq!(t.persistent.total_reset_count, 0);
+        // The fields of later versions take their defaults: both banks, not established.
+        assert_eq!(t.persistent.pcr_allocation, PcrAllocation::default());
+        assert!(!t.platform_established());
+
+        let body = payload_of(5, 3, 9, 0, 0, &NO_TAILS);
+        let t = Tpm::restore(&wrap_snapshot(5, &body), &[9; 48]).unwrap();
+        assert_eq!(
+            (t.persistent.reset_count, t.persistent.total_reset_count),
+            (3, 9)
+        );
+        // A total below the reset count is inconsistent.
+        let body = payload_of(5, 3, 2, 0, 0, &NO_TAILS);
+        assert_eq!(
+            Tpm::restore(&wrap_snapshot(5, &body), &[9; 48]).unwrap_err(),
+            StateError::BadField
+        );
+    }
+
+    #[test]
+    fn restore_v6_reads_the_pcr_allocation_of_both_banks() {
+        for (mask, expected) in [
+            (3, PcrAllocation::default()),
+            (1, PcrAllocation::from_bits(1).unwrap()),
+            (2, PcrAllocation::from_bits(2).unwrap()),
+        ] {
+            let body = payload_of(6, 4, 17, mask, 0, &NO_TAILS);
+            let t = Tpm::restore(&wrap_snapshot(6, &body), &[9; 48]).unwrap();
+            assert_eq!(t.persistent.pcr_allocation, expected);
+            assert_eq!(t.persistent.pcr_allocation.bits(), mask);
+            assert_eq!(t.persistent.total_reset_count, 17);
+            assert!(!t.platform_established());
+        }
+        assert_eq!(PcrAllocation::default().bits(), 3);
+    }
+
+    #[test]
+    fn restore_v7_reads_the_establishment_flag() {
+        let body = payload_of(7, 4, 17, 3, 0, &NO_TAILS);
+        let t = Tpm::restore(&wrap_snapshot(7, &body), &[9; 48]).unwrap();
+        assert!(!t.platform_established());
+        let body = payload_of(7, 4, 17, 3, 1, &NO_TAILS);
+        let t = Tpm::restore(&wrap_snapshot(7, &body), &[9; 48]).unwrap();
+        assert!(t.platform_established());
+        let body = payload_of(7, 4, 17, 3, 2, &NO_TAILS);
+        assert_eq!(
+            Tpm::restore(&wrap_snapshot(7, &body), &[9; 48]).unwrap_err(),
+            StateError::BadField
+        );
+    }
+
+    #[test]
+    fn restore_v7_extends_the_seeds_deterministically_and_v8_reads_the_tails() {
+        let v7 = wrap_snapshot(7, &payload_of(7, 4, 17, 3, 0, &NO_TAILS));
+        let seeds = |t: &Tpm| {
+            [
+                t.persistent.platform_seed.to_vec(),
+                t.persistent.owner_seed.to_vec(),
+                t.persistent.endorsement_seed.to_vec(),
+            ]
+        };
+        let first = seeds(&Tpm::restore(&v7, &[9; 48]).unwrap());
+        let second = seeds(&Tpm::restore(&v7, &[9; 48]).unwrap());
+        let other = seeds(&Tpm::restore(&v7, &[10; 48]).unwrap());
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        for seed in first.iter().chain(&other) {
+            // The 32 stored octets stay; the other 32 are new and not zero.
+            assert_eq!(seed[..LEGACY_SEED_BYTES], [0x42; LEGACY_SEED_BYTES]);
+            assert_ne!(seed[LEGACY_SEED_BYTES..], [0; LEGACY_SEED_BYTES]);
+        }
+        // The three tails of one restore are different from each other.
+        assert_ne!(first[0][32..], first[1][32..]);
+        assert_ne!(first[1][32..], first[2][32..]);
+
+        // Version 8 stores the tails: they come from the snapshot and do not depend on entropy.
+        let mut tails = [0u8; 96];
+        for (i, octet) in tails.iter_mut().enumerate() {
+            *octet = 0xa5 ^ i as u8;
+        }
+        let v8 = wrap_snapshot(8, &payload_of(8, 4, 17, 3, 0, &tails));
+        for entropy in [[9u8; 48], [10; 48]] {
+            let restored = seeds(&Tpm::restore(&v8, &entropy).unwrap());
+            for (i, seed) in restored.iter().enumerate() {
+                assert_eq!(seed[..32], [0x42; 32]);
+                assert_eq!(seed[32..], tails[32 * i..32 * (i + 1)]);
+            }
+        }
+        // A truncated tail is a short payload.
+        let body = payload_of(8, 4, 17, 3, 0, &tails);
+        assert_eq!(
+            Tpm::restore(&wrap_snapshot(8, &body[..body.len() - 1]), &[9; 48]).unwrap_err(),
+            StateError::BadLength
         );
     }
 

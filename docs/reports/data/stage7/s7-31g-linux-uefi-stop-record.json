@@ -1,0 +1,1102 @@
+{
+  "inputs": {
+    "boot_option": "Boot0001 = \\EFI\\BOOT\\BOOTX64.EFI + OptionalData (UTF-16LE cmdline), BootOrder = [1]",
+    "cmdline": "console=ttyS0 initrd=\\EFI\\BOOT\\INITRD.IMG od.nonce=od7s31adiagnostic0001",
+    "initramfs_sha256": "ee9183a4eded3c16a8c6a7a81c6d5bb79be8bb023f793f7cd61694ea2bd3e588",
+    "nonce_channel": "kernel command line od.nonce= (S5-07 path); no trailer in the archive",
+    "nvram_seed_sha256": "551f9d995b3c7b482f168bee48b488cbca2ff3ebf3e81d9285b4d08c324ce625",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "inputs_per_variant": {
+    "rebased": {
+      "firmware_rom_sha256": "f4866d823a521f78f806f033b2bd6d70adf2ea6b950cc605f3d9290d0f16b0c6"
+    },
+    "rebased-hdr": {
+      "firmware_rom_sha256": "f4866d823a521f78f806f033b2bd6d70adf2ea6b950cc605f3d9290d0f16b0c6"
+    },
+    "stock": {
+      "firmware_rom_sha256": "f4866d823a521f78f806f033b2bd6d70adf2ea6b950cc605f3d9290d0f16b0c6"
+    }
+  },
+  "note": "Two runs per variant, identical (records_identical). The three variants were measured by three separate invocations of the script (parallel); the ROM hash depends on the checkout path of the build, see inputs_per_variant.",
+  "schema": "od-s7-31g-stop-record-v1",
+  "variants": {
+    "rebased": {
+      "esp_sha256": "b47e8c093a4fb4f4c27e2ed870d41c25ffdae160d042f91ec5a4200dd4538e6c",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x1000",
+        "image_base": "0x1000000",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.454943] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "d76de0f19521d92c5e2e006505bf97469f31cf291d785b28c3b26290ab986603",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464322,
+          "retired": 2000000000,
+          "rip": "0xffffffff9664e269",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649712,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252712
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663430,
+                "rip": "0xffffffff98f254ce",
+                "virtual_ns": 1343266430
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019526,
+                "rip": "0x207468b",
+                "virtual_ns": 199584526
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe69f680e000",
+                "limit": "0x7f"
+              },
+              "rax": "0x20",
+              "rflags": "0x256",
+              "rsp": "0xffffceea00067da0",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x5444888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649712,
+              "virtual_ns": 1343252712
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "750a4180fc5f0f858c0100004d63e6498b7d084889de4c89e2e859d30b0185c0",
+            "rip_fetch_error": null,
+            "rip_physical": "0x304e269",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x5444ff8",
+                "level": "PML4E",
+                "raw": "0x0000000005447067"
+              },
+              {
+                "entry_gpa": "0x5447ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000005448063"
+              },
+              {
+                "entry_gpa": "0x5448598",
+                "level": "PDE",
+                "raw": "0x00000000030000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "rebased"
+        },
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.454943] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "d76de0f19521d92c5e2e006505bf97469f31cf291d785b28c3b26290ab986603",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464322,
+          "retired": 2000000000,
+          "rip": "0xffffffff9664e269",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649712,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252712
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663430,
+                "rip": "0xffffffff98f254ce",
+                "virtual_ns": 1343266430
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019526,
+                "rip": "0x207468b",
+                "virtual_ns": 199584526
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe69f680e000",
+                "limit": "0x7f"
+              },
+              "rax": "0x20",
+              "rflags": "0x256",
+              "rsp": "0xffffceea00067da0",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x5444888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649712,
+              "virtual_ns": 1343252712
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "750a4180fc5f0f858c0100004d63e6498b7d084889de4c89e2e859d30b0185c0",
+            "rip_fetch_error": null,
+            "rip_physical": "0x304e269",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x5444ff8",
+                "level": "PML4E",
+                "raw": "0x0000000005447067"
+              },
+              {
+                "entry_gpa": "0x5447ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000005448063"
+              },
+              {
+                "entry_gpa": "0x5448598",
+                "level": "PDE",
+                "raw": "0x00000000030000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "rebased"
+        }
+      ],
+      "variant_file_sha256": "6edb37f06ab7af065fc852db05b243d3ef3357b246837c1c75423fc51c2bf63c"
+    },
+    "rebased-hdr": {
+      "esp_sha256": "edf1e1e318ccc9ab9a71bcb7b7a7cbf7a485a4bd74913c0625dbe0162cff0e8f",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x400",
+        "image_base": "0x1000000",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.454109] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "0dfe5107a0a551c5bf8d03a3c3db24f018dcfb01cbdcfc39aa1684f0b6a28542",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464348,
+          "retired": 2000000000,
+          "rip": "0xffffffffa6a4e366",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649614,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252614
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663332,
+                "rip": "0xffffffffa93254ce",
+                "virtual_ns": 1343266332
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019428,
+                "rip": "0x207468b",
+                "virtual_ns": 199584428
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe1a901ff000",
+                "limit": "0x7f"
+              },
+              "rax": "0xffffffff",
+              "rflags": "0x216",
+              "rsp": "0xffffcb7d00067da0",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x4e44888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649614,
+              "virtual_ns": 1343252614
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "4180fc5c74964180fc220f85dcfeffffe96bffffff3c220f8463ffffff0fb643",
+            "rip_fetch_error": null,
+            "rip_physical": "0x2a4e366",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x4e44ff8",
+                "level": "PML4E",
+                "raw": "0x0000000004e47067"
+              },
+              {
+                "entry_gpa": "0x4e47ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000004e48063"
+              },
+              {
+                "entry_gpa": "0x4e489a8",
+                "level": "PDE",
+                "raw": "0x0000000002a000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "rebased-hdr"
+        },
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.454109] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "0dfe5107a0a551c5bf8d03a3c3db24f018dcfb01cbdcfc39aa1684f0b6a28542",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464348,
+          "retired": 2000000000,
+          "rip": "0xffffffffa6a4e366",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649614,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252614
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663332,
+                "rip": "0xffffffffa93254ce",
+                "virtual_ns": 1343266332
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019428,
+                "rip": "0x207468b",
+                "virtual_ns": 199584428
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe1a901ff000",
+                "limit": "0x7f"
+              },
+              "rax": "0xffffffff",
+              "rflags": "0x216",
+              "rsp": "0xffffcb7d00067da0",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x4e44888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649614,
+              "virtual_ns": 1343252614
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "4180fc5c74964180fc220f85dcfeffffe96bffffff3c220f8463ffffff0fb643",
+            "rip_fetch_error": null,
+            "rip_physical": "0x2a4e366",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x4e44ff8",
+                "level": "PML4E",
+                "raw": "0x0000000004e47067"
+              },
+              {
+                "entry_gpa": "0x4e47ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000004e48063"
+              },
+              {
+                "entry_gpa": "0x4e489a8",
+                "level": "PDE",
+                "raw": "0x0000000002a000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "rebased-hdr"
+        }
+      ],
+      "variant_file_sha256": "08274984c35fd60dce78c001b62aa84cca4504d0bb9972169a5183cc2bd7f70f"
+    },
+    "stock": {
+      "esp_sha256": "29dfb4aa6a8030430328cdb660940f9a3bd295e4d853ecc9b9c7026a7ffff266",
+      "pe": {
+        "entry_rva": "0x1075f78",
+        "headers_size": "0x1000",
+        "image_base": "0x0",
+        "image_size": "0x10f0000"
+      },
+      "records_identical": true,
+      "runs": [
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.453415] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "d07762e26bed88fb3c32a1389031fa5dfcb6ecaec4ae00e091c7591ee5c8ce96",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464361,
+          "retired": 2000000000,
+          "rip": "0xffffffff8c30b797",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649473,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252473
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663137,
+                "rip": "0xffffffff8db254ce",
+                "virtual_ns": 1343266137
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019698,
+                "rip": "0x167468b",
+                "virtual_ns": 199584698
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe3819b42000",
+                "limit": "0x7f"
+              },
+              "rax": "0xffffffff8d87e403",
+              "rflags": "0x202",
+              "rsp": "0xffffd10700067d68",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x5c44888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649473,
+              "virtual_ns": 1343252473
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "75f74829f831ffc3cccccccc31c031ffc3cccccccc0f1f400090909090909090",
+            "rip_fetch_error": null,
+            "rip_physical": "0x490b797",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x5c44ff8",
+                "level": "PML4E",
+                "raw": "0x0000000005c47067"
+              },
+              {
+                "entry_gpa": "0x5c47ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000005c48063"
+              },
+              {
+                "entry_gpa": "0x5c48308",
+                "level": "PDE",
+                "raw": "0x00000000048000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "stock"
+        },
+        {
+          "activity": "Running",
+          "bytes": {
+            "source": "unmapped-to-a-known-image"
+          },
+          "com1_bytes": 18596,
+          "com1_last_line": "[    1.453415] rcu: \tMax phase no-delay instances is 400.",
+          "com1_sha256": "d07762e26bed88fb3c32a1389031fa5dfcb6ecaec4ae00e091c7591ee5c8ce96",
+          "cpu_loop": "unified",
+          "exit": "budget_exhausted",
+          "exit_boot_services_entered": true,
+          "exit_detail": "BudgetExhausted",
+          "fw_stop": null,
+          "memory_error": null,
+          "milestones_requested": [],
+          "milestones_visited_in_order": [],
+          "nvram_snapshot_sha256": "592793c670f5a646576fae6da6aadb4cf11c9633085e0571c06995b61e5e5cc9",
+          "page_fault": null,
+          "quanta": 1464361,
+          "retired": 2000000000,
+          "rip": "0xffffffff8c30b797",
+          "rip_symbol": null,
+          "runner_exit_code": 5,
+          "status": "error",
+          "stop_reason": null,
+          "unified": {
+            "checkpoints": [
+              {
+                "cpl": 0,
+                "id": 0,
+                "kind": "boundary",
+                "name": "entry",
+                "quanta": 1,
+                "retired": 0,
+                "rip": "0x200040",
+                "virtual_ns": 0
+              },
+              {
+                "cpl": 0,
+                "id": 1,
+                "kind": "boundary",
+                "name": "marker",
+                "quanta": 316260,
+                "retired": 1241649473,
+                "rip": "0x2223e0",
+                "virtual_ns": 1343252473
+              },
+              {
+                "cpl": 0,
+                "id": 2,
+                "kind": "after_event",
+                "name": "first_lidt",
+                "quanta": 143,
+                "retired": 3032779,
+                "rip": "0x200b81",
+                "virtual_ns": 3032779
+              },
+              {
+                "cpl": 0,
+                "id": 3,
+                "kind": "after_event",
+                "name": "first_cr3_write",
+                "quanta": 87,
+                "retired": 3029061,
+                "rip": "0x20b1a7",
+                "virtual_ns": 3029061
+              },
+              {
+                "cpl": 0,
+                "id": 4,
+                "kind": "after_event",
+                "name": "first_page_fault",
+                "quanta": 322290,
+                "retired": 1241663137,
+                "rip": "0xffffffff8db254ce",
+                "virtual_ns": 1343266137
+              },
+              {
+                "cpl": 0,
+                "id": 6,
+                "kind": "boundary",
+                "name": "cpuid_leaf_0",
+                "quanta": 308173,
+                "retired": 98019698,
+                "rip": "0x167468b",
+                "virtual_ns": 199584698
+              }
+            ],
+            "cpl3_retired": 0,
+            "cpuid_divergence_leaf": null,
+            "cr3_changes": 26417,
+            "exceptions_delivered": 7,
+            "final_state": {
+              "cs_selector": "0x10",
+              "gdtr": {
+                "base": "0xfffffe3819b42000",
+                "limit": "0x7f"
+              },
+              "rax": "0xffffffff8d87e403",
+              "rflags": "0x202",
+              "rsp": "0xffffd10700067d68",
+              "ss_cache": "DataSegmentDescriptorCache { base: 0, limit: 4294967295, access: 147, flags: 12 }",
+              "ss_selector": "0x0",
+              "sti_shadow": "Clear"
+            },
+            "first_page_fault": {
+              "cr2": "0xffff888007f0f000",
+              "error_code": "0x0",
+              "translation_error": "PageFault { record: PageFaultRecord { fault: ArchitecturalFault { vector: 14, error_code: Some(16), linear_address: Some(18446612682203262976) }, saved_rip: 18446612682203262976, access: Fetch, context: AccessContext { mode: Long64, privilege: Ring0, origin: Explicit } }, reason: NotPresent { level: Pml4 } }",
+              "walk": [
+                {
+                  "entry_gpa": "0x5c44888",
+                  "level": "PML4E",
+                  "raw": "0x0000000000000000"
+                }
+              ]
+            },
+            "marker": {
+              "quanta": 316260,
+              "retired": 1241649473,
+              "virtual_ns": 1343252473
+            },
+            "marker_rip": "0x2223e0",
+            "members": [
+              "cli",
+              "cpu_owned_cr3",
+              "cpuid:X8664V1Stage4A",
+              "rdtsc",
+              "msr:EferReadOnlyV1(3328)",
+              "msr:fs_gs_base",
+              "msr:star_write",
+              "msr:lstar_write",
+              "msr:cstar_write",
+              "msr:sysenter_cs_write",
+              "msr:sysenter_stack_write",
+              "msr:syscall_mask_write",
+              "msr:kernel_gs_base_write",
+              "msr:tdx_keyid_partitioning_read",
+              "fp_state",
+              "int3",
+              "pio_u8",
+              "sti",
+              "popf_cpl0",
+              "pci_config",
+              "irq",
+              "user_mode",
+              "syscall"
+            ],
+            "page_faults_delivered": 7,
+            "rip_bytes": "75f74829f831ffc3cccccccc31c031ffc3cccccccc0f1f400090909090909090",
+            "rip_fetch_error": null,
+            "rip_physical": "0x490b797",
+            "rip_walk": [
+              {
+                "entry_gpa": "0x5c44ff8",
+                "level": "PML4E",
+                "raw": "0x0000000005c47067"
+              },
+              {
+                "entry_gpa": "0x5c47ff0",
+                "level": "PDPTE",
+                "raw": "0x0000000005c48063"
+              },
+              {
+                "entry_gpa": "0x5c48308",
+                "level": "PDE",
+                "raw": "0x00000000048000e3"
+              }
+            ],
+            "set_exit_detail": "Run(InstructionBudgetExhausted)"
+          },
+          "variant": "stock"
+        }
+      ],
+      "variant_file_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+    }
+  }
+}

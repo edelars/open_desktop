@@ -3,6 +3,7 @@
 
 use sha2::{Digest, Sha384};
 
+use crate::codes::curve;
 use crate::credential;
 use crate::crypto::{
     HashAlg, RsaPadding, ecc_ecdh, ecc_from_scalar, ecc_public, ecc_sign, ecc_verify, hash, hmac,
@@ -25,9 +26,11 @@ pub(crate) fn known_answers() -> bool {
         && transport_known_answers()
         && credential::self_test()
         && ecc_known_answers().is_some()
+        && ecc384_known_answers().is_some()
         && rsa_known_answers().is_some()
         && rsa3072_known_answers().is_some()
         && mlkem_known_answers().is_some()
+        && mldsa_known_answers().is_some()
 }
 
 // SHA-512, KDFa and HMAC over SHA-384/SHA-512 and the ECDSA verification of SHA-384/SHA-512
@@ -75,6 +78,7 @@ fn sha2_known_answers() -> bool {
         && hmac(HashAlg::Sha384, b"Jefe", &[data_a, data_b]).as_slice() == HMAC_384
         && hmac(HashAlg::Sha512, b"Jefe", &[data_a, data_b]).as_slice() == HMAC_512
         && ecc_verify(
+            curve::NIST_P256,
             &X,
             &Y,
             hash(HashAlg::Sha384, &[b"sample"]).as_slice(),
@@ -82,6 +86,7 @@ fn sha2_known_answers() -> bool {
             &S_384,
         )
         && ecc_verify(
+            curve::NIST_P256,
             &X,
             &Y,
             hash(HashAlg::Sha512, &[b"sample"]).as_slice(),
@@ -121,6 +126,72 @@ fn mlkem_known_answers() -> Option<()> {
         && sha256(ciphertext.as_slice()) == CIPHERTEXT_SHA256
         && encapsulated.as_slice() == ENCAPSULATED)
         .then_some(())
+}
+
+// NIST ACVP ML-DSA-keyGen-FIPS204 and ML-DSA-sigGen-FIPS204, revision
+// 975de31eb83d87039ec88934fdc47d8c312b892d, ML-DSA-65: keyGen case 26 (seed to public key); sigGen
+// case 41 (external interface, pure, deterministic, with a context) and case 121 (internal
+// interface, external mu, deterministic). The vectors give the expanded private key (FIPS 204
+// `skEncode`), which only `ExpandedSigningKey::from_expanded` reads (deprecated in favour of the
+// seed; the TPM stores seeds). The public keys and signatures are compared by their SHA-256.
+#[allow(deprecated)]
+fn mldsa_known_answers() -> Option<()> {
+    use ml_dsa::common::array::Array;
+    use ml_dsa::common::typenum::U64;
+    use ml_dsa::{ExpandedSigningKey, ExpandedSigningKeyBytes, MlDsa65};
+
+    const KEYGEN_SEED: [u8; 32] =
+        hex("a991fd42b071d49c48ae3e75c647459e0daad1e1ba356a04801912d3294bcff8");
+    const KEYGEN_PUBLIC_SHA256: [u8; 32] =
+        hex("b1a7d0d2f0d7a04b9d5ffccd9bd578864dab4a01cdd7f70a05cd1f4f0672e43a");
+    const CONTEXT: [u8; 11] = hex("73bdbbaa6d36302b2115c5");
+    const PURE_PUBLIC_SHA256: [u8; 32] =
+        hex("580e716a1459c587a0856a20dd808313458b87410645da39e4acd5e5cfe8ed4e");
+    const PURE_SIGNATURE_SHA256: [u8; 32] =
+        hex("f85739f53adb1cf03dacd390cddb586c3c8ba80067113ac4a4f055c58222239e");
+    const MU: [u8; 64] = hex(
+        "5524a9cfa4ccd49dfb40a32fbfca132e14dd58127e556c0f1c517ea0e9494dd96b803217cc34a89eccb25ce151d18f9989f1940cb12065883c76044c6ba05057",
+    );
+    const MU_PUBLIC_SHA256: [u8; 32] =
+        hex("4e44950a67dd34082542fa3f88e6d44a6a63269975ff8d6aa9bf9a2c8e485e7a");
+    const MU_SIGNATURE_SHA256: [u8; 32] =
+        hex("e41e02401edf44357ebc6f5dbcb37464972f187117618ec45233339cad075827");
+
+    let seeded = crate::mldsa::private_from_seed(&KEYGEN_SEED).ok()?;
+    if sha256(&crate::mldsa::public_bytes(&seeded)) != KEYGEN_PUBLIC_SHA256 {
+        return None;
+    }
+    let message = include_bytes!("kat/mldsa65-acvp-pure-msg.bin");
+    let pure = ExpandedSigningKey::<MlDsa65>::from_expanded(
+        &ExpandedSigningKeyBytes::<MlDsa65>::try_from(
+            &include_bytes!("kat/mldsa65-acvp-pure-sk.bin")[..],
+        )
+        .ok()?,
+    );
+    let public = pure.verifying_key().encode().as_slice().to_vec();
+    let signature = pure.sign_deterministic(message, &CONTEXT).ok()?.encode();
+    let mut forged = signature.as_slice().to_vec();
+    forged[0] ^= 1;
+    let pure_ok = sha256(&public) == PURE_PUBLIC_SHA256
+        && sha256(signature.as_slice()) == PURE_SIGNATURE_SHA256
+        && crate::mldsa::verify_message(&public, message, &CONTEXT, signature.as_slice())
+        && !crate::mldsa::verify_message(&public, message, &CONTEXT, &forged)
+        && !crate::mldsa::verify_message(&public, message, &[], signature.as_slice());
+    let by_mu = ExpandedSigningKey::<MlDsa65>::from_expanded(
+        &ExpandedSigningKeyBytes::<MlDsa65>::try_from(
+            &include_bytes!("kat/mldsa65-acvp-mu-sk.bin")[..],
+        )
+        .ok()?,
+    );
+    let public = by_mu.verifying_key().encode().as_slice().to_vec();
+    let signature = by_mu
+        .sign_mu_deterministic(&Array::<u8, U64>::try_from(&MU[..]).ok()?)
+        .encode();
+    let mu_ok = sha256(&public) == MU_PUBLIC_SHA256
+        && sha256(signature.as_slice()) == MU_SIGNATURE_SHA256
+        && crate::mldsa::verify_mu(&public, &MU, signature.as_slice())
+        && !crate::mldsa::verify_mu(&public, &[0; 64], signature.as_slice());
+    (pure_ok && mu_ok).then_some(())
 }
 
 // Fixture DRBG stream independently computed from SP 800-90A using Python hashlib/HMAC.
@@ -176,7 +247,7 @@ fn ecc_known_answers() -> Option<()> {
     const S: [u8; 32] = hex("f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8");
     const ZX: [u8; 32] = hex("ed3687f8bd593c3d260ead3cbf2d4ac102e1e845e1f58da14343c20e6b1a3d4b");
     const ZY: [u8; 32] = hex("37856c506e12c97117bcc59642d099b6a9cd1dee43186d30a1645effcab20df4");
-    let key = ecc_from_scalar(&D)?;
+    let key = ecc_from_scalar(curve::NIST_P256, &D)?;
     let (x, y) = ecc_public(&key)?;
     let digest = sha256(b"sample");
     let (r, s) = ecc_sign(&key, &digest)?;
@@ -184,13 +255,88 @@ fn ecc_known_answers() -> Option<()> {
         || y.as_slice() != Y
         || r.as_slice() != R
         || s.as_slice() != S
-        || !ecc_verify(&X, &Y, &digest, &R, &S)
+        || !ecc_verify(curve::NIST_P256, &X, &Y, &digest, &R, &S)
     {
         return None;
     }
     let mut scalar = [0; 32];
     scalar[31] = 2;
-    let peer = ecc_from_scalar(&scalar)?;
+    let peer = ecc_from_scalar(curve::NIST_P256, &scalar)?;
+    let (zx, zy) = ecc_ecdh(&peer, &X, &Y)?;
+    (zx.as_slice() == ZX && zy.as_slice() == ZY).then_some(())
+}
+
+// RFC 6979 Appendix A.2.6, SHA-384("sample") with the published P-384 test key (the signature is
+// reproduced bit for bit and also verified). The ECDH point is that of the scalar 2 and the public
+// point of the test key; OpenSSL 4.1.0 (`pkeyutl -derive`) and a Python affine-coordinate
+// implementation gave the same x-coordinate, Python the y-coordinate. A SHA-256 digest (shorter than
+// the order) and a SHA-512 digest (longer) are checked for the signature of the same key by a
+// round trip, with the digest cut or taken as it is (FIPS 186-4, clause 6.4), and by the
+// published signatures of RFC 6979 A.2.6 for SHA-256 and SHA-512 (they are verified, not reproduced: the TPM
+// nonce follows the hash of the curve, not of the message, see `ecc_sign`; checked with OpenSSL
+// 4.1.0 `pkeyutl -verify` on the raw digest). The SHA-512 one fails if the digest is cut to its
+// rightmost 48 octets instead of the leftmost.
+fn ecc384_known_answers() -> Option<()> {
+    const D: [u8; 48] = hex(
+        "6b9d3dad2e1b8c1c05b19875b6659f4de23c3b667bf297ba9aa47740787137d896d5724e4c70a825f872c9ea60d2edf5",
+    );
+    const X: [u8; 48] = hex(
+        "ec3a4e415b4e19a4568618029f427fa5da9a8bc4ae92e02e06aae5286b300c64def8f0ea9055866064a254515480bc13",
+    );
+    const Y: [u8; 48] = hex(
+        "8015d9b72d7d57244ea8ef9ac0c621896708a59367f9dfb9f54ca84b3f1c9db1288b231c3ae0d4fe7344fd2533264720",
+    );
+    const R: [u8; 48] = hex(
+        "94edbb92a5ecb8aad4736e56c691916b3f88140666ce9fa73d64c4ea95ad133c81a648152e44acf96e36dd1e80fabe46",
+    );
+    const S: [u8; 48] = hex(
+        "99ef4aeb15f178cea1fe40db2603138f130e740a19624526203b6351d0a3a94fa329c145786e679e7b82c71a38628ac8",
+    );
+    const ZX: [u8; 48] = hex(
+        "01fe2f3315c3441b70164b103cb8c724c5a87247d9388fd3d3696cb0708919e19d4a12c9bfbe7a5d0bff8b38f9f2eca5",
+    );
+    const ZY: [u8; 48] = hex(
+        "a3e51689dcf7558bbc0fc6b0f3846ea8ab35be970186a9a0cb96fc902792516f88dd6e75cf988d09e20ba49f708c4c47",
+    );
+    let key = ecc_from_scalar(curve::NIST_P384, &D)?;
+    let (x, y) = ecc_public(&key)?;
+    let digest = hash(HashAlg::Sha384, &[b"sample"]);
+    let (r, s) = ecc_sign(&key, digest.as_slice())?;
+    if x.as_slice() != X
+        || y.as_slice() != Y
+        || r.as_slice() != R
+        || s.as_slice() != S
+        || !ecc_verify(curve::NIST_P384, &X, &Y, digest.as_slice(), &R, &S)
+    {
+        return None;
+    }
+    const R256: [u8; 48] = hex(
+        "21b13d1e013c7fa1392d03c5f99af8b30c570c6f98d4ea8e354b63a21d3daa33bde1e888e63355d92fa2b3c36d8fb2cd",
+    );
+    const S256: [u8; 48] = hex(
+        "f3aa443fb107745bf4bd77cb3891674632068a10ca67e3d45db2266fa7d1feebefdc63eccd1ac42ec0cb8668a4fa0ab0",
+    );
+    const R512: [u8; 48] = hex(
+        "ed0959d5880ab2d869ae7f6c2915c6d60f96507f9cb3e047c0046861da4a799cfe30f35cc900056d7c99cd7882433709",
+    );
+    const S512: [u8; 48] = hex(
+        "512c8cceee3890a84058ce1e22dbc2198f42323ce8aca9135329f03c068e5112dc7cc3ef3446defceb01a45c2667fdd5",
+    );
+    for (hash_alg, rfc_r, rfc_s) in [
+        (HashAlg::Sha256, &R256, &S256),
+        (HashAlg::Sha512, &R512, &S512),
+    ] {
+        let digest = hash(hash_alg, &[b"sample"]);
+        let (r, s) = ecc_sign(&key, digest.as_slice())?;
+        if !ecc_verify(curve::NIST_P384, &X, &Y, digest.as_slice(), &r, &s)
+            || !ecc_verify(curve::NIST_P384, &X, &Y, digest.as_slice(), rfc_r, rfc_s)
+        {
+            return None;
+        }
+    }
+    let mut scalar = [0; 48];
+    scalar[47] = 2;
+    let peer = ecc_from_scalar(curve::NIST_P384, &scalar)?;
     let (zx, zy) = ecc_ecdh(&peer, &X, &Y)?;
     (zx.as_slice() == ZX && zy.as_slice() == ZY).then_some(())
 }

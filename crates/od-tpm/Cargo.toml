@@ -15,6 +15,9 @@ publish.workspace = true
 # docs/policies/DEPENDENCIES.md).
 # RSA-3072, RSASSA-PSS (`rsa::pss`) and OAEP with SHA-384/SHA-512 need no new feature of `rsa =0.10.0` (it has
 # no `pss` feature; the module is always built), see docs/policies/DEPENDENCIES.md.
+# Slice 6 adds `p384` (ECC P-384: ECDSA, ECDH, same features as `p256`), see docs/policies/DEPENDENCIES.md.
+# Slice 7 adds `ml-dsa` (ML-DSA-65, FIPS 204; `alloc` keeps the expanded key off the stack, `zeroize` wipes it),
+# see docs/policies/DEPENDENCIES.md.
 # `der`, `spki`, `sha1` of the ADR are not needed by slices B and C1 and are not added.
 [dependencies]
 # Wipe the retained HMAC inner and outer SHA-256 state when a sequence ends.
@@ -23,9 +26,11 @@ hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 rsa = { version = "=0.10.0", default-features = false, features = ["pkcs1v15", "hazmat"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+p384 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 aes = { version = "=0.9.4", default-features = false, features = ["zeroize"] }
 cfb-mode = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
 ml-kem = { version = "=0.3.3", default-features = false, features = ["zeroize", "hazmat"] }
+ml-dsa = { version = "=0.1.2", default-features = false, features = ["alloc", "zeroize"] }
 
 [lints]
 workspace = true

@@ -8,6 +8,18 @@ S7-01 определяет проверку формата образа ROM и P
 
 Запуск из корня проекта с установленными [инструментами сборки прошивки](../../firmware/uefi/README.md#команды).
 
+**Все проверки прошивки (S7-40).**
+
+```sh
+python3 tools/build/firmware_check_all.py --table-out work/stage7/firmware-check-all.txt
+```
+
+Команда выполняет по порядку: (а) `cargo build --release -p od-runner --offline`; (б) два ROM — базовый и с `--with-test-apps` (для `firmware_tpm_smoke.py`, которому нужны `--runner`, `--rom` и `--app` = `tpm.efi` из каталога сборки); (в) все `tests/system/firmware_*_smoke.py`: `boot`, `esp_boot`, `nvram`, `failure`, `install_media`, `pkcs7` (`--runner`, `--rom`), `secure_boot` (`--work`), `tpm`, `reset` (5 циклов; `--reset-cycles` меняет число) — скрипты, у которых аргументы необязательны, сами собирают недостающее; ROM с `--with-reboot-app` собирает только `firmware_reset_smoke.py` ([ISSUE-624](../KNOWN_ISSUES.md#issue-624)); (г) `cargo test --manifest-path firmware/uefi/Cargo.toml --offline`; (д) два ignored-теста `od-machine` из разделов [«Отказ TPM при Startup»](#отказ-tpm-при-startup) и [«Проверка PCR7 и отказов Secure Boot»](#проверка-pcr7-и-отказов-secure-boot) с переменными `OD_TPM_FAILURE_ROM`, `OD_TPM_FAILURE_ESP`, `OD_SB_PCR7_ROM`, `OD_SB_PCR7_FIXTURES` (ROM и fixtures PCR7 берутся из `--work` прогона `secure_boot`); (е) `python3 -m unittest` для `tools/build/test_build_firmware.py`, `test_s7_31a_rom_inventory.py`, `test_firmware_check_all.py` и `tests/system/test_firmware_*.py`.
+
+Шаг, упавший или пропущенный из-за упавшего предварительного шага, не останавливает остальные. В конце печатается таблица «шаг — код выхода — секунды — ключевая строка», команда возвращает `1` при любом провале (в том числе при `--skip`). Журналы каждого шага — в `<work>/logs/` (`--work` принимает пустой каталог, по умолчанию создаётся временный). `--list` печатает шаги, `--only <glob>` запускает выбранные вместе с обязательными предшественниками. Полный прогон занимает порядка часа; 50 циклов сброса и воспроизводимые измерения (`firmware_boot_bench.py`) в него не входят. Запускать на чистом checkout: `git worktree add <каталог вне репозитория> <коммит>`. Результат последнего прогона на `main` `991dc01` — зелёный, 16 из 16 шагов за 2229 с; таблица — в [отчёте этапа 7](../reports/STAGE_7_REPORT.md#s7-40--единая-проверка-прошивки) и в `docs/reports/data/stage7/firmware-check-all-2026-11-21-main-991dc01.txt` (первый, красный прогон из-за [ISSUE-631](../KNOWN_ISSUES.md#issue-631) — `firmware-check-all-2026-11-21.txt`).
+
+Прежние отдельные команды остаются в силе:
+
 ```sh
 python3 tests/system/firmware_boot_smoke.py &&
 python3 tests/system/firmware_esp_boot_smoke.py &&
@@ -15,12 +27,13 @@ python3 tests/system/firmware_nvram_smoke.py &&
 python3 tests/system/firmware_failure_smoke.py
 ```
 
-Эта последовательность проверяет G1–G3. Каждый скрипт собирает необходимые
+Эта последовательность проверяет G1–G3 и входит в команду выше. Каждый скрипт собирает необходимые
 ROM и тестовые EFI-приложения и завершает запуск кодом ошибки при расхождении.
 Штатный запрос `ResetSystem`, который остановил плату аппаратно, возвращает
 `exit=stopped` и `stop_reason=Reset` или `Shutdown`. Для `--fv-app rt`
-успех требует `Shutdown`. Возобновление работы vCPU после аппаратного
-сброса относится к S7-26.
+успех требует `Shutdown`. Возобновление работы после `Reset` — сброс платы
+в процессе, [раздел S7-26a](#сброс-и-перезагрузка-s7-26a): `firmware_reset_smoke.py`
+в эту последовательность не входит (5 циклов занимают около 15 минут).
 
 ## Измерения пути загрузки S7-27
 
@@ -88,7 +101,7 @@ python3 tests/system/firmware_boot_smoke.py
 | `--fv-app rt` | Приложение выходит из Boot Services, включает неидентичное отображение Runtime Services и завершает машину через ACPI PM1a с `Shutdown`. Процесс возвращает `0`. |
 | `--fv-app acpi` | Приложение обходит EFI configuration tables, проверяет ACPI и SMBIOS и возвращает `EFI_SUCCESS`. Процесс возвращает `6` после останова `0x21`. Скрипт сверяет handoff с бинарным эталоном и побайтно сравнивает 64 КиБ ACPI из гостя с freestanding blob. |
 | `--fv-app gop` | Приложение перечисляет режимы, проверяет ошибки, смену режима, доставку события таймера через вызовы GOP и четыре операции `Blt`. Затем оно рисует полосы в 640×480. Runner сохраняет кадр через `DisplayHandle::read_frame_into`. Скрипт сверяет метаданные кадра и сравнивает его с `display_pattern.py --pattern bars --seed 0` при `--tolerance 0`. Процесс возвращает `6` после останова `0x21`. |
-| `--fv-app blk` | Runner подключает GPT-образ из `make_test_disk.py` через `--nvme-image`. Гость читает первые секторы разделов, печатает их имена, проверяет поиск ESP по GUID, запись на границе секторов, `FlushBlocks`, `Reset` и доставку таймера во время `ReadBlocks`. Отдельные образы проверяют восстановление по резервной GPT и доступ к пространству имён при повреждении обеих копий. Процесс возвращает `6` после останова `0x21`. `--nvme-image` подключает копию образа в памяти (запись не сохраняется); для постоянного RAW-диска с блокировкой и durable-записью служит `--disk <путь>` (S8-21; взаимоисключающ с `--nvme-image`, `,ro` отклоняется, один диск; только на хосте macOS arm64 с `od-host`; с `--nvram-reboot-out` блокировка снимается между загрузками, [ISSUE-605](../KNOWN_ISSUES.md#issue-605); см. [WINDOWS.md](WINDOWS.md#12-файловый-диск-в-boot-firmware-s8-21)). |
+| `--fv-app blk` | Runner подключает GPT-образ из `make_test_disk.py` через `--nvme-image`. Гость читает первые секторы разделов, печатает их имена, проверяет поиск ESP по GUID, запись на границе секторов, `FlushBlocks`, `Reset` и доставку таймера во время `ReadBlocks`. Отдельные образы проверяют восстановление по резервной GPT и доступ к пространству имён при повреждении обеих копий. Процесс возвращает `6` после останова `0x21`. `--nvme-image` подключает копию образа в памяти (запись не сохраняется); для постоянного RAW-диска с блокировкой и durable-записью служит `--disk <путь>` (S8-21; взаимоисключающ с `--nvme-image`, `,ro` отклоняется, один диск; только на хосте macOS arm64 с `od-host`; с `--nvram-reboot-out` блокировка снимается между загрузками, [ISSUE-656](../KNOWN_ISSUES.md#issue-656); см. [WINDOWS.md](WINDOWS.md#12-файловый-диск-в-boot-firmware-s8-21)). |
 
 Для каждого прогона скрипт сверяет COM1 побайтово, включая CRLF, управляющие последовательности и последний байт `!`. При расхождении он печатает diff с видимыми управляющими байтами. [Манифест](../../tests/fixtures/firmware/manifest.json) задаёт ожидаемые остановы, SHA-256 эталонов и пределы инструкций и квантов. Скрипт сверяет хеш ROM из отчёта runner с хешем собранного образа и печатает время каждого запуска. Отдельная проверка запрашивает `ebs` из базового ROM и ожидает останов `0x35` с `EFI_NOT_FOUND`.
 
@@ -111,6 +124,50 @@ python3 tests/system/firmware_nvram_smoke.py
 ```
 
 Runner загружает `vars` с пустым устройством, получает снимок между квантами после `HLT` и создаёт новую плату с тем же ROM и `NvramDevice::with_contents`. Второй `vars` читает через `GetVariable` ранее записанные байты `od-s7-10`. Скрипт сверяет два транскрипта COM1, коды `0x21`, хеши ROM, handoff и снимка, пределы инструкций и квантов. Снимок передаётся внутри одного процесса runner. [Host API NVRAM](../specs/NVRAM_DEVICE.md#host-api).
+
+## Сброс и перезагрузка S7-26a
+
+Сброс платы — операция внутри процесса ([FIRMWARE_BOOT.md, раздел 12.1](../specs/FIRMWARE_BOOT.md#121-сброс-платы-внутри-процесса-s7-26a)): `ResetSystem` пишет в reset register, `run_boot` останавливается с `Reset`, владелец платы вызывает `LoadedFirmwareBoard::platform_reset` и снова `run_boot`. Ничего не создаётся заново; `--nvram-reboot-out` остаётся отдельным сценарием (плата пересоздаётся из снимка NVRAM, это не сброс).
+
+```sh
+# Единичные проверки (машина, CRB, TPM, runner)
+cargo test -p od-machine --offline --lib -- firmware_board::tests::platform_reset firmware_board::tests::cold_reset firmware_board::tests::reboot_app tpm_crb::tests::platform_reset acpi_pm::
+cargo test -p od-tpm --offline --lib -- init_at
+cargo test -p od-runner --offline --bin od-runner -- firmware_boot
+
+# Цикл в процессе: 5 циклов (около 13 минут), затем 50 (около 2,2 часа: 7 952 с в прогоне ниже)
+python3 tests/system/firmware_reset_smoke.py
+python3 tests/system/firmware_reset_smoke.py --cycles 50 --rss-limit-kib 4096
+
+# Прямой запуск runner (JSON в stdout, COM1 всех циклов в --com1-out, ход по циклам в stderr)
+target/release/od-runner boot-firmware --image <rom-with-apps.bin> --fv-app reboot \
+  --reboot-cycles 50 [--reboot-kind cold|warm] --com1-out <file> --budget 700000000
+```
+
+`firmware_reset_smoke.py` собирает ROM с тестовыми приложениями и `--with-reboot-app` и runner, запускает приложение `reboot` (читает и увеличивает `ODBootCount` в NVRAM, печатает его и PCR0 на COM1, вызывает `ResetSystem(Cold)`) и проверяет: каждый цикл заканчивается остановкой `Reset`; виртуальное время растёт сквозь сброс; `BootCount` равен номеру цикла; PCR0 одинаков во всех циклах и не равен начальному значению; COM1 побайтно одинаков во всех циклах, кроме строки `BootCount`; память runner в начале и в конце отличается не больше порога. Цена цикла определяется гостевым хешированием ROM (4 MiB, банки SHA-256 и SHA-384) для PCR0: около 3,66·10⁸ инструкций, 160–165 с в release на M3 Max; бюджет `--budget` действует на каждый цикл.
+
+### Измерения 2026-11-21
+
+Условия: Apple M3 Max, macOS 26.7.1 (25G241), `cargo 1.99.0` / `rustc 1.99.0`, `cargo build --release` без LTO и без `target-cpu`; ROM с тестовыми приложениями, в том числе `reboot`, SHA-256 `5df0b465d5a527e9a43a13d69ed8b78eada1b9591d3fb82fb7aaf6110ae06643` во всех прогонах таблицы. Образ, собранный на коммите `5aa1791` командой `build_firmware.py --with-test-apps --with-reboot-app`, имеет тот же SHA-256 (напечатан сборщиком при прогоне `firmware_reset_smoke.py`): `pack_fv` сортирует файлы по имени, поэтому переход от `reboot` в `TEST_APPS` к флагу не меняет архив; runner запускался без `nice` (это проверка корректности и памяти, не решение по скорости). Память — из отчёта runner: `rss_kib_*` (`ps -o rss`) и `footprint_kib_*` (`footprint -p`, включает сжатые страницы).
+
+| Прогон | Циклы | Итог | `retired` за цикл | PCR0 | RSS (`ps`), KiB: начало → конец | Footprint, KiB: начало → конец (рост) | Время |
+|---|---|---|---|---|---|---|---|
+| `firmware_reset_smoke.py` (Cold), дерево перед `9fef2f4` (без вывода хода в stderr), `5df0b465…` | 5 | все проверки скрипта пройдены | 365 720 960 (цикл 1); 365 753 988 (циклы 2–5) | `1f347605…4c19e0` | 184 224 → 149 904 | 182 672 → 185 328 (+2 656) | 898 с |
+| `firmware_reset_smoke.py --kind warm`, `9fef2f4`, `5df0b465…` | 5 | все проверки скрипта пройдены | 365 720 960; 365 753 988 | тот же | 184 208 → 187 920 | 182 688 → 184 304 (+1 616) | 806 с |
+| `firmware_reset_smoke.py` (Cold), после слияния с `main` (`746bae0`), `5df0b465…` | 5 | все проверки скрипта пройдены | 365 720 960; 365 753 988 | тот же | 184 208 → 188 912 | 182 672 → 185 264 (+2 592) | 781 с |
+| `firmware_reset_smoke.py` (Cold), после флага `--with-reboot-app` (дерево `5aa1791`), `5df0b465…` | 5 | все проверки скрипта пройдены | 365 720 960; 365 753 988 | тот же | 184 224 → 188 864 | 182 704 → 185 232 (+2 528) | 770 с |
+| `boot-firmware --reboot-cycles 50` (Cold), бинарь runner SHA-256 `ba7f213e…f4551` из дерева `9fef2f4` до переписывания doc-комментария (побайтно не сверялось), `5df0b465…`; [данные](../reports/data/stage7/s7-26-reboot-50-cycles-m3-max-2026-11-21.json), [сводка по циклам](../reports/data/stage7/s7-26-reboot-50-cycles-com1-summary-m3-max-2026-11-21.json) | 50 | `completed`, 50 остановок `Reset`, `BootCount` 1…50; `check_cycles` скрипта пройден по этому JSON и по COM1 прогона (`work/stage7/s7-26/cold50b.com1`, 180 241 байт, в git не хранится: в сводке по циклам — PCR0 и SHA-256 COM1 каждого цикла) | 365 720 960 (цикл 1); 365 753 988 (циклы 2–9); 365 754 067 (циклы 10–50: двузначный счётчик) | тот же | 184 208 → 189 344 (+5 136) | 182 688 → 185 712 (+3 024) | 7 952 с (159 с на цикл) |
+
+**Что показали измерения.**
+
+- Первый цикл (пустой NVRAM) выполняет на 33 028 инструкций меньше следующих; причина не исследована. Дальше число инструкций постоянно и меняется только от длины десятичного счётчика (+79 инструкций с цикла 10).
+- PCR0 одинаков в каждом цикле и в Cold, и в Warm, и не равен начальному значению: TPM начинает каждый цикл после `_TPM_Init`, прошивка заново выполняет `TPM2_Startup(CLEAR)` и измерения. `BootCount` растёт ровно на 1 за цикл: закоммиченный банк NVRAM пережил все сбросы.
+- COM1 побайтно одинаков во всех циклах, кроме строки `OD-UEFI reboot BootCount=N` (проверяет скрипт; в сводке по циклам все 50 SHA-256 COM1 с замаскированным счётчиком совпадают); в Cold и в Warm PCR0 один и тот же.
+- **RSS по `ps` на macOS шумит из-за сжатия памяти**: RSS процесса падает с 188 МБ до 149 МБ, когда система сжимает неиспользуемые страницы (пять циклов Cold: 184 224 → 149 904), и возвращается. Поэтому порог проверяется по `footprint` (physical footprint включает сжатые страницы); без утилиты `footprint` скрипт сравнивает RSS. **Известное ограничение:** RSS за те же 50 циклов вырос на 5 136 KiB (184 208 → 189 344), то есть на платформе без `footprint` 50-цикловый прогон с порогом 4096 KiB не пройдёт; порог под RSS не менялся, для такой платформы нужен отдельный замер и отдельное значение.
+- Footprint растёт в основном в первых циклах (после цикла 1 — 184 976 KiB, в конце — 185 712 KiB: +736 KiB за 49 циклов, последние 15 циклов — без изменений), то есть это прогрев аллокатора, а не рост на цикл. Временная проба (в репозиторий не вошла) выполнила 600 сбросов платы на простом образе (Cold и Warm по очереди, TPM, NVRAM, NVMe): footprint вырос на 1 104 KiB за первые сто сбросов и на 16 KiB за остальные пятьсот.
+- **Порог `--rss-limit-kib` = 4096 KiB** (по умолчанию в скрипте) — это запас над измеренным, а не округление: footprint вырос на 3 024 KiB за 50 циклов и на 2 528–2 656 KiB за 5 (четыре прогона по 5 циклов, у Warm 1 616 KiB). Запас 1 072 KiB (35 % сверх 50-цикловой величины) принят, чтобы разброс между прогонами (до 128 KiB между пятициклами) не давал ложных отказов; рост после первого цикла за 49 циклов (+736 KiB) в запас укладывается с большим зазором. Порог пересматривается по новым замерам, а не подбирается. Начало отсчёта — после загрузки платы и до первого запуска, конец — после последнего сброса.
+
+**Не проверено.** Повторение 50 циклов на второй машине и на Linux (где `footprint` нет, скрипт использует RSS); Warm на 50 циклах; поведение с NVMe-диском и ESP в цикле сброса (в приложении `reboot` устройств хранения нет, NVMe проверен только единичным тестом платы). Прогон 50 циклов занимает около 2,2 часа в release (`wall_ms` 7 952 120 в данных прогона), поэтому его запускают в фоне.
 
 ## Отказы без TPM и Secure Boot
 
@@ -140,7 +197,9 @@ python3 tests/system/firmware_tpm_smoke.py --runner target/release/od-runner \
   --app work/stage7/tpm-target/test-apps/x86_64-unknown-uefi/release/tpm.efi
 ```
 
-Проба проверяет TPM2 в XSDT и активные банки SHA-256 и SHA-384 через TCG2. Она проверяет разметку записей обоих банков, воспроизводит SHA-256 для PCR0/1/4/5 и сравнивает с TPM2_PCR_Read. Для GetRandom выводит длину ответа. Проба проверяет объявленные пределы TCG2 в 8192 байта и передаёт кадр в 4991 байт через SubmitCommand. Код TPM подтверждает достижение проверки параметра собранной команды. В прогоне с ESP дополнительно проверяет BootOrder, Boot0000, действие выбора и GPT_EVENT2. После GetEventLog проверяет отдельную запись EV_NO_ACTION, а затем вызывает EBS с устаревшим и актуальным MapKey и читает retained final events из физической памяти. Для сохранения артефактов диагностики передать `--work`. [Контракт TPM](../specs/VTPM.md#event-log).
+Проба проверяет TPM2 в XSDT и активные банки SHA-256 и SHA-384 через TCG2. Она проверяет разметку записей обоих банков, воспроизводит SHA-256 для PCR0/1/4/5 и сравнивает с TPM2_PCR_Read. Для GetRandom выводит длину ответа. Проба проверяет объявленные пределы TCG2 в 8192 байта и передаёт кадр в 4991 байт через SubmitCommand. Код TPM подтверждает достижение проверки параметра собранной команды. В прогоне с ESP дополнительно проверяет BootOrder, Boot0000, действие выбора и GPT_EVENT2. После GetEventLog проверяет отдельную запись EV_NO_ACTION, а затем вызывает EBS с устаревшим и актуальным MapKey и читает retained final events из физической памяти. Затем проба через `GetCapability` проверяет 101 команду, `TPM_ALG_MLDSA` и `TPM_ALG_MLKEM`, кривые P-256 и P-384 и банки SHA-256 и SHA-384. Через `SubmitCommand` она создаёт ключ ML-DSA-65, получает `NV_Certify` на 512 октетов (ответ 4024 октета, две страницы CRB), передаёт в `VerifySequenceComplete` подпись в 3313 октетов (команда 3348 октетов): искажённая подпись даёт `TPM_RC_SIGNATURE`, верная — билет `TPM_ST_MESSAGE_VERIFIED`. COM1 получает только размеры и коды. Для сохранения артефактов диагностики передать `--work`. [Контракт TPM](../specs/VTPM.md#event-log).
+
+**Приложение `reboot` встраивается отдельным флагом.** `build_firmware.py --with-test-apps --with-reboot-app` добавляет в FV приложение `reboot` (S7-26a) к стандартным; без `--with-test-apps` флаг отклоняется (`parser.error`). По умолчанию приложения `reboot` в ROM нет: эталоны COM1 в `tests/fixtures/firmware` содержат карту памяти, а её строки зависят от суммарного размера FV, поэтому любое добавленное в набор по умолчанию приложение сдвигает `base`/`pages` двух записей во всех эталонах с приложениями ([ISSUE-624](../KNOWN_ISSUES.md#issue-624)). Флаг использует `firmware_reset_smoke.py`.
 
 ## Уровни доказательств
 
@@ -181,14 +240,27 @@ python3 tools/build/build_firmware.py --out "$od_fw_check/firmware.bin"
 cargo run --release --offline -p od-runner -- boot-firmware \
   --image "$od_fw_check/firmware.bin" --budget 6000000 \
   --com1-out "$od_fw_check/boot_core.com1"
-cmp tests/fixtures/firmware/boot_core_com1.txt "$od_fw_check/boot_core.com1"
+mask() { sed -E '/OD-FW S7-05 table CRC/ s/(BS|RT)=0x[0-9A-F]{16}/\1=0x<layout>/g' "$1"; }
+cmp <(mask tests/fixtures/firmware/boot_core_com1.txt) <(mask "$od_fw_check/boot_core.com1")
 ```
+
+Сравнение (bash) пропускает только значения `BS=` и `RT=` строки `OD-FW S7-05 table CRC`, как `mask_layout_crcs` в `tests/system/firmware_boot_smoke.py` (самотест: `python3 tests/system/test_firmware_boot_smoke_mask.py`); причина — в разделе [«Раскладка образа и CRC таблиц Boot Services и Runtime Services»](#раскладка-образа-и-crc-таблиц-boot-services-и-runtime-services).
 
 Эталон содержит версию `0.1.0`, сообщения о переходе на свои
 таблицы, 17 записей памяти и ключи диагностики аллокаторов. За ними идут
 строки S7-05 об утилитах, сервисах памяти и базе протоколов Boot Services. Проверка RX
 отдельно подаёт байт через handle UART и сравнивает дополнительную строку
 с его hex-значением. [Результаты для двух конфигураций RAM](../reports/STAGE_7_REPORT.md#s7-04--версия-прошивки-и-com1).
+
+## Раскладка образа и CRC таблиц Boot Services и Runtime Services
+
+Строка `OD-FW S7-05 table CRC ST=… BS=… RT=…` печатает CRC трёх таблиц до сервисных вызовов. Таблицы Boot Services и Runtime Services состоят из указателей на функции ядра, поэтому их CRC зависит от раскладки кода образа: он меняется при любой правке кода прошивки, которая сдвигает функции. Для одних и тех же исходников значение Runtime Services зависит и от абсолютного пути каталога сборки (порядок элементов единственного codegen-unit), поэтому один и тот же коммит в разных каталогах даёт разные `RT=` при совпадении всех остальных строк. CRC System Table покрывает адреса данных и от раскладки не зависит. Измерения и бисект — [ISSUE-611](../KNOWN_ISSUES.md#issue-611).
+
+Поэтому `firmware_boot_smoke.py`, `firmware_nvram_smoke.py` и `firmware_esp_boot_smoke.py` сравнивают транскрипты с маской значений `BS=` и `RT=` (`mask_layout_crcs`): остальные байты, включая `ST=`, число и порядок строк, должны совпасть точно. Содержимое таблиц по именам проверено разово (ISSUE-611); постоянной проверки значений указателей нет.
+
+Когда меняется код ядра прошивки, в эталонах меняются ровно четыре строки: три строки `OD-FW MEM type=0x…3` и `…4` (размер образа кода и сдвиг следующих регионов) и значения в строке CRC. Правило обновления: получить фактический COM1 теми же командами `boot-firmware` и параметрами, что в `manifest.json` и в скриптах, записать его поверх эталонов, убедиться по `git diff`, что отличаются только эти строки, пересчитать `fixture_sha256` в `tests/fixtures/firmware/manifest.json` и повторить скрипты без правок. Не принимать новый эталон, если отличаются другие строки: это изменение поведения.
+
+Чтобы убедиться, что таблицы не изменились по именам, а не только по CRC, использовались две проверки. Boot Services (376 байт) читаются из физической RAM после останова по адресу из последней строки `exit boot services verified BS=0x…`; CRC пересчитывается `zlib.crc32` с нулевым полем, а целевая функция каждого поля сопоставляется с символом ELF (`nm -C`). Runtime Services к останову заменены таблицей драйвера RT, поэтому исходная таблица собирается из `RuntimeServices::diagnostic` (поле → символ) и адресов символов ELF, а полученный CRC сравнивается с напечатанным. Скриптов в репозитории нет: чтение RAM потребовало временной правки runner.
 
 ## Что проверяет S7-05 (таблицы UEFI)
 
@@ -372,6 +444,26 @@ OD_SB_PCR7_ROM="$od_sb_pcr7/firmware.bin" OD_SB_PCR7_FIXTURES="$od_sb_pcr7" \
 
 Второй тест запускает три платы с действующим TPM. Он извлекает журнал Event03 из гостевой RAM, самостоятельно вычисляет SHA-256 и SHA-384 для каждого события PCR7 и сверяет replay с `TPM2_PCR_Read` через CRB. Зачисленные и отозванные записи сверяются побайтно с исходными ESL, сохранёнными системным скриптом. PCR7 различается в SetupMode, после зачисления и после отзыва.
 
+#### Полный пересчёт журнала Event03 для PCR0–7 (ISSUE-630)
+
+Модуль `crates/od-machine/src/firmware_board/tcg_log_replay_tests.rs` пересчитывает весь журнал, а не только PCR7. `replay_log` проверяет заголовок Spec ID Event03 с двумя банками (SHA-256 и SHA-384), проходит по событиям до первого пустого слота или до конца журнала и для каждого события кроме `EV_NO_ACTION` расширяет PCR в обоих банках: `PCR = H(PCR || digest)`, где `digest` — запись журнала для этого банка. Событие вне PCR0–7, неверный формат заголовка или выход за границы журнала дают ошибку. Для типов, у которых профиль TCG определяет дайджест как хеш данных события (`EV_SEPARATOR`, `EV_ACTION`, `EV_EFI_ACTION`, `EV_EFI_VARIABLE_DRIVER_CONFIG`, `EV_EFI_VARIABLE_AUTHORITY`), `replay_log` дополнительно сверяет дайджесты обоих банков с хешем данных. Для остальных типов дайджест берётся из журнала как есть; в наблюдаемых журналах это типы `0x8000000a` (PCR0), `0x8000000b` (PCR1) и `0x80000003` (`EV_EFI_BOOT_SERVICES_APPLICATION`, PCR4), у которых дайджест не равен хешу данных события. Их содержимое тест не проверяет, это граница теста: он доказывает согласованность журнала с PCR, но не правильность самих дайджестов этих событий. `read_pcrs` читает PCR0–7 через `TPM2_PCR_Read` по CRB двумя командами: `TPML_DIGEST` содержит не более 8 дайджестов, поэтому один банк занимает одну команду.
+
+- **Живой прогон** (ignored-тест из предыдущего раздела): после каждой из трёх загрузок `check_boot` сверяет пересчёт со значениями `TPM2_PCR_Read` для PCR0–7 обоих банков, а не только PCR7. Результат 2026-11-21: `ok`, 1306,62 с (`unsigned.raw` 364987762 инструкций, `enroll.raw` 366990104, `revoke.raw` 367749573); ROM — базовый `firmware.bin` из `--work` прогона `firmware_secure_boot_smoke.py` (sha256 `f7920b37…a83562`).
+- **Всегда выполняемый тест** `recorded_boot_logs_replay_to_the_recorded_pcr0_to_7_in_both_banks` не требует ROM. Он пересчитывает три журнала, записанные этим живым прогоном, и сверяет с записанными в тех же файлах PCR0–7 обоих банков; проверяет, что каждая из PCR0–7 расширена хотя бы раз, а PCR ненулевой ровно тогда, когда журнал её расширял. Тест `a_corrupted_log_no_longer_replays_to_the_recorded_pcrs` показывает, что проверка различает повреждения: один изменённый октет дайджеста SHA-256 меняет только банк SHA-256, SHA-384 — только банк SHA-384; потерянное последнее событие, обрыв внутри события и испорченный заголовок не проходят.
+- **Фикстуры** `tests/fixtures/firmware/tcg_log_{unsigned,enroll,revoke}.bin` (20812, 23817 и 25317 октетов, не более 100 КиБ): 8 × 32 октета PCR0–7 SHA-256, 8 × 48 октетов PCR0–7 SHA-384 и использованная часть журнала. Происхождение: тот же ignored-тест, основа — коммит `5e07d1c`, 2026-11-21, три платы (`unsigned.raw` — запуск неподписанного `hello` в SetupMode, `enroll.raw` — зачисление PK/KEK/db, `revoke.raw` — отзыв и `dbx`). Фикстура фиксирует журнал той прошивки; изменение прошивки её не ломает — расхождение новой прошивки ловит живой прогон.
+
+```sh
+# Перезапись фикстур (после изменения измерений прошивки): тот же прогон, плюс каталог записи.
+OD_SB_PCR7_ROM="$od_sb_pcr7/firmware.bin" OD_SB_PCR7_FIXTURES="$od_sb_pcr7" \
+  OD_TCG_LOG_FIXTURE_DIR="$PWD/tests/fixtures/firmware" \
+  cargo test --offline --release -p od-machine --lib \
+  firmware_secure_boot_pcr7_replays_setup_enrollment_and_revocation -- --ignored --nocapture
+# Всегда выполняемые тесты.
+cargo test --offline --release -p od-machine --lib tcg_log_replay_tests
+```
+
+При установленной `OD_TCG_LOG_FIXTURE_DIR` прогон перед проверками пишет в каталог также `tcg_log_<имя>.full` (вся область журнала, 256 КиБ) для разбора упавшего пересчёта; эти файлы в репозиторий не коммитятся.
+
 | Сценарий | Наблюдаемый результат |
 |---|---|
 | `TPM2_Startup` возвращает `TPM_RC_FAILURE` | COM1 фиксирует причину, загрузка доходит до ESP. TCG2, финальные события и объявление TPM в ACPI отсутствуют. |
@@ -408,3 +500,36 @@ COM1, SHA-256 обоих дисков и SHA-256 сохранённых NVRAM sn
 ## Измерения
 
 Изменения аллокатора, очередей NVMe и кеша FAT проверяются сравнением с исходной реализацией на той же нагрузке. Для воспроизведения исходной серии см. [методику S7-27](#измерения-пути-загрузки-s7-27).
+
+## Диагностика пути Linux через UEFI (S7-31a)
+
+Диагностический срез, не приёмка S7-31. Ядро и initramfs берутся из `work/stage4/` основной копии репозитория (в Git их нет). Запись остановки неизменённого `vmlinuz` Ubuntu 7.0.0-38 и двух диагностических копий (ImageBase 0x1000000; то же и SizeOfHeaders 0x400), по два прогона каждой:
+
+```sh
+cargo build --release -p od-runner --offline
+python3 tests/system/firmware_linux_uefi_stop_record.py \
+  --stage4-dir <корень>/work/stage4 --out work/stage7/linux-uefi-stop-record.json
+```
+
+Запись efivarfs и ACPI (S7-31n, диагностика): `python3 tests/system/firmware_linux_uefi_efivars_acpi.py --stage4-dir <корень>/work/stage4 --out <record.json>` собирает `work/stage7/s7-31n/initramfs.cpio` (`tools/build/build_s7_31n_initramfs.py`), загружает ядро на едином цикле с зерном NVRAM (`Boot0001`, `BootOrder`, `ODBootCount`) и записывает имена и значения переменных `efivarfs` (атрибуты и значение сверяются с зерном; S7-31o), строки ACPI, RTC и `AE_` из dmesg и строки уровней `<0>`–`<4>` (хеш и выдержки COM1; код 0 — записи прогонов совпали, а не что журнал чист). Узкие проверки: `python3 -m unittest tools/build/test_build_s7_31n_initramfs.py`.
+
+Приёмочный прогон S7-31 (S7-31p): `OD_REQUIRE_UBUNTU_VMLINUZ=1 python3 tests/system/firmware_linux_boot.py --stage4-dir <корень>/work/stage4 --out <record.json>` — один прогон единого цикла и 23 проверки (host-тест загрузчика на реальном ядре, `/init`, значения `efivarfs`, ACPI и уровни dmesg по спискам известных строк, дамп framebuffer как справка). Код 0 — все проверки прошли; 1 — провал или нет ядра при флаге; 77 — нет ядра без флага (громкий пропуск). Чистая часть: `python3 -m unittest tools/build/test_firmware_linux_boot.py`. С `--trace-out <файл>` скрипт пишет трассу вызовов загрузчика (S7-31q): раннер `boot-firmware --cpu-loop unified --trace-call NAME=0xADDR[:guid=N][:name=N][:slot=OFFSET] --trace-system-table 0xADDR` ловит входы функций ROM и слоты таблицы рантайм-служб, пишет GUID и имена (без значений); `tests/system/firmware_protocol_trace.py` собирает аргументы по символам ROM и сворачивает вызовы.
+
+Код 0 у записи остановки означает, что записи обоих прогонов каждого варианта совпали, а не что Linux загрузился; сама остановка описана в JSON (RIP, байты у RIP из ROM или файла PE, символ, отметки, строка COM1). Ожидаемая остановка на текущем ROM: `stock` — «no bootable option» ([ISSUE-620](../KNOWN_ISSUES.md#issue-620)); `rebased` — `Unsupported { opcode: 131 }` в `load_into` ([ISSUE-621](../KNOWN_ISSUES.md#issue-621)); `rebased-hdr` — `Unsupported { opcode: 30 }` на первой инструкции stub ([ISSUE-622](../KNOWN_ISSUES.md#issue-622)). Один прогон занимает 45–95 с. Статический инвентарь инструкций stub:
+
+```sh
+cargo build --release -p od-isa --example firmware_profile_probe --offline
+python3 tools/build/s7_31a_efi_stub_isa_inventory.py --vmlinuz <vmlinuz-7.0.0-38-generic>
+```
+
+ESP для этих прогонов собирает `tools/build/make_test_disk.py --esp-fat32 --bootx64 <efi> --boot-file INITRD.IMG=<файл>` (дополнительные файлы только в `\EFI\BOOT\` с короткими именами 8.3). Результаты и выводы: [отчёт этапа 7](../reports/STAGE_7_REPORT.md#s7-31a--диагностика-пути-linux-через-собственную-uefi-2026-11-20), [ADR-0013](../decisions/ADR-0013-uefi-linux-cpu-profile.md).
+
+
+## Политика LoadImage для образа без перемещений (S7-31b)
+
+Host-тесты `pe::loader::tests` и `mem::pages::image::tests` проверяют политику ISSUE-620 без запуска гостя: `cargo test --manifest-path firmware/uefi/Cargo.toml --offline --lib pe::` и `--lib mem::pages`.
+
+- `stub_layout_image_is_position_independent_and_loads_without_fixups` собирает заголовки EFI stub ядра Ubuntu 7.0.0-38 с нуля (ImageBase 0, Characteristics `0x206`, SizeOfHeaders `0x1000`, четыре секции с теми же VA, `SizeOfImage=0x10f0000`). Запускается всегда; байтов ядра в Git нет.
+- `ubuntu_kernel_efi_stub_is_position_independent_and_loads_without_fixups` читает настоящий `vmlinuz-7.0.0-38-generic` как данные. Файл ищется по `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` вверх от каталога `firmware/uefi` либо по переменной `OD_UBUNTU_VMLINUZ` (полный путь).
+- Переменная `OD_REQUIRE_UBUNTU_VMLINUZ=1`: если файла нет, этот тест **падает**. Без неё тест при отсутствии файла печатает `skipped` и проходит (ядро не хранится в Git). Команда приёмки S7-31 задаёт переменную, чтобы пропуск не считался прохождением.
+- Размещение: образ с ImageBase 0 без каталога перемещений ставится по самому нижнему свободному адресу не ниже 1 МиБ, выровненному на 2 МиБ; образ с каталогом — по самому верхнему; закреплённый образ с ImageBase 0 получает `EFI_OUT_OF_RESOURCES`. Проверено на модели карты платы 128 МиБ ([FIRMWARE_BOOT.md](../specs/FIRMWARE_BOOT.md), раздел 2).

@@ -195,6 +195,8 @@ RSDP, XSDT, FADT, FACS, MADT; DSDT с PNP0C02; E820 запись для ECAM; р
 
 Регион ACPI платы — `[0xE_0000, 0xF_0000)`: часть для таблиц (E820 ACPI reclaim) `[0xE_0000, 0xE_F000)` и часть NVS `[0xE_F000, 0xF_0000)` для FACS. Blob: заголовок 0x60 байт (magic `ODACPIB1`, `version` 2, `manifest_hash`, `load_base`, `payload_offset`/`payload_len`, `rsdp_address`, `table_count`, `total_len`, `facs_offset`/`facs_len`/`facs_address`), каталог по 16 байт на таблицу (сигнатура, смещение в payload, длина, reserved 0), payload и 64 байта FACS в конце файла.
 
+**Исключение: вторая таблица устройств `STAGE4_DEVICES`.** В `firmware/uefi/src/acpi/blob.rs` есть константа `STAGE4_DEVICES` — таблица устройств платы этапа 4 (`pci_ecam`, `acpi_pm`, `acpi_tables`, без NVMe, один экран, порядок как в handoff block). Она дублирует то, что в основном пути хранит manifest из handoff block, а правило DRY из AGENTS.md требует не дублировать такие знания. Исключение допускается, потому что таблица нужна только freestanding blob этапа 4 (`od-acpi-blob`): путь UEFI (S7-12, S7-13) её не использует и строит DSDT и таблицы из manifest handoff. Расхождение значений ловит машинный тест `acpi_blob::stage4_blob_is_built_for_this_boards_manifest`: он пересчитывает хеш manifest из настоящей конфигурации платы и сравнивает с заголовком blob. Если blob этапа 4 будет удалён, таблица удаляется вместе с ним.
+
 Раскладка payload (загружается как есть на `load_base` = `0xE_0000`; значения — для эталонного 1104-byte blob `tests/fixtures/guest/stage4/acpi_blob/stage4_acpi_blob.bin`, в нём 5 таблиц, `payload_len` 0x360):
 
 | Таблица | Адрес (GPA) | Смещение в payload | Длина |

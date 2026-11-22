@@ -49,6 +49,7 @@ use crate::vcpu::{
     BOOT_VCPU_INDEX, LINUX_AP_CPUID_PROFILE, MAX_VCPUS, NmiBoundary, StartupApplied, Vcpu,
     VcpuCpuid, vcpu_set,
 };
+use crate::xhci::irq_source::XhciIoapicIrqSource;
 use crate::{
     ACPI_PM_DESCRIPTOR, ACPI_SCI_GSI, ACPI_SCI_IRQ_FLAGS, AbsentPortRegion, AbsentPorts,
     AccessWidth, AcpiPm, AcpiPmHandle, BusAccessError, BusBuildError, CMOS_INDEX_PORT,
@@ -70,7 +71,8 @@ use crate::{
 };
 use crate::{
     DiagnosticReadError, DiagnosticReadFailure, DiagnosticTranslateError, DisplayReadError,
-    FrameInfo,
+    FrameInfo, HidDevices, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT, XhciConfig,
+    XhciDevice, XhciHandle,
 };
 use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{Cpl0ProfileSet, GuestFpState, RunExit, TranslationContextChange};
@@ -117,6 +119,50 @@ pub const FIRMWARE_ACPI_FACS_BYTES: u64 = 0x1000;
 
 pub(crate) const FIRMWARE_CR0: u64 = 0x8001_0033;
 pub(crate) const FIRMWARE_CR4: u64 = 0x20;
+
+/// GDTR modeled for the unified loop (S7-31c): base 0, limit 0xFFFF, the value after reset
+/// (Intel SDM Vol. 3A, 10.1.1, Table 10-1).
+pub(crate) const UNIFIED_ENTRY_GDTR_BASE: u64 = 0;
+pub(crate) const UNIFIED_ENTRY_GDTR_LIMIT: u16 = 0xffff;
+/// Hidden segment caches modeled for the unified loop: limit 0xFFFF_FFFF, access 0x93 (present,
+/// writable data), flags 0xC (D/B and G). These are NOT reset values (a reset gives limit
+/// 0xFFFF); they are the flat values of the Linux entry state. In 64-bit mode base and limit of
+/// SS/DS/ES/FS/GS are not used, so they affect nothing the guest can observe.
+pub(crate) const UNIFIED_ENTRY_SEGMENT_LIMIT: u32 = 0xffff_ffff;
+pub(crate) const UNIFIED_ENTRY_SEGMENT_ACCESS: u8 = 0x93;
+pub(crate) const UNIFIED_ENTRY_SEGMENT_FLAGS: u8 = 0xc;
+
+/// The descriptor-table and segment-cache state the unified loop (S7-31c) gives a ROM entry
+/// state, which leaves all of it unmodeled (`LongModeState::default()`, FIRMWARE_BOOT.md, entry
+/// contract). The CPL0 set refuses `LGDT` without a modeled GDTR and loads a selector into
+/// SS/DS/ES/FS/GS only over a modeled cache. Each field is set only when it is unmodeled, so a
+/// second call changes nothing. The ROM replaces all of it with its own GDT in
+/// `od_fw_install_gdt`, its first function.
+pub(crate) fn model_unified_entry_descriptors(state: &mut LongModeState) {
+    let data = od_isa::DataSegmentDescriptorCache {
+        base: 0,
+        limit: UNIFIED_ENTRY_SEGMENT_LIMIT,
+        access: UNIFIED_ENTRY_SEGMENT_ACCESS,
+        flags: UNIFIED_ENTRY_SEGMENT_FLAGS,
+    };
+    let flat = od_isa::FsDescriptorCache {
+        limit: UNIFIED_ENTRY_SEGMENT_LIMIT,
+        access: UNIFIED_ENTRY_SEGMENT_ACCESS,
+        flags: UNIFIED_ENTRY_SEGMENT_FLAGS,
+    };
+    state.gdtr.get_or_insert(od_isa::state::Gdtr {
+        base: UNIFIED_ENTRY_GDTR_BASE,
+        limit: UNIFIED_ENTRY_GDTR_LIMIT,
+    });
+    if state.ss_cache.is_none() {
+        state.ss_cache = Some(data);
+        state.ss_selector.get_or_insert(0);
+    }
+    state.ds_cache.get_or_insert(data);
+    state.es_cache.get_or_insert(data);
+    state.fs_cache.get_or_insert(flat);
+    state.gs_cache.get_or_insert(flat);
+}
 pub(crate) const FIRMWARE_LOW_RAM_LIMIT: u64 = 0xF400_0000;
 pub(crate) const FIRMWARE_HIGH_RAM_BASE: u64 = 0x1_0000_0000;
 const PAGE: u64 = 0x1000;
@@ -217,6 +263,8 @@ pub enum FirmwareFvApp {
     Blk = 7,
     Fs = 8,
     Tpm = 9,
+    /// Counts boots in an NVRAM variable and resets the machine (S7-26); handoff v1.13 like `Tpm`.
+    Reboot = 10,
 }
 
 /// Host-supplied board configuration. Defaults follow FIRMWARE_BOOT.md 6.1.
@@ -244,6 +292,13 @@ pub struct FirmwareBoardConfig {
     /// Direct Linux boot only: expose NVMe at 00:04.0 with BAR0/1 and INTx.
     /// Requires `nvme` and `linux_profile` and selects handoff v1.3.
     pub nvme_pci: bool,
+    /// USB xHCI controller with a keyboard on port 1 and an absolute pointer on port 2
+    /// (S8-42, S8-43; `XHCI_DEVICE.md`): PCI function 00:05.0 with BAR0 `[0xFC00_8000,
+    /// 0xFC00_C000)`, INTA on GSI 17. Requires `pci_ecam`. `None` keeps the board, the handoff
+    /// block and the ACPI manifest hash byte for byte: the controller has no handoff device
+    /// code (firmware finds it by PCI enumeration), only the memory map and its region table
+    /// gain the BAR window.
+    pub xhci: Option<XhciConfig>,
     /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
     /// over bus 0. `false` keeps handoff v1.0 byte for byte (code 7
     /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
@@ -297,6 +352,7 @@ impl Default for FirmwareBoardConfig {
             nvram: None,
             tpm: None,
             nvme_pci: false,
+            xhci: None,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
@@ -544,9 +600,26 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
             "tpm FV application needs TPM CRB",
         ));
     }
+    if config.fv_app == Some(FirmwareFvApp::Reboot)
+        && !(config.tpm.is_some() && config.nvram.is_some())
+    {
+        return Err(FirmwareBoardError::Config(
+            "reboot FV application needs the TPM CRB and NVRAM",
+        ));
+    }
     if config.linux_profile && !(config.acpi_pm && config.acpi_tables && config.pci_ecam) {
         return Err(FirmwareBoardError::Config(
             "linux_profile needs acpi_pm, acpi_tables and pci_ecam",
+        ));
+    }
+    if config.xhci.is_some() && !config.pci_ecam {
+        return Err(FirmwareBoardError::Config("xhci needs pci_ecam"));
+    }
+    // The Linux-profile loops do not serve the controller yet (the set loop opens no BAR0
+    // window, the port reset has no wake deadline, the multi-vCPU path does not service it).
+    if config.xhci.is_some() && config.linux_profile {
+        return Err(FirmwareBoardError::Config(
+            "xhci is served by the firmware profile only (no linux_profile)",
         ));
     }
     if config.nvme_pci && !(config.nvme.is_some() && config.linux_profile) {
@@ -812,6 +885,14 @@ fn board_map(
     for device in devices.iter().filter(|device| device.is_mmio()) {
         regions.push(MemoryRegionSpec::new(
             range(device.base, device.length)?,
+            MemoryRegionKind::Mmio,
+        ));
+    }
+    // The xHCI BAR0 has no device-table entry (the firmware enumerates PCI): its window is a
+    // memory map region only, and so a region of the handoff table.
+    if config.xhci.is_some() {
+        regions.push(MemoryRegionSpec::new(
+            range(XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES)?,
             MemoryRegionKind::Mmio,
         ));
     }
@@ -1359,6 +1440,27 @@ impl Com1Log {
     }
 }
 
+/// What a platform reset does to RAM (S7-26, FIRMWARE_BOOT.md section 12.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlatformResetKind {
+    /// Power-on state: every RAM byte is zero again (the reset register of the board performs
+    /// this one: it is a hard reset, and so is every `ResetSystem` type of the firmware).
+    Cold,
+    /// RAM keeps its contents except what the entry contract rewrites: the firmware shadow, the
+    /// handoff block and the boot page tables. Requested through the host API only.
+    Warm,
+}
+
+/// The bytes and the CPU state a platform reset restores besides the ROM, which is its own
+/// source of truth (S7-26): the pristine boot page tables, the root the paged interpreter walks
+/// from (the firmware's own `MOV CR3` moves `page_table_root` to its tables while it runs) and
+/// the direct-entry state.
+struct ResetSource {
+    tables: Vec<u8>,
+    root: u64,
+    entry: LongModeState,
+}
+
 /// A loaded firmware board: machine, direct-entry CPU state and handoff block.
 pub struct LoadedFirmwareBoard {
     bus: MachineBus,
@@ -1373,6 +1475,10 @@ pub struct LoadedFirmwareBoard {
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    xhci_mmio: Option<XhciDevice>,
+    ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
+    xhci: Option<XhciHandle>,
+    hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -1389,6 +1495,9 @@ pub struct LoadedFirmwareBoard {
     /// `CR3` the paged interpreter walks from (S4-37L4): the board's page-table
     /// root, `FIRMWARE_BOOT_PAGE_TABLES_GPA` for the firmware boot.
     page_table_root: u64,
+    /// What [`Self::platform_reset`] puts back at power-on (S7-26); `None` on a Linux board,
+    /// which has no firmware entry and cannot be reset this way.
+    reset_source: Option<ResetSource>,
     /// The CONFIG_ADDRESS value last recorded by a LinuxDirect run.
     pci_config_address: u32,
     /// The ordinary CPL0 set changed its address cell since the last transfer to the shared bus.
@@ -1816,8 +1925,9 @@ impl LoadedFirmwareBoard {
     ///   Remote IRR of cannot veto it.
     ///
     /// Not touched: guest RAM, the devices of the board (UART, PIT, PIC, PM timer, NVMe, display),
-    /// the interrupt source and the clock: virtual time does not move. Resetting the devices is the
-    /// machine reset of S7-26. On an error nothing has changed.
+    /// the interrupt source and the clock: virtual time does not move. The devices and RAM are
+    /// reset by [`Self::platform_reset`] (S7-26), which calls this first. On an error nothing has
+    /// changed.
     pub(crate) fn reset_cpu_complex(
         &mut self,
         bsp_state: LongModeState,
@@ -1864,6 +1974,110 @@ impl LoadedFirmwareBoard {
             .acpi_pm
             .as_ref()
             .and_then(AcpiPmHandle::take_stop_request))
+    }
+
+    /// The platform reset of the firmware board (S7-26): what the reset register of the board
+    /// (`MachineStopReason::Reset`) and a host request do, inside the same process and on the
+    /// same board value, with no board rebuilt. The caller runs `run_boot` again afterwards.
+    ///
+    /// - CPU complex: [`Self::reset_cpu_complex`] to the direct-entry state of the loader, and the
+    ///   walk root of the paged interpreter back to the boot page tables.
+    /// - RAM: `Cold` zeroes every RAM region; `Warm` keeps it. Either way the ROM is read back
+    ///   into the firmware shadow, and the handoff block and the pristine boot page tables are
+    ///   written again, because the firmware overwrites all three while it runs.
+    /// - Devices back to their power-on state: UART (COM1 is configured again as at load),
+    ///   display (framebuffer bytes and `generation` are kept, DISPLAY_DEVICE.md 10), NVMe
+    ///   (queues and registers; the attached backend and the disk stay), ACPI PM block (registers
+    ///   and the latched stop request) and the TPM CRB (`_TPM_Init`, no locality granted).
+    ///   The board has no HPET.
+    /// - Not reset: the virtual clock, hence the PM timer and the RTC, which read it; the
+    ///   committed banks of the NVRAM (only its registers and a write in flight are lost); the
+    ///   persistent state of the TPM (its PCRs, sessions and loaded objects are the volatile
+    ///   state and are lost). `TPM2_Startup(CLEAR)` is sent by the firmware that boots next,
+    ///   as after the first power-on.
+    ///
+    /// A Linux board (no firmware entry) and a board with the Linux profile (PIT, 8259 pair) are
+    /// refused with `Config` before anything changes; so is a ROM that cannot be read back.
+    /// There is no other error path: a failure after the CPU complex was reset would leave a
+    /// board that must not be run, and none is reachable for the constant layout of the loader.
+    pub fn platform_reset(&mut self, kind: PlatformResetKind) -> Result<(), FirmwareBoardError> {
+        if self.reset_source.is_none() || self.has_linux_profile() {
+            return Err(FirmwareBoardError::Config(
+                "platform_reset: only the firmware profile has an entry to reset to",
+            ));
+        }
+        let rom = GuestPhysicalAddress::new(FIRMWARE_ROM_BASE);
+        let mut shadow = vec![0u8; FIRMWARE_IMAGE_BYTES];
+        self.bus
+            .read_flat_bytes(rom, &mut shadow)
+            .map_err(FirmwareBoardError::Bus)?;
+        let source = self.reset_source.as_ref().expect("checked above");
+        let entry = source.entry.clone();
+        self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
+        if kind == PlatformResetKind::Cold {
+            self.clear_ram()?;
+        }
+        let source = self.reset_source.as_ref().expect("checked above");
+        self.page_table_root = source.root;
+        let writes = [
+            (FIRMWARE_LINK_BASE, &shadow[..]),
+            (source.root, &source.tables[..]),
+            (FIRMWARE_HANDOFF_GPA, &self.handoff[..]),
+        ];
+        for (address, bytes) in writes {
+            self.bus
+                .write_flat_bytes(GuestPhysicalAddress::new(address), bytes, |_| {})
+                .map_err(FirmwareBoardError::Bus)?;
+        }
+        self.uart.reset();
+        configure_com1(&mut self.bus)?;
+        self.display.reset();
+        if let Some(nvme) = &self.nvme {
+            nvme.platform_reset();
+        }
+        if let Some(xhci) = &self.xhci {
+            xhci.platform_reset();
+        }
+        if let Some(pm) = &self.acpi_pm {
+            pm.platform_reset();
+        }
+        if let Some(nvram) = &self.nvram {
+            nvram.platform_reset();
+        }
+        if let Some(tpm) = &self.tpm {
+            tpm.platform_reset(self.clock.snapshot().now_ns());
+        }
+        self.pci_config_address = 0;
+        self.pci_config_pending = false;
+        self.host_stop_honoured = false;
+        Ok(())
+    }
+
+    /// Zero every RAM region of the memory map, 1 MiB at a time, through the committed-write
+    /// path (so the code page generations of a decoded or compiled page change).
+    fn clear_ram(&mut self) -> Result<(), FirmwareBoardError> {
+        const CHUNK: usize = 1 << 20;
+        let zeros = vec![0u8; CHUNK];
+        let regions: Vec<_> = self
+            .bus
+            .physical_memory()
+            .region_specs()
+            .filter(|spec| spec.kind == MemoryRegionKind::Ram)
+            .map(|spec| spec.range)
+            .collect();
+        for region in regions {
+            let end = region.end_exclusive();
+            let mut at = u128::from(region.start().get());
+            while at < end {
+                let len = (end - at).min(CHUNK as u128) as usize;
+                let address = GuestPhysicalAddress::new(at as u64);
+                self.bus
+                    .write_flat_bytes(address, &zeros[..len], |_| {})
+                    .map_err(FirmwareBoardError::Bus)?;
+                at += len as u128;
+            }
+        }
+        Ok(())
     }
 
     /// The vCPU `index` applies the INIT and SIPI waiting in its own Local APIC (S6-13), on its
@@ -1920,6 +2134,10 @@ impl LoadedFirmwareBoard {
             efer,
             None,
         )
+    }
+
+    pub fn bus(&self) -> &MachineBus {
+        &self.bus
     }
 
     pub fn bus_mut(&mut self) -> &mut MachineBus {
@@ -2180,6 +2398,18 @@ impl LoadedFirmwareBoard {
         self.nvme.clone()
     }
 
+    /// Handle of the xHCI controller; `None` unless `FirmwareBoardConfig::xhci` was set. The
+    /// host queues input with [`XhciHandle::push_input`]; the run loops service the controller.
+    pub fn xhci(&self) -> Option<XhciHandle> {
+        self.xhci.clone()
+    }
+
+    /// Host-side handles of the keyboard and the pointer behind the xHCI ports (LED state,
+    /// counters); `None` without `FirmwareBoardConfig::xhci`.
+    pub fn hid_devices(&self) -> Option<HidDevices> {
+        self.hid.clone()
+    }
+
     /// Both committed NVRAM banks, for the owning host between guest quanta.
     pub fn nvram_snapshot(&self) -> Option<Vec<u8>> {
         self.nvram.as_ref().map(NvramHandle::nvram_snapshot)
@@ -2248,6 +2478,13 @@ impl LoadedFirmwareBoard {
         true
     }
 
+    /// S7-31m: whether [`Self::enable_pit_pic_irq`] would succeed (a pure check): the Linux-profile
+    /// PIT and 8259 exist and the IOAPIC source is not installed.
+    pub(crate) fn pit_pic_irq_available(&self) -> bool {
+        self.pit_pic_source.is_some()
+            || (self.pit.is_some() && self.pic_master.is_some() && self.pit_ioapic_source.is_none())
+    }
+
     /// S4-38L8d: whether [`Self::enable_pit_ioapic_irq`] would succeed (a pure check): the
     /// Linux-profile PIT exists and the 8259 source is not installed.
     pub(crate) fn pit_ioapic_irq_available(&self) -> bool {
@@ -2309,7 +2546,8 @@ impl LoadedFirmwareBoard {
     /// nothing changed unless [`Self::enable_pit_ioapic_irq`] installed the PIT source first (so the
     /// IOAPIC and the Local APIC windows are open). The 8259 variant ([`Self::enable_uart_irq4`])
     /// cannot coexist: it needs the 8259 PIT source, which excludes the IOAPIC one. A PCI NVMe
-    /// endpoint also contributes its INTx line through the same IOAPIC source.
+    /// endpoint and the xHCI function also contribute their INTx lines (GSI 16 and 17) through
+    /// the same IOAPIC source.
     pub fn enable_uart_ioapic_irq4(&mut self) -> bool {
         if self.uart_ioapic_source.is_some() {
             return true;
@@ -2319,14 +2557,19 @@ impl LoadedFirmwareBoard {
         };
         let io_apic = IoApic::new(self.lapic.clone()).handle();
         let source = UartIoapicIrqSource::new(pit_ioapic, self.uart.clone(), io_apic.clone());
-        self.irq_source = match &self.nvme {
+        let mut chain: Box<dyn BoardIrqSource> = match &self.nvme {
             Some(nvme) if nvme.has_pci_transport() => Box::new(NvmeIoapicIrqSource::new(
                 Box::new(source.clone()),
                 nvme.clone(),
-                io_apic,
+                io_apic.clone(),
             )),
             _ => Box::new(source.clone()),
         };
+        // The xHCI INTA line (GSI 17) on top, when the board has the controller.
+        if let Some(xhci) = &self.xhci {
+            chain = Box::new(XhciIoapicIrqSource::new(chain, xhci.clone(), io_apic));
+        }
+        self.irq_source = chain;
         self.uart_ioapic_source = Some(source);
         true
     }
@@ -2357,6 +2600,65 @@ impl LoadedFirmwareBoard {
 
     /// S4-38L4i: the checkpoints recorded so far (in id order) and the recorder removed; `None`
     /// when none was enabled.
+    /// S7-31e (diagnostics only): the raw entries of the 4-level walk of `linear` from the board CR3,
+    /// read from RAM without touching an accessed or dirty bit. Each item is the level name, the
+    /// guest-physical address of the entry and its raw value; the walk stops at the first
+    /// non-present entry, at a large page, after the PTE, or when an entry cannot be read from RAM.
+    pub(crate) fn raw_page_walk(&mut self, linear: u64) -> Vec<(&'static str, u64, u64)> {
+        const LEVELS: [(&str, u32); 4] = [("PML4E", 39), ("PDPTE", 30), ("PDE", 21), ("PTE", 12)];
+        let mut table = self.page_table_root & 0x000f_ffff_ffff_f000;
+        let mut walk = Vec::new();
+        for (index, (name, shift)) in LEVELS.into_iter().enumerate() {
+            let address = table + ((linear >> shift) & 0x1ff) * 8;
+            let mut raw = [0u8; 8];
+            if self
+                .bus
+                .read_flat_bytes(GuestPhysicalAddress::new(address), &mut raw)
+                .is_err()
+            {
+                break;
+            }
+            let raw = u64::from_le_bytes(raw);
+            walk.push((name, address, raw));
+            let large = matches!(index, 1 | 2) && raw & 0x80 != 0;
+            if raw & 1 == 0 || large {
+                break;
+            }
+            table = raw & 0x000f_ffff_ffff_f000;
+        }
+        walk
+    }
+
+    /// S7-31e: CR2 and the error code of the first `#PF` delivered to the guest while checkpoints
+    /// were enabled (diagnostics only).
+    pub(crate) fn first_delivered_page_fault(&self) -> Option<(u64, u32)> {
+        self.checkpoints
+            .as_ref()
+            .and_then(CheckpointRecorder::first_page_fault)
+    }
+
+    /// S7-31q: watch the entry of the given functions through the CPL0-set loop (opt-in, observation
+    /// only; with no checkpoint table the per-boundary predicates stay off).
+    pub(crate) fn enable_call_trace(
+        &mut self,
+        targets: Vec<crate::linux_checkpoints::CallTraceTarget>,
+        system_table: Option<u64>,
+    ) {
+        match self.checkpoints.as_mut() {
+            Some(recorder) => recorder.set_call_trace(targets, system_table),
+            None => {
+                self.checkpoints = Some(CheckpointRecorder::call_trace_only(targets, system_table))
+            }
+        }
+    }
+
+    /// The calls traced so far and the trace removed; `None` when none was started.
+    pub(crate) fn take_call_trace(&mut self) -> Option<crate::linux_checkpoints::CallTraceReport> {
+        self.checkpoints
+            .as_mut()
+            .and_then(CheckpointRecorder::take_call_trace)
+    }
+
     pub(crate) fn take_checkpoints(&mut self) -> Option<Vec<LinuxCheckpointRecord>> {
         self.checkpoints.take().map(|recorder| recorder.records())
     }
@@ -2647,13 +2949,11 @@ impl LoadedFirmwareBoard {
     }
 
     /// Handle of the 8259 master chip (S4-39g); `None` without the Linux profile.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pic_master(&self) -> Option<Pic8259Handle> {
         self.pic_master.clone()
     }
 
     /// The installed PIT -> 8259 source (a second handle on it), if any.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pit_pic_source(&self) -> Option<PitPicIrqSource> {
         self.pit_pic_source.clone()
     }
@@ -2662,6 +2962,43 @@ impl LoadedFirmwareBoard {
     /// there, see `assemble_board`.
     pub(crate) const fn has_linux_profile(&self) -> bool {
         self.rdtsc_tick.is_some()
+    }
+
+    /// True for a board loaded from a firmware image (it has an entry to reset to); false for the
+    /// Linux direct board, which has no firmware.
+    pub(crate) const fn has_firmware_entry(&self) -> bool {
+        self.reset_source.is_some()
+    }
+
+    /// S7-31c (ADR-0013 variant (b)): bind the firmware device apertures (NVRAM, display
+    /// registers, the firmware NVMe window, TPM CRB) to the machine bus, so that the CPL0 set
+    /// loop serves them like the firmware profile loop does. Idempotent for a given board.
+    pub(crate) fn serve_firmware_set_windows(&mut self) {
+        let mut apertures = Vec::new();
+        if self.display_mmio.is_some() {
+            apertures.push((
+                crate::display_device::DISPLAY_REGISTERS_BASE,
+                crate::display_device::DISPLAY_REGISTERS_BYTES,
+            ));
+        }
+        if self.nvram.is_some() {
+            apertures.push((
+                crate::nvram_device::NVRAM_MMIO_BASE,
+                crate::nvram_device::NVRAM_MMIO_BYTES,
+            ));
+        }
+        // A firmware board never has `nvme_pci` (the loader refuses it), so the controller sits
+        // at the firmware's own NVMe window; under the Linux profile it is a bus device.
+        if self.nvme.is_some() {
+            apertures.push((crate::nvme::NVME_MMIO_BASE, crate::nvme::NVME_MMIO_BYTES));
+        }
+        if self.tpm.is_some() {
+            apertures.push((crate::tpm_crb::TPM_CRB_BASE, crate::tpm_crb::TPM_CRB_LEN));
+        }
+        if self.xhci.is_some() {
+            apertures.push((XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES));
+        }
+        self.bus.serve_firmware_set_windows(&apertures);
     }
 
     /// The board's `CR3`: the firmware boot tables, or for a Linux board the root of the Linux
@@ -2943,6 +3280,8 @@ impl LoadedFirmwareBoard {
                     display: self.display_mmio.as_ref(),
                     nvme: self.nvme_mmio.as_ref(),
                     tpm: self.tpm.as_ref(),
+                    xhci: self.xhci_mmio.as_ref(),
+                    ecam: self.ecam_mmio.as_ref(),
                 },
                 self.page_table_root,
                 efer,
@@ -3089,6 +3428,11 @@ impl LoadedFirmwareBoard {
         self.pit
             .as_ref()
             .map(|pit| [pit.port_b_reads(), pit.counter_port_reads()])
+    }
+
+    /// PIT channel 0 as the guest left it (S7-31m); `None` without the Linux profile.
+    pub(crate) fn pit_channel0_snapshot(&self) -> Option<crate::PitChannelSnapshot> {
+        self.pit.as_ref().map(|pit| pit.snapshot().channel0)
     }
 
     pub(crate) fn irq0_edges(&self) -> u64 {
@@ -3307,6 +3651,7 @@ impl LoadedFirmwareBoard {
             self.uart_output_context = Some(UartOutputContextCapture::default());
         }
         let nvme = self.nvme.clone();
+        let xhci = self.xhci.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -3325,6 +3670,9 @@ impl LoadedFirmwareBoard {
         }
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
+        }
+        if let Some(xhci) = &xhci {
+            xhci.service(&mut self.bus, |_| {});
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
@@ -3462,6 +3810,8 @@ impl LoadedFirmwareBoard {
                 (scheduler_budget.is_some() && scheduler_stop())
                     || uart.holding_occupied()
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                        // A guest write to an xHCI register (a doorbell) ends the quantum.
+                        || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
                     || acpi_pm
                         .as_ref()
                         .is_some_and(|pm| pm.stop_request().is_some())
@@ -3565,6 +3915,9 @@ impl LoadedFirmwareBoard {
             }
             if let Some(nvme) = &nvme {
                 nvme.service(&mut board.bus, |_| {});
+            }
+            if let Some(xhci) = &xhci {
+                xhci.service(&mut board.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -3964,6 +4317,7 @@ impl LoadedFirmwareBoard {
         let mut quanta = 0u64;
         self.com1_log.bytes.clear();
         let nvme = self.nvme.clone();
+        let xhci = self.xhci.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -3985,6 +4339,9 @@ impl LoadedFirmwareBoard {
         if let Some(nvme) = &nvme {
             nvme.service(&mut self.bus, |_| {});
         }
+        if let Some(xhci) = &xhci {
+            xhci.service(&mut self.bus, |_| {});
+        }
         loop {
             let uart = self.uart.clone();
             let report = self.run_quantum(
@@ -3994,6 +4351,8 @@ impl LoadedFirmwareBoard {
                 || {
                     uart.holding_occupied()
                         || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
+                        // A guest write to an xHCI register (a doorbell) ends the quantum.
+                        || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
                         || acpi_pm
                             .as_ref()
                             .is_some_and(|pm| pm.stop_request().is_some())
@@ -4015,6 +4374,9 @@ impl LoadedFirmwareBoard {
             // commands and post completions between quanta (NVME_DEVICE.md).
             if let Some(nvme) = &nvme {
                 nvme.service(&mut self.bus, |_| {});
+            }
+            if let Some(xhci) = &xhci {
+                xhci.service(&mut self.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -4117,6 +4479,10 @@ pub(crate) struct AssembledBoard {
     display_mmio: Option<DisplayDevice>,
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
+    xhci_mmio: Option<XhciDevice>,
+    ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
+    xhci: Option<XhciHandle>,
+    hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
     acpi_pm: Option<AcpiPmHandle>,
@@ -4345,6 +4711,24 @@ fn assemble_board_with_layout(
         });
         nvme = Some(handle);
     }
+    // The xHCI function (S8-42): PCI 00:05.0, BAR0 on the bus, the keyboard and the pointer
+    // behind its ports; it reads the board clock for the port reset and MFINDEX.
+    let mut xhci = None;
+    let mut xhci_mmio = None;
+    let mut hid = None;
+    if let Some(xhci_config) = config.xhci {
+        let (device, handle, function) = XhciDevice::new_pci(xhci_config, clock.clone());
+        pci.add_function(0, XHCI_PCI_SLOT, 0, Box::new(function))
+            .map_err(|_| FirmwareBoardError::Config("xHCI PCI slot is occupied"))?;
+        hid = Some(handle.attach_hid_devices());
+        xhci_mmio = Some(device.mmio_endpoint());
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(XHCI_PCI_BAR_BASE),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        xhci = Some(handle);
+    }
     let com1 = PortRange::new(
         PortAddress::new(devices[DEV_COM1].base as u16),
         devices[DEV_COM1].length as u32,
@@ -4377,9 +4761,12 @@ fn assemble_board_with_layout(
     }
     // One PCI configuration device, two bindings (ECAM MMIO + conf1 PIO) with the
     // same device index, so both front ends share one function table.
+    let mut ecam_mmio = None;
     if devices[DEV_ECAM_TABLE].present() {
         let device_index = bus_devices.len();
-        bus_devices.push(Box::new(pci));
+        let shared = crate::pci_ecam::SharedPciEcam::new(pci);
+        bus_devices.push(Box::new(shared.clone()));
+        ecam_mmio = Some(shared);
         mmio.push(MmioBinding {
             region_start: GuestPhysicalAddress::new(devices[DEV_ECAM_TABLE].base),
             device_index,
@@ -4428,7 +4815,14 @@ fn assemble_board_with_layout(
         bind(PIC_MASTER_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.master))?;
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
-        for region in [AbsentPortRegion::IoDelay, AbsentPortRegion::Post] {
+        // COM2, COM3 and COM4 are not declared by the board: absent UARTs read 0xFF (S7-31j).
+        for region in [
+            AbsentPortRegion::IoDelay,
+            AbsentPortRegion::Post,
+            AbsentPortRegion::Uart2,
+            AbsentPortRegion::Uart3,
+            AbsentPortRegion::Uart4,
+        ] {
             bind(
                 region.base_port(),
                 region.port_bytes(),
@@ -4460,6 +4854,10 @@ fn assemble_board_with_layout(
         display_mmio,
         nvme_mmio,
         nvme,
+        xhci_mmio,
+        ecam_mmio,
+        xhci,
+        hid,
         nvram,
         tpm,
         acpi_pm,
@@ -4508,6 +4906,10 @@ impl AssembledBoard {
             display_mmio,
             nvme_mmio,
             nvme,
+            xhci_mmio,
+            ecam_mmio,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4558,6 +4960,11 @@ impl AssembledBoard {
         };
         state.gpr[Register::Rsp as usize] = FIRMWARE_BOOT_STACK_TOP;
         state.gpr[Register::Rdi as usize] = FIRMWARE_HANDOFF_GPA;
+        let reset_source = ResetSource {
+            tables,
+            root: page_table_root,
+            entry: state.clone(),
+        };
         Ok(LoadedFirmwareBoard {
             bus,
             entry_state: Some(state.clone()),
@@ -4567,6 +4974,10 @@ impl AssembledBoard {
             display_mmio,
             nvme_mmio,
             nvme,
+            xhci_mmio,
+            ecam_mmio,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4576,6 +4987,7 @@ impl AssembledBoard {
             handoff,
             page_table_bytes,
             page_table_root,
+            reset_source: Some(reset_source),
             pci_config_address: 0,
             pci_config_pending: false,
             com1_log: Com1Log::default(),
@@ -4629,6 +5041,8 @@ impl AssembledBoard {
             uart,
             display,
             nvme,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4650,6 +5064,10 @@ impl AssembledBoard {
             display_mmio: None,
             nvme_mmio: None,
             nvme,
+            xhci_mmio: None,
+            ecam_mmio: None,
+            xhci,
+            hid,
             nvram,
             tpm,
             acpi_pm,
@@ -4659,6 +5077,7 @@ impl AssembledBoard {
             handoff: Vec::new(),
             page_table_bytes,
             page_table_root,
+            reset_source: None,
             pci_config_address: 0,
             pci_config_pending: false,
             com1_log: Com1Log::default(),
@@ -4732,10 +5151,14 @@ fn load_firmware_image_inner(
 mod secure_boot_pcr7_tests;
 
 #[cfg(test)]
+mod tcg_log_replay_tests;
+
+#[cfg(test)]
 mod failure_smoke_tests;
 
 #[cfg(test)]
 mod tests {
+    mod xhci_board;
     use super::*;
     use crate::{
         ACPI_PM_TMR_BLK, ACPI_PM1_CNT_SCI_EN, ACPI_PM1_CNT_SLP_EN, ACPI_PM1A_CNT_BLK,
@@ -6891,6 +7314,232 @@ mod tests {
         assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
     }
 
+    /// A board that ran `MOV AL,imm8; MOV DX,imm16; OUT DX,AL; HLT` on the reset register to its
+    /// reset stop.
+    fn reset_stopped_board(config: FirmwareBoardConfig) -> LoadedFirmwareBoard {
+        let [lo, hi] = ACPI_RESET_REG.to_le_bytes();
+        let code = [0xb0, ACPI_RESET_VALUE, 0x66, 0xba, lo, hi, 0xee, 0xf4];
+        // `handoff_minor_max` 13: the image takes the TPM handoff of the device test.
+        let image = test_image(&code, &[(0x2A, &13u16.to_le_bytes())]);
+        let mut board = load_firmware_image(&image, &config).unwrap();
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+        board
+    }
+
+    fn ram_at(board: &mut LoadedFirmwareBoard, address: u64, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0; len];
+        board
+            .bus_mut()
+            .read_flat_bytes(GuestPhysicalAddress::new(address), &mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn put_ram(board: &mut LoadedFirmwareBoard, address: u64, bytes: &[u8]) {
+        board
+            .bus_mut()
+            .write_flat_bytes(GuestPhysicalAddress::new(address), bytes, |_| {})
+            .unwrap();
+    }
+
+    fn mmio32(board: &mut LoadedFirmwareBoard, address: u64) -> u64 {
+        board
+            .bus_mut()
+            .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Dword)
+            .unwrap()
+    }
+
+    fn put_mmio32(board: &mut LoadedFirmwareBoard, address: u64, value: u64) {
+        board
+            .bus_mut()
+            .write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Dword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn platform_reset_runs_the_same_firmware_again_on_the_same_board() {
+        let mut board = reset_stopped_board(pm_config());
+        for cycle in 1..=3u64 {
+            board.platform_reset(PlatformResetKind::Cold).unwrap();
+            assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+            let report = board.run_boot(100).unwrap();
+            assert_eq!(report.exit, PagedProbeExit::Stopped);
+            assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+            assert_eq!(report.retired, 3, "the same instructions every cycle");
+            // The virtual clock is not reset: three nanoseconds per run, cumulative.
+            assert_eq!(report.virtual_ns, 3 * (cycle + 1));
+        }
+    }
+
+    #[test]
+    fn cold_reset_zeroes_ram_warm_reset_keeps_it_and_both_restore_the_entry_contract() {
+        for kind in [PlatformResetKind::Cold, PlatformResetKind::Warm] {
+            let mut board = reset_stopped_board(pm_config());
+            // Markers in low RAM and far above the tables, garbage over the shadow, the handoff
+            // block and the boot page tables, the way a running firmware leaves them.
+            let markers = [0x2_0000u64, 0x0100_0000];
+            for at in markers {
+                put_ram(&mut board, at, &[0xA5; 64]);
+            }
+            let root = board.page_table_root;
+            for at in [
+                FIRMWARE_LINK_BASE + 0x100,
+                FIRMWARE_HANDOFF_GPA + 8,
+                root + 8,
+            ] {
+                put_ram(&mut board, at, &[0xCC; 8]);
+            }
+            // The firmware's `MOV CR3` moved the walk root to its own tables.
+            board.page_table_root = 0x0015_0000;
+            board.vcpus[0].state.cr3 = Some(0x0015_0000);
+            board.vcpus[0].state.rip = 0x1234;
+            board.vcpus[0].state.gpr[Register::Rsp as usize] = 0x5678;
+
+            board.platform_reset(kind).unwrap();
+
+            let expected = if kind == PlatformResetKind::Cold {
+                0
+            } else {
+                0xA5
+            };
+            for at in markers {
+                assert_eq!(ram_at(&mut board, at, 64), vec![expected; 64], "{kind:?}");
+            }
+            let mut rom = vec![0; FIRMWARE_IMAGE_BYTES];
+            board
+                .bus_mut()
+                .read_flat_bytes(GuestPhysicalAddress::new(FIRMWARE_ROM_BASE), &mut rom)
+                .unwrap();
+            assert_eq!(ram_at(&mut board, FIRMWARE_LINK_BASE, rom.len()), rom);
+            let handoff = board.handoff_block().to_vec();
+            assert_eq!(
+                ram_at(&mut board, FIRMWARE_HANDOFF_GPA, handoff.len()),
+                handoff
+            );
+            let tables = board.reset_source.as_ref().unwrap().tables.clone();
+            assert_eq!(ram_at(&mut board, root, tables.len()), tables);
+            assert_eq!(
+                board.page_table_root, root,
+                "{kind:?}: the walk root is the boot one"
+            );
+            let state = board.state();
+            assert_eq!(state.rip, FIRMWARE_LINK_BASE + 0x40);
+            assert_eq!(state.gpr[Register::Rsp as usize], FIRMWARE_BOOT_STACK_TOP);
+            assert_eq!(state.gpr[Register::Rdi as usize], FIRMWARE_HANDOFF_GPA);
+            // No CR3 of the vCPU's own: the interpreter walks from the boot tables again (the
+            // `#PF` of the first Warm run came from a stale root).
+            assert_eq!(state.cr3, None, "{kind:?}");
+            assert_eq!(board.guest_efer(), FIRMWARE_EFER);
+        }
+    }
+
+    #[test]
+    fn platform_reset_takes_the_devices_to_power_on_and_keeps_the_clock() {
+        let config = FirmwareBoardConfig {
+            acpi_pm: true,
+            acpi_tables: true,
+            nvram: Some(NvramConfig::Empty),
+            nvme: Some(NvmeConfig::default()),
+            tpm: Some(TpmConfig {
+                entropy: vec![0x55; 48],
+                snapshot: None,
+            }),
+            ..reference_config()
+        };
+        let mut board = reset_stopped_board(config);
+        // PM block: an enabled event.
+        let pm_en = ACPI_PM1A_EVT_BLK + 2;
+        board
+            .bus_mut()
+            .write_port(io_port(pm_en), AccessWidth::Word, 1)
+            .unwrap();
+        // COM1: a byte in the holding register.
+        board
+            .bus_mut()
+            .write_port(io_port(FIRMWARE_COM1_PORT), AccessWidth::Byte, 0x41)
+            .unwrap();
+        assert!(board.uart.holding_occupied());
+        // NVMe: the admin queue size the driver programmed.
+        put_mmio32(&mut board, NVME_MMIO_BASE + 0x24, 0x001f_001f);
+        assert_eq!(mmio32(&mut board, NVME_MMIO_BASE + 0x24), 0x001f_001f);
+        // NVRAM: a transfer address, and a committed bank that must survive.
+        let nvram =
+            crate::nvram_device::NVRAM_MMIO_BASE + crate::nvram_device::NVRAM_STORE_BYTES as u64;
+        put_mmio32(&mut board, nvram, 0x1234);
+        let committed = board.nvram_snapshot().unwrap();
+        // TPM CRB: a granted locality.
+        let crb_loc_ctrl = TPM_CRB_BASE + 0x08;
+        let crb_loc_sts = TPM_CRB_BASE + 0x0c;
+        put_mmio32(&mut board, crb_loc_ctrl, 1);
+        assert_eq!(mmio32(&mut board, crb_loc_sts), 1);
+        let before = board.clock().now_ns();
+        assert!(before > 0);
+
+        board.platform_reset(PlatformResetKind::Cold).unwrap();
+
+        assert_eq!(board.acpi_pm().unwrap().stop_request(), None);
+        let pm_en_value = board
+            .bus_mut()
+            .read_port(io_port(pm_en), AccessWidth::Word)
+            .unwrap();
+        assert_eq!(pm_en_value, 0);
+        assert!(!board.uart.holding_occupied());
+        assert_eq!(mmio32(&mut board, NVME_MMIO_BASE + 0x24), 0);
+        assert_eq!(mmio32(&mut board, nvram), 0);
+        assert_eq!(board.nvram_snapshot().unwrap(), committed);
+        assert_eq!(mmio32(&mut board, crb_loc_sts), 0);
+        assert_eq!(board.clock().now_ns(), before, "time does not move");
+        // COM1 is configured again as at load, and the firmware runs to its reset again.
+        let report = board.run_boot(100).unwrap();
+        assert_eq!(report.stop_reason, Some(MachineStopReason::Reset));
+    }
+
+    #[test]
+    fn platform_reset_refuses_a_linux_board_and_changes_nothing() {
+        let mut board = linux_board();
+        let rip = board.state().rip;
+        assert!(matches!(
+            board.platform_reset(PlatformResetKind::Cold),
+            Err(FirmwareBoardError::Config(_))
+        ));
+        assert_eq!(board.state().rip, rip);
+    }
+
+    #[test]
+    fn reboot_app_needs_tpm_and_nvram() {
+        let config = FirmwareBoardConfig {
+            fv_app: Some(FirmwareFvApp::Reboot),
+            acpi_pm: true,
+            acpi_tables: true,
+            ..reference_config()
+        };
+        assert!(matches!(
+            validate_config(&config),
+            Err(FirmwareBoardError::Config(_))
+        ));
+        let full = FirmwareBoardConfig {
+            nvram: Some(NvramConfig::Empty),
+            tpm: Some(TpmConfig {
+                entropy: vec![0; 48],
+                snapshot: None,
+            }),
+            ..config
+        };
+        assert!(validate_config(&full).is_ok());
+        let block = firmware_handoff_block(&full).unwrap();
+        assert_eq!(u16::from_le_bytes([block[0x0a], block[0x0b]]), 13);
+        assert_eq!(
+            u32::from_le_bytes(block[0xa0..0xa4].try_into().unwrap()),
+            10
+        );
+    }
+
     #[test]
     fn other_reset_values_and_a_board_without_the_flag_do_not_stop() {
         let mut board =
@@ -7543,6 +8192,16 @@ mod tests {
             load_firmware_image(&image, &broken),
             Err(FirmwareBoardError::Tpm(_))
         ));
+        // A snapshot of a newer build (ADR-0009, decision 6) is refused, not read as empty state.
+        let mut newer = restored.clone();
+        let newer_version = (od_tpm::SNAPSHOT_VERSION + 1).to_be_bytes();
+        newer.tpm.as_mut().unwrap().snapshot.as_mut().unwrap()[8..10]
+            .copy_from_slice(&newer_version);
+        assert!(matches!(
+            load_firmware_image(&image, &newer),
+            Err(FirmwareBoardError::Tpm(od_tpm::StateError::UnsupportedVersion(v)))
+                if v == od_tpm::SNAPSHOT_VERSION + 1
+        ));
     }
 
     #[test]
@@ -8043,6 +8702,405 @@ mod tests {
         load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap()
     }
 
+    #[test]
+    fn unified_entry_descriptors_have_the_documented_values_and_a_second_call_changes_nothing() {
+        let mut state = LongModeState::default();
+        model_unified_entry_descriptors(&mut state);
+        // GDTR: the value after reset (SDM Vol. 3A, Table 10-1).
+        assert_eq!(
+            state.gdtr,
+            Some(od_isa::state::Gdtr {
+                base: 0,
+                limit: 0xffff
+            })
+        );
+        // Flat caches: not reset values (reset gives limit 0xFFFF), the Linux entry values.
+        let data = od_isa::DataSegmentDescriptorCache {
+            base: 0,
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        assert_eq!(state.ss_cache, Some(data));
+        assert_eq!(state.ds_cache, Some(data));
+        assert_eq!(state.es_cache, Some(data));
+        assert_eq!(state.ss_selector, Some(0));
+        let flat = od_isa::FsDescriptorCache {
+            limit: 0xffff_ffff,
+            access: 0x93,
+            flags: 0xc,
+        };
+        assert_eq!((state.fs_cache, state.gs_cache), (Some(flat), Some(flat)));
+        // Nothing else of the entry state changes.
+        let mut expected = LongModeState::default();
+        (expected.gdtr, expected.ss_cache, expected.ss_selector) =
+            (state.gdtr, state.ss_cache, state.ss_selector);
+        (expected.ds_cache, expected.es_cache) = (state.ds_cache, state.es_cache);
+        (expected.fs_cache, expected.gs_cache) = (state.fs_cache, state.gs_cache);
+        assert_eq!(state, expected);
+        let once = state.clone();
+        model_unified_entry_descriptors(&mut state);
+        assert_eq!(state, once);
+        // A modeled value is never overwritten.
+        let mut modeled = LongModeState::default();
+        modeled.gdtr = Some(od_isa::state::Gdtr {
+            base: 0x1000,
+            limit: 0x17,
+        });
+        modeled.ss_selector = Some(0x10);
+        model_unified_entry_descriptors(&mut modeled);
+        assert_eq!(modeled.gdtr.map(|gdtr| gdtr.base), Some(0x1000));
+        assert_eq!(modeled.ss_selector, Some(0x10));
+    }
+
+    #[test]
+    fn a_marker_only_observes_the_unified_run() {
+        // 40 NOPs, then HLT at IF = 0 (S7-31m: the set has the halt member; nothing can wake it).
+        let mut code = vec![0x90u8; 40];
+        code.push(0xf4);
+        let image = minor2_image(&code);
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let mut marked = load_firmware_image(&image, &linux_config()).unwrap();
+        let entry = plain.state().rip;
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        let with =
+            crate::run_firmware_unified_marked(&mut marked, 1_000, Some(entry + 10)).unwrap();
+        // The marker is the boundary before the 11th instruction.
+        assert_eq!(without.marker, None);
+        assert_eq!(with.marker_rip, Some(entry + 10));
+        assert_eq!(with.marker.as_ref().map(|marker| marker.retired), Some(10));
+        // Retired, quanta, time, exit and the final state are those of the run without it.
+        assert_eq!(with.run, without.run);
+        assert_eq!(with.set_exit_detail, without.set_exit_detail);
+        // The HLT retires, then the CPU stays halted: IF = 0 (SDM: only NMI, SMI or reset wake it).
+        assert_eq!(with.run.retired, 41);
+        assert_eq!(with.run.exit, PagedProbeExit::Halted);
+        assert_eq!(marked.state(), plain.state());
+        // S7-31m: the interrupt state of the stop is reported and observes only. The CPU is
+        // halted with IF clear (the reason is recorded), the PIC is as reset (all masked, nothing
+        // requested), channel 0 is unprogrammed, the PIT -> 8259 source is installed but has
+        // nothing to deliver, and the CPUID profile declares no APIC.
+        assert_eq!(with.interrupts, without.interrupts);
+        let interrupts = &with.interrupts;
+        assert!(!interrupts.interrupt_flag);
+        assert_eq!(interrupts.activity.as_deref(), Some("Halted"));
+        assert_eq!(interrupts.halt_stop, Some("if_clear"));
+        assert_eq!(interrupts.source, "pit_pic");
+        assert_eq!(
+            (interrupts.pic_imr, interrupts.pic_irr, interrupts.pic_isr),
+            (Some(0xff), Some(0), Some(0))
+        );
+        assert_eq!(interrupts.pit_channel0_programmed, Some(false));
+        assert!(!interrupts.apic_declared);
+        assert_eq!(
+            (
+                interrupts.irqs_delivered,
+                interrupts.irq0_edges,
+                interrupts.halt_wakes
+            ),
+            (0, 0, 0)
+        );
+        // The final RIP is reported with its raw paging-structure entries (S7-31e): the PML4E
+        // first, present, at the board CR3.
+        assert_eq!(with.rip_walk[0].level, "PML4E");
+        assert_eq!(with.rip_walk[0].entry_gpa & !0xfff, marked.cr3());
+        assert_eq!(with.rip_walk[0].raw & 1, 1);
+        // A marker the run never reaches is reported as not reached.
+        let mut unreached = load_firmware_image(&image, &linux_config()).unwrap();
+        let never =
+            crate::run_firmware_unified_marked(&mut unreached, 1_000, Some(0x1234)).unwrap();
+        assert_eq!(never.marker, None);
+        assert_eq!(never.run, without.run);
+    }
+
+    /// S7-31q: the call trace names a function, the GUID and the UCS-2 name its arguments point to
+    /// (RDX and RCX, as the Microsoft x64 ABI passes the 2nd and 1st argument), and only observes.
+    #[test]
+    fn a_call_trace_records_the_call_with_its_guid_and_name_and_changes_nothing() {
+        const FUNCTION: usize = 0x40;
+        const GUID: usize = 0x80;
+        const NAME: usize = 0xA0;
+        let mut code = vec![0x90u8; 0xC0];
+        let guid: [u8; 16] = [
+            0x91, 0x6e, 0x57, 0x09, 0x3f, 0x6d, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69,
+            0x72, 0x3b,
+        ];
+        code[GUID..GUID + 16].copy_from_slice(&guid);
+        code[NAME..NAME + 6].copy_from_slice(&[b'A', 0, b'b', 0, 0, 0]);
+        code[FUNCTION] = 0xC3; // ret
+        let image = minor2_image(&code);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        // mov edx, GUID; mov ecx, NAME; call FUNCTION; hlt
+        let mut program = vec![0xBA];
+        program.extend_from_slice(&((entry as u32) + GUID as u32).to_le_bytes());
+        program.push(0xB9);
+        program.extend_from_slice(&((entry as u32) + NAME as u32).to_le_bytes());
+        program.push(0xE8);
+        program.extend_from_slice(&((FUNCTION as i32) - 15).to_le_bytes());
+        program.push(0xF4);
+        let mut image = image;
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let mut traced = load_firmware_image(&image, &linux_config()).unwrap();
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let target = crate::CallTraceTarget {
+            name: "svc".to_owned(),
+            physical: entry + FUNCTION as u64,
+            guid_arg: Some(1),
+            name_arg: Some(0),
+            rt_slot: None,
+        };
+        let with = crate::run_firmware_unified_traced(&mut traced, 1_000, None, vec![target], None)
+            .unwrap();
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        let trace = with.call_trace.expect("a trace was asked for");
+        assert_eq!(trace.total, 1);
+        assert_eq!(trace.entries.len(), 1);
+        let call = &trace.entries[0];
+        assert_eq!((call.name.as_str(), call.cpl), ("svc", 0));
+        assert_eq!(
+            call.caller,
+            Some(entry + 15),
+            "the return address: the instruction after the call"
+        );
+        assert_eq!(call.guid, Some(guid));
+        assert_eq!(call.variable_name.as_deref(), Some("Ab"));
+        assert_eq!(
+            call.retired, 3,
+            "mov, mov, call retired before the first instruction of svc"
+        );
+        assert!(without.call_trace.is_none());
+        // Observation only: retired, quanta, exit and the state are those of the run without it.
+        assert_eq!(with.run, without.run);
+        assert_eq!(traced.state(), plain.state());
+    }
+
+    /// S7-31q: a runtime services table slot is followed once a traced call refreshed it, a NULL
+    /// GUID pointer is no GUID, and the function behind the slot is traced under the slot's name.
+    #[test]
+    fn a_call_trace_follows_a_runtime_services_slot_and_skips_a_null_guid() {
+        let (service, dynamic, system_table, runtime_table) =
+            (0x40usize, 0x60usize, 0x100usize, 0x140usize);
+        let mut code = vec![0x90u8; 0x200];
+        code[service] = 0xC3;
+        code[dynamic] = 0xC3;
+        code[0x1C0..0x1D0].copy_from_slice(&[7; 16]);
+        code[0x1E0..0x1E6].copy_from_slice(&[b'A', 0, b'b', 0, 0, 0]);
+        let image = minor2_image(&code);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let put = |code: &mut Vec<u8>, at: usize, value: u64| {
+            code[at..at + 8].copy_from_slice(&value.to_le_bytes())
+        };
+        put(&mut code, system_table + 0x58, entry + runtime_table as u64);
+        put(&mut code, runtime_table + 72, entry + dynamic as u64);
+        // mov edx, GUID; mov ecx, NAME; call service; call dynamic; xor edx, edx; call dynamic; hlt
+        let mut program = vec![0xBA];
+        program.extend_from_slice(&((entry as u32) + 0x1C0).to_le_bytes());
+        program.push(0xB9);
+        program.extend_from_slice(&((entry as u32) + 0x1E0).to_le_bytes());
+        for (target, next) in [(service, 15usize), (dynamic, 20)] {
+            program.push(0xE8);
+            program.extend_from_slice(&((target as i32) - next as i32).to_le_bytes());
+        }
+        program.extend_from_slice(&[0x31, 0xD2, 0xE8]);
+        program.extend_from_slice(&((dynamic as i32) - 27).to_le_bytes());
+        program.push(0xF4);
+        code[..program.len()].copy_from_slice(&program);
+        let mut image = minor2_image(&code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        let targets = vec![
+            crate::CallTraceTarget {
+                name: "service".into(),
+                physical: entry + service as u64,
+                guid_arg: None,
+                name_arg: None,
+                rt_slot: None,
+            },
+            crate::CallTraceTarget {
+                name: "GetVariable".into(),
+                physical: 0,
+                guid_arg: Some(1),
+                name_arg: Some(0),
+                rt_slot: Some(72),
+            },
+        ];
+        let run = crate::run_firmware_unified_traced(
+            &mut board,
+            1_000,
+            None,
+            targets,
+            Some(entry + system_table as u64),
+        )
+        .unwrap();
+        let trace = run.call_trace.unwrap();
+        let calls: Vec<_> = trace
+            .entries
+            .iter()
+            .map(|call| {
+                (
+                    call.name.as_str(),
+                    call.guid.is_some(),
+                    call.variable_name.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("service", false, None),
+                ("GetVariable", true, Some("Ab")),
+                ("GetVariable", false, Some("Ab"))
+            ],
+            "{trace:?}"
+        );
+        assert_eq!(trace.entries[1].guid, Some([7; 16]));
+        assert_eq!(trace.total, 3);
+    }
+
+    /// S7-31m (ISSUE-640): the kernel's idle loop in miniature. The code programs the 8259
+    /// (vector base 0x30, IR0 unmasked) and PIT channel 0 (mode 2, reload 1193), then runs
+    /// `sti; hlt`. The unified loop wakes the halted CPU at the timer edge and delivers vector
+    /// 0x30 through the guest IDT; the handler's own `hlt` runs at IF = 0 (an interrupt gate
+    /// clears IF), so the run ends halted with the reason `if_clear`.
+    #[test]
+    fn unified_hlt_at_if_set_is_woken_by_the_pit_and_hlt_at_if_clear_ends_the_run() {
+        const IDT: u64 = 0x2000;
+        const HANDLER_OFFSET: usize = 0x80;
+        // `mov al, imm8; out imm8, al` pairs: ICW1..ICW4 and OCW1 of the master 8259, then the
+        // PIT control word (channel 0, LSB+MSB, mode 2) and the reload 0x04A9 (1193).
+        let mut code = Vec::new();
+        for (port, value) in [
+            (0x20u8, 0x11u8),
+            (0x21, 0x30),
+            (0x21, 0x04),
+            (0x21, 0x01),
+            (0x21, 0xFE),
+            (0x43, 0x34),
+            (0x40, 0xA9),
+            (0x40, 0x04),
+        ] {
+            code.extend_from_slice(&[0xB0, value, 0xE6, port]);
+        }
+        code.extend_from_slice(&[0xFB, 0xF4]); // sti; hlt
+        let wake_rip_offset = code.len();
+        code.resize(HANDLER_OFFSET, 0x90);
+        // Handler: EOI to the master (`mov al, 0x20; out 0x20, al`), so IR0 can fire again, then
+        // `hlt` at IF = 0: the source has the next edge, yet an interrupt gate cleared IF.
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let mut board = load_firmware_image(&minor2_image(&code), &linux_config()).unwrap();
+        let entry = board.state().rip;
+        let handler = entry + HANDLER_OFFSET as u64;
+        let mut write = |address: u64, bytes: &[u8]| {
+            for (index, byte) in bytes.iter().enumerate() {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address + index as u64),
+                        AccessWidth::Byte,
+                        u64::from(*byte),
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+        };
+        // GDT entry 1: a 64-bit ring-0 code segment; IDT gate 0x30: an interrupt gate to it.
+        write(8, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&8u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        write(IDT + 0x30 * 16, &gate);
+        let state = board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: IDT,
+            limit: 0xFFF,
+        });
+        // The ROM loads CS from its own GDT; this entry state models the same segment.
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9B,
+            flags: 0xA,
+        });
+        let run = crate::run_firmware_unified(&mut board, 100_000).unwrap();
+        let interrupts = &run.interrupts;
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(
+            board.state().rip,
+            handler + 5,
+            "stopped after the handler's hlt"
+        );
+        assert!(wake_rip_offset < HANDLER_OFFSET);
+        assert_eq!(interrupts.irqs_delivered, 1);
+        assert_eq!(interrupts.halt_wakes, 1);
+        assert!(interrupts.irq0_edges >= 1);
+        assert!(!interrupts.interrupt_flag, "the interrupt gate cleared IF");
+        assert_eq!(interrupts.halt_stop, Some("if_clear"));
+        assert_eq!(interrupts.source, "pit_pic");
+        assert_eq!(interrupts.pit_channel0_programmed, Some(true));
+        // The handler's EOI cleared the in-service bit; the timer has a next edge (a wake is
+        // available) and the run still ends: IF = 0 gives no delivery and no second wake.
+        assert_eq!(interrupts.pic_isr, Some(0));
+        assert!(board.irq_wake_ns().is_some());
+        assert_eq!(interrupts.pic_icw2, Some(0x30));
+    }
+
+    #[test]
+    fn run_firmware_unified_refuses_boards_it_cannot_run_and_leaves_them_untouched() {
+        const NEEDS_LINUX_PROFILE: &str =
+            "run_firmware_unified needs a firmware board with the Linux profile";
+        // A firmware board without the Linux profile.
+        let mut firmware =
+            load_firmware_image(&minor2_image(&[0xf4]), &tables_config_with_ecam()).unwrap();
+        // A Linux board (Linux profile, no firmware entry).
+        let mut linux = assemble_board(&linux_config(), PciEcam::new(), None, None)
+            .unwrap()
+            .into_linux_board(0x1000, 0x1000)
+            .unwrap();
+        // A firmware board with the Linux profile and two vCPUs.
+        let mut two_cpus = load_firmware_image(
+            &minor2_image(&[0xf4]),
+            &FirmwareBoardConfig {
+                vcpu_count: 2,
+                ..linux_config()
+            },
+        )
+        .unwrap();
+        // A firmware board with the Linux profile whose timer source is the IOAPIC one: the 8259
+        // source cannot be installed (S7-31m).
+        let mut ioapic = load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap();
+        assert!(ioapic.enable_pit_ioapic_irq());
+        for (board, expected) in [
+            (&mut firmware, NEEDS_LINUX_PROFILE),
+            (&mut linux, NEEDS_LINUX_PROFILE),
+            (&mut two_cpus, "run_firmware_unified runs one vCPU"),
+            (
+                &mut ioapic,
+                "run_firmware_unified needs the Linux-profile PIT and 8259",
+            ),
+        ] {
+            let before = board.state().clone();
+            for _ in 0..2 {
+                assert_eq!(
+                    crate::run_firmware_unified(board, 10).unwrap_err(),
+                    FirmwareBoardError::Config(expected)
+                );
+                // A refusal models nothing and runs nothing.
+                assert_eq!(board.state(), &before);
+            }
+        }
+    }
+
     fn inb(board: &mut LoadedFirmwareBoard, port: u16) -> Result<u32, BusAccessError> {
         board.bus_mut().read_port(io_port(port), AccessWidth::Byte)
     }
@@ -8292,6 +9350,64 @@ mod tests {
                 .read_port(io_port(ACPI_PM1A_CNT_BLK), AccessWidth::Word),
             Ok(u32::from(ACPI_PM1_CNT_SCI_EN))
         );
+    }
+
+    /// S7-31j: the three legacy UART positions the board does not declare read `0xFF` and ignore
+    /// writes under the Linux profile (the kernel's 8250 driver probes all four); COM1 is the
+    /// declared UART and answers as before; undeclared ports outside these stay traps.
+    #[test]
+    fn linux_profile_absent_uarts_read_ff_ignore_writes_and_leave_com1_alone() {
+        let mut board = linux_board();
+        let com1_lsr = inb(&mut board, 0x3fd).expect("COM1 line status");
+        assert_ne!(
+            com1_lsr, 0xff,
+            "COM1 is a declared UART, not an absent port"
+        );
+        for base in [0x2f8u16, 0x3e8, 0x2e8] {
+            for offset in 0..8u16 {
+                let port = base + offset;
+                assert_eq!(inb(&mut board, port), Ok(0xff), "read {port:#x}");
+                board
+                    .bus_mut()
+                    .write_port(io_port(port), AccessWidth::Byte, 0x5a)
+                    .unwrap_or_else(|error| panic!("write {port:#x}: {error:?}"));
+                assert_eq!(
+                    inb(&mut board, port),
+                    Ok(0xff),
+                    "read after write {port:#x}"
+                );
+            }
+        }
+        // Not byte-wide: refused (the width policy of the absent-port devices), not 0xFFFF.
+        assert!(
+            board
+                .bus_mut()
+                .read_port(io_port(0x2f9), AccessWidth::Word)
+                .is_err()
+        );
+        // The ports next to the absent UARTs stay unbound traps (the policy of this board).
+        for port in [0x2f7u16, 0x300, 0x3e7, 0x3f0, 0x2e7] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
+        // COM1 unchanged by the new bindings.
+        assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr));
+    }
+
+    /// S7-31k: without the Linux profile the absent UARTs are not bound: COM2..COM4 stay traps.
+    #[test]
+    fn absent_uarts_are_not_bound_without_the_linux_profile() {
+        let mut board = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        for port in [0x2f8u16, 0x2f9, 0x3e8, 0x2e8] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "read {port:#x}"
+            );
+        }
     }
 
     // ---- S4-37a3: PIT port tick on 0x42 and 0x61 in run_boot (ISSUE-067) ----

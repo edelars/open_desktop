@@ -244,14 +244,15 @@
 
 | Задача | Статус | Причина |
 |---|---|---|
-| S9-13 | `blocked` | Нужно устройство хранения гостя из этапов 5/7 и S9-12 |
-| S9-23 | `blocked` | Контракт полного VM checkpoint: нужны S9-02 и S9-16 (выполнены); ISSUE-056 и компоненты этапов 4–8 |
+| S9-13 | срез реализован (2026-11-20), guest-level gate открыт | Сквозные тесты NVMe → persistent backend (`s9_13.rs`, [NVME_DEVICE.md §14.5](../specs/NVME_DEVICE.md)); настоящего гостевого драйвера нет, ISSUE-605 |
+| S9-23 | локальный кодек контейнера и manifest v1 реализован (2026-11-20); участники `blocked` | [STORAGE_FORMAT.md §13](../specs/STORAGE_FORMAT.md), `vm_container.rs`; полный checkpoint нужен S9-24…27 и ISSUE-056 |
 | S9-24 | `blocked` | Нет единого владельца CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); нужны компоненты этапа 4 |
 | S9-25 | `blocked` | Нужны реальные устройства, время и I/O state из этапов 5–8 |
-| S9-26 | `blocked` | Нет UEFI variables store; владелец — этап 7 (S7-09, S7-10, S7-33; [план](../plans/STAGE_7.md)); исправлено по [ISSUE-086](../KNOWN_ISSUES.md#issue-086-s9-26-wrong-uefi-stage-reference) |
-| S9-27 | `blocked` | vTPM отсутствует |
+| S9-26 | локальный срез реализован (2026-11-20); захват под общим cut и anti-rollback `blocked` | [NVRAM_DEVICE.md](../specs/NVRAM_DEVICE.md) (подраздел про контейнер), `tests/system/stage9_uefi_participant.rs`; см. §11
+| S9-27 | `blocked` | Состояние TPM кодируется `ODTPMSTA` v8 ([этап 7](../plans/STAGE_7.md), `od-tpm`); защита ключей host, политика отката и MAC не реализованы; anchor — S9-29 |
 | S9-28…S9-35 | `blocked` | Требуют компонентов этапов 4–8 и результатов S9-13, S9-24…27 |
-| S9-36, S9-37 | `blocked` | Цепочка от S9-35 |
+| S9-37 | срез в объёме storage реализован (2026-11-20); VMHost-часть `blocked` | [STORAGE_RECOVERY.md §4.3](../testing/STORAGE_RECOVERY.md#43-s9-37-срез-storage-2026-11-20), `tests/system/stage9_storage_concurrency.rs`; ISSUE-607, ISSUE-608 |
+| S9-36 | `blocked` | Цепочка от S9-35 |
 | S9-38 | закрыта в объёме storage (решение владельца 2026-11-18); VM-часть `blocked` | Storage-матрица уровня 0 полная ([STORAGE_RECOVERY.md §4.1](../testing/STORAGE_RECOVERY.md#41-матрица-s9-38-на-уровне-0-модель-faultbackend-2026-11-18)): полный перебор отказов × политик сбоя для RAW, CoW create/commit/repair, `create_base`, write/zero/discard, snapshot, delete, branch, compaction, export, import, salvage; отмена для tx, export, import; fuzz метаданных снимков и отказ writable open на повреждённом файле без записей. Уровень 1 (2026-11-18, [STORAGE_RECOVERY.md §4.2](../testing/STORAGE_RECOVERY.md#42-матрица-s9-38-на-уровне-1-kill-процесса-на-реальных-файлах-2026-11-18)): SIGKILL перед каждым мутирующим вызовом 9 операций на реальных файлах, 169 точек, оба исхода в каждой операции. Не сделано: VM-часть (S9-37, S9-29…31, S9-13) |
 | S9-39 | принята (решение владельца 2026-11-18) в объёме USB-накопителя варианта A: 30 прогонов (§7 и §8.7), барьерная семантика `F_FULLFSYNC` не доказана (все отключения позже 2 с), внутренний SSD целевой комбинации не испытан; новый план для точек между барьерами выполнен 2026-11-18 ([§8.7](../testing/S9_39_POWER_LOSS_PLAN.md#87-результаты-2026-11-18)): 15 прогонов на том же USB-накопителе (`after-b1`, `before-b2`, `after-b2` × 5), все `verify ok=true`; поколение после барьера 2 сохранено 5 из 5. Все отключения позже 2 с после точки (3,3–22,6 с) — слабое свидетельство; внутренний SSD не испытывался | 15 прогонов в трёх точках отключения (`idle`, `block0`, `rootcopy`), по 5 на стадию; все `verify ok=true`; см. [S9_39_POWER_LOSS_PLAN.md §7](../testing/S9_39_POWER_LOSS_PLAN.md). Пределы (итоговое ревью S9-43, для прогонов §7; точки между барьерами покрыты в §8.7): во всех стадиях отключение ручное после простоя накопителя, поэтому ни один прогон не доказывает, что `F_FULLFSYNC` сработал как барьер; `rootcopy` по построению почти не добавляет покрытия к `block0`; носитель — внешний USB, исключённый из целевой комбинации (внутренний SSD, STORAGE_FORMAT §3) |
 | S9-42 | принята (решение владельца 2026-11-18) | Скрипт `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md). Обновлено 2026-11-18: добавлены case `od_host_persistent_nvme` (S9-04) и `s9_40_bench_once` (S9-40), статичные строки приведены к факту; добавлена строка S9-38, статусы приведены к словарю; последний запуск `20261118-s9-38c` (срез S9-38 уровень 1): 12 passed, 0 failed, 1 not_run, 7 blocked; нестабильность теста этапа 5 [ISSUE-518](../KNOWN_ISSUES.md#issue-518-s5-persistent-nvme-reopen-test-flaky-in-parallel) закрыта общим `process_spawn_guard`. Hardware/Windows/review case остаются `blocked`/`not_run`; зависит от S9-39 (принята в объёме USB-накопителя) и S9-41 (ревью Opus high 2026-11-18) |
@@ -418,3 +419,32 @@
 **Решение владельца 2026-11-18 (S9-39).** S9-39 принята в объёме USB-накопителя варианта A: 30 прогонов (§7 и §8.7), барьерная семантика `F_FULLFSYNC` не доказана (все отключения позже 2 с), внутренний SSD целевой комбинации не испытан. Результаты — [S9_39_POWER_LOSS_PLAN.md §8.7](../testing/S9_39_POWER_LOSS_PLAN.md#87-результаты-2026-11-18). Утверждение о power-loss durability для целевой комбинации (внутренний SSD) не делается.
 
 **Решение владельца 2026-11-18 (приёмка storage-части).** Приняты в реализованном объёме по итогам ревью S9-43: S9-00…S9-03, S9-05, S9-07…S9-12, S9-14…S9-21, S9-41, S9-42 и S9-44 (как запись приёмки). Ограничения каждой задачи остаются в её разделе выше. S9-04 (нет интеграции с VMHost) и S9-40 (нет замеров checkpoint/restore) остаются частичными. **Этап 9 не принят:** G3/G4 (полная VM, S9-13, S9-23…S9-37) не выполнены.
+
+## 11. Срезы 2026-11-20: S9-13, S9-23, S9-37
+
+Сессия по цели «выполнить все возможные задачи этапа 9». Задачи, которые выполнимы без VMHost и без компонентов этапов 4–8, сделаны; остальные остаются `blocked` с причинами в §3. Этап 9 не принят: G3, G4 и G6 не выполнены (см. §8 плана).
+
+| Срез | Результат | Проверки | Ревью (Opus high, только чтение) |
+|---|---|---|---|
+| S9-13 | Сквозные тесты NVMe → `PersistentNvmeBackend` (`crates/od-host/src/paged_host_loop/tests/s9_13.rs`, 3 теста): порядок Write и Flush на backend, один запуск обработчика гостя на команду, отказ durable flush даёт SC 0x06 на последующие команды и quarantine, Flush вызывает durable flush ровно один раз. Настоящего гостевого NVMe-драйвера нет: ISSUE-605. [NVME_DEVICE.md §14.5](../specs/NVME_DEVICE.md) | `cargo test -p od-host --offline --lib s9_13`: 3 passed | Принять с исправлениями: формулировка «ровно одно прерывание» сужена до «один запуск обработчика»; AWUN/AWUPF вынесены в ISSUE-606; статус в плане и отчёте приведён в соответствие. Повторное ревью: замечания по документам закрыты |
+| S9-23 | Локальный кодек контейнера и manifest v1 (`crates/od-storage/src/vm_container.rs`): заголовок 128 Б, запись таблицы 64 Б, reference-секция 40 Б без путей и host handles, лимиты до аллокации. Участники не создаются, checkpoint не заявляется. [STORAGE_FORMAT.md §13](../specs/STORAGE_FORMAT.md), [VM_STATE.md §5](../specs/VM_STATE.md) | `cargo test -p od-storage --offline vm_container`: 33 passed | Принять с исправлениями: обязательная секция без mandatory отклоняется; порядок записей зафиксирован (писатель канонический, читатель любой без дыр, тест); CRC таблицы в header — отклонение от первоначального дизайна, подтверждено ревью. Открытые вопросы: ISSUE-610 |
+| S9-37 | Storage-часть: 12 тестов в `tests/system/stage9_storage_concurrency.rs`: export lease против delete, compaction и writer; child в другом процессе блокирует delete и compaction parent до SIGKILL; alias; отмена освобождает lease; lease закрепляет файл; встречные операции в двух процессах без зависания. [STORAGE_RECOVERY.md §4.3](../testing/STORAGE_RECOVERY.md#43-s9-37-срез-storage-2026-11-20) | `cargo test -p od-host --offline --test stage9_storage_concurrency -- --test-threads=1`: 12 passed, 1 ignored (дочерний процесс) | Принять: вырожденная пара в сценарии 6 переделана; тавтологичные проверки и потерянный stderr исправлены. После правок одного текста повторного ревью не было. Открытые пределы: ISSUE-607, ISSUE-608, ISSUE-609 |
+
+Решения координатора (без вопросов пользователю, по правилам проекта):
+- Порядок записей контейнера: читатель принимает любой порядок без дыр; писатель пишет канонический порядок `(kind, instance)`.
+- S9-37 в v1: lease блокирует весь файл, а не generation; правило глобального порядка блокировок записано как рекомендация, не как решение.
+- S9-34 отмечен как исключённый из первого профиля; это решение уже было принято в S9-42.
+
+Не сделано и остаётся `blocked`: S9-04 (интеграция с VMHost), S9-24…S9-36 (CPU, устройства, UEFI, vTPM, полный checkpoint, restore, clone, lifecycle, Linux/Windows), гостевой драйвер для S9-13, сочетания S9-37 с VMHost и restore, замеры checkpoint в S9-40, итоговое ревью полной VM в S9-43, приёмка этапа в S9-44.
+
+### Дополнение 2026-11-20: S9-26 (локальный срез UEFI)
+
+Кодек участника UEFI поверх контейнера (inline, `kind` назначен в `nvram_device.rs`): строгая проверка снимка `ODNVBANK` v1/v2 с активной generation, холодный restore с различимыми ошибками (нет секции, reference вместо inline, чужой `schema_id`, повреждение, несовпадение версии, legacy там, где ждали защищённый формат), round-trip через секцию. Проверки: `cargo test -p od-machine --offline --lib nvram` — 24 passed; `cargo test -p od-host --offline --test stage9_uefi_participant` — 11 passed. Ревью Opus high: принять с исправлениями (таблица отката переписана: обнуление слота новейшего банка с пересчитанным CRC принимается как старый банк и не обнаруживается; эвристика понижения generation не реализована; требование к S9-30 — restore обязан идти через `cold_restore_uefi_section`). Повторное ревью — см. коммит. Не сделано: захват generation под общим cut (S9-28), anti-rollback и MAC (S9-27, S9-29), живой restore (ISSUE-600).
+
+### Итоговые проверки 2026-11-20 (коммит после S9-26)
+
+- `cargo check --workspace --all-targets --offline` — код 0 (предупреждения в `od-machine`, `od-host` существуют и не относятся к срезам этой сессии).
+- `cargo test -p od-machine --offline -- --test-threads=1` — код 0 (полный набор, один раз на финальном коде).
+- `cargo test -p od-runner --offline` — код 0 (полный набор).
+- cargo fmt --all -- --check: чисто.
+- `python3 tools/check_layout.py`: 49 ошибок «Broken local link», все в существующих ссылках на `work/` (каталог игнорируется в этом worktree) и в `STAGE_6_REPORT.md`; новых ошибок из-за правок этой сессии нет.

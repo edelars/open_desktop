@@ -283,6 +283,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-13. Подключить guest storage и flush
 
 - [ ] Принято после ревью; нужен реально работающий device prerequisite из S9-01.
+- **Текущий статус (2026-11-20):** срез реализован: сквозные тесты NVMe → persistent backend (`crates/od-host/src/paged_host_loop/tests/s9_13.rs`, 3 теста); границы и проверки — [NVME_DEVICE.md §14.5](../specs/NVME_DEVICE.md). Настоящего гостевого NVMe-драйвера в срезе нет: guest-level gate открыт (см. KNOWN_ISSUES, ISSUE-605). Задача не принята, чекбокс не отмечен.
 - **Где:** storage device/DMA/queues в `od-machine`, backing в `od-storage`, host adapter в `od-host`.
 - **Сделать:** провести поддержанные read/write/flush/barrier/FUA от guest command до backend и completion. Если устройство из этапа 5/7 ещё отсутствует, реализовать его отдельный prerequisite по roadmap, не назвать host API integration готовым NVMe.
 - **Проверить:** порядок нескольких queues, completion до/после flush, guest error при host failure, DMA/interrupt effects ровно один раз. Advertised volatile-cache/atomicity features соответствуют реализации.
@@ -372,6 +373,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-23. Определить versioned full-VM container и manifest
 
 - [ ] Принято после архитектурного ревью.
+- **Текущий статус (2026-11-20):** локальный кодек контейнера и manifest v1 в `od-storage` (`vm_container.rs`, 32 теста); формат — [STORAGE_FORMAT.md §13](../specs/STORAGE_FORMAT.md), состав по профилям и blocker участников — [VM_STATE.md §5](../specs/VM_STATE.md). Участники не созданы, checkpoint не заявлен; открытые вопросы — STORAGE_FORMAT §13.5 (ISSUE-610). Задача не принята.
 - **Где:** `VM_STATE.md`, container codec в `od-storage`, participant contract `od-machine`.
 - **Сделать:** checkpoint ID/epoch, VM identity/config profile, CPU count/features, section schemas/lengths/checksums, RAM ranges, device versions, time/I/O state, disk roots и UEFI/vTPM refs. Manifest связывает весь набор; UI catalog остаётся восстанавливаемым.
 - **Проверить:** missing/duplicate/unsupported sections, total size limits, inconsistent epochs/IDs и required participant. Reader не пропускает unknown mandatory state.
@@ -396,6 +398,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-26. Включить UEFI variables как отдельного участника
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-20):** локальный срез: кодек участника UEFI в контейнере (inline, kind назначен), холодный restore через `cold_restore_uefi_section`, политика отката — [NVRAM_DEVICE.md](../specs/NVRAM_DEVICE.md) (подраздел про контейнер), тесты `tests/system/stage9_uefi_participant.rs` (11). Захват generation под общим cut (S9-28) и anti-rollback (S9-27, S9-29) не сделаны. Задача не принята.
 - **Контракт этапа 7 доступен для текущей реализации.** Снимок `ODNVBANK` v1/v2, API выдачи и приёма байтов, создание и холодный сброс защищённых ключей описаны в [контракте NVRAM](../specs/NVRAM_DEVICE.md#host-api). Завершение S7-24 и S7-33 отмечается в плане этапа 7.
 - **Где:** firmware state contract в `firmware/uefi/src/`, host persistence/container в `od-storage`, coordination `od-machine`.
 - **Сделать:** versioned variable store, attributes, authenticated-update metadata и trust policy согласно поддержанному профилю; capture immutable generation во время общего cut. Firmware остаётся отдельной guest-target сборкой.
@@ -405,9 +408,9 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-27. Включить vTPM и определить security/rollback policy
 
 - [ ] Принято после архитектурного и независимого ревью.
-- **Контракт этапа 7 доступен для текущей реализации.** `ODTPMSTA` v3 содержит поля постоянного состояния действующего профиля. Полный PTP 1.07 и приёмка его передачи остаются в S7-23 и S7-33. [Контракт TPM](../specs/VTPM.md#host-api-и-persistence).
+- **Контракт этапа 7 доступен для текущей реализации.** `ODTPMSTA` v8 (читаются v3–v8) содержит поля постоянного состояния действующего профиля. S7-23 принята 2026-11-21 с отклонениями ([ISSUE-599](../KNOWN_ISSUES.md#issue-599)), передачу контрактов закрыла S7-33 (принята 2026-11-21). [Контракт TPM](../specs/VTPM.md#host-api-и-persistence).
 - **Где:** состоянием TPM и кодеком `ODTPMSTA` владеет `od-tpm`. `od-machine` выдаёт и принимает эти байты. `od-storage` отвечает за контейнер, `od-host` — за защиту ключей.
-- **Сделать:** полный перечень persistent/volatile TPM state по profile, sessions/counters/keys и external anchors; согласованный capture с диском/UEFI. Определить confidentiality/access control для TPM secrets и RAM snapshots, ключевые зависимости и поведение при отсутствии host secret.
+- **Сделать:** полный перечень persistent/volatile TPM state по profile, sessions/counters/keys и external anchors; согласованный capture с диском/UEFI. Писать снимок TPM не реже нормы TCG TPM 2.0 Library Part 1 для обновления NV-копии `Clock` и публиковать этот интервал в `TPM_PT_CLOCK_UPDATE` вместо 0: сейчас значение 0 — принятое отклонение ([VTPM.md](../specs/VTPM.md#host-api-и-persistence), [ISSUE-599](../KNOWN_ISSUES.md#issue-599), п. 2), у TPM нет собственной NV, копию `Clock` фиксирует только снимок host. Определить confidentiality/access control для TPM secrets и RAM snapshots, ключевые зависимости и поведение при отсутствии host secret.
 - **Проверить:** mixed disk/TPM epochs, corrupted/protected state, wrong VM identity, unavailable key, counter rollback и restore на другой host в заявленных границах. Подготовить recovery encrypted guest; secrets не логировать.
 - **Готово локально:** policy честно различает coherent rollback, обнаружение rollback и доверие внешних систем; fresh TPM и восстановленный TPM — разные операции. Никакой anti-rollback гарантии из одной checksum.
 
@@ -461,7 +464,8 @@ S9-24…27 принимаются локально по codec/contract tests и 
 
 ### S9-34. Опциональный guest quiesce/thaw
 
-- [ ] Принято после ревью либо явно исключено из первого профиля.
+- [x] Принято после ревью либо явно исключено из первого профиля.
+- **Решение (исключено из первого профиля):** guest quiesce/thaw не входит в первый профиль, application-consistent claim не заявляется. Решение уже зафиксировано в S9-42 и в отчёте этапа; здесь отмечено по варианту «явно исключено».
 - **Где:** guest agents, `protocols/guest/`, orchestration `od-machine`.
 - **Сделать:** versioned handshake с capability, request ID, timeout/lease, freeze/quiesce acknowledgement и гарантированным thaw/recovery path. Поддержанный guest filesystem/application provider указывать точно; один filesystem flush не доказывает согласованность базы данных.
 - **Проверить:** agent absent, timeout, partial freeze, host crash, checkpoint failure и repeated thaw; guest не остаётся навсегда замороженным при потере host.
@@ -486,6 +490,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-37. Конкурирующие readers и операции
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-20):** срез в объёме storage: `tests/system/stage9_storage_concurrency.rs` (12 тестов), [STORAGE_RECOVERY.md §4.3](../testing/STORAGE_RECOVERY.md). Не закрыто: сочетания с VMHost, restore и clone (S9-36, S9-29…31); lease в v1 блокирует весь файл, а не generation, и production-функций delete и compaction под exclusive lock нет (ISSUE-608). Задача не принята.
 - **Где:** storage/VM lifecycle tests, multiprocess harness.
 - **Сделать:** разрешённые сочетания run/read snapshot/export/delete/migrate/restore/clone; конфликтующие mutations возвращают busy/conflict либо сериализуются по contract. Определить lock ordering для нескольких disks и persistent participants.
 - **Проверить:** export+GC, child writer+parent deletion, same-file alias, two VMHost, stale generation, timeout/cancel и lock holder crash. Read lease удерживает именно выбранную generation.

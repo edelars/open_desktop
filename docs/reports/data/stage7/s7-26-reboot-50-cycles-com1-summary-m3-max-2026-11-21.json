@@ -1,0 +1,519 @@
+{
+ "schema_version": 1,
+ "task": "S7-26a",
+ "source_report": "s7-26-reboot-50-cycles-m3-max-2026-11-21.json",
+ "run": "boot-firmware --fv-app reboot --reboot-cycles 50 --reboot-kind cold --budget 700000000",
+ "image_sha256": "5df0b465d5a527e9a43a13d69ed8b78eada1b9591d3fb82fb7aaf6110ae06643",
+ "runner_binary_sha256": "ba7f213e10ae3ad13219fbfa16bc5cb74a0f24645f5938012e66de419e2f4551",
+ "runner_source": "tree of commit 9fef2f4 before the doc-comment reflow of run_reboot_cycles (not byte-compared)",
+ "com1_total_bytes": 180241,
+ "com1_total_sha256": "ec854c6ce2d47d31c9686d3fc6e0cf05a17868fffb56ad5bd0660310ee276fb7",
+ "distinct_pcr0": [
+  "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0"
+ ],
+ "distinct_masked_com1_sha256": [
+  "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+ ],
+ "cycles": [
+  {
+   "cycle": 1,
+   "boot_count": 1,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365720960,
+   "virtual_ns": 365720960,
+   "com1_bytes": 3604,
+   "com1_sha256": "edc510feb8e017a86e834bfcea80d30cc0d6620d7a012abdfafe7c21563b9152",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 2,
+   "boot_count": 2,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 731474948,
+   "com1_bytes": 3604,
+   "com1_sha256": "c2dba639ac6db084118a73c913890d5738fe8a04bc7b4961836bb267a1d3aa46",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 3,
+   "boot_count": 3,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 1097228936,
+   "com1_bytes": 3604,
+   "com1_sha256": "aa622969d83a0aaaa49e60996d24d0b007d46b4c19b7a0923fd5bd0565767abe",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 4,
+   "boot_count": 4,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 1462982924,
+   "com1_bytes": 3604,
+   "com1_sha256": "d803a95b53b172668bf364b4c7dc833250b431a8c9adc7ef9ae67511c8b9d238",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 5,
+   "boot_count": 5,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 1828736912,
+   "com1_bytes": 3604,
+   "com1_sha256": "83f6ee5d0872b89f5105ae3d03b8db783021ec7f6ccb91b97b52b3f608ad51d7",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 6,
+   "boot_count": 6,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 2194490900,
+   "com1_bytes": 3604,
+   "com1_sha256": "7c7453045a8631eb4d82e0d742c6af3e5111b23f42deb927f248732508b212e3",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 7,
+   "boot_count": 7,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 2560244888,
+   "com1_bytes": 3604,
+   "com1_sha256": "4caa8f545aab9caf8f0519dd7f8c91f2ab21d89f0450c66f6168a5bb957a55ea",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 8,
+   "boot_count": 8,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 2925998876,
+   "com1_bytes": 3604,
+   "com1_sha256": "0a6ea72a5a12791af7aaae3a832812b9c42a0a4f7f46f2f43cacaadb45387140",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 9,
+   "boot_count": 9,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365753988,
+   "virtual_ns": 3291752864,
+   "com1_bytes": 3604,
+   "com1_sha256": "f316bf0a6161fb1e87080ea1b84c19c01a2f4f6f64d73c8ff8de57f2331ff0c0",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 10,
+   "boot_count": 10,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 3657506931,
+   "com1_bytes": 3605,
+   "com1_sha256": "2d66f2bff1b9db727aac21abd22c38085cd922180069cc41385407a80fd930e2",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 11,
+   "boot_count": 11,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 4023260998,
+   "com1_bytes": 3605,
+   "com1_sha256": "3d5e003632ea2fb095a0daedc229eaa5c9097b87b9c694d684b3460c76c4227f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 12,
+   "boot_count": 12,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 4389015065,
+   "com1_bytes": 3605,
+   "com1_sha256": "d0a3c225db8e713d8c147c465d70a4922a11b7a11a61f4a34f905dac31f09acb",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 13,
+   "boot_count": 13,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 4754769132,
+   "com1_bytes": 3605,
+   "com1_sha256": "f0b29bbff29f58a4304c3f3c0f08b5547d65de981d1245dd8eb4fbfdd5ba7322",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 14,
+   "boot_count": 14,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 5120523199,
+   "com1_bytes": 3605,
+   "com1_sha256": "948da7f5914c7e796a335161fa36e7f5b091cddc3980ab04d9ed6b3513aa6fc0",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 15,
+   "boot_count": 15,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 5486277266,
+   "com1_bytes": 3605,
+   "com1_sha256": "008cff9d0b8197700ec0b2ec83101436ed608ed9b4f746298ae5fe78b4b903bb",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 16,
+   "boot_count": 16,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 5852031333,
+   "com1_bytes": 3605,
+   "com1_sha256": "c5c1730dc7c6d5d4585752c5bfe7a8f3141312ac6597dba78f90257076ddaae2",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 17,
+   "boot_count": 17,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 6217785400,
+   "com1_bytes": 3605,
+   "com1_sha256": "f7f8c74e133a78085ff72ab67d52cd96dc5668d640b6de9bbcbba46d3de71fec",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 18,
+   "boot_count": 18,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 6583539467,
+   "com1_bytes": 3605,
+   "com1_sha256": "bf2a8103ca8e33ecf447e866743273f7329d895747923279b744a236e5f3b7fe",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 19,
+   "boot_count": 19,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 6949293534,
+   "com1_bytes": 3605,
+   "com1_sha256": "f27ec5c8a268dc2341eefb6b8ef5b7af7f3b4c7043257c1f8eef195ca0d0ea4f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 20,
+   "boot_count": 20,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 7315047601,
+   "com1_bytes": 3605,
+   "com1_sha256": "096efd0220e1f773aff13d9968ffb3de0c2d772d7d2e20fd6c94f6bd6c48f1d4",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 21,
+   "boot_count": 21,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 7680801668,
+   "com1_bytes": 3605,
+   "com1_sha256": "75eafa74041f0ed109b901b65ac39ace10f72d7925337e7659145a868eac9a06",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 22,
+   "boot_count": 22,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 8046555735,
+   "com1_bytes": 3605,
+   "com1_sha256": "3d91706a849e7376a1afdb79bf3f64c3ffeed06db215dbfcbda6d132f8121091",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 23,
+   "boot_count": 23,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 8412309802,
+   "com1_bytes": 3605,
+   "com1_sha256": "8672692afd5e4a04247825a45fd4518678da041f923369e2a3cbaf1c303dfec1",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 24,
+   "boot_count": 24,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 8778063869,
+   "com1_bytes": 3605,
+   "com1_sha256": "5eb94eb732deb635caf14463d30707872db04543b86cfb0d5568c957829f8e6f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 25,
+   "boot_count": 25,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 9143817936,
+   "com1_bytes": 3605,
+   "com1_sha256": "e2dfcee97e5867ac2322104aed3100f203f9895db041208e576e9309cd35b3c6",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 26,
+   "boot_count": 26,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 9509572003,
+   "com1_bytes": 3605,
+   "com1_sha256": "d5bd3b77ad2dac4c0ca9c874e825ffb058881ee032d949558c6d31a7d114ea91",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 27,
+   "boot_count": 27,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 9875326070,
+   "com1_bytes": 3605,
+   "com1_sha256": "9034d4253c5ebd3fe7659e7652c8184cd88af4cf66c1d4582d7d374e4bc9904f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 28,
+   "boot_count": 28,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 10241080137,
+   "com1_bytes": 3605,
+   "com1_sha256": "62df16e7abc5271443e8f600f3fb0036ff2a634d790063e4de44c8e5180b436d",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 29,
+   "boot_count": 29,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 10606834204,
+   "com1_bytes": 3605,
+   "com1_sha256": "b6b39e037dfafc4512d66b1e2a81998f09bdcc3f1d293390724ec2213bd38f16",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 30,
+   "boot_count": 30,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 10972588271,
+   "com1_bytes": 3605,
+   "com1_sha256": "a2ab52b1f3e715e8ddd993645cdafd3b0594f4a90c3ada6bdc4ceb56f5d3977e",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 31,
+   "boot_count": 31,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 11338342338,
+   "com1_bytes": 3605,
+   "com1_sha256": "987c9059b47a676307196b17428d3b3e3916f90ca8145b5fc1044cc38128209c",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 32,
+   "boot_count": 32,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 11704096405,
+   "com1_bytes": 3605,
+   "com1_sha256": "b115e3a41d6ce0f3e65b483793318d630dfe351fed4616fc1681dbbe50bd5855",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 33,
+   "boot_count": 33,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 12069850472,
+   "com1_bytes": 3605,
+   "com1_sha256": "667d078cf6a891c46d102fe42f5b5451004c6d397d007c8c2851c4c3be09e3ff",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 34,
+   "boot_count": 34,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 12435604539,
+   "com1_bytes": 3605,
+   "com1_sha256": "75c5ef4d3e2cc87b637a45b3f2aa6cc8ce1fd768ab6428f58b1c79c32e70cf9b",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 35,
+   "boot_count": 35,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 12801358606,
+   "com1_bytes": 3605,
+   "com1_sha256": "632df683d80cfadbe8d4982aed90eec0961bf3741f3b3aacd8d0163a17187910",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 36,
+   "boot_count": 36,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 13167112673,
+   "com1_bytes": 3605,
+   "com1_sha256": "3db34bcf6c9b43decbbde8bafd4bf55b5a099321fa1a9c9c8656827f3e143c3f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 37,
+   "boot_count": 37,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 13532866740,
+   "com1_bytes": 3605,
+   "com1_sha256": "791b717c1b080196c2e27006c91f7b629303e3940dd141857a83d93db52c0c13",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 38,
+   "boot_count": 38,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 13898620807,
+   "com1_bytes": 3605,
+   "com1_sha256": "a9ead8c770afd6ccbf37ad531edc51ca126c160de7d8eb8d90d5c54fd1322e22",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 39,
+   "boot_count": 39,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 14264374874,
+   "com1_bytes": 3605,
+   "com1_sha256": "2336d38c573dd6b29c867612a9b84a9845b687ca2ad14446e617e7c22b7d0f6e",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 40,
+   "boot_count": 40,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 14630128941,
+   "com1_bytes": 3605,
+   "com1_sha256": "09d60d07ed3a1cf19a155eb24b38ad25aa888f9c570babf7f438778a67c0d59f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 41,
+   "boot_count": 41,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 14995883008,
+   "com1_bytes": 3605,
+   "com1_sha256": "dbfeb9d4ccbe563c53cdf98f7c094e6bc53f336a08a0130bc641c8d9017b688f",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 42,
+   "boot_count": 42,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 15361637075,
+   "com1_bytes": 3605,
+   "com1_sha256": "73c8bfba69d05884df3120058cf5f27198a3628e2ff465470c1091ecb88093f8",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 43,
+   "boot_count": 43,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 15727391142,
+   "com1_bytes": 3605,
+   "com1_sha256": "94977aa728b0f3fb66a9ca21aac54f89cdb3ad64dc8a073601ed9bdfb6c90a74",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 44,
+   "boot_count": 44,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 16093145209,
+   "com1_bytes": 3605,
+   "com1_sha256": "9b46fd43ea752cae75abb18898589ce9da590d47b1c980794af44345556d8234",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 45,
+   "boot_count": 45,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 16458899276,
+   "com1_bytes": 3605,
+   "com1_sha256": "91348e42b7d70248f1daec6d1c20302cfcf4563b44546c26ebb8eb1202152742",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 46,
+   "boot_count": 46,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 16824653343,
+   "com1_bytes": 3605,
+   "com1_sha256": "5b0bae2a0d780f745adafea07cbe9615b70f38a7794f6435fabaabc96cd4b4d5",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 47,
+   "boot_count": 47,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 17190407410,
+   "com1_bytes": 3605,
+   "com1_sha256": "d72c8a806894db8584a8b356107fc2aaa6b71963acd0bc040d42d0a345cb2aea",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 48,
+   "boot_count": 48,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 17556161477,
+   "com1_bytes": 3605,
+   "com1_sha256": "af1d4f06de3cb9dd3f399f52788ed7d27139aca9f863b5f26b00965ff9d0c710",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 49,
+   "boot_count": 49,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 17921915544,
+   "com1_bytes": 3605,
+   "com1_sha256": "4430bd8f133b956c1d4349e4aaa189b6d2b85aa9d5aba925142471b0394eb682",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  },
+  {
+   "cycle": 50,
+   "boot_count": 50,
+   "pcr0": "1f34760503f557a5a62d5aafe62f03ea681afeeab5e0b770765a558aba4c19e0",
+   "retired": 365754067,
+   "virtual_ns": 18287669611,
+   "com1_bytes": 3605,
+   "com1_sha256": "ffab4746c73e0c1a8303125bc54671b578a813b5a57f3721ae0dc47da22fb228",
+   "com1_sha256_boot_count_masked": "1f0cd9968603612604a4bc6dff26f2ce13b356de79334d737c5146a0dda65518"
+  }
+ ]
+}

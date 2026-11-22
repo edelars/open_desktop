@@ -1,0 +1,72 @@
+# S7-31o: ports 0x70/0x71 (CMOS) as the Ubuntu 7.0.0-38 kernel used them on the unified loop BEFORE the fix
+# (board without RTC base: AbsentPorts, reads 0xFF). Temporary trace in AbsentPorts (not committed): the
+# first 60 accesses, then every 5000th. off=0 is port 0x70 (index), off=1 is port 0x71 (data).
+# Index 0x00 = RTC_SECONDS, 0x0a = RTC_FREQ_SELECT (bit 7 = UIP): mc146818_avoid_UIP never leaves the loop.
+# The last numbered line is #35000: the loop made 35000..40000 accesses (10000 iterations x 4) and timed out.
+#0 W off=0 val=0x00
+#1 R off=1 -> 0xff
+#2 W off=0 val=0x0a
+#3 R off=1 -> 0xff
+#4 W off=0 val=0x00
+#5 R off=1 -> 0xff
+#6 W off=0 val=0x0a
+#7 R off=1 -> 0xff
+#8 W off=0 val=0x00
+#9 R off=1 -> 0xff
+#10 W off=0 val=0x0a
+#11 R off=1 -> 0xff
+#12 W off=0 val=0x00
+#13 R off=1 -> 0xff
+#14 W off=0 val=0x0a
+#15 R off=1 -> 0xff
+#16 W off=0 val=0x00
+#17 R off=1 -> 0xff
+#18 W off=0 val=0x0a
+#19 R off=1 -> 0xff
+#20 W off=0 val=0x00
+#21 R off=1 -> 0xff
+#22 W off=0 val=0x0a
+#23 R off=1 -> 0xff
+#24 W off=0 val=0x00
+#25 R off=1 -> 0xff
+#26 W off=0 val=0x0a
+#27 R off=1 -> 0xff
+#28 W off=0 val=0x00
+#29 R off=1 -> 0xff
+#30 W off=0 val=0x0a
+#31 R off=1 -> 0xff
+#32 W off=0 val=0x00
+#33 R off=1 -> 0xff
+#34 W off=0 val=0x0a
+#35 R off=1 -> 0xff
+#36 W off=0 val=0x00
+#37 R off=1 -> 0xff
+#38 W off=0 val=0x0a
+#39 R off=1 -> 0xff
+#40 W off=0 val=0x00
+#41 R off=1 -> 0xff
+#42 W off=0 val=0x0a
+#43 R off=1 -> 0xff
+#44 W off=0 val=0x00
+#45 R off=1 -> 0xff
+#46 W off=0 val=0x0a
+#47 R off=1 -> 0xff
+#48 W off=0 val=0x00
+#49 R off=1 -> 0xff
+#50 W off=0 val=0x0a
+#51 R off=1 -> 0xff
+#52 W off=0 val=0x00
+#53 R off=1 -> 0xff
+#54 W off=0 val=0x0a
+#55 R off=1 -> 0xff
+#56 W off=0 val=0x00
+#57 R off=1 -> 0xff
+#58 W off=0 val=0x0a
+#59 R off=1 -> 0xff
+#5000 W off=0 val=0x00
+#10000 W off=0 val=0x00
+#15000 W off=0 val=0x00
+#20000 W off=0 val=0x00
+#25000 W off=0 val=0x00
+#30000 W off=0 val=0x00
+#35000 W off=0 val=0x00

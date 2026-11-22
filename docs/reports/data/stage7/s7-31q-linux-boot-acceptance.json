@@ -1,0 +1,1250 @@
+{
+  "acpi_table_lines": [
+    "<6>[    0.017394] ACPI: RSDP 0x00000000000E0000 000024 (v02 OPNDSK)",
+    "<6>[    0.017407] ACPI: XSDT 0x00000000000E0340 00003C (v01 OPNDSK ODFWXSDT 00000001 ODFW 00000001)",
+    "<6>[    0.017425] ACPI: FACP 0x00000000000E01E0 000114 (v06 OPNDSK ODFWFACP 00000001 ODFW 00000001)",
+    "<6>[    0.017446] ACPI: DSDT 0x00000000000E0040 000135 (v02 OPNDSK ODFWDSDT 00000001 ODFW 00000001)",
+    "<6>[    0.017469] ACPI: FACS 0x00000000000EF000 000040",
+    "<6>[    0.017486] ACPI: FACS 0x00000000000EF000 000040",
+    "<6>[    0.017502] ACPI: APIC 0x00000000000E0180 000054 (v05 OPNDSK ODFWAPIC 00000001 ODFW 00000001)",
+    "<6>[    0.017523] ACPI: MCFG 0x00000000000E0300 00003C (v01 OPNDSK ODFWMCFG 00000001 ODFW 00000001)"
+  ],
+  "checks": [
+    {
+      "detail": "exit=0 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 390 filtered out; finished in 0.01s",
+      "name": "host loader test on the real kernel",
+      "ok": true
+    },
+    {
+      "detail": "exit=budget_exhausted detail=BudgetExhausted retired=6000000000",
+      "name": "run ends at its budget",
+      "ok": true
+    },
+    {
+      "detail": "Linux version 7.0.0-38-generic",
+      "name": "kernel banner",
+      "ok": true
+    },
+    {
+      "detail": "OD-FW version line present",
+      "name": "firmware banner",
+      "ok": true
+    },
+    {
+      "detail": "'Run /init as init process' and OD_S7_31N_BEGIN",
+      "name": "/init reached",
+      "ok": true
+    },
+    {
+      "detail": "OD_S7_31N_END and 'Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000000' (init exit 0)",
+      "name": "/init ran to its end",
+      "ok": true
+    },
+    {
+      "detail": "OD_S7_31N_EFIVARFS_MOUNT_OK",
+      "name": "efivarfs mounted",
+      "ok": true
+    },
+    {
+      "detail": "14 names; missing=[]",
+      "name": "efivarfs lists the seeded variables",
+      "ok": true
+    },
+    {
+      "detail": "attributes=0x00000007 value=0100 expected=0100",
+      "name": "efivarfs value BOOTORDER",
+      "ok": true
+    },
+    {
+      "detail": "attributes=0x00000007 value=010000003400460069007800740075007200650000000404 expected=010000003400460069007800740075007200650000000404",
+      "name": "efivarfs value BOOT0001",
+      "ok": true
+    },
+    {
+      "detail": "attributes=0x00000007 value=03000000 expected=03000000",
+      "name": "efivarfs value ODBOOTCOUNT",
+      "ok": true
+    },
+    {
+      "detail": "missing=[]",
+      "name": "ACPI tables parsed",
+      "ok": true
+    },
+    {
+      "detail": "unexpected=[]; known and allowed={'ACPI: setting ELCR to 0200 (from 0000)': 'ISSUE-643', 'acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)': 'ISSUE-642 (deferred)'}",
+      "name": "ACPI without errors",
+      "ok": true
+    },
+    {
+      "detail": "unexpected=[]",
+      "name": "no other AE_ line",
+      "ok": true
+    },
+    {
+      "detail": "lines=['[    1.175220] [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0', '[drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0']",
+      "name": "simpledrm bound to the GOP framebuffer",
+      "ok": true
+    },
+    {
+      "detail": "no line with 'Unable to read'; rtc lines in dmesg=['PM: RTC time: 00:00:02, date: 2024-01-01', 'rtc_cmos 00:01: registered as rtc0', 'rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)', 'rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram']",
+      "name": "no RTC read error",
+      "ok": true
+    },
+    {
+      "detail": "unexpected=[]",
+      "name": "no unknown <0>-<3> lines",
+      "ok": true
+    },
+    {
+      "detail": "unexpected=[]",
+      "name": "no unknown <4> lines",
+      "ok": true
+    },
+    {
+      "detail": "levels={'3': 5, '4': 2, '5': 33, '6': 332, '7': 14}",
+      "name": "no unprefixed dmesg lines",
+      "ok": true
+    },
+    {
+      "detail": "total=140 dropped=0 services without a ROM symbol=[]",
+      "name": "call trace present",
+      "ok": true
+    },
+    {
+      "detail": "ExitBootServices by the guest at retired=1241678662",
+      "name": "guest called GetMemoryMap and ExitBootServices",
+      "ok": true
+    },
+    {
+      "detail": "system table=0x7f7fef0; guest runtime calls after ExitBootServices=[('GetNextVariableName', 2), ('GetVariable', 1), ('GetVariable', 1), ('GetVariable', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 3), ('GetNextVariableName', 1), ('GetVariable', 3), ('GetNextVariableName', 1), ('GetVariable', 3), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1), ('GetVariable', 1), ('GetNextVariableName', 1)]",
+      "name": "runtime services traced through the table slots",
+      "ok": true
+    },
+    {
+      "detail": "[('HandleProtocol', 'EFI_LOADED_IMAGE_PROTOCOL'), ('LocateProtocol', 'EFI_TCG2_PROTOCOL'), ('LocateProtocol', 'EFI_CC_MEASUREMENT_PROTOCOL (name from Linux include/linux/efi.h)'), ('LocateProtocol', 'EFI_MEMORY_ATTRIBUTE_PROTOCOL (name from Linux include/linux/efi.h)'), ('LocateProtocol', 'EFI_RNG_PROTOCOL'), ('LocateDevicePath', 'EFI_LOAD_FILE2_PROTOCOL'), ('LocateProtocol', 'EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL (name from Linux include/linux/efi.h)'), ('HandleProtocol', 'EFI_SIMPLE_FILE_SYSTEM_PROTOCOL'), ('LocateHandleBuffer', 'EFI_GRAPHICS_OUTPUT_PROTOCOL'), ('HandleProtocol', 'EFI_GRAPHICS_OUTPUT_PROTOCOL'), ('HandleProtocol', 'EFI_CONSOLE_OUT_DEVICE_GUID (name from Linux include/linux/efi.h)'), ('HandleProtocol', 'EFI_EDID_ACTIVE_PROTOCOL (name from Linux include/linux/efi.h)')]",
+      "name": "guest asked for protocols by GUID",
+      "ok": true
+    }
+  ],
+  "com1_sha256": "3d6b2ad1822eb16010249b22cd86004c6e20154dcbb2052f5cbc180867b21fe0",
+  "dmesg_rtc_lines": [
+    "<6>[    0.584525] PM: RTC time: 00:00:02, date: 2024-01-01",
+    "<6>[    1.173608] rtc_cmos 00:01: registered as rtc0",
+    "<6>[    1.173643] rtc_cmos 00:01: setting system clock to 2024-01-01T00:00:02 UTC (1704067202)",
+    "<6>[    1.173663] rtc_cmos 00:01: alarms up to one day, y3k, 114 bytes nvram"
+  ],
+  "dmesg_severity": {
+    "ae_lines": [
+      "<6>[    0.717154] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_ERROR)"
+    ],
+    "errors_level_0_to_3": [
+      "<3>[    0.000000] CPU: vendor_id 'OpenDesktop ' unknown, using generic init.",
+      "<3>[    0.000000] CPU: Your system may be unstable.",
+      "<3>[    0.023366] KHO: Failed to reserve lowmem scratch buffer",
+      "<3>[    1.181475] mce: Unable to init MCE device (rc: -5)",
+      "<3>[    1.181695] microcode: no support for this CPU vendor"
+    ],
+    "levels": {
+      "3": 5,
+      "4": 2,
+      "5": 33,
+      "6": 332,
+      "7": 14
+    },
+    "warnings_level_4": [
+      "<4>[    0.023399] KHO: Failed to reserve scratch area, disabling kexec handover",
+      "<4>[    0.438851] ACPI: setting ELCR to 0200 (from 0000)"
+    ]
+  },
+  "efivars_names": [
+    "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+    "ODMonotonicHigh-cf84fede-a501-46c2-8a8d-12ba3224192f",
+    "OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+    "Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+  ],
+  "framebuffer": {
+    "all_zero": false,
+    "bytes": 1228800,
+    "distinct_pixel_values": 2,
+    "mode": {
+      "format": 1,
+      "generation": 1,
+      "height": 480,
+      "mode_change_count": 1,
+      "sha256": "f95c4003ef6e0c7e54eb162b5816be53c4ce7d1eb298c20939be377f88810f41",
+      "stride": 2560,
+      "width": 640
+    },
+    "nonzero_bytes": 921600,
+    "note": "the display frame at the end of the run (guest console is ttyS0); not a screenshot claim",
+    "png": "t3.png",
+    "sha256": "f95c4003ef6e0c7e54eb162b5816be53c4ce7d1eb298c20939be377f88810f41",
+    "taken": true,
+    "top_pixel_values": [
+      {
+        "pixels": 304089,
+        "value": "0x005e2750"
+      },
+      {
+        "pixels": 3111,
+        "value": "0x00ffffff"
+      }
+    ]
+  },
+  "inputs": {
+    "cmdline": "console=ttyS0 initrd=\\EFI\\BOOT\\INITRD.IMG od.nonce=od7s31adiagnostic0001",
+    "firmware_rom_sha256": "67da57d014f3fd17feaab125ab2c33ba4b74b36625de844f0b5720190e59186a",
+    "initramfs_sha256": "b88cd99616611124e4616aea4274d49b4bb48bf421ae798215390e251a499ac9",
+    "loader": "kernel EFI stub as BOOTX64.EFI (no shim or grub)",
+    "nvram_seed_sha256": "f7b6171c32fd268f2b34b144f097967c1abb8b00e1cc3ae1ac7bc119f5d365fb",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"
+  },
+  "known_issue_lists": {
+    "acpi": {
+      "ACPI: setting ELCR to 0200 \\(from 0000\\)": "ISSUE-643",
+      "acpi PNP0A08:00: _OSC: platform retains control of PCIe features \\(AE_ERROR\\)": "ISSUE-642 (deferred)"
+    },
+    "errors": {
+      "CPU: Your system may be unstable\\.": "ISSUE-644",
+      "CPU: vendor_id 'OpenDesktop ' unknown, using generic init\\.": "ISSUE-644",
+      "KHO: Failed to reserve lowmem scratch buffer": "ISSUE-644",
+      "mce: Unable to init MCE device \\(rc: -5\\)": "ISSUE-644",
+      "microcode: no support for this CPU vendor": "ISSUE-644"
+    },
+    "warnings": {
+      "ACPI: setting ELCR to 0200 \\(from 0000\\)": "ISSUE-643",
+      "KHO: Failed to reserve scratch area, disabling kexec handover": "ISSUE-644"
+    }
+  },
+  "protocol_trace": {
+    "calls_by_service_and_caller": {
+      "ExitBootServices": {
+        "guest": 1
+      },
+      "GetMemoryMap": {
+        "firmware": 7,
+        "guest": 6
+      },
+      "GetNextVariableName": {
+        "guest": 16
+      },
+      "GetVariable": {
+        "firmware": 3,
+        "guest": 27
+      },
+      "HandleProtocol": {
+        "firmware": 17,
+        "guest": 5
+      },
+      "InstallProtocolInterface": {
+        "firmware": 14
+      },
+      "LocateDevicePath": {
+        "firmware": 6,
+        "guest": 1
+      },
+      "LocateHandle": {
+        "firmware": 4
+      },
+      "LocateHandleBuffer": {
+        "firmware": 4,
+        "guest": 2
+      },
+      "LocateProtocol": {
+        "firmware": 9,
+        "guest": 11
+      },
+      "OpenProtocol": {
+        "firmware": 4
+      },
+      "SetVariable": {
+        "firmware": 1,
+        "guest": 1
+      },
+      "SetVirtualAddressMap": {
+        "guest": 1
+      }
+    },
+    "dropped": 0,
+    "exit_boot_services_at_retired": 1241678662,
+    "phases": {
+      "before_exit_boot_services": [
+        {
+          "call": "GetMemoryMap",
+          "caller": "firmware",
+          "calls": 7,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3219996
+        },
+        {
+          "call": "InstallProtocolInterface",
+          "caller": "firmware",
+          "calls": 8,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3226482,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 9,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3227194,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "firmware",
+          "calls": 8,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3227255,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "InstallProtocolInterface",
+          "caller": "firmware",
+          "calls": 2,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3227343,
+          "guid": "0a4497ed-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "OpenProtocol",
+          "caller": "firmware",
+          "calls": 4,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3228556,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "LocateHandle",
+          "caller": "firmware",
+          "calls": 4,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3231469
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3233415,
+          "guid": "0a4497ed-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "InstallProtocolInterface",
+          "caller": "firmware",
+          "calls": 2,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3249412,
+          "guid": "09576e91-6d3f-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_DEVICE_PATH_PROTOCOL"
+        },
+        {
+          "call": "LocateDevicePath",
+          "caller": "firmware",
+          "calls": 6,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3253149,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 2,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3267701,
+          "guid": "09576e91-6d3f-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_DEVICE_PATH_PROTOCOL"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3269055,
+          "guid": "0a4497ee-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3292018
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3301526,
+          "guid": "0a4497f0-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3354928,
+          "guid": "0a4497ec-12b6-478b-a363-073c00412561",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "A"
+        },
+        {
+          "call": "InstallProtocolInterface",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3358634,
+          "guid": "0379be4e-d706-437d-b037-edb82fb772a4",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3644338,
+          "guid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3646362,
+          "guid": "8cf2f62c-bc9b-4821-808d-ec9ec421a1a0",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3646629,
+          "guid": "964e5b21-6459-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_BLOCK_IO_PROTOCOL"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3646878,
+          "guid": "ce345171-ba0b-11d2-8e4f-00a0c969723b",
+          "guid_name": "unknown (not in the table of this script)"
+        },
+        {
+          "call": "InstallProtocolInterface",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3649310,
+          "guid": "964e5b22-6459-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 3655613,
+          "guid": "964e5b21-6459-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_BLOCK_IO_PROTOCOL"
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 4422886,
+          "guid": "964e5b22-6459-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 4426251,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootNext"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 4430026,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "Boot0001"
+        },
+        {
+          "call": "SetVariable",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 4433931,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootCurrent"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "firmware",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98019541,
+          "guid": "5b1b31a1-9562-11d2-8e3f-00a0c969723b",
+          "guid_name": "EFI_LOADED_IMAGE_PROTOCOL"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98027760,
+          "guid": "5b1b31a1-9562-11d2-8e3f-00a0c969723b",
+          "guid_name": "EFI_LOADED_IMAGE_PROTOCOL"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 3,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98039695,
+          "guid": "607f766c-7455-42be-930b-e4d76db2720f",
+          "guid_name": "EFI_TCG2_PROTOCOL"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 3,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98040442,
+          "guid": "96751a3d-72f4-41a6-a794-ed5d0e67ae6b",
+          "guid_name": "EFI_CC_MEASUREMENT_PROTOCOL (name from Linux include/linux/efi.h)"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98047602,
+          "guid": "f4560cf6-40ec-4b4a-a192-bf1d57d0b189",
+          "guid_name": "EFI_MEMORY_ATTRIBUTE_PROTOCOL (name from Linux include/linux/efi.h)"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 2,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98055206,
+          "guid": "3152bca5-eade-433d-862e-c01cdc291f44",
+          "guid_name": "EFI_RNG_PROTOCOL"
+        },
+        {
+          "call": "GetMemoryMap",
+          "caller": "guest",
+          "calls": 6,
+          "cpl": [
+            0
+          ],
+          "first_retired": 98058829
+        },
+        {
+          "call": "LocateDevicePath",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241593777,
+          "guid": "4006c0c1-fcb3-403e-996d-4a6c8724e06d",
+          "guid_name": "EFI_LOAD_FILE2_PROTOCOL"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241599587,
+          "guid": "05c99a21-c70f-4ad2-8a5f-35df3343f51e",
+          "guid_name": "EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL (name from Linux include/linux/efi.h)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241600337,
+          "guid": "964e5b22-6459-11d2-8e39-00a0c969723b",
+          "guid_name": "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241652461,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SecureBoot"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241654036,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SetupMode"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241655833,
+          "guid": "e20939be-32d4-41be-a150-897f85d49829",
+          "guid_name": "MEMORY_ONLY_RESET_CONTROL_GUID (name from Linux drivers/firmware/efi/libstub/tpm.c:20-21; vendor GUID of MemoryOverwriteRequestControl)",
+          "variable_name": "MemoryOverwriteRequestControl"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241660903,
+          "guid": "1ce1e5bc-7ceb-42f2-81e5-8aadf180f57b",
+          "guid_name": "LINUX_EFI_RANDOM_SEED_TABLE_GUID (name from Linux include/linux/efi.h)",
+          "variable_name": "RandomSeed"
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241666809,
+          "guid": "9042a9de-23dc-4a38-96fb-7aded080516a",
+          "guid_name": "EFI_GRAPHICS_OUTPUT_PROTOCOL"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241669054,
+          "guid": "9042a9de-23dc-4a38-96fb-7aded080516a",
+          "guid_name": "EFI_GRAPHICS_OUTPUT_PROTOCOL"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241669198,
+          "guid": "d3b36f2c-d551-11d4-9a46-0090273fc14d",
+          "guid_name": "EFI_CONSOLE_OUT_DEVICE_GUID (name from Linux include/linux/efi.h)"
+        },
+        {
+          "call": "HandleProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241670043,
+          "guid": "bd8c1056-9f36-44ec-92a8-a6337f817986",
+          "guid_name": "EFI_EDID_ACTIVE_PROTOCOL (name from Linux include/linux/efi.h)"
+        },
+        {
+          "call": "LocateHandleBuffer",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241671106,
+          "guid": "4cf5b200-68b8-4ca5-9eec-b23e3f50029a",
+          "guid_name": "EFI_PCI_IO_PROTOCOL"
+        },
+        {
+          "call": "LocateProtocol",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241671960,
+          "guid": "c5a010fe-38a7-4531-8a4a-0500d2fd1649",
+          "guid_name": "OVMF_SEV_MEMORY_ACCEPTANCE_PROTOCOL (OVMF, name from Linux include/linux/efi.h)"
+        }
+      ],
+      "from_exit_boot_services": [
+        {
+          "call": "ExitBootServices",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1241678662
+        },
+        {
+          "call": "SetVirtualAddressMap",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1642874743
+        },
+        {
+          "call": "SetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1643829487,
+          "guid": "4424ac57-be4b-47dd-9e97-ed50f09f92a9",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "DUMMY"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 2,
+          "cpl": [
+            0
+          ],
+          "first_retired": 1915397881,
+          "guid": "00000000-0000-0000-0000-000000000000",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": ""
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2412132920,
+          "guid": "605dab50-e046-4300-abb6-3dd810dd8b23",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "MokIgnoreDB"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2412149649,
+          "guid": "d719b2cb-3d3a-4596-a3bc-dad00e67656f",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "db"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2412166171,
+          "guid": "d719b2cb-3d3a-4596-a3bc-dad00e67656f",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "dbx"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790341456,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "PlatformLangCodes"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790356474,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "PlatformLangCodes"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790382186,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "OsIndicationsSupported"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790397718,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "OsIndicationsSupported"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790422071,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SecureBoot"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790437540,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SecureBoot"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790461692,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SetupMode"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790477376,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "SetupMode"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 3,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790501262,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "Boot0001"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790517138,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "Boot0001"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 3,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790541331,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootOrder"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790557538,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootOrder"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 3,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790582486,
+          "guid": "6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "ODBootCount"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790598892,
+          "guid": "6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "ODBootCount"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790624487,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "PlatformLang"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790641232,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "PlatformLang"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790665783,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ConIn"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790682548,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ConIn"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790707408,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ConOut"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790724403,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ConOut"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790749781,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ErrOut"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790767043,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "ErrOut"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790792748,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "Timeout"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790810203,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "Timeout"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790853040,
+          "guid": "cf84fede-a501-46c2-8a8d-12ba3224192f",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "ODMonotonicHigh"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790870889,
+          "guid": "cf84fede-a501-46c2-8a8d-12ba3224192f",
+          "guid_name": "unknown (not in the table of this script)",
+          "variable_name": "ODMonotonicHigh"
+        },
+        {
+          "call": "GetVariable",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790897384,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootCurrent"
+        },
+        {
+          "call": "GetNextVariableName",
+          "caller": "guest",
+          "calls": 1,
+          "cpl": [
+            0
+          ],
+          "first_retired": 2790915496,
+          "guid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+          "guid_name": "EFI_GLOBAL_VARIABLE (variable vendor GUID)",
+          "variable_name": "BootCurrent"
+        }
+      ]
+    },
+    "total_calls": 140
+  },
+  "run": {
+    "com1_bytes": 61491,
+    "exit": "budget_exhausted",
+    "exit_detail": "BudgetExhausted",
+    "quanta": 156432097,
+    "retired": 6000000000,
+    "rip": "0xffffffff9471b337"
+  },
+  "schema": "od-s7-31p-linux-boot-acceptance-v1",
+  "variables": {
+    "BOOT0001": {
+      "attributes": "0x00000007",
+      "attributes_ok": true,
+      "bytes": 224,
+      "dumped": true,
+      "expected_value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+      "file": "Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+      "value_hex": "01000000340046006900780074007500720065000000040430005c004500460049005c0042004f004f0054005c0042004f004f0054005800360034002e0045004600490000007fff040063006f006e0073006f006c0065003d0074007400790053003000200069006e0069007400720064003d005c004500460049005c0042004f004f0054005c0049004e0049005400520044002e0049004d00470020006f0064002e006e006f006e00630065003d006f0064003700730033003100610064006900610067006e006f00730074006900630030003000300031000000",
+      "value_ok": true
+    },
+    "BOOTORDER": {
+      "attributes": "0x00000007",
+      "attributes_ok": true,
+      "bytes": 6,
+      "dumped": true,
+      "expected_value_hex": "0100",
+      "file": "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+      "value_hex": "0100",
+      "value_ok": true
+    },
+    "ODBOOTCOUNT": {
+      "attributes": "0x00000007",
+      "attributes_ok": true,
+      "bytes": 8,
+      "dumped": true,
+      "expected_value_hex": "03000000",
+      "file": "ODBootCount-6f1d52a4-26b0-4f0c-9a37-4e0b61c82d15",
+      "value_hex": "03000000",
+      "value_ok": true
+    }
+  },
+  "verdict": "PASS"
+}

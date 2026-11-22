@@ -603,7 +603,8 @@ fn ecc_parameters_reports_the_p256_registry_values_and_rejects_unsupported_curve
         assert_eq!(reader.tpm2b(32).unwrap(), hex(expected));
     }
     reader.finish().unwrap();
-    for id in [0, 4, 0xffff] {
+    // 4 (NIST P-384) is supported since slice 6; 5 is NIST P-521.
+    for id in [0, 5, 0xffff] {
         err(
             &run(&mut t, plain(cc::ECC_PARAMETERS, &[], &u16b(id))),
             Rc::CURVE.in_param(1),
@@ -659,7 +660,7 @@ fn make_credential_accepts_a_public_only_storage_key_and_opaque_name() {
         let x = point.tpm2b(32).unwrap();
         let y = point.tpm2b(32).unwrap();
         point.finish().unwrap();
-        assert!(crate::crypto::ecc_point_valid(x, y));
+        assert!(crate::crypto::ecc_point_valid(curve::NIST_P256, x, y));
         assert_ne!(previous_secret, secret);
         previous_secret = secret.to_vec();
     }
@@ -980,7 +981,7 @@ fn ecdh_zgen_accepts_coordinates_without_their_leading_zeros() {
     // A point of the curve whose x has a leading zero octet (one key in 256).
     let mut rng = crate::random::Drbg::new(&[5u8; 48]).unwrap();
     let (x, y) = loop {
-        let k = crate::crypto::ecc_generate(&mut rng).unwrap();
+        let k = crate::crypto::ecc_generate(&mut rng, curve::NIST_P256).unwrap();
         let (x, y) = crate::crypto::ecc_public(&k).unwrap();
         if x[0] == 0 {
             break (x, y);

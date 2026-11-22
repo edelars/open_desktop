@@ -32,6 +32,9 @@ mod lapic_irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_checkpoints;
+pub use linux_checkpoints::{
+    CALL_TRACE_MAX_ENTRIES, CallTraceEntry, CallTraceReport, CallTraceTarget,
+};
 mod linux_direct;
 mod linux_load;
 mod linux_placement;
@@ -41,6 +44,7 @@ mod litmus_interleaving;
 mod litmus_parallel;
 mod local_apic;
 mod lock_wait_metrics;
+mod net_backend;
 mod nvme;
 mod nvram_device;
 mod pae_fetch_view;
@@ -73,6 +77,7 @@ mod pit_pic_irq_source;
 mod ram_storage;
 mod rtc_cmos;
 mod smp_scheduler;
+mod stage10_display_probe;
 mod stage4_alias_probe;
 mod stage4_cpl3_syscall_probe;
 mod stage4_cr3_mixed_probe;
@@ -104,6 +109,7 @@ mod uart_rx_events;
 mod vcpu;
 mod virtual_clock;
 mod vm_snapshot;
+mod xhci;
 
 pub use acpi_blob::{
     ACPI_BLOB_ALIGN, ACPI_BLOB_DIR_ENTRY_BYTES, ACPI_BLOB_HEADER_BYTES, ACPI_BLOB_MAGIC,
@@ -131,9 +137,15 @@ pub use bus::{
     PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
     TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
 };
+pub use net_backend::{
+    Dropped, FrameQueue, NET_MAX_FRAME, NET_MIN_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT,
+    NetBackend, NetCounters, PushError,
+};
 pub use nvram_device::{
     NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NVRAM_SNAPSHOT_BYTES, NVRAM_STORE_BYTES, NvramConfig,
-    NvramContentsError, NvramDevice, SecureBootKeys,
+    NvramContentsError, NvramDevice, NvramSnapshotFormat, NvramSnapshotInfo, SecureBootKeys,
+    UEFI_SCHEMA_ID, UEFI_VARIABLES_INSTANCE, UEFI_VARIABLES_KIND, UefiRestoreError, UefiSection,
+    cold_restore_uefi_section, verify_nvram_snapshot,
 };
 pub use rtc_cmos::{
     CMOS_RTC_NOT_PRESENT_BIT, RTC_BASE_UNIX_SECONDS_MAX, RTC_CENTURY_REGISTER, RtcCmos,
@@ -216,6 +228,8 @@ pub use linux_checkpoints::{
     LinuxCheckpointTarget,
 };
 pub use linux_direct::{
+    FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts, FirmwareUnifiedMarker,
+    FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState, FirmwareUnifiedWalkEntry,
     LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
     LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
     LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
@@ -223,6 +237,7 @@ pub use linux_direct::{
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
+    run_firmware_unified, run_firmware_unified_marked, run_firmware_unified_traced,
     run_linux_direct_board, run_linux_direct_board_set, run_linux_direct_board_set_observed,
     run_linux_direct_board_set_user_mode, run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,
@@ -278,8 +293,8 @@ pub use firmware_board::{
     FIRMWARE_BOOT_STACK_TOP, FIRMWARE_COM1_PORT, FIRMWARE_EFER, FIRMWARE_EXECUTION_CYCLE_NS,
     FIRMWARE_HANDOFF_GPA, FIRMWARE_HANDOFF_WINDOW_BYTES, FIRMWARE_IMAGE_BYTES, FIRMWARE_LINK_BASE,
     FIRMWARE_MAX_RAM_BYTES, FIRMWARE_MIN_RAM_BYTES, FIRMWARE_ROM_BASE, FirmwareBoardConfig,
-    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard, QuantumProgress,
-    firmware_handoff_block, load_firmware_image,
+    FirmwareBoardError, FirmwareFvApp, FirmwareRunReport, LoadedFirmwareBoard, PlatformResetKind,
+    QuantumProgress, firmware_handoff_block, load_firmware_image,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
@@ -493,6 +508,10 @@ pub use stage4_uart_irq_probe::{
     Stage4UartIrqProbeError, Stage4UartIrqProbeExit, Stage4UartIrqProbeLoadError,
     Stage4UartIrqProbeReport, UartIrqTraceEvent, UartIrqTraceKind, load_stage4_uart_irq_probe,
 };
+pub use stage10_display_probe::{
+    LoadedStage10DisplayProbe, Stage10DisplayProbeError, Stage10DisplayProbeReport,
+    Stage10ProbeOutcome, Stage10ProbeStep, load_stage10_display_probe,
+};
 
 pub use litmus::{
     LITMUS_EXHAUSTIVE_THRESHOLD, LITMUS_MAX_SEEDS, LitmusCase, LitmusError, LitmusInstruction,
@@ -554,6 +573,13 @@ pub use physical_memory::{
 };
 
 pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};
+
+pub use xhci::{
+    ControlResponse, HidDevices, HidHandle, HseCause, InputEvent, InputQueueFull, InterruptStatus,
+    InvalidPort, UsbDevice, XHCI_INTX_GSI, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT,
+    XHCI_USB_PORT_RESET_NS, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
+    XhciSnapshot,
+};
 
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,

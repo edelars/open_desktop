@@ -1,5 +1,5 @@
 use crate::apic_pair::{
-    LEVEL, MASK, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN,
+    LEVEL, MASK, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN, XHCI_PIN,
 };
 use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
@@ -53,6 +53,14 @@ impl IoApicHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_nvme_line(asserted)
+    }
+
+    /// The xHCI INTA line on INTIN17 (GSI 17): level, active low.
+    pub(crate) fn set_xhci_line(&self, asserted: bool) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_xhci_line(asserted)
     }
 
     /// S4-38L8f: the route of INTIN2 as a question that changes nothing: `Some((cpu, vector))`
@@ -123,7 +131,7 @@ fn register(selector: u8) -> Option<Register> {
 fn valid_low(pin: usize, value: u64) -> bool {
     let masked = value & u64::from(MASK) != 0;
     let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
-    let level_low_form = matches!(pin, SCI_PIN | NVME_PIN)
+    let level_low_form = matches!(pin, SCI_PIN | NVME_PIN | XHCI_PIN)
         && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
     if pin != 4 && (masked || level_low_form) {
         allowed |= u64::from(POLARITY_LOW);
@@ -167,6 +175,14 @@ impl BusDevice for IoApic {
                         0
                     }
             }
+            Register::Redirection { pin: XHCI_PIN, .. } => {
+                state.route.pins[XHCI_PIN]
+                    | if state.route.xhci_remote_irr {
+                        REMOTE_IRR
+                    } else {
+                        0
+                    }
+            }
             Register::Redirection { pin, .. } => state.route.pins[pin],
         };
         Ok(u64::from(value))
@@ -199,7 +215,7 @@ impl BusDevice for IoApic {
                     state.set_low2(low)
                 } else if pin == SCI_PIN {
                     state.set_sci_low(low)
-                } else if pin == NVME_PIN {
+                } else if pin == NVME_PIN || pin == XHCI_PIN {
                     state.set_level_low(pin, low)
                 } else {
                     state.route.pins[pin] = low;
@@ -1045,6 +1061,84 @@ mod tests {
         // A new assertion after the release is a new request.
         io.set_sci_line(true).unwrap();
         assert_eq!(apic.pending(), Some(0x20));
+    }
+
+    // ---- S8-42: the xHCI INTA on INTIN17 (GSI 17), level/active low like the NVMe route -------
+
+    const XHCI_ENTRY: u64 = 0x10 + 2 * 17;
+    const NVME_ENTRY: u64 = 0x10 + 2 * 16;
+
+    #[test]
+    fn xhci_gsi_17_is_a_level_active_low_input_with_remote_irr_and_eoi_redelivery() {
+        let (mut bus, io, apic) = sci_setup();
+        select(&mut bus, XHCI_ENTRY);
+        let entry = u64::from(SCI_LEVEL_LOW) | 0x31;
+        // The entry form of a PCI INTA route is accepted and read back.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, entry).unwrap();
+        assert_eq!(read(&mut bus, 0x10), Ok(entry));
+        // A masked entry only records the line; unmasking delivers it once.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, entry | u64::from(MASK)).unwrap();
+        io.set_xhci_line(true).unwrap();
+        assert_eq!(apic.pending(), None);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, entry).unwrap();
+        assert_eq!(apic.pending(), Some(0x31));
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        assert_eq!(apic.acknowledge(), Some(0x31));
+        // Still asserted: the EOI redelivers; released: it does not.
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.pending(), Some(0x31));
+        assert_eq!(apic.acknowledge(), Some(0x31));
+        io.set_xhci_line(false).unwrap();
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.pending(), None);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+    }
+
+    #[test]
+    fn xhci_and_nvme_lines_are_independent_inputs() {
+        let (mut bus, io, apic) = sci_setup();
+        select(&mut bus, XHCI_ENTRY);
+        write(
+            &mut bus,
+            IO_APIC_MMIO_BASE,
+            0x10,
+            u64::from(SCI_LEVEL_LOW) | 0x41,
+        )
+        .unwrap();
+        select(&mut bus, NVME_ENTRY);
+        write(
+            &mut bus,
+            IO_APIC_MMIO_BASE,
+            0x10,
+            u64::from(SCI_LEVEL_LOW) | 0x30,
+        )
+        .unwrap();
+        io.set_nvme_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x30));
+        io.set_xhci_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x41));
+        // Remote IRR of each entry is its own.
+        select(&mut bus, XHCI_ENTRY);
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        select(&mut bus, NVME_ENTRY);
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        io.set_nvme_line(false).unwrap();
+        io.set_xhci_line(false).unwrap();
+        lapic_eoi(&mut bus);
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn xhci_pin_refuses_an_unmasked_edge_entry_with_the_line_asserted() {
+        let (mut bus, io, _apic) = sci_setup();
+        select(&mut bus, XHCI_ENTRY);
+        // Unmasked, edge, active high: not the form of the route.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x41).unwrap();
+        assert_eq!(
+            io.set_xhci_line(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
     }
 
     #[test]

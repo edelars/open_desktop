@@ -2572,4 +2572,7 @@ mod tests {
     mod s6_42c;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_43a;
+    /// S9-13: guest doorbells through the paged JIT host loop to the persistent NVMe backend.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s9_13;
 }

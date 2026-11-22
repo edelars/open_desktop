@@ -1,5 +1,6 @@
 //! UEFI text console over the board's COM1 port.
 
+pub mod key_queue;
 #[cfg(any(target_os = "none", target_os = "uefi"))]
 pub mod serial_term;
 pub mod text_in;
@@ -30,6 +31,18 @@ fn supported_char(unit: u16) -> bool {
             | 0x25bc
             | 0x25c4
     )
+}
+
+/// Publish EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL on the console input handle (the USB keyboard
+/// provides key state and toggles; the key queue is the one ConIn reads).
+///
+/// # Safety
+/// Call once on the BSP after [`install`]; `system` is the live System Table.
+#[cfg(target_os = "none")]
+pub unsafe fn install_input_ex(
+    system: *mut crate::uefi::system_table::SystemTable,
+) -> crate::uefi::status::Status {
+    unsafe { text_in::install_ex(system) }
 }
 
 /// Install the COM1 text protocols and publish all three console pointers.

@@ -160,7 +160,7 @@ fn write(
 ) -> Result<Completion, Status> {
     let transfer = check_transfer(state, command)?;
     // A write-protected namespace refuses the command before the payload is
-    // fetched, so neither guest memory nor the disk is touched (NVME_DEVICE.md 14.5).
+    // fetched, so neither guest memory nor the disk is touched (NVME_DEVICE.md 14.6).
     if state.write_protected {
         return Err(Status::NAMESPACE_WRITE_PROTECTED);
     }

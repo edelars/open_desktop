@@ -8,7 +8,7 @@
 
 use zeroize::Zeroize;
 
-use crate::codes::{alg, curve, object_attr, st};
+use crate::codes::{alg, object_attr, st};
 use crate::response::Rc;
 
 /// Implementation limits of phase A (Part 2 names in parentheses).
@@ -625,11 +625,17 @@ impl TpmaCc {
 
 /// Largest `TPM2B_PUBLIC_KEY_RSA` (RSA-3072, `MAX_RSA_KEY_BYTES`; RSA-2048 keys use 256 octets).
 pub const MAX_RSA_BYTES: usize = 384;
-/// Largest `TPM2B_ECC_PARAMETER` (P-256 only, `MAX_ECC_KEY_BYTES`).
-pub const MAX_ECC_BYTES: usize = 32;
+/// Largest `TPM2B_ECC_PARAMETER` (P-384, `MAX_ECC_KEY_BYTES`; P-256 coordinates, scalars and signature values use
+/// 32 octets, see `crypto::ecc_coordinate_bytes`).
+pub const MAX_ECC_BYTES: usize = 48;
 /// ML-KEM-768 sizes and selector (Part 2 v185, Table 219).
 pub(crate) const MLKEM_768: u16 = 2;
 pub(crate) const MAX_MLKEM_PUBLIC_BYTES: usize = 1184;
+/// ML-DSA-65 selector (`TPM_MLDSA_65`, Part 2 v185, Table 208) with its public key and signature
+/// sizes (`MAX_MLDSA_PUB_SIZE` and `MAX_MLDSA_SIG_SIZE` of this TPM: the only parameter set is 65).
+pub(crate) const MLDSA_65: u16 = 2;
+pub(crate) const MAX_MLDSA_PUBLIC_BYTES: usize = 1952;
+pub(crate) const MAX_MLDSA_SIGNATURE_BYTES: usize = 3309;
 /// Largest `TPM2B_SENSITIVE_DATA` payload of a sealed object (`MAX_SYM_DATA`; Part 3, 12.7.2 limits
 /// `outData` of `TPM2_Unseal` to 128 octets).
 pub const MAX_SYM_DATA: usize = 128;
@@ -836,6 +842,17 @@ pub enum PublicParams {
         symmetric: SymDef,
         parameter_set: u16,
     },
+    /// `TPMS_MLDSA_PARMS` (Part 2 v185, Table 230): the parameter set (only ML-DSA-65) and
+    /// `allowExternalMu` (`TPMI_YES_NO`; YES lets `SignDigest` and `VerifyDigestSignature` take
+    /// an external mu).
+    MlDsa {
+        parameter_set: u16,
+        allow_external_mu: bool,
+    },
+    /// `TPMS_SYMCIPHER_PARMS` (Part 2 v185, Table 165): the `TPMT_SYM_DEF_OBJECT` is AES-128 or
+    /// AES-256 in CFB mode, never NULL. It is the key's own cipher, and for a restricted decryption
+    /// key the cipher that protects its children (Part 2, Table 233 note).
+    SymCipher { symmetric: SymDef },
     /// `TPMS_KEYEDHASH_PARMS` (Table 213): the scheme is `TPM_ALG_NULL` (sealed data, or an HMAC
     /// key without a default hash) or `TPM_ALG_HMAC` with SHA-256 (an HMAC key, slice C2).
     KeyedHash { scheme: Scheme },
@@ -845,7 +862,9 @@ impl PublicParams {
     pub(crate) fn unmarshal_type(r: &mut Reader<'_>) -> Result<u16, Rc> {
         let type_alg = r.u16()?;
         match type_alg {
-            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM => Ok(type_alg),
+            alg::RSA | alg::ECC | alg::KEYEDHASH | alg::MLKEM | alg::MLDSA | alg::SYMCIPHER => {
+                Ok(type_alg)
+            }
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -873,9 +892,23 @@ impl PublicParams {
             }
             alg::ECC => {
                 let symmetric = SymDef::unmarshal(r)?;
-                let scheme = Scheme::unmarshal_public(r, &[alg::ECDSA, alg::ECDH], Rc::SCHEME)?;
+                // An ECDH scheme names SHA-256 for P-256 (as before) and any of the three hashes
+                // for P-384, whose KDF hash is SHA-384; the curve follows the scheme, so the hash of
+                // an ECDH scheme is checked after the curve is read.
+                let scheme = Scheme::unmarshal_with_hashes(
+                    r,
+                    &[alg::ECDSA, alg::ECDH],
+                    Rc::SCHEME,
+                    &SIGNING_HASHES,
+                )?;
                 let curve = r.u16()?;
-                if curve != curve::NIST_P256 {
+                if scheme.alg == alg::ECDH
+                    && scheme.hash != alg::SHA256
+                    && curve != crate::codes::curve::NIST_P384
+                {
+                    return Err(r.err(Rc::HASH));
+                }
+                if !crate::crypto::supported_ecc_curve(curve) {
                     return Err(r.err(Rc::CURVE));
                 }
                 if r.u16()? != alg::NULL {
@@ -901,6 +934,29 @@ impl PublicParams {
                     parameter_set,
                 })
             }
+            alg::MLDSA => {
+                let parameter_set = r.u16()?;
+                if parameter_set != MLDSA_65 {
+                    return Err(r.err(Rc::PARMS));
+                }
+                // `TPMI_YES_NO`: any other octet is `TPM_RC_VALUE`.
+                let allow_external_mu = match r.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(r.err(Rc::VALUE)),
+                };
+                Ok(Self::MlDsa {
+                    parameter_set,
+                    allow_external_mu,
+                })
+            }
+            alg::SYMCIPHER => {
+                // `TPMT_SYM_DEF_OBJECT` without the "+": TPM_ALG_NULL is no valid cipher.
+                match SymDef::unmarshal(r)? {
+                    SymDef::Null => Err(r.err(Rc::SYMMETRIC)),
+                    symmetric => Ok(Self::SymCipher { symmetric }),
+                }
+            }
             _ => Err(r.err(Rc::TYPE)),
         }
     }
@@ -912,10 +968,11 @@ pub enum Unique {
     Rsa(Vec<u8>),
     Ecc { x: Vec<u8>, y: Vec<u8> },
     MlKem(Vec<u8>),
+    MlDsa(Vec<u8>),
     Digest(Vec<u8>),
 }
 
-/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ML-KEM-768, or keyed-hash object with nameAlg SHA-256
+/// `TPMT_PUBLIC` of an RSA-2048, RSA-3072, ECC P-256, ECC P-384, ML-KEM-768, ML-DSA-65, SYMCIPHER (AES-CFB), or keyed-hash object with nameAlg SHA-256
 /// (or `TPM_ALG_NULL`, only at unmarshal: callers refuse it where a Name is needed).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TpmtPublic {
@@ -934,6 +991,8 @@ impl TpmtPublic {
             PublicParams::Ecc { .. } => alg::ECC,
             PublicParams::KeyedHash { .. } => alg::KEYEDHASH,
             PublicParams::MlKem { .. } => alg::MLKEM,
+            PublicParams::MlDsa { .. } => alg::MLDSA,
+            PublicParams::SymCipher { .. } => alg::SYMCIPHER,
         }
     }
 
@@ -966,6 +1025,7 @@ impl TpmtPublic {
                 w.u16(alg::NULL);
             }
             PublicParams::KeyedHash { scheme } => scheme.marshal(w),
+            PublicParams::SymCipher { symmetric } => symmetric.marshal(w),
             PublicParams::MlKem {
                 symmetric,
                 parameter_set,
@@ -973,9 +1033,16 @@ impl TpmtPublic {
                 symmetric.marshal(w);
                 w.u16(*parameter_set);
             }
+            PublicParams::MlDsa {
+                parameter_set,
+                allow_external_mu,
+            } => {
+                w.u16(*parameter_set);
+                w.u8(u8::from(*allow_external_mu));
+            }
         }
         match &self.unique {
-            Unique::Rsa(n) | Unique::MlKem(n) => w.tpm2b(n),
+            Unique::Rsa(n) | Unique::MlKem(n) | Unique::MlDsa(n) => w.tpm2b(n),
             Unique::Ecc { x, y } => {
                 w.tpm2b(x);
                 w.tpm2b(y);
@@ -997,7 +1064,7 @@ impl TpmtPublic {
     /// `authPolicy` or keyed-hash `unique` longer than a digest of `nameAlg` (32 octets for NULL), `TPM_RC_VALUE` for an RSA key size other than 2048 and 3072 and
     /// an RSA or keyed-hash scheme the TPM does not implement (Tables 172, 189, 194),
     /// `TPM_RC_SCHEME` for an ECC scheme (Table 199), `TPM_RC_CURVE` for a curve other than NIST
-    /// P-256 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
+    /// P-256 and NIST P-384 (Table 200), `TPM_RC_KDF` for a KDF other than NULL (Table 83), `TPM_RC_SYMMETRIC`
     /// and `TPM_RC_MODE` as in [`SymDef::unmarshal`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         let type_alg = PublicParams::unmarshal_type(r)?;
@@ -1017,12 +1084,19 @@ impl TpmtPublic {
         let params = PublicParams::unmarshal(r, type_alg)?;
         let unique = match params {
             PublicParams::Rsa { .. } => Unique::Rsa(r.tpm2b(MAX_RSA_BYTES)?.to_vec()),
-            PublicParams::Ecc { .. } => Unique::Ecc {
-                x: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
-                y: r.tpm2b(MAX_ECC_BYTES)?.to_vec(),
-            },
-            PublicParams::KeyedHash { .. } => Unique::Digest(r.tpm2b(digest_limit)?.to_vec()),
+            PublicParams::Ecc { curve, .. } => {
+                // The coordinates are bounded by the size of the curve of the key.
+                let limit = crate::crypto::ecc_coordinate_bytes(curve).unwrap_or(MAX_ECC_BYTES);
+                Unique::Ecc {
+                    x: r.tpm2b(limit)?.to_vec(),
+                    y: r.tpm2b(limit)?.to_vec(),
+                }
+            }
+            PublicParams::KeyedHash { .. } | PublicParams::SymCipher { .. } => {
+                Unique::Digest(r.tpm2b(digest_limit)?.to_vec())
+            }
             PublicParams::MlKem { .. } => Unique::MlKem(r.tpm2b(MAX_MLKEM_PUBLIC_BYTES)?.to_vec()),
+            PublicParams::MlDsa { .. } => Unique::MlDsa(r.tpm2b(MAX_MLDSA_PUBLIC_BYTES)?.to_vec()),
         };
         Ok(TpmtPublic {
             name_alg,
@@ -1097,7 +1171,7 @@ impl TpmtTicket {
     }
 }
 
-/// `TPMT_SIGNATURE` (Table 208) for RSASSA, RSAPSS and ECDSA.
+/// `TPMT_SIGNATURE` (Table 208) for RSASSA, RSAPSS, ECDSA and ML-DSA.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TpmtSignature {
     /// `TPMS_SIGNATURE_RSA`: hash and the signature of the key size.
@@ -1106,6 +1180,9 @@ pub enum TpmtSignature {
     Rsapss { hash: u16, sig: Vec<u8> },
     /// `TPMS_SIGNATURE_ECC`: hash, `signatureR`, `signatureS`.
     Ecdsa { hash: u16, r: Vec<u8>, s: Vec<u8> },
+    /// `TPM2B_SIGNATURE_MLDSA` (Part 2 v185, Table 217): no hash in the signature. The octets are the
+    /// FIPS 204 signature of the key (3309 for ML-DSA-65); a shorter one unmarshals and fails to verify.
+    MlDsa { sig: Vec<u8> },
     /// The NULL signature of an attestation with `signHandle` `TPM_RH_NULL`: `sigAlg` only.
     Null,
 }
@@ -1130,10 +1207,14 @@ impl TpmtSignature {
                 w.tpm2b(r);
                 w.tpm2b(s);
             }
+            TpmtSignature::MlDsa { sig } => {
+                w.u16(alg::MLDSA);
+                w.tpm2b(sig);
+            }
         }
     }
 
-    /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA, RSAPSS and ECDSA, including `TPM_ALG_NULL`
+    /// `TPM_RC_SCHEME` for a `sigAlg` other than RSASSA, RSAPSS, ECDSA and ML-DSA, including `TPM_ALG_NULL`
     /// (Table 84), `TPM_RC_HASH` for a hash outside [`SIGNING_HASHES`].
     pub fn unmarshal(r: &mut Reader<'_>) -> Result<Self, Rc> {
         Self::unmarshal_inner(r, false)
@@ -1147,6 +1228,11 @@ impl TpmtSignature {
         let a = r.u16()?;
         if allow_null && a == alg::NULL {
             return Ok(Self::Null);
+        }
+        if a == alg::MLDSA {
+            return Ok(TpmtSignature::MlDsa {
+                sig: r.tpm2b(MAX_MLDSA_SIGNATURE_BYTES)?.to_vec(),
+            });
         }
         if !matches!(a, alg::RSASSA | alg::RSAPSS | alg::ECDSA) {
             return Err(r.err(Rc::SCHEME));

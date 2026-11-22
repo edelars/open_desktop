@@ -24649,7 +24649,7 @@ MMX forms listed in the [S2-39o plan block](../plans/STAGE_2.md#s2-39n-mmx-integ
 on the x87 data registers, in the bare run (state with `x87`) and at CPL0 of the CPL0 set with the FP member.
 The set loads `GuestFpState.x87` into `LongModeState.x87` only for the step of an MMX operation
 (`step_cpl0_mmx`, before the generic dispatch) and stores it back; the S2-39m SSE half is unchanged. The
-S2-37 memory form of CVTPI2PS (ISSUE-642: no change of TOP/tags) and the other MMX conversions were not
+S2-37 memory form of CVTPI2PS (ISSUE-662: no change of TOP/tags) and the other MMX conversions were not
 touched and stay refused in the set.
 
 Tests (all passed): `s2_39_mmx` (20): every kind against an independent widened-lane model on several

@@ -120,7 +120,7 @@ fn attach_persistent_nvme_backend(
 }
 
 /// Opens a RAW image for reading only and attaches it as a write-protected
-/// namespace (S8-21, `docs/specs/NVME_DEVICE.md` 14.5): the controller reports
+/// namespace (S8-21, `docs/specs/NVME_DEVICE.md` 14.6): the controller reports
 /// `NSATTR` bit 0 and refuses every Write with `Namespace is Write Protected`.
 ///
 /// The file is opened without write access and holds a shared lock
@@ -408,6 +408,169 @@ impl NvmeBackend for PersistentNvmeBackend {
 
     fn flush(&mut self) -> Result<(), BackendError> {
         self.inner.flush()
+    }
+}
+
+/// S9-13 test support: a `Send` scripted storage under the production
+/// [`PersistentStorage`], so that the real durable-write/flush state machine can be
+/// attached to the NVMe controller (the shared `FaultBackend` of `od-storage` is
+/// `Rc`-based and cannot cross to the host worker thread). It counts the calls of the
+/// storage layer and can refuse the n-th `flush_file_durable` with an indeterminate
+/// I/O error. It models no power loss: `durable_bytes` is the content as of the last
+/// successful flush.
+#[cfg(test)]
+pub(crate) mod s9_13_support {
+    use std::io::ErrorKind;
+    use std::sync::{Arc, Mutex, MutexGuard};
+
+    use super::*;
+    use od_storage::io::{BackendError as StorageBackendError, StorageCapabilities};
+    use od_storage::testing::memory::MEMORY_MAX_LEN;
+
+    #[derive(Debug)]
+    struct ProbeState {
+        volatile: Vec<u8>,
+        durable: Vec<u8>,
+        write_calls: usize,
+        flush_calls: usize,
+        fail_flush_number: Option<usize>,
+    }
+
+    /// Shared view of the scripted storage; clone it before the storage is moved.
+    #[derive(Clone, Debug)]
+    pub(crate) struct DurableProbe(Arc<Mutex<ProbeState>>);
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    impl DurableProbe {
+        /// Makes the `number`-th (1-based) `flush_file_durable` fail with an I/O error
+        /// that leaves nothing durable (an indeterminate flush failure).
+        pub(crate) fn fail_flush_number(&self, number: usize) {
+            lock(&self.0).fail_flush_number = Some(number);
+        }
+
+        pub(crate) fn write_calls(&self) -> usize {
+            lock(&self.0).write_calls
+        }
+
+        pub(crate) fn flush_calls(&self) -> usize {
+            lock(&self.0).flush_calls
+        }
+
+        pub(crate) fn volatile_bytes(&self) -> Vec<u8> {
+            lock(&self.0).volatile.clone()
+        }
+
+        pub(crate) fn durable_bytes(&self) -> Vec<u8> {
+            lock(&self.0).durable.clone()
+        }
+    }
+
+    struct ProbeStorage(DurableProbe);
+
+    impl StorageBackend for ProbeStorage {
+        fn capabilities(&self) -> StorageCapabilities {
+            StorageCapabilities {
+                file_durability: true,
+                ..StorageCapabilities::read_write(MEMORY_MAX_LEN).with_exclusive_lock()
+            }
+        }
+
+        fn size(&self) -> Result<u64, StorageBackendError> {
+            Ok(lock(&(self.0).0).volatile.len() as u64)
+        }
+
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, StorageBackendError> {
+            let state = lock(&(self.0).0);
+            let start = usize::try_from(offset).unwrap_or(usize::MAX);
+            if start >= state.volatile.len() {
+                return Ok(0);
+            }
+            let count = buf.len().min(state.volatile.len() - start);
+            buf[..count].copy_from_slice(&state.volatile[start..start + count]);
+            Ok(count)
+        }
+
+        fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<usize, StorageBackendError> {
+            let mut state = lock(&(self.0).0);
+            state.write_calls += 1;
+            let start = usize::try_from(offset).unwrap_or(usize::MAX);
+            let end = start.checked_add(buf.len());
+            match end {
+                Some(end) if end <= state.volatile.len() => {
+                    state.volatile[start..end].copy_from_slice(buf);
+                    Ok(buf.len())
+                }
+                _ => Err(StorageBackendError::Io {
+                    kind: ErrorKind::StorageFull,
+                    os_error: None,
+                }),
+            }
+        }
+
+        fn flush_file_durable(&mut self) -> Result<(), StorageBackendError> {
+            let mut state = lock(&(self.0).0);
+            state.flush_calls += 1;
+            if state.fail_flush_number == Some(state.flush_calls) {
+                return Err(StorageBackendError::Io {
+                    kind: ErrorKind::Other,
+                    os_error: None,
+                });
+            }
+            state.durable = state.volatile.clone();
+            Ok(())
+        }
+    }
+
+    /// The production adapter over [`ProbeStorage`], shareable so the test can observe the
+    /// terminal/quarantine state after the controller owns a boxed clone.
+    #[derive(Clone)]
+    pub(crate) struct ObservedBackend(Arc<Mutex<PersistentStorage<ProbeStorage>>>);
+
+    /// Builds the adapter over `initial` bytes (a whole number of 512-byte sectors).
+    pub(crate) fn observed_backend(initial: &[u8]) -> (DurableProbe, ObservedBackend) {
+        let probe = DurableProbe(Arc::new(Mutex::new(ProbeState {
+            volatile: initial.to_vec(),
+            durable: initial.to_vec(),
+            write_calls: 0,
+            flush_calls: 0,
+            fail_flush_number: None,
+        })));
+        let adapter = PersistentStorage::open(ProbeStorage(probe.clone()))
+            .expect("the scripted storage declares file durability and a whole-sector size");
+        (probe, ObservedBackend(Arc::new(Mutex::new(adapter))))
+    }
+
+    impl ObservedBackend {
+        pub(crate) fn is_terminal_failed(&self) -> bool {
+            lock(&self.0).is_terminal_failed()
+        }
+
+        pub(crate) fn is_quarantined(&self) -> bool {
+            lock(&self.0).is_quarantined()
+        }
+    }
+
+    impl NvmeBackend for ObservedBackend {
+        fn sector_count(&self) -> u64 {
+            lock(&self.0).sectors
+        }
+
+        fn read_sectors(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), BackendError> {
+            lock(&self.0).read_sectors(lba, buffer)
+        }
+
+        fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), BackendError> {
+            lock(&self.0).write_sectors(lba, data)
+        }
+
+        fn flush(&mut self) -> Result<(), BackendError> {
+            lock(&self.0).durable_flush()
+        }
     }
 }
 

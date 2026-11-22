@@ -84,6 +84,12 @@ pub unsafe fn initialize(
     }
 }
 
+/// Host tests: bind (or unbind) the active tables the memory services publish permissions in.
+#[cfg(test)]
+pub(crate) fn set_active_tables_for_test(tables: Option<ActivePageTables>) {
+    BOOT_SERVICES.active_tables.set(tables);
+}
+
 /// # Safety
 /// The BSP must already be executing on `paging`'s private identity tables.
 /// Their RAM reservation must remain valid until `ExitBootServices`.
