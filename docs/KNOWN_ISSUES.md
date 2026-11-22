@@ -12,6 +12,21 @@
 
 ## Записи
 
+### ISSUE-649. S11-41: линковка `AudioToolbox`/`CoreFoundation` из `libod_host.a` в Swift-цели не проверена
+
+- **Компонент:** `crates/od-host/src/audio_output.rs`, [apps/Package.swift](../apps/Package.swift) (`od-vmhost`), `tests/cpu/stage3_harness.py` (список `-framework`).
+- **Суть:** `audio_output` объявляет `#[link(name = "AudioToolbox", kind = "framework")]` и `CoreFoundation`, но staticlib не передаёт их потребителю: Swift-цели перечисляют framework вручную, `AudioToolbox` в списках нет. В debug-сборке ссылки на `_AudioComponentFindNext`, `_ExtAudioFileWrite` лежат в объектном файле только с символами `audio_output` (проверено `nm -A`), и линковщик его не тянет, пока C ABI не использует звук. В release/LTO объект может слиться с другими, и тогда сборка `od-vmhost` или harness S3 получит неопределённые символы.
+- **Последствия:** возможна ошибка линковки Swift/harness-целей после release-сборки `od-host`; в тестах `cargo test` не проявляется.
+- **Основание:** найдено при S11-41 (2026-11-22); `swift build` и release-сборка с линковкой `od-vmhost` не запускались.
+- **Статус:** открыта. **Следующий шаг:** при подключении вывода к VMHost (S11-04/S11-42) добавить `.linkedFramework("AudioToolbox")` в `od-vmhost` и `-framework AudioToolbox` в harness; до этого проверить release-сборку `swift build -c release --product od-vmhost`.
+
+### ISSUE-650. S11-41: нет smoke-теста звука на VMHost, профиля `audio-test-tone`, измерения CPU и вывода на динамики
+
+- **Компонент:** VMHost, `crates/od-host/src/audio_output.rs`, `tests/system/audio_offline_smoke.py` (не создан).
+- **Суть:** S11-41 проверен unit-тестами `od-host` (offline WAV, кольцо, ручной запуск Default Output на тишине); `audio_offline_smoke.py`, профиль VMHost `audio-test-tone`, 5 прогонов smoke, загрузка CPU VMHost при выводе и измерение задержки на реальном устройстве не сделаны: профиль требует режима VMHost S11-04, формат строки `STATS` не определён.
+- **Последствия:** задержка кольца 16/4 блока подтверждена только имитацией двух потоков по 10 мс ([AUDIO_DEVICE.md](specs/AUDIO_DEVICE.md) 10.2); реальный вывод не слышали.
+- **Статус:** открыта. **Следующий шаг:** после S11-04 добавить профиль и smoke, записать CPU и задержку устройства (S11-43 измеряет сквозную задержку).
+
 <a id="issue-111--локальные-копии-артефактов-s5-05-отличаются-от-принятых"></a>
 ### ISSUE-508 — Локальные копии артефактов S5-05 отличаются от принятых
 
