@@ -15607,6 +15607,19 @@ reports `PhysicalBeyond4GiB`); the error code has no I/D bit (no XD, `CR4.SMEP` 
 set loop and host/JIT paths, hardware oracle, CPUID (S2-57/S2-58). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25m--32-bit-paging-walk-in-od-machine-bounded-slice).
 
+#### S2-25n — exact PAE refusal of the long-mode entries and the board PAE adapter
+
+**Статус:** bounded slice (`od-machine`: `page_walk.rs`, `pae_operand_access.rs`; tests in `ap_legacy_exec.rs`, `paged_pae_adapter/tests.rs`; `od-host`: test)
+after the acceptance of the parent S2-25 (2026-11-21); the slice itself is not marked, the parent checkbox is not touched.
+
+A 32-bit protected-mode executor over `GuestMemory` does not exist (`ProtectedCpu` is the closed trampoline profile over `RealModeMemory`), so the host loop,
+the JIT entries and the probes still **refuse** a PAE vCPU, now with the exact reason: `ProbeConfigError::PaeProtectedMode { cr0, cr4, efer }` (CR0.PG, CR4.PAE,
+LME = LMA = 0) instead of a missing `EFER.LME|LMA`; LME alone stays `RequiredBits`; nothing is fetched or walked. `LoadedFirmwareBoard::pae_memory_adapter` builds the
+`PagedPaeMemoryAdapter` over the whole bus for a vCPU on PAE paging, with the MMIO dispatch of `pae_operand_access`; a differential of the two on identical boards
+(RAM, Local APIC MMIO, an uncovered 36-bit page; results, committed writes and bytes per step). Not done: a 32-bit instruction executor on the adapter (and so execution of a
+PAE vCPU by the host loop/JIT), a production caller of the adapter, a hardware oracle, CPUID (S2-57/S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25n--exact-pae-refusal-of-the-long-mode-entries-and-the-board-pae-adapter-bounded-slice).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

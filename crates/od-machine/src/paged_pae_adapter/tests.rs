@@ -1133,9 +1133,27 @@ const EFER_LME_LMA: u64 = (1 << 8) | (1 << 10);
 fn the_two_paging_snapshots_exclude_each_other_by_construction() {
     let pdptes = [PD | P, 0, 0, 0];
     let cr0 = u64::from(CR0_WP_SET);
-    // PAE registers are not a 4-level snapshot: LME and LMA are required there.
+    // PAE registers are not a 4-level snapshot: LME and LMA are required there, and the state is
+    // named as PAE paging of a protected-mode vCPU (S2-25n).
     assert_eq!(
         Long64ProbeConfig::new(cr0, PDPT, 0x20, EFER_NXE),
+        Err(ProbeConfigError::PaeProtectedMode {
+            cr0,
+            cr4: 0x20,
+            efer: EFER_NXE
+        })
+    );
+    // LME alone (the transitional state) is still a missing bit, not PAE paging.
+    assert_eq!(
+        Long64ProbeConfig::new(cr0, PDPT, 0x20, 1 << 8),
+        Err(ProbeConfigError::RequiredBits {
+            register: "EFER",
+            bits: EFER_LME_LMA
+        })
+    );
+    // LMA alone is likewise a missing bit and not PAE paging: it fixes the mutant that tests only LME.
+    assert_eq!(
+        Long64ProbeConfig::new(cr0, PDPT, 0x20, 1 << 10),
         Err(ProbeConfigError::RequiredBits {
             register: "EFER",
             bits: EFER_LME_LMA
@@ -1187,9 +1205,10 @@ fn pae_bus() -> MachineBus {
 #[test]
 fn the_four_level_probe_entries_refuse_a_pae_state_with_a_typed_configuration_error() {
     let rejection = PagedProbeExit::Rejected(PagedProbeRejection::Configuration(
-        ProbeConfigError::RequiredBits {
-            register: "EFER",
-            bits: EFER_LME_LMA,
+        ProbeConfigError::PaeProtectedMode {
+            cr0: u64::from(CR0_WP_SET),
+            cr4: 0x20,
+            efer: EFER_NXE,
         },
     ));
     // Exclusive bus.
@@ -1259,9 +1278,10 @@ fn the_cpl0_set_loop_refuses_a_pae_state_with_the_same_configuration_error() {
     assert_eq!(
         report.exit,
         crate::paged_memory_adapter::PagedCpl0SetExit::Configuration(
-            ProbeConfigError::RequiredBits {
-                register: "EFER",
-                bits: EFER_LME_LMA,
+            ProbeConfigError::PaeProtectedMode {
+                cr0: u64::from(CR0_WP_SET),
+                cr4: 0x20,
+                efer: EFER_NXE,
             }
         )
     );

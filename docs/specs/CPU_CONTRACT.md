@@ -16377,6 +16377,31 @@ entry writer (fixed: it is a parameter of `access_operand_with_walk`). Not cover
 interpreter on the board view, a page-crossing operand, locked operations, the set loop and host/JIT paths, hardware oracle, CPUID
 declaration (S2-57/S2-58).
 
+## S2-25n — exact PAE refusal of the long-mode entries and the board PAE adapter (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.1.1 "Five Paging Modes" (the paging modes are selected by CR0.PG, CR4.PAE and IA32_EFER.LME; PAE
+paging is CR0.PG = 1, CR4.PAE = 1, LME = 0) and §5.4.2 (PAE translation), as in S2-25g/S2-25k/S2-25l. Text only: no hardware oracle
+(a user-space process on the Oracle machine cannot enable PAE paging), no oracle counters, no CPUID bit declared.
+
+| Item | Rule implemented |
+|---|---|
+| Executor on the PAE adapter | **none exists.** The only 32-bit protected-mode executor is `ProtectedCpu`, a closed trampoline profile over `RealModeMemory` (it walks its own data with `translate_pae`); no decoder of 32-bit instructions runs over `GuestMemory`. The host loop, the JIT entries, the probe and the CPL0 set loop decode and execute Long64 code over a four-level `Long64ProbeConfig`, so a protected-mode PAE vCPU is **not executed** by them whichever walk served its memory. |
+| Exact reason | `Long64ProbeConfig::new` (and so `from_cpu_state`, which every four-level entry calls: probe, shared probe, CPL0 set loop, host loop, JIT sessions, exception delivery, NMI delivery) returns `ProbeConfigError::PaeProtectedMode { cr0, cr4, efer }` for CR0.PE = PG = 1, CR4.PAE = 1 and EFER.LME = LMA = 0, in place of the `RequiredBits { EFER, LME \| LMA }` of S2-25l (which read as a missing bit). LME alone, LMA alone and the long-mode states are unchanged (`RequiredBits` / accepted). The refusal is before any fetch, walk, accessed bit, native block or retirement, as before; the state, RAM and the write list are untouched. |
+| Operand path | `LoadedFirmwareBoard::pae_memory_adapter(cpu, instruction_rip, committed_write)`: the `PagedPaeMemoryAdapter` over the whole bus (`over_machine`) for a vCPU whose legacy model is a protected-mode one on PAE paging (the snapshot is the model's own registers and PDPTE registers); an error text for a missing vCPU, real mode, a vCPU without a legacy model (the BSP, a long-mode vCPU) or a model not on PAE paging. An MMIO operand reaches the bound device as an access of that vCPU with the dirty bit set first: the dispatch of `pae_operand_access`. No production caller until a 32-bit executor exists (like `pae_operand_access`). |
+| Not changed | the Long64 path (`PagedMovMemoryAdapter`, the 4-level walk and its profiles), the adapter itself, the PAE walk, every locked / vector / descriptor refusal of S2-25l. |
+
+Tests: `od-machine` `ap_legacy_exec::tests::the_board_pae_memory_adapter_equals_the_board_operand_access_on_identical_tables`: two boards with
+identical PAE tables, the same ten dword operands (RAM store and load, Local APIC ID read, TPR write and read back, a store and a load of a 36-bit page no region covers, a store to a not-present PDPTE
+(`#PF`, error code 2 by the case) and a CPL 3 load of a supervisor page (`#PF`, error code 5 by the case), a second RAM store); per step the result
+(the read value, the write, the `#PF` error code, CR2 and the EIP of the record, or the physical address of the refused operand), the committed writes in
+order and the bytes of the page directory, page table and marker RAM page are equal (the device state is not compared: the Local APIC is checked by the
+TPR read back); the `#PF` codes 2 and 5 are not asserted literally, the adapter equals the board access. A dword that crosses from a RAM page into the
+Local APIC page is a typed refusal for a load (the MMIO byte, `OperandPhysical`) and for a store (the walk of the crossing page, `DeviceUnavailable`),
+both at the APIC base; after either the committed writes are empty, the RAM bytes before the boundary and the table bytes are unchanged (the store
+refuses before the first byte is written). The S2-25l tests (`paged_pae_adapter`
+probe, shared probe and CPL0 set loop; `od-host` `s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block`) and `page_walk` expect `PaeProtectedMode`.
+The adapter against `ProtectedCpu` on identical tables is the existing S2-25l differential (31 scenarios, unchanged).
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts

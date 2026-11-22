@@ -25,7 +25,7 @@
 
 use crate::{
     GuestPhysicalRange, LoadedFirmwareBoard, PaeAccessRequest, PaeOperandOperation,
-    TrackedAccessReport,
+    PagedPaeMemoryAdapter, TrackedAccessReport,
 };
 use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
 
@@ -70,5 +70,29 @@ impl LoadedFirmwareBoard {
             report,
             committed_writes,
         })
+    }
+
+    /// The `GuestMemory` of one instruction attempt of vCPU `cpu` on PAE paging (S2-25n): the
+    /// [`PagedPaeMemoryAdapter`] over the whole bus of the board, so that an MMIO operand reaches the
+    /// bound device as an access of that vCPU exactly as [`Self::pae_operand_access`] serves it, and
+    /// every committed write (the accessed and dirty bits of the entries, then the operand bytes)
+    /// goes to `committed_write`. The paging snapshot is the model's own registers
+    /// ([`Self::pae_paging_of`]): an error text when the vCPU does not exist, is not in a legacy
+    /// protected-mode model or that model is not on PAE paging. A long-mode vCPU never gets this
+    /// adapter, and the PAE adapter is never built for one.
+    pub(crate) fn pae_memory_adapter<'a>(
+        &'a mut self,
+        cpu: usize,
+        instruction_rip: u64,
+        committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> Result<PagedPaeMemoryAdapter<'a>, String> {
+        let paging = self.pae_paging_of(cpu)?;
+        Ok(PagedPaeMemoryAdapter::over_machine(
+            self.bus_mut(),
+            cpu,
+            paging,
+            instruction_rip,
+            committed_write,
+        ))
     }
 }

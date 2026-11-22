@@ -2424,9 +2424,10 @@ mod tests {
     /// S2-25l: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run by this loop.
     /// The loop decodes and executes Long64 instructions (the native blocks and the CPL0 set are
     /// 64-bit code), and its translation snapshot is the 4-level one; neither would be right for a
-    /// protected-mode PAE vCPU, so the refusal is explicit and typed (the configuration error of the
-    /// 4-level snapshot: EFER.LME and EFER.LMA are required), not a silent 4-level walk over PAE
-    /// tables. Nothing is fetched or walked: no instruction retires, RAM (accessed bits included),
+    /// protected-mode PAE vCPU, so the refusal is explicit and typed, with its exact reason (S2-25n:
+    /// `PaeProtectedMode`, the state is PAE paging of a protected-mode vCPU and no 32-bit executor
+    /// runs on the PAE adapter yet; before S2-25n the same refusal read as a missing EFER.LME|LMA), not a
+    /// silent 4-level walk over PAE tables. Nothing is fetched or walked: no instruction retires, RAM (accessed bits included),
     /// registers and the write list are what they were.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
@@ -2459,9 +2460,10 @@ mod tests {
             report.exit,
             PagedHostLoopExit::Interpreter(od_machine::PagedProbeExit::Rejected(
                 od_machine::PagedProbeRejection::Configuration(
-                    od_machine::ProbeConfigError::RequiredBits {
-                        register: "EFER",
-                        bits: (1 << 8) | (1 << 10),
+                    od_machine::ProbeConfigError::PaeProtectedMode {
+                        cr0: state_before.cr0.unwrap(),
+                        cr4: state_before.cr4.unwrap(),
+                        efer: 1 << 11,
                     }
                 )
             ))
