@@ -327,7 +327,7 @@ fn bare(code: &[u8], case: &Case, level: Level, count: u64) -> Observed {
 
 fn set(cell: &RefCell<GuestFpState>) -> Cpl0ProfileSet<'_> {
     Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
-        .with_cpuid(&CpuidProfile::X8664V1Stage4A)
+        .with_cpuid(&CpuidProfile::X8664V1Stage4AExt2)
         .with_fp_state(cell)
 }
 
@@ -1142,9 +1142,15 @@ fn cr0_em_ts_and_cr4_osfxsr_gate_every_form_at_cpl3_before_any_address_check() {
             for (name, code) in FORMS {
                 let (cpl3, before, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
                 let (cpl0, _, _) = in_set(Level::Cpl0, code, &case, 1, |_| {});
+                // S7-31i (main priority): LDMXCSR is `Unsupported` for CR0.EM = 1 or CR4.OSFXSR = 0 (the other
+                // forms are #UD); CR0.TS alone is #NM for it too.
+                let expected = if *name == "LDMXCSR [rax+0x10]" && vector == 6 {
+                    Result_::Unsupported(0xae)
+                } else {
+                    fault(vector)
+                };
                 assert_eq!(
-                    cpl3.result,
-                    fault(vector),
+                    cpl3.result, expected,
                     "{name} cr0 {cr0:#x} cr4 {cr4:#x} rax {rax:#x}"
                 );
                 assert_eq!(cpl3, cpl0, "{name}");
@@ -1189,17 +1195,8 @@ fn an_unmasked_exception_at_cpl3_is_xm_or_ud_by_cr4_osxmmexcpt_and_keeps_the_des
 fn ldmxcsr_and_stmxcsr_work_at_cpl3_with_the_target_mask() {
     let ldmxcsr = [0x0f, 0xae, 0x50, 0x10];
     let stmxcsr = [0x0f, 0xae, 0x18];
-    // Every valid value (bits 31:16 clear; DAZ, bit 6, is in the target mask, ADR-0014).
-    for value in [
-        0x1f80u32,
-        0x1fa0,
-        0x0000,
-        0x1f40,
-        0x1fc0,
-        0xffff,
-        0x9fe0 & 0xffff,
-        0x007f,
-    ] {
+    // Every valid value of TARGET_FXSAVE_MXCSR_MASK = 0xffbf (S7-31i; bits 31:16 and DAZ, bit 6, are reserved).
+    for value in [0x1f80u32, 0x1fa0, 0x0000, 0x003f, 0x9fbf, 0xffbf] {
         let mut case = Case::new(true);
         case.tail[..4].copy_from_slice(&value.to_le_bytes());
         let (cpl0, _, _) = in_set(Level::Cpl0, &ldmxcsr, &case, 1, |_| {});
@@ -1213,8 +1210,19 @@ fn ldmxcsr_and_stmxcsr_work_at_cpl3_with_the_target_mask() {
         );
         assert_eq!(cpl3.rflags, RFLAGS_BASE, "{value:#x}");
     }
-    // A reserved bit (31:16) is #GP(0) and the value is not loaded.
-    for value in [1u32 << 16, 1 << 31, 0xffff_ffff, 0x0001_1f80] {
+    // A reserved bit (31:16, or DAZ, bit 6: ISSUE-663, the oracle accepts it) is #GP(0) and the value is not loaded.
+    for value in [
+        1u32 << 16,
+        1 << 31,
+        0xffff_ffff,
+        0x0001_1f80,
+        0x0040,
+        0x1f40,
+        0x1fc0,
+        0xffff,
+        0x9fe0,
+        0x007f,
+    ] {
         let mut case = Case::new(true);
         case.tail[..4].copy_from_slice(&value.to_le_bytes());
         let (cpl3, before, after) = in_set(Level::Cpl3, &ldmxcsr, &case, 1, |_| {});

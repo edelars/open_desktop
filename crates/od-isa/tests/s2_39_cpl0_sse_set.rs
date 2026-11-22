@@ -256,7 +256,7 @@ fn bare_program(code: &[u8], case: &Case, controls: bool, count: u64) -> Observe
 
 fn set(cell: &RefCell<GuestFpState>) -> Cpl0ProfileSet<'_> {
     Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
-        .with_cpuid(&CpuidProfile::X8664V1Stage4A)
+        .with_cpuid(&CpuidProfile::X8664V1Stage4AExt2)
         .with_fp_state(cell)
 }
 
@@ -803,9 +803,15 @@ fn the_new_forms_are_gated_by_cr0_em_ts_and_cr4_osfxsr_before_any_operand_access
             case.rax = rax;
             for (name, code) in GATED_FORMS {
                 let (observed, before, after) = in_set(code, &case);
+                // S7-31i (main priority): LDMXCSR is `Unsupported` for CR0.EM = 1 or CR4.OSFXSR = 0 (where the
+                // other forms are #UD); CR0.TS alone is #NM for it too.
+                let expected = if *name == "LDMXCSR [rax]" && vector == 6 {
+                    Result_::Unsupported(0xae)
+                } else {
+                    fault(vector)
+                };
                 assert_eq!(
-                    observed.result,
-                    fault(vector),
+                    observed.result, expected,
                     "{name}: cr0 {cr0:#x} cr4 {cr4:#x} rax {rax:#x}"
                 );
                 assert_eq!(
@@ -897,13 +903,6 @@ fn ldmxcsr_loads_every_valid_value_and_changes_nothing_else() {
         0x6000,
         0x8000,
         0x1f80 | 0x3f,
-        // DAZ (bit 6) is in the target mask (ADR-0014); the i5-3210M loads each of these.
-        0x0040,
-        0x1fc0,
-        0x9fc0,
-        0xffff,
-        0x8040,
-        0x1f40,
     ] {
         for old in [0x1f80u32, 0x1fa5, 0x0000] {
             let case = mxcsr_case(value, old);
@@ -921,10 +920,17 @@ fn ldmxcsr_loads_every_valid_value_and_changes_nothing_else() {
 
 #[test]
 fn ldmxcsr_with_a_reserved_bit_is_gp0_and_changes_nothing() {
-    // TARGET_FXSAVE_MXCSR_MASK = 0xffff: bits 31:16 are reserved; DAZ (bit 6) is supported (ADR-0014). The
-    // i5-3210M raises #GP (SIGSEGV) for 0x0001_0000 and 0x8000_1f80.
+    // TARGET_FXSAVE_MXCSR_MASK = 0xffbf (S7-31i, "main priority" rule of merge 56c60c9; ADR-0014 superseded):
+    // bits 31:16 and DAZ (bit 6) are reserved. The i5-3210M accepts DAZ (S2-39p, KNOWN_ISSUES ISSUE-663), the
+    // model refuses it by the owner's decision.
     for value in [
-        0x0001_1f80u32,
+        0x0040u32,
+        0x1fc0,
+        0x9fc0,
+        0xffff,
+        0x8040,
+        0x1f40,
+        0x0001_1f80,
         0x8000_1f80,
         0xffff_ffff,
         0x0001_ffff,
@@ -942,9 +948,9 @@ fn ldmxcsr_with_a_reserved_bit_is_gp0_and_changes_nothing() {
 
 #[test]
 fn ldmxcsr_and_stmxcsr_take_every_addressing_form_with_an_unaligned_operand() {
-    // 0x1fa5 and the five DAZ values of the physical oracle (S2-39n: each loads with every addressing form
-    // there, ADR-0014).
-    for value in [0x1fa5u32, 0x0040, 0x1fc0, 0xffff, 0x8040, 0x1f40] {
+    // 0x1fa5 and values of the target mask 0xffbf (the DAZ values of the physical oracle are #GP here, see the
+    // reserved-bit test and ISSUE-663).
+    for value in [0x1fa5u32, 0x003f, 0x9fbf, 0xffbf, 0x6000, 0x1f80] {
         let mut case = mxcsr_case(value, 0x1f80);
         // The operand is unaligned at DATA + 1 (a 16-byte memory image holds the dword at offset 1).
         case.memory = [0; 16];
@@ -968,6 +974,14 @@ fn ldmxcsr_and_stmxcsr_take_every_addressing_form_with_an_unaligned_operand() {
         ];
         for (name, code, change) in forms {
             let (observed, before, after) = in_set_with(code, &case, 1, |state| change(state));
+            // S7-31i (main priority): the `LdmxcsrMemory` executor refuses a REX, a 67 and a segment prefix
+            // (`Unsupported`, nothing changes); only the unprefixed forms with a 64-bit address run.
+            if matches!(*name, "[r8+1]" | "[eax+1] 67" | "ds:[rax+1]") {
+                assert_eq!(observed.result, Result_::Unsupported(0xae), "{name}");
+                assert_eq!(observed.rip, CODE, "{name}");
+                assert_eq!(after, before, "{name}");
+                continue;
+            }
             assert_eq!(observed.result, Result_::Retired, "{name}");
             assert_eq!(observed.rip, CODE + code.len() as u64, "{name}");
             assert_eq!(after.sse.mxcsr, value, "{name}");
@@ -1002,8 +1016,19 @@ fn ldmxcsr_daz_makes_the_next_sse_form_read_a_denormal_source_as_zero() {
     // LDMXCSR [rax], then ADDSS xmm1,xmm2 with xmm1.low = 0x0000_0001 (the smallest binary32 denormal) and
     // xmm2.low = 1.0. DAZ = 1: the denormal is +0, the sum 1.0 is exact and no flag is set (SDM Vol. 1
     // §10.2.3.4). DAZ = 0: DE (denormal operand) and PE (1.0 + 2^-149 rounds to 1.0) are set. The i5-3210M
-    // gives 0x3f80_0000 with MXCSR 0x1fc0 and 0x1fa2 for the two loads (ADR-0014).
-    for (loaded, expected_mxcsr) in [(0x1fc0u32, 0x1fc0u32), (0x1f80, 0x1fa2)] {
+    // gives 0x3f80_0000 with MXCSR 0x1fc0 and 0x1fa2 for the two loads (ADR-0014). By the "main priority" rule
+    // (merge 56c60c9, mask 0xffbf) the DAZ load is `#GP(0)` at the LDMXCSR and nothing changes (ISSUE-663).
+    {
+        let mut case = mxcsr_case(0x1fc0, 0x1f80);
+        case.xmm[1][..4].copy_from_slice(&1u32.to_le_bytes());
+        case.xmm[2][..4].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+        let code = [&[0x0f, 0xae, 0x10][..], &[0xf3, 0x0f, 0x58, 0xca][..]].concat();
+        let (observed, before, after) = in_set_program(&code, &case, 2);
+        assert_eq!(observed.result, gp0());
+        assert_eq!(observed.rip, CODE);
+        assert_eq!(after, before);
+    }
+    for (loaded, expected_mxcsr) in [(0x1f80, 0x1fa2u32)] {
         let mut case = mxcsr_case(loaded, 0x1f80);
         case.xmm[1][..4].copy_from_slice(&1u32.to_le_bytes());
         case.xmm[2][..4].copy_from_slice(&0x3f80_0000u32.to_le_bytes());

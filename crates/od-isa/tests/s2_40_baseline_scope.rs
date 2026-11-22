@@ -425,9 +425,12 @@ const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
 /// registers (PAVGB/PAVGW/PMULHUW/PMINUB/PMAXUB/PMINSW/PMAXSW/PSADBW/PINSRW/PEXTRW/PMOVMSKB),
 /// MOVNTQ, MASKMOVQ and the MMX forms of PADDQ/PSUBQ/PMULUDQ. None of the forms refused by both belongs
 /// to a family whose CPUID bit the Windows profile declares. The forms refused only by the set are the
-/// twelve MMX conversions (SSE/SSE2, bits not declared) and FISTTP, which belongs to SSE3: the Windows
+/// twelve MMX conversions (SSE/SSE2, bits not declared), LDMXCSR of the survey profile (S7-31i, needs the SSE bit, see the entry) and FISTTP, which belongs to SSE3: the Windows
 /// profile declares that bit (discrepancy 2 of the S2-40 block of the plan).
 const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
+    // S7-31i LDMXCSR (merge 56c60c9, "main priority"): the executor of the FP member refuses it unless the CPUID
+    // profile of the set declares SSE; this survey uses `X8664V1Stage4A`, which does not (`X8664V1Stage4AExt2` does).
+    "LDMXCSR (mem)",
     "CVTPI2PS (reg)",
     "CVTPI2PS (mem)",
     "CVTTPS2PI (reg)",

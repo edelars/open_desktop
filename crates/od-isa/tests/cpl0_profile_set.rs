@@ -42723,7 +42723,7 @@ fn apic_base_with_prefixes_is_unsupported_without_mutation() {
 // this implementation): FNINIT leaves FCW = 0x037F, FSW = 0, FTW = 0xFFFF, FIP/FDP/FOP = 0 and the
 // register payloads; the FXSAVE image has FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per
 // nonempty physical register), FOP at 6, FIP/FCS at 8/12, FDP/FDS at 16/20, MXCSR at 24,
-// MXCSR_MASK at 28 (0xFFFF for this target, ADR-0014), ST0-7 in 16-byte slots from 32, XMM0-15 from 160;
+// MXCSR_MASK at 28 (0xFFBF for this target), ST0-7 in 16-byte slots from 32, XMM0-15 from 160;
 // the bytes in between and 416..512 are not written. The kernel sequence is `fpu__init_cpu_generic`
 // (`mov %cr0,%rax; and $-13,%rax; mov %cr0 <- %rdi` through `native_write_cr0`, CR4 |= 0x600, `fninit`)
 // followed by `fpu__init_system_mxcsr` (`fxsave fxregs(%rip)`), arch/x86/kernel/fpu/init.c.
@@ -43011,7 +43011,7 @@ fn expected_image_after_fninit(fp: &GuestFpState) -> [u8; 512] {
     image[16..20].copy_from_slice(&[0; 4]); // FDP
     image[20..22].copy_from_slice(&[0; 2]); // FDS
     image[24..28].copy_from_slice(&[0xa0, 0x1f, 0, 0]); // MXCSR 0x1FA0, untouched by FNINIT
-    image[28..32].copy_from_slice(&[0xff, 0xff, 0, 0]); // MXCSR_MASK 0xFFFF
+    image[28..32].copy_from_slice(&[0xbf, 0xff, 0, 0]); // MXCSR_MASK 0xFFBF
     // TOP = 0 after FNINIT: ST(i) is physical register i.
     for (slot, register) in fp.x87.registers.iter().enumerate() {
         image[32 + 16 * slot..42 + 16 * slot].copy_from_slice(register);
@@ -43116,7 +43116,7 @@ fn fxsave_of_the_initial_state_writes_the_architectural_defaults() {
     expected[8..14].copy_from_slice(&[0; 6]);
     expected[16..22].copy_from_slice(&[0; 6]);
     expected[24..28].copy_from_slice(&[0x80, 0x1f, 0, 0]); // MXCSR 0x1F80
-    expected[28..32].copy_from_slice(&[0xff, 0xff, 0, 0]);
+    expected[28..32].copy_from_slice(&[0xbf, 0xff, 0, 0]);
     for slot in 0..8 {
         expected[32 + 16 * slot..42 + 16 * slot].copy_from_slice(&[0; 10]);
     }
@@ -53960,7 +53960,7 @@ fn mov_es_ss_ds_register_form_at_cpl3_is_rejected_at_entry_without_mutation() {
 // Long64 image has FCW at 0, FSW at 2, the abridged FTW at 4, FOP at 6, FIP (8 bytes) at 8, FDP
 // (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (ignored on load), ST0-7 (logical order from TOP)
 // in 16-byte slots from 32 and XMM0-15 from 160. FXRSTOR faults with #GP(0) on an area that is not
-// 16-byte aligned and on MXCSR bits outside MXCSR_MASK (0xFFFF here: bits 31:16; ADR-0014).
+// 16-byte aligned and on MXCSR bits outside MXCSR_MASK (0xFFBF here).
 
 const FXRSTOR64_RBX_DISP8: [u8; 5] = [0x48, 0x0f, 0xae, 0x4b, 0x40];
 
@@ -54208,7 +54208,7 @@ fn fxrstor64_non_canonical_area_is_gp0_with_no_read() {
 
 #[test]
 fn fxrstor64_reserved_mxcsr_bits_are_gp0_with_no_state_change() {
-    for mxcsr in [0x0001_0000u32, 0x0001_1f80, 0x8000_1f80, 0xffff_ffff] {
+    for mxcsr in [0x0000_1fc0u32, 0x0001_1f80, 0x8000_1f80, 0xffff_ffff] {
         let cell = RefCell::new(dirty_fp_state());
         let before_cell = cell.borrow().clone();
         let (before, state, memory, result) = run_fxrstor_at(
@@ -54226,7 +54226,7 @@ fn fxrstor64_reserved_mxcsr_bits_are_gp0_with_no_state_change() {
         assert_eq!(state, before, "{mxcsr:#x}");
         assert_eq!(*cell.borrow(), before_cell, "{mxcsr:#x}");
     }
-    // Every bit of MXCSR_MASK (0xFFFF), DAZ included, is accepted.
+    // Every bit of MXCSR_MASK (0xFFBF) is accepted.
     let cell = RefCell::new(dirty_fp_state());
     let (_, _, _, result) = run_fxrstor_at(
         &cell,
@@ -54234,10 +54234,10 @@ fn fxrstor64_reserved_mxcsr_bits_are_gp0_with_no_state_change() {
         CR4_FP,
         &FXRSTOR64_RBX_DISP8,
         FP_AREA,
-        |m| write_image(m, FP_AREA, &image_with_mxcsr(0xffff)),
+        |m| write_image(m, FP_AREA, &image_with_mxcsr(0xffbf)),
     );
     assert_eq!(result.instructions_executed, 1);
-    assert_eq!(cell.borrow().sse.mxcsr, 0xffff);
+    assert_eq!(cell.borrow().sse.mxcsr, 0xffbf);
 }
 
 #[test]
@@ -54388,7 +54388,7 @@ fn fxrstor64_at_cpl3_is_refused_at_entry_without_mutation() {
 //
 // Oracles (by hand, Intel SDM from memory, the layout of the FXRSTOR64 tests above): the Long64
 // image has FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per nonempty physical register), FOP
-// at 6, FIP (8 bytes) at 8, FDP (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (0xFFFF for this
+// at 6, FIP (8 bytes) at 8, FDP (8 bytes) at 16, MXCSR at 24, MXCSR_MASK at 28 (0xFFBF for this
 // target), ST0-7 (logical order from TOP) in 16-byte slots from 32 (10 bytes each) and XMM0-15 from
 // 160. Bytes 5, 14..16 and 22..24 are inside the 64-bit fields or reserved; the 6 high bytes of every
 // ST slot, 416..512 and the bytes between the fields are not written (the sentinel stays). FXSAVE
@@ -54471,7 +54471,7 @@ fn fxsave64_stores_the_exact_image_and_nothing_else() {
     expected[8..16].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes()); // FIP
     expected[16..24].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()); // FDP
     expected[24..28].copy_from_slice(&0x0000_9fa0u32.to_le_bytes()); // MXCSR
-    expected[28..32].copy_from_slice(&0x0000_ffffu32.to_le_bytes()); // MXCSR_MASK
+    expected[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes()); // MXCSR_MASK
     for logical in 0..8usize {
         let physical = (3 + logical) & 7;
         let source = before_cell.x87.registers[physical];
@@ -54529,7 +54529,7 @@ fn fxsave64_of_the_initial_state_writes_the_architectural_defaults() {
     assert_eq!(image[8..16], [0; 8], "FIP");
     assert_eq!(image[16..24], [0; 8], "FDP");
     assert_eq!(image[24..28], [0x80, 0x1f, 0, 0], "MXCSR 0x1F80");
-    assert_eq!(image[28..32], [0xff, 0xff, 0, 0], "MXCSR_MASK 0xFFFF");
+    assert_eq!(image[28..32], [0xbf, 0xff, 0, 0], "MXCSR_MASK 0xFFBF");
     assert_eq!(
         image[416..512],
         [FP_SENTINEL; 96],

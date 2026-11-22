@@ -11761,7 +11761,7 @@ fn s2_39c_literal_fxsave_fixture_writes_the_observed_rip_relative_image() {
         &[0xaa, 0x05, 0xef, 0xcd, 0xab, 0x89, 0x2b, 0]
     );
     assert_eq!(&bytes[16..22], &[0x10, 0x32, 0x54, 0x76, 0x53, 0]);
-    assert_eq!(&bytes[24..32], &[0x80, 0x1f, 0, 0, 0xff, 0xff, 0, 0]);
+    assert_eq!(&bytes[24..32], &[0x80, 0x1f, 0, 0, 0xbf, 0xff, 0, 0]);
     let x87 = before.x87.as_ref().unwrap();
     for logical in 0..8 {
         let physical = (usize::from(x87.top()) + logical) & 7;
@@ -11823,7 +11823,7 @@ fn s2_39d_literal_fxsave64_fixture_writes_full_pointer_image_without_selectors()
             0xdc, 0xfe,
         ]
     );
-    assert_eq!(&bytes[24..32], &[0x80, 0x1f, 0, 0, 0xff, 0xff, 0, 0]);
+    assert_eq!(&bytes[24..32], &[0x80, 0x1f, 0, 0, 0xbf, 0xff, 0, 0]);
     let x87 = before.x87.as_ref().unwrap();
     for logical in 0..8 {
         let physical = (usize::from(x87.top()) + logical) & 7;
@@ -11973,8 +11973,7 @@ fn s2_39g_literal_fxrstor64_cr0_fixtures_are_strict_and_restore_staged_image() {
         .as_str()
         .unwrap();
     let mut image_bytes = decode_bytes(image).unwrap();
-    // Bit 16 is reserved; DAZ (bit 6) is in the target mask (ADR-0014).
-    image_bytes[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
+    image_bytes[24..28].copy_from_slice(&0x0000_1fc0u32.to_le_bytes());
     invalid_mxcsr["memory"][1]["initial_bytes_hex"] = serde_json::json!(encode_bytes(&image_bytes));
     assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&invalid_mxcsr).unwrap()).is_err());
 
