@@ -1046,18 +1046,13 @@ pub(super) fn total_accounted(c: &NetCounters) -> u64 {
         + c.arp_replies
         + c.arp_probe_ignored
         + c.drop_rx_queue_full
-        // S11-31c: UDP and ICMP echo (the ICMP error that tells the guest is a secondary outcome:
-        // `icmp_error_sent` and `icmp_error_suppressed` are not summed here). `drop_host_resource` is not
-        // summed either: TCP raises it too, as part of a segment's fate; a test whose TCP host never
-        // fails adds it itself.
-        + c.udp_forwarded
-        + c.drop_flow_limit_udp
-        + c.drop_flow_limit_icmp
-        + c.udp_unreachable
-        + c.udp_refused
-        + c.gw_port_unreachable
-        + c.icmp_echo_synthetic
-        + c.icmp_echo_forwarded
+        // S11-31c: one counter per frame for UDP and ICMP echo, bumped when the frame reaches the
+        // handler. What the handler then does with it (forwarded, refused, a flow limit, a socket
+        // that cannot be created, the ICMP error to the guest) is an outcome and is outside the
+        // identity on purpose: some outcomes (`drop_host_resource`) are shared with TCP and others
+        // are raised later by the sockets, so summing them would count frames twice.
+        + c.udp_datagrams
+        + c.icmp_echo_requests
 }
 
 #[test]
@@ -1079,14 +1074,16 @@ fn well_formed_dhcp_and_dns_packets_are_counted_unhandled_until_their_handler_ex
 
 #[test]
 fn udp_and_echo_to_external_addresses_reach_the_host_socket_layer_not_the_unhandled_counter() {
-    // The sockets of this backend cannot be created, so each frame ends in drop_host_resource.
+    // The sockets of this backend cannot be created: each frame reaches its handler (and is counted
+    // there) and the outcome is drop_host_resource.
     let mut b = backend();
     run(&mut b, &udp_frame(EXTERNAL, 9, b"x"));
     run(&mut b, &echo_frame(EXTERNAL));
     let c = b.counters();
     assert_eq!(c.drop_unhandled_l4, 0);
+    assert_eq!((c.udp_datagrams, c.icmp_echo_requests), (1, 1));
     assert_eq!(c.drop_host_resource, 2);
-    assert_eq!(total_accounted(&c) + c.drop_host_resource, 2);
+    assert_eq!(total_accounted(&c), 2);
     assert!(drain(&mut b).is_empty());
 }
 
@@ -1406,9 +1403,7 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
         c.tx_frames + c.drop_runt + c.drop_oversize + c.drop_tx_queue_full
     );
     // Every accepted frame ended in exactly one counter after processing.
-    // The scripted TCP host of this backend never fails, so drop_host_resource here is the fate of
-    // a UDP datagram or an echo request whose host socket could not be created.
-    assert_eq!(c.tx_frames, total_accounted(&c) + c.drop_host_resource);
+    assert_eq!(c.tx_frames, total_accounted(&c));
 }
 
 // ---- Frames built for the guest ---------------------------------------------------------------

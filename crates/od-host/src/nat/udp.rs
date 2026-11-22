@@ -9,12 +9,15 @@
 //! DNS (`10.0.2.3:53`) belong to S11-31b and stay in `drop_unhandled_l4` until it lands; any other
 //! port there gets ICMP port unreachable (`gw_port_unreachable`).
 //!
-//! Counters. The fate of a datagram handled by [`NatBackend::process_pending_at`] is exactly one of
-//! `udp_forwarded`, `drop_flow_limit_udp`, `drop_host_resource`, `udp_unreachable`, `udp_refused`
-//! or `gw_port_unreachable`. The last three count the situation; the ICMP error that tells the guest
-//! has its own counters (`icmp_error_sent`, `icmp_error_suppressed`, `drop_rx_queue_full`), as for
-//! TCP. A host error that the kernel reports on a later read (a refusal after the send) is counted
-//! the same way but belongs to no new frame.
+//! Counters. Every datagram that reaches this handler (also one for an unserved port of the gateway
+//! or DNS address) increases `udp_datagrams` once: that is its place in the frame accounting
+//! identity (`tx_frames` = the sum of the per-frame counters). What happens to it afterwards is an
+//! outcome and is outside the identity: `udp_forwarded`, `drop_flow_limit_udp`, `drop_host_resource`
+//! (also raised by TCP), `udp_unreachable`, `udp_refused`, `gw_port_unreachable`. The last three
+//! count the situation; the ICMP error that tells the guest has its own counters
+//! (`icmp_error_sent`, `icmp_error_suppressed`, `drop_rx_queue_full`), as for TCP. A host error that
+//! the kernel reports on a later read (a refusal after the send) is counted the same way and
+//! belongs to no new frame.
 
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
@@ -65,6 +68,16 @@ enum HostError {
 }
 
 fn host_error(error: &io::Error) -> HostError {
+    // The errno is exact (std has no kind for EHOSTDOWN); the kind is the fallback when there is none.
+    #[cfg(unix)]
+    if let Some(errno) = error.raw_os_error() {
+        match errno {
+            libc::ECONNREFUSED => return HostError::Refused,
+            libc::ENETUNREACH | libc::ENETDOWN => return HostError::NetUnreachable,
+            libc::EHOSTUNREACH | libc::EHOSTDOWN => return HostError::HostUnreachable,
+            _ => {}
+        }
+    }
     match error.kind() {
         ErrorKind::ConnectionRefused => HostError::Refused,
         ErrorKind::NetworkUnreachable | ErrorKind::NetworkDown => HostError::NetUnreachable,
@@ -131,6 +144,7 @@ impl UdpEngine {
         udp: &UdpDatagram<'_>,
         now: Instant,
     ) {
+        bump(&mut ctx.counters.udp_datagrams);
         // A UDP payload has at least the 8 header bytes, so the quote is always complete.
         let (quote, quote_len) = icmp_quote(packet);
         if matches!(packet.dst_class, DstClass::Gateway | DstClass::Dns) {
@@ -572,10 +586,18 @@ mod tests {
 
     #[test]
     fn closed_host_port_gives_an_icmp_port_unreachable_that_quotes_the_datagram() {
-        let closed = port_of(&server());
-        let mut b = io_backend();
-        let frame = guest_udp(40000, LOOP, closed, b"knock");
-        send(&mut b, &frame, Instant::now());
+        // A port nobody listens on: bound, then closed. The flow's own socket takes an ephemeral port
+        // and the kernel could hand out the closed one again, so the test starts over if it did.
+        let (mut b, frame) = loop {
+            let closed = port_of(&server());
+            let mut b = io_backend();
+            let frame = guest_udp(40000, LOOP, closed, b"knock");
+            send(&mut b, &frame, Instant::now());
+            let own = b.udp.flows.values().next().unwrap().socket.local_addr();
+            if own.unwrap().port() != closed {
+                break (b, frame);
+            }
+        };
         let frames = pump_for(&mut b, 1);
         assert_eq!(frames.len(), 1, "the refusal reaches the guest");
         let packet = parse_guest_packet(&frames[0]);
@@ -591,11 +613,13 @@ mod tests {
             (c.udp_refused, c.icmp_error_sent, c.udp_forwarded),
             (1, 1, 1)
         );
+        assert_eq!(c.udp_datagrams, 1, "one per frame, whatever came of it");
         // The flow survives: the next datagram is refused again, and nothing else is counted.
         send(&mut b, &frame, Instant::now());
         assert_eq!(pump_for(&mut b, 1).len(), 1);
         assert_eq!(b.counters().udp_refused, 2);
         assert_eq!(b.counters().udp_flows_opened, 1);
+        assert_eq!(b.counters().udp_datagrams, 2);
     }
 
     #[test]
@@ -622,6 +646,7 @@ mod tests {
         }
         let c = b.counters();
         assert_eq!((c.gw_port_unreachable, c.icmp_error_sent), (4, 4));
+        assert_eq!(c.udp_datagrams, 4, "the unserved gateway ports count too");
         assert_eq!((c.udp_flows_opened, c.drop_unhandled_l4), (0, 0));
         assert_eq!(b.flows.count(FlowProto::Udp), 0, "no flow, no socket");
     }
@@ -723,6 +748,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_errors_are_classified_by_errno_first() {
+        use std::io::Error;
+        for (errno, expected) in [
+            (libc::ECONNREFUSED, 3u8),
+            (libc::ENETUNREACH, 0),
+            (libc::ENETDOWN, 0),
+            (libc::EHOSTUNREACH, 1),
+            // std has no ErrorKind for EHOSTDOWN: only the errno tells it is a host error.
+            (libc::EHOSTDOWN, 1),
+        ] {
+            let key = FlowKey {
+                proto: FlowProto::Udp,
+                guest_port: 40000,
+                dst_ip: Ipv4Addr::new(93, 184, 216, 34),
+                dst_port: 9,
+            };
+            let quote = [0u8; ICMP_QUOTE_LEN];
+            let mut b = io_backend();
+            {
+                let (_handlers, mut ctx) = b.handler_parts(Duration::ZERO);
+                report_host_error(
+                    &mut ctx,
+                    Instant::now(),
+                    &Error::from_raw_os_error(errno),
+                    key,
+                    &quote,
+                );
+            }
+            let frames = drain(&mut b);
+            assert_eq!(frames.len(), 1, "errno {errno}");
+            assert_eq!(
+                icmp_error_of(&parse_guest_packet(&frames[0])).1,
+                expected,
+                "errno {errno}"
+            );
+        }
+        // Anything else is a lost datagram.
+        let key = FlowKey {
+            proto: FlowProto::Udp,
+            guest_port: 1,
+            dst_ip: LOOP,
+            dst_port: 9,
+        };
+        let mut b = io_backend();
+        let (_handlers, mut ctx) = b.handler_parts(Duration::ZERO);
+        report_host_error(
+            &mut ctx,
+            Instant::now(),
+            &Error::from_raw_os_error(libc::EACCES),
+            key,
+            &[0u8; ICMP_QUOTE_LEN],
+        );
+        assert_eq!(ctx.counters.drop_host_resource, 1);
     }
 
     #[test]

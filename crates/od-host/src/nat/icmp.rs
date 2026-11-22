@@ -11,9 +11,14 @@
 //! `dst_port`, so every request is a flow of its own and L6 counts requests, not pings. A guest
 //! that repeats a request still waiting for its reply replaces the old flow.
 //!
-//! Counters. The fate of an echo request is exactly one of `icmp_echo_synthetic`,
-//! `icmp_echo_forwarded`, `drop_flow_limit_icmp`, `drop_host_resource`, `drop_unsupported_proto`
-//! (or `drop_rx_queue_full` when the synthetic reply does not fit the L3 queue).
+//! Counters. Every echo request (type 8, code 0) that reaches this handler increases
+//! `icmp_echo_requests` once: that is its place in the frame accounting identity (`tx_frames` = the
+//! sum of the per-frame counters). Other ICMP messages are `drop_unsupported_proto` and are in the
+//! identity through that counter. What happens to a request afterwards is an outcome and is outside
+//! the identity: `icmp_echo_synthetic`, `icmp_echo_forwarded`, `drop_flow_limit_icmp`,
+//! `drop_host_resource` (also raised by TCP). A reply lost to a full L3 queue is counted by
+//! `drop_rx_queue_full`, which the identity sums for ARP: the identity holds only while L3 does not
+//! overflow (the accounting tests drain it), as for TCP.
 //!
 //! The ICMP errors for the guest and their rate limit (L15) are in [`super::ctx::Ctx`].
 
@@ -179,6 +184,7 @@ impl EchoEngine {
             bump(&mut ctx.counters.drop_unsupported_proto);
             return;
         }
+        bump(&mut ctx.counters.icmp_echo_requests);
         match packet.dst_class {
             DstClass::Gateway | DstClass::Dns => synthetic_reply(ctx, packet, icmp),
             DstClass::External => self.forward(ctx, packet, icmp, now),
@@ -378,6 +384,10 @@ mod tests {
         let c = b.counters();
         assert_eq!((c.icmp_echo_synthetic, c.icmp_echo_forwarded), (2, 0));
         assert_eq!(
+            c.icmp_echo_requests, 2,
+            "one per request, whatever came of it"
+        );
+        assert_eq!(
             b.flows.count(FlowProto::IcmpEcho),
             0,
             "nothing waits, nothing left the backend"
@@ -417,6 +427,10 @@ mod tests {
         }
         let c = b.counters();
         assert_eq!(c.drop_unsupported_proto, expected);
+        assert_eq!(
+            c.icmp_echo_requests, 0,
+            "not echo requests: they are in the identity through drop_unsupported_proto"
+        );
         assert_eq!(
             c.icmp_echo_synthetic + c.icmp_echo_forwarded + c.drop_host_resource,
             0
@@ -556,6 +570,42 @@ mod tests {
         assert_eq!(b.counters().icmp_echo_forwarded, 2);
         assert_eq!(pump_for(&mut b, 1).len(), 1);
         assert!(pump_quiet(&mut b, Duration::from_millis(100)).is_empty());
+    }
+
+    /// What NETWORK.md section 9 says about the unprivileged ICMP socket of macOS, on 127.0.0.1: the
+    /// reply carries an IP header, keeps the identifier, and a request whose checksum is zero gets none.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn unprivileged_icmp_socket_keeps_the_identifier_and_does_not_fix_the_checksum() {
+        // The reply to `seq`: the kernel also hands this socket copies of replies to other ICMP
+        // sockets of the process (the tests run in parallel), which are skipped.
+        let wait = |socket: &UdpSocket, seq: u16, window: Duration| -> Option<Vec<u8>> {
+            let started = Instant::now();
+            let mut buf = [0u8; 2048];
+            while started.elapsed() < window {
+                match socket.recv(&mut buf) {
+                    Ok(len) if parse_echo_reply(&buf[..len], 0x1234, seq).is_some() => {
+                        return Some(buf[..len].to_vec());
+                    }
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+            None
+        };
+        let request = icmp_message(8, 0, 0x1234, 7, b"hello");
+        let socket = open_icmp_socket(LOOP).unwrap();
+        socket.send(&request).unwrap();
+        let datagram =
+            wait(&socket, 7, Duration::from_secs(2)).expect("a reply to a correct request");
+        assert_eq!(datagram[0] >> 4, 4, "the reply comes with its IP header");
+        assert_eq!(parse_echo_reply(&datagram, 0x1234, 7), Some(&b"hello"[..]));
+        // The same request with the checksum field zero: no reply (the kernel does not fill it in).
+        let mut unsummed = icmp_message(8, 0, 0x1234, 8, b"hello");
+        unsummed[2..4].copy_from_slice(&[0, 0]);
+        let socket = open_icmp_socket(LOOP).unwrap();
+        socket.send(&unsummed).unwrap();
+        assert!(wait(&socket, 8, Duration::from_millis(400)).is_none());
     }
 
     fn reply(ident: u16, seq: u16, data: &[u8]) -> Vec<u8> {

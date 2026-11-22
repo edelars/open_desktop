@@ -18,6 +18,8 @@ use super::frame::{
 /// L15: ICMP errors sent to the guest per second, and the size of the bucket.
 pub const ICMP_ERROR_RATE: u64 = 50;
 const MILLI: u64 = 1000;
+/// Time that yields one thousandth of a token at the rate of L15 (20 000 ns at 50 per second).
+const MILLI_TOKEN_NS: u128 = 1_000_000_000 / (ICMP_ERROR_RATE as u128 * MILLI as u128);
 
 /// Puts a frame into the L3 queue; a full queue drops it at the tail and counts it (L3).
 pub(super) fn enqueue_for_guest(
@@ -53,18 +55,27 @@ impl ErrorBucket {
     }
 
     fn take(&mut self, now: Instant) -> bool {
-        if let Some(last) = self.last {
-            let elapsed_ms = now.saturating_duration_since(last).as_millis();
-            // One thousandth of a token per millisecond and per token of the rate.
-            let gained = u64::try_from(elapsed_ms)
-                .unwrap_or(u64::MAX)
-                .saturating_mul(ICMP_ERROR_RATE);
-            self.milli_tokens = self
-                .milli_tokens
-                .saturating_add(gained)
-                .min(ICMP_ERROR_RATE * MILLI);
+        match self.last {
+            None => self.last = Some(now),
+            Some(last) => {
+                let elapsed_ns = now.saturating_duration_since(last).as_nanos();
+                let gained = elapsed_ns / MILLI_TOKEN_NS;
+                // `last` moves only by the time that was turned into tokens: calls closer together
+                // than one thousandth of a token (20 us) must not throw their time away.
+                if gained > 0 {
+                    let total = u128::from(self.milli_tokens) + gained;
+                    if total >= u128::from(ICMP_ERROR_RATE * MILLI) {
+                        self.milli_tokens = ICMP_ERROR_RATE * MILLI;
+                        self.last = Some(now);
+                    } else {
+                        // total is below the bucket size, so it and gained fit in 64 bits.
+                        self.milli_tokens = total as u64;
+                        self.last =
+                            Some(last + Duration::from_nanos((gained * MILLI_TOKEN_NS) as u64));
+                    }
+                }
+            }
         }
-        self.last = Some(now);
         if self.milli_tokens >= MILLI {
             self.milli_tokens -= MILLI;
             true
@@ -219,5 +230,38 @@ impl Ctx<'_> {
         if self.send_ipv4(source, PROTO_ICMP, &message[..len]) {
             bump(&mut self.counters.icmp_error_sent);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_bucket_gives_50_at_once_then_one_per_20_ms() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut bucket = ErrorBucket::new();
+        assert!((0..50).all(|_| bucket.take(t0)));
+        assert!(!bucket.take(t0));
+        assert!(!bucket.take(at(19)));
+        assert!(bucket.take(at(20)));
+        assert!(!bucket.take(at(20)));
+        // A long pause does not store more than the bucket.
+        assert!((0..50).all(|_| bucket.take(at(60_000))));
+        assert!(!bucket.take(at(60_000)));
+    }
+
+    #[test]
+    fn error_bucket_keeps_the_time_between_calls_closer_than_a_millisecond() {
+        let t0 = Instant::now();
+        let mut bucket = ErrorBucket::new();
+        assert!((0..50).all(|_| bucket.take(t0)));
+        // Calls every 5 us for 100 ms: 20 000 calls, none of them a millisecond after the last.
+        // The bucket earns 100 ms * 50 per second = 5 tokens; losing the fractions would earn none.
+        let allowed = (1..=20_000u64)
+            .filter(|n| bucket.take(t0 + Duration::from_micros(5 * n)))
+            .count();
+        assert_eq!(allowed, 5);
     }
 }

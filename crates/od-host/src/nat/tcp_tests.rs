@@ -515,12 +515,100 @@ fn syn_waits_for_the_connect_and_the_synack_has_the_documented_fields() {
     assert_eq!((again[0].seq, again[0].flags), (synack.seq, SYN | ACK));
     let c = rig.counters();
     assert_eq!((c.tcp_segments, c.tcp_opened, c.tcp_retransmits), (3, 1, 1));
+}
 
-    // A SYN-ACK is not repeated by a timer: nothing for 100 s.
+#[test]
+fn the_synack_is_retransmitted_by_the_l10_policy_and_given_up_after_39_seconds() {
+    let mut rig = Rig::new();
+    rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
+    let synack = rig.tcp_replies().remove(0);
     let t = rig.now;
-    rig.at(t, Duration::from_secs(100));
+    let ms = Duration::from_millis;
+    for (n, at) in [1u64, 3, 7, 15, 23, 31].into_iter().enumerate() {
+        rig.at(t, ms(at * 1000 - 1));
+        assert!(rig.replies().is_empty(), "no SYN-ACK before {at} s");
+        rig.at(t, ms(at * 1000));
+        let again = rig.tcp_replies();
+        assert_eq!(again.len(), 1, "SYN-ACK at {at} s");
+        assert_eq!(
+            (again[0].seq, again[0].ack, again[0].flags, again[0].mss),
+            (synack.seq, 1001, SYN | ACK, Some(1460))
+        );
+        assert_eq!(rig.counters().tcp_retransmits, n as u64 + 1);
+    }
+    rig.at(t, ms(38_999));
     assert!(rig.replies().is_empty());
+    assert_eq!((rig.flows(), rig.counters().tcp_giveups), (1, 0));
+    rig.at(t, ms(39_000));
+    let rst = rig.tcp_replies();
+    assert_eq!(rst.len(), 1);
+    assert_eq!(
+        (rst[0].flags, rst[0].seq, rst[0].ack),
+        (RST | ACK, synack.seq + 1, 1001)
+    );
+    let c = rig.counters();
+    assert_eq!(
+        (c.tcp_giveups, c.tcp_retransmits, c.tcp_idle_expired),
+        (1, 6, 0)
+    );
+    assert_eq!(rig.flows(), 0);
+    assert!(rig.stream(0).lock().unwrap().closed);
+}
+
+#[test]
+fn a_repeated_syn_answers_at_once_and_does_not_extend_the_synack_timer() {
+    let mut rig = Rig::new();
+    rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
+    let synack = rig.tcp_replies().remove(0);
+    let t = rig.now;
+    let ms = Duration::from_millis;
+    for at in [1u64, 2, 3, 7, 15, 23, 31] {
+        rig.at(t, ms(at * 1000));
+        if at == 2 {
+            // The guest repeats its SYN between two timer events: an immediate SYN-ACK.
+            rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
+        }
+        let out = rig.tcp_replies();
+        assert_eq!(out.len(), 1, "at {at} s");
+        assert_eq!((out[0].seq, out[0].flags), (synack.seq, SYN | ACK));
+    }
+    rig.at(t, ms(38_999));
+    assert!(rig.replies().is_empty());
+    rig.at(t, ms(39_000));
+    let rst = rig.tcp_replies();
+    assert_eq!(
+        (rst.len(), rst[0].flags),
+        (1, RST | ACK),
+        "the term is still 39 s"
+    );
+    let c = rig.counters();
+    // Six timer retransmissions and the one answer to the repeated SYN.
+    assert_eq!((c.tcp_giveups, c.tcp_retransmits), (1, 7));
+    assert_eq!(rig.flows(), 0);
+}
+
+#[test]
+fn an_opening_flow_lives_at_most_69_seconds_without_a_pause() {
+    // The connect takes 29.999 s, then the SYN-ACK gets its 39 s.
+    let mut rig = Rig::new();
+    rig.host.lock().unwrap().initial = Connect::Pending;
+    rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
+    let t = rig.now;
+    let ms = Duration::from_millis;
+    rig.stream(0).lock().unwrap().connect = Connect::Done;
+    rig.at(t, ms(29_999));
+    let synack = rig.tcp_replies();
+    assert_eq!((synack.len(), synack[0].flags), (1, SYN | ACK));
+    let t_synack = rig.now;
+    for at in [1u64, 3, 7, 15, 23, 31] {
+        rig.at(t_synack, ms(at * 1000));
+        rig.replies();
+    }
+    rig.at(t_synack, ms(38_999));
     assert_eq!(rig.flows(), 1);
+    rig.at(t_synack, ms(39_000));
+    assert_eq!(rig.flows(), 0);
+    assert_eq!(rig.counters().tcp_giveups, 1);
 }
 
 #[test]
@@ -794,6 +882,58 @@ fn odd_segments_inside_a_connection_do_no_harm() {
     // The flow still works.
     rig.guest(&mut c, ACK | PSH, b"ok");
     assert_eq!(rig.stream(0).lock().unwrap().written, b"ok");
+}
+
+#[test]
+fn an_empty_segment_outside_the_sequence_is_answered_with_one_ack() {
+    let mut rig = Rig::new();
+    let mut c = rig.open();
+    // A keep-alive or window probe: no data, sequence number one behind the next expected.
+    let mut probe = c.clone();
+    probe.g_seq -= 1;
+    rig.push(&probe.frame(ACK, &[]));
+    let r = rig.tcp_replies();
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        (r[0].flags, r[0].seq, r[0].ack, r[0].window),
+        (ACK, c.h_next, c.g_seq, 65_535)
+    );
+    assert_eq!(rig.counters().tcp_out_of_order_dropped, 0);
+    // A plain ACK at the expected number still gets no answer.
+    rig.guest(&mut c, ACK, &[]);
+    assert!(rig.replies().is_empty());
+}
+
+#[test]
+fn a_window_update_that_the_full_l3_queue_refused_is_sent_later() {
+    let mut rig = Rig::new();
+    let mut c = rig.open();
+    let stream = rig.stream(0);
+    stream.lock().unwrap().write_budget = 0;
+    let data = pattern(65_536);
+    for chunk in data.chunks(1024) {
+        rig.guest(&mut c, ACK | PSH, chunk);
+        rig.replies();
+    }
+    assert_eq!(rig.counters().tcp_zero_window, 1);
+    for _ in 0..256 {
+        rig.push(&arp_request_for_gateway());
+    }
+    stream.lock().unwrap().write_budget = usize::MAX;
+    rig.tick(Duration::from_millis(1));
+    assert_eq!(
+        rig.counters().drop_rx_queue_full,
+        0,
+        "no update is tried into a full queue"
+    );
+    let mut buf = [0u8; NET_MAX_FRAME];
+    for _ in 0..256 {
+        assert!(rig.b.poll_receive(&mut buf).is_some());
+    }
+    rig.tick(Duration::from_millis(1));
+    let r = rig.tcp_replies();
+    assert_eq!((r.len(), r[0].window), (1, 65_535));
+    assert_eq!(stream.lock().unwrap().written, data);
 }
 
 #[test]
@@ -1426,7 +1566,7 @@ fn a_closed_guest_window_is_probed_and_the_data_follows_when_it_opens() {
 // ---- Idle timeouts ----------------------------------------------------------------------------
 
 #[test]
-fn idle_limits_l11_for_established_half_closed_and_unfinished_flows() {
+fn idle_limits_l11_for_established_half_closed_opening_and_closing_flows() {
     let ms = Duration::from_millis;
     // Established: 7 440 s.
     let mut rig = Rig::new();
@@ -1442,26 +1582,63 @@ fn idle_limits_l11_for_established_half_closed_and_unfinished_flows() {
     );
     assert!(rig.stream(0).lock().unwrap().closed);
 
-    // Half-closed (the guest sent FIN): 240 s.
+    // Half-closed (one FIN, from either side) is established for RFC 5382: still 7 440 s.
+    for guest_closes in [true, false] {
+        let mut rig = Rig::new();
+        let mut c = rig.open();
+        if guest_closes {
+            rig.guest(&mut c, FIN | ACK, &[]);
+        } else {
+            rig.stream(0).lock().unwrap().eof = true;
+            rig.tick(Duration::from_millis(1));
+            let fin = rig.tcp_replies();
+            Rig::absorb(&mut c, &fin);
+            rig.guest(&mut c, ACK, &[]);
+        }
+        rig.replies();
+        let t = rig.now;
+        rig.at(t, ms(240_000));
+        assert_eq!(
+            rig.flows(),
+            1,
+            "alive after 240 s, guest_closes={guest_closes}"
+        );
+        rig.at(t, ms(7_439_999));
+        assert_eq!(rig.flows(), 1);
+        rig.at(t, ms(7_440_000));
+        assert_eq!((rig.flows(), rig.counters().tcp_idle_expired), (0, 1));
+    }
+
+    // The NIC takes no frames, so the L10 timer stands still (NETWORK.md section 11). Opening (SYN-ACK
+    // sent, ACK never received): 240 s, and the SYN-ACK is not repeated meanwhile.
+    let mut rig = Rig::new();
+    rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
+    let t = rig.now;
+    rig.at(t, ms(239_999));
+    assert_eq!(rig.flows(), 1);
+    rig.at(t, ms(240_000));
+    assert_eq!((rig.flows(), rig.counters().tcp_idle_expired), (0, 1));
+    let c = rig.counters();
+    assert_eq!((c.tcp_retransmits, c.tcp_giveups), (0, 0));
+    assert_eq!(
+        rig.replies().len(),
+        1,
+        "only the first SYN-ACK was ever queued"
+    );
+
+    // Closing (FIN from both sides, the last one not acknowledged and not taken by the NIC): 240 s.
     let mut rig = Rig::new();
     let mut c = rig.open();
     rig.guest(&mut c, FIN | ACK, &[]);
     rig.replies();
+    rig.stream(0).lock().unwrap().eof = true;
+    rig.tick(Duration::from_millis(1));
     let t = rig.now;
     rig.at(t, ms(239_999));
     assert_eq!(rig.flows(), 1);
     rig.at(t, ms(240_000));
     assert_eq!((rig.flows(), rig.counters().tcp_idle_expired), (0, 1));
-
-    // SYN-ACK sent, ACK never received: 240 s.
-    let mut rig = Rig::new();
-    rig.send_syn(SERVER, 40000, 80, 1000, &MSS_1460);
-    rig.replies();
-    let t = rig.now;
-    rig.at(t, ms(239_999));
-    assert_eq!(rig.flows(), 1);
-    rig.at(t, ms(240_000));
-    assert_eq!((rig.flows(), rig.counters().tcp_idle_expired), (0, 1));
+    assert_eq!(rig.counters().tcp_retransmits, 0);
 
     // Traffic in either direction postpones the expiry.
     let mut rig = Rig::new();

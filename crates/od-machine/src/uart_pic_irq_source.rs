@@ -25,11 +25,14 @@
 
 use crate::irq_source::BoardIrqSource;
 use crate::pit_pic_irq_source::PitPicIrqSource;
-use crate::{Pic8259Handle, Uart16550Handle};
+use crate::{Pic8259Handle, Uart16550Handle, UartPortSpec};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// The 8259 master input line the UART interrupt output is wired to (ISA IRQ 4, COM1).
-pub(crate) const UART_IRQ_LINE: u8 = 4;
+/// The 8259 master input line COM1's interrupt output is wired to (ISA IRQ 4). The source takes the
+/// line of its UART from [`Uart16550Handle::port_spec`] (S4-24f), so COM2 (IRQ3) uses the same code;
+/// COM1 behaves as before.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const UART_IRQ_LINE: u8 = UartPortSpec::COM1.irq_line;
 
 struct Inner {
     pit_pic: PitPicIrqSource,
@@ -81,7 +84,7 @@ impl UartPicIrqSource {
         let mut line = self.line();
         let level = inner.uart.interrupt_line();
         if level && !line.level {
-            inner.pic.raise_irq(UART_IRQ_LINE);
+            inner.pic.raise_irq(inner.uart.port_spec().irq_line);
             line.edges += 1;
         }
         line.level = level;

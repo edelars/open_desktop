@@ -89,7 +89,8 @@ impl TcpHost for SystemTcpHost {
         };
         if rc < 0 {
             let errno = last_errno();
-            if errno != libc::EINPROGRESS {
+            // An interrupted connect carries on in the kernel, like one in progress.
+            if errno != libc::EINPROGRESS && errno != libc::EINTR {
                 return Err(connect_error(errno));
             }
         }
