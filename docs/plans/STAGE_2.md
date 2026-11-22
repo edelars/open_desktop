@@ -430,6 +430,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-32a | Bare `D9 F0..FF`: FSIN, FCOS, FSINCOS, FPTAN, F2XM1, FYL2X, FYL2XP1, FPATAN, FSCALE, FXTRACT в ограниченном локальном профиле; модельная точность против Core i5-3210M | S2-31 |
 | [x] | S2-32b | `DF 20`/`DF 30` FBLD/FBSTP по [RAX]; 335 строк oracle побитово | S2-32a |
 | [x] | S2-32c | `D9 30` FNSTENV, `DD 30` FNSAVE, `DD 20` FRSTOR по [RAX]: образы 28/108 байт, политика FCS/FDS; 324 строки oracle побайтно | S2-32b |
+| [x] | S2-32d | `D9 20` FLDENV по [RAX]: образ 28 байт, теги по содержимому, политика FCS/FDS как у FRSTOR; 324 строки oracle побайтно | S2-32c |
 | [ ] | S2-33 | MMX и совместное состояние с x87 | S2-32 |
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
 | [x] | S2-34.1 | Lossless local-only Long64 x87+SSE snapshot transfer: 16 raw XMM registers and raw MXCSR; no instruction semantics or hardware claim | S2-28a |
@@ -5597,6 +5598,22 @@ pp.3-342–3-343 ([official PDF, Vol.2A p.3-342](https://cdrdv2-public.intel.com
   исключениями, ES/B и X-битом (отказ `Unsupported`); #NM (CR0.EM/TS) и #AC; допуск в наборе CPL0 и написания с `FWAIT`; точное FCS/FDS после
   выполненных инструкций (модель сохраняет 0000H, i5-3210M — реальные CS/DS); остаток S2-32a/S2-32b (денормалы, NaN, бесконечности, IE/ZE/DE,
   unmasked-исключения, stack fault, произвольная адресация и префиксы, `FPREM`/`FPREM1` вне среза S2-30cl/cm). JIT и native закрыты, CPUID-бит FPU не объявлен.
+
+#### S2-32d. Срез: FLDENV (2026-11-22, не закрывает задачу, чекбокс S2-32 не отмечен)
+
+- **Сделано.** `D9 20` FLDENV по `[RAX]` без префиксов в ограниченном локальном профиле `od-isa` (обратная операция FNSTENV, S2-32c): одно чтение
+  28 байт, загрузка FCW, FSW (с TOP), тег-слова, FIP/FDP (младшие 32 бита), FOP (11 бит), FCS/FDS; содержимое регистров стека не меняется.
+  Тег непустого слота выводится из содержимого регистра, пустой остаётся пустым (как FRSTOR). Селекторы — политика S2-32c и правило загрузки
+  FRSTOR (нулевой остаётся `None`, если был `None`); FLDENV освобождён от отказа D8..DF при представленных селекторах. Допуск как у FRSTOR:
+  текущее и загружаемое FCW из двенадцати полностью замаскированных, ES/B чисты (иначе `Unsupported` без следа); неканонический адрес — #GP(0) до
+  изменения состояния. Подробности и SDM (Vol. 2A, с. 3-358; Vol. 1 §8.1.8, §8.1.10, рис. 8-9) — [CPU_CONTRACT, Local S2-32d](../specs/CPU_CONTRACT.md#local-s2-32d-bounded-fldenv-d9-20-at-rax).
+- **Проверка.** `tests/s2_32d_x87_fldenv.rs` (7 тестов): 324 строки oracle Core i5-3210M (`FNINIT; FRSTOR a; FLDENV b; FNSTENV; FNSAVE; FNSTENV`)
+  побайтно в двух начальных состояниях селекторов (648 прогонов модели), теги по содержимому, загрузка и ширина полей, круг FNSTENV→FLDENV, отказы без
+  следа, #GP и неотображённый адрес, декодер и пара `9B`; `s2_32c_x87_env` (8), `s2_57_cpuid_windows` (19), `--lib long_decode` (431),
+  `--lib x87` (103), `s2_32_x87_transcend` (6), `s2_32b_x87_bcd` (3), `cargo fmt --all -- --check`, `git diff --check`. Отчёт — [S2_32D_X87_FLDENV](../reports/S2_32D_X87_FLDENV.md).
+- **Не сделано (остаток S2-32).** 16-битные образы (префикс `66`, m14byte) и образы реального режима; образы с незамаскированными исключениями, ES/B и X-битом
+  (отказ `Unsupported`; SDM доставляет #MF при следующей ждущей инструкции); #NM и #AC; допуск в наборе CPL0 и написания `FSTENV`/`FSAVE` с `FWAIT`; FCS/FDS после
+  выполненных инструкций, как у i5-3210M; остаток S2-32a/S2-32b. JIT и native закрыты, CPUID-бит FPU не объявлен.
 
 ### S2-33. MMX и aliasing с x87
 

@@ -47151,7 +47151,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         && (0xd8..=0xdf).contains(&instruction.opcode.byte)
         && !matches!(
             instruction.operation,
-            Operation::FnstenvRax | Operation::FnsaveRax | Operation::FrstorRax
+            Operation::FnstenvRax
+                | Operation::FnsaveRax
+                | Operation::FrstorRax
+                | Operation::FldenvRax
         )
         && state
             .x87
@@ -48514,6 +48517,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             | Operation::FnstenvRax
             | Operation::FnsaveRax
             | Operation::FrstorRax
+            | Operation::FldenvRax
             | Operation::FfreeSti { .. }
     ) && state.x87.is_none()
     {
@@ -49845,7 +49849,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // and the tag classification of the model are preflighted (see `bounded_x87_environment_admitted`).
     if matches!(
         instruction.operation,
-        Operation::FnstenvRax | Operation::FnsaveRax | Operation::FrstorRax
+        Operation::FnstenvRax | Operation::FnsaveRax | Operation::FrstorRax | Operation::FldenvRax
     ) && !bounded_x87_environment_admitted(state)
     {
         return Ok(StepOutcome::Unsupported {
@@ -50294,6 +50298,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FnstenvRax
         | Operation::FnsaveRax
         | Operation::FrstorRax
+        | Operation::FldenvRax
         | Operation::FistM32IntRax
         | Operation::FistpM32IntRax
         | Operation::FistpM64IntRax
@@ -53128,7 +53133,36 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             return report_memory_error(error);
         }
         let x87 = state.x87.as_mut().expect("FRSTOR state was prevalidated");
-        if !x87_restore_image(x87, &image) {
+        if !x87_restore_image(x87, &image, true) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if instruction.operation == Operation::FldenvRax {
+        // S2-32d: read the 28-byte environment, validate it (control word in the all-masked set,
+        // no ES or B bit) before any state change, then load it; the registers are not touched.
+        let address = state.gpr[Register::Rax as usize];
+        let last = match address.checked_add(27) {
+            Some(last) => last,
+            None => {
+                return Err(MemoryError::AddressOverflow {
+                    address,
+                    length: 28,
+                });
+            }
+        };
+        if !canonical(address) || !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        let mut image = [0_u8; 108];
+        if let Err(error) = memory.read(address, context, &mut image[..28]) {
+            return report_memory_error(error);
+        }
+        let x87 = state.x87.as_mut().expect("FLDENV state was prevalidated");
+        if !x87_restore_image(x87, &image, false) {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -64231,7 +64265,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FbstpM80Rax
         | Operation::FnstenvRax
         | Operation::FnsaveRax
-        | Operation::FrstorRax => {
+        | Operation::FrstorRax
+        | Operation::FldenvRax => {
             unreachable!("FST/FSTP m32fp/m64fp commits in its prevalidated store path")
         }
         Operation::FistM32IntRax
@@ -67643,13 +67678,14 @@ fn x87_save_image(x87: &X87State, with_registers: bool) -> [u8; 108] {
     image
 }
 
-/// S2-32c FRSTOR: load the 108-byte image into `x87`. Returns false, with `x87` untouched, when
+/// S2-32c FRSTOR (`with_registers`) and S2-32d FLDENV (only the first 28 bytes of `image` are meaningful,
+/// the register contents stay): load the image into `x87`. Returns false, with `x87` untouched, when
 /// the control word is not one of the twelve all-masked words or the status word has ES or B set.
 /// FIP and FDP take the low 32 bits (upper bits cleared), FOP 11 bits; a selector loads as
 /// `Some(value)`, except that a zero selector stays unrepresented when it was. A register whose
-/// image tag is empty stays empty, every other register is tagged from its contents; the
-/// registers are stored in ST order from the loaded TOP.
-fn x87_restore_image(x87: &mut X87State, image: &[u8; 108]) -> bool {
+/// image tag is empty stays empty, every other register is tagged from its contents (for FLDENV the
+/// contents already in the register); FRSTOR stores the registers in ST order from the loaded TOP.
+fn x87_restore_image(x87: &mut X87State, image: &[u8; 108], with_registers: bool) -> bool {
     let control_word = u16::from_le_bytes([image[0], image[1]]);
     let status_word = u16::from_le_bytes([image[4], image[5]]);
     if !X87_ALL_MASKED_CONTROL_WORDS.contains(&control_word) || status_word & 0x8080 != 0 {
@@ -67675,7 +67711,9 @@ fn x87_restore_image(x87: &mut X87State, image: &[u8; 108]) -> bool {
     let top = usize::from(x87.top());
     for logical in 0..8 {
         let physical = (top + logical) & 7;
-        x87.registers[physical].copy_from_slice(&image[28 + 10 * logical..38 + 10 * logical]);
+        if with_registers {
+            x87.registers[physical].copy_from_slice(&image[28 + 10 * logical..38 + 10 * logical]);
+        }
         let tag = if (tag_word >> (2 * physical)) & 3 == 3 {
             X87Tag::Empty
         } else {
