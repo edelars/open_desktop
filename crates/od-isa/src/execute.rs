@@ -12,8 +12,8 @@ use crate::long_decode::{
     SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
-    AccessContext, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory, InstructionMode,
-    MemoryError, PrivilegeLevel,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory,
+    InstructionMode, MemoryError, PrivilegeLevel,
 };
 use crate::mmx_int::{MmxIntKind, mmx_int_result, mmx_shift_result};
 use crate::msr::MsrProfile;
@@ -51318,7 +51318,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Ssse3Int { .. }
         | Operation::Sse41 { .. }
         // S2-39 (integer SSE2 remainder): the same local SSE state; CPL3 keeps its own profile list.
+        // MASKMOVDQU (`Sse2Maskmov`) needs the SSE state only.
         | Operation::Sse2Int { .. }
+        | Operation::Sse2Maskmov { .. }
         | Operation::Sse41Fp { .. }
         // S2-38 (logic and permute remainder): the same local SSE state; CPL3 keeps its own profile list.
         | Operation::SseLogicPermute { .. }
@@ -51336,6 +51338,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.sse.is_some() && !general_fp_closed(instruction.operation)
         }
         Operation::FisttpMemory { .. } => state.x87.is_some(),
+        // S2-39 (MOVQ2DQ, MOVDQ2Q): the XMM state and the MMX registers (the x87 data registers); CPL3 keeps
+        // its own profile list.
+        Operation::Sse2MmxMove { .. } => state.sse.is_some() && state.x87.is_some(),
         // S2-33: the MMX forms and EMMS work on the MMX registers, the physical x87 data registers, so they
         // need the local x87 state (not the SSE state); CPL3 keeps its own profile list (neither is in it).
         // S2-39: the integer MMX forms of two operands, the shifts by an immediate and MOVD/MOVQ likewise.
@@ -52312,6 +52317,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             | Operation::MmxShiftImmediate { .. }
             | Operation::MmxMovd { .. }
             | Operation::MmxMovq { .. }
+            | Operation::Sse2MmxMove { .. }
     ) {
         return step_mmx_operation(state, memory, context, &instruction, next_rip)
             .expect("an MMX operation");
@@ -52487,6 +52493,21 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             memory,
             context,
             (kind, xmm, operand, immediate),
+            instruction.opcode.byte,
+            next_rip,
+        );
+    }
+    if let Operation::Sse2Maskmov {
+        data,
+        mask,
+        memory: operand,
+    } = instruction.operation
+    {
+        return step_sse2_maskmov(
+            state,
+            memory,
+            context,
+            (data, mask, operand),
             instruction.opcode.byte,
             next_rip,
         );
@@ -63946,6 +63967,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Emms
         | Operation::Sse41 { .. }
         | Operation::Sse2Int { .. }
+        | Operation::Sse2Maskmov { .. }
+        | Operation::Sse2MmxMove { .. }
         | Operation::Sse41Fp { .. }
         | Operation::SseFpArith { .. }
         | Operation::SseFpMisc { .. }
@@ -71082,23 +71105,8 @@ fn step_sse2_int(
     opcode: u8,
     next_rip: u64,
 ) -> Result<StepOutcome, MemoryError> {
-    const CR0_EM: u64 = 1 << 2;
-    const CR0_TS: u64 = 1 << 3;
-    const CR4_OSFXSR: u64 = 1 << 9;
-    let fault = |vector| {
-        Ok(StepOutcome::Fault(ArchitecturalFault {
-            vector,
-            error_code: None,
-            linear_address: None,
-        }))
-    };
-    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
-        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
-    {
-        return fault(6);
-    }
-    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
-        return fault(7);
+    if let Some(outcome) = sse2_gate_fault(state) {
+        return Ok(outcome);
     }
     let length = kind.memory_bytes();
     let mut address = 0;
@@ -71143,7 +71151,7 @@ fn step_sse2_int(
     if kind.stores_to_rm() {
         let mut bytes = [0u8; 16];
         match kind {
-            Sse2IntKind::MovdqRegisterStore => bytes = source_xmm,
+            Sse2IntKind::MovdqRegisterStore | Sse2IntKind::Movnt128 => bytes = source_xmm,
             Sse2IntKind::MovqStore | Sse2IntKind::MovdStore | Sse2IntKind::MovqToGeneral => {
                 bytes[..8].copy_from_slice(&source_xmm[..8]);
             }
@@ -71226,6 +71234,154 @@ fn step_sse2_int(
     sse.xmm[usize::from(xmm)] = result;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+/// The CR0/CR4 gates of the legacy SSE2 forms of S2-39 (Intel SDM Vol. 2A Tables 2-18 and 2-21, Vol. 2B each
+/// instruction): #UD for CR0.EM = 1 or CR4.OSFXSR = 0 (wins), then #NM for CR0.TS = 1; both only on a state that
+/// carries the control registers.
+fn sse2_gate_fault(state: &LongModeState) -> Option<StepOutcome> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let fault = |vector| {
+        Some(StepOutcome::Fault(ArchitecturalFault {
+            vector,
+            error_code: None,
+            linear_address: None,
+        }))
+    };
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return fault(6);
+    }
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        return fault(7);
+    }
+    None
+}
+
+/// S2-39: MASKMOVDQU (`66 0F F7 /r`, Intel SDM Vol. 2B p. 4-1). After [`sse2_gate_fault`] the implicit operand
+/// `[rdi]` (`[edi]` with the `67` prefix; the default segment DS and its overrides have a zero base in 64-bit mode)
+/// gets the canonical check of its 16 bytes and the range check, with no alignment rule ("The memory location does not
+/// need to be aligned on a natural boundary"). The bytes of the data register whose mask byte has bit 7 set are then
+/// stored by one 16-byte write of the merged value (see below); a fault of any of the 16 bytes is taken whatever the
+/// mask, and then nothing is written. No flag, MXCSR or XMM register changes.
+fn step_sse2_maskmov(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    (data, mask, operand): (u8, u8, MemoryOperand),
+    opcode: u8,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    if let Some(outcome) = sse2_gate_fault(state) {
+        return Ok(outcome);
+    }
+    let address = match operand.linear_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(fault) => return Ok(StepOutcome::Fault(fault)),
+    };
+    if let Err(error) = operand.access_range_address_48(state, next_rip, 16) {
+        return report_memory_error(error);
+    }
+    // The alignment check of the physical oracle for this form is on 8 bytes (the 16-byte store is checked as two
+    // quadwords); #AC is not modeled, so a misaligned operand at CPL3 with RFLAGS.AC = 1 (and CR0.AM = 1 or CR0 not
+    // carried) is `Unsupported`, before any memory access, as in the other S2-39 forms.
+    if address & 7 != 0
+        && context.privilege == PrivilegeLevel::Ring3
+        && state.rflags & (1 << 18) != 0
+        && state.cr0.is_none_or(|cr0| cr0 & CR0_AM != 0)
+    {
+        return Ok(StepOutcome::Unsupported { opcode });
+    }
+    let sse = state
+        .sse
+        .as_ref()
+        .expect("MASKMOVDQU state was prevalidated");
+    let (bytes, selector) = (sse.xmm[usize::from(data)], sse.xmm[usize::from(mask)]);
+    // The physical oracle faults when any of the 16 bytes would fault, whatever the mask (a mask of zero included), and
+    // then writes nothing. One 16-byte write of the merged value gives that: the bytes of a partial mask are first read
+    // (the read stands for the write's page walk, so its fault is reported as a write fault), a full mask needs no read.
+    let mut merged = bytes;
+    if selector.iter().any(|byte| byte & 0x80 == 0) {
+        if let Err(error) = memory.read(address, context, &mut merged) {
+            return report_memory_error(write_intent(error));
+        }
+        for (lane, byte) in merged.iter_mut().enumerate() {
+            if selector[lane] & 0x80 != 0 {
+                *byte = bytes[lane];
+            }
+        }
+    }
+    if let Err(error) = memory.write(address, context, &merged) {
+        return report_memory_error(error);
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// A fault of the read that stands for the page walk of a write is reported as the fault of the write: the W/R bit of a
+/// page-fault error code is set and the access of a fixture mapping error is a write.
+fn write_intent(error: MemoryError) -> MemoryError {
+    match error {
+        MemoryError::Architectural(mut fault) if fault.vector == 14 => {
+            fault.error_code = fault.error_code.map(|code| code | 2);
+            MemoryError::Architectural(fault)
+        }
+        MemoryError::Unmapped { address, .. } => MemoryError::Unmapped {
+            address,
+            access: AccessKind::Write,
+        },
+        MemoryError::PermissionDenied { address, .. } => MemoryError::PermissionDenied {
+            address,
+            access: AccessKind::Write,
+        },
+        error => error,
+    }
+}
+
+/// S2-39: MOVQ2DQ (`F3 0F D6 /r`, Intel SDM Vol. 2B p. 4-102) and MOVDQ2Q (`F2 0F D6 /r`, p. 4-58). `#UD` for CR0.EM = 1
+/// or CR4.OSFXSR = 0, then the MMX entry checks ([`mmx_entry_fault`]: `#NM` for CR0.TS = 1 and the pending x87
+/// exception, which the SDM lists as `#MF` for both instructions). Then the x87 to MMX transition (TOP = 0, tag word all
+/// valid) and the move of the low quadword: MOVQ2DQ zero-extends MMn into the XMM register, MOVDQ2Q writes MMn with
+/// 0xFFFF in bits 79:64 as every MMX write does. No flag or MXCSR bit changes.
+fn step_sse2_mmx_move(
+    state: &mut LongModeState,
+    (to_xmm, xmm, mm): (bool, u8, u8),
+    opcode: u8,
+    next_rip: u64,
+) -> StepOutcome {
+    const CR0_EM: u64 = 1 << 2;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        return StepOutcome::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        });
+    }
+    if let Some(outcome) = mmx_entry_fault(state, opcode) {
+        return outcome;
+    }
+    let x87 = state.x87.as_mut().expect("MMX state was prevalidated");
+    let sse = state.sse.as_mut().expect("SSE state was prevalidated");
+    if to_xmm {
+        let value = x87.mmx_register(mm).expect("the decoder gives MM0..MM7");
+        x87.enter_mmx_state();
+        let slot = &mut sse.xmm[usize::from(xmm)];
+        *slot = [0; 16];
+        slot[..8].copy_from_slice(&value);
+    } else {
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&sse.xmm[usize::from(xmm)][..8]);
+        x87.enter_mmx_state();
+        x87.write_mmx_register(mm, value);
+    }
+    state.rip = next_rip;
+    StepOutcome::Advanced
 }
 
 fn fault_with_code(vector: u8, error_code: u32) -> Result<StepOutcome, MemoryError> {
@@ -71650,6 +71806,13 @@ fn step_mmx_operation(
             opcode,
             next_rip,
         ),
+        // S2-39: MOVQ2DQ and MOVDQ2Q work on the MMX registers and the XMM registers.
+        Operation::Sse2MmxMove { to_xmm, xmm, mm } => Ok(step_sse2_mmx_move(
+            state,
+            (to_xmm, xmm, mm),
+            opcode,
+            next_rip,
+        )),
         Operation::Emms => Ok(step_emms(state, opcode, next_rip)),
         _ => return None,
     })
@@ -71676,6 +71839,7 @@ fn step_cpl0_mmx(
             | Operation::MmxMovd { .. }
             | Operation::MmxMovq { .. }
             | Operation::MmxSsse3 { .. }
+            | Operation::Sse2MmxMove { .. }
             | Operation::Emms
     ) {
         return None;
