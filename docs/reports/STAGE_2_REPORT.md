@@ -24671,6 +24671,60 @@ completed instructions), CR0.EM/TS on the physical machine (user space cannot se
 ones, SDM and unit tests), CPL3 of the set, MMX conversions in the set, a boot, the JIT, CPUID gating (S2-57).
 Parent S2-39 remains open.
 
+## S2-39p — integer SSE2 remainder at CPL0 of the set
+
+Code (`sse2_int.rs` new, `long_decode.rs`, `execute.rs`): a new decoder operation `Operation::Sse2Int { kind, xmm, operand, immediate }`
+(`decode_sse2_int`, tried by `decode` after the profile decoder and every other general decoder answered `Unsupported`/`None`; the
+narrow profile still claims the forms it claimed, so the plain `step`, `step_cpl3_xmm` and the CPL3 profile are unchanged) and one
+executor `step_sse2_int`, admitted wherever `state.sse` exists (the FP member of the CPL0 set at CPL0 and the bare run with SSE state;
+the FP-init CR0/CR4 pair and CPL3 refuse it). The executor has the gates of `step_sse41`: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, `#NM`
+for CR0.TS = 1, before any operand access, then the canonical check, `#GP(0)` for a 16-byte operand that is not 16-byte aligned (exception
+type 4; the 2-, 4- and 8-byte operands of the moves have no alignment rule), the range check, the access. Forms (Intel SDM Vol. 2B, pages
+4-54 MOVD/MOVQ, 4-72..4-83 MOVHLPS/MOVHPD/MOVHPS/MOVLHPS/MOVLPD/MOVLPS, 4-99 MOVQ, 4-183..4-196 PACK*, 4-201..4-208 PADD*, 4-220 PAND,
+4-223 PANDN, 4-227 PAVG, 4-245 PCMPEQ, 4-258 PCMPGT, 4-289 PEXTRW, 4-308 PINSRW, 4-313 PMADDWD, 4-316..4-341 PMAX/PMIN, 4-379 PMULHUW,
+4-383 PMULHW, 4-391 PMULLW, 4-395 PMULUDQ, 4-411 POR, 4-418 PSADBW, 4-426..4-433 PSHUFD/PSHUFHW/PSHUFLW, 4-443 PSLL, 4-455 PSRA,
+4-467 PSRL, 4-479..4-494 PSUB*, 4-502 PUNPCK*, 4-530 PXOR): 57 packed forms of `66 0F xx /r` with an XMM or m128 source (PADDB/W/D/Q,
+PSUBB/W/D/Q, PADDSB/W, PADDUSB/W, PSUBSB/W, PSUBUSB/W, PAND, PANDN, POR, PXOR, PCMPEQB/W/D, PCMPGTB/W/D, PMULLW, PMULHW, PMULHUW,
+PMADDWD, PMULUDQ, PSADBW, PAVGB/W, PMAXUB, PMINUB, PMAXSW, PMINSW, PUNPCK{L,H}{BW,WD,DQ,QDQ}, PACKSSWB, PACKUSWB, PACKSSDW, and
+PSLLW/D/Q, PSRLW/D/Q, PSRAW/D by the low quadword of an XMM or m128 count), PSHUFD (`66`), PSHUFHW (`F3`), PSHUFLW (`F2`) with imm8,
+MOVD/MOVQ xmm, r/m (`66 [REX.W] 0F 6E`), MOVD/MOVQ r/m, xmm (`66 [REX.W] 0F 7E`), MOVQ xmm, xmm/m64 (`F3 0F 7E`), MOVQ xmm/m64, xmm
+(`66 0F D6`), MOVLPS/MOVLPD/MOVHPS/MOVHPD loads (`0F/66 0F 12, 16`) and stores (`0F/66 0F 13, 17`), MOVHLPS and MOVLHPS (`0F 12/16`
+register), PEXTRW r32, xmm, imm8 (`66 0F C5`), PINSRW xmm, r32/m16, imm8 (`66 0F C4`), the register forms of MOVDQU (`F3 0F 6F/7F`) and
+MOVDQA (`66 0F 7F`; the memory forms are the S2-34 raw moves). Undefined encodings are `#UD` at decode time: LOCK on any of them, PEXTRW with
+a memory operand, the register form of `0F 13/17` and of `66 0F 12/16` (the physical oracle gives `SIGILL` for all of them). Refused
+(`Unsupported`, nothing changes), as in S2-54/S2-55: FS/GS overrides, repeated prefixes, `66` together with `F2`/`F3`, the wrong mandatory
+prefix. The decoder reads the ModRM byte only for an opcode it owns (a truncated encoding of another opcode keeps its `Unsupported`).
+
+Tests (all passed): the new `s2_39_int_sse2` (23): every packed form x 4 register pairs x 10 operand patterns and in 5 addressing forms
+(`[rax]`, `[rax+disp8]`, RIP-relative, SIB, `67`) against a reference written in the test from the SDM definitions on wide integers; 48 forms
+whose register form the plain `step` already retires (narrow profile) equal to it in the memory form; the 8 shifts x 18 counts x 4 values
+(including counts above the lane width, in the high quadword, `u64::MAX`); hand-computed values (saturation, PMULHW 0x8000*0x8000, PMADDWD
+overflow, PSADBW, PACK*, PUNPCK*, PMULUDQ, PSRAW by 20); PSHUFD/PSHUFHW/PSHUFLW with all 256 immediates in register and memory form;
+misalignment (7 offsets, all forms), the backend error, non-canonical bases (`#GP`, `#SS` for RBP), the order alignment, range, gates;
+the five gate combinations and the CR4.OSXMMEXCPT independence for 22 forms; the moves (widths, zero extension, REX.R/B, unaligned addresses,
+all 256 imm8 of PEXTRW and PINSRW); `#UD` and refused encodings; the set without the FP member; set equal to the plain `step`; one 8-form
+program. New decoder unit test (`long_decode`, 1). `cpl3_profile_set` (CPL3 refusal list +9 forms), `cpl0_profile_set` (comment only),
+`s2_34_sse_moves_memory` (the three register forms of MOVDQU/MOVDQA left its refusal list) and `s2_39_mmx` (F3 0F 70, F3 0F 7E, F3 0F 6F/7F
+register forms left the list of unclaimed prefixes) were adjusted. Suites: `od-isa` 36 binaries, 6857 passed, 0 failed; `od-jit` 521;
+`od-machine --lib` filtered (fp linux_direct s4_38) 452 passed, 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
+
+Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_int_sse2_oracle/` in the ignored area:
+`gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`, `summary.py`, `tags.py`; derived from the
+S2-55 slice A oracle, the local side runs each case as one instruction in the CPL0 set with the FP member): 46381 lines (46157 distinct case
+names; 224 lines repeat a name with another seed), byte for byte; two runs of the hardware side are identical. Result: 44732 equal (33061
+retirements, 9282 `SIGSEGV/SI_KERNEL` (#GP), 394 ACCERR, 783 MAPERR, 804 `SIGBUS` (#SS), 408 `SIGILL`), 1192 refused by the model (FS/GS
+overrides, repeated prefixes, `66` with `F2`/`F3`, the wrong mandatory prefix of an opcode, LOCK on forms owned by S2-34 and on the MMX forms), 81 range
+overflow of the shared access check (`AddressOverflow`, as in S2-54/S2-55), 152 no-prefix cases of the same opcodes excluded (MMX
+instructions; the local harness does not seed the x87 registers like the physical image, 112 of them equal), 0 other differences.
+The CPL3 process of the oracle cannot show the CR0.EM/TS and CR4.OSFXSR gates and does not model `#AC` (the set runs at CPL0, no alignment-check
+cases of the 2/4/8-byte forms).
+
+Not checked: the gates against the SDM PDF and the hardware (`#UD`-over-`#NM` order and the CR4.OSFXSR = 0 `#UD` are from memory, as in S2-39m),
+a Windows or Linux boot, the JIT, the full suite. Not covered: the forms that keep their refusals above; the memory forms of
+PSHUFLW/PINSRW/MOVLPD/MOVHPD/PMINUB/PCMPEQB/MOVD (xmm, m) in the addressing forms the narrow profile decoder claims still use their
+`step_cpl3_xmm` handler; MMX, MASKMOVDQU, MOVNTDQ, MOVDQ2Q/MOVQ2DQ, PSLLDQ/PSRLDQ with a memory operand (they have none), CPL3. The
+interpreter does not gate on CPUID and declares no bits (S2-57). Parent S2-39 remains open.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64
