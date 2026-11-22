@@ -643,6 +643,7 @@ fn access_pg32_internal(
         request.linear,
         request.operation,
         committed_write,
+        None,
         mmio,
         &mut compare_replace_entry32,
         |access, committed_write| {

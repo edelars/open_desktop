@@ -594,3 +594,91 @@ fn an_operand_that_crosses_a_page_is_refused_before_any_walk() {
     }
     assert_eq!([get(&memory, PD), get(&memory, PT)], before);
 }
+
+#[test]
+fn a_fetch_walks_as_a_fetch_and_is_served_from_ram_only() {
+    let (memory, config) = setup();
+    put(&memory, DATA, 0x1122_3344_5566_7788);
+    // RAM: the byte, A on the PDE and the PTE, no D.
+    let report = access_pae_ram(
+        &memory,
+        &config,
+        request(
+            PaeOperandOperation::Fetch,
+            page(0) + 1,
+            PrivilegeLevel::Ring0,
+        ),
+        |_| {},
+    );
+    assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Fetched(0x77)));
+    assert_eq!(get(&memory, PT) & (ACCESSED | DIRTY), ACCESSED);
+    // MMIO and ROM: an instruction fetch reaches no device, even with a dispatch.
+    for (linear, kind) in [
+        (page(1), MemoryRegionKind::Mmio),
+        (page(2), MemoryRegionKind::Rom),
+    ] {
+        let report = access_pae_with_mmio(
+            &memory,
+            &config,
+            request(PaeOperandOperation::Fetch, linear, PrivilegeLevel::Ring0),
+            |_| {},
+            |_, _, _| panic!("a fetch must not reach a device"),
+        );
+        assert!(
+            matches!(
+                report.outcome,
+                Err(TrackedAccessError::OperandPhysical {
+                    source: MemoryAccessError::UnreadableRegion(found),
+                    ..
+                }) if found == kind
+            ),
+            "{kind:?}: {:?}",
+            report.outcome
+        );
+    }
+}
+
+#[test]
+fn the_windows_of_a_set_loop_limit_what_the_dispatch_serves() {
+    let (memory, config) = setup();
+    let calls = std::cell::Cell::new(0);
+    let access = |windows: &[MmioWindow], linear, operation| {
+        access_pae_with_mmio_windows(
+            &memory,
+            &config,
+            request(operation, linear, PrivilegeLevel::Ring0),
+            |_| {},
+            windows,
+            |_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(7)
+            },
+        )
+    };
+    // The operand is wholly inside a window: served. Partly outside, or outside: the typed error of
+    // an access without a dispatch (a read: UnreadableRegion; a write: DeviceUnavailable).
+    let inside = [(MMIO_AT, 0x1000)];
+    let tail = [(MMIO_AT + 0x10, 0x1000)];
+    let around = [(MMIO_AT + 4, 4)];
+    assert_eq!(
+        access(&inside, page(1), READ4).outcome,
+        Ok(TrackedAccessOutcome::Read(7))
+    );
+    assert!(matches!(
+        access(&tail, page(1), READ4).outcome,
+        Err(TrackedAccessError::OperandPhysical { .. })
+    ));
+    assert!(matches!(
+        access(&around, page(1) + 2, READ4).outcome,
+        Err(TrackedAccessError::OperandPhysical { .. })
+    ));
+    assert!(matches!(
+        access(&tail, page(1), write(AccessWidth::Dword, 1)).outcome,
+        Err(TrackedAccessError::DeviceUnavailable { .. })
+    ));
+    assert_eq!(
+        access(&inside, page(1), write(AccessWidth::Dword, 1)).outcome,
+        Ok(TrackedAccessOutcome::Written)
+    );
+    assert_eq!(calls.get(), 2);
+}

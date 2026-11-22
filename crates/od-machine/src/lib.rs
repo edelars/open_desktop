@@ -52,6 +52,7 @@ mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
 mod paged_memory_adapter;
+mod paged_pae_adapter;
 mod paged_pio_step;
 mod paged_probe;
 mod paged_pump_backend;
@@ -345,6 +346,7 @@ pub use paged_memory_adapter::{
     step_paged_mov_word_read_cross_page_fetch, step_paged_sti, with_paged_cpl0_set_memory,
     with_paged_mov_dword_memory, with_paged_mov_memory, with_paged_mov_store_memory,
 };
+pub use paged_pae_adapter::PagedPaeMemoryAdapter;
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,

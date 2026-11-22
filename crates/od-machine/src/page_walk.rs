@@ -1846,6 +1846,23 @@ fn locate_atomic_target(
     }
 }
 
+/// Whether the MMIO windows of a set-loop access serve an operand of `width` bytes at `physical`:
+/// none given means every MMIO region is served; otherwise the operand must lie wholly inside one
+/// window (it may end exactly at the window's end).
+pub(crate) fn mmio_window_serves(
+    mmio_windows: Option<&[MmioWindow]>,
+    physical: GuestPhysicalAddress,
+    width: u8,
+) -> bool {
+    mmio_windows.is_none_or(|windows| {
+        windows.iter().any(|&(base, size)| {
+            physical.get() >= base
+                && u128::from(physical.get()) + u128::from(width)
+                    <= u128::from(base) + u128::from(size)
+        })
+    })
+}
+
 /// The tracked access. `mmio_windows`, when set, limits the MMIO the dispatch serves to the
 /// physical ranges `(base, size)` it lists: an operand in any other MMIO region takes the same typed
 /// error as without a dispatch, before the dirty bit or the device is touched (S4-38L9s; several
@@ -1964,13 +1981,7 @@ fn access_long64_4k_internal_windowed(
     };
     let _ = range;
 
-    let served = mmio_windows.is_none_or(|windows| {
-        windows.iter().any(|&(base, size)| {
-            physical.get() >= base
-                && u128::from(physical.get()) + u128::from(width)
-                    <= u128::from(base) + u128::from(size)
-        })
-    });
+    let served = mmio_window_serves(mmio_windows, physical, width);
     if is_mmio
         && (mmio.is_none()
             || !served

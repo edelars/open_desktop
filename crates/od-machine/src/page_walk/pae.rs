@@ -609,6 +609,11 @@ pub fn translate_pae_ram(
 pub enum PaeOperandOperation {
     /// A read of `width` bytes (the walk of a read: accessed bits only).
     Read { width: AccessWidth },
+    /// The fetch of one instruction byte (S2-25l): the walk of a fetch (accessed bits, the `XD` check and
+    /// the `I/D` bit of its error code), then one byte of a RAM or framebuffer region
+    /// ([`TrackedAccessOutcome::Fetched`]). An instruction fetch reaches no device: an MMIO byte is refused
+    /// like an MMIO read, a ROM byte, a reserved range and a hole like any other operand.
+    Fetch,
     /// The write-intent read of a read-modify-write destination: the walk of a write (the write
     /// rights and the page-fault error code of a write) without the dirty bit, then the read. RAM
     /// only: an MMIO destination is refused before any device is reached.
@@ -621,6 +626,7 @@ pub enum PaeOperandOperation {
 impl PaeOperandOperation {
     fn ram_operation(self) -> RamAccessOperation {
         match self {
+            Self::Fetch => RamAccessOperation::Fetch,
             Self::Read { width } => RamAccessOperation::Read { width },
             Self::ReadForWrite { width } => RamAccessOperation::ReadForWrite { width },
             Self::Write { width, value } => RamAccessOperation::Write { width, value },
@@ -647,7 +653,7 @@ pub fn access_pae_ram(
     request: PaeAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
 ) -> TrackedAccessReport {
-    access_pae_internal(memory, paging, request, &mut committed_write, None)
+    access_pae_internal(memory, paging, request, &mut committed_write, None, None)
 }
 
 /// The operand access of PAE paging with the device dispatch of the physical address: the PAE walk
@@ -673,6 +679,29 @@ pub(crate) fn access_pae_with_mmio(
         paging,
         request,
         &mut committed_write,
+        None,
+        Some(&mut mmio),
+    )
+}
+
+/// [`access_pae_with_mmio`] limited to the physical ranges `windows` name (S2-25l), as the set loop's
+/// 4-level access is: an MMIO operand that is not wholly inside one window is the typed error of the
+/// access without a dispatch (`DeviceUnavailable` for a write, `OperandPhysical` with
+/// `UnreadableRegion(Mmio)` for a read), before any device is reached and without the dirty bit.
+pub(crate) fn access_pae_with_mmio_windows(
+    memory: &PhysicalMemory,
+    paging: &PaeProbeConfig,
+    request: PaeAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+    windows: &[MmioWindow],
+    mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
+) -> TrackedAccessReport {
+    access_pae_internal(
+        memory,
+        paging,
+        request,
+        &mut committed_write,
+        Some(windows),
         Some(&mut mmio),
     )
 }
@@ -682,6 +711,7 @@ fn access_pae_internal(
     paging: &PaeProbeConfig,
     request: PaeAccessRequest,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    mmio_windows: Option<&[MmioWindow]>,
     mmio: Option<&mut MmioDispatch<'_>>,
 ) -> TrackedAccessReport {
     access_operand_with_walk(
@@ -689,6 +719,7 @@ fn access_pae_internal(
         request.linear,
         request.operation,
         committed_write,
+        mmio_windows,
         mmio,
         &mut compare_replace_table_entry,
         |access, committed_write| {
@@ -716,6 +747,7 @@ pub(super) fn access_operand_with_walk(
     linear: u32,
     operation: PaeOperandOperation,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    mmio_windows: Option<&[MmioWindow]>,
     mut mmio: Option<&mut MmioDispatch<'_>>,
     table_writer: &mut TrackedTableWriter<'_>,
     walk: impl FnOnce(AccessKind, &mut dyn FnMut(GuestPhysicalRange)) -> WalkResult,
@@ -756,8 +788,11 @@ pub(super) fn access_operand_with_walk(
         return fail(operand_error(source), trace, ad_updates, ad_update_count);
     }
     let is_mmio = match memory.locate_region_kind(physical, u64::from(width)) {
-        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => false,
+        Ok(MemoryRegionKind::Ram) => false,
         Ok(MemoryRegionKind::Mmio) => true,
+        // As in the 4-level access: data behaves like RAM (the region itself suppresses the
+        // committed-write callback); an instruction fetch from the framebuffer is a backend error.
+        Ok(MemoryRegionKind::Framebuffer) if operation != RamAccessOperation::Fetch => false,
         Ok(kind) => {
             let source = if access == AccessKind::Write {
                 MemoryAccessError::ReadOnlyRegion(kind)
@@ -768,7 +803,16 @@ pub(super) fn access_operand_with_walk(
         }
         Err(source) => return fail(operand_error(source), trace, ad_updates, ad_update_count),
     };
-    if is_mmio && (mmio.is_none() || matches!(operation, RamAccessOperation::ReadForWrite { .. })) {
+    // The windows of a set-loop access limit what the dispatch serves (none: every MMIO region).
+    let served = mmio_window_serves(mmio_windows, physical, width);
+    if is_mmio
+        && (mmio.is_none()
+            || !served
+            || matches!(
+                operation,
+                RamAccessOperation::ReadForWrite { .. } | RamAccessOperation::Fetch
+            ))
+    {
         let error = if access == AccessKind::Write {
             TrackedAccessError::DeviceUnavailable { address: physical }
         } else {
@@ -820,6 +864,11 @@ pub(super) fn access_operand_with_walk(
         }
     } else if is_mmio {
         dispatch(&mut mmio, operation).map(TrackedAccessOutcome::Read)
+    } else if operation == RamAccessOperation::Fetch {
+        memory
+            .load_u8(physical)
+            .map(TrackedAccessOutcome::Fetched)
+            .map_err(operand_error)
     } else {
         let mut bytes = [0u8; 8];
         memory

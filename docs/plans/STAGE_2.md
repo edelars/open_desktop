@@ -15522,6 +15522,22 @@ walk (`DataSegmentReadOnly`, `#GP(0)`). Known limitation: in `od-isa` the A/D bi
 bytes are written, so a store that changes the PTE mapping its own page gets A|D added to the value written. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25k--operand-access-through-pae-paging-bounded-slice).
 
+#### S2-25l — PAE adapter and the long-mode loops' refusal of a PAE state
+
+**Статус:** bounded slice (`od-machine`: `paged_pae_adapter.rs`, `page_walk/pae.rs`; `od-host`: test) after the acceptance of the parent
+S2-25 (2026-11-21); the slice itself is not marked, the parent checkbox is not touched.
+
+`PagedPaeMemoryAdapter`: `GuestMemory` over the PAE walk (instruction byte, loads and stores of 1/2/4/8 bytes, page-crossing operands byte by byte,
+write-intent read inside one page) with the MMIO dispatch of the set loop (windows), of the whole bus, or none. Sibling of `PagedMovMemoryAdapter`,
+not a mode of it: `Long64ProbeConfig` requires LME and LMA, and a PAE mode inside that adapter would leave about twenty four-level walk sites to guard.
+Locked operations, CMPXCHG16B, MFENCE, 16-byte operands, descriptor-table accesses and addresses above 4 GiB are typed refusals before any walk.
+Host loop, JIT and the CPL0 set loop: **explicit refusal**, not execution (they run Long64 code over a 4-level snapshot; a PAE vCPU is a 32-bit protected-mode one):
+`Long64ProbeConfig::from_cpu_state` gives `RequiredBits { EFER, LME | LMA }` for a PAE state, surfaced as `Rejected(Configuration)` / `PagedHostLoopExit::Interpreter`,
+with no fetch, walk, A/D bit or retirement. Checked by a differential against `ProtectedCpu` on identical tables (31 scenarios, 14 byte-equal images), MMIO tests and the
+refusal tests; no hardware oracle, no CPUID bit declared. Not done: an interpreter that drives the adapter, the fetch cache/vector/descriptor/locked paths over PAE,
+a page-crossing RMW destination, 32-bit paging in od-machine, CPUID declaration of PSE-36 and the other bits (PAE is declared since S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25l--pae-adapter-guestmemory-over-the-pae-walk-and-the-explicit-refusal-of-the-long-mode-loops-bounded-slice).
+
 #### S2-25m — 32-bit paging walk in od-machine
 
 **Статус:** bounded slice (`od-machine`: `page_walk/pg32.rs`, `bus.rs`, `pg32_fetch_view.rs`, `pg32_operand_access.rs`) after the
