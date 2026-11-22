@@ -17,6 +17,7 @@ use crate::{
     VirtualClockHandle,
 };
 
+mod hid;
 mod slot_commands;
 mod transfers;
 

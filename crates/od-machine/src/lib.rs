@@ -535,9 +535,9 @@ pub use physical_memory::{
 pub use virtual_clock::{VirtualClock, VirtualClockError, VirtualClockHandle};
 
 pub use xhci::{
-    ControlResponse, HseCause, InterruptStatus, InvalidPort, UsbDevice, XHCI_INTX_GSI,
-    XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT, XHCI_USB_PORT_RESET_NS, XhciConfig,
-    XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
+    ControlResponse, HidDevices, HidHandle, HseCause, InputEvent, InputQueueFull, InterruptStatus,
+    InvalidPort, UsbDevice, XHCI_INTX_GSI, XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES, XHCI_PCI_SLOT,
+    XHCI_USB_PORT_RESET_NS, XhciConfig, XhciDevice, XhciHandle, XhciPciFunction, XhciServiceReport,
 };
 
 pub use uart_rx_events::{
