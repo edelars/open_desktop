@@ -11,15 +11,16 @@ use od_machine::{NET_MAX_FRAME, NetBackend};
 
 use super::NatBackend;
 use super::frame::{GATEWAY_MAC, GUEST_IP, Policy};
+use super::tcp_tests::{FakeHost, scripted_host};
 use super::test_frames::{GUEST_MAC, IP, L4, ref_checksum};
 
 /// A backend whose guest may reach the host loopback (tests only).
 pub fn io_backend() -> NatBackend {
-    NatBackend::with_policy(
-        Policy::new(GUEST_MAC)
-            .expect("the test MAC is valid")
-            .allow_loopback_for_tests(),
-    )
+    let policy = Policy::new(GUEST_MAC)
+        .expect("the test MAC is valid")
+        .allow_loopback_for_tests();
+    // TCP goes to the scripted host: these tests have no TCP.
+    NatBackend::with_policy_and_tcp_host(policy, Box::new(FakeHost(scripted_host())))
 }
 
 /// Every frame the guest can take now.
@@ -38,7 +39,7 @@ pub fn pump_for(backend: &mut NatBackend, count: usize) -> Vec<Vec<u8>> {
     let started = Instant::now();
     let mut frames = Vec::new();
     while frames.len() < count && started.elapsed() < Duration::from_secs(2) {
-        backend.poll_io();
+        backend.service_at(Instant::now());
         frames.extend(drain(backend));
         if frames.len() < count {
             std::thread::sleep(Duration::from_millis(2));
@@ -52,7 +53,7 @@ pub fn pump_at(backend: &mut NatBackend, now: Instant, count: usize) -> Vec<Vec<
     let started = Instant::now();
     let mut frames = Vec::new();
     while frames.len() < count && started.elapsed() < Duration::from_secs(2) {
-        backend.poll_io_at(now);
+        backend.service_at(now);
         frames.extend(drain(backend));
         if frames.len() < count {
             std::thread::sleep(Duration::from_millis(2));
@@ -67,7 +68,7 @@ pub fn pump_quiet(backend: &mut NatBackend, window: Duration) -> Vec<Vec<u8>> {
     let started = Instant::now();
     let mut frames = Vec::new();
     while started.elapsed() < window {
-        backend.poll_io();
+        backend.service_at(Instant::now());
         frames.extend(drain(backend));
         std::thread::sleep(Duration::from_millis(2));
     }

@@ -80,6 +80,7 @@ pub struct NetCounters {
     pub dns_formerr: u64,
     pub dns_dropped_busy: u64,
     // Transport.
+    pub tcp_segments: u64,
     pub tcp_opened: u64,
     pub tcp_refused: u64,
     pub tcp_unreachable: u64,

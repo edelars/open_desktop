@@ -71,8 +71,10 @@ enum od_display_profile {
      * generation is then 1 and the frame equals bars_64x48_seed0.raw. */
     OD_DISPLAY_PROFILE_STAGE10_PROBE = 2,
     /* TEST-ONLY. Two screens (DISPLAY_DEVICE.md 16.2). Screen 0 is the profile-1
-     * bars frame; screen 1 is a 32x24 BGRX8888 checkerboard (8x8 cells, black
-     * at cell (0,0)) programmed through its mirror registers at create. */
+     * bars frame; screen 1 is the 80x60 BGRX8888 `checker` pattern, seed 0x204080
+     * (stride 320, tests/fixtures/guest/stage10/checker_80x60_seed0x204080.raw),
+     * programmed through its mirror registers at create. One of the two
+     * test-only profiles (1 and 4); see DISPLAY_HOST_ABI_V1.md rule 0. */
     OD_DISPLAY_PROFILE_TWO_SCREENS_TEST = 4
 };
 

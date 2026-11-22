@@ -250,7 +250,8 @@ pub enum MemoryAccessError {
         first: GuestPhysicalRange,
         second: GuestPhysicalRange,
     },
-    /// A map may contain at most one `Framebuffer` region.
+    /// A map may contain at most two `Framebuffer` regions, one per screen (DISPLAY_DEVICE.md 16.3);
+    /// a third one is rejected before any allocation.
     MultipleFramebufferRegions,
     /// A `Framebuffer` region must start and end on 4 KiB boundaries and be
     /// at most 36 MiB long.

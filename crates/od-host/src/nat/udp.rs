@@ -11,16 +11,18 @@
 //!
 //! Counters. The fate of a datagram handled by [`NatBackend::process_pending_at`] is exactly one of
 //! `udp_forwarded`, `drop_flow_limit_udp`, `drop_host_resource`, `udp_unreachable`, `udp_refused`
-//! or `gw_port_unreachable`; the last three count an ICMP error that was queued for the guest. When
-//! the error is rate limited (L15) the fate is `icmp_error_suppressed`, when the L3 queue is full
-//! it is `drop_rx_queue_full`. A host error found later by [`NatBackend::poll_io`] (a refusal that
-//! the kernel reports on the next read) is counted the same way but belongs to no new frame.
+//! or `gw_port_unreachable`. The last three count the situation; the ICMP error that tells the guest
+//! has its own counters (`icmp_error_sent`, `icmp_error_suppressed`, `drop_rx_queue_full`), as for
+//! TCP. A host error that the kernel reports on a later read (a refusal after the send) is counted
+//! the same way but belongs to no new frame.
 
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
+use super::bump;
+use super::ctx::Ctx;
 use super::flow::{FlowKey, FlowProto};
 use super::frame::{
     DstClass, GATEWAY_IP, GUEST_IP, IPV4_HEADER_LEN, Ipv4Packet, PROTO_UDP, UdpDatagram,
@@ -29,13 +31,12 @@ use super::frame::{
 use super::icmp::{
     ICMP_CODE_HOST_UNREACHABLE, ICMP_CODE_NET_UNREACHABLE, ICMP_CODE_PORT_UNREACHABLE,
 };
-use super::{NatBackend, bump};
 
 /// L12: idle time after which a UDP flow is removed.
 pub const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// L13: largest UDP data in either direction (1500 - 20 - 8).
 pub const MAX_UDP_DATA: usize = 1472;
-/// Datagrams read from one flow per [`NatBackend::poll_io`] call, so that a flooding flow cannot
+/// Datagrams read from one flow per [`NatBackend::service_at`] call, so that a flooding flow cannot
 /// starve the others; the rest stays in the kernel buffer.
 const UDP_RECV_BATCH: usize = 32;
 /// Bytes of the original packet that an ICMP error quotes: the IP header and 8 bytes (RFC 792).
@@ -44,14 +45,12 @@ const UDP_HEADER_LEN: usize = 8;
 const DHCP_SERVER_PORT: u16 = 67;
 const DNS_PORT: u16 = 53;
 
-pub(super) struct UdpFlow {
+struct UdpFlow {
     socket: UdpSocket,
     last_activity: Instant,
     /// Header and first 8 bytes of the latest datagram sent: what a delayed host error is about.
     quote: [u8; ICMP_QUOTE_LEN],
 }
-
-pub(super) type UdpFlows = HashMap<FlowKey, UdpFlow>;
 
 /// What an I/O error of a UDP socket means for the guest (NETWORK.md section 12.2).
 enum HostError {
@@ -94,11 +93,40 @@ pub(super) fn icmp_quote(packet: &Ipv4Packet<'_>) -> ([u8; ICMP_QUOTE_LEN], usiz
     (quote, IPV4_HEADER_LEN + data)
 }
 
-impl NatBackend {
+/// The UDP handler: the sockets and timers of the flows (the flow table of the backend counts them
+/// for L5).
+pub(super) struct UdpEngine {
+    flows: HashMap<FlowKey, UdpFlow>,
+    /// Test-only: socket creation fails as with exhausted descriptors, so that tests that feed
+    /// arbitrary frames never reach the network of the machine they run on.
+    #[cfg(test)]
+    sockets_denied: bool,
+}
+
+impl UdpEngine {
+    pub(super) fn new() -> Self {
+        Self {
+            flows: HashMap::new(),
+            #[cfg(test)]
+            sockets_denied: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn deny_sockets(&mut self) {
+        self.sockets_denied = true;
+    }
+
+    /// Reset of the NIC or the machine: closing the sockets, telling the guest nothing.
+    pub(super) fn clear(&mut self) {
+        self.flows.clear();
+    }
+
     /// A datagram from the guest to an external address, or to a port of the backend's addresses
     /// that nobody serves.
-    pub(super) fn handle_udp(
+    pub(super) fn handle(
         &mut self,
+        ctx: &mut Ctx<'_>,
         packet: &Ipv4Packet<'_>,
         udp: &UdpDatagram<'_>,
         now: Instant,
@@ -106,15 +134,13 @@ impl NatBackend {
         // A UDP payload has at least the 8 header bytes, so the quote is always complete.
         let (quote, quote_len) = icmp_quote(packet);
         if matches!(packet.dst_class, DstClass::Gateway | DstClass::Dns) {
-            let queued = self.send_icmp_error(
-                now,
+            bump(&mut ctx.counters.gw_port_unreachable);
+            ctx.send_icmp_dest_unreachable_from(
                 packet.dst,
                 ICMP_CODE_PORT_UNREACHABLE,
                 &quote[..quote_len],
+                now,
             );
-            if queued {
-                bump(&mut self.counters.gw_port_unreachable);
-            }
             return;
         }
         let key = FlowKey {
@@ -123,28 +149,34 @@ impl NatBackend {
             dst_ip: packet.dst,
             dst_port: udp.dst_port,
         };
-        let is_new = !self.udp_flows.contains_key(&key);
-        if is_new && !self.open_udp_flow(key, &quote, now) {
+        let is_new = !self.flows.contains_key(&key);
+        if is_new && !self.open_flow(ctx, key, &quote, now) {
             return;
         }
-        self.forward_udp(key, udp.data, quote, now, is_new);
+        self.forward(ctx, key, udp.data, quote, now, is_new);
     }
 
     /// Admission and socket of a new flow; false when the datagram is lost (the counter is increased).
-    fn open_udp_flow(&mut self, key: FlowKey, quote: &[u8; ICMP_QUOTE_LEN], now: Instant) -> bool {
+    fn open_flow(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        key: FlowKey,
+        quote: &[u8; ICMP_QUOTE_LEN],
+        now: Instant,
+    ) -> bool {
         // L5: open_flow counts drop_flow_limit_udp itself (Exists cannot happen, the flow is new).
-        if self.open_flow(key).is_err() {
+        if ctx.open_flow(key).is_err() {
             return false;
         }
-        let socket = match self.connected_udp_socket(key) {
+        let socket = match self.connected_socket(key) {
             Ok(socket) => socket,
             Err(error) => {
-                self.flows.remove(&key);
-                self.udp_host_error(now, &error, key, quote);
+                ctx.close_flow(&key);
+                report_host_error(ctx, now, &error, key, quote);
                 return false;
             }
         };
-        self.udp_flows.insert(
+        self.flows.insert(
             key,
             UdpFlow {
                 socket,
@@ -152,14 +184,14 @@ impl NatBackend {
                 quote: *quote,
             },
         );
-        bump(&mut self.counters.udp_flows_opened);
+        bump(&mut ctx.counters.udp_flows_opened);
         true
     }
 
-    fn connected_udp_socket(&self, key: FlowKey) -> io::Result<UdpSocket> {
+    fn connected_socket(&self, key: FlowKey) -> io::Result<UdpSocket> {
         #[cfg(test)]
-        if self.host_sockets_denied {
-            // Stands for the exhaustion of descriptors (EMFILE) in tests that must not use the host network.
+        if self.sockets_denied {
+            // Stands for the exhaustion of descriptors (EMFILE).
             return Err(io::Error::from_raw_os_error(24));
         }
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
@@ -170,8 +202,9 @@ impl NatBackend {
 
     /// Sends the datagram. A pending error of an earlier datagram (`ECONNREFUSED`) is reported for
     /// that datagram and the send is repeated once.
-    fn forward_udp(
+    fn forward(
         &mut self,
+        ctx: &mut Ctx<'_>,
         key: FlowKey,
         data: &[u8],
         quote: [u8; ICMP_QUOTE_LEN],
@@ -180,116 +213,121 @@ impl NatBackend {
     ) {
         let mut retried = false;
         loop {
-            let Some(flow) = self.udp_flows.get_mut(&key) else {
+            let Some(flow) = self.flows.get_mut(&key) else {
                 return;
             };
             match flow.socket.send(data) {
                 Ok(_) => {
                     flow.last_activity = now;
                     flow.quote = quote;
-                    bump(&mut self.counters.udp_forwarded);
+                    bump(&mut ctx.counters.udp_forwarded);
                     return;
                 }
                 Err(error) if error.kind() == ErrorKind::ConnectionRefused && !retried => {
                     retried = true;
                     let earlier = flow.quote;
-                    self.udp_host_error(now, &error, key, &earlier);
+                    report_host_error(ctx, now, &error, key, &earlier);
                 }
                 Err(error) => {
                     if is_new {
-                        self.udp_flows.remove(&key);
                         self.flows.remove(&key);
+                        ctx.close_flow(&key);
                     }
-                    self.udp_host_error(now, &error, key, &quote);
+                    report_host_error(ctx, now, &error, key, &quote);
                     return;
                 }
             }
         }
     }
 
-    /// Reports a host error to the guest as the table of NETWORK.md section 12.2 says: the datagram
-    /// `quote` names is answered with ICMP, or lost (`drop_host_resource`) for an unknown error.
-    fn udp_host_error(
-        &mut self,
-        now: Instant,
-        error: &io::Error,
-        key: FlowKey,
-        quote: &[u8; ICMP_QUOTE_LEN],
-    ) {
-        // A port unreachable comes from the destination itself; network and host unreachable come
-        // from the gateway, which is the router the guest would see.
-        let (code, source) = match host_error(error) {
-            HostError::Refused => (ICMP_CODE_PORT_UNREACHABLE, key.dst_ip),
-            HostError::NetUnreachable => (ICMP_CODE_NET_UNREACHABLE, GATEWAY_IP),
-            HostError::HostUnreachable => (ICMP_CODE_HOST_UNREACHABLE, GATEWAY_IP),
-            HostError::Other => {
-                bump(&mut self.counters.drop_host_resource);
-                return;
-            }
-        };
-        if self.send_icmp_error(now, source, code, quote) {
-            bump(if code == ICMP_CODE_PORT_UNREACHABLE {
-                &mut self.counters.udp_refused
-            } else {
-                &mut self.counters.udp_unreachable
-            });
-        }
-    }
-
     /// Reads replies and errors of every UDP flow and removes the idle ones. Never blocks.
-    pub(super) fn poll_udp(&mut self, now: Instant) {
-        // The map is taken out so that handling one flow may use the whole backend.
-        let mut flows = std::mem::take(&mut self.udp_flows);
-        flows.retain(|key, flow| self.poll_udp_flow(*key, flow, now));
-        self.udp_flows = flows;
+    pub(super) fn service(&mut self, ctx: &mut Ctx<'_>, now: Instant) {
+        self.flows
+            .retain(|key, flow| poll_flow(ctx, *key, flow, now));
     }
+}
 
-    fn poll_udp_flow(&mut self, key: FlowKey, flow: &mut UdpFlow, now: Instant) -> bool {
-        // One byte more than the largest datagram tells an oversize reply from a maximal one.
-        let mut buf = [0u8; MAX_UDP_DATA + 1];
-        for _ in 0..UDP_RECV_BATCH {
-            match flow.socket.recv(&mut buf) {
-                Ok(len) => {
-                    flow.last_activity = now;
-                    if len > MAX_UDP_DATA {
-                        bump(&mut self.counters.drop_oversize_reply);
-                    } else {
-                        self.send_udp_reply(key, &buf[..len]);
-                    }
+/// Reports a host error to the guest as the table of NETWORK.md section 12.2 says: the datagram
+/// `quote` names is answered with ICMP, or lost (`drop_host_resource`) for an unknown error.
+fn report_host_error(
+    ctx: &mut Ctx<'_>,
+    now: Instant,
+    error: &io::Error,
+    key: FlowKey,
+    quote: &[u8; ICMP_QUOTE_LEN],
+) {
+    // A port unreachable comes from the destination itself; network and host unreachable come from
+    // the gateway, which is the router the guest would see.
+    let (code, source, counter) = match host_error(error) {
+        HostError::Refused => (
+            ICMP_CODE_PORT_UNREACHABLE,
+            key.dst_ip,
+            &mut ctx.counters.udp_refused,
+        ),
+        HostError::NetUnreachable => (
+            ICMP_CODE_NET_UNREACHABLE,
+            GATEWAY_IP,
+            &mut ctx.counters.udp_unreachable,
+        ),
+        HostError::HostUnreachable => (
+            ICMP_CODE_HOST_UNREACHABLE,
+            GATEWAY_IP,
+            &mut ctx.counters.udp_unreachable,
+        ),
+        HostError::Other => {
+            bump(&mut ctx.counters.drop_host_resource);
+            return;
+        }
+    };
+    bump(counter);
+    ctx.send_icmp_dest_unreachable_from(source, code, quote, now);
+}
+
+fn poll_flow(ctx: &mut Ctx<'_>, key: FlowKey, flow: &mut UdpFlow, now: Instant) -> bool {
+    // One byte more than the largest datagram tells an oversize reply from a maximal one.
+    let mut buf = [0u8; MAX_UDP_DATA + 1];
+    for _ in 0..UDP_RECV_BATCH {
+        match flow.socket.recv(&mut buf) {
+            Ok(len) => {
+                flow.last_activity = now;
+                if len > MAX_UDP_DATA {
+                    bump(&mut ctx.counters.drop_oversize_reply);
+                } else {
+                    send_reply(ctx, key, &buf[..len]);
                 }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                Err(error) => {
-                    self.udp_host_error(now, &error, key, &flow.quote);
-                    if matches!(host_error(&error), HostError::Other) {
-                        break;
-                    }
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => {
+                report_host_error(ctx, now, &error, key, &flow.quote);
+                if matches!(host_error(&error), HostError::Other) {
+                    break;
                 }
             }
         }
-        if now.saturating_duration_since(flow.last_activity) >= UDP_IDLE_TIMEOUT {
-            self.flows.remove(&key);
-            bump(&mut self.counters.udp_idle_expired);
-            return false;
-        }
-        true
     }
+    if now.saturating_duration_since(flow.last_activity) >= UDP_IDLE_TIMEOUT {
+        ctx.close_flow(&key);
+        bump(&mut ctx.counters.udp_idle_expired);
+        return false;
+    }
+    true
+}
 
-    /// A datagram from the host for the guest: from the flow's destination to the guest port.
-    fn send_udp_reply(&mut self, key: FlowKey, data: &[u8]) {
-        let mut message = [0u8; UDP_HEADER_LEN + MAX_UDP_DATA];
-        let len = UDP_HEADER_LEN + data.len();
-        message[0..2].copy_from_slice(&key.dst_port.to_be_bytes());
-        message[2..4].copy_from_slice(&key.guest_port.to_be_bytes());
-        message[4..6].copy_from_slice(&(len as u16).to_be_bytes());
-        message[UDP_HEADER_LEN..len].copy_from_slice(data);
-        let mut checksum = l4_checksum(key.dst_ip, GUEST_IP, PROTO_UDP, &message[..len]);
-        if checksum == 0 {
-            checksum = 0xFFFF;
-        }
-        message[6..8].copy_from_slice(&checksum.to_be_bytes());
-        self.send_ipv4(key.dst_ip, GUEST_IP, PROTO_UDP, &message[..len]);
+/// A datagram from the host for the guest: from the flow's destination to the guest port.
+fn send_reply(ctx: &mut Ctx<'_>, key: FlowKey, data: &[u8]) {
+    let mut message = [0u8; UDP_HEADER_LEN + MAX_UDP_DATA];
+    let len = UDP_HEADER_LEN + data.len();
+    message[0..2].copy_from_slice(&key.dst_port.to_be_bytes());
+    message[2..4].copy_from_slice(&key.guest_port.to_be_bytes());
+    message[4..6].copy_from_slice(&(len as u16).to_be_bytes());
+    message[UDP_HEADER_LEN..len].copy_from_slice(data);
+    let mut checksum = l4_checksum(key.dst_ip, GUEST_IP, PROTO_UDP, &message[..len]);
+    if checksum == 0 {
+        checksum = 0xFFFF;
     }
+    message[6..8].copy_from_slice(&checksum.to_be_bytes());
+    ctx.send_ipv4(key.dst_ip, PROTO_UDP, &message[..len]);
 }
 
 #[cfg(test)]
@@ -457,7 +495,7 @@ mod tests {
             (c.udp_flows_opened, c.udp_forwarded, c.drop_flow_limit_udp),
             (64, 64, 1)
         );
-        assert_eq!(b.udp_flows.len(), 64);
+        assert_eq!(b.udp.flows.len(), 64);
         assert_eq!(b.flows.count(FlowProto::Udp), 64);
         // The server got the 64 datagrams and nothing from the 65th flow.
         let mut buf = [0u8; 64];
@@ -473,8 +511,8 @@ mod tests {
         send(&mut b, &guest_udp(40000, LOOP, port_of(&srv), b"again"), t0);
         assert_eq!(b.counters().udp_forwarded, 65);
         // When the flows have expired the slots are free again.
-        b.poll_io_at(t0 + UDP_IDLE_TIMEOUT);
-        assert_eq!(b.udp_flows.len(), 0);
+        b.service_at(t0 + UDP_IDLE_TIMEOUT);
+        assert_eq!(b.udp.flows.len(), 0);
         send(
             &mut b,
             &guest_udp(41000, LOOP, port_of(&srv), b"new"),
@@ -493,25 +531,25 @@ mod tests {
         let at = |s: u64, ms: u64| t0 + Duration::from_millis(s * 1000 + ms);
         let frame = guest_udp(40000, LOOP, port_of(&first_server), b"x");
         send(&mut b, &frame, t0);
-        b.poll_io_at(at(119, 999));
+        b.service_at(at(119, 999));
         assert_eq!(
-            b.udp_flows.len(),
+            b.udp.flows.len(),
             1,
             "alive one millisecond before the limit"
         );
         assert_eq!(b.counters().udp_idle_expired, 0);
-        b.poll_io_at(at(120, 0));
-        assert_eq!(b.udp_flows.len(), 0);
+        b.service_at(at(120, 0));
+        assert_eq!(b.udp.flows.len(), 0);
         assert_eq!(b.flows.count(FlowProto::Udp), 0);
         assert_eq!(b.counters().udp_idle_expired, 1);
 
         // A datagram of the guest restarts the time.
         send(&mut b, &frame, at(200, 0));
         send(&mut b, &frame, at(300, 0));
-        b.poll_io_at(at(419, 999));
-        assert_eq!(b.udp_flows.len(), 1);
-        b.poll_io_at(at(420, 0));
-        assert_eq!(b.udp_flows.len(), 0);
+        b.service_at(at(419, 999));
+        assert_eq!(b.udp.flows.len(), 1);
+        b.service_at(at(420, 0));
+        assert_eq!(b.udp.flows.len(), 0);
         assert_eq!(b.counters().udp_idle_expired, 2);
 
         // A datagram of the host restarts it too.
@@ -525,10 +563,10 @@ mod tests {
         let (_, client) = srv.recv_from(&mut buf).unwrap();
         srv.send_to(b"r", client).unwrap();
         assert_eq!(pump_at(&mut b, at(600, 0), 1).len(), 1);
-        b.poll_io_at(at(719, 999));
-        assert_eq!(b.udp_flows.len(), 1);
-        b.poll_io_at(at(720, 0));
-        assert_eq!(b.udp_flows.len(), 0);
+        b.service_at(at(719, 999));
+        assert_eq!(b.udp.flows.len(), 1);
+        b.service_at(at(720, 0));
+        assert_eq!(b.udp.flows.len(), 0);
         assert_eq!(b.counters().udp_idle_expired, 3);
     }
 
@@ -612,7 +650,7 @@ mod tests {
         }
         assert_eq!(drain(&mut b).len(), 50);
         assert_eq!(b.counters().icmp_error_suppressed, 0);
-        // The 51st within the same instant is suppressed: no frame, no gateway counter.
+        // The 51st within the same instant is suppressed: no frame, but the situation is counted.
         send(&mut b, &guest_udp(40100, GATEWAY_IP, 9, b"x"), t0);
         assert!(drain(&mut b).is_empty());
         let c = b.counters();
@@ -622,7 +660,7 @@ mod tests {
                 c.icmp_error_sent,
                 c.icmp_error_suppressed
             ),
-            (50, 50, 1)
+            (51, 50, 1)
         );
         // A second later the bucket is full again.
         for n in 0..50u16 {
@@ -657,7 +695,10 @@ mod tests {
         ];
         for (kind, expected) in cases {
             let mut b = io_backend();
-            b.udp_host_error(Instant::now(), &Error::from(kind), key, &quote);
+            {
+                let (_handlers, mut ctx) = b.handler_parts(Duration::ZERO);
+                report_host_error(&mut ctx, Instant::now(), &Error::from(kind), key, &quote);
+            }
             let frames = drain(&mut b);
             let c = b.counters();
             match expected {
@@ -694,7 +735,7 @@ mod tests {
             (1, 0, 0)
         );
         assert_eq!(b.flows.count(FlowProto::Udp), 0);
-        assert!(b.udp_flows.is_empty());
+        assert!(b.udp.flows.is_empty());
         assert!(drain(&mut b).is_empty());
     }
 
@@ -733,10 +774,10 @@ mod tests {
             b.rx_queue.push(&[0u8; 60]).unwrap();
         }
         srv.send_to(b"late", client).unwrap();
-        // The queue stays full, so poll_io cannot be pumped through drain: wait for the datagram instead.
+        // The queue stays full, so the sockets cannot be pumped through drain: wait for the datagram instead.
         let started = Instant::now();
         while b.counters().drop_rx_queue_full == 0 && started.elapsed() < Duration::from_secs(2) {
-            b.poll_io();
+            b.service_at(Instant::now());
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(b.counters().drop_rx_queue_full, 1);
@@ -755,7 +796,7 @@ mod tests {
         let mut buf = [0u8; 16];
         let (_, client) = srv.recv_from(&mut buf).unwrap();
         b.reset();
-        assert!(b.udp_flows.is_empty());
+        assert!(b.udp.flows.is_empty());
         assert_eq!(b.flows.count(FlowProto::Udp), 0);
         assert_eq!(b.counters().resets, 1);
         // The old socket is closed: a late datagram of the server reaches nobody.
@@ -778,7 +819,7 @@ mod tests {
             .map(|f| parse_guest_packet(f).identification)
             .collect();
         assert_eq!(ids, [0, 1, 2]);
-        b.ip_id = 0xFFFF;
+        b.shared.ip_id = 0xFFFF;
         send(
             &mut b,
             &guest_udp(40000, GATEWAY_IP, 9, b"x"),

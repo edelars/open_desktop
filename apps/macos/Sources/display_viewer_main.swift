@@ -9,12 +9,13 @@ import ODShared
 
 // S11-10: DisplayWindow, MetalPresenter and InputChannel are the target ODDisplay (shared with the application); this file stays the viewer.
 // S10-07 display viewer: entry point. Starts VMHost with the shared launch code (VMHostLaunch.swift) in the
-// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) and shows
+// TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) or, with `--profile probe`,
+// `--display-smoke probe` (S10-09 profile OD_DISPLAY_PROFILE_STAGE10_PROBE: VMHost runs the own guest probe of S10-08) and shows
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
-// The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
+// usage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
+// The profile flag is for smoke use only: `pattern` (default) or `probe` (one screen only; the frame appears after the guest has run).
 //
 // S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
 // margins, nearest-neighbour sampling); `--pixel-exact` draws 1 guest pixel as 1 physical pixel, centred. For the offscreen
@@ -43,7 +44,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern|probe] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -114,8 +115,11 @@ private struct ViewerConfig {
             }
         }
         if let profile = values["profile"] {
-            guard profile == "pattern" else {
-                throw ViewerError.usage("unsupported --profile \(profile) (only `pattern`; `probe` arrives in S10-09)")
+            guard profile == "pattern" || profile == "probe" else {
+                throw ViewerError.usage("unsupported --profile \(profile) (`pattern` or `probe`)")
+            }
+            guard profile == "pattern" || config.screens == 1 else {
+                throw ViewerError.usage("--profile probe has one screen (no --screens 2)")
             }
             config.profile = profile
         }
@@ -223,7 +227,7 @@ private final class ViewerSession {
     }
 
     /// State of screen 0 (the single-screen view and the dump); the connection state before any ANNOUNCE.
-    var primaryState: FrameReaderState { reader.primary?.state ?? reader.state }
+    var primaryState: FrameReaderState { reader.windowState(screen: 0) }
 
     /// One reader step: pump, then commit or discard the staged texture of each screen, and clear a screen's texture
     /// when that screen shows no frame. The cursor belongs to screen 0 (S10-14, 16.8).
@@ -256,7 +260,7 @@ private final class ViewerSession {
                 presenter.discard()
             }
             if current.state != .showing { presenter.clear() }
-            if reader.state.isTerminal || current.state.isTerminal { presenter.clear() }
+            if reader.isTerminal || current.state.isTerminal { presenter.clear() }
         }
         // The cursor is independent of the frame: an accepted update commits the cursor state (and a new texture if the
         // shape changed); a discarded one drops only the staged texture. The reader state does not clear the cursor state
@@ -266,7 +270,7 @@ private final class ViewerSession {
         } else if cursorUploaded {
             presenter.discardCursor()
         }
-        if reader.state.isTerminal { presenter.commitCursor(nil) }
+        if reader.isTerminal { presenter.commitCursor(nil) }
         return changed
     }
 
@@ -329,7 +333,7 @@ private final class ViewerSession {
     /// Pumps until the connection is announced (or failed), before any window exists (S10-15).
     func waitForAnnounce(timeoutMs: UInt64) {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutMs * 1_000_000
-        while reader.state == .connecting && !reader.state.isTerminal {
+        while reader.connection == .connecting {
             if DispatchTime.now().uptimeNanoseconds >= deadline { break }
             step(timeoutMs: 20)
         }
@@ -388,7 +392,7 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
     let presenter = session.presenters[target]
     // The state of the dumped screen; the connection state while no ANNOUNCE of it has arrived.
     func targetState() -> FrameReaderState {
-        session.reader.screens.count > target ? session.reader.screens[target].state : session.reader.state
+        session.reader.windowState(screen: target)
     }
     let deadline = DispatchTime.now().uptimeNanoseconds + config.timeoutMs * 1_000_000
     while targetState() != .showing && !targetState().isTerminal {
@@ -453,7 +457,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             // The windows are created after the ANNOUNCE of every screen, on the main thread, before the reader thread.
             session.waitForAnnounce(timeoutMs: config.timeoutMs)
             let title = session.presenters.count == 2 ? "Open Desktop display viewer (screen 0)"
-                : "Open Desktop display viewer (test pattern)"
+                : "Open Desktop display viewer (\(config.profile == "probe" ? "probe" : "test pattern"))"
             let first = DisplayWindow(
                 presenter: session.presenters[0], title: title,
                 contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: session.input)
@@ -491,18 +495,16 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         var publishedShown: ShownFrame?
         while !isStopRequested() {
             let changed = session.step(timeoutMs: 100)
-            let connection = session.reader.state
+            let connection = session.reader.connection
             if connection.isTerminal, statusDetail == nil {
                 // section 7.2: munmap and close are done by the reader; stop and reap VMHost, keep its real status.
                 let status = session.stopChild()
                 statusDetail = "\(describe(connection)) (VMHost exit status \(status))"
                 setFailed()
             }
-            // Each window shows its own screen; before the announce of a screen, the connection state.
-            let states: [FrameReaderState] = session.presenters.indices.map { index in
-                connection.isTerminal || index >= session.reader.screens.count
-                    ? connection : session.reader.screens[index].state
-            }
+            // Each window shows its own screen (the connection state while connecting or after a failure, 11.7); the state
+            // of screen 0 never stands in for another screen.
+            let states: [FrameReaderState] = session.presenters.indices.map { session.reader.windowState(screen: $0) }
             // S10-16: the shown frame for absolute mouse positions: only while SHOWING, with the mode count of that frame.
             var shown: ShownFrame?
             if let primary = session.reader.primary, primary.state == .showing, let frame = primary.lastFrame {

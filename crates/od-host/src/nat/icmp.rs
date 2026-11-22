@@ -1,8 +1,8 @@
-//! ICMP echo and ICMP errors of the NAT backend (S11-31c, NETWORK.md sections 9 and 12.2).
+//! ICMP echo of the NAT backend (S11-31c, NETWORK.md sections 9 and 12.2).
 //!
 //! Echo request to the gateway or DNS address: a synthetic reply, the packet never leaves the
 //! backend. Echo request to an external address: the message is sent through an unprivileged ICMP
-//! socket (`SOCK_DGRAM`, `IPPROTO_ICMP`; macOS only, see [`open_icmp_socket`]), one socket per
+//! socket (`SOCK_DGRAM`, `IPPROTO_ICMP`; macOS ARM64 only, see [`open_icmp_socket`]), one socket per
 //! request, and the reply is given back to the guest with the guest's identifier and sequence
 //! number. No reply within 5 s (L14) leaves the guest in silence (`icmp_echo_timeout`). At most 8
 //! requests wait at once (L6). Other ICMP types and codes are `drop_unsupported_proto`.
@@ -15,23 +15,21 @@
 //! `icmp_echo_forwarded`, `drop_flow_limit_icmp`, `drop_host_resource`, `drop_unsupported_proto`
 //! (or `drop_rx_queue_full` when the synthetic reply does not fit the L3 queue).
 //!
-//! The ICMP errors for the guest (UDP now, TCP in S11-31d) are rate limited to 50 per second with a
-//! bucket of 50 (L15): [`NatBackend::send_icmp_error`].
+//! The ICMP errors for the guest and their rate limit (L15) are in [`super::ctx::Ctx`].
 
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use super::bump;
+use super::ctx::Ctx;
 use super::flow::{FlowKey, FlowProto};
-use super::frame::{DstClass, GUEST_IP, IcmpMessage, Ipv4Packet, PROTO_ICMP, internet_checksum};
-use super::udp::{ICMP_QUOTE_LEN, MAX_UDP_DATA};
-use super::{NatBackend, bump};
+use super::frame::{DstClass, IcmpMessage, Ipv4Packet, PROTO_ICMP, internet_checksum};
+use super::udp::MAX_UDP_DATA;
 
 /// L14: how long an echo request to an external address waits for its reply.
 pub const ECHO_TIMEOUT: Duration = Duration::from_secs(5);
-/// L15: ICMP errors per second, and the size of the bucket.
-pub const ICMP_ERRORS_PER_SECOND: u32 = 50;
 /// L13: largest echo data (1500 - 20 - 8).
 pub const MAX_ECHO_DATA: usize = MAX_UDP_DATA;
 
@@ -39,59 +37,17 @@ pub const ICMP_CODE_NET_UNREACHABLE: u8 = 0;
 pub const ICMP_CODE_HOST_UNREACHABLE: u8 = 1;
 pub const ICMP_CODE_PORT_UNREACHABLE: u8 = 3;
 const ICMP_ECHO_REPLY: u8 = 0;
-const ICMP_DEST_UNREACHABLE: u8 = 3;
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_HEADER_LEN: usize = 8;
 /// Replies of the host are read into a buffer a little larger than any frame can carry.
 const RECV_BUFFER_LEN: usize = 2048;
-/// Datagrams read from one echo socket per poll that do not belong to the request.
+/// Datagrams read from one echo socket per service call that do not belong to the request.
 const ECHO_RECV_BATCH: usize = 4;
 
-/// Token bucket of L15: one token per 20 ms, at most 50 (so 50 per second sustained).
-#[derive(Debug)]
-pub(super) struct ErrorLimiter {
-    tokens: u32,
-    refilled_at: Instant,
-}
-
-impl ErrorLimiter {
-    const INTERVAL: Duration = Duration::from_millis(1000 / ICMP_ERRORS_PER_SECOND as u64);
-
-    pub(super) fn new(now: Instant) -> Self {
-        Self {
-            tokens: ICMP_ERRORS_PER_SECOND,
-            refilled_at: now,
-        }
-    }
-
-    pub(super) fn allow(&mut self, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.refilled_at);
-        let earned = elapsed.as_millis() / Self::INTERVAL.as_millis();
-        if earned > 0 {
-            let total = u128::from(self.tokens) + earned;
-            if total >= u128::from(ICMP_ERRORS_PER_SECOND) {
-                self.tokens = ICMP_ERRORS_PER_SECOND;
-                self.refilled_at = now;
-            } else {
-                // total < 50, so earned < 50 and both conversions fit.
-                self.tokens = total as u32;
-                self.refilled_at += Self::INTERVAL * earned as u32;
-            }
-        }
-        if self.tokens == 0 {
-            return false;
-        }
-        self.tokens -= 1;
-        true
-    }
-}
-
-pub(super) struct EchoFlow {
+struct EchoFlow {
     socket: UdpSocket,
     deadline: Instant,
 }
-
-pub(super) type EchoFlows = HashMap<FlowKey, EchoFlow>;
 
 /// An unprivileged ICMP socket connected to `dst` (NETWORK.md section 9). On macOS it is
 /// `socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)`, as in the source of `ping` for a non-root user; the
@@ -170,38 +126,74 @@ fn parse_echo_reply(datagram: &[u8], ident: u16, seq: u16) -> Option<&[u8]> {
     Some(&message[ICMP_HEADER_LEN..])
 }
 
-impl NatBackend {
+/// The reply of the host for the guest: from the pinged address, with the guest's identifier and
+/// sequence number.
+fn send_echo_reply(ctx: &mut Ctx<'_>, key: FlowKey, data: &[u8]) {
+    if data.len() > MAX_ECHO_DATA {
+        bump(&mut ctx.counters.drop_oversize_reply);
+        return;
+    }
+    let mut message = [0u8; ICMP_HEADER_LEN + MAX_ECHO_DATA];
+    let len = write_echo_reply(key.guest_port, key.dst_port, data, &mut message);
+    ctx.send_ipv4(key.dst_ip, PROTO_ICMP, &message[..len]);
+}
+
+/// The ICMP echo handler: the sockets and deadlines of the requests that wait for a reply (the flow
+/// table of the backend counts them for L6).
+pub(super) struct EchoEngine {
+    flows: HashMap<FlowKey, EchoFlow>,
+    /// Test-only: socket creation fails as with exhausted descriptors, so that tests that feed
+    /// arbitrary frames never reach the network of the machine they run on.
+    #[cfg(test)]
+    sockets_denied: bool,
+}
+
+impl EchoEngine {
+    pub(super) fn new() -> Self {
+        Self {
+            flows: HashMap::new(),
+            #[cfg(test)]
+            sockets_denied: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn deny_sockets(&mut self) {
+        self.sockets_denied = true;
+    }
+
+    /// Reset of the NIC or the machine: closing the sockets, telling the guest nothing.
+    pub(super) fn clear(&mut self) {
+        self.flows.clear();
+    }
+
     /// An ICMP message from the guest that passed the checks of NETWORK.md section 5.
-    pub(super) fn handle_icmp(
+    pub(super) fn handle(
         &mut self,
+        ctx: &mut Ctx<'_>,
         packet: &Ipv4Packet<'_>,
         icmp: &IcmpMessage<'_>,
         now: Instant,
     ) {
         if icmp.icmp_type != ICMP_ECHO_REQUEST || icmp.code != 0 {
-            bump(&mut self.counters.drop_unsupported_proto);
+            bump(&mut ctx.counters.drop_unsupported_proto);
             return;
         }
         match packet.dst_class {
-            DstClass::Gateway | DstClass::Dns => self.synthetic_echo_reply(packet, icmp),
-            DstClass::External => self.forward_echo(packet, icmp, now),
+            DstClass::Gateway | DstClass::Dns => synthetic_reply(ctx, packet, icmp),
+            DstClass::External => self.forward(ctx, packet, icmp, now),
             // Only UDP gets through to the limited broadcast address (NETWORK.md section 5).
-            DstClass::LimitedBroadcast => bump(&mut self.counters.drop_multicast_broadcast),
+            DstClass::LimitedBroadcast => bump(&mut ctx.counters.drop_multicast_broadcast),
         }
     }
 
-    fn synthetic_echo_reply(&mut self, packet: &Ipv4Packet<'_>, icmp: &IcmpMessage<'_>) {
-        let ident = u16::from_be_bytes([icmp.rest[0], icmp.rest[1]]);
-        let seq = u16::from_be_bytes([icmp.rest[2], icmp.rest[3]]);
-        let mut message = [0u8; ICMP_HEADER_LEN + MAX_ECHO_DATA];
-        // The data is at most 1472 bytes: the frame it came in is at most 1514.
-        let len = write_echo_reply(ident, seq, icmp.data, &mut message);
-        if self.send_ipv4(packet.dst, GUEST_IP, PROTO_ICMP, &message[..len]) {
-            bump(&mut self.counters.icmp_echo_synthetic);
-        }
-    }
-
-    fn forward_echo(&mut self, packet: &Ipv4Packet<'_>, icmp: &IcmpMessage<'_>, now: Instant) {
+    fn forward(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        packet: &Ipv4Packet<'_>,
+        icmp: &IcmpMessage<'_>,
+        now: Instant,
+    ) {
         let key = FlowKey {
             proto: FlowProto::IcmpEcho,
             guest_port: u16::from_be_bytes([icmp.rest[0], icmp.rest[1]]),
@@ -209,124 +201,89 @@ impl NatBackend {
             dst_port: u16::from_be_bytes([icmp.rest[2], icmp.rest[3]]),
         };
         // A repeated request replaces the one that still waits (the guest gave up on it).
-        if self.echo_flows.remove(&key).is_some() {
-            self.flows.remove(&key);
+        if self.flows.remove(&key).is_some() {
+            ctx.close_flow(&key);
         }
         // L6: open_flow counts drop_flow_limit_icmp itself.
-        if self.open_flow(key).is_err() {
+        if ctx.open_flow(key).is_err() {
             return;
         }
         let sent = self
-            .connected_icmp_socket(packet.dst)
+            .connected_socket(packet.dst)
             .and_then(|socket| socket.send(packet.payload).map(|_| socket));
         match sent {
             Ok(socket) => {
-                self.echo_flows.insert(
+                self.flows.insert(
                     key,
                     EchoFlow {
                         socket,
                         deadline: now + ECHO_TIMEOUT,
                     },
                 );
-                bump(&mut self.counters.icmp_echo_forwarded);
+                bump(&mut ctx.counters.icmp_echo_forwarded);
             }
             Err(_) => {
                 // Descriptors, no route, a refusing kernel: the request is lost like a lost packet.
-                self.flows.remove(&key);
-                bump(&mut self.counters.drop_host_resource);
+                ctx.close_flow(&key);
+                bump(&mut ctx.counters.drop_host_resource);
             }
         }
     }
 
-    fn connected_icmp_socket(&self, dst: Ipv4Addr) -> io::Result<UdpSocket> {
+    fn connected_socket(&self, dst: Ipv4Addr) -> io::Result<UdpSocket> {
         #[cfg(test)]
-        if self.host_sockets_denied {
-            // Stands for the exhaustion of descriptors (EMFILE) in tests that must not use the host network.
+        if self.sockets_denied {
+            // Stands for the exhaustion of descriptors (EMFILE).
             return Err(io::Error::from_raw_os_error(24));
         }
         open_icmp_socket(dst)
     }
 
     /// Reads the replies of the waiting echo requests and removes the ones that timed out.
-    pub(super) fn poll_icmp(&mut self, now: Instant) {
-        let mut flows = std::mem::take(&mut self.echo_flows);
-        flows.retain(|key, flow| self.poll_echo_flow(*key, flow, now));
-        self.echo_flows = flows;
+    pub(super) fn service(&mut self, ctx: &mut Ctx<'_>, now: Instant) {
+        self.flows
+            .retain(|key, flow| poll_flow(ctx, *key, flow, now));
     }
+}
 
-    fn poll_echo_flow(&mut self, key: FlowKey, flow: &mut EchoFlow, now: Instant) -> bool {
-        let mut buf = [0u8; RECV_BUFFER_LEN];
-        for _ in 0..ECHO_RECV_BATCH {
-            match flow.socket.recv(&mut buf) {
-                Ok(len) => {
-                    // Whatever else the kernel hands over (errors, other ICMP) is not our reply.
-                    if let Some(data) = parse_echo_reply(&buf[..len], key.guest_port, key.dst_port)
-                    {
-                        self.flows.remove(&key);
-                        self.send_echo_reply(key, data);
-                        return false;
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                Err(_) => {
-                    self.flows.remove(&key);
-                    bump(&mut self.counters.drop_host_resource);
+fn synthetic_reply(ctx: &mut Ctx<'_>, packet: &Ipv4Packet<'_>, icmp: &IcmpMessage<'_>) {
+    let ident = u16::from_be_bytes([icmp.rest[0], icmp.rest[1]]);
+    let seq = u16::from_be_bytes([icmp.rest[2], icmp.rest[3]]);
+    let mut message = [0u8; ICMP_HEADER_LEN + MAX_ECHO_DATA];
+    // The data is at most 1472 bytes: the frame it came in is at most 1514.
+    let len = write_echo_reply(ident, seq, icmp.data, &mut message);
+    if ctx.send_ipv4(packet.dst, PROTO_ICMP, &message[..len]) {
+        bump(&mut ctx.counters.icmp_echo_synthetic);
+    }
+}
+
+fn poll_flow(ctx: &mut Ctx<'_>, key: FlowKey, flow: &mut EchoFlow, now: Instant) -> bool {
+    let mut buf = [0u8; RECV_BUFFER_LEN];
+    for _ in 0..ECHO_RECV_BATCH {
+        match flow.socket.recv(&mut buf) {
+            Ok(len) => {
+                // Whatever else the kernel hands over (errors, other ICMP) is not our reply.
+                if let Some(data) = parse_echo_reply(&buf[..len], key.guest_port, key.dst_port) {
+                    ctx.close_flow(&key);
+                    send_echo_reply(ctx, key, data);
                     return false;
                 }
             }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) => {
+                ctx.close_flow(&key);
+                bump(&mut ctx.counters.drop_host_resource);
+                return false;
+            }
         }
-        if now >= flow.deadline {
-            self.flows.remove(&key);
-            bump(&mut self.counters.icmp_echo_timeout);
-            return false;
-        }
-        true
     }
-
-    /// The reply of the host for the guest: from the pinged address, with the guest's identifier
-    /// and sequence number.
-    fn send_echo_reply(&mut self, key: FlowKey, data: &[u8]) {
-        if data.len() > MAX_ECHO_DATA {
-            bump(&mut self.counters.drop_oversize_reply);
-            return;
-        }
-        let mut message = [0u8; ICMP_HEADER_LEN + MAX_ECHO_DATA];
-        let len = write_echo_reply(key.guest_port, key.dst_port, data, &mut message);
-        self.send_ipv4(key.dst_ip, GUEST_IP, PROTO_ICMP, &message[..len]);
+    if now >= flow.deadline {
+        ctx.close_flow(&key);
+        bump(&mut ctx.counters.icmp_echo_timeout);
+        return false;
     }
-
-    /// Queues an ICMP Destination Unreachable (`code`) for the guest, from `source`, quoting the IP
-    /// header and the first 8 bytes of the guest's packet (`quote`, RFC 792). Returns true when the
-    /// frame is in the L3 queue. When it is not, exactly one counter says why: `icmp_error_suppressed`
-    /// (L15: more than 50 errors per second) or `drop_rx_queue_full` (L3). On success
-    /// `icmp_error_sent` is increased; the caller counts the situation (`udp_refused`,
-    /// `gw_port_unreachable`, ...) only then, so that every packet has one fate.
-    pub(super) fn send_icmp_error(
-        &mut self,
-        now: Instant,
-        source: Ipv4Addr,
-        code: u8,
-        quote: &[u8],
-    ) -> bool {
-        if !self.icmp_limiter.allow(now) {
-            bump(&mut self.counters.icmp_error_suppressed);
-            return false;
-        }
-        let mut message = [0u8; ICMP_HEADER_LEN + ICMP_QUOTE_LEN];
-        let quote = &quote[..quote.len().min(ICMP_QUOTE_LEN)];
-        message[0] = ICMP_DEST_UNREACHABLE;
-        message[1] = code;
-        message[ICMP_HEADER_LEN..ICMP_HEADER_LEN + quote.len()].copy_from_slice(quote);
-        let len = ICMP_HEADER_LEN + quote.len();
-        let checksum = internet_checksum(&message[..len]);
-        message[2..4].copy_from_slice(&checksum.to_be_bytes());
-        if self.send_ipv4(source, GUEST_IP, PROTO_ICMP, &message[..len]) {
-            bump(&mut self.counters.icmp_error_sent);
-            return true;
-        }
-        false
-    }
+    true
 }
 
 #[cfg(test)]
@@ -390,7 +347,7 @@ mod tests {
             dst_port: seq,
         };
         backend.open_flow(key).unwrap();
-        backend.echo_flows.insert(
+        backend.echo.flows.insert(
             key,
             EchoFlow {
                 socket: silent_socket(),
@@ -474,14 +431,14 @@ mod tests {
         let t0 = Instant::now();
         let deadline = t0 + ECHO_TIMEOUT;
         let key = pending_flow(&mut b, 1, deadline);
-        b.poll_io_at(deadline - Duration::from_millis(1));
+        b.service_at(deadline - Duration::from_millis(1));
         assert!(
-            b.echo_flows.contains_key(&key),
+            b.echo.flows.contains_key(&key),
             "alive one millisecond before the deadline"
         );
         assert_eq!(b.counters().icmp_echo_timeout, 0);
-        b.poll_io_at(deadline);
-        assert!(!b.echo_flows.contains_key(&key));
+        b.service_at(deadline);
+        assert!(!b.echo.flows.contains_key(&key));
         assert_eq!(b.flows.count(FlowProto::IcmpEcho), 0);
         assert_eq!(b.counters().icmp_echo_timeout, 1);
         assert!(drain(&mut b).is_empty(), "silence, as after a lost packet");
@@ -505,10 +462,10 @@ mod tests {
             ),
             (1, 0, 0)
         );
-        assert_eq!(b.echo_flows.len(), 8);
+        assert_eq!(b.echo.flows.len(), 8);
         // The slots of timed out requests are free again.
-        b.poll_io_at(t0 + ECHO_TIMEOUT);
-        assert_eq!(b.echo_flows.len(), 0);
+        b.service_at(t0 + ECHO_TIMEOUT);
+        assert_eq!(b.echo.flows.len(), 0);
         assert_eq!(b.counters().icmp_echo_timeout, 8);
         assert_eq!(b.flows.count(FlowProto::IcmpEcho), 0);
         pending_flow(&mut b, 100, t0 + ECHO_TIMEOUT);
@@ -526,7 +483,7 @@ mod tests {
         let c = b.counters();
         assert_eq!((c.drop_host_resource, c.icmp_echo_forwarded), (1, 0));
         assert_eq!(b.flows.count(FlowProto::IcmpEcho), 0);
-        assert!(b.echo_flows.is_empty());
+        assert!(b.echo.flows.is_empty());
         assert!(drain(&mut b).is_empty());
     }
 
@@ -535,7 +492,7 @@ mod tests {
         let mut b = io_backend();
         pending_flow(&mut b, 1, Instant::now() + ECHO_TIMEOUT);
         b.reset();
-        assert!(b.echo_flows.is_empty());
+        assert!(b.echo.flows.is_empty());
         assert_eq!(b.flows.count(FlowProto::IcmpEcho), 0);
     }
 
@@ -595,7 +552,7 @@ mod tests {
         let frame = echo(LOOP, 8, 0, 5, 5, b"again");
         send(&mut b, &frame, Instant::now());
         send(&mut b, &frame, Instant::now());
-        assert_eq!(b.echo_flows.len(), 1);
+        assert_eq!(b.echo.flows.len(), 1);
         assert_eq!(b.counters().icmp_echo_forwarded, 2);
         assert_eq!(pump_for(&mut b, 1).len(), 1);
         assert!(pump_quiet(&mut b, Duration::from_millis(100)).is_empty());
@@ -664,34 +621,16 @@ mod tests {
             dst_ip: LOOP,
             dst_port: 1,
         };
-        b.send_echo_reply(key, &vec![0u8; MAX_ECHO_DATA + 1]);
+        {
+            let (_handlers, mut ctx) = b.handler_parts(Duration::ZERO);
+            send_echo_reply(&mut ctx, key, &vec![0u8; MAX_ECHO_DATA + 1]);
+        }
         assert_eq!(b.counters().drop_oversize_reply, 1);
         assert!(drain(&mut b).is_empty());
-        b.send_echo_reply(key, &vec![0u8; MAX_ECHO_DATA]);
+        {
+            let (_handlers, mut ctx) = b.handler_parts(Duration::ZERO);
+            send_echo_reply(&mut ctx, key, &vec![0u8; MAX_ECHO_DATA]);
+        }
         assert_eq!(drain(&mut b)[0].len(), NET_MAX_FRAME);
-    }
-
-    #[test]
-    fn error_limiter_refills_one_token_per_20_ms_up_to_50() {
-        let t0 = Instant::now();
-        let ms = |n: u64| t0 + Duration::from_millis(n);
-        let mut limiter = ErrorLimiter::new(t0);
-        assert!(
-            (0..50).all(|_| limiter.allow(t0)),
-            "a full bucket gives 50 at once"
-        );
-        assert!(!limiter.allow(t0), "the 51st is refused");
-        assert!(!limiter.allow(ms(19)));
-        assert!(limiter.allow(ms(20)), "one token after 20 ms");
-        assert!(!limiter.allow(ms(20)));
-        // The remainder of an interval is not lost: 30 ms gave the next token at 40 ms.
-        assert!(!limiter.allow(ms(39)));
-        assert!(limiter.allow(ms(40)));
-        // A long pause does not store more than the bucket holds.
-        let later = ms(60_000);
-        assert!((0..50).all(|_| limiter.allow(later)));
-        assert!(!limiter.allow(later));
-        // Time going backwards (a caller with an older instant) neither refills nor panics.
-        assert!(!limiter.allow(t0));
     }
 }

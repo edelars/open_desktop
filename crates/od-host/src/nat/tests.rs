@@ -715,10 +715,10 @@ fn malformed_arp_fields_are_dropped() {
 
 // ---- The backend: queues, counters, replies --------------------------------------------------
 
-/// A product backend whose host sockets cannot be created: these tests feed frames that would
-/// otherwise reach real hosts (the tests with sockets use `test_io::io_backend`).
+/// A backend whose TCP host is scripted and whose UDP and ICMP sockets cannot be created: no test of
+/// this file reaches a real network (the tests with sockets use `test_io::io_backend`).
 fn backend() -> NatBackend {
-    NatBackend::new(GUEST_MAC).unwrap().without_host_sockets()
+    super::tcp_tests::scripted_backend().without_host_sockets()
 }
 
 fn run(backend: &mut NatBackend, frame: &[u8]) {
@@ -1028,7 +1028,7 @@ fn every_silent_drop_row_increases_exactly_its_counter() {
 }
 
 /// Sum of every counter that accounts for the fate of one processed frame.
-fn total_accounted(c: &NetCounters) -> u64 {
+pub(super) fn total_accounted(c: &NetCounters) -> u64 {
     c.drop_bad_src_mac
         + c.drop_bad_dst_mac
         + c.drop_unsupported_ethertype
@@ -1042,40 +1042,38 @@ fn total_accounted(c: &NetCounters) -> u64 {
         + c.drop_l4_malformed
         + c.drop_arp_other
         + c.drop_unhandled_l4
+        + c.tcp_segments
         + c.arp_replies
         + c.arp_probe_ignored
         + c.drop_rx_queue_full
-        // S11-31c: UDP and ICMP echo (an ICMP error that is queued counts its situation, one that
-        // is rate limited counts `icmp_error_suppressed`, one that does not fit L3 counts
-        // `drop_rx_queue_full` above).
+        // S11-31c: UDP and ICMP echo (the ICMP error that tells the guest is a secondary outcome:
+        // `icmp_error_sent` and `icmp_error_suppressed` are not summed here). `drop_host_resource` is not
+        // summed either: TCP raises it too, as part of a segment's fate; a test whose TCP host never
+        // fails adds it itself.
         + c.udp_forwarded
         + c.drop_flow_limit_udp
         + c.drop_flow_limit_icmp
-        + c.drop_host_resource
         + c.udp_unreachable
         + c.udp_refused
         + c.gw_port_unreachable
-        + c.icmp_error_suppressed
         + c.icmp_echo_synthetic
         + c.icmp_echo_forwarded
 }
 
 #[test]
-fn well_formed_packets_without_a_handler_are_counted_unhandled_until_it_exists() {
-    // DHCP and DNS (S11-31b) and TCP (S11-31d); UDP to other addresses and ICMP echo are handled.
+fn well_formed_dhcp_and_dns_packets_are_counted_unhandled_until_their_handler_exists() {
+    // DHCP and DNS (S11-31b); TCP (S11-31d), UDP to other addresses and ICMP echo (S11-31c) are handled.
     let mut b = backend();
     for frame in [
         udp_frame(DNS_IP, 53, b"x"),
         udp_frame(GATEWAY_IP, 67, b"x"),
-        tcp_syn_frame(EXTERNAL, 80),
-        tcp_syn_frame(GATEWAY_IP, 80),
         dhcp_like_frame(),
     ] {
         run(&mut b, &frame);
     }
     let c = b.counters();
-    assert_eq!(c.drop_unhandled_l4, 5);
-    assert_eq!(total_accounted(&c), 5);
+    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (3, 0));
+    assert_eq!(total_accounted(&c), 3);
     assert!(drain(&mut b).is_empty());
 }
 
@@ -1088,20 +1086,45 @@ fn udp_and_echo_to_external_addresses_reach_the_host_socket_layer_not_the_unhand
     let c = b.counters();
     assert_eq!(c.drop_unhandled_l4, 0);
     assert_eq!(c.drop_host_resource, 2);
-    assert_eq!(total_accounted(&c), 2);
+    assert_eq!(total_accounted(&c) + c.drop_host_resource, 2);
     assert!(drain(&mut b).is_empty());
 }
 
 #[test]
+fn tcp_is_served_and_no_longer_counted_unhandled() {
+    let mut b = backend();
+    run(&mut b, &tcp_syn_frame(EXTERNAL, 80));
+    run(&mut b, &tcp_syn_frame(GATEWAY_IP, 80));
+    let c = b.counters();
+    assert_eq!((c.drop_unhandled_l4, c.tcp_segments), (0, 2));
+    assert_eq!(total_accounted(&c), 2);
+    // A SYN-ACK from the scripted host for the first, a refusal for the second.
+    assert_eq!(drain(&mut b).len(), 2);
+}
+
+#[test]
 fn product_backend_never_reaches_the_host_loopback() {
-    let mut product = backend();
+    let product_host = super::tcp_tests::scripted_host();
+    let mut product = NatBackend::with_policy_and_tcp_host(
+        policy(),
+        Box::new(super::tcp_tests::FakeHost(product_host.clone())),
+    );
     run(&mut product, &tcp_syn_frame(Ipv4Addr::LOCALHOST, 80));
     assert_eq!(product.counters().drop_policy_dst, 1);
-    assert_eq!(product.counters().drop_unhandled_l4, 0);
-    let mut test_backend = NatBackend::with_policy(policy().allow_loopback_for_tests());
+    assert_eq!(product.counters().tcp_segments, 0);
+    assert!(
+        product_host.lock().unwrap().streams.is_empty(),
+        "no socket to the loopback"
+    );
+    let test_host = super::tcp_tests::scripted_host();
+    let mut test_backend = NatBackend::with_policy_and_tcp_host(
+        policy().allow_loopback_for_tests(),
+        Box::new(super::tcp_tests::FakeHost(test_host.clone())),
+    );
     run(&mut test_backend, &tcp_syn_frame(Ipv4Addr::LOCALHOST, 80));
     assert_eq!(test_backend.counters().drop_policy_dst, 0);
-    assert_eq!(test_backend.counters().drop_unhandled_l4, 1);
+    assert_eq!(test_backend.counters().tcp_segments, 1);
+    assert_eq!(test_host.lock().unwrap().streams.len(), 1);
 }
 
 #[test]
@@ -1383,7 +1406,9 @@ fn backend_accounts_for_every_frame_of_a_garbage_stream() {
         c.tx_frames + c.drop_runt + c.drop_oversize + c.drop_tx_queue_full
     );
     // Every accepted frame ended in exactly one counter after processing.
-    assert_eq!(c.tx_frames, total_accounted(&c));
+    // The scripted TCP host of this backend never fails, so drop_host_resource here is the fate of
+    // a UDP datagram or an echo request whose host socket could not be created.
+    assert_eq!(c.tx_frames, total_accounted(&c) + c.drop_host_resource);
 }
 
 // ---- Frames built for the guest ---------------------------------------------------------------
