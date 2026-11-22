@@ -14,8 +14,6 @@
 //! no round-trip estimation (the retransmission timeout is fixed by the policy). Choices the document
 //! leaves open and this code makes:
 //!
-//! - The SYN-ACK is not retransmitted by a timer (the guest's own SYN retransmissions get a new
-//!   SYN-ACK), so that an opening that is never completed lives for the 240 s of L11.
 //! - After a timeout the unacknowledged data is sent again from the oldest byte (go back N); the first
 //!   segment is sent even when the guest window has shrunk meanwhile.
 //! - A zero guest window with data waiting and nothing in flight starts a probe (an empty ACK one byte
@@ -36,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use super::bump;
 use super::ctx::Ctx;
-use super::flow::{FlowKey, FlowProto};
+use super::flow::{FlowError, FlowKey, FlowProto};
 use super::frame::{
     DstClass, GUEST_IP, Ipv4Packet, PROTO_TCP, TcpOut, TcpSegment, build_tcp_segment,
 };
@@ -49,13 +47,15 @@ pub const TCP_WINDOW: u16 = 65_535;
 pub const TCP_BUFFER: usize = 65_536;
 /// L9: how long a host connect may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// L10: the first retransmission timeout, its ceiling, and the number of retransmissions.
+/// L10: the first retransmission timeout, its ceiling, and the number of retransmissions of the
+/// SYN-ACK, data and FIN.
 pub const RTO_INITIAL: Duration = Duration::from_secs(1);
 pub const RTO_MAX: Duration = Duration::from_secs(8);
 pub const MAX_RETRANSMITS: u8 = 6;
-/// L11: idle limits of an established flow and of a half-closed or not yet completed one.
+/// L11: idle limits of an established flow (also with one FIN) and of an opening or closing one
+/// (RFC 5382, REQ-5: 2 h 4 min established, 4 min transitory).
 pub const IDLE_ESTABLISHED: Duration = Duration::from_secs(7_440);
-pub const IDLE_HALF_OPEN: Duration = Duration::from_secs(240);
+pub const IDLE_TRANSITORY: Duration = Duration::from_secs(240);
 /// L19: how long a flow stays after the FIN exchange.
 pub const FIN_LINGER: Duration = Duration::from_secs(2);
 /// RFC 6691: the MSS of a peer that announces none.
@@ -369,10 +369,6 @@ impl TcpFlow {
         data: &[u8],
     ) -> bool {
         let window = self.advertised_window();
-        if window == 0 && self.last_adv_window != 0 {
-            bump(&mut ctx.counters.tcp_zero_window);
-        }
-        self.last_adv_window = window;
         let out = TcpOut {
             src_port: key.dst_port,
             dst_port: key.guest_port,
@@ -382,7 +378,16 @@ impl TcpFlow {
             window,
             mss: with_mss.then_some(TCP_MSS),
         };
-        emit(ctx, key, &out, data)
+        let sent = emit(ctx, key, &out, data);
+        // What the guest was told changes only when the segment reached the L3 queue, so a lost
+        // window update is tried again.
+        if sent {
+            if window == 0 && self.last_adv_window != 0 {
+                bump(&mut ctx.counters.tcp_zero_window);
+            }
+            self.last_adv_window = window;
+        }
+        sent
     }
 
     fn send_ack(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) {
@@ -489,6 +494,9 @@ impl TcpFlow {
                     return Outcome::Keep;
                 }
                 self.phase = Phase::Open;
+                self.retries = 0;
+                self.rto = RTO_INITIAL;
+                self.rto_deadline = None;
                 self.snd_una = seg.ack;
                 self.snd_nxt = seg.ack;
                 self.snd_max = seg.ack;
@@ -524,6 +532,10 @@ impl TcpFlow {
         }
         if !seg.data.is_empty() || seg.flags & FIN != 0 {
             self.accept_data(seg, ctx.counters);
+            self.send_ack(ctx, key);
+        } else if seg.seq != self.rcv_nxt {
+            // An empty segment outside the sequence (keep-alive, window probe) is answered with an ACK
+            // (RFC 9293, section 3.10.7.4); it is not counted as out of order data.
             self.send_ack(ctx, key);
         }
         self.check_linger(now);
@@ -569,7 +581,7 @@ impl TcpFlow {
 
     fn host_failed(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) -> bool {
         bump(&mut ctx.counters.tcp_host_reset);
-        send_reset(ctx, key, self.snd_nxt, self.rcv_nxt, RST | ACK);
+        send_reset(ctx, key, self.snd_max, self.rcv_nxt, RST | ACK);
         false
     }
 
@@ -616,18 +628,24 @@ impl TcpFlow {
     /// A window update after the host socket drained a buffer that had closed the window.
     fn send_window_update(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey) {
         if self.last_adv_window == 0
+            && ctx.rx_has_room()
             && (self.to_host.free() >= usize::from(TCP_MSS) || self.to_host.is_empty())
         {
             self.send_ack(ctx, key);
         }
     }
 
-    /// Sends the oldest unacknowledged segment again and goes back to it (go back N).
-    fn retransmit(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey, now: Instant) {
+    /// One more retransmission: counts it, doubles the timeout up to the ceiling, restarts the timer.
+    fn back_off(&mut self, ctx: &mut Ctx<'_>, now: Instant) {
         bump(&mut ctx.counters.tcp_retransmits);
         self.retries += 1;
         self.rto = (self.rto * 2).min(RTO_MAX);
         self.rto_deadline = Some(now + self.rto);
+    }
+
+    /// Sends the oldest unacknowledged segment again and goes back to it (go back N).
+    fn retransmit(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey, now: Instant) {
+        self.back_off(ctx, now);
         self.snd_nxt = self.snd_una;
         let seq = self.snd_una;
         let buffered = self.to_guest.len();
@@ -643,6 +661,28 @@ impl TcpFlow {
         }
     }
 
+    /// The retransmission timer of L10 for the SYN-ACK, data and FIN: when it has run out, wait while
+    /// the NIC does not take frames (a loss now would be ours, not the network's), else send the
+    /// oldest unacknowledged segment again, or give up with RST after the last retransmission.
+    fn check_rto(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey, now: Instant) -> Outcome {
+        if !self.rto_deadline.is_some_and(|deadline| now >= deadline) {
+            return Outcome::Keep;
+        }
+        if ctx.rx_stalled_for() >= self.rto {
+            self.rto_deadline = Some(now + self.rto);
+        } else if self.retries >= MAX_RETRANSMITS {
+            bump(&mut ctx.counters.tcp_giveups);
+            send_reset(ctx, key, self.snd_max, self.rcv_nxt, RST | ACK);
+            return Outcome::Remove;
+        } else if self.phase == Phase::SynReceived {
+            self.back_off(ctx, now);
+            self.send_synack(ctx, key);
+        } else {
+            self.retransmit(ctx, key, now);
+        }
+        Outcome::Keep
+    }
+
     /// Timers of an open flow: linger, idle, retransmission and the zero-window probe.
     fn run_timers(&mut self, ctx: &mut Ctx<'_>, key: &FlowKey, now: Instant) -> Outcome {
         if self.linger_deadline.is_some_and(|deadline| now >= deadline) {
@@ -654,17 +694,8 @@ impl TcpFlow {
         }
         if self.snd_una == self.snd_max {
             self.rto_deadline = None;
-        } else if self.rto_deadline.is_some_and(|deadline| now >= deadline) {
-            if ctx.rx_stalled_for() >= self.rto {
-                // The NIC does not take frames: a loss now would be ours, not the network's (L10).
-                self.rto_deadline = Some(now + self.rto);
-            } else if self.retries >= MAX_RETRANSMITS {
-                bump(&mut ctx.counters.tcp_giveups);
-                send_reset(ctx, key, self.snd_nxt, self.rcv_nxt, RST | ACK);
-                return Outcome::Remove;
-            } else {
-                self.retransmit(ctx, key, now);
-            }
+        } else if self.check_rto(ctx, key, now) == Outcome::Remove {
+            return Outcome::Remove;
         }
         let waiting = self.to_guest.len() > self.snd_nxt.wrapping_sub(self.snd_una) as usize;
         if self.snd_wnd == 0 && self.snd_una == self.snd_max && waiting {
@@ -686,8 +717,10 @@ impl TcpFlow {
     }
 
     fn idle_expired(&self, now: Instant) -> bool {
-        let limit = if self.phase != Phase::Open || self.guest_fin || self.host_eof {
-            IDLE_HALF_OPEN
+        // RFC 5382 treats a connection with one FIN as established; it is transitory while opening
+        // (SYN-ACK sent, no ACK) and closing (FIN from both sides).
+        let limit = if self.phase != Phase::Open || (self.guest_fin && self.host_eof) {
+            IDLE_TRANSITORY
         } else {
             IDLE_ESTABLISHED
         };
@@ -701,6 +734,9 @@ impl TcpFlow {
                 Ok(true) => {
                     self.phase = Phase::SynReceived;
                     self.last_activity = now;
+                    self.rto = RTO_INITIAL;
+                    self.retries = 0;
+                    self.rto_deadline = Some(now + RTO_INITIAL);
                     self.send_synack(ctx, key);
                     Outcome::Keep
                 }
@@ -722,7 +758,7 @@ impl TcpFlow {
                     bump(&mut ctx.counters.tcp_idle_expired);
                     Outcome::Remove
                 } else {
-                    Outcome::Keep
+                    self.check_rto(ctx, key, now)
                 }
             }
             Phase::Open => {
@@ -838,8 +874,17 @@ impl TcpEngine {
         seg: &TcpSegment<'_>,
         now: Instant,
     ) {
-        if ctx.open_flow(*key).is_err() {
-            return;
+        match ctx.open_flow(*key) {
+            Ok(()) => {}
+            // The limit refused it and the counter of L4 is already increased.
+            Err(FlowError::LimitReached(_)) => return,
+            Err(FlowError::Exists) => {
+                // The shared table holds a TCP flow this engine does not know: a handler bug, not
+                // something a guest can cause. Nothing is lost silently in a release build: the SYN
+                // still counts in `tcp_segments`.
+                debug_assert!(false, "flow table and TCP engine disagree about {key:?}");
+                return;
+            }
         }
         let mut quoted = [0u8; 28];
         let header = packet.header.len().min(20);
