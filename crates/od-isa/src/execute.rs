@@ -53094,6 +53094,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // masks every exception, FNSAVE re-initialises like FNINIT (FIP, FCS, FDP, FDS cleared).
         let save_registers = instruction.operation == Operation::FnsaveRax;
         let length: u64 = if save_registers { 108 } else { 28 };
+        if instruction.opcode.byte == 0x9b {
+            // S2-32f: the spelling `9B D9 30` / `9B DD 30` is FWAIT and then the non-waiting form. The
+            // FWAIT part has retired (the bounded profile admits no pending exception, so it raised
+            // nothing), so a fault of the store points at the FNSTENV/FNSAVE byte, `9B` + 1 (Intel SDM,
+            // FSTENV/FSAVE: "if an exception is generated for either of these instructions, the save EIP
+            // points to the instruction that caused the exception"). Success sets RIP to `next_rip` below.
+            state.rip = state.rip.wrapping_add(1);
+        }
         let destination = MemoryOperand {
             base: AddressBase::Register(Register::Rax),
             index: None,
@@ -72185,6 +72193,11 @@ fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
         }
     }
     if cr0 & 0xc != 0 {
+        if fwait {
+            // S2-32f: CR0.EM, or CR0.TS with MP clear, is no condition of FWAIT: the #NM is that of the
+            // FNSTENV/FNSAVE part, after the FWAIT part retired, so the saved RIP is `9B` + 1.
+            state.rip = state.rip.wrapping_add(1);
+        }
         return Ok(StepOutcome::Fault(ArchitecturalFault {
             vector: 7,
             error_code: None,

@@ -12582,6 +12582,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
     /// byte included, or a fetch error on one of the two bytes consumes nothing (the length is
     /// restored and the error is left to the decode of the next instruction).
     fn fwait_environment_spelling(&mut self) -> Option<Operation> {
+        // The look-ahead never leaves the 4 KiB page of the `9B` byte: `9B` is at `start + length - 1`,
+        // so when it or the byte after it is the last byte of its page no byte after `9B` is fetched
+        // (a bare FWAIT of its own byte: no fetch, no page walk and no recorded error of an adapter
+        // for the next page). A spelling across a page boundary is FWAIT and the non-waiting form
+        // as two instructions; the second faults with the same RIP, `9B` + 1.
+        let next = self.start.wrapping_add(u64::from(self.length));
+        if next % 0x1000 == 0 || next % 0x1000 == 0xfff {
+            return None;
+        }
         let start = self.length;
         let operation = (|| {
             let escape = self.byte().ok()?;
