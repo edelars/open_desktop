@@ -1151,6 +1151,14 @@ fn the_two_paging_snapshots_exclude_each_other_by_construction() {
             bits: EFER_LME_LMA
         })
     );
+    // LMA alone is likewise a missing bit and not PAE paging: it fixes the mutant that tests only LME.
+    assert_eq!(
+        Long64ProbeConfig::new(cr0, PDPT, 0x20, 1 << 10),
+        Err(ProbeConfigError::RequiredBits {
+            register: "EFER",
+            bits: EFER_LME_LMA
+        })
+    );
     // IA-32e registers are not a PAE snapshot.
     assert!(PaeProbeConfig::new(cr0, PDPT, 0x20, EFER_LME_LMA | EFER_NXE, pdptes).is_err());
     assert!(PaeProbeConfig::new(cr0, PDPT, 0x20, EFER_NXE, pdptes).is_ok());

@@ -1886,7 +1886,7 @@ mod tests {
         enum Seen {
             Read(u32),
             Written,
-            PageFault { error_code: u32, cr2: u32 },
+            PageFault { error_code: u32, cr2: u32, rip: u64 },
             Operand(u64),
         }
         type Step = (u32, PrivilegeLevel, Option<u32>);
@@ -1937,6 +1937,7 @@ mod tests {
                 Err(TrackedAccessError::PageFault { record, .. }) => Seen::PageFault {
                     error_code: record.fault().error_code.unwrap(),
                     cr2: record.cr2_value() as u32,
+                    rip: record.saved_rip(),
                 },
                 Err(TrackedAccessError::OperandPhysical { address, .. }) => {
                     Seen::Operand(address.get())
@@ -1970,6 +1971,7 @@ mod tests {
                         Seen::PageFault {
                             error_code: record.fault().error_code.unwrap(),
                             cr2: record.cr2_value() as u32,
+                            rip: record.saved_rip(),
                         }
                     } else {
                         match adapter.memory_error() {
@@ -2010,26 +2012,49 @@ mod tests {
             0,
             "no dirty bit for the uncovered page"
         );
-        // A dword that crosses from the RAM page into the Local APIC page is served byte by byte, and
-        // an MMIO byte of a crossing operand never reaches the device: a typed refusal.
+        // A dword that crosses from the RAM page into the Local APIC page: the operand never reaches the
+        // device, and nothing is committed. A load is the typed refusal of the MMIO byte (the walk of
+        // the crossing page without device access); a store walks both pages with write intent first,
+        // so the refusal comes before the first RAM byte is written: no committed range, the RAM bytes
+        // before the boundary keep their value, and the table (A and D of both entries) and RAM
+        // are equal to what they were before.
         let before = state_of(&mut b);
-        let mut committed = Vec::new();
-        let mut record = |range| committed.push(range);
-        let mut adapter = b.pae_memory_adapter(1, 0x8200, &mut record).unwrap();
+        let boundary_before = ram(&mut b, MARKER + 0xffe, 2);
         let context = AccessContext {
             mode: InstructionMode::Long64,
             privilege: Ring0,
             origin: AccessOrigin::Explicit,
         };
-        let mut buffer = [0u8; 4];
-        assert!(adapter.read(0x20_0ffe, context, &mut buffer).is_err());
-        assert!(adapter.memory_error().is_some());
-        drop(adapter);
-        assert_eq!(
-            state_of(&mut b)[16 + 8..16 + 16],
-            before[16 + 8..16 + 16],
-            "no D set"
-        );
+        for store in [false, true] {
+            let mut committed = Vec::new();
+            let mut record = |range| committed.push(range);
+            let mut adapter = b.pae_memory_adapter(1, 0x8200, &mut record).unwrap();
+            let mut buffer = [0u8; 4];
+            let result = if store {
+                adapter.write(0x20_0ffe, context, &0xA1B2_C3D4u32.to_le_bytes())
+            } else {
+                adapter.read(0x20_0ffe, context, &mut buffer)
+            };
+            assert!(result.is_err(), "store {store}");
+            // The load meets the MMIO byte of the operand; the store's walk of the crossing page is
+            // refused as an unavailable device. Both name the Local APIC page.
+            let refused_at = match adapter.memory_error() {
+                Some(TrackedAccessError::OperandPhysical { address, .. }) if !store => {
+                    address.get()
+                }
+                Some(TrackedAccessError::DeviceUnavailable { address }) if store => address.get(),
+                other => panic!("store {store}: {other:?}"),
+            };
+            assert_eq!(refused_at, LOCAL_APIC_MMIO_BASE, "store {store}");
+            drop(adapter);
+            assert!(committed.is_empty(), "store {store}: committed writes");
+            assert_eq!(state_of(&mut b), before, "store {store}: table and RAM");
+            assert_eq!(
+                ram(&mut b, MARKER + 0xffe, 2),
+                boundary_before,
+                "store {store}: the bytes before the boundary"
+            );
+        }
     }
 
     /// S2-25 remainder: the trampoline of the PAE tests with CR4.PSE (0x10) in place of PAE (0x20) is
