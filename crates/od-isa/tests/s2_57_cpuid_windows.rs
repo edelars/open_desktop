@@ -77,7 +77,7 @@ const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
         Reg::Edx1,
         0,
         "FPU",
-        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR exist only in the bounded profile of S2-32a/S2-32b/S2-32c and are not connected to the CPL0 set (x87 state is None there), FLDENV and the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
+        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR, FLDENV exist only in the bounded profile of S2-32a/S2-32b/S2-32c/S2-32d and are not connected to the CPL0 set (x87 state is None there), the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
     ),
     (Reg::Edx1, 3, "PSE", "no task"),
     (
@@ -806,9 +806,9 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
     };
     // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions (the x87 half of
     // the FP cell is lent only to MMX forms), so every x87 arithmetic form is refused in the set. The
-    // forms of S2-32a/S2-32b/S2-32c exist in the bounded x87 profile of `step` but are not connected to the
+    // forms of S2-32a/S2-32b/S2-32c/S2-32d exist in the bounded x87 profile of `step` but are not connected to the
     // set: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20), FBSTP m80
-    // [RAX] (DF 30), FNSTENV (D9 30), FNSAVE (DD 30) and FRSTOR (DD 20).
+    // [RAX] (DF 30), FNSTENV (D9 30), FNSAVE (DD 30), FRSTOR (DD 20) and FLDENV (D9 20).
     for code in [
         &[0xd9u8, 0xfe][..],
         &[0xd9, 0xf3],
@@ -819,6 +819,7 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         &[0xd9, 0x30],
         &[0xdd, 0x30],
         &[0xdd, 0x20],
+        &[0xd9, 0x20],
     ] {
         unsupported(code, &|cpu| {
             cpu.x87 = None;
@@ -861,9 +862,14 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
             "FNSTENV with x87 state: {outcome:?}"
         );
     }
-    // The same three forms through the set (x87 = None): refused with no state change and with the 108-byte
-    // image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR loads nothing).
-    for code in [&[0xd9u8, 0x30][..], &[0xdd, 0x30], &[0xdd, 0x20]] {
+    // The same four forms through the set (x87 = None): refused with no state change and with the 108-byte
+    // image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR/FLDENV load nothing).
+    for code in [
+        &[0xd9u8, 0x30][..],
+        &[0xdd, 0x30],
+        &[0xdd, 0x20],
+        &[0xd9, 0x20],
+    ] {
         let mut cpu = cpu();
         cpu.x87 = None;
         cpu.gpr[Register::Rax as usize] = DATA;

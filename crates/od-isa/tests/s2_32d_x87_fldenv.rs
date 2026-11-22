@@ -489,6 +489,29 @@ fn memory_faults_leave_the_state_alone() {
 }
 
 #[test]
+fn an_address_whose_28_bytes_wrap_past_u64_max_is_an_address_overflow() {
+    // Same behaviour as FRSTOR: the end address is computed with checked arithmetic before the
+    // canonical check, so a start above u64::MAX - 27 is the model's AddressOverflow error (not #GP)
+    // and nothing is read or changed (u64::MAX - 27 itself does not wrap: it is canonical, so the read
+    // goes to memory).
+    for address in [u64::MAX - 26, u64::MAX - 1, u64::MAX] {
+        let mut state = state_with(Some(fixture()), address);
+        let mut ram = Ram::new(&FLDENV);
+        let before = (state.clone(), ram.bytes.clone());
+        let outcome = run(&mut state, &mut ram);
+        assert!(
+            matches!(
+                outcome,
+                Err(MemoryError::AddressOverflow { address: a, length: 28 }) if a == address
+            ),
+            "{address:#x}: {outcome:?}"
+        );
+        assert_eq!((state, ram.bytes), before);
+        assert!(ram.writes.is_empty() && ram.reads.is_empty());
+    }
+}
+
+#[test]
 fn decoder_and_the_fwait_pair() {
     let decode = |code: &[u8]| {
         let mut ram = Ram::new(code);
