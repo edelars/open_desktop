@@ -37,6 +37,112 @@ impl MsrProfile {
     }
 }
 
+/// S2-26h: the Windows-boot MSR file of the CPL0 profile set (`Cpl0ProfileSet::with_msr_windows`).
+///
+/// The list is the set of MSRs a Windows x64 kernel/loader is expected to touch during boot
+/// (hypothesis recorded in ADR-0013 W-18; no Windows binary was observed): IA32_APIC_BASE (`0x1B`),
+/// IA32_MISC_ENABLE (`0x1A0`), IA32_PAT (`0x277`), IA32_SYSENTER_CS/ESP/EIP (`0x174..=0x176`),
+/// IA32_EFER (`0xC0000080`), IA32_STAR/LSTAR/CSTAR/FMASK (`0xC0000081..=0xC0000084`) and
+/// IA32_FS_BASE/GS_BASE/KERNEL_GS_BASE (`0xC0000100..=0xC0000102`). IA32_TSC (`0x10`) is NOT in
+/// the list: the TSC policy is withheld pending the owner decision (S2-57), so `RDMSR`/`WRMSR`
+/// of `0x10` raise `#GP(0)` like any unimplemented MSR. MTRR MSRs are not listed because the
+/// Windows profile does not declare MTRR (CPUID.1:EDX[12]).
+pub const fn windows_msr_is_known(index: u32) -> bool {
+    matches!(
+        index,
+        0x1b | 0x1a0 | 0x277 | 0x174..=0x176 | 0xc000_0080..=0xc000_0084 | 0xc000_0100..=0xc000_0102
+    )
+}
+
+/// Indexes of the Windows list whose value lives in a cell owned by the Windows member itself or
+/// by one of the guest MSR cells of the set (everything except APIC_BASE, EFER, FS_BASE, GS_BASE).
+pub const fn windows_msr_is_cell_owned(index: u32) -> bool {
+    matches!(
+        index,
+        0x1a0 | 0x277 | 0x174..=0x176 | 0xc000_0081..=0xc000_0084 | 0xc000_0102
+    )
+}
+
+/// IA32_PAT at power-up (SDM Vol. 3A 14.12.4): PA0 = WB, PA1 = WT, PA2 = UC-, PA3 = UC, repeated.
+pub const IA32_PAT_RESET: u64 = 0x0007_0406_0007_0406;
+/// IA32_MISC_ENABLE of the virtual CPU: only bit 0 (fast-string enable) is modelled; the other
+/// bits (PMU, BTS/PEBS availability, EIST, MONITOR, XD disable, ...) read as 0. The bit layout is
+/// from the SDM Vol. 4 table, which is not in the repository text: model decision, not verified.
+pub const IA32_MISC_ENABLE_RESET: u64 = 1;
+const IA32_MISC_ENABLE_WRITABLE: u64 = 1;
+
+/// Result of a Windows-list `WRMSR` against the current cell value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowsMsrWrite {
+    /// The cell takes the value.
+    Accept,
+    /// Architectural `#GP(0)`: reserved bits set or a non-canonical address.
+    GeneralProtection,
+    /// The value touches a bit the model does not implement: fail closed, no state change.
+    Unsupported,
+}
+
+const fn canonical48(value: u64) -> bool {
+    let high = value >> 47;
+    high == 0 || high == 0x1_ffff
+}
+
+/// Whether every PAT entry holds an encodable memory type (SDM Vol. 3A Table 14-10: 0, 1, 4, 5, 6,
+/// 7; the five high bits of each byte are reserved).
+const fn pat_value_valid(value: u64) -> bool {
+    let mut entry = 0;
+    while entry < 8 {
+        let byte = (value >> (entry * 8)) & 0xff;
+        if !matches!(byte, 0 | 1 | 4 | 5 | 6 | 7) {
+            return false;
+        }
+        entry += 1;
+    }
+    true
+}
+
+/// Write rules of the cell-owned Windows MSRs (SDM Vol. 2D WRMSR: reserved bits and non-canonical
+/// IA32_LSTAR/SYSENTER_ESP/SYSENTER_EIP/KERNEL_GS_BASE raise `#GP(0)`).
+///
+/// - SYSENTER_CS: bits 63:32 reserved (the register is a 32-bit value, SDM SYSEXIT page).
+/// - SYSENTER_ESP/EIP, LSTAR, KERNEL_GS_BASE: canonical 48-bit address.
+/// - STAR, CSTAR: any value (CSTAR is not in the WRMSR canonical list).
+/// - FMASK: bits 63:32 reserved (SDM Vol. 3A Figure 6-14).
+/// - PAT: every entry an encodable type (Table 14-10).
+/// - MISC_ENABLE: only bit 0 may change; any other change is `Unsupported`.
+pub const fn windows_msr_write_decision(index: u32, current: u64, value: u64) -> WindowsMsrWrite {
+    let ok = match index {
+        0x174 | 0xc000_0084 => value >> 32 == 0,
+        0x175 | 0x176 | 0xc000_0082 | 0xc000_0102 => canonical48(value),
+        0xc000_0081 | 0xc000_0083 => true,
+        0x277 => pat_value_valid(value),
+        0x1a0 => {
+            return if (current ^ value) & !IA32_MISC_ENABLE_WRITABLE == 0 {
+                WindowsMsrWrite::Accept
+            } else {
+                WindowsMsrWrite::Unsupported
+            };
+        }
+        _ => return WindowsMsrWrite::Unsupported,
+    };
+    if ok {
+        WindowsMsrWrite::Accept
+    } else {
+        WindowsMsrWrite::GeneralProtection
+    }
+}
+
+/// Whether a caller-supplied cell value is a state the Windows member can hold.
+pub const fn windows_msr_cell_value_valid(index: u32, value: u64) -> bool {
+    match index {
+        0x1a0 => value & !IA32_MISC_ENABLE_WRITABLE == 0,
+        _ => matches!(
+            windows_msr_write_decision(index, value, value),
+            WindowsMsrWrite::Accept
+        ),
+    }
+}
+
 /// CPU-owned state for the separate, exact IA32_APIC_BASE profile.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApicBaseCpu {

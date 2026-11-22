@@ -1954,6 +1954,8 @@ pub struct Cpl0ProfileSet<'a> {
     msr_kernel_gs_base: Option<&'a Cell<u64>>,
     msr_tdx_keyid_partitioning_read: bool,
     msr_apic_base: Option<bool>,
+    /// S2-26h: the Windows-boot MSR file; `(IA32_PAT cell, IA32_MISC_ENABLE cell)`.
+    msr_windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1985,6 +1987,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_kernel_gs_base: None,
             msr_tdx_keyid_partitioning_read: false,
             msr_apic_base: None,
+            msr_windows: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2217,6 +2220,88 @@ impl<'a> Cpl0ProfileSet<'a> {
     pub const fn with_msr_apic_base_for_vcpu(mut self, is_bsp: bool) -> Self {
         self.msr_apic_base = Some(is_bsp);
         self
+    }
+
+    /// S2-26h: admit the Windows-boot MSR file (see [`crate::msr::windows_msr_is_known`]). The member
+    /// owns IA32_PAT (`0x277`, `pat`) and IA32_MISC_ENABLE (`0x1A0`, `misc_enable`) and adds read
+    /// access and write rules to the cells of the other members of the set, so the set must also carry
+    /// `with_msr(EferReadOnlyV1)`, `with_msr_efer_write`, `with_msr_bases`, `with_msr_apic_base`,
+    /// `with_msr_star_write`, `with_msr_lstar_write`, `with_msr_cstar_write`,
+    /// `with_msr_syscall_mask_write`, `with_msr_sysenter_cs_write`, `with_msr_sysenter_stack_write` and
+    /// `with_msr_kernel_gs_base_write`; a set without one of them is refused at entry
+    /// ([`Cpl0ProfileSetInputError::WindowsMsrMembersMissing`]), and so is a cell holding a value its
+    /// MSR could not hold ([`Cpl0ProfileSetInputError::WindowsMsrCellInvalid`]).
+    ///
+    /// With the member, at CPL0 under Long64 with the bare two-byte `0F 32`/`0F 30`: `RDMSR` of every
+    /// cell-owned index returns the cell in EDX:EAX; `WRMSR` follows
+    /// [`crate::msr::windows_msr_write_decision`] (reserved bits and non-canonical addresses are
+    /// `#GP(0)`, a MISC_ENABLE bit the model lacks is `Unsupported`, both without a state change);
+    /// `RDMSR` and `WRMSR` of any index outside the list (also IA32_TSC, `0x10`) are `#GP(0)`, and
+    /// at CPL3 every `RDMSR`/`WRMSR` is `#GP(0)`. APIC_BASE, EFER, FS_BASE and GS_BASE keep the
+    /// semantics of their own members. The CPUID MSR bit is not declared by this member (S2-57).
+    pub const fn with_msr_windows(
+        mut self,
+        pat: &'a Cell<u64>,
+        misc_enable: &'a Cell<u64>,
+    ) -> Self {
+        self.msr_windows = Some((pat, misc_enable));
+        self
+    }
+
+    /// S2-26h: the Windows member needs the other MSR members and valid cells.
+    const fn windows_msr_members_present(&self) -> bool {
+        self.msr_windows.is_none()
+            || (matches!(self.msr, Some(MsrProfile::EferReadOnlyV1(_)))
+                && self.msr_efer.is_some()
+                && self.msr_bases
+                && self.msr_apic_base.is_some()
+                && self.msr_star.is_some()
+                && self.msr_lstar.is_some()
+                && self.msr_cstar.is_some()
+                && self.msr_syscall_mask.is_some()
+                && self.msr_sysenter_cs.is_some()
+                && self.msr_sysenter_stack.is_some()
+                && self.msr_kernel_gs_base.is_some())
+    }
+
+    /// S2-26h: every Windows-list cell holds a value its MSR can hold.
+    fn windows_msr_cells_valid(&self) -> bool {
+        use crate::msr::windows_msr_cell_value_valid as valid;
+        let (Some((pat, misc)), Some(star), Some(lstar), Some(cstar), Some(mask), Some(cs)) = (
+            self.msr_windows,
+            self.msr_star,
+            self.msr_lstar,
+            self.msr_cstar,
+            self.msr_syscall_mask,
+            self.msr_sysenter_cs,
+        ) else {
+            return self.msr_windows.is_none();
+        };
+        let (Some((esp, eip)), Some(kgs)) = (self.msr_sysenter_stack, self.msr_kernel_gs_base)
+        else {
+            return false;
+        };
+        valid(0x277, pat.get())
+            && valid(0x1a0, misc.get())
+            && valid(0xc000_0081, star.get())
+            && valid(0xc000_0082, lstar.get())
+            && valid(0xc000_0083, cstar.get())
+            && valid(0xc000_0084, mask.get())
+            && valid(0x174, cs.get())
+            && valid(0x175, esp.get())
+            && valid(0x176, eip.get())
+            && valid(0xc000_0102, kgs.get())
+    }
+
+    /// S2-26h: entry admission of the Windows member.
+    fn windows_msr_admission(&self) -> Result<(), Cpl0ProfileSetInputError> {
+        if !self.windows_msr_members_present() {
+            return Err(Cpl0ProfileSetInputError::WindowsMsrMembersMissing);
+        }
+        if !self.windows_msr_cells_valid() {
+            return Err(Cpl0ProfileSetInputError::WindowsMsrCellInvalid);
+        }
+        Ok(())
     }
 
     /// S4-38L9d: admit the FP-state instructions the Linux kernel runs in `fpu__init_system`:
@@ -2554,6 +2639,11 @@ pub enum Cpl0ProfileSetInputError {
     /// S4-39e: `with_syscall` was selected but the set lacks one of the EFER, STAR, LSTAR or
     /// SYSCALL_MASK cells the instruction consumes.
     SyscallCellsMissing,
+    /// S2-26h: the set carries `with_msr_windows` but lacks one of the MSR members it builds on.
+    WindowsMsrMembersMissing,
+    /// S2-26h: a Windows-list MSR cell holds a value the MSR cannot hold (non-canonical address,
+    /// reserved bits, an unencodable PAT type, a MISC_ENABLE bit the model lacks).
+    WindowsMsrCellInvalid,
 }
 
 const fn cr3_profiles_match(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>) -> bool {
@@ -2627,6 +2717,8 @@ struct GuestMsrCells<'a> {
     tdx_keyid_partitioning_read: bool,
     /// The BSP bit of the fixed IA32_APIC_BASE value when the member is selected.
     apic_base: Option<bool>,
+    /// S2-26h: the Windows MSR file, `(IA32_PAT cell, IA32_MISC_ENABLE cell)`.
+    windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -30537,6 +30629,7 @@ pub fn run_with_cpl3_profile_set(
     if !set.syscall_cells_present() {
         return Err(Cpl0ProfileSetInputError::SyscallCellsMissing);
     }
+    set.windows_msr_admission()?;
     let mut rdtsc_source = rdtsc_source;
     let mut retired = 0u64;
     let mut rflags_defined = initial_rflags_defined;
@@ -33804,6 +33897,7 @@ fn run_cpl0_profile_set_inner(
     if !set.syscall_cells_present() {
         return Err(Error::SyscallCellsMissing);
     }
+    set.windows_msr_admission()?;
     if let Some(cell) = set.fp_state {
         // S4-38L9d: the FP instructions of the member run only on a CPU that declares them.
         let declared = set.cpuid.is_some_and(|profile| {
@@ -33893,6 +33987,7 @@ fn run_cpl0_profile_set_inner(
                 || set.msr_kernel_gs_base.is_some()
                 || set.msr_tdx_keyid_partitioning_read
                 || set.msr_apic_base.is_some()
+                || set.msr_windows.is_some()
                 || set.syscall
             {
                 Some(GuestMsrCells {
@@ -33906,6 +34001,7 @@ fn run_cpl0_profile_set_inner(
                     kernel_gs_base: set.msr_kernel_gs_base,
                     tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
                     apic_base: set.msr_apic_base,
+                    windows: set.msr_windows,
                     syscall: set.syscall,
                 })
             } else {
@@ -47723,6 +47819,76 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // profile keeps every index it handles; only the two base indexes
         // it does not handle fall through to the base profiles.
         let msr_index = state.gpr[Register::Rcx as usize] as u32;
+        // S2-26h: the Windows MSR file. Only for the bare two-byte `0F 32`/`0F 30` under Long64 in
+        // a set that carries the member; an MSR profile that handles the index keeps it, and every
+        // other form falls through to the existing refusals below. At CPL > 0 every access is
+        // `#GP(0)`; at CPL0 an index outside the list is `#GP(0)` (the `0x87` read stays with its
+        // own member), a cell-owned index reads/writes its cell, and the indexes of the other
+        // members (APIC_BASE, EFER, FS_BASE, GS_BASE) fall through to them.
+        if let Some(cells) = guest_msr_cells
+            && let Some((pat_cell, misc_enable_cell)) = cells.windows
+            && control_policy.is_some()
+            && context.mode.eq(&InstructionMode::Long64)
+            && instruction.length == 2
+            && instruction.prefixes == Prefixes::default()
+            && !msr_profile.is_some_and(|profile| profile.handles_index(msr_index))
+        {
+            let gp0 = || {
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }))
+            };
+            if context.privilege != PrivilegeLevel::Ring0 {
+                return gp0();
+            }
+            let tdx_read = instruction.operation == Operation::ReadMsr
+                && msr_index == 0x87
+                && cells.tdx_keyid_partitioning_read;
+            if !crate::msr::windows_msr_is_known(msr_index) && !tdx_read {
+                return gp0();
+            }
+            if crate::msr::windows_msr_is_cell_owned(msr_index) {
+                let cell = match msr_index {
+                    0x1a0 => Some(misc_enable_cell),
+                    0x277 => Some(pat_cell),
+                    0x174 => cells.sysenter_cs,
+                    0x175 => cells.sysenter_esp,
+                    0x176 => cells.sysenter_eip,
+                    0xc000_0081 => cells.star,
+                    0xc000_0082 => cells.lstar,
+                    0xc000_0083 => cells.cstar,
+                    0xc000_0084 => cells.syscall_mask,
+                    _ => cells.kernel_gs_base,
+                };
+                // Admission guarantees the cells; a missing one is a refusal, not a guess.
+                let Some(cell) = cell else {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                };
+                if instruction.operation == Operation::ReadMsr {
+                    let value = cell.get();
+                    state.gpr[Register::Rax as usize] = u64::from(value as u32);
+                    state.gpr[Register::Rdx as usize] = value >> 32;
+                } else {
+                    let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
+                        | u64::from(state.gpr[Register::Rax as usize] as u32);
+                    match crate::msr::windows_msr_write_decision(msr_index, cell.get(), value) {
+                        crate::msr::WindowsMsrWrite::Accept => cell.set(value),
+                        crate::msr::WindowsMsrWrite::GeneralProtection => return gp0(),
+                        crate::msr::WindowsMsrWrite::Unsupported => {
+                            return Ok(StepOutcome::Unsupported {
+                                opcode: instruction.opcode.byte,
+                            });
+                        }
+                    }
+                }
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+        }
         // S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: `WRMSR` of
         // IA32_STAR / IA32_LSTAR / IA32_CSTAR / IA32_SYSCALL_MASK / IA32_SYSENTER_CS /
         // IA32_SYSENTER_ESP / IA32_SYSENTER_EIP / IA32_KERNEL_GS_BASE stores EDX:EAX in
