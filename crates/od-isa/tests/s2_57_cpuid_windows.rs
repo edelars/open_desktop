@@ -805,8 +805,8 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
     };
     // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions; the x87 half of the FP
-    // cell is lent to the MMX forms (S2-39o) and, since S2-32d, to the forms of the bounded x87 profile of
-    // S2-32a/S2-32b/S2-32c (s2_32d_cpl0_x87.rs): FNSTENV/FNSAVE/FRSTOR run in the set, FSIN..FXTRACT and
+    // cell is lent to the MMX forms (S2-39o) and, since S2-32e, to the forms of the bounded x87 profile of
+    // S2-32a/S2-32b/S2-32c (s2_32e_cpl0_x87.rs): FNSTENV/FNSAVE/FRSTOR run in the set, FSIN..FXTRACT and
     // FBLD/FBSTP are gated and then refused while a selector is represented (the set admits no cell without
     // them: no FCS/FDS bypass), and every other x87 arithmetic form stays refused. The FPU bit remains
     // undeclared (S2-57). This test checks the refusal of the forms on a state without x87: FSIN (D9 FE),

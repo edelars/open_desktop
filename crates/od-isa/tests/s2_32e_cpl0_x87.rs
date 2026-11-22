@@ -1,4 +1,4 @@
-//! S2-32d (CPL0 set): the bounded x87 forms of S2-32a/b/c in the CPL0 profile set with the FP member. The x87
+//! S2-32e (CPL0 set): the bounded x87 forms of S2-32a/b/c in the CPL0 profile set with the FP member. The x87
 //! half of the member's cell is moved into the CPU state for the length of one instruction and the bounded profile
 //! of the bare run (`step`, S2-32a/b/c) executes it unchanged; the state is stored back afterwards. The expected
 //! values are the results of the same instruction in the bare run on the same x87 state, the literal images of
