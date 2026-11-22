@@ -716,6 +716,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
+| [ ] | S2-40e | Static inventory of beyond-v1 instruction forms in the selected kernel ELF | Static presence only (5 code sections of the S2-37bi ELF); no gate/predicate reproduction, no runtime/hardware claim; parent S2-39/40 remain open; [data](../reports/data/stage2/s2-40e-linux-beyond-v1-map-v1.json) |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; six handwritten controls plus 1,024 generated cases; 1,030 cases ×2 passed on interpreter and Linux x86_64 native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical Mac acceptance `not_run`; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
@@ -8568,7 +8569,24 @@ S2-39j/k plan and reports. S2-39j remains the normative protocol; S2-39k has a
 Linux x86_64 A/B/A/B acceptance run with 4/4 observations and raw
 `execution_kind=unknown`. This does not establish physical-Mac acceptance or
 close parent S2-39/40.
+#### S2-40e. Static inventory of beyond-v1 instruction forms in the selected kernel ELF
 
+**Status:** documentation and versioned-data slice; parent S2-39/40/41/42 remain open.
+
+The same five code sections of the same built-in kernel ELF scanned by S2-37bi
+were classified by exact mnemonic lists for every family outside
+`od-x86-64-v1-neutral-v0.1`. The ELF contains AVX/AVX2/AVX-512 (about 5,100 sites),
+BMI1/BMI2, PCLMULQDQ/AES-NI/SHA, SSSE3/SSE4.1/SSE4.2, CMPXCHG16B, POPCNT
+(`.altinstr_replacement` only), the XSAVE family, and RDRAND/PKU/FSGSBASE/FRED/
+confidential-computing instructions; the vector code sits in feature-suffixed functions
+and alternatives. Counts per class, section and function are in the
+[manifest](../reports/data/stage2/s2-40e-linux-beyond-v1-map-v1.json) and the
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40e--static-inventory-of-beyond-v1-instruction-forms-in-the-ubuntu-kernel-elf).
+This is static presence only: no CPUID or alternative predicate, call-site gate or branch
+context was reproduced (ISSUE-036), modules/initramfs/userspace were not scanned, and no
+runtime, hardware or oracle run was made. It neither proves necessity of any extension nor
+changes CPUID policy (S2-57). Per-extension decoder/state/semantics tasks under S2-40 item 2
+are created only after a necessity decision.
 ## 10. Системная проверка и приёмка
 
 ### S2-41. Независимо проверить privileged/mode сценарии
