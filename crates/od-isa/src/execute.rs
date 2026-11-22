@@ -71262,7 +71262,8 @@ fn sse2_gate_fault(state: &LongModeState) -> Option<StepOutcome> {
 }
 
 /// S2-39: MASKMOVDQU (`66 0F F7 /r`, Intel SDM Vol. 2B p. 4-1). After [`sse2_gate_fault`] the implicit operand
-/// `[rdi]` (`[edi]` with the `67` prefix; the default segment DS and its overrides have a zero base in 64-bit mode)
+/// `[rdi]` (`[edi]` with the `67` prefix; the default segment DS and the DS/ES/CS/SS overrides have a zero base in
+/// 64-bit mode; FS/GS overrides are refused before this step)
 /// gets the canonical check of its 16 bytes and the range check, with no alignment rule ("The memory location does not
 /// need to be aligned on a natural boundary"). The bytes of the data register whose mask byte has bit 7 set are then
 /// stored by one 16-byte write of the merged value (see below); a fault of any of the 16 bytes is taken whatever the

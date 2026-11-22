@@ -274,7 +274,8 @@ impl Sse2IntKind {
         )
     }
 
-    /// Whether a memory operand has to be 16-byte aligned (exception type 4: `#GP(0)` otherwise).
+    /// Whether a memory operand has to be 16-byte aligned (`#GP(0)` otherwise): exception type 4 for the packed forms,
+    /// type 1 for MOVNTDQ/MOVNTPS/MOVNTPD.
     pub const fn requires_alignment(self) -> bool {
         self.is_packed() || matches!(self, Self::Movnt128)
     }
