@@ -33,13 +33,15 @@
 //! unsupported form, a limit, a segment check) is [`PaeProtectedStop::Refused`], the `#PF` of an access
 //! is [`PaeStepOutcome::Fault`] with the record of the adapter.
 //!
-//! Differences from [`ProtectedCpu::step`] over physical memory, on purpose and checked by the
-//! differential of the tests: the fetch is one adapter walk per byte read (the model walks the same
-//! bytes), the accessed bit of an entry of a walk that later faults stays set (the model discards the
-//! walks of a faulting instruction), the lookahead bytes of an unsupported-form refusal are fetched
-//! through the adapter (their accessed bits are set), a DWORD operand that wraps past 4 GiB is a
-//! memory refusal (the adapter's rule), an MMIO operand reaches its device (the model refuses
-//! non-RAM). No hardware oracle: the SDM rules of the model and of the adapter are the reference.
+//! Differences from [`ProtectedCpu::step`] over physical memory, on purpose; each one has its own test
+//! (the lockstep covers the retiring instructions only, so these cases are separate tests): the fetch is
+//! one adapter walk per byte read (the model walks the same bytes; the lockstep),
+//! the accessed bit of an entry of a walk that later faults stays set (the model discards the walks of a
+//! faulting instruction), the lookahead bytes of an unsupported-form refusal are fetched through the
+//! adapter (the accessed bits of their walks are set; a `#PF` on one is a record, not a fault), a DWORD
+//! operand that wraps past 4 GiB is a memory refusal (the adapter's rule), an MMIO operand reaches its
+//! device (the model refuses non-RAM). `EFLAGS.VM` = 1 is [`PaeProtectedStop::Virtual8086`]. No hardware
+//! oracle: the SDM rules of the model and of the adapter are the reference.
 
 use crate::vcpu::LegacyCpu;
 use crate::{GuestPhysicalRange, LoadedFirmwareBoard, MachineBus, PagedPaeMemoryAdapter};
