@@ -12039,16 +12039,26 @@ FSAVE/FNSAVE p. 3-375 (the mnemonics with F are the non-waiting form preceded by
   a truncated fetch and a fetch error on either of the two bytes leave the bare FWAIT of one byte (the length is restored; a fetch error is left to the decode of the next instruction).
   A prefix before `9B` is refused (`Unsupported`; `F0` keeps the bare FWAIT with LOCK, `#UD` in the set). `9B D9 20` is FWAIT and FLDENV, not a form of its own.
   The fusion is the decoder's choice for the profile; the architecture has two instructions (no interrupt window between them in the fused form).
+  The look-ahead never leaves the 4 KiB page of the `9B` byte: when `9B`, or the byte after it, is the last byte of its page, no byte after `9B` is fetched at all and the
+  instruction is the bare FWAIT of its own byte (no fetch, no page walk, no recorded fault or memory error of the paged adapters or of the bounded fetch capture for the next page).
+  A spelling across a page boundary is therefore decoded as FWAIT and the non-waiting form as two instructions (limitation: the bounded profile refuses the bare FWAIT, `Unsupported`;
+  in the set the two instructions have the same effect and the same RIP of a fault as the fused form).
+- **Saved RIP of a fault.** Intel SDM (FSTENV/FSAVE, "Description"): the assembler issues two instructions, FWAIT and then FNSTENV/FNSAVE, and "if an exception is generated for either
+  of these instructions, the save EIP points to the instruction that caused the exception". Rule: an error of the FWAIT part leaves RIP at `9B` (#NM for CR0.MP with CR0.TS, #MF of a
+  pending unmasked exception); an error after the FWAIT part retired leaves RIP at the FNSTENV/FNSAVE byte, `9B` + 1 (the #NM of CR0.EM, or of CR0.TS with CR0.MP clear, which is no
+  condition of FWAIT; the faults of the store: non-canonical or wrapping address, page fault, unmapped memory). Nothing but RIP changes on a fault (the x87 state, the memory and the
+  cell stay as they were). Without a fault RIP advances by 3.
 - **Bounded profile.** FWAIT is a no-op: the admission of the environment forms (control word one of the twelve all-masked words, ES and B clear) leaves no pending unmasked
   exception. The rest is the non-waiting form (image, one write, state), RIP advances by 3. A state that the SDM would answer with `#MF` at the FWAIT (unmasked control word,
   ES, B) is refused, `Unsupported` with opcode `9B`, no state change, no memory access (carried over). The refusal of the other `D8..DF` forms while a selector is represented
   does not apply (the opcode is `9B`; the environment forms define the selectors themselves).
 - **CPL0 set.** `step_cpl0_bounded_x87` first applies the checks of the FWAIT of `step_cpl0_fp`: CR0 and CR4 modeled (else `Unsupported`), `#NM` for CR0.MP and CR0.TS, a pending unmasked
   exception (ES set and a status exception flag unmasked by the control word) is `#MF` with CR0.NE set (NE clear is `Unsupported`; the policy of the set admits only NE set), then the gates of
-  the x87 forms (`#NM` for CR0.EM or CR0.TS) and the bounded profile. The outcome with a pending exception is that of the bare FWAIT in the set; nothing changes on a fault.
+  the x87 forms (`#NM` for CR0.EM or CR0.TS) and the bounded profile. The outcome with a pending exception is that of the bare FWAIT in the set (RIP `9B`), also with CR0.EM set:
+  EM is no condition of FWAIT, so a pending exception is `#MF`, not `#NM`. The `#NM` of the gates (EM, or TS with MP clear) has RIP `9B` + 1; nothing else changes on a fault.
 - **Oracle.** 324 Core i5-3210M rows (`data/x87_fwait_oracle.c`; `data/x87_fwait_oracle_i5_3210m.txt`): the images of S2-32c through `FNINIT; FRSTOR; FSTENV; FSAVE; FSTENV`, the assembler
   emitting `9B D9 30` and `9B DD 30` (objdump). The answers are byte-identical to those of the non-waiting forms; all 324 rows (28 + 108 + 28 bytes) are reproduced from two starting selector states.
-- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (11); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
+- **Tests.** `crates/od-isa/tests/s2_32f_x87_fwait_env.rs` (12), `od-machine` `a_bare_fwait_on_the_last_byte_of_a_page_leaves_no_record_of_the_next_page` (paged adapter); the decoder test of `s2_32c_x87_env` and the pair test of `s2_32e_cpl0_x87` were updated (the pair is one instruction).
 - **Not covered.** `#MF` delivery in the bounded profile, 16-bit images, FWAIT before other forms, #AC, JIT and native (closed).
 
 ## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
