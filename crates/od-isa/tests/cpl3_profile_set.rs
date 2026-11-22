@@ -8577,11 +8577,11 @@ fn cpl3_glibc_xmm_controls_fault_before_touching_guest_memory() {
 
 #[test]
 fn cpl3_glibc_xmm_keeps_neighbouring_encodings_refused() {
+    // S2-39 (CPL3): the MMX spelling (no mandatory prefix) and the repeated-prefix spelling stay refused; the
+    // address-size spelling and the register MOVQ now run through the general core (s2_39_cpl3_sse).
     for (code, opcode) in [
         (&[0x0f, 0x6e, 0xc0][..], 0x6e),
         (&[0xf2, 0x66, 0x48, 0x0f, 0x6e, 0xc0][..], 0x6e),
-        (&[0x67, 0x66, 0x0f, 0x6e, 0x07][..], 0x6e),
-        (&[0x66, 0x0f, 0xd6, 0xc0][..], 0xd6),
     ] {
         let mut state = user_state();
         state.cr0 = Some(0x8005_0033);
@@ -8956,10 +8956,11 @@ fn cpl3_issue571_movdqa_alignment_fault_precedes_memory_read() {
 
 #[test]
 fn cpl3_issue571_neighboring_6f_and_7e_spellings_are_typed_unsupported() {
+    // S2-39 (CPL3): the legacy MOVD/MOVQ store direction (66 0F 7E /r) now runs through the general core; the MMX
+    // spellings and the wrong register prefix stay refused.
     for code in [
         &[0x0f, 0x6f, 0x07][..],       // unprefixed MOVQ form
         &[0xf2, 0x0f, 0x6f, 0xc0][..], // unsupported register prefix
-        &[0x66, 0x0f, 0x7e, 0x07][..], // legacy MOVD/MOVQ store direction
         &[0x0f, 0x7e, 0x07][..],
     ] {
         let mut state = user_state();
@@ -11677,10 +11678,11 @@ fn cpl3_issue576_observed_rip_relative_movsd_load_uses_the_vcpu_fp_cell() {
     assert_eq!(memory.read_widths, [(target, 8)]);
 }
 
-/// S2-39: the general SSE core runs in the CPL0 set at CPL0 on `state.sse` (tests/s2_39_cpl0_sse.rs); at CPL3
-/// the member keeps its own short profile list, so the general forms stay `Unsupported` with nothing changed.
+/// S2-39: the general SSE core runs in the CPL0 set at CPL0 on `state.sse` (tests/s2_39_cpl0_sse.rs) and, since the
+/// CPL3 slice, at CPL3 too (tests/s2_39_cpl3_sse.rs): these forms retire with the FP member. The forms that need the
+/// MMX registers (MOVDQ2Q, MOVQ2DQ: the x87 half stays in the cell at CPL3) stay `Unsupported` with nothing changed.
 #[test]
-fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
+fn cpl3_general_sse_forms_run_with_the_fp_member_and_the_mmx_moves_stay_refused() {
     let forms: [(&str, &[u8], u8); 21] = [
         ("addps xmm1,xmm2", &[0x0f, 0x58, 0xca], 0x58),
         ("addps xmm1,[rax]", &[0x0f, 0x58, 0x08], 0x58),
@@ -11711,6 +11713,7 @@ fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
         state.cr0 = Some(0x8005_0033);
         state.cr4 = Some(0x6b0);
         state.gpr[Register::Rax as usize] = DATA;
+        state.gpr[Register::Rdi as usize] = DATA;
         let expected = state.clone();
         let mut initial_fp = od_isa::GuestFpState::initial();
         initial_fp.sse.xmm[1] = [0x11; 16];
@@ -11721,10 +11724,20 @@ fn cpl3_general_sse_forms_stay_refused_with_the_fp_member() {
             memory = memory.with_user(DATA + offset, 0x33);
         }
         let result = run3_with_guest_fp(&mut state, &mut memory, &fp, 1);
-        assert_eq!(exit(&result), &RunExit::Unsupported { opcode }, "{name}");
-        assert_eq!(result.instructions_executed, 0, "{name}");
-        assert_eq!(state, expected, "{name}");
-        assert_eq!(*fp.borrow(), initial_fp, "{name}");
-        assert!(memory.writes.is_empty(), "{name}");
+        if matches!(opcode, 0xd6) && matches!(code[0], 0xf2 | 0xf3) {
+            assert_eq!(exit(&result), &RunExit::Unsupported { opcode }, "{name}");
+            assert_eq!(result.instructions_executed, 0, "{name}");
+            assert_eq!(state, expected, "{name}");
+            assert_eq!(*fp.borrow(), initial_fp, "{name}");
+            assert!(memory.writes.is_empty(), "{name}");
+        } else {
+            assert_eq!(
+                exit(&result),
+                &RunExit::InstructionBudgetExhausted,
+                "{name}"
+            );
+            assert_eq!(result.instructions_executed, 1, "{name}");
+            assert_eq!(state.rip, expected.rip + code.len() as u64, "{name}");
+        }
     }
 }
