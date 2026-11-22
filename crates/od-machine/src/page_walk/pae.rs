@@ -682,12 +682,45 @@ fn access_pae_internal(
     paging: &PaeProbeConfig,
     request: PaeAccessRequest,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
-    mut mmio: Option<&mut MmioDispatch<'_>>,
+    mmio: Option<&mut MmioDispatch<'_>>,
 ) -> TrackedAccessReport {
-    let operation = request.operation.ram_operation();
+    access_operand_with_walk(
+        memory,
+        request.linear,
+        request.operation,
+        committed_write,
+        mmio,
+        |access, committed_write| {
+            walk_pae_with_writer(
+                memory,
+                paging,
+                request.instruction_rip,
+                request.linear,
+                request.context,
+                access,
+                committed_write,
+                &mut compare_replace_table_entry,
+            )
+        },
+    )
+}
+
+/// The operand access of a 32-bit linear address after its page walk, shared by PAE paging and 32-bit
+/// paging (S2-25 remainder): the crossing check, `walk` (given the access kind and the committed-write
+/// callback; it is where the paging mode differs), the physical region of the operand, the dirty bit
+/// of the leaf and the bytes or the device dispatch.
+pub(super) fn access_operand_with_walk(
+    memory: &PhysicalMemory,
+    linear: u32,
+    operation: PaeOperandOperation,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    mut mmio: Option<&mut MmioDispatch<'_>>,
+    walk: impl FnOnce(AccessKind, &mut dyn FnMut(GuestPhysicalRange)) -> WalkResult,
+) -> TrackedAccessReport {
+    let operation = operation.ram_operation();
     let width = operation.width();
     let access = operation.access_kind();
-    let address = GuestLinearAddress::new(u64::from(request.linear));
+    let address = GuestLinearAddress::new(u64::from(linear));
     let mut ad_updates = [None; 5];
     let fail = |error, trace, ad_updates, ad_update_count| TrackedAccessReport {
         outcome: Err(error),
@@ -695,7 +728,7 @@ fn access_pae_internal(
         ad_updates,
         ad_update_count,
     };
-    if (request.linear & 0xfff) + u32::from(width) > 4096 {
+    if (linear & 0xfff) + u32::from(width) > 4096 {
         return fail(
             TrackedAccessError::CrossesPage { address, width },
             WalkTrace::new(),
@@ -703,16 +736,7 @@ fn access_pae_internal(
             0,
         );
     }
-    let walk = walk_pae_with_writer(
-        memory,
-        paging,
-        request.instruction_rip,
-        request.linear,
-        request.context,
-        access,
-        committed_write,
-        &mut compare_replace_table_entry,
-    );
+    let walk = walk(access, &mut *committed_write);
     let trace = walk.trace;
     let mut ad_update_count = walk.ad_update_count;
     ad_updates[..ad_update_count].copy_from_slice(&walk.ad_updates[..ad_update_count]);

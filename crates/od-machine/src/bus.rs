@@ -1201,6 +1201,35 @@ impl MachineBus {
         )
     }
 
+    /// S2-25 remainder: a tracked operand access of 32-bit paging by vCPU `vcpu`: the walk of
+    /// [`crate::page_walk::pg32`], then the physical address decides RAM, device or refusal, as for
+    /// [`Self::access_tracked_pae`].
+    pub(crate) fn access_tracked_pg32(
+        &mut self,
+        vcpu: usize,
+        paging: &crate::Pg32ProbeConfig,
+        request: crate::Pg32AccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> TrackedAccessReport {
+        let Self {
+            memory,
+            devices,
+            mmio,
+            ..
+        } = self;
+        let devices = exclusive_devices(devices);
+        let regions = memory.region_specs().collect::<Vec<_>>();
+        crate::page_walk::pg32::access_pg32_with_mmio(
+            memory,
+            paging,
+            request,
+            committed_write,
+            |address, width, operation| {
+                dispatch_tracked_mmio(&regions, mmio, devices, vcpu, address, width, operation)
+            },
+        )
+    }
+
     pub(crate) fn access_tracked_ram(
         &self,
         paging: &Long64ProbeConfig,

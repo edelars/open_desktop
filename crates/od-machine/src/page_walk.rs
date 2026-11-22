@@ -10,6 +10,7 @@ use od_isa::memory::{
 use std::fmt;
 
 pub mod pae;
+pub mod pg32;
 
 const CR0_PE: u64 = 1 << 0;
 const CR0_MP: u64 = 1 << 1;
