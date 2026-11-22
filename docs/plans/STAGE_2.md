@@ -15436,6 +15436,24 @@ walk (`DataSegmentReadOnly`, `#GP(0)`). Known limitation: in `od-isa` the A/D bi
 bytes are written, so a store that changes the PTE mapping its own page gets A|D added to the value written. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25k--operand-access-through-pae-paging-bounded-slice).
 
+#### S2-25l — 32-bit paging walk in od-machine
+
+**Статус:** bounded slice (`od-machine`: `page_walk/pg32.rs`, `bus.rs`, `pg32_fetch_view.rs`, `pg32_operand_access.rs`) after the
+acceptance of the parent S2-25 (2026-11-21); the slice itself is not marked. The parent checkbox is not changed.
+
+The `PhysicalMemory` walk of 32-bit paging (`CR0.PG = 1`, `CR4.PAE = 0`, `EFER.LME = 0`): `Pg32ProbeConfig`, two levels
+of 4-byte entries (`CR3` 31:12, 10 + 10 + 12 bits), a 4 MiB page with `CR4.PSE`, the PSE-36 model switch of `od-isa`
+(PDE 16:13 = address 35:32, 21:17 reserved), the rights model of PAE (`CR0.WP`, U/S for CPL 3, R/W) and the A/D commit as one
+compare-and-replace of the 8-byte cell around the 4-byte entry. `translate_pg32_ram[_read_only[_with_trace]]`,
+`access_pg32_ram` / `access_pg32_with_mmio` (the operand tail is the shared `access_operand_with_walk` of the PAE access),
+`MachineBus::access_tracked_pg32`, `LoadedFirmwareBoard::{pg32_paging_of, fetch_vcpu_view_pg32, pg32_operand_access}`. Checked
+against `od_isa::paging::translate32_with` on 400 random table sets x 8 (WP, PSE, PSE-36) configurations (48 000 walks). No
+hardware oracle; no CPUID declaration. Decisions: a PSE-36 page above 4 GiB is translated (the memory map decides; `od-isa`
+reports `PhysicalBeyond4GiB`); the error code has no I/D bit (no XD, `CR4.SMEP` not allowed in the snapshot). Not done:
+`CR4.SMEP` in od-machine, a 32-bit instruction interpreter on the board view, a page-crossing operand, locked operations, the
+set loop and host/JIT paths, hardware oracle, CPUID (S2-57/S2-58). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25l--32-bit-paging-walk-in-od-machine-bounded-slice).
+
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 
 The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`

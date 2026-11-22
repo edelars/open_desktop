@@ -16140,6 +16140,36 @@ Not covered: a 32-bit instruction interpreter on the board PAE view (the only le
 RAM, which still refuses MMIO), a page-crossing operand, locked operations, the PAE path in the `PagedMovMemoryAdapter` set loop
 and the host/JIT fast paths, 32-bit paging in od-machine, hardware oracle, CPUID declaration (S2-57/S2-58). Known limitation: in `od-isa` the A/D bits of the walks are committed after the operand bytes are written; a store that changes the PTE mapping its own page gets A|D added to the value just written (hardware sets A/D in the walk, before the write).
 
+## S2-25l — 32-bit paging walk in od-machine (bounded slice)
+
+Normative source: Intel SDM Rev. 093 Vol. 3A §5.3 (32-bit paging, from p. 5-9; Tables 5-3..5-6 on pp. 5-12–5-13, as cited in
+S2-25h), §5.6 access rights, §5.7 and Figure 5-12 (page-fault error code), §5.8 accessed and dirty flags. Text only: no hardware
+oracle; the page references are those of S2-25h and were not re-read for this slice.
+
+| Item | Rule implemented |
+|---|---|
+| Snapshot | `Pg32ProbeConfig::new(cr0, cr3, cr4, efer, pse36)`: `CR0.PE`, `PG`, `ET` set; `CR4.PAE`, `EFER.LME`, `EFER.LMA` clear; `CR3` a 32-bit value (11:0 ignored); `CR4.SMEP` not allowed; `from_protected_cpu` takes the registers and the PSE-36 switch of a `ProtectedCpu` |
+| Walk | PDE at `CR3[31:12] + 4 * linear[31:22]`; `P = 0` is not present at either level; with `CR4.PSE = 1` and `PDE.PS = 1` a 4 MiB page (frame 31:22, offset 21:0), otherwise PTE at `PDE[31:12] + 4 * linear[21:12]`, 4 KiB page; with `PSE = 0` `PS` is ignored and no bit is reserved |
+| Reserved bits | 4 MiB PDE: 21:13 (without the PSE-36 switch), 21:17 (with it, 16:13 are physical-address bits 35:32); #PF with P and RSVD (error code 9 / 11), before the accessed bit is set |
+| Rights | as S2-25h/PAE: CPL 3 needs U/S in the PDE and the PTE; a write needs R/W in both (4 MiB: the PDE) with `CR0.WP = 1` or at CPL 3; no XD (`EFER.NXE` inert); error code P, W/R, U/S, RSVD, never I/D; `CR2` = the linear address |
+| A/D | A of the PDE and the PTE when the walk reaches them (also on a later fault), D of the leaf of a write (the PDE of a 4 MiB page); each one compare-and-replace of the 8-byte cell around the entry (`compare_replace_entry32`, the other dword carried over); the committed range is the 8-byte cell; the read-only forms write nothing |
+| Physical address | 32 bits, 36 with the PSE-36 switch and a 4 MiB page; not truncated: the memory map decides (RAM, MMIO, framebuffer; a hole or ROM write is `OperandPhysical`). `od-isa` reports `PhysicalBeyond4GiB` for such a page |
+| Operand access | `access_pg32_ram` / `access_pg32_with_mmio` with the order of effects of S2-25k (shared `access_operand_with_walk`; the dirty bit goes through the entry writer of the mode); `PaeOperandOperation` and the `Pg32AccessRequest { instruction_rip, linear, context, operation }` |
+| Board | `LoadedFirmwareBoard::pg32_paging_of`, `fetch_vcpu_view_pg32` (read-only), `pg32_operand_access` and `MachineBus::access_tracked_pg32` for a vCPU whose legacy model is on 32-bit paging; the PAE and 4-level paths are not selected by them. No production caller (as the PAE views) |
+
+Tests: `page_walk/pg32/tests.rs` (14: configuration, a model snapshot, 4 KiB and 4 MiB A/D into low and high dwords of a cell, PSE = 0
+and PS, reserved bits 13..21 and PAT, PSE-36 address bits and reserved 17..21, not-present error codes, WP/U/S matrix with error
+codes 3, 5, 7, the refused write, the entry writer, the differential below, read-only parity), the differential
+`the_od_machine_walk_and_the_od_isa_walk_agree_on_random_tables` (400 sets x 8 configurations x 5 addresses x 3 kinds = 48 000
+walks: 21 498 mapped, 7 816 of them 4 MiB, 3 112 above 4 GiB; 11 172 not present; 3 942 reserved; 2 352 write-protected; 9 036 table
+outside the memory map; tables compared after every mapped walk), `page_walk/pg32/operand_tests.rs` (11: order and ranges of the
+writes, widths, 4 MiB D, PSE-36 above 4 GiB, MMIO dispatch, refusals, ROM and holes, error codes, WP clear, write-intent read,
+`CrossesPage`) and 3 in `ap_legacy_exec.rs` (an AP the trampoline put on 32-bit paging with PSE: the model state, the fetch view with no
+A/D written, the operand access with the Local APIC window and #PF codes). The operand tests found that the dirty commit used the 8-byte
+entry writer (fixed: it is a parameter of `access_operand_with_walk`). Not covered: `CR4.SMEP` in od-machine, a 32-bit instruction
+interpreter on the board view, a page-crossing operand, locked operations, the set loop and host/JIT paths, hardware oracle, CPUID
+declaration (S2-57/S2-58).
+
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
 The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
