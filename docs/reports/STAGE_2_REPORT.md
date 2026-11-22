@@ -24774,6 +24774,44 @@ PSHUFLW/PINSRW/MOVLPD/MOVHPD/PMINUB/PCMPEQB/MOVD (xmm, m) in the addressing form
 `step_cpl3_xmm` handler; MMX, MASKMOVDQU, MOVNTDQ, MOVDQ2Q/MOVQ2DQ, PSLLDQ/PSRLDQ with a memory operand (they have none), CPL3. The
 interpreter does not gate on CPUID and declares no new bits (SSE2 is not declared; CX8 and CMOV were declared earlier, S2-57). Parent S2-39 remains open.
 
+## S2-39r — MOVNT stores, MASKMOVDQU, MOVDQ2Q and MOVQ2DQ at CPL0 of the set
+
+Code (`sse2_int.rs`, `long_decode.rs`, `execute.rs`): `Sse2IntKind::Movnt128` (MOVNTPS `0F 2B`, MOVNTPD `66 0F 2B`, MOVNTDQ `66 0F E7`, memory form
+only: the whole source register to a 16-byte aligned operand; Intel SDM Vol. 2B pp. 4-88 MOVNTDQ, 4-94 MOVNTPD, 4-96 MOVNTPS, exception type 1) is a form of
+`Operation::Sse2Int`; MASKMOVDQU (`66 0F F7`, pp. 4-1..4-2) is the new `Operation::Sse2Maskmov { data, mask, memory }` (`step_sse2_maskmov`; the implicit operand is
+`[rdi]`, `[edi]` with `67`; DS/ES/CS/SS overrides have the zero base, FS/GS stay refused) and MOVQ2DQ (`F3 0F D6`, p. 4-102) / MOVDQ2Q (`F2 0F D6`, p. 4-58) the new
+`Operation::Sse2MmxMove { to_xmm, xmm, mm }` (`step_sse2_mmx_move`). The three come out of `decode_sse2_int` (the same fallback and prefix rules as S2-39q). Gates of
+all of them: `#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, `#NM` for CR0.TS = 1 before any operand access (`sse2_gate_fault`, now shared with `step_sse2_int`); the MMX
+moves add the pending x87 exception (`#MF`, `mmx_entry_fault`) and make the x87 to MMX transition (TOP = 0, tag word all valid); MOVDQ2Q writes MMn with 0xFFFF in bits 79:64,
+MOVQ2DQ zero-extends and does not rewrite its source; REX.R/REX.B extend only the XMM operand. Undefined encodings are `#UD` at decode time (physical oracle:
+`SIGILL`): the register form of the MOVNT stores, the memory form of MASKMOVDQU, MOVDQ2Q and MOVQ2DQ, LOCK. Refused (`Unsupported`, nothing changes): FS/GS overrides,
+repeated prefixes, `66` with `F2`/`F3`, other mandatory prefixes (`F2/F3 0F 2B`, `F2/F3 0F E7`, the no-prefix MOVNTQ/MASKMOVQ and `0F D6`). In the CPL0 set the MMX moves reuse
+the mechanism of the MMX forms (`step_cpl0_mmx`: the x87 half leaves the member's cell for one instruction); MASKMOVDQU and MOVNT need the SSE state only. CPL3, the
+FP-init CR0/CR4 pair and the CPUID bits (S2-57) are unchanged. The MASKMOVDQU memory rules come from the oracle, not from the SDM text: (a) a fault of any of the 16
+bytes is taken whatever the mask (a mask of zero included) and nothing is written, so the model reads the 16 bytes when the mask is partial (the fault of that read is
+reported as the write fault: W bit of the page-fault error code, `AccessKind::Write`) and writes the merged 16 bytes once; (b) the alignment check of CPL3 with
+RFLAGS.AC = 1 is on 8 bytes (offsets 0, 8 and 16 retire, all others are `SIGBUS/ADRALN`); `#AC` is not modeled, so that case is `Unsupported` before any access.
+
+The task statement also listed the memory forms of PADDB/W/D/Q, PSUBB/W/D/Q, PAND/PANDN/POR/PXOR, PCMPEQ/PCMPGT, PSHUFD, PSLL/PSRL/PSRA by an m128 count and
+PMULHW/PMULHUW/PMULUDQ as refused; in this tree they are executed by S2-39q (`s2_39_int_sse2`, 5 addressing forms each), so this slice has no change for them.
+
+Tests (all passed): the new `s2_39_rest` (22: the three MOVNT stores in 5 addressing forms x 5 source registers, misalignment at 15 offsets, the gate/alignment order,
+backend, non-canonical and RBP bases, undefined and refused encodings; MASKMOVDQU with 10 mask shapes x 17 offsets, 6 register pairs, 67 and segment overrides, gates,
+canonical and range rules, the whole-range fault rule, the 8-byte `#AC` rule; MOVQ2DQ/MOVDQ2Q for all 8 MMX registers x 5 XMM registers with the exact x87 transition,
+REX bits, the 8 TOP values, the gates and the pending exception, register-form-only and LOCK; the set without the FP member; one four-instruction program); every
+form runs in the set and in the bare run and both must agree. `cpl3_profile_set` (CPL3 refusal list +6 forms), `cpl0_profile_set` (comment only), `s2_39_int_sse2` (the
+`F3 0F D6` entry of the refusal list, which is MOVQ2DQ now, became `F2 0F D4`), `od-jit` block builder (1 test, 523). Suites: `od-isa` + `od-jit` 7445 passed, 0 failed;
+`od-machine --lib` filtered (fp linux_direct s4_38) 454 passed, 4 ignored; `cargo fmt --all -- --check`, `git diff --check` clean.
+
+Physical oracle (Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_rest_oracle/` in the ignored area: `gen_cases.py`, `oracle.c`, `src/main.rs`,
+`cases.txt`, `oracle_out.txt`, `local_out.txt`, `compare.py`; derived from the S2-55 slice A oracle with seven byte-mask register shapes and SIGFPE added): 2014 cases byte for byte;
+two runs of the hardware side are identical. Result: 1799 equal (1083 retirements, 358 `SIGSEGV/SI_KERNEL` (`#GP`), 110 ACCERR, 123 MAPERR, 30 `SIGBUS`, 65 `SIGILL`,
+30 `SIGFPE` (pending x87 exception)), 175 refused by the model (84 FS/GS, repeated and mismatched prefixes, the no-prefix MOVNTQ/MASKMOVQ; 91 `#AC` cases of MASKMOVDQU),
+24 range overflow of the shared access check (`AddressOverflow` at the top of the address space, as in S2-54/S2-55), 16 MASKMOVDQU cases whose 16 bytes straddle an
+inaccessible (`PROT_NONE`) page and an unmapped one: the hardware reports the unmapped (MAPERR) page, the fixture memory of the runner the first page (ACCERR); the
+ordering of two failing pages belongs to the memory backend, not to the instruction (a 16-byte MOVUPS store reports the first page, S2-34), 0 other. Not checkable on
+the physical side from user mode: the CR0.EM/TS and CR4.OSFXSR gates (SDM only), CR0.NE = 0 of the MMX moves, CPL0 behaviour of `#AC`.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64
