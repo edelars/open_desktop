@@ -2997,6 +2997,22 @@ x86-runner compile check, formatting and diff checks pass.
 and independent Sol-medium review is clean. Umbrella S2-27 and S2 remain open;
 Stage 3 is untouched. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-lretq).
 
+#### S2-27m — SYSCALL/SYSRET SDM gates, SYSRETL and CPL3 SYSRET #GP
+
+Bounded slice on the existing `with_syscall` member of the CPL0 profile set
+(S4-39e/f), checked against Intel SDM Rev. 093 Vol. 2B instead of memory:
+`EFER.LMA = 0` or `CS.L = 0` then `EFER.SCE = 0` are #UD for both
+instructions (no compatibility-mode SYSCALL on Intel, CSTAR unused); LOCK forms
+are #UD; `SYSCALL` also runs at CPL0; `SYSRET` at CPL3 is #GP(0); the bare
+`0F 07` (SYSRETL) commits the compatibility-mode return (RIP = ECX, CS = STAR
+[63:48] | 3, D = 1, L = 0), which the long-mode CPL3 entry then refuses; VM in
+R11 is cleared. TF/VIF/VIP in R11 and TF at SYSCALL stay refusals. No CPUID
+declaration (S2-57), no oracle (CPL0 state is not reachable from user space).
+Tests: `crates/od-isa/tests/cpl3_syscall.rs` (40, was 29), all `od-isa`
+suites pass. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set).
+Umbrella S2-27 and S2-24 stay open; compatibility-mode execution is not
+implemented.
+
 ## 9. x87, MMX и SSE/SSE2
 
 Здесь особенно запрещены shortcuts: host `double` вместо extended precision, сравнение только обычных конечных значений, потеря NaN payload/classification или blanket masking всех FP differences. Если нужны библиотеки для общей инфраструктуры, они не должны реализовывать за проект x86/FP semantics.

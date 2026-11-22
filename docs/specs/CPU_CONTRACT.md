@@ -15741,6 +15741,51 @@ Rev. 093, Vol. 2B, `RET` instruction entry; exact `F0 48 CB` #UD handling is
 the source-backed LOCK-invalid rule for this profile. See the [official SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 and [S2-27l Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).
 
+### S2-27m — SYSCALL/SYSRET gates, compatibility SYSRETL and CPL3 SYSRET (Windows CPL0 set)
+
+Scope: the `with_syscall` member of `Cpl0ProfileSet` (S4-39e/S4-39f) in
+`od-isa`, now checked against Intel SDM combined revision 093, Vol. 2B,
+`SYSCALL` (4-699..4-701) and `SYSRET` (4-709..4-711) instead of memory.
+CPUID is not touched: the `80000001` EDX[11] SYSCALL bit stays a separate
+S2-57 decision. There is no oracle: `SYSCALL`/`SYSRET` need CPL0 state and
+a user-space oracle cannot provide it, so the evidence is the SDM operation
+text and the unit tests in `crates/od-isa/tests/cpl3_syscall.rs`.
+
+Behavior added:
+
+- **Gate order, both instructions, before any write:** `EFER.LMA = 0` or
+  `CS.L = 0` is #UD, then `EFER.SCE = 0` is #UD. Intel has no `SYSCALL` in
+  compatibility mode: IA32_CSTAR is not consumed (the AMD compatibility-mode
+  target does not exist in the SDM operation).
+- **LOCK:** `F0 0F 05`, `F0 0F 07` and `F0 48 0F 07` are #UD from the decoder.
+- **SYSCALL at CPL0** is executed like CPL3 (RCX, R11, FMASK, STAR CS/SS,
+  LSTAR; the SDM allows every CPL of 64-bit mode). The CPL1/CPL2 callers are
+  not representable in the set state. TF in RFLAGS remains a refusal, now
+  checked after the #UD gates.
+- **SYSRET at CPL3** is #GP(0) after the #UD gates (both operand sizes); the
+  CPL3 allow-list admits `SYSRET` only under the member so that the step
+  decides.
+- **Bare `0F 07` (SYSRETL)** returns to compatibility mode: RIP = ECX
+  (zero-extended, no canonical check), CS = STAR[63:48] or 3 (no +16) with
+  access `0xfb`, flags `0xc` (D = 1, L = 0, G = 1), SS and RFLAGS as for
+  SYSRETQ. The retired instruction ends the CPL0 run with `UserModeEntered`.
+  The CPL3 entry admits only L = 1 code, so the long-mode interpreter refuses
+  to run the compatibility code (`WrongPrivilege`): this is the state commit
+  only, not compatibility-mode execution (S2-24 stays open).
+- **R11 flags:** VM is cleared (SDM: RF and VM are always 0 after SYSRET)
+  instead of refused. TF, VIF and VIP in R11 remain refusals (the SDM mask
+  keeps them; the single-step trap and virtual-interrupt state are not
+  modelled).
+- **Selector overflow** is operand-size aware: STAR[63:48] + 16 for the 64-bit
+  form, STAR[63:48] + 8 for the compatibility form.
+
+Unchanged refusals (`Unsupported`): non-canonical LSTAR, STAR[33:32] != 0, TF
+at `SYSCALL`, all other prefix forms, a set without the member. Not verified:
+the real-hardware behavior of STAR[33:32] != 0, SYSCALL at CPL1/CPL2,
+shadow-stack and CET state, FRED, and any oracle comparison. Linux boot
+(S4-39) uses only the forms that were already accepted; `od-isa` (35 test
+binaries) and the `od-machine` syscall/cpl3/iretq filters pass.
+
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit
@@ -27601,6 +27646,8 @@ SIMD-формы из пакета используют живую FP-ячейк�
 **Замечания ревью (Opus, S4-39d; принято с замечаниями, блокеров нет; access_with не меняет CPL0-доступы и DiagnosticV1).** (1) По памяти SDM: RF=1 в образе для всех исключений кроме #DB и выравнивание RSP до 16 при смене стека — унаследованное соглашение CPL0-пути, помечено. Отказ `NonCanonicalRsp0` — консервативный: по SDM неканонический RSP из TSS даёт архитектурное исключение; модель останавливается. (2) Порядок «шлюз IDT → дескриптор цели → TSS» соответствует псевдокоду INTER-PRIVILEGE-LEVEL по памяти SDM (чтение стека из TSS после шлюза). (3) Проверка CPL3-состояния строже архитектуры: conforming CS с DPL 3 отклоняется; у SS не проверяются DPL и writable в кеше; неверный RPL SS отдаётся как `InvalidCurrentCodeSegment`. (4) Тестовые пробелы: вложенная доставка CPL0→CPL0 сразу после входа из CPL3 с SS=0 в кадре; IRETQ CPL0→CPL0 с SS=0; реальный #GP(0) из CPL3 на плате (есть только юнит-тесты набора); отсутствие #DF при сбое записи кадра (состояние CPU не меняется, поведение совпадает с CPL0-путём).
 
 ### SYSCALL из CPL3 через STAR, LSTAR, SYSCALL_MASK и EFER.SCE (S4-39e)
+
+> Обновлено срезом [S2-27m](#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set): семантика сверена с Intel SDM Rev. 093 (а не по памяти); ниже уточнены только отказы, которые S2-27m заменил на #UD/#GP или исполнение (SYSCALL на CPL0, SYSRET на CPL3 и SYSRETL, LOCK, LMA/CS.L, VM в R11).
 
 **Основание.** Декомпозиция S4-39 (`docs/plans/STAGE_4.md`): после S4-39d под `--user-mode` прогон Linux на stage4a доходил до первого `syscall` в `/init` (RIP `0x4000c1`, байты `0f 05`) и останавливался как `user_mode_unsupported` (`Unsupported { opcode: 5 }`): форма стояла вне белого списка CPL3 (S4-39a), а декодер не называл её. Срез добавляет исполнение `SYSCALL` из CPL3 по ячейкам MSR набора (STAR, LSTAR, SYSCALL_MASK, EFER). Старый диагностический профиль `crates/od-isa/src/syscall.rs` (четыре формы, прежние STAR/FMASK/CR4) не подходит реальному ядру (STAR user base `0x23`, FMASK `0x257fd5`, CR4 `0x6b0`) и не переиспользовался и не менялся.
 
