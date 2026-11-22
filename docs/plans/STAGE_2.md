@@ -15288,7 +15288,9 @@ model addresses its memory with 32 bits and keeps refusing such a page (`Physica
 changed (the MMIO dispatch closure of `access_tracked` became `dispatch_tracked_mmio`, shared). No hardware oracle.
 Not done: a decoder/interpreter of 32-bit instructions on the board PAE view (the only legacy executor is the
 closed trampoline profile on RAM), a page-crossing operand, locked operations, host/JIT paths on PAE, 32-bit paging in
-od-machine, CPUID (S2-57/S2-58). See the
+od-machine, CPUID (S2-57/S2-58). A store through a DS that is not a writable data segment is refused before the
+walk (`DataSegmentReadOnly`, `#GP(0)`). Known limitation: in `od-isa` the A/D bits are committed after the operand
+bytes are written, so a store that changes the PTE mapping its own page gets A|D added to the value written. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25j--operand-access-through-pae-paging-bounded-slice).
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
