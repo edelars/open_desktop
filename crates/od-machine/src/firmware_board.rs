@@ -1963,7 +1963,7 @@ impl LoadedFirmwareBoard {
     /// Not touched: guest RAM (the entry state is only usable on RAM the caller has put back, or
     /// on a guest that sets up everything itself), ROM, the devices (including the PM block's
     /// registers), NVRAM, the TPM and virtual time. Their reset, and the RAM policy of cold and
-    /// warm reset, are S7-26. Without a recorded entry state (a Linux-profile board) it is a
+    /// warm reset, belong to [`Self::platform_reset`] (S7-26). Without a recorded entry state (a Linux-profile board) it is a
     /// configuration error. On an error nothing has changed.
     pub fn restart_vcpus(&mut self) -> Result<Option<MachineStopReason>, FirmwareBoardError> {
         let entry = self.entry_state.clone().ok_or(FirmwareBoardError::Config(
