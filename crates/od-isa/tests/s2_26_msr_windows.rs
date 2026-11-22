@@ -1,15 +1,18 @@
 //! S2-26h: the Windows-boot MSR file of the CPL0 profile set (`Cpl0ProfileSet::with_msr_windows`).
 //!
-//! Every expectation is a model of the SDM (Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A 14.12.2 for
-//! IA32_PAT, Vol. 3A Figure 6-14 for IA32_FMASK); RDMSR/WRMSR cannot run in user space, so there is
-//! no hardware oracle count for this slice (all rows are modelled).
+//! Every expectation is a model of the SDM (Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A 14.12.4 for
+//! IA32_PAT, Vol. 3A Figure 6-14 for IA32_STAR/IA32_FMASK, Vol. 4 Table 2-2 for IA32_SYSENTER_CS and
+//! IA32_MISC_ENABLE); RDMSR/WRMSR cannot run in user space (only the CPL3 `#GP(0)` of a bare RDMSR
+//! is observable there, and no oracle count was taken for it), so there is no hardware oracle count
+//! for this slice (all rows are modelled).
 
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
     Cpl0ProfileSetResult, RunConfig, RunExit, run_with_cpl0_profile_set, run_with_cpl3_profile_set,
 };
 use od_isa::msr::{
-    IA32_MISC_ENABLE_RESET, IA32_PAT_RESET, MsrProfile, WindowsMsrWrite, windows_msr_is_known,
+    IA32_MISC_ENABLE_RESET, IA32_PAT_RESET, MsrProfile, WindowsMsrWrite,
+    windows_msr_cell_value_valid, windows_msr_is_known, windows_msr_stored_value,
     windows_msr_write_decision,
 };
 use od_isa::{
@@ -310,7 +313,7 @@ fn rdmsr_returns_every_cell_owned_msr_in_edx_eax() {
         (IA32_SYSENTER_CS, 0x0000_0000_0000_0010),
         (IA32_SYSENTER_ESP, 0xffff_8000_dead_b000),
         (IA32_SYSENTER_EIP, 0xffff_f800_1234_5678),
-        (IA32_MISC_ENABLE, 1),
+        (IA32_MISC_ENABLE, 0x1801),
         (IA32_PAT, 0x0007_0406_0007_0406),
         (IA32_STAR, 0x0023_0010_0000_0000),
         (IA32_LSTAR, 0xffff_f800_0000_1000),
@@ -349,24 +352,30 @@ fn power_up_values_are_the_documented_ones() {
     assert_eq!(state.gpr[Register::Rax as usize], 0x0007_0406);
     assert_eq!(state.gpr[Register::Rdx as usize], 0x0007_0406);
     let (_, _, state) = access(&set, RDMSR, IA32_MISC_ENABLE, 0);
-    assert_eq!(state.gpr[Register::Rax as usize], 1);
+    // Bit 0 fast strings, bit 11 BTS unavailable, bit 12 PEBS unavailable (SDM Vol. 4 Table 2-2).
+    assert_eq!(IA32_MISC_ENABLE_RESET, 0x1801);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1801);
     assert_eq!(state.gpr[Register::Rdx as usize], 0);
 }
 
 #[test]
 fn wrmsr_stores_valid_values_and_changes_nothing_else() {
-    let valid: [(u32, u64); 11] = [
+    let valid: [(u32, u64); 13] = [
         (IA32_SYSENTER_CS, 0x10),
         (IA32_SYSENTER_CS, 0xffff_ffff),
+        // Bits 63:32 are ignored on write and read as zero (SDM Vol. 4 Table 2-2, 174H).
+        (IA32_SYSENTER_CS, 0x1_0000_0010),
+        (IA32_SYSENTER_CS, u64::MAX),
         (IA32_SYSENTER_ESP, 0xffff_8000_dead_b000),
         (IA32_SYSENTER_EIP, 0x0000_7fff_ffff_ffff),
         (IA32_PAT, 0x0007_0106_0405_0006),
-        (IA32_STAR, 0xffff_ffff_ffff_ffff),
+        (IA32_STAR, 0xffff_ffff_0000_0000),
         (IA32_LSTAR, 0xffff_f800_0000_1000),
         (IA32_CSTAR, 0x8000_0000_0000_0000),
         (IA32_FMASK, 0x0000_0000_0004_4700),
         (IA32_KERNEL_GS_BASE, 0xffff_8000_0000_0000),
-        (IA32_MISC_ENABLE, 0),
+        // Only bit 0 changes; the read-only bits 11 and 12 stay 1.
+        (IA32_MISC_ENABLE, 0x1800),
     ];
     for (index, value) in valid {
         let cells = Cells::new();
@@ -382,15 +391,16 @@ fn wrmsr_stores_valid_values_and_changes_nothing_else() {
         let mut expected = before.clone();
         expected.rip = RIP + 2;
         assert_eq!(after, expected, "{label}");
-        assert_eq!(cells.cell(index).get(), value, "{label}");
-        // The written value reads back through the same set.
+        let stored = windows_msr_stored_value(index, value);
+        assert_eq!(cells.cell(index).get(), stored, "{label}");
+        // The stored value reads back through the same set.
         let (_, _, read) = access(&set, RDMSR, index, 0);
         assert_eq!(
             read.gpr[Register::Rax as usize],
-            value & 0xffff_ffff,
+            stored & 0xffff_ffff,
             "{label}"
         );
-        assert_eq!(read.gpr[Register::Rdx as usize], value >> 32, "{label}");
+        assert_eq!(read.gpr[Register::Rdx as usize], stored >> 32, "{label}");
         // Every other cell is untouched.
         for other in CELL_OWNED {
             if other != index {
@@ -413,10 +423,13 @@ fn wrmsr_reserved_bits_and_non_canonical_addresses_are_gp0_without_change() {
         0x1234_5678_9abc_def0,
     ];
     let mut bad: Vec<(u32, u64)> = Vec::new();
-    // SYSENTER_CS and FMASK: bits 63:32 reserved.
+    // FMASK: bits 63:32 reserved (SYSENTER_CS is not here: its upper half is ignored, not reserved).
     for value in [1u64 << 32, 1 << 63, 0x1_0000_0010] {
-        bad.push((IA32_SYSENTER_CS, value));
         bad.push((IA32_FMASK, value));
+    }
+    // STAR: bits 31:0 reserved (SDM Vol. 3A Figure 6-14).
+    for value in [1u64, 1 << 31, 0x0023_0010_0000_0001, 0xffff_ffff_ffff_ffff] {
+        bad.push((IA32_STAR, value));
     }
     // Canonical-address MSRs of the WRMSR page: ESP, EIP, LSTAR, KERNEL_GS_BASE.
     for index in [
@@ -447,16 +460,42 @@ fn wrmsr_reserved_bits_and_non_canonical_addresses_are_gp0_without_change() {
 }
 
 #[test]
-fn star_and_cstar_take_any_value() {
-    // STAR has no reserved bits and CSTAR is not in the WRMSR canonical list.
-    for index in [IA32_STAR, IA32_CSTAR] {
-        for value in [0u64, 0x0000_8000_0000_0000, 0xdead_beef_dead_beef] {
-            let cells = Cells::new();
-            let set = cells.windows();
-            let (result, _, _) = access(&set, WRMSR, index, value);
-            assert_eq!(result.instructions_executed, 1);
-            assert_eq!(cells.cell(index).get(), value);
-        }
+fn star_takes_any_high_half_and_cstar_any_value() {
+    // STAR[63:32] are the SYSCALL/SYSRET selectors and take any value; STAR[31:0] are reserved
+    // (Figure 6-14, see the #GP(0) test). CSTAR is not in the WRMSR canonical list.
+    for (index, value) in [
+        (IA32_STAR, 0u64),
+        (IA32_STAR, 0x0023_0010_0000_0000),
+        (IA32_STAR, 0xdead_beef_0000_0000),
+        (IA32_CSTAR, 0),
+        (IA32_CSTAR, 0x0000_8000_0000_0000),
+        (IA32_CSTAR, 0xdead_beef_dead_beef),
+    ] {
+        let cells = Cells::new();
+        let set = cells.windows();
+        let (result, _, _) = access(&set, WRMSR, index, value);
+        assert_eq!(result.instructions_executed, 1, "{index:#x} {value:#x}");
+        assert_eq!(cells.cell(index).get(), value, "{index:#x} {value:#x}");
+    }
+}
+
+#[test]
+fn sysenter_cs_upper_half_is_ignored_on_write_and_reads_zero() {
+    // SDM Vol. 4 Table 2-2, 174H: bits 63:32 "not used, writes ignored, reads return zero"; bits 31:16
+    // can be read and written.
+    for (value, stored) in [
+        (0x1_0000_0010u64, 0x10u64),
+        (0xffff_ffff_ffff_ffff, 0xffff_ffff),
+        (0x8000_0000_dead_0008, 0xdead_0008),
+    ] {
+        let cells = Cells::new();
+        let set = cells.windows();
+        let (result, _, _) = access(&set, WRMSR, IA32_SYSENTER_CS, value);
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+        assert_eq!(cells.sysenter_cs.get(), stored, "{value:#x}");
+        let (_, _, read) = access(&set, RDMSR, IA32_SYSENTER_CS, 0);
+        assert_eq!(read.gpr[Register::Rax as usize], stored, "{value:#x}");
+        assert_eq!(read.gpr[Register::Rdx as usize], 0, "{value:#x}");
     }
 }
 
@@ -464,16 +503,28 @@ fn star_and_cstar_take_any_value() {
 fn misc_enable_models_only_the_fast_string_bit() {
     let cells = Cells::new();
     let set = cells.windows();
-    // Bit 0 toggles.
-    let (result, _, _) = access(&set, WRMSR, IA32_MISC_ENABLE, 0);
+    // Bit 0 toggles; the read-only bits 11 (BTS unavailable) and 12 (PEBS unavailable) stay 1.
+    let (result, _, _) = access(&set, WRMSR, IA32_MISC_ENABLE, 0x1800);
     assert_eq!(result.instructions_executed, 1);
-    assert_eq!(cells.misc_enable.get(), 0);
-    let (result, _, _) = access(&set, WRMSR, IA32_MISC_ENABLE, 1);
+    assert_eq!(cells.misc_enable.get(), 0x1800);
+    let (result, _, _) = access(&set, WRMSR, IA32_MISC_ENABLE, 0x1801);
     assert_eq!(result.instructions_executed, 1);
-    assert_eq!(cells.misc_enable.get(), 1);
-    // Any other bit (here: monitor FSM 18, limit CPUID maxval 22, XD disable 34, bit 1) is a bit the
-    // model lacks: fail closed, no state change, not an architectural #GP.
-    for value in [1u64 | 1 << 18, 1 | 1 << 22, 1 | 1 << 34, 1 | 2, 1 << 63] {
+    assert_eq!(cells.misc_enable.get(), 0x1801);
+    // Any other change (here: monitor FSM 18, limit CPUID maxval 22, XD disable 34, reserved bit 1,
+    // bit 63, and clearing the read-only bit 11 or 12 or both) is a bit the model lacks: a deliberate
+    // fail-closed decision, no state change, not an architectural #GP.
+    for value in [
+        0x1801u64 | 1 << 18,
+        0x1801 | 1 << 22,
+        0x1801 | 1 << 34,
+        0x1801 | 2,
+        0x1801 | 1 << 63,
+        0x1001,
+        0x0801,
+        0x0001,
+        1,
+        0,
+    ] {
         let (result, before, after) = access(&set, WRMSR, IA32_MISC_ENABLE, value);
         assert_eq!(
             exit(&result),
@@ -482,7 +533,7 @@ fn misc_enable_models_only_the_fast_string_bit() {
         );
         assert_eq!(result.instructions_executed, 0, "{value:#x}");
         assert_eq!(after, before, "{value:#x}");
-        assert_eq!(cells.misc_enable.get(), 1, "{value:#x}");
+        assert_eq!(cells.misc_enable.get(), 0x1801, "{value:#x}");
     }
 }
 
@@ -717,8 +768,13 @@ fn admission_needs_every_member_and_valid_cells_before_any_fetch() {
         (IA32_LSTAR, 0x0000_8000_0000_0000),
         (IA32_KERNEL_GS_BASE, 0x0000_8000_0000_0000),
         (IA32_FMASK, 1 << 32),
+        (IA32_STAR, 1),
         (IA32_PAT, 0x02),
         (IA32_MISC_ENABLE, 1 << 34),
+        (IA32_MISC_ENABLE, 0x1801 | 1 << 34),
+        // The read-only bits 11 and 12 always read 1.
+        (IA32_MISC_ENABLE, 1),
+        (IA32_MISC_ENABLE, 0x1000),
     ] {
         let cells = Cells::new();
         cells.cell(index).set(value);
@@ -804,8 +860,24 @@ fn the_decision_table_matches_the_documented_rules() {
         windows_msr_write_decision(IA32_SYSENTER_CS, 0, 0xffff_ffff),
         Accept
     );
+    // The upper half is ignored on write (Vol. 4 Table 2-2), not reserved; the cell keeps bits 31:0.
     assert_eq!(
         windows_msr_write_decision(IA32_SYSENTER_CS, 0, 1 << 32),
+        Accept
+    );
+    assert_eq!(
+        windows_msr_stored_value(IA32_SYSENTER_CS, u64::MAX),
+        0xffff_ffff
+    );
+    assert_eq!(windows_msr_stored_value(IA32_LSTAR, u64::MAX), u64::MAX);
+    assert!(windows_msr_cell_value_valid(IA32_SYSENTER_CS, 0xffff_ffff));
+    assert!(!windows_msr_cell_value_valid(IA32_SYSENTER_CS, 1 << 32));
+    assert_eq!(
+        windows_msr_write_decision(IA32_STAR, 0, 0x0023_0010_0000_0000),
+        Accept
+    );
+    assert_eq!(
+        windows_msr_write_decision(IA32_STAR, 0, 1),
         GeneralProtection
     );
     assert_eq!(
@@ -824,9 +896,16 @@ fn the_decision_table_matches_the_documented_rules() {
         windows_msr_write_decision(IA32_PAT, 0, 0x0302),
         GeneralProtection
     );
-    assert_eq!(windows_msr_write_decision(IA32_MISC_ENABLE, 1, 0), Accept);
     assert_eq!(
-        windows_msr_write_decision(IA32_MISC_ENABLE, 1, 3),
+        windows_msr_write_decision(IA32_MISC_ENABLE, 0x1801, 0x1800),
+        Accept
+    );
+    assert_eq!(
+        windows_msr_write_decision(IA32_MISC_ENABLE, 0x1801, 0x1803),
+        Unsupported
+    );
+    assert_eq!(
+        windows_msr_write_decision(IA32_MISC_ENABLE, 0x1801, 0x0801),
         Unsupported
     );
     // Indexes outside the cell-owned list have no decision here.
