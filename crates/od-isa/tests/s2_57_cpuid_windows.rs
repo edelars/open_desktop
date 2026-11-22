@@ -804,11 +804,14 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         );
         assert_eq!(cpu, before, "{code:02x?}: refused without a state change");
     };
-    // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions (the x87 half of
-    // the FP cell is lent only to MMX forms), so every x87 arithmetic form is refused in the set. The
-    // forms of S2-32a/S2-32b/S2-32c/S2-32d exist in the bounded x87 profile of `step` but are not connected to the
-    // set: FSIN (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20), FBSTP m80
-    // [RAX] (DF 30), FNSTENV (D9 30), FNSAVE (DD 30), FRSTOR (DD 20) and FLDENV (D9 20).
+    // FPU, blocker 1: the CPL0 set keeps `LongModeState.x87` None between instructions; the x87 half of the FP
+    // cell is lent to the MMX forms (S2-39o) and, since S2-32e, to the forms of the bounded x87 profile of
+    // S2-32a/S2-32b/S2-32c/S2-32d (s2_32e_cpl0_x87.rs): FNSTENV/FNSAVE/FRSTOR/FLDENV run in the set,
+    // FSIN..FXTRACT and FBLD/FBSTP are gated and then refused while a selector is represented (the set admits
+    // no cell without them: no FCS/FDS bypass), and every other x87 arithmetic form stays refused. The FPU bit
+    // remains undeclared (S2-57). This test checks the refusal of the forms on a state without x87: FSIN
+    // (D9 FE), FPATAN (D9 F3), F2XM1 (D9 F0), FSCALE (D9 FD), FBLD m80 [RAX] (DF 20), FBSTP m80 [RAX] (DF 30),
+    // FNSTENV (D9 30), FNSAVE (DD 30), FRSTOR (DD 20) and FLDENV (D9 20).
     for code in [
         &[0xd9u8, 0xfe][..],
         &[0xd9, 0xf3],
@@ -827,7 +830,7 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         });
     }
     // Control for the above: the same FSIN completes when x87 state with a valid ST(0) is present, so the
-    // refusal in the set comes from the missing connection and not from the operand or the status word.
+    // refusal comes from the missing x87 state and not from the operand or the status word.
     {
         let mut cpu = cpu();
         let mut x87 = X87State::fixture_seed();
@@ -845,8 +848,8 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
         );
     }
     // FPU, blocker 2 (S2-32c): FNSTENV (D9 /6), FNSAVE (DD /6) and FRSTOR (DD /4) at [RAX] exist in the bounded
-    // profile as well, and are likewise not connected to the set (the FSTENV/FSAVE spellings add FWAIT, which
-    // only the set owns). With clean x87 state the bounded profile completes FNSTENV.
+    // profile as well (the FSTENV/FSAVE spellings add FWAIT, which only the set owns). With clean x87 state the
+    // bounded profile completes FNSTENV.
     {
         let mut cpu = cpu();
         let mut x87 = X87State::fixture_seed();
@@ -862,8 +865,8 @@ fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
             "FNSTENV with x87 state: {outcome:?}"
         );
     }
-    // The same four forms through the set (x87 = None): refused with no state change and with the 108-byte
-    // image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR/FLDENV load nothing).
+    // The same four forms on a state without x87 (x87 = None): refused with no state change and with the
+    // 108-byte image area untouched (FNSTENV/FNSAVE write nothing, FRSTOR/FLDENV load nothing).
     for code in [
         &[0xd9u8, 0x30][..],
         &[0xdd, 0x30],
