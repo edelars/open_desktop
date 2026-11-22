@@ -3062,6 +3062,10 @@ pub enum Operation {
     },
     /// Bare `DB 38` FSTP m80fp at [RAX], bounded raw binary80 profile.
     FstpM80FpRax,
+    /// S2-32b: bare `DF 20` FBLD m80bcd at [RAX], pushing the exact integer of a valid packed BCD operand.
+    FbldM80Rax,
+    /// S2-32b: bare `DF 30` FBSTP m80bcd at [RAX], storing the rounded ST(0) as packed BCD and popping.
+    FbstpM80Rax,
     /// Bare `DB 28` FLD m80fp at [RAX], bounded Normal binary80 stack push.
     FldM80FpRax,
     /// Bare `DD 10` FST m64fp at [RAX], bounded finite profile.
@@ -9565,6 +9569,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 match modrm {
                     0x00 => Operation::FildM16IntRax,
                     0x28 => Operation::FildM64IntRax,
+                    0x20 => Operation::FbldM80Rax,
+                    0x30 => Operation::FbstpM80Rax,
                     0xe0 => Operation::FnstswAx,
                     0x10 => Operation::FistM16IntRax,
                     0x18 => Operation::FistpM16IntRax,
@@ -21693,6 +21699,8 @@ mod tests {
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
                     0x10 => Ok(Operation::FistM16IntRax),
+                    0x20 => Ok(Operation::FbldM80Rax),
+                    0x30 => Ok(Operation::FbstpM80Rax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -21778,6 +21786,8 @@ mod tests {
                     0x38 => Ok(Operation::FistpM64IntRax),
                     0x18 => Ok(Operation::FistpM16IntRax),
                     0x10 => Ok(Operation::FistM16IntRax),
+                    0x20 => Ok(Operation::FbldM80Rax),
+                    0x30 => Ok(Operation::FbstpM80Rax),
                     _ if indexed_x87_compare(0xdf, modrm).is_some() => {
                         Ok(indexed_x87_compare(0xdf, modrm).unwrap())
                     }
@@ -21894,6 +21904,10 @@ mod tests {
                     Ok(Operation::FistpM16IntRax)
                 } else if opcode == 0xdf && modrm == 0x38 {
                     Ok(Operation::FistpM64IntRax)
+                } else if opcode == 0xdf && modrm == 0x20 {
+                    Ok(Operation::FbldM80Rax)
+                } else if opcode == 0xdf && modrm == 0x30 {
+                    Ok(Operation::FbstpM80Rax)
                 } else if let Some(operation) = indexed_x87_compare(opcode, modrm) {
                     Ok(operation)
                 } else {

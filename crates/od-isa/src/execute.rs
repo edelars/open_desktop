@@ -48247,6 +48247,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             | Operation::FstM64FpRax
             | Operation::FstpM64FpRax
             | Operation::FstpM80FpRax
+            | Operation::FbldM80Rax
+            | Operation::FbstpM80Rax
             | Operation::FfreeSti { .. }
     ) && state.x87.is_none()
     {
@@ -49550,6 +49552,30 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     } else {
         None
     };
+    let fbld_destination = if instruction.operation == Operation::FbldM80Rax {
+        match bounded_x87_fbld_destination(state) {
+            Some(destination) => Some(destination),
+            None => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let fbstp = if instruction.operation == Operation::FbstpM80Rax {
+        match bounded_x87_fbstp_result(state) {
+            Some(result) => Some(result),
+            None => {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+        }
+    } else {
+        None
+    };
     let fstp_m80fp = if instruction.operation == Operation::FstpM80FpRax {
         match bounded_x87_m80fp_source(state) {
             Some(source) => Some(source),
@@ -49987,6 +50013,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FstpM64FpRax
         | Operation::FstpM80FpRax
         | Operation::FldM80FpRax
+        | Operation::FbldM80Rax
+        | Operation::FbstpM80Rax
         | Operation::FistM32IntRax
         | Operation::FistpM32IntRax
         | Operation::FistpM64IntRax
@@ -52698,6 +52726,77 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | if invalid { 0x0001 } else { 0 };
         }
         x87.status_word |= if overflow { 0x0008 } else { 0 };
+        x87.instruction_pointer = state.rip;
+        x87.data_pointer = address;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if let Some((bcd, flags)) = fbstp {
+        // S2-32b: FBSTP stores the whole 10-byte packed BCD in one write, then pops.
+        let destination = MemoryOperand {
+            base: AddressBase::Register(Register::Rax),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size: OperandSize::Qword,
+            size: OperandSize::Qword,
+        };
+        let address = match destination.linear_address_48(state, next_rip) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(MemoryError::Architectural(error)),
+        };
+        let last = address.checked_add(9).ok_or(MemoryError::AddressOverflow {
+            address,
+            length: 10,
+        })?;
+        if !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        if let Err(error) = memory.write(address, context, &bcd) {
+            return report_memory_error(error);
+        }
+        let x87 = state.x87.as_mut().expect("FBSTP state was prevalidated");
+        let old_top = x87.top();
+        x87.set_tag(old_top, X87Tag::Empty);
+        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9)))
+            | (u16::from(old_top.wrapping_add(1) & 7) << 11)
+            | flags;
+        x87.instruction_pointer = state.rip;
+        x87.data_pointer = address;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if let Some(destination) = fbld_destination {
+        // S2-32b: FBLD reads the 10 bytes, refuses a non-decimal digit before any state change
+        // (the SDM leaves that encoding undefined) and pushes the exact integer.
+        let address = state.gpr[Register::Rax as usize];
+        let last = match address.checked_add(9) {
+            Some(last) => last,
+            None => {
+                return Err(MemoryError::AddressOverflow {
+                    address,
+                    length: 10,
+                });
+            }
+        };
+        if !canonical(address) || !canonical(last) {
+            return report_memory_error(general_protection());
+        }
+        let mut raw = [0_u8; 10];
+        if let Err(error) = memory.read(address, context, &mut raw) {
+            return report_memory_error(error);
+        }
+        let Some((value, tag)) = bcd_to_binary80(raw) else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        let x87 = state.x87.as_mut().expect("FBLD state was prevalidated");
+        let old_top = x87.top();
+        let new_top = old_top.wrapping_add(7) & 7;
+        x87.registers[destination] = value;
+        x87.set_tag(destination as u8, tag);
+        x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
         x87.instruction_pointer = state.rip;
         x87.data_pointer = address;
         state.rip = next_rip;
@@ -63719,7 +63818,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::FstpM32FpRax
         | Operation::FstM64FpRax
         | Operation::FstpM64FpRax
-        | Operation::FstpM80FpRax => {
+        | Operation::FstpM80FpRax
+        | Operation::FbldM80Rax
+        | Operation::FbstpM80Rax => {
             unreachable!("FST/FSTP m32fp/m64fp commits in its prevalidated store path")
         }
         Operation::FistM32IntRax
@@ -66954,6 +67055,114 @@ fn bounded_x87_fprem1_result(state: &LongModeState) -> Option<([u8; 10], X87Tag,
         return None;
     }
     Some((result_raw, X87Tag::Valid, quotient_bits))
+}
+
+/// Packed BCD (18 digits, sign in bit 7 of byte 9, bits 6:0 of byte 9 ignored as on the oracle) to an
+/// exact binary80 integer; None when a digit is not decimal (undefined in the SDM).
+fn bcd_to_binary80(raw: [u8; 10]) -> Option<([u8; 10], X87Tag)> {
+    let mut value = 0u64;
+    for byte in raw[..9].iter().rev() {
+        let (high, low) = (byte >> 4, byte & 0xf);
+        if high > 9 || low > 9 {
+            return None;
+        }
+        value = value * 100 + u64::from(high) * 10 + u64::from(low);
+    }
+    let negative = raw[9] & 0x80 != 0;
+    let mut out = [0u8; 10];
+    if value == 0 {
+        out[9] = u8::from(negative) << 7;
+        return Some((out, X87Tag::Zero));
+    }
+    let lz = value.leading_zeros();
+    out[..8].copy_from_slice(&(value << lz).to_le_bytes());
+    let biased = 0x3fff + 63 - lz as u16;
+    out[8..].copy_from_slice(&(biased | (u16::from(negative) << 15)).to_le_bytes());
+    Some((out, X87Tag::Valid))
+}
+
+/// Preflight the bare `FBLD m80bcd` push: present state, absent selectors, one of the twelve
+/// all-exception-masked control words, no sticky exception except PE and an Empty slot below TOP.
+fn bounded_x87_fbld_destination(state: &LongModeState) -> Option<usize> {
+    let x87 = state.x87.as_ref()?;
+    if x87.instruction_selector.is_some()
+        || x87.data_selector.is_some()
+        || !X87_ALL_MASKED_CONTROL_WORDS.contains(&x87.control_word)
+        || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let destination = x87.top().wrapping_add(7) & 7;
+    (x87.tag(destination) == Some(X87Tag::Empty)).then_some(usize::from(destination))
+}
+
+/// All twelve control words with every exception masked (PC 24/53/64, four RC modes).
+const X87_ALL_MASKED_CONTROL_WORDS: [u16; 12] = [
+    0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f, 0x0f7f,
+];
+
+/// Preflight the bare `FBSTP m80bcd`: ST(0) is rounded to an integer under the RC of the control
+/// word (PC is ignored) and must fit 18 decimal digits; returns the 10 BCD bytes and the PE and
+/// C1 (round-up) bits. Values beyond 10^18 - 1 (IE and the BCD indefinite), denormals, NaNs and
+/// infinities keep their refusal.
+fn bounded_x87_fbstp_result(state: &LongModeState) -> Option<([u8; 10], u16)> {
+    let x87 = state.x87.as_ref()?;
+    if x87.instruction_selector.is_some()
+        || x87.data_selector.is_some()
+        || !X87_ALL_MASKED_CONTROL_WORDS.contains(&x87.control_word)
+        || x87.status_word & 0x80df != 0
+    {
+        return None;
+    }
+    let top = x87.top();
+    let raw = x87.registers[usize::from(top)];
+    let mantissa = u64::from_le_bytes(raw[..8].try_into().ok()?);
+    let sign_exponent = u16::from_le_bytes([raw[8], raw[9]]);
+    let negative = sign_exponent & 0x8000 != 0;
+    let biased = i32::from(sign_exponent & 0x7fff);
+    let (integer, inexact, rounded_up) = match x87.tag(top)? {
+        X87Tag::Zero if mantissa == 0 && biased == 0 => (0u64, false, false),
+        X87Tag::Valid if biased != 0 && biased != 0x7fff && mantissa >> 63 == 1 => {
+            let exponent = biased - 16383;
+            if exponent >= 60 {
+                return None;
+            }
+            // value = mantissa * 2^(exponent - 63); split into integer and remainder (in units of 2^-shift).
+            let shift = 63 - exponent;
+            let (integer, remainder, half) = if shift >= 128 {
+                (0u128, u128::from(mantissa), u128::MAX)
+            } else {
+                let whole = u128::from(mantissa) >> shift;
+                let low = u128::from(mantissa) & ((1u128 << shift) - 1);
+                (whole, low, 1u128 << (shift - 1))
+            };
+            let inexact = remainder != 0;
+            let odd = integer & 1 == 1;
+            let increment = match x87.control_word & 0x0c00 {
+                0x0000 => remainder > half || (remainder == half && odd),
+                0x0400 => inexact && negative,
+                0x0800 => inexact && !negative,
+                _ => false,
+            };
+            let integer = integer + u128::from(increment);
+            if integer >= 1_000_000_000_000_000_000 {
+                return None;
+            }
+            (integer as u64, inexact, increment)
+        }
+        _ => return None,
+    };
+    let mut bcd = [0u8; 10];
+    let mut rest = integer;
+    for byte in bcd[..9].iter_mut() {
+        *byte = (rest % 10) as u8 | (((rest / 10) % 10) as u8) << 4;
+        rest /= 100;
+    }
+    bcd[9] = u8::from(negative) << 7;
+    Some((
+        bcd,
+        (if inexact { 0x0020 } else { 0 }) | (if rounded_up { 0x0200 } else { 0 }),
+    ))
 }
 
 /// The complete architectural effect of one bounded S2-32 instruction: register payloads, tags
@@ -132050,7 +132259,7 @@ mod tests {
             assert!(memory.accesses.is_empty());
         }
 
-        for bytes in [&[0x66, 0xdf, 0x38][..], &[0xdf, 0x30][..]] {
+        for bytes in [&[0x66, 0xdf, 0x38][..], &[0xdf, 0x31][..]] {
             let mut state = LongModeState::default();
             state.rip = 0x8490;
             state.gpr[Register::Rax as usize] = 0x1000;
