@@ -24,13 +24,15 @@ pub(crate) const SCI_LEVEL_LOW: u32 = LEVEL | POLARITY_LOW;
 pub(crate) const NVME_PIN: usize = 16;
 /// The xHCI INTA route (XHCI_DEVICE.md section 2): level, active low, GSI 17.
 pub(crate) const XHCI_PIN: usize = 17;
+/// The NIC INTA route (NIC_DEVICE.md section 3): level, active low, GSI 18.
+pub(crate) const NIC_PIN: usize = 18;
 /// The COM2 UART interrupt (ISA IRQ 3 -> GSI 3, S11-21 agent channel). Like INTIN4 it is an ISA
 /// UART line: active high, edge or level as the guest programs the entry. These rules apply only
 /// while the board has connected the line (`PairState::com2_wired`, the `agent_channel` option);
 /// otherwise INTIN3 is an input without a line, as on a board without the channel.
 pub(crate) const COM2_PIN: usize = 3;
 /// Inputs with Remote IRR and EOI-driven redelivery.
-const LEVEL_PINS: [usize; 5] = [4, COM2_PIN, SCI_PIN, NVME_PIN, XHCI_PIN];
+const LEVEL_PINS: [usize; 6] = [4, COM2_PIN, SCI_PIN, NVME_PIN, XHCI_PIN, NIC_PIN];
 /// Number of IOAPIC inputs (MRE = 23); MADT (S4-31f) declares the same count.
 pub(crate) const IO_APIC_PINS: usize = 24;
 /// IOAPIC ID loaded at reset on a single-vCPU board.
@@ -54,6 +56,8 @@ pub(crate) struct Route {
     pub nvme_remote_irr: bool,
     pub xhci_asserted: bool,
     pub xhci_remote_irr: bool,
+    pub nic_asserted: bool,
+    pub nic_remote_irr: bool,
     /// The COM2 UART drives its input (INTIN3, active high): `true` while the line is high.
     pub com2_asserted: bool,
     /// Remote IRR of the INTIN3 entry: set by a level delivery, cleared by the destination's EOI.
@@ -81,6 +85,8 @@ impl Default for Route {
             nvme_remote_irr: false,
             xhci_asserted: false,
             xhci_remote_irr: false,
+            nic_asserted: false,
+            nic_remote_irr: false,
             com2_asserted: false,
             com2_remote_irr: false,
             id: IO_APIC_RESET_ID,
@@ -341,6 +347,7 @@ impl PairState {
             SCI_PIN => self.route.sci_asserted,
             NVME_PIN => self.route.nvme_asserted,
             XHCI_PIN => self.route.xhci_asserted,
+            NIC_PIN => self.route.nic_asserted,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -351,6 +358,7 @@ impl PairState {
             SCI_PIN => self.route.sci_remote_irr,
             NVME_PIN => self.route.nvme_remote_irr,
             XHCI_PIN => self.route.xhci_remote_irr,
+            NIC_PIN => self.route.nic_remote_irr,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -361,6 +369,7 @@ impl PairState {
             SCI_PIN => self.route.sci_remote_irr = value,
             NVME_PIN => self.route.nvme_remote_irr = value,
             XHCI_PIN => self.route.xhci_remote_irr = value,
+            NIC_PIN => self.route.nic_remote_irr = value,
             _ => unreachable!("non-level pin"),
         }
     }
@@ -604,6 +613,11 @@ impl PairState {
         self.set_active_low_level_line(XHCI_PIN, asserted)
     }
 
+    /// The NIC INTA line (GSI 18), level and active low like the NVMe and xHCI ones.
+    pub fn set_nic_line(&mut self, asserted: bool) -> Result<(), DeviceError> {
+        self.set_active_low_level_line(NIC_PIN, asserted)
+    }
+
     fn set_active_low_level_line(&mut self, pin: usize, asserted: bool) -> Result<(), DeviceError> {
         if asserted && self.route.pins[pin] & MASK == 0 && !self.is_level(pin) {
             return Err(DeviceError::UnsupportedConfiguration);
@@ -627,6 +641,7 @@ impl PairState {
             SCI_PIN => self.route.sci_asserted = high,
             NVME_PIN => self.route.nvme_asserted = high,
             XHCI_PIN => self.route.xhci_asserted = high,
+            NIC_PIN => self.route.nic_asserted = high,
             _ => unreachable!("non-level pin"),
         }
         Ok(())
@@ -734,7 +749,7 @@ impl PairState {
         let old = usize::from(self.route.dest[pin]);
         if new != old {
             match pin {
-                4 | COM2_PIN | SCI_PIN | NVME_PIN | XHCI_PIN
+                4 | COM2_PIN | SCI_PIN | NVME_PIN | XHCI_PIN | NIC_PIN
                     if (pin != COM2_PIN || self.com2_wired) && self.is_level(pin) =>
                 {
                     let vector = self.level_low(pin) as u8;

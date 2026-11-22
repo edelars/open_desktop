@@ -1,6 +1,6 @@
 use crate::apic_pair::{
-    COM2_PIN, LEVEL, MASK, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN,
-    XHCI_PIN,
+    COM2_PIN, LEVEL, MASK, NIC_PIN, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW,
+    SCI_PIN, XHCI_PIN,
 };
 use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
@@ -81,6 +81,14 @@ impl IoApicHandle {
             .set_xhci_line(asserted)
     }
 
+    /// The NIC INTA line on INTIN18 (GSI 18): level, active low.
+    pub(crate) fn set_nic_line(&self, asserted: bool) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_nic_line(asserted)
+    }
+
     /// S4-38L8f: the route of INTIN2 as a question that changes nothing: `Some((cpu, vector))`
     /// when the entry is unmasked (an edge would request `vector` on the Local APIC of vCPU
     /// `cpu`), `None` when it is masked (an edge is lost).
@@ -150,7 +158,7 @@ fn register(selector: u8) -> Option<Register> {
 fn valid_low(pin: usize, value: u64, com2_wired: bool) -> bool {
     let masked = value & u64::from(MASK) != 0;
     let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
-    let level_low_form = matches!(pin, SCI_PIN | NVME_PIN | XHCI_PIN)
+    let level_low_form = matches!(pin, SCI_PIN | NVME_PIN | XHCI_PIN | NIC_PIN)
         && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
     if pin != 4 && !(pin == COM2_PIN && com2_wired) && (masked || level_low_form) {
         allowed |= u64::from(POLARITY_LOW);
@@ -210,6 +218,14 @@ impl BusDevice for IoApic {
                         0
                     }
             }
+            Register::Redirection { pin: NIC_PIN, .. } => {
+                state.route.pins[NIC_PIN]
+                    | if state.route.nic_remote_irr {
+                        REMOTE_IRR
+                    } else {
+                        0
+                    }
+            }
             Register::Redirection { pin, .. } => state.route.pins[pin],
         };
         Ok(u64::from(value))
@@ -247,6 +263,7 @@ impl BusDevice for IoApic {
                 } else if (pin == COM2_PIN && state.com2_wired)
                     || pin == NVME_PIN
                     || pin == XHCI_PIN
+                    || pin == NIC_PIN
                 {
                     state.set_level_low(pin, low)
                 } else {
@@ -1169,6 +1186,42 @@ mod tests {
         write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x41).unwrap();
         assert_eq!(
             io.set_xhci_line(true),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+    }
+
+    const NIC_ENTRY: u64 = 0x10 + 2 * 18;
+
+    #[test]
+    fn nic_gsi_18_is_a_level_active_low_input_independent_of_the_other_pci_lines() {
+        let (mut bus, io, apic) = sci_setup();
+        let entry = u64::from(SCI_LEVEL_LOW);
+        select(&mut bus, XHCI_ENTRY);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, entry | 0x41).unwrap();
+        select(&mut bus, NIC_ENTRY);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, entry | 0x51).unwrap();
+        assert_eq!(read(&mut bus, 0x10), Ok(entry | 0x51));
+        io.set_nic_line(true).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        assert_ne!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        // The xHCI entry is untouched.
+        select(&mut bus, XHCI_ENTRY);
+        assert_eq!(read(&mut bus, 0x10).unwrap() & u64::from(REMOTE_IRR), 0);
+        // Still asserted: the EOI redelivers; released: it does not.
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        io.set_nic_line(false).unwrap();
+        lapic_eoi(&mut bus);
+        assert_eq!(apic.pending(), None);
+    }
+
+    #[test]
+    fn nic_pin_refuses_an_unmasked_edge_entry_with_the_line_asserted() {
+        let (mut bus, io, _apic) = sci_setup();
+        select(&mut bus, NIC_ENTRY);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x51).unwrap();
+        assert_eq!(
+            io.set_nic_line(true),
             Err(DeviceError::UnsupportedConfiguration)
         );
     }

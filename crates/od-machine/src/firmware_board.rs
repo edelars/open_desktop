@@ -26,6 +26,10 @@ use crate::irq_source::{BoardIrqSource, IrqBoundaryHook, IrqCounters, NoIrqSourc
 use crate::linux_checkpoints::{
     CheckpointRecorder, LinuxCheckpointRecord, LinuxCheckpointTable, LinuxCheckpointTableError,
 };
+use crate::nic_e1000::irq_source::NicIoapicIrqSource;
+use crate::nic_e1000::{
+    NIC_PCI_BAR_BASE, NIC_PCI_BAR_BYTES, NIC_PCI_SLOT, NicConfig, NicDevice, NicHandle,
+};
 use crate::nvme::irq_source::NvmeIoapicIrqSource;
 use crate::nvme::{NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES, NVME_PCI_SLOT};
 use crate::nvram_device::{
@@ -296,6 +300,13 @@ pub struct FirmwareBoardConfig {
     /// code (firmware finds it by PCI enumeration), only the memory map and its region table
     /// gain the BAR window.
     pub xhci: Option<XhciConfig>,
+    /// Network interface (S11-32; `NIC_DEVICE.md`): an 82540EM-compatible NIC at PCI function
+    /// 00:06.0 with BAR0 `[0xFC02_0000, 0xFC04_0000)` and INTA on GSI 18, the board form of
+    /// `network = nat`. Requires `pci_ecam`. `None` (`network = none`) keeps the board, the
+    /// handoff block and the ACPI manifest hash byte for byte: the NIC has no handoff device
+    /// code (firmware finds it by PCI enumeration), only the memory map and its region table
+    /// gain the BAR window. The host connects the backend with `NicHandle::attach_backend`.
+    pub nic: Option<NicConfig>,
     /// PCI configuration device (S4-30c): ECAM window plus conf1 ports 0xCF8..=0xCFF
     /// over bus 0. `false` keeps handoff v1.0 byte for byte (code 7
     /// `PRESENT = 0`); `true` makes code 7 `PRESENT = 1` (a v1.0 slot, so
@@ -359,6 +370,7 @@ impl Default for FirmwareBoardConfig {
             tpm: None,
             nvme_pci: false,
             xhci: None,
+            nic: None,
             pci_ecam: false,
             acpi_pm: false,
             acpi_tables: false,
@@ -628,6 +640,20 @@ fn validate_config(config: &FirmwareBoardConfig) -> Result<(), FirmwareBoardErro
         return Err(FirmwareBoardError::Config(
             "xhci is served by the firmware profile only (no linux_profile)",
         ));
+    }
+    if let Some(nic) = &config.nic {
+        if !config.pci_ecam {
+            return Err(FirmwareBoardError::Config("nic needs pci_ecam"));
+        }
+        // Like the xHCI function: the Linux-profile loops do not serve it.
+        if config.linux_profile {
+            return Err(FirmwareBoardError::Config(
+                "nic is served by the firmware profile only (no linux_profile)",
+            ));
+        }
+        nic.validate().map_err(|_| {
+            FirmwareBoardError::Config("nic mac must be unicast, non-zero and not the gateway")
+        })?;
     }
     if config.nvme_pci && !(config.nvme.is_some() && config.linux_profile) {
         return Err(FirmwareBoardError::Config(
@@ -900,6 +926,13 @@ fn board_map(
     if config.xhci.is_some() {
         regions.push(MemoryRegionSpec::new(
             range(XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES)?,
+            MemoryRegionKind::Mmio,
+        ));
+    }
+    // The same for the NIC BAR0.
+    if config.nic.is_some() {
+        regions.push(MemoryRegionSpec::new(
+            range(NIC_PCI_BAR_BASE, NIC_PCI_BAR_BYTES)?,
             MemoryRegionKind::Mmio,
         ));
     }
@@ -1472,8 +1505,10 @@ pub struct LoadedFirmwareBoard {
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
     xhci_mmio: Option<XhciDevice>,
+    nic_mmio: Option<NicDevice>,
     ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
     xhci: Option<XhciHandle>,
+    nic: Option<NicHandle>,
     hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
@@ -1942,6 +1977,9 @@ impl LoadedFirmwareBoard {
         if let Some(xhci) = &self.xhci {
             xhci.platform_reset();
         }
+        if let Some(nic) = &self.nic {
+            nic.platform_reset();
+        }
         if let Some(pm) = &self.acpi_pm {
             pm.platform_reset();
         }
@@ -2306,6 +2344,12 @@ impl LoadedFirmwareBoard {
         self.xhci.clone()
     }
 
+    /// Handle of the NIC; `None` unless `FirmwareBoardConfig::nic` was set. The host attaches
+    /// the network backend with [`NicHandle::attach_backend`]; the run loops service the NIC.
+    pub fn nic(&self) -> Option<NicHandle> {
+        self.nic.clone()
+    }
+
     /// Host-side handles of the keyboard and the pointer behind the xHCI ports (LED state,
     /// counters); `None` without `FirmwareBoardConfig::xhci`.
     pub fn hid_devices(&self) -> Option<HidDevices> {
@@ -2478,7 +2522,15 @@ impl LoadedFirmwareBoard {
         };
         // The xHCI INTA line (GSI 17) on top, when the board has the controller.
         if let Some(xhci) = &self.xhci {
-            chain = Box::new(XhciIoapicIrqSource::new(chain, xhci.clone(), io_apic));
+            chain = Box::new(XhciIoapicIrqSource::new(
+                chain,
+                xhci.clone(),
+                io_apic.clone(),
+            ));
+        }
+        // The NIC INTA line (GSI 18) on top of that.
+        if let Some(nic) = &self.nic {
+            chain = Box::new(NicIoapicIrqSource::new(chain, nic.clone(), io_apic));
         }
         self.irq_source = chain;
         self.uart_ioapic_source = Some(source);
@@ -2914,6 +2966,9 @@ impl LoadedFirmwareBoard {
         if self.xhci.is_some() {
             apertures.push((XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES));
         }
+        if self.nic.is_some() {
+            apertures.push((NIC_PCI_BAR_BASE, NIC_PCI_BAR_BYTES));
+        }
         self.bus.serve_firmware_set_windows(&apertures);
     }
 
@@ -3190,6 +3245,7 @@ impl LoadedFirmwareBoard {
                     nvme: self.nvme_mmio.as_ref(),
                     tpm: self.tpm.as_ref(),
                     xhci: self.xhci_mmio.as_ref(),
+                    nic: self.nic_mmio.as_ref(),
                     ecam: self.ecam_mmio.as_ref(),
                 },
                 self.page_table_root,
@@ -3541,6 +3597,7 @@ impl LoadedFirmwareBoard {
         }
         let nvme = self.nvme.clone();
         let xhci = self.xhci.clone();
+        let nic = self.nic.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -3562,6 +3619,9 @@ impl LoadedFirmwareBoard {
         }
         if let Some(xhci) = &xhci {
             xhci.service(&mut self.bus, |_| {});
+        }
+        if let Some(nic) = &nic {
+            nic.service(&mut self.bus, |_| {});
         }
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = Some(self.page_table_root);
         let mut irq_counters = IrqCounters::default();
@@ -3699,6 +3759,8 @@ impl LoadedFirmwareBoard {
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
                         // A guest write to an xHCI register (a doorbell) ends the quantum.
                         || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
+                        // A guest write to a NIC register (the tail pointers) ends it as well.
+                        || nic.as_ref().is_some_and(NicHandle::wakeup_pending)
                     || acpi_pm
                         .as_ref()
                         .is_some_and(|pm| pm.stop_request().is_some())
@@ -3804,6 +3866,9 @@ impl LoadedFirmwareBoard {
             }
             if let Some(xhci) = &xhci {
                 xhci.service(&mut board.bus, |_| {});
+            }
+            if let Some(nic) = &nic {
+                nic.service(&mut board.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -4203,6 +4268,7 @@ impl LoadedFirmwareBoard {
         self.com1_log.bytes.clear();
         let nvme = self.nvme.clone();
         let xhci = self.xhci.clone();
+        let nic = self.nic.clone();
         let acpi_pm = self.acpi_pm.clone();
         let pit = self.pit.clone();
         let rdtsc_tick = self.rdtsc_tick.clone();
@@ -4227,6 +4293,9 @@ impl LoadedFirmwareBoard {
         if let Some(xhci) = &xhci {
             xhci.service(&mut self.bus, |_| {});
         }
+        if let Some(nic) = &nic {
+            nic.service(&mut self.bus, |_| {});
+        }
         loop {
             let uart = self.uart.clone();
             let agent = self.agent_channel.clone();
@@ -4240,6 +4309,8 @@ impl LoadedFirmwareBoard {
                         || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
                         // A guest write to an xHCI register (a doorbell) ends the quantum.
                         || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
+                        // A guest write to a NIC register (the tail pointers) ends it as well.
+                        || nic.as_ref().is_some_and(NicHandle::wakeup_pending)
                         || acpi_pm
                             .as_ref()
                             .is_some_and(|pm| pm.stop_request().is_some())
@@ -4264,6 +4335,9 @@ impl LoadedFirmwareBoard {
             }
             if let Some(xhci) = &xhci {
                 xhci.service(&mut self.bus, |_| {});
+            }
+            if let Some(nic) = &nic {
+                nic.service(&mut self.bus, |_| {});
             }
             retired += report.instructions_executed;
             remaining = remaining.saturating_sub(report.instructions_executed);
@@ -4368,8 +4442,10 @@ pub(crate) struct AssembledBoard {
     nvme_mmio: Option<NvmeDevice>,
     nvme: Option<NvmeHandle>,
     xhci_mmio: Option<XhciDevice>,
+    nic_mmio: Option<NicDevice>,
     ecam_mmio: Option<crate::pci_ecam::SharedPciEcam>,
     xhci: Option<XhciHandle>,
+    nic: Option<NicHandle>,
     hid: Option<HidDevices>,
     nvram: Option<NvramHandle>,
     tpm: Option<TpmCrbHandle>,
@@ -4618,6 +4694,24 @@ fn assemble_board_with_layout(
         bus_devices.push(Box::new(device));
         xhci = Some(handle);
     }
+    // The NIC function (S11-32): PCI 00:06.0 with BAR0 on the bus; the backend is attached by the
+    // host afterwards.
+    let mut nic = None;
+    let mut nic_mmio = None;
+    if let Some(nic_config) = config.nic {
+        let (device, handle, function) = NicDevice::new_pci(nic_config).map_err(|_| {
+            FirmwareBoardError::Config("nic mac must be unicast, non-zero and not the gateway")
+        })?;
+        pci.add_function(0, NIC_PCI_SLOT, 0, Box::new(function))
+            .map_err(|_| FirmwareBoardError::Config("NIC PCI slot is occupied"))?;
+        nic_mmio = Some(device.mmio_endpoint());
+        mmio.push(MmioBinding {
+            region_start: GuestPhysicalAddress::new(NIC_PCI_BAR_BASE),
+            device_index: bus_devices.len(),
+        });
+        bus_devices.push(Box::new(device));
+        nic = Some(handle);
+    }
     let com1 = PortRange::new(
         PortAddress::new(devices[DEV_COM1].base as u16),
         devices[DEV_COM1].length as u32,
@@ -4769,8 +4863,10 @@ fn assemble_board_with_layout(
         nvme_mmio,
         nvme,
         xhci_mmio,
+        nic_mmio,
         ecam_mmio,
         xhci,
+        nic,
         hid,
         nvram,
         tpm,
@@ -4822,8 +4918,10 @@ impl AssembledBoard {
             nvme_mmio,
             nvme,
             xhci_mmio,
+            nic_mmio,
             ecam_mmio,
             xhci,
+            nic,
             hid,
             nvram,
             tpm,
@@ -4890,8 +4988,10 @@ impl AssembledBoard {
             nvme_mmio,
             nvme,
             xhci_mmio,
+            nic_mmio,
             ecam_mmio,
             xhci,
+            nic,
             hid,
             nvram,
             tpm,
@@ -4958,6 +5058,7 @@ impl AssembledBoard {
             display,
             nvme,
             xhci,
+            nic,
             hid,
             nvram,
             tpm,
@@ -4981,8 +5082,10 @@ impl AssembledBoard {
             nvme_mmio: None,
             nvme,
             xhci_mmio: None,
+            nic_mmio: None,
             ecam_mmio: None,
             xhci,
+            nic,
             hid,
             nvram,
             tpm,
@@ -5074,6 +5177,7 @@ mod failure_smoke_tests;
 
 #[cfg(test)]
 mod tests {
+    mod nic_board;
     mod xhci_board;
     use super::*;
     use crate::{

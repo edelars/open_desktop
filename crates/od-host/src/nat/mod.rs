@@ -22,6 +22,8 @@ pub mod frame;
 #[cfg(unix)]
 mod host_tcp;
 mod icmp;
+#[cfg(test)]
+mod nic_tests;
 pub mod resolver;
 pub mod tcp;
 #[cfg(test)]

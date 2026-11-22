@@ -4,6 +4,7 @@
 mod firmware_tests;
 
 use crate::display_device::{DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice};
+use crate::nic_e1000::{NIC_PCI_BAR_BASE, NIC_PCI_BAR_BYTES, NicDevice};
 use crate::nvme::{NVME_MMIO_BASE, NVME_MMIO_BYTES, NvmeDevice};
 use crate::nvram_device::{NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES, NvramHandle};
 use crate::page_walk::MmioDispatchError;
@@ -197,94 +198,54 @@ pub(crate) struct FirmwareMmio<'a> {
     pub(crate) tpm: Option<&'a TpmCrbHandle>,
     /// The xHCI controller (BAR0 of PCI 00:05.0); the firmware finds it by PCI enumeration.
     pub(crate) xhci: Option<&'a XhciDevice>,
+    /// The NIC (BAR0 of PCI 00:06.0), found by PCI enumeration as well.
+    pub(crate) nic: Option<&'a NicDevice>,
     /// The PCI configuration device (ECAM window): the firmware enumerates PCI through it.
     pub(crate) ecam: Option<&'a crate::pci_ecam::SharedPciEcam>,
 }
 
+/// The exact register windows of the devices a board has (at most one per device).
+#[derive(Default)]
+struct FirmwareWindows {
+    entries: [(u64, u64); 7],
+    len: usize,
+}
+
+impl FirmwareWindows {
+    fn as_slice(&self) -> &[(u64, u64)] {
+        &self.entries[..self.len]
+    }
+}
+
 impl FirmwareMmio<'_> {
-    fn windows(self) -> &'static [(u64, u64)] {
+    /// The register windows of the devices present, in a fixed order.
+    fn windows(self) -> FirmwareWindows {
         const DISPLAY: (u64, u64) = (DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES);
         const NVRAM: (u64, u64) = (NVRAM_MMIO_BASE, NVRAM_MMIO_BYTES);
         const NVME: (u64, u64) = (NVME_MMIO_BASE, NVME_MMIO_BYTES);
         const TPM: (u64, u64) = (TPM_CRB_BASE, TPM_CRB_LEN);
         const XHCI: (u64, u64) = (XHCI_PCI_BAR_BASE, XHCI_PCI_BAR_BYTES);
+        const NIC: (u64, u64) = (NIC_PCI_BAR_BASE, NIC_PCI_BAR_BYTES);
         const ECAM: (u64, u64) = (
             crate::PCI_ECAM_DESCRIPTOR.base,
             crate::PCI_ECAM_DESCRIPTOR.size,
         );
-        const WINDOWS: [&[(u64, u64)]; 64] = [
-            &[],
-            &[DISPLAY],
-            &[NVRAM],
-            &[DISPLAY, NVRAM],
-            &[NVME],
-            &[DISPLAY, NVME],
-            &[NVRAM, NVME],
-            &[DISPLAY, NVRAM, NVME],
-            &[TPM],
-            &[DISPLAY, TPM],
-            &[NVRAM, TPM],
-            &[DISPLAY, NVRAM, TPM],
-            &[NVME, TPM],
-            &[DISPLAY, NVME, TPM],
-            &[NVRAM, NVME, TPM],
-            &[DISPLAY, NVRAM, NVME, TPM],
-            &[XHCI],
-            &[DISPLAY, XHCI],
-            &[NVRAM, XHCI],
-            &[DISPLAY, NVRAM, XHCI],
-            &[NVME, XHCI],
-            &[DISPLAY, NVME, XHCI],
-            &[NVRAM, NVME, XHCI],
-            &[DISPLAY, NVRAM, NVME, XHCI],
-            &[TPM, XHCI],
-            &[DISPLAY, TPM, XHCI],
-            &[NVRAM, TPM, XHCI],
-            &[DISPLAY, NVRAM, TPM, XHCI],
-            &[NVME, TPM, XHCI],
-            &[DISPLAY, NVME, TPM, XHCI],
-            &[NVRAM, NVME, TPM, XHCI],
-            &[DISPLAY, NVRAM, NVME, TPM, XHCI],
-            &[ECAM],
-            &[DISPLAY, ECAM],
-            &[NVRAM, ECAM],
-            &[DISPLAY, NVRAM, ECAM],
-            &[NVME, ECAM],
-            &[DISPLAY, NVME, ECAM],
-            &[NVRAM, NVME, ECAM],
-            &[DISPLAY, NVRAM, NVME, ECAM],
-            &[TPM, ECAM],
-            &[DISPLAY, TPM, ECAM],
-            &[NVRAM, TPM, ECAM],
-            &[DISPLAY, NVRAM, TPM, ECAM],
-            &[NVME, TPM, ECAM],
-            &[DISPLAY, NVME, TPM, ECAM],
-            &[NVRAM, NVME, TPM, ECAM],
-            &[DISPLAY, NVRAM, NVME, TPM, ECAM],
-            &[XHCI, ECAM],
-            &[DISPLAY, XHCI, ECAM],
-            &[NVRAM, XHCI, ECAM],
-            &[DISPLAY, NVRAM, XHCI, ECAM],
-            &[NVME, XHCI, ECAM],
-            &[DISPLAY, NVME, XHCI, ECAM],
-            &[NVRAM, NVME, XHCI, ECAM],
-            &[DISPLAY, NVRAM, NVME, XHCI, ECAM],
-            &[TPM, XHCI, ECAM],
-            &[DISPLAY, TPM, XHCI, ECAM],
-            &[NVRAM, TPM, XHCI, ECAM],
-            &[DISPLAY, NVRAM, TPM, XHCI, ECAM],
-            &[NVME, TPM, XHCI, ECAM],
-            &[DISPLAY, NVME, TPM, XHCI, ECAM],
-            &[NVRAM, NVME, TPM, XHCI, ECAM],
-            &[DISPLAY, NVRAM, NVME, TPM, XHCI, ECAM],
-        ];
-        let index = usize::from(self.display.is_some())
-            | (usize::from(self.nvram.is_some()) << 1)
-            | (usize::from(self.nvme.is_some()) << 2)
-            | (usize::from(self.tpm.is_some()) << 3)
-            | (usize::from(self.xhci.is_some()) << 4)
-            | (usize::from(self.ecam.is_some()) << 5);
-        WINDOWS[index]
+        let mut windows = FirmwareWindows::default();
+        for (present, window) in [
+            (self.display.is_some(), DISPLAY),
+            (self.nvram.is_some(), NVRAM),
+            (self.nvme.is_some(), NVME),
+            (self.tpm.is_some(), TPM),
+            (self.xhci.is_some(), XHCI),
+            (self.nic.is_some(), NIC),
+            (self.ecam.is_some(), ECAM),
+        ] {
+            if present {
+                windows.entries[windows.len] = window;
+                windows.len += 1;
+            }
+        }
+        windows
     }
 
     fn access(
@@ -349,6 +310,17 @@ impl FirmwareMmio<'_> {
                 operation,
                 |access| xhci.read_mmio(access),
                 |access, value| xhci.write_mmio(access, value),
+            );
+        }
+        if let Some(nic) = self.nic
+            && (NIC_PCI_BAR_BASE..NIC_PCI_BAR_BASE + NIC_PCI_BAR_BYTES).contains(&address.get())
+        {
+            return access_device_registers(
+                "NIC",
+                address.get() - NIC_PCI_BAR_BASE,
+                operation,
+                |access| nic.read_mmio(access),
+                |access, value| nic.write_mmio(access, value),
             );
         }
         if let Some(tpm) = self.tpm
@@ -1311,6 +1283,7 @@ impl PagedProbeMemory<'_> {
             operation,
         };
         let windows = self.mmio.windows();
+        let windows = windows.as_slice();
         let result = if self.large_ram_profile {
             crate::access_long64_2m_ram(
                 self.memory,
