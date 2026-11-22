@@ -4192,6 +4192,60 @@ mod tests {
         assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
     }
 
+    /// The `I/D` flag of the `#PF` error code (SDM Vol. 3A §5.7) without SMEP: set for a fetch with
+    /// `CR4.PAE = 1` and `EFER.NXE = 1`, clear with `NXE = 0` or without `PAE`.
+    #[test]
+    fn page_fault_error_code_reports_i_d_for_an_nx_fetch_in_pae_paging_without_smep() {
+        let mut ram = pae_ram_ad();
+        put_q(&mut ram, PT + 16, 0x2063 | 1 << 63); // the code page: XD
+        let mut cpu = pae_active_cpu();
+        assert_eq!((cpu.cr4 & CR4_SMEP, cpu.efer & EFER_NXE), (0, EFER_NXE));
+        assert_ne!(cpu.cr4 & CR4_PAE, 0);
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert_eq!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                eip: 0x2000,
+                linear: 0x2000,
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NoExecute {
+                    entry: 0x2063 | 1 << 63
+                }
+            }
+        );
+        // P = 1 (protection), I/D = 1.
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x11));
+        // NXE = 0: XD is a reserved bit, the fetch faults with P | RSVD and no I/D.
+        cpu.efer = 0;
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert!(matches!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                reason: PageRefusal::ReservedBits { .. },
+                ..
+            }
+        ));
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0x9));
+        // 32-bit paging (PAE = 0) with NXE = 1: a not-present fetch has no I/D either.
+        let mut ram = ram32_ad();
+        put_d(&mut ram, PT + 8, 0);
+        let mut cpu = cpu32_active();
+        assert_eq!(
+            (cpu.cr4 & (CR4_SMEP | CR4_PAE), cpu.efer & EFER_NXE),
+            (0, EFER_NXE)
+        );
+        let refusal = step_one(&mut cpu, &mut ram, &MOV_EAX_1).unwrap_err();
+        assert!(matches!(
+            refusal,
+            ProtectedRefusal::PageFault {
+                access: AccessKind::Fetch,
+                reason: PageRefusal::NotPresent { .. },
+                ..
+            }
+        ));
+        assert_eq!(cpu.page_fault_error_code(&refusal), Some(0));
+    }
+
     #[test]
     fn mov_cr4_changing_smep_in_pae_paging_reloads_the_pdptes() {
         let (mut cpu, mut ram) = (pae_active_cpu(), pae_ram_ad());
@@ -4482,6 +4536,30 @@ mod tests {
         cpu.gpr[EAX] = 0x0005_0032;
         put(&mut ram, 0x2000, &[0x0F, 0x22, 0xC0]);
         cpu.step(&mut mem(&mut ram)).unwrap();
+        // The flat 32-bit CS (D = 1) of the entry would run as 16-bit code in the real-mode model: no
+        // hand-over until CS and SS are 16-bit segments (SDM Vol. 3A §12.9.2 steps 3 and 4). Each of
+        // CS.D and SS.B refuses on its own; G and the limit do not matter.
+        assert_eq!((cpu.cs.flags, cpu.ss.flags), (0xC, 0));
+        for (cs_flags, ss_flags, handed_over) in [
+            (0xC, 0x0, false),
+            (0x8, 0xC, false),
+            (0x8, 0x4, false),
+            (0x4, 0x8, false),
+            (0x8, 0x8, true),
+            (0x0, 0x0, true),
+        ] {
+            let mut c = cpu;
+            c.cs.flags = cs_flags;
+            c.ss.flags = ss_flags;
+            assert_eq!(
+                c.to_real_mode(&base).is_some(),
+                handed_over,
+                "CS flags {cs_flags:#x}, SS flags {ss_flags:#x}"
+            );
+        }
+        // 16-bit CS (G = 1, D = 0) with the 4 GiB limit kept, and a 16-bit SS.
+        cpu.cs.flags = 0x8;
+        cpu.ss.flags = 0x8;
         let mut real = cpu.to_real_mode(&base).unwrap();
         assert_eq!(real.mode.cr0, 0x0005_0032);
         assert_eq!((real.mode.eip, real.mode.eflags), (0x2003, 0x246));
@@ -4500,11 +4578,19 @@ mod tests {
         );
         assert_eq!(real.mode.ds.selector, 0x10);
         assert_eq!(real.mode.ds.limit, 0xFFFF_FFFF);
-        // And the real-mode model runs on from there: CLI at 0x2003 (CS base 0).
-        put(&mut ram, 0x2003, &[0xFA]);
+        // And the real-mode model runs on from there (CS base 0): `66 B8 imm32` is MOV EAX, imm32 (6
+        // bytes) with the operand-size prefix of a 16-bit CS; with a 32-bit CS the same bytes would
+        // be MOV AX, imm16 followed by other bytes. Then CLI.
+        put(
+            &mut ram,
+            0x2003,
+            &[0x66, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xFA],
+        );
+        assert!(real.step(&mut mem(&mut ram)).is_ok());
+        assert_eq!((real.gpr[EAX], real.mode.eip), (0x1234_5678, 0x2009));
         assert!(real.step(&mut mem(&mut ram)).is_ok());
         assert_eq!(real.mode.eflags & 0x200, 0);
-        assert_eq!(real.mode.eip, 0x2004);
+        assert_eq!(real.mode.eip, 0x200A);
     }
 
     #[test]
@@ -4582,7 +4668,13 @@ mod tests {
             cpu.step(m),
             Err(ProtectedRefusal::NotProtectedMode { eip: 0x2006 })
         );
-        let real = cpu.to_real_mode(&RealModeCpu::after_sipi(0, 0, 0)).unwrap();
+        // The compatibility CS is 32-bit (D = 1): no hand-over; with 16-bit CS and SS (§12.9.2
+        // steps 3 and 4, set directly) there is.
+        let base = RealModeCpu::after_sipi(0, 0, 0);
+        assert_eq!(cpu.to_real_mode(&base), None);
+        cpu.cs.flags = 0x8;
+        cpu.ss.flags = 0x8;
+        let real = cpu.to_real_mode(&base).unwrap();
         assert_eq!(real.mode.cr0 & CR0_PE, 0);
     }
 

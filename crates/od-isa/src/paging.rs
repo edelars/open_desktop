@@ -2132,6 +2132,28 @@ mod tests {
                 phys: 0xF_0040_0001
             })
         );
+        // The model limit comes after the architectural faults (as in the PAE walk): a write to a
+        // read-only frame above 4 GiB is the #PF, and so is a fetch of a user frame with SMEP.
+        set32(&mut ram, PD32 + 4, 0x0040_2081);
+        assert_eq!(
+            walk32_with(&ram, PSE36, true, linear, AccessKind::Write),
+            Err(PageRefusal::WriteProtected { entry: 0x0040_2081 })
+        );
+        set32(&mut ram, PD32 + 4, 0x0040_2087);
+        let smep36 = WalkFeatures {
+            smep: true,
+            pse36: true,
+        };
+        assert_eq!(
+            walk32_with(&ram, smep36, true, linear, AccessKind::Fetch),
+            Err(PageRefusal::SmepFetch { entry: 0x0040_2087 })
+        );
+        assert_eq!(
+            walk32_with(&ram, smep36, true, linear, AccessKind::Read),
+            Err(PageRefusal::PhysicalBeyond4GiB {
+                phys: 0x1_0040_1234
+            })
+        );
         // Bits 20:17 (physical-address bits 39:36 beyond MAXPHYADDR) and bit 21 stay reserved;
         // without PSE-36 they are reserved as well.
         for bit in 17..=21u32 {
