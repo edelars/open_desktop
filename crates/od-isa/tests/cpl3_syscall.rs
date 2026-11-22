@@ -215,6 +215,17 @@ fn exit(result: &Cpl0ProfileSetResult) -> &RunExit {
 }
 
 const SYSCALL: [u8; 2] = [0x0f, 0x05];
+const UD: RunExit = RunExit::Fault(ArchitecturalFault {
+    vector: 6,
+    error_code: None,
+    linear_address: None,
+});
+const GP0: RunExit = RunExit::Fault(ArchitecturalFault {
+    vector: 13,
+    error_code: Some(0),
+    linear_address: None,
+});
+const SYSRETL: [u8; 2] = [0x0f, 0x07];
 
 #[test]
 fn syscall_from_cpl3_enters_the_kernel_through_the_msr_cells() {
@@ -465,31 +476,32 @@ fn the_member_without_one_of_its_cells_is_refused_at_entry() {
 }
 
 #[test]
-fn syscall_at_cpl0_keeps_its_refusal() {
+fn syscall_at_cpl0_enters_the_kernel_through_the_msr_cells() {
+    // S2-27m: the SDM allows SYSCALL at every CPL of 64-bit mode (a CPL0 caller stays at CPL0).
     let cells = Cells::linux();
+    cells.lstar.set(RIP + 2);
     let set = cells.set();
-    let mut state = user_state();
-    state.cs_selector = Some(0x10);
-    state.ss_selector = Some(0x18);
-    let before = state.clone();
+    let mut state = kernel_state();
+    state.rflags = 0x3246; // IOPL 3, IF, ZF, PF
+    state.gpr[Register::Rcx as usize] = 0xdead;
+    state.gpr[Register::R11 as usize] = 0xbeef;
+    let rsp = state.gpr[Register::Rsp as usize];
     let mut memory = Memory::code(&SYSCALL);
-    let result = run_with_cpl0_profile_set(
-        &mut state,
-        &mut memory,
-        config(PrivilegeLevel::Ring0, 5),
-        2,
-        &set,
-        None,
-        || false,
-    )
-    .unwrap();
+    let result = run0(&mut state, &mut memory, &set, 1).unwrap();
     assert_eq!(
         result.exit,
-        Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x05 })
+        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
     );
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
-    assert_eq!(cells.snapshot(), [EFER_SCE, STAR, LSTAR, FMASK]);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.gpr[Register::Rcx as usize], RIP + 2);
+    assert_eq!(state.gpr[Register::R11 as usize], 0x3246);
+    assert_eq!(state.rflags, 2);
+    assert_eq!(state.cs_selector, Some(0x10));
+    assert_eq!(state.ss_selector, Some(0x18));
+    assert_eq!(state.gpr[Register::Rsp as usize], rsp);
+    assert_eq!(memory.accesses, 0);
+    assert_eq!(cells.snapshot(), [EFER_SCE, STAR, RIP + 2, FMASK]);
 }
 
 #[test]
@@ -514,12 +526,11 @@ fn the_cpl0_entry_refuses_a_ring3_state_even_with_the_member() {
 
 #[test]
 fn prefixed_forms_are_refused_without_a_change() {
-    let cases: [&[u8]; 9] = [
+    let cases: [&[u8]; 8] = [
         &[0x48, 0x0f, 0x05], // REX.W: the SYSRET-like spelling, not SYSCALL
         &[0x40, 0x0f, 0x05],
         &[0x66, 0x0f, 0x05],
         &[0x67, 0x0f, 0x05],
-        &[0xf0, 0x0f, 0x05],
         &[0xf2, 0x0f, 0x05],
         &[0xf3, 0x0f, 0x05],
         &[0x64, 0x0f, 0x05],
@@ -545,11 +556,9 @@ fn prefixed_forms_are_refused_without_a_change() {
 
 #[test]
 fn sysenter_sysret_and_neighbours_stay_refused() {
-    // SYSRET (0F 07, REX.W 0F 07), SYSENTER/SYSEXIT (0F 34/35), SYSCALL-like 0F 06 (CLTS) and
-    // 0F 08 (INVD) are not admitted by the member.
-    let cases: [(&[u8], u8); 6] = [
-        (&[0x0f, 0x07], 0x07),
-        (&[0x48, 0x0f, 0x07], 0x07),
+    // SYSENTER/SYSEXIT (0F 34/35), SYSCALL-like 0F 06 (CLTS) and 0F 08 (INVD) are not admitted
+    // by the member (SYSRET at CPL3 is the #GP(0) of S2-27m, tested separately).
+    let cases: [(&[u8], u8); 4] = [
         (&[0x0f, 0x34], 0x34),
         (&[0x0f, 0x35], 0x35),
         (&[0x0f, 0x06], 0x06),
@@ -633,7 +642,6 @@ fn only_the_bare_form_decodes_as_syscall() {
     for code in [
         &[0x48, 0x0f, 0x05][..],
         &[0x66, 0x0f, 0x05],
-        &[0xf0, 0x0f, 0x05],
         &[0xf2, 0x0f, 0x05],
         &[0x40, 0x0f, 0x05],
     ] {
@@ -642,6 +650,11 @@ fn only_the_bare_form_decodes_as_syscall() {
             "{code:02x?}"
         );
     }
+    // S2-27m: LOCK makes the exact form `#UD` (SDM: "#UD if the LOCK prefix is used").
+    assert!(matches!(
+        decode_bytes(&[0xf0, 0x0f, 0x05]),
+        Err(DecodeError::Invalid { length: 3, .. })
+    ));
 }
 
 #[test]
@@ -798,7 +811,6 @@ fn sysret_loads_rflags_through_the_sdm_mask_from_r11() {
 fn sysret_refuses_unmodelled_r11_flags_and_selectors_without_a_change() {
     for r11 in [
         USER_RFLAGS | (1 << 8),  // TF
-        USER_RFLAGS | (1 << 17), // VM
         USER_RFLAGS | (1 << 19), // VIF
         USER_RFLAGS | (1 << 20), // VIP
     ] {
@@ -832,15 +844,13 @@ fn sysret_refuses_unmodelled_r11_flags_and_selectors_without_a_change() {
 }
 
 #[test]
-fn sysret_without_rex_w_or_with_any_other_prefix_is_refused() {
-    let cases: [&[u8]; 9] = [
-        &[0x0f, 0x07], // SYSRETL
+fn sysret_with_any_other_prefix_is_refused() {
+    let cases: [&[u8]; 7] = [
         &[0x40, 0x0f, 0x07],
         &[0x49, 0x0f, 0x07],
         &[0x66, 0x48, 0x0f, 0x07],
         &[0x48, 0x66, 0x0f, 0x07],
         &[0x67, 0x48, 0x0f, 0x07],
-        &[0xf0, 0x48, 0x0f, 0x07],
         &[0xf3, 0x48, 0x0f, 0x07],
         &[0x2e, 0x48, 0x0f, 0x07],
     ];
@@ -926,21 +936,25 @@ fn sysret_with_a_non_canonical_rcx_is_gp0_without_a_change() {
 }
 
 #[test]
-fn sysret_at_cpl3_keeps_its_refusal() {
-    let cells = Cells::linux();
-    let set = cells.set();
-    let mut state = user_state();
-    state.gpr[Register::Rcx as usize] = USER_RIP;
-    state.gpr[Register::R11 as usize] = USER_RFLAGS;
-    let before = state.clone();
-    let result = run3(&mut state, &mut Memory::code(&SYSRETQ), &set, 5, 2).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x07 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
+fn sysret_at_cpl3_is_gp0_without_a_change() {
+    // S2-27m: SDM "IF (CPL != 0) THEN #GP(0)" after the #UD gates, for both operand sizes.
+    for code in [&SYSRETQ[..], &[0x0f, 0x07]] {
+        let cells = Cells::linux();
+        let set = cells.set();
+        let mut state = user_state();
+        state.gpr[Register::Rcx as usize] = USER_RIP;
+        state.gpr[Register::R11 as usize] = USER_RFLAGS;
+        let before = state.clone();
+        let result = run3(&mut state, &mut Memory::code(code), &set, 5, 2).unwrap();
+        assert_eq!(exit(&result), &GP0, "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+        assert_eq!(cells.snapshot(), [EFER_SCE, STAR, LSTAR, FMASK]);
+    }
 }
 
 #[test]
-fn only_the_exact_rex_w_form_decodes_as_sysret() {
+fn only_the_two_sdm_forms_decode_as_sysret() {
     let decode_bytes = |bytes: &[u8]| {
         let mut memory = Memory::code(bytes);
         decode(&mut memory, RIP, AccessContext::default())
@@ -948,15 +962,26 @@ fn only_the_exact_rex_w_form_decodes_as_sysret() {
     let instruction = decode_bytes(&SYSRETQ).unwrap();
     assert_eq!(instruction.operation, Operation::Sysret);
     assert_eq!(instruction.length, 3);
+    assert_eq!(instruction.operand_size, OperandSize::Qword);
+    // S2-27m: the bare `0F 07` is SYSRETL, the return to compatibility mode.
+    let instruction = decode_bytes(&[0x0f, 0x07]).unwrap();
+    assert_eq!(instruction.operation, Operation::Sysret);
+    assert_eq!(instruction.length, 2);
+    assert_eq!(instruction.operand_size, OperandSize::Dword);
     for code in [
-        &[0x0f, 0x07][..],
-        &[0x40, 0x0f, 0x07],
+        &[0x40, 0x0f, 0x07][..],
         &[0x49, 0x0f, 0x07],
         &[0x66, 0x48, 0x0f, 0x07],
-        &[0xf0, 0x48, 0x0f, 0x07],
+        &[0x66, 0x0f, 0x07],
     ] {
         assert!(
             matches!(decode_bytes(code), Err(DecodeError::Unsupported { .. })),
+            "{code:02x?}"
+        );
+    }
+    for (code, length) in [(&[0xf0, 0x0f, 0x07][..], 3), (&[0xf0, 0x48, 0x0f, 0x07], 4)] {
+        assert!(
+            matches!(decode_bytes(code), Err(DecodeError::Invalid { length: l, .. }) if l == length),
             "{code:02x?}"
         );
     }
@@ -1023,4 +1048,321 @@ fn syscall_then_sysret_round_trips_to_cpl3_at_rcx() {
     assert_eq!(exit(&third), &RunExit::InstructionBudgetExhausted);
     assert_eq!(state.gpr[Register::Rax as usize], 7);
     assert_eq!(state.rip, RIP + 7);
+}
+
+// ---------------------------------------------------------------------------------------------
+// S2-27m: SDM gates of SYSCALL/SYSRET (Intel SDM combined revision 093, Vol. 2B 4-699..4-711).
+// There is no oracle: SYSCALL/SYSRET need CPL0 state, and the user-space oracle cannot give it.
+// ---------------------------------------------------------------------------------------------
+
+fn kernel_state_with_l_clear() -> LongModeState {
+    let mut state = kernel_state();
+    // The 32-bit compatibility code segment a long-mode OS keeps in the GDT (D = 1, L = 0).
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9b,
+        flags: 0xc,
+    });
+    state
+}
+
+#[test]
+fn syscall_without_long_mode_active_is_ud_before_the_sce_check() {
+    // SDM: `IF IA32_EFER.LMA = 0 OR CS.L = 0 THEN #UD` comes first; SCE is checked after it. EFER
+    // 0x101 = LME | SCE (LMA clear): SCE alone does not make the instruction valid.
+    for efer in [0x101u64, 0x001] {
+        for privilege in [PrivilegeLevel::Ring3, PrivilegeLevel::Ring0] {
+            let cells = Cells::linux();
+            cells.efer.set(efer);
+            let set = cells.set();
+            let mut memory = Memory::code(&SYSCALL);
+            let (result, before, state) = if privilege == PrivilegeLevel::Ring3 {
+                let mut state = user_state();
+                let before = state.clone();
+                let result = run3(&mut state, &mut memory, &set, 5, 2).unwrap();
+                (exit(&result).clone(), before, state)
+            } else {
+                let mut state = kernel_state();
+                let before = state.clone();
+                let result = run0(&mut state, &mut memory, &set, 5).unwrap();
+                match result.exit {
+                    Cpl0ProfileSetExit::Run(exit) => (exit, before, state),
+                    other => panic!("{other:?}"),
+                }
+            };
+            assert_eq!(result, UD, "EFER {efer:#x} {privilege:?}");
+            assert_eq!(state, before, "EFER {efer:#x} {privilege:?}");
+            assert_eq!(cells.snapshot(), [efer, STAR, LSTAR, FMASK]);
+        }
+    }
+}
+
+#[test]
+fn syscall_in_compatibility_mode_is_ud_and_does_not_read_cstar() {
+    // Intel has no SYSCALL in compatibility mode (SDM: "#UD ... not recognized in compatibility
+    // mode"); IA32_CSTAR is not an Intel SYSCALL target. A CS cache with L = 0 under EFER.LMA = 1
+    // is compatibility mode.
+    let cells = Cells::linux();
+    let cstar = Cell::new(RIP + 0x40);
+    let set = cells.set().with_msr_cstar_write(&cstar);
+    let mut state = kernel_state_with_l_clear();
+    let before = state.clone();
+    let mut memory = Memory::code(&SYSCALL);
+    let result = run0(&mut state, &mut memory, &set, 5).unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(cstar.get(), RIP + 0x40);
+}
+
+#[test]
+fn lock_prefixed_syscall_and_sysret_are_ud_without_a_change() {
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = user_state();
+    let before = state.clone();
+    let result = run3(
+        &mut state,
+        &mut Memory::code(&[0xf0, 0x0f, 0x05]),
+        &set,
+        5,
+        2,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &UD);
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    for code in [&[0xf0u8, 0x0f, 0x07][..], &[0xf0, 0x48, 0x0f, 0x07]] {
+        let mut state = kernel_state();
+        let before = state.clone();
+        let result = run0(&mut state, &mut Memory::code(code), &set, 5).unwrap();
+        assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+/// S2-27m: the LOCK rule belongs to the decoder, not to the `with_syscall` member: a set without
+/// the member also answers `F0 0F 05`, `F0 0F 07` and `F0 48 0F 07` with `#UD` (and without a
+/// change), while the exact forms without LOCK keep the member refusal.
+#[test]
+fn lock_prefixed_forms_are_ud_in_a_set_without_the_member() {
+    let cells = Cells::linux();
+    let set = cells.cells_only();
+    let mut state = user_state();
+    let before = state.clone();
+    let result = run3(
+        &mut state,
+        &mut Memory::code(&[0xf0, 0x0f, 0x05]),
+        &set,
+        5,
+        2,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &UD);
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    for code in [
+        &[0xf0u8, 0x0f, 0x05][..],
+        &[0xf0, 0x0f, 0x07],
+        &[0xf0, 0x48, 0x0f, 0x07],
+    ] {
+        let mut state = kernel_state();
+        let before = state.clone();
+        let result = run0(&mut state, &mut Memory::code(code), &set, 5).unwrap();
+        assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD), "{code:02x?}");
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn sce_clear_is_ud_before_the_unmodelled_trap_flag_refusal() {
+    // TF is a refusal only for a valid SYSCALL; the #UD gates come first.
+    let cells = Cells::linux();
+    cells.efer.set(0xd00);
+    let set = cells.set();
+    let mut state = user_state();
+    state.rflags |= 1 << 8;
+    let before = state.clone();
+    let result = run3(&mut state, &mut Memory::code(&SYSCALL), &set, 5, 2).unwrap();
+    assert_eq!(exit(&result), &UD);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sysret_without_long_mode_active_or_sce_is_ud_before_the_gp_checks() {
+    // CPL3 (which would be #GP(0)) and a non-canonical RCX do not matter: #UD comes first.
+    for efer in [0x101u64, 0xd00, 0] {
+        for code in [&SYSRETQ[..], &SYSRETL[..]] {
+            let cells = Cells::linux();
+            cells.efer.set(efer);
+            let set = cells.set();
+            let mut state = user_state();
+            state.gpr[Register::Rcx as usize] = 0x0000_8000_0000_0000;
+            let before = state.clone();
+            let result = run3(&mut state, &mut Memory::code(code), &set, 5, 2).unwrap();
+            assert_eq!(exit(&result), &UD, "EFER {efer:#x} {code:02x?}");
+            assert_eq!(state, before);
+        }
+    }
+    // The same at CPL0 for the LMA gate (EFER 0x101: SCE set, LMA clear).
+    let cells = Cells::linux();
+    cells.efer.set(0x101);
+    let set = cells.set();
+    let mut state = kernel_state();
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sysret_in_compatibility_mode_is_ud() {
+    // SDM: "#UD: The SYSRET instruction is not recognized in compatibility mode."
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state_with_l_clear();
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::Run(UD));
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn sysretl_returns_to_compatibility_mode_with_ecx() {
+    // SDM: without REX.W "RIP := ECX", CS.Selector := STAR[63:48] (no +16) | 3, CS.L := 0,
+    // CS.D := 1; the upper half of RCX is ignored and no canonical check applies.
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state();
+    state.gpr[Register::Rcx as usize] = 0xdead_beef_0040_1234;
+    let before = state.clone();
+    let mut memory = Memory::code(&SYSRETL);
+    let result = run0(&mut state, &mut memory, &set, 5).unwrap();
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::UserModeEntered(od_isa::IretqUserEntry {
+            rip: 0x40_1234,
+            cs: 0x23,
+            rflags: USER_RFLAGS,
+            rsp: 0x7ffc_886f_cfa0,
+            ss: 0x2b,
+        })
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, 0x40_1234);
+    assert_eq!(state.rflags, USER_RFLAGS);
+    assert_eq!(state.cs_selector, Some(0x23));
+    assert_eq!(state.ss_selector, Some(0x2b));
+    assert_eq!(
+        state.cs_cache,
+        Some(CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0xfb,
+            flags: 0xc,
+        })
+    );
+    assert_eq!(
+        state.ss_cache,
+        Some(DataSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0xf3,
+            flags: 0xc,
+        })
+    );
+    // RSP, RCX (full 64 bits), R11 and the rest stay.
+    assert_eq!(state.gpr, before.gpr);
+    assert_eq!(memory.accesses, 0);
+    assert_eq!(cells.snapshot(), [EFER_SCE, STAR, LSTAR, FMASK]);
+    // The long-mode interpreter does not run compatibility code: the CPL3 entry refuses it.
+    let error = run3(&mut state, &mut Memory::code(&[]), &set, 0, 2).unwrap_err();
+    assert_eq!(error, Cpl0ProfileSetInputError::WrongPrivilege);
+}
+
+#[test]
+fn sysretl_takes_a_rcx_that_sysretq_rejects_as_non_canonical() {
+    let cells = Cells::linux();
+    let set = cells.set();
+    let mut state = kernel_state();
+    state.gpr[Register::Rcx as usize] = 0x0000_8000_0000_1000;
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(result.exit, Cpl0ProfileSetExit::Run(GP0));
+    assert_eq!(state, before);
+    let result = run0(&mut state, &mut Memory::code(&SYSRETL), &set, 5).unwrap();
+    assert!(matches!(
+        result.exit,
+        Cpl0ProfileSetExit::UserModeEntered(_)
+    ));
+    assert_eq!(state.rip, 0x1000);
+}
+
+#[test]
+fn sysret_selector_overflow_differs_by_operand_size() {
+    // STAR[63:48] = 0xfff0: the 64-bit form needs +16 (0x10000, overflow, refused); the
+    // compatibility form needs only the base (0xfff0) and +8 (0xfff8): both fit.
+    let cells = Cells::linux();
+    cells.star.set(0xfff0_0010_0000_0000);
+    let set = cells.set();
+    let mut state = kernel_state();
+    let before = state.clone();
+    let result = run0(&mut state, &mut Memory::code(&SYSRETQ), &set, 5).unwrap();
+    assert_eq!(
+        result.exit,
+        Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode: 0x07 })
+    );
+    assert_eq!(state, before);
+    let result = run0(&mut state, &mut Memory::code(&SYSRETL), &set, 5).unwrap();
+    assert!(matches!(
+        result.exit,
+        Cpl0ProfileSetExit::UserModeEntered(_)
+    ));
+    assert_eq!(state.cs_selector, Some(0xfff3));
+    assert_eq!(state.ss_selector, Some(0xfffb));
+}
+
+#[test]
+fn sysret_clears_vm_and_rf_of_r11_instead_of_refusing() {
+    // SDM: "Regardless of the value of R11, the RF and VM flags are always 0 in RFLAGS after
+    // execution of SYSRET." RFLAGS := (R11 & 3C7FD7H) | 2 contains neither bit 16 nor bit 17.
+    for code in [&SYSRETQ[..], &SYSRETL[..]] {
+        let cells = Cells::linux();
+        let set = cells.set();
+        let mut state = kernel_state();
+        state.gpr[Register::R11 as usize] = USER_RFLAGS | (1 << 16) | (1 << 17);
+        let result = run0(&mut state, &mut Memory::code(code), &set, 5).unwrap();
+        assert!(
+            matches!(result.exit, Cpl0ProfileSetExit::UserModeEntered(_)),
+            "{code:02x?}"
+        );
+        assert_eq!(state.rflags, USER_RFLAGS, "{code:02x?}");
+    }
+}
+
+#[test]
+fn syscall_sysret_round_trip_through_the_compatibility_return() {
+    // User `syscall` (CPL3) -> kernel SYSRETL at LSTAR -> CPL3 compatibility mode at ECX.
+    let cells = Cells::linux();
+    cells.lstar.set(RIP + 0x20);
+    let set = cells.set();
+    let mut code = vec![0u8; 0x22];
+    code[0..2].copy_from_slice(&SYSCALL);
+    code[0x20..0x22].copy_from_slice(&SYSRETL);
+    let mut memory = Memory::code(&code);
+    let mut state = user_state();
+    let first = run3(&mut state, &mut memory, &set, 10, 2).unwrap();
+    assert_eq!(exit(&first), &RunExit::StopAddress);
+    let second = run0(&mut state, &mut memory, &set, 10).unwrap();
+    assert!(matches!(
+        second.exit,
+        Cpl0ProfileSetExit::UserModeEntered(_)
+    ));
+    assert_eq!(state.rip, RIP + 2);
+    assert_eq!(state.cs_selector, Some(0x23));
+    assert_eq!(state.cs_cache.map(|cache| cache.flags), Some(0xc));
 }

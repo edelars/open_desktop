@@ -15756,6 +15756,88 @@ Rev. 093, Vol. 2B, `RET` instruction entry; exact `F0 48 CB` #UD handling is
 the source-backed LOCK-invalid rule for this profile. See the [official SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 and [S2-27l Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).
 
+### S2-27m — SYSCALL/SYSRET gates, compatibility SYSRETL and CPL3 SYSRET (Windows CPL0 set)
+
+Scope: the `with_syscall` member of `Cpl0ProfileSet` (S4-39e/S4-39f) in
+`od-isa`, now checked against Intel SDM combined revision 093, Vol. 2B,
+`SYSCALL` (4-699..4-701) and `SYSRET` (4-709..4-711) instead of memory.
+CPUID is not touched: the `80000001` EDX[11] SYSCALL bit stays a separate
+S2-57 decision. There is no oracle: `SYSCALL`/`SYSRET` need CPL0 state and
+a user-space oracle cannot provide it, so the evidence is the SDM operation
+text and the unit tests in `crates/od-isa/tests/cpl3_syscall.rs`.
+
+Behavior added:
+
+- **Gate order, both instructions, before any write:** `EFER.LMA = 0` or
+  `CS.L = 0` is #UD, then `EFER.SCE = 0` is #UD. Intel has no `SYSCALL` in
+  compatibility mode: IA32_CSTAR is not consumed (the AMD compatibility-mode
+  target does not exist in the SDM operation).
+- **LOCK:** `F0 0F 05`, `F0 0F 07` and `F0 48 0F 07` are #UD from the decoder.
+- **SYSCALL at CPL0** is executed like CPL3 (RCX, R11, FMASK, STAR CS/SS,
+  LSTAR; the SDM allows every CPL of 64-bit mode). The CPL1/CPL2 callers are
+  not representable in the set state. TF in RFLAGS remains a refusal, now
+  checked after the #UD gates.
+- **SYSRET at CPL3** is #GP(0) after the #UD gates (both operand sizes); the
+  CPL3 allow-list admits `SYSRET` only under the member so that the step
+  decides.
+- **Bare `0F 07` (SYSRETL)** returns to compatibility mode: RIP = ECX
+  (zero-extended, no canonical check), CS = STAR[63:48] or 3 (no +16) with
+  access `0xfb`, flags `0xc` (D = 1, L = 0, G = 1), SS and RFLAGS as for
+  SYSRETQ. The retired instruction ends the CPL0 run with `UserModeEntered`.
+  The CPL3 entry admits only L = 1 code, so the long-mode interpreter refuses
+  to run the compatibility code (`WrongPrivilege`): this is the state commit
+  only, not compatibility-mode execution (S2-24 stays open).
+- **R11 flags:** VM is cleared (SDM: RF and VM are always 0 after SYSRET)
+  instead of refused. TF, VIF and VIP in R11 remain refusals (the SDM mask
+  keeps them; the single-step trap and virtual-interrupt state are not
+  modelled).
+- **Selector overflow** is operand-size aware: STAR[63:48] + 16 for the 64-bit
+  form, STAR[63:48] + 8 for the compatibility form.
+
+Unchanged refusals (`Unsupported`): non-canonical LSTAR, STAR[33:32] != 0, TF
+at `SYSCALL`, all other prefix forms, and the exact forms in a set without the
+member. The decoder, not the member, decides two things for every set,
+including a set without `with_syscall`: `F0` with `0F 05`, `0F 07` or `48 0F 07`
+is #UD (test `lock_prefixed_forms_are_ud_in_a_set_without_the_member`), and a
+bare `0F 07` decodes as SYSRETL; a set without the member then refuses the
+decoded forms with `Unsupported`, unchanged.
+
+STAR[33:32] != 0 is specified by the SDM, not unknown: the `SYSCALL` operation
+(Vol. 2B, 4-700) sets `CS.Selector := IA32_STAR[47:32] AND FFFCH` (RPL forced to
+0) and `SS.Selector := IA32_STAR[47:32] + 8` (not masked, so SS.RPL =
+STAR[33:32]), and neither step checks or faults. The model refuses it
+conservatively and for one reason: the result is CPL 0 with an SS selector whose
+RPL is not 0, a segment state that no other modelled instruction produces and
+whose later consequences (stack-segment and far-return checks on that SS) have
+no test or oracle behind them. Not verified:
+the real-hardware behavior of that state, SYSCALL at CPL1/CPL2,
+shadow-stack and CET state, FRED, and any oracle comparison. Linux boot
+(S4-39) uses only the forms that were already accepted; `od-isa` (35 test
+binaries) and the `od-machine` syscall/cpl3/iretq filters pass.
+
+Board (`od-machine`) consequences, checked by two tests in
+`crates/od-machine/src/linux_direct.rs`:
+
+- **SYSRETQ at CPL3 is delivered.** The #GP(0) of `SYSRETQ` in CPL3 leaves the
+  CPL3 loop as `Run(Fault)` with vector 13 and code 0, and the board takes the
+  same path as any CPL3 #GP(0) (S4-39d/S4-39h): the IDT gate of vector 13 and
+  `TSS.RSP0`, the frame holds the RIP of the `SYSRETQ` (it did not retire), the
+  handler runs in CPL0 (`user_mode_facade_sysretq_in_cpl3_is_a_gp0_delivered_through_rsp0`).
+  The limits are those of that path: without an IDT the fault stays the fault
+  stop, and a refused or aborted delivery (a missing task register, an
+  unreadable TSS or IDT gate) is `ExceptionDeliveryFailed`.
+- **SYSRETL ends the board run as `rejected` after a committed state change.**
+  The CPL0 loop retires `0F 07` and commits the compatibility-mode state (CS =
+  STAR[63:48] or 3, L = 0, RIP = ECX, SS, RFLAGS), then returns
+  `UserModeEntered`. The board loop continues with the CPL3 entry, which admits
+  only L = 1 code and returns `Rejected(WrongPrivilege)`; the run stops with
+  `exit_kind` `rejected` while the CPU state is already the committed one (the
+  instruction counts as retired, CPL reads 3, RIP is ECX). This is a stop, not a
+  rollback and not compatibility-mode execution: Linux boot never reaches it
+  (`/init` returns with `SYSRETQ`), and S2-24 stays the owner of running
+  compatibility code
+  (`user_mode_facade_sysretl_commits_compatibility_state_then_the_loop_is_rejected`).
+
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit
@@ -27621,6 +27703,8 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 ### SYSCALL из CPL3 через STAR, LSTAR, SYSCALL_MASK и EFER.SCE (S4-39e)
 
+> Обновлено срезом [S2-27m](#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set): семантика сверена с Intel SDM Rev. 093 (а не по памяти); ниже уточнены только отказы, которые S2-27m заменил на #UD/#GP или исполнение (SYSCALL на CPL0, SYSRET на CPL3 и SYSRETL, LOCK, LMA/CS.L, VM в R11).
+
 **Основание.** Декомпозиция S4-39 (`docs/plans/STAGE_4.md`): после S4-39d под `--user-mode` прогон Linux на stage4a доходил до первого `syscall` в `/init` (RIP `0x4000c1`, байты `0f 05`) и останавливался как `user_mode_unsupported` (`Unsupported { opcode: 5 }`): форма стояла вне белого списка CPL3 (S4-39a), а декодер не называл её. Срез добавляет исполнение `SYSCALL` из CPL3 по ячейкам MSR набора (STAR, LSTAR, SYSCALL_MASK, EFER). Старый диагностический профиль `crates/od-isa/src/syscall.rs` (четыре формы, прежние STAR/FMASK/CR4) не подходит реальному ядру (STAR user base `0x23`, FMASK `0x257fd5`, CR4 `0x6b0`) и не переиспользовался и не менялся.
 
 **Что добавлено.**
@@ -27638,7 +27722,7 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 **EFER.SCE.** `SYSCALL` читает ячейку EFER набора (`with_msr_efer_write`), а не константу профиля `EferReadOnlyV1` (у которой SCE сброшен, `0xd00`): ядро Linux выставляет SCE через `WRMSR` (`guest_efer` = `0xd01` в диагностике), запись EFER набором допускает смену только SCE (S4-38L7f). Тест `an_msr_profile_does_not_change_the_instruction`.
 
-**Отказы.** Без члена (CPL3: остановка белого списка `Unsupported 0x05`, retired 0; CPL0: `Unsupported 0x05`); член без ячейки — `SyscallCellsMissing` при допуске; REX, REX.W, `66`, `67`, `F0`, `F2`, `F3`, `64`, `2e` — `Unsupported 0x05`; SCE = 0 — `#UD` (остановка `Fault`, доставка `#UD` из CPL3 в гостя не моделируется); неканонический LSTAR, RPL в STAR, TF — `Unsupported 0x05`; соседние формы `0F 07`, `48 0F 07`, `0F 34`, `0F 35`, `0F 06`, `0F 08` остаются отказами с прежним кодом.
+**Отказы.** Без члена (CPL3: остановка белого списка `Unsupported 0x05`, retired 0; CPL0: `Unsupported 0x05`); член без ячейки — `SyscallCellsMissing` при допуске; REX, REX.W, `66`, `67`, `F0`, `F2`, `F3`, `64`, `2e` — `Unsupported 0x05` [обновлено S2-27m: `F0 0F 05` теперь #UD (`Fault` вектор 6) из декодера, для любого набора, в том числе без члена; остальные префиксы без изменений]; SCE = 0 — `#UD` (остановка `Fault`, доставка `#UD` из CPL3 в гостя не моделируется); неканонический LSTAR, RPL в STAR, TF — `Unsupported 0x05`; соседние формы `0F 07`, `48 0F 07`, `0F 34`, `0F 35`, `0F 06`, `0F 08` остаются отказами с прежним кодом [обновлено S2-27m: `0F 07` и `48 0F 07` больше не отказы, а `SYSRETL` и `SYSRETQ` (см. S4-39f и S2-27m); `0F 34`, `0F 35`, `0F 06`, `0F 08` без изменений].
 
 **Проверено.** `crates/od-isa/tests/cpl3_syscall.rs` (новый, 18 тестов): исполнение из CPL3 (RCX = RIP + 2, R11 = RFLAGS, RFLAGS по FMASK ядра с RF и битом вне маски, IF сброшен, `rflags_defined`, CS `0x10`/SS `0x18` и оба кеша, `ss_unusable`, RIP = LSTAR, RSP и остальные регистры не менялись, память не трогалась, ячейки не менялись); определённость флагов при узкой маске; FMASK 32-битный и бит 1 неизменен; селекторы по другому STAR (`0x38` и `0x40`); SCE = 0 (`0xd00`, `0x500`, `0`) — `#UD` без мутации; неканонический LSTAR (две формы), RPL в STAR, TF — `Unsupported`, без мутации; канонический LSTAR нижней половины; набор с ячейками без члена и пустой набор — остановка белого списка; член без каждой из четырёх ячеек — `SyscallCellsMissing` (входы CPL3 и CPL0); SYSCALL в CPL0 с членом — прежний отказ; вход CPL0 отказывает состоянию Ring3; девять префиксованных форм; соседние формы; обрыв выборки второго байта; `mov eax, 0x53; syscall` в одном прогоне; декодер (`0F 05` — `Operation::Syscall`, длина 2; REX/REX.W/`66`/`F0`/`F2` — `Unsupported`); профиль MSR не подменяет ячейку EFER. `od-machine --lib` (+3): `user_mode_facade_syscall_enters_the_kernel_at_lstar_and_recomputes_the_cpl` (`IRETQ`, `mov`, `syscall` в CPL3, две `nop` ядра по LSTAR через вход CPL0: `cpl` 0, retired 5, `cpl3_retired` 2, RCX, R11, RSP пользователя, CS/SS, RFLAGS, `set_members` оканчивается `user_mode`, `syscall`), `user_mode_facade_syscall_with_sce_clear_is_a_ud_stop_in_cpl3` (`user_mode_fault`, `vector: 6`, `cpl` 3, CS не менялся), `user_mode_facade_syscall_member_needs_the_four_cells` (набор `minimal()` без ячеек — `user_mode_unsupported`, члена `syscall` нет). Единственная правка существующего теста: в `od-runner` (`tools/runner/src/linux_direct.rs`, `user_mode_runs_the_board_into_cpl3_and_the_record_says_so`) последний член `set_members` теперь `syscall` с `user_mode` перед ним (стенд stage4a содержит четыре члена; запись-отказ в исполнение не превращалась). Существующие отказные тесты (`0F 05` в `cpl0_profile_set.rs`, `cpl3_profile_set.rs`, `user_mode_commit.rs`, `od-testkit`, `native_v2`, `native_litmus`) не менялись и зелёные.
 
@@ -27658,19 +27742,21 @@ SIMD-формы из пакета используют живую FP-ячейк�
 
 ### SYSRETQ из ядра в CPL3, журнал системных вызовов, выход из цикла CPL3 при смене CPL (S4-39f)
 
+> Обновлено срезом [S2-27m](#s2-27m--syscallsysret-gates-compatibility-sysretl-and-cpl3-sysret-windows-cpl0-set): семантика сверена с Intel SDM Rev. 093 (а не по памяти; формулировки «по памяти SDM» и «текста SDM в репозитории нет» ниже устарели). Ниже в тексте S4-39f пометкой «[Обновлено S2-27m]» отмечены утверждения, которые срез заменил: голый `0F 07` (теперь `SYSRETL`), R11 с VM (теперь сбрасывается, не отказ), SYSRET на CPL3 (теперь #GP(0)), `F0` (теперь #UD), порядок проверок (#UD по LMA/CS.L/SCE до всех остальных).
+
 **Основание.** Декомпозиция S4-39 (`docs/plans/STAGE_4.md`): после S4-39e `SYSCALL` из CPL3 входит в ядро (`entry_SYSCALL_64`); возврат ядра в CPL3 — `SYSRETQ` (`48 0F 07`) — не декодировался и не исполнялся. Срез добавляет его, журнал системных вызовов в стоп-записи и закрывает ISSUE-087 (цикл `run_with_cpl3_profile_set` не останавливался после смены CPL).
 
 **Что добавлено.**
-- `crates/od-isa/src/long_decode.rs`: `Operation::Sysret`. Декодируется ровно `48 0F 07` (REX = `0x48` без других префиксов, длина 3, размер операнда Qword). Голый `0F 07` (32-битный `SYSRETL`), `40`/`49 0F 07`, `66`/`67`/`F0`/`F2`/`F3`/сегментные префиксы остаются прежним `DecodeError::Unsupported` (опкод `0x07`).
+- `crates/od-isa/src/long_decode.rs`: `Operation::Sysret`. Декодируется ровно `48 0F 07` (REX = `0x48` без других префиксов, длина 3, размер операнда Qword). Голый `0F 07` (32-битный `SYSRETL`), `40`/`49 0F 07`, `66`/`67`/`F0`/`F2`/`F3`/сегментные префиксы остаются прежним `DecodeError::Unsupported` (опкод `0x07`). [Обновлено S2-27m: голый `0F 07` теперь декодируется как `Operation::Sysret` с размером операнда Dword (длина 2, `SYSRETL`), `F0 0F 07` и `F0 48 0F 07` дают #UD (`DecodeError::Invalid`); `40`/`49 0F 07`, `66`/`67`/`F2`/`F3` и сегментные префиксы остаются `Unsupported`.]
 - `crates/od-isa/src/execute.rs`: шаг `execute_sysret` (вызывается из `step_configured` сразу после ветки `SYSCALL`); исправление цикла `run_with_cpl3_profile_set` (ISSUE-087). Новых членов набора нет: `SYSRETQ` исполняется под тем же членом `with_syscall()` и теми же четырьмя ячейками (EFER, STAR, LSTAR, SYSCALL_MASK), что и `SYSCALL`. Обоснование: это вторая половина одного механизма (STAR[63:48] — база пользовательских селекторов, нужная только ему), отдельный член означал бы набор, где ядро входит, но не может вернуться; `with_user_mode()` относится к `IRETQ` и к циклу платы, а `SYSRETQ` его не требует. Член `with_syscall()` сам по себе не открывает CPL3: допуск формы остаётся прежним (CPL0).
 - `crates/od-machine/src/linux_direct.rs`, `firmware_board.rs`, `paged_memory_adapter.rs`, `lib.rs`: журнал системных вызовов (см. ниже). `firmware_board.rs` и `paged_memory_adapter.rs` менялись минимально и необходимо: журнал пишется в цикле платы (там известно, какая инструкция ушла из CPL3 или вернулась в него) и переносится из отчёта прохода в `LinuxSetRunReport` и стоп-запись. `lib.rs` — публичный экспорт `SYSCALL_JOURNAL_CAPACITY`, `SyscallJournal`, `SyscallJournalEntry`.
 - `tools/runner/src/linux_direct.rs`: ключ `stop.syscall_journal` (только под `--user-mode`).
 
 **Семантика `SYSRETQ` (по памяти SDM; текста SDM в репозитории нет, сверить при появлении первоисточника).** При EFER.SCE = 0 — `#UD` (`Fault` вектор 6, как у `SYSCALL`). Неканонический RCX — `#GP(0)` (`Fault`, вектор 13, код 0; по Intel SDM, по памяти), без мутации. Иначе: RIP ← RCX (RIP + 3 не применяется); RFLAGS ← (R11 and `POPFQ_CPL0_FLAGS`) or 2; CS ← (STAR[63:48] + 16) or 3 с плоским кешем 64-битного кода DPL 3 (base 0, limit `0xFFFF_FFFF`, access `0xfb`, flags `0xa`); SS ← (STAR[63:48] + 8) or 3 с плоским кешем данных DPL 3 (access `0xf3`, flags `0xc`), `ss_unusable = false`. RSP, RCX, R11, остальные регистры, DS/ES/FS/GS, GDT и память не меняются (инструкция не читает и не пишет память). CPL становится 3. Проверки идут до записей, состояние CPU фиксируется последним внутри блока.
 
-**Маска RFLAGS (по памяти SDM).** По SDM `RFLAGS ← (R11 and 0x3C7FD7) or 2`: загружаются CF, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT, AC, VIF, VIP, ID; RF, VM и зарезервированные биты сбрасываются, бит 1 равен 1, старшая половина обнуляется. Реализовано существующей маской `POPFQ_CPL0_FLAGS` (CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC, ID) — это `0x3C7FD7` без TF, VIF и VIP. Три бита, которых нет в маске набора, не моделируются (как для `IRETQ`/`POPFQ`): R11 с TF, VM, VIF или VIP даёт отказ `Unsupported 0x07` без мутации, а не молчаливую загрузку. Значение, которое ядро кладёт в R11 (`0x202`), в маске целиком. Тест сверяет результат с литералом `0x3c_7fd7`. `rflags_defined |= POPFQ_INTEGER_FLAGS` (флаги загружены из регистра).
+**Маска RFLAGS (по памяти SDM).** По SDM `RFLAGS ← (R11 and 0x3C7FD7) or 2`: загружаются CF, PF, AF, ZF, SF, TF, IF, DF, OF, IOPL, NT, AC, VIF, VIP, ID; RF, VM и зарезервированные биты сбрасываются, бит 1 равен 1, старшая половина обнуляется. Реализовано существующей маской `POPFQ_CPL0_FLAGS` (CF, PF, AF, ZF, SF, DF, OF, IF, IOPL, NT, AC, ID) — это `0x3C7FD7` без TF, VIF и VIP. Три бита, которых нет в маске набора, не моделируются (как для `IRETQ`/`POPFQ`): R11 с TF, VM, VIF или VIP даёт отказ `Unsupported 0x07` без мутации, а не молчаливую загрузку. [Обновлено S2-27m: VM в R11 больше не отказ, а сбрасывается (RF и VM всегда 0 после SYSRET по SDM); TF, VIF и VIP остаются отказами.] Значение, которое ядро кладёт в R11 (`0x202`), в маске целиком. Тест сверяет результат с литералом `0x3c_7fd7`. `rflags_defined |= POPFQ_INTEGER_FLAGS` (флаги загружены из регистра).
 
-**Допуск и отказы.** `Unsupported { opcode: 0x07 }` без мутации: набор без члена `with_syscall()` (прежний отказ), контекст не Ring0 (включая CPL3), CS с RPL ≠ 0 или не загружен, голый `0F 07` и любой другой префикс, у набора нет ячейки STAR/LSTAR/SYSCALL_MASK/EFER или нет ячейки committed-возврата, STAR[63:48] + 16 переполняет селектор, TF/VM/VIF/VIP в R11. `Fault`: SCE = 0 — вектор 6; неканонический RCX — вектор 13. Ни один существующий отказной тест не ослаблен. Записи-отказы, ставшие исполнением: ни одной (в `cpl0_profile_set.rs` формы `0F 07` и `48 0F 07` проверяются на наборе без члена `with_syscall()` и остаются `Unsupported 0x07`; в `cpl3_syscall.rs` `sysenter_sysret_and_neighbours_stay_refused` — в CPL3 `48 0F 07` по-прежнему `Unsupported 0x07`, теперь потому что форма вне белого списка CPL3, а декодер её называет).
+**Допуск и отказы.** `Unsupported { opcode: 0x07 }` без мутации: набор без члена `with_syscall()` (прежний отказ), контекст не Ring0 (включая CPL3), CS с RPL ≠ 0 или не загружен, голый `0F 07` и любой другой префикс [обновлено S2-27m: SYSRET на CPL3 теперь `Fault` вектор 13, код 0 (#GP(0)) после #UD-проверок, а не отказ; голый `0F 07` исполняется как `SYSRETL`; `F0` — #UD], у набора нет ячейки STAR/LSTAR/SYSCALL_MASK/EFER или нет ячейки committed-возврата, STAR[63:48] + 16 переполняет селектор, TF/VM/VIF/VIP в R11. `Fault`: SCE = 0 — вектор 6; неканонический RCX — вектор 13. Ни один существующий отказной тест не ослаблен. Записи-отказы, ставшие исполнением: ни одной (в `cpl0_profile_set.rs` формы `0F 07` и `48 0F 07` проверяются на наборе без члена `with_syscall()` и остаются `Unsupported 0x07`; в `cpl3_syscall.rs` `sysenter_sysret_and_neighbours_stay_refused` — в CPL3 `48 0F 07` по-прежнему `Unsupported 0x07`, теперь потому что форма вне белого списка CPL3, а декодер её называет) [обновлено S2-27m: под членом `with_syscall` белый список CPL3 пропускает SYSRET, и шаг даёт #GP(0); без члена остаётся прежний отказ `Unsupported 0x07`].
 
 **Выход и продолжение.** Возврат фиксируется как committed-возврат в CPL3: цикл CPL0 останавливается сразу после retired-инструкции, до следующей выборки, исходом `Cpl0ProfileSetExit::UserModeEntered(IretqUserEntry { rip: RCX, cs, rflags, rsp, ss })` (тот же выход, что у committed `IRETQ`, S4-39b); дальше хозяин продолжает входом CPL3 на том же состоянии. Цикл платы (`paged_memory_adapter.rs`) этот выход уже обрабатывал (`UserModeEntered(_) => None`, следующая граница читает CPL из RPL CS), поэтому поведение платы не менялось.
 
