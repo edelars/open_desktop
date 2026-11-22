@@ -53094,12 +53094,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // masks every exception, FNSAVE re-initialises like FNINIT (FIP, FCS, FDP, FDS cleared).
         let save_registers = instruction.operation == Operation::FnsaveRax;
         let length: u64 = if save_registers { 108 } else { 28 };
+        let start_rip = state.rip;
         if instruction.opcode.byte == 0x9b {
             // S2-32f: the spelling `9B D9 30` / `9B DD 30` is FWAIT and then the non-waiting form. The
             // FWAIT part has retired (the bounded profile admits no pending exception, so it raised
             // nothing), so a fault of the store points at the FNSTENV/FNSAVE byte, `9B` + 1 (Intel SDM,
             // FSTENV/FSAVE: "if an exception is generated for either of these instructions, the save EIP
             // points to the instruction that caused the exception"). Success sets RIP to `next_rip` below.
+            // A model error (unmapped memory, address overflow, backend failure) is not an x86
+            // exception: it restores RIP to the `9B` byte and changes no state, like FNSTENV/FLDENV.
             state.rip = state.rip.wrapping_add(1);
         }
         let destination = MemoryOperand {
@@ -53112,16 +53115,22 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         };
         let address = match destination.linear_address_48(state, next_rip) {
             Ok(address) => address,
-            Err(error) => return report_memory_error(MemoryError::Architectural(error)),
+            Err(error) => {
+                return report_memory_error_at(state, start_rip, MemoryError::Architectural(error));
+            }
         };
-        let last = address
-            .checked_add(length - 1)
-            .ok_or(MemoryError::AddressOverflow {
-                address,
-                length: length as usize,
-            })?;
+        let Some(last) = address.checked_add(length - 1) else {
+            return report_memory_error_at(
+                state,
+                start_rip,
+                MemoryError::AddressOverflow {
+                    address,
+                    length: length as usize,
+                },
+            );
+        };
         if !canonical(last) {
-            return report_memory_error(general_protection());
+            return report_memory_error_at(state, start_rip, general_protection());
         }
         let image = x87_save_image(
             state
@@ -53131,7 +53140,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             save_registers,
         );
         if let Err(error) = memory.write(address, context, &image[..length as usize]) {
-            return report_memory_error(error);
+            return report_memory_error_at(state, start_rip, error);
         }
         let x87 = state
             .x87
@@ -70893,6 +70902,23 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
     match error {
         MemoryError::Architectural(fault) => Ok(StepOutcome::Fault(fault)),
         error => Err(error),
+    }
+}
+
+/// S2-32f: like `report_memory_error`, for a path that already moved RIP (the `9B` prefix of the
+/// spelled-apart FSTENV/FSAVE). An architectural fault keeps the moved RIP; a model error is not an
+/// x86 exception, so RIP goes back to `start_rip` (the first byte of the instruction).
+fn report_memory_error_at(
+    state: &mut LongModeState,
+    start_rip: u64,
+    error: MemoryError,
+) -> Result<StepOutcome, MemoryError> {
+    match error {
+        MemoryError::Architectural(fault) => Ok(StepOutcome::Fault(fault)),
+        error => {
+            state.rip = start_rip;
+            Err(error)
+        }
     }
 }
 
