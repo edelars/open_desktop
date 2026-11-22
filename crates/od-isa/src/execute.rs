@@ -74628,8 +74628,8 @@ fn sse_ref(state: &LongModeState) -> &crate::state::SseState {
         .expect("the CPL0 set loads the SSE state of its FP member before the run")
 }
 
-/// S2-39 (CPL3): the alignment-check exception `#AC` (SDM Vol. 3A 6.15 and Vol. 1 table of the SIMD exception
-/// classes: CPL3, RFLAGS.AC = 1 and CR0.AM = 1) is not modeled (ADR-0015 item 9 defers it). A memory operand of
+/// S2-39 (CPL3): the alignment-check exception `#AC` (SDM Vol. 3A 6.15 and Vol. 2A 2.5, Tables 2-20 to 2-22:
+/// CPL3, RFLAGS.AC = 1 and CR0.AM = 1) is not modeled (ADR-0015 item 9 defers it). A memory operand of
 /// `bytes` bytes whose address is not aligned to its size at CPL3 with both bits set is therefore `Unsupported`,
 /// before any memory access, as in the executors of the other S2-39 forms; CR0 not carried counts as AM = 1.
 fn cpl3_ac_unmodeled(
