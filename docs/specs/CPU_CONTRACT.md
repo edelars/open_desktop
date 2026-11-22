@@ -1277,9 +1277,15 @@ Implementation evidence и
 boot: IA32_APIC_BASE, MISC_ENABLE, PAT, SYSENTER_CS/ESP/EIP, EFER, STAR/LSTAR/CSTAR/FMASK, FS/GS/KERNEL_GS_BASE.
 Reads of the cell-owned MSRs return the cell; writes obey the SDM reserved-bit and canonical rules (see the plan
 S2-26h); an unknown or unlisted index (including IA32_TSC `0x10`, withheld with the TSC policy) and any access
-at CPL3 raise `#GP(0)`; MISC_ENABLE models only bit 0. The member does not declare the CPUID MSR bit. The list is
-a hypothesis (ADR-0013 W-18); sources: Intel SDM Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A §14.12.2, Figure 6-14.
-No physical oracle exists for these rows (RDMSR/WRMSR are privileged); they are model-only.
+at CPL3 raise `#GP(0)`. SYSENTER_CS bits 63:32 are ignored on write and read as zero (Vol. 4 Table 2-2); STAR
+bits 31:0 are reserved, so a non-zero low half is `#GP(0)` (Vol. 3A Figure 6-14; Vol. 4 has no breakdown, hardware
+not checked). MISC_ENABLE resets to `0x1801` (fast strings, BTS and PEBS unavailable; Vol. 4 Table 2-2) and only
+bit 0 is writable: a write changing any other bit is `Unsupported` without state change, a deliberate fail-closed
+decision, not `#GP(0)`. The member does not declare the CPUID MSR bit. The list is a hypothesis (ADR-0013,
+Decision 2, «Последствия варианта B», bullet on Intel kernel/loader paths: «гипотеза, не сверено»); sources:
+Intel SDM Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A §14.12.4, Figure 6-14, Vol. 4 Table 2-2.
+No physical oracle exists for the accepted CPL0 rows (RDMSR/WRMSR are privileged); they are model-only. Only the
+CPL3 `#GP(0)` of a bare RDMSR/WRMSR could be observed from user space; no oracle count was taken.
 
 ### Локальный профиль `RdtscSourceV1` (S2-26e)
 
