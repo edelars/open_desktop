@@ -2154,3 +2154,53 @@ cargo run --release -p od-bench --offline -- page-walk-compare \
 These synthetic probes establish only the cost of this diagnostic pure-walk
 API on the measured host and Rust release build. They do not establish a
 representative guest workload or determine whether a production TLB is useful.
+
+## PERF-01: Linux boot golden run and speed measurement (CPU core performance line)
+
+Tool: `tools/bench/linux_boot_perf.py` (plan: [CPU_CORE_PERF.md](../plans/CPU_CORE_PERF.md), report: [CPU_CORE_PERF_REPORT.md](../reports/CPU_CORE_PERF_REPORT.md)). Everything it writes goes to `work/cpu-core-perf/`, which `.gitignore` keeps out of Git (`/work/**`). It reuses `firmware_boot_bench.py` (SHA-256, host description) and `tests/system/firmware_linux_uefi_efivars_acpi.py` (`write_nvram_seed`, the NVRAM seed), and runs `build_s7_31n_initramfs.py`, `build_firmware.py` and `make_test_disk.py` as the plan lists them.
+
+### Inputs
+
+| Input | Source |
+|---|---|
+| runner | `cargo build --release -p od-runner --offline` (release profile as in `Cargo.toml`; the build parameters are part of every result) |
+| kernel | `work/stage4/linux-7.0.0-38.38/vmlinuz-7.0.0-38-generic` (`build --stage4-dir` names another checkout's directory) |
+| initramfs | `tools/build/build_s7_31n_initramfs.py` (S7-31n `/init`) |
+| ROM | `tools/build/build_firmware.py` |
+| ESP | `tools/build/make_test_disk.py --esp-fat32 --bootx64 <kernel> --boot-file INITRD.IMG=<initramfs>` |
+| NVRAM seed | `Boot0001` (kernel command line), `BootOrder`, `ODBootCount` |
+
+`build` makes all of them once and writes the SHA-256 of every input and the runner to `work/cpu-core-perf/inputs.json`; `build --runner-only` rebuilds only the runner. Records and measurements are comparable only when the input hashes (not the runner hash) are equal.
+
+### Commands
+
+```sh
+python3 tools/bench/linux_boot_perf.py build
+python3 tools/bench/linux_boot_perf.py record --budget 100000000 --label before
+python3 tools/bench/linux_boot_perf.py record --budget 100000000 --label after
+python3 tools/bench/linux_boot_perf.py compare work/cpu-core-perf/before-100000000.json work/cpu-core-perf/after-100000000.json
+sudo nice -n -5 sudo -u "$USER" python3 tools/bench/linux_boot_perf.py measure --budget 3200000000 --runs 3 --label before
+```
+
+`record` runs `od-runner boot-firmware --cpu-loop unified` with `--com1-out`, `--nvram-in`, `--nvram-out` and `--stop-snapshot` at the same paths for every label (the runner prints them in its JSON), then copies the files to `<label>-<budget>.com1`, `.nvram` and `.stop-snapshot`. The record keeps the whole runner stdout, the SHA-256 of COM1, of the NVRAM snapshot and of the stop snapshot, the input hashes, the commit and the wall time. A budget stop gives runner exit code 5; that is the normal end of a budget run, and the exit code is compared too.
+
+`compare` checks every field of the runner JSON, the three hashes and the exit code. Equal: `GOLDEN: MATCH`, exit 0. Different: `GOLDEN: MISMATCH`, the differing fields, exit 1. Different input hashes: `INPUTS DIFFER`, exit 2. No field is excluded because it is noisy; an unstable field between two runs of the same code is a finding and stops the work.
+
+### Budgets
+
+- **G100**: 100 million instructions, about 1 minute on the original code; only the firmware self-tests. A quick check during work.
+- **G3200**: 3.2 billion instructions, about 27 minutes; reaches ExitBootServices (about 1.24 billion); the kernel and the `/init` line are expected from the boot-timing report of 2026-11-22 and are not yet confirmed on these inputs (the PERF-01 G3200 run will confirm). The acceptance check. Run it in the background with the output in a file.
+
+### Speed measurement (K4)
+
+`measure --budget N --runs R --label L` runs the runner R times in sequence under `/usr/bin/time -l` and records, per run, wall time, guest instructions, host `instructions retired`, `cycles elapsed` and peak RSS; it prints median, minimum and maximum of million guest instructions per second and of host instructions per guest instruction. It checks `os.getpriority`: unless it is -5 the result is marked `"preliminary": true` with a warning. Priority -5 is set only by the command above (`sudo nice -n -5 sudo -u "$USER"`); the runs must also be sequential.
+
+Workloads: **F100** `--budget 100000000 --runs 5` (firmware, quick screening, recorded, never decides); **K3200** `--budget 3200000000 --runs 3` (firmware, kernel, `/init`; run in the background).
+
+Rule for counting a gain: only on K3200, same machine, same inputs, release build, priority -5, sequential runs. A gain counts when the [min, max] intervals of "before" and "after" do not overlap and the median is better by at least 2 %. Overlapping intervals mean "gain not confirmed". A "before" measurement can be reused only when the commit of the base, the input hashes and the build parameters are the same. Write the commit, the build parameters, the input hashes, the number of runs and the spread together with every number.
+
+### Rules
+
+- Never run two runner processes at once, neither measurements nor records: they share the output paths in `work/cpu-core-perf/run/` and compete for the CPU.
+- Close other heavy applications before K4; a loaded host moves wall time by several times (see the report).
+- Images and the kernel stay out of Git.

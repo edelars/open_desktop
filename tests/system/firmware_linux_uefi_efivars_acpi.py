@@ -71,6 +71,17 @@ def snapshot(entries: list[tuple[str, bytes, bytes]]) -> bytes:
     return struct.pack("<8sII", b"ODNVBANK", 1, 0) + bank + bytes(2 * esp_smoke.BANK_BYTES - len(bank))
 
 
+def write_nvram_seed(path: Path) -> bytes:
+    """Write the NVRAM seed (Boot0001, BootOrder, ODBootCount) to `path`; return the Boot0001 load option."""
+    option = esp_smoke.load_option(esp_smoke.file_node("BOOTX64.EFI"), (stop.CMDLINE + "\0").encode("utf-16le"))
+    path.write_bytes(snapshot([
+        ("Boot0001", esp_smoke.GLOBAL, option),
+        ("BootOrder", esp_smoke.GLOBAL, struct.pack("<H", 1)),
+        ("ODBootCount", OD_VENDOR, struct.pack("<I", ODBOOTCOUNT)),
+    ]))
+    return option
+
+
 def section(raw: bytes, begin: bytes, end: bytes) -> bytes | None:
     start = raw.find(begin)
     if start < 0:
@@ -195,12 +206,7 @@ def main() -> None:
         subprocess.run([sys.executable, stop.BUILDER, "--out", rom, "--target-dir", scratch / "rom"],
                        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
         nvram = scratch / "seed.nv"
-        option = esp_smoke.load_option(esp_smoke.file_node("BOOTX64.EFI"), (stop.CMDLINE + "\0").encode("utf-16le"))
-        nvram.write_bytes(snapshot([
-            ("Boot0001", esp_smoke.GLOBAL, option),
-            ("BootOrder", esp_smoke.GLOBAL, struct.pack("<H", 1)),
-            ("ODBootCount", OD_VENDOR, struct.pack("<I", ODBOOTCOUNT)),
-        ]))
+        option = write_nvram_seed(nvram)
         expected = {"BOOTORDER": struct.pack("<H", 1), "BOOT0001": option,
                     "ODBOOTCOUNT": struct.pack("<I", ODBOOTCOUNT)}
         record = {
