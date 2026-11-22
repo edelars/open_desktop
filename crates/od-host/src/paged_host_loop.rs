@@ -737,8 +737,11 @@ fn try_atomic_step(
 /// S2-25o: one instruction of a PAE protected-mode state (`od_machine::run_pae_state_step`). `None`: it
 /// retired (one instruction of the interpreter's count) and the loop goes on; `Some`: the exit of the loop.
 /// Only the exclusive bus runs it (vCPU 0, the whole bus: an MMIO operand reaches its device); a shared
-/// bus (the parallel mode) has no `&mut MachineBus` for the adapter and keeps the S2-25n refusal
-/// `ProbeConfigError::PaeProtectedMode`, named exactly, before any fetch or walk. A `#PF` is
+/// bus (the parallel mode) has no `&mut MachineBus` for the adapter and keeps the S2-25n refusal, named
+/// exactly, before any fetch or walk: the checks of the four-level configuration come first in their
+/// order (a CR0 or CR4 or EFER bit outside the mask, `CR0.ET` clear, ...: their own
+/// `ProbeConfigError`), and `ProbeConfigError::PaeProtectedMode` is the reason only for registers that
+/// pass them (the state is then valid PAE paging that this bus cannot run). A `#PF` is
 /// `GuestFault` with the record of the adapter (no delivery in this path).
 fn pae_protected_step(
     report: &mut PagedHostLoopReport,
@@ -749,13 +752,21 @@ fn pae_protected_step(
     committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
 ) -> Option<PagedHostLoopExit> {
     let LoopBusRef::Exclusive(machine) = bus else {
+        let (cr0, cr4) = (state.cr0.unwrap_or(0), state.cr4.unwrap_or(0));
+        // The long-mode configuration checks the registers in the order of its masks and answers
+        // `PaeProtectedMode` itself only after them; it never accepts a PAE state, so `Ok` is the same
+        // exact refusal.
+        let reason = match od_machine::Long64ProbeConfig::new(cr0, config.cr3, cr4, config.efer) {
+            Err(error) => error,
+            Ok(_) => od_machine::ProbeConfigError::PaeProtectedMode {
+                cr0,
+                cr4,
+                efer: config.efer,
+            },
+        };
         return Some(PagedHostLoopExit::Interpreter(
             od_machine::PagedProbeExit::Rejected(od_machine::PagedProbeRejection::Configuration(
-                od_machine::ProbeConfigError::PaeProtectedMode {
-                    cr0: state.cr0.unwrap_or(0),
-                    cr4: state.cr4.unwrap_or(0),
-                    efer: config.efer,
-                },
+                reason,
             )),
         ));
     };

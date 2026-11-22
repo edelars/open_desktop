@@ -59,6 +59,9 @@ use std::cell::RefCell;
 #[cfg(test)]
 mod tests;
 
+/// `EFLAGS.VM` (bit 17).
+const EFLAGS_VM: u32 = 1 << 17;
+
 /// Whether the step of this module executes `instruction` (see the module documentation).
 pub fn pae_covers(instruction: &ProtectedInstruction) -> bool {
     use ProtectedInstruction::{
@@ -96,6 +99,9 @@ pub fn pae_covers_without_efer_write(instruction: &ProtectedInstruction) -> bool
 pub enum PaeProtectedStop {
     /// The model is not a protected-mode one on PAE paging (`CR0.PG`, `CR4.PAE` or `LMA` say otherwise).
     NotPaePaging,
+    /// `EFLAGS.VM` is set: a virtual-8086 task. The model is a flat CPL 0 protected-mode vCPU, with
+    /// no virtual-8086 segments or privilege (SDM Vol. 3A section 20.2), so nothing is fetched.
+    Virtual8086 { eflags: u32 },
     /// A `LongModeState` cannot be seen as the model (see [`run_pae_state_step`]).
     State(PaeStateRefusal),
     /// The decoded instruction is outside [`pae_covers`]; nothing of it was executed.
@@ -223,6 +229,9 @@ pub fn step_pae_protected_with<G: GuestMemory + ?Sized>(
     if !cpu.pae_paging() || cpu.cr0 & CR0_PE == 0 {
         return PaeStepOutcome::Stopped(PaeProtectedStop::NotPaePaging);
     }
+    if cpu.eflags & EFLAGS_VM != 0 {
+        return PaeStepOutcome::Stopped(PaeProtectedStop::Virtual8086 { eflags: cpu.eflags });
+    }
     let mut next = *cpu;
     let mut view = LinearView::new(memory);
     let result = next.step_admitting(&mut view, admit);
@@ -262,10 +271,17 @@ pub fn step_pae_protected<G: GuestMemory + ?Sized>(
     step_pae_protected_with(cpu, memory, &pae_covers)
 }
 
-/// One step of a vCPU of the board, and the `#PF` record when it faulted.
+/// One step of a vCPU of the board, with the `#PF` record of the adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PaeBoardStep {
     pub(crate) outcome: PaeStepOutcome,
+    /// The record of the *last page fault the adapter raised during the step* (CR2, error code, saved
+    /// RIP), whatever the outcome. It is `Some` with [`PaeStepOutcome::Fault`] (the fault of the
+    /// instruction), but it can also be `Some` with a `Stopped` outcome: the lookahead bytes of an
+    /// unsupported-form refusal are fetched after the opcode, and a `#PF` on one of them is recorded
+    /// but is no guest fault (nothing retired, the refusal stands, nothing is faulted). The record is
+    /// architectural only when the outcome is `Fault`; a caller that delivers or reports a `#PF` must
+    /// test the outcome first. It is `None` when no access faulted.
     pub(crate) page_fault: Option<PageFaultRecord>,
 }
 
@@ -450,7 +466,9 @@ fn model_of_state(
 /// ([`pae_covers_without_efer_write`]: `EFER` is the caller's, a written value could not be handed
 /// back). When the instruction retired the state takes `EAX..EDI` (the low halves; the high ones are
 /// kept), `rip`, the low half of `rflags`; nothing else of it changes, as no covered instruction
-/// changes another register. Returns the outcome and the `#PF` record of a fault.
+/// changes another register. Returns the outcome and the `#PF` record of the adapter: as for
+/// `PaeBoardStep::page_fault`, it is architectural only with [`PaeStepOutcome::Fault`] (with a
+/// `Stopped` outcome it can be the record of a faulted lookahead byte).
 pub fn run_pae_state_step(
     state: &mut LongModeState,
     bus: &mut MachineBus,
