@@ -3,6 +3,7 @@
 mod absent_ports;
 mod acpi_blob;
 mod acpi_pm;
+mod agent_channel;
 mod ap_legacy_exec;
 mod apic_pair;
 mod bus;
@@ -554,10 +555,13 @@ pub use xhci::{
     XhciSnapshot,
 };
 
+pub use agent_channel::{
+    AGENT_CHANNEL_RX_QUEUE_BYTES, AGENT_CHANNEL_TX_QUEUE_BYTES, AgentChannel, AgentChannelStats,
+};
 pub use uart_rx_events::{
     UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,
 };
-pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
+pub use uart16550::{Uart16550Handle, Uart16550PollingTx, UartPortSpec};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
 pub use translation_probe_cache::{

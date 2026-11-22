@@ -81,6 +81,24 @@ pub fn tcp_segment(
     options: &[u8],
     data: &[u8],
 ) -> Vec<u8> {
+    tcp_segment_with_window(
+        src, dst, src_port, dst_port, seq, ack, flags, 65535, options, data,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_segment_with_window(
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    options: &[u8],
+    data: &[u8],
+) -> Vec<u8> {
     assert_eq!(options.len() % 4, 0);
     let header_len = 20 + options.len();
     let mut s = Vec::new();
@@ -90,7 +108,7 @@ pub fn tcp_segment(
     s.extend_from_slice(&ack.to_be_bytes());
     s.push(((header_len / 4) as u8) << 4);
     s.push(flags);
-    s.extend_from_slice(&65535u16.to_be_bytes());
+    s.extend_from_slice(&window.to_be_bytes());
     s.extend_from_slice(&[0, 0, 0, 0]);
     s.extend_from_slice(options);
     s.extend_from_slice(data);
