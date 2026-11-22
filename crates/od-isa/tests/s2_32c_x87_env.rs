@@ -5,8 +5,9 @@
 //! pointers: FSTENV/FNSTENV and FSAVE/FNSAVE save the low 32 bits of FIP and FDP, FCS and FDS when CR0.PE = 1, saved as
 //! 0000H when CPUID.07H.00H:EBX[13] deprecates them; FSAVE/FNSAVE clear FIP, FCS, FDP, FDS afterwards; FLDENV/FRSTOR load
 //! the low 32 bits and clear the upper 32), section 8.1.10 and Figure 8-9 (the 32-bit protected-mode image), Vol. 2A
-//! "FSTENV/FNSTENV" (p. 3-413: the instruction masks all exceptions after saving), "FSAVE/FNSAVE" (p. 3-408) and
-//! "FRSTOR" (p. 3-402).
+//! "FSTENV/FNSTENV" (p. 3-390: the instruction masks all exceptions after saving; FSTENV is FWAIT plus FNSTENV),
+//! "FSAVE/FNSAVE" (p. 3-375: the registers follow in ST(0)..ST(7) order, then FNINIT values) and "FRSTOR" (p. 3-373).
+//! CR0.EM/TS (#NM) and CPL3 #AC are not modeled, like in the neighbouring bounded x87 forms.
 //!
 //! Policy for FCS and FDS (S2-32c): the image carries the represented selector (`Some(v)`) and 0000H when none is
 //! represented (`None`), which is also what a processor with FCS/FDS deprecation saves; FRSTOR loads a selector as
