@@ -713,6 +713,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39l | Offline A/B/A/B interpreter replay against validated S2-39k evidence | Explicit-path opt-in only; existing independent comparator validates raw Linux evidence, then the interpreter profile is replayed A/B/A/B and compared only at protocol-defined bytes with E+5 progression. Focused checks passed; independent Sol/high review found no defects; ignored evidence is not a default-test dependency; physical acceptance and parent S2-39 remain open. [Protocol](../testing/S2_39L_FXSAVE64_REPLAY.md); [report](../reports/S2_39L_INTERPRETER_REPLAY.md) |
 | [ ] | S2-39m | SSE state of the CPL0 set in `LongModeState.sse` | The FP member loads the SSE half of its `GuestFpState` cell into `state.sse` for the run and stores it back at every exit; at CPL0 the general SSE core of S2-34/37/38/54/55 then runs in the set with the bare-run result, the CR0.EM/TS and CR4.OSFXSR gates and #XM/#UD; FXSAVE64/FXRSTOR64 use the same state; x87 stays in the cell. CPL3 general forms, narrow integer SSE2 forms, MMX forms, LDMXCSR/STMXCSR, the register-register forms of the raw 128-bit moves and MOVSS/MOVSD in every form stay refused (listed in the S2-39m block). Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse) |
+| [ ] | S2-39n | Narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set on `state.sse` | S2-39m. The FP member runs the register-register raw 128-bit moves, MOVSS/MOVSD (decoder forms), the integer SSE2 forms on XMM registers (executors of the plain `step`), the forms of the CPL3 handler (MOVD/MOVQ, PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS load, PCMPEQB m128, PMINUB m128 in the `[RAX+disp8]` form the decoder returns) and LDMXCSR/STMXCSR m32, behind the CR0.EM/TS and CR4.OSFXSR gates; physical oracle 5467 cases: 4642 equal, 785 forms still refused, 40 = DAZ policy (LDMXCSR with MXCSR bit 6). Narrow integer forms with a memory operand (except PCMPEQB), PSLL/PSRL/PSRA by an XMM count, MMX and the CPL3 profile stay as listed in the S2-39n block. Awaiting coordinator review; parent S2-39 remains open. [Report](../reports/STAGE_2_REPORT.md#s2-39n--narrow-sse-forms-movssmovsd-and-ldmxcsrstmxcsr-of-the-cpl0-set) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
@@ -8491,6 +8492,58 @@ before the operand address checks are from memory, not checked against the PDF.
 Parent S2-39 remains open.
 
 See the [S2-39m result](../reports/STAGE_2_REPORT.md#s2-39m--sse-state-of-the-cpl0-set-in-longmodestatesse).
+
+#### S2-39n. Narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set
+
+Continues S2-39m: the forms that block named as still refused at CPL0 in the set now run on
+`LongModeState.sse`, except where this block says otherwise. Added to the FP member of
+`Cpl0ProfileSet`:
+
+- the register-register forms of MOVUPS, MOVUPD, MOVAPS, MOVAPD (`[66] 0F 10/11/28/29`) and the MOVDQA load
+  (`66 0F 6F`); MOVSS and MOVSD register, load and store forms exactly as the decoder returns them (MOVSS
+  `[RAX]` load and store; MOVSD `[RAX]` and `[RBP-24]` load and store, `[RIP+disp32]` load);
+- the integer SSE2 forms on XMM registers with the executors of the plain `step`: PUNPCK*, PACK*, PSHUFD, the
+  shift-immediate groups `0F 71/72/73`, PCMPEQ*/PCMPGT*, PAND/PANDN/POR/PXOR, PADD*/PSUB* (including the
+  saturating, PADDQ/PSUBQ), PAVG*, PMAX*/PMIN*, PMULLW/PMULHUW/PMULUDQ, PMADDWD, PSADBW and PMOVMSKB;
+- the forms with a handler in `step_cpl3_xmm` only (the plain `step` refuses them): MOVD/MOVQ to an XMM
+  register, MOVQ to memory (`66 0F D6`), PSHUFLW, PINSRW m16, MOVLPD/MOVHPD/MOVHPS loads, PCMPEQB m128, PMINUB m128 (`66 0F DA`, xmm0 and `[RAX+disp8]` as the
+  decoder returns it); the
+  handler does not depend on the privilege level;
+- LDMXCSR and STMXCSR (`[REX] 0F AE /2`, `/3`, m32, any addressing form; new decoder operations; no
+  `66`/`F2`/`F3`/LOCK, no REX.W, no FS/GS override, mod = 11 refused). LDMXCSR reads the dword (a memory
+  fault is the backend's result), raises `#GP(0)` for any bit outside `TARGET_FXSAVE_MXCSR_MASK`
+  (`0xFFBF`, as FXRSTOR64) and otherwise replaces MXCSR; STMXCSR writes MXCSR; neither checks alignment, changes
+  a flag or raises a SIMD exception. A mask bit cleared by LDMXCSR with its flag set raises nothing at once
+  (SDM): the next instruction that reports it does (`#XM`/`#UD` by CR4.OSXMMEXCPT; tested).
+
+All of them take the CR0.EM or CR4.OSFXSR = 0 `#UD`, then the CR0.TS `#NM`, before any operand access, like the
+S2-39m forms. CPL3 keeps its own list, and the plain `step` and the FP-init CR0/CR4 pair are unchanged.
+CPUID bits are not gated and not declared (S2-57).
+
+Oracle (physical Intel Core i5-3210M, Ubuntu; `work/stage8/s2_39_sse_set_oracle/`, ignored): 5467 cases, one
+instruction per case with all XMM registers, GPRs, flags, MXCSR and the data pages seeded, byte for byte (XMM, GPR,
+flags, MXCSR, signal and kind, hash of the data page); two runs of the hardware side are identical. Result: 4642
+equal, 785 refused by the model (below), 40 differing by policy, 0 other differences. The policy difference is
+the DAZ bit: this hardware executes LDMXCSR with MXCSR bit 6 set, the target mask is `0xFFBF` (a DAZ-clear
+conservative profile, `CPU_CONTRACT.md`), so the model raises `#GP(0)` like FXRSTOR64 does.
+
+Not covered (still `Unsupported` with the opcode byte, measured by the oracle): integer SSE2 forms with a
+memory operand other than PCMPEQB (PADDB, PAND, POR, PXOR, PSUBB, PCMPEQD, PSHUFD, and PMINUB with
+`[RAX]`/`[RDI]`), PSLL/PSRL/PSRA with an XMM count, PMULHW, PSHUFHW, MOVQ xmm,xmm (`F3 0F 7E`
+register form), MOVD/MOVQ from an XMM register to a register or memory (`66 0F 7E`), MOVLPS load (`0F 12`),
+MOVLPD/MOVHPD store, MOVHLPS/MOVLHPS, PEXTRW, PINSRW from a register, the MOVDQU load/store and MOVDQA store
+register forms, MOVSS/MOVSD memory operands outside the decoder's encodings (for example `[RAX+8]`, `[RBX]`,
+MOVSS `[RBP-24]` and `[RIP+disp]`), LDMXCSR/STMXCSR with REX.W, a mandatory prefix, mod = 11 or an FS/GS override,
+MMX forms, and every CPL3 form beyond the CPL3 list. The hardware reference of these forms is in the oracle
+output; only the decoder, not the executor, stops them. CR0.EM/TS and CR4.OSFXSR cannot be exercised by the CPL3
+oracle; the gates are tested in `s2_39_cpl0_sse_set`.
+
+Semantics, Intel SDM Rev. 093: LDMXCSR Vol. 2A p. 3-539 (`NP 0F AE /2`, "#GP For an attempt to set reserved bits in
+MXCSR", the deferred exception), STMXCSR Vol. 2B p. 4-676, MXCSR Vol. 1 §10.2.3, exception class Vol. 2A §2.5
+Table 2-22 (Type 5). The `#UD`/`#NM` precedence is the one of S2-39m.
+Parent S2-39 remains open.
+
+See the [S2-39n result](../reports/STAGE_2_REPORT.md#s2-39n--narrow-sse-forms-movssmovsd-and-ldmxcsrstmxcsr-of-the-cpl0-set).
 
 ### S2-40. Дополнительные обязательные расширения
 

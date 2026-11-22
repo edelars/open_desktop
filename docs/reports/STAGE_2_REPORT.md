@@ -24580,6 +24580,53 @@ owns the bits). Semantics follow Intel SDM Rev. 093: Vol. 1 §11.5.1 and §11.5.
 classes); the CR4.OSFXSR = 0 `#UD`, the `#UD`-over-`#NM` precedence and the gate order
 before the address checks are from memory, not checked against the PDF.
 
+## S2-39n — narrow SSE forms, MOVSS/MOVSD and LDMXCSR/STMXCSR of the CPL0 set
+
+Code (`execute.rs`, `long_decode.rs`): in the FP member of the CPL0 set the register forms of the narrow
+profile decoder (raw 128-bit register moves, MOVSS/MOVSD, the integer SSE2 forms) run on `state.sse` through the
+executors of the plain `step` (`sse_cpl0_form` admits them; the S2-39m admission is not widened for any other
+form); the nine forms of `step_cpl3_xmm` that the plain `step` refuses run through that handler; new decoder
+operations `Ldmxcsr`/`Stmxcsr` (`[REX] 0F AE /2`, `/3`, m32; no mandatory prefix, no REX.W, mod != 11) and their
+executor (`#GP(0)` for a bit outside `TARGET_FXSAVE_MXCSR_MASK`, read before the check, no alignment check). One
+gate (`sse_cpl0_gate`): `#UD` for CR0.EM or CR4.OSFXSR = 0, `#NM` for CR0.TS, before any operand access; an
+FS/GS override on a memory form is refused (the executors do not add a segment base). The plain `step`, the
+FP-init CR0/CR4 pair and CPL3 are unchanged.
+
+Tests (all passed): the new `s2_39_cpl0_sse_set` (14): 75 register forms x 8 register pairs x 4 operand patterns
+equal to the plain `step` (registers, MXCSR, RFLAGS, memory, outcome, x87 untouched); MOVSS/MOVSD exact widths and
+zero extension, the `[RBP-24]` and `[RIP+disp32]` decoder forms and the refused addressing forms; the five gate
+combinations with four RAX values; memory errors; LDMXCSR valid values (9 x 3 MXCSR) and reserved bits (7),
+every addressing form with an unaligned operand, STMXCSR, `#XM`/`#UD` after an LDMXCSR that unmasks DIVPS and
+the masked retirement after the restore; refused prefix/mod = 11/REX.W/FS/GS forms; CPL3-handler forms with values
+computed in the test; a 12-form program against the plain `step`. New decoder unit test (`long_decode`, 1). `cpl0_profile_set` 1626
+(LDMXCSR/STMXCSR left the refusal list), `cpl3_profile_set` 238, `s2_39_cpl0_sse` 11, `s2_34_sse_moves_memory` 14, `s2_37_fp_arith` 19,
+`s2_38_misc_fp` 21, `s2_54_fp_hadd` 20, `s2_55_fp` 33, `od-isa --lib` 2678, `od-testkit` 525+3+2, `od-machine --lib` 1950 (18 ignored);
+`cargo check --workspace --tests`, `cargo fmt --all -- --check`, `git diff --check` clean. One decoder test (`long_decode`) and one test of the set (`every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member`
+in `cpl0_profile_set.rs`) dropped `0F AE 15`/`1D` (LDMXCSR/STMXCSR RIP-relative) from their lists of refused forms; the REX.W forms stay refused.
+
+Behaviour change outside the set: the forms `0F AE /2` and `/3` with a memory operand now decode everywhere (the plain `step`
+and the CPL3 set included); the decoder reads the SIB byte and displacement before it returns `Unsupported`. On an
+encoding truncated at a memory boundary the plain `step` and the CPL3 set now report the fetch error of the missing byte
+instead of `Unsupported`; a complete encoding still ends in `Unsupported` there, with the same opcode (`0xae`).
+
+Physical oracle (Intel Core i5-3210M, Ubuntu, Linux 7.0.0-42, gcc 15.2.0; `work/stage8/s2_39_sse_set_oracle/`, in the
+ignored area: `gen_cases.py`, `oracle.c`, `src/main.rs`, `cases.txt`, `oracle_out.txt`, `local_out.txt`; derived from the S2-37
+oracle, the local side runs each case as one instruction in the CPL0 set): 5467 cases (2960 register-register forms, 1596
+shift-immediate and shuffle forms, 180 MOVSS/MOVSD cases, 269 LDMXCSR/STMXCSR, 462 CPL3-handler and not-covered
+forms, with fault, page-boundary and unaligned operands), byte for byte; two runs of the hardware side are
+identical. Result: 4642 equal (4455 retirements, 103 `SIGSEGV/SI_KERNEL` (#GP), 66 ACCERR, 18 MAPERR), 785 refused by the
+model (register forms: 480; MOVSS/MOVSD: 21; LDMXCSR/STMXCSR: 7; CPL3-handler class: 277), 40 policy differences, 0 other differences.
+Policy: this hardware executes LDMXCSR with MXCSR bit 6 (DAZ) set (values `0x40`, `0x1FC0`, `0x8040`, `0x1F40`,
+`0xFFFF`, 8 addressing forms); the target mask is `0xFFBF`, so the model raises `#GP(0)`, as for FXRSTOR64.
+Not checked on the oracle: the CR0.EM/TS and CR4.OSFXSR gates and `#XM` (CPL3 process), a Windows or Linux boot, the JIT, the
+full suite.
+
+Not covered, with the forms listed in the S2-39n block of the plan: integer SSE2 forms with a memory operand except
+PCMPEQB, PSLL/PSRL/PSRA by an XMM count, PMULHW, PSHUFHW, MOVQ/MOVD from an XMM register, MOVLPS, MOVLPD/MOVHPD
+stores, MOVHLPS/MOVLHPS, PEXTRW, register-form PINSRW, MOVDQU and the register MOVDQA store, MOVSS/MOVSD
+addressing outside the decoder's measured encodings, LDMXCSR/STMXCSR REX.W/prefix/FS/GS forms, MMX, CPL3. The
+interpreter does not gate on CPUID and declares no bits (S2-57). Parent S2-39 remains open.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64

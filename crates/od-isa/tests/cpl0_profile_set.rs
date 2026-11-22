@@ -43292,8 +43292,9 @@ fn the_fp_member_admission_requires_declared_fpu_and_fxsr_and_known_selectors() 
 #[test]
 fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member() {
     // xorps and movups (and the rest of the general SSE core) are no longer refused under the member:
-    // S2-39 runs them on `state.sse` (tests/s2_39_cpl0_sse.rs).
-    let rip_forms: [(&str, &[u8], u8); 14] = [
+    // S2-39 runs them on `state.sse` (tests/s2_39_cpl0_sse.rs), and S2-39n runs the register moves, MOVSS/MOVSD,
+    // LDMXCSR/STMXCSR and the integer SSE2 forms there too (tests/s2_39_cpl0_sse_set.rs).
+    let rip_forms: [(&str, &[u8], u8); 12] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
         ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
@@ -43301,8 +43302,6 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
         ("fld1", &[0xd9, 0xe8], 0xd9),
         ("fxsave [rax]", &[0x0f, 0xae, 0x00], 0xae),
         ("fxrstor [rip+0]", &[0x0f, 0xae, 0x0d, 0, 0, 0, 0], 0xae),
-        ("ldmxcsr [rip+0]", &[0x0f, 0xae, 0x15, 0, 0, 0, 0], 0xae),
-        ("stmxcsr [rip+0]", &[0x0f, 0xae, 0x1d, 0, 0, 0, 0], 0xae),
         (
             "fxsave64 [rip+0]",
             &[0x48, 0x0f, 0xae, 0x05, 0, 0, 0, 0],

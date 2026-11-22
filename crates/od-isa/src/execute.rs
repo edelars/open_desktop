@@ -49667,6 +49667,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             opcode: instruction.opcode.byte,
         });
     }
+    // S2-39n: the FP member of the CPL0 set runs the narrow SSE forms on `state.sse` after the CR0/CR4 gates, before
+    // any operand access or admission test.
+    if sse_cpl0 {
+        if sse_cpl0_cpl3_handler_form(&instruction.operation) {
+            return step_cpl3_xmm(state, memory, context, &instruction, next_rip);
+        }
+        if sse_cpl0_form(&instruction)
+            && let Some(fault) = sse_cpl0_gate(state)
+        {
+            return Ok(StepOutcome::Fault(fault));
+        }
+    }
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
@@ -49862,6 +49874,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         {
             state.sse.is_some()
         }
+        // S2-39n: the register forms and the MOVSS/MOVSD/LDMXCSR/STMXCSR memory forms of `sse_cpl0_form`.
+        _ if sse_cpl0 && sse_cpl0_form(&instruction) => state.sse.is_some(),
+        Operation::Ldmxcsr(_) | Operation::Stmxcsr(_) => false,
         Operation::Sysenter | Operation::Sysexit => false,
         // S4-39e: SYSCALL is decided and committed (or refused) in its own branch before this match.
         Operation::Syscall => false,
@@ -52114,6 +52129,44 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             instruction.opcode.byte,
             next_rip,
         );
+    }
+    // S2-39n: LDMXCSR m32 and STMXCSR m32 in the CPL0 set (Intel SDM Vol. 2A, LDMXCSR and STMXCSR; Vol. 1 section
+    // 10.2.3): the CR0/CR4 gates ran before the admission test. LDMXCSR reads the dword (a memory fault is the
+    // backend's result and changes nothing) and then raises `#GP(0)` for any bit outside
+    // `TARGET_FXSAVE_MXCSR_MASK` before MXCSR changes; no flag and no other register changes. STMXCSR writes MXCSR.
+    // Neither form checks alignment, and neither raises a SIMD floating-point exception.
+    if let Operation::Ldmxcsr(source) = instruction.operation {
+        let address = match source.access_range_address_48(state, next_rip, 4) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        let mut raw = [0u8; 4];
+        if let Err(error) = memory.read(address, context, &mut raw) {
+            return report_memory_error(error);
+        }
+        let value = u32::from_le_bytes(raw);
+        if value & !crate::TARGET_FXSAVE_MXCSR_MASK != 0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        sse_mut(state).mxcsr = value;
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if let Operation::Stmxcsr(destination) = instruction.operation {
+        let address = match destination.access_range_address_48(state, next_rip, 4) {
+            Ok(address) => address,
+            Err(error) => return report_memory_error(error),
+        };
+        let value = sse_ref(state).mxcsr;
+        if let Err(error) = memory.write(address, context, &value.to_le_bytes()) {
+            return report_memory_error(error);
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
     }
     if let Operation::MovssLoadMemory {
         destination,
@@ -63468,6 +63521,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MovhpsLoadMemory { .. } => {
             return Ok(StepOutcome::Unsupported { opcode: instruction.opcode.byte });
         }
+        Operation::Ldmxcsr(_) | Operation::Stmxcsr(_) => {
+            unreachable!("LDMXCSR and STMXCSR commit before dispatch")
+        }
         Operation::MovssLoadMemory { .. } => unreachable!("MOVSS load commits before dispatch"),
         Operation::MovsdLoadMemory { .. } => unreachable!("MOVSD load commits before dispatch"),
         Operation::MovsdStoreMemory { .. } => unreachable!("MOVSD store commits before dispatch"),
@@ -71892,6 +71948,148 @@ fn step_popcnt_crc32(
     }
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
+}
+
+/// S2-39n: the register forms of the narrow profile decoder (raw 128-bit register moves, MOVSS/MOVSD
+/// register forms, the integer SSE2 forms on XMM registers) that the CPL0 set executes on `state.sse`
+/// with the same executors as the plain `step`; see `sse_cpl0_form`.
+fn sse_cpl0_register_form(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::MovupsRegister { .. }
+            | Operation::MovapsRegister { .. }
+            | Operation::MovapsReverseRegister { .. }
+            | Operation::MovdqaRegister { .. }
+            | Operation::MovapdRegister { .. }
+            | Operation::MovapdReverseRegister { .. }
+            | Operation::MovupdRegister { .. }
+            | Operation::MovupdReverseRegister { .. }
+            | Operation::PxorRegister { .. }
+            | Operation::PaddbRegister { .. }
+            | Operation::PaddwRegister { .. }
+            | Operation::PadddRegister { .. }
+            | Operation::PsubdRegister { .. }
+            | Operation::PaddqRegister { .. }
+            | Operation::PsubqRegister { .. }
+            | Operation::PcmpeqbRegister { .. }
+            | Operation::PcmpeqwRegister { .. }
+            | Operation::PcmpeqdRegister { .. }
+            | Operation::PcmpgtbRegister { .. }
+            | Operation::PcmpgtwRegister { .. }
+            | Operation::PcmpgtdRegister { .. }
+            | Operation::PunpcklbwRegister { .. }
+            | Operation::PunpckhbwRegister { .. }
+            | Operation::PunpcklwdRegister { .. }
+            | Operation::PunpckhwdRegister { .. }
+            | Operation::PunpckldqRegister { .. }
+            | Operation::PunpckhdqRegister { .. }
+            | Operation::PunpcklqdqRegister { .. }
+            | Operation::PunpckhqdqRegister { .. }
+            | Operation::PacksswbRegister { .. }
+            | Operation::PackuswbRegister { .. }
+            | Operation::PackssdwRegister { .. }
+            | Operation::PshufdRegister { .. }
+            | Operation::PsllwImmediateRegister { .. }
+            | Operation::PslldImmediateRegister { .. }
+            | Operation::PsllqImmediateRegister { .. }
+            | Operation::PslldqImmediateRegister { .. }
+            | Operation::PsrldqImmediateRegister { .. }
+            | Operation::PsrlqImmediateRegister { .. }
+            | Operation::PsrldImmediateRegister { .. }
+            | Operation::PsrlwImmediateRegister { .. }
+            | Operation::PsrawImmediateRegister { .. }
+            | Operation::PsradImmediateRegister { .. }
+            | Operation::PsubwRegister { .. }
+            | Operation::PadduswRegister { .. }
+            | Operation::PsubuswRegister { .. }
+            | Operation::PsubbRegister { .. }
+            | Operation::PaddusbRegister { .. }
+            | Operation::PaddsbRegister { .. }
+            | Operation::PsubsbRegister { .. }
+            | Operation::PaddswRegister { .. }
+            | Operation::PsubswRegister { .. }
+            | Operation::PsubusbRegister { .. }
+            | Operation::PandRegister { .. }
+            | Operation::PandnRegister { .. }
+            | Operation::PorRegister { .. }
+            | Operation::PavgbRegister { .. }
+            | Operation::PavgwRegister { .. }
+            | Operation::PmaxubRegister { .. }
+            | Operation::PminubRegister { .. }
+            | Operation::PmaxswRegister { .. }
+            | Operation::PminswRegister { .. }
+            | Operation::PmullwRegister { .. }
+            | Operation::PmulhuwRegister { .. }
+            | Operation::PsadbwRegister { .. }
+            | Operation::PmovmskbXmmToGpr { .. }
+            | Operation::PmuludqRegister { .. }
+            | Operation::PmaddwdRegister { .. }
+            | Operation::MovssRegister { .. }
+            | Operation::MovsdRegister { .. }
+            | Operation::MovsdStoreRegister { .. }
+    )
+}
+
+/// S2-39n: the memory forms the CPL0 set adds to the register forms above: MOVSS/MOVSD load and store (the
+/// addressing forms the decoder returns), LDMXCSR and STMXCSR.
+fn sse_cpl0_memory_form(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::MovssLoadMemory { .. }
+            | Operation::MovssStoreMemory { .. }
+            | Operation::MovsdLoadMemory { .. }
+            | Operation::MovsdStoreMemory { .. }
+            | Operation::Ldmxcsr(_)
+            | Operation::Stmxcsr(_)
+    )
+}
+
+/// S2-39n: forms with a handler in `step_cpl3_xmm` only (the plain `step` refuses them); the CPL0 set
+/// runs them through the same handler, whose gates and accesses do not depend on the privilege level.
+fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::MoveIntegerToXmm { .. }
+            | Operation::MovqFromXmm { .. }
+            | Operation::PshuflwRegister { .. }
+            | Operation::PinsrwMemory { .. }
+            | Operation::MovlpdLoadMemory { .. }
+            | Operation::MovhpdLoadMemory { .. }
+            | Operation::MovhpsLoadMemory { .. }
+            | Operation::PminubMemory { .. }
+            | Operation::PcmpeqbMemory { .. }
+    )
+}
+
+/// S2-39n: whether the FP member of the CPL0 set runs this instruction on `state.sse` beyond the general SSE core
+/// of S2-39m. A memory form with an FS or GS override is refused: the executors address memory without a segment
+/// base.
+fn sse_cpl0_form(instruction: &long_decode::Instruction) -> bool {
+    sse_cpl0_register_form(&instruction.operation)
+        || (sse_cpl0_memory_form(&instruction.operation)
+            && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65)))
+}
+
+/// S2-39n: the `#UD` (CR0.EM = 1 or CR4.OSFXSR = 0, wins) and `#NM` (CR0.TS = 1) gates of an SSE form of the CPL0
+/// set, before any operand access (the state carries both control registers under the set).
+fn sse_cpl0_gate(state: &LongModeState) -> Option<ArchitecturalFault> {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    let vector = if state.cr0.is_some_and(|cr0| cr0 & CR0_EM != 0)
+        || state.cr4.is_some_and(|cr4| cr4 & CR4_OSFXSR == 0)
+    {
+        6
+    } else if state.cr0.is_some_and(|cr0| cr0 & CR0_TS != 0) {
+        7
+    } else {
+        return None;
+    };
+    Some(ArchitecturalFault {
+        vector,
+        error_code: None,
+        linear_address: None,
+    })
 }
 
 /// The general form of a narrow register profile operation of ANDPS/ANDPD, ANDNPS/ANDNPD, ORPS/ORPD or XORPS/XORPD.
