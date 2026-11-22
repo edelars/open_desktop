@@ -27,6 +27,8 @@ use super::*;
 use od_isa::protected_exec::ProtectedCpu;
 
 #[cfg(test)]
+mod operand_tests;
+#[cfg(test)]
 mod tests;
 
 /// PDPTE bits that must be 0 when P = 1: 2:1, 8:5 and 63:MAXPHYADDR (SDM Vol. 3A Table 5-8).
@@ -598,4 +600,210 @@ pub fn translate_pae_ram(
         updates.push(update);
     }
     Ok(pae_translation(linear, &translation, updates))
+}
+
+/// One operand access of PAE paging (S2-25k): what [`access_pae_ram`] and the board's
+/// `pae_operand_access` serve. The operand lies in one 4 KiB page (a crossing operand is
+/// [`TrackedAccessError::CrossesPage`] before any walk, as in the 4-level path).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaeOperandOperation {
+    /// A read of `width` bytes (the walk of a read: accessed bits only).
+    Read { width: AccessWidth },
+    /// The write-intent read of a read-modify-write destination: the walk of a write (the write
+    /// rights and the page-fault error code of a write) without the dirty bit, then the read. RAM
+    /// only: an MMIO destination is refused before any device is reached.
+    ReadForWrite { width: AccessWidth },
+    /// A write of the low `width` bytes of `value`: the walk of a write, then the dirty bit of the
+    /// leaf (also before an MMIO dispatch), then the bytes.
+    Write { width: AccessWidth, value: u64 },
+}
+
+impl PaeOperandOperation {
+    fn ram_operation(self) -> RamAccessOperation {
+        match self {
+            Self::Read { width } => RamAccessOperation::Read { width },
+            Self::ReadForWrite { width } => RamAccessOperation::ReadForWrite { width },
+            Self::Write { width, value } => RamAccessOperation::Write { width, value },
+        }
+    }
+}
+
+/// A request for one operand access through PAE paging. `linear` is a 32-bit address (the operand
+/// does not wrap past 4 GiB: it lies in one page); `context` carries the CPL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaeAccessRequest {
+    pub instruction_rip: u64,
+    pub linear: u32,
+    pub context: AccessContext,
+    pub operation: PaeOperandOperation,
+}
+
+/// [`access_pae_with_mmio`] without a device dispatch: an operand in an MMIO region is the typed
+/// error of the RAM-only path of the 4-level walk (`DeviceUnavailable` for a write,
+/// `OperandPhysical` with `UnreadableRegion(Mmio)` for a read), and no dirty bit is set for it.
+pub fn access_pae_ram(
+    memory: &PhysicalMemory,
+    paging: &PaeProbeConfig,
+    request: PaeAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> TrackedAccessReport {
+    access_pae_internal(memory, paging, request, &mut committed_write, None)
+}
+
+/// The operand access of PAE paging with the device dispatch of the physical address: the PAE walk
+/// (accessed bits of the PDE and PTE as the walk reaches them, the dirty bit of the leaf for a
+/// write), then the region of the physical operand decides: RAM and framebuffer bytes are read or
+/// written in `memory`, an MMIO operand goes to `mmio` (the dirty bit is set first, like the
+/// 4-level path), ROM, reserved ranges and holes are `OperandPhysical` errors.
+///
+/// The physical address is not limited to 4 GiB: PAE entries carry 36 address bits (`MAXPHYADDR` of
+/// the profile; bits 62:36 are reserved, bit 63 is XD) and the board's memory map decides what lies there, RAM,
+/// MMIO or nothing (`OperandPhysical`, a model refusal and not a guest fault). The `od_isa`
+/// protected-mode model refuses a page above 4 GiB (`PhysicalBeyond4GiB`): it addresses its memory
+/// with 32 bits.
+pub(crate) fn access_pae_with_mmio(
+    memory: &PhysicalMemory,
+    paging: &PaeProbeConfig,
+    request: PaeAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+    mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
+) -> TrackedAccessReport {
+    access_pae_internal(
+        memory,
+        paging,
+        request,
+        &mut committed_write,
+        Some(&mut mmio),
+    )
+}
+
+fn access_pae_internal(
+    memory: &PhysicalMemory,
+    paging: &PaeProbeConfig,
+    request: PaeAccessRequest,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    mut mmio: Option<&mut MmioDispatch<'_>>,
+) -> TrackedAccessReport {
+    let operation = request.operation.ram_operation();
+    let width = operation.width();
+    let access = operation.access_kind();
+    let address = GuestLinearAddress::new(u64::from(request.linear));
+    let mut ad_updates = [None; 5];
+    let fail = |error, trace, ad_updates, ad_update_count| TrackedAccessReport {
+        outcome: Err(error),
+        trace,
+        ad_updates,
+        ad_update_count,
+    };
+    if (request.linear & 0xfff) + u32::from(width) > 4096 {
+        return fail(
+            TrackedAccessError::CrossesPage { address, width },
+            WalkTrace::new(),
+            ad_updates,
+            0,
+        );
+    }
+    let walk = walk_pae_with_writer(
+        memory,
+        paging,
+        request.instruction_rip,
+        request.linear,
+        request.context,
+        access,
+        committed_write,
+        &mut compare_replace_table_entry,
+    );
+    let trace = walk.trace;
+    let mut ad_update_count = walk.ad_update_count;
+    ad_updates[..ad_update_count].copy_from_slice(&walk.ad_updates[..ad_update_count]);
+    let translation = match walk.translation {
+        Ok(translation) => translation,
+        Err(error) => return fail(error, trace, ad_updates, ad_update_count),
+    };
+    let physical = translation.physical;
+    let operand_error = |source| TrackedAccessError::OperandPhysical {
+        address: physical,
+        source,
+    };
+    if let Err(source) = GuestPhysicalRange::new(physical, u64::from(width)) {
+        return fail(operand_error(source), trace, ad_updates, ad_update_count);
+    }
+    let is_mmio = match memory.locate_region_kind(physical, u64::from(width)) {
+        Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => false,
+        Ok(MemoryRegionKind::Mmio) => true,
+        Ok(kind) => {
+            let source = if access == AccessKind::Write {
+                MemoryAccessError::ReadOnlyRegion(kind)
+            } else {
+                MemoryAccessError::UnreadableRegion(kind)
+            };
+            return fail(operand_error(source), trace, ad_updates, ad_update_count);
+        }
+        Err(source) => return fail(operand_error(source), trace, ad_updates, ad_update_count),
+    };
+    if is_mmio && (mmio.is_none() || matches!(operation, RamAccessOperation::ReadForWrite { .. })) {
+        let error = if access == AccessKind::Write {
+            TrackedAccessError::DeviceUnavailable { address: physical }
+        } else {
+            operand_error(MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio))
+        };
+        return fail(error, trace, ad_updates, ad_update_count);
+    }
+
+    let dispatch = |mmio: &mut Option<&mut MmioDispatch<'_>>, operation| match mmio
+        .as_mut()
+        .expect("MMIO dispatch was validated")(
+        physical, width, operation,
+    ) {
+        Ok(value) => Ok(value),
+        Err(MmioDispatchError::Backend(message)) => Err(TrackedAccessError::MmioBackend {
+            address: physical,
+            message,
+        }),
+    };
+    let outcome = if let RamAccessOperation::Write { value, .. } = operation {
+        // The dirty bit goes first (also before a device is reached), then the operand.
+        match commit_leaf_dirty(
+            memory,
+            &mut compare_replace_table_entry,
+            &mut *committed_write,
+            translation.leaf_level,
+            translation.leaf_address,
+            translation.leaf_value,
+        ) {
+            Ok(Some(update)) => {
+                ad_updates[ad_update_count] = Some(update);
+                ad_update_count += 1;
+            }
+            Ok(None) => {}
+            Err(error) => return fail(error, trace, ad_updates, ad_update_count),
+        }
+        if is_mmio {
+            dispatch(&mut mmio, operation).map(|_| TrackedAccessOutcome::Written)
+        } else {
+            let bytes = value.to_le_bytes();
+            memory
+                .store_bytes(
+                    physical,
+                    &bytes[..usize::from(width)],
+                    &mut *committed_write,
+                )
+                .map(|()| TrackedAccessOutcome::Written)
+                .map_err(operand_error)
+        }
+    } else if is_mmio {
+        dispatch(&mut mmio, operation).map(TrackedAccessOutcome::Read)
+    } else {
+        let mut bytes = [0u8; 8];
+        memory
+            .load_bytes(physical, &mut bytes[..usize::from(width)])
+            .map(|()| TrackedAccessOutcome::Read(u64::from_le_bytes(bytes)))
+            .map_err(operand_error)
+    };
+    TrackedAccessReport {
+        outcome,
+        trace,
+        ad_updates,
+        ad_update_count,
+    }
 }

@@ -15283,7 +15283,7 @@ model of `od_isa::paging::translate_pae` (bits 62:36 reserved, XD reserved witho
 plus the U/S check, the page-fault error code, the trace and compare-and-replace A/D bits of the IA-32e
 walk; board connection `LoadedFirmwareBoard::fetch_vcpu_view_pae` for a vCPU whose legacy model is on PAE
 paging. The long-mode walk is not changed. Checked by a differential sweep against `od-isa` and unit tests;
-no hardware oracle. Not done: operand access, the set loop and host/JIT paths on PAE, 32-bit paging in od-machine (the od-isa model is S2-25h), CPUID
+no hardware oracle. Not done: operand access (S2-25k below), the set loop and host/JIT paths on PAE, 32-bit paging in od-machine (the od-isa model is S2-25h), CPUID
 (S2-57/S2-58). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25i--pae-walk-of-the-board-ram-in-od-machine-bounded-slice).
 
@@ -15320,6 +15320,30 @@ Tests: 6 in `paging.rs`, 17 in `protected_exec.rs` (each transition and refusal 
 IA-32e -> PG clear -> PE clear sequence). Not done: the Long64 CPL0 profile (`execute.rs`) `MOV CR0` rules, `od-machine`
 walks (SMEP/PSE-36 there), PE cleared together with PG, SMAP/PKU/PCIDE, CPUID declaration (S2-57). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25j--pse-36-walk-smep-ia-32e-deactivation-and-return-to-real-mode-model-only).
+
+#### S2-25k — operand access through PAE paging
+
+**Статус:** bounded slice (`od-isa`: `protected_exec.rs`; `od-machine`: `page_walk/pae.rs`, `bus.rs`, `pae_operand_access.rs`)
+after the acceptance of the parent S2-25 (2026-11-21); the slice itself is not marked. The parent checkbox is not
+changed.
+
+Operand loads and stores on PAE paging: the legacy protected-mode model of `od-isa` (`ProtectedCpu`) already walked
+data through `translate_pae`; this slice adds the store form `MOV DS:disp32, EAX` (`a3`, not a form of the Linux
+trampoline trace) so that a write walk (D bit, `CR0.WP`) is reachable, and tests of every operand form. In
+`od-machine`, `access_pae_ram` / `access_pae_with_mmio` serve a read, a write-intent read or a write after the PAE
+walk by the region of the physical address (RAM and framebuffer bytes; an MMIO operand goes to the device as the
+access of the vCPU, with D set first; ROM, reserved ranges and holes are `OperandPhysical` refusals);
+`MachineBus::access_tracked_pae` and `LoadedFirmwareBoard::pae_operand_access` connect it to a vCPU on PAE paging.
+Decision on the physical address: the od-machine walk and dispatch use the 36 bits of the PAE entries (the memory map
+decides; a page above 4 GiB with RAM or MMIO is served, one without a region is an operand refusal); the `od-isa`
+model addresses its memory with 32 bits and keeps refusing such a page (`PhysicalBeyond4GiB`). Long-mode path not
+changed (the MMIO dispatch closure of `access_tracked` became `dispatch_tracked_mmio`, shared). No hardware oracle.
+Not done: a decoder/interpreter of 32-bit instructions on the board PAE view (the only legacy executor is the
+closed trampoline profile on RAM), a page-crossing operand, locked operations, host/JIT paths on PAE, 32-bit paging in
+od-machine, CPUID (S2-57/S2-58). A store through a DS that is not a writable data segment is refused before the
+walk (`DataSegmentReadOnly`, `#GP(0)`). Known limitation: in `od-isa` the A/D bits are committed after the operand
+bytes are written, so a store that changes the PTE mapping its own page gets A|D added to the value written. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-25k--operand-access-through-pae-paging-bounded-slice).
 
 #### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
 

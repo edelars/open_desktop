@@ -44,6 +44,7 @@ mod lock_wait_metrics;
 mod nvme;
 mod nvram_device;
 mod pae_fetch_view;
+mod pae_operand_access;
 mod page_walk;
 #[cfg(test)]
 mod page_walk_2m_matrix_tests;
@@ -285,8 +286,9 @@ pub use local_apic::{
 };
 
 pub use page_walk::pae::{
-    PaeConfigError, PaePageSize, PaeProbeConfig, PaeTranslation, load_pae_pdptes,
-    translate_pae_ram, translate_pae_ram_read_only, translate_pae_ram_read_only_with_trace,
+    PaeAccessRequest, PaeConfigError, PaeOperandOperation, PaePageSize, PaeProbeConfig,
+    PaeTranslation, access_pae_ram, load_pae_pdptes, translate_pae_ram,
+    translate_pae_ram_read_only, translate_pae_ram_read_only_with_trace,
 };
 pub use page_walk::{
     AdBit, AdUpdate, EffectivePermissions, GuestLinearAddress, InstructionProbeOutcome,

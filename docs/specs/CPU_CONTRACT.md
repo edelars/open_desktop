@@ -16089,7 +16089,7 @@ NXE x 6 linear addresses x Read/Write/Fetch at CPL 0 compares outcome, physical 
 success, the table bytes after the A/D updates with `od-isa`; unit tests for each reserved bit
 (62:36, 20:13), XD with and without NXE, WP and U/S, PDPTE selection and loading, PDPTE not touched, a
 physical address above 4 GiB; the board view of an AP that the trampoline put on PAE paging. Not covered:
-operand reads/writes and MMIO dispatch through PAE paging, the PAE path in the `PagedMovMemoryAdapter` set loop
+operand reads/writes and MMIO dispatch through PAE paging (S2-25k below), the PAE path in the `PagedMovMemoryAdapter` set loop
 and the host/JIT fast paths (they stay IA-32e only), 32-bit paging in od-machine (PG=1, PAE=0; the od-isa model is S2-25h), a stage-4 style probe on
 PAE tables, hardware oracle, CPUID declaration (S2-57/S2-58).
 
@@ -16111,6 +16111,34 @@ Tests: `paging.rs` (`pse36_*`, `smep_*`, `page_fault_error_code_*`) and `protect
 `mov_cr0_clearing_pg_in_compatibility_mode_*`, `ia32e_*`, `clearing_pg_in_64bit_mode_*`, `mov_cr0_clearing_pe_*`, `to_real_mode_*`,
 `pe_clear_refusals_*`, `full_sequence_from_ia32e_to_real_mode`, `page_fault_error_code_reports_i_d_for_an_nx_fetch_*`). Not covered: hardware oracle, `od-machine` walks, the Long64 CPL0
 profile, SMAP/PKU/PCIDE, CPUID declaration (S2-57).
+
+## S2-25k — operand access through PAE paging (bounded slice)
+
+Normative source: as S2-25g/S2-25i (Intel SDM Rev. 093 Vol. 3A §5.4.2 PAE translation, Table 5-8 and Figure 5-12 for
+the page-fault error code, §5.6 access rights, §5.7 page-fault exceptions, §5.8 accessed and dirty flags). Text only: no hardware oracle.
+
+| Item | Rule implemented |
+|---|---|
+| `od-isa` store form | `ProtectedInstruction::MovDsFromEax`, `a3 disp32`: all four bytes are translated as writes and checked writable before the first byte is stored (`DataUnwritable` for unwritable memory, `DataBeyondLimit` under the DS limit); a DS that is not a writable data segment (`W = 0`) is refused first, before any walk (`DataSegmentReadOnly`, the hardware `#GP(0)`, SDM Vol. 2B MOV, Protected Mode Exceptions); the accessed bits of the walks that completed stay, the dirty bit only when the whole store is done. Not a form of the S6-14 trace: it exists to reach the write walk of PAE paging |
+| `od-isa` loads | `MOV EAX/EDX, ds:disp`, `CMP EAX/EDX, ds:disp`, `BT ds:disp, imm8` read through `translate_pae` (A on the PDE and PTE, no D, a PDPTE is never written); `PhysicalBeyond4GiB` for a page above 4 GiB stays (32-bit physical model) |
+| Request | `PaeAccessRequest { instruction_rip, linear: u32, context (CPL), operation }`, `PaeOperandOperation::{Read, ReadForWrite, Write}` with width 1, 2, 4 or 8 |
+| Order of effects (`access_pae_with_mmio`) | page-cross check (`CrossesPage`, before any walk), PAE walk (A of the PDE and PTE as the walk reaches them), region of the physical operand, then for a write the D bit of the leaf (also before an MMIO dispatch, as the 4-level path with a dispatch), then the bytes or the device access. `ReadForWrite`: the walk of a write without D, RAM only |
+| Physical address | the 36 bits of the PAE entries, not truncated: RAM or framebuffer is read/written, MMIO goes to the device of the region, ROM (write), a reserved range and a hole are `OperandPhysical` (a model refusal, no D bit); bits 62:MAXPHYADDR (62:36) of an entry are reserved (#PF with RSVD; bit 63 is XD) |
+| Rights and error codes | as S2-25i: CPL 3 needs U/S, a supervisor write needs R/W with `CR0.WP` (CPL 3 always); error code P (present), W/R, U/S, RSVD from `page_fault_error_code`; `CR2` = the linear address; a faulting access sets the A bits of the entries it reached and never D |
+| Without a dispatch (`access_pae_ram`) | an MMIO write is `DeviceUnavailable`, an MMIO read `OperandPhysical(UnreadableRegion(Mmio))`, before D and before any device |
+| Board | `LoadedFirmwareBoard::pae_operand_access(cpu, rip, linear, privilege, operation)` (`pae_operand_access.rs`): the PDPTE registers of the vCPU's legacy `ProtectedCpu`, the vCPU index reaches `BusDevice::read_from_cpu/write_from_cpu`, the committed write ranges are returned for code invalidation. The 4-level path is not selected by it |
+
+Tests: `od-isa` `protected_exec::tests` (`mov_ds_eax_*`, `pae_operand_*`: loads set A and never D, a store sets A and D of the leaf, 2 MiB PDE,
+PDPTE selection by bits 31:30, refusals by level and reserved bits 36/52/62, XD without NXE, bit 35 beyond 4 GiB, WP, DS limit,
+a store refused on its later byte keeps A and leaves D clear, unreadable/unwritable memory, a store through a read-only DS refused before the walk); `od-machine`
+`page_walk/pae/operand_tests.rs` (11 tests: order and ranges of the committed writes, every width, 2 MiB D, 36-bit addresses,
+MMIO dispatch with D first, refusals without a dispatch, ROM and holes, error codes 0, 2, 3, 4, 5, 6, 7, 9, 15, WP clear,
+write-intent read, `CrossesPage`) and `ap_legacy_exec.rs` `the_board_pae_operand_access_serves_ram_mmio_and_faults_of_an_ap_on_pae_paging`
+(an AP the trampoline put on PAE paging: store and load of RAM with code generation advance, the Local APIC window as vCPU 1
+with D after the write, an address outside the map, #PF codes).
+Not covered: a 32-bit instruction interpreter on the board PAE view (the only legacy executor is the closed trampoline profile on
+RAM, which still refuses MMIO), a page-crossing operand, locked operations, the PAE path in the `PagedMovMemoryAdapter` set loop
+and the host/JIT fast paths, 32-bit paging in od-machine, hardware oracle, CPUID declaration (S2-57/S2-58). Known limitation: in `od-isa` the A/D bits of the walks are committed after the operand bytes are written; a store that changes the PTE mapping its own page gets A|D added to the value just written (hardware sets A/D in the walk, before the write).
 
 ## S2-38f — exact MAXSS unmasked invalid and denormal exit
 
