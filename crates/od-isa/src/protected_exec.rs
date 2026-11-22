@@ -550,12 +550,16 @@ impl ProtectedCpu {
     /// The real-address mode state after a `MOV CR0` cleared `PE` (S2-25j; SDM Vol. 3A §12.9.2): the
     /// general registers, `EIP`, EFLAGS, CR0, GDTR/IDTR and the segment registers come from `self`; every
     /// segment keeps its selector, base and limit (the descriptor caches survive the switch, §12.9.2
-    /// step 4) and is not attributed (a real-mode segment has no attributes in [`RealModeCpu`]).
+    /// step 4) and is not attributed (a real-mode segment has no attributes in [`RealModeCpu`]); `CS.D`
+    /// and `SS.B` must be 0 (see below).
     /// `base` supplies what this model does not carry (the `CPUID` source): the real state the
     /// protected run was entered from. CR3, CR4, EFER and the PDPTE registers are not part of
-    /// [`RealModeCpu`] and are not carried (they keep their value in `self`). `None` while `PE` is 1.
+    /// [`RealModeCpu`] and are not carried (they keep their value in `self`). `None` while `PE` is 1,
+    /// and when `CS.D` or `SS.B` is 1: until the far jump of §12.9.2 step 7 the segments keep their
+    /// attributes (steps 3 and 4 load 16-bit ones before `PE` is cleared), and [`RealModeCpu`] has
+    /// no default-size bit, so a 32-bit code or stack segment would run as 16-bit.
     pub fn to_real_mode(&self, base: &RealModeCpu) -> Option<RealModeCpu> {
-        if self.cr0 & CR0_PE != 0 {
+        if self.cr0 & CR0_PE != 0 || self.cs.flags & 0x4 != 0 || self.ss.flags & 0x4 != 0 {
             return None;
         }
         let seg = |s: ProtectedSegment| RealSegment {

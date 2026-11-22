@@ -580,7 +580,8 @@ pub fn translate32<M: RealModeMemory>(
 ///   16:13, so the frame is `PDE[31:22] << 22 | PDE[16:13] << 32`; PDE bits 21:17 are reserved
 ///   (`MAXPHYADDR` = 36, so bits 39:36 do not exist; SDM Vol. 3A §5.3, Table 5-4). Memory is addressed
 ///   with 32 bits: a frame above 4 GiB (PDE bits 16:13 not all zero) is the model limit
-///   [`PageRefusal::PhysicalBeyond4GiB`] (the walk is correct, the memory interface cannot reach it);
+///   [`PageRefusal::PhysicalBeyond4GiB`] (the walk is correct, the memory interface cannot reach it;
+///   reported after the write-protect and SMEP checks, as the PAE walk does, so an architectural fault wins);
 /// - `smep`: an instruction fetch of a user-mode address (`U/S = 1` in the PDE and, for a 4 KiB page,
 ///   in the PTE) is [`PageRefusal::SmepFetch`].
 pub fn translate32_with<M: RealModeMemory>(
@@ -603,6 +604,7 @@ pub fn translate32_with<M: RealModeMemory>(
     used.push((pde_at, cell, pde));
     let mut rw_all = u64::from(pde) & RW != 0;
     let mut us_all = u64::from(pde) & US != 0;
+    let mut beyond = None;
     let (size, phys, leaf) = if params.pse && u64::from(pde) & PS != 0 {
         let reserved = if features.pse36 {
             PDE_4M_RESERVED_PSE36
@@ -622,10 +624,9 @@ pub fn translate32_with<M: RealModeMemory>(
             0
         };
         let low = u64::from((pde & 0xFFC0_0000) | (linear & 0x3F_FFFF));
+        // The model limit is reported after the architectural checks below (as `finish_walk` does).
         if high != 0 {
-            return Err(PageRefusal::PhysicalBeyond4GiB {
-                phys: (high << 32) | low,
-            });
+            beyond = Some((high << 32) | low);
         }
         (PageSize::Size4M, low as u32, pde)
     } else {
@@ -655,6 +656,9 @@ pub fn translate32_with<M: RealModeMemory>(
         return Err(PageRefusal::SmepFetch {
             entry: u64::from(leaf),
         });
+    }
+    if let Some(phys) = beyond {
+        return Err(PageRefusal::PhysicalBeyond4GiB { phys });
     }
     let mut touches = Vec::new();
     for (i, &(entry_at, cell, e)) in used.iter().enumerate() {
