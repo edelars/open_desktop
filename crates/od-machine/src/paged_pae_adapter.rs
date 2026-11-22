@@ -49,7 +49,7 @@ use od_isa::memory::{
 };
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// What the adapter reads and writes through.
 enum PaeAdapterBus<'a> {

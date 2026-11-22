@@ -403,6 +403,13 @@ pub enum ProtectedRefusal {
         access: AccessKind,
         reason: PageRefusal,
     },
+    /// [`ProtectedCpu::step_admitting`]: the decoded `instruction` (of `length` bytes at `eip`) is not
+    /// one the caller admits (S2-25o). Nothing was executed.
+    InstructionNotAdmitted {
+        eip: u32,
+        instruction: ProtectedInstruction,
+        length: u32,
+    },
     /// The far jump `JMP ptr16:32` was refused for `reason`.
     FarJumpRefused {
         eip: u32,
@@ -635,7 +642,7 @@ impl ProtectedCpu {
             self.cs.base.wrapping_add(offset as u32)
         };
         let phys = self.physical(mem, linear, AccessKind::Fetch, &mut Vec::new())?;
-        mem.read_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
+        mem.fetch_u8(phys).ok_or(ProtectedRefusal::FetchUnreadable {
             eip: self.eip,
             linear,
         })
@@ -714,6 +721,10 @@ impl ProtectedCpu {
         access: AccessKind,
         touches: &mut Vec<Touch>,
     ) -> Result<u32, ProtectedRefusal> {
+        // S2-25o: the memory walks the linear address itself (a `GuestMemory` adapter).
+        if mem.walks_linear() {
+            return Ok(linear);
+        }
         let walk = if self.pae_paging() {
             let params = PaeParams {
                 pdptes: self.pdptes,
@@ -966,6 +977,15 @@ impl ProtectedCpu {
                 limit: self.ds.limit,
             });
         }
+        if mem.walks_linear() {
+            let linear = self.ds.base.wrapping_add(disp);
+            return mem
+                .read_u32_linear(linear)
+                .ok_or(ProtectedRefusal::DataUnreadable {
+                    eip: self.eip,
+                    linear,
+                });
+        }
         let mut bytes = [0u8; 4];
         for (i, slot) in bytes.iter_mut().enumerate() {
             let linear = self.ds.base.wrapping_add(disp).wrapping_add(i as u32);
@@ -1002,6 +1022,17 @@ impl ProtectedCpu {
                 disp,
                 limit: self.ds.limit,
             });
+        }
+        if mem.walks_linear() {
+            let linear = self.ds.base.wrapping_add(disp);
+            return if mem.write_u32_linear(linear, value) {
+                Ok(())
+            } else {
+                Err(ProtectedRefusal::DataUnwritable {
+                    eip: self.eip,
+                    linear,
+                })
+            };
         }
         let mut walked = Vec::new();
         let mut targets = [0u32; 4];
@@ -1293,9 +1324,25 @@ impl ProtectedCpu {
         mem: &mut M,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
         let mut touches: Vec<Touch> = Vec::new();
-        let result = self.step_collecting(mem, &mut touches);
+        let result = self.step_collecting(mem, &mut touches, &|_| true);
         // S6-31b: a touch whose entry changed its translation bits meanwhile is discarded (the
         // instruction is not repeated: its effects are already committed); the count is not used.
+        let _discarded = paging::commit_touches(mem, &touches);
+        result
+    }
+
+    /// [`Self::step`] that executes only the instructions `admit` accepts (S2-25o): the decoded
+    /// instruction is shown to `admit` before anything of it is walked, read or written, and a
+    /// refusal is [`ProtectedRefusal::InstructionNotAdmitted`] with the state and memory unchanged
+    /// (the fetch walks of the decode excepted, as for any decode refusal). `step` is this with every
+    /// decoded instruction admitted.
+    pub fn step_admitting<M: RealModeMemory>(
+        &mut self,
+        mem: &mut M,
+        admit: &dyn Fn(&ProtectedInstruction) -> bool,
+    ) -> Result<ProtectedInstruction, ProtectedRefusal> {
+        let mut touches: Vec<Touch> = Vec::new();
+        let result = self.step_collecting(mem, &mut touches, admit);
         let _discarded = paging::commit_touches(mem, &touches);
         result
     }
@@ -1304,11 +1351,19 @@ impl ProtectedCpu {
         &mut self,
         mem: &mut M,
         touches: &mut Vec<Touch>,
+        admit: &dyn Fn(&ProtectedInstruction) -> bool,
     ) -> Result<ProtectedInstruction, ProtectedRefusal> {
         if self.cr0 & CR0_PE == 0 {
             return Err(ProtectedRefusal::NotProtectedMode { eip: self.eip });
         }
         let (insn, len) = self.decode(mem)?;
+        if !admit(&insn) {
+            return Err(ProtectedRefusal::InstructionNotAdmitted {
+                eip: self.eip,
+                instruction: insn,
+                length: len,
+            });
+        }
         // Accessed/dirty updates of the paging structures walked by this instruction (the fetch
         // walks come first, as in hardware), written by `step` at the end.
         if self.cr0 & CR0_PG != 0 {

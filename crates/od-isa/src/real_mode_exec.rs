@@ -436,6 +436,48 @@ pub trait RealModeMemory {
         }
         Some(Ok(()))
     }
+
+    /// S2-25o: the memory translates the linear addresses of the protected-mode model itself (a
+    /// paging walk of its own, as a `GuestMemory` adapter of PAE paging does). The model then takes the
+    /// address it computes (segment base plus offset) as the address of this memory: it does not walk
+    /// its own paging structures and records no accessed or dirty bit. A refused access is the
+    /// refusal of the model with the address, the memory keeps the reason. `false` (the default) is
+    /// physical memory: the model walks its tables (or, with paging off, uses the address as it is).
+    fn walks_linear(&self) -> bool {
+        false
+    }
+
+    /// One instruction byte at `linear`. The default is [`Self::read_u8`]; a memory that walks
+    /// linear addresses itself (`walks_linear`) tells an instruction fetch from a data read.
+    fn fetch_u8(&self, linear: u32) -> Option<u8> {
+        self.read_u8(linear)
+    }
+
+    /// S2-25o: the little-endian DWORD at `linear` as one operand (only the memory that
+    /// `walks_linear` is asked): one access, so that a device sees one 4-byte access and not four of
+    /// one byte. The default reads the four bytes one by one (the address wraps at 4 GiB).
+    fn read_u32_linear(&self, linear: u32) -> Option<u32> {
+        let mut bytes = [0u8; 4];
+        for (i, slot) in bytes.iter_mut().enumerate() {
+            *slot = self.read_u8(linear.wrapping_add(i as u32))?;
+        }
+        Some(u32::from_le_bytes(bytes))
+    }
+
+    /// S2-25o: stores the DWORD `value` at `linear` as one operand (only the memory that
+    /// `walks_linear` is asked). Returns `false` and changes nothing when the store is refused. The
+    /// default checks the four bytes first and writes them one by one.
+    fn write_u32_linear(&mut self, linear: u32, value: u32) -> bool {
+        if !(0..4u32).all(|i| self.can_write(linear.wrapping_add(i))) {
+            return false;
+        }
+        for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
+            if !self.write_u8(linear.wrapping_add(i as u32), byte) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Read-only memory made of one byte image placed at `base`; everything else is unreadable,

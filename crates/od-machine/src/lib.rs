@@ -45,6 +45,7 @@ mod nvme;
 mod nvram_device;
 mod pae_fetch_view;
 mod pae_operand_access;
+mod pae_protected_step;
 mod page_walk;
 #[cfg(test)]
 mod page_walk_2m_matrix_tests;
@@ -318,6 +319,10 @@ pub use host_parallel::{
 };
 #[cfg(feature = "lock-wait-metrics")]
 pub use lock_wait_metrics::{BoardLockWaitMetrics, MutexAcquisitionMetrics};
+pub use pae_protected_step::{
+    PaeProtectedStop, PaeStateRefusal, PaeStepOutcome, is_pae_protected_state, pae_covers,
+    pae_covers_without_efer_write, run_pae_state_step, step_pae_protected, step_pae_protected_with,
+};
 pub use paged_apic_entry::{PagedApicEntryReport, PagedApicEntryResult, poll_paged_apic_entry};
 pub use paged_descriptor::{
     PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, PagedLtrError,

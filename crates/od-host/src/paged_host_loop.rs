@@ -326,6 +326,12 @@ pub enum PagedHostLoopExit {
     DeviceBoundary,
     /// The board latched a shutdown or reset request from the guest.
     MachineStop(od_machine::MachineStopReason),
+    /// S2-25o: the state is PAE paging of a protected-mode vCPU and its instruction was not executed:
+    /// outside the covered set of `od_machine::pae_covers` (the stop names the instruction), a refusal of
+    /// the 32-bit model, a memory refusal that is no guest fault, or a state that cannot be the model
+    /// (`od_machine::run_pae_state_step`). Nothing of the instruction retired and the state is as it
+    /// was; nothing was handed to the JIT or to the Long64 interpreter.
+    PaeProtected(od_machine::PaeProtectedStop),
 }
 
 /// Counters and exit of one call of [`run_paged_host_loop`].
@@ -728,6 +734,60 @@ fn try_atomic_step(
     }
 }
 
+/// S2-25o: one instruction of a PAE protected-mode state (`od_machine::run_pae_state_step`). `None`: it
+/// retired (one instruction of the interpreter's count) and the loop goes on; `Some`: the exit of the loop.
+/// Only the exclusive bus runs it (vCPU 0, the whole bus: an MMIO operand reaches its device); a shared
+/// bus (the parallel mode) has no `&mut MachineBus` for the adapter and keeps the S2-25n refusal, named
+/// exactly, before any fetch or walk: the checks of the four-level configuration come first in their
+/// order (a CR0 or CR4 or EFER bit outside the mask, `CR0.ET` clear, ...: their own
+/// `ProbeConfigError`), and `ProbeConfigError::PaeProtectedMode` is the reason only for registers that
+/// pass them (the state is then valid PAE paging that this bus cannot run). A `#PF` is
+/// `GuestFault` with the record of the adapter (no delivery in this path).
+fn pae_protected_step(
+    report: &mut PagedHostLoopReport,
+    state: &mut od_isa::LongModeState,
+    bus: &mut LoopBusRef<'_, '_>,
+    config: PagedHostLoopConfig,
+    consecutive_faults: &mut u64,
+    committed_write: &mut dyn FnMut(od_machine::GuestPhysicalRange),
+) -> Option<PagedHostLoopExit> {
+    let LoopBusRef::Exclusive(machine) = bus else {
+        let (cr0, cr4) = (state.cr0.unwrap_or(0), state.cr4.unwrap_or(0));
+        // The long-mode configuration checks the registers in the order of its masks and answers
+        // `PaeProtectedMode` itself only after them; it never accepts a PAE state, so `Ok` is the same
+        // exact refusal.
+        let reason = match od_machine::Long64ProbeConfig::new(cr0, config.cr3, cr4, config.efer) {
+            Err(error) => error,
+            Ok(_) => od_machine::ProbeConfigError::PaeProtectedMode {
+                cr0,
+                cr4,
+                efer: config.efer,
+            },
+        };
+        return Some(PagedHostLoopExit::Interpreter(
+            od_machine::PagedProbeExit::Rejected(od_machine::PagedProbeRejection::Configuration(
+                reason,
+            )),
+        ));
+    };
+    let (outcome, page_fault) =
+        od_machine::run_pae_state_step(state, machine, 0, config.cr3, config.efer, committed_write);
+    match outcome {
+        od_machine::PaeStepOutcome::Retired(_) => {
+            report.retired_interpreter += 1;
+            report.steps_interpreter += 1;
+            report.remaining_budget -= 1;
+            *consecutive_faults = 0;
+            None
+        }
+        od_machine::PaeStepOutcome::Fault(fault) => {
+            report.page_fault = page_fault;
+            Some(PagedHostLoopExit::GuestFault(fault))
+        }
+        od_machine::PaeStepOutcome::Stopped(stop) => Some(PagedHostLoopExit::PaeProtected(stop)),
+    }
+}
+
 pub(crate) fn run_paged_host_loop_core(
     session: &mut PagedFetchedLoadSession,
     control: &PagedHostLoopControl,
@@ -834,6 +894,24 @@ pub(crate) fn run_paged_host_loop_core(
         }
         before_step(control, steps_started);
         steps_started += 1;
+
+        // S2-25o: PAE paging of a protected-mode vCPU. The native blocks and the Long64 interpreter run
+        // 64-bit code over a four-level snapshot; this state is a 32-bit one, executed by the covered
+        // set of the 32-bit model over the PAE adapter, one instruction per iteration.
+        if od_machine::is_pae_protected_state(state, config.efer) {
+            if let Some(exit) = pae_protected_step(
+                &mut report,
+                state,
+                &mut bus,
+                config,
+                consecutive_faults,
+                &mut committed_write,
+            ) {
+                report.exit = exit;
+                return report;
+            }
+            continue;
+        }
 
         // JIT path for the admitted forms; a native block gets the caller's byte.
         let attempt = native_allowed.then(|| {
@@ -2421,14 +2499,13 @@ mod tests {
         })
     }
 
-    /// S2-25l: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run by this loop.
-    /// The loop decodes and executes Long64 instructions (the native blocks and the CPL0 set are
-    /// 64-bit code), and its translation snapshot is the 4-level one; neither would be right for a
-    /// protected-mode PAE vCPU, so the refusal is explicit and typed, with its exact reason (S2-25n:
-    /// `PaeProtectedMode`, the state is PAE paging of a protected-mode vCPU and no 32-bit executor
-    /// runs on the PAE adapter yet; before S2-25n the same refusal read as a missing EFER.LME|LMA), not a
-    /// silent 4-level walk over PAE tables. Nothing is fetched or walked: no instruction retires, RAM (accessed bits included),
-    /// registers and the write list are what they were.
+    /// S2-25l, S2-25o: a vCPU on PAE paging (CR0.PG = 1, CR4.PAE = 1, EFER.LME = 0) is not run as Long64
+    /// code (the native blocks and the CPL0 set are 64-bit code over a 4-level snapshot). Until S2-25n
+    /// the refusal was by configuration (`PaeProtectedMode`); since S2-25o the loop runs the state as a
+    /// 32-bit vCPU through the PAE adapter (`s2_25o.rs`), and a state that cannot be that vCPU is refused
+    /// with its reason. Here the state is the four-level test fixture: the PDPTEs CR3 names are PML4
+    /// entries with reserved bits, so the refusal is that. Nothing is fetched or walked: no instruction
+    /// retires, RAM (accessed bits included), registers and the write list are what they were.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn s2_25l_a_pae_state_is_refused_by_the_loop_before_any_walk_or_native_block() {
@@ -2456,16 +2533,17 @@ mod tests {
             10,
             |range| writes.push((range.start().get(), range.len())),
         );
+        // S2-25o: the loop no longer refuses a PAE state by configuration; it runs it as a 32-bit vCPU.
+        // These tables are four-level ones, so the PDPTEs that CR3 names are the PML4 entries, whose
+        // bits 2:1 are reserved in a PDPTE: the state is refused with that reason (SDM Vol. 3A section
+        // 5.4.1), before any fetch or walk, and neither the JIT nor the Long64 interpreter runs it.
         assert_eq!(
             report.exit,
-            PagedHostLoopExit::Interpreter(od_machine::PagedProbeExit::Rejected(
-                od_machine::PagedProbeRejection::Configuration(
-                    od_machine::ProbeConfigError::PaeProtectedMode {
-                        cr0: state_before.cr0.unwrap(),
-                        cr4: state_before.cr4.unwrap(),
-                        efer: 1 << 11,
-                    }
-                )
+            PagedHostLoopExit::PaeProtected(od_machine::PaeProtectedStop::State(
+                od_machine::PaeStateRefusal::Paging(od_machine::PaeConfigError::PdpteReserved {
+                    index: 0,
+                    pdpte: 0x2007
+                })
             ))
         );
         assert_eq!(report.retired_total(), 0);
@@ -2484,6 +2562,8 @@ mod tests {
 
     /// S6-42: tests of several vCPU threads over the slot backend and the
     /// cross-vCPU invalidation (child module: it uses the helpers above).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod s2_25o;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     mod s6_42;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
