@@ -12,8 +12,8 @@
 
 ## Записи
 
-<a id="issue-653-s11-31b-dhcp-dns-unverified"></a>
-### ISSUE-653 — S11-31b: DHCP и DNS-пересылка: непроверенное поведение и решения по пробелам контракта
+<a id="issue-671-s11-31b-dhcp-dns-unverified"></a>
+### ISSUE-671 — S11-31b: DHCP и DNS-пересылка: непроверенное поведение и решения по пробелам контракта
 
 - **Дата обнаружения:** 2026-11-22, задача S11-31b.
 - **Компонент:** `crates/od-host/src/nat/dhcp.rs`, `nat/dns.rs`, `nat/resolver.rs`, [NETWORK.md](specs/NETWORK.md) разделы 7, 8, 16.
