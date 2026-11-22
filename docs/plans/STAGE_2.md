@@ -15279,7 +15279,8 @@ Model only: no hardware oracle (a user-space process cannot write CR0/CR4) and *
 - **PSE-36** (32-bit paging, SDM Rev. 093 Vol. 3A §5.3, Table 5-4): `ProtectedCpu::pse36` (default `false`) selects
   `paging::translate32_with`: with `CR4.PSE` and `PS = 1` the frame is PDE bits 31:22 plus PDE bits 16:13 as physical
   bits 35:32; bits 21:17 are reserved at `MAXPHYADDR` 36. A frame above 4 GiB is the existing model limit
-  `PhysicalBeyond4GiB` (memory is addressed with 32 bits), so only the layout and the reserved bits are checkable.
+  `PhysicalBeyond4GiB` (memory is addressed with 32 bits), reported after the write-protect and SMEP faults (as in the PAE
+  walk), so only the layout and the reserved bits are checkable.
 - **SMEP** (§5.6.1, §5.7): `CR4.SMEP` (bit 20) is settable by `MOV CR4` (not CPUID-gated, like `PSE`) and changing it
   reloads the PDPTEs of PAE paging; an instruction fetch of the CPL 0 model through a user-mode address (U/S = 1 in
   every entry that controls the translation; the PDPTE of PAE paging has no U/S) is `PageRefusal::SmepFetch`
@@ -15293,10 +15294,11 @@ Model only: no hardware oracle (a user-space process cannot write CR0/CR4) and *
 - **Return to real mode** (§12.9.2 step 6): `MOV CR0` clearing `PE` with paging already off stores the value;
   every later `step` is `ProtectedRefusal::NotProtectedMode` and `ProtectedCpu::to_real_mode(&base)` gives the
   `RealModeCpu` (registers, EFLAGS, GDTR/IDTR, segments with the selector, base and limit of their caches; CR3, CR4,
-  EFER and PDPTEs are not part of `RealModeCpu` and stay in the `ProtectedCpu`). Other CR0 writes with PE kept and
+  EFER and PDPTEs are not part of `RealModeCpu` and stay in the `ProtectedCpu`); it is `None` while `CS.D` or `SS.B` is 1
+  (`RealModeCpu` has no default-size bit; §12.9.2 steps 3 and 4 load 16-bit CS and SS before `PE` is cleared). Other CR0 writes with PE kept and
   paging off stay `Cr0WriteUnmodelled`.
 
-Tests: 6 in `paging.rs`, 16 in `protected_exec.rs` (each transition and refusal above, the error codes, the full
+Tests: 6 in `paging.rs`, 17 in `protected_exec.rs` (each transition and refusal above, the error codes, the full
 IA-32e -> PG clear -> PE clear sequence). Not done: the Long64 CPL0 profile (`execute.rs`) `MOV CR0` rules, `od-machine`
 walks (SMEP/PSE-36 there), PE cleared together with PG, SMAP/PKU/PCIDE, CPUID declaration (S2-57). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-25j--pse-36-walk-smep-ia-32e-deactivation-and-return-to-real-mode-model-only).

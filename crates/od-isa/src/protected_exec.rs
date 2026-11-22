@@ -83,13 +83,15 @@
 //! CR4` that clears `PAE` while `PG = 1` and `LMA = 0` leaves PAE paging for 32-bit paging (the
 //! PDPTE registers keep their value and are not used); one that sets `PAE` again reloads them from
 //! `CR3`. `MOV CR0` that clears `PG` with `LMA = 0` turns paging off (the PDPTE registers keep their
-//! value, unused); with `LMA = 1` (deactivating IA-32e mode) or with `PE` cleared it is a refusal.
+//! value, unused); with `LMA = 1` it deactivates IA-32e mode in compatibility mode (`#GP(0)` in 64-bit
+//! mode) and with `PE` cleared together with `PG` it is a refusal (S2-25j below).
 //! `MOV CR3` outside PAE paging stores the value: `CR3` bits 31:12 locate the page directory, the
 //! other bits are ignored by the walk.
 //!
 //! 64-bit mode, block 8 (S6-14n, CPU_CONTRACT.md "S6-14n"). With `EFER.LMA = 1` and `CS.L = 1` the
-//! closed set is the one instruction of the linked path at `0x20f0`: `ff 25 disp32`, `JMP
-//! QWORD PTR [rip+disp32]` (no prefix, no REX). `RIP` is 64 bits ([`ProtectedCpu::rip`]; the low
+//! closed set is the instruction of the linked path at `0x20f0`, `ff 25 disp32`, `JMP
+//! QWORD PTR [rip+disp32]` (no prefix, no REX), and, from S2-25j, `0f 22 c0`, `MOV CR0, RAX` (to apply
+//! the 64-bit mode rules of `MOV CR0`: clearing `PG` is `#GP(0)`; the high dword of `RAX` is taken as 0). `RIP` is 64 bits ([`ProtectedCpu::rip`]; the low
 //! half stays in `eip`, the high half in `rip_high`, nonzero only after this jump). Segmentation is
 //! off: the instruction bytes and the pointer cell are at the linear address itself (the CS and DS
 //! bases and limits are ignored, so a 64-bit `CS` with a nonzero base behaves like base 0); the
@@ -102,7 +104,8 @@
 //! instruction byte above is [`ProtectedRefusal::LinearBeyond4GiB`]. After the jump `RIP` is the
 //! target (`secondary_startup_64` in the linked path, `0xffffffff8139c090`) and the next step is
 //! [`ProtectedRefusal::Mode64TargetEntered`]: the target is neither fetched nor executed (the
-//! `CALL verify_cpu` there is only the boundary of the slice). Any other 64-bit instruction is
+//! `CALL verify_cpu` there is only the boundary of the slice). Any other 64-bit instruction (not the two
+//! above) is
 //! [`ProtectedRefusal::Unsupported`]; a `RIP` above 4 GiB that was not reached by this jump is
 //! [`ProtectedRefusal::Mode64NotModelled`].
 //!
@@ -756,7 +759,7 @@ impl ProtectedCpu {
         }
     }
 
-    /// Decodes the closed 64-bit set (block 8, S6-14n) at `RIP`.
+    /// Decodes the closed 64-bit set at `RIP`: `ff 25 disp32` (block 8, S6-14n) and `0f 22 c0` (S2-25j).
     fn decode64<M: RealModeMemory>(
         &self,
         mem: &M,
