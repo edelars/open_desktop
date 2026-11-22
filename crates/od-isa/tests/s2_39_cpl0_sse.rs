@@ -735,7 +735,8 @@ fn fxsave64_stores_the_live_sse_state_including_flags_set_by_the_previous_form()
 
 #[test]
 fn fxrstor64_with_reserved_mxcsr_bits_is_gp_and_changes_no_state() {
-    for reserved in [1u32 << 16, 1 << 31, 0xffc0] {
+    // Bits 31:16 are reserved; DAZ (bit 6) is in the target mask (ADR-0014).
+    for reserved in [1u32 << 16, 1 << 31, 0x0001_ffc0] {
         let image = image_with(0x1f80 | reserved);
         let case = case_with_image();
         let code = FXRSTOR64_RBX;

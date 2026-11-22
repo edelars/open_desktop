@@ -897,6 +897,13 @@ fn ldmxcsr_loads_every_valid_value_and_changes_nothing_else() {
         0x6000,
         0x8000,
         0x1f80 | 0x3f,
+        // DAZ (bit 6) is in the target mask (ADR-0014); the i5-3210M loads each of these.
+        0x0040,
+        0x1fc0,
+        0x9fc0,
+        0xffff,
+        0x8040,
+        0x1f40,
     ] {
         for old in [0x1f80u32, 0x1fa5, 0x0000] {
             let case = mxcsr_case(value, old);
@@ -914,13 +921,13 @@ fn ldmxcsr_loads_every_valid_value_and_changes_nothing_else() {
 
 #[test]
 fn ldmxcsr_with_a_reserved_bit_is_gp0_and_changes_nothing() {
-    // TARGET_FXSAVE_MXCSR_MASK = 0xffbf: bits 31:16 and bit 6 (DAZ) are reserved on the measured target.
+    // TARGET_FXSAVE_MXCSR_MASK = 0xffff: bits 31:16 are reserved; DAZ (bit 6) is supported (ADR-0014). The
+    // i5-3210M raises #GP (SIGSEGV) for 0x0001_0000 and 0x8000_1f80.
     for value in [
         0x0001_1f80u32,
         0x8000_1f80,
         0xffff_ffff,
-        0x1f80 | 0x40,
-        0xffff,
+        0x0001_ffff,
         0x0002_0000,
         0x1f80 | (1 << 20),
     ] {
@@ -935,42 +942,45 @@ fn ldmxcsr_with_a_reserved_bit_is_gp0_and_changes_nothing() {
 
 #[test]
 fn ldmxcsr_and_stmxcsr_take_every_addressing_form_with_an_unaligned_operand() {
-    let value = 0x1fa5u32;
-    let mut case = mxcsr_case(value, 0x1f80);
-    // The operand is unaligned at DATA + 1 (a 16-byte memory image holds the dword at offset 1).
-    case.memory = [0; 16];
-    case.memory[1..5].copy_from_slice(&value.to_le_bytes());
-    let forms: &[(&str, &[u8], fn(&mut LongModeState))] = &[
-        ("[rax+1]", &[0x0f, 0xae, 0x50, 0x01], |_| {}),
-        ("[r8+1]", &[0x41, 0x0f, 0xae, 0x50, 0x01], |s| {
-            s.gpr[8] = DATA
-        }),
-        ("[rax+rcx*2+1]", &[0x0f, 0xae, 0x54, 0x48, 0x01], |s| {
-            s.gpr[0] = DATA - 8;
-            s.gpr[1] = 4;
-        }),
-        (
-            "[rbp+0x101]",
-            &[0x0f, 0xae, 0x95, 0x01, 0x01, 0x00, 0x00],
-            |s| s.gpr[5] = DATA - 0x100,
-        ),
-        ("[eax+1] 67", &[0x67, 0x0f, 0xae, 0x50, 0x01], |_| {}),
-        ("ds:[rax+1]", &[0x3e, 0x0f, 0xae, 0x50, 0x01], |_| {}),
-    ];
-    for (name, code, change) in forms {
-        let (observed, before, after) = in_set_with(code, &case, 1, |state| change(state));
-        assert_eq!(observed.result, Result_::Retired, "{name}");
-        assert_eq!(observed.rip, CODE + code.len() as u64, "{name}");
-        assert_eq!(after.sse.mxcsr, value, "{name}");
-        assert_eq!(observed.xmm, before.sse.xmm, "{name}");
+    // 0x1fa5 and the five DAZ values of the physical oracle (S2-39n: each loads with every addressing form
+    // there, ADR-0014).
+    for value in [0x1fa5u32, 0x0040, 0x1fc0, 0xffff, 0x8040, 0x1f40] {
+        let mut case = mxcsr_case(value, 0x1f80);
+        // The operand is unaligned at DATA + 1 (a 16-byte memory image holds the dword at offset 1).
+        case.memory = [0; 16];
+        case.memory[1..5].copy_from_slice(&value.to_le_bytes());
+        let forms: &[(&str, &[u8], fn(&mut LongModeState))] = &[
+            ("[rax+1]", &[0x0f, 0xae, 0x50, 0x01], |_| {}),
+            ("[r8+1]", &[0x41, 0x0f, 0xae, 0x50, 0x01], |s| {
+                s.gpr[8] = DATA
+            }),
+            ("[rax+rcx*2+1]", &[0x0f, 0xae, 0x54, 0x48, 0x01], |s| {
+                s.gpr[0] = DATA - 8;
+                s.gpr[1] = 4;
+            }),
+            (
+                "[rbp+0x101]",
+                &[0x0f, 0xae, 0x95, 0x01, 0x01, 0x00, 0x00],
+                |s| s.gpr[5] = DATA - 0x100,
+            ),
+            ("[eax+1] 67", &[0x67, 0x0f, 0xae, 0x50, 0x01], |_| {}),
+            ("ds:[rax+1]", &[0x3e, 0x0f, 0xae, 0x50, 0x01], |_| {}),
+        ];
+        for (name, code, change) in forms {
+            let (observed, before, after) = in_set_with(code, &case, 1, |state| change(state));
+            assert_eq!(observed.result, Result_::Retired, "{name}");
+            assert_eq!(observed.rip, CODE + code.len() as u64, "{name}");
+            assert_eq!(after.sse.mxcsr, value, "{name}");
+            assert_eq!(observed.xmm, before.sse.xmm, "{name}");
+        }
+        // [RIP+disp32] to DATA + 1.
+        let disp = (DATA as i64 + 1 - (CODE as i64 + 7)) as i32;
+        let mut code = vec![0x0f, 0xae, 0x15];
+        code.extend_from_slice(&disp.to_le_bytes());
+        let (observed, _, after) = in_set(&code, &case);
+        assert_eq!(observed.result, Result_::Retired);
+        assert_eq!(after.sse.mxcsr, value);
     }
-    // [RIP+disp32] to DATA + 1.
-    let disp = (DATA as i64 + 1 - (CODE as i64 + 7)) as i32;
-    let mut code = vec![0x0f, 0xae, 0x15];
-    code.extend_from_slice(&disp.to_le_bytes());
-    let (observed, _, after) = in_set(&code, &case);
-    assert_eq!(observed.result, Result_::Retired);
-    assert_eq!(after.sse.mxcsr, value);
     // STMXCSR [rax+1] writes exactly four bytes there.
     let case = mxcsr_case(0, 0x1f85);
     let (observed, before, after) = in_set(&[0x0f, 0xae, 0x58, 0x01], &case);
@@ -985,6 +995,30 @@ fn ldmxcsr_and_stmxcsr_take_every_addressing_form_with_an_unaligned_operand() {
     assert_eq!(observed.data[..1], case.memory[..1]);
     assert_eq!(observed.data[5..16], case.memory[5..16], "four bytes only");
     assert_eq!(observed.data[16], SENTINEL);
+}
+
+#[test]
+fn ldmxcsr_daz_makes_the_next_sse_form_read_a_denormal_source_as_zero() {
+    // LDMXCSR [rax], then ADDSS xmm1,xmm2 with xmm1.low = 0x0000_0001 (the smallest binary32 denormal) and
+    // xmm2.low = 1.0. DAZ = 1: the denormal is +0, the sum 1.0 is exact and no flag is set (SDM Vol. 1
+    // §10.2.3.4). DAZ = 0: DE (denormal operand) and PE (1.0 + 2^-149 rounds to 1.0) are set. The i5-3210M
+    // gives 0x3f80_0000 with MXCSR 0x1fc0 and 0x1fa2 for the two loads (ADR-0014).
+    for (loaded, expected_mxcsr) in [(0x1fc0u32, 0x1fc0u32), (0x1f80, 0x1fa2)] {
+        let mut case = mxcsr_case(loaded, 0x1f80);
+        case.xmm[1][..4].copy_from_slice(&1u32.to_le_bytes());
+        case.xmm[2][..4].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+        let code = [&[0x0f, 0xae, 0x10][..], &[0xf3, 0x0f, 0x58, 0xca][..]].concat();
+        let (observed, _, after) = in_set_program(&code, &case, 2);
+        assert_eq!(observed.result, Result_::Retired, "{loaded:#x}");
+        assert_eq!(observed.rip, CODE + 7, "{loaded:#x}");
+        assert_eq!(after.sse.mxcsr, expected_mxcsr, "{loaded:#x}");
+        assert_eq!(
+            after.sse.xmm[1][..4],
+            0x3f80_0000u32.to_le_bytes(),
+            "{loaded:#x}"
+        );
+        assert_eq!(after.sse.xmm[1][4..], case.xmm[1][4..], "{loaded:#x}");
+    }
 }
 
 #[test]

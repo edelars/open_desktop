@@ -10437,7 +10437,7 @@ mod tests {
         assert_eq!(record.cr0.expect("cr0") & 0xc, 0);
         assert_eq!(record.cr4.expect("cr4") & 0x600, 0x600);
         // Oracle (SDM FXSAVE layout): FCW 0x037F, FSW 0, abridged FTW 0, FOP/FIP/FCS/FDP/FDS 0,
-        // MXCSR 0x1F80, MXCSR_MASK 0xFFBF, registers and XMM zero; the holes are untouched.
+        // MXCSR 0x1F80, MXCSR_MASK 0xFFFF (ADR-0014), registers and XMM zero; the holes are untouched.
         let after = read_area(&mut boot);
         let mut expected = before;
         expected[0..2].copy_from_slice(&[0x7F, 0x03]);
@@ -10447,7 +10447,7 @@ mod tests {
         expected[8..14].copy_from_slice(&[0; 6]);
         expected[16..22].copy_from_slice(&[0; 6]);
         expected[24..28].copy_from_slice(&[0x80, 0x1F, 0, 0]);
-        expected[28..32].copy_from_slice(&[0xBF, 0xFF, 0, 0]);
+        expected[28..32].copy_from_slice(&[0xFF, 0xFF, 0, 0]);
         for slot in 0..8 {
             expected[32 + 16 * slot..42 + 16 * slot].copy_from_slice(&[0; 10]);
         }
