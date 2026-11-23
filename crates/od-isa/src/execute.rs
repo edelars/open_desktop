@@ -34499,8 +34499,13 @@ pub fn run_with_fast_path_check(
 /// immediates. The work is done by the functions the general path calls (`exec_arithmetic`,
 /// `exec_logic`, `exec_shift`); no flag formula lives here.
 ///
+/// PERF-24, group G1: `Mov` and `MovImmediate` with a register destination and a register or
+/// immediate source. Group G3: relative `Branch` (Jcc) and `Jump` (JMP rel8/rel32), the target
+/// from `relative_target` (the canonical check of the general path).
+///
 /// Admission (ADR-0017, section 4): CPL0, RF = 0, TF = 0, no STI/MOV SS shadow, no LOCK/REP/REPNE
-/// prefix, no FS/GS segment prefix, no memory operand. Everything else is "not handled".
+/// prefix, no FS/GS segment prefix, no memory operand; for `Branch` and `Jump` also the
+/// admission of `executable` (opcode map, default prefixes). Everything else is "not handled".
 #[inline(never)]
 pub(crate) fn try_fast_step(
     state: &mut LongModeState,
@@ -34591,6 +34596,86 @@ pub(crate) fn try_fast_step(
                 Err(error) => Err(error),
             });
         }
+        // PERF-24, group G1. For register and immediate operands `transfer` is `read_operand` and
+        // `write_operand` of registers, which are `state.read` and `state.write` (the masking,
+        // the dword zero extension and the high byte registers live there): they are called
+        // directly, without the dispatch of `transfer`. A memory operand is refused here, before
+        // anything is written. MOV changes no flag, and its flag definedness is the identity
+        // (`FlagEffects::default()`), so the tail only sets RIP.
+        Operation::Mov {
+            dst: Operand::Register(dst),
+            src,
+        } => {
+            let value = match src {
+                Operand::Register(src) => state.read(src),
+                Operand::Immediate(value) => value,
+                Operand::Memory(_) => return None,
+            };
+            state.write(dst, value);
+            return Some(retire_without_flag_effects(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+            ));
+        }
+        Operation::MovImmediate {
+            dst: Operand::Register(dst),
+            value,
+        } => {
+            state.write(dst, value);
+            return Some(retire_without_flag_effects(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+            ));
+        }
+        // PERF-24, group G3: the admission of `executable` for Jcc and JMP (ADR-0017, 2.2), then
+        // the arms of the general path: a taken branch goes to `relative_target` (a non-canonical
+        // target is its #GP, nothing written) and is `Branched` without the tail; a branch not
+        // taken retires like any instruction (its flag definedness is the identity).
+        Operation::Branch {
+            condition,
+            displacement,
+        } => {
+            if !matches!(
+                instruction.opcode.map,
+                OpcodeMap::Primary | OpcodeMap::Escape0f
+            ) || instruction.prefixes != Prefixes::default()
+            {
+                return None;
+            }
+            if condition.evaluate(state.rflags) {
+                return Some(Ok(match relative_target(next_rip, displacement) {
+                    Ok(target) => {
+                        state.rip = target;
+                        StepOutcome::Branched
+                    }
+                    Err(fault) => StepOutcome::Fault(fault),
+                }));
+            }
+            return Some(retire_without_flag_effects(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+            ));
+        }
+        Operation::Jump { displacement } => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.prefixes != Prefixes::default()
+            {
+                return None;
+            }
+            return Some(Ok(match relative_target(next_rip, displacement) {
+                Ok(target) => {
+                    state.rip = target;
+                    StepOutcome::Branched
+                }
+                Err(fault) => StepOutcome::Fault(fault),
+            }));
+        }
         _ => return None,
     };
     // The common tail of the general path (flag definedness, RIP, `Advanced`).
@@ -34603,6 +34688,27 @@ pub(crate) fn try_fast_step(
         Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
         Err(error) => Err(error),
     })
+}
+
+/// PERF-24: the common tail of the general path for an instruction whose flag definedness is the
+/// identity (`FlagEffects::default()`: MOV, Jcc not taken): `rflags_defined` stays as it is, RIP
+/// goes to the next instruction, `Advanced`. Debug builds check the identity against
+/// `Instruction::flag_effects`, so a later change of the flag table cannot pass unnoticed.
+#[inline(always)]
+fn retire_without_flag_effects(
+    state: &mut LongModeState,
+    rflags_defined: u64,
+    instruction: &crate::long_decode::Instruction,
+    next_rip: u64,
+) -> Result<StepOutcome, MemoryError> {
+    debug_assert_eq!(
+        instruction.flag_effects().apply(rflags_defined),
+        rflags_defined,
+        "{instruction:?}"
+    );
+    let _ = (rflags_defined, instruction);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
 }
 
 /// PERF-22: one step of the checked loop: the general path runs for real on `memory` through the
@@ -42092,9 +42198,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
-    // PERF-23 (ADR-0017, section 3): the fast path of group G2, right after the decode and before the
-    // chain of conditions below. Only the CPL0 profile set enables it. `None` is "not handled", before
-    // any side effect, and the general path continues unchanged.
+    // PERF-23/24 (ADR-0017, section 3): the fast path of groups G1-G3, right after the decode and
+    // before the chain of conditions below. Only the CPL0 profile set enables it. `None` is "not
+    // handled", before any side effect, and the general path continues unchanged.
     if fast_path_enabled
         && control_policy.is_some()
         && let Some(outcome) =

@@ -9301,18 +9301,18 @@ mod tests {
         assert_eq!(fast.com1_transcript(), plain.com1_transcript());
         assert!(with.fast_path_check.is_none());
         if od_isa::fast_path_check::FAST_STEPS_COUNTED {
-            // add, xor, or, sub, shl.
-            assert_eq!(taken_with, 5);
+            // add, xor, or, sub, shl (G2) and, since PERF-24, the three register MOVs (G1).
+            assert_eq!(taken_with, 8);
         }
-        // The check wins over the switch: nothing is taken by the step, the five ALU forms are
-        // compared by the check, and the run is the same.
+        // The check wins over the switch: nothing is taken by the step, the five ALU forms and the
+        // three MOVs are compared by the check, and the run is the same.
         let (checked, board, taken_checked) = run(true, true);
         let report = checked
             .fast_path_check
             .clone()
             .expect("the check was asked for");
         assert_eq!(report.divergence, None);
-        assert_eq!(report.counters.compared, 5, "{report:?}");
+        assert_eq!(report.counters.compared, 8, "{report:?}");
         assert_eq!(taken_checked, 0);
         assert_eq!(checked.run, without.run);
         assert_eq!(board.state(), plain.state());

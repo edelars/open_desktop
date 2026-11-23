@@ -252,8 +252,8 @@ fn refuse_all(
 #[test]
 fn the_tree_fast_path_takes_register_alu_agrees_and_changes_nothing() {
     // PERF-23: the fast path of the tree handles the register ALU forms (group G2) of the program
-    // (add/cmp/sub rax and the rest are taken, the memory forms, stack forms, call and branches are
-    // refused) and the run is the unchecked run.
+    // (add/cmp/sub rax and the rest are taken, the memory forms and stack forms are refused, call is
+    // refused; the branches are taken (G3)) and the run is the unchecked run.
     let baseline = unchecked(PROGRAM);
     let (outcome, counters) = checked(PROGRAM, FastPathMode::Tree);
     assert!(fast_path_check::take_divergence().is_none());

@@ -17,7 +17,7 @@ use crate::{
     MemoryError, PrivilegeLevel, StiShadow,
 };
 
-const CODE: u64 = 0x1000;
+pub(super) const CODE: u64 = 0x1000;
 const CF: u64 = 1;
 const PF: u64 = 1 << 2;
 const AF: u64 = 1 << 4;
@@ -78,7 +78,7 @@ impl GuestMemory for Code {
     }
 }
 
-fn context(privilege: PrivilegeLevel) -> AccessContext {
+pub(super) fn context(privilege: PrivilegeLevel) -> AccessContext {
     AccessContext {
         mode: InstructionMode::Long64,
         privilege,
@@ -86,7 +86,7 @@ fn context(privilege: PrivilegeLevel) -> AccessContext {
     }
 }
 
-fn state(seed: u64, rflags: u64) -> LongModeState {
+pub(super) fn state(seed: u64, rflags: u64) -> LongModeState {
     let mut state = LongModeState {
         rip: CODE,
         rflags,
@@ -382,7 +382,7 @@ fn every_g2_register_form_equals_the_general_path() {
 }
 
 /// Snapshot of everything a refusal must leave untouched.
-fn assert_refused(
+pub(super) fn assert_refused(
     label: &str,
     bytes: &[u8],
     mut state: LongModeState,
@@ -526,10 +526,11 @@ fn memory_operands_and_other_operations_are_refused_without_side_effects() {
         ("shr dword [rsi], 3", &[0xc1, 0x2e, 0x03]),
         ("shld [rsi], rax, 3", &[0x48, 0x0f, 0xa4, 0x06, 0x03]),
         ("shrd [rsi], rax, cl", &[0x48, 0x0f, 0xad, 0x06]),
-        ("mov rax, rcx", &[0x48, 0x89, 0xc8]),
-        ("mov eax, 7", &[0xb8, 0x07, 0x00, 0x00, 0x00]),
-        ("jmp +0", &[0xeb, 0x00]),
-        ("jz +0", &[0x74, 0x00]),
+        // PERF-24: the register MOV forms and the relative JMP/Jcc are groups G1 and G3 now
+        // (fast_step_g1_g3_tests.rs); their memory forms and the other operations stay refused.
+        ("mov rax, [rsi]", &[0x48, 0x8b, 0x06]),
+        ("mov [rsi], rax", &[0x48, 0x89, 0x06]),
+        ("jmp [rsi]", &[0xff, 0x26]),
         ("push rax", &[0x50]),
         ("lea rax, [rsi]", &[0x48, 0x8d, 0x06]),
         ("nop", &[0x90]),
@@ -591,8 +592,9 @@ fn the_step_takes_g2_forms_with_the_flag_and_the_run_is_unchanged() {
         assert_eq!(on_state, off_state, "seed {seed}");
         assert_eq!(taken_off, 0);
         if fast_path_check::FAST_STEPS_COUNTED {
-            // add, xor, shl, cmp; the MOV and the NOP are not group G2.
-            assert_eq!(taken_on, 4, "seed {seed}");
+            // add, xor, shl, cmp (G2) and, since PERF-24, the register MOV (G1); the NOP is not
+            // taken.
+            assert_eq!(taken_on, 5, "seed {seed}");
         }
     }
 }
