@@ -1807,6 +1807,9 @@ pub struct FirmwareUnifiedRun {
     pub checkpoints: Vec<FirmwareUnifiedCheckpoint>,
     /// The calls of the call trace (S7-31q): `None` when none was asked for.
     pub call_trace: Option<CallTraceReport>,
+    /// The histogram of retired operations (PERF-20): `None` when none was asked for. Its total is
+    /// the number of instructions the loop retired.
+    pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
@@ -1969,6 +1972,29 @@ pub fn run_firmware_unified_traced(
     trace: Vec<CallTraceTarget>,
     system_table: Option<u64>,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_profiled(
+        board,
+        instruction_budget,
+        marker_rip,
+        trace,
+        system_table,
+        false,
+    )
+}
+
+/// [`run_firmware_unified_traced`] with the histogram of retired operations (PERF-20) when
+/// `op_histogram` is set: the loop decodes every instruction before it runs, read-only, and counts
+/// it after it retired under its operation, operand kind, operand size and CPL (see
+/// [`crate::OpHistogramReport`]). A diagnostic that only observes: the quanta, the clock and the
+/// result are unchanged. Without it the loop has no check for it.
+pub fn run_firmware_unified_profiled(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+    op_histogram: bool,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs a firmware board with the Linux profile",
@@ -2037,9 +2063,13 @@ pub fn run_firmware_unified_traced(
     if !trace.is_empty() {
         board.enable_call_trace(trace, system_table);
     }
+    if op_histogram {
+        board.enable_op_histogram();
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
     let call_trace = board.take_call_trace();
+    let op_histogram = board.take_op_histogram();
     cpu_cells.commit(
         board
             .vcpu_mut(BOOT_VCPU_INDEX)
@@ -2173,6 +2203,7 @@ pub fn run_firmware_unified_traced(
         marker,
         checkpoints,
         call_trace,
+        op_histogram,
     })
 }
 

@@ -1175,6 +1175,107 @@ impl GuestMemory for InstructionPathBytes<'_> {
     }
 }
 
+/// PERF-20: the page-lazy read-only instruction fetch of the histogram: each page is translated once
+/// through the read-only walk (no accessed/dirty bit, RAM only) and the other bytes of the page
+/// follow by offset. Only `fetch` works; the decoder reads nothing else.
+struct HistogramFetch<'a> {
+    memory: &'a crate::PhysicalMemory,
+    paging: &'a Long64ProbeConfig,
+    rip: u64,
+    /// The linear page base and the physical address of its first byte.
+    page: Option<(u64, u64)>,
+}
+
+impl GuestMemory for HistogramFetch<'_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        let unmapped = || MemoryError::Unmapped {
+            address,
+            access: AccessKind::Fetch,
+        };
+        let base = address & !0xFFF;
+        let physical = match self.page {
+            Some((linear, physical)) if linear == base => physical + (address & 0xFFF),
+            _ => {
+                let physical = crate::page_walk::translate_long64_2m_ram_read_only(
+                    self.memory,
+                    self.paging,
+                    self.rip,
+                    GuestLinearAddress::new(address),
+                    context,
+                    AccessKind::Fetch,
+                )
+                .map_err(|_| unmapped())?
+                .get();
+                self.page = Some((base, physical - (address & 0xFFF)));
+                physical
+            }
+        };
+        self.memory
+            .load_u8(GuestPhysicalAddress::new(physical))
+            .map_err(|_| unmapped())
+    }
+
+    fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+
+    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("histogram fetch is read-only".into()))
+    }
+}
+
+/// PERF-20: the instruction at `rip` decoded without any side effect; `None` when its bytes do not
+/// translate or the decoder refuses them (the step then reports that itself).
+fn histogram_decode(
+    rip: u64,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+) -> Option<Instruction> {
+    let mut fetch = HistogramFetch {
+        memory,
+        paging,
+        rip,
+        page: None,
+    };
+    od_isa::long_decode::decode(&mut fetch, rip, context).ok()
+}
+
 fn trace_destination_register(
     registers: &mut [Option<InstructionPathRegisterValue>; 2],
     state: &LongModeState,
@@ -2605,8 +2706,46 @@ pub(crate) fn run_cpl0_set_loop(
     let elf = execution_observations
         .as_deref()
         .is_some_and(LinuxExecutionObservationCollector::needs_elf_stack_copy_path);
+    // PERF-20: the histogram of retired operations has its own instantiation; every other run
+    // keeps the loop without it.
+    if checkpoints
+        .as_deref()
+        .is_some_and(CheckpointRecorder::has_op_histogram)
+    {
+        // The histogram instantiation has neither the instruction-path trace nor the ELF stack
+        // copy path: a run that asks for them together with the histogram would lose them
+        // silently. The runner does not combine them (the histogram is a separate diagnostic run).
+        debug_assert!(
+            !trace && !elf,
+            "the op histogram cannot be combined with the instruction-path trace or the ELF stack copy path"
+        );
+        return run_cpl0_set_loop_impl::<false, false, true>(
+            state,
+            bus,
+            split_gate,
+            vcpu,
+            cr3,
+            efer,
+            context,
+            instruction_budget,
+            rflags_defined,
+            set,
+            rdtsc,
+            stop,
+            committed_write,
+            cpuid_boundary,
+            cache,
+            irq,
+            checkpoints,
+            execution_observations,
+            exception_delivery,
+            stop_after_mmio,
+            on_syscall,
+            decoded,
+        );
+    }
     match (trace, elf) {
-        (true, true) => run_cpl0_set_loop_impl::<true, true>(
+        (true, true) => run_cpl0_set_loop_impl::<true, true, false>(
             state,
             bus,
             split_gate,
@@ -2630,7 +2769,7 @@ pub(crate) fn run_cpl0_set_loop(
             on_syscall,
             decoded,
         ),
-        (true, false) => run_cpl0_set_loop_impl::<true, false>(
+        (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
             bus,
             split_gate,
@@ -2654,7 +2793,7 @@ pub(crate) fn run_cpl0_set_loop(
             on_syscall,
             decoded,
         ),
-        (false, true) => run_cpl0_set_loop_impl::<false, true>(
+        (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
             bus,
             split_gate,
@@ -2678,7 +2817,7 @@ pub(crate) fn run_cpl0_set_loop(
             on_syscall,
             decoded,
         ),
-        (false, false) => run_cpl0_set_loop_impl::<false, false>(
+        (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
             bus,
             split_gate,
@@ -2706,7 +2845,11 @@ pub(crate) fn run_cpl0_set_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: bool>(
+fn run_cpl0_set_loop_impl<
+    const TRACE_ENABLED: bool,
+    const ELF_COPY_ENABLED: bool,
+    const HISTOGRAM_ENABLED: bool,
+>(
     state: &mut LongModeState,
     mut bus: LoopBus<'_>,
     split_gate: Option<&dyn crate::bus::SplitLockGate>,
@@ -2976,6 +3119,16 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
         let instruction_rip = state.rip;
+        // PERF-20: the instruction about to run, decoded read-only (no accessed/dirty bit, no cache
+        // or counter moves), and the CPL it runs at; counted below once it retired.
+        let (histogram_instruction, histogram_cpl) = if HISTOGRAM_ENABLED {
+            (
+                histogram_decode(instruction_rip, bus.ram(), &paging, context),
+                state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+            )
+        } else {
+            (None, 0)
+        };
         let mut trace_before = None;
         if let Some(observations) = execution_observations.as_deref_mut() {
             last_instruction_rip = Some(instruction_rip);
@@ -3467,6 +3620,17 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
             }
         }
         instructions_executed += result.instructions_executed;
+        if HISTOGRAM_ENABLED
+            && result.instructions_executed > 0
+            && let Some(recorder) = checkpoints.as_deref_mut()
+        {
+            recorder.note_retired_operation(
+                instruction_rip,
+                histogram_instruction,
+                histogram_cpl,
+                result.instructions_executed,
+            );
+        }
         if cpl3 {
             cpl3_retired += result.instructions_executed;
         }

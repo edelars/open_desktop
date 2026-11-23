@@ -123,3 +123,22 @@ stop
 ## 8. Проверка
 
 `tests/system/odctl_lifecycle_smoke.py`: временная библиотека → `create` без диска → `run` (start, wait running, pause, wait paused, resume, wait running, stop) → `inspect --json` → `delete --files`; `create --disk-gib 1` создаёт `disks/disk0.img` размером 1 ГиБ, `run` со `start` — код 4, `run` без `start` (`query`) — код 0 без `STOP`, `delete --files` — код 4 (в том числе при нечитаемой `config.plist`); параллельный `run` на занятую машину — код 3, пока держатель работает, его `od-vmhost` виден (`pgrep`, положительная проверка); SIGTERM у `run --json-events` — код 1, последняя строка `result`; весь JSON разбирается `json.loads`. Запуск: `cd apps && swift build`, затем `python3 tests/system/odctl_lifecycle_smoke.py` (печатает `ok`).
+
+## 9. Диагностические флаги od-runner (не odctl)
+
+### 9.1. Диагностика `od-runner boot-firmware --op-histogram-out` (PERF-20)
+
+Это не команда `odctl`, а диагностический флаг раннера (`tools/runner`, не часть пользовательского CLI). `--op-histogram-out <файл>` допустим только с `--cpu-loop unified` (иначе отказ при разборе аргументов) и не должен совпадать с другими файлами запуска. Перед каждой инструкцией она декодируется чтением без побочных эффектов (без битов accessed/dirty, без изменения кэшей и счётчиков), а после шага, если инструкция исполнена (retired), увеличивается счётчик по ключу «вариант `Operation` + вид операндов + размер операнда + CPL». Вид операндов: `mem` (есть операнд в памяти), `reg` (только регистры), `none` (явных операндов нет); он определяется явным разбором вариантов, формой имени варианта и текстом `Debug` декодированной операции (подробности и ограничения ниже). Размер — `operand_size` инструкции в байтах. Инструкция, исполненная, но не декодированная чтением, считается под ключом `<undecoded>`, поэтому сумма счётчиков равна числу исполненных инструкций.
+
+Режим включается только флагом: цикл получает его константным параметром (как `TRACE_ENABLED`), в обычном прогоне проверки в горячем цикле нет. В режиме декодированный кэш инструкций остаётся, но каждый шаг дополнительно декодируется, поэтому прогон с гистограммой медленнее обычного и не годится для замера времени. Гистограмма считает исполнения, это не профиль времени.
+
+Файл — JSON: `retired`, `total` (сумма счётчиков), `sum_equals_retired`, `keys`, `by_cpl` (`cpl0`…`cpl3`: `count`, `share`) и `entries` по убыванию счётчика, у каждой записи `key` (`Операция/вид/размер/cplN`), `operation`, `operands`, `operand_bytes`, `cpl`, `count`, `share`, `cumulative_share`. В отчёт запуска добавляется `op_histogram` (путь, `total`, `retired`, `sum_equals_retired`, `keys`, `cpl0`, `cpl3`).
+
+Ограничения классификации вида операндов:
+
+- `StackRegister` (PUSH/POP регистра) — один вариант с полем `push`; в ключе он разделён на `StackRegisterPush` и `StackRegisterPop`, вид `reg` (обращение к стеку как к памяти не считается).
+- Формы SSE/MMX с индексами регистров (имена на `Register`, `RegisterMasked`, `ImmediateRegister`) и варианты с полем `Register` (`LoadTr`, `LoadLdt`, `Load*SelectorReg`, `ReadCr*Into`, `WriteCr*From`, `WriteDebugRegister`) — `reg`.
+- Варианты с адресом, заданным самим вариантом (`*MemoryRax`, x87 `F*M16/M32/M64/M80*Rax`, `Fnstenv`/`Fnsave`/`Frstor`/`FldenvRax`, `WriteCr0Rdi`, `Fxsave64Rax*`), и формы FS/GS (`MovFsLoad`, `AddGsMem`, ...) — `mem`.
+- `Movs`/`Stos`/`Lods`/`Scas`/`Cmps` обращаются к памяти неявно и остаются `none`.
+- `Lea` несёт операнд `MemoryOperand` и считается `mem`, хотя память не читает и не пишет.
+- Остальные варианты разбираются текстом `Debug`: `MemoryOperand` — `mem`, `RegisterView` — `reg`, иначе `none`; вид — оценка по форме операции, а не измерение обращений к памяти.

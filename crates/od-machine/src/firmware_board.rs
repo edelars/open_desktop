@@ -2764,6 +2764,20 @@ impl LoadedFirmwareBoard {
         }
     }
 
+    /// PERF-20: count the retired operations of the CPL0-set loop (opt-in, observation only).
+    pub(crate) fn enable_op_histogram(&mut self) {
+        self.checkpoints
+            .get_or_insert_with(CheckpointRecorder::histogram_only)
+            .enable_op_histogram();
+    }
+
+    /// The histogram counted so far and the counting stopped; `None` when none was started.
+    pub(crate) fn take_op_histogram(&mut self) -> Option<crate::op_histogram::OpHistogramReport> {
+        self.checkpoints
+            .as_mut()
+            .and_then(CheckpointRecorder::take_op_histogram)
+    }
+
     /// The calls traced so far and the trace removed; `None` when none was started.
     pub(crate) fn take_call_trace(&mut self) -> Option<crate::linux_checkpoints::CallTraceReport> {
         self.checkpoints
@@ -9135,6 +9149,28 @@ mod tests {
         // Observation only: retired, quanta, exit and the state are those of the run without it.
         assert_eq!(with.run, without.run);
         assert_eq!(traced.state(), plain.state());
+    }
+
+    /// PERF-20: the histogram alone leaves the call trace off (`call_trace` stays `None`, as in a
+    /// run without it), counts every retired instruction and changes nothing else.
+    #[test]
+    fn an_op_histogram_without_a_call_trace_leaves_the_call_trace_none() {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x43].copy_from_slice(&[0x90, 0x50, 0xF4]); // nop; push rax; hlt
+        seal(&mut image);
+        let mut counted = load_firmware_image(&image, &linux_config()).unwrap();
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let with =
+            crate::run_firmware_unified_profiled(&mut counted, 1_000, None, Vec::new(), None, true)
+                .unwrap();
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        assert!(with.call_trace.is_none());
+        assert!(without.call_trace.is_none());
+        let histogram = with.op_histogram.expect("a histogram was asked for");
+        assert!(without.op_histogram.is_none());
+        assert_eq!(histogram.total, with.run.retired);
+        assert_eq!(with.run, without.run);
+        assert_eq!(counted.state(), plain.state());
     }
 
     /// S7-31q: a runtime services table slot is followed once a traced call refreshed it, a NULL

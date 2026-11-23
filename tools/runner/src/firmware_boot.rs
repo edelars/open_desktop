@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -94,6 +94,9 @@ struct Options {
     trace_calls: Vec<od_machine::CallTraceTarget>,
     /// S7-31q: `--trace-system-table <hex>`: the guest address of `EFI_SYSTEM_TABLE`, for the `slot=` targets.
     trace_system_table: Option<u64>,
+    /// PERF-20: `--op-histogram-out <file>` (unified loop only): the histogram of the retired
+    /// operations (operation, operand kind, operand size, CPL) as JSON.
+    op_histogram_out: Option<String>,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -371,6 +374,7 @@ pub fn run(args: &[String]) -> ExitCode {
     // unreadable image or NVRAM snapshot, a loader or NVMe refusal) leaves neither file behind.
     let mut diagnostics = Diagnostics {
         stop_snapshot: options.stop_snapshot.clone(),
+        op_histogram_out: options.op_histogram_out.clone(),
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -885,6 +889,7 @@ fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
     let new = [
         ("--stop-snapshot", options.stop_snapshot.as_deref()),
         ("--phase-log", options.phase_log.as_deref()),
+        ("--op-histogram-out", options.op_histogram_out.as_deref()),
     ];
     if new.iter().all(|(_, path)| path.is_none()) {
         return Ok(());
@@ -899,6 +904,7 @@ fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
         ("--framebuffer-out", options.framebuffer_out.as_deref()),
         new[0],
         new[1],
+        new[2],
     ];
     let resolved = all
         .iter()
@@ -910,7 +916,10 @@ fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     for (index, (name, path)) in resolved.iter().enumerate() {
-        if !matches!(*name, "--stop-snapshot" | "--phase-log") {
+        if !matches!(
+            *name,
+            "--stop-snapshot" | "--phase-log" | "--op-histogram-out"
+        ) {
             continue;
         }
         if let Some((other, _)) = resolved
@@ -926,8 +935,10 @@ fn validate_diagnostic_paths(options: &Options) -> Result<(), String> {
         let dir = RebootPath::resolve_creatable_dir(Path::new(&dumps.dir))
             .map_err(|error| format!("{}: {error}", dumps.dir))?;
         for (name, path) in &resolved {
-            if matches!(*name, "--stop-snapshot" | "--phase-log")
-                && path.absolute.starts_with(&dir.absolute)
+            if matches!(
+                *name,
+                "--stop-snapshot" | "--phase-log" | "--op-histogram-out"
+            ) && path.absolute.starts_with(&dir.absolute)
             {
                 return Err(format!(
                     "{name} must not be the --framebuffer-dir directory or a file inside it"
@@ -957,6 +968,8 @@ fn journal_config(options: &Options) -> Option<JournalConfig> {
 #[derive(Default)]
 struct Diagnostics {
     stop_snapshot: Option<String>,
+    /// PERF-20: where the unified loop writes the histogram of retired operations.
+    op_histogram_out: Option<String>,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1412,16 +1425,22 @@ fn boot(
     let xhci = board.xhci();
     let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
+    let mut op_histogram_result: Option<Result<Value, String>> = None;
+    let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_traced(
+        od_machine::run_firmware_unified_profiled(
             &mut board,
             budget,
             mark_rip,
             trace_calls.to_vec(),
             trace_system_table,
+            op_histogram_path.is_some(),
         ).map(|run| {
             let report = run.run;
+            if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
+                op_histogram_result = Some(write_op_histogram(path, histogram, report.retired));
+            }
             unified_run = Some(json!({
                 "set_exit_detail": run.set_exit_detail,
                 "members": run.members,
@@ -1635,6 +1654,11 @@ fn boot(
         result["cpu_loop"] = json!("unified");
         result["unified"] = unified_run;
     }
+    match op_histogram_result {
+        Some(Ok(summary)) => result["op_histogram"] = summary,
+        Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
+        None => {}
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -1722,6 +1746,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut mark_rip: Option<u64> = None;
     let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
     let mut trace_system_table: Option<u64> = None;
+    let mut op_histogram_out = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1813,6 +1838,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         .map_err(|_| format!("invalid --trace-system-table '{value}'"))?,
                 );
             }
+            "--op-histogram-out" if op_histogram_out.is_none() => {
+                op_histogram_out = Some(value.clone())
+            }
             "--trace-call" if trace_calls.len() < MAX_TRACE_CALLS => {
                 trace_calls.push(parse_trace_call(value)?)
             }
@@ -1864,6 +1892,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if !trace_calls.is_empty() && !unified {
         return Err("--trace-call requires --cpu-loop unified".to_owned());
+    }
+    if op_histogram_out.is_some() && !unified {
+        return Err("--op-histogram-out requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -2003,7 +2034,69 @@ fn parse(args: &[String]) -> Result<Options, String> {
         mark_rip,
         trace_calls,
         trace_system_table,
+        op_histogram_out,
     })
+}
+
+/// PERF-20: writes the histogram of retired operations as JSON and returns its summary for the
+/// run report. The keys come by descending count with their share and the running share; the
+/// totals by CPL are given apart; `sum_equals_retired` says whether the counted instructions are
+/// those the run retired. A count of executions, not a profile of time.
+fn write_op_histogram(
+    path: &str,
+    histogram: &od_machine::OpHistogramReport,
+    retired: u64,
+) -> Result<Value, String> {
+    let share = |count: u64| {
+        if histogram.total == 0 {
+            0.0
+        } else {
+            count as f64 / histogram.total as f64
+        }
+    };
+    let mut running = 0u64;
+    let entries = histogram
+        .entries
+        .iter()
+        .map(|entry| {
+            running += entry.count;
+            json!({
+                "key": format!(
+                    "{}/{}/{}/cpl{}",
+                    entry.operation, entry.operands, entry.operand_bytes, entry.cpl
+                ),
+                "operation": entry.operation,
+                "operands": entry.operands,
+                "operand_bytes": entry.operand_bytes,
+                "cpl": entry.cpl,
+                "count": entry.count,
+                "share": share(entry.count),
+                "cumulative_share": share(running),
+            })
+        })
+        .collect::<Vec<_>>();
+    let by_cpl =
+        |cpl: usize| json!({"count": histogram.by_cpl[cpl], "share": share(histogram.by_cpl[cpl])});
+    let sum_equals_retired = histogram.total == retired;
+    let document = json!({
+        "retired": retired,
+        "total": histogram.total,
+        "sum_equals_retired": sum_equals_retired,
+        "keys": histogram.entries.len(),
+        "by_cpl": {"cpl0": by_cpl(0), "cpl1": by_cpl(1), "cpl2": by_cpl(2), "cpl3": by_cpl(3)},
+        "entries": entries,
+    });
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+    fs::write(path, bytes).map_err(|error| format!("{path}: {error}"))?;
+    Ok(json!({
+        "path": path,
+        "total": histogram.total,
+        "retired": retired,
+        "sum_equals_retired": sum_equals_retired,
+        "keys": histogram.entries.len(),
+        "cpl0": histogram.by_cpl[0],
+        "cpl3": histogram.by_cpl[3],
+    }))
 }
 
 /// Virtual seconds (decimals allowed) as nanoseconds; positive and finite.
@@ -2256,6 +2349,66 @@ mod tests {
         .unwrap();
         assert!(options.unified && options.framebuffer_out.as_deref() == Some("fb.bin"));
         assert!(parse(&base(&["--framebuffer-out", "fb.bin", "--fv-app", "gop"])).is_ok());
+    }
+
+    #[test]
+    fn op_histogram_out_needs_the_unified_loop_and_is_taken_once() {
+        let required = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        let mut given = required.clone();
+        given.extend(args(&["--op-histogram-out", "h.json"]));
+        assert!(
+            parse(&given)
+                .err()
+                .unwrap()
+                .contains("--op-histogram-out requires --cpu-loop unified")
+        );
+        given.extend(args(&["--cpu-loop", "unified"]));
+        assert_eq!(
+            parse(&given).unwrap().op_histogram_out.as_deref(),
+            Some("h.json")
+        );
+        given.extend(args(&["--op-histogram-out", "other.json"]));
+        assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn op_histogram_file_lists_keys_by_count_with_running_shares_and_sums() {
+        let dir = TempDir::new("op-histogram");
+        let path = dir.join("h.json");
+        let entry = |operation: &str, operands, cpl, count| od_machine::OpHistogramEntry {
+            operation: operation.to_owned(),
+            operands,
+            operand_bytes: 8,
+            cpl,
+            count,
+        };
+        let histogram = od_machine::OpHistogramReport {
+            entries: vec![
+                entry("Mov", "mem", 0, 6),
+                entry("Add", "reg", 3, 3),
+                entry("Nop", "none", 0, 1),
+            ],
+            total: 10,
+            by_cpl: [7, 0, 0, 3],
+        };
+        let summary = write_op_histogram(path.to_str().unwrap(), &histogram, 10).unwrap();
+        assert_eq!(summary["sum_equals_retired"], json!(true));
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["total"], json!(10));
+        assert_eq!(document["by_cpl"]["cpl0"]["count"], json!(7));
+        assert_eq!(document["by_cpl"]["cpl3"]["count"], json!(3));
+        assert_eq!(document["entries"][0]["key"], json!("Mov/mem/8/cpl0"));
+        assert_eq!(document["entries"][1]["cumulative_share"], json!(0.9));
+        assert_eq!(document["entries"][2]["cumulative_share"], json!(1.0));
+        let mismatch = write_op_histogram(path.to_str().unwrap(), &histogram, 11).unwrap();
+        assert_eq!(mismatch["sum_equals_retired"], json!(false));
     }
 
     #[test]

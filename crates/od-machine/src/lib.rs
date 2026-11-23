@@ -50,6 +50,8 @@ mod net_backend;
 mod nic_e1000;
 mod nvme;
 mod nvram_device;
+mod op_histogram;
+pub use op_histogram::{OpHistogramEntry, OpHistogramReport};
 mod pae_fetch_view;
 mod pae_operand_access;
 mod pae_protected_step;
@@ -245,9 +247,10 @@ pub use linux_direct::{
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
-    run_firmware_unified, run_firmware_unified_marked, run_firmware_unified_traced,
-    run_linux_direct_board, run_linux_direct_board_set, run_linux_direct_board_set_observed,
-    run_linux_direct_board_set_user_mode, run_linux_direct_board_set_user_mode_interleaved,
+    run_firmware_unified, run_firmware_unified_marked, run_firmware_unified_profiled,
+    run_firmware_unified_traced, run_linux_direct_board, run_linux_direct_board_set,
+    run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
+    run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,
     run_linux_direct_board_set_user_mode_with_delay_tsc_summary,
     run_linux_direct_board_set_user_mode_with_elf_stack_copy,

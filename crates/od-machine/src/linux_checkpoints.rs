@@ -280,6 +280,8 @@ pub(crate) struct CheckpointRecorder {
     /// the instruction bytes) are off.
     trace_only: bool,
     call_trace: Option<CallTrace>,
+    /// PERF-20: the histogram of retired operations (opt-in, observation only).
+    op_histogram: Option<Box<crate::op_histogram::OpHistogram>>,
     /// Address checkpoints not recorded yet.
     pending: Vec<LinuxCheckpointTarget>,
     records: Vec<Option<LinuxCheckpointRecord>>,
@@ -303,6 +305,7 @@ impl CheckpointRecorder {
         Ok(Self {
             trace_only: false,
             call_trace: None,
+            op_histogram: None,
             pending: table.targets,
             records: vec![None; LINUX_CHECKPOINT_COUNT],
             started: false,
@@ -325,6 +328,16 @@ impl CheckpointRecorder {
             Self::new(LinuxCheckpointTable::default()).expect("an empty table is valid");
         recorder.trace_only = true;
         recorder.set_call_trace(targets, system_table);
+        recorder
+    }
+
+    /// A recorder that only counts the retired operations: no checkpoint table and no call trace
+    /// (`take_call_trace` stays `None`; the loop does not look for call candidates).
+    pub(crate) fn histogram_only() -> Self {
+        let mut recorder =
+            Self::new(LinuxCheckpointTable::default()).expect("an empty table is valid");
+        recorder.trace_only = true;
+        recorder.enable_op_histogram();
         recorder
     }
 
@@ -352,6 +365,35 @@ impl CheckpointRecorder {
             }
         }
         self.call_trace = Some(trace);
+    }
+
+    /// PERF-20: start counting the retired operations of the loop.
+    pub(crate) fn enable_op_histogram(&mut self) {
+        self.op_histogram
+            .get_or_insert_with(|| Box::new(crate::op_histogram::OpHistogram::new()));
+    }
+
+    /// Whether the loop counts its retired operations (the constant parameter of the loop).
+    pub(crate) fn has_op_histogram(&self) -> bool {
+        self.op_histogram.is_some()
+    }
+
+    /// PERF-20: one retired step of the loop (see [`crate::op_histogram::OpHistogram::record`]).
+    pub(crate) fn note_retired_operation(
+        &mut self,
+        rip: u64,
+        instruction: Option<od_isa::long_decode::Instruction>,
+        cpl: u8,
+        retired: u64,
+    ) {
+        if let Some(histogram) = self.op_histogram.as_mut() {
+            histogram.record(rip, instruction, cpl, retired);
+        }
+    }
+
+    /// The histogram counted so far and the counting stopped; `None` when it was not started.
+    pub(crate) fn take_op_histogram(&mut self) -> Option<crate::op_histogram::OpHistogramReport> {
+        self.op_histogram.take().map(|histogram| histogram.report())
     }
 
     /// Whether the loop must show this recorder the checkpoint predicates at every boundary.
