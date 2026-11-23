@@ -2873,6 +2873,14 @@ fn run_cpl0_set_loop_impl<
     mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     decoded: Option<&DecodedInstructionCache>,
 ) -> PagedCpl0SetReport {
+    // ADR-0017, section 3: a traced run keeps the general path (PERF-23 fast path off).
+    let set_without_fast_path;
+    let set = if TRACE_ENABLED {
+        set_without_fast_path = set.without_fast_path();
+        &set_without_fast_path
+    } else {
+        set
+    };
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context

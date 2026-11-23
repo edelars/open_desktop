@@ -10,7 +10,7 @@ use od_isa::fast_path_check::{
 use od_isa::long_decode::{ArithmeticKind, Instruction, LogicKind, Operand, Operation};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, GuestMemory, InstructionMode, LongModeState,
-    MemoryError, OperandSize, PrivilegeLevel, Register,
+    MemoryError, OperandSize, PrivilegeLevel, Register, StiShadow,
 };
 
 const CODE: u64 = 0x1000;
@@ -141,6 +141,8 @@ fn initial_state() -> LongModeState {
     let mut state = LongModeState {
         rip: CODE,
         rflags: 2,
+        // The fast path requires a modelled, clear interrupt shadow (ADR-0017 section 4).
+        sti_shadow: Some(StiShadow::Clear),
         ..LongModeState::default()
     };
     state.gpr[Register::Rbx as usize] = MMIO;
@@ -236,10 +238,40 @@ fn the_general_path_against_itself_gives_no_divergence_and_touches_devices_once(
     assert!(counters.memory_calls_compared >= 10, "{counters:?}");
 }
 
+fn refuse_all(
+    _: &mut LongModeState,
+    _: &mut CheckMemory<'_>,
+    _: AccessContext,
+    _: &mut u64,
+    _: &Instruction,
+    _: bool,
+) -> FastStepResult {
+    None
+}
+
 #[test]
-fn the_empty_fast_path_takes_nothing_and_changes_nothing() {
+fn the_tree_fast_path_takes_register_alu_agrees_and_changes_nothing() {
+    // PERF-23: the fast path of the tree handles the register ALU forms (group G2) of the program
+    // (add/cmp/sub rax and the rest are taken, the memory forms, stack forms, call and branches are
+    // refused) and the run is the unchecked run.
     let baseline = unchecked(PROGRAM);
     let (outcome, counters) = checked(PROGRAM, FastPathMode::Tree);
+    assert!(fast_path_check::take_divergence().is_none());
+    assert_same_run(&outcome, &baseline);
+    assert_eq!(counters.divergences, 0);
+    // add rax,5 / cmp rax,rdx / sub rax,rdx / dec rcx (three times) / add rax,rbx.
+    assert!(counters.compared >= 7, "{counters:?}");
+    assert_eq!(
+        counters.compared + counters.refused_by_admission,
+        baseline.result.instructions_executed,
+        "{counters:?}"
+    );
+}
+
+#[test]
+fn a_fast_path_that_refuses_everything_takes_nothing_and_changes_nothing() {
+    let baseline = unchecked(PROGRAM);
+    let (outcome, counters) = checked(PROGRAM, FastPathMode::Custom(refuse_all as DraftFastStep));
     assert!(fast_path_check::take_divergence().is_none());
     assert_same_run(&outcome, &baseline);
     assert_eq!(counters.divergences, 0);

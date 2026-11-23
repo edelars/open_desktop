@@ -2033,6 +2033,36 @@ pub fn run_firmware_unified_checked(
     op_histogram: bool,
     fast_path_verify: bool,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_with_fast_path(
+        board,
+        instruction_budget,
+        marker_rip,
+        trace,
+        system_table,
+        op_histogram,
+        fast_path_verify,
+        false,
+    )
+}
+
+/// [`run_firmware_unified_checked`] with the fast path of the step (PERF-23, ADR-0017, section 3)
+/// when `fast_path` is set: the CPL0 set runs group G2 (register and immediate `Arithmetic`,
+/// `Logic`, `Shift`) through `try_fast_step` right after the decode. The run retires the same
+/// instructions and ends in the same state, with the same COM1 and the same memory calls, as one
+/// without it. With `fast_path_verify` the check wins: the general path runs for real and the fast
+/// path is only replayed for the comparison. Off by default; the loops of `parallel_run`,
+/// `host_parallel`, SMP and `linux_direct` never get it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_firmware_unified_with_fast_path(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+    op_histogram: bool,
+    fast_path_verify: bool,
+    fast_path: bool,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs a firmware board with the Linux profile",
@@ -2078,6 +2108,7 @@ pub fn run_firmware_unified_checked(
     } else {
         set
     };
+    let set = if fast_path { set.with_fast_path() } else { set };
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board

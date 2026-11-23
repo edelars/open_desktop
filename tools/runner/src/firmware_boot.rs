@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -100,6 +100,9 @@ struct Options {
     /// PERF-22: `--fast-path-verify` (unified loop only): every instruction is also compared with
     /// the fast path replayed over the recorded memory calls (ADR-0017, section 5).
     fast_path_verify: bool,
+    /// PERF-23: `--fast-path` (unified loop only): the step runs the fast path of group G2 right
+    /// after the decode (ADR-0017, section 3). Without it the run is as before.
+    fast_path: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -379,6 +382,7 @@ pub fn run(args: &[String]) -> ExitCode {
         stop_snapshot: options.stop_snapshot.clone(),
         op_histogram_out: options.op_histogram_out.clone(),
         fast_path_verify: options.fast_path_verify,
+        fast_path: options.fast_path,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -976,6 +980,8 @@ struct Diagnostics {
     op_histogram_out: Option<String>,
     /// PERF-22: the unified loop compares every instruction with the fast path.
     fast_path_verify: bool,
+    /// PERF-23: the unified loop runs the fast path of group G2.
+    fast_path: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1437,7 +1443,7 @@ fn boot(
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_checked(
+        od_machine::run_firmware_unified_with_fast_path(
             &mut board,
             budget,
             mark_rip,
@@ -1445,6 +1451,7 @@ fn boot(
             trace_system_table,
             op_histogram_path.is_some(),
             diagnostics.fast_path_verify,
+            diagnostics.fast_path,
         ).map(|run| {
             let report = run.run;
             fast_path_check_result = run.fast_path_check.as_ref().map(fast_path_check_summary);
@@ -1773,6 +1780,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut trace_system_table: Option<u64> = None;
     let mut op_histogram_out = None;
     let mut fast_path_verify = false;
+    let mut fast_path = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1788,6 +1796,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--fast-path-verify" && !fast_path_verify {
             fast_path_verify = true;
+            index += 1;
+            continue;
+        }
+        if name == "--fast-path" && !fast_path {
+            fast_path = true;
             index += 1;
             continue;
         }
@@ -1930,6 +1943,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if fast_path_verify && !unified {
         return Err("--fast-path-verify requires --cpu-loop unified".to_owned());
     }
+    if fast_path && !unified {
+        return Err("--fast-path requires --cpu-loop unified".to_owned());
+    }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
             return Err("--reboot-cycles requires --fv-app reboot".to_owned());
@@ -2070,6 +2086,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         trace_system_table,
         op_histogram_out,
         fast_path_verify,
+        fast_path,
     })
 }
 
@@ -2455,6 +2472,38 @@ mod tests {
         given.extend(args(&["--cpu-loop", "unified"]));
         assert!(parse(&given).unwrap().fast_path_verify);
         given.extend(args(&["--fast-path-verify"]));
+        assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn fast_path_needs_the_unified_loop_is_taken_once_and_is_off_by_default() {
+        let base = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        let mut unified = base.clone();
+        unified.extend(args(&["--cpu-loop", "unified"]));
+        assert!(!parse(&unified).unwrap().fast_path);
+        let mut given = base;
+        given.extend(args(&["--fast-path"]));
+        assert!(
+            parse(&given)
+                .err()
+                .unwrap()
+                .contains("--fast-path requires --cpu-loop unified")
+        );
+        given.extend(args(&["--cpu-loop", "unified"]));
+        let options = parse(&given).unwrap();
+        assert!(options.fast_path && !options.fast_path_verify);
+        let mut both = given.clone();
+        both.extend(args(&["--fast-path-verify"]));
+        let options = parse(&both).unwrap();
+        assert!(options.fast_path && options.fast_path_verify);
+        given.extend(args(&["--fast-path"]));
         assert!(parse(&given).is_err());
     }
 

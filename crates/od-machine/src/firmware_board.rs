@@ -9218,6 +9218,107 @@ mod tests {
         }
     }
 
+    /// PERF-23: the fast path of the tree takes the register ALU forms (group G2) in the unified
+    /// run, the check finds no divergence and the run is the run without the check.
+    #[test]
+    fn the_tree_fast_path_takes_register_alu_in_the_unified_run_and_agrees() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // add rax, rcx; xor edx, edx; shl rax, 3; cmp rax, rdx; nop; hlt
+        let program = [
+            0x48, 0x01, 0xC8, 0x31, 0xD2, 0x48, 0xC1, 0xE0, 0x03, 0x48, 0x39, 0xD0, 0x90, 0xF4,
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        fast_path_check::set_mode(FastPathMode::Tree);
+        let mut checked = load_firmware_image(&image, &linux_config()).unwrap();
+        let with = crate::run_firmware_unified_checked(
+            &mut checked,
+            1_000,
+            None,
+            Vec::new(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        let report = with
+            .fast_path_check
+            .clone()
+            .expect("the check was asked for");
+        assert_eq!(report.divergence, None);
+        assert_eq!(report.counters.divergences, 0);
+        assert_eq!(with.run, without.run);
+        assert_eq!(checked.state(), plain.state());
+        // The four ALU instructions are taken; the NOP and HLT are refused or end before decode.
+        assert!(report.counters.compared >= 4, "{report:?}");
+    }
+
+    /// PERF-23 (ADR-0017, section 3): the unified run with the fast path of the step retires the
+    /// same instructions and ends in the same state, with the same COM1 transcript, as the run
+    /// without it; the fast path really takes the register and immediate ALU forms (debug builds
+    /// count them); with the check on as well, the check wins (the general path runs for real).
+    #[test]
+    fn the_unified_run_with_the_fast_path_equals_the_run_without_it() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // mov edx, 0x3F8; mov eax, 0x40; add eax, 0x0B; out dx, al ('K'); xor eax, eax;
+        // or eax, 0x4F; sub eax, 1; out dx, al ('N'); mov eax, 0x25; shl eax, 1; out dx, al ('J'); hlt
+        let program = [
+            0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB8, 0x40, 0x00, 0x00, 0x00, 0x83, 0xC0, 0x0B, 0xEE,
+            0x31, 0xC0, 0x83, 0xC8, 0x4F, 0x83, 0xE8, 0x01, 0xEE, 0xB8, 0x25, 0x00, 0x00, 0x00,
+            0xD1, 0xE0, 0xEE, 0xF4,
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |fast_path: bool, verify: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            fast_path_check::set_mode(FastPathMode::Tree);
+            fast_path_check::reset_fast_steps_taken();
+            let run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                1_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                verify,
+                fast_path,
+            )
+            .unwrap();
+            (run, board, fast_path_check::fast_steps_taken())
+        };
+        let (without, plain, taken_without) = run(false, false);
+        assert_eq!(taken_without, 0);
+        assert_eq!(plain.com1_transcript(), b"KNJ");
+        assert_eq!(without.run.retired, 12);
+        let (with, fast, taken_with) = run(true, false);
+        assert_eq!(with.run, without.run);
+        assert_eq!(with.run.retired, 12);
+        assert_eq!(fast.state(), plain.state());
+        assert_eq!(fast.com1_transcript(), plain.com1_transcript());
+        assert!(with.fast_path_check.is_none());
+        if od_isa::fast_path_check::FAST_STEPS_COUNTED {
+            // add, xor, or, sub, shl.
+            assert_eq!(taken_with, 5);
+        }
+        // The check wins over the switch: nothing is taken by the step, the five ALU forms are
+        // compared by the check, and the run is the same.
+        let (checked, board, taken_checked) = run(true, true);
+        let report = checked
+            .fast_path_check
+            .clone()
+            .expect("the check was asked for");
+        assert_eq!(report.divergence, None);
+        assert_eq!(report.counters.compared, 5, "{report:?}");
+        assert_eq!(taken_checked, 0);
+        assert_eq!(checked.run, without.run);
+        assert_eq!(board.state(), plain.state());
+        assert_eq!(board.com1_transcript(), plain.com1_transcript());
+    }
+
     /// PERF-22: a wrong draft handler (a NOP that moves RIP one byte too far) is found by the
     /// check in the unified loop at the first instruction it takes, and the divergence ends the run
     /// and is reported with the RIP and the bytes of the instruction.

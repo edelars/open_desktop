@@ -139,12 +139,15 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
     let cli = CliProfile::NonPviLong64V1;
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let with_cli = plain.with_cli(&cli);
+    // PERF-23: the fast path of the step, enabled; the result must be `run`'s, like the others.
+    let fast = plain.with_fast_path();
 
     let mut base_state = case.state.clone();
     let mut base_memory = case.memory.clone();
     let base = run(&mut base_state, &mut base_memory, config(&case), || false);
 
-    for set in [&plain, &with_cli] {
+    for set in [&plain, &with_cli, &fast] {
+        let taken_before = fast_path_check::fast_steps_taken();
         let mut state = case.state.clone();
         state.cr0 = Some(0x8001_0033);
         state.cr4 = Some(0x20);
@@ -183,6 +186,13 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
         state.sti_shadow = None;
         assert_eq!(state, base_state, "{label}");
         assert_eq!(memory, base_memory, "{label}");
+        // Only the set with the fast path takes steps through it (debug builds count them).
+        let taken = fast_path_check::fast_steps_taken() - taken_before;
+        if std::ptr::eq(set, &fast) {
+            FAST_STEPS_TAKEN.fetch_add(taken, Ordering::Relaxed);
+        } else {
+            assert_eq!(taken, 0, "{label}");
+        }
     }
     check_fast_path(&case, label);
     tally.cases += 1;
@@ -246,15 +256,16 @@ fn check_fast_path(case: &Case, label: &str) {
         assert_eq!(checked, base, "{label}: {mode:?}");
         assert_eq!(state, base_state, "{label}: {mode:?}");
         assert_eq!(memory, base_memory, "{label}: {mode:?}");
-        // Every retired instruction was either compared or refused by the (empty) admission; a
-        // step that ends in a memory error or a fault retires nothing but is still compared.
+        // Every retired instruction was either compared or refused by the admission of the fast
+        // path of the tree (PERF-23: register ALU, group G2); a step that ends in a memory error
+        // or a fault retires nothing but is still compared.
         match mode {
             FastPathMode::Tree => {
-                assert_eq!(counters.compared, 0, "{label}");
                 assert!(
-                    counters.refused_by_admission >= base.instructions_executed,
+                    counters.compared + counters.refused_by_admission >= base.instructions_executed,
                     "{label}"
                 );
+                TREE_COMPARED.fetch_add(counters.compared, Ordering::Relaxed);
             }
             _ => {
                 assert!(counters.compared >= base.instructions_executed, "{label}");
@@ -275,10 +286,27 @@ fn print_fast_path_totals(corpus: &str) {
         FAST_PATH_CALLS.load(Ordering::Relaxed)
     );
     assert!(FAST_PATH_COMPARED.load(Ordering::Relaxed) > 0);
+    // PERF-23: the fast path of the tree takes the register ALU forms of the corpora, with no
+    // divergence (each case asserts that); it must have compared some.
+    println!(
+        "{corpus}: the tree fast path so far compared {} instructions",
+        TREE_COMPARED.load(Ordering::Relaxed)
+    );
+    assert!(TREE_COMPARED.load(Ordering::Relaxed) > 0);
+    // PERF-23: with the fast path on, the step itself takes them (counted in debug builds).
+    println!(
+        "{corpus}: the step fast path so far took {} instructions",
+        FAST_STEPS_TAKEN.load(Ordering::Relaxed)
+    );
+    if fast_path_check::FAST_STEPS_COUNTED {
+        assert!(FAST_STEPS_TAKEN.load(Ordering::Relaxed) > 0);
+    }
 }
 
+static FAST_STEPS_TAKEN: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_COMPARED: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_CALLS: AtomicU64 = AtomicU64::new(0);
+static TREE_COMPARED: AtomicU64 = AtomicU64::new(0);
 
 struct SplitMix(u64);
 

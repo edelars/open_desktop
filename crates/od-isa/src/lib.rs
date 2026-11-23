@@ -11,6 +11,8 @@ pub mod cpuid;
 pub mod cr8;
 pub mod execute;
 pub mod fast_path_check;
+#[cfg(test)]
+mod fast_step_g2_tests;
 mod finite_arithmetic;
 pub mod hlt;
 pub mod integer_flags;

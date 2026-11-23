@@ -824,6 +824,41 @@ thread_local! {
     static BUFFERS: RefCell<Vec<MemoryLog>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    static FAST_STEPS_TAKEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// PERF-23: whether [`fast_steps_taken`] counts. The count is kept in debug builds only, so the
+/// step of a release build carries no counter.
+pub const FAST_STEPS_COUNTED: bool = cfg!(debug_assertions);
+
+/// Debug builds: one more step of this thread was taken by the fast path of the step
+/// (`Cpl0ProfileSet::with_fast_path`); the replay of the check does not count.
+#[cfg(debug_assertions)]
+pub(crate) fn note_fast_step_taken() {
+    FAST_STEPS_TAKEN.with(|cell| cell.set(cell.get() + 1));
+}
+
+/// PERF-23: the steps of this thread taken by the fast path of the step since the last
+/// [`reset_fast_steps_taken`]; always 0 when [`FAST_STEPS_COUNTED`] is false (release builds).
+pub fn fast_steps_taken() -> u64 {
+    #[cfg(debug_assertions)]
+    {
+        FAST_STEPS_TAKEN.with(Cell::get)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// Clears [`fast_steps_taken`] of this thread.
+pub fn reset_fast_steps_taken() {
+    #[cfg(debug_assertions)]
+    FAST_STEPS_TAKEN.with(|cell| cell.set(0));
+}
+
 /// Selects the fast path for the checks of this thread.
 pub fn set_mode(mode: FastPathMode) {
     MODE.with(|cell| cell.set(mode));
