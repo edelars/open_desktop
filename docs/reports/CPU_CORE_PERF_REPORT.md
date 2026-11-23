@@ -24,7 +24,7 @@
 | PERF-03 | A | PERF-02 | низкая | принято: lto=fat, codegen-units=1 (K3200 +4,76 %) | Измеренное решение о параметрах release-сборки |
 | PERF-04 | B | PERF-03 | средняя | принято с оговоркой (K3200 +5,84 %, golden MATCH; K6 не снят) | `stop` не берёт мьютексы устройств без обращения к устройству |
 | PERF-05 | B | PERF-04 | средняя | принято с оговорками (K3200 +3,48 %, golden MATCH; K6 не снят) | Источник IRQ опрашивается, только когда ответ мог измениться |
-| PERF-06 | B | PERF-03 | средняя | не начато | Статическая часть допуска считается один раз на квант |
+| PERF-06 | B | PERF-03 | средняя | отклонено: K3200 +1,43 % (порог 2 %), golden MATCH | Статическая часть допуска считается один раз на квант |
 | PERF-07 | B | PERF-02 | низкая | не начато | Решение по профилю о постоянном кеше трансляции выборки (ожидается «не делаем») |
 | PERF-08 | B | PERF-03 | низкая | отклонено: выигрыш +0,39 % (K3200), порог 2 % | Один поиск в кеше выборки на инструкцию вместо поиска на каждый байт |
 | PERF-10 | C | PERF-08 | высокая | ПРИНЯТО (K3200 +25,2 %, golden MATCH; шаг 9 — размер таблицы не подбирался) | Кеш декодированных инструкций |
@@ -524,3 +524,63 @@ codegen-units = 1
 - K6 (профиль) для PERF-05 не снимался.
 
 - Расширенный K2 после PERF-05 (K1 `cargo fmt --check` и `cargo check`, затем `od-isa`, `od-machine`, `od-runner`, `od-testkit` + `od-host` + `od-jit`): 0 падений, `s6_42d` проходит (исправлен ранее).
+
+### 7.8. PERF-06 — статическая часть допуска один раз на квант (код готов, замеры не сняты)
+
+База: HEAD `ac6c134` (код = `9512cdf`), правка не закоммичена. «Квант» = один вызов `run_cpl0_set_loop_impl`; набор `Cpl0ProfileSet` в нём заимствован как `&`, его поля (в том числе ссылки на ячейки MSR, профиль CPUID, `fp_state`) за вызов не меняются.
+
+**Шаг 1. Проверки и вычисления `run_cpl0_profile_set_inner` в порядке исполнения** (`execute.rs`, номера строк по рабочему дереву после правки; подтверждено чтением кода).
+
+| № | Проверка / вычисление | Ошибка | Зависимость |
+|---|---|---|---|
+| 1 | `config.context.mode != Long64` | `WrongMode` | конфигурации вызова |
+| 2 | `config.context.privilege != required_privilege` | `WrongPrivilege` | конфигурации вызова |
+| 3 | Ring0 и RPL выбранного CS равен 3 | `WrongPrivilege` | состояния |
+| 4 | `initial_rflags_defined` вне `INTEGER_FLAGS` | `InvalidRflagsDefined` | конфигурации вызова |
+| 5 | `state.cr0` задан и `policy.accepts_cr0` | `Cr0Missing`, `Cr0OutsidePolicy` | состояния (политика — набор, но проверяется значение CR0) |
+| 6 | `state.cr4` задан и `policy.accepts_cr4` | `Cr4Missing`, `Cr4OutsidePolicy` | состояния |
+| 7 | CR3: `cpu_owned_cr3` (набор) определяет, нужен ли CR3; проверяется `state.cr3` | `Cr3Missing`, `InvalidInitialCr3`, `Cr3NotAdmitted` | состояния |
+| 8 | `state.x87` / `state.sse` не заданы | `FpStateNotAdmitted` | состояния |
+| 9 | `set.syscall_cells_present()` | `SyscallCellsMissing` | **только от набора** (const fn по полям набора) |
+| 10 | `set.windows_msr_admission()`, часть 1: `windows_msr_members_present()` | `WindowsMsrMembersMissing` | **только от набора** |
+| 11 | то же, часть 2: `windows_msr_cells_valid()` | `WindowsMsrCellInvalid` | **от состояния ячеек**: читает значения `Cell<u64>` (`pat.get()`, `star.get()`, …), которые гость меняет через WRMSR; не выносится |
+| 12 | `set.fp_state`, FPU и FXSR в `profile.query(1, 0).edx` | `FpFeaturesNotDeclared` | **только от набора** (профиль CPUID неизменяем; `query` без побочных эффектов) |
+| 13 | `cell.try_borrow_mut()`, селекторы FCS/FDS известны | `FpStateNotAdmitted` | состояния (заимствование ячейки и её содержимое) |
+| 14 | `state.activity` | `ActivityMissing`, `NotRunning` | состояния |
+| 15 | `state.sti_shadow` | `StiShadowMissing` | состояния |
+| 16 | RFLAGS.VM, RFLAGS бит 1 | `RflagsVmSet`, `RflagsReservedBitClear` | состояния |
+| 17 | `set.cli/sti` и CR0.PE / CR4.PVI | `CliPreconditionFailed` | состояния |
+| 18 | `cr3_effect`, `user_entry`, `pio_cell` | — | вызова (создаются на каждый вызов) |
+| 19 | `state.sse = cell.borrow().sse.clone()` | — | состояния (копирование SSE; предмет PERF-25, не тронуто) |
+| 20 | сборка `GuestMsrCells` (условие «есть хоть один MSR-член» и поля из набора) | — | **только от набора** (ссылки на ячейки, не значения) |
+| 21 | `rdtsc: RdtscControls { cr4_tsd: cr4 & 4 }` | — | состояния (CR4) |
+| 22 | `fp_sse_declared`: `profile.query(1, 0).edx & SSE` | — | **только от набора** |
+| 23 | остальное построение `ExecutionProfiles` (`cpuid`, `msr`, `cli`, `halt`, `control_policy`, `pio_u8` по `pio_cell` и т. д.) | — | набора и вызова; копирование — предмет PERF-25 |
+
+Отличие от кандидатов плана: «`windows_msr_admission` целиком» в набор-только не входит. Вынесена только проверка наличия членов (п. 10); проверка значений ячеек (п. 11) остаётся на каждом входе, чтобы не пропустить значение, которое гость записал в середине кванта. Для наборов без Windows-члена п. 11 — ранний возврат по `msr_windows.is_none()`.
+
+**Код.**
+- `execute.rs`: структура `Cpl0ProfileSetStaticAdmission<'a>` (`Clone, Copy`, поля приватные): `syscall_cells_present`, `windows_msr_members_present`, `fp_features_declared` (читается только при `with_fp_state`), `fp_sse_declared`, `guest_msrs`. Строит её `Cpl0ProfileSet::static_admission()` (чистая функция набора).
+- `run_cpl0_profile_set_inner` получил параметр `prepared` и берёт сохранённые результаты в тех же местах последовательности (п. 9, 10, 12, 20, 22). `windows_msr_admission(&self, prepared)` проверяет сохранённое наличие членов, затем читает ячейки.
+- Новые входы: `run_with_cpl0_profile_set_and_pio_prepared`, `run_with_cpl3_profile_set_prepared`. Прежние `run_with_cpl0_profile_set`, `run_with_cpl0_profile_set_and_pio`, `run_with_cpl3_profile_set` строят структуру сами и вызывают общий код (для двух последних — новые входы).
+- `paged_memory_adapter.rs`, `run_cpl0_set_loop_impl`: `let prepared = set.static_admission();` один раз до цикла; на каждой итерации вызываются `..._prepared` (CPL0 и CPL3). Общий цикл вызывают `host_parallel.rs`, `firmware_board/vcpu_quantum.rs`, `linux_direct.rs`: перенос действует и для них (исключение 4.4). Внутри CPL3-входа структура, переданная снаружи, используется и для вызовов внутреннего входа на каждый шаг и для пробы REP-строки.
+- Не тронуто: поля и построение `Cpl0ProfileSet`, проверки по `state`, копирование SSE и `ExecutionProfiles` (PERF-25), поведение прежних публичных входов.
+
+**Тест** (`crates/od-isa/tests/perf06_static_admission.rs`):
+
+| Тест | Что проверяет |
+|---|---|
+| `prepared_entries_match_the_plain_entries_for_every_combination` | 128 сочетаний набор-только условий (нет ячеек SYSCALL, нет членов Windows, неверная ячейка PAT, FP без объявленных FPU/FXSR, наборы без MSR-членов) × 3 профиля CPUID (нет, `DiagnosticV1`, `X8664V1Stage4A`) × 4 состояния (штатное, CR0 вне политики — до статических проверок, активность не Running и RFLAGS бит 1 сброшен — после них) × входы CPL0 и CPL3: результат и итоговое состояние равны у прежнего и нового входа; достигнуты все четыре статические ошибки (на CPL3 — три, FP-проверку CPL3-вход делает шагом) |
+| `two_set_only_violations_report_the_first_of_the_fixed_order` | при нескольких нарушениях сразу первой возвращается ошибка в порядке SYSCALL, члены Windows, ячейки Windows, FP, для обоих входов и обоих профилей |
+| `a_windows_cell_changed_after_the_preparation_is_still_refused` | ячейка PAT испорчена после построения структуры: новые CPL0- и CPL3-входы возвращают `WindowsMsrCellInvalid` |
+
+**Не сделано исполнителем:** K2 в расширенном составе (od-testkit, od-host, od-jit), K3 (G100, G3200), K4 (K3200), K6 (доля `CpuidSelection::query`, «своё» время `run_with_cpl0_profile_set_and_pio`), ревью. Статус задачи в плане не менялся.
+
+### 7.9. PERF-06 — ОТКЛОНЕНО (2026-11-23)
+
+- База: HEAD `ac6c134` (код = `9512cdf`, PERF-05). Замеры K4 на том же составе.
+- Golden: G100 и G3200 — `GOLDEN: MATCH` (`compare-pr06-g100.txt`, `compare-pr06-g3200.txt`).
+- K3200 (приоритет −5, `preliminary: False`): PERF-06 — медиана 3,0335 (разброс 3,0259–3,0386) против базы PERF-05 2,9908 (2,9899–2,9936): **+1,43 %**, порог 2 % не пройден → правка не принимается.
+- F100 (отсев): 2,99 против 2,9695 (+0,7 %).
+- Правка сохранена в `work/cpu-core-perf/pr06-rejected.diff` (вне git), тест `perf06_static_admission.rs` — в `work/cpu-core-perf/pr06-rejected-test.rs`. Код откатан к HEAD.
+- Вывод: стоимость статической части допуска на K3200 мала (порядка 1 %), вынесение не окупается заметно.
