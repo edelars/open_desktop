@@ -339,6 +339,15 @@ pub(crate) struct RamFrame {
     large: bool,
 }
 
+/// PERF-10: a byte of plain RAM named by (region, offset inside the region), with the generation of
+/// its 4 KiB page read at that moment (see `PhysicalMemory::ram_frame_code_page`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RamCodePage {
+    pub(crate) region: usize,
+    pub(crate) offset: usize,
+    pub(crate) generation: u64,
+}
+
 impl RamFrame {
     /// A 2 MiB span from `PhysicalMemory::ram_leaf_2m` (not a 4 KiB frame).
     pub(crate) fn is_large(self) -> bool {
@@ -1095,6 +1104,38 @@ impl PhysicalMemory {
             .checked_add(usize::try_from(in_frame & mask).ok()?)?;
         let storage = region.backing.as_ref()?;
         by_mode!(self.mode, order => storage.try_load_u8(at, order))
+    }
+
+    /// PERF-10: where byte `in_frame` of a frame from [`Self::ram_frame`] (or of a span from
+    /// [`Self::ram_leaf_2m`]) lives: the region index, the byte offset inside the region, and the
+    /// current generation of its 4 KiB page (an `Acquire` load, so the caller reads it BEFORE the
+    /// bytes it caches, the reader's rule of [`Self::code_page_generation`]). `in_frame` is any
+    /// address: only its low 12 bits (low 21 bits for a 2 MiB span) are used, like
+    /// [`Self::read_ram_frame_u8`]. `None` for a handle that is not of this memory.
+    pub(crate) fn ram_frame_code_page(
+        &self,
+        frame: RamFrame,
+        in_frame: u64,
+    ) -> Option<RamCodePage> {
+        let region = self.regions.get(frame.region)?;
+        let mask = if frame.large { 0x1f_ffff } else { 0xfff };
+        let offset = frame
+            .offset
+            .checked_add(usize::try_from(in_frame & mask).ok()?)?;
+        let start = region.spec.range.start.get();
+        let page_index = usize::try_from(
+            (start.checked_add(u64::try_from(offset).ok()?)? >> 12) - (start >> 12),
+        )
+        .ok()?;
+        let generation = region
+            .page_generations
+            .get(page_index)?
+            .load(Ordering::Acquire);
+        Some(RamCodePage {
+            region: frame.region,
+            offset,
+            generation,
+        })
     }
 
     pub(crate) fn locate_region_kind(

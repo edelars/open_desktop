@@ -13950,7 +13950,26 @@ fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
     }
 }
 
+/// Decodes the instruction at `rip`. PERF-10: the backend is asked first for a decoded instruction
+/// it remembers ([`GuestMemory::cached_instruction`]; the default has none); on `None` the decoder
+/// reads the bytes as before and tells the backend of a successful result
+/// ([`GuestMemory::remember_instruction`]). The decoder itself is [`decode_uncached`].
 pub fn decode(
+    memory: &mut impl GuestMemory,
+    rip: u64,
+    context: AccessContext,
+) -> Result<Instruction, DecodeError> {
+    if let Some(instruction) = memory.cached_instruction(rip, context) {
+        return Ok(instruction);
+    }
+    let decoded = decode_uncached(&mut *memory, rip, context);
+    if let Ok(instruction) = &decoded {
+        memory.remember_instruction(rip, context, *instruction);
+    }
+    decoded
+}
+
+fn decode_uncached(
     memory: &mut impl GuestMemory,
     rip: u64,
     context: AccessContext,

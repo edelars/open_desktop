@@ -14524,6 +14524,7 @@ mod tests {
                 None,
                 Some(&sweep),
                 crate::fetch_translation_cache::FetchCacheTag::Page4K,
+                None,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");
@@ -14963,6 +14964,7 @@ mod tests {
             |_| {},
             true,
             cache,
+            None,
             None,
             None,
             None,
@@ -15451,6 +15453,7 @@ mod tests {
             |range| writes.push((range.start().get(), range.len())),
             true,
             cache.as_ref(),
+            None,
             None,
             None,
             None,
@@ -20461,4 +20464,8 @@ mod tests {
     // ---- S4-09f: system acceptance of the A/D bits through the set loop ----
 
     mod stage4_ad_acceptance;
+
+    // ---- PERF-10: the decoded-instruction cache ----
+
+    mod decoded_instruction_cache;
 }

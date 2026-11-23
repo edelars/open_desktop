@@ -1,6 +1,7 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::console_output_context::capture_frame_chain;
+use crate::decoded_instruction_cache::DecodedInstructionCache;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackAlignmentPoint,
     ElfStackCopyProbe, ElfStackCopySnapshot, ElfStackCopyStatus, ElfStackCopyTargetCr3Capture,
@@ -41,7 +42,7 @@ use od_isa::execute::{
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
-use od_isa::long_decode::{AddressBase, Operand, Operation};
+use od_isa::long_decode::{AddressBase, Instruction, Operand, Operation};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
     MemoryError, PageFaultRecord, PrivilegeLevel,
@@ -131,6 +132,7 @@ pub fn step_paged_invlpg(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -190,6 +192,7 @@ fn fetch_only_adapter<'a>(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     }
 }
 
@@ -389,6 +392,7 @@ fn step_paged_state_op(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -494,6 +498,7 @@ fn with_paged_mov_read_memory<R>(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -793,6 +798,7 @@ pub fn step_paged_mov(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -856,6 +862,7 @@ pub fn step_paged_mov_2m_ram(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -2388,6 +2395,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         execution_observations,
         None,
         FetchCacheTag::Page4K,
+        None,
     )
 }
 
@@ -2419,6 +2427,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     sweep: Option<&Rc<FetchCacheSweep>>,
     tag: FetchCacheTag,
+    decoded: Option<&DecodedInstructionCache>,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
@@ -2446,6 +2455,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
         irq,
         checkpoints,
         execution_observations,
+        decoded,
     )
 }
 
@@ -2482,6 +2492,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     irq: Option<IrqBoundaryHook<'_>>,
     checkpoints: Option<&mut CheckpointRecorder>,
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
+    decoded: Option<&DecodedInstructionCache>,
 ) -> PagedCpl0SetReport {
     run_cpl0_set_loop(
         state,
@@ -2505,6 +2516,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         ExceptionDeliveryMode::Quantum,
         false,
         None,
+        decoded,
     )
 }
 
@@ -2585,6 +2597,7 @@ pub(crate) fn run_cpl0_set_loop(
     exception_delivery: ExceptionDeliveryMode<'_>,
     stop_after_mmio: bool,
     on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
+    decoded: Option<&DecodedInstructionCache>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2615,6 +2628,7 @@ pub(crate) fn run_cpl0_set_loop(
             exception_delivery,
             stop_after_mmio,
             on_syscall,
+            decoded,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false>(
             state,
@@ -2638,6 +2652,7 @@ pub(crate) fn run_cpl0_set_loop(
             exception_delivery,
             stop_after_mmio,
             on_syscall,
+            decoded,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true>(
             state,
@@ -2661,6 +2676,7 @@ pub(crate) fn run_cpl0_set_loop(
             exception_delivery,
             stop_after_mmio,
             on_syscall,
+            decoded,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false>(
             state,
@@ -2684,6 +2700,7 @@ pub(crate) fn run_cpl0_set_loop(
             exception_delivery,
             stop_after_mmio,
             on_syscall,
+            decoded,
         ),
     }
 }
@@ -2711,6 +2728,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
     exception_delivery: ExceptionDeliveryMode<'_>,
     stop_after_mmio: bool,
     mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
+    decoded: Option<&DecodedInstructionCache>,
 ) -> PagedCpl0SetReport {
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
@@ -2724,6 +2742,20 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
                 .code_page_generation(GuestPhysicalAddress::new(page << 12))
                 .ok()
         });
+    }
+    // PERF-10: the decoded-instruction cache serves only an ordinary run over a write-watch fetch
+    // cache. A diagnostic (a sweep, a trace, an execution observation) keeps the byte-per-fetch
+    // decoding, whose counters and observations the cache would change.
+    let decoded = decoded.filter(|_| {
+        !TRACE_ENABLED
+            && !ELF_COPY_ENABLED
+            && execution_observations.is_none()
+            && cache.is_some_and(|cache| {
+                cache.invalidation() == FetchCacheInvalidation::WriteWatch && !cache.sweep_active()
+            })
+    });
+    if let Some(decoded) = decoded {
+        decoded.bind_memory(std::ptr::from_ref(bus.ram()) as usize);
     }
     // Every committed RAM write of the loop (guest stores, walker A/D commits, exception frames)
     // passes through `watch`, which lets the cache drop entries whose tables were written.
@@ -3053,6 +3085,7 @@ fn run_cpl0_set_loop_impl<const TRACE_ENABLED: bool, const ELF_COPY_ENABLED: boo
         );
         memory.capture_page_fault_trace = execution_observations.is_some();
         memory.descriptor_gate = split_gate;
+        memory.decoded.cache = decoded;
         let run_config = RunConfig {
             instruction_budget: 1,
             stop_rip: None,
@@ -3587,6 +3620,7 @@ fn set_loop_adapter<'a>(
         cpl0_set_cross_page_read: true,
         fetch_cache,
         walks,
+        decoded: DecodedStep::default(),
     }
 }
 
@@ -4346,6 +4380,7 @@ pub fn step_paged_mov_word_read(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -4429,6 +4464,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -4494,6 +4530,7 @@ pub fn step_paged_mov_dword_read(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -4568,6 +4605,7 @@ pub fn step_paged_mov_dword_store(
         cpl0_set_cross_page_read: false,
         fetch_cache: None,
         walks: None,
+        decoded: DecodedStep::default(),
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -4865,6 +4903,30 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// S4-13b: counts the tracked walks of this adapter (measurement only); `None` outside the
     /// set loop's instruction adapter.
     walks: Option<&'a WalkCounter>,
+    /// PERF-10: the decoded-instruction cache of this adapter's instruction (off unless the set loop
+    /// turns it on; see [`DecodedStep`]).
+    decoded: DecodedStep<'a>,
+}
+
+/// PERF-10: the state of the decoded-instruction cache for the one instruction an adapter serves.
+/// `cache` is `Some` only when the set loop of an ordinary run hands it over; every other adapter
+/// has `DecodedStep::default()`, which keeps the byte-per-fetch decoding.
+#[derive(Default)]
+struct DecodedStep<'a> {
+    cache: Option<&'a DecodedInstructionCache>,
+    /// Set by a miss of `cached_instruction` whose gate and translation conditions held: the key a
+    /// successful decode of the same RIP and context may be remembered under.
+    pending: Option<DecodedPending>,
+    /// A fetch of the current decode left the 4 KiB page of the RIP (a lookahead, a cross-page
+    /// instruction): the decode is not remembered.
+    outside_page: bool,
+}
+
+#[derive(Clone, Copy)]
+struct DecodedPending {
+    rip: u64,
+    context: AccessContext,
+    page: crate::physical_memory::RamCodePage,
 }
 
 fn faulting_page_walk_context(
@@ -5296,6 +5358,70 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         }
     }
 
+    /// PERF-10: the decoded instruction at `rip`, when every condition of the cache holds, else
+    /// `None` (and then, if the gate and the translation conditions held, a pending key that
+    /// [`Self::decoded_cache_remember`] turns into an entry after a successful decode).
+    ///
+    /// The conditions, all at once: (0) the gate, the one that opens the fetch cache path of the
+    /// set loop (a fetch cache with the write-watch policy and no sweep, the cross-page fetch and
+    /// the large-RAM profile, no capture of effects, no read-only qword) and the RIP is the one of
+    /// the instruction this adapter serves; (a) the fetch translation cache holds the translation of
+    /// the RIP's page for this paging snapshot and context (a peek: the rights of the fetch, U/S,
+    /// SMEP and the access bits are those of the byte fetch that made the entry); (b) the cached
+    /// entry has this RIP, this physical place and this context; (c) the generation of the code page
+    /// equals the stored one. The generation is read here, before any byte of this decode.
+    fn decoded_cache_lookup(&mut self, rip: u64, context: AccessContext) -> Option<Instruction> {
+        self.decoded.pending = None;
+        self.decoded.outside_page = false;
+        let decoded = self.decoded.cache?;
+        let fetch_cache = self.fetch_cache?;
+        if !(self.cpl0_set_cross_page_fetch
+            && self.large_ram_profile
+            && !self.capture_effects
+            && !self.read_only_qword
+            && fetch_cache.invalidation() == FetchCacheInvalidation::WriteWatch
+            && !fetch_cache.sweep_active()
+            && rip == self.instruction_rip)
+        {
+            return None;
+        }
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let frame = fetch_cache.lookup(rip, &self.paging, context)?;
+        let page = self.bus.ram_ref()?.ram_frame_code_page(frame, rip)?;
+        if let Some(instruction) = decoded.lookup(rip, context, page) {
+            return Some(instruction);
+        }
+        self.decoded.pending = Some(DecodedPending { rip, context, page });
+        None
+    }
+
+    /// PERF-10: stores a successful decode under the pending key of [`Self::decoded_cache_lookup`],
+    /// only if that key is for this RIP and context and no byte of the decode was fetched off the page
+    /// of the RIP.
+    fn decoded_cache_remember(
+        &mut self,
+        rip: u64,
+        context: AccessContext,
+        instruction: Instruction,
+    ) {
+        let Some(pending) = self.decoded.pending.take() else {
+            return;
+        };
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        if self.decoded.outside_page || pending.rip != rip || pending.context != context {
+            return;
+        }
+        if let Some(cache) = self.decoded.cache {
+            cache.insert(rip, context, pending.page, instruction);
+        }
+    }
+
     fn access_cross_page_read(
         &mut self,
         address: u64,
@@ -5625,7 +5751,23 @@ enum LockedTarget<'g> {
 }
 
 impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
+    fn cached_instruction(&mut self, rip: u64, context: AccessContext) -> Option<Instruction> {
+        self.decoded_cache_lookup(rip, context)
+    }
+
+    fn remember_instruction(&mut self, rip: u64, context: AccessContext, instruction: Instruction) {
+        self.decoded_cache_remember(rip, context, instruction);
+    }
+
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        // PERF-10: a byte off the page of the RIP (a lookahead, a page-crossing instruction)
+        // keeps the decode that is under way out of the decoded-instruction cache. The
+        // comparison is the same across the wrap of the address space.
+        if let Some(pending) = &self.decoded.pending
+            && (address ^ pending.rip) & !0xfff != 0
+        {
+            self.decoded.outside_page = true;
+        }
         if self.read_only_qword {
             return Err(Self::unsupported("instruction fetch"));
         }
@@ -6475,6 +6617,7 @@ mod tests {
             cpl0_set_cross_page_read: false,
             fetch_cache: None,
             walks: None,
+            decoded: DecodedStep::default(),
         }
     }
 

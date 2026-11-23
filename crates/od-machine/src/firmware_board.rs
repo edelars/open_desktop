@@ -14,6 +14,7 @@ use crate::console_output_context::{
     capture_frame_chain,
 };
 use crate::crc32::crc32_ieee;
+use crate::decoded_instruction_cache::DecodedInstructionCache;
 use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
     RdtscClockReadLedger,
@@ -1604,6 +1605,11 @@ pub struct LoadedFirmwareBoard {
     fetch_cache_sweep_configs: Option<Vec<SweepConfig>>,
     /// S4-13d: what one entry of the CPL0-set loop's fetch cache covers; 4 KiB unless asked.
     fetch_cache_tag: FetchCacheTag,
+    /// PERF-10: the decoded-instruction cache of the unified and Linux set loops. It lives between
+    /// quanta, is bound to this board's memory and is emptied by `platform_reset` and by a snapshot
+    /// restore. Diagnostic runs (a sweep, an execution observation, the fetch cache report) do not
+    /// use it.
+    decoded_instruction_cache: DecodedInstructionCache,
     fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
@@ -2070,6 +2076,7 @@ impl LoadedFirmwareBoard {
         let source = self.reset_source.as_ref().expect("checked above");
         let entry = source.entry.clone();
         self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
+        self.decoded_instruction_cache.reset();
         if kind == PlatformResetKind::Cold {
             self.clear_ram()?;
         }
@@ -2113,6 +2120,18 @@ impl LoadedFirmwareBoard {
         self.pci_config_pending = false;
         self.host_stop_honoured = false;
         Ok(())
+    }
+
+    /// PERF-10: empties the decoded-instruction cache (a snapshot restore calls this; a platform
+    /// reset does it itself).
+    pub(crate) fn reset_decoded_instruction_cache(&self) {
+        self.decoded_instruction_cache.reset();
+    }
+
+    /// PERF-10: the decoded-instruction cache of this board (the tests of the cache read its counters).
+    #[cfg(test)]
+    pub(crate) fn decoded_instruction_cache(&self) -> &DecodedInstructionCache {
+        &self.decoded_instruction_cache
     }
 
     /// Zero every RAM region of the memory map, 1 MiB at a time, through the committed-write
@@ -3980,6 +3999,13 @@ impl LoadedFirmwareBoard {
                     recorder.begin_call(retired, quanta + 1, ns_at_start);
                 }
             }
+            // PERF-10: an ordinary run only; a diagnostic (a sweep, the fetch cache report, an
+            // execution observation) keeps the byte-per-fetch decoding.
+            let decoded_cache = (fetch_cache
+                && fetch_sweep.is_none()
+                && !board.fetch_cache_report_enabled
+                && execution_observations.is_none())
+            .then_some(&board.decoded_instruction_cache);
             let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
@@ -4006,6 +4032,7 @@ impl LoadedFirmwareBoard {
                 execution_observations.as_mut(),
                 fetch_sweep.as_ref(),
                 board.fetch_cache_tag,
+                decoded_cache,
             );
             quanta += 1;
             partial_rep = matches!(
@@ -5192,6 +5219,7 @@ impl AssembledBoard {
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
+            decoded_instruction_cache: DecodedInstructionCache::default(),
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -5287,6 +5315,7 @@ impl AssembledBoard {
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
+            decoded_instruction_cache: DecodedInstructionCache::default(),
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -7562,6 +7591,25 @@ mod tests {
             assert_eq!(report.retired, 3, "the same instructions every cycle");
             // The virtual clock is not reset: three nanoseconds per run, cumulative.
             assert_eq!(report.virtual_ns, 3 * (cycle + 1));
+        }
+    }
+
+    #[test]
+    fn platform_reset_empties_the_decoded_instruction_cache() {
+        for kind in [PlatformResetKind::Cold, PlatformResetKind::Warm] {
+            let mut board = reset_stopped_board(pm_config());
+            let cache = board.decoded_instruction_cache();
+            let (rip, ring0, probe, _) =
+                crate::decoded_instruction_cache::test_support::insert_probe(cache);
+            assert!(cache.entries() > 0);
+            board.platform_reset(kind).unwrap();
+            let cache = board.decoded_instruction_cache();
+            assert_eq!(cache.entries(), 0, "{kind:?}: the table is empty");
+            assert_eq!(
+                cache.lookup(rip, ring0, probe),
+                None,
+                "{kind:?}: probe gone"
+            );
         }
     }
 
@@ -11112,6 +11160,7 @@ mod tests {
                     delivered_mirror: None,
                     skip_first_boundary: false,
                 }),
+                None,
                 None,
                 None,
             )

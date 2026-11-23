@@ -10,6 +10,7 @@ mod bus;
 mod clock_owner;
 mod console_output_context;
 mod crc32;
+mod decoded_instruction_cache;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;

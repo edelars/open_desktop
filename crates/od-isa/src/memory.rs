@@ -230,6 +230,30 @@ pub enum FenceKind {
 /// before integration; this contract does not authorize retrying a device access.
 pub trait GuestMemory {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError>;
+
+    /// PERF-10: the decoded instruction this backend remembers for the instruction fetch at
+    /// `rip`, or `None` (the default: the backend has no decoded-instruction cache, and the
+    /// decoder reads the bytes). A backend that answers must guarantee that the answer equals what
+    /// [`crate::long_decode::decode`] would return now, byte for byte, including every right the
+    /// fetch of those bytes needs. Wrappers do not forward this method.
+    fn cached_instruction(
+        &mut self,
+        _rip: u64,
+        _context: AccessContext,
+    ) -> Option<crate::long_decode::Instruction> {
+        None
+    }
+
+    /// PERF-10: the decoder tells the backend that `decode` just returned `instruction` for the
+    /// fetch at `rip` (called only after a successful decode that followed a `None` of
+    /// [`Self::cached_instruction`] for the same `rip` and `context`). The default does nothing.
+    fn remember_instruction(
+        &mut self,
+        _rip: u64,
+        _context: AccessContext,
+        _instruction: crate::long_decode::Instruction,
+    ) {
+    }
     fn read(
         &mut self,
         address: u64,

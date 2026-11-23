@@ -281,6 +281,8 @@ impl VmSnapshot {
             .local_apic()
             .restore_pair(&self.apic)
             .map_err(|_| SnapshotError::Apic)?;
+        // PERF-10: the restore may put the vCPUs back to another translation context.
+        board.reset_decoded_instruction_cache();
         for (cpu, vcpu) in self.vcpus.iter().enumerate() {
             *board.vcpu_mut(cpu).expect("the count was checked") = vcpu.clone();
         }
@@ -295,6 +297,7 @@ mod tests {
     use super::*;
     use crate::apic_pair::{LEVEL, PairState};
     use crate::clock_owner::ClockOwner;
+    use crate::decoded_instruction_cache::test_support::insert_probe;
     use crate::interleaved_harness::HZ;
     use crate::smp_scheduler::{
         BoardSmpHost, Executed, QuantumPolicy, SmpScheduler, StopError, StopRequest,
@@ -522,6 +525,26 @@ mod tests {
         assert_eq!(apic0.vector_state(0x40), (true, false));
         assert_eq!(apic1.vector_state(0x41), (true, false));
         assert_eq!(apic1.vector_state(0x63), (true, false));
+    }
+
+    #[test]
+    fn a_restore_empties_the_decoded_instruction_cache() {
+        let mut board = board(2);
+        power_on(&mut board);
+        start_ap(&mut board);
+        dirty(&board);
+        let mut scheduler = scheduler(2);
+        let point = stop(&mut board, &mut scheduler).unwrap();
+        let snapshot = VmSnapshot::take(&board, &scheduler, &point).unwrap();
+        let cache = board.decoded_instruction_cache();
+        let (rip, ring0, probe, _) = insert_probe(cache);
+        assert!(cache.entries() > 0);
+        snapshot
+            .restore(&mut board, &mut scheduler, &point)
+            .unwrap();
+        let cache = board.decoded_instruction_cache();
+        assert_eq!(cache.entries(), 0, "the table is empty after the restore");
+        assert_eq!(cache.lookup(rip, ring0, probe), None, "the probe is gone");
     }
 
     #[test]

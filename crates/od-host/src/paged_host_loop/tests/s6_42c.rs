@@ -1836,17 +1836,27 @@ fn s6_42d_atomic_step_without_sti_enabled_declines_blocking_shadow() {
     let before = state.clone();
     let mut session = PagedFetchedLoadSession::new();
     let report = atomic_host_step(&mut session, &mut board, &mut state, &mut 0, |_, _| {});
-    assert!(matches!(report.exit, PagedHostLoopExit::Interpreter(_)));
-    assert_eq!(report.remaining_budget, 1);
+    // S7-31g: the CPL0 set carries a Blocking shadow across the run boundary (CPU_CONTRACT.md,
+    // S7-31g); only the JIT paths decline it, so the interpreter retires the LOCK and the shadow
+    // ends after it.
+    assert_eq!(
+        report.exit,
+        PagedHostLoopExit::BudgetExhausted,
+        "{report:?}"
+    );
+    assert_eq!(report.remaining_budget, 0);
     assert_eq!(report.atomic_jit_steps, 0);
-    assert_eq!(state, before);
+    assert_eq!(report.retired_jit, 0);
+    assert_eq!(report.retired_interpreter, 1);
+    assert_eq!(state.rip, before.rip + 3);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Clear));
     assert_eq!(
         board
             .bus_mut()
             .atomic_inline_memory()
             .load_u64(GuestPhysicalAddress::new(DATA))
             .unwrap(),
-        MARKER,
+        MARKER + 1,
     );
 }
 

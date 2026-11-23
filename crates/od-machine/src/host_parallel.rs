@@ -956,6 +956,8 @@ pub fn run_host_set_step(
         ExceptionDeliveryMode::HostStep(step.consecutive_faults),
         false,
         None,
+        // PERF-10: the parallel mode does not use the decoded-instruction cache.
+        None,
     );
     let partial_rep = matches!(
         report.exit,
