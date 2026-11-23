@@ -3932,15 +3932,41 @@ impl LoadedFirmwareBoard {
             // advance, so the guest-visible time and the quantum layout of a run whose request is
             // never set are those of a run without a request.
             let host_stop = board.host_stop.clone();
+            // PERF-04: the bus flags below (the THR of the two UARTs, an NVMe doorbell, the PM
+            // stop and timer tick, the PIT port tick) are raised only while the guest's own
+            // instruction reaches the device through the set-step dispatch, or between quanta by
+            // the host (the quantum's first call sees those). Their mutexes are taken at the first
+            // call of a quantum and whenever the count of device accesses has changed since the
+            // last look. The atomic conditions and the flags a host thread can raise during a
+            // quantum (the xHCI input queue) are read at every call, as before. See
+            // CPU_CORE_PERF_REPORT.md, PERF-04, for the table of who raises each flag.
+            let device_accesses = board.bus.device_access_counter();
+            let bus_flags_looked_at = Cell::new(false);
+            let device_accesses_seen = Cell::new(0u64);
             let stop = || {
-                (scheduler_budget.is_some() && scheduler_stop())
-                    || uart.holding_occupied()
+                if (scheduler_budget.is_some() && scheduler_stop())
+                    // A guest write to an xHCI register (a doorbell) or a host input event ends
+                    // the quantum (one atomic load).
+                    || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
+                    // A guest write to a NIC register (the tail pointers) ends it as well.
+                    || nic.as_ref().is_some_and(NicHandle::wakeup_pending)
+                    || rdtsc_tick
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                    || host_stop
+                        .as_deref()
+                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
+                    return true;
+                }
+                let accesses = device_accesses.load(Ordering::Relaxed);
+                if bus_flags_looked_at.replace(true) && accesses == device_accesses_seen.get() {
+                    return false;
+                }
+                device_accesses_seen.set(accesses);
+                uart.holding_occupied()
                     || agent.as_ref().is_some_and(AgentChannel::holding_occupied)
                     || nvme.as_ref().is_some_and(NvmeHandle::doorbell_pending)
-                        // A guest write to an xHCI register (a doorbell) ends the quantum.
-                        || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
-                        // A guest write to a NIC register (the tail pointers) ends it as well.
-                        || nic.as_ref().is_some_and(NicHandle::wakeup_pending)
                     || acpi_pm
                         .as_ref()
                         .is_some_and(|pm| pm.stop_request().is_some())
@@ -3948,12 +3974,6 @@ impl LoadedFirmwareBoard {
                         .as_ref()
                         .is_some_and(AcpiPmHandle::timer_tick_pending)
                     || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
-                    || rdtsc_tick
-                        .as_ref()
-                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
-                    || host_stop
-                        .as_deref()
-                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
             };
             // S4-38L8b: the quantum ends at the next edge of the source; the clock moves only
             // after the quantum (one instruction is one ns), so the limit is the time left.
@@ -10999,6 +11019,121 @@ mod tests {
     }
 
     // ---- S6-16a: the set loop of a vCPU reaches its own Local APIC ----
+
+    /// PERF-04: the stop predicate of the CPL0-set loop looks at the bus flags (UART THR, NVMe
+    /// doorbell, PM stop and tick, PIT port tick) only at the first call of a quantum and after
+    /// the guest reached a device.
+    mod stop_gate {
+        use super::*;
+        use od_isa::execute::{ControlRegisterPolicy, MovCr3Long64V1};
+        use od_isa::{CliProfile, HaltProfile};
+
+        const CLD: u8 = 0xFC;
+        /// `MOV EDX, imm32`.
+        fn mov_edx(value: u32) -> Vec<u8> {
+            let mut code = vec![0xBA];
+            code.extend_from_slice(&value.to_le_bytes());
+            code
+        }
+
+        /// A Linux-profile board that runs `code` at the entry of the CPL0 set loop.
+        fn board_running(code: &[u8]) -> LoadedFirmwareBoard {
+            let mut board = load_firmware_image(&minor2_image(code), &linux_config()).unwrap();
+            let mut state = board.state().clone();
+            state.cr3 = Some(board.cr3());
+            state.cs_selector = Some(0x08);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x9B,
+                flags: 2,
+            });
+            state.ss_selector = Some(0x10);
+            state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+                base: 0,
+                limit: u32::MAX,
+                access: 0x93,
+                flags: 0,
+            });
+            state.rflags = 2;
+            state.activity = Some(CpuActivity::Running);
+            *board.state_mut() = state;
+            board
+        }
+
+        fn run(board: &mut LoadedFirmwareBoard, budget: u64) -> LinuxSetRunReport {
+            let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                .with_cli(&cli)
+                .with_cpu_owned_cr3(MovCr3Long64V1)
+                .with_pio_u8()
+                .with_halt(&halt);
+            board
+                .run_linux_boot_cpl0_set(budget, &set, false, false, false)
+                .unwrap()
+        }
+
+        #[test]
+        fn a_guest_write_to_the_uart_thr_ends_the_quantum_at_the_same_boundary() {
+            // MOV EDX,0x3F8; MOV AL,'A'; OUT DX,AL; MOV AL,'B'; OUT DX,AL; six CLD.
+            let mut code = mov_edx(0x3F8);
+            code.extend([0xB0, b'A', 0xEE, 0xB0, b'B', 0xEE]);
+            code.extend([CLD; 6]);
+            let mut board = board_running(&code);
+            let report = run(&mut board, 11);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.run.retired, 11);
+            // Each OUT ends its quantum (3 and 2 instructions); the third quantum has the rest.
+            assert_eq!(report.run.quanta, 3, "{report:?}");
+            assert_eq!(report.run.com1, b"AB");
+        }
+
+        #[test]
+        fn a_flag_raised_before_the_quantum_stops_it_at_the_first_boundary() {
+            let mut board = board_running(&[CLD; 4]);
+            board
+                .bus_mut()
+                .write_port(PortAddress::new(0x3F8), AccessWidth::Byte, u32::from(b'Z'))
+                .unwrap();
+            assert!(board.uart.holding_occupied());
+            let report = run(&mut board, 4);
+            // No device access happens in the run: only the first call of the first quantum can
+            // see the flag. It stops the quantum before the first instruction.
+            assert_eq!(report.run.exit, PagedProbeExit::Stopped, "{report:?}");
+            assert_eq!(report.set_exit_detail, "Run(StopRequested)");
+            assert_eq!(
+                (report.run.retired, report.run.quanta),
+                (0, 1),
+                "{report:?}"
+            );
+            assert_eq!(report.run.com1, b"Z");
+        }
+
+        #[test]
+        fn a_device_access_without_a_raised_flag_does_not_end_the_quantum() {
+            // MOV EDX,0x3FD (the UART line status); three IN AL,DX; two CLD.
+            let mut code = mov_edx(0x3FD);
+            code.extend([0xEC; 3]);
+            code.extend([CLD; 2]);
+            let mut board = board_running(&code);
+            let before = board.bus().device_access_counter().load(Ordering::Relaxed);
+            let report = run(&mut board, 6);
+            assert_eq!(
+                report.run.exit,
+                PagedProbeExit::BudgetExhausted,
+                "{report:?}"
+            );
+            assert_eq!(report.run.retired, 6);
+            assert_eq!(report.run.quanta, 1, "{report:?}");
+            assert!(report.run.com1.is_empty());
+            let after = board.bus().device_access_counter().load(Ordering::Relaxed);
+            assert_eq!(after - before, 3, "each IN reaches the device once");
+        }
+    }
 
     mod vcpu_mmio {
         use super::*;

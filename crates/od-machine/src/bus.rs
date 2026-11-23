@@ -11,7 +11,8 @@ use od_isa::{
 };
 use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, MutexGuard, PoisonError};
 
 // Must match the bounded 36-bit physical-address format accepted by
 // page_walk.rs. Higher PTE bits can contain software metadata or NX.
@@ -291,6 +292,12 @@ pub struct MachineBus {
     /// `set_step_windows` and the firmware device apertures. `None` for every other board.
     firmware_set_windows: Option<Vec<crate::page_walk::MmioWindow>>,
     ports: Vec<PortRegionBinding>,
+    /// PERF-04: how many times a guest instruction reached a device through the set-step
+    /// dispatch (a port in or out, an MMIO read or write). It lives in a shared cell, like
+    /// `rdtsc_tick`, so the `stop` predicate of a run loop reads it without borrowing the bus. A
+    /// device flag that is raised only by an access of the guest's own instruction can change
+    /// only when this count changes.
+    device_accesses: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -344,6 +351,11 @@ pub enum TrackedCodePatchError {
 }
 
 impl MachineBus {
+    /// PERF-04: the shared cell of the guest device-access count (see the field).
+    pub(crate) fn device_access_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.device_accesses)
+    }
+
     /// Diagnostic-only read of one guest virtual range. The page walk uses a no-op A/D writer,
     /// and the final physical access is admitted only when its entire range is backed by RAM.
     pub(crate) fn read_virtual_ram_diagnostic(
@@ -738,6 +750,9 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     /// Index of the vCPU whose set loop this is (S6-16a): its MMIO accesses reach the
     /// per-processor devices (the Local APIC window) as that vCPU's. Every other device ignores it.
     vcpu: usize,
+    /// The count of [`MachineBus::device_access_counter`]; every device access of this view adds
+    /// one before the device is called.
+    device_accesses: &'a AtomicU64,
 }
 
 /// How the set-step view of one instruction reaches the device table (S6-34). `Exclusive`: the
@@ -802,6 +817,16 @@ impl<'a> MachineBusSetStepIo<'a> {
 
     pub(crate) fn mmio_written(&self) -> bool {
         self.mmio_written.get()
+    }
+
+    /// The one place where this view reaches a device (a port or an MMIO access): it counts the
+    /// access (PERF-04) and runs `f` on the device table.
+    fn with_counted_devices<R>(
+        &self,
+        f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> R,
+    ) -> Result<R, DeviceTableBusy> {
+        self.device_accesses.fetch_add(1, AtomicOrdering::Relaxed);
+        self.devices.with(f)
     }
 
     /// The same view with the gate of the split `LOCK` of the vCPU thread (S6-34 step 8).
@@ -931,16 +956,14 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
         let device_index = binding.device_index;
         match operation {
             RamAccessOperation::Read { .. } => self
-                .devices
-                .with(|devices| devices[device_index].read_from_cpu(vcpu, access))
+                .with_counted_devices(|devices| devices[device_index].read_from_cpu(vcpu, access))
                 .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|value| value & width.mask())
                 .map_err(|error| {
                     Backend(format!("MMIO device {device_index} read failed: {error:?}"))
                 }),
             RamAccessOperation::Write { value, .. } => self
-                .devices
-                .with(|devices| {
+                .with_counted_devices(|devices| {
                     devices[device_index].write_from_cpu(vcpu, access, value & width.mask())
                 })
                 .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
@@ -976,10 +999,12 @@ impl SetStepPortIo<'_, '_> {
         &self,
         f: impl FnOnce(&mut [Box<dyn BusDevice>]) -> Result<R, BusAccessError>,
     ) -> Result<R, BusAccessError> {
-        self.0.devices.with(f).map_err(|_| BusAccessError::Device {
-            device_index: usize::MAX,
-            source: DeviceError::Busy,
-        })?
+        self.0
+            .with_counted_devices(f)
+            .map_err(|_| BusAccessError::Device {
+                device_index: usize::MAX,
+                source: DeviceError::Busy,
+            })?
     }
 }
 
@@ -1071,6 +1096,7 @@ impl MachineBus {
             set_step_windows,
             firmware_set_windows,
             ports,
+            device_accesses,
         } = self;
         (
             memory,
@@ -1085,6 +1111,7 @@ impl MachineBus {
                 mmio_lens,
                 windows: firmware_set_windows.as_deref().unwrap_or(*set_step_windows),
                 vcpu,
+                device_accesses,
             },
         )
     }
@@ -1111,6 +1138,7 @@ impl MachineBus {
                     .as_deref()
                     .unwrap_or(self.set_step_windows),
                 vcpu,
+                device_accesses: &self.device_accesses,
             },
         )
     }
@@ -1548,6 +1576,7 @@ impl MachineBus {
             set_step_windows: &SET_STEP_WINDOWS,
             firmware_set_windows: None,
             ports,
+            device_accesses: Arc::new(AtomicU64::new(0)),
         })
     }
 
