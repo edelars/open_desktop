@@ -1971,6 +1971,8 @@ pub struct Cpl0ProfileSet<'a> {
     int3: bool,
     user_mode: bool,
     syscall: bool,
+    /// PERF-22: run every step under the fast-path check (diagnostic; see [`crate::fast_path_check`]).
+    fast_path_verify: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -2003,7 +2005,22 @@ impl<'a> Cpl0ProfileSet<'a> {
             int3: false,
             user_mode: false,
             syscall: false,
+            fast_path_verify: false,
         }
+    }
+
+    /// PERF-22 (ADR-0017, section 5): diagnostic mode. Every step of the run executes as usual on
+    /// the real memory and is then compared with the fast path (`try_fast_step`, or the mode chosen
+    /// with [`crate::fast_path_check::set_mode`]) replayed on a copy of the CPU state over the
+    /// recorded memory calls: all of the CPU state, the step outcome and the ordered memory calls
+    /// must agree. The first disagreement ends the run with `RunExit::MemoryError(Backend(report))`
+    /// and is kept for [`crate::fast_path_check::take_divergence`]. Without this call the loop has
+    /// no check for it and nothing changes. The counters and the last divergence live in the
+    /// thread that runs the loop (thread-local), so the mode is for the single-threaded unified
+    /// loop only; it does not fit `host_parallel` or SMP, where steps run on other threads.
+    pub const fn with_fast_path_verify(mut self) -> Self {
+        self.fast_path_verify = true;
+        self
     }
 
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
@@ -3980,7 +3997,7 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_configured_with_profile_mode::<true>(
+    run_configured_with_profile_mode::<true, false>(
         state,
         memory,
         config,
@@ -34076,7 +34093,8 @@ fn run_cpl0_profile_set_inner(
     if let Some(cell) = set.fp_state {
         state.sse = Some(cell.borrow().sse.clone());
     }
-    let result = run_configured(
+    let result = run_configured_checked(
+        set.fast_path_verify,
         state,
         memory,
         config,
@@ -34296,7 +34314,7 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false>(
+    run_configured_with_profile_mode::<false, false>(
         state,
         memory,
         config,
@@ -34306,7 +34324,193 @@ fn run_configured(
     )
 }
 
-fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
+/// PERF-22: the entry of the CPL0 set loops. `verify` selects the checked instance of the loop
+/// (`Cpl0ProfileSet::with_fast_path_verify`); the other instance has no code for the check.
+#[inline(always)]
+fn run_configured_checked(
+    verify: bool,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    rflags_defined: u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> RunResult {
+    if verify {
+        run_configured_with_profile_mode::<false, true>(
+            state,
+            memory,
+            config,
+            rflags_defined,
+            profiles,
+            runtime,
+        )
+    } else {
+        run_configured_with_profile_mode::<false, false>(
+            state,
+            memory,
+            config,
+            rflags_defined,
+            profiles,
+            runtime,
+        )
+    }
+}
+
+/// PERF-22: [`run`] with every step under the fast-path check of [`crate::fast_path_check`]
+/// (no profile, the integer-flags definedness of a fresh entry). The first divergence ends the run
+/// with `RunExit::MemoryError(MemoryError::Backend(report))` and is kept for
+/// [`crate::fast_path_check::take_divergence`]; the counters are read with
+/// [`crate::fast_path_check::counters`]. For tests and diagnostics.
+pub fn run_with_fast_path_check(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured_with_profile_mode::<false, true>(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles::EMPTY,
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// PERF-21/22 (ADR-0017, section 3): the fast path of one decoded instruction, placed right after
+/// the decode in the step. The contract: `None` ("not handled") only before any side effect, from
+/// an admission that reads `instruction`, `state` and `context` and writes nothing; after it the
+/// function returns `Some` with exactly what the general path returns, calling `memory` the same
+/// way in the same order. Until PERF-23 it handles nothing, and the step does not call it; only
+/// the check of [`crate::fast_path_check`] does.
+#[inline(never)]
+pub(crate) fn try_fast_step(
+    _state: &mut LongModeState,
+    _memory: &mut impl GuestMemory,
+    _context: AccessContext,
+    _rflags_defined: &mut u64,
+    _instruction: &crate::long_decode::Instruction,
+    _control_policy_present: bool,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    None
+}
+
+/// PERF-22: one step of the checked loop: the general path runs for real on `memory` through the
+/// recording [`crate::fast_path_check::CheckMemory`], then the checker replays the fast path on a
+/// copy of the state taken before the step and compares (ADR-0017, section 5).
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn step_checked(
+    checker: &mut crate::fast_path_check::FastPathChecker,
+    state: &mut LongModeState,
+    memory: &mut dyn GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> Result<StepOutcome, MemoryError> {
+    use crate::fast_path_check::FastPathMode;
+    let before = state.clone();
+    let defined_before = *rflags_defined;
+    let policy_present = profiles.control_policy.is_some();
+    let mut recording = checker.record(memory);
+    let outcome = step_configured_with_profile_mode::<false>(
+        state,
+        &mut recording,
+        context,
+        rflags_defined,
+        profiles,
+        runtime,
+    );
+    let mode = checker.mode();
+    checker.finish(
+        recording,
+        before,
+        defined_before,
+        context,
+        state,
+        *rflags_defined,
+        &outcome,
+        |fast_state, replay, context, fast_defined, instruction| match mode {
+            FastPathMode::Tree => try_fast_step(
+                fast_state,
+                replay,
+                context,
+                fast_defined,
+                instruction,
+                policy_present,
+            ),
+            FastPathMode::Custom(draft) => draft(
+                fast_state,
+                replay,
+                context,
+                fast_defined,
+                instruction,
+                policy_present,
+            ),
+            FastPathMode::GeneralPath => {
+                let mut never = || false;
+                Some(step_configured_with_profile_mode::<false>(
+                    fast_state,
+                    replay,
+                    context,
+                    fast_defined,
+                    profiles,
+                    StepRuntime {
+                        rdtsc_source: None,
+                        sti_sequence: None,
+                        exact_hlt_only: false,
+                        stop_requested: &mut never,
+                    },
+                ))
+            }
+        },
+    );
+    outcome
+}
+
+/// One step of the run loop: the plain step, or (`VERIFY`) the checked one.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn step_with_optional_check<const NO_PROFILES: bool, const VERIFY: bool, M: GuestMemory>(
+    checker: &mut Option<crate::fast_path_check::FastPathChecker>,
+    state: &mut LongModeState,
+    memory: &mut M,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> Result<StepOutcome, MemoryError> {
+    if VERIFY {
+        let checker = checker.as_mut().expect("a checked run creates its checker");
+        step_checked(
+            checker,
+            state,
+            memory,
+            context,
+            rflags_defined,
+            profiles,
+            runtime,
+        )
+    } else {
+        step_configured_with_profile_mode::<NO_PROFILES>(
+            state,
+            memory,
+            context,
+            rflags_defined,
+            profiles,
+            runtime,
+        )
+    }
+}
+
+fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool>(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
@@ -34519,6 +34723,8 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     let mut sti_sequence = sti_profile.map(|_| StiSequenceProgress::new(state));
     let mut retired = 0;
+    // PERF-22: only the checked instance of the loop has a checker.
+    let mut checker = VERIFY.then(crate::fast_path_check::FastPathChecker::new);
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -34533,7 +34739,8 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
         } else {
             let old_shadow = state.sti_shadow;
             let outcome = if let Some(source) = rdtsc_source.take() {
-                let outcome = step_configured_with_profile_mode::<NO_PROFILES>(
+                let outcome = step_with_optional_check::<NO_PROFILES, VERIFY, _>(
+                    &mut checker,
                     state,
                     memory,
                     config.context,
@@ -34549,7 +34756,8 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
                 *rdtsc_source = Some(source);
                 outcome
             } else {
-                step_configured_with_profile_mode::<NO_PROFILES>(
+                step_with_optional_check::<NO_PROFILES, VERIFY, _>(
+                    &mut checker,
                     state,
                     memory,
                     config.context,
@@ -34563,6 +34771,19 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool>(
                     },
                 )
             };
+            // PERF-22: the first divergence of the checked loop ends the run; the report is in
+            // the exit and in `fast_path_check::take_divergence`.
+            if VERIFY
+                && let Some(failure) = checker
+                    .as_ref()
+                    .and_then(crate::fast_path_check::FastPathChecker::failure)
+            {
+                return RunResult {
+                    exit: RunExit::MemoryError(MemoryError::Backend(failure.to_owned())),
+                    instructions_executed: retired,
+                    rflags_defined,
+                };
+            }
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
                     // The CPL0 profile set's shadow sources are MOV SS and, under

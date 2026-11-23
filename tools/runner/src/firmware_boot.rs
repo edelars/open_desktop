@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -97,6 +97,9 @@ struct Options {
     /// PERF-20: `--op-histogram-out <file>` (unified loop only): the histogram of the retired
     /// operations (operation, operand kind, operand size, CPL) as JSON.
     op_histogram_out: Option<String>,
+    /// PERF-22: `--fast-path-verify` (unified loop only): every instruction is also compared with
+    /// the fast path replayed over the recorded memory calls (ADR-0017, section 5).
+    fast_path_verify: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -375,6 +378,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut diagnostics = Diagnostics {
         stop_snapshot: options.stop_snapshot.clone(),
         op_histogram_out: options.op_histogram_out.clone(),
+        fast_path_verify: options.fast_path_verify,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -970,6 +974,8 @@ struct Diagnostics {
     stop_snapshot: Option<String>,
     /// PERF-20: where the unified loop writes the histogram of retired operations.
     op_histogram_out: Option<String>,
+    /// PERF-22: the unified loop compares every instruction with the fast path.
+    fast_path_verify: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1426,18 +1432,23 @@ fn boot(
     let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
     let mut op_histogram_result: Option<Result<Value, String>> = None;
+    let mut fast_path_check_result: Option<Result<Value, String>> = None;
+    let mut fast_path_check_progress: Option<Value> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_profiled(
+        od_machine::run_firmware_unified_checked(
             &mut board,
             budget,
             mark_rip,
             trace_calls.to_vec(),
             trace_system_table,
             op_histogram_path.is_some(),
+            diagnostics.fast_path_verify,
         ).map(|run| {
             let report = run.run;
+            fast_path_check_result = run.fast_path_check.as_ref().map(fast_path_check_summary);
+            fast_path_check_progress = run.fast_path_check.as_ref().map(fast_path_check_counters);
             if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
                 op_histogram_result = Some(write_op_histogram(path, histogram, report.retired));
             }
@@ -1659,6 +1670,20 @@ fn boot(
         Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
         None => {}
     }
+    // PERF-22: a divergence of the fast-path check is a failure of the run (exit code 5) whose
+    // message is the report; otherwise the counters go to the result.
+    match fast_path_check_result {
+        Some(Ok(summary)) => result["fast_path_check"] = summary,
+        Some(Err(error)) => {
+            // The counters up to the divergence stay in the report of the failed run.
+            let mut value = failure("run_error", "fast_path_check", error);
+            if let Some(counters) = fast_path_check_progress {
+                value["fast_path_check"] = counters;
+            }
+            return Err((value, 5));
+        }
+        None => {}
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -1747,6 +1772,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
     let mut trace_system_table: Option<u64> = None;
     let mut op_histogram_out = None;
+    let mut fast_path_verify = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1757,6 +1783,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--xhci" && !xhci {
             xhci = true;
+            index += 1;
+            continue;
+        }
+        if name == "--fast-path-verify" && !fast_path_verify {
+            fast_path_verify = true;
             index += 1;
             continue;
         }
@@ -1895,6 +1926,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if op_histogram_out.is_some() && !unified {
         return Err("--op-histogram-out requires --cpu-loop unified".to_owned());
+    }
+    if fast_path_verify && !unified {
+        return Err("--fast-path-verify requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -2035,6 +2069,29 @@ fn parse(args: &[String]) -> Result<Options, String> {
         trace_calls,
         trace_system_table,
         op_histogram_out,
+        fast_path_verify,
+    })
+}
+
+/// PERF-22: the counters of the fast-path check for the run report, or the report of its first
+/// divergence as an error (the run stopped there).
+fn fast_path_check_summary(report: &od_machine::FastPathCheckReport) -> Result<Value, String> {
+    if let Some(divergence) = &report.divergence {
+        return Err(divergence.to_string());
+    }
+    Ok(fast_path_check_counters(report))
+}
+
+/// PERF-22: the counters of the fast-path check as JSON (also kept when a divergence stops the run).
+fn fast_path_check_counters(report: &od_machine::FastPathCheckReport) -> Value {
+    let counters = &report.counters;
+    json!({
+        "compared": counters.compared,
+        "refused_by_admission": counters.refused_by_admission,
+        "before_decode": counters.before_decode,
+        "not_decoded": counters.not_decoded,
+        "memory_calls_compared": counters.memory_calls_compared,
+        "divergences": counters.divergences,
     })
 }
 
@@ -2376,6 +2433,59 @@ mod tests {
         );
         given.extend(args(&["--op-histogram-out", "other.json"]));
         assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn fast_path_verify_needs_the_unified_loop_and_is_taken_once() {
+        let mut given = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+            "--fast-path-verify",
+        ]);
+        assert!(
+            parse(&given)
+                .err()
+                .unwrap()
+                .contains("--fast-path-verify requires --cpu-loop unified")
+        );
+        given.extend(args(&["--cpu-loop", "unified"]));
+        assert!(parse(&given).unwrap().fast_path_verify);
+        given.extend(args(&["--fast-path-verify"]));
+        assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn a_fast_path_divergence_is_an_error_and_counters_are_a_summary() {
+        let report = od_machine::FastPathCheckReport {
+            counters: od_isa::fast_path_check::CheckCounters {
+                compared: 3,
+                refused_by_admission: 5,
+                ..Default::default()
+            },
+            divergence: None,
+        };
+        let summary = fast_path_check_summary(&report).unwrap();
+        assert_eq!(summary["compared"], 3);
+        assert_eq!(summary["refused_by_admission"], 5);
+        assert_eq!(summary["divergences"], 0);
+        let diverged = od_machine::FastPathCheckReport {
+            counters: report.counters,
+            divergence: Some(od_isa::fast_path_check::FastPathDivergence {
+                rip: 0x1000,
+                bytes: vec![0x90],
+                instruction: "Nop".to_owned(),
+                differences: vec!["state.rip: general path 1 | fast path 2".to_owned()],
+            }),
+        };
+        let error = fast_path_check_summary(&diverged).unwrap_err();
+        assert!(
+            error.contains("rip=0x1000") && error.contains("bytes=90"),
+            "{error}"
+        );
     }
 
     #[test]

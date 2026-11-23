@@ -9173,6 +9173,112 @@ mod tests {
         assert_eq!(counted.state(), plain.state());
     }
 
+    /// PERF-22: the fast-path check in the unified loop (ADR-0017, section 5) changes nothing a run
+    /// does (retired, quanta, exit, state) and finds no divergence with the empty fast path of the
+    /// tree (it refuses everything) nor with the general path as its own fast path (every
+    /// instruction compared, the memory calls of the board adapter recorded and replayed).
+    #[test]
+    fn a_fast_path_check_leaves_the_unified_run_unchanged_and_finds_no_divergence() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // nop; push rax; pop rcx; call +0; pop rdx; hlt
+        image[0x40..0x4a].copy_from_slice(&[0x90, 0x50, 0x59, 0xE8, 0, 0, 0, 0, 0x5A, 0xF4]);
+        seal(&mut image);
+        let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
+        let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
+        assert!(without.fast_path_check.is_none());
+        for mode in [FastPathMode::Tree, FastPathMode::GeneralPath] {
+            fast_path_check::set_mode(mode);
+            let mut checked = load_firmware_image(&image, &linux_config()).unwrap();
+            let with = crate::run_firmware_unified_checked(
+                &mut checked,
+                1_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+            fast_path_check::set_mode(FastPathMode::Tree);
+            let report = with
+                .fast_path_check
+                .clone()
+                .expect("the check was asked for");
+            assert_eq!(report.divergence, None, "{mode:?}");
+            assert_eq!(report.counters.divergences, 0, "{mode:?}");
+            assert_eq!(with.run, without.run, "{mode:?}");
+            assert_eq!(checked.state(), plain.state(), "{mode:?}");
+            let steps = report.counters.compared + report.counters.refused_by_admission;
+            assert!(steps >= with.run.retired, "{mode:?} {report:?}");
+            match mode {
+                FastPathMode::Tree => assert_eq!(report.counters.compared, 0),
+                _ => assert_eq!(report.counters.refused_by_admission, 0),
+            }
+        }
+    }
+
+    /// PERF-22: a wrong draft handler (a NOP that moves RIP one byte too far) is found by the
+    /// check in the unified loop at the first instruction it takes, and the divergence ends the run
+    /// and is reported with the RIP and the bytes of the instruction.
+    #[test]
+    fn a_fast_path_check_stops_the_unified_run_at_a_wrong_draft_handler() {
+        use od_isa::execute::StepOutcome;
+        use od_isa::fast_path_check::{
+            self, CheckMemory, DraftFastStep, FastPathMode, FastStepResult,
+        };
+        use od_isa::long_decode::{Instruction, Operation};
+        fn wrong_nop(
+            state: &mut od_isa::LongModeState,
+            _: &mut CheckMemory<'_>,
+            _: od_isa::AccessContext,
+            _: &mut u64,
+            instruction: &Instruction,
+            _: bool,
+        ) -> FastStepResult {
+            matches!(instruction.operation, Operation::Nop).then(|| {
+                state.rip = state.rip.wrapping_add(u64::from(instruction.length) + 1);
+                Ok(StepOutcome::Advanced)
+            })
+        }
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x43].copy_from_slice(&[0x90, 0x50, 0xF4]); // nop; push rax; hlt
+        seal(&mut image);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        fast_path_check::set_mode(FastPathMode::Custom(wrong_nop as DraftFastStep));
+        let run = crate::run_firmware_unified_checked(
+            &mut board,
+            1_000,
+            None,
+            Vec::new(),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        fast_path_check::set_mode(FastPathMode::Tree);
+        let report = run.fast_path_check.expect("the check was asked for");
+        let divergence = report.divergence.expect("the wrong NOP is found");
+        assert_eq!(
+            (divergence.rip, divergence.bytes.as_slice()),
+            (entry, &[0x90][..])
+        );
+        assert!(
+            divergence
+                .differences
+                .iter()
+                .any(|line| line.starts_with("state.rip:")),
+            "{divergence}"
+        );
+        assert_eq!(report.counters.divergences, 1);
+        // The run stopped at the divergent instruction: the push after it never retired.
+        assert!(run.run.retired <= 1, "{:?}", run.run);
+    }
+
     /// S7-31q: a runtime services table slot is followed once a traced call refreshed it, a NULL
     /// GUID pointer is no GUID, and the function behind the slot is traced under the slot's name.
     #[test]

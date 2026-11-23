@@ -1810,6 +1810,17 @@ pub struct FirmwareUnifiedRun {
     /// The histogram of retired operations (PERF-20): `None` when none was asked for. Its total is
     /// the number of instructions the loop retired.
     pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
+    /// The fast-path check of the run (PERF-22): `None` when it was not asked for.
+    pub fast_path_check: Option<FastPathCheckReport>,
+}
+
+/// What the fast-path check (PERF-22, ADR-0017 section 5) did in a unified run: how many
+/// instructions were compared with the fast path, how many the fast path refused, and the first
+/// divergence, which also ended the run (its exit is a `MemoryError::Backend` with the same text).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FastPathCheckReport {
+    pub counters: od_isa::fast_path_check::CheckCounters,
+    pub divergence: Option<od_isa::fast_path_check::FastPathDivergence>,
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
@@ -1995,6 +2006,33 @@ pub fn run_firmware_unified_profiled(
     system_table: Option<u64>,
     op_histogram: bool,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_checked(
+        board,
+        instruction_budget,
+        marker_rip,
+        trace,
+        system_table,
+        op_histogram,
+        false,
+    )
+}
+
+/// [`run_firmware_unified_profiled`] with the fast-path check (PERF-22) when `fast_path_verify` is
+/// set: every instruction runs as usual on the real memory and is then compared with the fast path
+/// replayed on a copy of the CPU state over the recorded memory calls (all CPU state, the step
+/// outcome, the ordered memory calls; see [`od_isa::fast_path_check`]). The first divergence ends
+/// the run: its exit is a memory error carrying the report, and the report is in
+/// [`FirmwareUnifiedRun::fast_path_check`]. Devices see every access once (the replay never reaches
+/// them). A diagnostic: the run is several times slower, and without it the loop has no check.
+pub fn run_firmware_unified_checked(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+    op_histogram: bool,
+    fast_path_verify: bool,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs a firmware board with the Linux profile",
@@ -2035,6 +2073,11 @@ pub fn run_firmware_unified_profiled(
     let set = profile.bind(&cpu_cells, &pci_cell, |member| {
         names.push(member.to_string())
     });
+    let set = if fast_path_verify {
+        set.with_fast_path_verify()
+    } else {
+        set
+    };
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board
@@ -2066,8 +2109,16 @@ pub fn run_firmware_unified_profiled(
     if op_histogram {
         board.enable_op_histogram();
     }
+    if fast_path_verify {
+        od_isa::fast_path_check::reset();
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
+    // The loop runs on this thread, so its counters are this thread's.
+    let fast_path_check = fast_path_verify.then(|| FastPathCheckReport {
+        counters: od_isa::fast_path_check::counters(),
+        divergence: od_isa::fast_path_check::take_divergence(),
+    });
     let call_trace = board.take_call_trace();
     let op_histogram = board.take_op_histogram();
     cpu_cells.commit(
@@ -2204,6 +2255,7 @@ pub fn run_firmware_unified_profiled(
         checkpoints,
         call_trace,
         op_histogram,
+        fast_path_check,
     })
 }
 

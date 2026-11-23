@@ -15,6 +15,7 @@ use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, RunConfig, run,
     run_with_cpl0_profile_set,
 };
+use od_isa::fast_path_check::{self, FastPathMode};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CliProfile, CpuActivity, GuestMemory, InstructionMode,
     LongModeState, MemoryError, OperandSize, PrivilegeLevel, StiShadow,
@@ -23,6 +24,7 @@ use od_testkit::generate::generate_fixture;
 use od_testkit::memory_corpus::{
     MEMORY_CORPUS_RAM_LEN, MEMORY_CORPUS_SEQUENCES, S3_34A_SEEDS, generate_memory_corpus_input,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Memory {
@@ -182,6 +184,7 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
         assert_eq!(state, base_state, "{label}");
         assert_eq!(memory, base_memory, "{label}");
     }
+    check_fast_path(&case, label);
     tally.cases += 1;
     if base.exit == od_isa::execute::RunExit::StopAddress {
         tally.stopped_at_end += 1;
@@ -189,6 +192,93 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
         tally.other_exits += 1;
     }
 }
+
+/// PERF-22: the same case through the set with the fast-path check (ADR-0017, section 5). The
+/// checked run must end exactly like the plain set run (exit, count, definedness, state, memory),
+/// with the empty fast path of the tree (nothing taken) and with the general path as its own fast
+/// path (every instruction compared: all CPU state, the outcome and the ordered memory calls,
+/// memory errors included). No divergence in either.
+fn check_fast_path(case: &Case, label: &str) {
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let admitted = |state: &LongModeState| {
+        let mut state = state.clone();
+        state.cr0 = Some(0x8001_0033);
+        state.cr4 = Some(0x20);
+        state.activity = Some(CpuActivity::Running);
+        state.sti_shadow = Some(StiShadow::Clear);
+        state
+    };
+    let mut base_state = admitted(&case.state);
+    let mut base_memory = case.memory.clone();
+    let base = run_with_cpl0_profile_set(
+        &mut base_state,
+        &mut base_memory,
+        config(case),
+        od_isa::INTEGER_FLAGS,
+        &plain,
+        None,
+        || false,
+    )
+    .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+    for mode in [FastPathMode::Tree, FastPathMode::GeneralPath] {
+        fast_path_check::set_mode(mode);
+        fast_path_check::reset();
+        let mut state = admitted(&case.state);
+        let mut memory = case.memory.clone();
+        let checked = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(case),
+            od_isa::INTEGER_FLAGS,
+            &plain.with_fast_path_verify(),
+            None,
+            || false,
+        )
+        .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+        fast_path_check::set_mode(FastPathMode::Tree);
+        let counters = fast_path_check::counters();
+        assert_eq!(
+            fast_path_check::take_divergence(),
+            None,
+            "{label}: {mode:?}"
+        );
+        assert_eq!(counters.divergences, 0, "{label}: {mode:?}");
+        assert_eq!(checked, base, "{label}: {mode:?}");
+        assert_eq!(state, base_state, "{label}: {mode:?}");
+        assert_eq!(memory, base_memory, "{label}: {mode:?}");
+        // Every retired instruction was either compared or refused by the (empty) admission; a
+        // step that ends in a memory error or a fault retires nothing but is still compared.
+        match mode {
+            FastPathMode::Tree => {
+                assert_eq!(counters.compared, 0, "{label}");
+                assert!(
+                    counters.refused_by_admission >= base.instructions_executed,
+                    "{label}"
+                );
+            }
+            _ => {
+                assert!(counters.compared >= base.instructions_executed, "{label}");
+                assert_eq!(counters.refused_by_admission, 0, "{label}");
+                FAST_PATH_COMPARED.fetch_add(counters.compared, Ordering::Relaxed);
+                FAST_PATH_CALLS.fetch_add(counters.memory_calls_compared, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+fn print_fast_path_totals(corpus: &str) {
+    // The counters are process-wide here, so the three tests (parallel threads) share them; the
+    // lines are informational and the per-case asserts above are the check.
+    println!(
+        "{corpus}: fast-path check so far {} instructions compared against the general path, {} memory calls",
+        FAST_PATH_COMPARED.load(Ordering::Relaxed),
+        FAST_PATH_CALLS.load(Ordering::Relaxed)
+    );
+    assert!(FAST_PATH_COMPARED.load(Ordering::Relaxed) > 0);
+}
+
+static FAST_PATH_COMPARED: AtomicU64 = AtomicU64::new(0);
+static FAST_PATH_CALLS: AtomicU64 = AtomicU64::new(0);
 
 struct SplitMix(u64);
 
@@ -242,6 +332,7 @@ fn integer_and_branch_corpus_matches_run() {
         "integer/branch: {} cases, {} stopped at code end, {} other exits",
         tally.cases, tally.stopped_at_end, tally.other_exits
     );
+    print_fast_path_totals("integer/branch");
 }
 
 #[test]
@@ -283,6 +374,7 @@ fn memory_corpus_matches_run() {
         "memory: {} cases, {} stopped at code end, {} other exits",
         tally.cases, tally.stopped_at_end, tally.other_exits
     );
+    print_fast_path_totals("memory");
 }
 
 #[test]
@@ -343,4 +435,5 @@ fn stack_forms_match_run() {
         "stack: {} cases, {} stopped at code end, {} other exits",
         tally.cases, tally.stopped_at_end, tally.other_exits
     );
+    print_fast_path_totals("stack");
 }
