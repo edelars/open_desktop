@@ -19,7 +19,7 @@ use crate::fetch_cache_sweep::FetchCacheSweep;
 use crate::fetch_translation_cache::{
     FetchCacheInvalidation, FetchCacheStats, FetchCacheTag, FetchTranslationCache, TranslationKey,
 };
-use crate::irq_source::IrqBoundaryHook;
+use crate::irq_source::{IrqBoundaryHook, PolledVector};
 use crate::linux_checkpoints::{BoundaryView, CheckpointRecorder};
 use crate::page_walk::{
     VectorRamAccess, access_long64_2m_ram_vector, translate_long64_2m_ram_read_only_with_tables,
@@ -4079,7 +4079,33 @@ pub(crate) fn deliver_pending_irq(
         hook.skip_first_boundary = false;
         return IrqBoundaryOutcome::None;
     }
-    let Some(vector) = hook.source.pending_vector() else {
+    // PERF-05: a source that is stable between device accesses is asked again only when a guest
+    // access reached a device since the last question or a vector was delivered. The checks below
+    // (IF, STI shadow, the refusal counters, the delivery) run at every boundary on the saved answer.
+    let reuse = match (hook.polled, hook.device_accesses) {
+        (Some(polled), Some(counter))
+            if hook.source.stable_between_device_accesses()
+                && counter.load(std::sync::atomic::Ordering::Relaxed) == polled.device_accesses =>
+        {
+            Some(polled.vector)
+        }
+        _ => None,
+    };
+    let answer = match reuse {
+        Some(answer) => answer,
+        None => {
+            let device_accesses = hook
+                .device_accesses
+                .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed));
+            let answer = hook.source.pending_vector();
+            hook.polled = device_accesses.map(|device_accesses| PolledVector {
+                vector: answer,
+                device_accesses,
+            });
+            answer
+        }
+    };
+    let Some(vector) = answer else {
         return IrqBoundaryOutcome::None;
     };
     if state.rflags & RFLAGS_IF == 0 {
@@ -4098,6 +4124,8 @@ pub(crate) fn deliver_pending_irq(
     let failure = match delivery {
         Cpl0ExternalInterruptDelivery::Delivered { .. } => {
             hook.source.acknowledge(vector);
+            // PERF-05: the INTA changed the controller: the next boundary asks again.
+            hook.polled = None;
             hook.counters.irqs_delivered += 1;
             if let Some(delivered) = hook.delivered_mirror {
                 delivered.set(delivered.get().saturating_add(1));

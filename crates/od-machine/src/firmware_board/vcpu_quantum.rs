@@ -227,6 +227,8 @@ fn quantum_loop(
             delivered_mirror: None,
             counters: &mut counters,
             skip_first_boundary,
+            device_accesses: None,
+            polled: None,
         }),
         None,
         None,

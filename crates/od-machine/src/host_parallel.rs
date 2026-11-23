@@ -851,6 +851,8 @@ impl HostBoardIrqSource<'_> {
             counters: &mut counters,
             delivered_mirror: None,
             skip_first_boundary: *skip_first_boundary,
+            device_accesses: None,
+            polled: None,
         };
         let outcome = deliver_pending_irq(
             &mut hook,

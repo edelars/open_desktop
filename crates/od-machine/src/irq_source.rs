@@ -64,6 +64,20 @@ pub(crate) trait BoardIrqSource: Send {
     fn wake_ns(&self) -> Option<u64> {
         None
     }
+
+    /// PERF-05: whether the answer of [`Self::pending_vector`] stays the same, with no change to
+    /// the source or the devices it reads, as long as no guest access reaches a device through the
+    /// bus (the device-access count of the bus does not move) and no vector was acknowledged. Then
+    /// the board loop may reuse the last answer at the next instruction boundary of the same call.
+    ///
+    /// `true` requires that (a) the board clock does not move inside a call of the set loop, (b)
+    /// the state `pending_vector` reads changes only by a guest port or MMIO access or by
+    /// [`Self::acknowledge`], and (c) asking again without such a change changes nothing in the
+    /// source (counters and statistics included). `false` by default: the source is asked at every
+    /// boundary.
+    fn stable_between_device_accesses(&self) -> bool {
+        false
+    }
 }
 
 /// The source of a board without any interrupt controller: never a vector, never a deadline.
@@ -104,6 +118,14 @@ pub(crate) struct IrqCounters {
     pub(crate) halt_idle_ns: u64,
 }
 
+/// PERF-05: the last answer of `pending_vector` and the device-access count of the bus at the
+/// moment it was asked.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PolledVector {
+    pub(crate) vector: Option<u8>,
+    pub(crate) device_accesses: u64,
+}
+
 /// The hook the set loop gets for one call: the source, the counters and whether the first
 /// boundary is inside a partial REP.
 pub(crate) struct IrqBoundaryHook<'a> {
@@ -114,6 +136,13 @@ pub(crate) struct IrqBoundaryHook<'a> {
     /// The call resumes a partial REP (`RepIterationBudgetExhausted`): the first boundary is in
     /// the middle of the REP, nothing is delivered there.
     pub(crate) skip_first_boundary: bool,
+    /// PERF-05: the count of guest device accesses of the bus
+    /// ([`crate::bus::MachineBus::device_access_counter`]). `None`: the source is asked at every
+    /// boundary.
+    pub(crate) device_accesses: Option<&'a std::sync::atomic::AtomicU64>,
+    /// PERF-05: the last answer of the source in this call; `None` before the first question and
+    /// after a delivery.
+    pub(crate) polled: Option<PolledVector>,
 }
 
 #[cfg(test)]

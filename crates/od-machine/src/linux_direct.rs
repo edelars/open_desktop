@@ -16383,6 +16383,8 @@ mod tests {
                     counters,
                     delivered_mirror,
                     skip_first_boundary,
+                    device_accesses: None,
+                    polled: None,
                 }),
             );
             (state, report)

@@ -4047,6 +4047,9 @@ impl LoadedFirmwareBoard {
                     counters: &mut irq_counters,
                     delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
                     skip_first_boundary: partial_rep,
+                    // PERF-05: the count of the guest device accesses of this bus.
+                    device_accesses: Some(&*device_accesses),
+                    polled: None,
                 }),
                 board.checkpoints.as_mut(),
                 execution_observations.as_mut(),
@@ -9311,6 +9314,97 @@ mod tests {
         assert_eq!(interrupts.pic_icw2, Some(0x30));
     }
 
+    /// PERF-05: the guest unmasks IR0 by a write to port 0x21 while the edge sits in the IRR; the
+    /// vector is delivered at the very boundary after the `out`, not later: the instruction after
+    /// it (`mov ebx, 0x1234`) has not run when the handler starts. The saved answer of the source
+    /// (nothing pending while IR0 was masked) must not survive the write to the 8259.
+    #[test]
+    fn unmasking_ir0_by_a_port_write_delivers_at_the_boundary_after_the_out() {
+        const IDT: u64 = 0x2000;
+        const HANDLER_OFFSET: usize = 0x80;
+        let mut code = Vec::new();
+        // The master 8259 with every line masked (OCW1 0xFF), then PIT channel 0 in mode 2 with a
+        // reload of 2 (an edge every ~1.7 us of virtual time).
+        for (port, value) in [
+            (0x20u8, 0x11u8),
+            (0x21, 0x30),
+            (0x21, 0x04),
+            (0x21, 0x01),
+            (0x21, 0xFF),
+            (0x43, 0x34),
+            (0x40, 0x02),
+            (0x40, 0x00),
+        ] {
+            code.extend_from_slice(&[0xB0, value, 0xE6, port]);
+        }
+        code.push(0xFB); // sti
+        // A delay of ~6000 instructions: `mov ecx, 3000; dec ecx; jnz -4`. Edges latch in the IRR.
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC]);
+        code.extend_from_slice(&[0xB0, 0xFE, 0xE6, 0x21]); // unmask IR0
+        code.extend_from_slice(&[0xBB, 0x34, 0x12, 0x00, 0x00]); // mov ebx, 0x1234
+        code.push(0xF4); // hlt
+        assert!(code.len() < HANDLER_OFFSET);
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]); // EOI; hlt at IF = 0
+        let mut board = load_firmware_image(&minor2_image(&code), &linux_config()).unwrap();
+        let entry = board.state().rip;
+        let handler = entry + HANDLER_OFFSET as u64;
+        let mut write = |address: u64, bytes: &[u8]| {
+            for (index, byte) in bytes.iter().enumerate() {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address + index as u64),
+                        AccessWidth::Byte,
+                        u64::from(*byte),
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+        };
+        write(8, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&8u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        write(IDT + 0x30 * 16, &gate);
+        let state = board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: IDT,
+            limit: 0xFFF,
+        });
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9B,
+            flags: 0xA,
+        });
+        let run = crate::run_firmware_unified(&mut board, 100_000).unwrap();
+        let interrupts = &run.interrupts;
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(interrupts.irqs_delivered, 1, "{run:?}");
+        assert_eq!(interrupts.halt_stop, Some("if_clear"));
+        assert_eq!(
+            board.state().rip,
+            handler + 5,
+            "stopped after the handler's hlt"
+        );
+        assert_eq!(
+            board.state().gpr[od_isa::Register::Rbx as usize],
+            0,
+            "the delivery came before the instruction after the out"
+        );
+        assert_eq!(
+            board.state().gpr[od_isa::Register::Rcx as usize],
+            0,
+            "the delay ran out"
+        );
+        assert!(interrupts.irq0_edges >= 1);
+    }
+
     #[test]
     fn run_firmware_unified_refuses_boards_it_cannot_run_and_leaves_them_untouched() {
         const NEEDS_LINUX_PROFILE: &str =
@@ -11270,6 +11364,8 @@ mod tests {
                 .with_halt(&halt)
                 .with_sti(&sti);
             let cr3 = board.cr3();
+            // PERF-05: the hook carries the device-access count of the bus, as the board loop's.
+            let device_accesses = board.bus().device_access_counter();
             run_cpl0_set_paged_2m_ram_with_cache(
                 state,
                 board.bus_mut(),
@@ -11294,6 +11390,8 @@ mod tests {
                     counters,
                     delivered_mirror: None,
                     skip_first_boundary: false,
+                    device_accesses: Some(&*device_accesses),
+                    polled: None,
                 }),
                 None,
                 None,
@@ -11398,6 +11496,113 @@ mod tests {
                 (false, true),
                 "vCPU 0 is still in service"
             );
+        }
+
+        /// PERF-05: a source that counts its questions; the vector it answers is fixed.
+        struct CountingSource {
+            polls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+            stable: bool,
+            vector: Option<u8>,
+        }
+
+        impl CountingSource {
+            fn new(
+                stable: bool,
+                vector: Option<u8>,
+            ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+                let polls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                (
+                    Self {
+                        polls: polls.clone(),
+                        stable,
+                        vector,
+                    },
+                    polls,
+                )
+            }
+        }
+
+        impl BoardIrqSource for CountingSource {
+            fn pending_vector(&self) -> Option<u8> {
+                self.polls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.vector
+            }
+
+            fn acknowledge(&mut self, _vector: u8) {}
+
+            fn next_deadline_ns(&self) -> Option<u64> {
+                None
+            }
+
+            fn stable_between_device_accesses(&self) -> bool {
+                self.stable
+            }
+        }
+
+        /// PERF-05: a source that does not claim stability is asked at every boundary, also when
+        /// no device is reached (the hook has the count of device accesses).
+        #[test]
+        fn a_source_that_is_not_stable_is_asked_at_every_boundary() {
+            let (mut board, mut state) = board_and_state(&[0x90; 8]);
+            let (mut source, polls) = CountingSource::new(false, None);
+            let mut counters = IrqCounters::default();
+            let report = run(&mut board, 0, &mut state, 8, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 8, "{report:?}");
+            assert_eq!(polls.load(std::sync::atomic::Ordering::Relaxed), 8);
+        }
+
+        /// PERF-05: a stable source is asked at the first boundary of the call and again only after a
+        /// guest access reached a device (here a port read: `in al, 0x21`, then 3 `nop`).
+        #[test]
+        fn a_stable_source_is_asked_again_only_after_a_device_access() {
+            let (mut board, mut state) = board_and_state(&[0x90; 8]);
+            let (mut source, polls) = CountingSource::new(true, None);
+            let mut counters = IrqCounters::default();
+            let report = run(&mut board, 0, &mut state, 8, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 8, "{report:?}");
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "no device access: one question for the 8 boundaries"
+            );
+
+            let (mut board, mut state) = board_and_state(&[0xE4, 0x21, 0x90, 0x90, 0x90]);
+            let before = board
+                .bus()
+                .device_access_counter()
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let (mut source, polls) = CountingSource::new(true, None);
+            let report = run(&mut board, 0, &mut state, 4, &mut source, &mut counters);
+            assert_eq!(report.instructions_executed, 4, "{report:?}");
+            let after = board
+                .bus()
+                .device_access_counter()
+                .load(std::sync::atomic::Ordering::Relaxed);
+            assert!(after > before, "the port read reached a device");
+            // Boundary 1 asks; the boundary after the port read asks again; the last two reuse.
+            assert_eq!(polls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        }
+
+        /// PERF-05: the refusal counters count at every boundary on the saved answer.
+        #[test]
+        fn the_refusal_counters_count_every_boundary_on_a_saved_answer() {
+            for stable in [false, true] {
+                let (mut board, mut state) = board_and_state(&[0x90; 8]);
+                state.rflags = 2; // IF = 0
+                let (mut source, polls) = CountingSource::new(stable, Some(VECTOR));
+                let mut counters = IrqCounters::default();
+                let report = run(&mut board, 0, &mut state, 5, &mut source, &mut counters);
+                assert_eq!(report.instructions_executed, 5, "{report:?}");
+                assert_eq!(counters.irq_refused_masked, 5, "stable = {stable}");
+                assert_eq!(counters.irq_refused_shadow, 0);
+                assert_eq!(counters.irqs_delivered, 0);
+                assert_eq!(
+                    polls.load(std::sync::atomic::Ordering::Relaxed),
+                    if stable { 1 } else { 5 },
+                    "stable = {stable}"
+                );
+            }
         }
     }
 }

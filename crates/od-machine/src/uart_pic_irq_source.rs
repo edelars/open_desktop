@@ -114,6 +114,13 @@ impl BoardIrqSource for UartPicIrqSource {
         self.0.pit_pic.irq0_edges()
     }
 
+    /// PERF-05: the UART level is a pure function of the UART registers (a guest port access, the
+    /// pumps between quanta); a repeated `sample` of an unchanged level changes nothing. The rest is
+    /// the PIT source. See CPU_CORE_PERF_REPORT.md, 7.6.
+    fn stable_between_device_accesses(&self) -> bool {
+        self.0.pit_pic.stable_between_device_accesses()
+    }
+
     fn wake_ns(&self) -> Option<u64> {
         self.sample();
         self.0.pit_pic.wake_ns()

@@ -241,6 +241,13 @@ impl BoardIrqSource for PitPicIrqSource {
         self.inner().stats.edges
     }
 
+    /// PERF-05: inside one call of the set loop the answer depends only on the clock (does not
+    /// move), the PIT, 8259 and the queue state (a guest port access, `acknowledge`); a repeated
+    /// `catch_up` for the same clock value returns at once. See CPU_CORE_PERF_REPORT.md, 7.6.
+    fn stable_between_device_accesses(&self) -> bool {
+        true
+    }
+
     fn wake_ns(&self) -> Option<u64> {
         let mut inner = self.inner();
         inner.catch_up();
