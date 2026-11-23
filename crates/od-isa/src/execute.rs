@@ -66493,27 +66493,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.rflags = flags;
         }
         Operation::Arithmetic { kind, dst, src } => {
-            let arithmetic = (|| {
-                let lhs = read_rmw_destination(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    dst,
-                    &instruction,
-                    control_policy.is_some(),
-                )?;
-                let rhs = read_operand(state, memory, context, next_rip, src)?;
-                let (result, flags) =
-                    arithmetic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
-                // Neither flags nor CPU aliases commit until a potentially
-                // faulting destination write has completed transactionally.
-                if kind != ArithmeticKind::Cmp {
-                    write_operand(state, memory, context, next_rip, dst, result)?;
-                }
-                state.rflags = flags;
-                Ok::<_, MemoryError>(())
-            })();
+            let arithmetic = exec_arithmetic(
+                state,
+                memory,
+                context,
+                next_rip,
+                &instruction,
+                control_policy.is_some(),
+                kind,
+                dst,
+                src,
+            );
             match arithmetic {
                 Ok(()) => {}
                 Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
@@ -66521,25 +66511,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::Logic { kind, dst, src } => {
-            let logic = (|| {
-                let lhs = read_rmw_destination(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    dst,
-                    &instruction,
-                    control_policy.is_some(),
-                )?;
-                let rhs = read_operand(state, memory, context, next_rip, src)?;
-                let (result, flags) =
-                    logic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
-                if kind != LogicKind::Test {
-                    write_operand(state, memory, context, next_rip, dst, result)?;
-                }
-                state.rflags = flags;
-                Ok::<_, MemoryError>(())
-            })();
+            let logic = exec_logic(
+                state,
+                memory,
+                context,
+                next_rip,
+                &instruction,
+                control_policy.is_some(),
+                kind,
+                dst,
+                src,
+            );
             match logic {
                 Ok(()) => {}
                 Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
@@ -66623,43 +66605,19 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             count,
             ..
         } => {
-            let shift = (|| {
-                let raw_count = read_operand(state, memory, context, next_rip, count)? as u8;
-                let count = shift_count(kind, instruction.operand_size, raw_count);
-                let lhs = read_rmw_destination(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    dst,
-                    &instruction,
-                    control_policy.is_some(),
-                )?;
-                let source = match source {
-                    Some(source) => read_operand(state, memory, context, next_rip, source)?,
-                    None => 0,
-                };
-                let (result, flags) = shift_result(
-                    instruction.operand_size,
-                    kind,
-                    lhs,
-                    source,
-                    count,
-                    raw_count
-                        & if instruction.operand_size == OperandSize::Qword {
-                            0x3f
-                        } else {
-                            0x1f
-                        },
-                    state.rflags,
-                );
-                write_operand(state, memory, context, next_rip, dst, result)?;
-                state.rflags = flags;
-                *rflags_defined = instruction
-                    .flag_effects_for_count(raw_count)
-                    .apply(*rflags_defined);
-                Ok::<_, MemoryError>(())
-            })();
+            let shift = exec_shift(
+                state,
+                memory,
+                context,
+                next_rip,
+                rflags_defined,
+                &instruction,
+                control_policy.is_some(),
+                kind,
+                dst,
+                source,
+                count,
+            );
             match shift {
                 Ok(()) => {}
                 Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
@@ -66674,13 +66632,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             displacement,
         } => {
             if condition.evaluate(state.rflags) {
-                let target = next_rip.wrapping_add_signed(i64::from(displacement));
-                if !canonical(target) {
-                    let MemoryError::Architectural(fault) = general_protection() else {
-                        unreachable!()
-                    };
-                    return Ok(StepOutcome::Fault(fault));
-                }
+                let target = match relative_target(next_rip, displacement) {
+                    Ok(target) => target,
+                    Err(fault) => return Ok(StepOutcome::Fault(fault)),
+                };
                 state.rip = target;
                 return Ok(StepOutcome::Branched);
             }
@@ -66691,13 +66646,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             });
         }
         Operation::Jump { displacement } => {
-            let target = next_rip.wrapping_add_signed(i64::from(displacement));
-            if !canonical(target) {
-                let MemoryError::Architectural(fault) = general_protection() else {
-                    unreachable!()
-                };
-                return Ok(StepOutcome::Fault(fault));
-            }
+            let target = match relative_target(next_rip, displacement) {
+                Ok(target) => target,
+                Err(fault) => return Ok(StepOutcome::Fault(fault)),
+            };
             state.rip = target;
             return Ok(StepOutcome::Branched);
         }
@@ -77371,6 +77323,137 @@ fn conditional_move(
         state.write(destination, state.read(destination));
     }
     Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017):
+/// register/memory ALU arithmetic. The caller maps `MemoryError::Architectural` to a fault.
+#[allow(clippy::too_many_arguments)]
+fn exec_arithmetic(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    instruction: &long_decode::Instruction,
+    control_policy: bool,
+    kind: ArithmeticKind,
+    dst: Operand,
+    src: Operand,
+) -> Result<(), MemoryError> {
+    let lhs = read_rmw_destination(
+        state,
+        memory,
+        context,
+        next_rip,
+        dst,
+        instruction,
+        control_policy,
+    )?;
+    let rhs = read_operand(state, memory, context, next_rip, src)?;
+    let (result, flags) = arithmetic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
+    // Neither flags nor CPU aliases commit until a potentially
+    // faulting destination write has completed transactionally.
+    if kind != ArithmeticKind::Cmp {
+        write_operand(state, memory, context, next_rip, dst, result)?;
+    }
+    state.rflags = flags;
+    Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017): logic operations.
+#[allow(clippy::too_many_arguments)]
+fn exec_logic(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    instruction: &long_decode::Instruction,
+    control_policy: bool,
+    kind: LogicKind,
+    dst: Operand,
+    src: Operand,
+) -> Result<(), MemoryError> {
+    let lhs = read_rmw_destination(
+        state,
+        memory,
+        context,
+        next_rip,
+        dst,
+        instruction,
+        control_policy,
+    )?;
+    let rhs = read_operand(state, memory, context, next_rip, src)?;
+    let (result, flags) = logic_result(instruction.operand_size, kind, lhs, rhs, state.rflags);
+    if kind != LogicKind::Test {
+        write_operand(state, memory, context, next_rip, dst, result)?;
+    }
+    state.rflags = flags;
+    Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017): shifts and
+/// SHLD/SHRD, including the flag definedness update after the destination write.
+#[allow(clippy::too_many_arguments)]
+fn exec_shift(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    rflags_defined: &mut u64,
+    instruction: &long_decode::Instruction,
+    control_policy: bool,
+    kind: ShiftKind,
+    dst: Operand,
+    source: Option<Operand>,
+    count: Operand,
+) -> Result<(), MemoryError> {
+    let raw_count = read_operand(state, memory, context, next_rip, count)? as u8;
+    let count = shift_count(kind, instruction.operand_size, raw_count);
+    let lhs = read_rmw_destination(
+        state,
+        memory,
+        context,
+        next_rip,
+        dst,
+        instruction,
+        control_policy,
+    )?;
+    let source = match source {
+        Some(source) => read_operand(state, memory, context, next_rip, source)?,
+        None => 0,
+    };
+    let (result, flags) = shift_result(
+        instruction.operand_size,
+        kind,
+        lhs,
+        source,
+        count,
+        raw_count
+            & if instruction.operand_size == OperandSize::Qword {
+                0x3f
+            } else {
+                0x1f
+            },
+        state.rflags,
+    );
+    write_operand(state, memory, context, next_rip, dst, result)?;
+    state.rflags = flags;
+    *rflags_defined = instruction
+        .flag_effects_for_count(raw_count)
+        .apply(*rflags_defined);
+    Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017): the target of a
+/// relative `Jcc`/`JMP`; a non-canonical target is a #GP fault.
+fn relative_target(next_rip: u64, displacement: i32) -> Result<u64, ArchitecturalFault> {
+    let target = next_rip.wrapping_add_signed(i64::from(displacement));
+    if !canonical(target) {
+        let MemoryError::Architectural(fault) = general_protection() else {
+            unreachable!()
+        };
+        return Err(fault);
+    }
+    Ok(target)
 }
 
 fn read_operand(
