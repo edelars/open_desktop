@@ -1812,6 +1812,9 @@ pub struct FirmwareUnifiedRun {
     pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
     /// The fast-path check of the run (PERF-22): `None` when it was not asked for.
     pub fast_path_check: Option<FastPathCheckReport>,
+    /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
+    /// over the life of the board's cache: `None` when it was not enabled.
+    pub block_stats: Option<crate::DecodedBlockCacheStats>,
 }
 
 /// What the fast-path check (PERF-22, ADR-0017 section 5) did in a unified run: how many
@@ -2109,6 +2112,13 @@ pub fn run_firmware_unified_with_fast_path(
         set
     };
     let set = if fast_path { set.with_fast_path() } else { set };
+    // PERF-31 (ADR-0018, variant (a), prototype): the board was asked for the predecoded block
+    // cache; the set uses it only with the fast path, without the check, in batched calls.
+    let set = if board.block_cache_prototype() {
+        set.with_block_cache_prototype()
+    } else {
+        set
+    };
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board
@@ -2287,6 +2297,7 @@ pub fn run_firmware_unified_with_fast_path(
         call_trace,
         op_histogram,
         fast_path_check,
+        block_stats: board.block_cache_stats(),
     })
 }
 
@@ -14700,6 +14711,7 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");
@@ -20645,4 +20657,8 @@ mod tests {
     // ---- PERF-10: the decoded-instruction cache ----
 
     mod decoded_instruction_cache;
+
+    // ---- PERF-31: the predecoded block cache (prototype) ----
+
+    mod decoded_block_cache;
 }

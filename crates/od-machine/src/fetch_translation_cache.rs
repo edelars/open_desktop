@@ -552,6 +552,20 @@ impl FetchTranslationCache {
         self.inner.borrow().stats
     }
 
+    /// PERF-31: the number of times entries were dropped (every flush counter of the stats summed),
+    /// read by the block check of the set loop: an unchanged count means that every entry present
+    /// when it was read is still present and unchanged (an insert replaces an entry only on a fetch
+    /// miss, which a block never makes).
+    pub(crate) fn drops(&self) -> u64 {
+        let stats = self.inner.borrow().stats;
+        stats.write_flushes
+            + stats.context_flushes
+            + stats.invlpg_flushes
+            + stats.control_flushes
+            + stats.fault_flushes
+            + stats.host_flushes
+    }
+
     /// Drop every entry on a host event the page generations cannot show (S4-14i). Counted in
     /// `host_flushes`.
     #[cfg_attr(not(test), allow(dead_code))]

@@ -14,6 +14,7 @@ use crate::console_output_context::{
     capture_frame_chain,
 };
 use crate::crc32::crc32_ieee;
+use crate::decoded_block_cache::{DecodedBlockCache, DecodedBlockCacheStats};
 use crate::decoded_instruction_cache::DecodedInstructionCache;
 use crate::execution_observations::{
     LinuxExecutionObservationCollector, LinuxExecutionObservations, RdtscClockReadCompletion,
@@ -1614,6 +1615,11 @@ pub struct LoadedFirmwareBoard {
     /// qword reads through a data translation cache of one quantum. Off unless
     /// [`Self::enable_data_cache_prototype`]; diagnostic runs never use it.
     data_cache_prototype: bool,
+    /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded block cache of the unified set
+    /// loop, `None` unless [`Self::enable_block_cache_prototype`]. It lives between quanta like
+    /// the decoded-instruction cache, is used under its conditions (an ordinary run) and only by
+    /// batched calls, and is emptied with it.
+    block_cache: Option<DecodedBlockCache>,
     fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
@@ -2087,6 +2093,9 @@ impl LoadedFirmwareBoard {
         let entry = source.entry.clone();
         self.reset_cpu_complex(entry, FIRMWARE_EFER)?;
         self.decoded_instruction_cache.reset();
+        if let Some(blocks) = &self.block_cache {
+            blocks.reset();
+        }
         if kind == PlatformResetKind::Cold {
             self.clear_ram()?;
         }
@@ -2136,6 +2145,10 @@ impl LoadedFirmwareBoard {
     /// reset does it itself).
     pub(crate) fn reset_decoded_instruction_cache(&self) {
         self.decoded_instruction_cache.reset();
+        // PERF-31: the predecoded blocks follow the same rule.
+        if let Some(blocks) = &self.block_cache {
+            blocks.reset();
+        }
     }
 
     /// PERF-10: the decoded-instruction cache of this board (the tests of the cache read its counters).
@@ -2819,6 +2832,28 @@ impl LoadedFirmwareBoard {
     /// observation) keeps every walk whatever this says.
     pub fn enable_data_cache_prototype(&mut self) {
         self.data_cache_prototype = true;
+    }
+
+    /// PERF-31 (ADR-0018, variant (a), prototype): the unified set loop of the next runs executes
+    /// the fast path from predecoded straight-line blocks (see `od_isa::predecoded_block`) when the
+    /// run has the fast path and batched calls; the cache lives between quanta. Off by default; a
+    /// diagnostic run (a sweep, the fetch cache report, an execution observation) and a run with the
+    /// fast-path check never use it.
+    pub fn enable_block_cache_prototype(&mut self) {
+        if self.block_cache.is_none() {
+            self.block_cache = Some(DecodedBlockCache::default());
+        }
+    }
+
+    /// PERF-31: whether [`Self::enable_block_cache_prototype`] was called.
+    pub fn block_cache_prototype(&self) -> bool {
+        self.block_cache.is_some()
+    }
+
+    /// PERF-31: the counters of the predecoded block cache (ADR-0018, section 5, M1), `None` unless
+    /// it was enabled.
+    pub fn block_cache_stats(&self) -> Option<DecodedBlockCacheStats> {
+        self.block_cache.as_ref().map(DecodedBlockCache::stats)
     }
 
     /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
@@ -4105,6 +4140,12 @@ impl LoadedFirmwareBoard {
                 board.instruction_batches
                     && !board.fetch_cache_report_enabled
                     && fetch_sweep.is_none(),
+                // PERF-31 (ADR-0018, variant (a), prototype): under the conditions of the
+                // decoded-instruction cache; the loop also requires batched calls.
+                board
+                    .block_cache
+                    .as_ref()
+                    .filter(|_| decoded_cache.is_some()),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -5293,6 +5334,7 @@ impl AssembledBoard {
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
+            block_cache: None,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -5391,6 +5433,7 @@ impl AssembledBoard {
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
+            block_cache: None,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -9467,6 +9510,82 @@ mod tests {
                 // The first read walks; the other stack reads of the same page hit.
                 assert!(counters.inserts >= 1, "{counters:?}");
                 assert!(counters.hits >= 3, "{counters:?}");
+            }
+        }
+    }
+
+    /// PERF-31 (ADR-0018, variant (a), prototype): with the predecoded block cache the unified run
+    /// (retired, quanta, exit, virtual time), the state, COM1 and the RAM are those of the run
+    /// without it, with the fast path; instructions really ran from blocks, the flag alone without
+    /// the fast path changes nothing, and the cache is not used unless asked for.
+    #[test]
+    fn the_unified_run_with_the_block_cache_prototype_equals_the_run_without_it() {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        #[rustfmt::skip]
+        let program = [
+            0xB9, 0x32, 0x00, 0x00, 0x00,       // 0x00 mov ecx, 50
+            0x48, 0x89, 0x4C, 0x24, 0xF8,       // 0x05 L: mov [rsp-8], rcx
+            0x48, 0x8B, 0x44, 0x24, 0xF8,       // 0x0A mov rax, [rsp-8]
+            0x48, 0x01, 0xC2,                   // 0x0F add rdx, rax
+            0x50,                               // 0x12 push rax
+            0x5B,                               // 0x13 pop rbx
+            0xE8, 0x0F, 0x00, 0x00, 0x00,       // 0x14 call F (0x28)
+            0x66, 0xBA, 0xF8, 0x03,             // 0x19 mov dx, 0x3f8
+            0xB0, 0x41,                         // 0x1D mov al, 'A'
+            0xEE,                               // 0x1F out dx, al
+            0x31, 0xD2,                         // 0x20 xor edx, edx
+            0xFF, 0xC9,                         // 0x22 dec ecx
+            0x75, 0xDF,                         // 0x24 jnz L
+            0xF4,                               // 0x26 hlt
+            0x90,                               // 0x27
+            0x48, 0x83, 0xC6, 0x01,             // 0x28 F: add rsi, 1
+            0xC3,                               // 0x2C ret
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |fast_path: bool, blocks: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            if blocks {
+                board.enable_block_cache_prototype();
+            }
+            let run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                10_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                false,
+                fast_path,
+            )
+            .unwrap();
+            let mut ram = vec![0u8; 0x40_0000];
+            board
+                .bus_mut()
+                .read_flat_bytes(GuestPhysicalAddress::new(0), &mut ram)
+                .unwrap();
+            (run, board, ram)
+        };
+        let (without, plain, plain_ram) = run(true, false);
+        assert_eq!(without.block_stats, None);
+        assert_eq!(without.run.exit, PagedProbeExit::Halted, "{without:?}");
+        assert_eq!(plain.state().gpr[6], 50, "the call ran every pass");
+        assert_eq!(plain.com1_transcript().len(), 50);
+        for fast_path in [true, false] {
+            let (with, blocks, ram) = run(fast_path, true);
+            assert_eq!(with.run, without.run, "fast path {fast_path}");
+            assert_eq!(blocks.state(), plain.state(), "fast path {fast_path}");
+            assert_eq!(blocks.com1_transcript(), plain.com1_transcript());
+            assert!(ram == plain_ram, "RAM differs, fast path {fast_path}");
+            let stats = with.block_stats.expect("the cache was asked for");
+            if fast_path {
+                // Most of the loop runs from blocks: the passes after the first are hits.
+                assert!(stats.hits >= 40, "{stats:?}");
+                assert!(stats.retired >= 40 * 6, "{stats:?}");
+                assert!(stats.retired_in_runs_of_two_or_more > 0, "{stats:?}");
+            } else {
+                // Without the fast path the set does not use the blocks.
+                assert_eq!(stats, DecodedBlockCacheStats::default(), "{stats:?}");
             }
         }
     }

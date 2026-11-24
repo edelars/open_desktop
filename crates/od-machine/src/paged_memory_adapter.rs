@@ -2,6 +2,7 @@
 
 use crate::console_output_context::capture_frame_chain;
 use crate::data_translation_cache::DataTranslationCache;
+use crate::decoded_block_cache::{BlockLookup, DecodedBlockCache};
 use crate::decoded_instruction_cache::DecodedInstructionCache;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackAlignmentPoint,
@@ -44,7 +45,7 @@ use od_isa::execute::{
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
-use od_isa::long_decode::{AddressBase, Instruction, Operand, Operation};
+use od_isa::long_decode::{AddressBase, DecodedBlock, Instruction, Operand, Operation};
 use od_isa::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
     MemoryError, PageFaultRecord, PrivilegeLevel,
@@ -2507,6 +2508,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         None,
         false,
         false,
+        None,
     )
 }
 
@@ -2541,6 +2543,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     decoded: Option<&DecodedInstructionCache>,
     data_cache: bool,
     batch: bool,
+    blocks: Option<&DecodedBlockCache>,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
@@ -2578,6 +2581,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
         decoded,
         data_cache.as_ref(),
         batch,
+        blocks,
     )
 }
 
@@ -2642,6 +2646,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         decoded,
         None,
         false,
+        None,
     )
 }
 
@@ -2732,6 +2737,7 @@ pub(crate) fn run_cpl0_set_loop(
     decoded: Option<&DecodedInstructionCache>,
     data_cache: Option<&DataTranslationCache>,
     batch: bool,
+    blocks: Option<&DecodedBlockCache>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2777,6 +2783,7 @@ pub(crate) fn run_cpl0_set_loop(
             decoded,
             data_cache,
             batch,
+            blocks,
         );
     }
     match (trace, elf) {
@@ -2805,6 +2812,7 @@ pub(crate) fn run_cpl0_set_loop(
             decoded,
             data_cache,
             batch,
+            blocks,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
@@ -2831,6 +2839,7 @@ pub(crate) fn run_cpl0_set_loop(
             decoded,
             data_cache,
             batch,
+            blocks,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
@@ -2857,6 +2866,7 @@ pub(crate) fn run_cpl0_set_loop(
             decoded,
             data_cache,
             batch,
+            blocks,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
@@ -2883,6 +2893,7 @@ pub(crate) fn run_cpl0_set_loop(
             decoded,
             data_cache,
             batch,
+            blocks,
         ),
     }
 }
@@ -2917,6 +2928,7 @@ fn run_cpl0_set_loop_impl<
     decoded: Option<&DecodedInstructionCache>,
     data_cache: Option<&DataTranslationCache>,
     batch: bool,
+    blocks: Option<&DecodedBlockCache>,
 ) -> PagedCpl0SetReport {
     // ADR-0017, section 3: a traced run keeps the general path (PERF-23 fast path off).
     let set_without_fast_path;
@@ -3063,6 +3075,13 @@ fn run_cpl0_set_loop_impl<
             .as_deref()
             .is_none_or(|recorder| !recorder.wants_boundary());
     let mut carried: Option<CarriedBoundary> = None;
+    // PERF-31 (ADR-0018, variant (a), prototype): the predecoded block cache serves only a batched
+    // ordinary run that has the decoded-instruction cache (its gate and its generation rule); it is
+    // bound to the memory of the run like that cache.
+    let blocks = blocks.filter(|_| batch && decoded.is_some());
+    if let Some(blocks) = blocks {
+        blocks.bind_memory(std::ptr::from_ref(bus.ram()) as usize);
+    }
     let (exit, page_fault, memory_error) = loop {
         let carried_boundary = carried.take();
         let stopped = match carried_boundary {
@@ -3360,6 +3379,7 @@ fn run_cpl0_set_loop_impl<
         memory.capture_page_fault_trace = execution_observations.is_some();
         memory.descriptor_gate = split_gate;
         memory.decoded.cache = decoded;
+        memory.decoded.blocks = blocks;
         memory.data_cache = data_cache;
         let run_config = RunConfig {
             instruction_budget: call_budget,
@@ -3835,6 +3855,13 @@ fn run_cpl0_set_loop_impl<
             && let Some(data_cache) = data_cache
         {
             data_cache.flush();
+        }
+        // PERF-31: and every predecoded block (ADR-0018; the fetch cache gate of a lookup would
+        // miss anyway until the page is fetched again under the new context).
+        if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
+            && let Some(blocks) = blocks
+        {
+            blocks.flush();
         }
         if matches!(
             result.exit,
@@ -5475,6 +5502,50 @@ struct DecodedStep<'a> {
     /// A fetch of the current decode left the 4 KiB page of the RIP (a lookahead, a cross-page
     /// instruction): the decode is not remembered.
     outside_page: bool,
+    /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded block cache, handed over by the
+    /// set loop of an ordinary batched run of the board that asked for it; `None` everywhere else.
+    blocks: Option<&'a DecodedBlockCache>,
+    /// PERF-31: the block the last `cached_block` answered, while it holds. It outlives the
+    /// instruction boundaries of a batched call (`begin_batched_instruction` keeps it).
+    active_block: Option<ActiveBlock>,
+}
+
+/// PERF-31: what a further instruction of the active block needs to be served from it: the page
+/// generation and the count of fetch cache drops as of the lookup that answered the block.
+#[derive(Clone, Copy)]
+struct ActiveBlock {
+    region: usize,
+    page_index: usize,
+    generation: u64,
+    fetch_drops: u64,
+}
+
+/// PERF-31: the bytes of one plain-RAM frame the fetch translation cache holds for the page of a
+/// block, read without any effect (no walk, no counter): the code view of `predecode_block`, which
+/// itself keeps every fetch on the page of the first RIP.
+struct FrameCode<'m> {
+    ram: &'m crate::PhysicalMemory,
+    frame: crate::physical_memory::RamFrame,
+}
+
+impl GuestMemory for FrameCode<'_> {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        self.ram
+            .read_ram_frame_u8(self.frame, address)
+            .ok_or_else(|| MemoryError::Backend("predecode: not a byte of the frame".into()))
+    }
+
+    fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("predecode reads no data".into()))
+    }
+
+    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("predecode writes nothing".into()))
+    }
+
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend("predecode has no fence".into()))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -6069,6 +6140,93 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         }
     }
 
+    /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded block at `rip` under the
+    /// conditions of [`Self::decoded_cache_lookup`] (the same gate, the translation of the page held
+    /// by the fetch cache for this paging snapshot and context, the generation of the code page read
+    /// before any byte), built on a miss from the bytes of the frame the fetch cache holds (no walk,
+    /// no counter of the fetch path moves except the one peek of the decoded-instruction cache's
+    /// gate). The answer becomes the active block that [`Self::block_still_holds`] checks.
+    fn block_lookup(&mut self, rip: u64, context: AccessContext) -> Option<DecodedBlock> {
+        self.decoded.active_block = None;
+        let blocks = self.decoded.blocks?;
+        let fetch_cache = self.fetch_cache?;
+        if !(self.cpl0_set_cross_page_fetch
+            && self.large_ram_profile
+            && !self.capture_effects
+            && !self.read_only_qword
+            && fetch_cache.invalidation() == FetchCacheInvalidation::WriteWatch
+            && !fetch_cache.sweep_active()
+            && rip == self.instruction_rip)
+        {
+            return None;
+        }
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let fetch_drops = fetch_cache.drops();
+        let frame = fetch_cache.lookup(rip, &self.paging, context)?;
+        let ram = self.bus.ram_ref()?;
+        let page = ram.ram_frame_code_page(frame, rip)?;
+        let page_index = ram.ram_code_page_index(page)?;
+        let block = match blocks.lookup(rip, context, page) {
+            BlockLookup::Block(block) => block,
+            BlockLookup::Empty => return None,
+            BlockLookup::Miss => {
+                let built = od_isa::predecoded_block::predecode_block(
+                    &mut FrameCode { ram, frame },
+                    rip,
+                    context,
+                    od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS,
+                );
+                let block = (!built.is_empty()).then(|| DecodedBlock::from(built));
+                blocks.insert(rip, context, page, block.clone());
+                block?
+            }
+        };
+        self.decoded.active_block = Some(ActiveBlock {
+            region: page.region,
+            page_index,
+            generation: page.generation,
+            fetch_drops,
+        });
+        Some(block)
+    }
+
+    /// PERF-31: whether the next instruction of the active block may be served from it: no fetch
+    /// cache entry was dropped since the lookup (so the translation of the page and its rights are
+    /// still the ones the fetch would use, and a fetch would walk nothing) and the generation of
+    /// the code page is the one the block was looked up under (so its bytes are those the block was
+    /// decoded from). Within a batched call nothing else changes what a fetch of the page would
+    /// see: the paging snapshot is the call's, and an insert into the fetch cache needs a fetch.
+    #[inline(always)]
+    fn block_still_holds(&mut self) -> bool {
+        let Some(active) = self.decoded.active_block else {
+            return false;
+        };
+        let holds = !self.capture_effects
+            && match (
+                self.decoded.blocks,
+                self.fetch_cache,
+                self.bus.ram_ref().and_then(|ram| {
+                    ram.ram_code_page_generation_at(active.region, active.page_index)
+                }),
+            ) {
+                (Some(blocks), Some(fetch_cache), Some(generation)) => blocks.block_holds(
+                    (active.generation, generation),
+                    (active.fetch_drops, fetch_cache.drops()),
+                ),
+                _ => false,
+            };
+        if !holds {
+            self.decoded.active_block = None;
+            if let Some(blocks) = self.decoded.blocks {
+                blocks.note_holds_failed();
+            }
+        }
+        holds
+    }
+
     fn access_cross_page_read(
         &mut self,
         address: u64,
@@ -6404,6 +6562,22 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
 
     fn remember_instruction(&mut self, rip: u64, context: AccessContext, instruction: Instruction) {
         self.decoded_cache_remember(rip, context, instruction);
+    }
+
+    fn cached_block(&mut self, rip: u64, context: AccessContext) -> Option<DecodedBlock> {
+        self.block_lookup(rip, context)
+    }
+
+    #[inline(always)]
+    fn block_holds(&mut self) -> bool {
+        self.block_still_holds()
+    }
+
+    #[inline(always)]
+    fn block_retired(&mut self, index: usize) {
+        if let Some(blocks) = self.decoded.blocks {
+            blocks.note_retired(index);
+        }
     }
 
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {

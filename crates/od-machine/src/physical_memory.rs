@@ -1153,6 +1153,31 @@ impl PhysicalMemory {
         })
     }
 
+    /// PERF-31: the index of the 4 KiB page of `page` among the page generations of its region
+    /// (for [`Self::ram_code_page_generation_at`]); `None` for a page that is not of this memory.
+    pub(crate) fn ram_code_page_index(&self, page: RamCodePage) -> Option<usize> {
+        let region = self.regions.get(page.region)?;
+        let start = region.spec.range.start.get();
+        let index = usize::try_from(
+            (start.checked_add(u64::try_from(page.offset).ok()?)? >> 12) - (start >> 12),
+        )
+        .ok()?;
+        (index < region.page_generations.len()).then_some(index)
+    }
+
+    /// PERF-31: the current generation of page `index` of region `region` (an `Acquire` load, as
+    /// [`Self::ram_frame_code_page`] reads it).
+    #[inline(always)]
+    pub(crate) fn ram_code_page_generation_at(&self, region: usize, index: usize) -> Option<u64> {
+        Some(
+            self.regions
+                .get(region)?
+                .page_generations
+                .get(index)?
+                .load(Ordering::Acquire),
+        )
+    }
+
     pub(crate) fn locate_region_kind(
         &self,
         address: GuestPhysicalAddress,

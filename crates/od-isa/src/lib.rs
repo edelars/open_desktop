@@ -33,6 +33,7 @@ pub mod mmx_int;
 pub mod msr;
 pub mod paging;
 pub mod port_io;
+pub mod predecoded_block;
 pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;

@@ -254,6 +254,34 @@ pub trait GuestMemory {
         _instruction: crate::long_decode::Instruction,
     ) {
     }
+
+    /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded straight-line block this backend
+    /// remembers for the instruction fetch at `rip`, or `None` (the default: no block cache). Asked
+    /// only by a batched run of a set built with `Cpl0ProfileSet::with_block_cache_prototype`
+    /// (see [`crate::predecoded_block`]). A backend that answers must guarantee, for its first
+    /// instruction, what [`Self::cached_instruction`] guarantees: each instruction equals what
+    /// [`crate::long_decode::decode`] would return now at its RIP, and fetching it now would have no
+    /// effect. The answer makes it the active block of the backend. Wrappers do not forward this
+    /// method.
+    fn cached_block(
+        &mut self,
+        _rip: u64,
+        _context: AccessContext,
+    ) -> Option<crate::long_decode::DecodedBlock> {
+        None
+    }
+
+    /// PERF-31: asked before every further instruction of the active block (the one the last
+    /// [`Self::cached_block`] answered), right before it runs: `true` only when the guarantee of
+    /// `cached_block` still holds for it (nothing that a fetch depends on changed since). `false`
+    /// ends the block; the default (no block cache) is `false`.
+    fn block_holds(&mut self) -> bool {
+        false
+    }
+
+    /// PERF-31: the instruction at `index` of the active block retired from the block (diagnostic
+    /// counters only; `index` 0 starts a new run of a block). The default does nothing.
+    fn block_retired(&mut self, _index: usize) {}
     fn read(
         &mut self,
         address: u64,

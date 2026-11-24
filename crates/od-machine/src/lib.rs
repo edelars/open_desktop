@@ -11,6 +11,7 @@ mod clock_owner;
 mod console_output_context;
 mod crc32;
 mod data_translation_cache;
+mod decoded_block_cache;
 mod decoded_instruction_cache;
 mod diagnostic_vcpu;
 mod display_device;
@@ -57,6 +58,8 @@ pub use op_histogram::{OpHistogramEntry, OpHistogramReport};
 pub use data_translation_cache::{
     DATA_CACHE_COUNTED, DataCacheCounters, data_cache_counters, reset_data_cache_counters,
 };
+// PERF-31: the counters of the predecoded block cache prototype (the runner's `unified.block_stats`).
+pub use decoded_block_cache::{BLOCK_RUN_LENGTH_BUCKETS, DecodedBlockCacheStats};
 mod pae_fetch_view;
 mod pae_operand_access;
 mod pae_protected_step;

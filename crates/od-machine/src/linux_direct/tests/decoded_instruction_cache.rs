@@ -101,6 +101,7 @@ fn run_scenario(
                     cached.then_some(&decoded),
                     false,
                     false,
+                    None,
                 );
                 efer = report.efer;
                 state.cr3 = Some(report.cr3);

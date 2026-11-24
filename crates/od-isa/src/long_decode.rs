@@ -3630,6 +3630,11 @@ pub struct Instruction {
     pub operation: Operation,
 }
 
+/// PERF-31 (ADR-0018, variant (a), prototype): a predecoded straight-line block, the instructions
+/// in execution order from its first RIP (see [`crate::predecoded_block`]). Shared, so that the
+/// run loop holds the block it executes while the backend's cache keeps it too.
+pub type DecodedBlock = std::sync::Arc<[Instruction]>;
+
 impl Instruction {
     /// SDM093 scalar instruction flag effects. Undefined bits are metadata,
     /// not assertions about the concrete bits a particular CPU produces.

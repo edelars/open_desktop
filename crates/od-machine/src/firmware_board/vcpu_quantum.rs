@@ -241,6 +241,8 @@ fn quantum_loop(
         None,
         // PERF-25: nor batched calls (one instruction per call, as before).
         false,
+        // PERF-31: nor the predecoded block cache.
+        None,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -720,6 +722,8 @@ pub(crate) fn run_litmus_ram_quantum(
         None,
         // PERF-25: nor batched calls (one instruction per call, as before).
         false,
+        // PERF-31: nor the predecoded block cache.
+        None,
     );
     quantum_result(report, cpu, vcpu, 0)
 }

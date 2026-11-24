@@ -1975,6 +1975,9 @@ pub struct Cpl0ProfileSet<'a> {
     fast_path_verify: bool,
     /// PERF-23: run the fast path of group G2 in the step (ADR-0017, section 3).
     fast_path: bool,
+    /// PERF-31 (ADR-0018, variant (a), prototype): batched calls run the fast path from the
+    /// predecoded blocks of the memory (see [`crate::predecoded_block`]).
+    block_cache: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -2009,6 +2012,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             syscall: false,
             fast_path_verify: false,
             fast_path: false,
+            block_cache: false,
         }
     }
 
@@ -2041,6 +2045,19 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// The set without the fast path (a loop whose diagnostics keep the general path alone).
     pub const fn without_fast_path(mut self) -> Self {
         self.fast_path = false;
+        self
+    }
+
+    /// PERF-31 (ADR-0018, variant (a), prototype): a batched call
+    /// ([`run_with_cpl0_profile_set_and_pio_batched`]) of a set that also has the fast path
+    /// ([`Self::with_fast_path`]) runs the fast path from the predecoded blocks its memory answers
+    /// ([`GuestMemory::cached_block`], see [`crate::predecoded_block`]); a memory without blocks
+    /// answers none and nothing changes. Ignored without the fast path, with
+    /// [`Self::with_fast_path_verify`] (the check wins) and by one-instruction calls. The run
+    /// retires the same instructions with the same effects, exits and boundaries as without it.
+    /// Off by default.
+    pub const fn with_block_cache_prototype(mut self) -> Self {
+        self.block_cache = true;
         self
     }
 
@@ -4022,7 +4039,7 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_configured_with_profile_mode::<true, false, _>(
+    run_configured_with_profile_mode::<true, false, false, _>(
         state,
         memory,
         config,
@@ -34367,8 +34384,12 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
     if let Some(cell) = set.fp_state {
         state.sse = Some(cell.borrow().sse.clone());
     }
+    // PERF-31: blocks only for a batched call of a set with the fast path (see
+    // `Cpl0ProfileSet::with_block_cache_prototype`); the checked instance never has them.
+    let blocks = set.block_cache && set.fast_path && batch.is_some();
     let result = run_configured_checked(
         set.fast_path_verify,
+        blocks,
         state,
         memory,
         config,
@@ -34590,7 +34611,7 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, false, _>(
+    run_configured_with_profile_mode::<false, false, false, _>(
         state,
         memory,
         config,
@@ -34607,6 +34628,7 @@ fn run_configured(
 #[allow(clippy::too_many_arguments)]
 fn run_configured_checked<M: GuestMemory>(
     verify: bool,
+    blocks: bool,
     state: &mut LongModeState,
     memory: &mut M,
     config: RunConfig,
@@ -34616,7 +34638,18 @@ fn run_configured_checked<M: GuestMemory>(
     batch: Option<BatchBoundary<'_, M>>,
 ) -> RunResult {
     if verify {
-        run_configured_with_profile_mode::<false, true, M>(
+        run_configured_with_profile_mode::<false, true, false, M>(
+            state,
+            memory,
+            config,
+            rflags_defined,
+            profiles,
+            runtime,
+            batch,
+        )
+    } else if blocks {
+        // PERF-31 (ADR-0018, variant (a), prototype): the instance that runs from blocks.
+        run_configured_with_profile_mode::<false, false, true, M>(
             state,
             memory,
             config,
@@ -34626,7 +34659,7 @@ fn run_configured_checked<M: GuestMemory>(
             batch,
         )
     } else {
-        run_configured_with_profile_mode::<false, false, M>(
+        run_configured_with_profile_mode::<false, false, false, M>(
             state,
             memory,
             config,
@@ -34649,7 +34682,7 @@ pub fn run_with_fast_path_check(
     config: RunConfig,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, true, _>(
+    run_configured_with_profile_mode::<false, true, false, _>(
         state,
         memory,
         config,
@@ -35155,7 +35188,15 @@ fn step_with_optional_check<const NO_PROFILES: bool, const VERIFY: bool, M: Gues
     }
 }
 
-fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool, M: GuestMemory>(
+/// `BLOCKS` (PERF-31, ADR-0018, variant (a), prototype): the instance that runs the fast path from
+/// the predecoded blocks of the memory (see [`crate::predecoded_block`]); every other instance has
+/// no code for them.
+fn run_configured_with_profile_mode<
+    const NO_PROFILES: bool,
+    const VERIFY: bool,
+    const BLOCKS: bool,
+    M: GuestMemory,
+>(
     state: &mut LongModeState,
     memory: &mut M,
     config: RunConfig,
@@ -35371,6 +35412,8 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool,
     let mut retired = 0;
     // PERF-22: only the checked instance of the loop has a checker.
     let mut checker = VERIFY.then(crate::fast_path_check::FastPathChecker::new);
+    // PERF-31: the block the instance with blocks is running, if any.
+    let mut block_cursor: Option<crate::predecoded_block::BlockCursor> = None;
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -35384,7 +35427,21 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool,
             Some(RunExit::Halted)
         } else {
             let old_shadow = state.sti_shadow;
-            let outcome = if let Some(source) = rdtsc_source.take() {
+            // PERF-31: the instance with blocks runs the fast path from a block first; `None` (no
+            // block, or the fast path refused, before any effect) leaves the instruction to the
+            // general step below, as without blocks.
+            let outcome = if BLOCKS
+                && let Some(outcome) = crate::predecoded_block::block_step(
+                    &mut block_cursor,
+                    state,
+                    memory,
+                    config.context,
+                    &mut rflags_defined,
+                ) {
+                #[cfg(debug_assertions)]
+                crate::fast_path_check::note_fast_step_taken();
+                outcome
+            } else if let Some(source) = rdtsc_source.take() {
                 let outcome = step_with_optional_check::<NO_PROFILES, VERIFY, _>(
                     &mut checker,
                     state,

@@ -17,6 +17,8 @@ use od_isa::execute::{
     run_with_cpl0_profile_set_and_pio_batched,
 };
 use od_isa::fast_path_check::{self, FastPathMode};
+use od_isa::long_decode::DecodedBlock;
+use od_isa::predecoded_block::{MAX_BLOCK_INSTRUCTIONS, predecode_block};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CliProfile, CpuActivity, GuestMemory, InstructionMode,
     LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
@@ -25,6 +27,7 @@ use od_testkit::generate::generate_fixture;
 use od_testkit::memory_corpus::{
     MEMORY_CORPUS_RAM_LEN, MEMORY_CORPUS_SEQUENCES, S3_34A_SEEDS, generate_memory_corpus_input,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,6 +200,7 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
     }
     check_fast_path(&case, label);
     check_batched(&case, label);
+    check_blocks(&case, label);
     tally.cases += 1;
     if base.exit == od_isa::execute::RunExit::StopAddress {
         tally.stopped_at_end += 1;
@@ -300,81 +304,20 @@ impl PortIo for NoPort {
 /// caller then goes on with a new call). The exit that ends the run, the retired count, the
 /// definedness, the state and the memory must be the same, with and without the fast path.
 fn check_batched(case: &Case, label: &str) {
-    let admitted = |state: &LongModeState| {
-        let mut state = state.clone();
-        state.cr0 = Some(0x8001_0033);
-        state.cr4 = Some(0x20);
-        state.activity = Some(CpuActivity::Running);
-        state.sti_shadow = Some(StiShadow::Clear);
-        state
-    };
-    let budget = config(case).instruction_budget;
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     for set in [plain, plain.with_fast_path()] {
-        let mut reference_state = admitted(&case.state);
-        let mut reference_memory = case.memory.clone();
-        let (mut reference_retired, mut reference_defined) = (0, od_isa::INTEGER_FLAGS);
-        let reference_exit = loop {
-            let result = run_with_cpl0_profile_set_and_pio(
-                &mut reference_state,
-                &mut reference_memory,
-                RunConfig {
-                    instruction_budget: 1,
-                    ..config(case)
-                },
-                reference_defined,
-                &set,
-                None,
-                &mut NoPort,
-                || false,
-            )
-            .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
-            reference_retired += result.instructions_executed;
-            reference_defined = result.rflags_defined;
-            if result.exit != Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
-                || result.instructions_executed == 0
-                || reference_retired == budget
-            {
-                break result.exit;
-            }
-        };
+        let reference = one_instruction_reference(case, &set, label);
         for refuse_every in [None, Some(1), Some(3), Some(7)] {
             let mut state = admitted(&case.state);
             let mut memory = case.memory.clone();
-            let (mut retired, mut defined, mut asked) = (0, od_isa::INTEGER_FLAGS, 0u64);
-            let exit = loop {
-                let result = run_with_cpl0_profile_set_and_pio_batched(
-                    &mut state,
-                    &mut memory,
-                    RunConfig {
-                        instruction_budget: budget - retired,
-                        ..config(case)
-                    },
-                    defined,
-                    &set,
-                    None,
-                    &mut NoPort,
-                    || false,
-                    &mut |_: &LongModeState, _: &mut Memory| {
-                        asked += 1;
-                        refuse_every.is_none_or(|every| asked % every != 0)
-                    },
-                )
-                .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
-                retired += result.instructions_executed;
-                defined = result.rflags_defined;
-                if result.exit == Cpl0ProfileSetExit::Run(RunExit::StopRequested) {
-                    assert!(result.instructions_executed > 0, "{label}");
-                    continue;
-                }
-                break result.exit;
-            };
+            let (exit, retired, defined, asked) =
+                run_batched_over(case, &set, &mut state, &mut memory, refuse_every, label);
             let variant = format!("{label}: batched, refusing every {refuse_every:?}");
-            assert_eq!(exit, reference_exit, "{variant}");
-            assert_eq!(retired, reference_retired, "{variant}");
-            assert_eq!(defined, reference_defined, "{variant}");
-            assert_eq!(state, reference_state, "{variant}");
-            assert_eq!(memory, reference_memory, "{variant}");
+            assert_eq!(exit, reference.exit, "{variant}");
+            assert_eq!(retired, reference.retired, "{variant}");
+            assert_eq!(defined, reference.defined, "{variant}");
+            assert_eq!(state, reference.state, "{variant}");
+            assert_eq!(memory, reference.memory, "{variant}");
             // Asked before every instruction but the first of each call, never at the budget.
             if refuse_every.is_none() {
                 assert!(asked <= retired, "{variant}");
@@ -382,6 +325,271 @@ fn check_batched(case: &Case, label: &str) {
         }
     }
     BATCHED_CASES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// What a run of one-instruction calls of the set leaves (the reference of the batched checks).
+struct Reference {
+    exit: Cpl0ProfileSetExit<()>,
+    retired: u64,
+    defined: u64,
+    state: LongModeState,
+    memory: Memory,
+}
+
+fn admitted(state: &LongModeState) -> LongModeState {
+    let mut state = state.clone();
+    state.cr0 = Some(0x8001_0033);
+    state.cr4 = Some(0x20);
+    state.activity = Some(CpuActivity::Running);
+    state.sti_shadow = Some(StiShadow::Clear);
+    state
+}
+
+/// The case as the board loop runs it without batches: one-instruction calls of `set`, each with
+/// its own admission, until an exit other than the budget or the budget of the case.
+fn one_instruction_reference(case: &Case, set: &Cpl0ProfileSet<'_>, label: &str) -> Reference {
+    let budget = config(case).instruction_budget;
+    let mut state = admitted(&case.state);
+    let mut memory = case.memory.clone();
+    let (mut retired, mut defined) = (0, od_isa::INTEGER_FLAGS);
+    let exit = loop {
+        let result = run_with_cpl0_profile_set_and_pio(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                ..config(case)
+            },
+            defined,
+            set,
+            None,
+            &mut NoPort,
+            || false,
+        )
+        .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+        retired += result.instructions_executed;
+        defined = result.rflags_defined;
+        if result.exit != Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+            || result.instructions_executed == 0
+            || retired == budget
+        {
+            break result.exit;
+        }
+    };
+    Reference {
+        exit,
+        retired,
+        defined,
+        state,
+        memory,
+    }
+}
+
+/// PERF-31 (ADR-0018, variant (a), prototype): the corpus memory with a predecoded block cache of
+/// its own, by the rule of the board's: a block is built with `predecode_block` from the bytes
+/// (their fetch has no effect here), keyed by its RIP and the generation of its 4 KiB page, and
+/// every write raises the generation of each page it touches; `block_holds` compares the
+/// generation of the active block's page. `ignore_writes` is the mutation that drops the
+/// invalidation (the test of it must then see a stale block run).
+struct BlockMemory {
+    inner: Memory,
+    generations: HashMap<u64, u64>,
+    blocks: HashMap<u64, (u64, Option<DecodedBlock>)>,
+    active: Option<(u64, u64)>,
+    retired_from_blocks: u64,
+    holds_failed: u64,
+    ignore_writes: bool,
+}
+
+impl BlockMemory {
+    fn new(inner: Memory) -> Self {
+        Self {
+            inner,
+            generations: HashMap::new(),
+            blocks: HashMap::new(),
+            active: None,
+            retired_from_blocks: 0,
+            holds_failed: 0,
+            ignore_writes: false,
+        }
+    }
+
+    fn generation(&self, page: u64) -> u64 {
+        self.generations.get(&page).copied().unwrap_or(0)
+    }
+
+    fn wrote(&mut self, address: u64, len: usize) {
+        if self.ignore_writes || len == 0 {
+            return;
+        }
+        let last = address.wrapping_add(len as u64 - 1);
+        for page in address >> 12..=last >> 12 {
+            *self.generations.entry(page).or_default() += 1;
+        }
+    }
+}
+
+impl GuestMemory for BlockMemory {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.inner.fetch(address, context)
+    }
+
+    fn cached_block(&mut self, rip: u64, context: AccessContext) -> Option<DecodedBlock> {
+        self.active = None;
+        let page = rip >> 12;
+        let generation = self.generation(page);
+        let block = match self.blocks.get(&rip) {
+            Some((held, block)) if *held == generation => block.clone(),
+            _ => {
+                let built = predecode_block(&mut self.inner, rip, context, MAX_BLOCK_INSTRUCTIONS);
+                let block = (!built.is_empty()).then(|| DecodedBlock::from(built));
+                self.blocks.insert(rip, (generation, block.clone()));
+                block
+            }
+        }?;
+        self.active = Some((page, generation));
+        Some(block)
+    }
+
+    fn block_holds(&mut self) -> bool {
+        let holds = self
+            .active
+            .is_some_and(|(page, generation)| self.generation(page) == generation);
+        if !holds && self.active.take().is_some() {
+            self.holds_failed += 1;
+        }
+        holds
+    }
+
+    fn block_retired(&mut self, _: usize) {
+        self.retired_from_blocks += 1;
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        out: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.inner.read(address, context, out)
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        data: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.inner.write(address, context, data)?;
+        self.wrote(address, data.len());
+        Ok(())
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        value: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_exchange_integer(address, context, size, value)
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        value: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_fetch_add_integer(address, context, size, value)
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        size: OperandSize,
+        expected: u64,
+        replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner
+            .atomic_compare_exchange_integer(address, context, size, expected, replacement)
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.inner.mfence(context)
+    }
+}
+
+/// Batched calls of `set` over `memory`, as `check_batched` makes them (the boundary check
+/// refuses at every `refuse_every`-th boundary it is asked at), until an exit other than the
+/// refusal. Returns the exit, the retired count, the definedness and how often the check was asked.
+fn run_batched_over<M: GuestMemory>(
+    case: &Case,
+    set: &Cpl0ProfileSet<'_>,
+    state: &mut LongModeState,
+    memory: &mut M,
+    refuse_every: Option<u64>,
+    label: &str,
+) -> (Cpl0ProfileSetExit<()>, u64, u64, u64) {
+    let budget = config(case).instruction_budget;
+    let (mut retired, mut defined, mut asked) = (0, od_isa::INTEGER_FLAGS, 0u64);
+    let exit = loop {
+        let result = run_with_cpl0_profile_set_and_pio_batched(
+            state,
+            memory,
+            RunConfig {
+                instruction_budget: budget - retired,
+                ..config(case)
+            },
+            defined,
+            set,
+            None,
+            &mut NoPort,
+            || false,
+            &mut |_: &LongModeState, _: &mut M| {
+                asked += 1;
+                refuse_every.is_none_or(|every| asked % every != 0)
+            },
+        )
+        .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+        retired += result.instructions_executed;
+        defined = result.rflags_defined;
+        if result.exit == Cpl0ProfileSetExit::Run(RunExit::StopRequested) {
+            assert!(result.instructions_executed > 0, "{label}");
+            continue;
+        }
+        break result.exit;
+    };
+    (exit, retired, defined, asked)
+}
+
+/// PERF-31 (ADR-0018, variant (a), prototype): the case through batched calls of the set with the
+/// fast path and the block cache prototype over [`BlockMemory`] must end exactly like the
+/// one-instruction calls of the set with the fast path (exit, count, definedness, state, memory),
+/// whatever the boundary check refuses.
+fn check_blocks(case: &Case, label: &str) {
+    let fast = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_fast_path();
+    let reference = one_instruction_reference(case, &fast, label);
+    let blocks = fast.with_block_cache_prototype();
+    for refuse_every in [None, Some(1), Some(3), Some(7)] {
+        let mut state = admitted(&case.state);
+        let mut memory = BlockMemory::new(case.memory.clone());
+        let (exit, retired, defined, _) =
+            run_batched_over(case, &blocks, &mut state, &mut memory, refuse_every, label);
+        let variant = format!("{label}: blocks, refusing every {refuse_every:?}");
+        assert_eq!(exit, reference.exit, "{variant}");
+        assert_eq!(retired, reference.retired, "{variant}");
+        assert_eq!(defined, reference.defined, "{variant}");
+        assert_eq!(state, reference.state, "{variant}");
+        assert_eq!(memory.inner, reference.memory, "{variant}");
+        assert!(memory.retired_from_blocks <= retired, "{variant}");
+        BLOCK_RETIRED.fetch_add(memory.retired_from_blocks, Ordering::Relaxed);
+    }
+    BLOCK_CASES.fetch_add(1, Ordering::Relaxed);
 }
 
 fn print_fast_path_totals(corpus: &str) {
@@ -414,10 +622,20 @@ fn print_fast_path_totals(corpus: &str) {
         BATCHED_CASES.load(Ordering::Relaxed)
     );
     assert!(BATCHED_CASES.load(Ordering::Relaxed) > 0);
+    // PERF-31: and through the batched entry with predecoded blocks; some instructions ran from them.
+    println!(
+        "{corpus}: block runs so far matched one-instruction calls on {} cases, {} instructions retired from blocks",
+        BLOCK_CASES.load(Ordering::Relaxed),
+        BLOCK_RETIRED.load(Ordering::Relaxed)
+    );
+    assert!(BLOCK_CASES.load(Ordering::Relaxed) > 0);
+    assert!(BLOCK_RETIRED.load(Ordering::Relaxed) > 0);
 }
 
 static FAST_STEPS_TAKEN: AtomicU64 = AtomicU64::new(0);
 static BATCHED_CASES: AtomicU64 = AtomicU64::new(0);
+static BLOCK_CASES: AtomicU64 = AtomicU64::new(0);
+static BLOCK_RETIRED: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_COMPARED: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_CALLS: AtomicU64 = AtomicU64::new(0);
 static TREE_COMPARED: AtomicU64 = AtomicU64::new(0);
@@ -578,4 +796,59 @@ fn stack_forms_match_run() {
         tally.cases, tally.stopped_at_end, tally.other_exits
     );
     print_fast_path_totals("stack");
+}
+
+/// PERF-31 (ADR-0018, variant (a), prototype): self-modifying code inside one block. The first
+/// instruction of the block (`MOV BYTE [RIP+1], 0x22`) patches the low byte of the immediate of the
+/// next one (`MOV EAX, 0x1111`). The block was decoded before the store; the store raises the
+/// generation of the page, the block no longer holds and the patched instruction is decoded again
+/// on the general path, exactly as one-instruction calls run it. The mutation (writes do not raise
+/// the generation) must run the stale decode and be seen.
+#[test]
+fn a_store_into_the_running_block_ends_it_and_the_new_bytes_run() {
+    let mut program = vec![0xC6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x22]; // MOV BYTE [RIP+1], 0x22
+    program.extend([0xB8, 0x11, 0x11, 0x00, 0x00]); // MOV EAX, 0x1111
+    program.extend([0x01, 0xC3]); // ADD EBX, EAX
+    let stop_rip = 0x1000 + program.len() as u64;
+    let case = Case {
+        state: LongModeState {
+            rip: 0x1000,
+            rflags: 2,
+            ..LongModeState::default()
+        },
+        memory: Memory {
+            regions: vec![(0x1000, program)],
+        },
+        stop_rip,
+    };
+    let fast = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_fast_path();
+    let reference = one_instruction_reference(&case, &fast, "smc");
+    assert_eq!(
+        reference.exit,
+        Cpl0ProfileSetExit::Run(RunExit::StopAddress)
+    );
+    assert_eq!(reference.state.gpr[0], 0x1122);
+    assert_eq!(reference.state.gpr[3], 0x1122);
+    let blocks = fast.with_block_cache_prototype();
+    let run = |ignore_writes: bool| {
+        let mut state = admitted(&case.state);
+        let mut memory = BlockMemory::new(case.memory.clone());
+        memory.ignore_writes = ignore_writes;
+        let (exit, retired, defined, _) =
+            run_batched_over(&case, &blocks, &mut state, &mut memory, None, "smc");
+        (exit, retired, defined, state, memory)
+    };
+    let (exit, retired, defined, state, memory) = run(false);
+    assert_eq!(exit, reference.exit);
+    assert_eq!((retired, defined), (reference.retired, reference.defined));
+    assert_eq!(state, reference.state);
+    assert_eq!(memory.inner, reference.memory);
+    // The store ran from the block; the block then no longer held, and a new block was built
+    // from the patched bytes (served from it: MOV EAX and ADD).
+    assert_eq!(memory.holds_failed, 1);
+    assert_eq!(memory.retired_from_blocks, 3);
+    // The mutation: the stale `MOV EAX, 0x1111` runs from the block.
+    let (_, _, _, stale, _) = run(true);
+    assert_eq!(stale.gpr[0], 0x1111, "the mutation must be visible");
+    assert_ne!(stale, reference.state);
 }
