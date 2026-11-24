@@ -553,28 +553,17 @@ fn inadmissible_conditions_are_refused_without_side_effects() {
     });
 }
 
+// PERF-24b: the memory MOV forms, LEA and MOVZX are group G4 now (fast_step_g4_tests.rs); the
+// other control transfers and operations stay refused.
 #[test]
-fn memory_movs_and_other_control_transfers_are_refused_without_side_effects() {
+fn other_control_transfers_and_operations_are_refused_without_side_effects() {
     let ring0 = context(PrivilegeLevel::Ring0);
     let refused: &[(&str, &[u8])] = &[
-        ("mov rax, [rsi]", &[0x48, 0x8b, 0x06]),
-        ("mov [rsi], rax", &[0x48, 0x89, 0x06]),
-        ("mov al, [rsi]", &[0x8a, 0x06]),
-        ("mov [rsi], ax", &[0x66, 0x89, 0x06]),
-        ("mov byte [rsi], 5", &[0xc6, 0x06, 0x05]),
-        (
-            "mov qword [rsi], 5",
-            &[0x48, 0xc7, 0x06, 0x05, 0x00, 0x00, 0x00],
-        ),
-        ("mov eax, [rip]", &[0x8b, 0x05, 0x00, 0x00, 0x00, 0x00]),
-        ("mov rax, [rsi+rcx*8+8]", &[0x48, 0x8b, 0x44, 0xce, 0x08]),
         ("jmp rax", &[0xff, 0xe0]),
         ("jmp [rsi]", &[0xff, 0x26]),
         ("call +0", &[0xe8, 0x00, 0x00, 0x00, 0x00]),
         ("ret", &[0xc3]),
         ("push rax", &[0x50]),
-        ("lea rax, [rsi]", &[0x48, 0x8d, 0x06]),
-        ("movzx eax, cl", &[0x0f, 0xb6, 0xc1]),
         ("cmovz rax, rcx", &[0x48, 0x0f, 0x44, 0xc1]),
         ("nop", &[0x90]),
     ];

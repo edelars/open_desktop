@@ -268,6 +268,45 @@ fn the_tree_fast_path_takes_register_alu_agrees_and_changes_nothing() {
     );
 }
 
+/// PERF-24b, group G4: loads, stores and extensions over RAM and the MMIO window, LEA, MOV m, imm,
+/// RIP-relative and absolute (moffs) addresses.
+const G4_PROGRAM: &[u8] = &[
+    0x48, 0x8b, 0x03, //                               mov rax, [rbx]            MMIO read
+    0x48, 0x89, 0x46, 0x08, //                         mov [rsi+8], rax          RAM write
+    0x89, 0x43, 0x10, //                               mov [rbx+0x10], eax       MMIO write
+    0x0f, 0xb6, 0x4e, 0x03, //                         movzx ecx, byte [rsi+3]
+    0x48, 0x0f, 0xbf, 0x56, 0x04, //                   movsx rdx, word [rsi+4]
+    0x48, 0x63, 0x7e, 0x08, //                         movsxd rdi, dword [rsi+8]
+    0x4c, 0x8d, 0x44, 0x8e, 0x10, //                   lea r8, [rsi+rcx*4+0x10]  no access
+    0xc6, 0x46, 0x20, 0x7f, //                         mov byte [rsi+0x20], 0x7f
+    0x48, 0xc7, 0x46, 0x28, 0xff, 0xff, 0xff, 0xff, // mov qword [rsi+0x28], -1
+    0x4c, 0x8b, 0x0d, 0x01, 0x10, 0x00, 0x00, //       mov r9, [rip+0x1001]      RAM + 0x30
+    0xa0, 0x40, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov al, [0x2040]
+    0x48, 0x8b, 0x4b, 0x20, //                         mov rcx, [rbx+0x20]       MMIO read
+];
+
+#[test]
+fn the_tree_fast_path_takes_the_g4_moves_with_the_same_memory_calls() {
+    let baseline = unchecked(G4_PROGRAM);
+    assert_eq!(
+        baseline.result.exit,
+        RunExit::StopAddress,
+        "{:?}",
+        baseline.result
+    );
+    assert_eq!(baseline.result.instructions_executed, 12);
+    assert_eq!(baseline.bus.mmio_reads, 2);
+    let (outcome, counters) = checked(G4_PROGRAM, FastPathMode::Tree);
+    assert!(fast_path_check::take_divergence().is_none());
+    assert_same_run(&outcome, &baseline);
+    assert_eq!(counters.divergences, 0);
+    // Every instruction is taken and compared; the journal of the check has exactly the eleven
+    // data calls of the general path (all but the LEA), MMIO included, each made once.
+    assert_eq!(counters.compared, 12, "{counters:?}");
+    assert_eq!(counters.refused_by_admission, 0, "{counters:?}");
+    assert_eq!(counters.memory_calls_compared, 11, "{counters:?}");
+}
+
 #[test]
 fn a_fast_path_that_refuses_everything_takes_nothing_and_changes_nothing() {
     let baseline = unchecked(PROGRAM);

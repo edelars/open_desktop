@@ -527,12 +527,10 @@ fn memory_operands_and_other_operations_are_refused_without_side_effects() {
         ("shld [rsi], rax, 3", &[0x48, 0x0f, 0xa4, 0x06, 0x03]),
         ("shrd [rsi], rax, cl", &[0x48, 0x0f, 0xad, 0x06]),
         // PERF-24: the register MOV forms and the relative JMP/Jcc are groups G1 and G3 now
-        // (fast_step_g1_g3_tests.rs); their memory forms and the other operations stay refused.
-        ("mov rax, [rsi]", &[0x48, 0x8b, 0x06]),
-        ("mov [rsi], rax", &[0x48, 0x89, 0x06]),
+        // (fast_step_g1_g3_tests.rs), the memory MOV forms and LEA group G4 (PERF-24b,
+        // fast_step_g4_tests.rs); the other operations stay refused.
         ("jmp [rsi]", &[0xff, 0x26]),
         ("push rax", &[0x50]),
-        ("lea rax, [rsi]", &[0x48, 0x8d, 0x06]),
         ("nop", &[0x90]),
         ("imul rax, rcx", &[0x48, 0x0f, 0xaf, 0xc1]),
     ];

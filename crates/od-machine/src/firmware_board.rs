@@ -9319,6 +9319,64 @@ mod tests {
         assert_eq!(board.com1_transcript(), plain.com1_transcript());
     }
 
+    /// PERF-24b, group G4: the moves with memory (stack-relative loads and stores of the board's
+    /// paged memory, MOV m, imm, MOVZX, MOVSXD, LEA) in the unified run: with the fast path the run
+    /// and the state are those of the run without it and every move is taken (debug builds count
+    /// them); under the check every move is compared with exactly the seven data calls of the
+    /// general path through the board adapter, and nothing diverges.
+    #[test]
+    fn the_unified_run_takes_the_g4_moves_and_the_check_agrees() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // mov [rsp-8], rax; mov rcx, [rsp-8]; mov byte [rsp-0x10], 0x5a;
+        // movzx edx, byte [rsp-0x10]; movsxd rdi, dword [rsp-8]; lea rsi, [rsp-0x20];
+        // mov dword [rsi], 0x12345678; mov eax, [rsi]; hlt
+        let program = [
+            0x48, 0x89, 0x44, 0x24, 0xF8, 0x48, 0x8B, 0x4C, 0x24, 0xF8, 0xC6, 0x44, 0x24, 0xF0,
+            0x5A, 0x0F, 0xB6, 0x54, 0x24, 0xF0, 0x48, 0x63, 0x7C, 0x24, 0xF8, 0x48, 0x8D, 0x74,
+            0x24, 0xE0, 0xC7, 0x06, 0x78, 0x56, 0x34, 0x12, 0x8B, 0x06, 0xF4,
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |fast_path: bool, verify: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            fast_path_check::set_mode(FastPathMode::Tree);
+            fast_path_check::reset_fast_steps_taken();
+            let run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                1_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                verify,
+                fast_path,
+            )
+            .unwrap();
+            (run, board, fast_path_check::fast_steps_taken())
+        };
+        let (without, plain, _) = run(false, false);
+        assert_eq!(without.run.retired, 9);
+        assert_eq!(plain.state().gpr[2], 0x5a);
+        assert_eq!(plain.state().gpr[0], 0x1234_5678);
+        let (with, fast, taken_with) = run(true, false);
+        assert_eq!(with.run, without.run);
+        assert_eq!(fast.state(), plain.state());
+        if od_isa::fast_path_check::FAST_STEPS_COUNTED {
+            assert_eq!(taken_with, 8);
+        }
+        let (checked, board, _) = run(false, true);
+        let report = checked
+            .fast_path_check
+            .clone()
+            .expect("the check was asked for");
+        assert_eq!(report.divergence, None);
+        assert_eq!(report.counters.compared, 8, "{report:?}");
+        assert_eq!(report.counters.memory_calls_compared, 7, "{report:?}");
+        assert_eq!(checked.run, without.run);
+        assert_eq!(board.state(), plain.state());
+    }
+
     /// PERF-22: a wrong draft handler (a NOP that moves RIP one byte too far) is found by the
     /// check in the unified loop at the first instruction it takes, and the divergence ends the run
     /// and is reported with the RIP and the bytes of the instruction.

@@ -15,6 +15,8 @@ pub mod fast_path_check;
 mod fast_step_g1_g3_tests;
 #[cfg(test)]
 mod fast_step_g2_tests;
+#[cfg(test)]
+mod fast_step_g4_tests;
 mod finite_arithmetic;
 pub mod hlt;
 pub mod integer_flags;

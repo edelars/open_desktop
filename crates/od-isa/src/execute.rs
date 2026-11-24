@@ -34501,10 +34501,14 @@ pub fn run_with_fast_path_check(
 ///
 /// PERF-24, group G1: `Mov` and `MovImmediate` with a register destination and a register or
 /// immediate source. Group G3: relative `Branch` (Jcc) and `Jump` (JMP rel8/rel32), the target
-/// from `relative_target` (the canonical check of the general path).
+/// from `relative_target` (the canonical check of the general path). Group G4 (PERF-24b): `Mov`
+/// and `MovImmediate` with a memory operand, `Extend` (MOVZX/MOVSX/MOVSXD, register or memory
+/// source) and `Lea`, through the pieces of `transfer`. A memory access is not refused ahead
+/// (whether it faults is known only to the memory, whose page walk already has effects): it is
+/// made with the calls of the general path, and its error ends the instruction as there.
 ///
 /// Admission (ADR-0017, section 4): CPL0, RF = 0, TF = 0, no STI/MOV SS shadow, no LOCK/REP/REPNE
-/// prefix, no FS/GS segment prefix, no memory operand; for `Branch` and `Jump` also the
+/// prefix, no FS/GS segment prefix; G2 also no memory operand; for `Branch` and `Jump` also the
 /// admission of `executable` (opcode map, default prefixes). Everything else is "not handled".
 #[inline(never)]
 pub(crate) fn try_fast_step(
@@ -34596,34 +34600,87 @@ pub(crate) fn try_fast_step(
                 Err(error) => Err(error),
             });
         }
-        // PERF-24, group G1. For register and immediate operands `transfer` is `read_operand` and
-        // `write_operand` of registers, which are `state.read` and `state.write` (the masking,
-        // the dword zero extension and the high byte registers live there): they are called
-        // directly, without the dispatch of `transfer`. A memory operand is refused here, before
-        // anything is written. MOV changes no flag, and its flag definedness is the identity
-        // (`FlagEffects::default()`), so the tail only sets RIP.
-        Operation::Mov {
-            dst: Operand::Register(dst),
-            src,
-        } => {
-            let value = match src {
-                Operand::Register(src) => state.read(src),
-                Operand::Immediate(value) => value,
-                Operand::Memory(_) => return None,
+        // PERF-24, groups G1 and G4: MOV in every operand form, MOVZX/MOVSX/MOVSXD, LEA (the arm
+        // of `transfer` in the general path). The pieces of `transfer` are called directly, without
+        // its dispatch: for registers and immediates `state.read`/`state.write` (the masking, the
+        // dword zero extension and the high byte registers live there; this is what
+        // `read_operand`/`write_operand` do for them), for memory `read_memory_operand` and
+        // `write_memory_operand` (the memory arms of `read_operand`/`write_operand`), for the
+        // extension `extended_source` and for LEA `exec_lea`. The order is that of `transfer`:
+        // the source is read, then the destination written; a register destination is written only
+        // after its memory read succeeded. A memory error after the admission is not a refusal: it
+        // is mapped like the arm of the general path (`Architectural` -> `Fault`, nothing written,
+        // RIP and `rflags_defined` unchanged; any other error is returned). These operations change
+        // no flag and their flag definedness is the identity (`FlagEffects::default()`), so the tail
+        // only sets RIP.
+        Operation::Mov { dst, src } => {
+            let moved = match (dst, src) {
+                (Operand::Register(dst), Operand::Register(src)) => {
+                    state.write(dst, state.read(src));
+                    Ok(())
+                }
+                (Operand::Register(dst), Operand::Immediate(value)) => {
+                    state.write(dst, value);
+                    Ok(())
+                }
+                (Operand::Register(dst), Operand::Memory(src)) => {
+                    read_memory_operand(state, memory, context, next_rip, src)
+                        .map(|value| state.write(dst, value))
+                }
+                (Operand::Memory(dst), Operand::Register(src)) => {
+                    let value = state.read(src);
+                    write_memory_operand(state, memory, context, next_rip, dst, value)
+                }
+                (Operand::Memory(dst), Operand::Immediate(value)) => {
+                    write_memory_operand(state, memory, context, next_rip, dst, value)
+                }
+                // Not produced by the decoder (memory to memory, an immediate destination): the
+                // general path keeps its own answer.
+                _ => return None,
             };
-            state.write(dst, value);
-            return Some(retire_without_flag_effects(
+            return Some(retire_transfer(
                 state,
                 *rflags_defined,
                 instruction,
                 next_rip,
+                moved,
             ));
         }
-        Operation::MovImmediate {
-            dst: Operand::Register(dst),
-            value,
-        } => {
-            state.write(dst, value);
+        Operation::MovImmediate { dst, value } => {
+            let moved = match dst {
+                Operand::Register(dst) => {
+                    state.write(dst, value);
+                    Ok(())
+                }
+                Operand::Memory(dst) => {
+                    write_memory_operand(state, memory, context, next_rip, dst, value)
+                }
+                Operand::Immediate(_) => return None,
+            };
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        Operation::Extend { dst, src, signed } => {
+            if matches!(src, Operand::Immediate(_)) {
+                return None;
+            }
+            let moved = extended_source(state, memory, context, next_rip, src, signed)
+                .map(|value| state.write(dst, value));
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        Operation::Lea { dst, src } => {
+            exec_lea(state, next_rip, dst, src);
             return Some(retire_without_flag_effects(
                 state,
                 *rflags_defined,
@@ -34688,6 +34745,25 @@ pub(crate) fn try_fast_step(
         Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
         Err(error) => Err(error),
     })
+}
+
+/// PERF-24 (group G4): the arm of `transfer` in the general path after the transfer: success
+/// retires through [`retire_without_flag_effects`]; an architectural fault is the `Fault`
+/// outcome (the transfer wrote nothing, RIP and `rflags_defined` stay); any other memory error is
+/// returned as it is.
+#[inline(always)]
+fn retire_transfer(
+    state: &mut LongModeState,
+    rflags_defined: u64,
+    instruction: &crate::long_decode::Instruction,
+    next_rip: u64,
+    transferred: Result<(), MemoryError>,
+) -> Result<StepOutcome, MemoryError> {
+    match transferred {
+        Ok(()) => retire_without_flag_effects(state, rflags_defined, instruction, next_rip),
+        Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
+        Err(error) => Err(error),
+    }
 }
 
 /// PERF-24: the common tail of the general path for an instruction whose flag definedness is the
@@ -42198,7 +42274,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
-    // PERF-23/24 (ADR-0017, section 3): the fast path of groups G1-G3, right after the decode and
+    // PERF-23/24 (ADR-0017, section 3): the fast path of groups G1-G4, right after the decode and
     // before the chain of conditions below. Only the CPL0 profile set enables it. `None` is "not
     // handled", before any side effect, and the general path continues unchanged.
     if fast_path_enabled
@@ -77839,24 +77915,10 @@ fn transfer(
             state.gpr[Register::Rax as usize] = u64::from(state.gs_selector);
         }
         Operation::Extend { dst, src, signed } => {
-            let value = read_operand(state, memory, context, next_rip, src)?;
-            let source_size = match src {
-                Operand::Register(view) => view.size(),
-                Operand::Memory(mem) => mem.size,
-                Operand::Immediate(_) => {
-                    unreachable!("extension source is a register or memory operand")
-                }
-            };
-            let value = if signed {
-                // Explicit two's-complement extension of the source width.
-                let shift = 64 - source_size.bytes() * 8;
-                (((value << shift) as i64) >> shift) as u64
-            } else {
-                value
-            };
+            let value = extended_source(state, memory, context, next_rip, src, signed)?;
             state.write(dst, value);
         }
-        Operation::Lea { dst, src } => state.write(dst, src.effective_address(state, next_rip)),
+        Operation::Lea { dst, src } => exec_lea(state, next_rip, dst, src),
         Operation::Xchg { left, right } => {
             // Capture both aliases before either write: AL/AH may share a GPR.
             let lhs = state.read(left);
@@ -78036,6 +78098,42 @@ fn relative_target(next_rip: u64, displacement: i32) -> Result<u64, Architectura
     Ok(target)
 }
 
+/// MOVZX/MOVSX/MOVSXD (`Operation::Extend`): the source (`read_operand`, so a memory source is
+/// one `read_integer` of the source width) extended to 64 bits, zero or sign, before the write of
+/// the destination register. Shared by `transfer` and the fast path (PERF-24, group G4).
+#[inline(always)]
+fn extended_source(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    src: Operand,
+    signed: bool,
+) -> Result<u64, MemoryError> {
+    let value = read_operand(state, memory, context, next_rip, src)?;
+    let source_size = match src {
+        Operand::Register(view) => view.size(),
+        Operand::Memory(mem) => mem.size,
+        Operand::Immediate(_) => {
+            unreachable!("extension source is a register or memory operand")
+        }
+    };
+    Ok(if signed {
+        // Explicit two's-complement extension of the source width.
+        let shift = 64 - source_size.bytes() * 8;
+        (((value << shift) as i64) >> shift) as u64
+    } else {
+        value
+    })
+}
+
+/// LEA: the effective address (no canonical check, no memory call) into the destination register.
+/// Shared by `transfer` and the fast path (PERF-24, group G4).
+#[inline(always)]
+fn exec_lea(state: &mut LongModeState, next_rip: u64, dst: RegisterView, src: MemoryOperand) {
+    state.write(dst, src.effective_address(state, next_rip));
+}
+
 fn read_operand(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
@@ -78046,11 +78144,24 @@ fn read_operand(
     match operand {
         Operand::Register(view) => Ok(state.read(view)),
         Operand::Immediate(value) => Ok(value),
-        Operand::Memory(mem) => {
-            let address = mem.access_address_48(state, next_rip)?;
-            memory.read_integer(address, context, mem.size)
-        }
+        Operand::Memory(mem) => read_memory_operand(state, memory, context, next_rip, mem),
     }
+}
+
+/// The memory arm of [`read_operand`]: the whole-access address check of the zero-base,
+/// canonical48 profile (a non-canonical byte is #GP(0), or #SS(0) for an RSP/RBP base, before any
+/// memory call), then one `read_integer` of the operand width. PERF-24 (group G4): the fast path
+/// calls it for the memory source of MOV and MOVZX/MOVSX/MOVSXD.
+#[inline(always)]
+fn read_memory_operand(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    mem: MemoryOperand,
+) -> Result<u64, MemoryError> {
+    let address = mem.access_address_48(state, next_rip)?;
+    memory.read_integer(address, context, mem.size)
 }
 
 /// S4-38L7u: the visible selector of segment register `sreg` (0 ES, 1 CS, 2 SS, 3 DS, 4 FS,
@@ -78097,12 +78208,25 @@ fn write_operand(
     match operand {
         Operand::Register(view) => state.write(view, value),
         Operand::Immediate(_) => unreachable!("an instruction cannot write an immediate"),
-        Operand::Memory(mem) => {
-            let address = mem.access_address_48(state, next_rip)?;
-            memory.write_integer(address, context, mem.size, value)?;
-        }
+        Operand::Memory(mem) => write_memory_operand(state, memory, context, next_rip, mem, value)?,
     }
     Ok(())
+}
+
+/// The memory arm of [`write_operand`]: the address check of [`read_memory_operand`], then one
+/// `write_integer` of the operand width. PERF-24 (group G4): the fast path calls it for the memory
+/// destination of MOV.
+#[inline(always)]
+fn write_memory_operand(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    mem: MemoryOperand,
+    value: u64,
+) -> Result<(), MemoryError> {
+    let address = mem.access_address_48(state, next_rip)?;
+    memory.write_integer(address, context, mem.size, value)
 }
 
 // Unlocked read-modify-write for a profiled backend. The destination has
