@@ -1626,10 +1626,11 @@ pub struct LoadedFirmwareBoard {
     /// Test injection (S4-37a6b): `run_boot` drops the pending RDTSC tick.
     #[cfg(test)]
     suppress_rdtsc_tick: bool,
-    /// PERF-25: the CPL0-set loop of the Linux runs (`run_linux_boot_cpl0_set*`, the unified loop)
-    /// calls the set for several instructions at a time in an ordinary run (on by default; the
-    /// loop itself keeps one instruction per call under its diagnostics). Off only in tests that
-    /// compare the two.
+    /// PERF-25: the CPL0-set loop of the Linux runs (`run_linux_boot_cpl0_set*`) calls the set for
+    /// several instructions at a time in an ordinary run (the loop itself keeps one instruction per
+    /// call under its diagnostics). On by default only for the firmware board of the unified loop
+    /// (`load_firmware`, `boot-firmware --cpu-loop unified`); off for the Linux direct board
+    /// (`into_linux_board`, plan rule 4.4). Tests that compare the two set it explicitly.
     instruction_batches: bool,
 }
 
@@ -2774,7 +2775,7 @@ impl LoadedFirmwareBoard {
     }
 
     /// PERF-25 (tests): one instruction per call of the set in the Linux runs of this board, as
-    /// before the batched calls, or (`true`, the default) several.
+    /// before the batched calls, or (`true`, the default of a firmware board) several.
     #[cfg(test)]
     pub(crate) fn set_instruction_batches(&mut self, on: bool) {
         self.instruction_batches = on;
@@ -5396,7 +5397,10 @@ impl AssembledBoard {
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
-            instruction_batches: true,
+            // PERF-25, plan rule 4.4: no golden run and no K4 with batched calls exist for the
+            // Linux direct boot (`od-runner linux`), so its board calls the set one instruction
+            // at a time; only the firmware board of the unified loop (`load_firmware`) batches.
+            instruction_batches: false,
         };
         // S6-18a: the application processors of a Linux board read the CPUID of the target
         // profile in their legacy models (the kernel's `verify_cpu` needs it); one vCPU has none.
