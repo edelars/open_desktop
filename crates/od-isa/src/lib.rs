@@ -19,6 +19,8 @@ mod fast_step_g2_tests;
 mod fast_step_g4_tests;
 #[cfg(test)]
 mod fast_step_g5_tests;
+#[cfg(test)]
+mod fast_step_static_filter_tests;
 mod finite_arithmetic;
 pub mod hlt;
 pub mod integer_flags;
