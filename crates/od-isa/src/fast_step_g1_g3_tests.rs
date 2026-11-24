@@ -553,17 +553,19 @@ fn inadmissible_conditions_are_refused_without_side_effects() {
     });
 }
 
-// PERF-24b: the memory MOV forms, LEA and MOVZX are group G4 now (fast_step_g4_tests.rs); the
-// other control transfers and operations stay refused.
+// PERF-24b: the memory MOV forms, LEA and MOVZX are group G4 now (fast_step_g4_tests.rs); PERF-25:
+// CALL rel32, RET and PUSH/POP are group G5 (fast_step_g5_tests.rs); the other control transfers
+// and operations stay refused.
 #[test]
 fn other_control_transfers_and_operations_are_refused_without_side_effects() {
     let ring0 = context(PrivilegeLevel::Ring0);
     let refused: &[(&str, &[u8])] = &[
         ("jmp rax", &[0xff, 0xe0]),
         ("jmp [rsi]", &[0xff, 0x26]),
-        ("call +0", &[0xe8, 0x00, 0x00, 0x00, 0x00]),
-        ("ret", &[0xc3]),
-        ("push rax", &[0x50]),
+        ("call [rsi]", &[0xff, 0x16]),
+        ("call rax", &[0xff, 0xd0]),
+        ("push imm8", &[0x6a, 0x01]),
+        ("pushfq", &[0x9c]),
         ("cmovz rax, rcx", &[0x48, 0x0f, 0x44, 0xc1]),
         ("nop", &[0x90]),
     ];

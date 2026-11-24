@@ -9174,8 +9174,8 @@ mod tests {
     }
 
     /// PERF-22: the fast-path check in the unified loop (ADR-0017, section 5) changes nothing a run
-    /// does (retired, quanta, exit, state) and finds no divergence with the empty fast path of the
-    /// tree (it refuses everything) nor with the general path as its own fast path (every
+    /// does (retired, quanta, exit, state) and finds no divergence with the fast path of the
+    /// tree (it takes PUSH, POP and CALL and refuses the NOP) nor with the general path as its own fast path (every
     /// instruction compared, the memory calls of the board adapter recorded and replayed).
     #[test]
     fn a_fast_path_check_leaves_the_unified_run_unchanged_and_finds_no_divergence() {
@@ -9212,7 +9212,8 @@ mod tests {
             let steps = report.counters.compared + report.counters.refused_by_admission;
             assert!(steps >= with.run.retired, "{mode:?} {report:?}");
             match mode {
-                FastPathMode::Tree => assert_eq!(report.counters.compared, 0),
+                // PERF-25: PUSH, POP, CALL and POP are group G5 of the tree; the NOP is refused.
+                FastPathMode::Tree => assert_eq!(report.counters.compared, 4, "{report:?}"),
                 _ => assert_eq!(report.counters.refused_by_admission, 0),
             }
         }
@@ -9373,6 +9374,64 @@ mod tests {
         assert_eq!(report.divergence, None);
         assert_eq!(report.counters.compared, 8, "{report:?}");
         assert_eq!(report.counters.memory_calls_compared, 7, "{report:?}");
+        assert_eq!(checked.run, without.run);
+        assert_eq!(board.state(), plain.state());
+    }
+
+    /// PERF-25, group G5: ALU with memory on the stack, PUSH/POP, CALL and RET in the unified run
+    /// over the board's paged memory: with the fast path the run and the state are those of the run
+    /// without it and every G5 form is taken (debug builds count them); under the check every one is
+    /// compared with exactly the nine data calls of the general path through the board adapter, and
+    /// nothing diverges.
+    #[test]
+    fn the_unified_run_takes_the_g5_forms_and_the_check_agrees() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // mov eax, 0x11; push rax; add qword [rsp], 5; cmp qword [rsp], 0x16; pop rcx; call +1;
+        // hlt (the return lands here); add rax, [rsp]; sub rax, [rsp]; ret
+        let program = [
+            0xB8, 0x11, 0x00, 0x00, 0x00, 0x50, 0x48, 0x83, 0x04, 0x24, 0x05, 0x48, 0x83, 0x3C,
+            0x24, 0x16, 0x59, 0xE8, 0x01, 0x00, 0x00, 0x00, 0xF4, 0x48, 0x03, 0x04, 0x24, 0x48,
+            0x2B, 0x04, 0x24, 0xC3,
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |fast_path: bool, verify: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            fast_path_check::set_mode(FastPathMode::Tree);
+            fast_path_check::reset_fast_steps_taken();
+            let run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                1_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                verify,
+                fast_path,
+            )
+            .unwrap();
+            (run, board, fast_path_check::fast_steps_taken())
+        };
+        let (without, plain, _) = run(false, false);
+        assert_eq!(without.run.retired, 10);
+        assert_eq!(plain.state().gpr[1], 0x16);
+        assert_eq!(plain.state().gpr[0], 0x11);
+        let (with, fast, taken_with) = run(true, false);
+        assert_eq!(with.run, without.run);
+        assert_eq!(fast.state(), plain.state());
+        if od_isa::fast_path_check::FAST_STEPS_COUNTED {
+            // Everything but the HLT (the MOV is G1).
+            assert_eq!(taken_with, 9);
+        }
+        let (checked, board, _) = run(false, true);
+        let report = checked
+            .fast_path_check
+            .clone()
+            .expect("the check was asked for");
+        assert_eq!(report.divergence, None);
+        assert_eq!(report.counters.compared, 9, "{report:?}");
+        assert_eq!(report.counters.memory_calls_compared, 9, "{report:?}");
         assert_eq!(checked.run, without.run);
         assert_eq!(board.state(), plain.state());
     }

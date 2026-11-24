@@ -510,17 +510,9 @@ fn inadmissible_conditions_are_refused_without_side_effects() {
 #[test]
 fn memory_operands_and_other_operations_are_refused_without_side_effects() {
     let ring0 = context(PrivilegeLevel::Ring0);
+    // PERF-25: the memory forms of `Arithmetic` and `Logic` and PUSH/POP are group G5 now
+    // (fast_step_g5_tests.rs); the memory shifts stay refused.
     let refused: &[(&str, &[u8])] = &[
-        ("add rax, [rsi]", &[0x48, 0x03, 0x06]),
-        ("add [rsi], rax", &[0x48, 0x01, 0x06]),
-        ("add [rsi], 5", &[0x48, 0x83, 0x06, 0x05]),
-        ("cmp [rsi], rax", &[0x48, 0x39, 0x06]),
-        ("inc qword [rsi]", &[0x48, 0xff, 0x06]),
-        ("neg dword [rsi]", &[0xf7, 0x1e]),
-        ("and [rsi], rax", &[0x48, 0x21, 0x06]),
-        ("or rax, [rsi]", &[0x48, 0x0b, 0x06]),
-        ("test [rsi], rax", &[0x48, 0x85, 0x06]),
-        ("not qword [rsi]", &[0x48, 0xf7, 0x16]),
         ("shl qword [rsi], 1", &[0x48, 0xd1, 0x26]),
         ("shl qword [rsi], cl", &[0x48, 0xd3, 0x26]),
         ("shr dword [rsi], 3", &[0xc1, 0x2e, 0x03]),
@@ -530,7 +522,6 @@ fn memory_operands_and_other_operations_are_refused_without_side_effects() {
         // (fast_step_g1_g3_tests.rs), the memory MOV forms and LEA group G4 (PERF-24b,
         // fast_step_g4_tests.rs); the other operations stay refused.
         ("jmp [rsi]", &[0xff, 0x26]),
-        ("push rax", &[0x50]),
         ("nop", &[0x90]),
         ("imul rax, rcx", &[0x48, 0x0f, 0xaf, 0xc1]),
     ];

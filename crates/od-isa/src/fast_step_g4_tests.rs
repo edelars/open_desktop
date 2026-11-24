@@ -24,12 +24,15 @@ use crate::{
     PrivilegeLevel, StiShadow,
 };
 
-const CODE: u64 = 0x1000;
+pub(super) const CODE: u64 = 0x1000;
 /// Reads and writes of any byte in this window are a page fault (vector 14).
-const PAGE_FAULT: u64 = 0x0000_0040_0000_0000;
+pub(super) const PAGE_FAULT: u64 = 0x0000_0040_0000_0000;
 /// Reads and writes of any byte in this window are a backend error (not a guest fault).
-const UNMAPPED: u64 = 0x0000_0050_0000_0000;
-const WINDOW: u64 = 0x1000;
+pub(super) const UNMAPPED: u64 = 0x0000_0050_0000_0000;
+/// PERF-25 (G5): reads of this window succeed, writes are a page fault (vector 14, error code 3):
+/// a read-modify-write or a push that faults after its read, or at its write.
+pub(super) const READ_ONLY: u64 = 0x0000_0060_0000_0000;
+pub(super) const WINDOW: u64 = 0x1000;
 const CF: u64 = 1;
 const ZF: u64 = 1 << 6;
 const SF: u64 = 1 << 7;
@@ -41,14 +44,14 @@ const RF: u64 = 1 << 16;
 /// Code at `code_base` for the fetch; data is a sparse RAM over every other address (an unwritten
 /// byte has a value derived from its address), except the page-fault and unmapped windows.
 #[derive(Clone)]
-struct Ram {
+pub(super) struct Ram {
     code_base: u64,
     code: Vec<u8>,
-    written: BTreeMap<u64, u8>,
+    pub(super) written: BTreeMap<u64, u8>,
 }
 
 impl Ram {
-    fn new(code_base: u64, code: &[u8]) -> Self {
+    pub(super) fn new(code_base: u64, code: &[u8]) -> Self {
         Self {
             code_base,
             code: code.to_vec(),
@@ -75,6 +78,15 @@ impl Ram {
             return Err(MemoryError::Architectural(ArchitecturalFault {
                 vector: 14,
                 error_code: Some(if access == AccessKind::Write { 2 } else { 0 }),
+                linear_address: Some(byte),
+            }));
+        }
+        if access == AccessKind::Write
+            && let Some(byte) = Self::hit(READ_ONLY, address, len)
+        {
+            return Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
                 linear_address: Some(byte),
             }));
         }
@@ -126,22 +138,22 @@ impl GuestMemory for Ram {
 
 /// How one instruction ended.
 #[derive(Debug, PartialEq)]
-enum End {
+pub(super) enum End {
     Retired,
     Fault(ArchitecturalFault),
     Error(MemoryError),
 }
 
 /// Everything one path left: state, definedness, end, memory, the data calls.
-struct Run {
-    state: LongModeState,
-    defined: u64,
-    end: End,
-    ram: Ram,
-    log: MemoryLog,
+pub(super) struct Run {
+    pub(super) state: LongModeState,
+    pub(super) defined: u64,
+    pub(super) end: End,
+    pub(super) ram: Ram,
+    pub(super) log: MemoryLog,
 }
 
-fn start_state(gpr: [u64; 16], rip: u64, rflags: u64) -> LongModeState {
+pub(super) fn start_state(gpr: [u64; 16], rip: u64, rflags: u64) -> LongModeState {
     LongModeState {
         rip,
         rflags,
@@ -155,9 +167,13 @@ fn start_state(gpr: [u64; 16], rip: u64, rflags: u64) -> LongModeState {
 }
 
 fn general(bytes: &[u8], start: &LongModeState, defined: u64) -> Run {
+    general_on(Ram::new(start.rip, bytes), bytes, start, defined)
+}
+
+/// [`general`] over a given memory (PERF-25: a stack prepared by the case).
+pub(super) fn general_on(mut ram: Ram, bytes: &[u8], start: &LongModeState, defined: u64) -> Run {
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let mut state = start.clone();
-    let mut ram = Ram::new(start.rip, bytes);
     let mut recording = CheckMemory::record(&mut ram, MemoryLog::default());
     let result = run_with_cpl0_profile_set(
         &mut state,
@@ -192,7 +208,7 @@ fn general(bytes: &[u8], start: &LongModeState, defined: u64) -> Run {
     }
 }
 
-fn decode_at(base: u64, bytes: &[u8]) -> Instruction {
+pub(super) fn decode_at(base: u64, bytes: &[u8]) -> Instruction {
     let mut ram = Ram::new(base, bytes);
     let instruction = long_decode::decode(&mut ram, base, context(PrivilegeLevel::Ring0))
         .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
@@ -202,7 +218,7 @@ fn decode_at(base: u64, bytes: &[u8]) -> Instruction {
 
 /// The decode of a generated encoding; `None` for a form the decoder does not support (the general
 /// path stops there as `Unsupported` and the fast path is never asked).
-fn try_decode_at(base: u64, bytes: &[u8]) -> Option<Instruction> {
+pub(super) fn try_decode_at(base: u64, bytes: &[u8]) -> Option<Instruction> {
     let mut ram = Ram::new(base, bytes);
     match long_decode::decode(&mut ram, base, context(PrivilegeLevel::Ring0)) {
         Ok(instruction) => {
@@ -247,7 +263,7 @@ fn fast(bytes: &[u8], start: &LongModeState, defined: u64) -> Run {
 
 /// The data calls of two journals are the same calls in the same order (fetches are not compared:
 /// the decode is common to both paths).
-fn assert_same_calls(label: &str, general: &MemoryLog, fast: &MemoryLog) {
+pub(super) fn assert_same_calls(label: &str, general: &MemoryLog, fast: &MemoryLog) {
     assert_eq!(
         general.calls().len(),
         fast.calls().len(),
@@ -295,8 +311,8 @@ fn compare(label: &str, bytes: &[u8], start: &LongModeState, defined: u64) -> Ru
 /// One r/m memory operand: ModRM `mod` and `rm` low bits, REX.X/REX.B, the SIB and displacement
 /// bytes, and whether a 0x67 prefix selects 32-bit addressing.
 #[derive(Clone)]
-struct Address {
-    label: String,
+pub(super) struct Address {
+    pub(super) label: String,
     mode: u8,
     rm: u8,
     rex_x: bool,
@@ -319,7 +335,7 @@ fn address(label: String, mode: u8, rm: u8, rex_x: bool, rex_b: bool, tail: Vec<
 
 /// Every ModRM memory shape: base registers (all sixteen where the encoding allows), SIB with and
 /// without base and index and every scale, disp8 and disp32, RIP-relative, and 32-bit addressing.
-fn address_forms() -> Vec<Address> {
+pub(super) fn address_forms() -> Vec<Address> {
     let mut out = Vec::new();
     // [base], mod 00 (rm 100 is the SIB escape, rm 101 is RIP-relative).
     for base in 0u8..16 {
@@ -464,7 +480,7 @@ fn address_forms() -> Vec<Address> {
 
 /// An instruction `legacy` prefixes, REX (W, R from `reg`, X/B from the form; forced when asked),
 /// the opcode, ModRM, the SIB and displacement, the immediate.
-fn encode(
+pub(super) fn encode(
     legacy: &[u8],
     wide: bool,
     force_rex: bool,
@@ -614,7 +630,7 @@ fn moffs_encodings(address: u64) -> Vec<(String, Vec<u8>)> {
 
 /// Register sets: low RAM (unaligned), the canonical high half, values near the top of the lower
 /// half (an access may leave the canonical range), and mixed values that are mostly non-canonical.
-fn register_sets() -> Vec<(&'static str, [u64; 16])> {
+pub(super) fn register_sets() -> Vec<(&'static str, [u64; 16])> {
     let mut low = [0u64; 16];
     let mut high = [0u64; 16];
     let mut edge = [0u64; 16];

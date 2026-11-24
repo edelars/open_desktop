@@ -307,6 +307,46 @@ fn the_tree_fast_path_takes_the_g4_moves_with_the_same_memory_calls() {
     assert_eq!(counters.memory_calls_compared, 11, "{counters:?}");
 }
 
+/// PERF-25, group G5: ALU with memory over RAM and the MMIO window (a device register read and
+/// written once by a read-modify-write, read once by a compare), PUSH/POP, CALL and RET.
+const G5_PROGRAM: &[u8] = &[
+    0x48, 0x01, 0x06, //             add [rsi], rax            RAM read-modify-write
+    0x48, 0x01, 0x03, //             add [rbx], rax            MMIO read-modify-write
+    0x48, 0x3b, 0x43, 0x08, //       cmp rax, [rbx+8]          MMIO read
+    0x85, 0x46, 0x10, //             test [rsi+0x10], eax      RAM read
+    0x80, 0x76, 0x18, 0x5a, //       xor byte [rsi+0x18], 0x5a RAM read-modify-write
+    0x50, //                         push rax
+    0x41, 0x51, //                   push r9
+    0x5a, //                         pop rdx
+    0x59, //                         pop rcx
+    0xe8, 0x02, 0x00, 0x00, 0x00, // call +2                   (the subroutine below)
+    0xeb, 0x05, //                   jmp +5                    (after the return: to the end)
+    0x48, 0x2b, 0x04, 0x24, //       sub rax, [rsp]            the return address
+    0xc3, //                         ret
+];
+
+#[test]
+fn the_tree_fast_path_takes_the_g5_alu_memory_and_stack_forms_with_the_same_memory_calls() {
+    let baseline = unchecked(G5_PROGRAM);
+    assert_eq!(
+        baseline.result.exit,
+        RunExit::StopAddress,
+        "{:?}",
+        baseline.result
+    );
+    assert_eq!(baseline.result.instructions_executed, 13);
+    assert_eq!(baseline.bus.mmio_reads, 2);
+    let (outcome, counters) = checked(G5_PROGRAM, FastPathMode::Tree);
+    assert!(fast_path_check::take_divergence().is_none());
+    assert_same_run(&outcome, &baseline);
+    assert_eq!(counters.divergences, 0);
+    // Every instruction is taken and compared; the journal has the fifteen data calls of the
+    // general path (two for each read-modify-write, one for each other access), MMIO included.
+    assert_eq!(counters.compared, 13, "{counters:?}");
+    assert_eq!(counters.refused_by_admission, 0, "{counters:?}");
+    assert_eq!(counters.memory_calls_compared, 15, "{counters:?}");
+}
+
 #[test]
 fn a_fast_path_that_refuses_everything_takes_nothing_and_changes_nothing() {
     let baseline = unchecked(PROGRAM);

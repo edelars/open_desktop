@@ -34507,9 +34507,15 @@ pub fn run_with_fast_path_check(
 /// (whether it faults is known only to the memory, whose page walk already has effects): it is
 /// made with the calls of the general path, and its error ends the instruction as there.
 ///
+/// PERF-25, group G5: `Arithmetic` and `Logic` with a memory operand (`fast_alu_memory`: the
+/// memory calls of `exec_arithmetic`/`exec_logic` in their order, one address check), PUSH/POP
+/// of a register (`exec_stack_register`), `CALL rel32` (`exec_call`) and `RET`/`RET imm16`
+/// (`exec_return`), the last three shared with the general arms.
+///
 /// Admission (ADR-0017, section 4): CPL0, RF = 0, TF = 0, no STI/MOV SS shadow, no LOCK/REP/REPNE
-/// prefix, no FS/GS segment prefix; G2 also no memory operand; for `Branch` and `Jump` also the
-/// admission of `executable` (opcode map, default prefixes). Everything else is "not handled".
+/// prefix, no FS/GS segment prefix; `Shift` also no memory operand; for `Branch`, `Jump`,
+/// `Call` and `Return` also the admission of `executable` (opcode map and byte, default
+/// prefixes). Everything else is "not handled".
 #[inline(never)]
 pub(crate) fn try_fast_step(
     state: &mut LongModeState,
@@ -34532,37 +34538,64 @@ pub(crate) fn try_fast_step(
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
     let result = match instruction.operation {
+        // PERF-25, group G5: a memory operand goes to `fast_alu_memory` (the calls of
+        // `exec_arithmetic`/`exec_logic` in their order, the flag formulas of
+        // `arithmetic_result`/`logic_result`); the register forms stay G2. Both end in the common
+        // tail below (flag definedness after the successful write, RIP, `Advanced`; a fault or an
+        // error leaves RIP and the definedness).
         Operation::Arithmetic { kind, dst, src } => {
             if matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_)) {
-                return None;
+                let size = instruction.operand_size;
+                fast_alu_memory(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    dst,
+                    src,
+                    kind != ArithmeticKind::Cmp,
+                    |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
+                )?
+            } else {
+                exec_arithmetic(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    instruction,
+                    control_policy_present,
+                    kind,
+                    dst,
+                    src,
+                )
             }
-            exec_arithmetic(
-                state,
-                memory,
-                context,
-                next_rip,
-                instruction,
-                control_policy_present,
-                kind,
-                dst,
-                src,
-            )
         }
         Operation::Logic { kind, dst, src } => {
             if matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_)) {
-                return None;
+                let size = instruction.operand_size;
+                fast_alu_memory(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    dst,
+                    src,
+                    kind != LogicKind::Test,
+                    |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
+                )?
+            } else {
+                exec_logic(
+                    state,
+                    memory,
+                    context,
+                    next_rip,
+                    instruction,
+                    control_policy_present,
+                    kind,
+                    dst,
+                    src,
+                )
             }
-            exec_logic(
-                state,
-                memory,
-                context,
-                next_rip,
-                instruction,
-                control_policy_present,
-                kind,
-                dst,
-                src,
-            )
         }
         Operation::Shift {
             kind,
@@ -34732,6 +34765,48 @@ pub(crate) fn try_fast_step(
                 }
                 Err(fault) => StepOutcome::Fault(fault),
             }));
+        }
+        // PERF-25, group G5: the stack forms, through the functions of the general arms. PUSH/POP r
+        // (16/64-bit, any register, REX.B, 66, a CS/DS/ES/SS prefix as the decoder admits them)
+        // retire like the general arm (its flag definedness is the identity); a #SS (non-canonical
+        // slot, before any call), a #PF or a backend error of the access is mapped by
+        // `report_memory_error` with nothing committed. CALL rel32 and RET/RET imm16 only in the
+        // form of `executable` with default prefixes (ADR-0017, 2.2; `2E E8`, `66 C3` and the
+        // CPL3 addr32 CALL stay in the general path); they are `Branched` without the tail.
+        Operation::StackRegister { push, register } => {
+            let pushed = exec_stack_register(
+                state,
+                memory,
+                context,
+                instruction.operand_size,
+                push,
+                register,
+            );
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                pushed,
+            ));
+        }
+        Operation::Call { displacement } => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0xe8
+                || instruction.prefixes != Prefixes::default()
+            {
+                return None;
+            }
+            return Some(exec_call(state, memory, context, next_rip, displacement));
+        }
+        Operation::Return { stack_adjust } => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || !matches!(instruction.opcode.byte, 0xc3 | 0xc2)
+                || instruction.prefixes != Prefixes::default()
+            {
+                return None;
+            }
+            return Some(exec_return(state, memory, context, stack_adjust));
         }
         _ => return None,
     };
@@ -66275,31 +66350,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::StackRegister { push, register } => {
-            let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_width = instruction.operand_size;
-            if push {
-                // Read the source before changing RSP, which is required for
-                // PUSH SP/RSP. A failed bounded-memory write commits neither RSP
-                // nor RIP.
-                let value = state.read(RegisterView::low(register, stack_width));
-                if let Err(error) = push_stack_value(state, memory, context, value, stack_width) {
-                    return report_memory_error(error);
-                }
-            } else {
-                let stack_address = match stack_access_address(old_rsp, false, stack_width) {
-                    Ok(address) => address,
-                    Err(error) => return report_memory_error(error),
-                };
-                let value = match memory.read_integer(stack_address, context, stack_width) {
-                    Ok(value) => value,
-                    Err(error) => return report_memory_error(error),
-                };
-                // POP SP first advances the 64-bit stack pointer by two, then
-                // writes the popped word into its low 16-bit alias. The qword
-                // form likewise writes RSP after the post-increment step.
-                state.gpr[Register::Rsp as usize] =
-                    old_rsp.wrapping_add(stack_width.bytes() as u64);
-                state.write(RegisterView::low(register, stack_width), value);
+            if let Err(error) = exec_stack_register(
+                state,
+                memory,
+                context,
+                instruction.operand_size,
+                push,
+                register,
+            ) {
+                return report_memory_error(error);
             }
         }
         Operation::PushImmediate { value } => {
@@ -67310,20 +67369,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             return Ok(StepOutcome::Branched);
         }
         Operation::Call { displacement } => {
-            let target = next_rip.wrapping_add_signed(i64::from(displacement));
-            if !canonical(target) {
-                let MemoryError::Architectural(fault) = general_protection() else {
-                    unreachable!()
-                };
-                return Ok(StepOutcome::Fault(fault));
-            }
-            if let Err(error) =
-                push_stack_value(state, memory, context, next_rip, OperandSize::Qword)
-            {
-                return report_memory_error(error);
-            }
-            state.rip = target;
-            return Ok(StepOutcome::Branched);
+            return exec_call(state, memory, context, next_rip, displacement);
         }
         Operation::IndirectCall { operand } => {
             // Resolve the complete source before the push. Memory sources are
@@ -67351,26 +67397,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             return Ok(StepOutcome::Branched);
         }
         Operation::Return { stack_adjust } => {
-            let old_rsp = state.gpr[Register::Rsp as usize];
-            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
-                Ok(address) => address,
-                Err(error) => return report_memory_error(error),
-            };
-            let target = match memory.read_integer(stack_address, context, OperandSize::Qword) {
-                Ok(target) => target,
-                Err(error) => return report_memory_error(error),
-            };
-            if !canonical(target) {
-                let MemoryError::Architectural(fault) = general_protection() else {
-                    unreachable!()
-                };
-                return Ok(StepOutcome::Fault(fault));
-            }
-            state.gpr[Register::Rsp as usize] = old_rsp
-                .wrapping_add(8)
-                .wrapping_add(u64::from(stack_adjust));
-            state.rip = target;
-            return Ok(StepOutcome::Branched);
+            return exec_return(state, memory, context, stack_adjust);
         }
         // S2-53: PREFETCHW is a hint: no memory access, no fault, no state change but RIP.
         Operation::Endbr64Nop
@@ -78096,6 +78123,209 @@ fn relative_target(next_rip: u64, displacement: i32) -> Result<u64, Architectura
         return Err(fault);
     }
     Ok(target)
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5):
+/// PUSH/POP of an opcode-encoded register (`Operation::StackRegister`), 16- or 64-bit. PUSH reads
+/// the source before RSP changes (PUSH SP/RSP pushes the old value), writes the slot below RSP and
+/// only then moves RSP (`push_stack_value`); POP reads the slot at RSP, advances RSP and then
+/// writes the register (POP SP/RSP: the popped value wins over the increment). A non-canonical slot
+/// is #SS(0) (or an address overflow) before any memory call; a failed access commits neither RSP nor the register. The
+/// caller maps the error with `report_memory_error`.
+#[inline(always)]
+fn exec_stack_register(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    stack_width: OperandSize,
+    push: bool,
+    register: Register,
+) -> Result<(), MemoryError> {
+    if push {
+        let value = state.read(RegisterView::low(register, stack_width));
+        return push_stack_value(state, memory, context, value, stack_width);
+    }
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    let stack_address = stack_access_address(old_rsp, false, stack_width)?;
+    let value = memory.read_integer(stack_address, context, stack_width)?;
+    // POP SP first advances the 64-bit stack pointer by two, then writes the popped word into its
+    // low 16-bit alias. The qword form likewise writes RSP after the post-increment step.
+    state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(stack_width.bytes() as u64);
+    state.write(RegisterView::low(register, stack_width), value);
+    Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5): the
+/// near relative `CALL rel32` (`E8`). The target is checked first (`relative_target`: a
+/// non-canonical target is #GP(0) with no memory call); then the return address is pushed
+/// (`push_stack_value`: #SS(0) for a non-canonical slot before the call, a failed write commits
+/// nothing); RIP moves only after the push. `Branched`, `rflags_defined` untouched.
+#[inline(always)]
+fn exec_call(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    displacement: i32,
+) -> Result<StepOutcome, MemoryError> {
+    let target = match relative_target(next_rip, displacement) {
+        Ok(target) => target,
+        Err(fault) => return Ok(StepOutcome::Fault(fault)),
+    };
+    if let Err(error) = push_stack_value(state, memory, context, next_rip, OperandSize::Qword) {
+        return report_memory_error(error);
+    }
+    state.rip = target;
+    Ok(StepOutcome::Branched)
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5): the
+/// near `RET` / `RET imm16` (`C3`/`C2`). The qword slot at RSP is checked (#SS(0) before any
+/// memory call) and read; a non-canonical return address is #GP(0) after that read with nothing
+/// committed; then RSP moves past the slot and the immediate, and RIP to the target. `Branched`,
+/// `rflags_defined` untouched.
+#[inline(always)]
+fn exec_return(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    stack_adjust: u16,
+) -> Result<StepOutcome, MemoryError> {
+    let old_rsp = state.gpr[Register::Rsp as usize];
+    let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+        Ok(address) => address,
+        Err(error) => return report_memory_error(error),
+    };
+    let target = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+        Ok(target) => target,
+        Err(error) => return report_memory_error(error),
+    };
+    if !canonical(target) {
+        let MemoryError::Architectural(fault) = general_protection() else {
+            unreachable!()
+        };
+        return Ok(StepOutcome::Fault(fault));
+    }
+    state.gpr[Register::Rsp as usize] = old_rsp
+        .wrapping_add(8)
+        .wrapping_add(u64::from(stack_adjust));
+    state.rip = target;
+    Ok(StepOutcome::Branched)
+}
+
+/// PERF-25, group G5 (ADR-0017, section 1): an ALU operation (`Arithmetic`/`Logic`) whose
+/// destination is memory and whose source is a register or an immediate, in the fast path. The
+/// same calls as `exec_arithmetic`/`exec_logic` → `read_rmw_destination` (CPL0: a plain
+/// `read_integer`) → `write_operand`, in the same order, without their operand dispatch and with
+/// one address computation instead of two: the address check of `access_address_48` (#GP(0), or
+/// #SS(0) for an RSP/RBP base, or the range error, before any memory call) depends only on the
+/// state, which nothing changes between the read and the write, so the second check of the general
+/// path cannot give another answer. Then one `read_integer` of the operand width, the result and
+/// flags from `compute` (`arithmetic_result`/`logic_result`), one `write_integer` unless the
+/// operation only compares (CMP/TEST), and the flags last: a failed read or write (#PF after the
+/// read included) commits neither memory nor flags.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn fast_alu_into_memory(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: MemoryOperand,
+    rhs: u64,
+    writes: bool,
+    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
+) -> Result<(), MemoryError> {
+    let address = destination.access_address_48(state, next_rip)?;
+    let lhs = memory.read_integer(address, context, destination.size)?;
+    let (result, flags) = compute(lhs, rhs, state.rflags);
+    if writes {
+        memory.write_integer(address, context, destination.size, result)?;
+    }
+    state.rflags = flags;
+    Ok(())
+}
+
+/// PERF-25, group G5: an ALU operation with a register destination and a memory source in the fast
+/// path: the register (no memory call), then `read_memory_operand` (the memory arm of
+/// `read_operand`), the result and flags from `compute`, the register write unless the operation
+/// only compares, the flags. A failed read commits nothing.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn fast_alu_from_memory(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    destination: RegisterView,
+    source: MemoryOperand,
+    writes: bool,
+    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
+) -> Result<(), MemoryError> {
+    let lhs = state.read(destination);
+    let rhs = read_memory_operand(state, memory, context, next_rip, source)?;
+    let (result, flags) = compute(lhs, rhs, state.rflags);
+    if writes {
+        state.write(destination, result);
+    }
+    state.rflags = flags;
+    Ok(())
+}
+
+/// PERF-25, group G5: the operand shapes of an ALU operation with memory: memory destination with
+/// a register or immediate source ([`fast_alu_into_memory`]; the register source is read first,
+/// which the general path does after the memory read: reading a register has no effect and the
+/// read changes no register), or register destination with a memory source
+/// ([`fast_alu_from_memory`]). Any other shape (not produced by the decoder) is `None` before any
+/// effect, and the general path keeps its own answer.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn fast_alu_memory(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    dst: Operand,
+    src: Operand,
+    writes: bool,
+    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
+) -> Option<Result<(), MemoryError>> {
+    Some(match (dst, src) {
+        (Operand::Memory(destination), Operand::Register(view)) => {
+            let rhs = state.read(view);
+            fast_alu_into_memory(
+                state,
+                memory,
+                context,
+                next_rip,
+                destination,
+                rhs,
+                writes,
+                compute,
+            )
+        }
+        (Operand::Memory(destination), Operand::Immediate(rhs)) => fast_alu_into_memory(
+            state,
+            memory,
+            context,
+            next_rip,
+            destination,
+            rhs,
+            writes,
+            compute,
+        ),
+        (Operand::Register(destination), Operand::Memory(source)) => fast_alu_from_memory(
+            state,
+            memory,
+            context,
+            next_rip,
+            destination,
+            source,
+            writes,
+            compute,
+        ),
+        _ => return None,
+    })
 }
 
 /// MOVZX/MOVSX/MOVSXD (`Operation::Extend`): the source (`read_operand`, so a memory source is
