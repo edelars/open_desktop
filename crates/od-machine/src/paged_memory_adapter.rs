@@ -1,6 +1,7 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::console_output_context::capture_frame_chain;
+use crate::data_translation_cache::DataTranslationCache;
 use crate::decoded_instruction_cache::DecodedInstructionCache;
 use crate::execution_observations::{
     DeliveredPageFaultObservation, ElfMmuGatherPageWalk, ElfMmuGatherRaw, ElfStackAlignmentPoint,
@@ -33,7 +34,8 @@ use crate::{
 use od_isa::execute::{
     Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError, Cpl0ProfileSetResult, InvlpgExit,
     InvlpgLong64V1, InvlpgResult, RunConfig, RunExit, RunInputError, RunResult,
-    TranslationContextChange, run_with_cpl0_profile_set_and_pio, run_with_cpl3_profile_set,
+    TranslationContextChange, run_with_cpl0_profile_set_and_pio,
+    run_with_cpl0_profile_set_and_pio_batched, run_with_cpl3_profile_set,
     step_invlpg as cpu_step_invlpg, step_paged_mov as cpu_step_paged_mov,
 };
 use od_isa::execute::{
@@ -133,6 +135,7 @@ pub fn step_paged_invlpg(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -193,6 +196,7 @@ fn fetch_only_adapter<'a>(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     }
 }
 
@@ -393,6 +397,7 @@ fn step_paged_state_op(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -499,6 +504,7 @@ fn with_paged_mov_read_memory<R>(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -799,6 +805,7 @@ pub fn step_paged_mov(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -863,6 +870,7 @@ pub fn step_paged_mov_2m_ram(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -2456,7 +2464,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_policy(
 /// execution observations are independent: either, both or none may be given.
 ///
 /// The fetch cache (if any) is created here and lives in this call only; the loop itself is
-/// [`run_cpl0_set_paged_2m_ram_with_cache`].
+/// [`run_cpl0_set_loop`].
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
@@ -2497,6 +2505,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         None,
         FetchCacheTag::Page4K,
         None,
+        false,
+        false,
     )
 }
 
@@ -2529,6 +2539,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     sweep: Option<&Rc<FetchCacheSweep>>,
     tag: FetchCacheTag,
     decoded: Option<&DecodedInstructionCache>,
+    data_cache: bool,
+    batch: bool,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
@@ -2538,9 +2550,13 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
             None => cache,
         }
     });
-    run_cpl0_set_paged_2m_ram_with_cache(
+    // PERF-11 (ADR-0016, prototype): the data translation cache, asked for by the board, lives in
+    // this call only too (one quantum).
+    let data_cache = data_cache.then(DataTranslationCache::new);
+    run_cpl0_set_loop(
         state,
-        bus,
+        LoopBus::Exclusive(bus),
+        None,
         crate::vcpu::BOOT_VCPU_INDEX,
         cr3,
         efer,
@@ -2556,7 +2572,12 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
         irq,
         checkpoints,
         execution_observations,
+        ExceptionDeliveryMode::Quantum,
+        false,
+        None,
         decoded,
+        data_cache.as_ref(),
+        batch,
     )
 }
 
@@ -2575,6 +2596,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
 /// the check has nothing to compare. `PagedCpl0SetReport::fetch_cache_stats` of a cache that
 /// serves several calls are cumulative over all of them.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
     state: &mut LongModeState,
     bus: &mut MachineBus,
@@ -2618,6 +2640,8 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         false,
         None,
         decoded,
+        None,
+        false,
     )
 }
 
@@ -2675,6 +2699,13 @@ pub(crate) enum ExceptionDeliveryMode<'a> {
 /// (`split_gate`, S6-34 step 8; `None` keeps the refusal of S6-31/S6-32).
 /// The host passes the number of consecutive delivered faults and resumes at its own
 /// IRQ boundary after each new delivery. Other callers continue within this loop.
+///
+/// PERF-25: with `batch` an ordinary run (no trace, ELF copy path, histogram, execution
+/// observation, CPUID boundary, checkpoint boundaries, `GuestOnly` or sweeping fetch cache) runs
+/// the CPL0 entry for several instructions per call
+/// ([`od_isa::execute::run_with_cpl0_profile_set_and_pio_batched`]); the call returns to this loop
+/// after every instruction at whose end the loop has something to do (see
+/// `set_loop_batch_boundary`). Without `batch` every call runs one instruction, as before.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_loop(
     state: &mut LongModeState,
@@ -2699,6 +2730,8 @@ pub(crate) fn run_cpl0_set_loop(
     stop_after_mmio: bool,
     on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     decoded: Option<&DecodedInstructionCache>,
+    data_cache: Option<&DataTranslationCache>,
+    batch: bool,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2742,6 +2775,8 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             decoded,
+            data_cache,
+            batch,
         );
     }
     match (trace, elf) {
@@ -2768,6 +2803,8 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             decoded,
+            data_cache,
+            batch,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
@@ -2792,6 +2829,8 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             decoded,
+            data_cache,
+            batch,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
@@ -2816,6 +2855,8 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             decoded,
+            data_cache,
+            batch,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
@@ -2840,6 +2881,8 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             decoded,
+            data_cache,
+            batch,
         ),
     }
 }
@@ -2872,6 +2915,8 @@ fn run_cpl0_set_loop_impl<
     stop_after_mmio: bool,
     mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     decoded: Option<&DecodedInstructionCache>,
+    data_cache: Option<&DataTranslationCache>,
+    batch: bool,
 ) -> PagedCpl0SetReport {
     // ADR-0017, section 3: a traced run keeps the general path (PERF-23 fast path off).
     let set_without_fast_path;
@@ -2908,6 +2953,16 @@ fn run_cpl0_set_loop_impl<
     if let Some(decoded) = decoded {
         decoded.bind_memory(std::ptr::from_ref(bus.ram()) as usize);
     }
+    // PERF-11 (ADR-0016, prototype): the data translation cache serves only an ordinary run of a
+    // caller that owns the bus (a vCPU thread of the parallel mode does not see the writes of the
+    // others in `watch`). A diagnostic (a trace, the ELF copy path, an execution observation) keeps
+    // every walk.
+    let data_cache = data_cache.filter(|_| {
+        !TRACE_ENABLED
+            && !ELF_COPY_ENABLED
+            && execution_observations.is_none()
+            && matches!(bus, LoopBus::Exclusive(_))
+    });
     // Every committed RAM write of the loop (guest stores, walker A/D commits, exception frames)
     // passes through `watch`, which lets the cache drop entries whose tables were written.
     let guest_only =
@@ -2915,6 +2970,9 @@ fn run_cpl0_set_loop_impl<
     let mut watch = |range: GuestPhysicalRange| {
         if let Some(cache) = cache {
             cache.note_write(range);
+        }
+        if let Some(data_cache) = data_cache {
+            data_cache.note_write(range);
         }
         committed_write(range);
     };
@@ -2966,6 +3024,9 @@ fn run_cpl0_set_loop_impl<
     let mut delivered_exceptions = 0u64;
     let mut delivered_page_faults = 0u64;
     let mut delivered_general_protection_faults = 0u64;
+    // PERF-25: batched calls only for a caller that owns the bus, has no split-lock gate and uses
+    // a fresh delivery limit per quantum (read before `exception_delivery` is taken apart below).
+    let quantum_delivery = matches!(exception_delivery, ExceptionDeliveryMode::Quantum);
     // Deliveries since the last retired instruction (see `MAX_DELIVERIES_WITHOUT_RETIREMENT`).
     let (mut local_faults, yield_after_delivery) = match &exception_delivery {
         ExceptionDeliveryMode::HostStep(faults) => (*faults, true),
@@ -2985,8 +3046,30 @@ fn run_cpl0_set_loop_impl<
     let mut pit_written = false;
     let mut port_accessed = false;
     let mut mmio_written = false;
+    // PERF-25: whether a call may run more than one instruction (see `run_cpl0_set_loop`; the
+    // conditions that can change during the run are checked at every boundary below), and what the
+    // boundary check of a batched call already did at the boundary it ended the call on.
+    let batch = batch
+        && matches!(bus, LoopBus::Exclusive(_))
+        && split_gate.is_none()
+        && quantum_delivery
+        && !TRACE_ENABLED
+        && !ELF_COPY_ENABLED
+        && !HISTOGRAM_ENABLED
+        && execution_observations.is_none()
+        && !cpuid_boundary
+        && !guest_only
+        && checkpoints
+            .as_deref()
+            .is_none_or(|recorder| !recorder.wants_boundary());
+    let mut carried: Option<CarriedBoundary> = None;
     let (exit, page_fault, memory_error) = loop {
-        if stop() || (stop_after_mmio && mmio_written) {
+        let carried_boundary = carried.take();
+        let stopped = match carried_boundary {
+            Some(boundary) => boundary.stop,
+            None => stop(),
+        };
+        if stopped || (stop_after_mmio && mmio_written) {
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
         }
         if pit_write_pending {
@@ -3028,16 +3111,34 @@ fn run_cpl0_set_loop_impl<
             context
         };
         if let Some(hook) = irq.as_mut() {
-            match deliver_pending_irq(
-                hook,
-                state,
-                bus.ram(),
-                &paging,
-                context,
-                &mut watch,
-                cache,
-                split_gate,
-            ) {
+            let outcome = match carried_boundary {
+                // PERF-25: the check of the last call asked the source at this boundary.
+                Some(CarriedBoundary {
+                    irq: Some(vector), ..
+                }) => deliver_polled_irq(
+                    hook,
+                    vector,
+                    state,
+                    bus.ram(),
+                    &paging,
+                    context,
+                    &mut watch,
+                    cache,
+                    split_gate,
+                ),
+                Some(CarriedBoundary { irq: None, .. }) => IrqBoundaryOutcome::None,
+                None => deliver_pending_irq(
+                    hook,
+                    state,
+                    bus.ram(),
+                    &paging,
+                    context,
+                    &mut watch,
+                    cache,
+                    split_gate,
+                ),
+            };
+            match outcome {
                 IrqBoundaryOutcome::None => {}
                 IrqBoundaryOutcome::Delivered => {
                     if let Some(observations) = execution_observations.as_deref_mut() {
@@ -3229,6 +3330,18 @@ fn run_cpl0_set_loop_impl<
             && cache.is_some_and(FetchTranslationCache::sweep_active)
             && invlpg_at_rip(state, bus.ram(), &paging, context, None);
         let control_before = (state.cr0, state.cr4);
+        // PERF-25: the instructions this call may run: the rest of the budget for a batched call at
+        // CPL0 whose first instruction has no RF (that one is the loop's, see above) and whose fetch
+        // cache has no shadows (they learn of `INVLPG` and CR0/CR4 from this loop), otherwise one.
+        let call_budget = if batch
+            && !cpl3
+            && !resume_flag_before
+            && !cache.is_some_and(FetchTranslationCache::sweep_active)
+        {
+            instruction_budget - instructions_executed
+        } else {
+            1
+        };
         let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
         let mut port = SetPortWatch {
             inner: io.port_io(),
@@ -3247,8 +3360,9 @@ fn run_cpl0_set_loop_impl<
         memory.capture_page_fault_trace = execution_observations.is_some();
         memory.descriptor_gate = split_gate;
         memory.decoded.cache = decoded;
+        memory.data_cache = data_cache;
         let run_config = RunConfig {
-            instruction_budget: 1,
+            instruction_budget: call_budget,
             stop_rip: None,
             context,
         };
@@ -3276,6 +3390,31 @@ fn run_cpl0_set_loop_impl<
                 instructions_executed: done.instructions_executed,
                 rflags_defined: done.rflags_defined,
             })
+        } else if call_budget > 1 {
+            let device_accesses_at_call = io.device_access_count();
+            let call_trace = checkpoints.as_deref();
+            run_with_cpl0_profile_set_and_pio_batched(
+                state,
+                &mut memory,
+                run_config,
+                current_rflags_defined,
+                set,
+                rdtsc_source,
+                &mut port,
+                || false,
+                &mut |state: &LongModeState, memory: &mut PagedMovMemoryAdapter<'_>| {
+                    set_loop_batch_boundary(
+                        state,
+                        memory,
+                        &io,
+                        device_accesses_at_call,
+                        call_trace,
+                        &mut stop,
+                        &mut irq,
+                        &mut carried,
+                    )
+                },
+            )
         } else {
             run_with_cpl0_profile_set_and_pio(
                 state,
@@ -3292,6 +3431,34 @@ fn run_cpl0_set_loop_impl<
         // the instruction lease before attempting a separate exception-entry transaction.
         memory.finish_descriptor_scope();
         memory.descriptor_gate = None;
+        // PERF-25: from here on `instruction_rip` is the RIP of the last instruction of the call
+        // (the one that ended it), which a batched call moved on (the same one otherwise).
+        let instruction_rip = memory.instruction_rip;
+        #[cfg(test)]
+        batch_trace::record(
+            call_budget,
+            result.as_ref().map_or(0, |done| done.instructions_executed),
+            state.rip,
+        );
+        // PERF-25: a batched call that retired instructions and then ended with a fault (the
+        // faulting instruction did not retire) has its retired instructions counted here, before
+        // the delivery branches below leave this iteration through `continue` or `break`: the
+        // count, the definedness and the delivery streak are then those of the one-instruction
+        // calls (the retired ones, then a call of the faulting one that retired nothing). Every
+        // other exit of such a call (a port error, `Unsupported`, a partial REP, a translation
+        // context change, a user entry ...) reaches the accounting after the delivery branches,
+        // and an `Err` is an admission refusal, which runs nothing.
+        let mut result = result;
+        if call_budget > 1
+            && let Ok(done) = result.as_mut()
+            && done.instructions_executed > 0
+            && matches!(done.exit, Cpl0ProfileSetExit::Run(RunExit::Fault(_)))
+        {
+            instructions_executed += done.instructions_executed;
+            current_rflags_defined = done.rflags_defined;
+            *deliveries_without_retirement = 0;
+            done.instructions_executed = 0;
+        }
         pit_written |= port.pit_written;
         port_accessed |= port.port_accessed;
         mmio_written |= io.mmio_written();
@@ -3516,15 +3683,27 @@ fn run_cpl0_set_loop_impl<
         }
         let (page_fault, memory_error) = (memory.page_fault.take(), memory.memory_error.take());
         drop(memory);
-        let result = match result {
+        let mut result = match result {
             Ok(result) => result,
             Err(error) => break (PagedCpl0SetExit::Rejected(error), page_fault, memory_error),
         };
+        // PERF-25: a batched call whose boundary check (or the entry's own check) handed the boundary
+        // back ends with `StopRequested` after at least one retired instruction: for this loop that
+        // is the boundary after a one-instruction call. Its STOP callback is `|| false` (the loop's
+        // own STOP is asked by `set_loop_batch_boundary`), so no other `StopRequested` can come
+        // from it; one with nothing retired would stay the stop it is.
+        if call_budget > 1
+            && result.instructions_executed > 0
+            && matches!(result.exit, Cpl0ProfileSetExit::Run(RunExit::StopRequested))
+        {
+            result.exit = Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted);
+        }
         // S4-39f: the syscall journal. A retired instruction of the CPL3 entry that left CPL3 is
         // the `SYSCALL` (the only form of the allow-list that changes the CPL); a committed
         // return to CPL3 from the CPL0 entry is a `SYSRETQ` when the instruction is one (an
         // `IRETQ` return is not a system call).
-        if user_mode && result.instructions_executed == 1 {
+        // PERF-25: a batched CPL0 call ends right after the `SYSRETQ`, so its last instruction is it.
+        if user_mode && result.instructions_executed >= 1 {
             let event = if cpl3 {
                 state
                     .cs_selector
@@ -3650,6 +3829,13 @@ fn run_cpl0_set_loop_impl<
         {
             cache.flush();
         }
+        // PERF-11: and every cached data translation (the snapshot check of a lookup would miss
+        // anyway; the flush also frees the watched frames).
+        if matches!(result.exit, Cpl0ProfileSetExit::TranslationContextChange(_))
+            && let Some(data_cache) = data_cache
+        {
+            data_cache.flush();
+        }
         if matches!(
             result.exit,
             Cpl0ProfileSetExit::TranslationContextChange(TranslationContextChange::Cr3Write { .. })
@@ -3723,6 +3909,122 @@ fn run_cpl0_set_loop_impl<
     }
 }
 
+/// PERF-25: what the boundary check of a batched set call did at the boundary it ended the call on,
+/// so that the loop does not do it a second time there: STOP was asked (`stop` is the answer),
+/// and, when it said no, the interrupt source was asked and `irq` is the vector to deliver now.
+#[derive(Clone, Copy)]
+struct CarriedBoundary {
+    stop: bool,
+    irq: Option<u8>,
+}
+
+/// PERF-25: the boundary check of a batched call of the set loop
+/// ([`run_with_cpl0_profile_set_and_pio_batched`]). At a boundary inside the call it does what the
+/// loop does at a boundary of an ordinary run, or returns `false` to hand the boundary to the loop
+/// (a new call). The entry itself has already ended the call after an instruction that changed an
+/// input of its admission (CR0/CR3/CR4, the CPL, IF, RF, TF, IOPL, the STI shadow, the activity)
+/// and after a translation context change (`MOV CR3`, an EFER write), a committed return to CPL3,
+/// `HLT`, a fault, a port error, a user entry, `Unsupported` and a partial REP; the budget is never
+/// passed. Here, in the order of the loop:
+///
+/// 1. the instruction that retired ends as after a call: its descriptor lease is released;
+/// 2. a device access of that instruction (a port or MMIO access moves the count of the bus, an MMIO
+///    write sets `mmio_written`) hands the boundary back: it may have changed the interrupt source,
+///    a device flag `stop` reads, the PIT write that ends the quantum or `stop_after_mmio`;
+/// 3. so does a RIP the call trace (opt-in) may record;
+/// 4. STOP is asked, once (the host and scheduler stops, the RDTSC tick, the device flags); a stop
+///    hands the boundary back with the answer;
+/// 5. the interrupt source is asked as [`deliver_pending_irq`] asks it (the saved answer of PERF-05,
+///    the refusals at IF = 0 or in the STI shadow counted); a vector to deliver hands the boundary
+///    back with it;
+/// 6. the adapter is made ready for the next instruction as a new one would be: its RIP, and empty
+///    records of the instruction (the page fault, the memory errors, the decoded-instruction key).
+///
+/// A batched call has no CPUID boundary, no checkpoint boundary, no RF instruction after the first
+/// and no `GuestOnly` or sweeping fetch cache (see the conditions of `batch` and `call_budget`).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn set_loop_batch_boundary(
+    state: &LongModeState,
+    memory: &mut PagedMovMemoryAdapter<'_>,
+    io: &crate::bus::MachineBusSetStepIo<'_>,
+    device_accesses_at_call: u64,
+    call_trace: Option<&CheckpointRecorder>,
+    stop: &mut impl FnMut() -> bool,
+    irq: &mut Option<IrqBoundaryHook<'_>>,
+    carried: &mut Option<CarriedBoundary>,
+) -> bool {
+    if memory.descriptor_scope.is_some() {
+        memory.finish_descriptor_scope();
+    }
+    if io.device_access_count() != device_accesses_at_call || io.mmio_written() {
+        return false;
+    }
+    if call_trace.is_some_and(|recorder| recorder.is_call_candidate(state.rip)) {
+        return false;
+    }
+    if stop() {
+        *carried = Some(CarriedBoundary {
+            stop: true,
+            irq: None,
+        });
+        return false;
+    }
+    if let Some(hook) = irq.as_mut()
+        && let Some(vector) = poll_pending_irq(hook, state)
+    {
+        *carried = Some(CarriedBoundary {
+            stop: false,
+            irq: Some(vector),
+        });
+        return false;
+    }
+    memory.begin_batched_instruction(state.rip);
+    true
+}
+
+/// PERF-25 (tests): every CPL0 entry call of the set loop on this thread, in order.
+#[cfg(test)]
+pub(crate) mod batch_trace {
+    use std::cell::RefCell;
+
+    /// One call: the instruction budget it was given, the instructions it retired and the RIP it
+    /// left (before the loop delivers anything).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct Call {
+        pub(crate) budget: u64,
+        pub(crate) retired: u64,
+        pub(crate) rip: u64,
+    }
+
+    thread_local! {
+        /// `None` until [`start`]: nothing is recorded for the other tests of the crate.
+        static CALLS: RefCell<Option<Vec<Call>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record(budget: u64, retired: u64, rip: u64) {
+        CALLS.with(|calls| {
+            if let Some(calls) = calls.borrow_mut().as_mut() {
+                calls.push(Call {
+                    budget,
+                    retired,
+                    rip,
+                });
+            }
+        });
+    }
+
+    /// Record the calls of this thread from now on (what was recorded before is dropped).
+    pub(crate) fn start() {
+        CALLS.with(|calls| *calls.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// The calls recorded since [`start`]; recording stops.
+    pub(crate) fn take() -> Vec<Call> {
+        CALLS.with(|calls| calls.borrow_mut().take().unwrap_or_default())
+    }
+}
+
 /// The translation context a call that continues this one is handed (S4-14i): the paging snapshot
 /// of `cr3` and the state, and the access context of the loop for the CPL of the state. The same
 /// function computes the seal of the end of a call and the check of the start of the next.
@@ -3793,6 +4095,7 @@ fn set_loop_adapter<'a>(
         fetch_cache,
         walks,
         decoded: DecodedStep::default(),
+        data_cache: None,
     }
 }
 
@@ -4014,6 +4317,21 @@ struct DescriptorScope<'a> {
 }
 
 impl<'a> PagedMovMemoryAdapter<'a> {
+    /// PERF-25: the set loop's adapter of a batched call goes on to the next instruction at `rip`:
+    /// what is of one instruction starts as in a new adapter of the loop (`set_loop_adapter`), the
+    /// rest (the bus, the paging snapshot, the caches, the gate, the profile flags) stays.
+    fn begin_batched_instruction(&mut self, rip: u64) {
+        debug_assert!(self.descriptor_scope.is_none() && !self.capture_effects);
+        debug_assert!(!self.capture_page_fault_trace);
+        self.instruction_rip = rip;
+        self.page_fault = None;
+        self.memory_error = None;
+        self.access_error = None;
+        self.page_fault_trace = None;
+        self.decoded.pending = None;
+        self.decoded.outside_page = false;
+    }
+
     fn begin_descriptor_scope(
         &mut self,
         gate: &'a dyn crate::bus::SplitLockGate,
@@ -4237,6 +4555,7 @@ fn with_cpl0_gate_memory<T>(
     Ok((delivery, memory.page_fault, memory.memory_error))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn deliver_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &mut LongModeState,
@@ -4247,9 +4566,22 @@ pub(crate) fn deliver_pending_irq(
     cache: Option<&FetchTranslationCache>,
     gate: Option<&dyn crate::bus::SplitLockGate>,
 ) -> IrqBoundaryOutcome {
+    match poll_pending_irq(hook, state) {
+        Some(vector) => deliver_polled_irq(
+            hook, vector, state, memory, paging, context, watch, cache, gate,
+        ),
+        None => IrqBoundaryOutcome::None,
+    }
+}
+
+/// The question part of [`deliver_pending_irq`] at one boundary: the vector to deliver now, or
+/// `None` when there is none or it is held back (IF = 0, the STI shadow), the refusal counted.
+/// PERF-25: the boundary check of a batched set call asks this too, at the boundaries inside the
+/// call, and hands a vector to [`deliver_polled_irq`] of the loop at that same boundary.
+fn poll_pending_irq(hook: &mut IrqBoundaryHook<'_>, state: &LongModeState) -> Option<u8> {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
-        return IrqBoundaryOutcome::None;
+        return None;
     }
     // PERF-05: a source that is stable between device accesses is asked again only when a guest
     // access reached a device since the last question or a vector was delivered. The checks below
@@ -4277,17 +4609,32 @@ pub(crate) fn deliver_pending_irq(
             answer
         }
     };
-    let Some(vector) = answer else {
-        return IrqBoundaryOutcome::None;
-    };
+    let vector = answer?;
     if state.rflags & RFLAGS_IF == 0 {
         hook.counters.irq_refused_masked += 1;
-        return IrqBoundaryOutcome::None;
+        return None;
     }
     if state.sti_shadow != Some(od_isa::StiShadow::Clear) {
         hook.counters.irq_refused_shadow += 1;
-        return IrqBoundaryOutcome::None;
+        return None;
     }
+    Some(vector)
+}
+
+/// The delivery part of [`deliver_pending_irq`]: `vector` came from [`poll_pending_irq`] at this
+/// same boundary.
+#[allow(clippy::too_many_arguments)]
+fn deliver_polled_irq(
+    hook: &mut IrqBoundaryHook<'_>,
+    vector: u8,
+    state: &mut LongModeState,
+    memory: &crate::PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    context: AccessContext,
+    watch: &mut dyn FnMut(GuestPhysicalRange),
+    cache: Option<&FetchTranslationCache>,
+    gate: Option<&dyn crate::bus::SplitLockGate>,
+) -> IrqBoundaryOutcome {
     let (delivery, page_fault, memory_error) =
         with_cpl0_gate_memory(memory, paging, state.rip, watch, cache, gate, |memory| {
             deliver_external_interrupt_cpl0_set(state, memory, vector, context)
@@ -4581,6 +4928,7 @@ pub fn step_paged_mov_word_read(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -4665,6 +5013,7 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -4731,6 +5080,7 @@ pub fn step_paged_mov_dword_read(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -4806,6 +5156,7 @@ pub fn step_paged_mov_dword_store(
         fetch_cache: None,
         walks: None,
         decoded: DecodedStep::default(),
+        data_cache: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -5106,6 +5457,10 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// PERF-10: the decoded-instruction cache of this adapter's instruction (off unless the set loop
     /// turns it on; see [`DecodedStep`]).
     decoded: DecodedStep<'a>,
+    /// PERF-11 (ADR-0016, prototype): the data translation cache of the set loop's instruction
+    /// adapter, which serves same-page qword reads in [`GuestMemory::read`]; `None` everywhere
+    /// else (and unless the board asked for it).
+    data_cache: Option<&'a DataTranslationCache>,
 }
 
 /// PERF-10: the state of the decoded-instruction cache for the one instruction an adapter serves.
@@ -5341,6 +5696,21 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         operation: RamAccessOperation,
         mmio_allowed: bool,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
+        self.access_with_observed(address, context, operation, mmio_allowed, |_| {})
+    }
+
+    /// [`Self::access_with`] that also shows the walk report to `observe` (PERF-11: the miss of
+    /// the data translation cache keeps the trace of a successful walk). `access_with` passes a
+    /// closure that does nothing; with `#[inline(always)]` its body is the one it always was.
+    #[inline(always)]
+    fn access_with_observed(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        operation: RamAccessOperation,
+        mmio_allowed: bool,
+        observe: impl FnOnce(&crate::TrackedAccessReport),
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
         if self.capture_page_fault_trace {
             self.page_fault_trace = None;
         }
@@ -5440,6 +5810,7 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 .err()
                 .and_then(|error| faulting_page_walk_context(error, report.trace));
         }
+        observe(&report);
         match report.outcome {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
@@ -5447,6 +5818,82 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 Err(self.map_access_error(error))
             }
         }
+    }
+
+    /// PERF-11: one same-page qword read through the data translation cache. A hit reads the qword
+    /// of the cached plain-RAM frame (the host accesses of the walk's read) and walks nothing: the
+    /// entry was made by a successful read walk with the same snapshot and page privilege, which set
+    /// every accessed bit of the path, and no write to a table frame of the path has happened since
+    /// (it would have dropped the entry), so the walk would read the same entries, write nothing and
+    /// read the same bytes. A miss is the ordinary tracked read (`access_with`, with every effect,
+    /// fault and record as without the cache); only a success is remembered, from the trace of that
+    /// same walk.
+    #[inline(always)]
+    fn read_qword_through_data_cache(
+        &mut self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+    ) -> Result<u64, MemoryError> {
+        if let Some(frame) = cache.lookup(address, &self.paging, context.page_privilege())
+            && let Some(memory) = self.bus.ram_ref()
+            && let Some(value) = memory.read_ram_frame_qword(frame, address)
+        {
+            return Ok(value);
+        }
+        self.read_qword_and_remember(cache, address, context)
+    }
+
+    /// The miss of [`Self::read_qword_through_data_cache`].
+    #[inline(never)]
+    fn read_qword_and_remember(
+        &mut self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+    ) -> Result<u64, MemoryError> {
+        let mut walked = None;
+        let outcome = self.access_with_observed(
+            address,
+            context,
+            RamAccessOperation::Read {
+                width: crate::AccessWidth::Qword,
+            },
+            true,
+            |report| {
+                if report.outcome.is_ok() {
+                    walked = Some(report.trace);
+                }
+            },
+        )?;
+        let TrackedAccessOutcome::Read(value) = outcome else {
+            return Err(Self::unsupported("non-read result"));
+        };
+        if let Some(trace) = walked
+            && let Some(memory) = self.bus.ram_ref()
+            && let Some((physical, tables)) = crate::page_walk::data_translation_of_walk_trace(
+                &trace,
+                GuestLinearAddress::new(address),
+            )
+            // Only plain RAM (ADR-0016, section 2 item 4): the operand frame and every table frame.
+            // A device, ROM, reserved or framebuffer frame is never remembered.
+            && let Some(frame) = memory.ram_frame(physical)
+            && tables.iter().flatten().all(|table| {
+                matches!(
+                    memory.locate_region_kind(*table, 0x1000),
+                    Ok(MemoryRegionKind::Ram)
+                )
+            })
+        {
+            cache.insert(
+                address,
+                &self.paging,
+                context.page_privilege(),
+                frame,
+                tables.map(|table| table.map(|base| base.get() >> 12)),
+            );
+        }
+        Ok(value)
     }
 
     /// S4-13: one instruction byte through the fetch translation cache. A hit reads the byte at
@@ -6088,6 +6535,27 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
+        // PERF-11 (ADR-0016, prototype): a same-page qword read of the set loop's adapter goes
+        // through the data translation cache. Everything else below is untouched. The conditions
+        // are those under which the read below is exactly `self.access(address, context, Read
+        // { Qword })` (no descriptor scope, no page crossing, the large-RAM profile, the qword
+        // width) and the capture modes are off (they divert the writes the cache must see, or need
+        // the trace of every walk).
+        if let Some(cache) = self.data_cache
+            && let Ok(destination) = <&mut [u8; 8]>::try_from(&mut *destination)
+            && context.origin != AccessOrigin::DescriptorTable
+            && address & 0xfff <= 0x1000 - 8
+            && !self.capture_effects
+            && !self.capture_page_fault_trace
+        {
+            debug_assert!(
+                self.large_ram_profile && !self.dword_read_profile && !self.word_read_profile
+            );
+            *destination = self
+                .read_qword_through_data_cache(cache, address, context)?
+                .to_le_bytes();
+            return Ok(());
+        }
         if let Ok(vector) = <&mut [u8; 16]>::try_from(&mut *destination)
             && self.supports_cpl3_vector(context)
         {
@@ -6368,6 +6836,9 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod data_cache_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6818,6 +7289,7 @@ mod tests {
             fetch_cache: None,
             walks: None,
             decoded: DecodedStep::default(),
+            data_cache: None,
         }
     }
 

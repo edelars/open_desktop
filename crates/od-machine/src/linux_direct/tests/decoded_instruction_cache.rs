@@ -99,6 +99,8 @@ fn run_scenario(
                     None,
                     FetchCacheTag::Page4K,
                     cached.then_some(&decoded),
+                    false,
+                    false,
                 );
                 efer = report.efer;
                 state.cr3 = Some(report.cr3);

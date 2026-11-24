@@ -960,6 +960,10 @@ pub fn run_host_set_step(
         None,
         // PERF-10: the parallel mode does not use the decoded-instruction cache.
         None,
+        // PERF-11: nor the data translation cache.
+        None,
+        // PERF-25: nor batched calls (one instruction per call, as before).
+        false,
     );
     let partial_rep = matches!(
         report.exit,

@@ -1106,6 +1106,21 @@ impl PhysicalMemory {
         by_mode!(self.mode, order => storage.try_load_u8(at, order))
     }
 
+    /// PERF-11: the qword at `in_frame` of a 4 KiB frame from [`Self::ram_frame`] (only the low 12
+    /// bits of `in_frame` are used; the qword must not cross the frame), read with the host accesses
+    /// of [`Self::load_bytes`] of 8 bytes, the read of the tracked walk. `None` for a 2 MiB handle,
+    /// a qword past the frame end or a handle that is not of this memory (the caller then walks).
+    #[inline(always)]
+    pub(crate) fn read_ram_frame_qword(&self, frame: RamFrame, in_frame: u64) -> Option<u64> {
+        let in_page = (in_frame & 0xfff) as usize;
+        if frame.large || in_page > 0x1000 - 8 {
+            return None;
+        }
+        let storage = self.regions.get(frame.region)?.backing.as_ref()?;
+        let at = frame.offset + in_page;
+        Some(by_mode!(self.mode, order => storage.load_qword_as_copy(at, order)))
+    }
+
     /// PERF-10: where byte `in_frame` of a frame from [`Self::ram_frame`] (or of a span from
     /// [`Self::ram_leaf_2m`]) lives: the region index, the byte offset inside the region, and the
     /// current generation of its 4 KiB page (an `Acquire` load, so the caller reads it BEFORE the

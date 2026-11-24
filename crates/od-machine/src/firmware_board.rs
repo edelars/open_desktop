@@ -1610,6 +1610,10 @@ pub struct LoadedFirmwareBoard {
     /// restore. Diagnostic runs (a sweep, an execution observation, the fetch cache report) do not
     /// use it.
     decoded_instruction_cache: DecodedInstructionCache,
+    /// PERF-11 (ADR-0016, prototype): the unified and Linux set loops of this board serve same-page
+    /// qword reads through a data translation cache of one quantum. Off unless
+    /// [`Self::enable_data_cache_prototype`]; diagnostic runs never use it.
+    data_cache_prototype: bool,
     fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
@@ -1622,6 +1626,11 @@ pub struct LoadedFirmwareBoard {
     /// Test injection (S4-37a6b): `run_boot` drops the pending RDTSC tick.
     #[cfg(test)]
     suppress_rdtsc_tick: bool,
+    /// PERF-25: the CPL0-set loop of the Linux runs (`run_linux_boot_cpl0_set*`, the unified loop)
+    /// calls the set for several instructions at a time in an ordinary run (on by default; the
+    /// loop itself keeps one instruction per call under its diagnostics). Off only in tests that
+    /// compare the two.
+    instruction_batches: bool,
 }
 
 /// The NMI half of a vCPU boundary (see [`LoadedFirmwareBoard::deliver_pending_nmi`]) on what it
@@ -2764,6 +2773,13 @@ impl LoadedFirmwareBoard {
         }
     }
 
+    /// PERF-25 (tests): one instruction per call of the set in the Linux runs of this board, as
+    /// before the batched calls, or (`true`, the default) several.
+    #[cfg(test)]
+    pub(crate) fn set_instruction_batches(&mut self, on: bool) {
+        self.instruction_batches = on;
+    }
+
     /// PERF-20: count the retired operations of the CPL0-set loop (opt-in, observation only).
     pub(crate) fn enable_op_histogram(&mut self) {
         self.checkpoints
@@ -2794,6 +2810,14 @@ impl LoadedFirmwareBoard {
     /// observes. Off by default.
     pub fn enable_fetch_cache_report(&mut self) {
         self.fetch_cache_report_enabled = true;
+    }
+
+    /// PERF-11 (ADR-0016, prototype): the set loops of the next runs serve same-page qword reads
+    /// through the data translation cache (one quantum, exact `WriteWatch` policy, plain RAM
+    /// only). Off by default; a diagnostic run (a sweep, the fetch cache report, an execution
+    /// observation) keeps every walk whatever this says.
+    pub fn enable_data_cache_prototype(&mut self) {
+        self.data_cache_prototype = true;
     }
 
     /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
@@ -4040,6 +4064,9 @@ impl LoadedFirmwareBoard {
                 && !board.fetch_cache_report_enabled
                 && execution_observations.is_none())
             .then_some(&board.decoded_instruction_cache);
+            // PERF-11 (ADR-0016, prototype): the data translation cache, only when asked for and
+            // under the conditions of the decoded-instruction cache (an ordinary run).
+            let data_cache = board.data_cache_prototype && decoded_cache.is_some();
             let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
@@ -4070,6 +4097,13 @@ impl LoadedFirmwareBoard {
                 fetch_sweep.as_ref(),
                 board.fetch_cache_tag,
                 decoded_cache,
+                data_cache,
+                // PERF-25: an ordinary run calls the set for several instructions at a time (the
+                // loop keeps one per call wherever it has a diagnostic to show every boundary;
+                // the fetch cache report and the sweep keep one per call here too).
+                board.instruction_batches
+                    && !board.fetch_cache_report_enabled
+                    && fetch_sweep.is_none(),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -5257,12 +5291,14 @@ impl AssembledBoard {
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
+            data_cache_prototype: false,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
+            instruction_batches: true,
         })
     }
 
@@ -5353,12 +5389,14 @@ impl AssembledBoard {
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
+            data_cache_prototype: false,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
             suppress_pm_tick: false,
             #[cfg(test)]
             suppress_rdtsc_tick: false,
+            instruction_batches: true,
         };
         // S6-18a: the application processors of a Linux board read the CPUID of the target
         // profile in their legacy models (the kernel's `verify_cpu` needs it); one vCPU has none.
@@ -9378,6 +9416,164 @@ mod tests {
         assert_eq!(board.state(), plain.state());
     }
 
+    /// PERF-11 (ADR-0016, prototype): with the data translation cache the unified run, the state and
+    /// COM1 are those of the run without it, with and without the fast path; the cache really serves
+    /// the stack qword reads (debug builds count the hits) and is not used unless asked for.
+    #[test]
+    fn the_unified_run_with_the_data_cache_prototype_equals_the_run_without_it() {
+        use od_isa::fast_path_check::{self, FastPathMode};
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        // mov [rsp-8], rax; mov rcx, [rsp-8]; mov rdx, [rsp-8]; mov rbx, [rsp-8]; push rcx;
+        // pop rsi; mov rdi, [rsp-8]; hlt
+        let program = [
+            0x48, 0x89, 0x44, 0x24, 0xF8, 0x48, 0x8B, 0x4C, 0x24, 0xF8, 0x48, 0x8B, 0x54, 0x24,
+            0xF8, 0x48, 0x8B, 0x5C, 0x24, 0xF8, 0x51, 0x5E, 0x48, 0x8B, 0x7C, 0x24, 0xF8, 0xF4,
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |fast_path: bool, data_cache: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            if data_cache {
+                board.enable_data_cache_prototype();
+            }
+            fast_path_check::set_mode(FastPathMode::Tree);
+            crate::reset_data_cache_counters();
+            let run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                1_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                false,
+                fast_path,
+            )
+            .unwrap();
+            (run, board, crate::data_cache_counters())
+        };
+        let (without, plain, counters) = run(false, false);
+        assert_eq!(counters, crate::DataCacheCounters::default());
+        assert_eq!(without.run.retired, 8);
+        for fast_path in [false, true] {
+            let (with, cached, counters) = run(fast_path, true);
+            assert_eq!(with.run, without.run, "fast path {fast_path}");
+            assert_eq!(cached.state(), plain.state(), "fast path {fast_path}");
+            assert_eq!(cached.com1_transcript(), plain.com1_transcript());
+            if crate::DATA_CACHE_COUNTED {
+                // The first read walks; the other stack reads of the same page hit.
+                assert!(counters.inserts >= 1, "{counters:?}");
+                assert!(counters.hits >= 3, "{counters:?}");
+            }
+        }
+    }
+
+    /// PERF-11 (ADR-0016, prototype): the invalidation wiring of the loop. The program reads a
+    /// qword of the page X (a miss, then a hit), writes a new PTE of X through a mapping of its own
+    /// page table, reads X again (the cache must have dropped the entry: the new frame), switches CR3
+    /// to a second root whose PT maps X elsewhere and reads X again. With the cache the run, the
+    /// state, COM1 and the RAM are those of the run without it, and the cache served the repeated
+    /// reads (debug builds count the hits).
+    #[test]
+    fn the_data_cache_prototype_sees_a_guest_pte_store_and_a_cr3_switch_in_the_unified_run() {
+        const ROOT_A: u64 = 0x90_0000;
+        const ROOT_B: u64 = 0x91_0000;
+        const X: u64 = 0x40_0000;
+        const VIEW: u64 = 0x40_1000;
+        let frames = [0x98_0000u64, 0x98_1000, 0x98_2000];
+        let values = [
+            0x1111_2222_3333_4444u64,
+            0x5555_6666_7777_8888,
+            0x9999_aaaa_bbbb_cccc,
+        ];
+        let mut code = Vec::new();
+        let read_x = |code: &mut Vec<u8>, rex: u8, modrm: u8| {
+            code.extend_from_slice(&[rex, 0x8B, modrm, 0x25]);
+            code.extend_from_slice(&(X as u32).to_le_bytes());
+        };
+        read_x(&mut code, 0x48, 0x04); // mov rax, [X]
+        read_x(&mut code, 0x4C, 0x04); // mov r8, [X]
+        // mov rcx, frames[1] | 3; mov [VIEW], rcx (PTE[0] of X through PT[1])
+        code.extend_from_slice(&[0x48, 0xC7, 0xC1]);
+        code.extend_from_slice(&((frames[1] | 3) as u32).to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x0C, 0x25]);
+        code.extend_from_slice(&(VIEW as u32).to_le_bytes());
+        read_x(&mut code, 0x4C, 0x0C); // mov r9, [X]
+        read_x(&mut code, 0x4C, 0x14); // mov r10, [X]
+        // mov rdx, ROOT_B; mov cr3, rdx
+        code.extend_from_slice(&[0x48, 0xC7, 0xC2]);
+        code.extend_from_slice(&(ROOT_B as u32).to_le_bytes());
+        code.extend_from_slice(&[0x0F, 0x22, 0xDA]);
+        read_x(&mut code, 0x4C, 0x1C); // mov r11, [X]
+        read_x(&mut code, 0x4C, 0x24); // mov r12, [X]
+        code.push(0xF4);
+        let board = |data_cache: bool| {
+            let mut board = load_firmware_image(&minor2_image(&code), &linux_config()).unwrap();
+            let mut put = |address: u64, value: u64| {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address),
+                        AccessWidth::Qword,
+                        value,
+                        |_| {},
+                    )
+                    .unwrap();
+            };
+            // Two roots: 2 MiB identity leaves for the first 4 MiB (code, stack, IDT, GDT) and a
+            // 4 KiB PT for X whose [0] maps the data frame and [1] the PT itself.
+            for (root, frame) in [(ROOT_A, frames[0]), (ROOT_B, frames[2])] {
+                put(root, (root + 0x1000) | 3);
+                put(root + 0x1000, (root + 0x2000) | 3);
+                put(root + 0x2000, 0x83);
+                put(root + 0x2008, 0x20_0000 | 0x83);
+                put(root + 0x2010, (root + 0x3000) | 3);
+                put(root + 0x3000, frame | 3);
+                // A and D already set: the walk through [1] for the store to VIEW changes nothing,
+                // so the only change of the PT is the guest's store to [0].
+                put(root + 0x3008, (root + 0x3000) | 0x63);
+            }
+            for (frame, value) in frames.iter().zip(values) {
+                put(*frame, value);
+            }
+            board.page_table_root = ROOT_A;
+            if data_cache {
+                board.enable_data_cache_prototype();
+            }
+            board
+        };
+        let run = |data_cache: bool| {
+            let mut board = board(data_cache);
+            crate::reset_data_cache_counters();
+            let run = crate::run_firmware_unified(&mut board, 1_000).unwrap();
+            (run, board, crate::data_cache_counters())
+        };
+        let (without, plain, counters) = run(false);
+        assert_eq!(counters, crate::DataCacheCounters::default());
+        assert_eq!(without.run.exit, PagedProbeExit::Halted, "{without:?}");
+        assert_eq!(without.run.retired, 11, "{without:?}");
+        use od_isa::Register::{R8, R9, R10, R11, R12, Rax};
+        let gpr = |board: &LoadedFirmwareBoard, register: od_isa::Register| {
+            board.state().gpr[register as usize]
+        };
+        assert_eq!(
+            [Rax, R8, R9, R10, R11, R12].map(|register| gpr(&plain, register)),
+            [
+                values[0], values[0], values[1], values[1], values[2], values[2]
+            ]
+        );
+        let (with, cached, counters) = run(true);
+        assert_eq!(format!("{with:?}"), format!("{without:?}"));
+        assert_eq!(cached.state(), plain.state());
+        assert_eq!(cached.com1_transcript(), plain.com1_transcript());
+        assert_eq!(perf25_ram(&cached), perf25_ram(&plain));
+        if crate::DATA_CACHE_COUNTED {
+            // The second read of each pair hits; the PTE store and MOV CR3 drop the entry.
+            assert_eq!(counters.hits, 3, "{counters:?}");
+            assert_eq!(counters.inserts, 3, "{counters:?}");
+            assert_eq!(counters.context_flushes, 1, "MOV CR3: {counters:?}");
+        }
+    }
+
     /// PERF-25, group G5: ALU with memory on the stack, PUSH/POP, CALL and RET in the unified run
     /// over the board's paged memory: with the fast path the run and the state are those of the run
     /// without it and every G5 form is taken (debug builds count them); under the check every one is
@@ -9763,6 +9959,572 @@ mod tests {
             "the delay ran out"
         );
         assert!(interrupts.irq0_edges >= 1);
+    }
+
+    // ---- PERF-25: batched calls of the set in the unified loop ----
+
+    /// A unified-run board for `code` with the GDT entry 1 (64-bit ring-0 code), the IDT at 0x2000
+    /// with an interrupt gate for vector 0x30 to `code[handler_offset..]`, and the entry state
+    /// on that segment (as the PIT -> 8259 tests above build it).
+    fn perf25_irq_board(code: &[u8], handler_offset: usize) -> LoadedFirmwareBoard {
+        perf25_board(code, &[(0x30, handler_offset)])
+    }
+
+    /// `perf25_irq_board` with an interrupt gate for every `(vector, offset)` of `gates` (to
+    /// `code[offset..]`), and GDT entries 2 (ring-0 data, 0x10), 4 (ring-3 data, 0x23) and 5
+    /// (64-bit ring-3 code, 0x2B) next to entry 1.
+    fn perf25_board(code: &[u8], gates: &[(u8, usize)]) -> LoadedFirmwareBoard {
+        const IDT: u64 = 0x2000;
+        let mut board = load_firmware_image(&minor2_image(code), &linux_config()).unwrap();
+        let entry = board.state().rip;
+        let mut write = |address: u64, bytes: &[u8]| {
+            for (index, byte) in bytes.iter().enumerate() {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address + index as u64),
+                        AccessWidth::Byte,
+                        u64::from(*byte),
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+        };
+        write(8, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0]);
+        write(0x10, &[0xFF, 0xFF, 0, 0, 0, 0x93, 0xCF, 0]);
+        write(0x20, &[0xFF, 0xFF, 0, 0, 0, 0xF3, 0xCF, 0]);
+        write(0x28, &[0xFF, 0xFF, 0, 0, 0, 0xFB, 0xAF, 0]);
+        for &(vector, offset) in gates {
+            let handler = entry + offset as u64;
+            let mut gate = [0u8; 16];
+            gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+            gate[2..4].copy_from_slice(&8u16.to_le_bytes());
+            gate[5] = 0x8E;
+            gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+            gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+            write(IDT + u64::from(vector) * 16, &gate);
+        }
+        let state = board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: IDT,
+            limit: 0xFFF,
+        });
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9B,
+            flags: 0xA,
+        });
+        board
+    }
+
+    /// The 8259 programmed (vector base 0x30, IMR `imr`) and PIT channel 0 in mode 2 with
+    /// `reload`, as `mov al, imm8; out imm8, al` pairs.
+    fn perf25_pic_pit_code(imr: u8, reload: u16) -> Vec<u8> {
+        let mut code = Vec::new();
+        for (port, value) in [
+            (0x20u8, 0x11u8),
+            (0x21, 0x30),
+            (0x21, 0x04),
+            (0x21, 0x01),
+            (0x21, imr),
+            (0x43, 0x34),
+            (0x40, reload as u8),
+            (0x40, (reload >> 8) as u8),
+        ] {
+            code.extend_from_slice(&[0xB0, value, 0xE6, port]);
+        }
+        code
+    }
+
+    /// The unified run of `board()` with and without batched calls: the whole report, the state and
+    /// the RAM below 16 MiB (the stack, the boot page tables) must be equal; the calls of the
+    /// batched run are returned.
+    fn perf25_compare(
+        board: impl Fn() -> LoadedFirmwareBoard,
+        budget: u64,
+    ) -> (
+        crate::FirmwareUnifiedRun,
+        Vec<crate::paged_memory_adapter::batch_trace::Call>,
+    ) {
+        let (mut runs, calls) = perf25_compare_runs(board, &[budget]);
+        (runs.pop().expect("one run"), calls)
+    }
+
+    /// The RAM pages below 16 MiB (`None` for a page that is not RAM).
+    fn perf25_ram(board: &LoadedFirmwareBoard) -> Vec<Option<Vec<u8>>> {
+        (0..0x100_0000u64)
+            .step_by(0x1000)
+            .map(|address| {
+                let mut page = vec![0u8; 0x1000];
+                board
+                    .bus()
+                    .physical_memory()
+                    .load_bytes(GuestPhysicalAddress::new(address), &mut page)
+                    .ok()
+                    .map(|()| page)
+            })
+            .collect()
+    }
+
+    /// `perf25_compare` for consecutive unified runs of the same board with `budgets`: every
+    /// report, and after the last run the state and the RAM, must be equal.
+    fn perf25_compare_runs(
+        board: impl Fn() -> LoadedFirmwareBoard,
+        budgets: &[u64],
+    ) -> (
+        Vec<crate::FirmwareUnifiedRun>,
+        Vec<crate::paged_memory_adapter::batch_trace::Call>,
+    ) {
+        let ram = perf25_ram;
+        let mut single = board();
+        single.set_instruction_batches(false);
+        crate::paged_memory_adapter::batch_trace::start();
+        let one: Vec<_> = budgets
+            .iter()
+            .map(|&budget| crate::run_firmware_unified(&mut single, budget).unwrap())
+            .collect();
+        let single_calls = crate::paged_memory_adapter::batch_trace::take();
+        assert!(single_calls.iter().all(|call| call.budget == 1));
+        let mut batched = board();
+        crate::paged_memory_adapter::batch_trace::start();
+        let many: Vec<_> = budgets
+            .iter()
+            .map(|&budget| crate::run_firmware_unified(&mut batched, budget).unwrap())
+            .collect();
+        let calls = crate::paged_memory_adapter::batch_trace::take();
+        assert_eq!(format!("{many:?}"), format!("{one:?}"));
+        assert_eq!(batched.state(), single.state());
+        assert_eq!(ram(&batched), ram(&single));
+        // The batched run retired the same instructions in fewer calls.
+        assert_eq!(
+            calls.iter().map(|call| call.retired).sum::<u64>(),
+            single_calls.iter().map(|call| call.retired).sum::<u64>()
+        );
+        assert!(calls.len() < single_calls.len(), "{calls:?}");
+        (many, calls)
+    }
+
+    #[test]
+    fn batched_calls_end_the_unified_run_like_one_instruction_calls_and_after_each_out() {
+        // Straight code, then the PIT/8259 setup (eight OUTs), STI, a delay loop and HLT at IF = 1
+        // (woken by the timer; the handler's own HLT at IF = 0 ends the run).
+        const HANDLER_OFFSET: usize = 0xC0;
+        let mut code = vec![0x90; 20];
+        let outs_start = code.len();
+        code.extend_from_slice(&perf25_pic_pit_code(0xFE, 0x04A9));
+        let sti_offset = code.len();
+        code.push(0xFB);
+        // mov ecx, 3000; dec ecx; jnz -4
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC]);
+        code.push(0xF4);
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_irq_board(&code, HANDLER_OFFSET), 100_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted);
+        assert_eq!(run.interrupts.irqs_delivered, 1);
+        let entry = perf25_irq_board(&code, HANDLER_OFFSET).state().rip;
+        // The first call runs the NOPs and the first `mov al`, and ends right after the first
+        // OUT (a device access); every OUT of the setup ends its call.
+        assert_eq!(
+            calls[0],
+            crate::paged_memory_adapter::batch_trace::Call {
+                budget: calls[0].budget,
+                retired: 22,
+                rip: entry + outs_start as u64 + 4,
+            }
+        );
+        assert!(calls[0].budget > 22);
+        for pair in 1..8 {
+            assert_eq!(calls[pair].retired, 2, "{calls:?}");
+            assert_eq!(
+                calls[pair].rip,
+                entry + (outs_start + 4 * (pair + 1)) as u64,
+                "{calls:?}"
+            );
+        }
+        // STI changes IF and opens the shadow: its call ends right after it; the next instruction
+        // closes the shadow and ends its call too.
+        assert_eq!(
+            (calls[8].retired, calls[8].rip),
+            (1, entry + sti_offset as u64 + 1)
+        );
+        assert_eq!(
+            (calls[9].retired, calls[9].rip),
+            (1, entry + sti_offset as u64 + 6)
+        );
+        // The delay loop runs in a few calls (the quantum ends at the timer deadline).
+        assert!(calls[10].retired > 1_000, "{calls:?}");
+    }
+
+    #[test]
+    fn a_vector_unmasked_by_an_out_is_delivered_at_the_boundary_after_it_in_a_batched_run() {
+        // PERF-05's case: the edges latch while IR0 is masked; the OUT that unmasks it ends the
+        // batched call, and the vector goes in before `mov ebx, 0x1234`.
+        const HANDLER_OFFSET: usize = 0x80;
+        let mut code = perf25_pic_pit_code(0xFF, 2);
+        code.push(0xFB);
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC]);
+        let unmask = code.len();
+        code.extend_from_slice(&[0xB0, 0xFE, 0xE6, 0x21]);
+        code.extend_from_slice(&[0xBB, 0x34, 0x12, 0x00, 0x00, 0xF4]);
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_irq_board(&code, HANDLER_OFFSET), 100_000);
+        assert_eq!(run.interrupts.irqs_delivered, 1);
+        let entry = perf25_irq_board(&code, HANDLER_OFFSET).state().rip;
+        let after_unmask = entry + unmask as u64 + 4;
+        let index = calls
+            .iter()
+            .position(|call| call.rip == after_unmask)
+            .expect("a call ends right after the unmasking OUT");
+        // The next call starts in the handler: the delivery came at that boundary.
+        let handler = entry + HANDLER_OFFSET as u64;
+        assert_eq!(calls[index + 1].rip, handler + 4, "{calls:?}");
+        assert_eq!(calls[index + 1].retired, 2);
+    }
+
+    #[test]
+    fn refusals_of_a_pending_vector_are_counted_at_every_boundary_inside_a_batched_call() {
+        // IR0 unmasked and a fast timer, but IF = 0 over a delay loop: the vector is pending at every
+        // boundary, refused (masked) each time, inside the batched calls too; then STI: refused once
+        // in the shadow, delivered at the boundary after it.
+        const HANDLER_OFFSET: usize = 0x80;
+        let mut code = vec![0xFA]; // cli
+        code.extend_from_slice(&perf25_pic_pit_code(0xFE, 2));
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC]);
+        code.extend_from_slice(&[0xFB, 0x90, 0xF4]); // sti; nop; hlt
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_irq_board(&code, HANDLER_OFFSET), 100_000);
+        let interrupts = &run.interrupts;
+        assert_eq!(interrupts.irqs_delivered, 1, "{run:?}");
+        assert!(interrupts.irq_refused_masked > 1_000, "{interrupts:?}");
+        assert_eq!(interrupts.irq_refused_shadow, 1, "{interrupts:?}");
+        // The masked stretch ran in calls of many instructions.
+        assert!(calls.iter().any(|call| call.retired > 1_000), "{calls:?}");
+    }
+
+    #[test]
+    fn every_rdtsc_ends_its_batched_call_and_quantum_like_one_instruction_calls() {
+        // NOPs between the reads: the RDTSC tick ends the quantum right after each RDTSC.
+        let mut code = Vec::new();
+        for _ in 0..4 {
+            code.extend_from_slice(&[0x90, 0x90, 0x90, 0x0F, 0x31]);
+        }
+        code.push(0xF4);
+        let (run, calls) = perf25_compare(
+            || load_firmware_image(&minor2_image(&code), &linux_config()).unwrap(),
+            1_000,
+        );
+        assert_eq!(run.run.exit, PagedProbeExit::Halted);
+        let entry = load_firmware_image(&minor2_image(&code), &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let ends: Vec<_> = calls
+            .iter()
+            .map(|call| (call.retired, call.rip - entry))
+            .collect();
+        assert_eq!(ends, [(4, 5), (4, 10), (4, 15), (4, 20), (1, 21)]);
+    }
+
+    /// The entry RIP of every `perf25_board` (the image layout does not depend on the code).
+    fn perf25_entry() -> u64 {
+        perf25_board(&[0xF4], &[]).state().rip
+    }
+
+    /// `code` with `HLT` at `handler` (an interrupt gate leaves IF = 0: the run ends there).
+    fn perf25_with_handler(mut code: Vec<u8>, handler: usize) -> Vec<u8> {
+        assert!(code.len() <= handler);
+        code.resize(handler, 0x90);
+        code.push(0xF4);
+        code
+    }
+
+    #[test]
+    fn a_general_protection_fault_inside_a_batched_call_counts_the_instructions_before_it() {
+        // Five NOPs and `mov ecx, 0x1234`, then `RDMSR` of an MSR the set does not model: `#GP(0)`
+        // through the gate of vector 13 to a HLT. The batched call retires the six instructions
+        // and ends with the fault; they count as in six one-instruction calls.
+        const HANDLER: usize = 0x40;
+        let mut code = vec![0x90; 5];
+        code.extend_from_slice(&[0xB9, 0x34, 0x12, 0x00, 0x00]);
+        let rdmsr = code.len();
+        code.extend_from_slice(&[0x0F, 0x32, 0xF4]);
+        let code = perf25_with_handler(code, HANDLER);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[(13, HANDLER)]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(
+            (run.exceptions_delivered, run.page_faults_delivered),
+            (1, 0)
+        );
+        assert_eq!(
+            run.run.retired, 7,
+            "six before the fault and the handler's HLT"
+        );
+        let entry = perf25_entry();
+        assert_eq!((calls[0].retired, calls[0].rip), (6, entry + rdmsr as u64));
+        assert!(calls[0].budget > 6, "{calls:?}");
+        assert_eq!(calls[1].rip, entry + HANDLER as u64 + 1, "{calls:?}");
+    }
+
+    #[test]
+    fn a_page_fault_inside_a_batched_call_counts_the_instructions_before_it() {
+        // Five NOPs and `mov rax, 0x4000_0000_0000`, then a load from that unmapped address: `#PF`
+        // through the gate of vector 14 to a HLT.
+        const HANDLER: usize = 0x40;
+        let mut code = vec![0x90; 5];
+        code.extend_from_slice(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0x40, 0, 0]);
+        let load = code.len();
+        code.extend_from_slice(&[0x48, 0x8B, 0x18, 0xF4]);
+        let code = perf25_with_handler(code, HANDLER);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[(14, HANDLER)]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(
+            (run.exceptions_delivered, run.page_faults_delivered),
+            (1, 1)
+        );
+        assert_eq!(
+            run.run.retired, 7,
+            "six before the fault and the handler's HLT"
+        );
+        let entry = perf25_entry();
+        assert_eq!((calls[0].retired, calls[0].rip), (6, entry + load as u64));
+        assert!(calls[0].budget > 6, "{calls:?}");
+        assert_eq!(calls[1].rip, entry + HANDLER as u64 + 1, "{calls:?}");
+    }
+
+    #[test]
+    fn an_efer_write_ends_its_batched_call_like_one_instruction_calls() {
+        // `WRMSR IA32_EFER` with NXE cleared: a translation context change ends the call.
+        let mut code = vec![0x90; 3];
+        code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0xC0, 0x0F, 0x32]);
+        code.extend_from_slice(&[0x25, 0xFF, 0xF7, 0xFF, 0xFF, 0x0F, 0x30]);
+        let after = code.len();
+        code.extend_from_slice(&[0x90, 0x90, 0x90, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        let entry = perf25_entry();
+        assert!(
+            calls.iter().any(|call| call.rip == entry + after as u64),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn popf_changing_ac_if_and_tf_ends_its_batched_call_like_one_instruction_calls() {
+        // `pushfq; pop rax; <op> eax, imm32; push rax; popfq`: AC set, IF set, both cleared, TF set.
+        let mut code = vec![0x90; 2];
+        let mut ends = Vec::new();
+        for op in [
+            [0x0D, 0x00, 0x00, 0x04, 0x00],
+            [0x0D, 0x00, 0x02, 0x00, 0x00],
+            [0x25, 0xFF, 0xFD, 0xFB, 0xFF],
+            [0x0D, 0x00, 0x01, 0x00, 0x00],
+        ] {
+            code.extend_from_slice(&[0x9C, 0x58]);
+            code.extend_from_slice(&op);
+            code.extend_from_slice(&[0x50, 0x9D]);
+            ends.push(code.len());
+            code.extend_from_slice(&[0x90, 0x90]);
+        }
+        code.push(0xF4);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+        let entry = perf25_entry();
+        for end in &ends[..3] {
+            assert!(
+                calls.iter().any(|call| call.rip == entry + *end as u64),
+                "{end:#x}: {calls:?} {run:?}"
+            );
+        }
+        // TF: the set does not model the trap, so the POPFQ that sets it is refused and the run
+        // stops with RIP on it (the call before it ends there).
+        assert_eq!(
+            run.run.exit,
+            PagedProbeExit::Unsupported { opcode: 0x9d },
+            "{run:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.rip == entry + ends[3] as u64 - 1),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn mov_ss_ends_its_batched_call_and_the_shadowed_instruction_runs_alone() {
+        let mut code = vec![0x90; 3];
+        code.extend_from_slice(&[0xB8, 0x10, 0x00, 0x00, 0x00, 0x8E, 0xD0]);
+        let after = code.len();
+        code.extend_from_slice(&[0x90, 0x90, 0x90, 0x90, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        let entry = perf25_entry();
+        let index = calls
+            .iter()
+            .position(|call| call.rip == entry + after as u64)
+            .expect("a call ends right after MOV SS");
+        assert_eq!(
+            (calls[index + 1].retired, calls[index + 1].rip),
+            (1, entry + after as u64 + 1),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn mov_cr4_ends_its_batched_call_and_an_unsupported_mov_cr0_ends_it_before_itself() {
+        // Two NOPs, the read of the register and the change of one bit (CR4.PGE set, CR0.WP
+        // cleared), then the write. This board's set writes CR4 (the call ends right after it) and
+        // has no MOV to CR0: that write stops the run as `Unsupported` (no change), after the
+        // batched call retired the four instructions before it.
+        for (read, op, write, cr0) in [
+            (
+                [0x0F, 0x20, 0xE0],
+                [0x0D, 0x80, 0x00, 0x00, 0x00],
+                [0x0F, 0x22, 0xE0],
+                false,
+            ),
+            (
+                [0x0F, 0x20, 0xC0],
+                [0x25, 0xFF, 0xFF, 0xFE, 0xFF],
+                [0x0F, 0x22, 0xC0],
+                true,
+            ),
+        ] {
+            let mut code = vec![0x90; 2];
+            code.extend_from_slice(&read);
+            code.extend_from_slice(&op);
+            let at = code.len();
+            code.extend_from_slice(&write);
+            code.extend_from_slice(&[0x90, 0x90, 0xF4]);
+            let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+            let entry = perf25_entry();
+            if cr0 {
+                assert_eq!(
+                    run.run.exit,
+                    PagedProbeExit::Unsupported { opcode: 0x22 },
+                    "{run:?}"
+                );
+                assert_eq!(run.run.retired, 4, "{run:?}");
+                assert_eq!((calls[0].retired, calls[0].rip), (4, entry + at as u64));
+            } else {
+                assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+                assert_eq!((calls[0].retired, calls[0].rip), (5, entry + at as u64 + 3));
+            }
+        }
+    }
+
+    #[test]
+    fn an_mmio_write_ends_its_batched_call_like_one_instruction_calls() {
+        // `mov rbx, 0xFC00_0040; mov eax, 0x10; mov [rbx], eax`: a store to the WIDTH register of
+        // the display (a set window of the unified run).
+        let mut code = vec![0x90; 2];
+        code.extend_from_slice(&[0x48, 0xBB, 0x40, 0x00, 0x00, 0xFC, 0, 0, 0, 0]);
+        code.extend_from_slice(&[0xB8, 0x10, 0x00, 0x00, 0x00, 0x89, 0x03]);
+        let after = code.len();
+        code.extend_from_slice(&[0x90, 0x90, 0x90, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        let entry = perf25_entry();
+        assert!(
+            calls.iter().any(|call| call.rip == entry + after as u64),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_rep_of_a_batched_call_resumes_like_one_instruction_calls() {
+        // `mov ecx, 2500; mov edi, 0x3000; mov al, 0xAB; rep stosb`: the REP stops after each
+        // chunk of iterations (a partial REP, RIP on the REP) and resumes in the next call; then the
+        // same in two runs whose first budget ends right after the REP started.
+        let mut code = vec![0x90; 3];
+        code.extend_from_slice(&[0xB9, 0xC4, 0x09, 0, 0, 0xBF, 0x00, 0x30, 0, 0, 0xB0, 0xAB]);
+        let rep = code.len();
+        code.extend_from_slice(&[0xF3, 0xAA, 0x90, 0x90, 0x90, 0xF4]);
+        let board = || perf25_board(&code, &[]);
+        let (run, calls) = perf25_compare(board, 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        let at_rep = perf25_entry() + rep as u64;
+        assert!(
+            calls.iter().filter(|call| call.rip == at_rep).count() >= 2,
+            "{calls:?}"
+        );
+        let (runs, _) = perf25_compare_runs(board, &[7, 1_000]);
+        assert_eq!(runs[1].run.exit, PagedProbeExit::Halted, "{runs:?}");
+        let mut filled = vec![0u8; 2501];
+        let mut batched_again = board();
+        crate::run_firmware_unified(&mut batched_again, 1_000).unwrap();
+        batched_again
+            .bus()
+            .physical_memory()
+            .load_bytes(GuestPhysicalAddress::new(0x3000), &mut filled)
+            .unwrap();
+        assert!(filled[..2500].iter().all(|byte| *byte == 0xAB));
+        assert_eq!(filled[2500], 0);
+    }
+
+    #[test]
+    fn rf_from_iretq_runs_the_next_instruction_alone_like_one_instruction_calls() {
+        // An `IRETQ` frame (SS 0x10, the entry RSP, RFLAGS with RF, CS 8, `target`): the
+        // instruction at `target` starts with RF set and runs in a call of its own.
+        let mut code = vec![
+            0x48, 0x89, 0xE3, 0x6A, 0x10, 0x53, 0x68, 0x02, 0x00, 0x01, 0x00,
+        ];
+        code.extend_from_slice(&[0x6A, 0x08]);
+        let lea = code.len();
+        code.extend_from_slice(&[0x48, 0x8D, 0x05, 0, 0, 0, 0, 0x50, 0x48, 0xCF]);
+        let target = code.len();
+        let rel = (target - (lea + 7)) as u32;
+        code[lea + 3..lea + 7].copy_from_slice(&rel.to_le_bytes());
+        code.extend_from_slice(&[0x90, 0x90, 0x90, 0x90, 0xF4]);
+        let (run, calls) = perf25_compare(|| perf25_board(&code, &[]), 1_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        let entry = perf25_entry();
+        assert!(
+            calls.contains(&crate::paged_memory_adapter::batch_trace::Call {
+                budget: 1,
+                retired: 1,
+                rip: entry + target as u64 + 1,
+            }),
+            "{calls:?}"
+        );
+        assert_eq!(run.final_state.rflags & (1 << 16), 0, "{run:?}");
+    }
+
+    #[test]
+    fn a_host_stop_inside_a_batched_call_leaves_the_state_of_as_many_one_instruction_calls() {
+        // `inc rax; jmp back` at IF = 0; a host thread raises the stop while the run goes on. The
+        // batched run stops at some boundary; one-instruction calls for that many instructions
+        // must leave the same state and RAM.
+        let code = [0x48, 0xFF, 0xC0, 0xEB, 0xFB];
+        const BUDGET: u64 = 1 << 40;
+        let mut batched = perf25_board(&code, &[]);
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        batched.set_host_stop(std::sync::Arc::clone(&flag));
+        let setter = {
+            let flag = std::sync::Arc::clone(&flag);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            })
+        };
+        crate::paged_memory_adapter::batch_trace::start();
+        let stopped = crate::run_firmware_unified(&mut batched, BUDGET).unwrap();
+        let calls = crate::paged_memory_adapter::batch_trace::take();
+        setter.join().unwrap();
+        assert!(batched.take_host_stop_honoured());
+        let retired = stopped.run.retired;
+        assert!(retired > 0 && retired < BUDGET, "{stopped:?}");
+        assert!(calls.iter().any(|call| call.retired > 1), "{calls:?}");
+        let mut single = perf25_board(&code, &[]);
+        single.set_instruction_batches(false);
+        let reference = crate::run_firmware_unified(&mut single, retired).unwrap();
+        assert_eq!(reference.run.retired, retired);
+        assert_eq!(batched.state(), single.state());
+        assert_eq!(perf25_ram(&batched), perf25_ram(&single));
     }
 
     #[test]

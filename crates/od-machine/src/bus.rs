@@ -819,6 +819,12 @@ impl<'a> MachineBusSetStepIo<'a> {
         self.mmio_written.get()
     }
 
+    /// PERF-25: the device-access count of the bus now ([`MachineBus::device_access_counter`]):
+    /// every port or MMIO access of a guest instruction through this view (or any other) moves it.
+    pub(crate) fn device_access_count(&self) -> u64 {
+        self.device_accesses.load(AtomicOrdering::Relaxed)
+    }
+
     /// The one place where this view reaches a device (a port or an MMIO access): it counts the
     /// access (PERF-04) and runs `f` on the device table.
     fn with_counted_devices<R>(

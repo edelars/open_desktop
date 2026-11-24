@@ -12,13 +12,14 @@
 //! and are covered by the targeted tests as well.
 
 use od_isa::execute::{
-    ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, RunConfig, run,
-    run_with_cpl0_profile_set,
+    ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, RunConfig, RunExit, run,
+    run_with_cpl0_profile_set, run_with_cpl0_profile_set_and_pio,
+    run_with_cpl0_profile_set_and_pio_batched,
 };
 use od_isa::fast_path_check::{self, FastPathMode};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CliProfile, CpuActivity, GuestMemory, InstructionMode,
-    LongModeState, MemoryError, OperandSize, PrivilegeLevel, StiShadow,
+    LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
 };
 use od_testkit::generate::generate_fixture;
 use od_testkit::memory_corpus::{
@@ -195,6 +196,7 @@ fn check(case: Case, tally: &mut Tally, label: &str) {
         }
     }
     check_fast_path(&case, label);
+    check_batched(&case, label);
     tally.cases += 1;
     if base.exit == od_isa::execute::RunExit::StopAddress {
         tally.stopped_at_end += 1;
@@ -277,6 +279,111 @@ fn check_fast_path(case: &Case, label: &str) {
     }
 }
 
+/// The corpora have no port instruction; the sets have no port member either.
+struct NoPort;
+
+impl PortIo for NoPort {
+    type Error = ();
+
+    fn read_u8(&mut self, _: u16) -> Result<u8, ()> {
+        unreachable!()
+    }
+
+    fn write_u8(&mut self, _: u16, _: u8) -> Result<(), ()> {
+        unreachable!()
+    }
+}
+
+/// PERF-25: the case as the board loop runs it, through one-instruction calls of the set (each with
+/// its own admission), and through batched calls (`run_with_cpl0_profile_set_and_pio_batched`) whose
+/// boundary check agrees always, or refuses at every 1st, 3rd or 7th boundary it is asked at (the
+/// caller then goes on with a new call). The exit that ends the run, the retired count, the
+/// definedness, the state and the memory must be the same, with and without the fast path.
+fn check_batched(case: &Case, label: &str) {
+    let admitted = |state: &LongModeState| {
+        let mut state = state.clone();
+        state.cr0 = Some(0x8001_0033);
+        state.cr4 = Some(0x20);
+        state.activity = Some(CpuActivity::Running);
+        state.sti_shadow = Some(StiShadow::Clear);
+        state
+    };
+    let budget = config(case).instruction_budget;
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    for set in [plain, plain.with_fast_path()] {
+        let mut reference_state = admitted(&case.state);
+        let mut reference_memory = case.memory.clone();
+        let (mut reference_retired, mut reference_defined) = (0, od_isa::INTEGER_FLAGS);
+        let reference_exit = loop {
+            let result = run_with_cpl0_profile_set_and_pio(
+                &mut reference_state,
+                &mut reference_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    ..config(case)
+                },
+                reference_defined,
+                &set,
+                None,
+                &mut NoPort,
+                || false,
+            )
+            .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+            reference_retired += result.instructions_executed;
+            reference_defined = result.rflags_defined;
+            if result.exit != Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                || result.instructions_executed == 0
+                || reference_retired == budget
+            {
+                break result.exit;
+            }
+        };
+        for refuse_every in [None, Some(1), Some(3), Some(7)] {
+            let mut state = admitted(&case.state);
+            let mut memory = case.memory.clone();
+            let (mut retired, mut defined, mut asked) = (0, od_isa::INTEGER_FLAGS, 0u64);
+            let exit = loop {
+                let result = run_with_cpl0_profile_set_and_pio_batched(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: budget - retired,
+                        ..config(case)
+                    },
+                    defined,
+                    &set,
+                    None,
+                    &mut NoPort,
+                    || false,
+                    &mut |_: &LongModeState, _: &mut Memory| {
+                        asked += 1;
+                        refuse_every.is_none_or(|every| asked % every != 0)
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{label}: admission failed: {error:?}"));
+                retired += result.instructions_executed;
+                defined = result.rflags_defined;
+                if result.exit == Cpl0ProfileSetExit::Run(RunExit::StopRequested) {
+                    assert!(result.instructions_executed > 0, "{label}");
+                    continue;
+                }
+                break result.exit;
+            };
+            let variant = format!("{label}: batched, refusing every {refuse_every:?}");
+            assert_eq!(exit, reference_exit, "{variant}");
+            assert_eq!(retired, reference_retired, "{variant}");
+            assert_eq!(defined, reference_defined, "{variant}");
+            assert_eq!(state, reference_state, "{variant}");
+            assert_eq!(memory, reference_memory, "{variant}");
+            // Asked before every instruction but the first of each call, never at the budget.
+            if refuse_every.is_none() {
+                assert!(asked <= retired, "{variant}");
+            }
+        }
+    }
+    BATCHED_CASES.fetch_add(1, Ordering::Relaxed);
+}
+
 fn print_fast_path_totals(corpus: &str) {
     // The counters are process-wide here, so the three tests (parallel threads) share them; the
     // lines are informational and the per-case asserts above are the check.
@@ -301,9 +408,16 @@ fn print_fast_path_totals(corpus: &str) {
     if fast_path_check::FAST_STEPS_COUNTED {
         assert!(FAST_STEPS_TAKEN.load(Ordering::Relaxed) > 0);
     }
+    // PERF-25: every case also went through the batched entry.
+    println!(
+        "{corpus}: batched calls so far matched one-instruction calls on {} cases",
+        BATCHED_CASES.load(Ordering::Relaxed)
+    );
+    assert!(BATCHED_CASES.load(Ordering::Relaxed) > 0);
 }
 
 static FAST_STEPS_TAKEN: AtomicU64 = AtomicU64::new(0);
+static BATCHED_CASES: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_COMPARED: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_CALLS: AtomicU64 = AtomicU64::new(0);
 static TREE_COMPARED: AtomicU64 = AtomicU64::new(0);

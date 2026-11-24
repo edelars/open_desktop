@@ -10,6 +10,7 @@ mod bus;
 mod clock_owner;
 mod console_output_context;
 mod crc32;
+mod data_translation_cache;
 mod decoded_instruction_cache;
 mod diagnostic_vcpu;
 mod display_device;
@@ -52,6 +53,10 @@ mod nvme;
 mod nvram_device;
 mod op_histogram;
 pub use op_histogram::{OpHistogramEntry, OpHistogramReport};
+// PERF-11: debug-build counters of the data translation cache prototype (tests, measurements).
+pub use data_translation_cache::{
+    DATA_CACHE_COUNTED, DataCacheCounters, data_cache_counters, reset_data_cache_counters,
+};
 mod pae_fetch_view;
 mod pae_operand_access;
 mod pae_protected_step;

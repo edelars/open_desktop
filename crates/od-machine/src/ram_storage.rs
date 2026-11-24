@@ -325,6 +325,21 @@ impl RamStorage {
     scalar_access!(load_u32, store_u32, cell_load_u32, cell_store_u32, u32);
     scalar_access!(load_u64, store_u64, cell_load_u64, cell_store_u64, u64);
 
+    /// PERF-11: the qword at region offset `offset` read with exactly the host accesses of
+    /// [`Self::copy_out`] of 8 bytes (the read of the tracked walk, `PhysicalMemory::load_bytes`):
+    /// one 8-byte access when the host index is aligned, else the ascending chunks of the copy.
+    /// Panics when out of range, like the copy.
+    #[inline(always)]
+    pub(crate) fn load_qword_as_copy(&self, offset: usize, order: Ordering) -> u64 {
+        let at = self.lead + offset;
+        if at % 8 == 0 && offset.checked_add(8).is_some_and(|end| end <= self.len) {
+            return self.cell_load_u64(at, order);
+        }
+        let mut bytes = [0u8; 8];
+        self.copy_out(offset, &mut bytes, order);
+        u64::from_le_bytes(bytes)
+    }
+
     /// One byte, or `None` outside the store (frame reads of the fetch cache).
     #[inline(always)]
     pub(crate) fn try_load_u8(&self, offset: usize, order: Ordering) -> Option<u8> {

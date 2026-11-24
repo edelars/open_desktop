@@ -491,7 +491,7 @@
 
 ### PERF-25. Несколько инструкций за один вызов набора
 
-- [ ] Не начато. Выполнять, только если профиль PERF-13 показывает, что суммарное «своё» время `run_cpl0_set_loop`, `run_with_cpl0_profile_set_and_pio`, `run_configured_with_profile_mode` и `_platform_memmove` остаётся выше 8 %; иначе закрыть решением «не делаем» с числами.
+- [~] Код готов (2026-11-24), приёмка (K3, K4, K6) не проведена — отчёт линии, раздел 7.20. Выполнять, только если профиль PERF-13 показывает, что суммарное «своё» время `run_cpl0_set_loop`, `run_with_cpl0_profile_set_and_pio`, `run_configured_with_profile_mode` и `_platform_memmove` остаётся выше 8 %; иначе закрыть решением «не делаем» с числами.
 - **Кто:** проект — Claude Opus (короткий раздел в отчёте линии до начала кода); код — Claude Sonnet.
 - **Где:** `run_cpl0_set_loop_impl` (`paged_memory_adapter.rs`); вход набора в `execute.rs`.
 - **Сделать:**

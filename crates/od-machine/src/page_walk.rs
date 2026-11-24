@@ -1247,10 +1247,7 @@ fn walk_long64_4k_with_writer(
             ad_update_count,
         );
     }
-    let offset_mask = if large_leaf { 0x1f_ffff } else { 0xfff };
-    let physical = GuestPhysicalAddress::new(
-        (leaf.1 & ENTRY_ADDRESS_MASK & !offset_mask) | (address.0 & offset_mask),
-    );
+    let physical = leaf_physical(leaf.1, large_leaf, address);
     WalkResult {
         translation: Ok(WalkTranslation {
             physical,
@@ -1267,6 +1264,45 @@ fn walk_long64_4k_with_writer(
         ad_updates,
         ad_update_count,
     }
+}
+
+/// The physical address `address` translates to through the leaf entry `leaf_value` (a 2 MiB PDE
+/// with `large_leaf`, else a 4 KiB PTE). The one formula of the walker
+/// (`walk_long64_4k_with_writer`) and of [`data_translation_of_walk_trace`].
+#[inline(always)]
+fn leaf_physical(
+    leaf_value: u64,
+    large_leaf: bool,
+    address: GuestLinearAddress,
+) -> GuestPhysicalAddress {
+    let offset_mask = if large_leaf { 0x1f_ffff } else { 0xfff };
+    GuestPhysicalAddress::new(
+        (leaf_value & ENTRY_ADDRESS_MASK & !offset_mask) | (address.0 & offset_mask),
+    )
+}
+
+/// PERF-11 (ADR-0016, prototype): what the data translation cache keeps of a SUCCESSFUL walk of
+/// `address` (the trace of a `TrackedAccessReport` whose outcome is `Ok`): the base of the 4 KiB
+/// physical frame of `address` and the base of every table frame of the path (PML4 first; `None`
+/// past a 2 MiB leaf). The trace of a successful walk ends at its leaf (a PDE ends a 2 MiB walk, a
+/// PTE a 4 KiB one), so no second walk is needed. `None` for an empty trace or one that does not
+/// end at a leaf level (never the case after a success).
+pub(crate) fn data_translation_of_walk_trace(
+    trace: &WalkTrace,
+    address: GuestLinearAddress,
+) -> Option<(GuestPhysicalAddress, [Option<GuestPhysicalAddress>; 4])> {
+    let len = trace.len();
+    let leaf = trace.entries().get(len.checked_sub(1)?)?.as_ref()?;
+    let large_leaf = match (leaf.level, len) {
+        (PageTableLevel::Pd, 3) => true,
+        (PageTableLevel::Pt, 4) => false,
+        _ => return None,
+    };
+    let physical = leaf_physical(leaf.entry_value, large_leaf, address);
+    let tables = (*trace.entries()).map(|entry| {
+        entry.map(|entry| GuestPhysicalAddress::new(entry.entry_address.get() & !0xfff))
+    });
+    Some((GuestPhysicalAddress::new(physical.get() & !0xfff), tables))
 }
 
 /// Performs one same-page fetch/read/write through RAM page tables and RAM only.

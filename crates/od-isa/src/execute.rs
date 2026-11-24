@@ -4022,7 +4022,7 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_configured_with_profile_mode::<true, false>(
+    run_configured_with_profile_mode::<true, false, _>(
         state,
         memory,
         config,
@@ -4034,6 +4034,7 @@ pub fn run(
             exact_hlt_only: false,
             stop_requested: &mut stop_requested,
         },
+        None,
     )
 }
 
@@ -30713,6 +30714,7 @@ pub fn run_with_cpl0_profile_set(
         None,
         stop_requested,
         PrivilegeLevel::Ring0,
+        None,
     )?;
     // A pending effect means the run loop stopped right after the retired
     // MOV CR3; its placeholder exit is replaced by the typed one. A pending
@@ -30749,6 +30751,93 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
     pio: &mut P,
     stop_requested: impl FnMut() -> bool,
 ) -> Result<Cpl0ProfileSetResult<P::Error>, Cpl0ProfileSetInputError> {
+    run_cpl0_profile_set_with_pio(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        set,
+        rdtsc_source,
+        pio,
+        stop_requested,
+        None,
+    )
+}
+
+/// PERF-25: [`run_with_cpl0_profile_set_and_pio`] for several instructions in one call, for a
+/// caller whose own work between two instructions (an interrupt boundary, a stop poll, device
+/// flags) is done by `boundary`. Admission, the CPU and memory effects of every instruction, the
+/// exits and their precedence are those of [`run_with_cpl0_profile_set_and_pio`]; the admission,
+/// the profiles of the set and the SSE state of the FP member are set up once per call instead of
+/// once per instruction.
+///
+/// After every retired instruction that leaves budget (`instructions_executed <
+/// config.instruction_budget`) and does not end the run itself (a CPU-owned `MOV CR3` or another
+/// translation context change, a committed `IRETQ`/`SYSRETQ` to CPL3, `HLT`), and before anything
+/// of the next instruction is fetched, the run continues only when
+///
+/// 1. every input of the admission an instruction can change is what it was at the entry: CR0,
+///    CR3, CR4, the CS selector (the CPL), RFLAGS except CF/PF/AF/ZF/SF/OF/DF (so IF, RF, TF, IOPL,
+///    AC, NT, VM), the STI shadow, the activity and the presence of x87 state, and, for a set with
+///    the Windows MSR file, its admission of the cells; and
+/// 2. `boundary(state, memory)` returns `true` (it is called with the state and the memory of
+///    the run, exactly once per such boundary, and is never called before the first instruction or
+///    at the boundary where the budget is spent).
+///
+/// Otherwise the run ends there with `Cpl0ProfileSetExit::Run(RunExit::StopRequested)` and
+/// `instructions_executed` counting every retired instruction: the state is the one a run of
+/// exactly that many instructions leaves, so the caller continues with a new call. A fault, a port
+/// error, a user entry, `Unsupported` and a partial REP end the run as in the one-instruction
+/// call. With `|| true` and a budget of one this is [`run_with_cpl0_profile_set_and_pio`].
+///
+/// Unlike a one-instruction call, an exit that reports an error or a fault (`Run(Fault)`,
+/// `Run(MemoryError)`, `Run(Unsupported)`, `PortIo`, a partial REP ...) can come with
+/// `instructions_executed > 0`: the instructions before the one that ended the call retired, and
+/// `rflags_defined` is the definedness after the last of them. The caller must count them (and
+/// take that definedness) whatever it does with the exit, also when it delivers the fault and goes
+/// on: they are what a run of one-instruction calls retired before the call of the instruction that
+/// ended this one. `Err` is an admission refusal and runs nothing.
+///
+/// While the call runs, `boundary` included, the SSE state of the FP member is in `state.sse`
+/// (`Some`) and the SSE half of the member's cell is the one of the entry; the cell is written back
+/// when the call returns, as for the one-instruction call.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_cpl0_profile_set_and_pio_batched<P: crate::PortIo, M: GuestMemory>(
+    state: &mut LongModeState,
+    memory: &mut M,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    pio: &mut P,
+    stop_requested: impl FnMut() -> bool,
+    boundary: &mut dyn FnMut(&LongModeState, &mut M) -> bool,
+) -> Result<Cpl0ProfileSetResult<P::Error>, Cpl0ProfileSetInputError> {
+    run_cpl0_profile_set_with_pio(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        set,
+        rdtsc_source,
+        pio,
+        stop_requested,
+        Some(boundary),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
+    state: &mut LongModeState,
+    memory: &mut M,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    pio: &mut P,
+    stop_requested: impl FnMut() -> bool,
+    boundary: Option<BatchCheck<'_, M>>,
+) -> Result<Cpl0ProfileSetResult<P::Error>, Cpl0ProfileSetInputError> {
     let mut capture = PortErrorCapture {
         port: pio,
         error: None,
@@ -30763,6 +30852,7 @@ pub fn run_with_cpl0_profile_set_and_pio<P: crate::PortIo>(
         Some(&mut capture),
         stop_requested,
         PrivilegeLevel::Ring0,
+        boundary,
     )?;
     // The failed instruction did not retire, so a port error, a user entry and a CR3 effect
     // cannot be pending together.
@@ -30861,6 +30951,7 @@ pub fn run_with_cpl3_profile_set(
                     None,
                     || false,
                     PrivilegeLevel::Ring3,
+                    None,
                 )
                 .is_ok_and(|(probe, cr3_effect, user_entry)| {
                     probe.exit == RunExit::InstructionBudgetExhausted
@@ -30944,6 +31035,7 @@ pub fn run_with_cpl3_profile_set(
             None,
             &mut stop_requested,
             PrivilegeLevel::Ring3,
+            None,
         );
         let Ok((result, cr3_effect, user_entry)) = inner else {
             // An admission error of the step: after a retired instruction changed an admitted
@@ -34061,10 +34153,67 @@ impl<P: crate::PortIo> crate::PortIo for PortErrorCapture<'_, P> {
     }
 }
 
+/// PERF-25: the inputs of the CPL0 set admission that an instruction can change (see
+/// [`run_with_cpl0_profile_set_and_pio_batched`]). Equal keys at two boundaries mean equal
+/// admission results there, for the same set and config.
+#[derive(Clone, Copy)]
+struct BatchKey {
+    cr0: Option<u64>,
+    cr3: Option<u64>,
+    cr4: Option<u64>,
+    cs_selector: Option<u16>,
+    rflags: u64,
+    sti_shadow: Option<crate::StiShadow>,
+    activity: Option<crate::CpuActivity>,
+    x87: bool,
+}
+
+impl BatchKey {
+    /// CF, PF, AF, ZF, SF, OF and DF: the flags no admission and no boundary of the set loops reads.
+    const UNCHECKED_RFLAGS: u64 = 0x0cd5;
+
+    /// The admission inputs of `state` are still those of the key.
+    #[inline(always)]
+    fn holds(&self, state: &LongModeState) -> bool {
+        self.rflags == state.rflags & !Self::UNCHECKED_RFLAGS
+            && self.cr0 == state.cr0
+            && self.cr4 == state.cr4
+            && self.cr3 == state.cr3
+            && self.cs_selector == state.cs_selector
+            && self.sti_shadow == state.sti_shadow
+            && self.activity == state.activity
+            && self.x87 == state.x87.is_some()
+    }
+
+    #[inline(always)]
+    fn of(state: &LongModeState) -> Self {
+        Self {
+            cr0: state.cr0,
+            cr3: state.cr3,
+            cr4: state.cr4,
+            cs_selector: state.cs_selector,
+            rflags: state.rflags & !Self::UNCHECKED_RFLAGS,
+            sti_shadow: state.sti_shadow,
+            activity: state.activity,
+            x87: state.x87.is_some(),
+        }
+    }
+}
+
+/// PERF-25: the caller's check of a batched run (see [`run_with_cpl0_profile_set_and_pio_batched`]).
+type BatchCheck<'b, M> = &'b mut dyn FnMut(&LongModeState, &mut M) -> bool;
+
+/// PERF-25: the boundary of a batched run of the set loop: the admission inputs at its entry and
+/// the caller's check.
+struct BatchBoundary<'b, M> {
+    key: BatchKey,
+    check: BatchCheck<'b, M>,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn run_cpl0_profile_set_inner(
+fn run_cpl0_profile_set_inner<M: GuestMemory>(
     state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
+    memory: &mut M,
     config: RunConfig,
     initial_rflags_defined: u64,
     set: &Cpl0ProfileSet<'_>,
@@ -34072,6 +34221,7 @@ fn run_cpl0_profile_set_inner(
     pio: Option<&mut dyn crate::PortIo<Error = ()>>,
     mut stop_requested: impl FnMut() -> bool,
     required_privilege: PrivilegeLevel,
+    boundary: Option<BatchCheck<'_, M>>,
 ) -> Result<
     (
         RunResult,
@@ -34187,6 +34337,27 @@ fn run_cpl0_profile_set_inner(
             let port: &mut dyn crate::PortIo<Error = ()> = port;
             Some(RefCell::new(port))
         }
+        None => None,
+    };
+    // PERF-25: a batched run (`boundary`) continues only while every input of the admission above
+    // that an instruction can change is what it was at this entry: then the admission of a new call
+    // at that boundary would pass exactly as this one did (the set, the config and the cells of the
+    // set do not change; the Windows MSR cells are checked again). Any change of CR0/CR3/CR4, CS (the
+    // CPL), RFLAGS other than the six status flags and DF (IF, RF, TF, IOPL, AC, VM ...), the STI
+    // shadow, the activity or the presence of x87 state ends the run before the next instruction.
+    let key = BatchKey::of(state);
+    let mut windows_checked;
+    let batch = match boundary {
+        Some(caller) if set.msr_windows.is_some() => {
+            windows_checked = move |state: &LongModeState, memory: &mut M| {
+                set.windows_msr_admission().is_ok() && caller(state, memory)
+            };
+            Some(BatchBoundary {
+                key,
+                check: &mut windows_checked as BatchCheck<'_, M>,
+            })
+        }
+        Some(check) => Some(BatchBoundary { key, check }),
         None => None,
     };
     // S2-39: the SSE state of the FP member lives in `state.sse` (XMM0-15 and MXCSR, the model of the
@@ -34393,6 +34564,7 @@ fn run_cpl0_profile_set_inner(
             exact_hlt_only: false,
             stop_requested: &mut stop_requested,
         },
+        batch,
     );
     if let Some(cell) = set.fp_state
         && let Some(sse) = state.sse.take()
@@ -34418,45 +34590,50 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, false>(
+    run_configured_with_profile_mode::<false, false, _>(
         state,
         memory,
         config,
         rflags_defined,
         profiles,
         runtime,
+        None,
     )
 }
 
 /// PERF-22: the entry of the CPL0 set loops. `verify` selects the checked instance of the loop
 /// (`Cpl0ProfileSet::with_fast_path_verify`); the other instance has no code for the check.
 #[inline(always)]
-fn run_configured_checked(
+#[allow(clippy::too_many_arguments)]
+fn run_configured_checked<M: GuestMemory>(
     verify: bool,
     state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
+    memory: &mut M,
     config: RunConfig,
     rflags_defined: u64,
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
+    batch: Option<BatchBoundary<'_, M>>,
 ) -> RunResult {
     if verify {
-        run_configured_with_profile_mode::<false, true>(
+        run_configured_with_profile_mode::<false, true, M>(
             state,
             memory,
             config,
             rflags_defined,
             profiles,
             runtime,
+            batch,
         )
     } else {
-        run_configured_with_profile_mode::<false, false>(
+        run_configured_with_profile_mode::<false, false, M>(
             state,
             memory,
             config,
             rflags_defined,
             profiles,
             runtime,
+            batch,
         )
     }
 }
@@ -34472,7 +34649,7 @@ pub fn run_with_fast_path_check(
     config: RunConfig,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, true>(
+    run_configured_with_profile_mode::<false, true, _>(
         state,
         memory,
         config,
@@ -34484,6 +34661,7 @@ pub fn run_with_fast_path_check(
             exact_hlt_only: false,
             stop_requested: &mut stop_requested,
         },
+        None,
     )
 }
 
@@ -34977,13 +35155,14 @@ fn step_with_optional_check<const NO_PROFILES: bool, const VERIFY: bool, M: Gues
     }
 }
 
-fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool>(
+fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool, M: GuestMemory>(
     state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
+    memory: &mut M,
     config: RunConfig,
     mut rflags_defined: u64,
     profiles: ExecutionProfiles<'_>,
     mut runtime: StepRuntime<'_, '_, '_>,
+    mut batch: Option<BatchBoundary<'_, M>>,
 ) -> RunResult {
     let profiles = if NO_PROFILES {
         ExecutionProfiles::EMPTY
@@ -35288,6 +35467,20 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, const VERIFY: bool>
                     if state.activity == Some(crate::CpuActivity::Halted) {
                         return RunResult {
                             exit: RunExit::Halted,
+                            instructions_executed: retired,
+                            rflags_defined,
+                        };
+                    }
+                    // PERF-25: a batched run goes on only while the admission inputs are those of
+                    // its entry and the caller's check agrees (asked before every further
+                    // instruction; the boundary at the budget belongs to the caller). Otherwise it
+                    // ends here, before any fetch of the next instruction.
+                    if retired != config.instruction_budget
+                        && let Some(batch) = batch.as_mut()
+                        && !(batch.key.holds(state) && (batch.check)(&*state, &mut *memory))
+                    {
+                        return RunResult {
+                            exit: RunExit::StopRequested,
                             instructions_executed: retired,
                             rflags_defined,
                         };

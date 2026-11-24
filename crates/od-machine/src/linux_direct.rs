@@ -13399,6 +13399,65 @@ mod tests {
     }
 
     #[test]
+    fn batched_calls_keep_the_syscall_journal_and_the_cpl3_entries_of_one_instruction_calls() {
+        // PERF-25: CPL0 NOPs before the `IRETQ` to CPL3 and in the kernel at LSTAR (before
+        // `mov eax, 0x2a; sysretq`): the batched CPL0 calls end right after the `IRETQ` and after
+        // each `SYSRETQ` (a committed return to CPL3), and the journal records both system calls.
+        // The budget: 4 NOPs and IRETQ, 2 user, 3 NOPs, MOV and SYSRETQ, 2 user, 5 kernel.
+        let run = |batches: bool| {
+            let (mut boot, file) = user_mode_board_with(
+                &[0x90; 4],
+                &[
+                    0xb8, 0x53, 0, 0, 0, 0x0f, 0x05, 0xb8, 0x07, 0, 0, 0, 0x0f, 0x05,
+                ],
+                true,
+                0x202,
+            );
+            write_phys(
+                &mut boot,
+                SYSCALL_KERNEL_AT,
+                &[0x90, 0x90, 0x90, 0xb8, 0x2a, 0, 0, 0, 0x48, 0x0f, 0x07],
+            );
+            boot.board.set_instruction_batches(batches);
+            crate::paged_memory_adapter::batch_trace::start();
+            let record = run_syscall_facade(&mut boot, &file, 19, 0xd01);
+            let calls = crate::paged_memory_adapter::batch_trace::take();
+            (record, boot.board.state().clone(), calls)
+        };
+        let (one, one_state, one_calls) = run(false);
+        let (many, many_state, calls) = run(true);
+        assert_eq!(format!("{many:?}"), format!("{one:?}"));
+        assert_eq!(many_state, one_state);
+        assert!(one_calls.iter().all(|call| call.budget == 1));
+        assert!(calls.len() < one_calls.len(), "{calls:?}");
+        assert_eq!(
+            (many.retired, many.cpl3_retired, many.cpl),
+            (19, 4, 3),
+            "{many:?}"
+        );
+        assert_eq!(many.rip, USER_CODE_AT + 14);
+        let journal = &many.syscall_journal;
+        assert_eq!((journal.entered, journal.returned), (2, 2));
+        assert_eq!(
+            journal
+                .entries
+                .iter()
+                .map(|entry| entry.rax_return)
+                .collect::<Vec<_>>(),
+            [Some(0x2a), Some(0x2a)]
+        );
+        // The three batched CPL0 calls of five instructions each.
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.budget > 1 && call.retired == 5)
+                .count(),
+            3,
+            "{calls:?}"
+        );
+    }
+
+    #[test]
     fn syscall_journal_is_a_ring_and_an_iretq_return_is_not_a_system_call() {
         let mut journal = SyscallJournal::default();
         for nr in 0..(SYSCALL_JOURNAL_CAPACITY as u64 + 3) {
@@ -14639,6 +14698,8 @@ mod tests {
                 Some(&sweep),
                 crate::fetch_translation_cache::FetchCacheTag::Page4K,
                 None,
+                false,
+                false,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");

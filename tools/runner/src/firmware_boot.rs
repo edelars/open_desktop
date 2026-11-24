@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--data-cache-prototype] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -103,6 +103,9 @@ struct Options {
     /// PERF-23: `--fast-path` (unified loop only): the step runs the fast path of group G2 right
     /// after the decode (ADR-0017, section 3). Without it the run is as before.
     fast_path: bool,
+    /// PERF-11: `--data-cache-prototype` (unified loop only): same-page qword reads go through the
+    /// data translation cache prototype (ADR-0016). Without it the run is as before.
+    data_cache_prototype: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -383,6 +386,7 @@ pub fn run(args: &[String]) -> ExitCode {
         op_histogram_out: options.op_histogram_out.clone(),
         fast_path_verify: options.fast_path_verify,
         fast_path: options.fast_path,
+        data_cache_prototype: options.data_cache_prototype,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -982,6 +986,8 @@ struct Diagnostics {
     fast_path_verify: bool,
     /// PERF-23: the unified loop runs the fast path of group G2.
     fast_path: bool,
+    /// PERF-11: the unified loop serves same-page qword reads through the data translation cache.
+    data_cache_prototype: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1442,6 +1448,9 @@ fn boot(
     let mut fast_path_check_progress: Option<Value> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
+        if diagnostics.data_cache_prototype {
+            board.enable_data_cache_prototype();
+        }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
         od_machine::run_firmware_unified_with_fast_path(
             &mut board,
@@ -1781,6 +1790,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut op_histogram_out = None;
     let mut fast_path_verify = false;
     let mut fast_path = false;
+    let mut data_cache_prototype = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1801,6 +1811,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--fast-path" && !fast_path {
             fast_path = true;
+            index += 1;
+            continue;
+        }
+        if name == "--data-cache-prototype" && !data_cache_prototype {
+            data_cache_prototype = true;
             index += 1;
             continue;
         }
@@ -1946,6 +1961,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if fast_path && !unified {
         return Err("--fast-path requires --cpu-loop unified".to_owned());
     }
+    if data_cache_prototype && !unified {
+        return Err("--data-cache-prototype requires --cpu-loop unified".to_owned());
+    }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
             return Err("--reboot-cycles requires --fv-app reboot".to_owned());
@@ -2087,6 +2105,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         op_histogram_out,
         fast_path_verify,
         fast_path,
+        data_cache_prototype,
     })
 }
 
@@ -2504,6 +2523,38 @@ mod tests {
         let options = parse(&both).unwrap();
         assert!(options.fast_path && options.fast_path_verify);
         given.extend(args(&["--fast-path"]));
+        assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn data_cache_prototype_needs_the_unified_loop_is_taken_once_and_is_off_by_default() {
+        let base = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        let mut unified = base.clone();
+        unified.extend(args(&["--cpu-loop", "unified"]));
+        assert!(!parse(&unified).unwrap().data_cache_prototype);
+        let mut given = base;
+        given.extend(args(&["--data-cache-prototype"]));
+        assert!(
+            parse(&given)
+                .err()
+                .unwrap()
+                .contains("--data-cache-prototype requires --cpu-loop unified")
+        );
+        given.extend(args(&["--cpu-loop", "unified"]));
+        let options = parse(&given).unwrap();
+        assert!(options.data_cache_prototype && !options.fast_path);
+        let mut both = given.clone();
+        both.extend(args(&["--fast-path"]));
+        let options = parse(&both).unwrap();
+        assert!(options.data_cache_prototype && options.fast_path);
+        given.extend(args(&["--data-cache-prototype"]));
         assert!(parse(&given).is_err());
     }
 
