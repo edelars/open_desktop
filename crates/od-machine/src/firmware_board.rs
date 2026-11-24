@@ -2868,6 +2868,26 @@ impl LoadedFirmwareBoard {
         self.block_cache.is_some()
     }
 
+    /// PERF-33 (E5, step 4): the block cache in the block check mode (the runner's
+    /// `--block-cache-verify`; enables the cache as [`Self::enable_block_cache_prototype`] does): the
+    /// unified set loop looks the blocks up and walks them as usual, but runs every instruction
+    /// through the general step with a fresh decode (no decoded-instruction cache) and compares that
+    /// decode with the one the block holds; the first difference ends the run. Under the conditions
+    /// of the blocks (the fast path, no fast-path check, batched calls of an ordinary run).
+    pub fn enable_block_cache_verify(&mut self) {
+        self.enable_block_cache_prototype();
+        if let Some(blocks) = &mut self.block_cache {
+            blocks.enable_verify();
+        }
+    }
+
+    /// PERF-33 (E5, step 4): whether [`Self::enable_block_cache_verify`] was called.
+    pub fn block_cache_verify(&self) -> bool {
+        self.block_cache
+            .as_ref()
+            .is_some_and(DecodedBlockCache::verify)
+    }
+
     /// PERF-31: the counters of the predecoded block cache (ADR-0018, section 5, M1), `None` unless
     /// it was enabled and counts (PERF-33: [`Self::enable_block_stats`], or a debug build).
     pub fn block_cache_stats(&self) -> Option<DecodedBlockCacheStats> {
@@ -9636,6 +9656,499 @@ mod tests {
         assert_eq!(board.block_cache_stats(), None, "stats alone make no cache");
         board.enable_block_cache_prototype();
         assert!(board.block_cache_stats().is_some());
+    }
+
+    // PERF-33 (E5, step 3): the scenarios of the block cache mutations on the firmware board (the
+    // unified loop, batched calls, the fast path): with blocks the whole run report, the state,
+    // COM1 and the RAM are those of the run without them, and a single mutation that alone must
+    // be seen (a store into the active block, a device write between two runs, an instruction over
+    // the end of a page) is seen.
+
+    /// How the block cache of a board scenario behaves.
+    #[derive(Clone, Copy, PartialEq)]
+    enum E5Blocks {
+        Off,
+        On,
+        Mutated(crate::decoded_block_cache::BlockMutations),
+    }
+
+    /// One step of a board scenario: a unified run with this budget, or the host between two runs.
+    enum E5Step<'a> {
+        Run(u64),
+        Host(&'a dyn Fn(&mut LoadedFirmwareBoard)),
+    }
+
+    struct E5Observed {
+        /// The `Debug` text of every run report, without the block counters.
+        runs: Vec<String>,
+        state: od_isa::LongModeState,
+        com1: Vec<u8>,
+        ram: Vec<Option<Vec<u8>>>,
+        stats: Option<DecodedBlockCacheStats>,
+    }
+
+    impl E5Observed {
+        fn same_as(&self, other: &Self) -> bool {
+            self.runs == other.runs
+                && self.state == other.state
+                && self.com1 == other.com1
+                && self.ram == other.ram
+        }
+    }
+
+    const E5_ROOT_A: u64 = 0x90_0000;
+    const E5_ROOT_B: u64 = 0x91_0000;
+    /// The linear page of the scenarios: 4 KiB pages through the PT of each root.
+    const E5_X: u64 = 0x40_0000;
+    const E5_FRAME_A: u64 = 0x98_0000;
+    const E5_FRAME_B: u64 = 0x98_2000;
+    const E5_FRAME_C: u64 = 0x98_4000;
+
+    /// `mov eax, target; jmp rax`: the entry of the image goes to the code of the scenario.
+    fn e5_entry(target: u64) -> Vec<u8> {
+        let mut code = vec![0xB8];
+        code.extend((target as u32).to_le_bytes());
+        code.extend([0xFF, 0xE0]);
+        code
+    }
+
+    /// Runs `steps` on a fresh board whose two roots map the first 4 MiB with 2 MiB identity leaves
+    /// (code, stack, IDT, GDT) and the pages of `E5_X` through a 4 KiB PT with the entries
+    /// `pt` (page index, PTE; A and D already set) for each root; `bytes` are laid in RAM.
+    fn e5_run(
+        entry: u64,
+        pt: &[(u64, &[(u64, u64)])],
+        bytes: &[(u64, &[u8])],
+        steps: &[E5Step<'_>],
+        blocks: E5Blocks,
+    ) -> E5Observed {
+        let mut board =
+            load_firmware_image(&minor2_image(&e5_entry(entry)), &linux_config()).unwrap();
+        let mut put = |address: u64, value: u64| {
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        };
+        for (root, entries) in pt {
+            put(*root, (*root + 0x1000) | 0x23);
+            put(*root + 0x1000, (*root + 0x2000) | 0x23);
+            put(*root + 0x2000, 0xA3);
+            put(*root + 0x2008, 0x20_0000 | 0xA3);
+            put(*root + 0x2010, (*root + 0x3000) | 0x23);
+            for (index, entry) in *entries {
+                put(*root + 0x3000 + 8 * index, *entry);
+            }
+        }
+        for (address, data) in bytes {
+            board
+                .bus_mut()
+                .write_flat_bytes(GuestPhysicalAddress::new(*address), data, |_| {})
+                .unwrap();
+        }
+        board.page_table_root = pt[0].0;
+        if blocks != E5Blocks::Off {
+            board.enable_block_stats();
+            board.enable_block_cache_prototype();
+        }
+        if let E5Blocks::Mutated(mutations) = blocks {
+            board
+                .block_cache
+                .as_ref()
+                .expect("enabled above")
+                .mutate_for_test(mutations);
+        }
+        let mut runs = Vec::new();
+        for step in steps {
+            match step {
+                E5Step::Host(act) => act(&mut board),
+                E5Step::Run(budget) => {
+                    let mut run = crate::run_firmware_unified_with_fast_path(
+                        &mut board,
+                        *budget,
+                        None,
+                        Vec::new(),
+                        None,
+                        false,
+                        false,
+                        true,
+                    )
+                    .unwrap();
+                    run.block_stats = None;
+                    runs.push(format!("{run:?}"));
+                }
+            }
+        }
+        E5Observed {
+            runs,
+            state: board.state().clone(),
+            com1: board.com1_transcript().to_vec(),
+            ram: perf25_ram(&board),
+            stats: board.block_cache_stats(),
+        }
+    }
+
+    /// The run with blocks equals the run without them; the single mutation `seen` (if any) is
+    /// seen. Returns the runs without blocks, with them and with the mutation.
+    fn e5_check(
+        entry: u64,
+        pt: &[(u64, &[(u64, u64)])],
+        bytes: &[(u64, &[u8])],
+        steps: &[E5Step<'_>],
+        seen: Option<crate::decoded_block_cache::BlockMutations>,
+    ) -> (E5Observed, E5Observed, Option<E5Observed>) {
+        let plain = e5_run(entry, pt, bytes, steps, E5Blocks::Off);
+        assert_eq!(plain.stats, None);
+        let blocks = e5_run(entry, pt, bytes, steps, E5Blocks::On);
+        assert!(
+            blocks.same_as(&plain),
+            "the blocks changed the run: {:?} against {:?}",
+            blocks.runs,
+            plain.runs
+        );
+        let stats = blocks.stats.expect("the cache counts");
+        assert!(stats.retired > 0, "nothing ran from a block: {stats:?}");
+        let mutated = seen.map(|mutations| {
+            let mutated = e5_run(entry, pt, bytes, steps, E5Blocks::Mutated(mutations));
+            assert!(
+                !mutated.same_as(&plain),
+                "the mutation {mutations:?} must be seen"
+            );
+            mutated
+        });
+        (plain, blocks, mutated)
+    }
+
+    const E5_PTE: u64 = 0x63;
+
+    /// (a) A store into the active block on the board: `MOV [RBX], EAX` patches the immediate of
+    /// the next instruction of its block (the PTE of the code page has its dirty bit already: no
+    /// fetch cache drop). The mutation of the generation check inside the block runs the stale
+    /// decode.
+    #[test]
+    fn the_block_cache_of_the_unified_run_sees_a_store_into_the_active_block() {
+        #[rustfmt::skip]
+        let mut code = vec![
+            0xBB, 0, 0, 0, 0,                   // 0x00 mov ebx, X + 0x0D
+            0xB8, 0x55, 0x55, 0x00, 0x00,       // 0x05 mov eax, 0x5555
+            0x89, 0x03,                         // 0x0A mov [rbx], eax
+            0xBA, 0x11, 0x11, 0x00, 0x00,       // 0x0C mov edx, 0x1111 (immediate at 0x0D)
+            0x89, 0xD6,                         // 0x11 mov esi, edx
+            0xF4,                               // 0x13 hlt
+        ];
+        code[1..5].copy_from_slice(&((E5_X + 0x0D) as u32).to_le_bytes());
+        let pt: &[(u64, &[(u64, u64)])] = &[(E5_ROOT_A, &[(0, E5_FRAME_A | E5_PTE)])];
+        let (plain, blocks, mutated) = e5_check(
+            E5_X,
+            pt,
+            &[(E5_FRAME_A, &code)],
+            &[E5Step::Run(1_000)],
+            Some(crate::decoded_block_cache::BlockMutations {
+                holds_generation: true,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(plain.state.gpr[od_isa::Register::Rsi as usize], 0x5555);
+        let stats = blocks.stats.unwrap();
+        assert_eq!(stats.holds_failed, 1, "{stats:?}");
+        assert_eq!(
+            mutated.unwrap().state.gpr[od_isa::Register::Rsi as usize],
+            0x1111,
+            "the stale decode ran"
+        );
+    }
+
+    /// (a) A device write (the host, as a DMA) into a code page between two unified runs: the
+    /// cached block of the loop is stale at the next lookup. The mutation of the lookup generation
+    /// runs it.
+    #[test]
+    fn the_block_cache_of_the_unified_run_sees_a_device_write_between_runs() {
+        #[rustfmt::skip]
+        let code = [
+            0xBA, 0x11, 0x11, 0x00, 0x00,       // 0x00 L: mov edx, 0x1111 (immediate at 0x01)
+            0x89, 0xD6,                         // 0x05 mov esi, edx
+            0xEB, 0xF7,                         // 0x07 jmp L
+        ];
+        let device_write = |board: &mut LoadedFirmwareBoard| {
+            board
+                .bus_mut()
+                .write_flat_bytes(
+                    GuestPhysicalAddress::new(E5_FRAME_A + 1),
+                    &0x2222u32.to_le_bytes(),
+                    |_| {},
+                )
+                .unwrap();
+        };
+        let pt: &[(u64, &[(u64, u64)])] = &[(E5_ROOT_A, &[(0, E5_FRAME_A | E5_PTE)])];
+        let (plain, blocks, mutated) = e5_check(
+            E5_X,
+            pt,
+            &[(E5_FRAME_A, &code)],
+            &[
+                E5Step::Run(100),
+                E5Step::Host(&device_write),
+                E5Step::Run(100),
+            ],
+            Some(crate::decoded_block_cache::BlockMutations {
+                lookup_generation: true,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(plain.state.gpr[od_isa::Register::Rsi as usize], 0x2222);
+        let stats = blocks.stats.unwrap();
+        assert!(stats.stale >= 1, "{stats:?}");
+        assert_eq!(
+            mutated.unwrap().state.gpr[od_isa::Register::Rsi as usize],
+            0x1111,
+            "the stale block ran"
+        );
+    }
+
+    /// (d) `MOV CR3` on the board to a root that maps the same linear page to another frame with
+    /// other code. No single mutation is seen here (see the case of the epoch in
+    /// `linux_direct::tests::decoded_block_cache`); the run with blocks equals the run without.
+    #[test]
+    fn the_block_cache_of_the_unified_run_follows_a_mov_cr3_to_another_frame() {
+        let code = |immediate: u16, tail_is_halt: bool| {
+            let mut code = vec![0xB9, 5, 0, 0, 0]; // 0x00 mov ecx, 5
+            code.push(0xBA); // 0x05 L: mov edx, imm
+            code.extend(u32::from(immediate).to_le_bytes());
+            code.extend([0xFF, 0xC9]); // 0x0A dec ecx
+            code.extend([0x75, 0xF7]); // 0x0C jnz L
+            if tail_is_halt {
+                code.push(0xF4); // 0x0E hlt
+                code.extend([0x90; 4]);
+            } else {
+                code.push(0xB8); // 0x0E mov eax, ROOT_B
+                code.extend((E5_ROOT_B as u32).to_le_bytes());
+            }
+            code.extend([0x0F, 0x22, 0xD8]); // 0x13 mov cr3, rax
+            code.extend([0xEB, 0xE8]); // 0x16 jmp 0x00
+            code
+        };
+        let (a, c) = (code(0x1111, false), code(0x2222, true));
+        let pt: &[(u64, &[(u64, u64)])] = &[
+            (E5_ROOT_A, &[(0, E5_FRAME_A | E5_PTE)]),
+            (E5_ROOT_B, &[(0, E5_FRAME_C | E5_PTE)]),
+        ];
+        let bytes: &[(u64, &[u8])] = &[(E5_FRAME_A, &a), (E5_FRAME_C, &c)];
+        let (plain, blocks, _) = e5_check(E5_X, pt, bytes, &[E5Step::Run(1_000)], None);
+        assert_eq!(plain.state.gpr[od_isa::Register::Rdx as usize], 0x2222);
+        assert_eq!(blocks.stats.unwrap().flushes, 1, "{:?}", blocks.stats);
+        let none = crate::decoded_block_cache::BlockMutations::default();
+        for mutations in [
+            crate::decoded_block_cache::BlockMutations {
+                epoch: true,
+                ..none
+            },
+            crate::decoded_block_cache::BlockMutations::INVALIDATION,
+        ] {
+            let mutated = e5_run(
+                E5_X,
+                pt,
+                bytes,
+                &[E5Step::Run(1_000)],
+                E5Blocks::Mutated(mutations),
+            );
+            assert!(mutated.same_as(&plain), "{mutations:?}");
+        }
+    }
+
+    /// (e) An instruction over the end of a page on the board: `MOV EDX, 0x44332211` at 0xFFC of
+    /// page X needs its last byte from page X + 1, another frame; the first byte of the frame of X
+    /// is 0x99. The block stops before it; the mutation of the page fence decodes the byte of the
+    /// same frame.
+    #[test]
+    fn the_block_cache_of_the_unified_run_keeps_an_instruction_over_the_page_end_out() {
+        #[rustfmt::skip]
+        let head = [
+            0xB9, 0x03, 0x00, 0x00, 0x00,       // 0xFF0 mov ecx, 3
+            0xFF, 0xC9,                         // 0xFF5 L: dec ecx
+            0xB8, 0x11, 0x00, 0x00, 0x00,       // 0xFF7 mov eax, 0x11
+            0xBA, 0x11, 0x22, 0x33,             // 0xFFC mov edx, 0x44332211 (four bytes here)
+        ];
+        #[rustfmt::skip]
+        let tail = [
+            0x44,                               // X+1 0x000 the last byte of the immediate
+            0x89, 0xD6,                         // 0x001 mov esi, edx
+            0x75, 0xF0,                         // 0x003 jnz L
+            0xF4,                               // 0x005 hlt
+        ];
+        let pt: &[(u64, &[(u64, u64)])] = &[(
+            E5_ROOT_A,
+            &[(0, E5_FRAME_A | E5_PTE), (1, E5_FRAME_B | E5_PTE)],
+        )];
+        let bytes: &[(u64, &[u8])] = &[
+            (E5_FRAME_A, &[0x99]),
+            (E5_FRAME_A + 0xFF0, &head),
+            (E5_FRAME_B, &tail),
+        ];
+        let (plain, blocks, mutated) = e5_check(
+            E5_X + 0xFF0,
+            pt,
+            bytes,
+            &[E5Step::Run(1_000)],
+            Some(crate::decoded_block_cache::BlockMutations {
+                page_fence: true,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(plain.state.gpr[od_isa::Register::Rdx as usize], 0x4433_2211);
+        assert!(blocks.stats.unwrap().retired > 0);
+        assert_eq!(
+            mutated.unwrap().state.gpr[od_isa::Register::Rdx as usize],
+            0x9933_2211,
+            "the byte of the same frame was decoded"
+        );
+    }
+
+    /// PERF-33 (E5, step 4): the block check (`--block-cache-verify`) on the board: the unified run
+    /// in the check mode is the run without blocks (report, state, COM1, RAM), every instruction a
+    /// block held was compared with the fresh decode of the general step, and nothing diverged.
+    #[test]
+    fn the_block_cache_check_of_the_unified_run_changes_nothing_and_finds_no_divergence() {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        #[rustfmt::skip]
+        let program = [
+            0xB9, 0x32, 0x00, 0x00, 0x00,       // 0x00 mov ecx, 50
+            0x48, 0x89, 0x4C, 0x24, 0xF8,       // 0x05 L: mov [rsp-8], rcx
+            0x48, 0x8B, 0x44, 0x24, 0xF8,       // 0x0A mov rax, [rsp-8]
+            0x48, 0x01, 0xC2,                   // 0x0F add rdx, rax
+            0x50,                               // 0x12 push rax
+            0x5B,                               // 0x13 pop rbx
+            0xE8, 0x0F, 0x00, 0x00, 0x00,       // 0x14 call F (0x28)
+            0x66, 0xBA, 0xF8, 0x03,             // 0x19 mov dx, 0x3f8
+            0xB0, 0x41,                         // 0x1D mov al, 'A'
+            0xEE,                               // 0x1F out dx, al
+            0x31, 0xD2,                         // 0x20 xor edx, edx
+            0xFF, 0xC9,                         // 0x22 dec ecx
+            0x75, 0xDF,                         // 0x24 jnz L
+            0xF4,                               // 0x26 hlt
+            0x90,                               // 0x27
+            0x48, 0x83, 0xC6, 0x01,             // 0x28 F: add rsi, 1
+            0xC3,                               // 0x2C ret
+        ];
+        image[0x40..0x40 + program.len()].copy_from_slice(&program);
+        seal(&mut image);
+        let run = |verify: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            if verify {
+                board.enable_block_cache_verify();
+                assert!(board.block_cache_prototype() && board.block_cache_verify());
+            }
+            let mut run = crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                10_000,
+                None,
+                Vec::new(),
+                None,
+                false,
+                false,
+                true,
+            )
+            .unwrap();
+            let check = run.block_check.take();
+            run.block_stats = None;
+            (
+                format!("{run:?}"),
+                check,
+                board.state().clone(),
+                board.com1_transcript().to_vec(),
+                perf25_ram(&board),
+            )
+        };
+        let (plain_run, plain_check, plain_state, plain_com1, plain_ram) = run(false);
+        assert_eq!(plain_check, None);
+        let (run, check, state, com1, ram) = run(true);
+        assert_eq!(run, plain_run);
+        assert_eq!(state, plain_state);
+        assert_eq!(com1, plain_com1);
+        assert!(ram == plain_ram, "RAM differs");
+        let check = check.expect("the check was asked for");
+        assert_eq!(check.divergence, None);
+        assert_eq!(check.counters.divergences, 0);
+        // Most of the loop is in blocks: every pass compares its block instructions.
+        assert!(check.counters.compared >= 40 * 6, "{check:?}");
+    }
+
+    /// PERF-33 (E5, step 4): the block check finds a stale block. With the mutation of the
+    /// generation check inside the active block, the block still says `MOV EDX, 0x1111` after the
+    /// store patched it: the fresh decode of the general step differs, and the run stops there
+    /// with the RIP, the bytes and both instructions.
+    #[test]
+    fn the_block_cache_check_of_the_unified_run_stops_at_a_stale_block() {
+        #[rustfmt::skip]
+        let mut code = vec![
+            0xBB, 0, 0, 0, 0,                   // 0x00 mov ebx, X + 0x0D
+            0xB8, 0x55, 0x55, 0x00, 0x00,       // 0x05 mov eax, 0x5555
+            0x89, 0x03,                         // 0x0A mov [rbx], eax
+            0xBA, 0x11, 0x11, 0x00, 0x00,       // 0x0C mov edx, 0x1111 (immediate at 0x0D)
+            0x89, 0xD6,                         // 0x11 mov esi, edx
+            0xF4,                               // 0x13 hlt
+        ];
+        code[1..5].copy_from_slice(&((E5_X + 0x0D) as u32).to_le_bytes());
+        let mut board =
+            load_firmware_image(&minor2_image(&e5_entry(E5_X)), &linux_config()).unwrap();
+        let mut put = |address: u64, value: u64| {
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+        };
+        put(E5_ROOT_A, (E5_ROOT_A + 0x1000) | 0x23);
+        put(E5_ROOT_A + 0x1000, (E5_ROOT_A + 0x2000) | 0x23);
+        put(E5_ROOT_A + 0x2000, 0xA3);
+        put(E5_ROOT_A + 0x2008, 0x20_0000 | 0xA3);
+        put(E5_ROOT_A + 0x2010, (E5_ROOT_A + 0x3000) | 0x23);
+        put(E5_ROOT_A + 0x3000, E5_FRAME_A | E5_PTE);
+        board
+            .bus_mut()
+            .write_flat_bytes(GuestPhysicalAddress::new(E5_FRAME_A), &code, |_| {})
+            .unwrap();
+        board.page_table_root = E5_ROOT_A;
+        board.enable_block_cache_verify();
+        board.block_cache.as_ref().unwrap().mutate_for_test(
+            crate::decoded_block_cache::BlockMutations {
+                holds_generation: true,
+                ..Default::default()
+            },
+        );
+        let run = crate::run_firmware_unified_with_fast_path(
+            &mut board,
+            1_000,
+            None,
+            Vec::new(),
+            None,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+        let check = run.block_check.expect("the check was asked for");
+        assert_eq!(check.counters.divergences, 1, "{check:?}");
+        let divergence = check.divergence.expect("a divergence");
+        assert_eq!(divergence.divergence.rip, E5_X + 0x0C);
+        assert_eq!(divergence.bytes, [0xBA, 0x55, 0x55, 0x00, 0x00]);
+        let text = divergence.to_string();
+        assert!(
+            text.contains("rip=0x40000c") && text.contains("bytes=ba55550000"),
+            "{text}"
+        );
+        let fresh = divergence.divergence.decoded.expect("the fresh decode");
+        assert_ne!(fresh, divergence.divergence.block);
+        // The run stopped at the divergence: the instruction after it did not run.
+        assert_ne!(run.run.exit, PagedProbeExit::Halted, "{:?}", run.run);
+        assert_eq!(board.state().gpr[od_isa::Register::Rsi as usize], 0);
     }
 
     /// PERF-11 (ADR-0016, prototype): the invalidation wiring of the loop. The program reads a

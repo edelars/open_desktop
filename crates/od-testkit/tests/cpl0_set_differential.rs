@@ -18,7 +18,9 @@ use od_isa::execute::{
 };
 use od_isa::fast_path_check::{self, FastPathMode};
 use od_isa::long_decode::DecodedBlock;
-use od_isa::predecoded_block::{MAX_BLOCK_INSTRUCTIONS, predecode_block};
+use od_isa::predecoded_block::{
+    FastBlockRole, MAX_BLOCK_INSTRUCTIONS, fast_block_role, predecode_block,
+};
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, CliProfile, CpuActivity, GuestMemory, InstructionMode,
     LongModeState, MemoryError, OperandSize, PortIo, PrivilegeLevel, StiShadow,
@@ -390,7 +392,8 @@ fn one_instruction_reference(case: &Case, set: &Cpl0ProfileSet<'_>, label: &str)
 /// (their fetch has no effect here), keyed by its RIP and the generation of its 4 KiB page, and
 /// every write raises the generation of each page it touches; `block_holds` compares the
 /// generation of the active block's page. `ignore_writes` is the mutation that drops the
-/// invalidation (the test of it must then see a stale block run).
+/// invalidation (the test of it must then see a stale block run); `ignore_page_fence` (PERF-33,
+/// E5) the mutation that builds blocks without the page fence of `predecode_block`.
 struct BlockMemory {
     inner: Memory,
     generations: HashMap<u64, u64>,
@@ -399,6 +402,33 @@ struct BlockMemory {
     retired_from_blocks: u64,
     holds_failed: u64,
     ignore_writes: bool,
+    ignore_page_fence: bool,
+}
+
+/// PERF-33 (E5): the mutation of the page fence: the loop of `predecode_block` (the end of the page
+/// of `rip`, the length limit, the role of each instruction) without its fence, so an instruction
+/// that needs a byte of the next page is taken.
+fn predecode_block_without_page_fence(
+    code: &mut Memory,
+    rip: u64,
+    context: AccessContext,
+) -> Vec<od_isa::long_decode::Instruction> {
+    let mut block = Vec::new();
+    let mut at = rip;
+    while block.len() < MAX_BLOCK_INSTRUCTIONS && at >> 12 == rip >> 12 {
+        let Ok(instruction) = od_isa::long_decode::decode(&mut *code, at, context) else {
+            break;
+        };
+        let Some(role) = fast_block_role(&instruction) else {
+            break;
+        };
+        block.push(instruction);
+        at = at.wrapping_add(u64::from(instruction.length));
+        if role == FastBlockRole::Terminator {
+            break;
+        }
+    }
+    block
 }
 
 impl BlockMemory {
@@ -411,6 +441,7 @@ impl BlockMemory {
             retired_from_blocks: 0,
             holds_failed: 0,
             ignore_writes: false,
+            ignore_page_fence: false,
         }
     }
 
@@ -441,7 +472,11 @@ impl GuestMemory for BlockMemory {
         let block = match self.blocks.get(&rip) {
             Some((held, block)) if *held == generation => block.clone(),
             _ => {
-                let built = predecode_block(&mut self.inner, rip, context, MAX_BLOCK_INSTRUCTIONS);
+                let built = if self.ignore_page_fence {
+                    predecode_block_without_page_fence(&mut self.inner, rip, context)
+                } else {
+                    predecode_block(&mut self.inner, rip, context, MAX_BLOCK_INSTRUCTIONS)
+                };
                 let block = (!built.is_empty()).then(|| DecodedBlock::from(built));
                 self.blocks.insert(rip, (generation, block.clone()));
                 block
@@ -851,4 +886,76 @@ fn a_store_into_the_running_block_ends_it_and_the_new_bytes_run() {
     let (_, _, _, stale, _) = run(true);
     assert_eq!(stale.gpr[0], 0x1111, "the mutation must be visible");
     assert_ne!(stale, reference.state);
+}
+
+/// PERF-33 (E5, step 3): the case of `a_store_into_the_running_block_ends_it_and_the_new_bytes_run`
+/// through `check_blocks`: the batched calls with blocks match one-instruction calls whether the
+/// boundary check lets every boundary pass or refuses every 1st, 3rd or 7th one.
+#[test]
+fn a_store_into_the_running_block_matches_at_every_refused_boundary() {
+    let mut program = vec![0xC6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x22]; // MOV BYTE [RIP+1], 0x22
+    program.extend([0xB8, 0x11, 0x11, 0x00, 0x00]); // MOV EAX, 0x1111
+    program.extend([0x01, 0xC3]); // ADD EBX, EAX
+    let stop_rip = 0x1000 + program.len() as u64;
+    let case = Case {
+        state: LongModeState {
+            rip: 0x1000,
+            rflags: 2,
+            ..LongModeState::default()
+        },
+        memory: Memory {
+            regions: vec![(0x1000, program)],
+        },
+        stop_rip,
+    };
+    check_blocks(&case, "smc at every boundary");
+}
+
+/// PERF-33 (E5, step 3): an instruction over the end of a page. `MOV BYTE [RIP+9], 0x99` at 0x1FF0
+/// writes the first byte of the next page, the last byte of the immediate of `MOV EDX, 0x44332211`
+/// at 0x1FFC. The block of the first page stops before the crossing instruction (the page fence),
+/// so the store, a write to the other page, does not touch the block, and the crossing instruction
+/// is decoded on the general path with the new byte: `check_blocks` matches one-instruction calls at
+/// every refused boundary. The mutation (no page fence) puts the crossing instruction into the
+/// block, decoded before the store, and its stale immediate runs.
+#[test]
+fn a_block_stops_before_an_instruction_over_the_page_end_at_every_refused_boundary() {
+    let mut program = vec![0xC6, 0x05, 0x09, 0x00, 0x00, 0x00, 0x99]; // 0x1FF0 MOV BYTE [RIP+9], 0x99
+    program.extend([0xB8, 0x11, 0x00, 0x00, 0x00]); // 0x1FF7 MOV EAX, 0x11
+    program.extend([0xBA, 0x11, 0x22, 0x33, 0x44]); // 0x1FFC MOV EDX, 0x44332211 (0x44 at 0x2000)
+    program.extend([0x01, 0xD3]); // 0x2001 ADD EBX, EDX
+    let stop_rip = 0x1FF0 + program.len() as u64;
+    let case = Case {
+        state: LongModeState {
+            rip: 0x1FF0,
+            rflags: 2,
+            ..LongModeState::default()
+        },
+        memory: Memory {
+            regions: vec![(0x1FF0, program)],
+        },
+        stop_rip,
+    };
+    check_blocks(&case, "page end");
+    let fast = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_fast_path();
+    let reference = one_instruction_reference(&case, &fast, "page end");
+    assert_eq!(
+        reference.exit,
+        Cpl0ProfileSetExit::Run(RunExit::StopAddress)
+    );
+    assert_eq!(reference.state.gpr[2], 0x9933_2211);
+    let blocks = fast.with_block_cache_prototype();
+    let run = |ignore_page_fence: bool| {
+        let mut state = admitted(&case.state);
+        let mut memory = BlockMemory::new(case.memory.clone());
+        memory.ignore_page_fence = ignore_page_fence;
+        run_batched_over(&case, &blocks, &mut state, &mut memory, None, "page end");
+        (state, memory)
+    };
+    let (state, memory) = run(false);
+    assert_eq!(state, reference.state);
+    // The store and MOV EAX ran from the block of the first page; ADD from the second page's.
+    assert_eq!(memory.retired_from_blocks, 3);
+    let (stale, _) = run(true);
+    assert_eq!(stale.gpr[2], 0x4433_2211, "the mutation must be visible");
 }

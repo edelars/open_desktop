@@ -3082,6 +3082,8 @@ fn run_cpl0_set_loop_impl<
     if let Some(blocks) = blocks {
         blocks.bind_memory(std::ptr::from_ref(bus.ram()) as usize);
     }
+    // PERF-33 (E5, step 4): `--block-cache-verify` (see `DecodedBlockCache::verify`).
+    let block_verify = blocks.is_some_and(DecodedBlockCache::verify);
     let (exit, page_fault, memory_error) = loop {
         let carried_boundary = carried.take();
         let stopped = match carried_boundary {
@@ -3378,8 +3380,10 @@ fn run_cpl0_set_loop_impl<
         );
         memory.capture_page_fault_trace = execution_observations.is_some();
         memory.descriptor_gate = split_gate;
-        memory.decoded.cache = decoded;
+        // PERF-33 (E5, step 4): the block check decodes every instruction from its bytes.
+        memory.decoded.cache = decoded.filter(|_| !block_verify);
         memory.decoded.blocks = blocks;
+        memory.decoded.verify = block_verify;
         memory.data_cache = data_cache;
         let run_config = RunConfig {
             instruction_budget: call_budget,
@@ -5508,6 +5512,12 @@ struct DecodedStep<'a> {
     /// PERF-31: the block the last `cached_block` answered, while it holds. It outlives the
     /// instruction boundaries of a batched call (`begin_batched_instruction` keeps it).
     active_block: Option<ActiveBlock>,
+    /// PERF-33 (E5, step 4): the block check of `--block-cache-verify` (the set loop hands the
+    /// decoded-instruction cache over to none of its instructions then, so every decode reads the
+    /// bytes): `remember_instruction` keeps the first decode of the instruction in `fresh`
+    /// instead, for [`GuestMemory::take_decoded_for_block_check`].
+    verify: bool,
+    fresh: Option<(u64, Instruction)>,
 }
 
 /// PERF-31: what a further instruction of the active block needs to be served from it: the page
@@ -6173,12 +6183,20 @@ impl<'a> PagedMovMemoryAdapter<'a> {
             BlockLookup::Block(block) => block,
             BlockLookup::Empty => return None,
             BlockLookup::Miss => {
-                let built = od_isa::predecoded_block::predecode_block(
-                    &mut FrameCode { ram, frame },
-                    rip,
-                    context,
-                    od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS,
-                );
+                let mut code = FrameCode { ram, frame };
+                let max_len = od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS;
+                // PERF-33 (E5): the test-only mutation of the page fence.
+                #[cfg(test)]
+                let built = if blocks.page_fence_mutated() {
+                    crate::decoded_block_cache::predecode_block_without_page_fence(
+                        &mut code, rip, context, max_len,
+                    )
+                } else {
+                    od_isa::predecoded_block::predecode_block(&mut code, rip, context, max_len)
+                };
+                #[cfg(not(test))]
+                let built =
+                    od_isa::predecoded_block::predecode_block(&mut code, rip, context, max_len);
                 let block = (!built.is_empty()).then(|| DecodedBlock::from(built));
                 blocks.insert(rip, context, page, block.clone());
                 block?
@@ -6561,7 +6579,17 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     }
 
     fn remember_instruction(&mut self, rip: u64, context: AccessContext, instruction: Instruction) {
+        if self.decoded.verify {
+            if self.decoded.fresh.is_none() {
+                self.decoded.fresh = Some((rip, instruction));
+            }
+            return;
+        }
         self.decoded_cache_remember(rip, context, instruction);
+    }
+
+    fn take_decoded_for_block_check(&mut self) -> Option<(u64, Instruction)> {
+        self.decoded.fresh.take()
     }
 
     fn cached_block(&mut self, rip: u64, context: AccessContext) -> Option<DecodedBlock> {

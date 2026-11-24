@@ -1978,6 +1978,8 @@ pub struct Cpl0ProfileSet<'a> {
     /// PERF-31 (ADR-0018, variant (a), prototype): batched calls run the fast path from the
     /// predecoded blocks of the memory (see [`crate::predecoded_block`]).
     block_cache: bool,
+    /// PERF-33 (E5, step 4): with `block_cache`, the blocks are checked instead of run from.
+    block_verify: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -2013,6 +2015,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             fast_path_verify: false,
             fast_path: false,
             block_cache: false,
+            block_verify: false,
         }
     }
 
@@ -2058,6 +2061,19 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// Off by default.
     pub const fn with_block_cache_prototype(mut self) -> Self {
         self.block_cache = true;
+        self
+    }
+
+    /// PERF-33 (E5, step 4): [`Self::with_block_cache_prototype`] in the block check mode (the
+    /// runner's `--block-cache-verify`): the batched call looks the blocks up and walks them as
+    /// usual, but runs every instruction through the general step with a fresh decode and compares
+    /// that decode with the one the block holds (see [`crate::predecoded_block`]); the first
+    /// difference ends the run with `RunExit::MemoryError(Backend(report))`. Under the same
+    /// conditions as the blocks (the fast path, no fast-path check, batched calls); the memory must
+    /// answer `GuestMemory::take_decoded_for_block_check`, or nothing is compared.
+    pub const fn with_block_cache_verify(mut self) -> Self {
+        self.block_cache = true;
+        self.block_verify = true;
         self
     }
 
@@ -4039,7 +4055,7 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_configured_with_profile_mode::<true, false, false, _>(
+    run_configured_with_profile_mode::<true, false, false, false, _>(
         state,
         memory,
         config,
@@ -34390,6 +34406,7 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
     let result = run_configured_checked(
         set.fast_path_verify,
         blocks,
+        blocks && set.block_verify,
         state,
         memory,
         config,
@@ -34611,7 +34628,7 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, false, false, _>(
+    run_configured_with_profile_mode::<false, false, false, false, _>(
         state,
         memory,
         config,
@@ -34629,6 +34646,7 @@ fn run_configured(
 fn run_configured_checked<M: GuestMemory>(
     verify: bool,
     blocks: bool,
+    block_verify: bool,
     state: &mut LongModeState,
     memory: &mut M,
     config: RunConfig,
@@ -34638,7 +34656,18 @@ fn run_configured_checked<M: GuestMemory>(
     batch: Option<BatchBoundary<'_, M>>,
 ) -> RunResult {
     if verify {
-        run_configured_with_profile_mode::<false, true, false, M>(
+        run_configured_with_profile_mode::<false, true, false, false, M>(
+            state,
+            memory,
+            config,
+            rflags_defined,
+            profiles,
+            runtime,
+            batch,
+        )
+    } else if block_verify {
+        // PERF-33 (E5, step 4): the instance that checks the blocks.
+        run_configured_with_profile_mode::<false, false, true, true, M>(
             state,
             memory,
             config,
@@ -34649,7 +34678,7 @@ fn run_configured_checked<M: GuestMemory>(
         )
     } else if blocks {
         // PERF-31 (ADR-0018, variant (a), prototype): the instance that runs from blocks.
-        run_configured_with_profile_mode::<false, false, true, M>(
+        run_configured_with_profile_mode::<false, false, true, false, M>(
             state,
             memory,
             config,
@@ -34659,7 +34688,7 @@ fn run_configured_checked<M: GuestMemory>(
             batch,
         )
     } else {
-        run_configured_with_profile_mode::<false, false, false, M>(
+        run_configured_with_profile_mode::<false, false, false, false, M>(
             state,
             memory,
             config,
@@ -34682,7 +34711,7 @@ pub fn run_with_fast_path_check(
     config: RunConfig,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, true, false, _>(
+    run_configured_with_profile_mode::<false, true, false, false, _>(
         state,
         memory,
         config,
@@ -35190,11 +35219,14 @@ fn step_with_optional_check<const NO_PROFILES: bool, const VERIFY: bool, M: Gues
 
 /// `BLOCKS` (PERF-31, ADR-0018, variant (a), prototype): the instance that runs the fast path from
 /// the predecoded blocks of the memory (see [`crate::predecoded_block`]); every other instance has
-/// no code for them.
+/// no code for them. `BLOCK_VERIFY` (PERF-33, E5, step 4; only with `BLOCKS`): the instance that
+/// checks the blocks instead: every instruction runs through the general step, and its fresh decode
+/// is compared with the block's.
 fn run_configured_with_profile_mode<
     const NO_PROFILES: bool,
     const VERIFY: bool,
     const BLOCKS: bool,
+    const BLOCK_VERIFY: bool,
     M: GuestMemory,
 >(
     state: &mut LongModeState,
@@ -35427,10 +35459,24 @@ fn run_configured_with_profile_mode<
             Some(RunExit::Halted)
         } else {
             let old_shadow = state.sti_shadow;
+            // PERF-33 (E5, step 4): the instance that checks the blocks only finds the instruction
+            // the block walk has for this RIP; the general step below runs it.
+            let block_check_rip = state.rip;
+            let block_expected = if BLOCK_VERIFY {
+                crate::predecoded_block::block_check_expect(
+                    &mut block_cursor,
+                    state,
+                    memory,
+                    config.context,
+                )
+            } else {
+                None
+            };
             // PERF-31: the instance with blocks runs the fast path from a block first; `None` (no
             // block, or the fast path refused, before any effect) leaves the instruction to the
             // general step below, as without blocks.
             let outcome = if BLOCKS
+                && !BLOCK_VERIFY
                 && let Some(outcome) = crate::predecoded_block::block_step(
                     &mut block_cursor,
                     state,
@@ -35474,6 +35520,25 @@ fn run_configured_with_profile_mode<
                     },
                 )
             };
+            // PERF-33 (E5, step 4): the fresh decode of the step against the block; the first
+            // divergence ends the run, its report in the exit and in
+            // `predecoded_block::take_block_check_divergence`.
+            if BLOCK_VERIFY
+                && let Some(report) = crate::predecoded_block::block_check_after(
+                    &mut block_cursor,
+                    block_expected,
+                    block_check_rip,
+                    &outcome,
+                    state,
+                    memory,
+                )
+            {
+                return RunResult {
+                    exit: RunExit::MemoryError(MemoryError::Backend(report)),
+                    instructions_executed: retired,
+                    rflags_defined,
+                };
+            }
             // PERF-22: the first divergence of the checked loop ends the run; the report is in
             // the exit and in `fast_path_check::take_divergence`.
             if VERIFY

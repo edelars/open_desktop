@@ -1812,9 +1812,41 @@ pub struct FirmwareUnifiedRun {
     pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
     /// The fast-path check of the run (PERF-22): `None` when it was not asked for.
     pub fast_path_check: Option<FastPathCheckReport>,
+    /// The block check of the run (PERF-33, E5, step 4, `--block-cache-verify`): `None` when it
+    /// was not asked for.
+    pub block_check: Option<BlockCheckReport>,
     /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
     /// over the life of the board's cache: `None` when it was not enabled.
     pub block_stats: Option<crate::DecodedBlockCacheStats>,
+}
+
+/// What the block check (PERF-33, E5, step 4) did in a unified run: the counters and the first
+/// divergence, which also ended the run (its exit is a `MemoryError::Backend` with the text of the
+/// divergence).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockCheckReport {
+    pub counters: od_isa::predecoded_block::BlockCheckCounters,
+    pub divergence: Option<BlockCheckDivergenceReport>,
+}
+
+/// The first divergence of the block check with the bytes at its RIP.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockCheckDivergenceReport {
+    pub divergence: od_isa::predecoded_block::BlockCheckDivergence,
+    /// The bytes at the RIP as a fetch would see them after the run (as many as the longer of the
+    /// two instructions; fewer when a byte does not translate or is not RAM).
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Display for BlockCheckDivergenceReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bytes: String = self
+            .bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        write!(f, "{} bytes={bytes}", self.divergence)
+    }
 }
 
 /// What the fast-path check (PERF-22, ADR-0017 section 5) did in a unified run: how many
@@ -2114,11 +2146,15 @@ pub fn run_firmware_unified_with_fast_path(
     let set = if fast_path { set.with_fast_path() } else { set };
     // PERF-31 (ADR-0018, variant (a), prototype): the board was asked for the predecoded block
     // cache; the set uses it only with the fast path, without the check, in batched calls.
-    let set = if board.block_cache_prototype() {
+    // PERF-33 (E5, step 4): or in the block check mode.
+    let set = if board.block_cache_verify() {
+        set.with_block_cache_verify()
+    } else if board.block_cache_prototype() {
         set.with_block_cache_prototype()
     } else {
         set
     };
+    let block_check = board.block_cache_verify() && !fast_path_verify && fast_path;
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board
@@ -2153,12 +2189,34 @@ pub fn run_firmware_unified_with_fast_path(
     if fast_path_verify {
         od_isa::fast_path_check::reset();
     }
+    if block_check {
+        od_isa::predecoded_block::reset_block_check();
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
     // The loop runs on this thread, so its counters are this thread's.
     let fast_path_check = fast_path_verify.then(|| FastPathCheckReport {
         counters: od_isa::fast_path_check::counters(),
         divergence: od_isa::fast_path_check::take_divergence(),
+    });
+    // PERF-33 (E5, step 4): the bytes of a divergence are read as a fetch would see them now (a
+    // read-only walk: no accessed or dirty bit, no cache), after the run stopped there.
+    let block_check = block_check.then(|| {
+        let counters = od_isa::predecoded_block::block_check_counters();
+        let divergence =
+            od_isa::predecoded_block::take_block_check_divergence().map(|divergence| {
+                let length = divergence
+                    .decoded
+                    .map_or(divergence.block.length, |decoded| {
+                        decoded.length.max(divergence.block.length)
+                    });
+                let (_, bytes, _) = board.fetch_view_2m(divergence.rip, usize::from(length));
+                BlockCheckDivergenceReport { divergence, bytes }
+            });
+        BlockCheckReport {
+            counters,
+            divergence,
+        }
     });
     let call_trace = board.take_call_trace();
     let op_histogram = board.take_op_histogram();
@@ -2297,6 +2355,7 @@ pub fn run_firmware_unified_with_fast_path(
         call_trace,
         op_histogram,
         fast_path_check,
+        block_check,
         block_stats: board.block_cache_stats(),
     })
 }

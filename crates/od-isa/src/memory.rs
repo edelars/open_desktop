@@ -282,6 +282,15 @@ pub trait GuestMemory {
     /// PERF-31: the instruction at `index` of the active block retired from the block (diagnostic
     /// counters only; `index` 0 starts a new run of a block). The default does nothing.
     fn block_retired(&mut self, _index: usize) {}
+
+    /// PERF-33 (E5, step 4): the block check (`Cpl0ProfileSet::with_block_cache_verify`) asks,
+    /// after every step, for the first instruction the decoder returned from the bytes during it, with
+    /// its RIP (a backend in that mode answers no [`Self::cached_instruction`] and keeps the first
+    /// [`Self::remember_instruction`] of the step instead), and forgets it. The default (no check)
+    /// has none. Wrappers do not forward this method.
+    fn take_decoded_for_block_check(&mut self) -> Option<(u64, crate::long_decode::Instruction)> {
+        None
+    }
     fn read(
         &mut self,
         address: u64,

@@ -26,10 +26,24 @@
 //! checks read only CR0, CR3, CR4, the activity and the STI shadow (and the fast path itself needs
 //! a clear shadow): they passed at the entry of the call, and the batch boundary ends the call as
 //! soon as any of them changes.
+//!
+//! PERF-33 (E5, step 4): the block check (`Cpl0ProfileSet::with_block_cache_verify`, the runner's
+//! `--block-cache-verify`). The loop looks the blocks up and walks them as above
+//! ([`block_check_expect`]), but runs every instruction through the general step, whose decode
+//! reads the bytes (the backend answers no decoded instruction in that mode), and then compares that
+//! fresh decode with the instruction the block holds for the RIP ([`block_check_after`]). The
+//! comparison reads nothing and changes no cache: the backend hands over the decode it already made
+//! ([`GuestMemory::take_decoded_for_block_check`]). The first difference ends the run with
+//! `RunExit::MemoryError(Backend(report))` and is kept for [`take_block_check_divergence`]; the
+//! counters are [`block_check_counters`] (thread-local, like those of `fast_path_check`). One
+//! difference to the run from blocks: the check cannot see a refusal of the fast path (the general
+//! step decides it inside), so the walk of a block goes on after such an instruction instead of
+//! looking up a new block at the next RIP; both compare the decode of the same bytes.
 
 use crate::execute::{StepOutcome, try_fast_step};
 use crate::long_decode::{self, DecodedBlock, Instruction, Operand, Operation};
 use crate::memory::{AccessContext, GuestMemory, MemoryError};
+use std::cell::RefCell;
 
 /// The longest block [`predecode_block`] builds.
 pub const MAX_BLOCK_INSTRUCTIONS: usize = 64;
@@ -209,6 +223,156 @@ pub(crate) fn block_step<M: GuestMemory>(
         _ => *cursor = None,
     }
     outcome
+}
+
+/// PERF-33 (E5, step 4): what the block check counted.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BlockCheckCounters {
+    /// Instructions a block held whose fresh decode was compared with it (and agreed, except the
+    /// one of a divergence).
+    pub compared: u64,
+    /// Instructions a block held that the step ended without decoding (a check before the decode,
+    /// a fetch error or fault): nothing to compare, and the walk of the block ends.
+    pub not_decoded: u64,
+    /// Fresh decodes that differ from the block (0 or 1: the first ends the run).
+    pub divergences: u64,
+}
+
+/// PERF-33 (E5, step 4): the first difference between a block and the fresh decode of the general
+/// step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockCheckDivergence {
+    /// The RIP of the instruction.
+    pub rip: u64,
+    /// Its index in the block and the length of the block.
+    pub index: usize,
+    pub block_len: usize,
+    /// The instruction the block holds for the RIP.
+    pub block: Instruction,
+    /// The fresh decode of the general step (`None`: the step retired the instruction without a
+    /// decode the check could see).
+    pub decoded: Option<Instruction>,
+}
+
+impl std::fmt::Display for BlockCheckDivergence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "block check divergence at rip=0x{:x} (instruction {} of a block of {}): block {:?}, fresh decode {:?}",
+            self.rip, self.index, self.block_len, self.block, self.decoded
+        )
+    }
+}
+
+thread_local! {
+    static BLOCK_CHECK: RefCell<(BlockCheckCounters, Option<BlockCheckDivergence>)> =
+        const { RefCell::new((BlockCheckCounters { compared: 0, not_decoded: 0, divergences: 0 }, None)) };
+}
+
+/// PERF-33 (E5, step 4): zero the counters of the block check of this thread and forget its
+/// divergence.
+pub fn reset_block_check() {
+    BLOCK_CHECK.with(|check| *check.borrow_mut() = Default::default());
+}
+
+/// PERF-33 (E5, step 4): the counters of the block check of this thread.
+pub fn block_check_counters() -> BlockCheckCounters {
+    BLOCK_CHECK.with(|check| check.borrow().0)
+}
+
+/// PERF-33 (E5, step 4): the divergence that ended the last checked run of this thread, if any.
+pub fn take_block_check_divergence() -> Option<BlockCheckDivergence> {
+    BLOCK_CHECK.with(|check| check.borrow_mut().1.take())
+}
+
+/// PERF-33 (E5, step 4): before the step of the checked loop, the instruction (and its index) the
+/// block walk has for `state.rip`: the next one of the current block when it is at `state.rip`
+/// and the block still holds, else the first one of the block the memory has for `state.rip`
+/// (exactly the choice of [`block_step`]); `None` (the cursor dropped) when there is none. Nothing
+/// runs.
+#[inline(always)]
+pub(crate) fn block_check_expect<M: GuestMemory>(
+    cursor: &mut Option<BlockCursor>,
+    state: &crate::LongModeState,
+    memory: &mut M,
+    context: AccessContext,
+) -> Option<(usize, Instruction)> {
+    let continues = cursor
+        .as_ref()
+        .is_some_and(|current| current.rip == state.rip && current.next < current.block.len())
+        && memory.block_holds();
+    if !continues {
+        *cursor = None;
+        let block = memory.cached_block(state.rip, context)?;
+        *cursor = Some(BlockCursor {
+            block,
+            next: 0,
+            rip: state.rip,
+        });
+    }
+    let current = cursor.as_ref()?;
+    Some((current.next, current.block[current.next]))
+}
+
+/// PERF-33 (E5, step 4): after the general step of the instruction at `rip` (`outcome`), the
+/// comparison of its fresh decode with `expected` (from [`block_check_expect`]) and the walk of
+/// the block as [`block_step`] makes it; the fresh decode is taken from the memory either way. The
+/// report of a divergence (also kept for [`take_block_check_divergence`]), else `None`.
+#[inline(always)]
+pub(crate) fn block_check_after<M: GuestMemory>(
+    cursor: &mut Option<BlockCursor>,
+    expected: Option<(usize, Instruction)>,
+    rip: u64,
+    outcome: &Result<StepOutcome, MemoryError>,
+    state: &crate::LongModeState,
+    memory: &mut M,
+) -> Option<String> {
+    let fresh = memory.take_decoded_for_block_check();
+    let (index, block) = expected?;
+    let decoded = fresh
+        .filter(|(at, _)| *at == rip)
+        .map(|(_, instruction)| instruction);
+    let retired = matches!(outcome, Ok(StepOutcome::Advanced | StepOutcome::Branched));
+    if decoded.is_none() && !retired {
+        *cursor = None;
+        BLOCK_CHECK.with(|check| check.borrow_mut().0.not_decoded += 1);
+        return None;
+    }
+    if decoded != Some(block) {
+        let block_len = cursor.as_ref().map_or(0, |current| current.block.len());
+        *cursor = None;
+        let divergence = BlockCheckDivergence {
+            rip,
+            index,
+            block_len,
+            block,
+            decoded,
+        };
+        let report = divergence.to_string();
+        BLOCK_CHECK.with(|check| {
+            let mut check = check.borrow_mut();
+            check.0.compared += 1;
+            check.0.divergences += 1;
+            check.1 = Some(divergence);
+        });
+        return Some(report);
+    }
+    BLOCK_CHECK.with(|check| check.borrow_mut().0.compared += 1);
+    match outcome {
+        Ok(StepOutcome::Advanced) => {
+            if let Some(current) = cursor.as_mut() {
+                current.next = index + 1;
+                current.rip = state.rip;
+            }
+            memory.block_retired(index);
+        }
+        Ok(StepOutcome::Branched) => {
+            *cursor = None;
+            memory.block_retired(index);
+        }
+        _ => *cursor = None,
+    }
+    None
 }
 
 #[cfg(test)]

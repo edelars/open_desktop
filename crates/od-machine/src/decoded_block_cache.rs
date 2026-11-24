@@ -22,6 +22,10 @@
 //! for the runner's `--block-stats` ([`DecodedBlockCache::enable_stats`]), and a debug build
 //! (the tests, [`BLOCK_CACHE_COUNTED`]) counts from the start. A cache that does not count writes
 //! no counter: every update is behind one test of a plain `bool` field.
+//!
+//! PERF-33 (E5): the tests drop each source of the invalidation on its own ([`BlockMutations`],
+//! test builds only) to prove it is needed; `--block-cache-verify` ([`DecodedBlockCache::verify`])
+//! checks every decode of a block against a fresh decode of the general step.
 
 use crate::physical_memory::RamCodePage;
 use od_isa::long_decode::DecodedBlock;
@@ -159,11 +163,47 @@ pub(crate) struct DecodedBlockCache {
     /// under `&mut self`, so the hot path reads a plain field.
     counted: bool,
     counters: Counters,
-    /// Test-only mutation switch: a cache that ignores its invalidation (the page generation at the
-    /// lookup and inside a block, the fetch cache drops inside a block), for the tests that prove
-    /// the invalidation is needed.
+    /// PERF-33 (E5, step 4): the runner's `--block-cache-verify`: the set loop looks blocks up and
+    /// walks them as usual, but runs every instruction through the general step with a fresh decode
+    /// and compares that decode with the one the block holds. Set only under `&mut self`.
+    verify: bool,
+    /// Test-only mutation switches (PERF-33, E5): each drops one source of the invalidation, for the
+    /// tests that prove it is needed. A release build has none of them.
     #[cfg(test)]
-    ignore_invalidation: Cell<bool>,
+    mutations: Cell<BlockMutations>,
+}
+
+/// PERF-33 (E5, step 1): the test-only mutations of the block cache, one per source of its
+/// invalidation. Each one, alone, makes the cache ignore that source.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BlockMutations {
+    /// (a) The page generation at the lookup: a stale entry hits.
+    pub(crate) lookup_generation: bool,
+    /// (b) The page generation inside an active block (`block_holds`).
+    pub(crate) holds_generation: bool,
+    /// (c) The count of fetch cache drops inside an active block (`block_holds`).
+    pub(crate) holds_fetch_drops: bool,
+    /// (d) The epoch: a translation context change of the guest flushes nothing.
+    pub(crate) epoch: bool,
+    /// (e) The page fence of the build (`PageFence` of `predecode_block`): an instruction that
+    /// needs a byte past the page of the first RIP is taken, its bytes read from the same frame.
+    pub(crate) page_fence: bool,
+    /// (f) `reset` (the board reset, the snapshot restore, another memory) empties nothing.
+    pub(crate) reset: bool,
+}
+
+#[cfg(test)]
+impl BlockMutations {
+    /// The mutation of PERF-31: every check of the page generations and the fetch cache drops.
+    pub(crate) const INVALIDATION: Self = Self {
+        lookup_generation: true,
+        holds_generation: true,
+        holds_fetch_drops: true,
+        epoch: false,
+        page_fence: false,
+        reset: false,
+    };
 }
 
 impl Default for DecodedBlockCache {
@@ -186,8 +226,9 @@ impl DecodedBlockCache {
             run: Cell::new(0),
             counted: BLOCK_CACHE_COUNTED,
             counters: Counters::default(),
+            verify: false,
             #[cfg(test)]
-            ignore_invalidation: Cell::new(false),
+            mutations: Cell::new(BlockMutations::default()),
         }
     }
 
@@ -212,6 +253,18 @@ impl DecodedBlockCache {
         self.counted
     }
 
+    /// PERF-33 (E5, step 4): the set loop checks the blocks instead of running from them (the
+    /// runner's `--block-cache-verify`, see [`Self::verify`]).
+    pub(crate) fn enable_verify(&mut self) {
+        self.verify = true;
+    }
+
+    /// PERF-33 (E5, step 4): whether the set loop checks the blocks (every instruction runs through
+    /// the general step with a fresh decode, compared with the decode of the block).
+    pub(crate) fn verify(&self) -> bool {
+        self.verify
+    }
+
     /// The counters, with the run still open counted as ended (all zero when the cache does not
     /// count).
     pub(crate) fn stats(&self) -> DecodedBlockCacheStats {
@@ -221,7 +274,11 @@ impl DecodedBlockCache {
 
     /// Empties the table (the board reset and the snapshot restore call this). The counters stay.
     pub(crate) fn reset(&self) {
-        if self.live.get() != 0 {
+        #[cfg(test)]
+        let skip = self.mutations.get().reset;
+        #[cfg(not(test))]
+        let skip = false;
+        if !skip && self.live.get() != 0 {
             self.table
                 .borrow_mut()
                 .iter_mut()
@@ -250,7 +307,13 @@ impl DecodedBlockCache {
     /// A translation context change of the guest: every entry is dropped (in O(1): the entries of
     /// an older epoch never hit and are replaced in place).
     pub(crate) fn flush(&self) {
-        self.epoch.set(self.epoch.get() + 1);
+        #[cfg(test)]
+        let skip = self.mutations.get().epoch;
+        #[cfg(not(test))]
+        let skip = false;
+        if !skip {
+            self.epoch.set(self.epoch.get() + 1);
+        }
         if self.counted {
             add(&self.counters.flushes, 1);
         }
@@ -265,7 +328,7 @@ impl DecodedBlockCache {
     #[inline(always)]
     fn generation_holds(&self, held: u64, now: u64) -> bool {
         #[cfg(test)]
-        if self.ignore_invalidation.get() {
+        if self.mutations.get().lookup_generation {
             return true;
         }
         held == now
@@ -276,10 +339,15 @@ impl DecodedBlockCache {
     #[inline(always)]
     pub(crate) fn block_holds(&self, generation: (u64, u64), fetch_drops: (u64, u64)) -> bool {
         #[cfg(test)]
-        if self.ignore_invalidation.get() {
-            return true;
+        {
+            let mutations = self.mutations.get();
+            (mutations.holds_generation || generation.0 == generation.1)
+                && (mutations.holds_fetch_drops || fetch_drops.0 == fetch_drops.1)
         }
-        generation.0 == generation.1 && fetch_drops.0 == fetch_drops.1
+        #[cfg(not(test))]
+        {
+            generation.0 == generation.1 && fetch_drops.0 == fetch_drops.1
+        }
     }
 
     /// The entry for exactly this key (`page` carries the generation the caller read before it
@@ -406,11 +474,48 @@ impl DecodedBlockCache {
         add(&counters.run_lengths[bucket], 1);
     }
 
-    /// Test-only: the mutation of the invalidation (see `ignore_invalidation`).
+    /// Test-only (PERF-33, E5): the cache drops the sources of its invalidation `mutations` names.
     #[cfg(test)]
-    pub(crate) fn ignore_invalidation_for_test(&self) {
-        self.ignore_invalidation.set(true);
+    pub(crate) fn mutate_for_test(&self, mutations: BlockMutations) {
+        self.mutations.set(mutations);
     }
+
+    /// Test-only (PERF-33, E5): whether the build ignores the page fence ([`BlockMutations::page_fence`]).
+    #[cfg(test)]
+    pub(crate) fn page_fence_mutated(&self) -> bool {
+        self.mutations.get().page_fence
+    }
+}
+
+/// Test-only (PERF-33, E5, mutation (e)): `od_isa::predecoded_block::predecode_block` without its
+/// page fence: the same loop (the end of the page of `rip`, `MAX_BLOCK_INSTRUCTIONS`, the role of
+/// each instruction), but a fetch past the page is not refused, so an instruction that needs a byte
+/// of the next page is taken with whatever `code` answers for it.
+#[cfg(test)]
+pub(crate) fn predecode_block_without_page_fence<M: od_isa::memory::GuestMemory>(
+    code: &mut M,
+    rip: u64,
+    context: AccessContext,
+    max_len: usize,
+) -> Vec<od_isa::long_decode::Instruction> {
+    use od_isa::predecoded_block::{FastBlockRole, fast_block_role};
+    let page = rip >> 12;
+    let mut block = Vec::new();
+    let mut at = rip;
+    while block.len() < max_len && at >> 12 == page {
+        let Ok(instruction) = od_isa::long_decode::decode(&mut *code, at, context) else {
+            break;
+        };
+        let Some(role) = fast_block_role(&instruction) else {
+            break;
+        };
+        block.push(instruction);
+        at = at.wrapping_add(u64::from(instruction.length));
+        if role == FastBlockRole::Terminator {
+            break;
+        }
+    }
+    block
 }
 
 #[cfg(test)]
