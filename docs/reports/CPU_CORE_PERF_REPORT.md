@@ -730,3 +730,23 @@ codegen-units = 1
 - Ревью Opus high: блокеров и major нет; minor (комментарии, проверка RDX в тесте, doc) исправлены.
 
 Оговорка: Г5 — совокупный срез (АЛУ с памятью, стек, call/ret), замеры не по каждой операции отдельно.
+
+### 7.19. PERF-13 — промежуточный профиль на HEAD 0cfe874 (2026-11-24)
+
+Профили K6 на текущем коде (с кешем декодирования, быстрым путём Г1–Г5 за флагом, но без флага по умолчанию): окно прошивки (300 млн, локально) и окно ядра (3,2 млрд, M1 Pro). Файлы: `head0cfe-fw-profile.json`, `head0cfe-kernel-profile.json`.
+
+| Функция | Ядро (3,2 млрд), «своё» | Прошивка (300 млн), «своё» |
+|---|---|---|
+| `od_isa::execute::step_configured_with_profile_mode` | 44,55 % | 40,32 % |
+| `paged_memory_adapter::run_cpl0_set_loop_impl` | 13,46 % | 12,85 % |
+| `page_walk::walk_long64_4k_with_writer` | 6,05 % | 5,03 % |
+| `execute::run_configured_with_profile_mode` | 4,65 % | 4,30 % |
+| `_platform_memmove` | 4,34 % | 4,28 % |
+| `PhysicalMemory::load_u64` | 4,08 % | 5,03 % |
+| `page_walk::access_long64_4k_internal_windowed` | 2,41 % | 1,99 % |
+| `DecodedInstructionCache::lookup` | 0,96 % | 3,58 % |
+
+Выводы:
+- Критерий PERF-25 (сумма «своего» `run_cpl0_set_loop`, `run_with_cpl0_profile_set_and_pio`, `run_configured_with_profile_mode` и `_platform_memmove` выше 8 %): ядро 22,5 %, прошивка ~21 % — задача нужна.
+- Обход таблиц страниц (`walk_long64_4k`, `load_u64`, `access_long64_4k`) вместе 12–15 % — кандидат PERF-11 (кеш трансляции данных по ADR-0016).
+- Шаг интерпретатора (`step_configured_with_profile_mode`) 40–45 % — дальнейший быстрый путь (Г6+ или переписывание шага) по гистограмме.
