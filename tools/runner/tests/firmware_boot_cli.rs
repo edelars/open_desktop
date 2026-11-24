@@ -605,12 +605,8 @@ fn block_stats_are_reported_only_with_the_flag() {
     rom[0x30..0x34].fill(0);
     let crc = crc32(&rom);
     rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
-    let blocks = [
-        "--cpu-loop",
-        "unified",
-        "--fast-path",
-        "--block-cache-prototype",
-    ];
+    // PERF-33 (E1): the blocks are the default with `--fast-path`.
+    let blocks = ["--cpu-loop", "unified", "--fast-path"];
     let plain = invoke_with_args(&rom, "10000", &blocks);
     let counted = invoke_with_args(&rom, "10000", &[&blocks[..], &["--block-stats"]].concat());
     for run in [&plain, &counted] {
@@ -637,6 +633,94 @@ fn block_stats_are_reported_only_with_the_flag() {
     }
     assert_eq!(left, counted_report, "the field is the only difference");
     for run in [plain, counted] {
+        fs::remove_file(&run.com1).unwrap();
+    }
+}
+
+/// PERF-33 (E1): with `--fast-path` the unified loop runs the block cache by default (the counters
+/// show block hits), `--no-block-cache` turns it off and is refused without `--fast-path`, and the
+/// report of the default run equals the report of the run without blocks.
+#[test]
+fn the_fast_path_runs_the_block_cache_by_default_and_the_report_is_the_same_without_it() {
+    #[rustfmt::skip]
+    let code = [
+        0xB9, 0x32, 0x00, 0x00, 0x00, // mov ecx, 50
+        0x48, 0x01, 0xCA,             // L: add rdx, rcx
+        0x48, 0x89, 0xD0,             // mov rax, rdx
+        0xFF, 0xC9,                   // dec ecx
+        0x75, 0xF6,                   // jnz L
+        0xF4,                         // hlt
+    ];
+    let mut rom = image(&code);
+    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let fast = ["--cpu-loop", "unified", "--fast-path"];
+    let default = invoke_with_args(&rom, "10000", &fast);
+    let without = invoke_with_args(&rom, "10000", &[&fast[..], &["--no-block-cache"]].concat());
+    let counted = invoke_with_args(&rom, "10000", &[&fast[..], &["--block-stats"]].concat());
+    for run in [&default, &without, &counted] {
+        assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
+    }
+    let mut counted_report = report(&counted);
+    let stats = counted_report["unified"]
+        .as_object_mut()
+        .unwrap()
+        .remove("block_stats")
+        .expect("--fast-path runs the block cache by default");
+    assert!(stats["hits"].as_u64().unwrap() > 0, "{stats}");
+    assert!(
+        stats["retired_from_blocks"].as_u64().unwrap() > 0,
+        "{stats}"
+    );
+    let (mut default_report, mut without_report) = (report(&default), report(&without));
+    assert_eq!(default_report["exit"], "halted");
+    assert!(default_report["unified"].get("block_stats").is_none());
+    // The COM1 path differs between invocations by construction.
+    for report in [
+        &mut default_report,
+        &mut without_report,
+        &mut counted_report,
+    ] {
+        report.as_object_mut().unwrap().remove("com1_out");
+    }
+    assert_eq!(default_report, without_report, "the blocks change no field");
+    assert_eq!(default_report, counted_report);
+    // Without blocks there is nothing to count; without the fast path there are no blocks to
+    // turn off: both are refused when the arguments are parsed.
+    for (extra, error) in [
+        (
+            &[
+                "--cpu-loop",
+                "unified",
+                "--fast-path",
+                "--no-block-cache",
+                "--block-stats",
+            ][..],
+            "--block-stats requires the block cache",
+        ),
+        (
+            &["--cpu-loop", "unified", "--no-block-cache"][..],
+            "--no-block-cache requires --cpu-loop unified and --fast-path",
+        ),
+    ] {
+        let refused = invoke_with_args(&rom, "10000", extra);
+        assert_eq!(
+            refused.output.status.code(),
+            Some(3),
+            "{extra:?}: {:?}",
+            refused.output
+        );
+        let result = report(&refused);
+        assert_eq!(result["status"], "invalid_input");
+        assert!(
+            result["error"]["detail"].as_str().unwrap().contains(error),
+            "{result}"
+        );
+        assert!(!refused.com1.exists());
+    }
+    for run in [default, without, counted] {
         fs::remove_file(&run.com1).unwrap();
     }
 }

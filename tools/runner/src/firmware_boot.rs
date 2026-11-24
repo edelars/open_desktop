@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--data-cache-prototype] [--block-cache-prototype] [--block-stats] [--block-cache-verify] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--block-stats] [--block-cache-verify] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -37,7 +37,9 @@ write protected: the guest sees NSATTR bit 0 and every Write is refused with Nam
 Protected (docs/specs/NVME_DEVICE.md 14.6); the file is never modified.\n\
 \x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
 board is dropped, so the writer lock (LOCK_EX) is released between the two boots \
-(limitation until S8-23).";
+(limitation until S8-23).\n\
+\x20\x20--fast-path (unified loop): the predecoded block cache is on by default (ADR-0018); \
+--no-block-cache turns it off, and --fast-path-verify runs without it (the check is a diagnostic mode).";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -106,14 +108,15 @@ struct Options {
     /// PERF-11: `--data-cache-prototype` (unified loop only): same-page qword reads go through the
     /// data translation cache prototype (ADR-0016). Without it the run is as before.
     data_cache_prototype: bool,
-    /// PERF-31: `--block-cache-prototype` (unified loop with `--fast-path` only): batched calls run
-    /// the fast path from predecoded straight-line blocks (ADR-0018, variant (a)). Without it the
-    /// run is as before.
-    block_cache_prototype: bool,
-    /// PERF-33 (E2): `--block-stats` (with `--block-cache-prototype` only): the block cache counts
+    /// PERF-31, PERF-33 (E1): whether batched calls run the fast path from predecoded straight-line
+    /// blocks (ADR-0018, variant (a)). On by default with `--fast-path` in the unified loop; off with
+    /// `--no-block-cache`, with `--fast-path-verify` (a diagnostic mode) and without `--fast-path`.
+    /// The blocks change only where the decode comes from: the run is the same with and without them.
+    block_cache: bool,
+    /// PERF-33 (E2): `--block-stats` (with the block cache only): the block cache counts
     /// and the report gets `unified.block_stats`. Without it a release build writes no counter.
     block_stats: bool,
-    /// PERF-33 (E5, step 4): `--block-cache-verify` (with `--block-cache-prototype` only, not with
+    /// PERF-33 (E5, step 4): `--block-cache-verify` (with the block cache only, not with
     /// `--fast-path-verify`): the blocks are looked up and walked as usual, but every instruction
     /// runs through the general step with a fresh decode, which is compared with the block's; the
     /// report gets `block_cache_check`, and the first divergence fails the run (exit code 5).
@@ -399,7 +402,7 @@ pub fn run(args: &[String]) -> ExitCode {
         fast_path_verify: options.fast_path_verify,
         fast_path: options.fast_path,
         data_cache_prototype: options.data_cache_prototype,
-        block_cache_prototype: options.block_cache_prototype,
+        block_cache: options.block_cache,
         block_stats: options.block_stats,
         block_cache_verify: options.block_cache_verify,
         journal_config: journal_config(&options),
@@ -1004,7 +1007,7 @@ struct Diagnostics {
     /// PERF-11: the unified loop serves same-page qword reads through the data translation cache.
     data_cache_prototype: bool,
     /// PERF-31: the unified loop runs the fast path from predecoded blocks.
-    block_cache_prototype: bool,
+    block_cache: bool,
     /// PERF-33: the block cache counts; the report gets `unified.block_stats`.
     block_stats: bool,
     /// PERF-33 (E5): the unified loop checks the decode of every block instruction.
@@ -1464,8 +1467,8 @@ fn boot(
     let xhci = board.xhci();
     let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
-    // PERF-31: `unified.block_stats`, only with `--block-stats` (PERF-33; it needs
-    // `--block-cache-prototype`).
+    // PERF-31: `unified.block_stats`, only with `--block-stats` (PERF-33; it needs the block
+    // cache).
     let mut unified_block_stats: Option<Value> = None;
     let mut op_histogram_result: Option<Result<Value, String>> = None;
     let mut fast_path_check_result: Option<Result<Value, String>> = None;
@@ -1481,7 +1484,7 @@ fn boot(
         if diagnostics.block_stats {
             board.enable_block_stats();
         }
-        if diagnostics.block_cache_prototype {
+        if diagnostics.block_cache {
             board.enable_block_cache_prototype();
         }
         if diagnostics.block_cache_verify {
@@ -1849,7 +1852,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut fast_path_verify = false;
     let mut fast_path = false;
     let mut data_cache_prototype = false;
-    let mut block_cache_prototype = false;
+    let mut no_block_cache = false;
     let mut block_stats = false;
     let mut block_cache_verify = false;
     let mut index = 0;
@@ -1880,8 +1883,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             index += 1;
             continue;
         }
-        if name == "--block-cache-prototype" && !block_cache_prototype {
-            block_cache_prototype = true;
+        if name == "--no-block-cache" && !no_block_cache {
+            no_block_cache = true;
             index += 1;
             continue;
         }
@@ -2040,30 +2043,31 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if data_cache_prototype && !unified {
         return Err("--data-cache-prototype requires --cpu-loop unified".to_owned());
     }
+    // PERF-33 (E1): with `--fast-path` the unified loop runs the predecoded block cache by
+    // default; `--no-block-cache` turns it off (the control of the measurements).
+    if no_block_cache && !(unified && fast_path) {
+        return Err("--no-block-cache requires --cpu-loop unified and --fast-path".to_owned());
+    }
     // PERF-33 (E5, step 4): the block check runs with the blocks only, and the fast-path check
     // runs without them.
     if block_cache_verify && fast_path_verify {
         return Err("--block-cache-verify does not combine with --fast-path-verify".to_owned());
     }
-    if block_cache_verify && !block_cache_prototype {
+    // The fast-path check is a diagnostic mode (ADR-0018, section 4): `--fast-path
+    // --fast-path-verify` runs without blocks, and that is no error.
+    let block_cache = unified && fast_path && !no_block_cache && !fast_path_verify;
+    if block_cache_verify && !block_cache {
         return Err(
-            "--block-cache-verify requires --cpu-loop unified, --fast-path and --block-cache-prototype"
+            "--block-cache-verify requires the block cache (--cpu-loop unified and --fast-path, \
+             without --no-block-cache)"
                 .to_owned(),
         );
     }
-    // PERF-31: the blocks run the fast path, which the check replaces by the general path.
-    if block_cache_prototype && !(unified && fast_path) {
-        return Err(
-            "--block-cache-prototype requires --cpu-loop unified and --fast-path".to_owned(),
-        );
-    }
-    if block_cache_prototype && fast_path_verify {
-        return Err("--block-cache-prototype does not combine with --fast-path-verify".to_owned());
-    }
     // PERF-33: the counters are those of the block cache.
-    if block_stats && !block_cache_prototype {
+    if block_stats && !block_cache {
         return Err(
-            "--block-stats requires --cpu-loop unified, --fast-path and --block-cache-prototype"
+            "--block-stats requires the block cache (--cpu-loop unified and --fast-path, without \
+             --no-block-cache or --fast-path-verify)"
                 .to_owned(),
         );
     }
@@ -2209,7 +2213,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         fast_path_verify,
         fast_path,
         data_cache_prototype,
-        block_cache_prototype,
+        block_cache,
         block_stats,
         block_cache_verify,
     })
@@ -2728,9 +2732,9 @@ mod tests {
         assert!(parse(&given).is_err());
     }
 
-    #[test]
-    fn block_cache_prototype_needs_the_unified_loop_and_the_fast_path_and_is_off_by_default() {
-        let base = args(&[
+    /// The required arguments of the unified loop, then `extra`.
+    fn unified_with(extra: &[&str]) -> Vec<String> {
+        let mut given = args(&[
             "--image",
             "rom.bin",
             "--com1-out",
@@ -2740,45 +2744,108 @@ mod tests {
             "--cpu-loop",
             "unified",
         ]);
-        assert!(!parse(&base).unwrap().block_cache_prototype);
-        let mut given = base.clone();
-        given.extend(args(&["--block-cache-prototype"]));
+        given.extend(args(extra));
+        given
+    }
+
+    /// PERF-33 (E1): with `--fast-path` the unified loop runs the block cache by default;
+    /// `--no-block-cache` turns it off, `--fast-path-verify` runs without it (no error), and
+    /// without `--fast-path` there are no blocks.
+    #[test]
+    fn the_block_cache_is_on_by_default_with_the_fast_path_and_off_with_no_block_cache() {
+        let firmware_loop = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+        ]);
+        assert!(!parse(&firmware_loop).unwrap().block_cache);
+        assert!(!parse(&unified_with(&[])).unwrap().block_cache);
+        for extra in [&["--data-cache-prototype"][..], &["--fast-path-verify"][..]] {
+            assert!(
+                !parse(&unified_with(extra)).unwrap().block_cache,
+                "{extra:?}"
+            );
+        }
+        let options = parse(&unified_with(&["--fast-path"])).unwrap();
+        assert!(options.block_cache && options.fast_path);
+        let options = parse(&unified_with(&["--fast-path", "--data-cache-prototype"])).unwrap();
+        assert!(options.block_cache && options.data_cache_prototype);
+        // The control of the measurements: the same fast path without blocks.
+        let options = parse(&unified_with(&["--fast-path", "--no-block-cache"])).unwrap();
+        assert!(!options.block_cache && options.fast_path);
+        let options = parse(&unified_with(&[
+            "--no-block-cache",
+            "--fast-path",
+            "--data-cache-prototype",
+        ]))
+        .unwrap();
+        assert!(!options.block_cache && options.fast_path && options.data_cache_prototype);
+        // The fast-path check is a diagnostic mode: no blocks, and no error.
+        for extra in [
+            &["--fast-path", "--fast-path-verify"][..],
+            &["--fast-path-verify", "--fast-path"][..],
+            &["--fast-path", "--fast-path-verify", "--no-block-cache"][..],
+        ] {
+            let options = parse(&unified_with(extra)).unwrap();
+            assert!(
+                !options.block_cache && options.fast_path && options.fast_path_verify,
+                "{extra:?}"
+            );
+        }
+        // `--no-block-cache` without the fast path is a parse error, in either loop.
+        let message = "--no-block-cache requires --cpu-loop unified and --fast-path";
+        for extra in [
+            &[][..],
+            &["--fast-path-verify"][..],
+            &["--data-cache-prototype"][..],
+        ] {
+            let mut given = unified_with(extra);
+            given.extend(args(&["--no-block-cache"]));
+            assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
+        }
+        let mut plain = firmware_loop.clone();
+        plain.extend(args(&["--no-block-cache"]));
+        assert!(parse(&plain).err().unwrap().contains(message));
+        plain.extend(args(&["--cpu-loop", "firmware"]));
+        assert!(parse(&plain).err().unwrap().contains(message));
+        // Taken once.
         assert!(
-            parse(&given)
-                .err()
-                .unwrap()
-                .contains("--block-cache-prototype requires --cpu-loop unified and --fast-path")
+            parse(&unified_with(&[
+                "--fast-path",
+                "--no-block-cache",
+                "--no-block-cache"
+            ]))
+            .is_err()
         );
-        given.extend(args(&["--fast-path"]));
-        let options = parse(&given).unwrap();
-        assert!(options.block_cache_prototype && options.fast_path);
-        let mut checked = given.clone();
-        checked.extend(args(&["--fast-path-verify"]));
-        assert!(parse(&checked).is_err());
-        given.extend(args(&["--block-cache-prototype"]));
-        assert!(parse(&given).is_err());
+    }
+
+    /// PERF-33 (E1): `--block-cache-prototype` is gone (the blocks are the default with
+    /// `--fast-path`); the parser refuses it like any unknown flag.
+    #[test]
+    fn the_removed_block_cache_prototype_flag_is_refused() {
+        for extra in [
+            &["--block-cache-prototype"][..],
+            &["--fast-path", "--block-cache-prototype"][..],
+        ] {
+            assert!(parse(&unified_with(extra)).is_err(), "{extra:?}");
+        }
     }
 
     #[test]
-    fn block_stats_need_the_block_cache_prototype_are_taken_once_and_are_off_by_default() {
-        let base = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-            "--cpu-loop",
-            "unified",
-        ]);
-        let mut blocks = base.clone();
-        blocks.extend(args(&["--fast-path", "--block-cache-prototype"]));
-        assert!(!parse(&blocks).unwrap().block_stats);
-        let message =
-            "--block-stats requires --cpu-loop unified, --fast-path and --block-cache-prototype";
-        for extra in [&[][..], &["--fast-path"][..]] {
-            let mut given = base.clone();
-            given.extend(args(extra));
+    fn block_stats_need_the_block_cache_are_taken_once_and_are_off_by_default() {
+        assert!(!parse(&unified_with(&["--fast-path"])).unwrap().block_stats);
+        let message = "--block-stats requires the block cache (--cpu-loop unified and --fast-path, \
+                       without --no-block-cache or --fast-path-verify)";
+        for extra in [
+            &[][..],
+            &["--fast-path", "--no-block-cache"][..],
+            &["--fast-path", "--fast-path-verify"][..],
+            &["--fast-path-verify"][..],
+        ] {
+            let mut given = unified_with(extra);
             given.extend(args(&["--block-stats"]));
             assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
         }
@@ -2794,35 +2861,33 @@ mod tests {
         assert!(parse(&firmware_loop).err().unwrap().contains(message));
         firmware_loop.extend(args(&["--cpu-loop", "firmware"]));
         assert!(parse(&firmware_loop).is_err());
+        // With the default blocks.
+        let mut blocks = unified_with(&["--fast-path"]);
         blocks.extend(args(&["--block-stats"]));
         let options = parse(&blocks).unwrap();
-        assert!(options.block_stats && options.block_cache_prototype && options.fast_path);
+        assert!(options.block_stats && options.block_cache && options.fast_path);
         blocks.extend(args(&["--block-stats"]));
         assert!(parse(&blocks).is_err());
     }
 
-    /// PERF-33 (E5, step 4): `--block-cache-verify` needs the blocks, does not combine with
-    /// `--fast-path-verify` (as `--block-cache-prototype` does not), is taken once and is off by
-    /// default.
+    /// PERF-33 (E5, step 4; E1): `--block-cache-verify` needs the blocks (refused with
+    /// `--no-block-cache` and without `--fast-path`), does not combine with `--fast-path-verify`,
+    /// is taken once and is off by default.
     #[test]
     fn block_cache_verify_needs_the_blocks_and_does_not_combine_with_the_fast_path_check() {
-        let base = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-            "--cpu-loop",
-            "unified",
-        ]);
-        let mut blocks = base.clone();
-        blocks.extend(args(&["--fast-path", "--block-cache-prototype"]));
-        assert!(!parse(&blocks).unwrap().block_cache_verify);
-        let message = "--block-cache-verify requires --cpu-loop unified, --fast-path and --block-cache-prototype";
-        for extra in [&[][..], &["--fast-path"][..]] {
-            let mut given = base.clone();
-            given.extend(args(extra));
+        assert!(
+            !parse(&unified_with(&["--fast-path"]))
+                .unwrap()
+                .block_cache_verify
+        );
+        let message = "--block-cache-verify requires the block cache (--cpu-loop unified and \
+                       --fast-path, without --no-block-cache)";
+        for extra in [
+            &[][..],
+            &["--data-cache-prototype"][..],
+            &["--fast-path", "--no-block-cache"][..],
+        ] {
+            let mut given = unified_with(extra);
             given.extend(args(&["--block-cache-verify"]));
             assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
         }
@@ -2836,29 +2901,22 @@ mod tests {
             "--block-cache-verify",
         ]);
         assert!(parse(&firmware_loop).err().unwrap().contains(message));
-        let mut checked = blocks.clone();
-        checked.extend(args(&["--block-cache-verify", "--fast-path-verify"]));
-        assert!(
-            parse(&checked)
-                .err()
-                .unwrap()
-                .contains("--block-cache-verify does not combine with --fast-path-verify")
-        );
-        let mut fast_check = base.clone();
-        fast_check.extend(args(&[
-            "--fast-path",
-            "--fast-path-verify",
-            "--block-cache-verify",
-        ]));
-        assert!(
-            parse(&fast_check)
-                .err()
-                .unwrap()
-                .contains("--block-cache-verify does not combine with --fast-path-verify")
-        );
+        for extra in [
+            &["--fast-path", "--block-cache-verify", "--fast-path-verify"][..],
+            &["--fast-path-verify", "--block-cache-verify"][..],
+        ] {
+            assert!(
+                parse(&unified_with(extra))
+                    .err()
+                    .unwrap()
+                    .contains("--block-cache-verify does not combine with --fast-path-verify"),
+                "{extra:?}"
+            );
+        }
+        let mut blocks = unified_with(&["--fast-path"]);
         blocks.extend(args(&["--block-cache-verify", "--block-stats"]));
         let options = parse(&blocks).unwrap();
-        assert!(options.block_cache_verify && options.block_cache_prototype && options.block_stats);
+        assert!(options.block_cache_verify && options.block_cache && options.block_stats);
         blocks.extend(args(&["--block-cache-verify"]));
         assert!(parse(&blocks).is_err());
     }

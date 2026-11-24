@@ -2839,7 +2839,9 @@ impl LoadedFirmwareBoard {
 
     /// PERF-31 (ADR-0018, variant (a), prototype): the unified set loop of the next runs executes
     /// the fast path from predecoded straight-line blocks (see `od_isa::predecoded_block`) when the
-    /// run has the fast path and batched calls; the cache lives between quanta. Off by default; a
+    /// run has the fast path and batched calls; the cache lives between quanta. Off by default on
+    /// the board (its tests opt in); the runner's `boot-firmware` calls it by default with
+    /// `--fast-path` in the unified loop (PERF-33, E1; `--no-block-cache` keeps it off). A
     /// diagnostic run (a sweep, the fetch cache report, an execution observation) and a run with the
     /// fast-path check never use it.
     pub fn enable_block_cache_prototype(&mut self) {
