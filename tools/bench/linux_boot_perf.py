@@ -139,7 +139,7 @@ def load_inputs() -> dict:
 
 
 def runner_argv(inputs: dict, budget: int, *, snapshot: bool, fast_path: bool = False,
-                data_cache: bool = False) -> list:
+                data_cache: bool = False, block_cache: bool = False) -> list:
     paths = inputs["paths"]
     argv = [str(runner_path()), "boot-firmware", "--image", paths["rom"], "--nvme-image", paths["esp"],
             "--budget", str(budget), "--com1-out", str(COM1), "--nvram-in", paths["seed"],
@@ -151,6 +151,9 @@ def runner_argv(inputs: dict, budget: int, *, snapshot: bool, fast_path: bool = 
     if data_cache:
         # PERF-11: the data translation cache prototype (ADR-0016); the golden record must not change.
         argv += ["--data-cache-prototype"]
+    if block_cache:
+        # PERF-31 variant (a): the block cache prototype (ADR-0018); needs --fast-path, unified only.
+        argv += ["--block-cache-prototype"]
     return argv
 
 
@@ -176,7 +179,8 @@ def cmd_record(args: argparse.Namespace) -> int:
     inputs = load_inputs()
     clean_run_dir()
     argv = runner_argv(inputs, args.budget, snapshot=not args.no_snapshot, fast_path=args.fast_path,
-                       data_cache=args.data_cache_prototype)
+                       data_cache=args.data_cache_prototype,
+                       block_cache=args.block_cache_prototype)
     started = time.monotonic()
     proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
     wall = time.monotonic() - started
@@ -200,7 +204,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "budget": args.budget,
         "runner_exit_code": proc.returncode,
         "fast_path": bool(args.fast_path),
-        "data_cache_prototype": bool(args.data_cache_prototype),
+        "data_cache_prototype": bool(args.data_cache_prototype), "block_cache_prototype": bool(args.block_cache_prototype),
         "runner_stdout": report,
         "com1_sha256": digest_if_exists(COM1),
         "nvram_sha256": digest_if_exists(NVRAM_OUT),
@@ -317,7 +321,8 @@ def cmd_measure(args: argparse.Namespace) -> int:
         time_out.unlink(missing_ok=True)
         argv = ["/usr/bin/time", "-l", "-o", str(time_out)] + runner_argv(inputs, args.budget, snapshot=False,
                                                                        fast_path=args.fast_path,
-                                                                       data_cache=args.data_cache_prototype)
+                                                                       data_cache=args.data_cache_prototype,
+                       block_cache=args.block_cache_prototype)
         started = time.monotonic()
         proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
         wall = time.monotonic() - started
@@ -355,7 +360,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         "schema": "od-cpu-core-perf-measure-v1",
         "label": args.label, "budget": args.budget, "runs_requested": args.runs,
         "priority": priority, "preliminary": preliminary, "fast_path": bool(args.fast_path),
-        "data_cache_prototype": bool(args.data_cache_prototype),
+        "data_cache_prototype": bool(args.data_cache_prototype), "block_cache_prototype": bool(args.block_cache_prototype),
         "inputs": inputs["inputs"], "runner_sha256": sha256_file(runner_path()),
         "build_profile": inputs.get("build_profile"), "host": bench.host_fingerprint(),
         "fingerprint": fingerprint, "runs": runs, "summary": summary, **git_state(),
@@ -829,7 +834,8 @@ def cmd_profile(args: argparse.Namespace) -> int:
     out_path.unlink(missing_ok=True)
     stdout_file, stderr_file = RUN_DIR / "profile-runner.stdout", RUN_DIR / "profile-runner.stderr"
     argv = runner_argv(inputs, args.budget, snapshot=False, fast_path=args.fast_path,
-                       data_cache=args.data_cache_prototype)
+                       data_cache=args.data_cache_prototype,
+                       block_cache=args.block_cache_prototype)
     started = time.monotonic()
     sample_rc, sample_message, sampled_from, runner_alive_after = None, "", None, None
     with open(stdout_file, "wb") as out, open(stderr_file, "wb") as err:
@@ -882,7 +888,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     result = {
         "schema": "od-cpu-core-perf-profile-v1",
         "label": args.label, "budget": args.budget, "fast_path": bool(args.fast_path),
-        "data_cache_prototype": bool(args.data_cache_prototype), "at_s": args.at, "seconds": args.seconds,
+        "data_cache_prototype": bool(args.data_cache_prototype), "block_cache_prototype": bool(args.block_cache_prototype), "at_s": args.at, "seconds": args.seconds,
         "sampled_from_s": round(sampled_from, 3) if sampled_from is not None else None,
         "sample_exit_code": sample_rc, "runner_alive_after_sample": runner_alive_after,
         "runner_exit_code": proc.returncode, "runner_json": runner_json, "wall_s": round(wall, 3),
@@ -937,6 +943,8 @@ def main() -> int:
     record.add_argument("--fast-path", action="store_true", help="pass --fast-path to the runner (unified loop only)")
     record.add_argument("--data-cache-prototype", action="store_true",
                         help="pass --data-cache-prototype to the runner (PERF-11, unified loop only)")
+    record.add_argument("--block-cache-prototype", action="store_true",
+        help="pass --block-cache-prototype to the runner (PERF-31, unified loop, needs --fast-path)")
     record.set_defaults(func=cmd_record)
     compare = sub.add_parser("compare", help="compare two records")
     compare.add_argument("a", type=Path)
@@ -951,6 +959,8 @@ def main() -> int:
     measure.add_argument("--fast-path", action="store_true", help="pass --fast-path to the runner (unified loop only)")
     measure.add_argument("--data-cache-prototype", action="store_true",
                          help="pass --data-cache-prototype to the runner (PERF-11, unified loop only)")
+    measure.add_argument("--block-cache-prototype", action="store_true",
+        help="pass --block-cache-prototype to the runner (PERF-31, unified loop, needs --fast-path)")
     measure.set_defaults(func=cmd_measure)
     profile = sub.add_parser("profile", help="one run under /usr/bin/sample; self/inclusive tables (K6)")
     profile.add_argument("--budget", type=int, help="instruction budget (required unless --from-sample)")
@@ -964,6 +974,8 @@ def main() -> int:
     profile.add_argument("--fast-path", action="store_true", help="pass --fast-path to the runner (unified loop only)")
     profile.add_argument("--data-cache-prototype", action="store_true",
                          help="pass --data-cache-prototype to the runner (PERF-11, unified loop only)")
+    profile.add_argument("--block-cache-prototype", action="store_true",
+        help="pass --block-cache-prototype to the runner (PERF-31, unified loop, needs --fast-path)")
     profile.set_defaults(func=cmd_profile)
     args = parser.parse_args()
     if args.command == "profile" and args.from_sample is not None:

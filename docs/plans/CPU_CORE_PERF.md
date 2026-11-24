@@ -97,11 +97,11 @@
 | Область | Факт | Следствие |
 |---|---|---|
 | Сборка | В корневом [Cargo.toml](../../Cargo.toml) нет секции `[profile.release]`; каталога `.cargo/` нет. Значит действуют умолчания Cargo: межкрейтовый LTO выключен, `codegen-units = 16`. | PERF-03 |
-| Цикл кванта | `run_cpl0_set_loop_impl` ([paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs), строка 2692) на каждой итерации: вызывает `stop()`, `deliver_pending_irq`, создаёт `SetPortWatch` и адаптер (`set_loop_adapter`, строка 3547), вызывает `run_with_cpl0_profile_set_and_pio` с `instruction_budget: 1`. | PERF-04, PERF-05, PERF-25 |
+| Цикл кванта | `run_cpl0_set_loop_impl` ([paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); номера строк здесь — снимок, искать по имени функции: на коммите `83bdeac` — строка 2891) на каждой итерации: вызывает `stop()`, `deliver_pending_irq`, создаёт `SetPortWatch` и адаптер (`set_loop_adapter`; на `83bdeac` — строка 4054), вызывает `run_with_cpl0_profile_set_and_pio` с `instruction_budget: 1`. | PERF-04, PERF-05, PERF-25 |
 | Замыкание `stop` | В `run_linux_boot_cpl0_set_with_post_iret_index` ([firmware_board.rs](../../crates/od-machine/src/firmware_board.rs), рядом со строкой 3808) проверяет `uart.holding_occupied()`, `nvme.doorbell_pending()`, `xhci.wakeup_pending()`, `acpi_pm.stop_request()`, `acpi_pm.timer_tick_pending()`, `pit.port_tick_pending()` и атомарные флаги (`rdtsc_tick`, `host_stop`). | PERF-04 |
-| Опрос IRQ | `deliver_pending_irq` (`paged_memory_adapter.rs`, строка 4034) сначала вызывает `hook.source.pending_vector()` и только потом смотрит `RFLAGS.IF`. `PitPicIrqSource::pending_vector` делает `catch_up()` под мьютексом, `UartPicIrqSource` — ещё и `sample()`. Часы платы внутри кванта не идут. | PERF-05 |
+| Опрос IRQ | `deliver_pending_irq` (`paged_memory_adapter.rs`; на `83bdeac` — строка 4559) сначала вызывает `hook.source.pending_vector()` и только потом смотрит `RFLAGS.IF`. `PitPicIrqSource::pending_vector` делает `catch_up()` под мьютексом, `UartPicIrqSource` — ещё и `sample()`. Часы платы внутри кванта не идут. | PERF-05 |
 | Допуск | `run_cpl0_profile_set_inner` ([execute.rs](../../crates/od-isa/src/execute.rs), строка 33945) на каждый вызов: проверки состояния, `set.syscall_cells_present()`, `set.windows_msr_admission()`, два `profile.query(1, 0)`, сборка `ExecutionProfiles` (≈150 полей), копирование SSE-состояния из ячейки в `state.sse` и обратно. | PERF-06, PERF-25 |
-| Кеш выборки | `run_cpl0_set_paged_2m_ram_observed_with_sweep` (`paged_memory_adapter.rs`, строка 2403) создаёт новый `FetchTranslationCache` на каждый квант. Постоянный вариант (`FetchTranslationCache::persistent`, S4-14i) существует, этот путь его не использует. В кеше 4 слота (`SLOTS`). | PERF-07, PERF-10 |
+| Кеш выборки | `run_cpl0_set_paged_2m_ram_observed_with_sweep` (`paged_memory_adapter.rs`; на `83bdeac` — строка 2522) создаёт новый `FetchTranslationCache` на каждый квант. Постоянный вариант (`FetchTranslationCache::persistent`, S4-14i) существует, этот путь его не использует. В кеше 4 слота (`SLOTS`). | PERF-07, PERF-10 |
 | Декодирование | Шаг вызывает `long_decode::decode(memory, state.rip, context)` (`execute.rs`, строка 41537). `Fetch::byte` ([long_decode.rs](../../crates/od-isa/src/long_decode.rs), строка 3975) берёт каждый байт отдельным `memory.fetch`. Кеша декодированных инструкций нет. `Instruction` — `Copy`. | PERF-10 |
 | Данные | Чтение и запись данных идут через `PagedMovMemoryAdapter::access_with` и каждый раз делают полный обход таблиц. Кеша трансляции данных нет; [translation_probe_cache.rs](../../crates/od-machine/src/translation_probe_cache.rs) — эксперимент на одну запись, «not a production TLB». | PERF-11, PERF-12 |
 | Шаг | `step_configured_with_profile_mode` занимает строки 41191–66866 `execute.rs`: разбор ≈150 полей профилей, затем ≈240 последовательных `if` верхнего уровня и несколько `match instruction.operation`. | PERF-20…PERF-24 |
@@ -113,7 +113,7 @@
 
 1. Перед работой прочитать [AGENTS.md](../../AGENTS.md), [crates/AGENTS.md](../../crates/AGENTS.md), [tools/AGENTS.md](../../tools/AGENTS.md), [карту проекта](../PROJECT_LAYOUT.md) и разделы 0–6 этого плана.
 2. Поиск по коду начинать с `graphify query`; `rg` — для простого текстового поиска по уже найденным файлам.
-3. Код пишет Claude Sonnet (усилие `high`). Независимое ревью и все решения о семантике и выборе варианта — Claude Opus (усилие `high`). Пользователя спрашивать только о доступах (например, `sudo` для приоритета).
+3. Код пишет Claude Sonnet (усилие `high`). Независимое ревью и все решения о семантике и выборе варианта — Claude Opus (усилие `high`). Пользователя спрашивать только о доступах (например, `sudo` для приоритета). Для ступени E (PERF-33) это отменено указанием владельца 2026-11-23: код там пишет Claude Opus (`high`) — раздел 3.2 [плана ступени E](CPU_CORE_PERF_BLOCKS.md).
 4. Работа ведётся в `main` напрямую: без веток и отдельных worktree. Одна задача — один коммит в `main` после ревью. В одном checkout одновременно ведётся одна задача; двумя задачами нельзя одновременно менять `execute.rs` или `paged_memory_adapter.rs`.
 5. Полный набор тестов (K2) запускать один раз на окончательном коде задачи. После правок только комментариев и документов не перезапускать.
 6. Не добавлять новых crates, внешних зависимостей, feature-флагов «на будущее» и общих фреймворков. Новый модуль — только там, где задача его называет.
@@ -569,7 +569,8 @@
 
 ### PERF-33. План ступени E
 
-- [ ] Не начато. Blocked до принятого ADR PERF-31.
+- [ ] План написан, на ревью; не отмечено до ревью PERF-40.
+- **Текущий статус (2026-11-24):** план ступени E написан, на ревью (задача не закрыта) — [CPU_CORE_PERF_BLOCKS.md](CPU_CORE_PERF_BLOCKS.md) (задачи E1–E6, порядок E2 → E3 → E5 → E1 → E4 → E6) по ADR-0018 «Итог» (вариант (а) принят); первое ревью плана: замечания учтены (см. раздел 10 плана ступени E), итог повторного ревью — после него; K5 — 4 `ERROR`, как до правки.
 - **Где:** `docs/plans/CPU_CORE_PERF_BLOCKS.md` (новый), формат этого документа.
 - **Сделать:**
   1. Расписать выбранный вариант на задачи с полями Где/Сделать/Проверить/Готово/Не делать, с теми же проверками K1–K6 и сверочным режимом PERF-22 как обязательным доказательством.
