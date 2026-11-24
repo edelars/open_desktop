@@ -195,6 +195,8 @@ K1–K6 — как в [разделе 5 плана линии](CPU_CORE_PERF.md#
 
 ### E1. Решение о включении блоков по умолчанию при `--fast-path`
 
+- **Результат (2026-11-24): принято, включено.** Блоки по умолчанию при --fast-path; --no-block-cache — контроль. K3200 локально +88,7 %, M1 +81,6 %, выводы совпадают, golden без флагов — MATCH. Отчёт 7.30.
+
 - [ ] Не начато.
 - **Кто:** код — Claude Opus (high); ревью — Claude Opus (high), только чтение, до прогонов; решение по числам — Claude Opus (high).
 - **Где:** `tools/runner/src/firmware_boot.rs` (флаги), `crates/od-machine/src/firmware_board.rs` (включение блоков вместе с быстрым путём), `tools/bench/linux_boot_perf.py` (флаги), `docs/specs/CLI.md` (раздел 9: `--fast-path`, `--no-block-cache`), тесты runner (`mod tests` в `tools/runner/src/firmware_boot.rs` или `tools/runner/tests/firmware_boot_cli.rs`), `docs/testing/BENCHMARKS.md` (раздел скрипта, флаги), ADR-0018 (строка «Статус»), отчёт линии.

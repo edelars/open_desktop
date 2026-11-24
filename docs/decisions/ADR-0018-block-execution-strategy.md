@@ -4,7 +4,7 @@
 
 **Задача:** [PERF-31](../plans/CPU_CORE_PERF.md#perf-31-решение-о-стратегии-блочного-исполнения) линии [CPU_CORE_PERF](../plans/CPU_CORE_PERF.md); вход — [PERF-32](../plans/CPU_CORE_PERF.md#perf-32-какую-долю-загрузки-покрывает-существующий-jit) (отчёт линии, раздел 7.22); следующая задача — PERF-33 (план ступени E).
 
-**Статус:** принято (вариант а) с оговорками. Прототип варианта (а) измерен (раздел «Итог»); флаг `--block-cache-prototype` по умолчанию выключен до задачи E1 плана ступени E.
+**Статус:** принято (вариант а). Блоки включены по умолчанию при --fast-path (E1, отчёт 7.30); флаг --block-cache-prototype удалён, --no-block-cache выключает. Замеры: K3200 +88,7 % локально, +81,6 % на M1.
 
 **Код, на который ссылается документ:** HEAD `2e2d68f`. «PMA» — [paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); «DIC» — [decoded_instruction_cache.rs](../../crates/od-machine/src/decoded_instruction_cache.rs); «JC» — [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md).
 
