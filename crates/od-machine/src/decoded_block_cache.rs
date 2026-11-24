@@ -18,15 +18,25 @@
 //! (another memory, a board reset and a snapshot restore empty it); a translation context change
 //! of the guest (`MOV CR3`, an EFER write) flushes it in O(1) (an epoch). The table is direct-mapped
 //! and allocated on the first insert. The counters ([`DecodedBlockCacheStats`]) are the diagnostic
-//! of ADR-0018, section 5 (M1).
+//! of ADR-0018, section 5 (M1). They count only when asked for (PERF-33, E2): the board turns them on
+//! for the runner's `--block-stats` ([`DecodedBlockCache::enable_stats`]), and a debug build
+//! (the tests, [`BLOCK_CACHE_COUNTED`]) counts from the start. A cache that does not count writes
+//! no counter: every update is behind one test of a plain `bool` field.
 
 use crate::physical_memory::RamCodePage;
 use od_isa::long_decode::DecodedBlock;
 use od_isa::memory::AccessContext;
 use std::cell::{Cell, RefCell};
 
-/// The default size of the table.
-pub(crate) const DEFAULT_DECODED_BLOCK_SLOTS: usize = 1 << 14;
+/// Whether a new [`DecodedBlockCache`] counts before [`DecodedBlockCache::enable_stats`] (debug
+/// builds: the tests read the counters), by the pattern of `DATA_CACHE_COUNTED`. In a release
+/// build only `--block-stats` turns them on.
+pub const BLOCK_CACHE_COUNTED: bool = cfg!(debug_assertions);
+
+/// The default size of the table: 2^13 slots (PERF-33, E2 step 5: with blocks of up to
+/// `MAX_BLOCK_INSTRUCTIONS` = 64 the memory is bounded by 38 404 096 bytes, under 64 MiB; 2^14
+/// slots gave 76 808 192 bytes).
+pub(crate) const DEFAULT_DECODED_BLOCK_SLOTS: usize = 1 << 13;
 
 /// The buckets of [`DecodedBlockCacheStats::run_lengths`]: the lower bound of each.
 pub const BLOCK_RUN_LENGTH_BUCKETS: [u64; 7] = [1, 2, 3, 4, 8, 16, 32];
@@ -82,6 +92,52 @@ pub struct DecodedBlockCacheStats {
     pub run_lengths: [u64; 7],
 }
 
+/// The counters in place: one `Cell` each, so that a count is one add with no borrow flag to check
+/// and set (the `RefCell` of PERF-31 did both at every count).
+#[derive(Default)]
+struct Counters {
+    lookups: Cell<u64>,
+    hits: Cell<u64>,
+    empty_hits: Cell<u64>,
+    misses: Cell<u64>,
+    stale: Cell<u64>,
+    built_blocks: Cell<u64>,
+    built_instructions: Cell<u64>,
+    flushes: Cell<u64>,
+    resets: Cell<u64>,
+    holds_failed: Cell<u64>,
+    runs: Cell<u64>,
+    retired: Cell<u64>,
+    retired_in_runs_of_two_or_more: Cell<u64>,
+    run_lengths: [Cell<u64>; BLOCK_RUN_LENGTH_BUCKETS.len()],
+}
+
+#[inline(always)]
+fn add(counter: &Cell<u64>, amount: u64) {
+    counter.set(counter.get() + amount);
+}
+
+impl Counters {
+    fn snapshot(&self) -> DecodedBlockCacheStats {
+        DecodedBlockCacheStats {
+            lookups: self.lookups.get(),
+            hits: self.hits.get(),
+            empty_hits: self.empty_hits.get(),
+            misses: self.misses.get(),
+            stale: self.stale.get(),
+            built_blocks: self.built_blocks.get(),
+            built_instructions: self.built_instructions.get(),
+            flushes: self.flushes.get(),
+            resets: self.resets.get(),
+            holds_failed: self.holds_failed.get(),
+            runs: self.runs.get(),
+            retired: self.retired.get(),
+            retired_in_runs_of_two_or_more: self.retired_in_runs_of_two_or_more.get(),
+            run_lengths: self.run_lengths.each_ref().map(Cell::get),
+        }
+    }
+}
+
 /// The answer of [`DecodedBlockCache::lookup`].
 pub(crate) enum BlockLookup {
     Block(DecodedBlock),
@@ -96,10 +152,13 @@ pub(crate) struct DecodedBlockCache {
     live: Cell<usize>,
     memory: Cell<usize>,
     epoch: Cell<u64>,
-    /// The instructions retired so far by the current run (0: none open).
+    /// The instructions retired so far by the current run (0: none open); kept only while
+    /// `counted`.
     run: Cell<u64>,
-    /// Updated in place (a `Cell` would copy the whole struct at every count).
-    stats: RefCell<DecodedBlockCacheStats>,
+    /// Whether the counters count (see [`BLOCK_CACHE_COUNTED`], [`Self::enable_stats`]). Set only
+    /// under `&mut self`, so the hot path reads a plain field.
+    counted: bool,
+    counters: Counters,
     /// Test-only mutation switch: a cache that ignores its invalidation (the page generation at the
     /// lookup and inside a block, the fetch cache drops inside a block), for the tests that prove
     /// the invalidation is needed.
@@ -125,7 +184,8 @@ impl DecodedBlockCache {
             memory: Cell::new(0),
             epoch: Cell::new(0),
             run: Cell::new(0),
-            stats: RefCell::new(DecodedBlockCacheStats::default()),
+            counted: BLOCK_CACHE_COUNTED,
+            counters: Counters::default(),
             #[cfg(test)]
             ignore_invalidation: Cell::new(false),
         }
@@ -135,15 +195,28 @@ impl DecodedBlockCache {
         1usize << (64 - self.shift)
     }
 
-    /// The counters, with the run still open counted as ended.
-    pub(crate) fn stats(&self) -> DecodedBlockCacheStats {
-        self.close_run();
-        *self.stats.borrow()
+    /// PERF-33 (E2): the counters count from now on (the runner's `--block-stats`).
+    pub(crate) fn enable_stats(&mut self) {
+        self.counted = true;
     }
 
+    /// Test-only: a cache that does not count, as a release build without `--block-stats`.
+    #[cfg(test)]
+    pub(crate) fn disable_stats_for_test(&mut self) {
+        self.counted = false;
+    }
+
+    /// Whether the counters count.
     #[inline(always)]
-    fn count(&self, update: impl FnOnce(&mut DecodedBlockCacheStats)) {
-        update(&mut self.stats.borrow_mut());
+    pub(crate) fn counted(&self) -> bool {
+        self.counted
+    }
+
+    /// The counters, with the run still open counted as ended (all zero when the cache does not
+    /// count).
+    pub(crate) fn stats(&self) -> DecodedBlockCacheStats {
+        self.close_run();
+        self.counters.snapshot()
     }
 
     /// Empties the table (the board reset and the snapshot restore call this). The counters stay.
@@ -156,7 +229,9 @@ impl DecodedBlockCache {
             self.live.set(0);
         }
         self.memory.set(0);
-        self.count(|stats| stats.resets += 1);
+        if self.counted {
+            add(&self.counters.resets, 1);
+        }
     }
 
     /// Ties the cache to the memory of the run that is about to start (`identity` is the address
@@ -176,7 +251,9 @@ impl DecodedBlockCache {
     /// an older epoch never hit and are replaced in place).
     pub(crate) fn flush(&self) {
         self.epoch.set(self.epoch.get() + 1);
-        self.count(|stats| stats.flushes += 1);
+        if self.counted {
+            add(&self.counters.flushes, 1);
+        }
     }
 
     fn index(&self, region: usize, offset: usize) -> usize {
@@ -233,21 +310,27 @@ impl DecodedBlockCache {
                             None => BlockLookup::Empty,
                         }
                     } else {
-                        self.count(|stats| stats.stale += 1);
+                        if self.counted {
+                            add(&self.counters.stale, 1);
+                        }
                         BlockLookup::Miss
                     }
                 }
                 _ => BlockLookup::Miss,
             }
         };
-        self.count(|stats| {
-            stats.lookups += 1;
-            match found {
-                BlockLookup::Block(_) => stats.hits += 1,
-                BlockLookup::Empty => stats.empty_hits += 1,
-                BlockLookup::Miss => stats.misses += 1,
-            }
-        });
+        if self.counted {
+            let counters = &self.counters;
+            add(&counters.lookups, 1);
+            add(
+                match found {
+                    BlockLookup::Block(_) => &counters.hits,
+                    BlockLookup::Empty => &counters.empty_hits,
+                    BlockLookup::Miss => &counters.misses,
+                },
+                1,
+            );
+        }
         found
     }
 
@@ -260,12 +343,11 @@ impl DecodedBlockCache {
         page: RamCodePage,
         block: Option<DecodedBlock>,
     ) {
-        if let Some(block) = &block {
-            let len = block.len() as u64;
-            self.count(|stats| {
-                stats.built_blocks += 1;
-                stats.built_instructions += len;
-            });
+        if self.counted
+            && let Some(block) = &block
+        {
+            add(&self.counters.built_blocks, 1);
+            add(&self.counters.built_instructions, block.len() as u64);
         }
         let mut table = self.table.borrow_mut();
         if table.is_empty() {
@@ -289,6 +371,9 @@ impl DecodedBlockCache {
     /// The instruction at `index` of a block retired from it; `index` 0 starts a new run.
     #[inline(always)]
     pub(crate) fn note_retired(&self, index: usize) {
+        if !self.counted {
+            return;
+        }
         if index == 0 {
             self.close_run();
         }
@@ -296,8 +381,11 @@ impl DecodedBlockCache {
     }
 
     /// A run ended because the block no longer held.
+    #[inline(always)]
     pub(crate) fn note_holds_failed(&self) {
-        self.count(|stats| stats.holds_failed += 1);
+        if self.counted {
+            add(&self.counters.holds_failed, 1);
+        }
     }
 
     fn close_run(&self) {
@@ -309,14 +397,13 @@ impl DecodedBlockCache {
             .iter()
             .rposition(|low| length >= *low)
             .expect("a run retired at least one");
-        self.count(|stats| {
-            stats.runs += 1;
-            stats.retired += length;
-            if length >= 2 {
-                stats.retired_in_runs_of_two_or_more += length;
-            }
-            stats.run_lengths[bucket] += 1;
-        });
+        let counters = &self.counters;
+        add(&counters.runs, 1);
+        add(&counters.retired, length);
+        if length >= 2 {
+            add(&counters.retired_in_runs_of_two_or_more, length);
+        }
+        add(&counters.run_lengths[bucket], 1);
     }
 
     /// Test-only: the mutation of the invalidation (see `ignore_invalidation`).
@@ -386,6 +473,80 @@ mod tests {
         cache.reset();
         assert_eq!(hit(&cache, 0x10, page(0x10, 1)), None);
         assert_eq!(cache.stats().resets, 2);
+    }
+
+    /// PERF-33 (E2): a cache that does not count (a release build without `--block-stats`) keeps
+    /// every counter at zero through every operation that counts, and behaves the same; turned on,
+    /// it counts from then on.
+    #[test]
+    fn a_cache_that_does_not_count_writes_no_counter() {
+        let mut cache = DecodedBlockCache::new(16);
+        cache.disable_stats_for_test();
+        assert!(!cache.counted());
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let exercise = |cache: &DecodedBlockCache| {
+            cache.bind_memory(0x1000);
+            assert_eq!(hit(cache, 0x10, page(0x10, 1)), None);
+            cache.insert(0x10, ring0, page(0x10, 1), Some(block(2)));
+            assert_eq!(hit(cache, 0x10, page(0x10, 1)), Some(2));
+            assert_eq!(hit(cache, 0x10, page(0x10, 2)), None, "stale");
+            cache.insert(0x20, ring0, page(0x20, 1), None);
+            assert_eq!(hit(cache, 0x20, page(0x20, 1)), Some(0));
+            cache.note_retired(0);
+            cache.note_retired(1);
+            cache.note_holds_failed();
+            cache.flush();
+            cache.reset();
+        };
+        exercise(&cache);
+        assert_eq!(cache.stats(), DecodedBlockCacheStats::default());
+        assert_eq!(cache.run.get(), 0, "no run is kept either");
+        cache.enable_stats();
+        exercise(&cache);
+        let stats = cache.stats();
+        assert_eq!(
+            (
+                stats.lookups,
+                stats.hits,
+                stats.empty_hits,
+                stats.misses,
+                stats.stale
+            ),
+            (4, 1, 1, 2, 1),
+            "{stats:?}"
+        );
+        assert_eq!((stats.built_blocks, stats.built_instructions), (1, 2));
+        assert_eq!((stats.runs, stats.retired, stats.holds_failed), (1, 2, 1));
+        assert_eq!((stats.flushes, stats.resets), (1, 1));
+    }
+
+    /// PERF-33 (E2, step 5): the memory of the table. The size of `Instruction` is written here as
+    /// a constant so that a growth of the type shows; the bound of the table follows from it:
+    /// every slot full with a block of `MAX_BLOCK_INSTRUCTIONS`, and it stays under 64 MiB.
+    #[test]
+    fn the_memory_of_the_table_is_bounded() {
+        use od_isa::long_decode::Instruction;
+        use od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS;
+        const INSTRUCTION_BYTES: usize = 72;
+        const SLOT_BYTES: usize = 64;
+        // 2^13 × 64 + 2^13 × (16 + 64 × 72).
+        const BOUND_BYTES: usize = 38_404_096;
+        let instruction = std::mem::size_of::<Instruction>();
+        let slot = std::mem::size_of::<Option<Entry>>();
+        // An `Arc<[T]>` allocation: the two counts, then the elements.
+        let block_header = 2 * std::mem::size_of::<usize>();
+        let slots = DEFAULT_DECODED_BLOCK_SLOTS;
+        let table = slots * slot;
+        let blocks = slots * (block_header + MAX_BLOCK_INSTRUCTIONS * instruction);
+        println!(
+            "size_of::<Instruction>() = {instruction}, size_of::<Option<Entry>>() = {slot}, \
+             table = {table} bytes, blocks at most = {blocks} bytes, bound = {} bytes",
+            table + blocks
+        );
+        assert_eq!(instruction, INSTRUCTION_BYTES);
+        assert_eq!(slot, SLOT_BYTES);
+        assert_eq!(table + blocks, BOUND_BYTES);
+        assert!(table + blocks <= 64 << 20);
     }
 
     #[test]

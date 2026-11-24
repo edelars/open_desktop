@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--data-cache-prototype] [--block-cache-prototype] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--data-cache-prototype] [--block-cache-prototype] [--block-stats] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -107,9 +107,12 @@ struct Options {
     /// data translation cache prototype (ADR-0016). Without it the run is as before.
     data_cache_prototype: bool,
     /// PERF-31: `--block-cache-prototype` (unified loop with `--fast-path` only): batched calls run
-    /// the fast path from predecoded straight-line blocks (ADR-0018, variant (a)); the report gets
-    /// `unified.block_stats`. Without it the run is as before.
+    /// the fast path from predecoded straight-line blocks (ADR-0018, variant (a)). Without it the
+    /// run is as before.
     block_cache_prototype: bool,
+    /// PERF-33 (E2): `--block-stats` (with `--block-cache-prototype` only): the block cache counts
+    /// and the report gets `unified.block_stats`. Without it a release build writes no counter.
+    block_stats: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -392,6 +395,7 @@ pub fn run(args: &[String]) -> ExitCode {
         fast_path: options.fast_path,
         data_cache_prototype: options.data_cache_prototype,
         block_cache_prototype: options.block_cache_prototype,
+        block_stats: options.block_stats,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -995,6 +999,8 @@ struct Diagnostics {
     data_cache_prototype: bool,
     /// PERF-31: the unified loop runs the fast path from predecoded blocks.
     block_cache_prototype: bool,
+    /// PERF-33: the block cache counts; the report gets `unified.block_stats`.
+    block_stats: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1450,7 +1456,8 @@ fn boot(
     let xhci = board.xhci();
     let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
-    // PERF-31: `unified.block_stats`, only with `--block-cache-prototype`.
+    // PERF-31: `unified.block_stats`, only with `--block-stats` (PERF-33; it needs
+    // `--block-cache-prototype`).
     let mut unified_block_stats: Option<Value> = None;
     let mut op_histogram_result: Option<Result<Value, String>> = None;
     let mut fast_path_check_result: Option<Result<Value, String>> = None;
@@ -1459,6 +1466,9 @@ fn boot(
     let run = if unified {
         if diagnostics.data_cache_prototype {
             board.enable_data_cache_prototype();
+        }
+        if diagnostics.block_stats {
+            board.enable_block_stats();
         }
         if diagnostics.block_cache_prototype {
             board.enable_block_cache_prototype();
@@ -1475,8 +1485,10 @@ fn boot(
             diagnostics.fast_path,
         ).map(|run| {
             let report = run.run;
+            // A debug build counts without the flag; the field is there only with it.
             unified_block_stats = run
                 .block_stats
+                .filter(|_| diagnostics.block_stats)
                 .map(|stats| block_stats_summary(&stats, report.retired));
             fast_path_check_result = run.fast_path_check.as_ref().map(fast_path_check_summary);
             fast_path_check_progress = run.fast_path_check.as_ref().map(fast_path_check_counters);
@@ -1810,6 +1822,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut fast_path = false;
     let mut data_cache_prototype = false;
     let mut block_cache_prototype = false;
+    let mut block_stats = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1840,6 +1853,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--block-cache-prototype" && !block_cache_prototype {
             block_cache_prototype = true;
+            index += 1;
+            continue;
+        }
+        if name == "--block-stats" && !block_stats {
+            block_stats = true;
             index += 1;
             continue;
         }
@@ -1997,6 +2015,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if block_cache_prototype && fast_path_verify {
         return Err("--block-cache-prototype does not combine with --fast-path-verify".to_owned());
     }
+    // PERF-33: the counters are those of the block cache.
+    if block_stats && !block_cache_prototype {
+        return Err(
+            "--block-stats requires --cpu-loop unified, --fast-path and --block-cache-prototype"
+                .to_owned(),
+        );
+    }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
             return Err("--reboot-cycles requires --fv-app reboot".to_owned());
@@ -2140,6 +2165,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         fast_path,
         data_cache_prototype,
         block_cache_prototype,
+        block_stats,
     })
 }
 
@@ -2665,6 +2691,48 @@ mod tests {
         assert!(parse(&checked).is_err());
         given.extend(args(&["--block-cache-prototype"]));
         assert!(parse(&given).is_err());
+    }
+
+    #[test]
+    fn block_stats_need_the_block_cache_prototype_are_taken_once_and_are_off_by_default() {
+        let base = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+            "--cpu-loop",
+            "unified",
+        ]);
+        let mut blocks = base.clone();
+        blocks.extend(args(&["--fast-path", "--block-cache-prototype"]));
+        assert!(!parse(&blocks).unwrap().block_stats);
+        let message =
+            "--block-stats requires --cpu-loop unified, --fast-path and --block-cache-prototype";
+        for extra in [&[][..], &["--fast-path"][..]] {
+            let mut given = base.clone();
+            given.extend(args(extra));
+            given.extend(args(&["--block-stats"]));
+            assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
+        }
+        let mut firmware_loop = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+            "--block-stats",
+        ]);
+        assert!(parse(&firmware_loop).err().unwrap().contains(message));
+        firmware_loop.extend(args(&["--cpu-loop", "firmware"]));
+        assert!(parse(&firmware_loop).is_err());
+        blocks.extend(args(&["--block-stats"]));
+        let options = parse(&blocks).unwrap();
+        assert!(options.block_stats && options.block_cache_prototype && options.fast_path);
+        blocks.extend(args(&["--block-stats"]));
+        assert!(parse(&blocks).is_err());
     }
 
     #[test]

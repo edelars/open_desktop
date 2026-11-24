@@ -1620,6 +1620,9 @@ pub struct LoadedFirmwareBoard {
     /// the decoded-instruction cache, is used under its conditions (an ordinary run) and only by
     /// batched calls, and is emptied with it.
     block_cache: Option<DecodedBlockCache>,
+    /// PERF-33 (E2): the block cache counts ([`Self::enable_block_stats`]; a debug build counts
+    /// anyway, see `BLOCK_CACHE_COUNTED`).
+    block_stats: bool,
     fetch_cache_sweep_report: Option<FetchSweepReport>,
     /// True when the assembly was given a PIT or LAPIC-timer clock other than the board clock
     /// (a test injection of S4-37a1/a4): their deadlines are in another time domain, so the
@@ -2841,7 +2844,22 @@ impl LoadedFirmwareBoard {
     /// fast-path check never use it.
     pub fn enable_block_cache_prototype(&mut self) {
         if self.block_cache.is_none() {
-            self.block_cache = Some(DecodedBlockCache::default());
+            let mut blocks = DecodedBlockCache::default();
+            if self.block_stats {
+                blocks.enable_stats();
+            }
+            self.block_cache = Some(blocks);
+        }
+    }
+
+    /// PERF-33 (E2): the predecoded block cache counts (ADR-0018, section 5, M1; the runner's
+    /// `--block-stats`), before or after [`Self::enable_block_cache_prototype`]. Off by default:
+    /// a release build without it writes no counter on the hot path, and
+    /// [`Self::block_cache_stats`] is `None`.
+    pub fn enable_block_stats(&mut self) {
+        self.block_stats = true;
+        if let Some(blocks) = &mut self.block_cache {
+            blocks.enable_stats();
         }
     }
 
@@ -2851,9 +2869,12 @@ impl LoadedFirmwareBoard {
     }
 
     /// PERF-31: the counters of the predecoded block cache (ADR-0018, section 5, M1), `None` unless
-    /// it was enabled.
+    /// it was enabled and counts (PERF-33: [`Self::enable_block_stats`], or a debug build).
     pub fn block_cache_stats(&self) -> Option<DecodedBlockCacheStats> {
-        self.block_cache.as_ref().map(DecodedBlockCache::stats)
+        self.block_cache
+            .as_ref()
+            .filter(|blocks| blocks.counted())
+            .map(DecodedBlockCache::stats)
     }
 
     /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
@@ -5335,6 +5356,7 @@ impl AssembledBoard {
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
             block_cache: None,
+            block_stats: false,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -5434,6 +5456,7 @@ impl AssembledBoard {
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
             block_cache: None,
+            block_stats: false,
             fetch_cache_sweep_report: None,
             foreign_timer_clock,
             #[cfg(test)]
@@ -9546,6 +9569,7 @@ mod tests {
         let run = |fast_path: bool, blocks: bool| {
             let mut board = load_firmware_image(&image, &linux_config()).unwrap();
             if blocks {
+                board.enable_block_stats();
                 board.enable_block_cache_prototype();
             }
             let run = crate::run_firmware_unified_with_fast_path(
@@ -9588,6 +9612,30 @@ mod tests {
                 assert_eq!(stats, DecodedBlockCacheStats::default(), "{stats:?}");
             }
         }
+    }
+
+    /// PERF-33 (E2): the counters of the block cache are there only when asked for
+    /// (`enable_block_stats`, before or after the cache) or in a debug build.
+    #[test]
+    fn the_block_cache_counts_only_when_asked_for() {
+        let image = minor2_image(&[0xF4]);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        assert_eq!(board.block_cache_stats(), None, "no cache");
+        board.enable_block_cache_prototype();
+        assert_eq!(
+            board.block_cache_stats().is_some(),
+            crate::BLOCK_CACHE_COUNTED
+        );
+        board.enable_block_stats();
+        assert_eq!(
+            board.block_cache_stats(),
+            Some(DecodedBlockCacheStats::default())
+        );
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        board.enable_block_stats();
+        assert_eq!(board.block_cache_stats(), None, "stats alone make no cache");
+        board.enable_block_cache_prototype();
+        assert!(board.block_cache_stats().is_some());
     }
 
     /// PERF-11 (ADR-0016, prototype): the invalidation wiring of the loop. The program reads a

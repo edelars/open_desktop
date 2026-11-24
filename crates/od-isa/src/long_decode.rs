@@ -3632,7 +3632,10 @@ pub struct Instruction {
 
 /// PERF-31 (ADR-0018, variant (a), prototype): a predecoded straight-line block, the instructions
 /// in execution order from its first RIP (see [`crate::predecoded_block`]). Shared, so that the
-/// run loop holds the block it executes while the backend's cache keeps it too.
+/// run loop holds the block it executes while the backend's cache keeps it too. `Arc`, not `Rc`
+/// (PERF-33, E2): the board that owns the cache must be `Send` (`assert_send` in
+/// `od-machine`'s `bus/shared_tests.rs` and `stage10_display_probe.rs`), and an `Rc` in its
+/// table is not.
 pub type DecodedBlock = std::sync::Arc<[Instruction]>;
 
 impl Instruction {

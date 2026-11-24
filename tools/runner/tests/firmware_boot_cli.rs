@@ -586,6 +586,61 @@ fn diagnostic_options_are_validated_before_launch() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// PERF-33 (E2): `unified.block_stats` is in the report only with `--block-stats` (a debug runner
+/// counts anyway, so the flag alone decides the field); the run itself is the same either way.
+#[test]
+fn block_stats_are_reported_only_with_the_flag() {
+    #[rustfmt::skip]
+    let code = [
+        0xB9, 0x32, 0x00, 0x00, 0x00, // mov ecx, 50
+        0x48, 0x01, 0xCA,             // L: add rdx, rcx
+        0x48, 0x89, 0xD0,             // mov rax, rdx
+        0xFF, 0xC9,                   // dec ecx
+        0x75, 0xF6,                   // jnz L
+        0xF4,                         // hlt
+    ];
+    // The unified loop's board gives a newer handoff: the image declares that it takes any minor.
+    let mut rom = image(&code);
+    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let blocks = [
+        "--cpu-loop",
+        "unified",
+        "--fast-path",
+        "--block-cache-prototype",
+    ];
+    let plain = invoke_with_args(&rom, "10000", &blocks);
+    let counted = invoke_with_args(&rom, "10000", &[&blocks[..], &["--block-stats"]].concat());
+    for run in [&plain, &counted] {
+        assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
+    }
+    let (plain_report, mut counted_report) = (report(&plain), report(&counted));
+    assert_eq!(plain_report["exit"], "halted");
+    assert_eq!(plain_report["cpu_loop"], "unified");
+    assert!(plain_report["unified"].get("block_stats").is_none());
+    let stats = counted_report["unified"]
+        .as_object_mut()
+        .unwrap()
+        .remove("block_stats")
+        .expect("the counted run reports the block cache");
+    assert!(stats["hits"].as_u64().unwrap() > 0, "{stats}");
+    assert!(
+        stats["retired_from_blocks"].as_u64().unwrap() > 0,
+        "{stats}"
+    );
+    // The COM1 path differs between invocations by construction.
+    let mut left = plain_report;
+    for report in [&mut left, &mut counted_report] {
+        report.as_object_mut().unwrap().remove("com1_out");
+    }
+    assert_eq!(left, counted_report, "the field is the only difference");
+    for run in [plain, counted] {
+        fs::remove_file(&run.com1).unwrap();
+    }
+}
+
 /// MOV RBX,imm64; MOV DWORD [RBX],imm32 (the guest-side register or pixel write).
 fn store_dword(code: &mut Vec<u8>, address: u64, value: u32) {
     code.extend_from_slice(&[0x48, 0xbb]);
