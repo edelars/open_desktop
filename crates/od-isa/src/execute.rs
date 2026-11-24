@@ -35446,6 +35446,10 @@ fn run_configured_with_profile_mode<
     let mut checker = VERIFY.then(crate::fast_path_check::FastPathChecker::new);
     // PERF-31: the block the instance with blocks is running, if any.
     let mut block_cursor: Option<crate::predecoded_block::BlockCursor> = None;
+    // PERF-33 (E4, step 2): the instance with blocks tells a counting memory (`--block-stats`)
+    // of every instruction the general step retired; asked once, so a run that does not count only
+    // tests this local.
+    let block_stats = BLOCKS && memory.block_stats_counted();
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -35475,6 +35479,7 @@ fn run_configured_with_profile_mode<
             // PERF-31: the instance with blocks runs the fast path from a block first; `None` (no
             // block, or the fast path refused, before any effect) leaves the instruction to the
             // general step below, as without blocks.
+            let mut from_block = false;
             let outcome = if BLOCKS
                 && !BLOCK_VERIFY
                 && let Some(outcome) = crate::predecoded_block::block_step(
@@ -35486,6 +35491,7 @@ fn run_configured_with_profile_mode<
                 ) {
                 #[cfg(debug_assertions)]
                 crate::fast_path_check::note_fast_step_taken();
+                from_block = true;
                 outcome
             } else if let Some(source) = rdtsc_source.take() {
                 let outcome = step_with_optional_check::<NO_PROFILES, VERIFY, _>(
@@ -35562,6 +35568,9 @@ fn run_configured_with_profile_mode<
                         state.sti_shadow = Some(crate::StiShadow::Clear);
                     }
                     retired += 1;
+                    if block_stats && !from_block {
+                        memory.block_general_retired(block_check_rip, config.context);
+                    }
                     // Stop right after a retired CPU-owned MOV CR3, before the
                     // next fetch; the effect stays in the cell for the caller.
                     if profiles

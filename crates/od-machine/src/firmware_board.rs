@@ -2899,6 +2899,14 @@ impl LoadedFirmwareBoard {
             .map(DecodedBlockCache::stats)
     }
 
+    /// PERF-33 (E4, step 2): why the runs of the blocks ended and what the general step retired
+    /// (by reason and the key of PERF-20), `None` unless the block cache was enabled and counts.
+    pub fn block_end_report(&self) -> Option<crate::BlockEndReport> {
+        self.block_cache
+            .as_ref()
+            .and_then(DecodedBlockCache::end_report)
+    }
+
     /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
     /// the failure) and the request removed; `None` when it was not enabled.
     pub fn take_fetch_cache_report(&mut self) -> Option<LinuxFetchCacheReport> {
@@ -9627,6 +9635,15 @@ mod tests {
             if fast_path {
                 // Most of the loop runs from blocks: the passes after the first are hits.
                 assert!(stats.hits >= 40, "{stats:?}");
+                // PERF-33 (E4, step 2): every retired instruction is either from a block or of the
+                // general step, and every run has one end reason.
+                let ends = with.block_ends.as_ref().expect("the cache counts");
+                assert_eq!(
+                    ends.general_retired + stats.retired,
+                    with.run.retired,
+                    "{ends:?}"
+                );
+                assert_eq!(ends.end_reasons.iter().sum::<u64>(), stats.runs, "{ends:?}");
                 assert!(stats.retired >= 40 * 6, "{stats:?}");
                 assert!(stats.retired_in_runs_of_two_or_more > 0, "{stats:?}");
             } else {
@@ -9782,6 +9799,7 @@ mod tests {
                     )
                     .unwrap();
                     run.block_stats = None;
+                    run.block_ends = None;
                     runs.push(format!("{run:?}"));
                 }
             }
@@ -10056,6 +10074,7 @@ mod tests {
             .unwrap();
             let check = run.block_check.take();
             run.block_stats = None;
+            run.block_ends = None;
             (
                 format!("{run:?}"),
                 check,

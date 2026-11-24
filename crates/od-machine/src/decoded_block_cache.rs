@@ -27,10 +27,12 @@
 //! test builds only) to prove it is needed; `--block-cache-verify` ([`DecodedBlockCache::verify`])
 //! checks every decode of a block against a fresh decode of the general step.
 
+use crate::op_histogram::{OpHistogram, OpHistogramEntry};
 use crate::physical_memory::RamCodePage;
-use od_isa::long_decode::DecodedBlock;
+use od_isa::long_decode::{DecodedBlock, Instruction, Operation, Prefixes};
 use od_isa::memory::AccessContext;
-use std::cell::{Cell, RefCell};
+use od_isa::predecoded_block::BlockEnd;
+use std::cell::{Cell, RefCell, RefMut};
 
 /// Whether a new [`DecodedBlockCache`] counts before [`DecodedBlockCache::enable_stats`] (debug
 /// builds: the tests read the counters), by the pattern of `DATA_CACHE_COUNTED`. In a release
@@ -44,6 +46,167 @@ pub(crate) const DEFAULT_DECODED_BLOCK_SLOTS: usize = 1 << 13;
 
 /// The buckets of [`DecodedBlockCacheStats::run_lengths`]: the lower bound of each.
 pub const BLOCK_RUN_LENGTH_BUCKETS: [u64; 7] = [1, 2, 3, 4, 8, 16, 32];
+
+/// PERF-33 (E4, step 2): why a run of a block ended, the keys of [`BlockEndReport::end_reasons`]
+/// (the runner's `unified.block_stats.end_reasons`). The run got to the end of its block:
+/// `branch` (the block ends with a Jcc/JMP/CALL/RET, taken or not: the norm),
+/// `outside_fast_path` (the block ends before an instruction `fast_block_role` does not admit),
+/// `branch_prefix_filtered` (before a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix, which
+/// the filter does not admit), `page_end`, `page_crossing` (before an instruction that needs a byte
+/// of the next page), `length_limit` (`MAX_BLOCK_INSTRUCTIONS`), `decode_error`. The run was cut
+/// inside its block: `refused` (the fast path refused an instruction the filter admitted),
+/// `branch_prefix_refused` (the refused one is a Jcc/JMP/CALL/RET with other non-default prefixes:
+/// 66, a CS/DS/ES/SS segment, REX ...), `not_retired` (a fault, an error or another exit of the
+/// step), `holds_failed`, `call_end` (the batched call ended inside the block: the batch boundary,
+/// the budget, a stop). `unknown`: a block built without its end recorded (counting turned on after
+/// the build, a test mutation).
+pub const BLOCK_RUN_END_REASONS: [&str; 13] = [
+    "branch",
+    "outside_fast_path",
+    "branch_prefix_filtered",
+    "page_end",
+    "page_crossing",
+    "length_limit",
+    "decode_error",
+    "refused",
+    "branch_prefix_refused",
+    "not_retired",
+    "holds_failed",
+    "call_end",
+    "unknown",
+];
+const END_BRANCH: usize = 0;
+const END_OUTSIDE_FAST_PATH: usize = 1;
+const END_BRANCH_PREFIX_FILTERED: usize = 2;
+const END_PAGE_END: usize = 3;
+const END_PAGE_CROSSING: usize = 4;
+const END_LENGTH_LIMIT: usize = 5;
+const END_DECODE_ERROR: usize = 6;
+const END_REFUSED: usize = 7;
+const END_BRANCH_PREFIX_REFUSED: usize = 8;
+const END_NOT_RETIRED: usize = 9;
+const END_HOLDS_FAILED: usize = 10;
+const END_CALL_END: usize = 11;
+const END_UNKNOWN: usize = 12;
+
+/// PERF-33 (E4, step 2): why an instruction went the general step instead of a block, the
+/// reasons of [`BlockEndReport::general`] (the runner's `unified.block_stats.general_by_key`):
+/// `no_lookup` (the gate of the lookup did not pass: the translation is not in the fetch cache, not
+/// RAM, ...), `not_block_form` (no block starts at the RIP: the instruction is outside the filter),
+/// `branch_prefix_filtered` (the same for a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix),
+/// `page_crossing` and `decode_error` (no block starts at the RIP for that reason), `refused` and
+/// `branch_prefix_refused` (as in [`BLOCK_RUN_END_REASONS`]), `single_step` (a one-instruction
+/// call of the set loop, which has no blocks: CPL3, RF, the fetch cache shadows).
+pub const BLOCK_GENERAL_REASONS: [&str; 8] = [
+    "no_lookup",
+    "not_block_form",
+    "branch_prefix_filtered",
+    "page_crossing",
+    "decode_error",
+    "refused",
+    "branch_prefix_refused",
+    "single_step",
+];
+const GENERAL_NO_LOOKUP: usize = 0;
+const GENERAL_NOT_BLOCK_FORM: usize = 1;
+const GENERAL_BRANCH_PREFIX_FILTERED: usize = 2;
+const GENERAL_PAGE_CROSSING: usize = 3;
+const GENERAL_DECODE_ERROR: usize = 4;
+const GENERAL_REFUSED: usize = 5;
+const GENERAL_BRANCH_PREFIX_REFUSED: usize = 6;
+const GENERAL_SINGLE_STEP: usize = 7;
+
+/// PERF-33 (E4, step 2): what the cache counted of the ends of the runs and of the general step
+/// (only while it counts, see [`DecodedBlockCache::end_report`]).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BlockEndReport {
+    /// Runs by why they ended, indexed as [`BLOCK_RUN_END_REASONS`]; the sum is
+    /// [`DecodedBlockCacheStats::runs`].
+    pub end_reasons: [u64; BLOCK_RUN_END_REASONS.len()],
+    /// The runs that ended with `outside_fast_path` or `branch_prefix_filtered`, by the key of
+    /// PERF-20 (`Operation` variant, operand kind, operand size, CPL) of the instruction the block
+    /// ended before; by descending count.
+    pub end_outside_fast_path: Vec<OpHistogramEntry>,
+    /// The instructions the general step retired, by reason, indexed as [`BLOCK_GENERAL_REASONS`].
+    pub general_by_reason: [u64; BLOCK_GENERAL_REASONS.len()],
+    /// The same by reason and the key of PERF-20 (`<undecoded>` when the read-only decode failed);
+    /// by descending count.
+    pub general: Vec<(&'static str, OpHistogramEntry)>,
+    /// Their sum: with [`DecodedBlockCacheStats::retired`] the instructions the counted runs
+    /// retired.
+    pub general_retired: u64,
+}
+
+/// The block of the open run, for the reason its end gets.
+#[derive(Clone, Copy)]
+struct CurrentBlock {
+    len: usize,
+    /// `None`: not recorded at the build.
+    end: Option<BlockEnd>,
+    cpl: u8,
+}
+
+/// PERF-33 (E4, step 2): the counters of the ends and of the general step (allocated on the first
+/// use while the cache counts).
+#[derive(Default)]
+struct EndDetail {
+    /// Why the block (or the empty entry) of each slot ended, written with the slot.
+    ends: Vec<Option<BlockEnd>>,
+    current: Option<CurrentBlock>,
+    /// The index of the last instruction the open run retired.
+    last_index: usize,
+    /// Why the open run was cut, when it was.
+    cut: Option<usize>,
+    /// Why the next instruction of the general step goes there.
+    general_reason: usize,
+    end_counts: [u64; BLOCK_RUN_END_REASONS.len()],
+    end_keys: Option<Box<OpHistogram>>,
+    general_counts: [u64; BLOCK_GENERAL_REASONS.len()],
+    general_keys: [Option<Box<OpHistogram>>; BLOCK_GENERAL_REASONS.len()],
+}
+
+fn is_branch(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::Branch { .. }
+            | Operation::Jump { .. }
+            | Operation::Call { .. }
+            | Operation::Return { .. }
+    )
+}
+
+/// The reason of a run that got to the end of a block that ended with `end`.
+fn end_reason(end: &BlockEnd) -> usize {
+    match end {
+        BlockEnd::Branch => END_BRANCH,
+        BlockEnd::OutsideFastPath { instruction, .. } if is_branch(&instruction.operation) => {
+            END_BRANCH_PREFIX_FILTERED
+        }
+        BlockEnd::OutsideFastPath { .. } => END_OUTSIDE_FAST_PATH,
+        BlockEnd::PageEnd => END_PAGE_END,
+        BlockEnd::PageCrossing => END_PAGE_CROSSING,
+        BlockEnd::LengthLimit => END_LENGTH_LIMIT,
+        BlockEnd::DecodeError => END_DECODE_ERROR,
+    }
+}
+
+/// The reason of the general step at a RIP where no block starts because of `end`.
+fn general_reason(end: Option<&BlockEnd>) -> usize {
+    match end {
+        Some(BlockEnd::OutsideFastPath { instruction, .. })
+            if is_branch(&instruction.operation) =>
+        {
+            GENERAL_BRANCH_PREFIX_FILTERED
+        }
+        Some(BlockEnd::PageCrossing) => GENERAL_PAGE_CROSSING,
+        Some(BlockEnd::DecodeError) => GENERAL_DECODE_ERROR,
+        _ => GENERAL_NOT_BLOCK_FORM,
+    }
+}
+
+fn cpl_of(context: AccessContext) -> u8 {
+    context.privilege as u8
+}
 
 #[derive(Clone)]
 struct Entry {
@@ -167,6 +330,8 @@ pub(crate) struct DecodedBlockCache {
     /// walks them as usual, but runs every instruction through the general step with a fresh decode
     /// and compares that decode with the one the block holds. Set only under `&mut self`.
     verify: bool,
+    /// PERF-33 (E4, step 2): the ends of the runs and the general step, only while `counted`.
+    detail: RefCell<Option<Box<EndDetail>>>,
     /// Test-only mutation switches (PERF-33, E5): each drops one source of the invalidation, for the
     /// tests that prove it is needed. A release build has none of them.
     #[cfg(test)]
@@ -227,9 +392,17 @@ impl DecodedBlockCache {
             counted: BLOCK_CACHE_COUNTED,
             counters: Counters::default(),
             verify: false,
+            detail: RefCell::new(None),
             #[cfg(test)]
             mutations: Cell::new(BlockMutations::default()),
         }
+    }
+
+    /// PERF-33 (E4, step 2): the counters of the ends (only while `counted`).
+    fn detail(&self) -> RefMut<'_, EndDetail> {
+        RefMut::map(self.detail.borrow_mut(), |detail| {
+            &mut **detail.get_or_insert_with(Box::default)
+        })
     }
 
     fn slots(&self) -> usize {
@@ -284,6 +457,9 @@ impl DecodedBlockCache {
                 .iter_mut()
                 .for_each(|slot| *slot = None);
             self.live.set(0);
+            if self.counted {
+                self.detail().ends.iter_mut().for_each(|end| *end = None);
+            }
         }
         self.memory.set(0);
         if self.counted {
@@ -359,12 +535,10 @@ impl DecodedBlockCache {
         page: RamCodePage,
     ) -> BlockLookup {
         let epoch = self.epoch.get();
+        let slot = self.index(page.region, page.offset);
         let found = {
             let table = self.table.borrow();
-            match table
-                .get(self.index(page.region, page.offset))
-                .and_then(Option::as_ref)
-            {
+            match table.get(slot).and_then(Option::as_ref) {
                 Some(entry)
                     if entry.rip == rip
                         && entry.region == page.region
@@ -398,12 +572,26 @@ impl DecodedBlockCache {
                 },
                 1,
             );
+            let mut detail = self.detail();
+            let end = detail.ends.get(slot).copied().flatten();
+            match &found {
+                BlockLookup::Block(block) => {
+                    detail.current = Some(CurrentBlock {
+                        len: block.len(),
+                        end,
+                        cpl: cpl_of(context),
+                    });
+                }
+                BlockLookup::Empty => detail.general_reason = general_reason(end.as_ref()),
+                BlockLookup::Miss => {}
+            }
         }
         found
     }
 
     /// Stores the block decoded from the bytes of `page` (its generation read before them), or
     /// that none starts at `rip`, replacing whatever held the slot.
+    #[cfg(test)]
     pub(crate) fn insert(
         &self,
         rip: u64,
@@ -411,17 +599,46 @@ impl DecodedBlockCache {
         page: RamCodePage,
         block: Option<DecodedBlock>,
     ) {
-        if self.counted
-            && let Some(block) = &block
-        {
-            add(&self.counters.built_blocks, 1);
-            add(&self.counters.built_instructions, block.len() as u64);
+        self.insert_with_end(rip, context, page, block, None);
+    }
+
+    /// [`Self::insert`] with why the build ended (`None`: not known), for the counters of
+    /// PERF-33 (E4, step 2) only.
+    pub(crate) fn insert_with_end(
+        &self,
+        rip: u64,
+        context: AccessContext,
+        page: RamCodePage,
+        block: Option<DecodedBlock>,
+        end: Option<BlockEnd>,
+    ) {
+        let slot = self.index(page.region, page.offset);
+        if self.counted {
+            if let Some(block) = &block {
+                add(&self.counters.built_blocks, 1);
+                add(&self.counters.built_instructions, block.len() as u64);
+            }
+            let slots = self.slots();
+            let mut detail = self.detail();
+            if detail.ends.is_empty() {
+                detail.ends.resize(slots, None);
+            }
+            detail.ends[slot] = end;
+            match &block {
+                Some(block) => {
+                    detail.current = Some(CurrentBlock {
+                        len: block.len(),
+                        end,
+                        cpl: cpl_of(context),
+                    });
+                }
+                None => detail.general_reason = general_reason(end.as_ref()),
+            }
         }
         let mut table = self.table.borrow_mut();
         if table.is_empty() {
             table.resize(self.slots(), None);
         }
-        let slot = self.index(page.region, page.offset);
         if table[slot].is_none() {
             self.live.set(self.live.get() + 1);
         }
@@ -446,6 +663,7 @@ impl DecodedBlockCache {
             self.close_run();
         }
         self.run.set(self.run.get() + 1);
+        self.detail().last_index = index;
     }
 
     /// A run ended because the block no longer held.
@@ -453,6 +671,164 @@ impl DecodedBlockCache {
     pub(crate) fn note_holds_failed(&self) {
         if self.counted {
             add(&self.counters.holds_failed, 1);
+            if self.run.get() > 0 {
+                self.detail().cut = Some(END_HOLDS_FAILED);
+            }
+        }
+    }
+
+    /// PERF-33 (E4, step 2): the set loop asks for a block (the run of the last one, if any, has
+    /// ended); until a lookup says otherwise, a general step goes there for `no_lookup`.
+    pub(crate) fn note_lookup_asked(&self) {
+        if !self.counted {
+            return;
+        }
+        self.close_run();
+        let mut detail = self.detail();
+        detail.current = None;
+        detail.general_reason = GENERAL_NO_LOOKUP;
+    }
+
+    /// PERF-33 (E4, step 2): `instruction` of the active block did not retire from it: the fast
+    /// path refused it (`refused`) or its step ended otherwise.
+    pub(crate) fn note_run_cut(&self, instruction: &Instruction, refused: bool) {
+        if !self.counted {
+            return;
+        }
+        let mut detail = self.detail();
+        let end = if refused {
+            let prefixed_branch =
+                is_branch(&instruction.operation) && instruction.prefixes != Prefixes::default();
+            detail.general_reason = if prefixed_branch {
+                GENERAL_BRANCH_PREFIX_REFUSED
+            } else {
+                GENERAL_REFUSED
+            };
+            if prefixed_branch {
+                END_BRANCH_PREFIX_REFUSED
+            } else {
+                END_REFUSED
+            }
+        } else {
+            END_NOT_RETIRED
+        };
+        if self.run.get() > 0 {
+            detail.cut = Some(end);
+        }
+    }
+
+    /// PERF-33 (E4, step 2): the general step retired `instruction` (decoded read-only before or
+    /// after the step; `None`: it did not decode so) at `rip` in `cpl`, for the reason the last
+    /// lookup or cut gave.
+    pub(crate) fn note_general_retired(&self, rip: u64, instruction: Option<Instruction>, cpl: u8) {
+        if self.counted {
+            let reason = self.detail().general_reason;
+            self.count_general(reason, rip, instruction, cpl, 1);
+        }
+    }
+
+    /// PERF-33 (E4, step 2): a one-instruction call of the set loop (no blocks) retired `retired`
+    /// instructions of `instruction` at `rip` in `cpl`.
+    pub(crate) fn note_single_step_retired(
+        &self,
+        rip: u64,
+        instruction: Option<Instruction>,
+        cpl: u8,
+        retired: u64,
+    ) {
+        if self.counted {
+            self.count_general(GENERAL_SINGLE_STEP, rip, instruction, cpl, retired);
+        }
+    }
+
+    fn count_general(
+        &self,
+        reason: usize,
+        rip: u64,
+        instruction: Option<Instruction>,
+        cpl: u8,
+        retired: u64,
+    ) {
+        let mut detail = self.detail();
+        detail.general_counts[reason] += retired;
+        detail.general_keys[reason]
+            .get_or_insert_with(|| Box::new(OpHistogram::new()))
+            .record(rip, instruction, cpl, retired);
+    }
+
+    /// PERF-33 (E4, step 2): the ends of the runs and the general step, with the run still open
+    /// counted as ended; `None` when the cache does not count.
+    pub(crate) fn end_report(&self) -> Option<BlockEndReport> {
+        if !self.counted {
+            return None;
+        }
+        self.close_run();
+        let detail = self.detail();
+        let mut general = Vec::new();
+        for (reason, keys) in detail.general_keys.iter().enumerate() {
+            if let Some(keys) = keys {
+                general.extend(
+                    keys.report()
+                        .entries
+                        .into_iter()
+                        .map(|entry| (BLOCK_GENERAL_REASONS[reason], entry)),
+                );
+            }
+        }
+        general.sort_by(|a, b| {
+            b.1.count.cmp(&a.1.count).then_with(|| {
+                (
+                    a.0,
+                    &a.1.operation,
+                    a.1.operands,
+                    a.1.operand_bytes,
+                    a.1.cpl,
+                )
+                    .cmp(&(
+                        b.0,
+                        &b.1.operation,
+                        b.1.operands,
+                        b.1.operand_bytes,
+                        b.1.cpl,
+                    ))
+            })
+        });
+        Some(BlockEndReport {
+            end_reasons: detail.end_counts,
+            end_outside_fast_path: detail
+                .end_keys
+                .as_ref()
+                .map(|keys| keys.report().entries)
+                .unwrap_or_default(),
+            general_by_reason: detail.general_counts,
+            general,
+            general_retired: detail.general_counts.iter().sum(),
+        })
+    }
+
+    /// PERF-33 (E4, step 2): the reason of the run that just closed.
+    fn note_run_end(&self) {
+        let mut detail = self.detail();
+        let reason = match (detail.cut.take(), detail.current) {
+            (Some(cut), _) => cut,
+            (None, Some(current)) if detail.last_index + 1 >= current.len => {
+                current.end.as_ref().map_or(END_UNKNOWN, end_reason)
+            }
+            (None, Some(_)) => END_CALL_END,
+            (None, None) => END_UNKNOWN,
+        };
+        detail.end_counts[reason] += 1;
+        if matches!(reason, END_OUTSIDE_FAST_PATH | END_BRANCH_PREFIX_FILTERED)
+            && let Some(CurrentBlock {
+                end: Some(BlockEnd::OutsideFastPath { rip, instruction }),
+                cpl,
+                ..
+            }) = detail.current
+        {
+            detail
+                .end_keys
+                .get_or_insert_with(|| Box::new(OpHistogram::new()))
+                .record(rip, Some(instruction), cpl, 1);
         }
     }
 
@@ -472,6 +848,7 @@ impl DecodedBlockCache {
             add(&counters.retired_in_runs_of_two_or_more, length);
         }
         add(&counters.run_lengths[bucket], 1);
+        self.note_run_end();
     }
 
     /// Test-only (PERF-33, E5): the cache drops the sources of its invalidation `mutations` names.
@@ -652,6 +1029,144 @@ mod tests {
         assert_eq!(slot, SLOT_BYTES);
         assert_eq!(table + blocks, BOUND_BYTES);
         assert!(table + blocks <= 64 << 20);
+    }
+
+    /// PERF-33 (E4, step 2): every run gets one reason for its end (their sum is `runs`), every
+    /// general step one reason and the PERF-20 key of its instruction; a cache that does not count
+    /// keeps none of it.
+    #[test]
+    fn the_ends_of_the_runs_and_the_general_steps_are_counted_by_reason() {
+        let cache = DecodedBlockCache::new(1 << 10);
+        let ring0 = context(PrivilegeLevel::Ring0);
+        let out = decoded(&[0xEE]).unwrap(); // OUT DX, AL
+        let mov = decoded(&[0x89, 0xC0]).unwrap(); // MOV EAX, EAX
+        let prefixed_jnz = decoded(&[0x2E, 0x75, 0x00]).unwrap(); // CS JNZ +0
+        let before_out = Some(BlockEnd::OutsideFastPath {
+            rip: 0x1006,
+            instruction: out,
+        });
+        let reason = |report: &BlockEndReport, name: &str| {
+            let index = BLOCK_RUN_END_REASONS
+                .iter()
+                .position(|n| *n == name)
+                .unwrap();
+            report.end_reasons[index]
+        };
+        let general = |report: &BlockEndReport, name: &str| {
+            let index = BLOCK_GENERAL_REASONS
+                .iter()
+                .position(|n| *n == name)
+                .unwrap();
+            report.general_by_reason[index]
+        };
+        // A block of three before OUT, run to its end: `outside_fast_path`.
+        cache.note_lookup_asked();
+        cache.insert_with_end(0x1000, ring0, page(0x100, 1), Some(block(3)), before_out);
+        (0..3).for_each(|index| cache.note_retired(index));
+        // The same block from a hit, cut by a refusal of its third instruction: `refused`.
+        cache.note_lookup_asked();
+        assert_eq!(hit(&cache, 0x1000, page(0x100, 1)), Some(3));
+        (0..2).for_each(|index| cache.note_retired(index));
+        cache.note_run_cut(&mov, true);
+        cache.note_general_retired(0x1004, Some(mov), 0);
+        // OUT at 0x1006 starts no block (built, then a hit): `not_block_form` twice.
+        cache.note_lookup_asked();
+        cache.insert_with_end(0x1006, ring0, page(0x106, 1), None, before_out);
+        cache.note_general_retired(0x1006, Some(out), 0);
+        cache.note_lookup_asked();
+        assert_eq!(hit(&cache, 0x1006, page(0x106, 1)), Some(0));
+        cache.note_general_retired(0x1006, Some(out), 0);
+        // A block of two ending with a branch, run to its end: `branch`; then cut by the end of
+        // the call, then by a block that no longer holds, then by a refused prefixed Jcc.
+        let ends_with_branch = |cache: &DecodedBlockCache| {
+            cache.note_lookup_asked();
+            cache.insert_with_end(
+                0x3000,
+                ring0,
+                page(0x300, 1),
+                Some(block(2)),
+                Some(BlockEnd::Branch),
+            );
+            cache.note_retired(0);
+        };
+        ends_with_branch(&cache);
+        cache.note_retired(1);
+        ends_with_branch(&cache);
+        // The gate of the next lookup does not pass: `no_lookup`, the instruction undecoded.
+        cache.note_lookup_asked();
+        cache.note_general_retired(0x5000, None, 0);
+        ends_with_branch(&cache);
+        cache.note_holds_failed();
+        ends_with_branch(&cache);
+        cache.note_run_cut(&prefixed_jnz, true);
+        cache.note_general_retired(0x3002, Some(prefixed_jnz), 0);
+        // A fault inside a block: `not_retired`.
+        ends_with_branch(&cache);
+        cache.note_run_cut(&mov, false);
+        // A one-instruction call at CPL3.
+        cache.note_single_step_retired(0x4000, Some(mov), 3, 1);
+        let report = cache.end_report().expect("a debug build counts");
+        let stats = cache.stats();
+        assert_eq!(stats.runs, 7, "{stats:?}");
+        assert_eq!(report.end_reasons.iter().sum::<u64>(), stats.runs);
+        for (name, count) in [
+            ("outside_fast_path", 1),
+            ("refused", 1),
+            ("branch", 1),
+            ("call_end", 1),
+            ("holds_failed", 1),
+            ("branch_prefix_refused", 1),
+            ("not_retired", 1),
+            ("unknown", 0),
+        ] {
+            assert_eq!(reason(&report, name), count, "{name}: {report:?}");
+        }
+        assert_eq!(report.end_outside_fast_path.len(), 1);
+        assert_eq!(report.end_outside_fast_path[0].count, 1);
+        for (name, count) in [
+            ("refused", 1),
+            ("not_block_form", 2),
+            ("no_lookup", 1),
+            ("branch_prefix_refused", 1),
+            ("single_step", 1),
+        ] {
+            assert_eq!(general(&report, name), count, "{name}: {report:?}");
+        }
+        assert_eq!(report.general_retired, 6);
+        assert_eq!(
+            report
+                .general
+                .iter()
+                .map(|(_, entry)| entry.count)
+                .sum::<u64>(),
+            report.general_retired
+        );
+        assert_eq!(report.general[0].0, "not_block_form", "the top key first");
+        assert!(
+            report
+                .general
+                .iter()
+                .any(|(reason, entry)| *reason == "single_step"
+                    && entry.cpl == 3
+                    && entry.operands == "reg")
+        );
+        assert!(
+            report
+                .general
+                .iter()
+                .any(|(reason, entry)| *reason == "no_lookup" && entry.operation == "<undecoded>")
+        );
+        // A cache that does not count has no report and keeps nothing.
+        let mut quiet = DecodedBlockCache::new(16);
+        quiet.disable_stats_for_test();
+        quiet.note_lookup_asked();
+        quiet.insert_with_end(0x1000, ring0, page(0x100, 1), Some(block(3)), before_out);
+        quiet.note_retired(0);
+        quiet.note_run_cut(&mov, true);
+        quiet.note_general_retired(0x1000, Some(mov), 0);
+        quiet.note_single_step_retired(0x1000, Some(mov), 0, 1);
+        assert!(quiet.detail.borrow().is_none(), "nothing allocated");
+        assert_eq!(quiet.end_report(), None);
     }
 
     #[test]

@@ -3363,6 +3363,16 @@ fn run_cpl0_set_loop_impl<
         } else {
             1
         };
+        // PERF-33 (E4, step 2): a one-instruction call runs no block; a counting block cache
+        // (`--block-stats`) gets its instruction as a general step, decoded read-only (PERF-20).
+        let single_step_key = (call_budget == 1 && blocks.is_some_and(DecodedBlockCache::counted))
+            .then(|| {
+                (
+                    instruction_rip,
+                    histogram_decode(instruction_rip, bus.ram(), &paging, context),
+                    state.cs_selector.map_or(0, |selector| (selector & 3) as u8),
+                )
+            });
         let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
         let mut port = SetPortWatch {
             inner: io.port_io(),
@@ -3831,6 +3841,12 @@ fn run_cpl0_set_loop_impl<
             }
         }
         instructions_executed += result.instructions_executed;
+        if let Some((rip, instruction, cpl)) = single_step_key
+            && result.instructions_executed > 0
+            && let Some(blocks) = blocks
+        {
+            blocks.note_single_step_retired(rip, instruction, cpl, result.instructions_executed);
+        }
         if HISTOGRAM_ENABLED
             && result.instructions_executed > 0
             && let Some(recorder) = checkpoints.as_deref_mut()
@@ -6159,6 +6175,10 @@ impl<'a> PagedMovMemoryAdapter<'a> {
     fn block_lookup(&mut self, rip: u64, context: AccessContext) -> Option<DecodedBlock> {
         self.decoded.active_block = None;
         let blocks = self.decoded.blocks?;
+        // PERF-33 (E4, step 2): the counters of `--block-stats` only.
+        if blocks.counted() {
+            blocks.note_lookup_asked();
+        }
         let fetch_cache = self.fetch_cache?;
         if !(self.cpl0_set_cross_page_fetch
             && self.large_ram_profile
@@ -6186,19 +6206,28 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 let mut code = FrameCode { ram, frame };
                 let max_len = od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS;
                 // PERF-33 (E5): the test-only mutation of the page fence.
+                // PERF-33 (E4, step 2): why the build ended, kept by a counting cache only.
                 #[cfg(test)]
-                let built = if blocks.page_fence_mutated() {
-                    crate::decoded_block_cache::predecode_block_without_page_fence(
+                let (built, end) = if blocks.page_fence_mutated() {
+                    let built = crate::decoded_block_cache::predecode_block_without_page_fence(
                         &mut code, rip, context, max_len,
-                    )
+                    );
+                    (built, None)
                 } else {
-                    od_isa::predecoded_block::predecode_block(&mut code, rip, context, max_len)
+                    let (built, end) = od_isa::predecoded_block::predecode_block_with_end(
+                        &mut code, rip, context, max_len,
+                    );
+                    (built, Some(end))
                 };
                 #[cfg(not(test))]
-                let built =
-                    od_isa::predecoded_block::predecode_block(&mut code, rip, context, max_len);
+                let (built, end) = {
+                    let (built, end) = od_isa::predecoded_block::predecode_block_with_end(
+                        &mut code, rip, context, max_len,
+                    );
+                    (built, Some(end))
+                };
                 let block = (!built.is_empty()).then(|| DecodedBlock::from(built));
-                blocks.insert(rip, context, page, block.clone());
+                blocks.insert_with_end(rip, context, page, block.clone(), end);
                 block?
             }
         };
@@ -6606,6 +6635,30 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         if let Some(blocks) = self.decoded.blocks {
             blocks.note_retired(index);
         }
+    }
+
+    fn block_run_cut(&mut self, instruction: &Instruction, refused: bool) {
+        if let Some(blocks) = self.decoded.blocks {
+            blocks.note_run_cut(instruction, refused);
+        }
+    }
+
+    fn block_stats_counted(&self) -> bool {
+        self.decoded.blocks.is_some_and(DecodedBlockCache::counted)
+    }
+
+    /// PERF-33 (E4, step 2): the key of the instruction comes from the read-only decode of the
+    /// histogram of PERF-20 (nothing of the guest or of the caches moves) under the paging snapshot
+    /// of the call, which the step did not change.
+    fn block_general_retired(&mut self, rip: u64, context: AccessContext) {
+        let Some(blocks) = self.decoded.blocks.filter(|blocks| blocks.counted()) else {
+            return;
+        };
+        let instruction = self
+            .bus
+            .ram_ref()
+            .and_then(|ram| histogram_decode(rip, ram, &self.paging, context));
+        blocks.note_general_retired(rip, instruction, context.privilege as u8);
     }
 
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {

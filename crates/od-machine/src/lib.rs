@@ -60,7 +60,8 @@ pub use data_translation_cache::{
 };
 // PERF-31: the counters of the predecoded block cache prototype (the runner's `unified.block_stats`).
 pub use decoded_block_cache::{
-    BLOCK_CACHE_COUNTED, BLOCK_RUN_LENGTH_BUCKETS, DecodedBlockCacheStats,
+    BLOCK_CACHE_COUNTED, BLOCK_GENERAL_REASONS, BLOCK_RUN_END_REASONS, BLOCK_RUN_LENGTH_BUCKETS,
+    BlockEndReport, DecodedBlockCacheStats,
 };
 mod pae_fetch_view;
 mod pae_operand_access;

@@ -283,6 +283,24 @@ pub trait GuestMemory {
     /// counters only; `index` 0 starts a new run of a block). The default does nothing.
     fn block_retired(&mut self, _index: usize) {}
 
+    /// PERF-33 (E4, step 2): the run of the active block ended before `instruction` of it, which
+    /// did not retire from the block: `refused` when the fast path refused it (the general step
+    /// runs it next), else it faulted or ended otherwise (diagnostic counters only). The default does
+    /// nothing. Wrappers do not forward this method.
+    fn block_run_cut(&mut self, _instruction: &crate::long_decode::Instruction, _refused: bool) {}
+
+    /// PERF-33 (E4, step 2): whether the backend counts the instructions the general step retires
+    /// in a run with blocks ([`Self::block_general_retired`], the runner's `--block-stats`); asked
+    /// once per call. The default is `false`. Wrappers do not forward this method.
+    fn block_stats_counted(&self) -> bool {
+        false
+    }
+
+    /// PERF-33 (E4, step 2): the instruction at `rip` retired through the general step (not from a
+    /// block) in a run with blocks; asked only when [`Self::block_stats_counted`]. Diagnostic
+    /// counters only; the default does nothing. Wrappers do not forward this method.
+    fn block_general_retired(&mut self, _rip: u64, _context: AccessContext) {}
+
     /// PERF-33 (E5, step 4): the block check (`Cpl0ProfileSet::with_block_cache_verify`) asks,
     /// after every step, for the first instruction the decoder returned from the bytes during it, with
     /// its RIP (a backend in that mode answers no [`Self::cached_instruction`] and keeps the first

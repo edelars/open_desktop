@@ -94,6 +94,25 @@ pub fn fast_block_role(instruction: &Instruction) -> Option<FastBlockRole> {
     }
 }
 
+/// PERF-33 (E4, step 2): why [`predecode_block_with_end`] ended a block (also an empty one: then
+/// the first instruction is the one it ended before). A diagnostic of `--block-stats` only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockEnd {
+    /// After a Jcc, JMP, CALL or RET (the last instruction of the block).
+    Branch,
+    /// Before `instruction` at `rip`, which [`fast_block_role`] does not admit (an operation
+    /// outside the fast path, or a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix).
+    OutsideFastPath { rip: u64, instruction: Instruction },
+    /// At the end of the page of the first RIP.
+    PageEnd,
+    /// Before an instruction that needs a byte of the next page.
+    PageCrossing,
+    /// At [`MAX_BLOCK_INSTRUCTIONS`] (`max_len`).
+    LengthLimit,
+    /// Before bytes that do not decode.
+    DecodeError,
+}
+
 /// The fetches of [`predecode_block`], held on the 4 KiB page of the first RIP: a fetch of another
 /// page fails and is noted, so that the instruction that needed it is not taken.
 struct PageFence<'m, M> {
@@ -135,6 +154,16 @@ pub fn predecode_block<M: GuestMemory>(
     context: AccessContext,
     max_len: usize,
 ) -> Vec<Instruction> {
+    predecode_block_with_end(code, rip, context, max_len).0
+}
+
+/// PERF-33 (E4, step 2): [`predecode_block`] and why the block ended there.
+pub fn predecode_block_with_end<M: GuestMemory>(
+    code: &mut M,
+    rip: u64,
+    context: AccessContext,
+    max_len: usize,
+) -> (Vec<Instruction>, BlockEnd) {
     let page = rip >> 12;
     let mut fence = PageFence {
         code,
@@ -143,24 +172,36 @@ pub fn predecode_block<M: GuestMemory>(
     };
     let mut block = Vec::new();
     let mut at = rip;
-    while block.len() < max_len && at >> 12 == page {
-        fence.outside = false;
-        let Ok(instruction) = long_decode::decode(&mut fence, at, context) else {
-            break;
-        };
-        if fence.outside {
-            break;
+    loop {
+        if block.len() >= max_len {
+            return (block, BlockEnd::LengthLimit);
         }
+        if at >> 12 != page {
+            return (block, BlockEnd::PageEnd);
+        }
+        fence.outside = false;
+        let decoded = long_decode::decode(&mut fence, at, context);
+        if fence.outside {
+            return (block, BlockEnd::PageCrossing);
+        }
+        let Ok(instruction) = decoded else {
+            return (block, BlockEnd::DecodeError);
+        };
         let Some(role) = fast_block_role(&instruction) else {
-            break;
+            return (
+                block,
+                BlockEnd::OutsideFastPath {
+                    rip: at,
+                    instruction,
+                },
+            );
         };
         block.push(instruction);
         at = at.wrapping_add(u64::from(instruction.length));
         if role == FastBlockRole::Terminator {
-            break;
+            return (block, BlockEnd::Branch);
         }
     }
-    block
 }
 
 /// The block a run loop is executing and where it is in it.
@@ -219,8 +260,12 @@ pub(crate) fn block_step<M: GuestMemory>(
             memory.block_retired(index);
         }
         // A refusal (nothing happened: the general step runs the instruction), a fault or an error
-        // (the instruction did not retire): the run of the block ends.
-        _ => *cursor = None,
+        // (the instruction did not retire): the run of the block ends (PERF-33, E4: the memory is
+        // told why, for its `--block-stats` counters only).
+        _ => {
+            memory.block_run_cut(&current.block[index], outcome.is_none());
+            *cursor = None;
+        }
     }
     outcome
 }
@@ -475,5 +520,54 @@ mod tests {
     fn a_block_has_at_most_the_maximum_length() {
         let code: Vec<u8> = std::iter::repeat_n(MOV_EAX, 100).flatten().collect();
         assert_eq!(lengths(0x1000, &code, 0x1000).len(), MAX_BLOCK_INSTRUCTIONS);
+    }
+
+    fn end(base: u64, bytes: &[u8], rip: u64) -> BlockEnd {
+        let mut code = Code {
+            base,
+            bytes: bytes.to_vec(),
+        };
+        let (block, end) =
+            predecode_block_with_end(&mut code, rip, ring0(), MAX_BLOCK_INSTRUCTIONS);
+        assert_eq!(
+            block,
+            predecode_block(&mut code, rip, ring0(), MAX_BLOCK_INSTRUCTIONS),
+            "the same block"
+        );
+        end
+    }
+
+    /// PERF-33 (E4, step 2): the build says why the block ended, and the block is the one of
+    /// `predecode_block`.
+    #[test]
+    fn the_end_of_a_block_says_why_it_ended() {
+        // MOV EAX; JNZ -2.
+        let mut code = MOV_EAX.to_vec();
+        code.extend([0x75, 0xFE]);
+        assert_eq!(end(0x1000, &code, 0x1000), BlockEnd::Branch);
+        // MOV EAX; OUT DX, AL: before the port, at its RIP.
+        let mut code = MOV_EAX.to_vec();
+        code.push(0xEE);
+        assert!(matches!(
+            end(0x1000, &code, 0x1000),
+            BlockEnd::OutsideFastPath { rip: 0x1005, instruction } if instruction.length == 1
+        ));
+        // FS JMP +0: a branch the filter does not admit (empty block).
+        let fs_jmp = end(0x1000, &[0x64, 0xEB, 0x00], 0x1000);
+        assert!(
+            matches!(
+                fs_jmp,
+                BlockEnd::OutsideFastPath { rip: 0x1000, instruction }
+                    if matches!(instruction.operation, Operation::Jump { .. })
+            ),
+            "{fs_jmp:?}"
+        );
+        let movs: Vec<u8> = std::iter::repeat_n(MOV_EAX, 100).flatten().collect();
+        // Three MOV EAX from 0xFF1 end exactly at the page end; from 0xFF4 the third crosses it.
+        assert_eq!(end(0xFF1, &movs, 0xFF1), BlockEnd::PageEnd);
+        assert_eq!(end(0xFF4, &movs, 0xFF4), BlockEnd::PageCrossing);
+        assert_eq!(end(0x1000, &movs, 0x1000), BlockEnd::LengthLimit);
+        // MOV EAX and then bytes that are not there.
+        assert_eq!(end(0x1000, &MOV_EAX, 0x1000), BlockEnd::DecodeError);
     }
 }

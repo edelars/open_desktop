@@ -126,6 +126,7 @@
 | [docs/testing/BENCHMARKS.md](../testing/BENCHMARKS.md), новый раздел | PERF-01 | Методика замера загрузки Linux и золотого прогона |
 | `docs/decisions/ADR-00NN-…` | PERF-11, PERF-21, PERF-31 | Решения: кеш трансляции данных, быстрый путь шага, стратегия блочного исполнения |
 | `docs/plans/CPU_CORE_PERF_BLOCKS.md` | PERF-33 | Отдельный план ступени E после принятого решения |
+| `docs/plans/CPU_CORE_PERF_BLOCKS_PART2.md` | PERF-33 | Ступень E, часть 2: цена гостевой инструкции в блочном режиме (E7–E15), в том числе срез записи PERF-12 (E8) |
 | [docs/KNOWN_ISSUES.md](../KNOWN_ISSUES.md) | любая задача | Найденные и неустранённые дефекты |
 
 ### Владельцы изменений

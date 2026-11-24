@@ -1506,7 +1506,7 @@ fn boot(
             unified_block_stats = run
                 .block_stats
                 .filter(|_| diagnostics.block_stats)
-                .map(|stats| block_stats_summary(&stats, report.retired));
+                .map(|stats| block_stats_summary(&stats, run.block_ends.as_ref(), report.retired));
             fast_path_check_result = run.fast_path_check.as_ref().map(fast_path_check_summary);
             fast_path_check_progress = run.fast_path_check.as_ref().map(fast_path_check_counters);
             block_cache_check_result = run.block_check.as_ref().map(block_cache_check_summary);
@@ -2223,7 +2223,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
 /// cache and the shares over the instructions the run retired (`retired`). Blocks hold only
 /// G1-G5 forms and their instructions run only through the fast path, so
 /// `share_retired_from_blocks` is the share of instructions executed from blocks of G1-G5 only.
-fn block_stats_summary(stats: &od_machine::DecodedBlockCacheStats, retired: u64) -> Value {
+///
+/// PERF-33 (E4, step 2): with `ends`, also `end_reasons` (runs by why they ended, every key of
+/// `BLOCK_RUN_END_REASONS`; the sum is `runs`), `end_outside_fast_path_by_key` (the runs that
+/// ended before an instruction outside the filter, by its PERF-20 key
+/// `Operation/operands/bytes/cplN`), `general_by_reason` (every key of `BLOCK_GENERAL_REASONS`),
+/// `general_by_key` (`<reason>:<PERF-20 key>` -> instructions the general step retired),
+/// `general_retired`, `share_retired_general` and `sum_equals_retired`
+/// (`general_retired + retired_from_blocks == retired`).
+fn block_stats_summary(
+    stats: &od_machine::DecodedBlockCacheStats,
+    ends: Option<&od_machine::BlockEndReport>,
+    retired: u64,
+) -> Value {
     let share = |part: u64| {
         if retired == 0 {
             0.0
@@ -2233,7 +2245,7 @@ fn block_stats_summary(stats: &od_machine::DecodedBlockCacheStats, retired: u64)
     };
     let buckets = ["1", "2", "3", "4-7", "8-15", "16-31", "32+"];
     debug_assert_eq!(buckets.len(), od_machine::BLOCK_RUN_LENGTH_BUCKETS.len());
-    json!({
+    let mut summary = json!({
         "lookups": stats.lookups,
         "hits": stats.hits,
         "empty_hits": stats.empty_hits,
@@ -2260,7 +2272,62 @@ fn block_stats_summary(stats: &od_machine::DecodedBlockCacheStats, retired: u64)
         },
         "share_retired_from_blocks": share(stats.retired),
         "share_retired_in_runs_of_two_or_more": share(stats.retired_in_runs_of_two_or_more),
-    })
+    });
+    if let Some(ends) = ends {
+        let key = |entry: &od_machine::OpHistogramEntry| {
+            format!(
+                "{}/{}/{}/cpl{}",
+                entry.operation, entry.operands, entry.operand_bytes, entry.cpl
+            )
+        };
+        let named = |names: &[&str], counts: &[u64]| {
+            names
+                .iter()
+                .zip(counts)
+                .map(|(name, count)| (name.to_string(), json!(count)))
+                .collect::<serde_json::Map<_, _>>()
+        };
+        let fields = summary.as_object_mut().expect("an object");
+        fields.insert(
+            "end_reasons".into(),
+            Value::Object(named(&od_machine::BLOCK_RUN_END_REASONS, &ends.end_reasons)),
+        );
+        fields.insert(
+            "end_outside_fast_path_by_key".into(),
+            Value::Object(
+                ends.end_outside_fast_path
+                    .iter()
+                    .map(|entry| (key(entry), json!(entry.count)))
+                    .collect(),
+            ),
+        );
+        fields.insert(
+            "general_by_reason".into(),
+            Value::Object(named(
+                &od_machine::BLOCK_GENERAL_REASONS,
+                &ends.general_by_reason,
+            )),
+        );
+        fields.insert(
+            "general_by_key".into(),
+            Value::Object(
+                ends.general
+                    .iter()
+                    .map(|(reason, entry)| (format!("{reason}:{}", key(entry)), json!(entry.count)))
+                    .collect(),
+            ),
+        );
+        fields.insert("general_retired".into(), json!(ends.general_retired));
+        fields.insert(
+            "share_retired_general".into(),
+            json!(share(ends.general_retired)),
+        );
+        fields.insert(
+            "sum_equals_retired".into(),
+            json!(ends.general_retired + stats.retired == retired),
+        );
+    }
+    summary
 }
 
 /// PERF-22: the counters of the fast-path check for the run report, or the report of its first

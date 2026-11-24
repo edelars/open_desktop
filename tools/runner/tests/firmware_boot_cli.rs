@@ -626,6 +626,52 @@ fn block_stats_are_reported_only_with_the_flag() {
         stats["retired_from_blocks"].as_u64().unwrap() > 0,
         "{stats}"
     );
+    // PERF-33 (E4, step 2): every run has one end reason, every other retired instruction one
+    // general-step key, and both parts sum to what the run retired.
+    let sum = |value: &serde_json::Value| -> u64 {
+        value
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|count| count.as_u64().unwrap())
+            .sum()
+    };
+    let end_reasons = stats["end_reasons"].as_object().unwrap();
+    assert_eq!(
+        end_reasons
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        od_machine::BLOCK_RUN_END_REASONS.into_iter().collect(),
+        "{stats}"
+    );
+    assert_eq!(sum(&stats["end_reasons"]), stats["runs"].as_u64().unwrap());
+    assert!(
+        stats["end_reasons"]["branch"].as_u64().unwrap() > 0,
+        "{stats}"
+    );
+    assert_eq!(
+        stats["general_by_reason"].as_object().unwrap().len(),
+        od_machine::BLOCK_GENERAL_REASONS.len()
+    );
+    let general = stats["general_retired"].as_u64().unwrap();
+    assert!(general > 0, "{stats}");
+    assert_eq!(sum(&stats["general_by_key"]), general, "{stats}");
+    assert_eq!(sum(&stats["general_by_reason"]), general, "{stats}");
+    assert!(
+        stats["general_by_key"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| key.contains(':') && key.contains("/cpl")),
+        "{stats}"
+    );
+    assert_eq!(
+        general + stats["retired_from_blocks"].as_u64().unwrap(),
+        counted_report["retired"].as_u64().unwrap(),
+        "{stats}"
+    );
+    assert_eq!(stats["sum_equals_retired"], true);
     // The COM1 path differs between invocations by construction.
     let mut left = plain_report;
     for report in [&mut left, &mut counted_report] {

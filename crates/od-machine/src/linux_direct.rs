@@ -1818,6 +1818,9 @@ pub struct FirmwareUnifiedRun {
     /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
     /// over the life of the board's cache: `None` when it was not enabled.
     pub block_stats: Option<crate::DecodedBlockCacheStats>,
+    /// PERF-33 (E4, step 2): the ends of the runs of the blocks and the general step, under the
+    /// same condition as `block_stats`.
+    pub block_ends: Option<crate::BlockEndReport>,
 }
 
 /// What the block check (PERF-33, E5, step 4) did in a unified run: the counters and the first
@@ -2357,6 +2360,7 @@ pub fn run_firmware_unified_with_fast_path(
         fast_path_check,
         block_check,
         block_stats: board.block_cache_stats(),
+        block_ends: board.block_end_report(),
     })
 }
 
