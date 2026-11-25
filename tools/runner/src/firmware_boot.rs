@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--block-stats] [--block-cache-verify] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--data-cache-verify] [--block-stats] [--block-cache-verify] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -105,9 +105,15 @@ struct Options {
     /// PERF-23: `--fast-path` (unified loop only): the step runs the fast path of group G2 right
     /// after the decode (ADR-0017, section 3). Without it the run is as before.
     fast_path: bool,
-    /// PERF-11: `--data-cache-prototype` (unified loop only): same-page qword reads go through the
-    /// data translation cache prototype (ADR-0016). Without it the run is as before.
+    /// PERF-11, E8: `--data-cache-prototype` (unified loop only): same-page reads of 1, 2, 4 and 8
+    /// bytes and `Explicit` writes go through the data translation cache (ADR-0016). Without it
+    /// the run is as before.
     data_cache_prototype: bool,
+    /// E8 (step 8): `--data-cache-verify` (with `--data-cache-prototype` only, not with
+    /// `--fast-path-verify` or `--block-cache-verify`): every hit of the data translation cache is
+    /// checked against a walk that writes nothing before it is used; the report gets
+    /// `data_cache_check`, and the first divergence fails the run (exit code 5).
+    data_cache_verify: bool,
     /// PERF-31, PERF-33 (E1): whether batched calls run the fast path from predecoded straight-line
     /// blocks (ADR-0018, variant (a)). On by default with `--fast-path` in the unified loop; off with
     /// `--no-block-cache`, with `--fast-path-verify` (a diagnostic mode) and without `--fast-path`.
@@ -402,6 +408,7 @@ pub fn run(args: &[String]) -> ExitCode {
         fast_path_verify: options.fast_path_verify,
         fast_path: options.fast_path,
         data_cache_prototype: options.data_cache_prototype,
+        data_cache_verify: options.data_cache_verify,
         block_cache: options.block_cache,
         block_stats: options.block_stats,
         block_cache_verify: options.block_cache_verify,
@@ -1004,8 +1011,11 @@ struct Diagnostics {
     fast_path_verify: bool,
     /// PERF-23: the unified loop runs the fast path of group G2.
     fast_path: bool,
-    /// PERF-11: the unified loop serves same-page qword reads through the data translation cache.
+    /// PERF-11, E8: the unified loop serves same-page reads and writes through the data translation
+    /// cache.
     data_cache_prototype: bool,
+    /// E8: the unified loop checks every hit of the data translation cache.
+    data_cache_verify: bool,
     /// PERF-31: the unified loop runs the fast path from predecoded blocks.
     block_cache: bool,
     /// PERF-33: the block cache counts; the report gets `unified.block_stats`.
@@ -1476,10 +1486,16 @@ fn boot(
     // PERF-33 (E5, step 4): the block check of `--block-cache-verify`.
     let mut block_cache_check_result: Option<Result<Value, String>> = None;
     let mut block_cache_check_progress: Option<Value> = None;
+    // E8 (step 8): the check of the data translation cache of `--data-cache-verify`.
+    let mut data_cache_check_result: Option<Result<Value, String>> = None;
+    let mut data_cache_check_progress: Option<Value> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
         if diagnostics.data_cache_prototype {
             board.enable_data_cache_prototype();
+        }
+        if diagnostics.data_cache_verify {
+            board.enable_data_cache_verify();
         }
         if diagnostics.block_stats {
             board.enable_block_stats();
@@ -1511,6 +1527,8 @@ fn boot(
             fast_path_check_progress = run.fast_path_check.as_ref().map(fast_path_check_counters);
             block_cache_check_result = run.block_check.as_ref().map(block_cache_check_summary);
             block_cache_check_progress = run.block_check.as_ref().map(block_cache_check_counters);
+            data_cache_check_result = run.data_cache_check.as_ref().map(data_cache_check_summary);
+            data_cache_check_progress = run.data_cache_check.as_ref().map(data_cache_check_counters);
             if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
                 op_histogram_result = Some(write_op_histogram(path, histogram, report.retired));
             }
@@ -1761,6 +1779,18 @@ fn boot(
         }
         None => {}
     }
+    // E8 (step 8): the same for the check of the data translation cache.
+    match data_cache_check_result {
+        Some(Ok(summary)) => result["data_cache_check"] = summary,
+        Some(Err(error)) => {
+            let mut value = failure("run_error", "data_cache_check", error);
+            if let Some(counters) = data_cache_check_progress {
+                value["data_cache_check"] = counters;
+            }
+            return Err((value, 5));
+        }
+        None => {}
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -1855,6 +1885,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut no_block_cache = false;
     let mut block_stats = false;
     let mut block_cache_verify = false;
+    let mut data_cache_verify = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1895,6 +1926,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--block-cache-verify" && !block_cache_verify {
             block_cache_verify = true;
+            index += 1;
+            continue;
+        }
+        if name == "--data-cache-verify" && !data_cache_verify {
+            data_cache_verify = true;
             index += 1;
             continue;
         }
@@ -2042,6 +2078,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if data_cache_prototype && !unified {
         return Err("--data-cache-prototype requires --cpu-loop unified".to_owned());
+    }
+    // E8 (step 8, ADR-0016 decision Д5): the check of the data translation cache needs the cache
+    // and is the only check of its run.
+    if data_cache_verify && !data_cache_prototype {
+        return Err("--data-cache-verify requires --data-cache-prototype".to_owned());
+    }
+    if data_cache_verify && (fast_path_verify || block_cache_verify) {
+        return Err(
+            "--data-cache-verify does not combine with --fast-path-verify or --block-cache-verify"
+                .to_owned(),
+        );
     }
     // PERF-33 (E1): with `--fast-path` the unified loop runs the predecoded block cache by
     // default; `--no-block-cache` turns it off (the control of the measurements).
@@ -2213,6 +2260,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         fast_path_verify,
         fast_path,
         data_cache_prototype,
+        data_cache_verify,
         block_cache,
         block_stats,
         block_cache_verify,
@@ -2368,6 +2416,33 @@ fn block_cache_check_counters(report: &od_machine::BlockCheckReport) -> Value {
     json!({
         "compared": counters.compared,
         "not_decoded": counters.not_decoded,
+        "divergences": counters.divergences,
+    })
+}
+
+/// E8 (step 8): the counters of the check of the data translation cache for the run report, or the
+/// report of its first divergence as an error (the run stopped there). A run that counted a
+/// divergence without keeping one is a failure too.
+fn data_cache_check_summary(report: &od_machine::DataCacheCheckReport) -> Result<Value, String> {
+    if let Some(divergence) = &report.divergence {
+        return Err(divergence.to_string());
+    }
+    if report.counters.divergences != 0 {
+        return Err(format!(
+            "data cache check: {} divergences counted",
+            report.counters.divergences
+        ));
+    }
+    Ok(data_cache_check_counters(report))
+}
+
+/// E8 (step 8): the counters of the check of the data translation cache as JSON (also kept when a
+/// divergence stops the run).
+fn data_cache_check_counters(report: &od_machine::DataCacheCheckReport) -> Value {
+    let counters = &report.counters;
+    json!({
+        "verified_reads": counters.verified_reads,
+        "verified_writes": counters.verified_writes,
         "divergences": counters.divergences,
     })
 }
@@ -2986,6 +3061,128 @@ mod tests {
         assert!(options.block_cache_verify && options.block_cache && options.block_stats);
         blocks.extend(args(&["--block-cache-verify"]));
         assert!(parse(&blocks).is_err());
+    }
+
+    /// E8 (step 8): `--data-cache-verify` needs `--data-cache-prototype` (and with it the unified
+    /// loop), does not combine with `--fast-path-verify` or `--block-cache-verify`, is taken once
+    /// and is off by default; with the fast path it runs with the blocks.
+    #[test]
+    fn data_cache_verify_needs_the_data_cache_and_combines_with_no_other_check() {
+        assert!(
+            !parse(&unified_with(&["--fast-path", "--data-cache-prototype"]))
+                .unwrap()
+                .data_cache_verify
+        );
+        for extra in [&[][..], &["--fast-path"][..]] {
+            let mut given = unified_with(extra);
+            given.extend(args(&["--data-cache-verify"]));
+            assert!(
+                parse(&given)
+                    .err()
+                    .unwrap()
+                    .contains("--data-cache-verify requires --data-cache-prototype"),
+                "{extra:?}"
+            );
+        }
+        let firmware_loop = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+            "--data-cache-prototype",
+            "--data-cache-verify",
+        ]);
+        assert!(
+            parse(&firmware_loop)
+                .err()
+                .unwrap()
+                .contains("--data-cache-prototype requires --cpu-loop unified")
+        );
+        for extra in [
+            &[
+                "--fast-path",
+                "--data-cache-prototype",
+                "--data-cache-verify",
+                "--fast-path-verify",
+            ][..],
+            &[
+                "--fast-path",
+                "--data-cache-prototype",
+                "--block-cache-verify",
+                "--data-cache-verify",
+            ][..],
+        ] {
+            assert!(
+                parse(&unified_with(extra)).err().unwrap().contains(
+                    "--data-cache-verify does not combine with --fast-path-verify or \
+                     --block-cache-verify"
+                ),
+                "{extra:?}"
+            );
+        }
+        let mut checked = unified_with(&["--fast-path", "--data-cache-prototype"]);
+        checked.extend(args(&["--data-cache-verify", "--block-stats"]));
+        let options = parse(&checked).unwrap();
+        assert!(
+            options.data_cache_verify
+                && options.data_cache_prototype
+                && options.block_cache
+                && options.block_stats
+        );
+        let without_fast_path = parse(&unified_with(&[
+            "--data-cache-prototype",
+            "--data-cache-verify",
+        ]))
+        .unwrap();
+        assert!(without_fast_path.data_cache_verify && !without_fast_path.block_cache);
+        checked.extend(args(&["--data-cache-verify"]));
+        assert!(parse(&checked).is_err());
+    }
+
+    /// E8 (step 8): the counters of the check are the summary; a kept divergence, or a counted one,
+    /// is an error with the counters still at hand.
+    #[test]
+    fn a_data_cache_check_divergence_is_an_error_and_counters_are_a_summary() {
+        let report = od_machine::DataCacheCheckReport {
+            counters: od_machine::DataCacheCheckCounters {
+                verified_reads: 7,
+                verified_writes: 3,
+                divergences: 0,
+            },
+            divergence: None,
+        };
+        let summary = data_cache_check_summary(&report).unwrap();
+        assert_eq!(summary["verified_reads"], 7);
+        assert_eq!(summary["verified_writes"], 3);
+        assert_eq!(summary["divergences"], 0);
+        let diverged = od_machine::DataCacheCheckReport {
+            counters: od_machine::DataCacheCheckCounters {
+                verified_reads: 7,
+                verified_writes: 4,
+                divergences: 1,
+            },
+            divergence: Some(od_machine::DataCacheCheckDivergence {
+                linear: 0x40_1000,
+                rip: 0x20_0040,
+                write: true,
+                reason: "dirty bit clear".to_owned(),
+            }),
+        };
+        let error = data_cache_check_summary(&diverged).unwrap_err();
+        assert!(
+            error.contains("write hit at linear 0x401000")
+                && error.contains("rip 0x200040")
+                && error.contains("dirty bit clear"),
+            "{error}"
+        );
+        assert_eq!(data_cache_check_counters(&diverged)["divergences"], 1);
+        let counted_only = od_machine::DataCacheCheckReport {
+            divergence: None,
+            ..diverged
+        };
+        assert!(data_cache_check_summary(&counted_only).is_err());
     }
 
     #[test]

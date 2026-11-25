@@ -58,6 +58,8 @@ pub use op_histogram::{OpHistogramEntry, OpHistogramReport};
 pub use data_translation_cache::{
     DATA_CACHE_COUNTED, DataCacheCounters, data_cache_counters, reset_data_cache_counters,
 };
+// E8: the check of the data translation cache (the runner's `--data-cache-verify`).
+pub use data_translation_cache::check::{DataCacheCheckCounters, DataCacheCheckDivergence};
 // PERF-31: the counters of the predecoded block cache prototype (the runner's `unified.block_stats`).
 pub use decoded_block_cache::{
     BLOCK_CACHE_COUNTED, BLOCK_GENERAL_REASONS, BLOCK_RUN_END_REASONS, BLOCK_RUN_LENGTH_BUCKETS,
@@ -249,14 +251,15 @@ pub use linux_checkpoints::{
     LinuxCheckpointTarget,
 };
 pub use linux_direct::{
-    BlockCheckDivergenceReport, BlockCheckReport, FastPathCheckReport, FirmwareUnifiedCheckpoint,
-    FirmwareUnifiedInterrupts, FirmwareUnifiedMarker, FirmwareUnifiedPageFault, FirmwareUnifiedRun,
-    FirmwareUnifiedState, FirmwareUnifiedWalkEntry, LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers,
-    LinuxDirectBoot, LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput,
-    LinuxDirectZone, LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport,
-    LinuxStopInputs, LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport,
-    LinuxVcpuRunMode, LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal,
-    SyscallJournalEntry, load_linux_direct_board, load_linux_direct_board_with_nvme,
+    BlockCheckDivergenceReport, BlockCheckReport, DataCacheCheckReport, FastPathCheckReport,
+    FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts, FirmwareUnifiedMarker,
+    FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState, FirmwareUnifiedWalkEntry,
+    LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
+    LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
+    LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
+    LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, LinuxVcpuRunMode,
+    LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
+    load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
     run_firmware_unified, run_firmware_unified_checked, run_firmware_unified_marked,
     run_firmware_unified_profiled, run_firmware_unified_traced,

@@ -99,7 +99,7 @@ fn run_scenario(
                     None,
                     FetchCacheTag::Page4K,
                     cached.then_some(&decoded),
-                    false,
+                    crate::data_translation_cache::DataCacheUse::Off,
                     false,
                     None,
                 );

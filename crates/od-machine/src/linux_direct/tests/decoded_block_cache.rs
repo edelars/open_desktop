@@ -111,7 +111,7 @@ fn run_scenario(
                     None,
                     FetchCacheTag::Page4K,
                     Some(&decoded),
-                    false,
+                    crate::data_translation_cache::DataCacheUse::Off,
                     true,
                     (blocks != Blocks::Off).then_some(&cache),
                 );

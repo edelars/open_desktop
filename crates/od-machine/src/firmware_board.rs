@@ -1611,10 +1611,13 @@ pub struct LoadedFirmwareBoard {
     /// restore. Diagnostic runs (a sweep, an execution observation, the fetch cache report) do not
     /// use it.
     decoded_instruction_cache: DecodedInstructionCache,
-    /// PERF-11 (ADR-0016, prototype): the unified and Linux set loops of this board serve same-page
-    /// qword reads through a data translation cache of one quantum. Off unless
-    /// [`Self::enable_data_cache_prototype`]; diagnostic runs never use it.
+    /// PERF-11 (ADR-0016), E8: the unified and Linux set loops of this board serve same-page reads
+    /// of 1, 2, 4 and 8 bytes and `Explicit` writes through a data translation cache of one
+    /// quantum. Off unless [`Self::enable_data_cache_prototype`]; diagnostic runs never use it.
     data_cache_prototype: bool,
+    /// E8 (step 8): every hit of the data translation cache is checked against a walk that writes
+    /// nothing ([`Self::enable_data_cache_verify`], the runner's `--data-cache-verify`).
+    data_cache_verify: bool,
     /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded block cache of the unified set
     /// loop, `None` unless [`Self::enable_block_cache_prototype`]. It lives between quanta like
     /// the decoded-instruction cache, is used under its conditions (an ordinary run) and only by
@@ -2835,6 +2838,21 @@ impl LoadedFirmwareBoard {
     /// observation) keeps every walk whatever this says.
     pub fn enable_data_cache_prototype(&mut self) {
         self.data_cache_prototype = true;
+    }
+
+    /// E8 (step 8, ADR-0016 decision Д5): the data translation cache in the check mode (the
+    /// runner's `--data-cache-verify`; enables the cache as [`Self::enable_data_cache_prototype`]
+    /// does): the cache serves as usual, but before each hit uses its entry a walk that writes
+    /// nothing must agree with it; the first difference ends the run. Under the conditions of the
+    /// cache (an ordinary run).
+    pub fn enable_data_cache_verify(&mut self) {
+        self.data_cache_prototype = true;
+        self.data_cache_verify = true;
+    }
+
+    /// E8: whether [`Self::enable_data_cache_verify`] was called.
+    pub fn data_cache_verify(&self) -> bool {
+        self.data_cache_verify
     }
 
     /// PERF-31 (ADR-0018, variant (a), prototype): the unified set loop of the next runs executes
@@ -4153,7 +4171,15 @@ impl LoadedFirmwareBoard {
             .then_some(&board.decoded_instruction_cache);
             // PERF-11 (ADR-0016, prototype): the data translation cache, only when asked for and
             // under the conditions of the decoded-instruction cache (an ordinary run).
-            let data_cache = board.data_cache_prototype && decoded_cache.is_some();
+            let data_cache = match (
+                board.data_cache_prototype && decoded_cache.is_some(),
+                board.data_cache_verify,
+            ) {
+                (false, _) => crate::data_translation_cache::DataCacheUse::Off,
+                (true, false) => crate::data_translation_cache::DataCacheUse::On,
+                // E8 (step 8): `--data-cache-verify`: every hit is checked first.
+                (true, true) => crate::data_translation_cache::DataCacheUse::Verify,
+            };
             let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
@@ -5385,6 +5411,7 @@ impl AssembledBoard {
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
+            data_cache_verify: false,
             block_cache: None,
             block_stats: false,
             fetch_cache_sweep_report: None,
@@ -5485,6 +5512,7 @@ impl AssembledBoard {
             fetch_cache_tag: FetchCacheTag::Page4K,
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
+            data_cache_verify: false,
             block_cache: None,
             block_stats: false,
             fetch_cache_sweep_report: None,
@@ -9561,8 +9589,10 @@ mod tests {
             assert_eq!(cached.state(), plain.state(), "fast path {fast_path}");
             assert_eq!(cached.com1_transcript(), plain.com1_transcript());
             if crate::DATA_CACHE_COUNTED {
-                // The first read walks; the other stack reads of the same page hit.
-                assert!(counters.inserts >= 1, "{counters:?}");
+                // E8: the first access of the stack page is the store; it walks and makes a Write
+                // entry, which the stack reads and the PUSH of the same page hit.
+                assert!(counters.write_inserts >= 1, "{counters:?}");
+                assert!(counters.write_hits >= 1, "{counters:?}");
                 assert!(counters.hits >= 3, "{counters:?}");
             }
         }
@@ -10278,6 +10308,167 @@ mod tests {
             assert_eq!(counters.inserts, 3, "{counters:?}");
             assert_eq!(counters.context_flushes, 1, "MOV CR3: {counters:?}");
         }
+    }
+
+    /// E8 (step 10): a write through a hit of the data translation cache into the active block
+    /// (self-modifying code, the scenario of E5 with the data cache): the first store into the code
+    /// page makes a Write entry of it, the second one, a hit, patches the immediate of the next
+    /// instruction of the block; the block run ends there and the patched instruction runs, as
+    /// without the cache and without blocks.
+    #[test]
+    fn a_data_cache_write_hit_into_the_active_block_ends_its_run() {
+        #[rustfmt::skip]
+        let mut code = vec![
+            0xBB, 0, 0, 0, 0,                   // 0x00 mov ebx, X + 0x10
+            0xB8, 0x55, 0x55, 0x00, 0x00,       // 0x05 mov eax, 0x5555
+            0x89, 0x43, 0x40,                   // 0x0A mov [rbx + 0x40], eax (a miss: the entry)
+            0x89, 0x03,                         // 0x0D mov [rbx], eax (a hit: the immediate below)
+            0xBA, 0x11, 0x11, 0x00, 0x00,       // 0x0F mov edx, 0x1111 (immediate at 0x10)
+            0x89, 0xD6,                         // 0x14 mov esi, edx
+            0xF4,                               // 0x16 hlt
+        ];
+        code[1..5].copy_from_slice(&((E5_X + 0x10) as u32).to_le_bytes());
+        let pt: &[(u64, &[(u64, u64)])] = &[(E5_ROOT_A, &[(0, E5_FRAME_A | E5_PTE)])];
+        let bytes: &[(u64, &[u8])] = &[(E5_FRAME_A, &code)];
+        let data_cache = |board: &mut LoadedFirmwareBoard| board.enable_data_cache_prototype();
+        let plain = e5_run(E5_X, pt, bytes, &[E5Step::Run(1_000)], E5Blocks::Off);
+        let blocks = e5_run(E5_X, pt, bytes, &[E5Step::Run(1_000)], E5Blocks::On);
+        crate::reset_data_cache_counters();
+        let cached = e5_run(
+            E5_X,
+            pt,
+            bytes,
+            &[E5Step::Host(&data_cache), E5Step::Run(1_000)],
+            E5Blocks::On,
+        );
+        let counters = crate::data_cache_counters();
+        assert_eq!(plain.state.gpr[od_isa::Register::Rsi as usize], 0x5555);
+        assert!(blocks.same_as(&plain));
+        assert!(
+            cached.same_as(&plain),
+            "{:?} against {:?}",
+            cached.runs,
+            plain.runs
+        );
+        let stats = cached.stats.unwrap();
+        assert!(stats.holds_failed >= 1, "{stats:?}");
+        if crate::DATA_CACHE_COUNTED {
+            assert!(counters.write_hits >= 1, "{counters:?}");
+            assert!(counters.write_inserts >= 1, "{counters:?}");
+        }
+    }
+
+    /// E8 (step 9, ADR-0016 decision Д6): a write into a page table by the host between two unified
+    /// runs (as a device DMA, `|_| {}`: no `watch`) remaps the data page the loop reads: the data
+    /// translation cache lives in one call of the loop, so the next run reads the new frame, as
+    /// without the cache.
+    #[test]
+    fn the_data_cache_sees_a_device_write_into_a_page_table_between_runs() {
+        let data = E5_X + 0x1000;
+        let mut code = Vec::new();
+        for register in [0x04u8, 0x0C] {
+            // L: mov rax, [data]; mov rcx, [data]
+            code.extend_from_slice(&[0x48, 0x8B, register, 0x25]);
+            code.extend_from_slice(&(data as u32).to_le_bytes());
+        }
+        code.extend_from_slice(&[0xEB, 0xEE]); // jmp L
+        let (old, new) = (0x1111_2222_3333_4444u64, 0x5555_6666_7777_8888u64);
+        let pt: &[(u64, &[(u64, u64)])] = &[(
+            E5_ROOT_A,
+            &[(0, E5_FRAME_A | E5_PTE), (1, E5_FRAME_B | E5_PTE)],
+        )];
+        let (old_bytes, new_bytes) = (old.to_le_bytes(), new.to_le_bytes());
+        let bytes: &[(u64, &[u8])] = &[
+            (E5_FRAME_A, &code),
+            (E5_FRAME_B, &old_bytes),
+            (E5_FRAME_C, &new_bytes),
+        ];
+        let device_write = |board: &mut LoadedFirmwareBoard| {
+            board
+                .bus_mut()
+                .write_physical(
+                    GuestPhysicalAddress::new(E5_ROOT_A + 0x3008),
+                    AccessWidth::Qword,
+                    E5_FRAME_C | E5_PTE,
+                    |_| {},
+                )
+                .unwrap();
+        };
+        let data_cache = |board: &mut LoadedFirmwareBoard| board.enable_data_cache_prototype();
+        let steps = |cached: bool| {
+            let mut steps = Vec::new();
+            if cached {
+                steps.push(E5Step::Host(&data_cache));
+            }
+            steps.extend([
+                E5Step::Run(100),
+                E5Step::Host(&device_write),
+                E5Step::Run(100),
+            ]);
+            steps
+        };
+        let plain = e5_run(E5_X, pt, bytes, &steps(false), E5Blocks::On);
+        crate::reset_data_cache_counters();
+        let cached = e5_run(E5_X, pt, bytes, &steps(true), E5Blocks::On);
+        let counters = crate::data_cache_counters();
+        assert_eq!(plain.state.gpr[od_isa::Register::Rax as usize], new);
+        assert_eq!(plain.state.gpr[od_isa::Register::Rcx as usize], new);
+        assert!(
+            cached.same_as(&plain),
+            "{:?} against {:?}",
+            cached.runs,
+            plain.runs
+        );
+        if crate::DATA_CACHE_COUNTED {
+            assert!(counters.hits >= 10, "{counters:?}");
+        }
+    }
+
+    /// E8 (step 8): the check of the data translation cache (`--data-cache-verify`) on the board:
+    /// the unified run with blocks is the run without the cache, the check saw read and write hits,
+    /// and found no divergence.
+    #[test]
+    fn the_data_cache_check_of_the_unified_run_changes_nothing_and_finds_no_divergence() {
+        use crate::data_translation_cache::check;
+        #[rustfmt::skip]
+        let mut code = vec![
+            0xBB, 0, 0, 0, 0,                   // 0x00 mov ebx, X + 0x1800
+            0xB9, 0x10, 0x00, 0x00, 0x00,       // 0x05 mov ecx, 16
+            0x89, 0x0B,                         // 0x0A L: mov [rbx], ecx
+            0x8B, 0x13,                         // 0x0C mov edx, [rbx]
+            0x01, 0x53, 0x08,                   // 0x0E add [rbx + 8], edx
+            0x0F, 0xB6, 0x73, 0x01,             // 0x11 movzx esi, byte [rbx + 1]
+            0xFF, 0xC9,                         // 0x15 dec ecx
+            0x75, 0xF1,                         // 0x17 jnz L
+            0xF4,                               // 0x19 hlt
+        ];
+        code[1..5].copy_from_slice(&((E5_X + 0x1800) as u32).to_le_bytes());
+        let pt: &[(u64, &[(u64, u64)])] = &[(
+            E5_ROOT_A,
+            &[(0, E5_FRAME_A | E5_PTE), (1, E5_FRAME_B | 0x23)],
+        )];
+        let bytes: &[(u64, &[u8])] = &[(E5_FRAME_A, &code)];
+        let verify = |board: &mut LoadedFirmwareBoard| board.enable_data_cache_verify();
+        let plain = e5_run(E5_X, pt, bytes, &[E5Step::Run(1_000)], E5Blocks::On);
+        check::reset_data_cache_check();
+        let checked = e5_run(
+            E5_X,
+            pt,
+            bytes,
+            &[E5Step::Host(&verify), E5Step::Run(1_000)],
+            E5Blocks::On,
+        );
+        let counters = check::data_cache_check_counters();
+        assert_eq!(check::take_data_cache_check_divergence(), None);
+        assert_eq!(counters.divergences, 0, "{counters:?}");
+        assert!(
+            counters.verified_reads > 0 && counters.verified_writes > 0,
+            "{counters:?}"
+        );
+        assert_eq!(checked.state, plain.state);
+        assert_eq!(checked.com1, plain.com1);
+        assert_eq!(checked.ram, plain.ram);
+        assert_eq!(plain.state.gpr[od_isa::Register::Rcx as usize], 0);
     }
 
     /// PERF-25, group G5: ALU with memory on the stack, PUSH/POP, CALL and RET in the unified run

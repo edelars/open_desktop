@@ -1,6 +1,7 @@
 //! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::console_output_context::capture_frame_chain;
+pub(crate) use crate::data_translation_cache::DataCacheUse;
 use crate::data_translation_cache::DataTranslationCache;
 use crate::decoded_block_cache::{BlockLookup, DecodedBlockCache};
 use crate::decoded_instruction_cache::DecodedInstructionCache;
@@ -2506,7 +2507,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         None,
         FetchCacheTag::Page4K,
         None,
-        false,
+        DataCacheUse::Off,
         false,
         None,
     )
@@ -2541,7 +2542,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     sweep: Option<&Rc<FetchCacheSweep>>,
     tag: FetchCacheTag,
     decoded: Option<&DecodedInstructionCache>,
-    data_cache: bool,
+    data_cache: DataCacheUse,
     batch: bool,
     blocks: Option<&DecodedBlockCache>,
 ) -> PagedCpl0SetReport {
@@ -2555,7 +2556,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     });
     // PERF-11 (ADR-0016, prototype): the data translation cache, asked for by the board, lives in
     // this call only too (one quantum).
-    let data_cache = data_cache.then(DataTranslationCache::new);
+    let data_cache = data_cache.cache();
     run_cpl0_set_loop(
         state,
         LoopBus::Exclusive(bus),
@@ -4094,6 +4095,22 @@ fn continuation_key(
             ..context
         },
     ))
+}
+
+/// E8: the test-only mutation that drops the rule "no Write entry for a page whose frame is a table
+/// frame of its own path" (`DataCacheMutations::own_table_frame_allowed`); `false` in a release
+/// build.
+#[inline(always)]
+fn own_table_frame_allowed(cache: &DataTranslationCache) -> bool {
+    #[cfg(test)]
+    {
+        cache.mutations().own_table_frame_allowed
+    }
+    #[cfg(not(test))]
+    {
+        let _ = cache;
+        false
+    }
 }
 
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
@@ -5917,45 +5934,99 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         }
     }
 
-    /// PERF-11: one same-page qword read through the data translation cache. A hit reads the qword
-    /// of the cached plain-RAM frame (the host accesses of the walk's read) and walks nothing: the
-    /// entry was made by a successful read walk with the same snapshot and page privilege, which set
-    /// every accessed bit of the path, and no write to a table frame of the path has happened since
-    /// (it would have dropped the entry), so the walk would read the same entries, write nothing and
-    /// read the same bytes. A miss is the ordinary tracked read (`access_with`, with every effect,
-    /// fault and record as without the cache); only a success is remembered, from the trace of that
-    /// same walk.
+    /// PERF-11, E8 (ADR-0016, decision Д4): the width of a read of `len` bytes at `address` that
+    /// the data translation cache may serve, or `None`. The conditions are those under which
+    /// [`GuestMemory::read`] below is exactly `self.access(address, context, Read { width })`:
+    /// the large-RAM profile, a width the profile admits (the match of `read`), no descriptor-table
+    /// origin (its scope and record), inside one 4 KiB page (no split branch, no `CrossesPage`,
+    /// no `reject_crossing_qword`); and the capture modes are off (they divert the writes the
+    /// cache must see, or need the trace of every walk). Anything else keeps its path, and its
+    /// refusal, as without the cache.
     #[inline(always)]
-    fn read_qword_through_data_cache(
-        &mut self,
-        cache: &DataTranslationCache,
+    fn data_cache_read_width(
+        &self,
         address: u64,
         context: AccessContext,
-    ) -> Result<u64, MemoryError> {
-        if let Some(frame) = cache.lookup(address, &self.paging, context.page_privilege())
-            && let Some(memory) = self.bus.ram_ref()
-            && let Some(value) = memory.read_ram_frame_qword(frame, address)
+        len: usize,
+    ) -> Option<crate::AccessWidth> {
+        if !self.large_ram_profile
+            || self.capture_effects
+            || self.capture_page_fault_trace
+            || context.origin == AccessOrigin::DescriptorTable
+            || (address & 0xfff) + len as u64 > 0x1000
         {
-            return Ok(value);
+            return None;
         }
-        self.read_qword_and_remember(cache, address, context)
+        match len {
+            8 if !self.dword_read_profile && !self.word_read_profile => {
+                Some(crate::AccessWidth::Qword)
+            }
+            4 if self.dword_read_profile || self.cpl0_set_dword_read => {
+                Some(crate::AccessWidth::Dword)
+            }
+            2 if self.word_read_profile || self.cpl0_set_word_read => {
+                Some(crate::AccessWidth::Word)
+            }
+            1 if self.cpl0_set_byte_read => Some(crate::AccessWidth::Byte),
+            _ => None,
+        }
     }
 
-    /// The miss of [`Self::read_qword_through_data_cache`].
-    #[inline(never)]
-    fn read_qword_and_remember(
+    /// PERF-11, E8: one same-page read of 1, 2, 4 or 8 bytes through the data translation cache. A
+    /// hit reads the bytes of the cached plain-RAM frame (the host accesses of the walk's read) and
+    /// walks nothing: the entry was made by a successful walk with the same snapshot and page
+    /// privilege, which set every accessed bit of the path, and no write to a table frame of the
+    /// path has happened since (it would have dropped the entry), so the walk would read the same
+    /// entries, write nothing and read the same bytes. A miss is the ordinary tracked read
+    /// (`access_with`, with every effect, fault and record as without the cache); only a success is
+    /// remembered, from the trace of that same walk.
+    #[inline(always)]
+    fn read_through_data_cache(
         &mut self,
         cache: &DataTranslationCache,
         address: u64,
         context: AccessContext,
+        width: crate::AccessWidth,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        if let Some(set) = cache.lookup(address, &self.paging, context.page_privilege())
+            && let Some(memory) = self.bus.ram_ref()
+            && let Some(frame) = cache.frame(set)
+        {
+            if cache.verify() {
+                self.check_data_cache_hit(cache, set, address, context, false)?;
+            }
+            if let Ok(destination) = <&mut [u8; 8]>::try_from(&mut *destination) {
+                if let Some(value) = memory.read_ram_frame_qword(frame, address) {
+                    *destination = value.to_le_bytes();
+                    return Ok(());
+                }
+            } else if memory
+                .read_ram_frame_bytes(frame, address, destination)
+                .is_some()
+            {
+                return Ok(());
+            }
+        }
+        let value = self.read_and_remember(cache, address, context, width)?;
+        destination.copy_from_slice(&value.to_le_bytes()[..destination.len()]);
+        Ok(())
+    }
+
+    /// The miss of [`Self::read_through_data_cache`].
+    #[inline(never)]
+    fn read_and_remember(
+        &mut self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+        width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
         let mut walked = None;
         let outcome = self.access_with_observed(
             address,
             context,
-            RamAccessOperation::Read {
-                width: crate::AccessWidth::Qword,
-            },
+            RamAccessOperation::Read { width },
             true,
             |report| {
                 if report.outcome.is_ok() {
@@ -5966,14 +6037,98 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         let TrackedAccessOutcome::Read(value) = outcome else {
             return Err(Self::unsupported("non-read result"));
         };
-        if let Some(trace) = walked
-            && let Some(memory) = self.bus.ram_ref()
+        if let Some(trace) = walked {
+            self.remember_data_translation(cache, address, context, &trace, false);
+        }
+        Ok(value)
+    }
+
+    /// E8 (ADR-0016, decision Д4): one same-page `Explicit` write of 1, 2, 4 or 8 bytes through the
+    /// data translation cache. A hit (a Write entry only: made by a successful write walk, so the
+    /// leaf has D and every level A, and the write rights of the snapshot and privilege were checked)
+    /// writes only the bytes of the operand through `PhysicalMemory::store_bytes` with the loop's
+    /// `committed_write`, the store of the walk: the page generation rises, `watch` tells the fetch
+    /// cache and this cache, and the decoded-instruction cache and the blocks see the write. A miss
+    /// (also a Read entry of the page) is the ordinary tracked write; a success is remembered as a
+    /// Write entry, which replaces whatever the set held.
+    #[inline(always)]
+    fn write_through_data_cache(
+        &mut self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+        width: crate::AccessWidth,
+        value: u64,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        if let Some(set) = cache.lookup_write(address, &self.paging, context.page_privilege())
+            && self.bus.ram_ref().is_some()
+        {
+            if cache.verify() {
+                self.check_data_cache_hit(cache, set, address, context, true)?;
+            }
+            let physical = GuestPhysicalAddress::new(cache.physical(set) | (address & 0xfff));
+            if let Some(memory) = self.bus.ram_ref()
+                && memory
+                    .store_bytes(physical, source, &mut *self.committed_write)
+                    .is_ok()
+            {
+                return Ok(());
+            }
+            // A failed store changed and notified nothing (S6-30b): the walk below decides.
+        }
+        self.write_and_remember(cache, address, context, width, value)
+    }
+
+    /// The miss of [`Self::write_through_data_cache`].
+    #[inline(never)]
+    fn write_and_remember(
+        &mut self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+        width: crate::AccessWidth,
+        value: u64,
+    ) -> Result<(), MemoryError> {
+        let mut walked = None;
+        let outcome = self.access_with_observed(
+            address,
+            context,
+            RamAccessOperation::Write { width, value },
+            true,
+            |report| {
+                if report.outcome.is_ok() {
+                    walked = Some(report.trace);
+                }
+            },
+        )?;
+        let TrackedAccessOutcome::Written = outcome else {
+            return Err(Self::unsupported("non-write result"));
+        };
+        if let Some(trace) = walked {
+            self.remember_data_translation(cache, address, context, &trace, true);
+        }
+        Ok(())
+    }
+
+    /// Remembers the translation of a successful walk of `address` (ADR-0016, section 2 item 4):
+    /// only when the operand frame and every table frame of the path are plain RAM (a device, ROM,
+    /// reserved or framebuffer frame is never remembered), and for a write only when the operand
+    /// frame is none of the table frames of its own path (decision Д4, item 3: the stored bytes may
+    /// have changed an entry the walk had read, and their `note_write` came before this insert).
+    fn remember_data_translation(
+        &self,
+        cache: &DataTranslationCache,
+        address: u64,
+        context: AccessContext,
+        trace: &crate::page_walk::WalkTrace,
+        write: bool,
+    ) {
+        if let Some(memory) = self.bus.ram_ref()
             && let Some((physical, tables)) = crate::page_walk::data_translation_of_walk_trace(
-                &trace,
+                trace,
                 GuestLinearAddress::new(address),
             )
-            // Only plain RAM (ADR-0016, section 2 item 4): the operand frame and every table frame.
-            // A device, ROM, reserved or framebuffer frame is never remembered.
             && let Some(frame) = memory.ram_frame(physical)
             && tables.iter().flatten().all(|table| {
                 matches!(
@@ -5981,16 +6136,125 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                     Ok(MemoryRegionKind::Ram)
                 )
             })
+            && !(write
+                && tables.iter().flatten().any(|table| *table == physical)
+                && !own_table_frame_allowed(cache))
         {
             cache.insert(
                 address,
                 &self.paging,
                 context.page_privilege(),
                 frame,
+                physical.get(),
                 tables.map(|table| table.map(|base| base.get() >> 12)),
+                write,
             );
         }
-        Ok(value)
+    }
+
+    /// E8 (step 8, ADR-0016 decision Д5): `--data-cache-verify`. Before the entry in `set` serves
+    /// this hit, a walk that writes nothing (`translate_long64_2m_ram_read_only_with_trace`: no
+    /// accessed or dirty bit, no `watch`, no cache touched) under the same snapshot, normalized
+    /// context and kind of access must agree with it: the walk succeeds, its 4 KiB frame and the
+    /// table frames of its path are those of the entry, every entry of the path has A, the leaf has
+    /// D for a Write entry, and for a read the frame handle is the one of that frame. Anything else
+    /// is a divergence: it is counted and kept ([`crate::data_translation_cache::check`]) and the
+    /// access fails before any effect with its text (the run stops there).
+    #[cold]
+    #[inline(never)]
+    fn check_data_cache_hit(
+        &self,
+        cache: &DataTranslationCache,
+        set: usize,
+        address: u64,
+        context: AccessContext,
+        write: bool,
+    ) -> Result<(), MemoryError> {
+        use crate::data_translation_cache::check::{self, DataCacheCheckDivergence};
+        let Some(memory) = self.bus.ram_ref() else {
+            return Ok(());
+        };
+        let entry = cache.entry(set);
+        let context = AccessContext {
+            origin: AccessOrigin::Explicit,
+            privilege: context.page_privilege(),
+            ..context
+        };
+        let (walk, trace) = crate::page_walk::translate_long64_2m_ram_read_only_with_trace(
+            memory,
+            &self.paging,
+            self.instruction_rip,
+            GuestLinearAddress::new(address),
+            context,
+            if write {
+                AccessKind::Write
+            } else {
+                AccessKind::Read
+            },
+        );
+        const ACCESSED: u64 = 1 << 5;
+        const DIRTY: u64 = 1 << 6;
+        let entries = &trace.entries()[..trace.len()];
+        let reason = match walk {
+            Err(error) => Some(format!("the walk fails: {error:?}; entry {entry:?}")),
+            Ok((physical, tables)) => {
+                let base = physical.get() & !0xfff;
+                let tables = tables.map(|table| table.map(|base| base.get() >> 12));
+                if base != entry.physical {
+                    Some(format!(
+                        "the walk gives the frame {base:#x}, the entry {:#x}",
+                        entry.physical
+                    ))
+                } else if tables != entry.tables {
+                    Some(format!(
+                        "the walk goes through the tables {tables:x?}, the entry watches {:x?}",
+                        entry.tables
+                    ))
+                } else if let Some(walked) = entries
+                    .iter()
+                    .flatten()
+                    .find(|walked| walked.entry_value & ACCESSED == 0)
+                {
+                    Some(format!(
+                        "accessed bit clear in the {:?} entry at {:#x} = {:#x}",
+                        walked.level,
+                        walked.entry_address.get(),
+                        walked.entry_value
+                    ))
+                } else if entry.write
+                    && entries
+                        .last()
+                        .copied()
+                        .flatten()
+                        .is_none_or(|leaf| leaf.entry_value & DIRTY == 0)
+                {
+                    Some(format!(
+                        "dirty bit clear in the leaf of a Write entry: {:x?}",
+                        entries.last()
+                    ))
+                } else if write && !entry.write {
+                    Some("a Read entry serves a write".to_owned())
+                } else if memory.ram_frame(GuestPhysicalAddress::new(base)) != entry.frame {
+                    Some(format!(
+                        "the frame handle of {base:#x} is not the entry's {:?}",
+                        entry.frame
+                    ))
+                } else {
+                    None
+                }
+            }
+        };
+        let divergence = reason.map(|reason| DataCacheCheckDivergence {
+            linear: address,
+            rip: self.instruction_rip,
+            write,
+            reason,
+        });
+        let error = divergence
+            .as_ref()
+            .map(|divergence| MemoryError::Backend(divergence.to_string()));
+        check::note(write, divergence);
+        error.map_or(Ok(()), Err)
     }
 
     /// S4-13: one instruction byte through the fetch translation cache. A hit reads the byte at
@@ -6790,26 +7054,14 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
-        // PERF-11 (ADR-0016, prototype): a same-page qword read of the set loop's adapter goes
-        // through the data translation cache. Everything else below is untouched. The conditions
-        // are those under which the read below is exactly `self.access(address, context, Read
-        // { Qword })` (no descriptor scope, no page crossing, the large-RAM profile, the qword
-        // width) and the capture modes are off (they divert the writes the cache must see, or need
-        // the trace of every walk).
+        // PERF-11, E8 (ADR-0016, decision Д4): a same-page read of 1, 2, 4 or 8 bytes of the set
+        // loop's adapter goes through the data translation cache, only where the read below would
+        // be exactly `self.access(address, context, Read { width })` (`data_cache_read_width`).
+        // Everything else below is untouched.
         if let Some(cache) = self.data_cache
-            && let Ok(destination) = <&mut [u8; 8]>::try_from(&mut *destination)
-            && context.origin != AccessOrigin::DescriptorTable
-            && address & 0xfff <= 0x1000 - 8
-            && !self.capture_effects
-            && !self.capture_page_fault_trace
+            && let Some(width) = self.data_cache_read_width(address, context, destination.len())
         {
-            debug_assert!(
-                self.large_ram_profile && !self.dword_read_profile && !self.word_read_profile
-            );
-            *destination = self
-                .read_qword_through_data_cache(cache, address, context)?
-                .to_le_bytes();
-            return Ok(());
+            return self.read_through_data_cache(cache, address, context, width, destination);
         }
         if let Ok(vector) = <&mut [u8; 16]>::try_from(&mut *destination)
             && self.supports_cpl3_vector(context)
@@ -6939,6 +7191,22 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         let mut bytes = [0; 8];
         bytes[..expected].copy_from_slice(source);
         let value = u64::from_le_bytes(bytes);
+        // E8 (ADR-0016, decisions Д2 and Д4): a same-page `Explicit` write of the set loop's
+        // adapter goes through the data translation cache, only where the write below would be
+        // exactly `self.access(address, context, Write { width, value })`: after the refusals of
+        // `read_only_qword`, the vector and the width above, no descriptor-table target (its check
+        // and record) and no stack frame of a delivery (`ImplicitStack`), inside one 4 KiB page
+        // (no `write_crossing_page`, no `CrossesPage`), the large-RAM profile, the capture modes
+        // off.
+        if let Some(cache) = self.data_cache
+            && context.origin == AccessOrigin::Explicit
+            && (address & 0xfff) + expected as u64 <= 0x1000
+            && self.large_ram_profile
+            && !self.capture_effects
+            && !self.capture_page_fault_trace
+        {
+            return self.write_through_data_cache(cache, address, context, width, value, source);
+        }
         let descriptor_target = if context.origin == AccessOrigin::DescriptorTable {
             if self.descriptor_gate.is_some() {
                 return Err(MemoryError::Backend(

@@ -1815,6 +1815,9 @@ pub struct FirmwareUnifiedRun {
     /// The block check of the run (PERF-33, E5, step 4, `--block-cache-verify`): `None` when it
     /// was not asked for.
     pub block_check: Option<BlockCheckReport>,
+    /// The check of the data translation cache (E8, step 8, `--data-cache-verify`): `None` when
+    /// it was not asked for.
+    pub data_cache_check: Option<DataCacheCheckReport>,
     /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
     /// over the life of the board's cache: `None` when it was not enabled.
     pub block_stats: Option<crate::DecodedBlockCacheStats>,
@@ -1830,6 +1833,15 @@ pub struct FirmwareUnifiedRun {
 pub struct BlockCheckReport {
     pub counters: od_isa::predecoded_block::BlockCheckCounters,
     pub divergence: Option<BlockCheckDivergenceReport>,
+}
+
+/// What the check of the data translation cache (E8, step 8, ADR-0016 decision Д5) did in a
+/// unified run: the counters and the first divergence, which also ended the run (its exit is a
+/// `MemoryError::Backend` with the text of the divergence).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataCacheCheckReport {
+    pub counters: crate::data_translation_cache::check::DataCacheCheckCounters,
+    pub divergence: Option<crate::data_translation_cache::check::DataCacheCheckDivergence>,
 }
 
 /// The first divergence of the block check with the bytes at its RIP.
@@ -2195,6 +2207,11 @@ pub fn run_firmware_unified_with_fast_path(
     if block_check {
         od_isa::predecoded_block::reset_block_check();
     }
+    // E8 (step 8): the check of the data translation cache counts on this thread too.
+    let data_cache_check = board.data_cache_verify();
+    if data_cache_check {
+        crate::data_translation_cache::check::reset_data_cache_check();
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
     // The loop runs on this thread, so its counters are this thread's.
@@ -2220,6 +2237,10 @@ pub fn run_firmware_unified_with_fast_path(
             counters,
             divergence,
         }
+    });
+    let data_cache_check = data_cache_check.then(|| DataCacheCheckReport {
+        counters: crate::data_translation_cache::check::data_cache_check_counters(),
+        divergence: crate::data_translation_cache::check::take_data_cache_check_divergence(),
     });
     let call_trace = board.take_call_trace();
     let op_histogram = board.take_op_histogram();
@@ -2359,6 +2380,7 @@ pub fn run_firmware_unified_with_fast_path(
         op_histogram,
         fast_path_check,
         block_check,
+        data_cache_check,
         block_stats: board.block_cache_stats(),
         block_ends: board.block_end_report(),
     })
@@ -14772,7 +14794,7 @@ mod tests {
                 Some(&sweep),
                 crate::fetch_translation_cache::FetchCacheTag::Page4K,
                 None,
-                false,
+                crate::data_translation_cache::DataCacheUse::Off,
                 false,
                 None,
             );
