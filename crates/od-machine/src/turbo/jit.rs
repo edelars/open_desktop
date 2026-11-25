@@ -479,9 +479,9 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         {
             p(Role::Straight, F_CF, F_ALL & !F_CF, true)
         }
+        // `LockSubDwordImm8` is a CPL3-profile form the general CPL0 step refuses: not admitted.
         Operation::LockAddMem { destination, .. }
         | Operation::LockSubMem { destination, .. }
-        | Operation::LockSubDwordImm8 { destination, .. }
         | Operation::LockAddMemReg { destination, .. }
         | Operation::LockSubMemReg { destination, .. }
             if mem_ok(&destination) && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
@@ -2191,10 +2191,6 @@ impl<'e> Ctx<'e> {
             Operation::LockSubMem {
                 destination,
                 immediate,
-            }
-            | Operation::LockSubDwordImm8 {
-                destination,
-                immediate,
             } => self.alu(
                 AluKind::Arith(ArithmeticKind::Sub),
                 Operand::Memory(destination),
@@ -2552,11 +2548,15 @@ impl<'e> Ctx<'e> {
                 ));
                 asm.emit(a64::csel(true, 13, T1, T2, Cond::Eq));
                 asm.emit(a64::str_imm(bytes, 13, ADDR, 0));
-                self.arith_flags(ArithmeticKind::Cmp, destination.size, T0, T2, true);
-                // RAX only on inequality (a dword write zero-extends RAX).
+                // The old memory value into T1 (the replacement is stored): `arith_flags` leaves
+                // its operands and writes its result to T2.
+                asm.emit(a64::mov_reg(true, T1, T2));
+                self.arith_flags(ArithmeticKind::Cmp, destination.size, T0, T1, true);
+                // RAX takes the old memory value only on inequality (a dword write zero-extends
+                // RAX).
                 let equal = self.asm.label();
                 self.asm.b_cond_to(Cond::Eq, equal);
-                self.store_reg(T2, accumulator, true);
+                self.store_reg(T1, accumulator, true);
                 self.asm.bind(equal);
                 true
             }
@@ -2697,7 +2697,10 @@ impl<'e> Ctx<'e> {
                 true
             }
             Operation::Sti => {
-                // IF = 1 and the shadow (the helper); the boundary after it is the loop's.
+                // IF = 1 and the shadow (the helper); the boundary after it is the loop's. An STI
+                // in the shadow of another one is the general step's (it refuses it): the helper
+                // changes nothing and the block leaves before the STI.
+                let exit = self.exit_before();
                 let defined = self.defined;
                 self.emit_defined(defined);
                 let asm = &mut self.asm;
@@ -2706,6 +2709,7 @@ impl<'e> Ctx<'e> {
                 asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_STI_HELPER));
                 asm.emit(a64::blr(16));
                 asm.emit(a64::msr_nzcv(25));
+                asm.cbnz_to(true, 0, exit);
                 asm.mov_imm64(1, self.next_rip);
                 asm.emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
                 let exit_common = self.engine.exit_common;

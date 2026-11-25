@@ -2282,11 +2282,15 @@ unsafe extern "C" fn div_helper(state: *mut LongModeState, divisor: u64, params:
     0
 }
 
-/// STI of generated code (bare `FB` at CPL0, the shadow clear before it): IF = 1, and the
-/// one-instruction shadow when IF was 0.
-unsafe extern "C" fn sti_helper(state: *mut LongModeState) {
+/// STI of generated code (bare `FB` at CPL0): IF = 1, and the one-instruction shadow when IF was
+/// 0; 0 returned. In the shadow of another STI (the one instruction the engine runs there) nothing
+/// changes and 1 is returned: the general step owns that case (its profile refuses it).
+unsafe extern "C" fn sti_helper(state: *mut LongModeState) -> u64 {
     // SAFETY: called only from generated code during a run.
     let state = unsafe { &mut *state };
+    if state.sti_shadow != Some(od_isa::StiShadow::Clear) {
+        return 1;
+    }
     let was_enabled = state.rflags & (1 << 9) != 0;
     state.rflags |= 1 << 9;
     state.sti_shadow = Some(if was_enabled {
@@ -2294,6 +2298,7 @@ unsafe extern "C" fn sti_helper(state: *mut LongModeState) {
     } else {
         od_isa::StiShadow::Blocking
     });
+    0
 }
 
 /// Admission of one instruction of generated code in the STI shadow (it clears after it).

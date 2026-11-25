@@ -587,7 +587,9 @@ struct Engine(Option<Box<TurboEngine>>);
 impl Engine {
     fn take(machine: &Machine) -> Self {
         let engine = POOL.lock().unwrap().pop();
-        let mut engine = engine.unwrap_or_else(|| TurboEngine::new(super::test_arena().expect("test arena")).expect("turbo engine"));
+        let mut engine = engine.unwrap_or_else(|| {
+            TurboEngine::new(super::test_arena().expect("test arena")).expect("turbo engine")
+        });
         engine.reset(machine.bus.physical_memory());
         engine.stats = super::TurboStats::default();
         Self(Some(engine))
@@ -595,7 +597,9 @@ impl Engine {
 
     /// A new engine (it goes to the pool afterwards).
     fn fresh() -> Self {
-        Self(Some(TurboEngine::new(super::test_arena().expect("test arena")).expect("turbo engine")))
+        Self(Some(
+            TurboEngine::new(super::test_arena().expect("test arena")).expect("turbo engine"),
+        ))
     }
 
     fn get(&mut self) -> &mut TurboEngine {
@@ -2306,8 +2310,8 @@ fn gs(asm: &mut Asm, rng: &mut Rng, v: u64) {
     }
 }
 
-/// The LOCK forms `jit::plan` admits but `LOCK SUB m32, imm8` (a known mismatch, see
-/// `lock_sub_dword_imm8_is_refused_by_the_general_step`).
+/// The LOCK forms `jit::plan` admits (all but `LOCK SUB m32, imm8`, a form the general CPL0 step
+/// refuses, see `lock_sub_dword_imm8_is_refused_by_the_general_step`).
 fn lock(asm: &mut Asm, rng: &mut Rng, v: u64) {
     lock_any(asm, rng, if v >= 10 { v + 1 } else { v });
 }
@@ -2583,7 +2587,7 @@ const TEMPLATES: &[Template] = &[
     Template {
         name: "lock_sub_dword_imm8",
         variants: 1,
-        jit: yes,
+        jit: no,
         emit: lock_sub_dword_imm8,
     },
     Template {
@@ -2600,9 +2604,10 @@ const TEMPLATES: &[Template] = &[
     },
 ];
 
-/// Templates with a known difference (each has an ignored test of its own): kept out of the
-/// other tests so that those find new differences.
-const KNOWN_MISMATCHES: &[&str] = &["cmpxchg_unequal", "lock_sub_dword_imm8"];
+/// Templates kept out of the random sequences: known differences (each has an ignored test of its
+/// own, none at present) and forms the general CPL0 step refuses (both runs stop there, so in the
+/// middle of a sequence they would cut it short).
+const KNOWN_MISMATCHES: &[&str] = &["lock_sub_dword_imm8"];
 
 fn template(name: &str) -> &'static Template {
     TEMPLATES
@@ -3735,10 +3740,9 @@ fn the_comparison_finds_a_difference_in_every_compared_part() {
 // ---- known mismatches ----------------------------------------------------------------------------
 
 /// CMPXCHG whose accumulator differs from memory must load the old memory value into RAX/EAX
-/// (ZF = 0). The turbo engine stores RAX - [mem] instead (in every form: LOCK, none, DS; 32 and
-/// 64 bits).
+/// (ZF = 0), in every form (LOCK, none, DS; 32 and 64 bits). (Found by these tests: the engine
+/// once stored RAX - [mem].)
 #[test]
-#[ignore = "turbo mismatch: CMPXCHG with RAX != [mem] loads RAX - [mem] into RAX"]
 fn cmpxchg_with_an_unequal_accumulator_loads_the_old_memory_value() {
     // cmpxchg [rbx + 0x40], rcx; hlt
     let program = [0x48, 0x0F, 0xB1, 0x4B, 0x40, 0xF4];
@@ -3752,10 +3756,10 @@ fn cmpxchg_with_an_unequal_accumulator_loads_the_old_memory_value() {
 }
 
 /// `LOCK SUB m32, imm8` (`F0 83 /5 ib` without REX.W, the decoder's `LockSubDwordImm8`, a CPL3
-/// form): `jit::plan` admits it, the general CPL0 step refuses it (`Unsupported { opcode: 0x83 }`)
-/// and the loop stops there; the turbo engine executes it and goes on.
+/// form): the general CPL0 step refuses it (`Unsupported { opcode: 0x83 }`) and the loop stops
+/// there; `jit::plan` does not admit it, so the turbo run stops at the same place. (Found by these
+/// tests: the engine once executed it.)
 #[test]
-#[ignore = "turbo mismatch: LOCK SUB m32, imm8 runs in turbo, the general CPL0 step refuses it"]
 fn lock_sub_dword_imm8_is_refused_by_the_general_step() {
     // lock sub dword [rbx + 0x40], 5; hlt
     let program = [0xF0, 0x83, 0x6B, 0x40, 0x05, 0xF4];
@@ -3763,9 +3767,9 @@ fn lock_sub_dword_imm8_is_refused_by_the_general_step() {
 }
 
 /// STI in the shadow of STI: the general step refuses the second STI (`Unsupported { opcode:
-/// 0xFB }`), the turbo engine executes it (one instruction in the shadow) and goes on.
+/// 0xFB }`); the engine's STI leaves to the general step in the shadow, so both runs stop there.
+/// (Found by these tests: the engine once executed it.)
 #[test]
-#[ignore = "turbo mismatch: STI in the shadow of STI runs in turbo, the general step refuses it"]
 fn an_sti_in_the_shadow_of_sti_is_refused_by_the_general_step() {
     scenario(
         "sti sti",
