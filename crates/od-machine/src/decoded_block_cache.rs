@@ -41,7 +41,7 @@ pub const BLOCK_CACHE_COUNTED: bool = cfg!(debug_assertions);
 
 /// The default size of the table: 2^13 slots (PERF-33, E2 step 5: with blocks of up to
 /// `MAX_BLOCK_INSTRUCTIONS` = 64 the memory is bounded by 38 404 096 bytes, under 64 MiB; 2^14
-/// slots gave 76 808 192 bytes).
+/// slots gave 76 808 192 bytes; E10: with the handler next to every decode, 63 569 920 bytes).
 pub(crate) const DEFAULT_DECODED_BLOCK_SLOTS: usize = 1 << 13;
 
 /// The buckets of [`DecodedBlockCacheStats::run_lengths`]: the lower bound of each.
@@ -51,12 +51,14 @@ pub const BLOCK_RUN_LENGTH_BUCKETS: [u64; 7] = [1, 2, 3, 4, 8, 16, 32];
 /// (the runner's `unified.block_stats.end_reasons`). The run got to the end of its block:
 /// `branch` (the block ends with a Jcc/JMP/CALL/RET, taken or not: the norm),
 /// `outside_fast_path` (the block ends before an instruction `fast_block_role` does not admit),
-/// `branch_prefix_filtered` (before a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix, which
-/// the filter does not admit), `page_end`, `page_crossing` (before an instruction that needs a byte
+/// `branch_prefix_filtered` (before a Jcc/JMP/CALL/RET outside the form of `executable`: a
+/// LOCK/REP/REPNE or FS/GS prefix, and since E10 also 66, 67, a CS/DS/ES/SS segment, REX ..., none
+/// of which has a handler), `page_end`, `page_crossing` (before an instruction that needs a byte
 /// of the next page), `length_limit` (`MAX_BLOCK_INSTRUCTIONS`), `decode_error`. The run was cut
-/// inside its block: `refused` (the fast path refused an instruction the filter admitted),
-/// `branch_prefix_refused` (the refused one is a Jcc/JMP/CALL/RET with other non-default prefixes:
-/// 66, a CS/DS/ES/SS segment, REX ...), `not_retired` (a fault, an error or another exit of the
+/// inside its block: `refused` (the dynamic admission of the fast path refused an instruction of
+/// the block: CPL, TF/RF, the shadow; since E10 the only refusal, and with the admission once per
+/// pass only at the first instruction of a run), `branch_prefix_refused` (the refused one is a
+/// prefixed Jcc/JMP/CALL/RET; zero since E10, kept for the format of the report), `not_retired` (a fault, an error or another exit of the
 /// step), `holds_failed`, `call_end` (the batched call ended inside the block: the batch boundary,
 /// the budget, a stop). `unknown`: a block built without its end recorded (counting turned on after
 /// the build, a test mutation).
@@ -93,7 +95,7 @@ const END_UNKNOWN: usize = 12;
 /// reasons of [`BlockEndReport::general`] (the runner's `unified.block_stats.general_by_key`):
 /// `no_lookup` (the gate of the lookup did not pass: the translation is not in the fetch cache, not
 /// RAM, ...), `not_block_form` (no block starts at the RIP: the instruction is outside the filter),
-/// `branch_prefix_filtered` (the same for a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix),
+/// `branch_prefix_filtered` (the same for a Jcc/JMP/CALL/RET outside the form of `executable`),
 /// `page_crossing` and `decode_error` (no block starts at the RIP for that reason), `refused` and
 /// `branch_prefix_refused` (as in [`BLOCK_RUN_END_REASONS`]), `single_step` (a one-instruction
 /// call of the set loop, which has no blocks: CPL3, RF, the fetch cache shadows).
@@ -1126,30 +1128,44 @@ mod tests {
         assert_eq!((stats.flushes, stats.resets), (1, 1));
     }
 
-    /// PERF-33 (E2, step 5): the memory of the table. The size of `Instruction` is written here as
-    /// a constant so that a growth of the type shows; the bound of the table follows from it:
-    /// every slot full with a block of `MAX_BLOCK_INSTRUCTIONS`, and it stays under 64 MiB.
+    /// PERF-33 (E2, step 5; E10): the memory of the table. The sizes of `Instruction`, of the
+    /// handler of the fast path and of a block entry (both, E10: ADR-0018, «Дополнение E10»,
+    /// decision 5) are written here as constants so that a growth of a type shows; the bound of the
+    /// table follows from them: every slot full with a block of `MAX_BLOCK_INSTRUCTIONS`, and it
+    /// stays under 64 MiB (an entry of at most 120 bytes).
     #[test]
     fn the_memory_of_the_table_is_bounded() {
+        use od_isa::execute::FastHandler;
         use od_isa::long_decode::Instruction;
-        use od_isa::predecoded_block::MAX_BLOCK_INSTRUCTIONS;
+        use od_isa::predecoded_block::{BlockInstruction, MAX_BLOCK_INSTRUCTIONS};
         const INSTRUCTION_BYTES: usize = 72;
+        const HANDLER_BYTES: usize = 48;
+        const ENTRY_BYTES: usize = 120;
         const SLOT_BYTES: usize = 64;
-        // 2^13 × 64 + 2^13 × (16 + 64 × 72).
-        const BOUND_BYTES: usize = 38_404_096;
+        // 2^13 × 64 + 2^13 × (16 + 64 × 120).
+        const BOUND_BYTES: usize = 63_569_920;
         let instruction = std::mem::size_of::<Instruction>();
+        let handler = std::mem::size_of::<FastHandler>();
+        let entry = std::mem::size_of::<BlockInstruction>();
         let slot = std::mem::size_of::<Option<Entry>>();
         // An `Arc<[T]>` allocation: the two counts, then the elements.
         let block_header = 2 * std::mem::size_of::<usize>();
         let slots = DEFAULT_DECODED_BLOCK_SLOTS;
         let table = slots * slot;
-        let blocks = slots * (block_header + MAX_BLOCK_INSTRUCTIONS * instruction);
+        let blocks = slots * (block_header + MAX_BLOCK_INSTRUCTIONS * entry);
         println!(
-            "size_of::<Instruction>() = {instruction}, size_of::<Option<Entry>>() = {slot}, \
+            "size_of::<Instruction>() = {instruction}, size_of::<FastHandler>() = {handler}, \
+             size_of::<BlockInstruction>() = {entry}, size_of::<Option<Entry>>() = {slot}, \
              table = {table} bytes, blocks at most = {blocks} bytes, bound = {} bytes",
             table + blocks
         );
         assert_eq!(instruction, INSTRUCTION_BYTES);
+        assert_eq!(handler, HANDLER_BYTES);
+        assert_eq!(entry, ENTRY_BYTES);
+        assert!(
+            entry <= 120,
+            "a block entry over 120 bytes breaks the 64 MiB bound"
+        );
         assert_eq!(slot, SLOT_BYTES);
         assert_eq!(table + blocks, BOUND_BYTES);
         assert!(table + blocks <= 64 << 20);

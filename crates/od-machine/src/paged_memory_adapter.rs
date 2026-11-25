@@ -7263,6 +7263,15 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         true
     }
 
+    /// E10 (ADR-0018, «Дополнение E10», «Диагностические режимы»): the dynamic admission once per
+    /// pass of a block (Д2) exactly where the short boundary of E9 is on for the call: the call
+    /// has its pass boundary (the unified loop of the board, no call trace, blocks without
+    /// `--block-cache-verify`) and is not the check of `--block-boundary-verify`.
+    #[inline(always)]
+    fn block_admission_once(&self) -> bool {
+        self.decoded.pass.as_ref().is_some_and(|pass| !pass.verify)
+    }
+
     fn block_run_cut(&mut self, instruction: &Instruction, refused: bool) {
         if let Some(blocks) = self.decoded.blocks {
             blocks.note_run_cut(instruction, refused);

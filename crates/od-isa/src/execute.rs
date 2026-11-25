@@ -7,9 +7,10 @@ use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
-    LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3PermuteKind,
-    Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind, SseFpArithKind,
-    SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical, general_protection,
+    FlagEffects, LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind,
+    Sse3PermuteKind, Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind,
+    SseFpArithKind, SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical,
+    general_protection,
 };
 use crate::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory,
@@ -34727,6 +34728,430 @@ pub fn run_with_fast_path_check(
     )
 }
 
+/// E10 (ADR-0018, «Дополнение E10»): the handler of the fast path for one decoded instruction,
+/// chosen once by [`fast_handler`] (the only place of the static rule) and run by
+/// [`run_fast_handler`]. A block (`crate::predecoded_block::DecodedBlock`) keeps it next to the
+/// decode, so the run of a block does not choose again; outside blocks [`try_fast_step`] chooses it
+/// from the fresh decode and runs the same executor. The variant is the (operation, operand form)
+/// and carries the operands ready to use; a variant never holds an `Operand` (the size of a block
+/// entry is bounded, `decoded_block_cache::the_memory_of_the_table_is_bounded` in `od-machine`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FastHandler(FastOp);
+
+/// The count operand of a register shift (the `count` of `Operation::Shift`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShiftCount {
+    Register(RegisterView),
+    Immediate(u64),
+}
+
+impl ShiftCount {
+    #[inline(always)]
+    fn operand(self) -> Operand {
+        match self {
+            ShiftCount::Register(view) => Operand::Register(view),
+            ShiftCount::Immediate(value) => Operand::Immediate(value),
+        }
+    }
+}
+
+/// The variants of [`FastHandler`] (groups G1-G6 of ADR-0017 and PERF-33 E4). `effects` is
+/// `Instruction::flag_effects()` of the instruction, taken when the handler is chosen; `size` its
+/// `operand_size`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FastOp {
+    // G1/G4: MOV, MOVZX/MOVSX/MOVSXD, LEA (the pieces of `transfer`).
+    MovRegReg {
+        dst: RegisterView,
+        src: RegisterView,
+    },
+    MovRegImm {
+        dst: RegisterView,
+        value: u64,
+    },
+    MovRegMem {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
+    MovMemReg {
+        dst: MemoryOperand,
+        src: RegisterView,
+    },
+    MovMemImm {
+        dst: MemoryOperand,
+        value: u64,
+    },
+    ExtendReg {
+        dst: RegisterView,
+        src: RegisterView,
+        signed: bool,
+    },
+    ExtendMem {
+        dst: RegisterView,
+        src: MemoryOperand,
+        signed: bool,
+    },
+    Lea {
+        dst: RegisterView,
+        src: MemoryOperand,
+    },
+    // G2 (register forms) and G5 (memory forms): ADD/ADC/SUB/SBB/CMP/INC/DEC/NEG.
+    ArithRegReg {
+        kind: ArithmeticKind,
+        size: OperandSize,
+        dst: RegisterView,
+        src: RegisterView,
+        effects: FlagEffects,
+    },
+    ArithRegImm {
+        kind: ArithmeticKind,
+        size: OperandSize,
+        dst: RegisterView,
+        value: u64,
+        effects: FlagEffects,
+    },
+    ArithRegMem {
+        kind: ArithmeticKind,
+        size: OperandSize,
+        dst: RegisterView,
+        src: MemoryOperand,
+        effects: FlagEffects,
+    },
+    ArithMemReg {
+        kind: ArithmeticKind,
+        size: OperandSize,
+        dst: MemoryOperand,
+        src: RegisterView,
+        effects: FlagEffects,
+    },
+    ArithMemImm {
+        kind: ArithmeticKind,
+        size: OperandSize,
+        dst: MemoryOperand,
+        value: u64,
+        effects: FlagEffects,
+    },
+    // G2 and G5: AND/OR/XOR/TEST/NOT.
+    LogicRegReg {
+        kind: LogicKind,
+        size: OperandSize,
+        dst: RegisterView,
+        src: RegisterView,
+        effects: FlagEffects,
+    },
+    LogicRegImm {
+        kind: LogicKind,
+        size: OperandSize,
+        dst: RegisterView,
+        value: u64,
+        effects: FlagEffects,
+    },
+    LogicRegMem {
+        kind: LogicKind,
+        size: OperandSize,
+        dst: RegisterView,
+        src: MemoryOperand,
+        effects: FlagEffects,
+    },
+    LogicMemReg {
+        kind: LogicKind,
+        size: OperandSize,
+        dst: MemoryOperand,
+        src: RegisterView,
+        effects: FlagEffects,
+    },
+    LogicMemImm {
+        kind: LogicKind,
+        size: OperandSize,
+        dst: MemoryOperand,
+        value: u64,
+        effects: FlagEffects,
+    },
+    // G2: shifts, rotates, SHLD/SHRD of registers (`exec_shift` keeps its own definedness).
+    Shift {
+        kind: ShiftKind,
+        dst: RegisterView,
+        source: Option<RegisterView>,
+        count: ShiftCount,
+    },
+    // G6: two-operand IMUL.
+    ImulReg {
+        dst: RegisterView,
+        src: RegisterView,
+        effects: FlagEffects,
+    },
+    ImulMem {
+        dst: RegisterView,
+        src: MemoryOperand,
+        effects: FlagEffects,
+    },
+    // G5: PUSH/POP of a register.
+    StackRegister {
+        push: bool,
+        register: Register,
+        width: OperandSize,
+    },
+    // G3/G5: control transfers in the form of `executable` (the last instruction of a block).
+    Branch {
+        condition: ConditionCode,
+        displacement: i32,
+    },
+    Jump {
+        displacement: i32,
+    },
+    Call {
+        displacement: i32,
+    },
+    Return {
+        stack_adjust: u16,
+    },
+    // G6: NOP and the ModRM NOP.
+    Nop,
+    NopModrm,
+}
+
+impl FastHandler {
+    /// Whether the handler changes the flow (Jcc, JMP, CALL, RET): a block ends after it.
+    #[inline(always)]
+    pub fn changes_flow(self) -> bool {
+        matches!(
+            self.0,
+            FastOp::Branch { .. }
+                | FastOp::Jump { .. }
+                | FastOp::Call { .. }
+                | FastOp::Return { .. }
+        )
+    }
+}
+
+/// E10 (ADR-0018, «Дополнение E10», decision 1): the static rule of the fast path, its only place.
+/// The handler of `instruction`, or `None` when the fast path never runs it: a LOCK/REP/REPNE
+/// prefix, an FS/GS segment prefix, an operation outside groups G1-G6, an operand form the fast
+/// path has no arm for (`Shift` with memory, `Extend` of an immediate, shapes the decoder does not
+/// produce), a control transfer outside the form of `executable` (ADR-0017, 2.2: opcode map and
+/// byte, default prefixes). Reads `instruction` only.
+#[inline(always)]
+pub fn fast_handler(instruction: &crate::long_decode::Instruction) -> Option<FastHandler> {
+    if instruction.prefixes.group1.is_some()
+        || matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
+    {
+        return None;
+    }
+    let size = instruction.operand_size;
+    let default_prefixes = instruction.prefixes == Prefixes::default();
+    let op = match instruction.operation {
+        Operation::Arithmetic { kind, dst, src } => {
+            let effects = instruction.flag_effects();
+            match (dst, src) {
+                (Operand::Register(dst), Operand::Register(src)) => FastOp::ArithRegReg {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Register(dst), Operand::Immediate(value)) => FastOp::ArithRegImm {
+                    kind,
+                    size,
+                    dst,
+                    value,
+                    effects,
+                },
+                (Operand::Register(dst), Operand::Memory(src)) => FastOp::ArithRegMem {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Memory(dst), Operand::Register(src)) => FastOp::ArithMemReg {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Memory(dst), Operand::Immediate(value)) => FastOp::ArithMemImm {
+                    kind,
+                    size,
+                    dst,
+                    value,
+                    effects,
+                },
+                _ => return None,
+            }
+        }
+        Operation::Logic { kind, dst, src } => {
+            let effects = instruction.flag_effects();
+            match (dst, src) {
+                (Operand::Register(dst), Operand::Register(src)) => FastOp::LogicRegReg {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Register(dst), Operand::Immediate(value)) => FastOp::LogicRegImm {
+                    kind,
+                    size,
+                    dst,
+                    value,
+                    effects,
+                },
+                (Operand::Register(dst), Operand::Memory(src)) => FastOp::LogicRegMem {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Memory(dst), Operand::Register(src)) => FastOp::LogicMemReg {
+                    kind,
+                    size,
+                    dst,
+                    src,
+                    effects,
+                },
+                (Operand::Memory(dst), Operand::Immediate(value)) => FastOp::LogicMemImm {
+                    kind,
+                    size,
+                    dst,
+                    value,
+                    effects,
+                },
+                _ => return None,
+            }
+        }
+        Operation::Shift {
+            kind,
+            dst: Operand::Register(dst),
+            source,
+            count,
+            ..
+        } => {
+            let source = match source {
+                None => None,
+                Some(Operand::Register(view)) => Some(view),
+                Some(_) => return None,
+            };
+            let count = match count {
+                Operand::Register(view) => ShiftCount::Register(view),
+                Operand::Immediate(value) => ShiftCount::Immediate(value),
+                Operand::Memory(_) => return None,
+            };
+            FastOp::Shift {
+                kind,
+                dst,
+                source,
+                count,
+            }
+        }
+        Operation::Mov { dst, src } => match (dst, src) {
+            (Operand::Register(dst), Operand::Register(src)) => FastOp::MovRegReg { dst, src },
+            (Operand::Register(dst), Operand::Immediate(value)) => FastOp::MovRegImm { dst, value },
+            (Operand::Register(dst), Operand::Memory(src)) => FastOp::MovRegMem { dst, src },
+            (Operand::Memory(dst), Operand::Register(src)) => FastOp::MovMemReg { dst, src },
+            (Operand::Memory(dst), Operand::Immediate(value)) => FastOp::MovMemImm { dst, value },
+            // Not produced by the decoder (memory to memory, an immediate destination).
+            _ => return None,
+        },
+        Operation::MovImmediate { dst, value } => match dst {
+            Operand::Register(dst) => FastOp::MovRegImm { dst, value },
+            Operand::Memory(dst) => FastOp::MovMemImm { dst, value },
+            Operand::Immediate(_) => return None,
+        },
+        Operation::Extend { dst, src, signed } => match src {
+            Operand::Register(src) => FastOp::ExtendReg { dst, src, signed },
+            Operand::Memory(src) => FastOp::ExtendMem { dst, src, signed },
+            Operand::Immediate(_) => return None,
+        },
+        Operation::Lea { dst, src } => FastOp::Lea { dst, src },
+        Operation::Imul { dst, src } => {
+            let effects = instruction.flag_effects();
+            match src {
+                Operand::Register(src) => FastOp::ImulReg { dst, src, effects },
+                Operand::Memory(src) => FastOp::ImulMem { dst, src, effects },
+                Operand::Immediate(_) => return None,
+            }
+        }
+        Operation::StackRegister { push, register } => FastOp::StackRegister {
+            push,
+            register,
+            width: size,
+        },
+        Operation::Branch {
+            condition,
+            displacement,
+        } if default_prefixes
+            && matches!(
+                instruction.opcode.map,
+                OpcodeMap::Primary | OpcodeMap::Escape0f
+            ) =>
+        {
+            FastOp::Branch {
+                condition,
+                displacement,
+            }
+        }
+        Operation::Jump { displacement }
+            if default_prefixes && instruction.opcode.map == OpcodeMap::Primary =>
+        {
+            FastOp::Jump { displacement }
+        }
+        Operation::Call { displacement }
+            if default_prefixes
+                && instruction.opcode.map == OpcodeMap::Primary
+                && instruction.opcode.byte == 0xe8 =>
+        {
+            FastOp::Call { displacement }
+        }
+        Operation::Return { stack_adjust }
+            if default_prefixes
+                && instruction.opcode.map == OpcodeMap::Primary
+                && matches!(instruction.opcode.byte, 0xc3 | 0xc2) =>
+        {
+            FastOp::Return { stack_adjust }
+        }
+        Operation::Nop => FastOp::Nop,
+        Operation::NopModrm => FastOp::NopModrm,
+        _ => return None,
+    };
+    Some(FastHandler(op))
+}
+
+/// E10 (ADR-0018, «Дополнение E10»): the dynamic admission of the fast path (ADR-0017, section 4):
+/// CPL0, RF = 0, TF = 0, no STI/MOV SS shadow. Reads only.
+#[inline(always)]
+pub(crate) fn fast_admitted(state: &LongModeState, context: AccessContext) -> bool {
+    const TF: u64 = 1 << 8;
+    const RF: u64 = 1 << 16;
+    context.privilege == PrivilegeLevel::Ring0
+        && state.rflags & (TF | RF) == 0
+        && state.sti_shadow == Some(crate::StiShadow::Clear)
+}
+
+/// E10 (ADR-0018, «Дополнение E10»): the instruction a block holds, run by its stored handler
+/// after the dynamic admission (asked by the caller). The run of a block calls it for every
+/// instruction it runs; outside blocks [`try_fast_step`] runs the same executor.
+#[inline(never)]
+pub(crate) fn run_block_instruction(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    entry: &crate::predecoded_block::BlockInstruction,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    run_fast_handler(
+        &entry.handler(),
+        entry.instruction(),
+        state,
+        memory,
+        context,
+        rflags_defined,
+        true,
+    )
+}
+
 /// PERF-21/22/23 (ADR-0017, section 3): the fast path of one decoded instruction, placed right
 /// after the decode in the step. The contract: `None` ("not handled") only before any side effect,
 /// from an admission that reads `instruction`, `state` and `context` and writes nothing; after it
@@ -34735,32 +35160,8 @@ pub fn run_with_fast_path_check(
 /// (`Cpl0ProfileSet::with_fast_path`, off by default, ADR-0017, section 3, "Включение"); the check
 /// of [`crate::fast_path_check`] calls it too, on a replay.
 ///
-/// PERF-23, group G2: `Arithmetic`, `Logic` and `Shift` whose operands are registers or
-/// immediates. The work is done by the functions the general path calls (`exec_arithmetic`,
-/// `exec_logic`, `exec_shift`); no flag formula lives here.
-///
-/// PERF-24, group G1: `Mov` and `MovImmediate` with a register destination and a register or
-/// immediate source. Group G3: relative `Branch` (Jcc) and `Jump` (JMP rel8/rel32), the target
-/// from `relative_target` (the canonical check of the general path). Group G4 (PERF-24b): `Mov`
-/// and `MovImmediate` with a memory operand, `Extend` (MOVZX/MOVSX/MOVSXD, register or memory
-/// source) and `Lea`, through the pieces of `transfer`. A memory access is not refused ahead
-/// (whether it faults is known only to the memory, whose page walk already has effects): it is
-/// made with the calls of the general path, and its error ends the instruction as there.
-///
-/// PERF-25, group G5: `Arithmetic` and `Logic` with a memory operand (`fast_alu_memory`: the
-/// memory calls of `exec_arithmetic`/`exec_logic` in their order, one address check), PUSH/POP
-/// of a register (`exec_stack_register`), `CALL rel32` (`exec_call`) and `RET`/`RET imm16`
-/// (`exec_return`), the last three shared with the general arms.
-///
-/// PERF-33 (E4), group G6: the two-operand `Imul` (`0F AF`, register or memory source, through
-/// `exec_imul`, shared with the general arm), `Nop` (`90`, `66 90`) and `NopModrm` (`0F 1F /0`,
-/// `0F 18` hints; the operand is never evaluated), both retiring with nothing but RIP changed.
-///
-/// Admission (ADR-0017, section 4): CPL0, RF = 0, TF = 0, no STI/MOV SS shadow, no LOCK/REP/REPNE
-/// prefix, no FS/GS segment prefix; `Shift` also no memory operand; for `Branch`, `Jump`,
-/// `Call` and `Return` also the admission of `executable` (opcode map and byte, default
-/// prefixes); `NopModrm` also its admission in `executable` (a control-register policy).
-/// Everything else is "not handled".
+/// E10 (ADR-0018, «Дополнение E10»): the dynamic admission ([`fast_admitted`]), the static rule
+/// ([`fast_handler`]) and the executor ([`run_fast_handler`]), the one a block runs too.
 #[inline(never)]
 pub(crate) fn try_fast_step(
     state: &mut LongModeState,
@@ -34770,91 +35171,259 @@ pub(crate) fn try_fast_step(
     instruction: &crate::long_decode::Instruction,
     control_policy_present: bool,
 ) -> Option<Result<StepOutcome, MemoryError>> {
-    const TF: u64 = 1 << 8;
-    const RF: u64 = 1 << 16;
-    // Admission: reads only; nothing is written and `memory` is not called.
-    if context.privilege != PrivilegeLevel::Ring0
-        || state.rflags & (TF | RF) != 0
-        || state.sti_shadow != Some(crate::StiShadow::Clear)
-        || instruction.prefixes.group1.is_some()
-        || matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
-    {
+    if !fast_admitted(state, context) {
         return None;
     }
+    let handler = fast_handler(instruction)?;
+    run_fast_handler(
+        &handler,
+        instruction,
+        state,
+        memory,
+        context,
+        rflags_defined,
+        control_policy_present,
+    )
+}
+
+/// E10 (ADR-0018, «Дополнение E10»): the executor of the fast path: `handler` (from
+/// [`fast_handler`] of `instruction`) after the dynamic admission. Every arm calls the functions of
+/// the general path for its operand form; no flag or address formula lives here.
+///
+/// PERF-23, group G2: `Arithmetic`, `Logic` and `Shift` whose operands are registers or
+/// immediates: for `Arithmetic`/`Logic` the pieces of `exec_arithmetic`/`exec_logic` at CPL0
+/// ([`fast_alu_register`]: the register reads, `arithmetic_result`/`logic_result` of the operand
+/// size, the write unless CMP/TEST, the flags; ADR-0018, «Дополнение E10», deviation 1), for
+/// `Shift` `exec_shift` itself.
+///
+/// PERF-24, group G1: `Mov` and `MovImmediate` with a register destination and a register or
+/// immediate source. Group G3: relative `Branch` (Jcc) and `Jump` (JMP rel8/rel32), the target
+/// from `relative_target` (the canonical check of the general path). Group G4 (PERF-24b): `Mov`
+/// and `MovImmediate` with a memory operand, `Extend` (MOVZX/MOVSX/MOVSXD, register or memory
+/// source) and `Lea`, through the pieces of `transfer`. A memory access is not refused ahead
+/// (whether it faults is known only to the memory, whose page walk already has effects): it is
+/// made with the calls of the general path, and its error ends the instruction as there.
+///
+/// PERF-25, group G5: `Arithmetic` and `Logic` with a memory operand (`fast_alu_into_memory` /
+/// `fast_alu_from_memory`: the memory calls of `exec_arithmetic`/`exec_logic` in their order, one
+/// address check), PUSH/POP of a register (`exec_stack_register`), `CALL rel32` (`exec_call`) and
+/// `RET`/`RET imm16` (`exec_return`), the last three shared with the general arms.
+///
+/// PERF-33 (E4), group G6: the two-operand `Imul` (`0F AF`, register or memory source, through
+/// `exec_imul`, shared with the general arm), `Nop` (`90`, `66 90`) and `NopModrm` (`0F 1F /0`,
+/// `0F 18` hints; the operand is never evaluated), both retiring with nothing but RIP changed.
+///
+/// The only refusal left here is `NopModrm` without a control-register policy (the admission of
+/// `executable`), before any effect.
+#[inline(always)]
+fn run_fast_handler(
+    handler: &FastHandler,
+    instruction: &crate::long_decode::Instruction,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    control_policy_present: bool,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    debug_assert_eq!(fast_handler(instruction), Some(*handler), "{instruction:?}");
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    let result = match instruction.operation {
-        // PERF-25, group G5: a memory operand goes to `fast_alu_memory` (the calls of
-        // `exec_arithmetic`/`exec_logic` in their order, the flag formulas of
-        // `arithmetic_result`/`logic_result`); the register forms stay G2. Both end in the common
-        // tail below (flag definedness after the successful write, RIP, `Advanced`; a fault or an
-        // error leaves RIP and the definedness).
-        Operation::Arithmetic { kind, dst, src } => {
-            if matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_)) {
-                let size = instruction.operand_size;
-                fast_alu_memory(
+    // The arms that end in the common tail below give the result of the operation and the flag
+    // definedness of the instruction (PERF-25, group G5, and G2: an ALU operation goes to its form,
+    // the calls of `exec_arithmetic`/`exec_logic` in their order, the flag formulas of
+    // `arithmetic_result`/`logic_result`; a fault or an error leaves RIP and the definedness).
+    let (result, effects) = match handler.0 {
+        FastOp::ArithRegReg {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => {
+            let rhs = state.read(src);
+            fast_alu_register(
+                state,
+                dst,
+                rhs,
+                kind != ArithmeticKind::Cmp,
+                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
+            );
+            (Ok(()), effects)
+        }
+        FastOp::ArithRegImm {
+            kind,
+            size,
+            dst,
+            value,
+            effects,
+        } => {
+            fast_alu_register(
+                state,
+                dst,
+                value,
+                kind != ArithmeticKind::Cmp,
+                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
+            );
+            (Ok(()), effects)
+        }
+        FastOp::ArithRegMem {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => (
+            fast_alu_from_memory(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                src,
+                kind != ArithmeticKind::Cmp,
+                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
+            ),
+            effects,
+        ),
+        FastOp::ArithMemReg {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => {
+            let rhs = state.read(src);
+            (
+                fast_alu_into_memory(
                     state,
                     memory,
                     context,
                     next_rip,
                     dst,
-                    src,
+                    rhs,
                     kind != ArithmeticKind::Cmp,
                     |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-                )?
-            } else {
-                exec_arithmetic(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    instruction,
-                    control_policy_present,
-                    kind,
-                    dst,
-                    src,
-                )
-            }
+                ),
+                effects,
+            )
         }
-        Operation::Logic { kind, dst, src } => {
-            if matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_)) {
-                let size = instruction.operand_size;
-                fast_alu_memory(
+        FastOp::ArithMemImm {
+            kind,
+            size,
+            dst,
+            value,
+            effects,
+        } => (
+            fast_alu_into_memory(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                value,
+                kind != ArithmeticKind::Cmp,
+                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
+            ),
+            effects,
+        ),
+        FastOp::LogicRegReg {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => {
+            let rhs = state.read(src);
+            fast_alu_register(
+                state,
+                dst,
+                rhs,
+                kind != LogicKind::Test,
+                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
+            );
+            (Ok(()), effects)
+        }
+        FastOp::LogicRegImm {
+            kind,
+            size,
+            dst,
+            value,
+            effects,
+        } => {
+            fast_alu_register(
+                state,
+                dst,
+                value,
+                kind != LogicKind::Test,
+                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
+            );
+            (Ok(()), effects)
+        }
+        FastOp::LogicRegMem {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => (
+            fast_alu_from_memory(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                src,
+                kind != LogicKind::Test,
+                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
+            ),
+            effects,
+        ),
+        FastOp::LogicMemReg {
+            kind,
+            size,
+            dst,
+            src,
+            effects,
+        } => {
+            let rhs = state.read(src);
+            (
+                fast_alu_into_memory(
                     state,
                     memory,
                     context,
                     next_rip,
                     dst,
-                    src,
+                    rhs,
                     kind != LogicKind::Test,
                     |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-                )?
-            } else {
-                exec_logic(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    instruction,
-                    control_policy_present,
-                    kind,
-                    dst,
-                    src,
-                )
-            }
+                ),
+                effects,
+            )
         }
-        Operation::Shift {
+        FastOp::LogicMemImm {
+            kind,
+            size,
+            dst,
+            value,
+            effects,
+        } => (
+            fast_alu_into_memory(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                value,
+                kind != LogicKind::Test,
+                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
+            ),
+            effects,
+        ),
+        FastOp::Shift {
             kind,
             dst,
             source,
             count,
-            ..
         } => {
-            if matches!(dst, Operand::Memory(_))
-                || matches!(source, Some(Operand::Memory(_)))
-                || matches!(count, Operand::Memory(_))
-            {
-                return None;
-            }
             let shift = exec_shift(
                 state,
                 memory,
@@ -34864,9 +35433,9 @@ pub(crate) fn try_fast_step(
                 instruction,
                 control_policy_present,
                 kind,
-                dst,
-                source,
-                count,
+                Operand::Register(dst),
+                source.map(Operand::Register),
+                count.operand(),
             );
             // As in the general path: `exec_shift` applied the flag definedness itself.
             return Some(match shift {
@@ -34886,68 +35455,31 @@ pub(crate) fn try_fast_step(
         // `write_memory_operand` (the memory arms of `read_operand`/`write_operand`), for the
         // extension `extended_source` and for LEA `exec_lea`. The order is that of `transfer`:
         // the source is read, then the destination written; a register destination is written only
-        // after its memory read succeeded. A memory error after the admission is not a refusal: it
-        // is mapped like the arm of the general path (`Architectural` -> `Fault`, nothing written,
-        // RIP and `rflags_defined` unchanged; any other error is returned). These operations change
-        // no flag and their flag definedness is the identity (`FlagEffects::default()`), so the tail
-        // only sets RIP.
-        Operation::Mov { dst, src } => {
-            let moved = match (dst, src) {
-                (Operand::Register(dst), Operand::Register(src)) => {
-                    state.write(dst, state.read(src));
-                    Ok(())
-                }
-                (Operand::Register(dst), Operand::Immediate(value)) => {
-                    state.write(dst, value);
-                    Ok(())
-                }
-                (Operand::Register(dst), Operand::Memory(src)) => {
-                    read_memory_operand(state, memory, context, next_rip, src)
-                        .map(|value| state.write(dst, value))
-                }
-                (Operand::Memory(dst), Operand::Register(src)) => {
-                    let value = state.read(src);
-                    write_memory_operand(state, memory, context, next_rip, dst, value)
-                }
-                (Operand::Memory(dst), Operand::Immediate(value)) => {
-                    write_memory_operand(state, memory, context, next_rip, dst, value)
-                }
-                // Not produced by the decoder (memory to memory, an immediate destination): the
-                // general path keeps its own answer.
-                _ => return None,
-            };
-            return Some(retire_transfer(
+        // after its memory read succeeded. A memory error is not a refusal: it is mapped like the
+        // arm of the general path (`Architectural` -> `Fault`, nothing written, RIP and
+        // `rflags_defined` unchanged; any other error is returned). These operations change no flag
+        // and their flag definedness is the identity (`FlagEffects::default()`), so the tail only
+        // sets RIP.
+        FastOp::MovRegReg { dst, src } => {
+            state.write(dst, state.read(src));
+            return Some(retire_without_flag_effects(
                 state,
                 *rflags_defined,
                 instruction,
                 next_rip,
-                moved,
             ));
         }
-        Operation::MovImmediate { dst, value } => {
-            let moved = match dst {
-                Operand::Register(dst) => {
-                    state.write(dst, value);
-                    Ok(())
-                }
-                Operand::Memory(dst) => {
-                    write_memory_operand(state, memory, context, next_rip, dst, value)
-                }
-                Operand::Immediate(_) => return None,
-            };
-            return Some(retire_transfer(
+        FastOp::MovRegImm { dst, value } => {
+            state.write(dst, value);
+            return Some(retire_without_flag_effects(
                 state,
                 *rflags_defined,
                 instruction,
                 next_rip,
-                moved,
             ));
         }
-        Operation::Extend { dst, src, signed } => {
-            if matches!(src, Operand::Immediate(_)) {
-                return None;
-            }
-            let moved = extended_source(state, memory, context, next_rip, src, signed)
+        FastOp::MovRegMem { dst, src } => {
+            let moved = read_memory_operand(state, memory, context, next_rip, src)
                 .map(|value| state.write(dst, value));
             return Some(retire_transfer(
                 state,
@@ -34957,7 +35489,64 @@ pub(crate) fn try_fast_step(
                 moved,
             ));
         }
-        Operation::Lea { dst, src } => {
+        FastOp::MovMemReg { dst, src } => {
+            let value = state.read(src);
+            let moved = write_memory_operand(state, memory, context, next_rip, dst, value);
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        FastOp::MovMemImm { dst, value } => {
+            let moved = write_memory_operand(state, memory, context, next_rip, dst, value);
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        FastOp::ExtendReg { dst, src, signed } => {
+            let moved = extended_source(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Register(src),
+                signed,
+            )
+            .map(|value| state.write(dst, value));
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        FastOp::ExtendMem { dst, src, signed } => {
+            let moved = extended_source(
+                state,
+                memory,
+                context,
+                next_rip,
+                Operand::Memory(src),
+                signed,
+            )
+            .map(|value| state.write(dst, value));
+            return Some(retire_transfer(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+                moved,
+            ));
+        }
+        FastOp::Lea { dst, src } => {
             exec_lea(state, next_rip, dst, src);
             return Some(retire_without_flag_effects(
                 state,
@@ -34966,21 +35555,14 @@ pub(crate) fn try_fast_step(
                 next_rip,
             ));
         }
-        // PERF-24, group G3: the admission of `executable` for Jcc and JMP (ADR-0017, 2.2), then
-        // the arms of the general path: a taken branch goes to `relative_target` (a non-canonical
-        // target is its #GP, nothing written) and is `Branched` without the tail; a branch not
-        // taken retires like any instruction (its flag definedness is the identity).
-        Operation::Branch {
+        // PERF-24, group G3 (the form of `executable` is the static rule of `fast_handler`): a
+        // taken branch goes to `relative_target` (a non-canonical target is its #GP, nothing
+        // written) and is `Branched` without the tail; a branch not taken retires like any
+        // instruction (its flag definedness is the identity).
+        FastOp::Branch {
             condition,
             displacement,
         } => {
-            if !matches!(
-                instruction.opcode.map,
-                OpcodeMap::Primary | OpcodeMap::Escape0f
-            ) || instruction.prefixes != Prefixes::default()
-            {
-                return None;
-            }
             if condition.evaluate(state.rflags) {
                 return Some(Ok(match relative_target(next_rip, displacement) {
                     Ok(target) => {
@@ -34997,12 +35579,7 @@ pub(crate) fn try_fast_step(
                 next_rip,
             ));
         }
-        Operation::Jump { displacement } => {
-            if instruction.opcode.map != OpcodeMap::Primary
-                || instruction.prefixes != Prefixes::default()
-            {
-                return None;
-            }
+        FastOp::Jump { displacement } => {
             return Some(Ok(match relative_target(next_rip, displacement) {
                 Ok(target) => {
                     state.rip = target;
@@ -35018,15 +35595,12 @@ pub(crate) fn try_fast_step(
         // `report_memory_error` with nothing committed. CALL rel32 and RET/RET imm16 only in the
         // form of `executable` with default prefixes (ADR-0017, 2.2; `2E E8`, `66 C3` and the
         // CPL3 addr32 CALL stay in the general path); they are `Branched` without the tail.
-        Operation::StackRegister { push, register } => {
-            let pushed = exec_stack_register(
-                state,
-                memory,
-                context,
-                instruction.operand_size,
-                push,
-                register,
-            );
+        FastOp::StackRegister {
+            push,
+            register,
+            width,
+        } => {
+            let pushed = exec_stack_register(state, memory, context, width, push, register);
             return Some(retire_transfer(
                 state,
                 *rflags_defined,
@@ -35035,32 +35609,34 @@ pub(crate) fn try_fast_step(
                 pushed,
             ));
         }
-        Operation::Call { displacement } => {
-            if instruction.opcode.map != OpcodeMap::Primary
-                || instruction.opcode.byte != 0xe8
-                || instruction.prefixes != Prefixes::default()
-            {
-                return None;
-            }
+        FastOp::Call { displacement } => {
             return Some(exec_call(state, memory, context, next_rip, displacement));
         }
-        Operation::Return { stack_adjust } => {
-            if instruction.opcode.map != OpcodeMap::Primary
-                || !matches!(instruction.opcode.byte, 0xc3 | 0xc2)
-                || instruction.prefixes != Prefixes::default()
-            {
-                return None;
-            }
+        FastOp::Return { stack_adjust } => {
             return Some(exec_return(state, memory, context, stack_adjust));
         }
         // PERF-33 (E4), group G6: the arm of the general path (`exec_imul`), then the common tail
         // below (the flag definedness of `Imul`, RIP, `Advanced`; a fault of the source read
         // leaves everything).
-        Operation::Imul { dst, src } => exec_imul(state, memory, context, next_rip, dst, src),
+        FastOp::ImulReg { dst, src, effects } => (
+            exec_imul(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                Operand::Register(src),
+            ),
+            effects,
+        ),
+        FastOp::ImulMem { dst, src, effects } => (
+            exec_imul(state, memory, context, next_rip, dst, Operand::Memory(src)),
+            effects,
+        ),
         // PERF-33 (E4), group G6: NOP and the ModRM NOP change nothing but RIP (the general arms are
         // empty, `transfer` does nothing for `Nop`; the flag definedness is the identity).
         // `executable` admits `Nop` always and `NopModrm` only under a control-register policy.
-        Operation::Nop => {
+        FastOp::Nop => {
             return Some(retire_without_flag_effects(
                 state,
                 *rflags_defined,
@@ -35068,7 +35644,7 @@ pub(crate) fn try_fast_step(
                 next_rip,
             ));
         }
-        Operation::NopModrm => {
+        FastOp::NopModrm => {
             if !control_policy_present {
                 return None;
             }
@@ -35079,12 +35655,12 @@ pub(crate) fn try_fast_step(
                 next_rip,
             ));
         }
-        _ => return None,
     };
+    debug_assert_eq!(effects, instruction.flag_effects(), "{instruction:?}");
     // The common tail of the general path (flag definedness, RIP, `Advanced`).
     Some(match result {
         Ok(()) => {
-            *rflags_defined = instruction.flag_effects().apply(*rflags_defined);
+            *rflags_defined = effects.apply(*rflags_defined);
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }
@@ -35481,6 +36057,9 @@ fn run_configured_with_profile_mode<
     // of every instruction the general step retired; asked once, so a run that does not count only
     // tests this local.
     let block_stats = BLOCKS && memory.block_stats_counted();
+    // E10 (ADR-0018, «Дополнение E10», decision 3, variant Д2 of the screening F100): the dynamic
+    // admission once per pass of a block, only where the memory allows it for this call.
+    let admit_once = BLOCKS && !BLOCK_VERIFY && memory.block_admission_once();
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -35519,6 +36098,7 @@ fn run_configured_with_profile_mode<
                     memory,
                     config.context,
                     &mut rflags_defined,
+                    admit_once,
                 ) {
                 #[cfg(debug_assertions)]
                 crate::fast_path_check::note_fast_step_taken();
@@ -78672,60 +79252,25 @@ fn fast_alu_from_memory(
     Ok(())
 }
 
-/// PERF-25, group G5: the operand shapes of an ALU operation with memory: memory destination with
-/// a register or immediate source ([`fast_alu_into_memory`]; the register source is read first,
-/// which the general path does after the memory read: reading a register has no effect and the
-/// read changes no register), or register destination with a memory source
-/// ([`fast_alu_from_memory`]). Any other shape (not produced by the decoder) is `None` before any
-/// effect, and the general path keeps its own answer.
-#[allow(clippy::too_many_arguments)]
+/// E10 (ADR-0018, «Дополнение E10», deviation 1): an ALU operation with a register destination and a
+/// register or immediate source (`rhs`, already read) in the fast path: the pieces of
+/// `exec_arithmetic`/`exec_logic` at CPL0 (`read_rmw_destination` is `state.read` there), the
+/// result and flags from `compute`, the register write unless the operation only compares, the
+/// flags. No memory call, no error.
 #[inline(always)]
-fn fast_alu_memory(
+fn fast_alu_register(
     state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    next_rip: u64,
-    dst: Operand,
-    src: Operand,
+    destination: RegisterView,
+    rhs: u64,
     writes: bool,
     compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
-) -> Option<Result<(), MemoryError>> {
-    Some(match (dst, src) {
-        (Operand::Memory(destination), Operand::Register(view)) => {
-            let rhs = state.read(view);
-            fast_alu_into_memory(
-                state,
-                memory,
-                context,
-                next_rip,
-                destination,
-                rhs,
-                writes,
-                compute,
-            )
-        }
-        (Operand::Memory(destination), Operand::Immediate(rhs)) => fast_alu_into_memory(
-            state,
-            memory,
-            context,
-            next_rip,
-            destination,
-            rhs,
-            writes,
-            compute,
-        ),
-        (Operand::Register(destination), Operand::Memory(source)) => fast_alu_from_memory(
-            state,
-            memory,
-            context,
-            next_rip,
-            destination,
-            source,
-            writes,
-            compute,
-        ),
-        _ => return None,
-    })
+) {
+    let lhs = state.read(destination);
+    let (result, flags) = compute(lhs, rhs, state.rflags);
+    if writes {
+        state.write(destination, result);
+    }
+    state.rflags = flags;
 }
 
 /// MOVZX/MOVSX/MOVSXD (`Operation::Extend`): the source (`read_operand`, so a memory source is

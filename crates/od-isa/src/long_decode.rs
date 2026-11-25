@@ -3630,13 +3630,9 @@ pub struct Instruction {
     pub operation: Operation,
 }
 
-/// PERF-31 (ADR-0018, variant (a), prototype): a predecoded straight-line block, the instructions
-/// in execution order from its first RIP (see [`crate::predecoded_block`]). Shared, so that the
-/// run loop holds the block it executes while the backend's cache keeps it too. `Arc`, not `Rc`
-/// (PERF-33, E2): the board that owns the cache must be `Send` (`assert_send` in
-/// `od-machine`'s `bus/shared_tests.rs` and `stage10_display_probe.rs`), and an `Rc` in its
-/// table is not.
-pub type DecodedBlock = std::sync::Arc<[Instruction]>;
+/// PERF-31 (ADR-0018, variant (a)): a predecoded straight-line block; E10 keeps the handler of the
+/// fast path next to every decode (see [`crate::predecoded_block::DecodedBlock`]).
+pub use crate::predecoded_block::DecodedBlock;
 
 impl Instruction {
     /// SDM093 scalar instruction flag effects. Undefined bits are metadata,

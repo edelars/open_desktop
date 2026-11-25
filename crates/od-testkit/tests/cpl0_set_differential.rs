@@ -515,6 +515,12 @@ impl GuestMemory for BlockMemory {
         every == 0 || !self.short_asked.is_multiple_of(every)
     }
 
+    /// E10 (ADR-0018, «Дополнение E10», decision 3): like the board, the dynamic admission once per
+    /// pass (Д2) exactly where the short boundary is on.
+    fn block_admission_once(&self) -> bool {
+        self.short_every.is_some()
+    }
+
     fn read(
         &mut self,
         address: u64,

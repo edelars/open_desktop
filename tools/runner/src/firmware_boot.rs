@@ -3425,6 +3425,13 @@ mod tests {
                     block_len: 3,
                     block: decode(&[0xBA, 0x11, 0x11, 0, 0]),
                     decoded: Some(decode(&[0xBA, 0x22, 0x22, 0, 0])),
+                    block_handler: od_isa::execute::fast_handler(&decode(&[
+                        0xBA, 0x11, 0x11, 0, 0,
+                    ]))
+                    .unwrap(),
+                    fresh_handler: od_isa::execute::fast_handler(&decode(&[
+                        0xBA, 0x22, 0x22, 0, 0,
+                    ])),
                 },
                 bytes: vec![0xBA, 0x22, 0x22, 0, 0],
             }),

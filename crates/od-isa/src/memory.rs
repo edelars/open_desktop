@@ -297,6 +297,17 @@ pub trait GuestMemory {
         false
     }
 
+    /// E10 (ADR-0018, «Дополнение E10», decision 3 and «Диагностические режимы»): whether a batched
+    /// run with blocks may take the dynamic admission of the fast path once per pass of a block
+    /// (Д2) instead of at every instruction; asked once per call. `true` only where the short
+    /// boundary of E9 is on for the call (blocks without `--block-cache-verify`, without a call
+    /// trace and without `--block-boundary-verify`). The default is `false`. Wrappers do not forward
+    /// this method.
+    #[inline(always)]
+    fn block_admission_once(&self) -> bool {
+        false
+    }
+
     /// PERF-33 (E4, step 2): the run of the active block ended before `instruction` of it, which
     /// did not retire from the block: `refused` when the fast path refused it (the general step
     /// runs it next), else it faulted or ended otherwise (diagnostic counters only). The default does

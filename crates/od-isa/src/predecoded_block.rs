@@ -11,7 +11,9 @@
 //! The run loop of a batched CPL0 set call (`run_with_cpl0_profile_set_and_pio_batched`) with
 //! `Cpl0ProfileSet::with_block_cache_prototype` asks its memory for a block at every instruction it
 //! does not already run from one ([`GuestMemory::cached_block`]) and runs the instructions of the
-//! block through `try_fast_step` with the stored decode, asking [`GuestMemory::block_holds`] before
+//! block through the handler of the fast path stored with each decode (E10, ADR-0018, «Дополнение
+//! E10»: [`BlockInstruction`], chosen by `execute::fast_handler` when the block is built, run by the
+//! executor `try_fast_step` runs outside blocks too), asking [`GuestMemory::block_holds`] before
 //! every further one. Everything else of the loop is unchanged: the STOP, budget and stop-address
 //! checks before every instruction, the retire accounting and the batch boundary (admission inputs
 //! and the caller's check: device access, STOP, IRQ) after every retired one. A refusal of the fast
@@ -31,7 +33,8 @@
 //! `--block-cache-verify`). The loop looks the blocks up and walks them as above
 //! ([`block_check_expect`]), but runs every instruction through the general step, whose decode
 //! reads the bytes (the backend answers no decoded instruction in that mode), and then compares that
-//! fresh decode with the instruction the block holds for the RIP ([`block_check_after`]). The
+//! fresh decode with the instruction the block holds for the RIP, and (E10) the handler the block
+//! holds with the one `execute::fast_handler` chooses for the fresh decode ([`block_check_after`]). The
 //! comparison reads nothing and changes no cache: the backend hands over the decode it already made
 //! ([`GuestMemory::take_decoded_for_block_check`]). The first difference ends the run with
 //! `RunExit::MemoryError(Backend(report))` and is kept for [`take_block_check_divergence`]; the
@@ -40,10 +43,13 @@
 //! step decides it inside), so the walk of a block goes on after such an instruction instead of
 //! looking up a new block at the next RIP; both compare the decode of the same bytes.
 
-use crate::execute::{StepOutcome, try_fast_step};
-use crate::long_decode::{self, DecodedBlock, Instruction, Operand, Operation};
+use crate::execute::{
+    FastHandler, StepOutcome, fast_admitted, fast_handler, run_block_instruction,
+};
+use crate::long_decode::{self, Instruction};
 use crate::memory::{AccessContext, GuestMemory, MemoryError};
 use std::cell::RefCell;
+use std::sync::Arc;
 
 /// The longest block [`predecode_block`] builds.
 pub const MAX_BLOCK_INSTRUCTIONS: usize = 64;
@@ -57,44 +63,100 @@ pub enum FastBlockRole {
     Terminator,
 }
 
-/// The role of `instruction` in a block, or `None` when the block ends before it: the operation
-/// classes of the fast path (`try_fast_step`, G1-G6) without a LOCK/REP/REPNE prefix and without an
-/// FS/GS segment prefix, and `Shift` only without a memory operand. Only a filter: the fast path's
-/// own admission still decides every execution, and a form this admits but the fast path refuses
-/// ends the run of the block there (before any effect).
+/// The role of `instruction` in a block, or `None` when the block ends before it. E10 (ADR-0018,
+/// «Дополнение E10»): derived from the static rule of the fast path ([`fast_handler`], its only
+/// place): an instruction with a handler is in a block, a control transfer (Jcc, JMP, CALL, RET in
+/// the form of `executable`) ends it. The dynamic admission (CPL0, TF/RF, the shadow) still decides
+/// every execution.
+#[inline(always)]
 pub fn fast_block_role(instruction: &Instruction) -> Option<FastBlockRole> {
-    if instruction.prefixes.group1.is_some()
-        || matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
-    {
-        return None;
+    fast_handler(instruction).map(|handler| {
+        if handler.changes_flow() {
+            FastBlockRole::Terminator
+        } else {
+            FastBlockRole::Straight
+        }
+    })
+}
+
+/// E10 (ADR-0018, «Дополнение E10»): one instruction of a block: its decode and the handler of the
+/// fast path chosen for it when the block was built ([`fast_handler`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockInstruction {
+    handler: FastHandler,
+    instruction: Instruction,
+}
+
+impl BlockInstruction {
+    /// The entry of `instruction`: panics when the fast path has no handler for it (a block holds
+    /// only instructions [`fast_block_role`] admits; building one from another is a host bug).
+    pub fn new(instruction: Instruction) -> Self {
+        let handler = fast_handler(&instruction).unwrap_or_else(|| {
+            panic!("a block instruction without a fast handler: {instruction:?}")
+        });
+        Self {
+            handler,
+            instruction,
+        }
     }
-    match instruction.operation {
-        Operation::Arithmetic { .. }
-        | Operation::Logic { .. }
-        | Operation::Mov { .. }
-        | Operation::MovImmediate { .. }
-        | Operation::Lea { .. }
-        | Operation::StackRegister { .. }
-        // PERF-33 (E4), group G6.
-        | Operation::Imul { .. }
-        | Operation::Nop
-        | Operation::NopModrm => Some(FastBlockRole::Straight),
-        Operation::Extend { src, .. } if !matches!(src, Operand::Immediate(_)) => {
-            Some(FastBlockRole::Straight)
-        }
-        Operation::Shift {
-            dst, source, count, ..
-        } if !matches!(dst, Operand::Memory(_))
-            && !matches!(source, Some(Operand::Memory(_)))
-            && !matches!(count, Operand::Memory(_)) =>
-        {
-            Some(FastBlockRole::Straight)
-        }
-        Operation::Branch { .. }
-        | Operation::Jump { .. }
-        | Operation::Call { .. }
-        | Operation::Return { .. } => Some(FastBlockRole::Terminator),
-        _ => None,
+
+    /// The stored decode.
+    #[inline(always)]
+    pub fn instruction(&self) -> &Instruction {
+        &self.instruction
+    }
+
+    /// The stored handler.
+    #[inline(always)]
+    pub fn handler(&self) -> FastHandler {
+        self.handler
+    }
+}
+
+/// PERF-31 (ADR-0018, variant (a)): a predecoded straight-line block, the instructions in
+/// execution order from its first RIP, each with its handler (E10). Shared, so that the run loop
+/// holds the block it executes while the backend's cache keeps it too. `Arc`, not `Rc` (PERF-33,
+/// E2): the board that owns the cache must be `Send` (`assert_send` in `od-machine`'s
+/// `bus/shared_tests.rs` and `stage10_display_probe.rs`), and an `Rc` in its table is not. Built
+/// from decodes ([`From<Vec<Instruction>>`], [`FromIterator<Instruction>`]), each of which must
+/// have a handler ([`BlockInstruction::new`]).
+#[derive(Clone, Debug)]
+pub struct DecodedBlock(Arc<[BlockInstruction]>);
+
+impl std::ops::Deref for DecodedBlock {
+    type Target = [BlockInstruction];
+
+    #[inline(always)]
+    fn deref(&self) -> &[BlockInstruction] {
+        &self.0
+    }
+}
+
+impl FromIterator<Instruction> for DecodedBlock {
+    fn from_iter<I: IntoIterator<Item = Instruction>>(instructions: I) -> Self {
+        Self(
+            instructions
+                .into_iter()
+                .map(BlockInstruction::new)
+                .collect(),
+        )
+    }
+}
+
+impl From<Vec<Instruction>> for DecodedBlock {
+    fn from(instructions: Vec<Instruction>) -> Self {
+        instructions.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+impl DecodedBlock {
+    /// Test-only: the block with the handler of entry `index` replaced (a block whose handler
+    /// was not chosen from its own decode, for the check of `--block-cache-verify`).
+    pub(crate) fn with_handler(&self, index: usize, handler: FastHandler) -> Self {
+        let mut entries = self.0.to_vec();
+        entries[index].handler = handler;
+        Self(entries.into())
     }
 }
 
@@ -105,7 +167,8 @@ pub enum BlockEnd {
     /// After a Jcc, JMP, CALL or RET (the last instruction of the block).
     Branch,
     /// Before `instruction` at `rip`, which [`fast_block_role`] does not admit (an operation
-    /// outside the fast path, or a Jcc/JMP/CALL/RET with a LOCK/REP/REPNE or FS/GS prefix).
+    /// outside the fast path, or a Jcc/JMP/CALL/RET outside the form of `executable`: a prefix
+    /// other than the default ones).
     OutsideFastPath { rip: u64, instruction: Instruction },
     /// At the end of the page of the first RIP.
     PageEnd,
@@ -220,8 +283,13 @@ pub(crate) struct BlockCursor {
 /// One instruction of the run loop from a block: the next instruction of the current block when it
 /// is at `state.rip` and the block still holds, else the first one of the block the memory has for
 /// `state.rip`; `None` (nothing done, the cursor dropped) when there is none or the fast path
-/// refuses it, and the loop then takes the general step. Otherwise the outcome of `try_fast_step`
-/// on the stored decode, which is the outcome of the general step (ADR-0017, section 3).
+/// refuses it, and the loop then takes the general step. Otherwise the outcome of the stored
+/// handler of the fast path (E10, [`run_block_instruction`]), which is the outcome of the general
+/// step (ADR-0017, section 3). `admit_once` (Д2, chosen by the screening F100: ADR-0018,
+/// «Дополнение E10», decision 3; the loop asks [`GuestMemory::block_admission_once`] once per
+/// call): the dynamic admission only at the first instruction of a pass; between two
+/// instructions of one pass only the earlier one runs, and no handler writes TF, RF or the shadow.
+/// Otherwise (Д1) at every instruction.
 #[inline(always)]
 pub(crate) fn block_step<M: GuestMemory>(
     cursor: &mut Option<BlockCursor>,
@@ -229,6 +297,7 @@ pub(crate) fn block_step<M: GuestMemory>(
     memory: &mut M,
     context: AccessContext,
     rflags_defined: &mut u64,
+    admit_once: bool,
 ) -> Option<Result<StepOutcome, MemoryError>> {
     let continues = cursor
         .as_ref()
@@ -245,14 +314,23 @@ pub(crate) fn block_step<M: GuestMemory>(
     }
     let current = cursor.as_mut()?;
     let index = current.next;
-    let outcome = try_fast_step(
-        state,
-        memory,
-        context,
-        rflags_defined,
-        &current.block[index],
-        true,
-    );
+    let admitted = if admit_once && continues {
+        debug_assert!(fast_admitted(state, context));
+        true
+    } else {
+        fast_admitted(state, context)
+    };
+    let outcome = if admitted {
+        run_block_instruction(
+            state,
+            memory,
+            context,
+            rflags_defined,
+            &current.block[index],
+        )
+    } else {
+        None
+    };
     match outcome {
         Some(Ok(StepOutcome::Advanced)) => {
             current.next = index + 1;
@@ -267,7 +345,7 @@ pub(crate) fn block_step<M: GuestMemory>(
         // (the instruction did not retire): the run of the block ends (PERF-33, E4: the memory is
         // told why, for its `--block-stats` counters only).
         _ => {
-            memory.block_run_cut(&current.block[index], outcome.is_none());
+            memory.block_run_cut(current.block[index].instruction(), outcome.is_none());
             *cursor = None;
         }
     }
@@ -312,14 +390,25 @@ pub struct BlockCheckDivergence {
     /// The fresh decode of the general step (`None`: the step retired the instruction without a
     /// decode the check could see).
     pub decoded: Option<Instruction>,
+    /// E10: the handler the block holds for the RIP.
+    pub block_handler: FastHandler,
+    /// E10: the handler [`fast_handler`] chooses for the fresh decode (`None`: no decode, or no
+    /// handler for it).
+    pub fresh_handler: Option<FastHandler>,
 }
 
 impl std::fmt::Display for BlockCheckDivergence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "block check divergence at rip=0x{:x} (instruction {} of a block of {}): block {:?}, fresh decode {:?}",
-            self.rip, self.index, self.block_len, self.block, self.decoded
+            "block check divergence at rip=0x{:x} (instruction {} of a block of {}): block {:?}, fresh decode {:?}, block handler {:?}, fresh handler {:?}",
+            self.rip,
+            self.index,
+            self.block_len,
+            self.block,
+            self.decoded,
+            self.block_handler,
+            self.fresh_handler
         )
     }
 }
@@ -356,7 +445,7 @@ pub(crate) fn block_check_expect<M: GuestMemory>(
     state: &crate::LongModeState,
     memory: &mut M,
     context: AccessContext,
-) -> Option<(usize, Instruction)> {
+) -> Option<(usize, BlockInstruction)> {
     let continues = cursor
         .as_ref()
         .is_some_and(|current| current.rip == state.rip && current.next < current.block.len())
@@ -381,7 +470,7 @@ pub(crate) fn block_check_expect<M: GuestMemory>(
 #[inline(always)]
 pub(crate) fn block_check_after<M: GuestMemory>(
     cursor: &mut Option<BlockCursor>,
-    expected: Option<(usize, Instruction)>,
+    expected: Option<(usize, BlockInstruction)>,
     rip: u64,
     outcome: &Result<StepOutcome, MemoryError>,
     state: &crate::LongModeState,
@@ -398,15 +487,21 @@ pub(crate) fn block_check_after<M: GuestMemory>(
         BLOCK_CHECK.with(|check| check.borrow_mut().0.not_decoded += 1);
         return None;
     }
-    if decoded != Some(block) {
+    // E10: the handler the block holds must be the one the static rule chooses for the fresh
+    // decode (a guard on the place of the build: with equal decodes it can differ only when the
+    // block's handler was not chosen from its own decode).
+    let fresh_handler = decoded.as_ref().and_then(fast_handler);
+    if decoded != Some(*block.instruction()) || fresh_handler != Some(block.handler()) {
         let block_len = cursor.as_ref().map_or(0, |current| current.block.len());
         *cursor = None;
         let divergence = BlockCheckDivergence {
             rip,
             index,
             block_len,
-            block,
+            block: *block.instruction(),
             decoded,
+            block_handler: block.handler(),
+            fresh_handler,
         };
         let report = divergence.to_string();
         BLOCK_CHECK.with(|check| {
@@ -438,6 +533,7 @@ pub(crate) fn block_check_after<M: GuestMemory>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::long_decode::Operation;
     use crate::memory::{AccessKind, AccessOrigin, InstructionMode, PrivilegeLevel};
 
     struct Code {
@@ -584,5 +680,79 @@ mod tests {
         assert_eq!(end(0x1000, &movs, 0x1000), BlockEnd::LengthLimit);
         // MOV EAX and then bytes that are not there.
         assert_eq!(end(0x1000, &MOV_EAX, 0x1000), BlockEnd::DecodeError);
+    }
+    /// E10 (ADR-0018, «Дополнение E10», decision 4): the block check compares the handler the
+    /// block holds with the one the static rule chooses for the fresh decode: a block whose handler
+    /// was not chosen from its own decode diverges although the decodes agree.
+    #[test]
+    fn the_block_check_compares_the_stored_handler_with_the_fresh_one() {
+        struct Fresh(Option<(u64, Instruction)>);
+        impl GuestMemory for Fresh {
+            fn fetch(&mut self, _: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                unreachable!()
+            }
+            fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+                unreachable!()
+            }
+            fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+                unreachable!()
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                unreachable!()
+            }
+            fn take_decoded_for_block_check(&mut self) -> Option<(u64, Instruction)> {
+                self.0.take()
+            }
+        }
+        // MOV EAX, imm32; ADD EAX, EBX; JNZ -2.
+        let mut bytes = MOV_EAX.to_vec();
+        bytes.extend([0x01, 0xD8, 0x75, 0xFE]);
+        let mut code = Code {
+            base: 0x1000,
+            bytes,
+        };
+        let block = DecodedBlock::from(predecode_block(
+            &mut code,
+            0x1000,
+            ring0(),
+            MAX_BLOCK_INSTRUCTIONS,
+        ));
+        assert_eq!(block.len(), 3);
+        let state = crate::fast_step_g2_tests::state(1, 2);
+        let check = |block: &DecodedBlock| {
+            reset_block_check();
+            let mut cursor = Some(BlockCursor {
+                block: block.clone(),
+                next: 0,
+                rip: 0x1000,
+            });
+            let mut memory = Fresh(Some((0x1000, *block[0].instruction())));
+            let report = block_check_after(
+                &mut cursor,
+                Some((0, block[0])),
+                0x1000,
+                &Ok(StepOutcome::Advanced),
+                &state,
+                &mut memory,
+            );
+            (
+                report,
+                take_block_check_divergence(),
+                block_check_counters(),
+            )
+        };
+        let (report, divergence, counters) = check(&block);
+        assert_eq!((report, divergence), (None, None));
+        assert_eq!((counters.compared, counters.divergences), (1, 0));
+        // The first entry keeps its decode (MOV EAX, imm32) with the handler of ADD EAX, EBX.
+        let mutated = block.with_handler(0, block[1].handler());
+        let (report, divergence, counters) = check(&mutated);
+        let divergence = divergence.expect("a divergence");
+        assert!(report.is_some_and(|report| report.contains("block handler")));
+        assert_eq!(divergence.block, *block[0].instruction());
+        assert_eq!(divergence.decoded, Some(*block[0].instruction()));
+        assert_eq!(divergence.block_handler, block[1].handler());
+        assert_eq!(divergence.fresh_handler, Some(block[0].handler()));
+        assert_eq!((counters.compared, counters.divergences), (1, 1));
     }
 }

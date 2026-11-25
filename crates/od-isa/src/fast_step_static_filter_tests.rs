@@ -1,4 +1,5 @@
-//! PERF-33 (E3, adapted to HEAD after E3 was rolled back): the static rule of the predecoded
+//! PERF-33 (E3, adapted to HEAD after E3 was rolled back; E10: both now take the rule from
+//! `execute::fast_handler`, ADR-0018, «Дополнение E10»): the static rule of the predecoded
 //! blocks (`predecoded_block::fast_block_role`) against what the fast path
 //! (`execute::try_fast_step`) actually runs, on every decode of a generated set of encodings: every
 //! one- and two-byte (`0F xx`) opcode under the group 1 prefixes (none, F0, F2, F3), the segment
@@ -12,15 +13,18 @@
 //! - `fast_block_role` is `None` => `try_fast_step` answers "not handled" (nothing changed, no
 //!   data access): a group added to the fast path but not to the block rule fails here;
 //! - `fast_block_role` is `Some(Straight)` => `try_fast_step` handles it, and never as `Branched`;
-//! - `fast_block_role` is `Some(Terminator)` => `try_fast_step` handles it, except a control
-//!   transfer outside the form of `executable` (a prefix other than the default ones: `3E 75`,
-//!   `2E E8`, `66 C3`, `67 E8`, ...), which the rule admits by design (its documentation: "Only a
-//!   filter ... a form this admits but the fast path refuses ends the run of the block there") and
-//!   the fast path refuses before any effect.
+//! - `fast_block_role` is `Some(Terminator)` => `try_fast_step` handles it. Since E10 there is
+//!   no exception: a control transfer outside the form of `executable` (`3E 75`, `2E E8`, `66 C3`,
+//!   `67 E8`, ...) has no handler, so the block ends before it (the one allowed change of the
+//!   composition of the blocks, step 2 of E10).
 //!
 //! A handled admitted decode is refused again under each dynamic refusal (CPL3, TF, RF, a shadow).
+//! E10: the set the fast path handles is the one of HEAD `1500400` before E10 (its count and an
+//! FNV-1a-64 hash of the sorted encodings, taken there with this generator). A change of the
+//! decoder or of the generator that changes these numbers needs them taken again on the code
+//! before the change, with a proof that the set of the fast path itself did not change.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::mem::{Discriminant, discriminant};
 
 use crate::execute::{StepOutcome, try_fast_step};
@@ -214,6 +218,7 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
     unmodelled.sti_shadow = None;
 
     let mut seen = HashSet::new();
+    let mut handled_set: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut handled_operations: HashSet<Discriminant<Operation>> = HashSet::new();
     let (mut decodes, mut straight, mut terminator, mut role_only) =
         (0usize, 0usize, 0usize, 0usize);
@@ -232,21 +237,18 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
             continue;
         };
         if fast.outcome.is_none() {
-            // The documented superset of the rule: only a control transfer outside the form of
-            // `executable`, refused before any effect.
+            // Before E10 the documented superset of the rule (a control transfer outside the form
+            // of `executable`); since E10 none: the rule is the fast path's own.
             assert_not_handled("admitted by the role only", &bytes, &fast, &start);
-            assert_eq!(
-                role,
-                FastBlockRole::Terminator,
-                "{bytes:02x?}: the role admits {instruction:?} as straight, the fast path does \
-                 not handle it"
-            );
-            assert!(
-                !in_executable_form(&instruction),
-                "{bytes:02x?}: the fast path refuses {instruction:?} in the form of `executable`"
-            );
             role_only += 1;
             continue;
+        }
+        if matches!(role, FastBlockRole::Terminator) {
+            assert!(
+                in_executable_form(&instruction),
+                "{bytes:02x?}: a handled control transfer outside the form of `executable`: \
+                 {instruction:?}"
+            );
         }
         if matches!(fast.outcome, Some(Ok(StepOutcome::Branched))) {
             assert_eq!(
@@ -259,6 +261,7 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
             FastBlockRole::Straight => straight += 1,
             FastBlockRole::Terminator => terminator += 1,
         }
+        handled_set.insert(bytes.clone());
         handled_operations.insert(discriminant(&instruction.operation));
         for (label, refused, ctx) in [
             ("CPL3", &start, context(PrivilegeLevel::Ring3)),
@@ -272,14 +275,24 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
         }
     }
     // The generated set reaches every group: thousands of decodes, both roles, the fifteen
-    // operation classes of G1-G6, and the prefixed control transfers the rule admits by design.
+    // operation classes of G1-G6; no decode the rule admits and the fast path does not handle.
     assert!(decodes > 10_000, "{decodes}");
-    assert!(
-        straight > 1_000 && terminator > 10,
-        "{straight} {terminator}"
-    );
-    assert!(role_only > 0, "{decodes} decodes");
+    assert_eq!(role_only, 0, "{decodes} decodes");
     assert_eq!(handled_operations.len(), 15, "{decodes} decodes");
+    // E10: the handled set is the one of HEAD `1500400` (before E10): 126 403 decodes, 33 009
+    // handled (32 128 straight, 881 terminators), and the same encodings.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for encoding in &handled_set {
+        for &byte in encoding.iter().chain(std::iter::once(&0xffu8)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    assert_eq!(
+        (decodes, straight, terminator, handled_set.len()),
+        (126_403, 32_128, 881, 33_009)
+    );
+    assert_eq!(hash, 0xed77_1809_cfcb_deab, "the handled set changed");
 }
 
 /// Known encodings: their role (`None`: the block ends before them) and whether the fast path
@@ -302,20 +315,21 @@ fn the_block_role_and_the_fast_path_on_known_forms() {
         (&[0x50], Some(Straight), true),             // push rax
         (&[0x75, 0xfe], Some(Terminator), true),     // jnz -2
         (&[0x0f, 0x85, 0, 0, 0, 0], Some(Terminator), true), // jnz rel32
-        (&[0x3e, 0x75, 0xfe], Some(Terminator), false), // ds: jnz (a branch hint)
+        (&[0x3e, 0x75, 0xfe], None, false),          // ds: jnz (a branch hint)
         (&[0xeb, 0xfe], Some(Terminator), true),     // jmp -2
         (&[0xe8, 0, 0, 0, 0], Some(Terminator), true), // call rel32
-        (&[0x2e, 0xe8, 0, 0, 0, 0], Some(Terminator), false), // cs: call rel32
+        (&[0x2e, 0xe8, 0, 0, 0, 0], None, false),    // cs: call rel32
         (&[0xc3], Some(Terminator), true),           // ret
         (&[0xc2, 8, 0], Some(Terminator), true),     // ret 8
-        (&[0x66, 0xc3], Some(Terminator), false),    // o16 ret
+        (&[0x66, 0xc3], None, false),                // o16 ret
         (&[0xee], None, false),                      // out dx, al
         (&[0x0f, 0x31], None, false),                // rdtsc
         (&[0xfa], None, false),                      // cli
         (&[0xf3, 0xaa], None, false),                // rep stosb
-        (&[0x67, 0xe8, 0, 0, 0, 0], Some(Terminator), false), // a32 call rel32
-        (&[0x66, 0xeb, 0xfe], Some(Terminator), false), // o16 jmp -2
-        (&[0x67, 0x75, 0xfe], Some(Terminator), false), // a32 jnz -2
+        // E10: control transfers outside the form of `executable` end the block before them.
+        (&[0x67, 0xe8, 0, 0, 0, 0], None, false), // a32 call rel32
+        (&[0x66, 0xeb, 0xfe], None, false),       // o16 jmp -2
+        (&[0x67, 0x75, 0xfe], None, false),       // a32 jnz -2
         // PERF-33 (E4), group G6.
         (&[0x48, 0x0f, 0xaf, 0xc1], Some(Straight), true), // imul rax, rcx
         (&[0x0f, 0xaf, 0x00], Some(Straight), true),       // imul eax, [rax]
