@@ -19,6 +19,8 @@
 #![allow(clippy::all)]
 
 mod jit;
+#[cfg(test)]
+mod tests;
 
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
 use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};
