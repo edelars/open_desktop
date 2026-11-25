@@ -6,7 +6,9 @@
 
 **Статус:** принято (2026-11-25): ревью ADR (Opus high, только чтение) прошло, его minor учтены (2.3 — отказ удержания, факт 6 — место `mmio_written.set(true)`, раздел 3 — условие `c == device_accesses_at_call`, факт 2 — охват после Г6). Код по разделу 7 написан, ревью кода (Opus high, только чтение) пройдено; K3200 (+14,5 %), golden и сверки KS/KV на 300 млн и KS на 3,2 млрд — [отчёт линии, 7.34](../reports/CPU_CORE_PERF_REPORT.md).
 
-**Код, на который ссылается документ:** HEAD `02dbcd4` (код E8 — `1022d25`). «EX» — [execute.rs](../../crates/od-isa/src/execute.rs); «PB» — [predecoded_block.rs](../../crates/od-isa/src/predecoded_block.rs); «PMA» — [paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); «FB» — [firmware_board.rs](../../crates/od-machine/src/firmware_board.rs); «BUS» — [bus.rs](../../crates/od-machine/src/bus.rs). Номера строк не даются: искать по имени функции.
+**Замена:** Заменено [ADR-0022](ADR-0022-turbo-jit.md) (2026-11-25): код удалён из unified-цикла (граница прохода блока, флаг `--block-boundary-verify`). Исходники — в коммите `ca2fc78` (последний, где они есть); ссылки на удалённые файлы ниже даны как текст. Текст решения не переписывался: это история.
+
+**Код, на который ссылается документ:** HEAD `02dbcd4` (код E8 — `1022d25`). «EX» — [execute.rs](../../crates/od-isa/src/execute.rs); «PB» — `predecoded_block.rs` (файл удалён); «PMA» — [paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); «FB» — [firmware_board.rs](../../crates/od-machine/src/firmware_board.rs); «BUS» — [bus.rs](../../crates/od-machine/src/bus.rs). Номера строк не даются: искать по имени функции.
 
 ## Вопрос
 

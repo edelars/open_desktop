@@ -6,7 +6,9 @@
 
 **Статус:** принято (вариант а). Блоки включены по умолчанию при --fast-path (E1, отчёт 7.30); флаг --block-cache-prototype удалён, --no-block-cache выключает. Замеры: K3200 +88,7 % локально, +81,6 % на M1.
 
-**Код, на который ссылается документ:** HEAD `2e2d68f`. «PMA» — [paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); «DIC» — [decoded_instruction_cache.rs](../../crates/od-machine/src/decoded_instruction_cache.rs); «JC» — [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md).
+**Замена:** Заменено [ADR-0022](ADR-0022-turbo-jit.md) (2026-11-25): код удалён из unified-цикла (кеш предекодированных блоков, кеш декодированных инструкций, флаги `--no-block-cache`, `--block-stats`, `--block-cache-verify`). Исходники — в коммите `ca2fc78` (последний, где они есть); ссылки на удалённые файлы ниже даны как текст. Текст решения не переписывался: это история.
+
+**Код, на который ссылается документ:** HEAD `2e2d68f`. «PMA» — [paged_memory_adapter.rs](../../crates/od-machine/src/paged_memory_adapter.rs); «DIC» — `decoded_instruction_cache.rs` (файл удалён); «JC» — [JIT_CONTRACT.md](../specs/JIT_CONTRACT.md).
 
 ## Вопрос
 
