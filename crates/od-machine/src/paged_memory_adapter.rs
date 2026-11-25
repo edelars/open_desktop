@@ -139,6 +139,8 @@ pub fn step_paged_invlpg(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_invlpg(
         InvlpgLong64V1,
@@ -200,6 +202,8 @@ fn fetch_only_adapter<'a>(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     }
 }
 
@@ -401,6 +405,8 @@ fn step_paged_state_op(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = match op {
         StateOp::Sti => od_isa::step_paged_sti(
@@ -508,6 +514,8 @@ fn with_paged_mov_read_memory<R>(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let callback_result = callback(&mut memory);
     PagedMovMemoryScope {
@@ -809,6 +817,8 @@ pub fn step_paged_mov(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -874,6 +884,8 @@ pub fn step_paged_mov_2m_ram(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -2594,6 +2606,56 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     )
 }
 
+/// Experiment (turbo loop): one quantum of the board's unified loop through the turbo engine.
+/// No fetch, data or block cache (generated code writes RAM past their watches), one instruction per
+/// call of the general path, the fast transition of the board between RDTSC quanta.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_cpl0_set_paged_turbo(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    set: &Cpl0ProfileSet<'_>,
+    rdtsc: Option<&mut dyn FnMut() -> u64>,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    irq: Option<IrqBoundaryHook<'_>>,
+    turbo: crate::turbo::TurboHook<'_>,
+) -> PagedCpl0SetReport {
+    run_cpl0_set_loop_impl::<false, false, false>(
+        state,
+        LoopBus::Exclusive(bus),
+        None,
+        crate::vcpu::BOOT_VCPU_INDEX,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        set,
+        rdtsc,
+        stop,
+        committed_write,
+        false,
+        None,
+        irq,
+        None,
+        None,
+        ExceptionDeliveryMode::Quantum,
+        false,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(turbo),
+    )
+}
+
 /// The set loop of [`run_cpl0_set_paged_2m_ram_observed`] over a fetch cache owned by the caller
 /// (S4-14i). `None` is no cache. A cache built with [`FetchTranslationCache::with_invalidation`]
 /// and dropped after the call is what `_observed` does. A cache the caller passes again to the next
@@ -2796,6 +2858,7 @@ pub(crate) fn run_cpl0_set_loop(
             batch,
             blocks,
             pass_stop,
+            None,
         );
     }
     match (trace, elf) {
@@ -2826,6 +2889,7 @@ pub(crate) fn run_cpl0_set_loop(
             batch,
             blocks,
             pass_stop,
+            None,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
@@ -2854,6 +2918,7 @@ pub(crate) fn run_cpl0_set_loop(
             batch,
             blocks,
             pass_stop,
+            None,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
@@ -2882,6 +2947,7 @@ pub(crate) fn run_cpl0_set_loop(
             batch,
             blocks,
             pass_stop,
+            None,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
@@ -2910,6 +2976,7 @@ pub(crate) fn run_cpl0_set_loop(
             batch,
             blocks,
             pass_stop,
+            None,
         ),
     }
 }
@@ -2946,7 +3013,17 @@ fn run_cpl0_set_loop_impl<
     batch: bool,
     blocks: Option<&DecodedBlockCache>,
     pass_stop: Option<AsyncStopFlags<'_>>,
+    turbo: Option<crate::turbo::TurboHook<'_>>,
 ) -> PagedCpl0SetReport {
+    let mut turbo = turbo;
+    let mut instruction_budget = instruction_budget;
+    // Experiment (turbo loop): the instructions of the merged quanta before the current one.
+    let mut quantum_base = 0u64;
+    let mut turbo_force_slow: Option<u64> = None;
+    let mut turbo_rdtsc_next: Option<u64> = None;
+    let turbo_writes: std::cell::RefCell<Vec<GuestPhysicalRange>> =
+        std::cell::RefCell::new(Vec::new());
+    let turbo_on = turbo.is_some();
     // ADR-0017, section 3: a traced run keeps the general path (PERF-23 fast path off).
     let set_without_fast_path;
     let set = if TRACE_ENABLED {
@@ -2997,6 +3074,9 @@ fn run_cpl0_set_loop_impl<
     let guest_only =
         cache.is_some_and(|cache| cache.invalidation() == FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
+        if turbo_on {
+            turbo_writes.borrow_mut().push(range);
+        }
         if let Some(cache) = cache {
             cache.note_write(range);
         }
@@ -3114,6 +3194,38 @@ fn run_cpl0_set_loop_impl<
             None => stop(),
         };
         if stopped || (stop_after_mmio && mmio_written) {
+            // Experiment (turbo loop): a quantum ended by the RDTSC tick alone goes on here, after
+            // the board did what it does between two such quanta.
+            if stopped
+                && !mmio_written
+                && !pit_write_pending
+                && instructions_executed > quantum_base
+                && let Some(hook) = turbo.as_mut()
+                && let Some(fast) = hook.fast_quantum.as_mut()
+            {
+                let cpl = state.cs_selector.map_or(0, |selector| (selector & 3) as usize);
+                let source = irq
+                    .as_ref()
+                    .map(|irq_hook| &*irq_hook.source as &dyn crate::irq_source::BoardIrqSource);
+                if let Some(start) = fast(
+                    crate::turbo::FastQuantumEnd {
+                        retired: instructions_executed - quantum_base,
+                        cpl,
+                    },
+                    source,
+                ) {
+                    quantum_base = instructions_executed;
+                    instruction_budget = instructions_executed + start.budget;
+                    if let Some(irq_hook) = irq.as_mut() {
+                        irq_hook.polled = None;
+                        irq_hook.skip_first_boundary = false;
+                        if start.cut_by_deadline {
+                            irq_hook.counters.quantum_cut_by_deadline += 1;
+                        }
+                    }
+                    continue;
+                }
+            }
             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
         }
         if pit_write_pending {
@@ -3271,6 +3383,99 @@ fn run_cpl0_set_loop_impl<
         {
             break (PagedCpl0SetExit::CpuidDivergence { leaf }, None, None);
         }
+        // Experiment (turbo loop): generated code runs what it can from here.
+        if let Some(hook) = turbo.as_mut() {
+            {
+                let mut writes = turbo_writes.borrow_mut();
+                if !writes.is_empty() {
+                    hook.engine.note_writes(bus.ram(), &writes);
+                    writes.clear();
+                }
+            }
+            if turbo_rdtsc_next == Some(state.rip)
+                && let Some(source) = rdtsc.as_mut()
+            {
+                turbo_rdtsc_next = None;
+                let value = source();
+                state.gpr[od_isa::Register::Rax as usize] = u64::from(value as u32);
+                state.gpr[od_isa::Register::Rdx as usize] = u64::from((value >> 32) as u32);
+                state.rip = state.rip.wrapping_add(2);
+                instructions_executed += 1;
+                *deliveries_without_retirement = 0;
+                continue;
+            }
+            turbo_rdtsc_next = None;
+            let polled = irq.as_ref().map(|irq_hook| irq_hook.polled);
+            let known = match polled {
+                None => true,
+                Some(polled) => polled.is_some(),
+            };
+            if turbo_force_slow != Some(state.rip)
+                && !cpl3
+                && known
+                && crate::turbo::admits(state)
+            {
+                let masked = polled.flatten().is_some_and(|polled| polled.vector.is_some())
+                    && state.rflags & RFLAGS_IF == 0;
+                let mut env = crate::turbo::RunEnv {
+                    ram: bus.ram(),
+                    paging,
+                    context,
+                    flush_pending: false,
+                    engine: std::ptr::null_mut(),
+                };
+                let budget = instruction_budget - instructions_executed;
+                let outcome =
+                    hook.engine
+                        .run(&mut env, state, &mut current_rflags_defined, budget);
+                instructions_executed += outcome.retired;
+                if outcome.retired > 0 {
+                    *deliveries_without_retirement = 0;
+                }
+                if masked
+                    && outcome.retired > 1
+                    && let Some(irq_hook) = irq.as_mut()
+                {
+                    irq_hook.counters.irq_refused_masked += outcome.retired - 1;
+                }
+                match outcome.exit {
+                    crate::turbo::TurboExit::Budget => continue,
+                    crate::turbo::TurboExit::Rdtsc => {
+                        if outcome.retired == 0
+                            && let Some(source) = rdtsc.as_mut()
+                        {
+                            let value = source();
+                            state.gpr[od_isa::Register::Rax as usize] = u64::from(value as u32);
+                            state.gpr[od_isa::Register::Rdx as usize] =
+                                u64::from((value >> 32) as u32);
+                            state.rip = state.rip.wrapping_add(2);
+                            instructions_executed += 1;
+                            *deliveries_without_retirement = 0;
+                            continue;
+                        }
+                        turbo_rdtsc_next = Some(state.rip);
+                        if outcome.retired > 0 {
+                            continue;
+                        }
+                    }
+                    crate::turbo::TurboExit::Slow => {
+                        if outcome.retired > 0 {
+                            turbo_force_slow = Some(state.rip);
+                            continue;
+                        }
+                    }
+                    crate::turbo::TurboExit::RepPartial => {
+                        break (
+                            PagedCpl0SetExit::Run(RunExit::RepIterationBudgetExhausted),
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+            turbo_force_slow = None;
+            hook.engine.note_slow(bus.ram(), &paging, context, state.rip);
+        }
         let instruction_rip = state.rip;
         // PERF-20: the instruction about to run, decoded read-only (no accessed/dirty bit, no cache
         // or counter moves), and the CPL it runs at; counted below once it retired.
@@ -3418,6 +3623,10 @@ fn run_cpl0_set_loop_impl<
         memory.decoded.blocks = blocks;
         memory.decoded.verify = block_verify;
         memory.data_cache = data_cache;
+        if let Some(hook) = turbo.as_mut() {
+            memory.turbo_insn = hook.engine.take_slow_decode(instruction_rip);
+            memory.turbo_tlb = Some(hook.engine.tlbs());
+        }
         let run_config = RunConfig {
             instruction_budget: call_budget,
             stop_rip: None,
@@ -3979,7 +4188,7 @@ fn run_cpl0_set_loop_impl<
     }
     PagedCpl0SetReport {
         exit,
-        instructions_executed,
+        instructions_executed: instructions_executed - quantum_base,
         rflags_defined: current_rflags_defined,
         page_fault,
         memory_error,
@@ -4451,6 +4660,8 @@ fn set_loop_adapter<'a>(
         walks,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     }
 }
 
@@ -5314,6 +5525,8 @@ pub fn step_paged_mov_word_read(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -5399,6 +5612,8 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -5466,6 +5681,8 @@ pub fn step_paged_mov_dword_read(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -5542,6 +5759,8 @@ pub fn step_paged_mov_dword_store(
         walks: None,
         decoded: DecodedStep::default(),
         data_cache: None,
+        turbo_insn: None,
+        turbo_tlb: None,
     };
     let cpu = od_isa::step_paged_mov_dword_store(
         od_isa::PagedMovDwordStoreLong64V1,
@@ -5846,6 +6065,12 @@ pub struct PagedMovMemoryAdapter<'a> {
     /// adapter, which serves same-page qword reads in [`GuestMemory::read`]; `None` everywhere
     /// else (and unless the board asked for it).
     data_cache: Option<&'a DataTranslationCache>,
+    /// Experiment (turbo loop): the decode of the instruction at this RIP the turbo engine already
+    /// made (served by `cached_instruction` once).
+    pub(crate) turbo_insn: Option<(u64, Instruction)>,
+    /// Experiment (turbo loop): the read and write TLBs of the turbo engine (exact: filled by
+    /// successful walks, dropped on every change of a table frame).
+    pub(crate) turbo_tlb: Option<(*const crate::turbo::TlbEntry, *const crate::turbo::TlbEntry)>,
 }
 
 /// PERF-10: the state of the decoded-instruction cache for the one instruction an adapter serves.
@@ -7199,6 +7424,12 @@ enum LockedTarget<'g> {
 
 impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     fn cached_instruction(&mut self, rip: u64, context: AccessContext) -> Option<Instruction> {
+        if let Some((at, instruction)) = self.turbo_insn
+            && at == rip
+        {
+            self.turbo_insn = None;
+            return Some(instruction);
+        }
         self.decoded_cache_lookup(rip, context)
     }
 
@@ -7429,6 +7660,16 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // loop's adapter goes through the data translation cache, only where the read below would
         // be exactly `self.access(address, context, Read { width })` (`data_cache_read_width`).
         // Everything else below is untouched.
+        if let Some((rtlb, _)) = self.turbo_tlb
+            && self.data_cache_read_width(address, context, destination.len()).is_some()
+            && let Some(host) = crate::turbo::tlb_host(rtlb, address, destination.len())
+        {
+            // SAFETY: a TLB hit names a host RAM page holding the whole access.
+            unsafe {
+                std::ptr::copy_nonoverlapping(host, destination.as_mut_ptr(), destination.len());
+            }
+            return Ok(());
+        }
         if let Some(cache) = self.data_cache
             && let Some(width) = self.data_cache_read_width(address, context, destination.len())
         {
@@ -7569,6 +7810,20 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // and record) and no stack frame of a delivery (`ImplicitStack`), inside one 4 KiB page
         // (no `write_crossing_page`, no `CrossesPage`), the large-RAM profile, the capture modes
         // off.
+        if let Some((_, wtlb)) = self.turbo_tlb
+            && context.origin == AccessOrigin::Explicit
+            && (address & 0xfff) + expected as u64 <= 0x1000
+            && self.large_ram_profile
+            && !self.capture_effects
+            && !self.capture_page_fault_trace
+            && let Some(host) = crate::turbo::tlb_host(wtlb, address, expected)
+        {
+            // SAFETY: a write TLB hit names a host RAM page (not watched) holding the access.
+            unsafe {
+                std::ptr::copy_nonoverlapping(source.as_ptr(), host, expected);
+            }
+            return Ok(());
+        }
         if let Some(cache) = self.data_cache
             && context.origin == AccessOrigin::Explicit
             && (address & 0xfff) + expected as u64 <= 0x1000
@@ -8184,6 +8439,8 @@ mod tests {
             walks: None,
             decoded: DecodedStep::default(),
             data_cache: None,
+            turbo_insn: None,
+            turbo_tlb: None,
         }
     }
 

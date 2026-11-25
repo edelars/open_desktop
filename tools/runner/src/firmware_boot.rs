@@ -1521,8 +1521,12 @@ fn boot(
         if diagnostics.block_boundary_verify {
             board.enable_block_boundary_verify();
         }
+        // Experiment (turbo loop): `OD_TURBO=1` runs the unified loop through the turbo JIT.
+        if std::env::var_os("OD_TURBO").is_some() && !board.enable_turbo() {
+            eprintln!("turbo: not available on this host");
+        }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_with_fast_path(
+        let unified_run = od_machine::run_firmware_unified_with_fast_path(
             &mut board,
             budget,
             mark_rip,
@@ -1640,7 +1644,13 @@ fn boot(
                 })),
             }));
             report
-        })
+        });
+        if std::env::var_os("OD_TURBO_STATS").is_some()
+            && let Some(report) = board.turbo_report()
+        {
+            eprintln!("{report}");
+        }
+        unified_run
     } else if let Some(journal) = &mut diagnostics.journal {
         board.run_boot_with_quantum_hook(budget, |board, progress| {
             journal.at_boundary(board, progress)

@@ -79,6 +79,7 @@ mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
 mod paged_memory_adapter;
+mod turbo;
 mod paged_pae_adapter;
 mod paged_pio_step;
 mod paged_probe;

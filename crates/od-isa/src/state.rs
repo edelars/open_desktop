@@ -239,6 +239,11 @@ impl RegisterView {
     pub const fn size(self) -> OperandSize {
         self.size
     }
+
+    /// Bit position of the alias inside the 64-bit register (8 for AH..BH, else 0).
+    pub const fn shift(self) -> u8 {
+        self.shift
+    }
 }
 
 /// Architectural integer values, independent of fragment/JIT/host layout.

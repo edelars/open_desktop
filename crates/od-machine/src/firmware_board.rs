@@ -1618,6 +1618,8 @@ pub struct LoadedFirmwareBoard {
     /// E8 (step 8): every hit of the data translation cache is checked against a walk that writes
     /// nothing ([`Self::enable_data_cache_verify`], the runner's `--data-cache-verify`).
     data_cache_verify: bool,
+    /// Experiment (turbo loop): the JIT engine of the unified loop ([`Self::enable_turbo`]).
+    turbo: Option<Box<crate::turbo::TurboEngine>>,
     /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded block cache of the unified set
     /// loop, `None` unless [`Self::enable_block_cache_prototype`]. It lives between quanta like
     /// the decoded-instruction cache, is used under its conditions (an ordinary run) and only by
@@ -2838,6 +2840,20 @@ impl LoadedFirmwareBoard {
     /// observation) keeps every walk whatever this says.
     pub fn enable_data_cache_prototype(&mut self) {
         self.data_cache_prototype = true;
+    }
+
+    /// Experiment (turbo loop): run the unified loop through the turbo JIT. `false` when the host
+    /// cannot (not macOS on aarch64, no executable mapping).
+    pub fn enable_turbo(&mut self) -> bool {
+        if self.turbo.is_none() {
+            self.turbo = crate::turbo::TurboEngine::new();
+        }
+        self.turbo.is_some()
+    }
+
+    /// Experiment (turbo loop): the statistics of the engine as text (`None` without turbo).
+    pub fn turbo_report(&self) -> Option<String> {
+        self.turbo.as_ref().map(|engine| engine.report())
     }
 
     /// E8 (step 8, ADR-0016 decision Д5): the data translation cache in the check mode (the
@@ -4169,7 +4185,7 @@ impl LoadedFirmwareBoard {
             if irq_hook && deadline_budget < remaining && quantum_budget == deadline_budget {
                 irq_counters.quantum_cut_by_deadline += 1;
             }
-            let shortened = quantum_budget < remaining;
+            let mut shortened = quantum_budget < remaining;
             // S4-38L4i: the recorder (opt-in, observation only) learns where the quantum starts.
             if let Some(observations) = execution_observations.as_mut() {
                 observations.begin_instruction_path_quantum(quanta.saturating_add(1), retired);
@@ -4198,7 +4214,109 @@ impl LoadedFirmwareBoard {
                 // E8 (step 8): `--data-cache-verify`: every hit is checked first.
                 (true, true) => crate::data_translation_cache::DataCacheUse::Verify,
             };
-            let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
+            // Experiment (turbo loop): an ordinary run of the unified loop goes through the turbo
+            // engine, with the board's transition between RDTSC quanta done inside the loop.
+            let turbo_quantum = board.turbo.is_some()
+                && decoded_cache.is_some()
+                && board.checkpoints.is_none()
+                && scheduler_budget.is_none()
+                && !cpuid_boundary
+                && irq_hook;
+            let report = if turbo_quantum {
+                let fast_allowed = matches!(board.clock_driver, BoardClock::Standalone)
+                    && !schedule_standalone
+                    && agent.is_none()
+                    && rdtsc_tick.is_some();
+                let shortened_cell = Cell::new(shortened);
+                let device_mark = Cell::new(device_accesses.load(Ordering::Relaxed));
+                let clock = board.clock.clone();
+                let report = {
+                    let mut fast = |end: crate::turbo::FastQuantumEnd,
+                                    source: Option<&dyn crate::irq_source::BoardIrqSource>|
+                     -> Option<crate::turbo::FastQuantumStart> {
+                        if !fast_allowed {
+                            return None;
+                        }
+                        let tick = rdtsc_tick.as_ref()?;
+                        if !tick.load(Ordering::Relaxed)
+                            || device_accesses.load(Ordering::Relaxed) != device_mark.get()
+                            || xhci
+                                .as_ref()
+                                .is_some_and(|xhci| xhci.wakeup_flag().load(Ordering::Relaxed))
+                            || nic
+                                .as_ref()
+                                .is_some_and(|nic| nic.wakeup_flag().load(Ordering::Relaxed))
+                            || host_stop
+                                .as_ref()
+                                .is_some_and(|flag| flag.load(Ordering::Acquire))
+                        {
+                            return None;
+                        }
+                        let n = end.retired;
+                        if remaining <= n {
+                            return None;
+                        }
+                        // The board after the quantum (services, the UART pump and the PM/PIT
+                        // ticks have nothing to do without a device access).
+                        quanta += 1;
+                        retired += n;
+                        remaining -= n;
+                        clock.advance_standalone(n).expect("turbo: clock advance");
+                        tick.store(false, Ordering::Relaxed);
+                        rdtsc_reads = rdtsc_reads.saturating_add(1);
+                        rdtsc_reads_by_cpl[end.cpl] = rdtsc_reads_by_cpl[end.cpl].saturating_add(1);
+                        clock
+                            .advance_standalone(RDTSC_TICK_NS)
+                            .expect("turbo: clock advance");
+                        // The board before the next quantum.
+                        let mut quantum_budget = remaining;
+                        if let Some(deadline) = source.and_then(|source| source.next_deadline_ns()) {
+                            let limit = deadline
+                                .saturating_sub(clock.snapshot().now_ns())
+                                .max(1);
+                            if limit < remaining {
+                                quantum_budget = limit;
+                            }
+                        }
+                        shortened_cell.set(quantum_budget < remaining);
+                        device_mark.set(device_accesses.load(Ordering::Relaxed));
+                        Some(crate::turbo::FastQuantumStart {
+                            budget: quantum_budget,
+                            cut_by_deadline: quantum_budget < remaining,
+                        })
+                    };
+                    crate::paged_memory_adapter::run_cpl0_set_paged_turbo(
+                        &mut board.vcpus[BOOT_VCPU_INDEX].state,
+                        &mut board.bus,
+                        board.page_table_root,
+                        walker_efer,
+                        context,
+                        quantum_budget,
+                        INTEGER_FLAGS,
+                        &set,
+                        source
+                            .as_mut()
+                            .map(|source| source as &mut dyn FnMut() -> u64),
+                        stop,
+                        |_| {},
+                        Some(IrqBoundaryHook {
+                            source: &mut *board.irq_source,
+                            counters: &mut irq_counters,
+                            delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
+                            skip_first_boundary: partial_rep,
+                            device_accesses: Some(&*device_accesses),
+                            polled: None,
+                        }),
+                        crate::turbo::TurboHook {
+                            engine: board.turbo.as_deref_mut().expect("turbo engine"),
+                            fast_quantum: Some(&mut fast),
+                        },
+                    )
+                };
+                shortened = shortened_cell.get();
+                report
+            } else {
+            run_cpl0_set_paged_2m_ram_observed_with_sweep(
                 &mut board.vcpus[BOOT_VCPU_INDEX].state,
                 &mut board.bus,
                 board.page_table_root,
@@ -4246,7 +4364,8 @@ impl LoadedFirmwareBoard {
                 // at again only after a device access); not with the scheduler's stop, which is
                 // not one of them.
                 scheduler_budget.is_none().then_some(async_stop),
-            );
+            )
+            };
             quanta += 1;
             partial_rep = matches!(
                 report.exit,
@@ -5435,6 +5554,7 @@ impl AssembledBoard {
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
             data_cache_verify: false,
+            turbo: None,
             block_cache: None,
             block_stats: false,
             fetch_cache_sweep_report: None,
@@ -5536,6 +5656,7 @@ impl AssembledBoard {
             decoded_instruction_cache: DecodedInstructionCache::default(),
             data_cache_prototype: false,
             data_cache_verify: false,
+            turbo: None,
             block_cache: None,
             block_stats: false,
             fetch_cache_sweep_report: None,

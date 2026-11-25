@@ -294,6 +294,9 @@ struct Region {
     /// `Release` after the data of a write has been stored, read with `Acquire` (see
     /// [`PhysicalMemory::code_page_generation`]); every access is through `&self`.
     page_generations: Vec<AtomicU64>,
+    /// Experiment (turbo loop): one byte per page; nonzero while the turbo JIT has code on the
+    /// page. A committed write to such a page is logged (`PhysicalMemory::take_code_watch_hits`).
+    code_watch: Vec<std::sync::atomic::AtomicU8>,
 }
 
 /// S6-41c: what generated code needs for one inline atomic operation on a RAM operand
@@ -391,6 +394,9 @@ pub struct PhysicalMemory {
     /// accesses and of bulk copies, and the host fence of the guest fences. Set once, before the memory is shared (`&mut self`), so
     /// no access reads it through an atomic. The default is [`ExecutionMode::Interleaved`].
     mode: ExecutionMode,
+    /// Experiment (turbo loop): pages of `code_watch` written since the last take.
+    code_watch_hits: std::sync::Mutex<Vec<(u64, u64)>>,
+    code_watch_pending: std::sync::atomic::AtomicBool,
     /// The counters that are written while vCPU threads run, on cache lines of their own (S6-34
     /// step 12): a write to one never invalidates the line that every access reads (`regions`,
     /// `mode`).
@@ -500,15 +506,20 @@ impl PhysicalMemory {
             } else {
                 (None, Vec::new())
             };
+            let mut code_watch = Vec::new();
+            code_watch.resize_with(page_generations.len(), || std::sync::atomic::AtomicU8::new(0));
             regions.push(Region {
                 spec,
                 backing,
                 page_generations,
+                code_watch,
             });
         }
         Ok(Self {
             regions,
             mode: ExecutionMode::default(),
+            code_watch_hits: std::sync::Mutex::new(Vec::new()),
+            code_watch_pending: std::sync::atomic::AtomicBool::new(false),
             counters: ColdCounters {
                 #[cfg(test)]
                 host_fences: AtomicU64::new(0),
@@ -679,6 +690,15 @@ impl PhysicalMemory {
         for generation in generations {
             let previous = generation.fetch_add(1, publish);
             debug_assert_ne!(previous, u64::MAX, "page generation wrapped to 0");
+        }
+        if let Some(watch) = region.code_watch.get(first_generation..end_generation)
+            && watch.iter().any(|flag| flag.load(Ordering::Relaxed) != 0)
+        {
+            self.code_watch_hits
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((address.get(), len));
+            self.code_watch_pending.store(true, Ordering::Release);
         }
         let committed = GuestPhysicalRange {
             start: address,
@@ -1072,6 +1092,53 @@ impl PhysicalMemory {
                 large: false,
             },
         )
+    }
+
+    /// Experiment (turbo loop): the host address of the plain-RAM 4 KiB page holding `address`.
+    pub(crate) fn ram_page_host_ptr(&self, address: GuestPhysicalAddress) -> Option<*mut u8> {
+        let base = GuestPhysicalAddress(address.0 & !0xfff);
+        let (index, offset) = self.locate_index(base, 0x1000).ok()?;
+        let region = &self.regions[index];
+        if region.spec.kind != MemoryRegionKind::Ram {
+            return None;
+        }
+        region.backing.as_ref()?.operand_ptr(offset, 8)
+    }
+
+    fn code_watch_cell(&self, address: GuestPhysicalAddress) -> Option<&std::sync::atomic::AtomicU8> {
+        let (index, _) = self.locate_index(GuestPhysicalAddress(address.0 & !0xfff), 1).ok()?;
+        let region = &self.regions[index];
+        if region.spec.kind != MemoryRegionKind::Ram {
+            return None;
+        }
+        let page = (address.0 >> 12) - (region.spec.range.start.0 >> 12);
+        region.code_watch.get(usize::try_from(page).ok()?)
+    }
+
+    /// Experiment (turbo loop): whether the page of `address` is watched.
+    pub(crate) fn code_watch(&self, address: GuestPhysicalAddress) -> bool {
+        self.code_watch_cell(address)
+            .is_some_and(|cell| cell.load(Ordering::Relaxed) != 0)
+    }
+
+    /// Experiment (turbo loop): watch (or stop watching) the page of `address`.
+    pub(crate) fn set_code_watch(&self, address: GuestPhysicalAddress, on: bool) {
+        if let Some(cell) = self.code_watch_cell(address) {
+            cell.store(on as u8, Ordering::Relaxed);
+        }
+    }
+
+    /// Experiment (turbo loop): the watched pages written since the last call, if any.
+    pub(crate) fn take_code_watch_hits(&self) -> Option<Vec<(u64, u64)>> {
+        if !self.code_watch_pending.load(Ordering::Acquire) {
+            return None;
+        }
+        self.code_watch_pending.store(false, Ordering::Relaxed);
+        let mut hits = self
+            .code_watch_hits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Some(std::mem::take(&mut *hits))
     }
 
     /// S4-13d: a handle to the plain-RAM 2 MiB span at `base` (2 MiB aligned), or `None` unless
