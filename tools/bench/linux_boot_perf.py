@@ -359,7 +359,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         "schema": "od-cpu-core-perf-measure-v1",
         "label": args.label, "budget": args.budget, "runs_requested": args.runs,
         "priority": priority, "preliminary": preliminary, "turbo_requested": not args.no_turbo,
-        "turbo": all(row["turbo"] for row in runs),
+        "turbo": bool(runs) and all(row["turbo"] for row in runs),
         "inputs": inputs["inputs"], "runner_sha256": sha256_file(runner_path()),
         "build_profile": inputs.get("build_profile"), "host": bench.host_fingerprint(),
         "fingerprint": fingerprint, "runs": runs, "summary": summary, **git_state(),

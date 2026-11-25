@@ -70,7 +70,6 @@ pub(crate) const EXIT_BUDGET: u64 = 1;
 pub(crate) const EXIT_LOOKUP: u64 = 2;
 pub(crate) const EXIT_SLOW: u64 = 3;
 pub(crate) const EXIT_RDTSC: u64 = 4;
-/// The instruction before retired and wrote a watched page: leave the run at the next one.
 /// A REP string instruction ran `REP_ITERATION_WORK_LIMIT` iterations and did not retire.
 pub(crate) const EXIT_REP_PARTIAL: u64 = 6;
 /// An RDTSC retired and its boundary belongs to the set loop (no fast transition, or an
@@ -166,6 +165,9 @@ enum LeafRef {
     Tlb(*mut TlbEntry),
     Lookup(*mut LookupEntry, *mut u64),
 }
+
+/// The shortest list of the leaf reverse index that is compacted.
+const MIN_COMPACTION: usize = 256;
 
 /// The mark of a reference seen once during a compaction (`pad` of a TLB entry, a high bit of a
 /// lookup entry's leaf; frames are far below it). Set and cleared within one compaction.
@@ -536,6 +538,8 @@ pub(crate) struct TurboEngine {
     /// Per leaf table frame: the index of the list of TLB and lookup entries filled through it.
     leaf_refs: HashMap<u64, u32>,
     ref_lists: Vec<Vec<LeafRef>>,
+    /// Per list of `ref_lists`: the length at which it is compacted next.
+    ref_compact_at: Vec<usize>,
     free_lists: Vec<u32>,
     /// The frame of the last noted reference and its list.
     last_ref: (u64, u32),
@@ -571,7 +575,6 @@ pub struct TurboStats {
     pub code_invalidations: u64,
     pub general_steps: u64,
     pub code_writes: u64,
-    pub noted_writes: u64,
     pub leaf_drops: u64,
     pub slot_switches: u64,
     pub slot_misses: u64,
@@ -671,6 +674,7 @@ impl TurboEngine {
             page_extras: HashMap::default(),
             leaf_refs: HashMap::default(),
             ref_lists: Vec::new(),
+            ref_compact_at: Vec::new(),
             free_lists: Vec::new(),
             last_ref: (u64::MAX, 0),
             slow_insns: HashMap::default(),
@@ -790,6 +794,7 @@ impl TurboEngine {
         self.pt_frames.clear();
         self.leaf_refs.clear();
         self.ref_lists.clear();
+        self.ref_compact_at.clear();
         self.free_lists.clear();
         self.last_ref = (u64::MAX, 0);
     }
@@ -827,9 +832,11 @@ impl TurboEngine {
                         Some(index) => index,
                         None => {
                             self.ref_lists.push(Vec::new());
+                            self.ref_compact_at.push(0);
                             (self.ref_lists.len() - 1) as u32
                         }
                     };
+                    self.ref_compact_at[index as usize] = MIN_COMPACTION;
                     self.leaf_refs.insert(frame, index);
                     index
                 }
@@ -838,11 +845,14 @@ impl TurboEngine {
             index
         };
         let refs = &mut self.ref_lists[index as usize];
-        if refs.len() >= 256 && refs.len().is_power_of_two() {
+        let compact_at = &mut self.ref_compact_at[index as usize];
+        if refs.len() >= *compact_at {
             // Compact: the entries that still hold the frame, each once (a slot refilled through
             // the same leaf is noted again on every fill). The list then stays within the number
-            // of TLB and lookup entries of all contexts.
+            // of TLB and lookup entries of all contexts; the next compaction waits for as many
+            // new references as survived (amortized constant work per reference).
             compact_refs(refs, frame);
+            *compact_at = MIN_COMPACTION.max(2 * refs.len());
         }
         refs.push(reference);
     }
@@ -983,12 +993,17 @@ impl TurboEngine {
         ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
     }
 
-    /// Code pages written by anyone (the RAM's code watch log).
     /// Writes `PhysicalMemory` logged to watched pages since the last call (by the general step,
     /// devices, DMA, any run without the engine): drop the translations through written table
     /// frames and the blocks of written code.
     pub(crate) fn drain_code_watch(&mut self, ram: &PhysicalMemory) {
-        if let Some(ranges) = ram.take_code_watch_hits() {
+        if let Some((ranges, overflowed)) = ram.take_code_watch_hits() {
+            if overflowed {
+                // More writes than the log keeps: what they changed is unknown, start over.
+                self.drop_code(ram);
+                self.flush_translations(ram);
+                return;
+            }
             for (address, len) in ranges {
                 if len == 0 {
                     continue;
@@ -1319,15 +1334,24 @@ impl TurboEngine {
             Some(next_host as *const u8),
         );
         self.pending_decodes.clear();
-        let jit::Compiled::Block(code, _, _) = compiled else {
-            return None;
+        let code = match compiled {
+            jit::Compiled::Block(code, _, _) => code,
+            jit::Compiled::NoSpace => {
+                // Start over with an empty code cache (the next lookup translates again).
+                self.drop_code(env.ram);
+                return None;
+            }
+            _ => return None,
         };
         // Both pages hold its bytes: the tail of the first, the head of the second.
         let offset = (rip & 0xfff) as u16;
         self.mark_code(page, &[(offset, (0x1000 - u32::from(offset)) as u8)]);
         self.mark_code(next_page, &[(0, 16)]);
         for (p, phys) in [(page, physical), (next_page, next_physical)] {
-            self.code_pages.entry(p).or_default().push((rip, page));
+            let keys = self.code_pages.entry(p).or_default();
+            if !keys.contains(&(rip, page)) {
+                keys.push((rip, page));
+            }
             if !env.ram.code_watch(phys) {
                 env.ram.set_code_watch(phys, true);
             }
@@ -1672,8 +1696,7 @@ fn width_of(size: u64) -> crate::AccessWidth {
 /// The slow path of a guest data access from generated code: one access with the semantics of the
 /// general path (walk with A/D, RAM only), and the TLB filled from its walk. Status 0: done (the
 /// value of a read is returned); 1: the general path must run the instruction (nothing happened
-/// besides accessed/dirty bits the general path sets again); 2: done, and the write hit a watched
-/// page (the run must end after this instruction).
+/// besides accessed/dirty bits the general path sets again).
 unsafe extern "C" fn mem_helper(
     ctx: *mut TurboCtx,
     address: u64,

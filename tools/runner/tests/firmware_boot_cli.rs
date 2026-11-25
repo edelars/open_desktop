@@ -619,8 +619,9 @@ fn the_unified_run_without_turbo_reports_the_same_and_turbo_stats_go_to_stderr()
     // compare the general step with itself).
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         let retired = stderr
-            .split("retired: ")
-            .nth(1)
+            .lines()
+            .find(|line| line.starts_with("turbo: TurboStats"))
+            .and_then(|line| line.split("retired: ").nth(1))
             .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
             .and_then(|digits| digits.parse::<u64>().ok());
         assert!(

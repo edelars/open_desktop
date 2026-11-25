@@ -109,6 +109,9 @@ impl GuestPhysicalRange {
 pub(crate) const WATCH_CODE: u8 = 1;
 /// Watch bit of a page-table frame the turbo engine translated through.
 pub(crate) const WATCH_TABLE: u8 = 2;
+/// The most writes to watched pages logged between two takes; beyond it only an overflow flag
+/// is kept.
+const WATCH_LOG_LIMIT: usize = 1 << 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
@@ -395,6 +398,8 @@ pub struct PhysicalMemory {
     /// The turbo engine: pages of `code_watch` written since the last take.
     code_watch_hits: std::sync::Mutex<Vec<(u64, u64)>>,
     code_watch_pending: std::sync::atomic::AtomicBool,
+    /// More writes were logged than [`WATCH_LOG_LIMIT`] since the last take (the log was dropped).
+    code_watch_overflow: std::sync::atomic::AtomicBool,
     /// The counters that are written while vCPU threads run, on cache lines of their own (S6-34
     /// step 12): a write to one never invalidates the line that every access reads (`regions`,
     /// `mode`).
@@ -520,6 +525,7 @@ impl PhysicalMemory {
             mode: ExecutionMode::default(),
             code_watch_hits: std::sync::Mutex::new(Vec::new()),
             code_watch_pending: std::sync::atomic::AtomicBool::new(false),
+            code_watch_overflow: std::sync::atomic::AtomicBool::new(false),
             counters: ColdCounters {
                 #[cfg(test)]
                 host_fences: AtomicU64::new(0),
@@ -694,10 +700,18 @@ impl PhysicalMemory {
         if let Some(watch) = region.code_watch.get(first_generation..end_generation)
             && watch.iter().any(|flag| flag.load(Ordering::Relaxed) != 0)
         {
-            self.code_watch_hits
+            let mut hits = self
+                .code_watch_hits
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push((address.get(), len));
+                .unwrap_or_else(|error| error.into_inner());
+            if hits.len() >= WATCH_LOG_LIMIT {
+                // Nobody took the log for long (the engine did not run): keep only the fact.
+                hits.clear();
+                self.code_watch_overflow.store(true, Ordering::Relaxed);
+            } else {
+                hits.push((address.get(), len));
+            }
+            drop(hits);
             self.code_watch_pending.store(true, Ordering::Release);
         }
         let committed = GuestPhysicalRange {
@@ -1165,8 +1179,9 @@ impl PhysicalMemory {
         }
     }
 
-    /// The turbo engine: the watched pages written since the last call, if any.
-    pub(crate) fn take_code_watch_hits(&self) -> Option<Vec<(u64, u64)>> {
+    /// The turbo engine: the watched pages written since the last call, if any, and whether the
+    /// log overflowed (then the ranges are incomplete and the engine must forget everything).
+    pub(crate) fn take_code_watch_hits(&self) -> Option<(Vec<(u64, u64)>, bool)> {
         if !self.code_watch_pending.load(Ordering::Acquire) {
             return None;
         }
@@ -1175,7 +1190,8 @@ impl PhysicalMemory {
             .code_watch_hits
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        Some(std::mem::take(&mut *hits))
+        let overflowed = self.code_watch_overflow.swap(false, Ordering::Relaxed);
+        Some((std::mem::take(&mut *hits), overflowed))
     }
 
     /// S4-13d: a handle to the plain-RAM 2 MiB span at `base` (2 MiB aligned), or `None` unless

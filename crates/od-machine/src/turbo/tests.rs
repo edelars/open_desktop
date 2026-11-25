@@ -3932,3 +3932,45 @@ fn a_remapped_second_page_of_a_crossing_instruction_is_seen() {
         assert_generated(&outcome, "crossing remap");
     }
 }
+
+/// An instruction crossing into the next code page, run in space A, then (after MOV CR3 to space
+/// B, which maps the first page to the same frame and the second one to another frame with other
+/// bytes) at the same RIP: no page-table write tells the engine about the second translation, the
+/// block of the crossing instruction must walk it again.
+#[test]
+fn a_crossing_instruction_in_two_spaces_uses_the_second_page_of_each() {
+    for split in 2..10u64 {
+        let start = CODE + 0x1000 - 3 - split;
+        let mut asm = Asm::new(start);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+        asm.mov_imm(RCX, 0x0102_0304_0506_0708);
+        asm.op(&[], 8, &[0x01], RCX, Rm::R(RDX), &[]);
+        asm.hlt();
+        let program = asm.bytes.clone();
+        let mut other = program[(0x1000 - (start - CODE)) as usize..].to_vec();
+        other[0] ^= 0x5A;
+        let prepare = |machine: &mut Machine| {
+            machine.code(start, &program);
+            machine.state.rip = start;
+            put(&machine.bus, ALT + 0x5000, &other);
+            put_qword(
+                &machine.bus,
+                PT_B + ((CODE + 0x1000) >> 12) * 8,
+                (ALT + 0x5000) | P | RW,
+            );
+        };
+        let between = |machine: &mut Machine, _call: usize| {
+            machine.cr3 = PML4_B;
+            machine.state.cr3 = Some(PML4_B);
+            machine.state.rip = start;
+            machine.state.activity = Some(CpuActivity::Running);
+        };
+        let outcome = Case::new(format!("crossing in two spaces {split}"), 10, &prepare)
+            .program(&program)
+            .between(&between)
+            .calls(2)
+            .check();
+        assert_eq!(outcome.report.exit, "Run(Halted)");
+        assert_generated(&outcome, "crossing in two spaces");
+    }
+}

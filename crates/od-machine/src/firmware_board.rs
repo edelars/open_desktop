@@ -2818,9 +2818,13 @@ impl LoadedFirmwareBoard {
     }
 
     /// The unified loop of this board runs the general step only (the reference mode, the
-    /// runner's `--no-turbo`): the engine, if any, is dropped and never created again.
+    /// runner's `--no-turbo`): the engine, if any, is dropped (after it stopped watching guest
+    /// memory) and never created again.
     pub fn disable_turbo(&mut self) {
         self.turbo_disabled = true;
+        if let Some(engine) = self.turbo.as_mut() {
+            engine.reset(self.bus.physical_memory());
+        }
         self.turbo = None;
     }
 
