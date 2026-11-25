@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--data-cache-verify] [--block-stats] [--block-cache-verify] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--data-cache-verify] [--block-stats] [--block-cache-verify] [--block-boundary-verify] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -127,6 +127,12 @@ struct Options {
     /// runs through the general step with a fresh decode, which is compared with the block's; the
     /// report gets `block_cache_check`, and the first divergence fails the run (exit code 5).
     block_cache_verify: bool,
+    /// E9 (step 7, ADR-0019, section 5): `--block-boundary-verify` (with the block cache only, not
+    /// with `--block-cache-verify`, `--fast-path-verify` or `--data-cache-verify`): every short
+    /// boundary of a pass of a block is only predicted and checked by the full boundary, so the run
+    /// is the run with blocks and full boundaries; the report gets `block_boundary_check`, and the
+    /// first divergence fails the run (exit code 5).
+    block_boundary_verify: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -412,6 +418,7 @@ pub fn run(args: &[String]) -> ExitCode {
         block_cache: options.block_cache,
         block_stats: options.block_stats,
         block_cache_verify: options.block_cache_verify,
+        block_boundary_verify: options.block_boundary_verify,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -1022,6 +1029,8 @@ struct Diagnostics {
     block_stats: bool,
     /// PERF-33 (E5): the unified loop checks the decode of every block instruction.
     block_cache_verify: bool,
+    /// E9: the unified loop checks every short boundary of a pass of a block.
+    block_boundary_verify: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1489,6 +1498,9 @@ fn boot(
     // E8 (step 8): the check of the data translation cache of `--data-cache-verify`.
     let mut data_cache_check_result: Option<Result<Value, String>> = None;
     let mut data_cache_check_progress: Option<Value> = None;
+    // E9 (step 7): the check of the short boundary of `--block-boundary-verify`.
+    let mut block_boundary_check_result: Option<Result<Value, String>> = None;
+    let mut block_boundary_check_progress: Option<Value> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
         if diagnostics.data_cache_prototype {
@@ -1505,6 +1517,9 @@ fn boot(
         }
         if diagnostics.block_cache_verify {
             board.enable_block_cache_verify();
+        }
+        if diagnostics.block_boundary_verify {
+            board.enable_block_boundary_verify();
         }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
         od_machine::run_firmware_unified_with_fast_path(
@@ -1529,6 +1544,10 @@ fn boot(
             block_cache_check_progress = run.block_check.as_ref().map(block_cache_check_counters);
             data_cache_check_result = run.data_cache_check.as_ref().map(data_cache_check_summary);
             data_cache_check_progress = run.data_cache_check.as_ref().map(data_cache_check_counters);
+            block_boundary_check_result =
+                run.block_boundary_check.as_ref().map(block_boundary_check_summary);
+            block_boundary_check_progress =
+                run.block_boundary_check.as_ref().map(block_boundary_check_counters);
             if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
                 op_histogram_result = Some(write_op_histogram(path, histogram, report.retired));
             }
@@ -1791,6 +1810,18 @@ fn boot(
         }
         None => {}
     }
+    // E9 (step 7): the same for the check of the short boundary.
+    match block_boundary_check_result {
+        Some(Ok(summary)) => result["block_boundary_check"] = summary,
+        Some(Err(error)) => {
+            let mut value = failure("run_error", "block_boundary_check", error);
+            if let Some(counters) = block_boundary_check_progress {
+                value["block_boundary_check"] = counters;
+            }
+            return Err((value, 5));
+        }
+        None => {}
+    }
     if !sample_rips.is_empty() {
         result["rip_samples"] = json!(
             samples
@@ -1886,6 +1917,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut block_stats = false;
     let mut block_cache_verify = false;
     let mut data_cache_verify = false;
+    let mut block_boundary_verify = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1931,6 +1963,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--data-cache-verify" && !data_cache_verify {
             data_cache_verify = true;
+            index += 1;
+            continue;
+        }
+        if name == "--block-boundary-verify" && !block_boundary_verify {
+            block_boundary_verify = true;
             index += 1;
             continue;
         }
@@ -2110,6 +2147,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .to_owned(),
         );
     }
+    // E9 (step 7, ADR-0019, section 5): the check of the short boundary needs the blocks and is
+    // the only check of its run.
+    if block_boundary_verify && (block_cache_verify || fast_path_verify || data_cache_verify) {
+        return Err(
+            "--block-boundary-verify does not combine with --block-cache-verify, \
+             --fast-path-verify or --data-cache-verify"
+                .to_owned(),
+        );
+    }
+    if block_boundary_verify && !block_cache {
+        return Err(
+            "--block-boundary-verify requires the block cache (--cpu-loop unified and --fast-path, \
+             without --no-block-cache)"
+                .to_owned(),
+        );
+    }
     // PERF-33: the counters are those of the block cache.
     if block_stats && !block_cache {
         return Err(
@@ -2264,6 +2317,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         block_cache,
         block_stats,
         block_cache_verify,
+        block_boundary_verify,
     })
 }
 
@@ -2443,6 +2497,34 @@ fn data_cache_check_counters(report: &od_machine::DataCacheCheckReport) -> Value
     json!({
         "verified_reads": counters.verified_reads,
         "verified_writes": counters.verified_writes,
+        "divergences": counters.divergences,
+    })
+}
+
+/// E9 (step 7): the counters of the check of the short boundary for the run report, or the report of
+/// its first divergence as an error (the run stopped there). A run that counted a divergence
+/// without keeping one is a failure too.
+fn block_boundary_check_summary(
+    report: &od_machine::BlockBoundaryCheckReport,
+) -> Result<Value, String> {
+    if let Some(divergence) = &report.divergence {
+        return Err(divergence.to_string());
+    }
+    if report.counters.divergences != 0 {
+        return Err(format!(
+            "block boundary check: {} divergences counted",
+            report.counters.divergences
+        ));
+    }
+    Ok(block_boundary_check_counters(report))
+}
+
+/// E9 (step 7): the counters of the check of the short boundary as JSON (also kept when a
+/// divergence stops the run).
+fn block_boundary_check_counters(report: &od_machine::BlockBoundaryCheckReport) -> Value {
+    let counters = &report.counters;
+    json!({
+        "verified_boundaries": counters.verified,
         "divergences": counters.divergences,
     })
 }
@@ -3139,6 +3221,97 @@ mod tests {
         assert!(without_fast_path.data_cache_verify && !without_fast_path.block_cache);
         checked.extend(args(&["--data-cache-verify"]));
         assert!(parse(&checked).is_err());
+    }
+
+    /// E9 (step 7): `--block-boundary-verify` needs the block cache (the unified loop and the fast
+    /// path, without `--no-block-cache`), does not combine with another check, is taken once and is
+    /// off by default.
+    #[test]
+    fn block_boundary_verify_needs_the_blocks_and_combines_with_no_other_check() {
+        assert!(
+            !parse(&unified_with(&["--fast-path"]))
+                .unwrap()
+                .block_boundary_verify
+        );
+        let needs = "--block-boundary-verify requires the block cache";
+        for extra in [
+            &["--block-boundary-verify"][..],
+            &["--fast-path", "--no-block-cache", "--block-boundary-verify"][..],
+        ] {
+            assert!(
+                parse(&unified_with(extra)).err().unwrap().contains(needs),
+                "{extra:?}"
+            );
+        }
+        let alone = "--block-boundary-verify does not combine with --block-cache-verify, \
+                     --fast-path-verify or --data-cache-verify";
+        for extra in [
+            &[
+                "--fast-path",
+                "--block-boundary-verify",
+                "--block-cache-verify",
+            ][..],
+            &[
+                "--fast-path",
+                "--block-boundary-verify",
+                "--fast-path-verify",
+            ][..],
+            &[
+                "--fast-path",
+                "--data-cache-prototype",
+                "--data-cache-verify",
+                "--block-boundary-verify",
+            ][..],
+        ] {
+            assert!(
+                parse(&unified_with(extra)).err().unwrap().contains(alone),
+                "{extra:?}"
+            );
+        }
+        let mut checked = unified_with(&["--fast-path", "--data-cache-prototype"]);
+        checked.extend(args(&["--block-boundary-verify", "--block-stats"]));
+        let options = parse(&checked).unwrap();
+        assert!(options.block_boundary_verify && options.block_cache && options.block_stats);
+        checked.extend(args(&["--block-boundary-verify"]));
+        assert!(parse(&checked).is_err());
+    }
+
+    /// E9 (step 7): the counters of the check are the summary; a kept divergence, or a counted one,
+    /// is an error with the counters still at hand.
+    #[test]
+    fn a_block_boundary_check_divergence_is_an_error_and_counters_are_a_summary() {
+        let report = od_machine::BlockBoundaryCheckReport {
+            counters: od_machine::BlockBoundaryCheckCounters {
+                verified: 9,
+                divergences: 0,
+            },
+            divergence: None,
+        };
+        let summary = block_boundary_check_summary(&report).unwrap();
+        assert_eq!(summary["verified_boundaries"], 9);
+        assert_eq!(summary["divergences"], 0);
+        let diverged = od_machine::BlockBoundaryCheckReport {
+            counters: od_machine::BlockBoundaryCheckCounters {
+                verified: 9,
+                divergences: 1,
+            },
+            divergence: Some(od_machine::BlockBoundaryCheckDivergence {
+                rip: 0x1234,
+                index: 2,
+                reason: "the full boundary ends the call".to_owned(),
+            }),
+        };
+        let error = block_boundary_check_summary(&diverged).unwrap_err();
+        assert!(
+            error.contains("0x1234") && error.contains("instruction 2"),
+            "{error}"
+        );
+        assert_eq!(block_boundary_check_counters(&diverged)["divergences"], 1);
+        let counted_only = od_machine::BlockBoundaryCheckReport {
+            divergence: None,
+            ..diverged
+        };
+        assert!(block_boundary_check_summary(&counted_only).is_err());
     }
 
     /// E8 (step 8): the counters of the check are the summary; a kept divergence, or a counted one,

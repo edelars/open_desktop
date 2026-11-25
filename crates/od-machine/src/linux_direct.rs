@@ -1818,6 +1818,9 @@ pub struct FirmwareUnifiedRun {
     /// The check of the data translation cache (E8, step 8, `--data-cache-verify`): `None` when
     /// it was not asked for.
     pub data_cache_check: Option<DataCacheCheckReport>,
+    /// The check of the short boundary of a pass of a block (E9, step 7,
+    /// `--block-boundary-verify`): `None` when it was not asked for.
+    pub block_boundary_check: Option<BlockBoundaryCheckReport>,
     /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
     /// over the life of the board's cache: `None` when it was not enabled.
     pub block_stats: Option<crate::DecodedBlockCacheStats>,
@@ -1842,6 +1845,16 @@ pub struct BlockCheckReport {
 pub struct DataCacheCheckReport {
     pub counters: crate::data_translation_cache::check::DataCacheCheckCounters,
     pub divergence: Option<crate::data_translation_cache::check::DataCacheCheckDivergence>,
+}
+
+/// What the check of the short boundary (E9, step 7, ADR-0019, section 5) did in a unified run:
+/// the counters and the first divergence, which also ended the run (its exit is a
+/// `MemoryError::Backend` with the text of the divergence).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockBoundaryCheckReport {
+    pub counters: crate::decoded_block_cache::boundary_check::BlockBoundaryCheckCounters,
+    pub divergence:
+        Option<crate::decoded_block_cache::boundary_check::BlockBoundaryCheckDivergence>,
 }
 
 /// The first divergence of the block check with the bytes at its RIP.
@@ -2212,6 +2225,11 @@ pub fn run_firmware_unified_with_fast_path(
     if data_cache_check {
         crate::data_translation_cache::check::reset_data_cache_check();
     }
+    // E9 (step 7): the check of the short boundary counts on this thread too.
+    let block_boundary_check = board.block_boundary_verify();
+    if block_boundary_check {
+        crate::decoded_block_cache::boundary_check::reset_block_boundary_check();
+    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
     // The loop runs on this thread, so its counters are this thread's.
@@ -2241,6 +2259,11 @@ pub fn run_firmware_unified_with_fast_path(
     let data_cache_check = data_cache_check.then(|| DataCacheCheckReport {
         counters: crate::data_translation_cache::check::data_cache_check_counters(),
         divergence: crate::data_translation_cache::check::take_data_cache_check_divergence(),
+    });
+    let block_boundary_check = block_boundary_check.then(|| BlockBoundaryCheckReport {
+        counters: crate::decoded_block_cache::boundary_check::block_boundary_check_counters(),
+        divergence:
+            crate::decoded_block_cache::boundary_check::take_block_boundary_check_divergence(),
     });
     let call_trace = board.take_call_trace();
     let op_histogram = board.take_op_histogram();
@@ -2381,6 +2404,7 @@ pub fn run_firmware_unified_with_fast_path(
         fast_path_check,
         block_check,
         data_cache_check,
+        block_boundary_check,
         block_stats: board.block_cache_stats(),
         block_ends: board.block_end_report(),
     })
@@ -14796,6 +14820,7 @@ mod tests {
                 None,
                 crate::data_translation_cache::DataCacheUse::Off,
                 false,
+                None,
                 None,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");

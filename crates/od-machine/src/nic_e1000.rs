@@ -629,6 +629,11 @@ impl NicHandle {
         self.dirty.load(Ordering::Relaxed)
     }
 
+    /// E9 (ADR-0019, section 2.4): the flag of [`Self::wakeup_pending`] itself.
+    pub(crate) fn wakeup_flag(&self) -> &AtomicBool {
+        &self.dirty
+    }
+
     /// Board reset: registers, staged frame, backend flows and PCI configuration as at creation.
     pub fn platform_reset(&self) {
         lock(&self.state).platform_reset();

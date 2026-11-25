@@ -35589,6 +35589,37 @@ fn run_configured_with_profile_mode<
                     rflags_defined,
                 };
             }
+            // E9 (ADR-0019, section 2.1): the short boundary inside a pass of a block. After an
+            // instruction a block ran (`Advanced`) whose next one is the next of the same block,
+            // below the budget of the call, the memory may answer for the whole boundary: then the
+            // caller's check and the checks of the tail below (the shadow, the CPU-owned MOV CR3,
+            // the committed IRETQ, HLT, the admission key), which no instruction of a block can
+            // change (ADR-0019, section 1), are skipped. Every other boundary is the full one.
+            if BLOCKS
+                && !BLOCK_VERIFY
+                && from_block
+                && matches!(outcome, Ok(StepOutcome::Advanced))
+                && retired + 1 != config.instruction_budget
+                && batch.is_some()
+                && let Some(index) = crate::predecoded_block::block_pass_goes_on(&block_cursor)
+                && memory.block_pass_boundary(state.rip, index)
+            {
+                retired += 1;
+                debug_assert!(old_shadow != Some(crate::StiShadow::Blocking));
+                debug_assert!(batch.as_ref().is_some_and(|batch| batch.key.holds(state)));
+                debug_assert!(
+                    profiles
+                        .cpu_owned_cr3
+                        .is_none_or(|effect| effect.get().is_none())
+                );
+                debug_assert!(
+                    !profiles
+                        .iretq_user_entry
+                        .is_some_and(|boundary| boundary.committed.get())
+                );
+                debug_assert!(state.activity != Some(crate::CpuActivity::Halted));
+                continue;
+            }
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
                     // The CPL0 profile set's shadow sources are MOV SS and, under

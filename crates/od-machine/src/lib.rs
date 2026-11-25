@@ -65,6 +65,10 @@ pub use decoded_block_cache::{
     BLOCK_CACHE_COUNTED, BLOCK_GENERAL_REASONS, BLOCK_RUN_END_REASONS, BLOCK_RUN_LENGTH_BUCKETS,
     BlockEndReport, DecodedBlockCacheStats,
 };
+// E9: the check of the short boundary of a pass of a block (the runner's `--block-boundary-verify`).
+pub use decoded_block_cache::boundary_check::{
+    BlockBoundaryCheckCounters, BlockBoundaryCheckDivergence,
+};
 mod pae_fetch_view;
 mod pae_operand_access;
 mod pae_protected_step;
@@ -251,11 +255,11 @@ pub use linux_checkpoints::{
     LinuxCheckpointTarget,
 };
 pub use linux_direct::{
-    BlockCheckDivergenceReport, BlockCheckReport, DataCacheCheckReport, FastPathCheckReport,
-    FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts, FirmwareUnifiedMarker,
-    FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState, FirmwareUnifiedWalkEntry,
-    LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
-    LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
+    BlockBoundaryCheckReport, BlockCheckDivergenceReport, BlockCheckReport, DataCacheCheckReport,
+    FastPathCheckReport, FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts,
+    FirmwareUnifiedMarker, FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState,
+    FirmwareUnifiedWalkEntry, LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot,
+    LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
     LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
     LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, LinuxVcpuRunMode,
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,

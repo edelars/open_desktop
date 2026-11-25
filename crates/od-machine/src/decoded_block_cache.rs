@@ -330,12 +330,35 @@ pub(crate) struct DecodedBlockCache {
     /// walks them as usual, but runs every instruction through the general step with a fresh decode
     /// and compares that decode with the one the block holds. Set only under `&mut self`.
     verify: bool,
+    /// E9 (ADR-0019, section 5): the runner's `--block-boundary-verify`: every short boundary of a
+    /// pass of a block is only predicted and checked by the full boundary. Set only under
+    /// `&mut self`.
+    boundary_verify: bool,
     /// PERF-33 (E4, step 2): the ends of the runs and the general step, only while `counted`.
     detail: RefCell<Option<Box<EndDetail>>>,
     /// Test-only mutation switches (PERF-33, E5): each drops one source of the invalidation, for the
     /// tests that prove it is needed. A release build has none of them.
     #[cfg(test)]
     mutations: Cell<BlockMutations>,
+    /// Test-only mutation switches of the short boundary (E9, ADR-0019, decision 6).
+    #[cfg(test)]
+    boundary_mutations: Cell<BoundaryMutations>,
+}
+
+/// E9 (ADR-0019, decision 6): the test-only mutations of the short boundary of a pass of a block,
+/// each of which, alone, must make a test see a difference to the full boundary.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BoundaryMutations {
+    /// The short check does not read the device-access count.
+    pub(crate) skip_device_count: bool,
+    /// The short check does not read the atomic flags of `stop` (the host stop among them).
+    pub(crate) skip_stop_flags: bool,
+    /// A full boundary arms the short one with a saved vector (held back at IF = 0 or in the STI
+    /// shadow) as well.
+    pub(crate) arm_with_vector: bool,
+    /// A call with a call trace takes short boundaries too.
+    pub(crate) arm_with_call_trace: bool,
 }
 
 /// PERF-33 (E5, step 1): the test-only mutations of the block cache, one per source of its
@@ -392,9 +415,12 @@ impl DecodedBlockCache {
             counted: BLOCK_CACHE_COUNTED,
             counters: Counters::default(),
             verify: false,
+            boundary_verify: false,
             detail: RefCell::new(None),
             #[cfg(test)]
             mutations: Cell::new(BlockMutations::default()),
+            #[cfg(test)]
+            boundary_mutations: Cell::new(BoundaryMutations::default()),
         }
     }
 
@@ -436,6 +462,29 @@ impl DecodedBlockCache {
     /// the general step with a fresh decode, compared with the decode of the block).
     pub(crate) fn verify(&self) -> bool {
         self.verify
+    }
+
+    /// E9 (ADR-0019, section 5): the set loop checks the short boundaries of the passes of the
+    /// blocks instead of taking them (the runner's `--block-boundary-verify`).
+    pub(crate) fn enable_boundary_verify(&mut self) {
+        self.boundary_verify = true;
+    }
+
+    /// E9: whether the set loop checks the short boundaries (see [`Self::enable_boundary_verify`]).
+    pub(crate) fn boundary_verify(&self) -> bool {
+        self.boundary_verify
+    }
+
+    /// Test-only (E9): the short boundary drops what `mutations` names.
+    #[cfg(test)]
+    pub(crate) fn mutate_boundary_for_test(&self, mutations: BoundaryMutations) {
+        self.boundary_mutations.set(mutations);
+    }
+
+    /// Test-only (E9): the mutations of the short boundary in force.
+    #[cfg(test)]
+    pub(crate) fn boundary_mutations(&self) -> BoundaryMutations {
+        self.boundary_mutations.get()
     }
 
     /// The counters, with the run still open counted as ended (all zero when the cache does not
@@ -893,6 +942,81 @@ pub(crate) fn predecode_block_without_page_fence<M: od_isa::memory::GuestMemory>
         }
     }
     block
+}
+
+/// E9 (step 7, ADR-0019, section 5): the check of `--block-boundary-verify`. At a boundary inside
+/// a pass of a block where the short check says yes, the adapter only predicts the short boundary
+/// and the loop makes the full one, which checks the prediction (`checked_batch_boundary` of the set
+/// loop) and counts here; the first divergence is kept and ends the run (an exit
+/// `MemoryError::Backend` with its text). The loop runs on the thread of its caller, so the counters
+/// are that thread's (as those of the block check and of the data cache check).
+pub mod boundary_check {
+    use std::cell::RefCell;
+
+    /// What the check did since the last [`reset_block_boundary_check`].
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct BlockBoundaryCheckCounters {
+        /// Short boundaries predicted and confirmed by the full boundary.
+        pub verified: u64,
+        pub divergences: u64,
+    }
+
+    /// The first predicted short boundary the full one did not confirm.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct BlockBoundaryCheckDivergence {
+        /// The RIP of the instruction after the boundary.
+        pub rip: u64,
+        /// The index in its block (that is, in the pass) of the instruction before the boundary.
+        pub index: usize,
+        /// What differs.
+        pub reason: String,
+    }
+
+    impl std::fmt::Display for BlockBoundaryCheckDivergence {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "block boundary check: the short boundary after instruction {} of a pass (next rip {:#x}) is not the full one: {}",
+                self.index, self.rip, self.reason
+            )
+        }
+    }
+
+    thread_local! {
+        static CHECK: RefCell<(BlockBoundaryCheckCounters, Option<BlockBoundaryCheckDivergence>)> =
+            const { RefCell::new((BlockBoundaryCheckCounters { verified: 0, divergences: 0 }, None)) };
+    }
+
+    /// Clears the counters and the divergence of this thread.
+    pub fn reset_block_boundary_check() {
+        CHECK.with(|check| *check.borrow_mut() = (BlockBoundaryCheckCounters::default(), None));
+    }
+
+    /// The counters of this thread.
+    pub fn block_boundary_check_counters() -> BlockBoundaryCheckCounters {
+        CHECK.with(|check| check.borrow().0)
+    }
+
+    /// The first divergence of this thread, taken.
+    pub fn take_block_boundary_check_divergence() -> Option<BlockBoundaryCheckDivergence> {
+        CHECK.with(|check| check.borrow_mut().1.take())
+    }
+
+    /// One checked prediction: `divergence` is `None` when the full boundary confirmed it.
+    pub(crate) fn note(divergence: Option<BlockBoundaryCheckDivergence>) {
+        CHECK.with(|check| {
+            let mut check = check.borrow_mut();
+            match divergence {
+                None => check.0.verified += 1,
+                Some(divergence) => {
+                    check.0.divergences += 1;
+                    if check.1.is_none() {
+                        check.1 = Some(divergence);
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]

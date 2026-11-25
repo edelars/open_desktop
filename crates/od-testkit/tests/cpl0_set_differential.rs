@@ -403,6 +403,11 @@ struct BlockMemory {
     holds_failed: u64,
     ignore_writes: bool,
     ignore_page_fence: bool,
+    /// E9 (ADR-0019): the short boundary inside a pass of a block: `None` never (the full boundary
+    /// after every instruction), `Some(0)` always, `Some(k)` always but at every k-th question. The
+    /// corpus has no device and no stop, so a yes is always right.
+    short_every: Option<u64>,
+    short_asked: u64,
 }
 
 /// PERF-33 (E5): the mutation of the page fence: the loop of `predecode_block` (the end of the page
@@ -442,6 +447,8 @@ impl BlockMemory {
             holds_failed: 0,
             ignore_writes: false,
             ignore_page_fence: false,
+            short_every: None,
+            short_asked: 0,
         }
     }
 
@@ -498,6 +505,14 @@ impl GuestMemory for BlockMemory {
 
     fn block_retired(&mut self, _: usize) {
         self.retired_from_blocks += 1;
+    }
+
+    fn block_pass_boundary(&mut self, _: u64, _: usize) -> bool {
+        let Some(every) = self.short_every else {
+            return false;
+        };
+        self.short_asked += 1;
+        every == 0 || !self.short_asked.is_multiple_of(every)
     }
 
     fn read(
@@ -605,17 +620,26 @@ fn run_batched_over<M: GuestMemory>(
 /// PERF-31 (ADR-0018, variant (a), prototype): the case through batched calls of the set with the
 /// fast path and the block cache prototype over [`BlockMemory`] must end exactly like the
 /// one-instruction calls of the set with the fast path (exit, count, definedness, state, memory),
-/// whatever the boundary check refuses.
+/// whatever the boundary check refuses. E9 (ADR-0019): also with the short boundary inside the
+/// passes of the blocks (always, or but at every third question), which skips the check there.
 fn check_blocks(case: &Case, label: &str) {
     let fast = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_fast_path();
     let reference = one_instruction_reference(case, &fast, label);
     let blocks = fast.with_block_cache_prototype();
-    for refuse_every in [None, Some(1), Some(3), Some(7)] {
+    let variants = [None, Some(1), Some(3), Some(7)]
+        .into_iter()
+        .flat_map(|refuse_every| [(refuse_every, None), (refuse_every, Some(0))])
+        .chain([(None, Some(3))]);
+    for (refuse_every, short_every) in variants {
         let mut state = admitted(&case.state);
         let mut memory = BlockMemory::new(case.memory.clone());
+        memory.short_every = short_every;
         let (exit, retired, defined, _) =
             run_batched_over(case, &blocks, &mut state, &mut memory, refuse_every, label);
-        let variant = format!("{label}: blocks, refusing every {refuse_every:?}");
+        SHORT_BOUNDARIES.fetch_add(memory.short_asked, Ordering::Relaxed);
+        let variant = format!(
+            "{label}: blocks, refusing every {refuse_every:?}, short boundary {short_every:?}"
+        );
         assert_eq!(exit, reference.exit, "{variant}");
         assert_eq!(retired, reference.retired, "{variant}");
         assert_eq!(defined, reference.defined, "{variant}");
@@ -665,12 +689,19 @@ fn print_fast_path_totals(corpus: &str) {
     );
     assert!(BLOCK_CASES.load(Ordering::Relaxed) > 0);
     assert!(BLOCK_RETIRED.load(Ordering::Relaxed) > 0);
+    // E9: and short boundaries were asked inside the passes.
+    println!(
+        "{corpus}: short boundaries so far asked {} times",
+        SHORT_BOUNDARIES.load(Ordering::Relaxed)
+    );
+    assert!(SHORT_BOUNDARIES.load(Ordering::Relaxed) > 0);
 }
 
 static FAST_STEPS_TAKEN: AtomicU64 = AtomicU64::new(0);
 static BATCHED_CASES: AtomicU64 = AtomicU64::new(0);
 static BLOCK_CASES: AtomicU64 = AtomicU64::new(0);
 static BLOCK_RETIRED: AtomicU64 = AtomicU64::new(0);
+static SHORT_BOUNDARIES: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_COMPARED: AtomicU64 = AtomicU64::new(0);
 static FAST_PATH_CALLS: AtomicU64 = AtomicU64::new(0);
 static TREE_COMPARED: AtomicU64 = AtomicU64::new(0);

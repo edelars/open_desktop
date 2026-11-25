@@ -283,6 +283,20 @@ pub trait GuestMemory {
     /// counters only; `index` 0 starts a new run of a block). The default does nothing.
     fn block_retired(&mut self, _index: usize) {}
 
+    /// E9 (ADR-0019, section 2): the short boundary of a pass of a block. Asked by a batched run
+    /// with blocks after the instruction at `index` of the active block retired from the block
+    /// with `Advanced`, when the next instruction is the next one of the same block and the
+    /// budget of the call is not reached; `rip` is the RIP of that next instruction. `true` only
+    /// when the boundary check of the caller (`BatchBoundary::check`) would answer "go on" at this
+    /// boundary and change nothing but what this method did itself (it makes the backend ready for
+    /// the instruction at `rip`); the loop then skips that check and its own checks after the
+    /// instruction, which no instruction of a block can change. `false` (the default) keeps the
+    /// full boundary. Wrappers do not forward this method.
+    #[inline(always)]
+    fn block_pass_boundary(&mut self, _rip: u64, _index: usize) -> bool {
+        false
+    }
+
     /// PERF-33 (E4, step 2): the run of the active block ended before `instruction` of it, which
     /// did not retire from the block: `refused` when the fast path refused it (the general step
     /// runs it next), else it faulted or ended otherwise (diagnostic counters only). The default does

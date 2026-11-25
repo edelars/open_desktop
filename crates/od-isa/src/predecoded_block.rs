@@ -274,6 +274,17 @@ pub(crate) fn block_step<M: GuestMemory>(
     outcome
 }
 
+/// E9 (ADR-0019, section 2.1): after an instruction of the current block retired from it with
+/// `Advanced` ([`block_step`]), its index in the block when the next instruction of the loop is
+/// the next one of the same block (the pass goes on), else `None` (the block ends here).
+#[inline(always)]
+pub(crate) fn block_pass_goes_on(cursor: &Option<BlockCursor>) -> Option<usize> {
+    cursor
+        .as_ref()
+        .filter(|current| current.next < current.block.len())
+        .map(|current| current.next - 1)
+}
+
 /// PERF-33 (E5, step 4): what the block check counted.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BlockCheckCounters {

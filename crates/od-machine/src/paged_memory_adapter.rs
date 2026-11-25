@@ -60,6 +60,7 @@ use od_isa::{
 };
 use od_isa::{IretqUserEntry, LongModeState};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedMovStepError {
@@ -2510,6 +2511,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         DataCacheUse::Off,
         false,
         None,
+        None,
     )
 }
 
@@ -2521,6 +2523,10 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
 /// loop reads comes back from the shadows: the run is the one of
 /// [`run_cpl0_set_paged_2m_ram_observed`]. Without a cache `sweep` is ignored. `tag` is what one
 /// entry of the call's cache covers (S4-13d): `Page4K` is the default of every other caller.
+/// `pass_stop` (E9, ADR-0019, section 2.4): the atomic flags of `stop`, given only by a caller
+/// whose `stop` answers `false` without changing anything while the device-access count of the bus
+/// is unchanged since its last call and none of these flags is raised (see [`AsyncStopFlags`]);
+/// `None` keeps the full boundary after every instruction.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     state: &mut LongModeState,
@@ -2545,6 +2551,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     data_cache: DataCacheUse,
     batch: bool,
     blocks: Option<&DecodedBlockCache>,
+    pass_stop: Option<AsyncStopFlags<'_>>,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
@@ -2583,6 +2590,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
         data_cache.as_ref(),
         batch,
         blocks,
+        pass_stop,
     )
 }
 
@@ -2647,6 +2655,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         decoded,
         None,
         false,
+        None,
         None,
     )
 }
@@ -2739,6 +2748,7 @@ pub(crate) fn run_cpl0_set_loop(
     data_cache: Option<&DataTranslationCache>,
     batch: bool,
     blocks: Option<&DecodedBlockCache>,
+    pass_stop: Option<AsyncStopFlags<'_>>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2785,6 +2795,7 @@ pub(crate) fn run_cpl0_set_loop(
             data_cache,
             batch,
             blocks,
+            pass_stop,
         );
     }
     match (trace, elf) {
@@ -2814,6 +2825,7 @@ pub(crate) fn run_cpl0_set_loop(
             data_cache,
             batch,
             blocks,
+            pass_stop,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
@@ -2841,6 +2853,7 @@ pub(crate) fn run_cpl0_set_loop(
             data_cache,
             batch,
             blocks,
+            pass_stop,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
@@ -2868,6 +2881,7 @@ pub(crate) fn run_cpl0_set_loop(
             data_cache,
             batch,
             blocks,
+            pass_stop,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
@@ -2895,6 +2909,7 @@ pub(crate) fn run_cpl0_set_loop(
             data_cache,
             batch,
             blocks,
+            pass_stop,
         ),
     }
 }
@@ -2930,6 +2945,7 @@ fn run_cpl0_set_loop_impl<
     data_cache: Option<&DataTranslationCache>,
     batch: bool,
     blocks: Option<&DecodedBlockCache>,
+    pass_stop: Option<AsyncStopFlags<'_>>,
 ) -> PagedCpl0SetReport {
     // ADR-0017, section 3: a traced run keeps the general path (PERF-23 fast path off).
     let set_without_fast_path;
@@ -3085,6 +3101,12 @@ fn run_cpl0_set_loop_impl<
     }
     // PERF-33 (E5, step 4): `--block-cache-verify` (see `DecodedBlockCache::verify`).
     let block_verify = blocks.is_some_and(DecodedBlockCache::verify);
+    // E9 (ADR-0019, section 2.4): the short boundary of a pass of a block, only for a run from the
+    // blocks (not the block check) whose caller gave the atomic flags of its `stop`, and its check
+    // `--block-boundary-verify` (see `DecodedBlockCache::boundary_verify`).
+    let pass_stop = pass_stop.filter(|_| blocks.is_some() && !block_verify);
+    let boundary_verify =
+        pass_stop.is_some() && blocks.is_some_and(DecodedBlockCache::boundary_verify);
     let (exit, page_fault, memory_error) = loop {
         let carried_boundary = carried.take();
         let stopped = match carried_boundary {
@@ -3428,6 +3450,20 @@ fn run_cpl0_set_loop_impl<
         } else if call_budget > 1 {
             let device_accesses_at_call = io.device_access_count();
             let call_trace = checkpoints.as_deref();
+            // E9 (ADR-0019, section 2.4): the call may take short boundaries inside the passes of
+            // its blocks, never with a call trace (its candidates depend on RIP); it is armed by
+            // the first full boundary that goes on with a quiet interrupt source.
+            if let Some(flags) = pass_stop
+                && (call_trace.is_none() || pass_with_call_trace_mutated(blocks))
+            {
+                memory.decoded.pass = Some(PassBoundary {
+                    counter: io.device_access_counter_ref(),
+                    expected: device_accesses_at_call,
+                    flags,
+                    armed: false,
+                    verify: boundary_verify,
+                });
+            }
             run_with_cpl0_profile_set_and_pio_batched(
                 state,
                 &mut memory,
@@ -3493,6 +3529,15 @@ fn run_cpl0_set_loop_impl<
             current_rflags_defined = done.rflags_defined;
             *deliveries_without_retirement = 0;
             done.instructions_executed = 0;
+        }
+        // E9 (`--block-boundary-verify`): the first divergence of the check ends the run, as a
+        // memory error with its text (counted and kept in `decoded_block_cache::boundary_check`).
+        if boundary_verify
+            && let Some(failure) = memory.take_pass_check_failure()
+            && let Ok(done) = result.as_mut()
+        {
+            done.exit =
+                Cpl0ProfileSetExit::Run(RunExit::MemoryError(MemoryError::Backend(failure)));
         }
         pit_written |= port.pit_written;
         port_accessed |= port.port_accessed;
@@ -3966,6 +4011,58 @@ struct CarriedBoundary {
     irq: Option<u8>,
 }
 
+/// E9 (ADR-0019, section 2.4): how many atomic flags [`AsyncStopFlags`] holds.
+pub(crate) const ASYNC_STOP_FLAGS: usize = 4;
+
+/// E9: the flag an absent member of [`AsyncStopFlags`] reads; nothing ever raises it.
+static NEVER_RAISED: AtomicBool = AtomicBool::new(false);
+
+/// E9 (ADR-0019, section 2.4): the atomic flags of the board's `stop` that a host thread or a
+/// device may raise during a call (the host stop of S4-41c-1, the wake-up flags of xHCI and of the
+/// NIC, the RDTSC tick). The board builds one value per quantum and reads it both in its `stop`
+/// and, through `pass_stop` of the set loop, at the short boundary of a pass of a block, so that a
+/// flag added to the list is read by both. An absent flag reads [`NEVER_RAISED`]: [`Self::raised`]
+/// is four relaxed loads without a branch.
+#[derive(Clone, Copy)]
+pub(crate) struct AsyncStopFlags<'a> {
+    flags: [&'a AtomicBool; ASYNC_STOP_FLAGS],
+}
+
+impl<'a> AsyncStopFlags<'a> {
+    pub(crate) fn new(flags: [Option<&'a AtomicBool>; ASYNC_STOP_FLAGS]) -> Self {
+        Self {
+            flags: flags.map(|flag| flag.unwrap_or(&NEVER_RAISED)),
+        }
+    }
+
+    /// Whether any flag is raised now (relaxed loads, as the board's `stop` reads them).
+    #[inline(always)]
+    pub(crate) fn raised(&self) -> bool {
+        let [a, b, c, d] = self.flags;
+        a.load(AtomicOrdering::Relaxed)
+            | b.load(AtomicOrdering::Relaxed)
+            | c.load(AtomicOrdering::Relaxed)
+            | d.load(AtomicOrdering::Relaxed)
+    }
+}
+
+/// E9 (ADR-0019, section 2.4): what the short boundary of a batched call with blocks reads: the
+/// device-access count of the bus against its value at the start of the call (any port or MMIO
+/// access of the call moves it, and an MMIO write moves it before `mmio_written` is set) and the
+/// atomic flags of `stop`. Built for a call of the unified loop of the board (`pass_stop`) without
+/// a call trace; `armed` is set by `set_loop_batch_boundary` at the end of every boundary that goes
+/// on, only when the interrupt source is quiet there (ADR-0019, section 3), and cleared otherwise.
+#[derive(Clone, Copy)]
+struct PassBoundary<'a> {
+    counter: &'a AtomicU64,
+    expected: u64,
+    flags: AsyncStopFlags<'a>,
+    armed: bool,
+    /// `--block-boundary-verify` (ADR-0019, section 5): a short boundary is only predicted, and
+    /// the full boundary that follows checks the prediction.
+    verify: bool,
+}
+
 /// PERF-25: the boundary check of a batched call of the set loop
 /// ([`run_with_cpl0_profile_set_and_pio_batched`]). At a boundary inside the call it does what the
 /// loop does at a boundary of an ordinary run, or returns `false` to hand the boundary to the loop
@@ -3990,9 +4087,51 @@ struct CarriedBoundary {
 ///
 /// A batched call has no CPUID boundary, no checkpoint boundary, no RF instruction after the first
 /// and no `GuestOnly` or sweeping fetch cache (see the conditions of `batch` and `call_budget`).
+///
+/// E9 (ADR-0019): at the end of a boundary that goes on, a call built for the short boundary of a
+/// pass of a block (`PassBoundary`) is armed for the boundaries that follow when the interrupt
+/// source is quiet here (`irq_quiet`), and disarmed otherwise. Under `--block-boundary-verify` a
+/// boundary the short check predicted is checked here (`checked_batch_boundary`).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn set_loop_batch_boundary(
+    state: &LongModeState,
+    memory: &mut PagedMovMemoryAdapter<'_>,
+    io: &crate::bus::MachineBusSetStepIo<'_>,
+    device_accesses_at_call: u64,
+    call_trace: Option<&CheckpointRecorder>,
+    stop: &mut impl FnMut() -> bool,
+    irq: &mut Option<IrqBoundaryHook<'_>>,
+    carried: &mut Option<CarriedBoundary>,
+) -> bool {
+    if memory.decoded.pass_prediction.is_some() {
+        return checked_batch_boundary(
+            state,
+            memory,
+            io,
+            device_accesses_at_call,
+            call_trace,
+            stop,
+            irq,
+            carried,
+        );
+    }
+    full_batch_boundary(
+        state,
+        memory,
+        io,
+        device_accesses_at_call,
+        call_trace,
+        stop,
+        irq,
+        carried,
+    )
+}
+
+/// The boundary of [`set_loop_batch_boundary`] itself (steps 1-6 and the arming of E9).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn full_batch_boundary(
     state: &LongModeState,
     memory: &mut PagedMovMemoryAdapter<'_>,
     io: &crate::bus::MachineBusSetStepIo<'_>,
@@ -4028,7 +4167,89 @@ fn set_loop_batch_boundary(
         return false;
     }
     memory.begin_batched_instruction(state.rip);
+    let blocks = memory.decoded.blocks;
+    if let Some(pass) = memory.decoded.pass.as_mut() {
+        pass.armed = irq
+            .as_ref()
+            .is_none_or(|hook| irq_quiet(hook, pass.counter, device_accesses_at_call, blocks));
+    }
     true
+}
+
+/// E9 (`--block-boundary-verify`, ADR-0019, section 5): the full boundary at which the short check
+/// predicted a short one. Before it the records of the instruction must be empty (what variant В1
+/// of the short boundary relies on) and no descriptor scope open; the full boundary must go on, hand
+/// nothing to the loop, leave the interrupt hook (its counters, the saved answer, the first-boundary
+/// skip) as it was and make the adapter ready for the predicted RIP. Anything else is a divergence:
+/// counted and kept ([`crate::decoded_block_cache::boundary_check`]); the call ends here and the
+/// loop ends the run with its text.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn checked_batch_boundary(
+    state: &LongModeState,
+    memory: &mut PagedMovMemoryAdapter<'_>,
+    io: &crate::bus::MachineBusSetStepIo<'_>,
+    device_accesses_at_call: u64,
+    call_trace: Option<&CheckpointRecorder>,
+    stop: &mut impl FnMut() -> bool,
+    irq: &mut Option<IrqBoundaryHook<'_>>,
+    carried: &mut Option<CarriedBoundary>,
+) -> bool {
+    use crate::decoded_block_cache::boundary_check::{self, BlockBoundaryCheckDivergence};
+    let Some((rip, index)) = memory.decoded.pass_prediction.take() else {
+        return false;
+    };
+    let records_empty = memory.instruction_records_empty() && memory.descriptor_scope.is_none();
+    let hook_state = |irq: &Option<IrqBoundaryHook<'_>>| {
+        irq.as_ref()
+            .map(|hook| (*hook.counters, hook.polled, hook.skip_first_boundary))
+    };
+    let before = hook_state(irq);
+    let go_on = full_batch_boundary(
+        state,
+        memory,
+        io,
+        device_accesses_at_call,
+        call_trace,
+        stop,
+        irq,
+        carried,
+    );
+    let after = hook_state(irq);
+    let reason = if !records_empty {
+        Some(
+            "the records of the instruction are not empty (or a descriptor scope is open)"
+                .to_owned(),
+        )
+    } else if !go_on {
+        Some(format!(
+            "the full boundary ends the call (device accesses {} since the start {device_accesses_at_call}, handed over {:?})",
+            io.device_access_count(),
+            carried.map(|boundary| (boundary.stop, boundary.irq))
+        ))
+    } else if before != after {
+        Some(format!(
+            "the full boundary changed the interrupt hook: {before:?} -> {after:?}"
+        ))
+    } else if memory.instruction_rip != rip {
+        Some(format!(
+            "the full boundary readied rip {:#x}, the short one {rip:#x}",
+            memory.instruction_rip
+        ))
+    } else {
+        None
+    };
+    let divergence = reason.map(|reason| BlockBoundaryCheckDivergence { rip, index, reason });
+    let failure = divergence.as_ref().map(ToString::to_string);
+    boundary_check::note(divergence);
+    match failure {
+        Some(failure) => {
+            memory.decoded.pass_failed = Some(failure);
+            false
+        }
+        None => go_on,
+    }
 }
 
 /// PERF-25 (tests): every CPL0 entry call of the set loop on this thread, in order.
@@ -4111,6 +4332,76 @@ fn own_table_frame_allowed(cache: &DataTranslationCache) -> bool {
         let _ = cache;
         false
     }
+}
+
+/// E9: the test-only mutation `BoundaryMutations::arm_with_call_trace`: a call with a call trace
+/// takes short boundaries too; `false` in a release build.
+#[inline(always)]
+fn pass_with_call_trace_mutated(blocks: Option<&DecodedBlockCache>) -> bool {
+    #[cfg(test)]
+    {
+        blocks.is_some_and(|blocks| blocks.boundary_mutations().arm_with_call_trace)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = blocks;
+        false
+    }
+}
+
+/// E9 (ADR-0019, section 2.2 (a)): no device was reached since the start of the call; the
+/// test-only mutation `BoundaryMutations::skip_device_count` drops the check (`true` always).
+#[inline(always)]
+fn pass_count_unchanged(pass: &PassBoundary<'_>, blocks: Option<&DecodedBlockCache>) -> bool {
+    #[cfg(test)]
+    if blocks.is_some_and(|blocks| blocks.boundary_mutations().skip_device_count) {
+        return true;
+    }
+    #[cfg(not(test))]
+    let _ = blocks;
+    pass.counter.load(AtomicOrdering::Relaxed) == pass.expected
+}
+
+/// E9 (ADR-0019, section 2.2 (b)): an atomic flag of `stop` is raised; the test-only mutation
+/// `BoundaryMutations::skip_stop_flags` drops the check (`false` always).
+#[inline(always)]
+fn pass_flags_raised(pass: &PassBoundary<'_>, blocks: Option<&DecodedBlockCache>) -> bool {
+    #[cfg(test)]
+    if blocks.is_some_and(|blocks| blocks.boundary_mutations().skip_stop_flags) {
+        return false;
+    }
+    #[cfg(not(test))]
+    let _ = blocks;
+    pass.flags.raised()
+}
+
+/// E9 (ADR-0019, section 3): the interrupt source of `irq` is quiet at a boundary that goes on:
+/// its next question would reuse the saved answer "no vector" (PERF-05) without a side effect, as
+/// long as the device-access count `counter` stays at `at_call` (the short boundary checks that).
+/// Exactly the condition of the reuse in `poll_pending_irq`, with the saved answer `None` and taken
+/// at the count of the start of the call, and no boundary of a partial REP to skip. The test-only
+/// mutation `BoundaryMutations::arm_with_vector` also accepts a saved vector.
+fn irq_quiet(
+    hook: &IrqBoundaryHook<'_>,
+    counter: &AtomicU64,
+    at_call: u64,
+    blocks: Option<&DecodedBlockCache>,
+) -> bool {
+    #[cfg(test)]
+    let vector_allowed = blocks.is_some_and(|blocks| blocks.boundary_mutations().arm_with_vector);
+    #[cfg(not(test))]
+    let vector_allowed = {
+        let _ = blocks;
+        false
+    };
+    !hook.skip_first_boundary
+        && hook.polled.is_some_and(|polled| {
+            (polled.vector.is_none() || vector_allowed) && polled.device_accesses == at_call
+        })
+        && hook
+            .device_accesses
+            .is_some_and(|hook_counter| std::ptr::eq(hook_counter, counter))
+        && hook.source.stable_between_device_accesses()
 }
 
 /// The adapter of the set loop for one instruction or one interrupt delivery: RAM only, the
@@ -4394,6 +4685,36 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         self.page_fault_trace = None;
         self.decoded.pending = None;
         self.decoded.outside_page = false;
+    }
+
+    /// E9 (ADR-0019, section 4): the records of one instruction that `begin_batched_instruction`
+    /// resets are all empty (as after an instruction a block retired).
+    fn instruction_records_empty(&self) -> bool {
+        self.page_fault.is_none()
+            && self.memory_error.is_none()
+            && self.access_error.is_none()
+            && self.page_fault_trace.is_none()
+            && self.decoded.pending.is_none()
+            && !self.decoded.outside_page
+    }
+
+    /// E9 (`--block-boundary-verify`): at the end of a call, the divergence that ends the run: one
+    /// a full boundary found, or a predicted short boundary the call ended before confirming (the
+    /// loop left at an exit of its own tail, such as a changed admission key).
+    fn take_pass_check_failure(&mut self) -> Option<String> {
+        use crate::decoded_block_cache::boundary_check::{self, BlockBoundaryCheckDivergence};
+        if let Some((rip, index)) = self.decoded.pass_prediction.take() {
+            let divergence = BlockBoundaryCheckDivergence {
+                rip,
+                index,
+                reason: "the call ended before the full boundary confirmed the short one"
+                    .to_owned(),
+            };
+            let text = divergence.to_string();
+            boundary_check::note(Some(divergence));
+            self.decoded.pass_failed.get_or_insert(text);
+        }
+        self.decoded.pass_failed.take()
     }
 
     fn begin_descriptor_scope(
@@ -5551,6 +5872,16 @@ struct DecodedStep<'a> {
     /// instead, for [`GuestMemory::take_decoded_for_block_check`].
     verify: bool,
     fresh: Option<(u64, Instruction)>,
+    /// E9 (ADR-0019, section 2.4): the short boundary of a batched call of the unified loop of the
+    /// board; `None` everywhere else, which keeps the full boundary after every instruction.
+    pass: Option<PassBoundary<'a>>,
+    /// E9 (`--block-boundary-verify`): the short boundary the check predicted (the RIP of the next
+    /// instruction and the index in the block of the one that retired), until the full boundary
+    /// that follows confirms it.
+    pass_prediction: Option<(u64, usize)>,
+    /// E9 (`--block-boundary-verify`): the text of the first divergence of this call (the loop
+    /// ends the run with it).
+    pass_failed: Option<String>,
 }
 
 /// PERF-31: what a further instruction of the active block needs to be served from it: the page
@@ -6899,6 +7230,37 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         if let Some(blocks) = self.decoded.blocks {
             blocks.note_retired(index);
         }
+    }
+
+    /// E9 (ADR-0019, section 2.2): the short boundary holds when the call is armed for it (the
+    /// interrupt source was quiet at the last full boundary), no device was reached since the start
+    /// of the call and no atomic flag of `stop` is raised. It then readies the adapter for the
+    /// instruction at `rip` (section 4, variant В1); otherwise it changes nothing and the loop makes
+    /// the full boundary.
+    #[inline(always)]
+    fn block_pass_boundary(&mut self, rip: u64, index: usize) -> bool {
+        let Some(pass) = &self.decoded.pass else {
+            return false;
+        };
+        if !(pass.armed
+            && pass_count_unchanged(pass, self.decoded.blocks)
+            && !pass_flags_raised(pass, self.decoded.blocks))
+        {
+            return false;
+        }
+        if pass.verify {
+            self.decoded.pass_prediction = Some((rip, index));
+            return false;
+        }
+        // ADR-0019, section 4, variant В1 (chosen by the screening F100: 983.8 against 1005.0
+        // host instructions per guest instruction for В2, which resets every record as
+        // `begin_batched_instruction` does): after an instruction a block retired, the records of
+        // one instruction are empty (they are set only on the way to an `Err`, which ends the
+        // call), so only the RIP moves; a debug build asserts it and `--block-boundary-verify`
+        // checks it at every boundary it confirms.
+        debug_assert!(self.instruction_records_empty());
+        self.instruction_rip = rip;
+        true
     }
 
     fn block_run_cut(&mut self, instruction: &Instruction, refused: bool) {

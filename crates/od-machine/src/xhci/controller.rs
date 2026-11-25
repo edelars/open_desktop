@@ -1197,6 +1197,11 @@ impl XhciHandle {
         self.dirty.load(Ordering::Relaxed)
     }
 
+    /// E9 (ADR-0019, section 2.4): the flag of [`Self::wakeup_pending`] itself.
+    pub(crate) fn wakeup_flag(&self) -> &AtomicBool {
+        &self.dirty
+    }
+
     /// Board reset: the controller returns to its power-on state (HCRST, devices reset, input
     /// queue empty, PCI configuration as at board creation). The devices stay attached.
     pub fn platform_reset(&self) {

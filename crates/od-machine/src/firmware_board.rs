@@ -2908,6 +2908,25 @@ impl LoadedFirmwareBoard {
             .is_some_and(DecodedBlockCache::verify)
     }
 
+    /// E9 (step 7, ADR-0019, section 5): the short boundaries of the passes of the blocks in the
+    /// check mode (the runner's `--block-boundary-verify`; enables the cache as
+    /// [`Self::enable_block_cache_prototype`] does): wherever the unified set loop would take a
+    /// short boundary, it makes the full one and checks that it agrees (goes on and changes nothing);
+    /// the first difference ends the run. The run is otherwise the run with blocks.
+    pub fn enable_block_boundary_verify(&mut self) {
+        self.enable_block_cache_prototype();
+        if let Some(blocks) = &mut self.block_cache {
+            blocks.enable_boundary_verify();
+        }
+    }
+
+    /// E9: whether [`Self::enable_block_boundary_verify`] was called.
+    pub fn block_boundary_verify(&self) -> bool {
+        self.block_cache
+            .as_ref()
+            .is_some_and(DecodedBlockCache::boundary_verify)
+    }
+
     /// PERF-31: the counters of the predecoded block cache (ADR-0018, section 5, M1), `None` unless
     /// it was enabled and counts (PERF-33: [`Self::enable_block_stats`], or a debug build).
     pub fn block_cache_stats(&self) -> Option<DecodedBlockCacheStats> {
@@ -4086,20 +4105,19 @@ impl LoadedFirmwareBoard {
             let device_accesses = board.bus.device_access_counter();
             let bus_flags_looked_at = Cell::new(false);
             let device_accesses_seen = Cell::new(0u64);
+            // E9 (ADR-0019, section 2.4): the atomic flags of `stop` as one list, read by `stop`
+            // below and, through `pass_stop`, by the short boundary of a pass of a block: a guest
+            // write to an xHCI register (a doorbell) or a host input event, a guest write to a NIC
+            // register (the tail pointers), the RDTSC tick and the host stop each end the quantum
+            // (one relaxed load each).
+            let async_stop = crate::paged_memory_adapter::AsyncStopFlags::new([
+                xhci.as_ref().map(XhciHandle::wakeup_flag),
+                nic.as_ref().map(NicHandle::wakeup_flag),
+                rdtsc_tick.as_deref(),
+                host_stop.as_deref(),
+            ]);
             let stop = || {
-                if (scheduler_budget.is_some() && scheduler_stop())
-                    // A guest write to an xHCI register (a doorbell) or a host input event ends
-                    // the quantum (one atomic load).
-                    || xhci.as_ref().is_some_and(XhciHandle::wakeup_pending)
-                    // A guest write to a NIC register (the tail pointers) ends it as well.
-                    || nic.as_ref().is_some_and(NicHandle::wakeup_pending)
-                    || rdtsc_tick
-                        .as_ref()
-                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
-                    || host_stop
-                        .as_deref()
-                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
-                {
+                if (scheduler_budget.is_some() && scheduler_stop()) || async_stop.raised() {
                     return true;
                 }
                 let accesses = device_accesses.load(Ordering::Relaxed);
@@ -4223,6 +4241,11 @@ impl LoadedFirmwareBoard {
                     .block_cache
                     .as_ref()
                     .filter(|_| decoded_cache.is_some()),
+                // E9 (ADR-0019, section 2.4): with these flags and an unchanged device-access
+                // count, `stop` above answers `false` and changes nothing (its bus flags are looked
+                // at again only after a device access); not with the scheduler's stop, which is
+                // not one of them.
+                scheduler_budget.is_none().then_some(async_stop),
             );
             quanta += 1;
             partial_rep = matches!(
@@ -11422,6 +11445,398 @@ mod tests {
         assert_eq!(reference.run.retired, retired);
         assert_eq!(batched.state(), single.state());
         assert_eq!(perf25_ram(&batched), perf25_ram(&single));
+    }
+
+    // ---- E9 (ADR-0019): the short boundary inside a pass of a block in the unified loop ----
+
+    /// The unified runs of `board()` with `budgets`, with the fast path and the blocks: with the short
+    /// boundary (the default), or in the check mode `--block-boundary-verify` (`verify`: the full
+    /// boundary after every instruction, each short boundary the check would take confirmed by it),
+    /// with the test-only `mutations` of the short boundary. The runs, the calls and the board.
+    fn e9_runs(
+        board: &impl Fn() -> LoadedFirmwareBoard,
+        budgets: &[u64],
+        verify: bool,
+        mutations: crate::decoded_block_cache::BoundaryMutations,
+    ) -> (
+        Vec<crate::FirmwareUnifiedRun>,
+        Vec<crate::paged_memory_adapter::batch_trace::Call>,
+        LoadedFirmwareBoard,
+    ) {
+        let mut board = board();
+        if verify {
+            board.enable_block_boundary_verify();
+        } else {
+            board.enable_block_cache_prototype();
+        }
+        board
+            .block_cache
+            .as_ref()
+            .expect("the blocks were asked for")
+            .mutate_boundary_for_test(mutations);
+        crate::paged_memory_adapter::batch_trace::start();
+        let runs = budgets
+            .iter()
+            .map(|&budget| {
+                crate::run_firmware_unified_with_fast_path(
+                    &mut board,
+                    budget,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    false,
+                    true,
+                )
+                .unwrap()
+            })
+            .collect();
+        (
+            runs,
+            crate::paged_memory_adapter::batch_trace::take(),
+            board,
+        )
+    }
+
+    /// E9 (step 8): the unified runs of `board()` with the short boundary against the same runs with
+    /// the full boundary after every instruction (the check mode, which also checks every boundary
+    /// the short one would take): every report (but the check's own), every call of the set loop
+    /// (its budget, what it retired, where it ended), the state, COM1 and the RAM below 16 MiB are
+    /// equal, and the check found no divergence. Returns the runs with the short boundary, their calls
+    /// and how many short boundaries the check confirmed.
+    fn e9_compare(
+        board: impl Fn() -> LoadedFirmwareBoard,
+        budgets: &[u64],
+    ) -> (
+        Vec<crate::FirmwareUnifiedRun>,
+        Vec<crate::paged_memory_adapter::batch_trace::Call>,
+        u64,
+    ) {
+        let none = crate::decoded_block_cache::BoundaryMutations::default();
+        let (mut full, full_calls, full_board) = e9_runs(&board, budgets, true, none);
+        let (short, short_calls, short_board) = e9_runs(&board, budgets, false, none);
+        let mut verified = 0;
+        for run in &mut full {
+            let check = run
+                .block_boundary_check
+                .take()
+                .expect("the check was asked for");
+            assert_eq!(check.divergence, None, "{check:?}");
+            assert_eq!(check.counters.divergences, 0, "{check:?}");
+            verified += check.counters.verified;
+        }
+        assert!(short.iter().all(|run| run.block_boundary_check.is_none()));
+        assert_eq!(format!("{short:?}"), format!("{full:?}"));
+        assert_eq!(short_calls, full_calls);
+        assert_eq!(short_board.state(), full_board.state());
+        assert_eq!(short_board.com1_transcript(), full_board.com1_transcript());
+        assert_eq!(perf25_ram(&short_board), perf25_ram(&full_board));
+        (short, short_calls, verified)
+    }
+
+    /// `mov rbx, 0xFC00_0040; mov eax, 0x10; mov [rbx], eax` (a store to the WIDTH register of the
+    /// display, a set window of the unified run) and `mov ecx, [rbx]` (its load) after two NOPs, all in
+    /// one block; three NOPs and HLT after them. The offsets after the store and after the load.
+    fn e9_mmio_code() -> (Vec<u8>, usize, usize) {
+        let mut code = vec![0x90; 2];
+        code.extend_from_slice(&[0x48, 0xBB, 0x40, 0x00, 0x00, 0xFC, 0, 0, 0, 0]);
+        code.extend_from_slice(&[0xB8, 0x10, 0x00, 0x00, 0x00, 0x89, 0x03]);
+        let store = code.len();
+        code.extend_from_slice(&[0x8B, 0x0B]);
+        let load = code.len();
+        code.extend_from_slice(&[0x90, 0x90, 0x90, 0xF4]);
+        (code, store, load)
+    }
+
+    #[test]
+    fn e9_an_mmio_store_and_load_of_a_block_instruction_end_the_pass_and_the_call() {
+        let (code, store, load) = e9_mmio_code();
+        let board = || perf25_board(&code, &[]);
+        let (runs, calls, verified) = e9_compare(board, &[1_000]);
+        assert_eq!(runs[0].run.exit, PagedProbeExit::Halted, "{runs:?}");
+        assert!(verified > 0, "no short boundary was taken");
+        let entry = perf25_entry();
+        for end in [store, load] {
+            assert!(
+                calls.iter().any(|call| call.rip == entry + end as u64),
+                "{end:#x}: {calls:?}"
+            );
+        }
+        // The mutation: a short check that does not read the device-access count goes on in the
+        // pass after the store, and the call no longer ends there.
+        let (_, mutated, _) = e9_runs(
+            &board,
+            &[1_000],
+            false,
+            crate::decoded_block_cache::BoundaryMutations {
+                skip_device_count: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            !mutated.iter().any(|call| call.rip == entry + store as u64),
+            "{mutated:?}"
+        );
+        assert_ne!(mutated, calls);
+    }
+
+    #[test]
+    fn e9_outs_after_a_pass_and_the_timer_interrupt_are_those_of_the_full_boundary() {
+        // As `batched_calls_end_the_unified_run_like_one_instruction_calls_and_after_each_out`, with
+        // a longer delay loop body (one block of four instructions).
+        const HANDLER_OFFSET: usize = 0xC0;
+        let mut code = vec![0x90; 20];
+        code.extend_from_slice(&perf25_pic_pit_code(0xFE, 0x04A9));
+        code.push(0xFB);
+        // mov ecx, 3000; L: add eax, 1; add ebx, 1; dec ecx; jnz L
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00]);
+        code.extend_from_slice(&[0x83, 0xC0, 0x01, 0x83, 0xC3, 0x01, 0xFF, 0xC9, 0x75, 0xF6]);
+        code.push(0xF4);
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        let (runs, _, verified) =
+            e9_compare(|| perf25_irq_board(&code, HANDLER_OFFSET), &[100_000]);
+        assert_eq!(runs[0].run.exit, PagedProbeExit::Halted);
+        assert_eq!(runs[0].interrupts.irqs_delivered, 1);
+        assert!(verified > 1_000, "{verified}");
+    }
+
+    /// IR0 unmasked and a fast timer at IF = 0 over a loop of one block: the vector is pending and
+    /// refused at every boundary, also inside the passes; then STI, refused once in the shadow and
+    /// delivered after it.
+    fn e9_masked_code() -> (Vec<u8>, usize) {
+        const HANDLER_OFFSET: usize = 0x80;
+        let mut code = vec![0xFA]; // cli
+        code.extend_from_slice(&perf25_pic_pit_code(0xFE, 2));
+        code.extend_from_slice(&[0xB9, 0xB8, 0x0B, 0x00, 0x00]);
+        code.extend_from_slice(&[0x83, 0xC0, 0x01, 0x83, 0xC3, 0x01, 0xFF, 0xC9, 0x75, 0xF6]);
+        code.extend_from_slice(&[0xFB, 0x90, 0xF4]); // sti; nop; hlt
+        code.resize(HANDLER_OFFSET, 0x90);
+        code.extend_from_slice(&[0xB0, 0x20, 0xE6, 0x20, 0xF4]);
+        (code, HANDLER_OFFSET)
+    }
+
+    #[test]
+    fn e9_refusals_at_if_0_inside_passes_are_counted_like_at_the_full_boundary() {
+        let (code, handler) = e9_masked_code();
+        let board = || perf25_irq_board(&code, handler);
+        let (runs, _, _) = e9_compare(board, &[100_000]);
+        let interrupts = &runs[0].interrupts;
+        assert_eq!(interrupts.irqs_delivered, 1, "{interrupts:?}");
+        assert!(interrupts.irq_refused_masked > 1_000, "{interrupts:?}");
+        assert_eq!(interrupts.irq_refused_shadow, 1, "{interrupts:?}");
+        // The mutation: arming the short boundary with a saved vector skips refusals.
+        let (mutated, _, _) = e9_runs(
+            &board,
+            &[100_000],
+            false,
+            crate::decoded_block_cache::BoundaryMutations {
+                arm_with_vector: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            mutated[0].interrupts.irq_refused_masked < interrupts.irq_refused_masked,
+            "{:?}",
+            mutated[0].interrupts
+        );
+    }
+
+    #[test]
+    fn e9_an_rdtsc_right_after_a_block_ends_its_call_and_quantum_as_before() {
+        let mut code = Vec::new();
+        for _ in 0..4 {
+            code.extend_from_slice(&[0x90, 0x90, 0x90, 0x0F, 0x31]);
+        }
+        code.push(0xF4);
+        let (runs, calls, verified) = e9_compare(
+            || load_firmware_image(&minor2_image(&code), &linux_config()).unwrap(),
+            &[1_000],
+        );
+        assert_eq!(runs[0].run.exit, PagedProbeExit::Halted);
+        assert!(verified > 0);
+        let entry = load_firmware_image(&minor2_image(&code), &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let ends: Vec<_> = calls
+            .iter()
+            .map(|call| (call.retired, call.rip - entry))
+            .collect();
+        assert_eq!(ends, [(4, 5), (4, 10), (4, 15), (4, 20), (1, 21)]);
+    }
+
+    #[test]
+    fn e9_the_budget_inside_a_pass_ends_the_run_where_the_full_boundary_does() {
+        // Twenty NOPs (one block) and HLT; the first run ends inside the pass, after 1, 2, 7 or 19
+        // instructions, and the next one goes on from there.
+        let mut code = vec![0x90; 20];
+        code.push(0xF4);
+        for first in [1, 2, 7, 19] {
+            let (runs, _, verified) = e9_compare(|| perf25_board(&code, &[]), &[first, 1_000]);
+            assert_eq!(runs[0].run.retired, first);
+            assert_eq!(runs[1].run.exit, PagedProbeExit::Halted, "{runs:?}");
+            assert_eq!(runs[0].run.retired + runs[1].run.retired, 21);
+            if first > 2 {
+                assert!(verified > 0, "{first}");
+            }
+        }
+    }
+
+    #[test]
+    fn e9_a_partial_rep_after_a_pass_resumes_as_at_the_full_boundary() {
+        let mut code = vec![0x90; 3];
+        code.extend_from_slice(&[0xB9, 0xC4, 0x09, 0, 0, 0xBF, 0x00, 0x30, 0, 0, 0xB0, 0xAB]);
+        let rep = code.len();
+        code.extend_from_slice(&[0xF3, 0xAA, 0x90, 0x90, 0x90, 0xF4]);
+        let board = || perf25_board(&code, &[]);
+        let (runs, calls, verified) = e9_compare(board, &[1_000]);
+        assert_eq!(runs[0].run.exit, PagedProbeExit::Halted, "{runs:?}");
+        assert!(verified > 0);
+        let at_rep = perf25_entry() + rep as u64;
+        assert!(
+            calls.iter().filter(|call| call.rip == at_rep).count() >= 2,
+            "{calls:?}"
+        );
+        let (runs, _, _) = e9_compare(board, &[7, 1_000]);
+        assert_eq!(runs[1].run.exit, PagedProbeExit::Halted, "{runs:?}");
+    }
+
+    #[test]
+    fn e9_a_host_stop_from_another_thread_stops_a_pass_at_an_instruction_boundary() {
+        // `add rax, 1; add rbx, 1; jmp back` (one block) at IF = 0; a host thread raises the stop
+        // while the run goes on. The run with short boundaries stops at some boundary; one-instruction
+        // calls for that many instructions leave the same state and RAM.
+        let code = [0x48, 0x83, 0xC0, 0x01, 0x48, 0x83, 0xC3, 0x01, 0xEB, 0xF6];
+        const BUDGET: u64 = 1 << 40;
+        let mut batched = perf25_board(&code, &[]);
+        batched.enable_block_cache_prototype();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        batched.set_host_stop(std::sync::Arc::clone(&flag));
+        let setter = {
+            let flag = std::sync::Arc::clone(&flag);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            })
+        };
+        let stopped = crate::run_firmware_unified_with_fast_path(
+            &mut batched,
+            BUDGET,
+            None,
+            Vec::new(),
+            None,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+        setter.join().unwrap();
+        assert!(batched.take_host_stop_honoured());
+        let retired = stopped.run.retired;
+        assert!(retired > 0 && retired < BUDGET, "{stopped:?}");
+        let stats = stopped.block_stats.expect("a debug build counts");
+        assert!(stats.retired_in_runs_of_two_or_more > 0, "{stats:?}");
+        let mut single = perf25_board(&code, &[]);
+        single.set_instruction_batches(false);
+        let reference = crate::run_firmware_unified(&mut single, retired).unwrap();
+        assert_eq!(reference.run.retired, retired);
+        assert_eq!(batched.state(), single.state());
+        assert_eq!(perf25_ram(&batched), perf25_ram(&single));
+    }
+
+    #[test]
+    fn e9_a_call_trace_keeps_the_full_boundary_and_sees_a_function_entered_inside_a_pass() {
+        // NOPs that fall through into the traced function at FUNCTION (no CALL: its entry is inside
+        // the pass of the block), then HLT.
+        const FUNCTION: usize = 4;
+        let mut code = vec![0x90; 12];
+        code.push(0xF4);
+        let image = minor2_image(&code);
+        let entry = load_firmware_image(&image, &linux_config())
+            .unwrap()
+            .state()
+            .rip;
+        let traced = |verify: bool, mutations| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            if verify {
+                board.enable_block_boundary_verify();
+            } else {
+                board.enable_block_cache_prototype();
+            }
+            board
+                .block_cache
+                .as_ref()
+                .unwrap()
+                .mutate_boundary_for_test(mutations);
+            let target = crate::CallTraceTarget {
+                name: "f".to_owned(),
+                physical: entry + FUNCTION as u64,
+                guid_arg: None,
+                name_arg: None,
+                rt_slot: None,
+            };
+            crate::run_firmware_unified_with_fast_path(
+                &mut board,
+                1_000,
+                None,
+                vec![target],
+                None,
+                false,
+                false,
+                true,
+            )
+            .unwrap()
+        };
+        let none = crate::decoded_block_cache::BoundaryMutations::default();
+        let with_blocks = traced(false, none);
+        assert_eq!(with_blocks.run.exit, PagedProbeExit::Halted);
+        assert_eq!(with_blocks.call_trace.as_ref().unwrap().total, 1);
+        // No short boundary is predicted at all under a call trace.
+        let checked = traced(true, none);
+        assert_eq!(
+            checked
+                .block_boundary_check
+                .as_ref()
+                .unwrap()
+                .counters
+                .verified,
+            0
+        );
+        assert_eq!(checked.call_trace, with_blocks.call_trace);
+        // The mutation: short boundaries under the trace skip the entry of the function.
+        let mutated = traced(
+            false,
+            crate::decoded_block_cache::BoundaryMutations {
+                arm_with_call_trace: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(mutated.call_trace.as_ref().unwrap().total, 0);
+    }
+
+    #[test]
+    fn e9_the_check_of_the_short_boundary_changes_nothing_of_the_run() {
+        // The run of the PERF-31 differential case in the check mode against the run with blocks
+        // and short boundaries (`e9_compare`) and against the run without blocks.
+        let (code, _, _) = e9_mmio_code();
+        let board = || perf25_board(&code, &[]);
+        let (runs, _, verified) = e9_compare(board, &[1_000]);
+        assert!(verified > 0);
+        let mut plain = board();
+        let without = crate::run_firmware_unified_with_fast_path(
+            &mut plain,
+            1_000,
+            None,
+            Vec::new(),
+            None,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(runs[0].run, without.run);
+        assert_eq!(runs[0].interrupts, without.interrupts);
     }
 
     #[test]

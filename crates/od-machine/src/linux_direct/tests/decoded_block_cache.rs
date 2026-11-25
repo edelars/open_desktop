@@ -51,6 +51,9 @@ enum Step<'a> {
 enum Blocks {
     Off,
     On,
+    /// E9: the block cache with the full boundary after every instruction (no `pass_stop`); `On`
+    /// and `Mutated` take the short boundary inside the passes of the blocks (ADR-0019).
+    FullBoundary,
     /// A mutation: the cache ignores the sources of its invalidation these name (PERF-33, E5).
     Mutated(BlockMutations),
 }
@@ -114,6 +117,8 @@ fn run_scenario(
                     crate::data_translation_cache::DataCacheUse::Off,
                     true,
                     (blocks != Blocks::Off).then_some(&cache),
+                    (!matches!(blocks, Blocks::Off | Blocks::FullBoundary))
+                        .then(|| crate::paged_memory_adapter::AsyncStopFlags::new([None; 4])),
                 );
                 efer = report.efer;
                 state.cr3 = Some(report.cr3);
@@ -161,6 +166,10 @@ fn assert_blocks_are_invisible(
     let blocks = run_scenario(build, steps, Blocks::On);
     assert_eq!(plain.stats, DecodedBlockCacheStats::default());
     assert_same(&blocks, &plain);
+    // E9: the short boundary inside the passes changes nothing either (nor what the blocks did).
+    let full = run_scenario(build, steps, Blocks::FullBoundary);
+    assert_same(&full, &plain);
+    assert_eq!(full.stats, blocks.stats);
     blocks
 }
 
@@ -705,5 +714,275 @@ fn the_reset_of_the_cache_is_seen_only_in_what_the_cache_did() {
         "the mutation must be seen in the cache: {:?} against {:?}",
         stale.stats,
         blocks.stats
+    );
+}
+
+// ---- E9 (ADR-0019): the short boundary inside a pass of a block, at the level of the set loop ----
+
+/// E9: a source of the hook that counts how often it is asked and always gives `vector`;
+/// `stable` is its answer to `stable_between_device_accesses`.
+struct CountingSource {
+    asked: std::cell::Cell<u64>,
+    vector: Option<u8>,
+    stable: bool,
+}
+
+impl crate::irq_source::BoardIrqSource for CountingSource {
+    fn pending_vector(&self) -> Option<u8> {
+        self.asked.set(self.asked.get() + 1);
+        self.vector
+    }
+
+    fn acknowledge(&mut self, _vector: u8) {}
+
+    fn next_deadline_ns(&self) -> Option<u64> {
+        None
+    }
+
+    fn stable_between_device_accesses(&self) -> bool {
+        self.stable
+    }
+}
+
+/// How the boundary inside the passes of the blocks of an E9 case is made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Boundary {
+    /// The full boundary after every instruction (no `pass_stop`).
+    Full,
+    /// The short boundary.
+    Short,
+    /// The check mode: the full boundary, each short one predicted and checked.
+    Check,
+    /// The short boundary with test-only mutations.
+    Mutated(crate::decoded_block_cache::BoundaryMutations),
+}
+
+/// `mov rbx, va(1); mov ecx, 20; L: add eax, 1; mov [rbx], eax; add edx, 1; add esi, 1; dec ecx;
+/// jnz L; hlt`: one block of eight instructions, then passes of six; the store goes to the data page
+/// `va(1)`.
+fn e9_loop(boot: &mut LinuxDirectBoot) -> LongModeState {
+    // The data page is dirty already: the store writes no table (which would drop the fetch cache
+    // and end the pass on its own).
+    write_tree(
+        boot,
+        TREE_PML4,
+        &[(0, pte(FRAME_A)), (1, FRAME_B | A_D_PRESENT_WRITABLE)],
+        None,
+    );
+    let base = va(0) + 0x100;
+    let mut code = mov_imm32(3, va(1) as u32);
+    code.extend(mov32(1, 20));
+    code.extend([0x83, 0xC0, 0x01]); // L: add eax, 1
+    code.extend([0x89, 0x03]); // mov [rbx], eax
+    code.extend([0x83, 0xC2, 0x01]); // add edx, 1
+    code.extend([0x83, 0xC6, 0x01]); // add esi, 1
+    code.extend([0xFF, 0xC9]); // dec ecx
+    code.extend([0x75, 0xF1]); // jnz L
+    code.push(HLT);
+    lay_code(boot, FRAME_A, 0x100, &code);
+    let mut state = tree_state(boot, TREE_PML4, base);
+    state.gpr[Register::Rsi as usize] = 0;
+    state
+}
+
+/// What an E9 case saw: the report, the state, how often the source was asked, the counters of the
+/// hook and those of the check.
+#[derive(Debug, PartialEq)]
+struct E9Outcome {
+    report: PagedCpl0SetReport,
+    state: LongModeState,
+    asked: u64,
+    irq: crate::irq_source::IrqCounters,
+    check: crate::decoded_block_cache::boundary_check::BlockBoundaryCheckCounters,
+}
+
+/// One call of the set loop over `e9_loop` with blocks and the hook of a `CountingSource`, IF as
+/// `interrupts` says; `stop` is one atomic flag, also the one flag of `pass_stop`, raised by the
+/// first committed write to the data page when `raise_at_store`.
+fn e9_case(
+    boundary: Boundary,
+    vector: Option<u8>,
+    stable: bool,
+    interrupts: bool,
+    raise_at_store: bool,
+) -> E9Outcome {
+    use crate::decoded_block_cache::boundary_check;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (cli, halt) = (CliProfile::NonPviLong64V1, HaltProfile::Long64V1);
+    let set = switch_set(&cli, &halt)
+        .with_fast_path()
+        .with_block_cache_prototype();
+    let (mut boot, _) = boot_with_entry(&[HLT]);
+    let mut state = e9_loop(&mut boot);
+    if interrupts {
+        state.rflags |= 1 << 9;
+    } else {
+        state.rflags &= !(1 << 9);
+    }
+    let efer = boot.board.efer();
+    let cr3 = state.cr3.expect("the case runs with a CPU-owned CR3");
+    let decoded = DecodedInstructionCache::new(1 << 10);
+    let mut cache = DecodedBlockCache::new(1 << 8);
+    match boundary {
+        Boundary::Check => cache.enable_boundary_verify(),
+        Boundary::Mutated(mutations) => cache.mutate_boundary_for_test(mutations),
+        Boundary::Full | Boundary::Short => {}
+    }
+    boundary_check::reset_block_boundary_check();
+    let flag = AtomicBool::new(false);
+    let counter = boot.board.bus_mut().device_access_counter();
+    let mut source = CountingSource {
+        asked: std::cell::Cell::new(0),
+        vector,
+        stable,
+    };
+    let mut irq = crate::irq_source::IrqCounters::default();
+    let report = run_cpl0_set_paged_2m_ram_observed_with_sweep(
+        &mut state,
+        boot.board.bus_mut(),
+        cr3,
+        efer,
+        long64(),
+        1_000,
+        INTEGER_FLAGS,
+        &set,
+        None,
+        || flag.load(Ordering::Relaxed),
+        |range| {
+            if raise_at_store && range.start().get() >> 12 == FRAME_B >> 12 {
+                flag.store(true, Ordering::Relaxed);
+            }
+        },
+        false,
+        Some(FetchCacheInvalidation::WriteWatch),
+        Some(crate::irq_source::IrqBoundaryHook {
+            source: &mut source,
+            counters: &mut irq,
+            delivered_mirror: None,
+            skip_first_boundary: false,
+            device_accesses: Some(&*counter),
+            polled: None,
+        }),
+        None,
+        None,
+        None,
+        FetchCacheTag::Page4K,
+        Some(&decoded),
+        crate::data_translation_cache::DataCacheUse::Off,
+        true,
+        Some(&cache),
+        (boundary != Boundary::Full).then(|| {
+            crate::paged_memory_adapter::AsyncStopFlags::new([Some(&flag), None, None, None])
+        }),
+    );
+    let mut report = report;
+    report.walk_counts = Default::default();
+    report.fetch_cache_stats = None;
+    let check = boundary_check::block_boundary_check_counters();
+    assert_eq!(boundary_check::take_block_boundary_check_divergence(), None);
+    E9Outcome {
+        report,
+        state,
+        asked: source.asked.get(),
+        irq,
+        check,
+    }
+}
+
+/// The case with the short boundary and in the check mode against the full boundary (all but the
+/// counters of the check equal); the outcome with the short boundary and the number of short
+/// boundaries the check confirmed.
+fn e9_assert_same(
+    vector: Option<u8>,
+    stable: bool,
+    interrupts: bool,
+    raise_at_store: bool,
+) -> (E9Outcome, u64) {
+    let full = e9_case(Boundary::Full, vector, stable, interrupts, raise_at_store);
+    let short = e9_case(Boundary::Short, vector, stable, interrupts, raise_at_store);
+    let mut checked = e9_case(Boundary::Check, vector, stable, interrupts, raise_at_store);
+    let verified = checked.check.verified;
+    assert_eq!(checked.check.divergences, 0);
+    checked.check = Default::default();
+    assert_eq!(full.check, Default::default());
+    assert_eq!(short, full);
+    assert_eq!(checked, full);
+    (short, verified)
+}
+
+#[test]
+fn e9_a_quiet_stable_source_lets_the_pass_take_short_boundaries_and_changes_nothing() {
+    let (outcome, verified) = e9_assert_same(None, true, true, false);
+    assert!(halted(&outcome.report), "{:?}", outcome.report);
+    assert_eq!(outcome.state.gpr[Register::Rsi as usize], 20);
+    // Passes of six: the boundaries inside them are short (all but the one after the first
+    // instruction of the call, which arms the call, and the ones after each JNZ).
+    assert!(verified >= 20 * 4, "{verified}");
+}
+
+#[test]
+fn e9_an_unstable_source_is_asked_at_every_boundary_and_no_boundary_is_short() {
+    let (outcome, verified) = e9_assert_same(None, false, true, false);
+    assert!(halted(&outcome.report), "{:?}", outcome.report);
+    assert_eq!(verified, 0);
+    // Asked at the first boundary of the call and after every instruction but the HLT.
+    assert_eq!(outcome.asked, outcome.report.instructions_executed);
+}
+
+#[test]
+fn e9_a_vector_held_back_at_if_0_keeps_the_full_boundary_and_its_refusals() {
+    let (outcome, verified) = e9_assert_same(Some(0x30), true, false, false);
+    assert!(halted(&outcome.report), "{:?}", outcome.report);
+    assert_eq!(verified, 0);
+    assert_eq!(
+        outcome.irq.irq_refused_masked,
+        outcome.report.instructions_executed
+    );
+    // The mutation: arming with the saved vector skips the refusals inside the passes.
+    let mutated = e9_case(
+        Boundary::Mutated(crate::decoded_block_cache::BoundaryMutations {
+            arm_with_vector: true,
+            ..Default::default()
+        }),
+        Some(0x30),
+        true,
+        false,
+        false,
+    );
+    assert!(
+        mutated.irq.irq_refused_masked < outcome.irq.irq_refused_masked,
+        "{:?}",
+        mutated.irq
+    );
+}
+
+#[test]
+fn e9_an_atomic_stop_flag_raised_inside_a_pass_ends_the_call_at_the_next_boundary() {
+    let (outcome, verified) = e9_assert_same(None, true, true, true);
+    assert_eq!(
+        outcome.report.exit,
+        PagedCpl0SetExit::Run(RunExit::StopRequested),
+        "{:?}",
+        outcome.report
+    );
+    // mov, mov, add and the store: the flag went up during the store, the boundary after it ends
+    // the call.
+    assert_eq!(outcome.report.instructions_executed, 4);
+    assert!(verified >= 2, "{verified}");
+    // The mutation: a short check that does not read the flags runs to the end of the pass.
+    let mutated = e9_case(
+        Boundary::Mutated(crate::decoded_block_cache::BoundaryMutations {
+            skip_stop_flags: true,
+            ..Default::default()
+        }),
+        None,
+        true,
+        true,
+        true,
+    );
+    assert_eq!(
+        mutated.report.instructions_executed, 8,
+        "{:?}",
+        mutated.report
     );
 }

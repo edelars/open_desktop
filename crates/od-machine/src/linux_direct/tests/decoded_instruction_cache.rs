@@ -102,6 +102,7 @@ fn run_scenario(
                     crate::data_translation_cache::DataCacheUse::Off,
                     false,
                     None,
+                    None,
                 );
                 efer = report.efer;
                 state.cr3 = Some(report.cr3);

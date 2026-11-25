@@ -966,6 +966,8 @@ pub fn run_host_set_step(
         false,
         // PERF-31: nor the predecoded block cache.
         None,
+        // E9: nor the short boundary of a pass of a block.
+        None,
     );
     let partial_rep = matches!(
         report.exit,
