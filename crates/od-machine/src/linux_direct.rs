@@ -1988,9 +1988,9 @@ pub fn run_firmware_unified_traced(
 /// [`crate::OpHistogramReport`]). A diagnostic that only observes: the quanta, the clock and the
 /// result are unchanged. Without it the loop has no check for it.
 ///
-/// The loop runs through the turbo engine of the board (template JIT, see `crate::turbo`) where
-/// the host supports it and the board was not given [`LoadedFirmwareBoard::disable_turbo`]: the
-/// run creates the engine ([`LoadedFirmwareBoard::enable_turbo`]); what the engine does not
+/// The loop runs through the turbo engine of the board (template JIT, ADR-0022) when its owner
+/// gave the board one ([`LoadedFirmwareBoard::enable_turbo`] with the owner's executable region;
+/// the runner does by default); what the engine does not
 /// translate, and every quantum with a diagnostic (a checkpoint, a call trace, a marker, the
 /// histogram, the fetch cache report or sweep), runs through the general step, which is also the
 /// reference semantics. Without an engine every instruction runs through the general step.
@@ -2042,8 +2042,6 @@ pub fn run_firmware_unified_profiled(
     let set = profile.bind(&cpu_cells, &pci_cell, |member| {
         names.push(member.to_string())
     });
-    // The turbo engine of the loop (none on a host without one or after `disable_turbo`).
-    board.enable_turbo();
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board

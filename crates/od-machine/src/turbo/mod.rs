@@ -24,6 +24,7 @@ use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessReque
 use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};
 use od_isa::LongModeState;
 use od_isa::memory::{AccessContext, AccessKind};
+use od_jit::exec_arena::ExecutableArena;
 use std::collections::HashMap as StdHashMap;
 use std::collections::HashSet as StdHashSet;
 
@@ -279,65 +280,35 @@ pub(crate) struct HelperResult {
     pub status: u64,
 }
 
-/// The executable region (one MAP_JIT mapping, bump allocated).
+/// The bytes of executable memory the owner gives the engine ([`TurboEngine::new`]): 96 MiB, well
+/// inside the ±128 MiB reach of the direct branches from blocks to the shared stubs.
+pub const TURBO_ARENA_BYTES: usize = 96 << 20;
+
+/// The largest arena the engine takes: every direct branch inside it must reach the stubs at its
+/// start (`b`/`bl` reach ±128 MiB).
+const MAX_ARENA_BYTES: usize = 128 << 20;
+
+/// The executable region of the engine: the owner's [`ExecutableArena`] (the process's MAP_JIT
+/// mapping, owned by `od-host`), allocated in order by the engine itself.
 struct CodeArena {
-    base: *mut u8,
+    exec: Box<dyn ExecutableArena>,
+    base: usize,
     size: usize,
     used: usize,
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod sys {
-    use std::ffi::c_void;
-    unsafe extern "C" {
-        pub fn mmap(
-            addr: *mut c_void,
-            len: usize,
-            prot: i32,
-            flags: i32,
-            fd: i32,
-            off: i64,
-        ) -> *mut c_void;
-        pub fn pthread_jit_write_protect_np(enabled: i32);
-        pub fn sys_icache_invalidate(start: *mut c_void, len: usize);
-    }
-    pub const PROT_READ: i32 = 1;
-    pub const PROT_WRITE: i32 = 2;
-    pub const PROT_EXEC: i32 = 4;
-    pub const MAP_PRIVATE: i32 = 0x0002;
-    pub const MAP_ANON: i32 = 0x1000;
-    pub const MAP_JIT: i32 = 0x0800;
-}
-
 impl CodeArena {
-    fn new(size: usize) -> Option<Self> {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            // SAFETY: an anonymous private MAP_JIT mapping.
-            let raw = unsafe {
-                sys::mmap(
-                    std::ptr::null_mut(),
-                    size,
-                    sys::PROT_READ | sys::PROT_WRITE | sys::PROT_EXEC,
-                    sys::MAP_PRIVATE | sys::MAP_ANON | sys::MAP_JIT,
-                    -1,
-                    0,
-                )
-            };
-            if raw as isize == -1 || raw.is_null() {
-                return None;
-            }
-            Some(Self {
-                base: raw.cast(),
-                size,
-                used: 0,
-            })
+    fn new(exec: Box<dyn ExecutableArena>) -> Option<Self> {
+        let (base, size) = (exec.base(), exec.len());
+        if size > MAX_ARENA_BYTES || base % 16 != 0 {
+            return None;
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            let _ = size;
-            None
-        }
+        Some(Self {
+            exec,
+            base,
+            size,
+            used: 0,
+        })
     }
 
     fn reserve(&self, words: usize) -> Option<usize> {
@@ -345,48 +316,100 @@ impl CodeArena {
         if self.used + bytes > self.size {
             return None;
         }
-        Some(self.base as usize + self.used)
+        Some(self.base + self.used)
     }
 
     /// Copy `words` to `at` (from `reserve`) and advance.
     fn commit(&mut self, at: usize, words: &[u32]) {
-        let bytes = words.len() * 4;
-        debug_assert_eq!(at, self.base as usize + self.used);
-        // SAFETY: `at..at+bytes` is inside the mapping; write protection is lifted for this thread
-        // only while copying, and the instruction cache is invalidated before execution.
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        unsafe {
-            sys::pthread_jit_write_protect_np(0);
-            std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), at as *mut u8, bytes);
-            sys::pthread_jit_write_protect_np(1);
-            sys::sys_icache_invalidate(at as *mut _, bytes);
-        }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        unreachable!("no code arena on this host");
-        self.used += bytes;
-        // keep 16-byte alignment of the next block
+        debug_assert_eq!(at, self.base + self.used);
+        self.exec.write(at, words);
+        self.used += words.len() * 4;
+        // Keep the next block 16-byte aligned.
         self.used = (self.used + 15) & !15;
     }
 
-    /// Overwrite one word (used to kill a block's entry).
+    /// Overwrite one word in place.
     fn patch(&mut self, at: usize, word: u32) {
-        // SAFETY: as in `commit`, one aligned word inside the mapping.
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        unsafe {
-            sys::pthread_jit_write_protect_np(0);
-            (at as *mut u32).write(word);
-            sys::pthread_jit_write_protect_np(1);
-            sys::sys_icache_invalidate(at as *mut _, 4);
-        }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            let _ = (at, word);
-            unreachable!("no code arena on this host");
-        }
+        self.exec.write(at, &[word]);
     }
 
     fn reset(&mut self, keep: usize) {
         self.used = keep;
+    }
+}
+
+/// Test only: an executable region for the tests of this crate (production regions come from the
+/// owner, `od_host::JitArena`). `None` off macOS/aarch64.
+#[cfg(test)]
+pub(crate) fn test_arena() -> Option<Box<dyn ExecutableArena>> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        use std::ffi::c_void;
+        unsafe extern "C" {
+            fn mmap(
+                addr: *mut c_void,
+                len: usize,
+                prot: i32,
+                flags: i32,
+                fd: i32,
+                off: i64,
+            ) -> *mut c_void;
+            fn pthread_jit_write_protect_np(enabled: i32);
+            fn sys_icache_invalidate(start: *mut c_void, len: usize);
+        }
+        struct TestArena {
+            base: usize,
+            len: usize,
+        }
+        // SAFETY: a private mapping the test owns; it is never unmapped (tests are short-lived).
+        unsafe impl Send for TestArena {}
+        impl ExecutableArena for TestArena {
+            fn base(&self) -> usize {
+                self.base
+            }
+            fn len(&self) -> usize {
+                self.len
+            }
+            fn write(&mut self, at: usize, words: &[u32]) {
+                let bytes = words.len() * 4;
+                assert!(at >= self.base && at + bytes <= self.base + self.len);
+                // SAFETY: inside the test's MAP_JIT mapping; write protection is lifted for this
+                // thread only while copying.
+                unsafe {
+                    pthread_jit_write_protect_np(0);
+                    std::ptr::copy_nonoverlapping(
+                        words.as_ptr().cast::<u8>(),
+                        at as *mut u8,
+                        bytes,
+                    );
+                    pthread_jit_write_protect_np(1);
+                    sys_icache_invalidate(at as *mut c_void, bytes);
+                }
+            }
+        }
+        let len = 16 << 20;
+        // SAFETY: an anonymous private MAP_JIT mapping (RWX, MAP_PRIVATE | MAP_ANON | MAP_JIT).
+        let raw = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                len,
+                7,
+                0x0002 | 0x1000 | 0x0800,
+                -1,
+                0,
+            )
+        };
+        if raw as isize == -1 || raw.is_null() {
+            return None;
+        }
+        Some(Box::new(TestArena {
+            base: raw as usize,
+            len,
+        }))
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        None
     }
 }
 
@@ -511,7 +534,12 @@ pub struct TurboStats {
 }
 
 impl TurboEngine {
-    pub(crate) fn new() -> Option<Box<Self>> {
+    /// An engine generating code into `arena`; `None` on a host whose code the engine does not
+    /// emit (it emits AArch64 only) or for an arena it cannot use.
+    pub(crate) fn new(arena: Box<dyn ExecutableArena>) -> Option<Box<Self>> {
+        if !cfg!(target_arch = "aarch64") {
+            return None;
+        }
         let offsets = StateOffsets {
             gpr: std::mem::offset_of!(LongModeState, gpr) as u32,
             rip: std::mem::offset_of!(LongModeState, rip) as u32,
@@ -523,7 +551,7 @@ impl TurboEngine {
         if offsets.gpr + 16 * 8 > 32760 || offsets.rip > 32760 || offsets.gs_base > 32760 {
             return None;
         }
-        let arena = CodeArena::new(96 << 20)?;
+        let arena = CodeArena::new(arena)?;
         let mut rtlb = vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice();
         let mut wtlb = vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice();
         let mut lookup = vec![LookupEntry { rip: 1, code: 0 }; LOOKUP_SIZE].into_boxed_slice();

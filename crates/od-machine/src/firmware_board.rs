@@ -2805,13 +2805,14 @@ impl LoadedFirmwareBoard {
         self.fetch_cache_report_enabled = true;
     }
 
-    /// The turbo engine of the unified loop: created on the first call on a host that supports it
-    /// (macOS on aarch64 with an executable mapping); the unified run calls this itself. `false`
-    /// when the board has no engine: the host cannot, or [`Self::disable_turbo`] was called; the
-    /// loop then runs the general step only.
-    pub fn enable_turbo(&mut self) -> bool {
+    /// Give the unified loop the turbo engine (ADR-0022), generating code into `arena`: the
+    /// executable region of the owner (`od_host::JitArena` of
+    /// [`crate::TURBO_ARENA_BYTES`]). A board that already has an engine keeps it. `false` when the
+    /// board has no engine: the engine cannot run on this host or with this arena, or
+    /// [`Self::disable_turbo`] was called; the loop then runs the general step only.
+    pub fn enable_turbo(&mut self, arena: Box<dyn od_jit::exec_arena::ExecutableArena>) -> bool {
         if self.turbo.is_none() && !self.turbo_disabled {
-            self.turbo = crate::turbo::TurboEngine::new();
+            self.turbo = crate::turbo::TurboEngine::new(arena);
         }
         self.turbo.is_some()
     }
@@ -7795,7 +7796,7 @@ mod tests {
     fn platform_reset_resets_the_turbo_engine() {
         for kind in [PlatformResetKind::Cold, PlatformResetKind::Warm] {
             let mut board = reset_stopped_board(pm_config());
-            if !board.enable_turbo() {
+            if !crate::turbo::test_arena().is_some_and(|arena| board.enable_turbo(arena)) {
                 // A host without the engine: nothing to reset.
                 return;
             }
@@ -9362,10 +9363,13 @@ mod tests {
             general.turbo_engine().is_none(),
             "disable_turbo keeps it off"
         );
-        assert!(!general.enable_turbo());
+        assert!(!crate::turbo::test_arena().is_some_and(|arena| general.enable_turbo(arena)));
         assert_eq!(general.com1_transcript(), b"KNJ");
         assert_eq!(without.run.retired, 12);
         let mut turbo = load_firmware_image(&image, &linux_config()).unwrap();
+        if let Some(arena) = crate::turbo::test_arena() {
+            turbo.enable_turbo(arena);
+        }
         let with = crate::run_firmware_unified(&mut turbo, 1_000).unwrap();
         assert_eq!(with.run, without.run);
         assert_eq!(with.set_exit_detail, without.set_exit_detail);

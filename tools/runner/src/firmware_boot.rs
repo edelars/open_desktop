@@ -1443,10 +1443,23 @@ fn boot(
     let mut op_histogram_result: Option<Result<Value, String>> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
-        // The unified loop runs through the turbo engine unless `--no-turbo` asks for the general
-        // step only (the run creates the engine on a host that has one).
+        // The unified loop runs through the turbo engine (ADR-0022) unless `--no-turbo` asks for
+        // the general step only: the runner owns the process's executable region and gives it to
+        // the board. Without a region (another host, the region taken) the loop runs the general
+        // step only and the result is the same.
         if diagnostics.no_turbo {
             board.disable_turbo();
+        } else {
+            match od_host::JitArena::new(od_machine::TURBO_ARENA_BYTES) {
+                Ok(arena) => {
+                    if !board.enable_turbo(Box::new(arena)) {
+                        eprintln!("turbo: not available on this host; the general step runs alone");
+                    }
+                }
+                Err(error) => eprintln!(
+                    "turbo: no executable region ({error:?}); the general step runs alone"
+                ),
+            }
         }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
         let unified_run = od_machine::run_firmware_unified_profiled(

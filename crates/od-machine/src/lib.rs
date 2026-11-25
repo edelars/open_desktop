@@ -107,6 +107,7 @@ mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod turbo;
+pub use turbo::TURBO_ARENA_BYTES;
 mod uart16550;
 mod uart_ioapic_irq_source;
 mod uart_pic_irq_source;

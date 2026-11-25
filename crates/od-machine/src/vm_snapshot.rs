@@ -539,7 +539,7 @@ mod tests {
         let mut scheduler = scheduler(2);
         let point = stop(&mut board, &mut scheduler).unwrap();
         let snapshot = VmSnapshot::take(&board, &scheduler, &point).unwrap();
-        if !board.enable_turbo() {
+        if !crate::turbo::test_arena().is_some_and(|arena| board.enable_turbo(arena)) {
             // A host without the engine: nothing to reset.
             return;
         }
