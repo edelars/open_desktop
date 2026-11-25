@@ -1099,7 +1099,7 @@ impl PhysicalMemory {
         let base = GuestPhysicalAddress(address.0 & !0xfff);
         let (index, offset) = self.locate_index(base, 0x1000).ok()?;
         let region = &self.regions[index];
-        if region.spec.kind != MemoryRegionKind::Ram {
+        if !matches!(region.spec.kind, MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) {
             return None;
         }
         region.backing.as_ref()?.operand_ptr(offset, 8)

@@ -4230,6 +4230,11 @@ impl LoadedFirmwareBoard {
                 let shortened_cell = Cell::new(shortened);
                 let device_mark = Cell::new(device_accesses.load(Ordering::Relaxed));
                 let clock = board.clock.clone();
+                let snapshot = clock.snapshot();
+                let now_cell = Cell::new(snapshot.now_ns());
+                let tsc_hz = snapshot.tsc_hz();
+                // The next edge of the source while no device was reached (`None`: ask it).
+                let deadline_cache: Cell<Option<Option<u64>>> = Cell::new(None);
                 let report = {
                     let mut fast = |end: crate::turbo::FastQuantumEnd,
                                     source: Option<&dyn crate::irq_source::BoardIrqSource>|
@@ -4261,28 +4266,44 @@ impl LoadedFirmwareBoard {
                         quanta += 1;
                         retired += n;
                         remaining -= n;
-                        clock.advance_standalone(n).expect("turbo: clock advance");
+                        // The retired instructions and the RDTSC tick: one advance (the same
+                        // end state as the two of the board).
+                        clock
+                            .advance_standalone(n + RDTSC_TICK_NS)
+                            .expect("turbo: clock advance");
+                        let now = now_cell.get() + n + RDTSC_TICK_NS;
+                        now_cell.set(now);
                         tick.store(false, Ordering::Relaxed);
                         rdtsc_reads = rdtsc_reads.saturating_add(1);
                         rdtsc_reads_by_cpl[end.cpl] = rdtsc_reads_by_cpl[end.cpl].saturating_add(1);
-                        clock
-                            .advance_standalone(RDTSC_TICK_NS)
-                            .expect("turbo: clock advance");
-                        // The board before the next quantum.
+                        // The board before the next quantum. Without a device access and before
+                        // the next edge the source's answer cannot change (its catch-up applies
+                        // nothing then).
+                        let (deadline, fresh_source) = match deadline_cache.get() {
+                            Some(deadline) if deadline.is_none_or(|deadline| now < deadline) => {
+                                (deadline, false)
+                            }
+                            _ => {
+                                let deadline = source.and_then(|source| source.next_deadline_ns());
+                                deadline_cache.set(Some(deadline));
+                                (deadline, true)
+                            }
+                        };
                         let mut quantum_budget = remaining;
-                        if let Some(deadline) = source.and_then(|source| source.next_deadline_ns()) {
-                            let limit = deadline
-                                .saturating_sub(clock.snapshot().now_ns())
-                                .max(1);
+                        if let Some(deadline) = deadline {
+                            let limit = deadline.saturating_sub(now).max(1);
                             if limit < remaining {
                                 quantum_budget = limit;
                             }
                         }
                         shortened_cell.set(quantum_budget < remaining);
                         device_mark.set(device_accesses.load(Ordering::Relaxed));
+                        let tsc = (u128::from(now) * u128::from(tsc_hz) / 1_000_000_000) as u64;
                         Some(crate::turbo::FastQuantumStart {
                             budget: quantum_budget,
                             cut_by_deadline: quantum_budget < remaining,
+                            fresh_source,
+                            tsc,
                         })
                     };
                     crate::paged_memory_adapter::run_cpl0_set_paged_turbo(
@@ -4309,6 +4330,7 @@ impl LoadedFirmwareBoard {
                         }),
                         crate::turbo::TurboHook {
                             engine: board.turbo.as_deref_mut().expect("turbo engine"),
+                            tick: rdtsc_tick.as_deref(),
                             fast_quantum: Some(&mut fast),
                         },
                     )

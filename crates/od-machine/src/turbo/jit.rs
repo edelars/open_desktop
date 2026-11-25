@@ -246,6 +246,25 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             p(Role::Straight, 0, F_ALL & !F_AF, mem)
         }
         Operation::Shift {
+            kind: kind @ (ShiftKind::Shld | ShiftKind::Shrd),
+            dst: Operand::Register(_),
+            source: Some(Operand::Register(_)),
+            count: Operand::Immediate(count),
+            ..
+        } if fast && matches!(size, OperandSize::Dword | OperandSize::Qword) => {
+            let _ = kind;
+            let width = size_bytes(size) * 8;
+            let masked = (count as u32) & if width == 64 { 0x3f } else { 0x1f };
+            if masked == 0 {
+                return p(Role::Straight, 0, 0, false);
+            }
+            if masked == 1 {
+                p(Role::Straight, 0, F_CF | F_PF | F_ZF | F_SF | F_OF, false)
+            } else {
+                p(Role::Straight, F_OF, F_CF | F_PF | F_ZF | F_SF, false)
+            }
+        }
+        Operation::Shift {
             kind,
             dst: Operand::Register(_),
             source: None,
@@ -254,7 +273,22 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         } if fast => {
             let width = size_bytes(size) * 8;
             if width < 32 {
-                return None;
+                // 8/16-bit SHL/SHR/SAR by an immediate below the width.
+                let Operand::Immediate(count) = count else {
+                    return None;
+                };
+                let masked = (count as u32) & 0x1f;
+                if !matches!(kind, ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar) || masked >= width {
+                    return None;
+                }
+                if masked == 0 {
+                    return p(Role::Straight, 0, 0, false);
+                }
+                return if masked == 1 {
+                    p(Role::Straight, 0, F_CF | F_PF | F_ZF | F_SF | F_OF, false)
+                } else {
+                    p(Role::Straight, F_OF, F_CF | F_PF | F_ZF | F_SF, false)
+                };
             }
             match count {
                 Operand::Immediate(count) => {
@@ -520,7 +554,7 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             let ok_size = |size: OperandSize| matches!(size, OperandSize::Word | OperandSize::Dword | OperandSize::Qword);
             match (dst, offset) {
                 (Operand::Register(view), _) if ok_size(view.size()) => p(Role::Straight, 0, F_CF, false),
-                (Operand::Memory(m), BitOffset::Immediate(_)) if ok_size(m.size) && mem_ok(&m) => {
+                (Operand::Memory(m), _) if ok_size(m.size) && mem_ok(&m) => {
                     p(Role::Straight, 0, F_CF, true)
                 }
                 _ => None,
@@ -885,7 +919,7 @@ impl<'e> Ctx<'e> {
             asm.emit(a64::lsr_imm(true, 13, ADDR, 12));
         }
         asm.emit(a64::ubfx(true, 14, ADDR, 12, TLB_BITS));
-        asm.emit(a64::add_reg(true, 14, if write { 23 } else { 22 }, 14, LSL, 4));
+        asm.emit(a64::add_reg(true, 14, if write { 23 } else { 22 }, 14, LSL, 5));
         asm.emit(a64::ldp(15, 14, 14, 0));
         asm.emit(a64::eor_reg(true, 15, 15, 13));
         asm.cbnz_to(true, 15, slow);
@@ -1154,8 +1188,46 @@ impl<'e> Ctx<'e> {
         };
         let width = size_bytes(size) * 8;
         let x64 = size == OperandSize::Qword;
-        if matches!((dst, offset), (Operand::Memory(_), BitOffset::Register(_))) {
-            return false;
+        if let (Operand::Memory(mem), BitOffset::Register(view)) = (dst, offset) {
+            // The signed offset picks the element: floor(offset / width) elements from the
+            // operand, the bit is offset mod width (Euclidean, a power of two).
+            if !mem_ok(&mem) {
+                return false;
+            }
+            let log_width = width.trailing_zeros();
+            let log_bytes = size_bytes(size).trailing_zeros();
+            self.load_reg(17, view);
+            match view.size() {
+                OperandSize::Dword => self.asm.emit(a64::sxtw(17, 17)),
+                OperandSize::Word => self.asm.emit(a64::sxth(17, 17)),
+                _ => {}
+            }
+            self.address(&mem, false);
+            let asm = &mut self.asm;
+            asm.emit(a64::asr_imm(true, 16, 17, log_width));
+            asm.emit(a64::add_reg(true, ADDR, ADDR, 16, LSL, log_bytes));
+            asm.emit(a64::and_imm(true, 17, 17, u64::from(width - 1)).unwrap());
+            self.load_mem(size_bytes(size), T0, &[17]);
+            let asm = &mut self.asm;
+            asm.emit(a64::lsrv(true, T1, T0, 17));
+            asm.emit(a64::and_imm(false, T1, T1, 1).unwrap());
+            asm.emit(a64::movz(true, 16, 1, 0));
+            asm.emit(a64::lslv(true, 16, 16, 17));
+            match kind {
+                BitKind::Test => {}
+                BitKind::Set => asm.emit(a64::orr_reg(x64, T2, T0, 16)),
+                BitKind::Reset => asm.emit(a64::bic_reg(x64, T2, T0, 16)),
+                BitKind::Complement => asm.emit(a64::eor_reg(x64, T2, T0, 16)),
+            }
+            if kind != BitKind::Test {
+                self.store_mem(size_bytes(size), T2, &[T1]);
+            }
+            if live_after & F_CF != 0 {
+                let asm = &mut self.asm;
+                asm.emit(a64::eor_imm(false, T1, T1, 1).unwrap());
+                asm.emit(a64::rmif(T1, 63, 2));
+            }
+            return true;
         }
         // The base into T0 first (memory: a fault exits before anything changes); the TLB check
         // uses x13-x15, so the offset goes to x17 after it.
@@ -1403,6 +1475,129 @@ impl<'e> Ctx<'e> {
             }
             Operation::Logic { kind, dst, src } => {
                 self.alu(AluKind::Logic(kind), dst, src, size, false, false, live_after)
+            }
+            Operation::Shift {
+                kind: kind @ (ShiftKind::Shld | ShiftKind::Shrd),
+                dst: Operand::Register(view),
+                source: Some(Operand::Register(source)),
+                count: Operand::Immediate(count),
+                ..
+            } => {
+                let x64 = size == OperandSize::Qword;
+                let width = size_bytes(size) * 8;
+                let c = (count as u32) & if width == 64 { 0x3f } else { 0x1f };
+                if c == 0 {
+                    if size == OperandSize::Dword {
+                        self.load_reg(T0, view);
+                        self.store_reg(T0, view, true);
+                    }
+                    return true;
+                }
+                let live = live_after & (F_CF | F_PF | F_ZF | F_SF | F_OF) != 0;
+                self.load_reg(T0, view);
+                self.load_reg(T1, source);
+                let asm = &mut self.asm;
+                let r = if live { 26 } else { T2 };
+                if kind == ShiftKind::Shld {
+                    asm.emit(a64::extr(x64, r, T0, T1, width - c));
+                } else {
+                    asm.emit(a64::extr(x64, r, T1, T0, c));
+                }
+                if live {
+                    if kind == ShiftKind::Shld {
+                        asm.emit(a64::ubfx(x64, 13, T0, width - c, 1));
+                    } else {
+                        asm.emit(a64::ubfx(x64, 13, T0, c - 1, 1));
+                    }
+                    if c != 1 {
+                        asm.emit(a64::mrs_nzcv(25));
+                    }
+                    asm.emit(a64::tst_reg(x64, 26, 26));
+                    asm.emit(a64::eor_imm(false, 14, 13, 1).unwrap());
+                    if c == 1 {
+                        if kind == ShiftKind::Shld {
+                            asm.emit(a64::lsr_imm(x64, 15, 26, width - 1));
+                            asm.emit(a64::eor_reg(false, 15, 15, 13));
+                        } else {
+                            asm.emit(a64::lsr_imm(x64, 15, T0, width - 1));
+                            asm.emit(a64::lsr_imm(x64, 16, 26, width - 1));
+                            asm.emit(a64::eor_reg(false, 15, 15, 16));
+                        }
+                        asm.emit(a64::orr_reg_shift(false, 14, 15, 14, LSL, 1));
+                        asm.emit(a64::rmif(14, 0, 3));
+                    } else {
+                        asm.emit(a64::rmif(14, 63, 2));
+                        asm.emit(a64::rmif(25, 28, 1));
+                    }
+                    asm.emit(a64::mov_reg(true, T2, 26));
+                }
+                self.store_reg(T2, view, size == OperandSize::Dword);
+                true
+            }
+            Operation::Shift {
+                kind,
+                dst: Operand::Register(view),
+                count: Operand::Immediate(count),
+                ..
+            } if matches!(size, OperandSize::Byte | OperandSize::Word) => {
+                // 8/16-bit SHL/SHR/SAR by 1..width-1 (the plan admits nothing else).
+                let width = size_bytes(size) * 8;
+                let c = (count as u32) & 0x1f;
+                if c == 0 {
+                    return true;
+                }
+                let live = live_after & (F_CF | F_PF | F_ZF | F_SF | F_OF) != 0;
+                self.load_reg(T0, view);
+                let asm = &mut self.asm;
+                let r = if live { 26 } else { T2 };
+                match kind {
+                    ShiftKind::Shl => {
+                        asm.emit(a64::lsl_imm(false, r, T0, c));
+                        asm.emit(a64::and_imm(false, r, r, (1u64 << width) - 1).unwrap());
+                    }
+                    ShiftKind::Shr => asm.emit(a64::lsr_imm(false, r, T0, c)),
+                    _ => {
+                        // Arithmetic: sign-extend the narrow value first.
+                        asm.emit(a64::sbfx(false, r, T0, 0, width));
+                        asm.emit(a64::asr_imm(false, r, r, c));
+                        asm.emit(a64::and_imm(false, r, r, (1u64 << width) - 1).unwrap());
+                    }
+                }
+                if live {
+                    match kind {
+                        ShiftKind::Shl => asm.emit(a64::ubfx(false, 13, T0, width - c, 1)),
+                        ShiftKind::Shr => asm.emit(a64::ubfx(false, 13, T0, c - 1, 1)),
+                        _ => {
+                            asm.emit(a64::sbfx(false, 13, T0, 0, width));
+                            asm.emit(a64::asr_imm(false, 13, 13, c - 1));
+                            asm.emit(a64::and_imm(false, 13, 13, 1).unwrap());
+                        }
+                    }
+                    if c != 1 {
+                        asm.emit(a64::mrs_nzcv(25));
+                    }
+                    asm.emit(a64::lsl_imm(false, 14, 26, 32 - width));
+                    asm.emit(a64::tst_reg(false, 14, 14));
+                    asm.emit(a64::eor_imm(false, 14, 13, 1).unwrap());
+                    if c == 1 {
+                        match kind {
+                            ShiftKind::Shl => {
+                                asm.emit(a64::lsr_imm(false, 15, 26, width - 1));
+                                asm.emit(a64::eor_reg(false, 15, 15, 13));
+                            }
+                            ShiftKind::Shr => asm.emit(a64::ubfx(false, 15, T0, width - 1, 1)),
+                            _ => asm.emit(a64::movz(false, 15, 0, 0)),
+                        }
+                        asm.emit(a64::orr_reg_shift(false, 14, 15, 14, LSL, 1));
+                        asm.emit(a64::rmif(14, 0, 3));
+                    } else {
+                        asm.emit(a64::rmif(14, 63, 2));
+                        asm.emit(a64::rmif(25, 28, 1));
+                    }
+                    asm.emit(a64::mov_reg(true, T2, 26));
+                }
+                self.store_reg(T2, view, true);
+                true
             }
             Operation::Shift {
                 kind,
@@ -2445,7 +2640,10 @@ pub(crate) fn describe(rip: u64, host_page: *const u8, context: AccessContext) -
                 | Operation::Mov { dst, src } => {
                     format!("{}/{}", form(&dst), form(&src))
                 }
-                Operation::Shift { dst, count, .. } => format!("{}/{}", form(&dst), form(&count)),
+                Operation::Shift { dst, count, kind, source, .. } => {
+                    format!("{}/{} {kind:?} src={}", form(&dst), form(&count), source.is_some())
+                }
+                Operation::Bit { dst, offset, kind } => format!("{} {offset:?} {kind:?}", form(&dst)),
                 Operation::Extend { src, .. } | Operation::Imul { src, .. } => form(&src).into(),
                 _ => String::new(),
             };

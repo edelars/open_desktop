@@ -57,7 +57,7 @@ type Fx = std::hash::BuildHasherDefault<FxHasher>;
 pub(crate) type HashMap<K, V> = StdHashMap<K, V, Fx>;
 pub(crate) type HashSet<K> = StdHashSet<K, Fx>;
 
-pub(crate) const TLB_BITS: u32 = 8;
+pub(crate) const TLB_BITS: u32 = 10;
 pub(crate) const TLB_SIZE: usize = 1 << TLB_BITS;
 pub(crate) const LOOKUP_BITS: u32 = 13;
 pub(crate) const LOOKUP_SIZE: usize = 1 << LOOKUP_BITS;
@@ -97,12 +97,62 @@ pub(crate) struct TlbEntry {
     pub tag: u64,
     /// host address = guest linear address + addend.
     pub addend: u64,
+    /// The frame of the table that holds the leaf entry of this translation.
+    pub leaf: u64,
+    pub pad: u64,
 }
 
 const EMPTY_TLB: TlbEntry = TlbEntry {
     tag: u64::MAX,
     addend: 0,
+    leaf: u64::MAX,
+    pad: 0,
 };
+
+/// One cached translation context (TLBs and the lookup table of one CR3/paging key).
+struct Slot {
+    key: Option<(Long64ProbeConfig, u64)>,
+    rtlb: Box<[TlbEntry]>,
+    wtlb: Box<[TlbEntry]>,
+    lookup: Box<[LookupEntry]>,
+    lookup_page: Box<[u64]>,
+    lookup_leaf: Box<[u64]>,
+    stamp: u64,
+}
+
+impl Slot {
+    fn new() -> Self {
+        Self {
+            key: None,
+            rtlb: vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice(),
+            wtlb: vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice(),
+            lookup: vec![LookupEntry { rip: 1, code: 0 }; LOOKUP_SIZE].into_boxed_slice(),
+            lookup_page: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
+            lookup_leaf: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
+            stamp: 0,
+        }
+    }
+    fn flush(&mut self) {
+        self.rtlb.fill(EMPTY_TLB);
+        self.wtlb.fill(EMPTY_TLB);
+        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+    }
+    fn drop_leaf(&mut self, frame: u64) {
+        for entry in self.rtlb.iter_mut().chain(self.wtlb.iter_mut()) {
+            if entry.leaf == frame {
+                *entry = EMPTY_TLB;
+            }
+        }
+        for (entry, leaf) in self.lookup.iter_mut().zip(self.lookup_leaf.iter()) {
+            if *leaf == frame {
+                *entry = LookupEntry { rip: 1, code: 0 };
+            }
+        }
+    }
+}
+
+/// Cached translation contexts besides the active one.
+const SLOTS: usize = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -178,6 +228,9 @@ pub(crate) struct RunEnv<'a> {
     pub quantum_base: *mut u64,
     pub instruction_budget: *mut u64,
     pub cpl: usize,
+    pub tick: Option<*const std::sync::atomic::AtomicBool>,
+    /// The TSC an RDTSC of the current (merged) quantum reads, when the fast transition knows it.
+    pub tsc_next: Option<u64>,
 }
 
 #[repr(C)]
@@ -331,13 +384,19 @@ pub(crate) struct TurboEngine {
     lookup: Box<[LookupEntry]>,
     /// The physical page of each lookup entry's code.
     lookup_page: Box<[u64]>,
+    /// The leaf table frame of each lookup entry's code translation.
+    lookup_leaf: Box<[u64]>,
+    /// Inactive translation contexts.
+    slots: Vec<Slot>,
+    stamp: u64,
     blocks: HashMap<(u64, u64), BlockInfo>,
     /// Physical page -> keys of the blocks on it.
     code_pages: HashMap<u64, Vec<(u64, u64)>>,
     /// Physical page -> bitmap of its bytes that compiled instructions came from.
     code_bytes: HashMap<u64, Box<[u64; 64]>>,
-    /// Physical pages known to be page-table frames of cached translations.
-    pt_frames: HashSet<u64>,
+    /// Physical pages known to be page-table frames of cached translations: bit 0 a leaf
+    /// table, bit 1 an upper level.
+    pt_frames: HashMap<u64, u8>,
     offsets: StateOffsets,
     paging_key: Option<(Long64ProbeConfig, u64)>,
     singles: HashMap<(u64, u64), BlockInfo>,
@@ -349,8 +408,11 @@ pub(crate) struct TurboEngine {
     slow_decode: Option<(u64, od_isa::long_decode::Instruction)>,
     /// The physical page of the code the last run was in when it stopped.
     last_page: u64,
+    /// The leaf table frame of the last code translation (for `install`).
+    last_leaf: u64,
     collect_slow: bool,
     debug: u64,
+    debug_fb: u64,
     slow_kinds: HashMap<String, u64>,
     pub stats: TurboStats,
 }
@@ -370,6 +432,16 @@ pub struct TurboStats {
     pub general_steps: u64,
     pub code_writes: u64,
     pub noted_writes: u64,
+    pub leaf_drops: u64,
+    pub slot_switches: u64,
+    pub slot_misses: u64,
+    pub singles: u64,
+    pub rep_calls: u64,
+    pub rep_pages: u64,
+    pub rdtsc_calls: u64,
+    pub fast_transitions: u64,
+    pub helper_reads: u64,
+    pub helper_writes: u64,
 }
 
 impl TurboEngine {
@@ -423,10 +495,13 @@ impl TurboEngine {
             wtlb,
             lookup,
             lookup_page: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
+            lookup_leaf: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
+            slots: (0..SLOTS).map(|_| Slot::new()).collect(),
+            stamp: 0,
             blocks: HashMap::default(),
             code_pages: HashMap::default(),
             code_bytes: HashMap::default(),
-            pt_frames: HashSet::default(),
+            pt_frames: HashMap::default(),
             offsets,
             paging_key: None,
             singles: HashMap::default(),
@@ -434,8 +509,10 @@ impl TurboEngine {
             slow_decode: None,
             pending_decodes: Vec::new(),
             last_page: u64::MAX,
+            last_leaf: u64::MAX,
             collect_slow: std::env::var_os("OD_TURBO_STATS").is_some(),
             debug: std::env::var("OD_TURBO_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            debug_fb: std::env::var("OD_TURBO_DEBUG_FB").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             slow_kinds: HashMap::default(),
             stats: TurboStats::default(),
         });
@@ -519,34 +596,79 @@ impl TurboEngine {
         self.stubs_end = self.arena.used;
     }
 
-    fn flush_tlbs(&mut self) {
-        for entry in self.rtlb.iter_mut() {
-            *entry = EMPTY_TLB;
-        }
-        for entry in self.wtlb.iter_mut() {
-            *entry = EMPTY_TLB;
-        }
-    }
-
     fn flush_write_tlb(&mut self) {
-        for entry in self.wtlb.iter_mut() {
-            *entry = EMPTY_TLB;
+        self.wtlb.fill(EMPTY_TLB);
+        for slot in &mut self.slots {
+            slot.wtlb.fill(EMPTY_TLB);
         }
     }
 
     fn flush_lookup(&mut self) {
-        for entry in self.lookup.iter_mut() {
-            *entry = LookupEntry { rip: 1, code: 0 };
+        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+        for slot in &mut self.slots {
+            slot.lookup.fill(LookupEntry { rip: 1, code: 0 });
         }
     }
 
-    /// Every translation the engine cached (TLBs, lookup table, page-table watch).
+    /// Every translation the engine cached (TLBs, lookup tables, page-table watch), in every
+    /// context.
     pub(crate) fn flush_translations(&mut self) {
         self.stats.flushes += 1;
-        self.flush_tlbs();
-        self.flush_lookup();
+        self.rtlb.fill(EMPTY_TLB);
+        self.wtlb.fill(EMPTY_TLB);
+        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+        for slot in &mut self.slots {
+            slot.flush();
+        }
         self.pt_frames.clear();
     }
+
+    /// A table frame was written: the translations through it are dropped (only those whose
+    /// leaf it holds when it is a leaf table only; everything otherwise).
+    fn table_written(&mut self, frame: u64) {
+        match self.pt_frames.get(&frame).copied() {
+            None => {}
+            Some(levels) if levels & 2 != 0 => self.flush_translations(),
+            Some(_) => {
+                self.stats.leaf_drops += 1;
+                for entry in self.rtlb.iter_mut().chain(self.wtlb.iter_mut()) {
+                    if entry.leaf == frame {
+                        *entry = EMPTY_TLB;
+                    }
+                }
+                for (entry, leaf) in self.lookup.iter_mut().zip(self.lookup_leaf.iter()) {
+                    if *leaf == frame {
+                        *entry = LookupEntry { rip: 1, code: 0 };
+                    }
+                }
+                for slot in &mut self.slots {
+                    slot.drop_leaf(frame);
+                }
+                self.pt_frames.remove(&frame);
+            }
+        }
+    }
+
+    /// Note the table frames of a walk (PML4 first; the last one holds the leaf); `true` when
+    /// one of them was not watched before.
+    fn watch_tables(&mut self, tables: &[Option<GuestPhysicalAddress>; 4]) -> (bool, u64) {
+        let present: Vec<u64> = tables.iter().flatten().map(|table| table.get() >> 12).collect();
+        let mut new = false;
+        let leaf = present.last().copied().unwrap_or(u64::MAX);
+        for (index, frame) in present.iter().enumerate() {
+            let bit = if index + 1 == present.len() { 1 } else { 2 };
+            let levels = self.pt_frames.entry(*frame).or_insert(0);
+            if *levels == 0 {
+                new = true;
+            }
+            *levels |= bit;
+        }
+        (new, leaf)
+    }
+
+
+
+
 
     /// Keep the decodes of the last translation (their bytes count as code of the page).
     fn keep_decodes(&mut self, page: u64) {
@@ -640,15 +762,13 @@ impl TurboEngine {
             let first = range.start().get() >> 12;
             let last = (range.start().get() + range.len() - 1) >> 12;
             for page in first..=last {
-                if self.pt_frames.contains(&page) {
-                    flush = true;
+                if self.pt_frames.contains_key(&page) {
+                    self.table_written(page);
                 }
             }
             self.note_code_write(ram, range.start().get(), range.len());
         }
-        if flush {
-            self.flush_translations();
-        }
+        let _ = &mut flush;
     }
 
     /// Code pages written by anyone (the RAM's code watch log).
@@ -662,10 +782,35 @@ impl TurboEngine {
 
     fn check_paging(&mut self, state: &LongModeState, paging: &Long64ProbeConfig) {
         let key = (*paging, state.rflags & (1 << 18));
-        if self.paging_key != Some(key) {
-            self.paging_key = Some(key);
-            self.flush_translations();
+        if self.paging_key == Some(key) {
+            return;
         }
+        self.stamp += 1;
+        let index = match self.slots.iter().position(|slot| slot.key == Some(key)) {
+            Some(index) => index,
+            None => {
+                // The least recently used context gives way.
+                let index = (0..SLOTS).min_by_key(|&index| self.slots[index].stamp).unwrap_or(0);
+                self.slots[index].flush();
+                self.slots[index].key = Some(key);
+                self.stats.slot_misses += 1;
+                index
+            }
+        };
+        let slot = &mut self.slots[index];
+        std::mem::swap(&mut self.rtlb, &mut slot.rtlb);
+        std::mem::swap(&mut self.wtlb, &mut slot.wtlb);
+        std::mem::swap(&mut self.lookup, &mut slot.lookup);
+        std::mem::swap(&mut self.lookup_page, &mut slot.lookup_page);
+        std::mem::swap(&mut self.lookup_leaf, &mut slot.lookup_leaf);
+        let previous = self.paging_key;
+        self.paging_key = slot.key;
+        slot.key = previous;
+        slot.stamp = self.stamp;
+        self.ctx.rtlb = self.rtlb.as_mut_ptr();
+        self.ctx.wtlb = self.wtlb.as_mut_ptr();
+        self.ctx.lookup = self.lookup.as_mut_ptr();
+        self.stats.slot_switches += 1;
     }
 
     fn install(&mut self, rip: u64, code: usize, page: u64) {
@@ -675,6 +820,7 @@ impl TurboEngine {
             code: code as u64,
         };
         self.lookup_page[index] = page;
+        self.lookup_leaf[index] = self.last_leaf;
     }
 
     /// The code for `rip`: an existing block, a fresh one, or the slow/RDTSC stub. `None` when
@@ -697,11 +843,11 @@ impl TurboEngine {
             crate::page_walk::data_translation_of_walk_trace(&report.trace, GuestLinearAddress::new(rip))?;
         let page = physical.get() >> 12;
         env.ram.ram_frame(physical)?;
-        for table in tables.iter().flatten() {
-            if self.pt_frames.insert(table.get() >> 12) {
-                self.flush_write_tlb();
-            }
+        let (new, leaf) = self.watch_tables(&tables);
+        if new {
+            self.flush_write_tlb();
         }
+        self.last_leaf = leaf;
         if let Some(info) = self.blocks.get(&(rip, page)) {
             let code = info.code;
             self.install(rip, code, page);
@@ -774,6 +920,7 @@ impl TurboEngine {
 
     /// A block of the one instruction at `rip` (for a budget smaller than the block there).
     fn single_for(&mut self, env: &mut RunEnv<'_>, rip: u64) -> Option<usize> {
+        self.stats.singles += 1;
         let request = TrackedAccessRequest {
             instruction_rip: rip,
             address: GuestLinearAddress::new(rip),
@@ -829,10 +976,14 @@ impl TurboEngine {
             &report.trace,
             GuestLinearAddress::new(next_linear),
         )?;
-        for table in tables.iter().flatten() {
-            if self.pt_frames.insert(table.get() >> 12) {
-                self.flush_write_tlb();
-            }
+        let (new, _) = self.watch_tables(&tables);
+        if new {
+            self.flush_write_tlb();
+        }
+        // A crossing block depends on two translations: it is never in the lookup table of a
+        // leaf drop it would miss, so drop it with any change of the second table too.
+        if let Some(frame) = tables.iter().flatten().last() {
+            self.pt_frames.insert(frame.get() >> 12, 2);
         }
         let page = physical.get() >> 12;
         let next_page = next_physical.get() >> 12;
@@ -1167,17 +1318,12 @@ impl TurboEngine {
             }
         }
         let page = physical.get() >> 12;
-        let mut new_tables = false;
-        for table in tables.iter().flatten() {
-            if self.pt_frames.insert(table.get() >> 12) {
-                new_tables = true;
-            }
-        }
+        let (new_tables, leaf) = self.watch_tables(&tables);
         if new_tables {
             self.flush_write_tlb();
         }
         if write
-            && (self.pt_frames.contains(&page)
+            && (self.pt_frames.contains_key(&page)
                 || ram.code_watch(physical)
                 || self.code_bytes.contains_key(&page))
         {
@@ -1188,6 +1334,8 @@ impl TurboEngine {
         let entry = TlbEntry {
             tag: linear_page,
             addend: (host as u64).wrapping_sub(linear_page << 12),
+            leaf,
+            pad: 0,
         };
         self.stats.tlb_fills += 1;
         if write {
@@ -1219,6 +1367,11 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
     let engine = unsafe { &mut *env.engine };
     let size = op & 0xf;
     let write = op & OP_WRITE != 0;
+    if write {
+        engine.stats.helper_writes += 1;
+    } else {
+        engine.stats.helper_reads += 1;
+    }
     let fallback = HelperResult { value: 0, status: 1 };
     if (address & 0xfff) + size > 0x1000 {
         engine.stats.tlb_fallbacks += 1;
@@ -1239,18 +1392,18 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
             return fallback;
         };
         let page = physical.get() >> 12;
-        if engine.pt_frames.contains(&page)
+        if engine.pt_frames.contains_key(&page)
             || engine.overlaps_code(page, physical.get() & 0xfff, size)
-            || env.ram.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)).is_none()
+            || env.ram.ram_page_host_ptr(physical).is_none()
             || tables.iter().flatten().any(|table| table.get() >> 12 == page)
         {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug > 0 {
-                engine.debug -= 1;
+            if engine.debug_fb > 0 && rip >> 63 != 0 {
+                engine.debug_fb -= 1;
                 eprintln!(
                     "turbo write refused rip {rip:#x} addr {address:#x} phys {:#x}: pt {} code {} ram {} own {}",
                     physical.get(),
-                    engine.pt_frames.contains(&page),
+                    engine.pt_frames.contains_key(&page),
                     engine.overlaps_code(page, physical.get() & 0xfff, size),
                     env.ram.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)).is_some(),
                     tables.iter().flatten().any(|table| table.get() >> 12 == page)
@@ -1305,8 +1458,8 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         }
         other => {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug > 0 {
-                engine.debug -= 1;
+            if engine.debug_fb > 0 && rip >> 63 != 0 {
+                engine.debug_fb -= 1;
                 let kind = crate::page_walk::translate_long64_2m_ram_read_only(
                     env.ram,
                     &env.paging,
@@ -1336,11 +1489,17 @@ pub(crate) struct FastQuantumEnd {
 pub(crate) struct FastQuantumStart {
     pub budget: u64,
     pub cut_by_deadline: bool,
+    /// The source was asked again (it caught up with the clock): its saved answer is stale.
+    pub fresh_source: bool,
+    /// What an RDTSC of the new quantum reads (the clock does not move inside a quantum).
+    pub tsc: u64,
 }
 
 /// What the board hands the set loop in turbo mode.
 pub(crate) struct TurboHook<'a> {
     pub engine: &'a mut TurboEngine,
+    /// The RDTSC tick of the board (raised by every RDTSC).
+    pub tick: Option<&'a std::sync::atomic::AtomicBool>,
     /// The board's transition between two quanta ended by an RDTSC tick alone, done without
     /// leaving the loop: `None` when the board must see the boundary itself.
     pub fast_quantum: Option<
@@ -1381,6 +1540,7 @@ unsafe extern "C" fn rep_helper(
     let state = unsafe { &mut *state };
     let size = params & 0xf;
     let movs = params & 0x10 != 0;
+    engine.stats.rep_calls += 1;
     const DF: u64 = 1 << 10;
     if state.rflags & DF != 0 {
         return 1;
@@ -1419,6 +1579,7 @@ unsafe extern "C" fn rep_helper(
             pages.push((a >> 12, true, std::ptr::null_mut()));
         }
     }
+    engine.stats.rep_pages += pages.len() as u64;
     for (page, write, host) in pages.iter_mut() {
         let Ok((physical, tables)) = crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
             env.ram,
@@ -1432,7 +1593,7 @@ unsafe extern "C" fn rep_helper(
         };
         let frame = physical.get() >> 12;
         if *write
-            && (engine.pt_frames.contains(&frame)
+            && (engine.pt_frames.contains_key(&frame)
                 || engine.code_bytes.contains_key(&frame)
                 || env.ram.code_watch(physical)
                 || tables.iter().flatten().any(|table| table.get() >> 12 == frame))
@@ -1579,9 +1740,18 @@ unsafe extern "C" fn rdtsc_helper(
     let Some(source) = env.rdtsc else {
         return -3;
     };
+    // SAFETY: the engine of the run.
+    unsafe { (*env.engine).stats.rdtsc_calls += 1 };
     use od_isa::Register;
-    // SAFETY: the source closure of the set loop, alive for the run.
-    let value = unsafe { (*source)() };
+    let value = match (env.tsc_next.take(), env.tick) {
+        (Some(tsc), Some(tick)) => {
+            // SAFETY: the board's tick flag, alive for the run.
+            unsafe { (*tick).store(true, std::sync::atomic::Ordering::Relaxed) };
+            tsc
+        }
+        // SAFETY: the source closure of the set loop, alive for the run.
+        _ => unsafe { (*source)() },
+    };
     state.gpr[Register::Rax as usize] = u64::from(value as u32);
     state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
     state.rip = rip.wrapping_add(2);
@@ -1627,9 +1797,14 @@ unsafe extern "C" fn rdtsc_helper(
     };
     *quantum_base = executed;
     *instruction_budget = executed + start.budget;
+    // SAFETY: the engine of the run.
+    unsafe { (*env.engine).stats.fast_transitions += 1 };
+    env.tsc_next = Some(start.tsc);
     let mut masked = false;
     if let Some(hook) = irq {
-        hook.polled = None;
+        if start.fresh_source {
+            hook.polled = None;
+        }
         hook.skip_first_boundary = false;
         if start.cut_by_deadline {
             hook.counters.quantum_cut_by_deadline += 1;

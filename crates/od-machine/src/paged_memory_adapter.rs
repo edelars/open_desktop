@@ -3217,7 +3217,9 @@ fn run_cpl0_set_loop_impl<
                     quantum_base = instructions_executed;
                     instruction_budget = instructions_executed + start.budget;
                     if let Some(irq_hook) = irq.as_mut() {
-                        irq_hook.polled = None;
+                        if start.fresh_source {
+                            irq_hook.polled = None;
+                        }
                         irq_hook.skip_first_boundary = false;
                         if start.cut_by_deadline {
                             irq_hook.counters.quantum_cut_by_deadline += 1;
@@ -3454,6 +3456,8 @@ fn run_cpl0_set_loop_impl<
                     quantum_base: &mut quantum_base,
                     instruction_budget: &mut instruction_budget,
                     cpl: 0,
+                    tick: hook.tick.map(|tick| tick as *const AtomicBool),
+                    tsc_next: None,
                 };
                 // In the STI shadow: one instruction, then the shadow clears (as after any
                 // retired instruction of the set loop).

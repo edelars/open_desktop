@@ -250,6 +250,10 @@ pub fn ror_imm(x64: bool, rd: u32, rn: u32, shift: u32) -> u32 {
     // EXTR Rd, Rn, Rn, #shift
     0x1380_0000 | sf(x64) | ((x64 as u32) << 22) | (rn << 16) | (shift << 10) | (rn << 5) | rd
 }
+/// EXTR Rd, Rn, Rm, #lsb: the low bits of (Rn:Rm) >> lsb.
+pub fn extr(x64: bool, rd: u32, rn: u32, rm: u32, lsb: u32) -> u32 {
+    0x1380_0000 | sf(x64) | ((x64 as u32) << 22) | (rm << 16) | (lsb << 10) | (rn << 5) | rd
+}
 pub fn ubfx(x64: bool, rd: u32, rn: u32, lsb: u32, width: u32) -> u32 {
     ubfm(x64, rd, rn, lsb, lsb + width - 1)
 }
