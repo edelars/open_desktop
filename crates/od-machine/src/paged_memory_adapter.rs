@@ -3203,7 +3203,9 @@ fn run_cpl0_set_loop_impl<
                 && let Some(hook) = turbo.as_mut()
                 && let Some(fast) = hook.fast_quantum.as_mut()
             {
-                let cpl = state.cs_selector.map_or(0, |selector| (selector & 3) as usize);
+                let cpl = state
+                    .cs_selector
+                    .map_or(0, |selector| (selector & 3) as usize);
                 let source = irq
                     .as_ref()
                     .map(|irq_hook| &*irq_hook.source as &dyn crate::irq_source::BoardIrqSource);
@@ -3417,24 +3419,33 @@ fn run_cpl0_set_loop_impl<
                 && !cpl3
                 && (crate::turbo::admits(state) || in_shadow)
             {
-                let masked = polled.flatten().is_some_and(|polled| polled.vector.is_some())
+                let masked = polled
+                    .flatten()
+                    .is_some_and(|polled| polled.vector.is_some())
                     && state.rflags & RFLAGS_IF == 0;
                 // SAFETY (the transmutes): lifetimes only; every pointer is used by `run` alone,
                 // while the loop does nothing else with what it points at.
                 let rdtsc_ptr = rdtsc.as_deref_mut().map(|source| unsafe {
-                    std::mem::transmute::<&mut dyn FnMut() -> u64, *mut (dyn FnMut() -> u64 + 'static)>(source)
+                    std::mem::transmute::<
+                        &mut dyn FnMut() -> u64,
+                        *mut (dyn FnMut() -> u64 + 'static),
+                    >(source)
                 });
                 let fast_ptr = hook.fast_quantum.as_deref_mut().map(|fast| unsafe {
                     std::mem::transmute::<
                         &mut dyn FnMut(
                             crate::turbo::FastQuantumEnd,
                             Option<&dyn crate::irq_source::BoardIrqSource>,
-                        ) -> Option<crate::turbo::FastQuantumStart>,
-                        *mut (dyn FnMut(
-                            crate::turbo::FastQuantumEnd,
-                            Option<&dyn crate::irq_source::BoardIrqSource>,
-                        ) -> Option<crate::turbo::FastQuantumStart>
-                              + 'static),
+                        )
+                            -> Option<crate::turbo::FastQuantumStart>,
+                        *mut (
+                            dyn FnMut(
+                                    crate::turbo::FastQuantumEnd,
+                                    Option<&dyn crate::irq_source::BoardIrqSource>,
+                                )
+                                    -> Option<crate::turbo::FastQuantumStart>
+                                + 'static
+                        ),
                     >(fast)
                 });
                 let irq_ptr = irq.as_mut().map(|irq_hook| unsafe {
@@ -5217,7 +5228,10 @@ pub(crate) fn deliver_pending_irq(
 /// `None` when there is none or it is held back (IF = 0, the STI shadow), the refusal counted.
 /// PERF-25: the boundary check of a batched set call asks this too, at the boundaries inside the
 /// call, and hands a vector to [`deliver_polled_irq`] of the loop at that same boundary.
-pub(crate) fn poll_pending_irq(hook: &mut IrqBoundaryHook<'_>, state: &LongModeState) -> Option<u8> {
+pub(crate) fn poll_pending_irq(
+    hook: &mut IrqBoundaryHook<'_>,
+    state: &LongModeState,
+) -> Option<u8> {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
         return None;
@@ -7704,7 +7718,9 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // be exactly `self.access(address, context, Read { width })` (`data_cache_read_width`).
         // Everything else below is untouched.
         if let Some(view) = self.turbo_tlb
-            && self.data_cache_read_width(address, context, destination.len()).is_some()
+            && self
+                .data_cache_read_width(address, context, destination.len())
+                .is_some()
             && let Some(host) = crate::turbo::view_host(
                 view,
                 &self.paging,

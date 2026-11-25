@@ -168,7 +168,11 @@ pub fn encode_bitmask(value: u64, x64: bool) -> Option<(u32, u32, u32)> {
         }
         size = half;
     }
-    let mask = if size == 64 { u64::MAX } else { (1u64 << size) - 1 };
+    let mask = if size == 64 {
+        u64::MAX
+    } else {
+        (1u64 << size) - 1
+    };
     let element = value & mask;
     // Rotate so that the element is a run of ones starting at bit 0.
     let ones = element.count_ones();
@@ -333,7 +337,10 @@ pub fn rev16(rd: u32, rn: u32) -> u32 {
 
 /// Load/store with an unsigned immediate offset scaled by the access size (`size` in bytes).
 pub fn ldr_imm(size: u32, rt: u32, rn: u32, offset: u32) -> u32 {
-    debug_assert!(offset % size == 0 && offset / size < 4096, "ldr offset {offset}");
+    debug_assert!(
+        offset % size == 0 && offset / size < 4096,
+        "ldr offset {offset}"
+    );
     let (base, scale) = match size {
         1 => (0x3940_0000, 0),
         2 => (0x7940_0000, 1),
@@ -343,7 +350,10 @@ pub fn ldr_imm(size: u32, rt: u32, rn: u32, offset: u32) -> u32 {
     base | ((offset >> scale) << 10) | (rn << 5) | rt
 }
 pub fn str_imm(size: u32, rt: u32, rn: u32, offset: u32) -> u32 {
-    debug_assert!(offset % size == 0 && offset / size < 4096, "str offset {offset}");
+    debug_assert!(
+        offset % size == 0 && offset / size < 4096,
+        "str offset {offset}"
+    );
     let (base, scale) = match size {
         1 => (0x3900_0000, 0),
         2 => (0x7900_0000, 1),
@@ -409,10 +419,18 @@ pub fn cbnz(x64: bool, rt: u32, offset_words: i32) -> u32 {
     0x3500_0000 | sf(x64) | (((offset_words as u32) & 0x7ffff) << 5) | rt
 }
 pub fn tbz(rt: u32, bit: u32, offset_words: i32) -> u32 {
-    0x3600_0000 | ((bit >> 5) << 31) | ((bit & 31) << 19) | (((offset_words as u32) & 0x3fff) << 5) | rt
+    0x3600_0000
+        | ((bit >> 5) << 31)
+        | ((bit & 31) << 19)
+        | (((offset_words as u32) & 0x3fff) << 5)
+        | rt
 }
 pub fn tbnz(rt: u32, bit: u32, offset_words: i32) -> u32 {
-    0x3700_0000 | ((bit >> 5) << 31) | ((bit & 31) << 19) | (((offset_words as u32) & 0x3fff) << 5) | rt
+    0x3700_0000
+        | ((bit >> 5) << 31)
+        | ((bit & 31) << 19)
+        | (((offset_words as u32) & 0x3fff) << 5)
+        | rt
 }
 pub fn br(rn: u32) -> u32 {
     0xD61F_0000 | (rn << 5)
@@ -607,8 +625,14 @@ impl Asm {
             self.emit(sub_imm(true, rd, rn, (-imm) as u32, false));
         } else if imm > 0 && imm & 0xfff == 0 && imm < (1 << 24) {
             self.emit(add_imm(true, rd, rn, (imm >> 12) as u32, true));
-        } else if imm < 0 && (-imm) & 0xfff == 0 && (-imm) < (1 << 24) {
-            self.emit(sub_imm(true, rd, rn, ((-imm) >> 12) as u32, true));
+        } else if imm < 0 && imm.unsigned_abs() & 0xfff == 0 && imm.unsigned_abs() < (1 << 24) {
+            self.emit(sub_imm(
+                true,
+                rd,
+                rn,
+                (imm.unsigned_abs() >> 12) as u32,
+                true,
+            ));
         } else {
             self.mov_imm64(scratch, imm as u64);
             self.emit(add_reg(true, rd, rn, scratch, LSL, 0));
@@ -3125,7 +3149,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "encoder mismatch: add_any(1, 2, i64::MIN, 9) panics in debug builds (`-imm` overflows at the `imm < 0 && (-imm) & 0xfff == 0` check)"]
     fn asm_add_any_i64_min() {
         let mut a = Asm::new();
         a.add_any(1, 2, i64::MIN, 9);

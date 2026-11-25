@@ -507,7 +507,9 @@ impl PhysicalMemory {
                 (None, Vec::new())
             };
             let mut code_watch = Vec::new();
-            code_watch.resize_with(page_generations.len(), || std::sync::atomic::AtomicU8::new(0));
+            code_watch.resize_with(page_generations.len(), || {
+                std::sync::atomic::AtomicU8::new(0)
+            });
             regions.push(Region {
                 spec,
                 backing,
@@ -1099,7 +1101,10 @@ impl PhysicalMemory {
         let base = GuestPhysicalAddress(address.0 & !0xfff);
         let (index, offset) = self.locate_index(base, 0x1000).ok()?;
         let region = &self.regions[index];
-        if !matches!(region.spec.kind, MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) {
+        if !matches!(
+            region.spec.kind,
+            MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer
+        ) {
             return None;
         }
         region.backing.as_ref()?.operand_ptr(offset, 8)
@@ -1116,8 +1121,13 @@ impl PhysicalMemory {
         region.backing.as_ref()?.operand_ptr(offset, 8)
     }
 
-    fn code_watch_cell(&self, address: GuestPhysicalAddress) -> Option<&std::sync::atomic::AtomicU8> {
-        let (index, _) = self.locate_index(GuestPhysicalAddress(address.0 & !0xfff), 1).ok()?;
+    fn code_watch_cell(
+        &self,
+        address: GuestPhysicalAddress,
+    ) -> Option<&std::sync::atomic::AtomicU8> {
+        let (index, _) = self
+            .locate_index(GuestPhysicalAddress(address.0 & !0xfff), 1)
+            .ok()?;
         let region = &self.regions[index];
         if region.spec.kind != MemoryRegionKind::Ram {
             return None;

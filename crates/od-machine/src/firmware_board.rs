@@ -4338,55 +4338,55 @@ impl LoadedFirmwareBoard {
                 shortened = shortened_cell.get();
                 report
             } else {
-            run_cpl0_set_paged_2m_ram_observed_with_sweep(
-                &mut board.vcpus[BOOT_VCPU_INDEX].state,
-                &mut board.bus,
-                board.page_table_root,
-                walker_efer,
-                context,
-                quantum_budget,
-                INTEGER_FLAGS,
-                &set,
-                source
-                    .as_mut()
-                    .map(|source| source as &mut dyn FnMut() -> u64),
-                stop,
-                |_| {},
-                cpuid_boundary,
-                fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
-                irq_hook.then(|| IrqBoundaryHook {
-                    source: &mut *board.irq_source,
-                    counters: &mut irq_counters,
-                    delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
-                    skip_first_boundary: partial_rep,
-                    // PERF-05: the count of the guest device accesses of this bus.
-                    device_accesses: Some(&*device_accesses),
-                    polled: None,
-                }),
-                board.checkpoints.as_mut(),
-                execution_observations.as_mut(),
-                fetch_sweep.as_ref(),
-                board.fetch_cache_tag,
-                decoded_cache,
-                data_cache,
-                // PERF-25: an ordinary run calls the set for several instructions at a time (the
-                // loop keeps one per call wherever it has a diagnostic to show every boundary;
-                // the fetch cache report and the sweep keep one per call here too).
-                board.instruction_batches
-                    && !board.fetch_cache_report_enabled
-                    && fetch_sweep.is_none(),
-                // PERF-31 (ADR-0018, variant (a), prototype): under the conditions of the
-                // decoded-instruction cache; the loop also requires batched calls.
-                board
-                    .block_cache
-                    .as_ref()
-                    .filter(|_| decoded_cache.is_some()),
-                // E9 (ADR-0019, section 2.4): with these flags and an unchanged device-access
-                // count, `stop` above answers `false` and changes nothing (its bus flags are looked
-                // at again only after a device access); not with the scheduler's stop, which is
-                // not one of them.
-                scheduler_budget.is_none().then_some(async_stop),
-            )
+                run_cpl0_set_paged_2m_ram_observed_with_sweep(
+                    &mut board.vcpus[BOOT_VCPU_INDEX].state,
+                    &mut board.bus,
+                    board.page_table_root,
+                    walker_efer,
+                    context,
+                    quantum_budget,
+                    INTEGER_FLAGS,
+                    &set,
+                    source
+                        .as_mut()
+                        .map(|source| source as &mut dyn FnMut() -> u64),
+                    stop,
+                    |_| {},
+                    cpuid_boundary,
+                    fetch_cache.then_some(FetchCacheInvalidation::WriteWatch),
+                    irq_hook.then(|| IrqBoundaryHook {
+                        source: &mut *board.irq_source,
+                        counters: &mut irq_counters,
+                        delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
+                        skip_first_boundary: partial_rep,
+                        // PERF-05: the count of the guest device accesses of this bus.
+                        device_accesses: Some(&*device_accesses),
+                        polled: None,
+                    }),
+                    board.checkpoints.as_mut(),
+                    execution_observations.as_mut(),
+                    fetch_sweep.as_ref(),
+                    board.fetch_cache_tag,
+                    decoded_cache,
+                    data_cache,
+                    // PERF-25: an ordinary run calls the set for several instructions at a time (the
+                    // loop keeps one per call wherever it has a diagnostic to show every boundary;
+                    // the fetch cache report and the sweep keep one per call here too).
+                    board.instruction_batches
+                        && !board.fetch_cache_report_enabled
+                        && fetch_sweep.is_none(),
+                    // PERF-31 (ADR-0018, variant (a), prototype): under the conditions of the
+                    // decoded-instruction cache; the loop also requires batched calls.
+                    board
+                        .block_cache
+                        .as_ref()
+                        .filter(|_| decoded_cache.is_some()),
+                    // E9 (ADR-0019, section 2.4): with these flags and an unchanged device-access
+                    // count, `stop` above answers `false` and changes nothing (its bus flags are looked
+                    // at again only after a device access); not with the scheduler's stop, which is
+                    // not one of them.
+                    scheduler_budget.is_none().then_some(async_stop),
+                )
             };
             quanta += 1;
             partial_rep = matches!(

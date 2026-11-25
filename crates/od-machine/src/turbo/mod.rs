@@ -23,8 +23,8 @@ mod jit;
 
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
 use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};
-use od_isa::memory::{AccessContext, AccessKind};
 use od_isa::LongModeState;
+use od_isa::memory::{AccessContext, AccessKind};
 use std::collections::HashMap as StdHashMap;
 use std::collections::HashSet as StdHashSet;
 
@@ -200,21 +200,21 @@ pub(crate) struct LookupEntry {
 /// What generated code reads and writes through x21.
 #[repr(C)]
 pub(crate) struct TurboCtx {
-    pub budget: i64,         // 0
-    pub nzcv: u64,           // 8
-    pub pf: u64,             // 16
-    pub af: u64,             // 24
-    pub defined: u64,        // 32
-    pub rtlb: *mut TlbEntry, // 40
-    pub wtlb: *mut TlbEntry, // 48
-    pub lookup: *mut LookupEntry, // 56
-    pub mem_helper: usize,   // 64
+    pub budget: i64,               // 0
+    pub nzcv: u64,                 // 8
+    pub pf: u64,                   // 16
+    pub af: u64,                   // 24
+    pub defined: u64,              // 32
+    pub rtlb: *mut TlbEntry,       // 40
+    pub wtlb: *mut TlbEntry,       // 48
+    pub lookup: *mut LookupEntry,  // 56
+    pub mem_helper: usize,         // 64
     pub env: *mut RunEnv<'static>, // 72
-    pub status: u64,         // 80
-    pub rep_helper: usize,   // 88
+    pub status: u64,               // 80
+    pub rep_helper: usize,         // 88
     /// The visible ES, CS, SS, DS, FS, GS selectors (bit 16: modelled), copied at the start of a run.
     pub selectors: [u32; 6], // 96
-    pub rdtsc_helper: usize, // 120
+    pub rdtsc_helper: usize,       // 120
     /// The budget at the start of the current segment (after the last RDTSC transition).
     pub seg_start: i64,
     /// Instructions retired by the run in the segments before the current one.
@@ -253,8 +253,13 @@ pub(crate) struct RunEnv<'a> {
     pub rdtsc: Option<*mut (dyn FnMut() -> u64 + 'static)>,
     /// The board's fast transition between RDTSC quanta.
     pub fast: Option<
-        *mut (dyn FnMut(FastQuantumEnd, Option<&dyn crate::irq_source::BoardIrqSource>) -> Option<FastQuantumStart>
-             + 'static),
+        *mut (
+            dyn FnMut(
+                    FastQuantumEnd,
+                    Option<&dyn crate::irq_source::BoardIrqSource>,
+                ) -> Option<FastQuantumStart>
+                + 'static
+        ),
     >,
     /// The interrupt hook of the set loop.
     pub irq: Option<*mut crate::irq_source::IrqBoundaryHook<'static>>,
@@ -286,7 +291,14 @@ struct CodeArena {
 mod sys {
     use std::ffi::c_void;
     unsafe extern "C" {
-        pub fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
+        pub fn mmap(
+            addr: *mut c_void,
+            len: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            off: i64,
+        ) -> *mut c_void;
         pub fn pthread_jit_write_protect_np(enabled: i32);
         pub fn sys_icache_invalidate(start: *mut c_void, len: usize);
     }
@@ -466,6 +478,11 @@ pub(crate) struct TurboEngine {
     last_leaf: u64,
     pub stats: TurboStats,
 }
+
+// SAFETY: the raw pointers of the engine point at allocations it owns (its TLB and lookup arrays,
+// its context, its code arena) or, only during `run`, at the run's environment; the engine is used
+// by one thread at a time (the board that owns it), so moving it to another thread moves all of it.
+unsafe impl Send for TurboEngine {}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TurboStats {
@@ -747,7 +764,11 @@ impl TurboEngine {
     /// Note the table frames of a walk (PML4 first; the last one holds the leaf); `true` when
     /// one of them was not watched before.
     fn watch_tables(&mut self, tables: &[Option<GuestPhysicalAddress>; 4]) -> (bool, u64) {
-        let present: Vec<u64> = tables.iter().flatten().map(|table| table.get() >> 12).collect();
+        let present: Vec<u64> = tables
+            .iter()
+            .flatten()
+            .map(|table| table.get() >> 12)
+            .collect();
         let mut new = false;
         let leaf = present.last().copied().unwrap_or(u64::MAX);
         for (index, frame) in present.iter().enumerate() {
@@ -760,10 +781,6 @@ impl TurboEngine {
         }
         (new, leaf)
     }
-
-
-
-
 
     /// Keep the decodes of the last translation (their bytes count as code of the page).
     fn keep_decodes(&mut self, page: u64) {
@@ -784,7 +801,10 @@ impl TurboEngine {
     }
 
     fn mark_code(&mut self, page: u64, ranges: &[(u16, u8)]) {
-        let map = self.code_bytes.entry(page).or_insert_with(|| Box::new([0; 64]));
+        let map = self
+            .code_bytes
+            .entry(page)
+            .or_insert_with(|| Box::new([0; 64]));
         for &(offset, length) in ranges {
             for byte in offset as usize..(offset as usize + length as usize).min(4096) {
                 map[byte / 64] |= 1 << (byte % 64);
@@ -803,7 +823,11 @@ impl TurboEngine {
             let word = (byte / 64) as usize;
             let bit = byte % 64;
             let take = (64 - bit).min(end - byte);
-            let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << bit };
+            let mask = if take == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << take) - 1) << bit
+            };
             if map[word] & mask != 0 {
                 return true;
             }
@@ -825,7 +849,11 @@ impl TurboEngine {
                 continue;
             }
             let start = if page == first { address & 0xfff } else { 0 };
-            let end = if page == last { ((address + len - 1) & 0xfff) + 1 } else { 4096 };
+            let end = if page == last {
+                ((address + len - 1) & 0xfff) + 1
+            } else {
+                4096
+            };
             if self.overlaps_code(page, start, end - start) {
                 self.invalidate_code_page(ram, page);
             }
@@ -891,7 +919,9 @@ impl TurboEngine {
             Some(index) => index,
             None => {
                 // The least recently used context gives way.
-                let index = (0..SLOTS).min_by_key(|&index| self.slots[index].stamp).unwrap_or(0);
+                let index = (0..SLOTS)
+                    .min_by_key(|&index| self.slots[index].stamp)
+                    .unwrap_or(0);
                 self.slots[index].flush();
                 self.slots[index].key = Some(key);
                 self.stats.slot_misses += 1;
@@ -982,7 +1012,13 @@ impl TurboEngine {
         self.stats.lookups += 1;
         if let Some(walk) = fast_translate(env.ram, &env.paging, rip, WalkKind::Fetch) {
             apply_ad(&walk, false);
-            return self.code_for_physical(env, rip, GuestPhysicalAddress::new(walk.physical), walk.tables, walk.host_page);
+            return self.code_for_physical(
+                env,
+                rip,
+                GuestPhysicalAddress::new(walk.physical),
+                walk.tables,
+                walk.host_page,
+            );
         }
         // The fetch walk of the general path (accessed bits) for the first byte of the page.
         let request = TrackedAccessRequest {
@@ -996,9 +1032,12 @@ impl TurboEngine {
             wrote = true;
         });
         report.outcome.ok()?;
-        let (physical, tables) =
-            crate::page_walk::data_translation_of_walk_trace(&report.trace, GuestLinearAddress::new(rip))?;
-        env.ram.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))?;
+        let (physical, tables) = crate::page_walk::data_translation_of_walk_trace(
+            &report.trace,
+            GuestLinearAddress::new(rip),
+        )?;
+        env.ram
+            .ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))?;
         let host_page = env.ram.ram_only_page_host_ptr(physical)?;
         self.code_for_physical(env, rip, physical, tables, host_page)
     }
@@ -1047,7 +1086,13 @@ impl TurboEngine {
             jit::Compiled::Slow => {
                 // Remembered like a block, so that a flush of the lookup table does not
                 // translate it again.
-                self.blocks.insert((rip, page), BlockInfo { code: self.slow_stub, page });
+                self.blocks.insert(
+                    (rip, page),
+                    BlockInfo {
+                        code: self.slow_stub,
+                        page,
+                    },
+                );
                 self.code_pages.entry(page).or_default().push((rip, page));
                 self.slow_stub
             }
@@ -1077,15 +1122,25 @@ impl TurboEngine {
         };
         let report = crate::page_walk::access_long64_2m_ram(env.ram, &env.paging, request, |_| {});
         report.outcome.ok()?;
-        let (physical, _) =
-            crate::page_walk::data_translation_of_walk_trace(&report.trace, GuestLinearAddress::new(rip))?;
+        let (physical, _) = crate::page_walk::data_translation_of_walk_trace(
+            &report.trace,
+            GuestLinearAddress::new(rip),
+        )?;
         let page = physical.get() >> 12;
         if let Some(info) = self.singles.get(&(rip, page)) {
             return Some(info.code);
         }
         let host_page = env.ram.ram_page_host_ptr(physical)?;
         self.pending_decodes.clear();
-        let compiled = jit::compile_limited(self, rip, page, host_page as *const u8, env.context, 1, None);
+        let compiled = jit::compile_limited(
+            self,
+            rip,
+            page,
+            host_page as *const u8,
+            env.context,
+            1,
+            None,
+        );
         self.keep_decodes(page);
         if !env.ram.code_watch(physical) {
             env.ram.set_code_watch(physical, true);
@@ -1110,7 +1165,12 @@ impl TurboEngine {
     }
 
     /// A block of the one instruction at `rip` whose bytes continue on the next page.
-    fn crossing_block(&mut self, env: &mut RunEnv<'_>, rip: u64, physical: GuestPhysicalAddress) -> Option<usize> {
+    fn crossing_block(
+        &mut self,
+        env: &mut RunEnv<'_>,
+        rip: u64,
+        physical: GuestPhysicalAddress,
+    ) -> Option<usize> {
         let next_linear = (rip | 0xfff).wrapping_add(1);
         // The fetch walk of the next page (its accessed bits), as the general path's fetch.
         let request = TrackedAccessRequest {
@@ -1185,7 +1245,10 @@ impl TurboEngine {
     }
 
     /// The decode of the instruction at `rip` the last run ended before, if the engine has it.
-    pub(crate) fn take_slow_decode(&mut self, rip: u64) -> Option<(u64, od_isa::long_decode::Instruction)> {
+    pub(crate) fn take_slow_decode(
+        &mut self,
+        rip: u64,
+    ) -> Option<(u64, od_isa::long_decode::Instruction)> {
         match self.slow_decode.take() {
             Some((at, instruction)) if at == rip => Some((at, instruction)),
             _ => None,
@@ -1396,18 +1459,23 @@ impl TurboEngine {
             let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
             let known_page = (self.lookup[index].rip == rip).then(|| self.lookup_page[index]);
             self.slow_decode = if let Some(page) = known_page {
-                self.slow_insns.get(&(rip, page)).copied().map(|instruction| (rip, instruction))
-            } else { crate::page_walk::translate_long64_2m_ram_read_only(
-                env.ram,
-                &env.paging,
-                rip,
-                GuestLinearAddress::new(rip),
-                env.context,
-                AccessKind::Fetch,
-            )
-            .ok()
-            .and_then(|physical| self.slow_insns.get(&(rip, physical.get() >> 12)).copied())
-            .map(|instruction| (rip, instruction)) };
+                self.slow_insns
+                    .get(&(rip, page))
+                    .copied()
+                    .map(|instruction| (rip, instruction))
+            } else {
+                crate::page_walk::translate_long64_2m_ram_read_only(
+                    env.ram,
+                    &env.paging,
+                    rip,
+                    GuestLinearAddress::new(rip),
+                    env.context,
+                    AccessKind::Fetch,
+                )
+                .ok()
+                .and_then(|physical| self.slow_insns.get(&(rip, physical.get() >> 12)).copied())
+                .map(|instruction| (rip, instruction))
+            };
         }
         self.stats.retired += retired;
         TurboOutcome { retired, exit }
@@ -1450,9 +1518,10 @@ impl TurboEngine {
         trace: &crate::page_walk::WalkTrace,
         write: bool,
     ) {
-        let Some((physical, tables)) =
-            crate::page_walk::data_translation_of_walk_trace(trace, GuestLinearAddress::new(address))
-        else {
+        let Some((physical, tables)) = crate::page_walk::data_translation_of_walk_trace(
+            trace,
+            GuestLinearAddress::new(address),
+        ) else {
             return;
         };
         let Some(host) = ram.ram_page_host_ptr(physical) else {
@@ -1512,7 +1581,13 @@ fn width_of(size: u64) -> crate::AccessWidth {
 /// value of a read is returned); 1: the general path must run the instruction (nothing happened
 /// besides accessed/dirty bits the general path sets again); 2: done, and the write hit a watched
 /// page (the run must end after this instruction).
-unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value: u64, rip: u64) -> HelperResult {
+unsafe extern "C" fn mem_helper(
+    ctx: *mut TurboCtx,
+    address: u64,
+    op: u64,
+    value: u64,
+    rip: u64,
+) -> HelperResult {
     // SAFETY: called only from generated code during `TurboEngine::run`, which set `env`.
     let ctx = unsafe { &mut *ctx };
     let env = unsafe { &mut *ctx.env };
@@ -1524,14 +1599,21 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
     } else {
         engine.stats.helper_reads += 1;
     }
-    let fallback = HelperResult { value: 0, status: 1 };
+    let fallback = HelperResult {
+        value: 0,
+        status: 1,
+    };
     if (address & 0xfff) + size > 0x1000 {
         engine.stats.tlb_fallbacks += 1;
         return fallback;
     }
     let width = width_of(size);
     // The fast form of the walk: read-only checks, then the accessed/dirty bits and the access.
-    let kind = if write { WalkKind::Write } else { WalkKind::Read };
+    let kind = if write {
+        WalkKind::Write
+    } else {
+        WalkKind::Read
+    };
     if let Some(walk) = fast_translate(env.ram, &env.paging, address, kind) {
         let page = walk.physical >> 12;
         // SAFETY: the host page of the walk holds the whole access (no page crossing).
@@ -1539,7 +1621,11 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         if op & OP_ATOMIC != 0 {
             if engine.pt_frames.contains_key(&page)
                 || engine.code_bytes.contains_key(&page)
-                || walk.tables.iter().flatten().any(|table| table.get() >> 12 == page)
+                || walk
+                    .tables
+                    .iter()
+                    .flatten()
+                    .any(|table| table.get() >> 12 == page)
             {
                 engine.stats.tlb_fallbacks += 1;
                 return fallback;
@@ -1549,14 +1635,21 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
             engine.fill_fast(address, &walk, false);
             let linear_page = address >> 12;
             if engine.wtlb[(linear_page as usize) & (TLB_SIZE - 1)].tag == linear_page {
-                return HelperResult { value: 0, status: 0 };
+                return HelperResult {
+                    value: 0,
+                    status: 0,
+                };
             }
             return fallback;
         }
         if write {
             if engine.pt_frames.contains_key(&page)
                 || engine.overlaps_code(page, walk.physical & 0xfff, size)
-                || walk.tables.iter().flatten().any(|table| table.get() >> 12 == page)
+                || walk
+                    .tables
+                    .iter()
+                    .flatten()
+                    .any(|table| table.get() >> 12 == page)
             {
                 engine.stats.tlb_fallbacks += 1;
                 return fallback;
@@ -1572,7 +1665,10 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
                 }
             }
             engine.fill_fast(address, &walk, true);
-            return HelperResult { value: 0, status: 0 };
+            return HelperResult {
+                value: 0,
+                status: 0,
+            };
         }
         apply_ad(&walk, false);
         // SAFETY: as above.
@@ -1589,14 +1685,16 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
     }
     if write {
         // Classify first, without effects: a watched page goes to the general path.
-        let Ok((physical, tables)) = crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
-            env.ram,
-            &env.paging,
-            rip,
-            GuestLinearAddress::new(address),
-            env.context,
-            AccessKind::Write,
-        ) else {
+        let Ok((physical, tables)) =
+            crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
+                env.ram,
+                &env.paging,
+                rip,
+                GuestLinearAddress::new(address),
+                env.context,
+                AccessKind::Write,
+            )
+        else {
             engine.stats.tlb_fallbacks += 1;
             return fallback;
         };
@@ -1604,7 +1702,10 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         if engine.pt_frames.contains_key(&page)
             || engine.overlaps_code(page, physical.get() & 0xfff, size)
             || env.ram.ram_page_host_ptr(physical).is_none()
-            || tables.iter().flatten().any(|table| table.get() >> 12 == page)
+            || tables
+                .iter()
+                .flatten()
+                .any(|table| table.get() >> 12 == page)
         {
             engine.stats.tlb_fallbacks += 1;
             return fallback;
@@ -1626,7 +1727,10 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
                 let page = address >> 12;
                 let index = (page as usize) & (TLB_SIZE - 1);
                 if engine.wtlb[index].tag == page {
-                    HelperResult { value: 0, status: 0 }
+                    HelperResult {
+                        value: 0,
+                        status: 0,
+                    }
                 } else {
                     fallback
                 }
@@ -1652,7 +1756,10 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         }
         Ok(crate::page_walk::TrackedAccessOutcome::Written) => {
             engine.fill(env.ram, address, &report.trace, true);
-            HelperResult { value: 0, status: 0 }
+            HelperResult {
+                value: 0,
+                status: 0,
+            }
         }
         _ => {
             engine.stats.tlb_fallbacks += 1;
@@ -1701,7 +1808,9 @@ pub(crate) fn admits(state: &LongModeState) -> bool {
     const RF: u64 = 1 << 16;
     state.rflags & (TF | RF) == 0
         && state.sti_shadow == Some(od_isa::StiShadow::Clear)
-        && state.activity.is_none_or(|activity| activity == od_isa::CpuActivity::Running)
+        && state
+            .activity
+            .is_none_or(|activity| activity == od_isa::CpuActivity::Running)
 }
 
 /// REP MOVS/STOS of generated code (forward, 64-bit addresses): the iterations of the general path
@@ -1779,7 +1888,8 @@ unsafe extern "C" fn rep_helper(
             let a = rsi.wrapping_add(i * size);
             if a >> 12 != src_page {
                 src_page = a >> 12;
-                let Some(walk) = fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read) else {
+                let Some(walk) = fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read)
+                else {
                     return 1;
                 };
                 walks.push((src_page, walk));
@@ -1789,7 +1899,8 @@ unsafe extern "C" fn rep_helper(
         }
         if d >> 12 != dst_page {
             dst_page = d >> 12;
-            let Some(walk) = fast_translate(env.ram, &env.paging, d & !0xfff, WalkKind::Write) else {
+            let Some(walk) = fast_translate(env.ram, &env.paging, d & !0xfff, WalkKind::Write)
+            else {
                 return 1;
             };
             walks.push((dst_page, walk));
@@ -1848,7 +1959,9 @@ unsafe extern "C" fn rep_helper(
         let dst = unsafe { dst_walk.host_page.add((d & 0xfff) as usize) };
         let bytes = (chunk.count * size) as usize;
         let frame = dst_walk.physical >> 12;
-        if engine.code_bytes.contains_key(&frame) || env.ram.code_watch(GuestPhysicalAddress::new(frame << 12)) {
+        if engine.code_bytes.contains_key(&frame)
+            || env.ram.code_watch(GuestPhysicalAddress::new(frame << 12))
+        {
             code_writes.push((frame, d & 0xfff, (d & 0xfff) + bytes as u64));
         }
         if movs {
@@ -1865,7 +1978,11 @@ unsafe extern "C" fn rep_helper(
                 for e in 0..chunk.count as usize {
                     // SAFETY: as above.
                     unsafe {
-                        std::ptr::copy(src.add(e * size as usize), dst.add(e * size as usize), size as usize)
+                        std::ptr::copy(
+                            src.add(e * size as usize),
+                            dst.add(e * size as usize),
+                            size as usize,
+                        )
                     };
                 }
             }
@@ -1876,12 +1993,16 @@ unsafe extern "C" fn rep_helper(
                     1 => std::ptr::write_bytes(dst, accumulator as u8, bytes),
                     2 => {
                         for e in 0..chunk.count as usize {
-                            dst.add(e * 2).cast::<u16>().write_unaligned(accumulator as u16);
+                            dst.add(e * 2)
+                                .cast::<u16>()
+                                .write_unaligned(accumulator as u16);
                         }
                     }
                     4 => {
                         for e in 0..chunk.count as usize {
-                            dst.add(e * 4).cast::<u32>().write_unaligned(accumulator as u32);
+                            dst.add(e * 4)
+                                .cast::<u32>()
+                                .write_unaligned(accumulator as u32);
                         }
                     }
                     _ => {
@@ -1894,7 +2015,11 @@ unsafe extern "C" fn rep_helper(
         }
         i += chunk.count;
     }
-    state.gpr[Register::Rsi as usize] = if movs { rsi.wrapping_add(n * size) } else { rsi };
+    state.gpr[Register::Rsi as usize] = if movs {
+        rsi.wrapping_add(n * size)
+    } else {
+        rsi
+    };
     state.gpr[Register::Rdi as usize] = rdi.wrapping_add(n * size);
     state.gpr[Register::Rcx as usize] = count - n;
     let changed = !table_writes.is_empty() || !code_writes.is_empty();
@@ -2148,7 +2273,9 @@ pub(crate) fn admits_in_shadow(state: &LongModeState) -> bool {
     const RF: u64 = 1 << 16;
     state.rflags & (TF | RF) == 0
         && state.sti_shadow == Some(od_isa::StiShadow::Blocking)
-        && state.activity.is_none_or(|activity| activity == od_isa::CpuActivity::Running)
+        && state
+            .activity
+            .is_none_or(|activity| activity == od_isa::CpuActivity::Running)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2268,7 +2395,11 @@ impl FastWalk {
     fn needs_ad(&self, write: bool) -> bool {
         (0..self.count).any(|level| {
             let leaf = level + 1 == self.count;
-            let wanted = if leaf && write { PTE_ACCESSED | PTE_DIRTY } else { PTE_ACCESSED };
+            let wanted = if leaf && write {
+                PTE_ACCESSED | PTE_DIRTY
+            } else {
+                PTE_ACCESSED
+            };
             self.values[level] & wanted != wanted
         })
     }

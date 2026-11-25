@@ -79,7 +79,6 @@ mod paged_apic_entry;
 mod paged_descriptor;
 mod paged_exception_delivery;
 mod paged_memory_adapter;
-mod turbo;
 mod paged_pae_adapter;
 mod paged_pio_step;
 mod paged_probe;
@@ -125,6 +124,7 @@ mod stop_diagnostic;
 mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
+mod turbo;
 mod uart16550;
 mod uart_ioapic_irq_source;
 mod uart_pic_irq_source;

@@ -1,15 +1,15 @@
 //! Experiment (turbo loop): translation of one guest block (straight-line code on one 4 KiB page)
 //! to AArch64. See the module documentation of `turbo` for the register convention.
 
-use super::a64::{self, Asm, Cond, Label, LSL, XZR};
-use super::{TurboEngine, EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_WRITE, TLB_BITS};
+use super::a64::{self, Asm, Cond, LSL, Label, XZR};
+use super::{EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_WRITE, TLB_BITS, TurboEngine};
+use od_isa::Register;
 use od_isa::long_decode::{
     self, AddressBase, ArithmeticKind, ConditionCode, Instruction, LogicKind, MemoryOperand,
     OpcodeMap, Operand, Operation, Prefixes, ShiftKind,
 };
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
 use od_isa::state::{OperandSize, RegisterView};
-use od_isa::Register;
 
 pub(crate) enum Compiled {
     /// Code address, instruction count, guest byte ranges (page offset, length) of the
@@ -140,7 +140,14 @@ fn size_bytes(size: OperandSize) -> u32 {
 fn plan(insn: &Instruction) -> Option<Plan> {
     let fast = od_isa::execute::fast_handler(insn).is_some();
     let size = insn.operand_size;
-    let p = |role, reads, writes, can_exit| Some(Plan { role, reads, writes, can_exit });
+    let p = |role, reads, writes, can_exit| {
+        Some(Plan {
+            role,
+            reads,
+            writes,
+            can_exit,
+        })
+    };
     match insn.operation {
         Operation::Arithmetic { kind, dst, src } if fast => {
             let mem = matches!(dst, Operand::Memory(_)) || matches!(src, Operand::Memory(_));
@@ -214,7 +221,9 @@ fn plan(insn: &Instruction) -> Option<Plan> {
                     return None;
                 };
                 let masked = (count as u32) & 0x1f;
-                if !matches!(kind, ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar) || masked >= width {
+                if !matches!(kind, ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar)
+                    || masked >= width
+                {
                     return None;
                 }
                 if masked == 0 {
@@ -307,7 +316,12 @@ fn plan(insn: &Instruction) -> Option<Plan> {
                     return None;
                 }
             }
-            p(Role::Straight, 0, F_CF | F_OF, matches!(src, Operand::Memory(_)))
+            p(
+                Role::Straight,
+                0,
+                F_CF | F_OF,
+                matches!(src, Operand::Memory(_)),
+            )
         }
         Operation::StackRegister { .. } if fast => {
             if !matches!(size, OperandSize::Qword | OperandSize::Word) {
@@ -315,7 +329,9 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             }
             p(Role::Straight, 0, 0, true)
         }
-        Operation::Branch { condition, .. } if fast => p(Role::Terminator, cond_reads(condition), 0, false),
+        Operation::Branch { condition, .. } if fast => {
+            p(Role::Terminator, cond_reads(condition), 0, false)
+        }
         Operation::Jump { .. } if fast => p(Role::Terminator, 0, 0, false),
         Operation::Call { .. } if fast => p(Role::Terminator, 0, 0, true),
         Operation::Return { .. } if fast => p(Role::Terminator, 0, 0, true),
@@ -326,20 +342,30 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         {
             match dst {
                 Operand::Register(_) => p(Role::Straight, cond_reads(condition), 0, false),
-                Operand::Memory(m) if mem_ok(&m) => p(Role::Straight, cond_reads(condition), 0, true),
+                Operand::Memory(m) if mem_ok(&m) => {
+                    p(Role::Straight, cond_reads(condition), 0, true)
+                }
                 _ => None,
             }
         }
-        Operation::ConditionalMove { condition, dst, src }
-            if insn.opcode.map == OpcodeMap::Escape0f
-                && (0x40..=0x4f).contains(&insn.opcode.byte)
-                && insn.prefixes.group1.is_none()
-                && !matches!(insn.prefixes.segment, Some(0x64 | 0x65))
-                && matches!(dst.size(), OperandSize::Word | OperandSize::Dword | OperandSize::Qword) =>
+        Operation::ConditionalMove {
+            condition,
+            dst,
+            src,
+        } if insn.opcode.map == OpcodeMap::Escape0f
+            && (0x40..=0x4f).contains(&insn.opcode.byte)
+            && insn.prefixes.group1.is_none()
+            && !matches!(insn.prefixes.segment, Some(0x64 | 0x65))
+            && matches!(
+                dst.size(),
+                OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+            ) =>
         {
             match src {
                 Operand::Register(_) => p(Role::Straight, cond_reads(condition), 0, false),
-                Operand::Memory(m) if mem_ok(&m) => p(Role::Straight, cond_reads(condition), 0, true),
+                Operand::Memory(m) if mem_ok(&m) => {
+                    p(Role::Straight, cond_reads(condition), 0, true)
+                }
                 _ => None,
             }
         }
@@ -418,7 +444,9 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         {
             p(Role::Straight, 0, F_ALL, true)
         }
-        Operation::AddGsMem { destination, .. } if insn.prefixes.group1.is_none() && mem_ok(&destination) => {
+        Operation::AddGsMem { destination, .. }
+            if insn.prefixes.group1.is_none() && mem_ok(&destination) =>
+        {
             p(Role::Straight, 0, F_ALL, true)
         }
         Operation::LogicGsMemImm { dst, .. } if insn.prefixes.group1.is_none() && mem_ok(&dst) => {
@@ -484,11 +512,19 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             p(Role::Straight, 0, 0, false)
         }
         Operation::Bit { dst, offset, .. }
-            if insn.prefixes.group1.is_none() && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+            if insn.prefixes.group1.is_none()
+                && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
         {
-            let ok_size = |size: OperandSize| matches!(size, OperandSize::Word | OperandSize::Dword | OperandSize::Qword);
+            let ok_size = |size: OperandSize| {
+                matches!(
+                    size,
+                    OperandSize::Word | OperandSize::Dword | OperandSize::Qword
+                )
+            };
             match (dst, offset) {
-                (Operand::Register(view), _) if ok_size(view.size()) => p(Role::Straight, 0, F_CF, false),
+                (Operand::Register(view), _) if ok_size(view.size()) => {
+                    p(Role::Straight, 0, F_CF, false)
+                }
                 (Operand::Memory(m), _) if ok_size(m.size) && mem_ok(&m) => {
                     p(Role::Straight, 0, F_CF, true)
                 }
@@ -507,7 +543,9 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             }
         }
         Operation::SubGsMem { dst, src }
-            if insn.prefixes.group1.is_none() && mem_ok(&src) && dst.size() == OperandSize::Qword =>
+            if insn.prefixes.group1.is_none()
+                && mem_ok(&src)
+                && dst.size() == OperandSize::Qword =>
         {
             p(Role::Straight, 0, F_ALL, true)
         }
@@ -583,25 +621,43 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             dst: Operand::Register(view),
             sreg,
             ..
-        } if sreg <= 5 && matches!(view.size(), OperandSize::Dword | OperandSize::Qword | OperandSize::Word) => {
+        } if sreg <= 5
+            && matches!(
+                view.size(),
+                OperandSize::Dword | OperandSize::Qword | OperandSize::Word
+            ) =>
+        {
             p(Role::Straight, 0, 0, true)
         }
-        Operation::LockCmpxchgMem { destination, source }
-        | Operation::CmpxchgMemory { destination, source }
-            if mem_ok(&destination)
-                && matches!(destination.size, OperandSize::Dword | OperandSize::Qword)
-                && source.size() == destination.size
-                && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        Operation::LockCmpxchgMem {
+            destination,
+            source,
+        }
+        | Operation::CmpxchgMemory {
+            destination,
+            source,
+        } if mem_ok(&destination)
+            && matches!(destination.size, OperandSize::Dword | OperandSize::Qword)
+            && source.size() == destination.size
+            && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
         {
             p(Role::Straight, 0, F_ALL, true)
         }
-        Operation::LockXaddMem { destination, source }
-        | Operation::XaddDsMem { destination, source }
-        | Operation::XaddMemory { destination, source }
-            if mem_ok(&destination)
-                && matches!(destination.size, OperandSize::Dword | OperandSize::Qword)
-                && source.size() == destination.size
-                && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        Operation::LockXaddMem {
+            destination,
+            source,
+        }
+        | Operation::XaddDsMem {
+            destination,
+            source,
+        }
+        | Operation::XaddMemory {
+            destination,
+            source,
+        } if mem_ok(&destination)
+            && matches!(destination.size, OperandSize::Dword | OperandSize::Qword)
+            && source.size() == destination.size
+            && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
         {
             p(Role::Straight, 0, F_ALL, true)
         }
@@ -802,7 +858,8 @@ impl<'e> Ctx<'e> {
         };
         match (mem.base, mem.index) {
             (AddressBase::NextRip, None) => {
-                let value = self.next_rip.wrapping_add_signed(mem.displacement) & mem.address_size.mask();
+                let value =
+                    self.next_rip.wrapping_add_signed(mem.displacement) & mem.address_size.mask();
                 self.mov_imm(ADDR, value);
             }
             (AddressBase::None, None) => {
@@ -825,7 +882,8 @@ impl<'e> Ctx<'e> {
                 if let Some(index) = index {
                     self.load_gpr64(13, index);
                     if have {
-                        self.asm.emit(a64::add_reg(true, ADDR, ADDR, 13, LSL, scale_shift));
+                        self.asm
+                            .emit(a64::add_reg(true, ADDR, ADDR, 13, LSL, scale_shift));
                     } else {
                         self.asm.emit(a64::lsl_imm(true, ADDR, 13, scale_shift));
                     }
@@ -857,7 +915,14 @@ impl<'e> Ctx<'e> {
             asm.emit(a64::lsr_imm(true, 13, ADDR, 12));
         }
         asm.emit(a64::ubfx(true, 14, ADDR, 12, TLB_BITS));
-        asm.emit(a64::add_reg(true, 14, if write { 23 } else { 22 }, 14, LSL, 5));
+        asm.emit(a64::add_reg(
+            true,
+            14,
+            if write { 23 } else { 22 },
+            14,
+            LSL,
+            5,
+        ));
         asm.emit(a64::ldp(15, 14, 14, 0));
         asm.emit(a64::eor_reg(true, 15, 15, 13));
         asm.cbnz_to(true, 15, slow);
@@ -943,14 +1008,20 @@ impl<'e> Ctx<'e> {
         };
         let subtract = matches!(
             kind,
-            ArithmeticKind::Sub | ArithmeticKind::Cmp | ArithmeticKind::Sbb | ArithmeticKind::Dec | ArithmeticKind::Neg
+            ArithmeticKind::Sub
+                | ArithmeticKind::Cmp
+                | ArithmeticKind::Sbb
+                | ArithmeticKind::Dec
+                | ArithmeticKind::Neg
         );
         if !live {
             // Result only (x26 is not touched: the flags of this instruction are dead).
             let r = T2;
             match kind {
                 ArithmeticKind::Add => asm.emit(a64::add_reg(x64, r, a, b, LSL, 0)),
-                ArithmeticKind::Sub | ArithmeticKind::Cmp => asm.emit(a64::sub_reg(x64, r, a, b, LSL, 0)),
+                ArithmeticKind::Sub | ArithmeticKind::Cmp => {
+                    asm.emit(a64::sub_reg(x64, r, a, b, LSL, 0))
+                }
                 ArithmeticKind::Inc => asm.emit(a64::add_imm(x64, r, a, 1, false)),
                 ArithmeticKind::Dec => asm.emit(a64::sub_imm(x64, r, a, 1, false)),
                 ArithmeticKind::Neg => asm.emit(a64::sub_reg(x64, r, XZR, a, LSL, 0)),
@@ -1183,10 +1254,12 @@ impl<'e> Ctx<'e> {
         match offset {
             BitOffset::Register(view) => {
                 self.load_reg(17, view);
-                self.asm.emit(a64::and_imm(false, 17, 17, u64::from(width - 1)).unwrap());
+                self.asm
+                    .emit(a64::and_imm(false, 17, 17, u64::from(width - 1)).unwrap());
             }
             BitOffset::Immediate(value) => {
-                self.asm.emit(a64::movz(false, 17, u32::from(value) & (width - 1), 0));
+                self.asm
+                    .emit(a64::movz(false, 17, u32::from(value) & (width - 1), 0));
             }
         }
         let asm = &mut self.asm;
@@ -1408,12 +1481,24 @@ impl<'e> Ctx<'e> {
     fn emit_insn(&mut self, insn: &Instruction, live_after: u8) -> bool {
         let size = insn.operand_size;
         match insn.operation {
-            Operation::Arithmetic { kind, dst, src } => {
-                self.alu(AluKind::Arith(kind), dst, src, size, false, false, live_after)
-            }
-            Operation::Logic { kind, dst, src } => {
-                self.alu(AluKind::Logic(kind), dst, src, size, false, false, live_after)
-            }
+            Operation::Arithmetic { kind, dst, src } => self.alu(
+                AluKind::Arith(kind),
+                dst,
+                src,
+                size,
+                false,
+                false,
+                live_after,
+            ),
+            Operation::Logic { kind, dst, src } => self.alu(
+                AluKind::Logic(kind),
+                dst,
+                src,
+                size,
+                false,
+                false,
+                live_after,
+            ),
             Operation::Shift {
                 kind: kind @ (ShiftKind::Shld | ShiftKind::Shrd),
                 dst: Operand::Register(view),
@@ -1850,7 +1935,11 @@ impl<'e> Ctx<'e> {
                 }
                 true
             }
-            Operation::ConditionalMove { condition, dst, src } => {
+            Operation::ConditionalMove {
+                condition,
+                dst,
+                src,
+            } => {
                 // The source is read whatever the condition.
                 let size = dst.size();
                 self.source_value(src, T1, size, &[]);
@@ -1860,7 +1949,11 @@ impl<'e> Ctx<'e> {
                     None => {
                         self.parity_bit(13);
                         // x13 bit 0 = odd parity; PF = even.
-                        let keep = if condition == ConditionCode::Parity { Cond::Ne } else { Cond::Eq };
+                        let keep = if condition == ConditionCode::Parity {
+                            Cond::Ne
+                        } else {
+                            Cond::Eq
+                        };
                         self.asm.emit(a64::and_imm(false, 13, 13, 1).unwrap());
                         self.asm.emit(a64::mrs_nzcv(25));
                         self.asm.emit(a64::tst_reg(false, 13, 13));
@@ -1875,7 +1968,8 @@ impl<'e> Ctx<'e> {
                 let exit = self.exit_before();
                 let boundary = self.asm.label();
                 let short = self.asm.label();
-                self.boundaries.push((boundary, short, self.next_rip, self.k, self.defined));
+                self.boundaries
+                    .push((boundary, short, self.next_rip, self.k, self.defined));
                 let rest = (self.len - self.k - 1) as u32;
                 let here = (self.len - self.k) as u32;
                 let asm = &mut self.asm;
@@ -1905,7 +1999,8 @@ impl<'e> Ctx<'e> {
                 let movs = matches!(insn.operation, Operation::RepMovs { .. });
                 let exit = self.exit_before();
                 let partial = self.asm.label();
-                self.partials.push((partial, self.rip, self.k, self.defined));
+                self.partials
+                    .push((partial, self.rip, self.k, self.defined));
                 let done = self.asm.label();
                 let asm = &mut self.asm;
                 asm.emit(a64::mrs_nzcv(25));
@@ -1922,7 +2017,8 @@ impl<'e> Ctx<'e> {
                 let leave = asm.label();
                 asm.tbnz_to(0, 2, leave);
                 asm.b_to(exit);
-                self.leaves.push((leave, self.next_rip, self.k, self.defined));
+                self.leaves
+                    .push((leave, self.next_rip, self.k, self.defined));
                 self.asm.bind(done);
                 true
             }
@@ -1988,7 +2084,11 @@ impl<'e> Ctx<'e> {
                 false,
                 live_after,
             ),
-            Operation::LogicGsMemImm { kind, dst, immediate } => self.alu(
+            Operation::LogicGsMemImm {
+                kind,
+                dst,
+                immediate,
+            } => self.alu(
                 AluKind::Logic(kind),
                 Operand::Memory(dst),
                 Operand::Immediate(immediate),
@@ -1997,7 +2097,10 @@ impl<'e> Ctx<'e> {
                 false,
                 live_after,
             ),
-            Operation::AddGsMem { destination, source } => self.alu(
+            Operation::AddGsMem {
+                destination,
+                source,
+            } => self.alu(
                 AluKind::Arith(ArithmeticKind::Add),
                 Operand::Memory(destination),
                 Operand::Register(source),
@@ -2033,7 +2136,9 @@ impl<'e> Ctx<'e> {
                 false,
                 live_after,
             ),
-            Operation::MovGsStore { dst, src } => self.store_into(dst, Operand::Register(src), true),
+            Operation::MovGsStore { dst, src } => {
+                self.store_into(dst, Operand::Register(src), true)
+            }
             Operation::MovGsMemByteImm { dst, immediate } => {
                 self.store_into(dst, Operand::Immediate(u64::from(immediate)), true)
             }
@@ -2064,7 +2169,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockAddMem { destination, immediate } => self.alu(
+            Operation::LockAddMem {
+                destination,
+                immediate,
+            } => self.alu(
                 AluKind::Arith(ArithmeticKind::Add),
                 Operand::Memory(destination),
                 Operand::Immediate(immediate),
@@ -2073,8 +2181,14 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockSubMem { destination, immediate }
-            | Operation::LockSubDwordImm8 { destination, immediate } => self.alu(
+            Operation::LockSubMem {
+                destination,
+                immediate,
+            }
+            | Operation::LockSubDwordImm8 {
+                destination,
+                immediate,
+            } => self.alu(
                 AluKind::Arith(ArithmeticKind::Sub),
                 Operand::Memory(destination),
                 Operand::Immediate(immediate),
@@ -2083,7 +2197,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockAddMemReg { destination, source } => self.alu(
+            Operation::LockAddMemReg {
+                destination,
+                source,
+            } => self.alu(
                 AluKind::Arith(ArithmeticKind::Add),
                 Operand::Memory(destination),
                 Operand::Register(source),
@@ -2092,7 +2209,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockSubMemReg { destination, source } => self.alu(
+            Operation::LockSubMemReg {
+                destination,
+                source,
+            } => self.alu(
                 AluKind::Arith(ArithmeticKind::Sub),
                 Operand::Memory(destination),
                 Operand::Register(source),
@@ -2101,7 +2221,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockOrMem { destination, immediate } => self.alu(
+            Operation::LockOrMem {
+                destination,
+                immediate,
+            } => self.alu(
                 AluKind::Logic(LogicKind::Or),
                 Operand::Memory(destination),
                 Operand::Immediate(immediate),
@@ -2110,7 +2233,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockAndMem { destination, immediate } => self.alu(
+            Operation::LockAndMem {
+                destination,
+                immediate,
+            } => self.alu(
                 AluKind::Logic(LogicKind::And),
                 Operand::Memory(destination),
                 Operand::Immediate(immediate),
@@ -2119,7 +2245,10 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockXorMem { destination, immediate } => self.alu(
+            Operation::LockXorMem {
+                destination,
+                immediate,
+            } => self.alu(
                 AluKind::Logic(LogicKind::Xor),
                 Operand::Memory(destination),
                 Operand::Immediate(immediate),
@@ -2128,7 +2257,11 @@ impl<'e> Ctx<'e> {
                 true,
                 live_after,
             ),
-            Operation::LockLogicMemReg { kind, destination, source } => self.alu(
+            Operation::LockLogicMemReg {
+                kind,
+                destination,
+                source,
+            } => self.alu(
                 AluKind::Logic(kind),
                 Operand::Memory(destination),
                 Operand::Register(source),
@@ -2139,7 +2272,8 @@ impl<'e> Ctx<'e> {
             ),
             Operation::Bswap { dst } => {
                 self.load_reg(T0, dst);
-                self.asm.emit(a64::rev(dst.size() == OperandSize::Qword, T0, T0));
+                self.asm
+                    .emit(a64::rev(dst.size() == OperandSize::Qword, T0, T0));
                 self.store_reg(T0, dst, true);
                 true
             }
@@ -2165,7 +2299,10 @@ impl<'e> Ctx<'e> {
                 asm.emit(a64::mrs_nzcv(25));
                 asm.emit(a64::mov_reg(true, 0, 19));
                 asm.emit(a64::mov_reg(true, 1, T1));
-                asm.mov_imm64(2, u64::from(size_bytes(size)) | if signed { 0x100 } else { 0 });
+                asm.mov_imm64(
+                    2,
+                    u64::from(size_bytes(size)) | if signed { 0x100 } else { 0 },
+                );
                 asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_DIV_HELPER));
                 asm.emit(a64::blr(16));
                 asm.emit(a64::msr_nzcv(25));
@@ -2176,7 +2313,13 @@ impl<'e> Ctx<'e> {
                 self.address(&src, true);
                 self.load_mem(8, T1, &[]);
                 self.load_reg(T0, dst);
-                self.arith_flags(ArithmeticKind::Sub, OperandSize::Qword, T0, T1, live_after != 0);
+                self.arith_flags(
+                    ArithmeticKind::Sub,
+                    OperandSize::Qword,
+                    T0,
+                    T1,
+                    live_after != 0,
+                );
                 self.store_reg(T2, dst, false);
                 true
             }
@@ -2291,7 +2434,11 @@ impl<'e> Ctx<'e> {
                 }
                 true
             }
-            Operation::ImulImmediate { dst, src, immediate } => {
+            Operation::ImulImmediate {
+                dst,
+                src,
+                immediate,
+            } => {
                 let live = live_after & (F_CF | F_OF) != 0;
                 self.source_value(src, T0, dst.size(), &[]);
                 self.mov_imm(T1, immediate & dst.size().mask());
@@ -2370,8 +2517,14 @@ impl<'e> Ctx<'e> {
                 self.store_reg(T0, view, true);
                 true
             }
-            Operation::LockCmpxchgMem { destination, source }
-            | Operation::CmpxchgMemory { destination, source } => {
+            Operation::LockCmpxchgMem {
+                destination,
+                source,
+            }
+            | Operation::CmpxchgMemory {
+                destination,
+                source,
+            } => {
                 let bytes = size_bytes(destination.size);
                 let start = self.asm.label();
                 self.asm.bind(start);
@@ -2384,7 +2537,12 @@ impl<'e> Ctx<'e> {
                 let asm = &mut self.asm;
                 asm.emit(a64::add_reg(true, ADDR, ADDR, 14, LSL, 0));
                 asm.emit(a64::ldr_imm(bytes, T2, ADDR, 0));
-                asm.emit(a64::subs_reg(destination.size == OperandSize::Qword, XZR, T0, T2));
+                asm.emit(a64::subs_reg(
+                    destination.size == OperandSize::Qword,
+                    XZR,
+                    T0,
+                    T2,
+                ));
                 asm.emit(a64::csel(true, 13, T1, T2, Cond::Eq));
                 asm.emit(a64::str_imm(bytes, 13, ADDR, 0));
                 self.arith_flags(ArithmeticKind::Cmp, destination.size, T0, T2, true);
@@ -2395,9 +2553,18 @@ impl<'e> Ctx<'e> {
                 self.asm.bind(equal);
                 true
             }
-            Operation::LockXaddMem { destination, source }
-            | Operation::XaddDsMem { destination, source }
-            | Operation::XaddMemory { destination, source } => {
+            Operation::LockXaddMem {
+                destination,
+                source,
+            }
+            | Operation::XaddDsMem {
+                destination,
+                source,
+            }
+            | Operation::XaddMemory {
+                destination,
+                source,
+            } => {
                 let bytes = size_bytes(destination.size);
                 let start = self.asm.label();
                 self.asm.bind(start);
@@ -2599,7 +2766,8 @@ pub(crate) fn compile_limited(
     let _ = page;
     let mut insns: Vec<(u64, Instruction, Plan)> = Vec::new();
     let mut at = rip;
-    while insns.len() < max && (at >> 12 == rip >> 12 || (next_host.is_some() && insns.is_empty())) {
+    while insns.len() < max && (at >> 12 == rip >> 12 || (next_host.is_some() && insns.is_empty()))
+    {
         fetch.outside = false;
         let decoded = long_decode::decode(&mut fetch, at, context);
         if fetch.outside {
@@ -2628,7 +2796,9 @@ pub(crate) fn compile_limited(
     if insns.is_empty() {
         return Compiled::Slow;
     }
-    let terminated = insns.last().is_some_and(|(_, _, plan)| plan.role == Role::Terminator);
+    let terminated = insns
+        .last()
+        .is_some_and(|(_, _, plan)| plan.role == Role::Terminator);
     let end_rip = at;
     // Flag liveness (backward): everything is live at the end and at every possible exit.
     let mut live_after = vec![0u8; insns.len()];
@@ -2740,7 +2910,8 @@ pub(crate) fn compile_limited(
     for (label, exit_rip, k, defined) in exits {
         ctx.asm.bind(label);
         ctx.emit_defined(defined);
-        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k) as u32, false));
+        ctx.asm
+            .emit(a64::add_imm(true, 20, 20, (len - k) as u32, false));
         ctx.asm.mov_imm64(1, exit_rip);
         ctx.asm.emit(a64::movz(true, 0, EXIT_SLOW as u32, 0));
         ctx.asm.b_abs(exit_common);
@@ -2752,12 +2923,14 @@ pub(crate) fn compile_limited(
         ctx.emit_defined(defined);
         ctx.asm.emit(a64::ldr_imm(8, 20, 21, super::CTX_SEG_START));
         ctx.asm.mov_imm64(1, next);
-        ctx.asm.emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
+        ctx.asm
+            .emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
         ctx.asm.b_abs(exit_common);
         // The new quantum is shorter than the rest of the block: one instruction at a time.
         ctx.asm.bind(short);
         ctx.emit_defined(defined);
-        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
+        ctx.asm
+            .emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
         ctx.asm.mov_imm64(1, next);
         ctx.asm.emit(a64::movz(true, 0, EXIT_BUDGET as u32, 0));
         ctx.asm.b_abs(exit_common);
@@ -2766,18 +2939,22 @@ pub(crate) fn compile_limited(
     for (label, next, k, defined) in leaves {
         ctx.asm.bind(label);
         ctx.emit_defined(defined);
-        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
+        ctx.asm
+            .emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
         ctx.asm.mov_imm64(1, next);
-        ctx.asm.emit(a64::movz(true, 0, super::EXIT_LOOKUP as u32, 0));
+        ctx.asm
+            .emit(a64::movz(true, 0, super::EXIT_LOOKUP as u32, 0));
         ctx.asm.b_abs(exit_common);
     }
     let partials = std::mem::take(&mut ctx.partials);
     for (label, exit_rip, k, defined) in partials {
         ctx.asm.bind(label);
         ctx.emit_defined(defined);
-        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k) as u32, false));
+        ctx.asm
+            .emit(a64::add_imm(true, 20, 20, (len - k) as u32, false));
         ctx.asm.mov_imm64(1, exit_rip);
-        ctx.asm.emit(a64::movz(true, 0, super::EXIT_REP_PARTIAL as u32, 0));
+        ctx.asm
+            .emit(a64::movz(true, 0, super::EXIT_REP_PARTIAL as u32, 0));
         ctx.asm.b_abs(exit_common);
     }
     let words = ctx.asm.words.len();
