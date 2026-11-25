@@ -136,72 +136,8 @@ fn size_bytes(size: OperandSize) -> u32 {
     size.bytes() as u32
 }
 
-fn disabled(group: u32) -> bool {
-    static MASK: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let mask = *MASK.get_or_init(|| {
-        std::env::var("OD_TURBO_DISABLE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0)
-    });
-    mask & group != 0
-}
-
 /// The plan of `insn`, or `None` when the block ends before it.
 fn plan(insn: &Instruction) -> Option<Plan> {
-    let group = match insn.operation {
-        Operation::AddGsLoad { .. }
-        | Operation::CmpGsLoad { .. }
-        | Operation::LogicGsLoad { .. }
-        | Operation::CmpGsMemImm { .. }
-        | Operation::AddGsMemImm { .. }
-        | Operation::SubGsMemImm { .. }
-        | Operation::LogicGsMemImm { .. }
-        | Operation::AddGsMem { .. }
-        | Operation::TestGsMemByte { .. }
-        | Operation::TestGsMemWord { .. }
-        | Operation::TestGsMemWide { .. } => 1,
-        Operation::MovGsStore { .. }
-        | Operation::MovGsMemByteImm { .. }
-        | Operation::MovGsMemImm { .. }
-        | Operation::MovzxGsLoadB { .. }
-        | Operation::MovzxGsLoadW { .. }
-        | Operation::MovsxGsLoadB { .. }
-        | Operation::MovsxdGsLoad { .. } => 2,
-        Operation::LockIncMem { .. }
-        | Operation::LockDecMem { .. }
-        | Operation::LockAddMem { .. }
-        | Operation::LockSubMem { .. }
-        | Operation::LockSubDwordImm8 { .. }
-        | Operation::LockAddMemReg { .. }
-        | Operation::LockSubMemReg { .. }
-        | Operation::LockOrMem { .. }
-        | Operation::LockAndMem { .. }
-        | Operation::LockXorMem { .. }
-        | Operation::LockLogicMemReg { .. } => 4,
-        Operation::Bswap { .. } => 8,
-        Operation::Invlpg | Operation::Lfence => 16,
-        Operation::ClearDirectionFlag | Operation::SetDirectionFlag => 32,
-        Operation::Bit { .. } => 64,
-        Operation::Divide { .. } => 128,
-        Operation::Sti => 256,
-        Operation::MovSregStore { .. } => 512,
-        Operation::Shift { count: Operand::Register(_), .. } => 1024,
-        Operation::Shift { kind: ShiftKind::Rol | ShiftKind::Ror, .. } => 2048,
-        Operation::BitScan { .. } => 4096,
-        Operation::PushFlags | Operation::PushImmediate { .. } => 8192,
-        Operation::LockCmpxchgMem { .. }
-        | Operation::CmpxchgMemory { .. }
-        | Operation::LockXaddMem { .. }
-        | Operation::XaddDsMem { .. }
-        | Operation::XaddMemory { .. } => 16384,
-        Operation::Mul { .. } | Operation::ImulImmediate { .. } | Operation::SignExtendAccumulator { .. } => 32768,
-        Operation::Cli => 65536,
-        _ => 0,
-    };
-    if group != 0 && disabled(group) {
-        return None;
-    }
     let fast = od_isa::execute::fast_handler(insn).is_some();
     let size = insn.operand_size;
     let p = |role, reads, writes, can_exit| Some(Plan { role, reads, writes, can_exit });
@@ -550,7 +486,6 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         Operation::Bit { dst, offset, .. }
             if insn.prefixes.group1.is_none() && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
         {
-            use od_isa::long_decode::BitOffset;
             let ok_size = |size: OperandSize| matches!(size, OperandSize::Word | OperandSize::Dword | OperandSize::Qword);
             match (dst, offset) {
                 (Operand::Register(view), _) if ok_size(view.size()) => p(Role::Straight, 0, F_CF, false),
@@ -2621,47 +2556,6 @@ impl<'e> Ctx<'e> {
             }
             _ => false,
         }
-    }
-}
-
-/// Diagnostic: a short key of the instruction at `rip` (its operation and operand forms).
-pub(crate) fn describe(rip: u64, host_page: *const u8, context: AccessContext) -> String {
-    let mut fetch = CodePage {
-        host: host_page,
-        page: rip >> 12,
-        next: None,
-        outside: false,
-        crossed: false,
-    };
-    match long_decode::decode(&mut fetch, rip, context) {
-        Ok(insn) => {
-            let text = format!("{:?}", insn.operation);
-            let name: String = text
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            let forms = match insn.operation {
-                Operation::Arithmetic { dst, src, .. }
-                | Operation::Logic { dst, src, .. }
-                | Operation::Mov { dst, src } => {
-                    format!("{}/{}", form(&dst), form(&src))
-                }
-                Operation::Shift { dst, count, kind, source, .. } => {
-                    format!("{}/{} {kind:?} src={}", form(&dst), form(&count), source.is_some())
-                }
-                Operation::Bit { dst, offset, kind } => format!("{} {offset:?} {kind:?}", form(&dst)),
-                Operation::Extend { src, .. } | Operation::Imul { src, .. } => form(&src).into(),
-                _ => String::new(),
-            };
-            let prefixes = if insn.prefixes == Prefixes::default() {
-                String::new()
-            } else {
-                format!(" {:?}", insn.prefixes)
-            };
-            format!("{name} {forms} {:?}{prefixes}", insn.operand_size)
-        }
-        Err(_) if fetch.outside => "page-crossing".into(),
-        Err(_) => "decode-error".into(),
     }
 }
 

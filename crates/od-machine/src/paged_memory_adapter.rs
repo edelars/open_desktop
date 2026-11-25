@@ -3387,7 +3387,6 @@ fn run_cpl0_set_loop_impl<
         }
         // Experiment (turbo loop): generated code runs what it can from here.
         if let Some(hook) = turbo.as_mut() {
-            hook.engine.settle_slow();
             {
                 let mut writes = turbo_writes.borrow_mut();
                 if !writes.is_empty() {
@@ -3414,18 +3413,6 @@ fn run_cpl0_set_loop_impl<
                 Some(polled) => polled.is_some(),
             };
             let in_shadow = crate::turbo::admits_in_shadow(state);
-            if cpl3 {
-                hook.engine.stats.loop_cpl3 += 1;
-            } else if !known {
-                hook.engine.stats.loop_unknown += 1;
-                if !(crate::turbo::admits(state) || in_shadow) {
-                    hook.engine.stats.loop_refused += 1;
-                }
-            } else if !(crate::turbo::admits(state) || in_shadow) {
-                hook.engine.stats.loop_refused += 1;
-            } else if turbo_force_slow == Some(state.rip) {
-                hook.engine.stats.loop_forced += 1;
-            }
             if turbo_force_slow != Some(state.rip)
                 && !cpl3
                 && (crate::turbo::admits(state) || in_shadow)
@@ -3530,7 +3517,7 @@ fn run_cpl0_set_loop_impl<
                 }
             }
             turbo_force_slow = None;
-            hook.engine.note_slow(bus.ram(), &paging, context, state.rip);
+            hook.engine.note_general_step();
         }
         let instruction_rip = state.rip;
         // PERF-20: the instruction about to run, decoded read-only (no accessed/dirty bit, no cache

@@ -343,12 +343,15 @@ impl CodeArena {
         debug_assert_eq!(at, self.base as usize + self.used);
         // SAFETY: `at..at+bytes` is inside the mapping; write protection is lifted for this thread
         // only while copying, and the instruction cache is invalidated before execution.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         unsafe {
             sys::pthread_jit_write_protect_np(0);
             std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), at as *mut u8, bytes);
             sys::pthread_jit_write_protect_np(1);
             sys::sys_icache_invalidate(at as *mut _, bytes);
         }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        unreachable!("no code arena on this host");
         self.used += bytes;
         // keep 16-byte alignment of the next block
         self.used = (self.used + 15) & !15;
@@ -357,11 +360,17 @@ impl CodeArena {
     /// Overwrite one word (used to kill a block's entry).
     fn patch(&mut self, at: usize, word: u32) {
         // SAFETY: as in `commit`, one aligned word inside the mapping.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         unsafe {
             sys::pthread_jit_write_protect_np(0);
             (at as *mut u32).write(word);
             sys::pthread_jit_write_protect_np(1);
             sys::sys_icache_invalidate(at as *mut _, 4);
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (at, word);
+            unreachable!("no code arena on this host");
         }
     }
 
@@ -455,13 +464,6 @@ pub(crate) struct TurboEngine {
     last_page: u64,
     /// The leaf table frame of the last code translation (for `install`).
     last_leaf: u64,
-    collect_slow: bool,
-    debug: u64,
-    debug_fb: u64,
-    slow_kinds: HashMap<String, u64>,
-    slow_walks: HashMap<String, u64>,
-    last_cause: u8,
-    pending_slow: Option<(String, u64)>,
     pub stats: TurboStats,
 }
 
@@ -481,11 +483,6 @@ pub struct TurboStats {
     pub code_writes: u64,
     pub noted_writes: u64,
     pub leaf_drops: u64,
-    pub rep_refused: [u64; 12],
-    pub loop_cpl3: u64,
-    pub loop_unknown: u64,
-    pub loop_refused: u64,
-    pub loop_forced: u64,
     pub slot_switches: u64,
     pub slot_misses: u64,
     pub singles: u64,
@@ -523,17 +520,17 @@ impl TurboEngine {
             rtlb: rtlb.as_mut_ptr(),
             wtlb: wtlb.as_mut_ptr(),
             lookup: lookup.as_mut_ptr(),
-            mem_helper: mem_helper as usize,
+            mem_helper: mem_helper as *const () as usize,
             env: std::ptr::null_mut(),
             status: 0,
-            rep_helper: rep_helper as usize,
+            rep_helper: rep_helper as *const () as usize,
             selectors: [0; 6],
-            rdtsc_helper: rdtsc_helper as usize,
+            rdtsc_helper: rdtsc_helper as *const () as usize,
             seg_start: 0,
             run_retired: 0,
             masked: 0,
-            div_helper: div_helper as usize,
-            sti_helper: sti_helper as usize,
+            div_helper: div_helper as *const () as usize,
+            sti_helper: sti_helper as *const () as usize,
         });
         let mut engine = Box::new(Self {
             arena,
@@ -573,13 +570,6 @@ impl TurboEngine {
             pending_decodes: Vec::new(),
             last_page: u64::MAX,
             last_leaf: u64::MAX,
-            collect_slow: std::env::var_os("OD_TURBO_STATS").is_some(),
-            debug: std::env::var("OD_TURBO_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            debug_fb: std::env::var("OD_TURBO_DEBUG_FB").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            slow_kinds: HashMap::default(),
-            slow_walks: HashMap::default(),
-            last_cause: 0,
-            pending_slow: None,
             stats: TurboStats::default(),
         });
         engine.emit_stubs();
@@ -941,6 +931,38 @@ impl TurboEngine {
         }
     }
 
+    /// Every translated block, single and remembered decode (the code cache starts empty).
+    fn drop_code(&mut self, ram: &PhysicalMemory) {
+        self.arena.reset(self.stubs_end);
+        self.blocks.clear();
+        self.singles.clear();
+        self.code_bytes.clear();
+        self.slow_insns.clear();
+        self.page_extras.clear();
+        for page in self.code_pages.keys() {
+            ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
+        }
+        self.code_pages.clear();
+        self.slow_decode = None;
+        self.flush_lookup();
+    }
+
+    /// Forget everything the engine derived from guest memory and paging: guest memory changed
+    /// without passing through the engine (a platform reset, a restored snapshot).
+    pub(crate) fn reset(&mut self, ram: &PhysicalMemory) {
+        // Writes logged before the reset concern code that is dropped below.
+        let _ = ram.take_code_watch_hits();
+        self.drop_code(ram);
+        self.flush_translations();
+        for slot in &mut self.slots {
+            slot.key = None;
+        }
+        self.paging_key = None;
+        self.last_page = u64::MAX;
+        self.last_leaf = u64::MAX;
+        self.sync_view();
+    }
+
     /// Drop the lookup entries (of every context) of the block `(rip, page)`.
     fn drop_lookup_of(&mut self, rip: u64, page: u64) {
         let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
@@ -1008,17 +1030,6 @@ impl TurboEngine {
             // No write entry may point at a page with code.
             self.flush_write_tlb();
         }
-        if self.debug > 0 {
-            self.debug -= 1;
-            let what = match &compiled {
-                jit::Compiled::Block(code, n, _) => format!("block {n} at {code:#x}"),
-                jit::Compiled::Slow => format!("slow: {}", jit::describe(rip, host_page as *const u8, env.context)),
-                jit::Compiled::Rdtsc => "rdtsc".into(),
-                jit::Compiled::NoSpace => "nospace".into(),
-                jit::Compiled::Crossing => "crossing".into(),
-            };
-            eprintln!("turbo compile {rip:#x}: {what}");
-        }
         let code = match compiled {
             jit::Compiled::Block(code, instructions, ranges) => {
                 self.mark_code(page, &ranges);
@@ -1047,17 +1058,7 @@ impl TurboEngine {
             },
             jit::Compiled::NoSpace => {
                 // Start over with an empty code cache.
-                self.arena.reset(self.stubs_end);
-                self.blocks.clear();
-                self.singles.clear();
-                self.code_bytes.clear();
-                self.slow_insns.clear();
-                self.page_extras.clear();
-                for page in self.code_pages.keys() {
-                    env.ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
-                }
-                self.code_pages.clear();
-                self.flush_lookup();
+                self.drop_code(env.ram);
                 return None;
             }
         };
@@ -1191,67 +1192,14 @@ impl TurboEngine {
         }
     }
 
-    /// Diagnostic (OD_TURBO_STATS): count the operation the general path runs at `rip`.
-    pub(crate) fn note_slow(
-        &mut self,
-        ram: &PhysicalMemory,
-        paging: &Long64ProbeConfig,
-        context: AccessContext,
-        rip: u64,
-    ) {
+    /// The loop runs one general step (an instruction the engine leaves to it).
+    pub(crate) fn note_general_step(&mut self) {
         self.stats.general_steps += 1;
-        if !self.collect_slow {
-            return;
-        }
-        let Ok(physical) = crate::page_walk::translate_long64_2m_ram_read_only(
-            ram,
-            paging,
-            rip,
-            GuestLinearAddress::new(rip),
-            context,
-            AccessKind::Fetch,
-        ) else {
-            *self.slow_kinds.entry("fetch-fault".into()).or_default() += 1;
-            return;
-        };
-        let Some(host) = ram.ram_page_host_ptr(physical) else {
-            *self.slow_kinds.entry("fetch-not-ram".into()).or_default() += 1;
-            return;
-        };
-        let mut key = jit::describe(rip, host as *const u8, context);
-        if std::env::var_os("OD_TURBO_RIPS").is_some() {
-            key = format!("{rip:#x} c{} {}", self.last_cause, &key[..key.len().min(40)]);
-        }
-        *self.slow_kinds.entry(key.clone()).or_default() += 1;
-        self.pending_slow = Some((key, crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed)));
     }
 
-    /// Diagnostic: the walks of the general step just done.
-    pub(crate) fn settle_slow(&mut self) {
-        if let Some((key, before)) = self.pending_slow.take() {
-            let now = crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-            *self.slow_walks.entry(key).or_default() += now - before;
-        }
-    }
-
-    /// Diagnostic: the general-path operations by count.
+    /// The statistics of the engine as text.
     pub(crate) fn report(&self) -> String {
-        let mut kinds: Vec<_> = self.slow_kinds.iter().collect();
-        kinds.sort_by(|a, b| b.1.cmp(a.1));
-        let mut text = format!(
-            "{:?} walks {}\n",
-            self.stats_summary(),
-            crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        for (key, count) in kinds.iter().take(60) {
-            let walks = self.slow_walks.get(*key).copied().unwrap_or(0);
-            text.push_str(&format!("{count:>12} {walks:>10} {key}\n"));
-        }
-        text
-    }
-
-    fn stats_summary(&self) -> TurboStats {
-        self.stats
+        format!("{:?}", self.stats)
     }
 
     /// Run generated code from `state.rip` for at most `budget` instructions.
@@ -1264,7 +1212,6 @@ impl TurboEngine {
         masked: bool,
     ) -> TurboOutcome {
         self.stats.runs += 1;
-        self.last_cause = 0;
         self.drain_code_watch(env.ram);
         self.check_paging(state, &env.paging);
         env.engine = self as *mut _;
@@ -1291,7 +1238,7 @@ impl TurboEngine {
         self.ctx.seg_start = self.ctx.budget;
         self.ctx.run_retired = 0;
         self.ctx.masked = masked as u64;
-        let mut exit = TurboExit::Budget;
+        let exit;
         loop {
             if self.ctx.budget <= 0 {
                 exit = TurboExit::Budget;
@@ -1306,14 +1253,12 @@ impl TurboEngine {
                 match self.code_for(env, rip) {
                     Some(code) => code,
                     None => {
-                        self.last_cause = 1;
                         exit = TurboExit::Slow;
                         break;
                     }
                 }
             };
             if code == self.slow_stub {
-                self.last_cause = 2;
                 exit = TurboExit::Slow;
                 break;
             }
@@ -1351,7 +1296,6 @@ impl TurboEngine {
                             match reason {
                                 EXIT_LOOKUP | EXIT_BUDGET => continue,
                                 EXIT_SLOW => {
-                                    self.last_cause = 3;
                                     exit = TurboExit::Slow;
                                     break;
                                 }
@@ -1375,14 +1319,12 @@ impl TurboEngine {
                             }
                         }
                         None => {
-                            self.last_cause = 4;
                             exit = TurboExit::Slow;
                             break;
                         }
                     }
                 }
                 EXIT_SLOW => {
-                    self.last_cause = 5;
                     exit = TurboExit::Slow;
                     break;
                 }
@@ -1665,17 +1607,6 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
             || tables.iter().flatten().any(|table| table.get() >> 12 == page)
         {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug_fb > 0 {
-                engine.debug_fb -= 1;
-                eprintln!(
-                    "turbo write refused rip {rip:#x} addr {address:#x} phys {:#x}: pt {} code {} ram {} own {}",
-                    physical.get(),
-                    engine.pt_frames.contains_key(&page),
-                    engine.overlaps_code(page, physical.get() & 0xfff, size),
-                    env.ram.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff)).is_some(),
-                    tables.iter().flatten().any(|table| table.get() >> 12 == page)
-                );
-            }
             return fallback;
         }
     }
@@ -1723,21 +1654,8 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
             engine.fill(env.ram, address, &report.trace, true);
             HelperResult { value: 0, status: 0 }
         }
-        other => {
+        _ => {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug_fb > 0 {
-                engine.debug_fb -= 1;
-                let kind = crate::page_walk::translate_long64_2m_ram_read_only(
-                    env.ram,
-                    &env.paging,
-                    rip,
-                    GuestLinearAddress::new(address),
-                    env.context,
-                    if write { AccessKind::Write } else { AccessKind::Read },
-                )
-                .map(|physical| (physical, env.ram.locate_region_kind(physical, 1)));
-                eprintln!("turbo fallback rip {rip:#x} addr {address:#x} op {op:#x}: {other:?} {kind:?}");
-            }
             fallback
         }
     }
@@ -1810,7 +1728,6 @@ unsafe extern "C" fn rep_helper(
     engine.stats.rep_calls += 1;
     const DF: u64 = 1 << 10;
     if state.rflags & DF != 0 {
-        engine.stats.rep_refused[1] += 1;
         return 1;
     }
     use od_isa::Register;
@@ -1830,7 +1747,6 @@ unsafe extern "C" fn rep_helper(
             (a & 0xfff) + size > 0x1000
         });
         if crosses {
-            engine.stats.rep_refused[2] += 1;
             return 1;
         }
     }
@@ -1840,7 +1756,6 @@ unsafe extern "C" fn rep_helper(
             (a & 0xfff) + size > 0x1000
         });
         if crosses {
-            engine.stats.rep_refused[3] += 1;
             return 1;
         }
     }
@@ -1865,7 +1780,6 @@ unsafe extern "C" fn rep_helper(
             if a >> 12 != src_page {
                 src_page = a >> 12;
                 let Some(walk) = fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read) else {
-                    engine.stats.rep_refused[4] += 1;
                     return 1;
                 };
                 walks.push((src_page, walk));
@@ -1876,7 +1790,6 @@ unsafe extern "C" fn rep_helper(
         if d >> 12 != dst_page {
             dst_page = d >> 12;
             let Some(walk) = fast_translate(env.ram, &env.paging, d & !0xfff, WalkKind::Write) else {
-                engine.stats.rep_refused[5] += 1;
                 return 1;
             };
             walks.push((dst_page, walk));
@@ -1912,11 +1825,9 @@ unsafe extern "C" fn rep_helper(
     for chunk in &chunks {
         let frame = walks[chunk.dst].1.physical >> 12;
         if tables.contains(&frame) {
-            engine.stats.rep_refused[6] += 1;
             return 1;
         }
         if movs && ad_pending && tables.contains(&(walks[chunk.src].1.physical >> 12)) {
-            engine.stats.rep_refused[7] += 1;
             return 1;
         }
         if engine.pt_frames.contains_key(&frame) && !table_writes.contains(&frame) {
