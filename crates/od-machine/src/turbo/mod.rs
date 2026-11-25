@@ -20,6 +20,8 @@
 
 pub(crate) mod a64;
 mod jit;
+#[cfg(test)]
+mod tests;
 
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
 use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};

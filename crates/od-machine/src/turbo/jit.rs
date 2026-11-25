@@ -678,6 +678,13 @@ fn plan(insn: &Instruction) -> Option<Plan> {
     }
 }
 
+/// Whether the translator admits `insn` (its `plan`): the differential tests check that their
+/// templates exercise generated code, not only the general path.
+#[cfg(test)]
+pub(super) fn admitted(insn: &Instruction) -> bool {
+    plan(insn).is_some()
+}
+
 /// The REP MOVS/STOS forms the general path admits with 64-bit addresses.
 fn rep_admitted(insn: &Instruction) -> bool {
     let p = insn.prefixes;
