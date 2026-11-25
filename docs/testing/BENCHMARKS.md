@@ -2205,6 +2205,32 @@ Rule for counting a gain: only on K3200, same machine, same inputs, release buil
 - Close other heavy applications before K4; a loaded host moves wall time by several times (see the report).
 - Images and the kernel stay out of Git.
 
+### PGO (E14, optional delivery build step)
+
+Profile-guided optimisation of the runner is an optional step of a delivery build, measured in report 7.39 of [CPU_CORE_PERF_REPORT.md](../reports/CPU_CORE_PERF_REPORT.md) (decision 7.25 confirmed). The developer build (`cargo build --release`, `build --runner-only`) and `Cargo.toml` do not change; profiles and the instrumented build stay in `work/cpu-core-perf/pgo/` and never go to Git. Training workload: G100 in the default mode with blocks (`--fast-path --data-cache-prototype`). Only `boot-firmware --cpu-loop unified --fast-path` runs the block loop, and every such run starts with the same firmware; a boot with other inputs would likely share with K3200 the firmware up to ExitBootServices (about 39 %; not checked), so G100 is the training with the least overlap with K3200. It covers all of F100 (an F100 gain is "with training and measurement overlapping") and about 3.1 % of K3200; the rest of K3200 (about 97 %: the remaining firmware and the kernel phase) is not trained.
+
+```sh
+rustup component add llvm-tools-preview    # once: llvm-profdata of the toolchain's LLVM
+RUSTFLAGS="-Cprofile-generate=$PWD/work/cpu-core-perf/pgo/raw" CARGO_TARGET_DIR=work/cpu-core-perf/pgo/target-gen \
+  cargo build --release -p od-runner --offline
+mkdir -p work/cpu-core-perf/pgo/raw-build-scripts work/cpu-core-perf/pgo/train
+mv work/cpu-core-perf/pgo/raw/*.profraw work/cpu-core-perf/pgo/raw-build-scripts/   # profiles of the instrumented build scripts
+work/cpu-core-perf/pgo/target-gen/release/od-runner boot-firmware --image <rom> --nvme-image <esp> --budget 100000000 \
+  --com1-out work/cpu-core-perf/pgo/train/com1.bin --nvram-in <seed> --nvram-out work/cpu-core-perf/pgo/train/nvram.out \
+  --cpu-loop unified --fast-path --data-cache-prototype        # <rom>, <esp>, <seed>: "paths" of inputs.json; exit 5 is the budget stop
+$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-profdata merge \
+  -o work/cpu-core-perf/pgo/merged.profdata work/cpu-core-perf/pgo/raw
+RUSTFLAGS="-Cprofile-use=$PWD/work/cpu-core-perf/pgo/merged.profdata" python3 tools/bench/linux_boot_perf.py build --runner-only
+# ... record / measure as usual ...
+python3 tools/bench/linux_boot_perf.py build --runner-only   # back to the ordinary build before any other measurement
+```
+
+- The training run calls the instrumented runner directly: `record` and `measure` refuse a runner whose SHA-256 differs from `inputs.json`. Check `pgrep -fl 'od-runner|linux_boot_perf'` first (the direct call bypasses `.run.lock`) and write its outputs outside `work/cpu-core-perf/run/`.
+- The profile paths in `RUSTFLAGS` must be absolute and unquoted inside the variable: a quoted path is taken as relative, and the runner and the build scripts write profiles into directories named `'` under the repository root and `tools/runner/`.
+- `build_profile` in `inputs.json` and in every record does not show `RUSTFLAGS`: a PGO and an ordinary build differ only by `runner_sha256`. Write which hash is which.
+- A pair "without PGO" / "with PGO" is the pair rule of section 3.3 of [CPU_CORE_PERF_BLOCKS.md](../plans/CPU_CORE_PERF_BLOCKS.md): one commit, only builds between the sides, order build without → F100 → build with → F100 → build without → K3200 → build with → K3200; then `compare` G100 (and G3200) of the PGO build against the ordinary one.
+- Cargo keeps artifacts of other `RUSTFLAGS` apart: after going back, delete the PGO binary left in `target/release/deps/od_runner-*` (the one whose SHA-256 is the PGO hash). Retrain after every code change; the numbers of the line's tasks are taken on the ordinary build.
+
 ## PERF-02: Profile by method (K6, CPU core performance line)
 
 Tool: `tools/bench/linux_boot_perf.py profile` (plan: [CPU_CORE_PERF.md](../plans/CPU_CORE_PERF.md), section 5 K6 and PERF-02). It uses only the macOS `/usr/bin/sample`; no external profiler or crate. The run is started like `record` (same inputs, same `.run.lock`, so it cannot overlap a record, a measurement or another profile), without `--stop-snapshot`.
