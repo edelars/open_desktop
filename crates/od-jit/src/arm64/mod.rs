@@ -1,5 +1,6 @@
 //! Checked ARM64 code-buffer encoding used by the existing fragment translator.
 
+pub mod a64;
 pub mod atomic_sequence;
 mod encoder;
 pub mod memory_order;

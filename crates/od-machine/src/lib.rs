@@ -10,9 +10,6 @@ mod bus;
 mod clock_owner;
 mod console_output_context;
 mod crc32;
-mod data_translation_cache;
-mod decoded_block_cache;
-mod decoded_instruction_cache;
 mod diagnostic_vcpu;
 mod display_device;
 mod dma_page;
@@ -54,21 +51,6 @@ mod nvme;
 mod nvram_device;
 mod op_histogram;
 pub use op_histogram::{OpHistogramEntry, OpHistogramReport};
-// PERF-11: debug-build counters of the data translation cache prototype (tests, measurements).
-pub use data_translation_cache::{
-    DATA_CACHE_COUNTED, DataCacheCounters, data_cache_counters, reset_data_cache_counters,
-};
-// E8: the check of the data translation cache (the runner's `--data-cache-verify`).
-pub use data_translation_cache::check::{DataCacheCheckCounters, DataCacheCheckDivergence};
-// PERF-31: the counters of the predecoded block cache prototype (the runner's `unified.block_stats`).
-pub use decoded_block_cache::{
-    BLOCK_CACHE_COUNTED, BLOCK_GENERAL_REASONS, BLOCK_RUN_END_REASONS, BLOCK_RUN_LENGTH_BUCKETS,
-    BlockEndReport, DecodedBlockCacheStats,
-};
-// E9: the check of the short boundary of a pass of a block (the runner's `--block-boundary-verify`).
-pub use decoded_block_cache::boundary_check::{
-    BlockBoundaryCheckCounters, BlockBoundaryCheckDivergence,
-};
 mod pae_fetch_view;
 mod pae_operand_access;
 mod pae_protected_step;
@@ -124,6 +106,8 @@ mod stop_diagnostic;
 mod tpm_crb;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
+mod turbo;
+pub use turbo::TURBO_ARENA_BYTES;
 mod uart16550;
 mod uart_ioapic_irq_source;
 mod uart_pic_irq_source;
@@ -255,19 +239,17 @@ pub use linux_checkpoints::{
     LinuxCheckpointTarget,
 };
 pub use linux_direct::{
-    BlockBoundaryCheckReport, BlockCheckDivergenceReport, BlockCheckReport, DataCacheCheckReport,
-    FastPathCheckReport, FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts,
-    FirmwareUnifiedMarker, FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState,
-    FirmwareUnifiedWalkEntry, LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot,
-    LinuxDirectE820, LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
+    FirmwareUnifiedCheckpoint, FirmwareUnifiedInterrupts, FirmwareUnifiedMarker,
+    FirmwareUnifiedPageFault, FirmwareUnifiedRun, FirmwareUnifiedState, FirmwareUnifiedWalkEntry,
+    LINUX_STOP_RIP_BYTES, LinuxCpl0SetMembers, LinuxDirectBoot, LinuxDirectE820,
+    LinuxDirectEntryState, LinuxDirectError, LinuxDirectInput, LinuxDirectZone,
     LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
     LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, LinuxVcpuRunMode,
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry,
     load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
-    run_firmware_unified, run_firmware_unified_checked, run_firmware_unified_marked,
-    run_firmware_unified_profiled, run_firmware_unified_traced,
-    run_firmware_unified_with_fast_path, run_linux_direct_board, run_linux_direct_board_set,
+    run_firmware_unified, run_firmware_unified_marked, run_firmware_unified_profiled,
+    run_firmware_unified_traced, run_linux_direct_board, run_linux_direct_board_set,
     run_linux_direct_board_set_observed, run_linux_direct_board_set_user_mode,
     run_linux_direct_board_set_user_mode_interleaved,
     run_linux_direct_board_set_user_mode_parallel, run_linux_direct_board_set_user_mode_threaded,

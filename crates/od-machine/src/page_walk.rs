@@ -158,13 +158,13 @@ impl Long64ProbeConfig {
         self.efer
     }
 
-    fn root(self) -> u64 {
+    pub(crate) fn root(self) -> u64 {
         self.cr3 & ENTRY_ADDRESS_MASK
     }
-    fn write_protect(self) -> bool {
+    pub(crate) fn write_protect(self) -> bool {
         self.cr0 & CR0_WP != 0
     }
-    fn nxe(self) -> bool {
+    pub(crate) fn nxe(self) -> bool {
         self.efer & EFER_NXE != 0
     }
 }
@@ -1281,7 +1281,7 @@ fn leaf_physical(
     )
 }
 
-/// PERF-11 (ADR-0016, prototype): what the data translation cache keeps of a SUCCESSFUL walk of
+/// What the TLB of the turbo engine keeps of a SUCCESSFUL walk of
 /// `address` (the trace of a `TrackedAccessReport` whose outcome is `Ok`): the base of the 4 KiB
 /// physical frame of `address` and the base of every table frame of the path (PML4 first; `None`
 /// past a 2 MiB leaf). The trace of a successful walk ends at its leaf (a PDE ends a 2 MiB walk, a

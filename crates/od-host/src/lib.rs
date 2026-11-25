@@ -17,6 +17,7 @@ pub mod jit_region {
 pub mod atomic_inline;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod host_threads;
+mod jit_arena;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod litmus_jit;
 pub mod nat;
@@ -136,6 +137,8 @@ struct ActiveCodeMetadataV3 {
     compile_flavor: od_jit::translation::CompileFlavor,
     pc_map: od_jit::statepoints::PcMap,
 }
+
+pub use jit_arena::JitArena;
 
 /// Compatibility name for the published executable mapping API.
 pub type ExecutableMemory = PublishedCode;

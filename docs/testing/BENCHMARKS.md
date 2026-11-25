@@ -2180,7 +2180,10 @@ python3 tools/bench/linux_boot_perf.py record --budget 100000000 --label before
 python3 tools/bench/linux_boot_perf.py record --budget 100000000 --label after
 python3 tools/bench/linux_boot_perf.py compare work/cpu-core-perf/before-100000000.json work/cpu-core-perf/after-100000000.json
 sudo nice -n -5 sudo -u "$USER" python3 tools/bench/linux_boot_perf.py measure --budget 3200000000 --runs 3 --label before
+python3 tools/bench/linux_boot_perf.py record --budget 100000000 --label control --no-turbo   # control: the general interpreter step only
 ```
+
+The runner runs in its default mode: the turbo engine of the unified loop ([ADR-0022](../decisions/ADR-0022-turbo-jit.md)) where the host has one. `record`, `measure` and `profile` take `--no-turbo`, which passes `--no-turbo` to the runner (the general interpreter step only: the reference and control mode, much slower; not for speed claims about the product) and writes `"turbo": true/false` into the metadata of the record. The flags of the removed block engine (`--fast-path`, `--data-cache-prototype` and the others) no longer exist; records made with them (before 2026-11-25) keep their fields as history. Golden records of the turbo mode and of `--no-turbo` are compared with `compare` like any other pair: the whole runner JSON, the hashes and the exit code must be equal.
 
 `record` runs `od-runner boot-firmware --cpu-loop unified` with `--com1-out`, `--nvram-in`, `--nvram-out` and `--stop-snapshot` at the same paths for every label (the runner prints them in its JSON), then copies the files to `<label>-<budget>.com1`, `.nvram` and `.stop-snapshot`. The record keeps the whole runner stdout, the SHA-256 of COM1, of the NVRAM snapshot and of the stop snapshot, the input hashes, the commit and the wall time. A budget stop gives runner exit code 5; that is the normal end of a budget run, and the exit code is compared too.
 
@@ -2207,7 +2210,7 @@ Rule for counting a gain: only on K3200, same machine, same inputs, release buil
 
 ### PGO (E14, optional delivery build step)
 
-Profile-guided optimisation of the runner is an optional step of a delivery build, measured in report 7.39 of [CPU_CORE_PERF_REPORT.md](../reports/CPU_CORE_PERF_REPORT.md) (decision 7.25 confirmed). The developer build (`cargo build --release`, `build --runner-only`) and `Cargo.toml` do not change; profiles and the instrumented build stay in `work/cpu-core-perf/pgo/` and never go to Git. Training workload: G100 in the default mode with blocks (`--fast-path --data-cache-prototype`). Only `boot-firmware --cpu-loop unified --fast-path` runs the block loop, and every such run starts with the same firmware; a boot with other inputs would likely share with K3200 the firmware up to ExitBootServices (about 39 %; not checked), so G100 is the training with the least overlap with K3200. It covers all of F100 (an F100 gain is "with training and measurement overlapping") and about 3.1 % of K3200; the rest of K3200 (about 97 %: the remaining firmware and the kernel phase) is not trained.
+Profile-guided optimisation of the runner is an optional step of a delivery build, measured in report 7.39 of [CPU_CORE_PERF_REPORT.md](../reports/CPU_CORE_PERF_REPORT.md) (decision 7.25 confirmed); that measurement was made on the block engine removed by [ADR-0022](../decisions/ADR-0022-turbo-jit.md), so it does not establish the effect of PGO on the turbo engine (the shares of the workload coverage below are from the same time). The developer build (`cargo build --release`, `build --runner-only`) and `Cargo.toml` do not change; profiles and the instrumented build stay in `work/cpu-core-perf/pgo/` and never go to Git. Training workload: G100 in the default mode (the turbo engine, `boot-firmware --cpu-loop unified` without `--no-turbo`). Every run of this loop starts with the same firmware; a boot with other inputs would likely share with K3200 the firmware up to ExitBootServices (about 39 %; not checked), so G100 is the training with the least overlap with K3200. It covers all of F100 (an F100 gain is "with training and measurement overlapping") and about 3.1 % of K3200; the rest of K3200 (about 97 %: the remaining firmware and the kernel phase) is not trained.
 
 ```sh
 rustup component add llvm-tools-preview    # once: llvm-profdata of the toolchain's LLVM
@@ -2217,7 +2220,7 @@ mkdir -p work/cpu-core-perf/pgo/raw-build-scripts work/cpu-core-perf/pgo/train
 mv work/cpu-core-perf/pgo/raw/*.profraw work/cpu-core-perf/pgo/raw-build-scripts/   # profiles of the instrumented build scripts
 work/cpu-core-perf/pgo/target-gen/release/od-runner boot-firmware --image <rom> --nvme-image <esp> --budget 100000000 \
   --com1-out work/cpu-core-perf/pgo/train/com1.bin --nvram-in <seed> --nvram-out work/cpu-core-perf/pgo/train/nvram.out \
-  --cpu-loop unified --fast-path --data-cache-prototype        # <rom>, <esp>, <seed>: "paths" of inputs.json; exit 5 is the budget stop
+  --cpu-loop unified        # <rom>, <esp>, <seed>: "paths" of inputs.json; exit 5 is the budget stop
 $(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-profdata merge \
   -o work/cpu-core-perf/pgo/merged.profdata work/cpu-core-perf/pgo/raw
 RUSTFLAGS="-Cprofile-use=$PWD/work/cpu-core-perf/pgo/merged.profdata" python3 tools/bench/linux_boot_perf.py build --runner-only

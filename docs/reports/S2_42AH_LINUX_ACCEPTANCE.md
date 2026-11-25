@@ -30,7 +30,7 @@ fixture; it does not exercise branch NOP shrinking or demonstrate a CPU defect.
 
 The raw run report and saved replay are in ignored
 `work/stage2/s2-42ah-native-branch/acceptance-20261104-jz-taken/`. The compact
-[verification record](../../work/stage2/s2-42ah-native-branch/verification.json)
+verification record (`work/stage2/s2-42ah-native-branch/verification.json`)
 contains commands, source/binary and report hashes, callback results and
 replay outcome.
 

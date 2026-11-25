@@ -1632,8 +1632,8 @@ QEMU System 10.0.13 загрузил закреплённое ядро и при
 **Путь к результату.**
 - ISSUE-578 (FWAIT в `fpu__drop`) исправлен: `9B` выполняется по SDM в CPL0 FP-состоянии, прогон дошёл до `/s6-smp-init`.
 - Прогон с бюджетом `2 500 000 000` исчерпал бюджет без маркеров. Диагностика (Opus high): ядро до старта PID 1 тратит около 2,4·10⁹ инструкций. Это бюджет, а не зависание.
-- Прогон с бюджетом `6 000 000 000` до исправления NVMe прошёл верификацию, но ядро логировало `I/O Error (sc 0x2) DNR` на чтениях с RAHEAD. Данные: [прогон](reports/data/stage6/s6-22-linuxdirect-prefix-nvme-read-errors.json). Причина: эмулятор отвергал `CDW12` бит 31 (LR) и `CDW13 = 7` (dsmgmt), которые Linux ставит при RAHEAD. Исправлено в ISSUE-579.
-- Два финальных прогона на исправленном коде с одинаковым seed. Оба прошли верификацию, в логе нет ни одной `I/O Error`, `BUG`, `WARNING`, `Oops`, `soft lockup`. Данные: [A](reports/data/stage6/s6-22-linuxdirect-final-run-a.json), [B](reports/data/stage6/s6-22-linuxdirect-final-run-b.json).
+- Прогон с бюджетом `6 000 000 000` до исправления NVMe прошёл верификацию, но ядро логировало `I/O Error (sc 0x2) DNR` на чтениях с RAHEAD. Данные: [прогон](data/stage6/s6-22-linuxdirect-prefix-nvme-read-errors.json). Причина: эмулятор отвергал `CDW12` бит 31 (LR) и `CDW13 = 7` (dsmgmt), которые Linux ставит при RAHEAD. Исправлено в ISSUE-579.
+- Два финальных прогона на исправленном коде с одинаковым seed. Оба прошли верификацию, в логе нет ни одной `I/O Error`, `BUG`, `WARNING`, `Oops`, `soft lockup`. Данные: [A](data/stage6/s6-22-linuxdirect-final-run-a.json), [B](data/stage6/s6-22-linuxdirect-final-run-b.json).
 
 **Команда.** [Рецепт](../testing/SMP.md#s6-22--проверка-гостевых-нагрузок) с `--budget 6000000000` (около 50 минут на 2 vCPU). Nonce меняется на каждом запуске.
 

@@ -231,11 +231,12 @@ pub enum FenceKind {
 pub trait GuestMemory {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError>;
 
-    /// PERF-10: the decoded instruction this backend remembers for the instruction fetch at
-    /// `rip`, or `None` (the default: the backend has no decoded-instruction cache, and the
-    /// decoder reads the bytes). A backend that answers must guarantee that the answer equals what
-    /// [`crate::long_decode::decode`] would return now, byte for byte, including every right the
-    /// fetch of those bytes needs. Wrappers do not forward this method.
+    /// The decoded instruction this backend already has for the instruction fetch at `rip` (the
+    /// turbo engine of `od-machine` hands over the decode of an instruction it leaves to the
+    /// general step), or `None` (the default: the decoder reads the bytes). A backend that answers
+    /// must guarantee that the answer equals what [`crate::long_decode::decode`] would return now,
+    /// byte for byte, including every right the fetch of those bytes needs. Wrappers do not
+    /// forward this method.
     fn cached_instruction(
         &mut self,
         _rip: u64,
@@ -244,96 +245,6 @@ pub trait GuestMemory {
         None
     }
 
-    /// PERF-10: the decoder tells the backend that `decode` just returned `instruction` for the
-    /// fetch at `rip` (called only after a successful decode that followed a `None` of
-    /// [`Self::cached_instruction`] for the same `rip` and `context`). The default does nothing.
-    fn remember_instruction(
-        &mut self,
-        _rip: u64,
-        _context: AccessContext,
-        _instruction: crate::long_decode::Instruction,
-    ) {
-    }
-
-    /// PERF-31 (ADR-0018, variant (a), prototype): the predecoded straight-line block this backend
-    /// remembers for the instruction fetch at `rip`, or `None` (the default: no block cache). Asked
-    /// only by a batched run of a set built with `Cpl0ProfileSet::with_block_cache_prototype`
-    /// (see [`crate::predecoded_block`]). A backend that answers must guarantee, for its first
-    /// instruction, what [`Self::cached_instruction`] guarantees: each instruction equals what
-    /// [`crate::long_decode::decode`] would return now at its RIP, and fetching it now would have no
-    /// effect. The answer makes it the active block of the backend. Wrappers do not forward this
-    /// method.
-    fn cached_block(
-        &mut self,
-        _rip: u64,
-        _context: AccessContext,
-    ) -> Option<crate::long_decode::DecodedBlock> {
-        None
-    }
-
-    /// PERF-31: asked before every further instruction of the active block (the one the last
-    /// [`Self::cached_block`] answered), right before it runs: `true` only when the guarantee of
-    /// `cached_block` still holds for it (nothing that a fetch depends on changed since). `false`
-    /// ends the block; the default (no block cache) is `false`.
-    fn block_holds(&mut self) -> bool {
-        false
-    }
-
-    /// PERF-31: the instruction at `index` of the active block retired from the block (diagnostic
-    /// counters only; `index` 0 starts a new run of a block). The default does nothing.
-    fn block_retired(&mut self, _index: usize) {}
-
-    /// E9 (ADR-0019, section 2): the short boundary of a pass of a block. Asked by a batched run
-    /// with blocks after the instruction at `index` of the active block retired from the block
-    /// with `Advanced`, when the next instruction is the next one of the same block and the
-    /// budget of the call is not reached; `rip` is the RIP of that next instruction. `true` only
-    /// when the boundary check of the caller (`BatchBoundary::check`) would answer "go on" at this
-    /// boundary and change nothing but what this method did itself (it makes the backend ready for
-    /// the instruction at `rip`); the loop then skips that check and its own checks after the
-    /// instruction, which no instruction of a block can change. `false` (the default) keeps the
-    /// full boundary. Wrappers do not forward this method.
-    #[inline(always)]
-    fn block_pass_boundary(&mut self, _rip: u64, _index: usize) -> bool {
-        false
-    }
-
-    /// E10 (ADR-0018, «Дополнение E10», decision 3 and «Диагностические режимы»): whether a batched
-    /// run with blocks may take the dynamic admission of the fast path once per pass of a block
-    /// (Д2) instead of at every instruction; asked once per call. `true` only where the short
-    /// boundary of E9 is on for the call (blocks without `--block-cache-verify`, without a call
-    /// trace and without `--block-boundary-verify`). The default is `false`. Wrappers do not forward
-    /// this method.
-    #[inline(always)]
-    fn block_admission_once(&self) -> bool {
-        false
-    }
-
-    /// PERF-33 (E4, step 2): the run of the active block ended before `instruction` of it, which
-    /// did not retire from the block: `refused` when the fast path refused it (the general step
-    /// runs it next), else it faulted or ended otherwise (diagnostic counters only). The default does
-    /// nothing. Wrappers do not forward this method.
-    fn block_run_cut(&mut self, _instruction: &crate::long_decode::Instruction, _refused: bool) {}
-
-    /// PERF-33 (E4, step 2): whether the backend counts the instructions the general step retires
-    /// in a run with blocks ([`Self::block_general_retired`], the runner's `--block-stats`); asked
-    /// once per call. The default is `false`. Wrappers do not forward this method.
-    fn block_stats_counted(&self) -> bool {
-        false
-    }
-
-    /// PERF-33 (E4, step 2): the instruction at `rip` retired through the general step (not from a
-    /// block) in a run with blocks; asked only when [`Self::block_stats_counted`]. Diagnostic
-    /// counters only; the default does nothing. Wrappers do not forward this method.
-    fn block_general_retired(&mut self, _rip: u64, _context: AccessContext) {}
-
-    /// PERF-33 (E5, step 4): the block check (`Cpl0ProfileSet::with_block_cache_verify`) asks,
-    /// after every step, for the first instruction the decoder returned from the bytes during it, with
-    /// its RIP (a backend in that mode answers no [`Self::cached_instruction`] and keeps the first
-    /// [`Self::remember_instruction`] of the step instead), and forgets it. The default (no check)
-    /// has none. Wrappers do not forward this method.
-    fn take_decoded_for_block_check(&mut self) -> Option<(u64, crate::long_decode::Instruction)> {
-        None
-    }
     fn read(
         &mut self,
         address: u64,

@@ -1,80 +1,62 @@
-//! PERF-33 (E3, adapted to HEAD after E3 was rolled back; E10: both now take the rule from
-//! `execute::fast_handler`, ADR-0018, «Дополнение E10»): the static rule of the predecoded
-//! blocks (`predecoded_block::fast_block_role`) against what the fast path
-//! (`execute::try_fast_step`) actually runs, on every decode of a generated set of encodings: every
-//! one- and two-byte (`0F xx`) opcode under the group 1 prefixes (none, F0, F2, F3), the segment
-//! prefixes (none, CS, FS, GS), the operand- and address-size prefixes and REX (REX.W and a REX
-//! without W; see `encodings`), register and memory ModRM forms of every `reg` field and two
-//! immediate/displacement patterns. The state is that of the G2 tests (CPL0, RF = TF = 0, a clear
-//! shadow), so the dynamic part of the admission of `try_fast_step` passes and only its static part
-//! can refuse.
+//! The static rule of the former interpreter fast path (`execute::fast_handler`, ADR-0018,
+//! «Дополнение E10»), which the turbo engine of `od-machine` asks (`fast_handler(..).is_some()`)
+//! before it admits an instruction to generated code. The rule is pinned on every decode of a
+//! generated set of encodings: every one- and two-byte (`0F xx`) opcode under the group 1 prefixes
+//! (none, F0, F2, F3), the segment prefixes (none, CS, FS, GS), the operand- and address-size
+//! prefixes and REX (REX.W and a REX without W; see `encodings`), register and memory ModRM forms of
+//! every `reg` field and two immediate/displacement patterns.
 //!
-//! For every successful decode:
-//! - `fast_block_role` is `None` => `try_fast_step` answers "not handled" (nothing changed, no
-//!   data access): a group added to the fast path but not to the block rule fails here;
-//! - `fast_block_role` is `Some(Straight)` => `try_fast_step` handles it, and never as `Branched`;
-//! - `fast_block_role` is `Some(Terminator)` => `try_fast_step` handles it. Since E10 there is
-//!   no exception: a control transfer outside the form of `executable` (`3E 75`, `2E E8`, `66 C3`,
-//!   `67 E8`, ...) has no handler, so the block ends before it (the one allowed change of the
-//!   composition of the blocks, step 2 of E10).
-//!
-//! A handled admitted decode is refused again under each dynamic refusal (CPL3, TF, RF, a shadow).
-//! E10: the set the fast path handles is the one of HEAD `1500400` before E10 (its count and an
-//! FNV-1a-64 hash of the sorted encodings, taken there with this generator). A change of the
-//! decoder or of the generator that changes these numbers needs them taken again on the code
-//! before the change, with a proof that the set of the fast path itself did not change.
+//! For every successful decode the rule gives a class only to an instruction without a LOCK/REP
+//! prefix and without an FS/GS segment prefix, and a control transfer only in the form of
+//! `executable` (`3E 75`, `2E E8`, `66 C3`, `67 E8`, ... have none). The admitted set is the one of
+//! HEAD `1500400` (its count, the counts of straight-line instructions and control transfers, and an
+//! FNV-1a-64 hash of the sorted encodings, taken there with this generator). A change of the decoder
+//! or of the generator that changes these numbers needs them taken again on the code before the
+//! change, with a proof that the rule itself did not change.
 
 use std::collections::{BTreeSet, HashSet};
 use std::mem::{Discriminant, discriminant};
 
-use crate::execute::{StepOutcome, try_fast_step};
-use crate::fast_step_g2_tests::{CODE, context, state};
-use crate::fast_step_g4_tests::Ram;
+use crate::execute::fast_handler;
 use crate::long_decode::{self, Instruction, OpcodeMap, Operation, Prefixes};
-use crate::predecoded_block::{FastBlockRole, fast_block_role};
+use crate::memory::AccessKind;
 use crate::{
-    AccessContext, GuestMemory, INTEGER_FLAGS, LongModeState, MemoryError, PrivilegeLevel,
-    StiShadow,
+    AccessContext, AccessOrigin, GuestMemory, InstructionMode, MemoryError, PrivilegeLevel,
 };
 
-const TF: u64 = 1 << 8;
-const RF: u64 = 1 << 16;
+const CODE: u64 = 0x1000;
 
-/// The memory of the G4 tests (code at `CODE`, a sparse RAM elsewhere) with every data access
-/// counted.
-struct Counted {
-    ram: Ram,
-    data_calls: u32,
-}
+/// Code bytes at `CODE` for the fetch; the decoder makes no data access.
+struct Code(Vec<u8>);
 
-impl GuestMemory for Counted {
-    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
-        self.ram.fetch(address, context)
+impl GuestMemory for Code {
+    fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        address
+            .checked_sub(CODE)
+            .and_then(|offset| self.0.get(offset as usize))
+            .copied()
+            .ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
     }
 
-    fn read(
-        &mut self,
-        address: u64,
-        context: AccessContext,
-        destination: &mut [u8],
-    ) -> Result<(), MemoryError> {
-        self.data_calls += 1;
-        self.ram.read(address, context, destination)
+    fn read(&mut self, address: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Read,
+        })
     }
 
-    fn write(
-        &mut self,
-        address: u64,
-        context: AccessContext,
-        source: &[u8],
-    ) -> Result<(), MemoryError> {
-        self.data_calls += 1;
-        self.ram.write(address, context, source)
+    fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Unmapped {
+            address,
+            access: AccessKind::Write,
+        })
     }
 
-    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
-        self.data_calls += 1;
-        self.ram.mfence(context)
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Ok(())
     }
 }
 
@@ -93,8 +75,7 @@ fn encodings() -> Vec<Vec<u8>> {
     for group1 in [None, Some(0xf0), Some(0xf2), Some(0xf3)] {
         for segment in [None, Some(0x2e), Some(0x64), Some(0x65)] {
             // The operand- and address-size prefixes and REX (REX.W and a REX without W), each
-            // alone, and REX.W after each size prefix: the full product of the three (12 forms)
-            // made the debug run 3.1 times as long as without 67 and 40; these 7 make it 1.8.
+            // alone, and REX.W after each size prefix.
             for size_and_rex in [
                 &[][..],
                 &[0x66],
@@ -133,8 +114,19 @@ fn encodings() -> Vec<Vec<u8>> {
     all
 }
 
-/// Whether a control transfer is in the form of `executable` that `try_fast_step` admits
-/// (ADR-0017, 2.2): default prefixes, and the opcode map and byte of its arm.
+/// A control transfer (the end of a straight-line run of code).
+fn is_transfer(instruction: &Instruction) -> bool {
+    matches!(
+        instruction.operation,
+        Operation::Branch { .. }
+            | Operation::Jump { .. }
+            | Operation::Call { .. }
+            | Operation::Return { .. }
+    )
+}
+
+/// Whether a control transfer is in the form of `executable` (ADR-0017, 2.2): default prefixes,
+/// and the opcode map and byte of its arm.
 fn in_executable_form(instruction: &Instruction) -> bool {
     let opcode = instruction.opcode;
     instruction.prefixes == Prefixes::default()
@@ -151,77 +143,26 @@ fn in_executable_form(instruction: &Instruction) -> bool {
         }
 }
 
-/// The decode of `bytes` at `CODE`, if it succeeds (with only the bytes it consumed).
+/// The decode of `bytes` at `CODE` at CPL0, if it succeeds (with only the bytes it consumed).
 fn decode(bytes: &[u8]) -> Option<(Instruction, Vec<u8>)> {
-    let mut ram = Ram::new(CODE, bytes);
-    let instruction = long_decode::decode(&mut ram, CODE, context(PrivilegeLevel::Ring0)).ok()?;
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: PrivilegeLevel::Ring0,
+        origin: AccessOrigin::Explicit,
+    };
+    let instruction = long_decode::decode(&mut Code(bytes.to_vec()), CODE, context).ok()?;
     Some((
         instruction,
         bytes[..usize::from(instruction.length)].to_vec(),
     ))
 }
 
-/// What a fast path left: its outcome, the state, the definedness and the data calls.
-struct Fast {
-    outcome: Option<Result<StepOutcome, MemoryError>>,
-    state: LongModeState,
-    defined: u64,
-    data_calls: u32,
-}
-
-fn run(bytes: &[u8], instruction: &Instruction, start: &LongModeState, ctx: AccessContext) -> Fast {
-    let mut state = start.clone();
-    let mut defined = INTEGER_FLAGS;
-    let mut memory = Counted {
-        ram: Ram::new(CODE, bytes),
-        data_calls: 0,
-    };
-    let outcome = try_fast_step(
-        &mut state,
-        &mut memory,
-        ctx,
-        &mut defined,
-        instruction,
-        true,
-    );
-    Fast {
-        outcome,
-        state,
-        defined,
-        data_calls: memory.data_calls,
-    }
-}
-
-fn assert_not_handled(label: &str, bytes: &[u8], fast: &Fast, start: &LongModeState) {
-    assert!(
-        fast.outcome.is_none(),
-        "{label}: {bytes:02x?}: {:?}",
-        fast.outcome
-    );
-    assert_eq!(&fast.state, start, "{label}: {bytes:02x?}");
-    assert_eq!(fast.defined, INTEGER_FLAGS, "{label}: {bytes:02x?}");
-    assert_eq!(fast.data_calls, 0, "{label}: {bytes:02x?}");
-}
-
 #[test]
-fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
-    let ring0 = context(PrivilegeLevel::Ring0);
-    let start = state(5, 2);
-    // The dynamic refusals of the admission: each alone refuses every instruction.
-    let mut tf = start.clone();
-    tf.rflags |= TF;
-    let mut rf = start.clone();
-    rf.rflags |= RF;
-    let mut shadow = start.clone();
-    shadow.sti_shadow = Some(StiShadow::Blocking);
-    let mut unmodelled = start.clone();
-    unmodelled.sti_shadow = None;
-
+fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     let mut seen = HashSet::new();
-    let mut handled_set: BTreeSet<Vec<u8>> = BTreeSet::new();
-    let mut handled_operations: HashSet<Discriminant<Operation>> = HashSet::new();
-    let (mut decodes, mut straight, mut terminator, mut role_only) =
-        (0usize, 0usize, 0usize, 0usize);
+    let mut admitted: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut admitted_operations: HashSet<Discriminant<Operation>> = HashSet::new();
+    let (mut decodes, mut straight, mut transfers) = (0usize, 0usize, 0usize);
     for encoding in encodings() {
         let Some((instruction, bytes)) = decode(&encoding) else {
             continue;
@@ -230,117 +171,89 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
             continue;
         }
         decodes += 1;
-        let role = fast_block_role(&instruction);
-        let fast = run(&bytes, &instruction, &start, ring0);
-        let Some(role) = role else {
-            assert_not_handled("refused by fast_block_role", &bytes, &fast, &start);
-            continue;
-        };
-        if fast.outcome.is_none() {
-            // Before E10 the documented superset of the rule (a control transfer outside the form
-            // of `executable`); since E10 none: the rule is the fast path's own.
-            assert_not_handled("admitted by the role only", &bytes, &fast, &start);
-            role_only += 1;
+        if fast_handler(&instruction).is_none() {
             continue;
         }
-        if matches!(role, FastBlockRole::Terminator) {
+        assert!(
+            instruction.prefixes.group1.is_none()
+                && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65)),
+            "{bytes:02x?}: a LOCK/REP or FS/GS prefix admitted: {instruction:?}"
+        );
+        if is_transfer(&instruction) {
             assert!(
                 in_executable_form(&instruction),
-                "{bytes:02x?}: a handled control transfer outside the form of `executable`: \
+                "{bytes:02x?}: a control transfer outside the form of `executable`: \
                  {instruction:?}"
             );
+            transfers += 1;
+        } else {
+            straight += 1;
         }
-        if matches!(fast.outcome, Some(Ok(StepOutcome::Branched))) {
-            assert_eq!(
-                role,
-                FastBlockRole::Terminator,
-                "{bytes:02x?}: {instruction:?}"
-            );
-        }
-        match role {
-            FastBlockRole::Straight => straight += 1,
-            FastBlockRole::Terminator => terminator += 1,
-        }
-        handled_set.insert(bytes.clone());
-        handled_operations.insert(discriminant(&instruction.operation));
-        for (label, refused, ctx) in [
-            ("CPL3", &start, context(PrivilegeLevel::Ring3)),
-            ("TF", &tf, ring0),
-            ("RF", &rf, ring0),
-            ("STI/MOV SS shadow", &shadow, ring0),
-            ("unmodelled shadow", &unmodelled, ring0),
-        ] {
-            let fast = run(&bytes, &instruction, refused, ctx);
-            assert_not_handled(label, &bytes, &fast, refused);
-        }
+        admitted.insert(bytes);
+        admitted_operations.insert(discriminant(&instruction.operation));
     }
-    // The generated set reaches every group: thousands of decodes, both roles, the fifteen
-    // operation classes of G1-G6; no decode the rule admits and the fast path does not handle.
+    // The generated set reaches every group: thousands of decodes, the fifteen operation classes
+    // of G1-G6.
     assert!(decodes > 10_000, "{decodes}");
-    assert_eq!(role_only, 0, "{decodes} decodes");
-    assert_eq!(handled_operations.len(), 15, "{decodes} decodes");
-    // E10: the handled set is the one of HEAD `1500400` (before E10): 126 403 decodes, 33 009
-    // handled (32 128 straight, 881 terminators), and the same encodings.
+    assert_eq!(admitted_operations.len(), 15, "{decodes} decodes");
+    // The admitted set of HEAD `1500400`: 126 403 decodes, 33 009 admitted (32 128 straight-line,
+    // 881 control transfers), and the same encodings.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for encoding in &handled_set {
+    for encoding in &admitted {
         for &byte in encoding.iter().chain(std::iter::once(&0xffu8)) {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
     assert_eq!(
-        (decodes, straight, terminator, handled_set.len()),
+        (decodes, straight, transfers, admitted.len()),
         (126_403, 32_128, 881, 33_009)
     );
-    assert_eq!(hash, 0xed77_1809_cfcb_deab, "the handled set changed");
+    assert_eq!(hash, 0xed77_1809_cfcb_deab, "the admitted set changed");
 }
 
-/// Known encodings: their role (`None`: the block ends before them) and whether the fast path
-/// handles them on the state of the G2 tests.
+/// Known encodings and whether the rule gives them a class.
 #[test]
-fn the_block_role_and_the_fast_path_on_known_forms() {
-    use FastBlockRole::{Straight, Terminator};
-    let cases: &[(&[u8], Option<FastBlockRole>, bool)] = &[
-        (&[0x01, 0xd8], Some(Straight), true),       // add eax, ebx
-        (&[0x48, 0x01, 0x18], Some(Straight), true), // add [rax], rbx
-        (&[0xf0, 0x01, 0x18], None, false),          // lock add [rax], ebx
-        (&[0x64, 0x8b, 0x00], None, false),          // mov eax, fs:[rax]
-        (&[0x65, 0x01, 0xd8], None, false),          // gs: add eax, ebx
-        (&[0x2e, 0x8b, 0x00], Some(Straight), true), // mov eax, cs:[rax]
-        (&[0xd1, 0xe0], Some(Straight), true),       // shl eax, 1
-        (&[0xd1, 0x20], None, false),                // shl dword [rax], 1
-        (&[0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8], Some(Straight), true), // mov rax, imm64
-        (&[0x0f, 0xb6, 0xc0], Some(Straight), true), // movzx eax, al
-        (&[0x8d, 0x04, 0x24], Some(Straight), true), // lea eax, [rsp]
-        (&[0x50], Some(Straight), true),             // push rax
-        (&[0x75, 0xfe], Some(Terminator), true),     // jnz -2
-        (&[0x0f, 0x85, 0, 0, 0, 0], Some(Terminator), true), // jnz rel32
-        (&[0x3e, 0x75, 0xfe], None, false),          // ds: jnz (a branch hint)
-        (&[0xeb, 0xfe], Some(Terminator), true),     // jmp -2
-        (&[0xe8, 0, 0, 0, 0], Some(Terminator), true), // call rel32
-        (&[0x2e, 0xe8, 0, 0, 0, 0], None, false),    // cs: call rel32
-        (&[0xc3], Some(Terminator), true),           // ret
-        (&[0xc2, 8, 0], Some(Terminator), true),     // ret 8
-        (&[0x66, 0xc3], None, false),                // o16 ret
-        (&[0xee], None, false),                      // out dx, al
-        (&[0x0f, 0x31], None, false),                // rdtsc
-        (&[0xfa], None, false),                      // cli
-        (&[0xf3, 0xaa], None, false),                // rep stosb
-        // E10: control transfers outside the form of `executable` end the block before them.
-        (&[0x67, 0xe8, 0, 0, 0, 0], None, false), // a32 call rel32
-        (&[0x66, 0xeb, 0xfe], None, false),       // o16 jmp -2
-        (&[0x67, 0x75, 0xfe], None, false),       // a32 jnz -2
-        // PERF-33 (E4), group G6.
-        (&[0x48, 0x0f, 0xaf, 0xc1], Some(Straight), true), // imul rax, rcx
-        (&[0x0f, 0xaf, 0x00], Some(Straight), true),       // imul eax, [rax]
-        (&[0x90], Some(Straight), true),                   // nop
-        (&[0x66, 0x90], Some(Straight), true),             // o16 nop
-        (&[0x0f, 0x1f, 0x44, 0x00, 0x00], Some(Straight), true), // nop dword [rax+rax]
-        (&[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00], Some(Straight), true), // nop word [rax+rax]
-        (&[0x0f, 0x18, 0x08], Some(Straight), true),       // prefetcht0 [rax]
-        (&[0x64, 0x0f, 0x1f, 0x00], None, false),          // nop dword fs:[rax]
-        (&[0xf3, 0x90], None, false),                      // pause
-        (&[0x6b, 0xc1, 0x05], None, false),                // imul eax, ecx, 5
+fn the_static_rule_on_known_forms() {
+    let cases: &[(&[u8], bool)] = &[
+        (&[0x01, 0xd8], true),                         // add eax, ebx
+        (&[0x48, 0x01, 0x18], true),                   // add [rax], rbx
+        (&[0xf0, 0x01, 0x18], false),                  // lock add [rax], ebx
+        (&[0x64, 0x8b, 0x00], false),                  // mov eax, fs:[rax]
+        (&[0x65, 0x01, 0xd8], false),                  // gs: add eax, ebx
+        (&[0x2e, 0x8b, 0x00], true),                   // mov eax, cs:[rax]
+        (&[0xd1, 0xe0], true),                         // shl eax, 1
+        (&[0xd1, 0x20], false),                        // shl dword [rax], 1
+        (&[0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8], true), // mov rax, imm64
+        (&[0x0f, 0xb6, 0xc0], true),                   // movzx eax, al
+        (&[0x8d, 0x04, 0x24], true),                   // lea eax, [rsp]
+        (&[0x50], true),                               // push rax
+        (&[0x75, 0xfe], true),                         // jnz -2
+        (&[0x0f, 0x85, 0, 0, 0, 0], true),             // jnz rel32
+        (&[0x3e, 0x75, 0xfe], false),                  // ds: jnz (a branch hint)
+        (&[0xeb, 0xfe], true),                         // jmp -2
+        (&[0xe8, 0, 0, 0, 0], true),                   // call rel32
+        (&[0x2e, 0xe8, 0, 0, 0, 0], false),            // cs: call rel32
+        (&[0xc3], true),                               // ret
+        (&[0xc2, 8, 0], true),                         // ret 8
+        (&[0x66, 0xc3], false),                        // o16 ret
+        (&[0xee], false),                              // out dx, al
+        (&[0x0f, 0x31], false),                        // rdtsc
+        (&[0xfa], false),                              // cli
+        (&[0xf3, 0xaa], false),                        // rep stosb
+        (&[0x67, 0xe8, 0, 0, 0, 0], false),            // a32 call rel32
+        (&[0x66, 0xeb, 0xfe], false),                  // o16 jmp -2
+        (&[0x67, 0x75, 0xfe], false),                  // a32 jnz -2
+        (&[0x48, 0x0f, 0xaf, 0xc1], true),             // imul rax, rcx
+        (&[0x0f, 0xaf, 0x00], true),                   // imul eax, [rax]
+        (&[0x90], true),                               // nop
+        (&[0x66, 0x90], true),                         // o16 nop
+        (&[0x0f, 0x1f, 0x44, 0x00, 0x00], true),       // nop dword [rax+rax]
+        (&[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00], true), // nop word [rax+rax]
+        (&[0x0f, 0x18, 0x08], true),                   // prefetcht0 [rax]
+        (&[0x64, 0x0f, 0x1f, 0x00], false),            // nop dword fs:[rax]
+        (&[0xf3, 0x90], false),                        // pause
+        (&[0x6b, 0xc1, 0x05], false),                  // imul eax, ecx, 5
     ];
     // Prefixed near branches the decoder itself refuses (`Unsupported`): they never reach the
     // rule. A decoder that learns one of them must add it to the table above.
@@ -353,21 +266,13 @@ fn the_block_role_and_the_fast_path_on_known_forms() {
     for bytes in undecoded {
         assert!(decode(bytes).is_none(), "{bytes:02x?}");
     }
-    let ring0 = context(PrivilegeLevel::Ring0);
-    let start = state(5, 2);
-    for &(bytes, role, handled) in cases {
+    for &(bytes, admitted) in cases {
         let (instruction, consumed) = decode(bytes).unwrap_or_else(|| panic!("{bytes:02x?}"));
         assert_eq!(consumed.len(), bytes.len(), "{bytes:02x?}");
         assert_eq!(
-            fast_block_role(&instruction),
-            role,
+            fast_handler(&instruction).is_some(),
+            admitted,
             "{bytes:02x?}: {instruction:?}"
         );
-        let fast = run(bytes, &instruction, &start, ring0);
-        if handled {
-            assert!(fast.outcome.is_some(), "{bytes:02x?}: {instruction:?}");
-        } else {
-            assert_not_handled("known form", bytes, &fast, &start);
-        }
     }
 }

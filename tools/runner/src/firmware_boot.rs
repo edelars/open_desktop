@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--fast-path-verify] [--fast-path] [--no-block-cache] [--data-cache-prototype] [--data-cache-verify] [--block-stats] [--block-cache-verify] [--block-boundary-verify] \
+                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -38,8 +38,9 @@ Protected (docs/specs/NVME_DEVICE.md 14.6); the file is never modified.\n\
 \x20\x20--disk with --nvram-reboot-out: the second boot reopens the disk after the first \
 board is dropped, so the writer lock (LOCK_EX) is released between the two boots \
 (limitation until S8-23).\n\
-\x20\x20--fast-path (unified loop): the predecoded block cache is on by default (ADR-0018); \
---no-block-cache turns it off, and --fast-path-verify runs without it (the check is a diagnostic mode).";
+\x20\x20--cpu-loop unified runs through the turbo engine (a template JIT) where the host has one; \
+--no-turbo runs every instruction through the general interpreter step (the reference mode), and \
+--turbo-stats prints the statistics of the engine to stderr at the end of the run.";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -99,40 +100,12 @@ struct Options {
     /// PERF-20: `--op-histogram-out <file>` (unified loop only): the histogram of the retired
     /// operations (operation, operand kind, operand size, CPL) as JSON.
     op_histogram_out: Option<String>,
-    /// PERF-22: `--fast-path-verify` (unified loop only): every instruction is also compared with
-    /// the fast path replayed over the recorded memory calls (ADR-0017, section 5).
-    fast_path_verify: bool,
-    /// PERF-23: `--fast-path` (unified loop only): the step runs the fast path of group G2 right
-    /// after the decode (ADR-0017, section 3). Without it the run is as before.
-    fast_path: bool,
-    /// PERF-11, E8: `--data-cache-prototype` (unified loop only): same-page reads of 1, 2, 4 and 8
-    /// bytes and `Explicit` writes go through the data translation cache (ADR-0016). Without it
-    /// the run is as before.
-    data_cache_prototype: bool,
-    /// E8 (step 8): `--data-cache-verify` (with `--data-cache-prototype` only, not with
-    /// `--fast-path-verify` or `--block-cache-verify`): every hit of the data translation cache is
-    /// checked against a walk that writes nothing before it is used; the report gets
-    /// `data_cache_check`, and the first divergence fails the run (exit code 5).
-    data_cache_verify: bool,
-    /// PERF-31, PERF-33 (E1): whether batched calls run the fast path from predecoded straight-line
-    /// blocks (ADR-0018, variant (a)). On by default with `--fast-path` in the unified loop; off with
-    /// `--no-block-cache`, with `--fast-path-verify` (a diagnostic mode) and without `--fast-path`.
-    /// The blocks change only where the decode comes from: the run is the same with and without them.
-    block_cache: bool,
-    /// PERF-33 (E2): `--block-stats` (with the block cache only): the block cache counts
-    /// and the report gets `unified.block_stats`. Without it a release build writes no counter.
-    block_stats: bool,
-    /// PERF-33 (E5, step 4): `--block-cache-verify` (with the block cache only, not with
-    /// `--fast-path-verify`): the blocks are looked up and walked as usual, but every instruction
-    /// runs through the general step with a fresh decode, which is compared with the block's; the
-    /// report gets `block_cache_check`, and the first divergence fails the run (exit code 5).
-    block_cache_verify: bool,
-    /// E9 (step 7, ADR-0019, section 5): `--block-boundary-verify` (with the block cache only, not
-    /// with `--block-cache-verify`, `--fast-path-verify` or `--data-cache-verify`): every short
-    /// boundary of a pass of a block is only predicted and checked by the full boundary, so the run
-    /// is the run with blocks and full boundaries; the report gets `block_boundary_check`, and the
-    /// first divergence fails the run (exit code 5).
-    block_boundary_verify: bool,
+    /// `--no-turbo` (unified loop only): the loop runs the general interpreter step only (the
+    /// reference mode); by default it runs through the turbo engine where the host has one.
+    no_turbo: bool,
+    /// `--turbo-stats` (unified loop only): the statistics of the turbo engine go to stderr at the
+    /// end of the run.
+    turbo_stats: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -411,14 +384,8 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut diagnostics = Diagnostics {
         stop_snapshot: options.stop_snapshot.clone(),
         op_histogram_out: options.op_histogram_out.clone(),
-        fast_path_verify: options.fast_path_verify,
-        fast_path: options.fast_path,
-        data_cache_prototype: options.data_cache_prototype,
-        data_cache_verify: options.data_cache_verify,
-        block_cache: options.block_cache,
-        block_stats: options.block_stats,
-        block_cache_verify: options.block_cache_verify,
-        block_boundary_verify: options.block_boundary_verify,
+        no_turbo: options.no_turbo,
+        turbo_stats: options.turbo_stats,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -1014,23 +981,10 @@ struct Diagnostics {
     stop_snapshot: Option<String>,
     /// PERF-20: where the unified loop writes the histogram of retired operations.
     op_histogram_out: Option<String>,
-    /// PERF-22: the unified loop compares every instruction with the fast path.
-    fast_path_verify: bool,
-    /// PERF-23: the unified loop runs the fast path of group G2.
-    fast_path: bool,
-    /// PERF-11, E8: the unified loop serves same-page reads and writes through the data translation
-    /// cache.
-    data_cache_prototype: bool,
-    /// E8: the unified loop checks every hit of the data translation cache.
-    data_cache_verify: bool,
-    /// PERF-31: the unified loop runs the fast path from predecoded blocks.
-    block_cache: bool,
-    /// PERF-33: the block cache counts; the report gets `unified.block_stats`.
-    block_stats: bool,
-    /// PERF-33 (E5): the unified loop checks the decode of every block instruction.
-    block_cache_verify: bool,
-    /// E9: the unified loop checks every short boundary of a pass of a block.
-    block_boundary_verify: bool,
+    /// The unified loop runs the general interpreter step only (`--no-turbo`).
+    no_turbo: bool,
+    /// The statistics of the turbo engine go to stderr after the unified run (`--turbo-stats`).
+    turbo_stats: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1486,68 +1440,37 @@ fn boot(
     let xhci = board.xhci();
     let mut watch = XhciWatch::new(xhci_keys);
     let mut unified_run = None;
-    // PERF-31: `unified.block_stats`, only with `--block-stats` (PERF-33; it needs the block
-    // cache).
-    let mut unified_block_stats: Option<Value> = None;
     let mut op_histogram_result: Option<Result<Value, String>> = None;
-    let mut fast_path_check_result: Option<Result<Value, String>> = None;
-    let mut fast_path_check_progress: Option<Value> = None;
-    // PERF-33 (E5, step 4): the block check of `--block-cache-verify`.
-    let mut block_cache_check_result: Option<Result<Value, String>> = None;
-    let mut block_cache_check_progress: Option<Value> = None;
-    // E8 (step 8): the check of the data translation cache of `--data-cache-verify`.
-    let mut data_cache_check_result: Option<Result<Value, String>> = None;
-    let mut data_cache_check_progress: Option<Value> = None;
-    // E9 (step 7): the check of the short boundary of `--block-boundary-verify`.
-    let mut block_boundary_check_result: Option<Result<Value, String>> = None;
-    let mut block_boundary_check_progress: Option<Value> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
     let run = if unified {
-        if diagnostics.data_cache_prototype {
-            board.enable_data_cache_prototype();
-        }
-        if diagnostics.data_cache_verify {
-            board.enable_data_cache_verify();
-        }
-        if diagnostics.block_stats {
-            board.enable_block_stats();
-        }
-        if diagnostics.block_cache {
-            board.enable_block_cache_prototype();
-        }
-        if diagnostics.block_cache_verify {
-            board.enable_block_cache_verify();
-        }
-        if diagnostics.block_boundary_verify {
-            board.enable_block_boundary_verify();
+        // The unified loop runs through the turbo engine (ADR-0022) unless `--no-turbo` asks for
+        // the general step only: the runner owns the process's executable region and gives it to
+        // the board. Without a region (another host, the region taken) the loop runs the general
+        // step only and the result is the same.
+        if diagnostics.no_turbo {
+            board.disable_turbo();
+        } else {
+            match od_host::JitArena::new(od_machine::TURBO_ARENA_BYTES) {
+                Ok(arena) => {
+                    if !board.enable_turbo(Box::new(arena)) {
+                        eprintln!("turbo: not available on this host; the general step runs alone");
+                    }
+                }
+                Err(error) => eprintln!(
+                    "turbo: no executable region ({error:?}); the general step runs alone"
+                ),
+            }
         }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        od_machine::run_firmware_unified_with_fast_path(
+        let unified_run = od_machine::run_firmware_unified_profiled(
             &mut board,
             budget,
             mark_rip,
             trace_calls.to_vec(),
             trace_system_table,
             op_histogram_path.is_some(),
-            diagnostics.fast_path_verify,
-            diagnostics.fast_path,
         ).map(|run| {
             let report = run.run;
-            // A debug build counts without the flag; the field is there only with it.
-            unified_block_stats = run
-                .block_stats
-                .filter(|_| diagnostics.block_stats)
-                .map(|stats| block_stats_summary(&stats, run.block_ends.as_ref(), report.retired));
-            fast_path_check_result = run.fast_path_check.as_ref().map(fast_path_check_summary);
-            fast_path_check_progress = run.fast_path_check.as_ref().map(fast_path_check_counters);
-            block_cache_check_result = run.block_check.as_ref().map(block_cache_check_summary);
-            block_cache_check_progress = run.block_check.as_ref().map(block_cache_check_counters);
-            data_cache_check_result = run.data_cache_check.as_ref().map(data_cache_check_summary);
-            data_cache_check_progress = run.data_cache_check.as_ref().map(data_cache_check_counters);
-            block_boundary_check_result =
-                run.block_boundary_check.as_ref().map(block_boundary_check_summary);
-            block_boundary_check_progress =
-                run.block_boundary_check.as_ref().map(block_boundary_check_counters);
             if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
                 op_histogram_result = Some(write_op_histogram(path, histogram, report.retired));
             }
@@ -1640,7 +1563,14 @@ fn boot(
                 })),
             }));
             report
-        })
+        });
+        if diagnostics.turbo_stats {
+            match board.turbo_report() {
+                Some(report) => eprintln!("turbo: {report}"),
+                None => eprintln!("turbo: no engine (--no-turbo, or a host without one)"),
+            }
+        }
+        unified_run
     } else if let Some(journal) = &mut diagnostics.journal {
         board.run_boot_with_quantum_hook(budget, |board, progress| {
             journal.at_boundary(board, progress)
@@ -1763,63 +1693,10 @@ fn boot(
     if let Some(unified_run) = unified_run {
         result["cpu_loop"] = json!("unified");
         result["unified"] = unified_run;
-        if let Some(stats) = unified_block_stats.take() {
-            result["unified"]["block_stats"] = stats;
-        }
     }
     match op_histogram_result {
         Some(Ok(summary)) => result["op_histogram"] = summary,
         Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
-        None => {}
-    }
-    // PERF-22: a divergence of the fast-path check is a failure of the run (exit code 5) whose
-    // message is the report; otherwise the counters go to the result.
-    match fast_path_check_result {
-        Some(Ok(summary)) => result["fast_path_check"] = summary,
-        Some(Err(error)) => {
-            // The counters up to the divergence stay in the report of the failed run.
-            let mut value = failure("run_error", "fast_path_check", error);
-            if let Some(counters) = fast_path_check_progress {
-                value["fast_path_check"] = counters;
-            }
-            return Err((value, 5));
-        }
-        None => {}
-    }
-    // PERF-33 (E5, step 4): the same for the block check.
-    match block_cache_check_result {
-        Some(Ok(summary)) => result["block_cache_check"] = summary,
-        Some(Err(error)) => {
-            let mut value = failure("run_error", "block_cache_check", error);
-            if let Some(counters) = block_cache_check_progress {
-                value["block_cache_check"] = counters;
-            }
-            return Err((value, 5));
-        }
-        None => {}
-    }
-    // E8 (step 8): the same for the check of the data translation cache.
-    match data_cache_check_result {
-        Some(Ok(summary)) => result["data_cache_check"] = summary,
-        Some(Err(error)) => {
-            let mut value = failure("run_error", "data_cache_check", error);
-            if let Some(counters) = data_cache_check_progress {
-                value["data_cache_check"] = counters;
-            }
-            return Err((value, 5));
-        }
-        None => {}
-    }
-    // E9 (step 7): the same for the check of the short boundary.
-    match block_boundary_check_result {
-        Some(Ok(summary)) => result["block_boundary_check"] = summary,
-        Some(Err(error)) => {
-            let mut value = failure("run_error", "block_boundary_check", error);
-            if let Some(counters) = block_boundary_check_progress {
-                value["block_boundary_check"] = counters;
-            }
-            return Err((value, 5));
-        }
         None => {}
     }
     if !sample_rips.is_empty() {
@@ -1910,14 +1787,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut trace_calls: Vec<od_machine::CallTraceTarget> = Vec::new();
     let mut trace_system_table: Option<u64> = None;
     let mut op_histogram_out = None;
-    let mut fast_path_verify = false;
-    let mut fast_path = false;
-    let mut data_cache_prototype = false;
-    let mut no_block_cache = false;
-    let mut block_stats = false;
-    let mut block_cache_verify = false;
-    let mut data_cache_verify = false;
-    let mut block_boundary_verify = false;
+    let mut no_turbo = false;
+    let mut turbo_stats = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1931,43 +1802,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
             index += 1;
             continue;
         }
-        if name == "--fast-path-verify" && !fast_path_verify {
-            fast_path_verify = true;
+        if name == "--no-turbo" && !no_turbo {
+            no_turbo = true;
             index += 1;
             continue;
         }
-        if name == "--fast-path" && !fast_path {
-            fast_path = true;
-            index += 1;
-            continue;
-        }
-        if name == "--data-cache-prototype" && !data_cache_prototype {
-            data_cache_prototype = true;
-            index += 1;
-            continue;
-        }
-        if name == "--no-block-cache" && !no_block_cache {
-            no_block_cache = true;
-            index += 1;
-            continue;
-        }
-        if name == "--block-stats" && !block_stats {
-            block_stats = true;
-            index += 1;
-            continue;
-        }
-        if name == "--block-cache-verify" && !block_cache_verify {
-            block_cache_verify = true;
-            index += 1;
-            continue;
-        }
-        if name == "--data-cache-verify" && !data_cache_verify {
-            data_cache_verify = true;
-            index += 1;
-            continue;
-        }
-        if name == "--block-boundary-verify" && !block_boundary_verify {
-            block_boundary_verify = true;
+        if name == "--turbo-stats" && !turbo_stats {
+            turbo_stats = true;
             index += 1;
             continue;
         }
@@ -2107,69 +1948,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if op_histogram_out.is_some() && !unified {
         return Err("--op-histogram-out requires --cpu-loop unified".to_owned());
     }
-    if fast_path_verify && !unified {
-        return Err("--fast-path-verify requires --cpu-loop unified".to_owned());
+    if no_turbo && !unified {
+        return Err("--no-turbo requires --cpu-loop unified".to_owned());
     }
-    if fast_path && !unified {
-        return Err("--fast-path requires --cpu-loop unified".to_owned());
-    }
-    if data_cache_prototype && !unified {
-        return Err("--data-cache-prototype requires --cpu-loop unified".to_owned());
-    }
-    // E8 (step 8, ADR-0016 decision Д5): the check of the data translation cache needs the cache
-    // and is the only check of its run.
-    if data_cache_verify && !data_cache_prototype {
-        return Err("--data-cache-verify requires --data-cache-prototype".to_owned());
-    }
-    if data_cache_verify && (fast_path_verify || block_cache_verify) {
-        return Err(
-            "--data-cache-verify does not combine with --fast-path-verify or --block-cache-verify"
-                .to_owned(),
-        );
-    }
-    // PERF-33 (E1): with `--fast-path` the unified loop runs the predecoded block cache by
-    // default; `--no-block-cache` turns it off (the control of the measurements).
-    if no_block_cache && !(unified && fast_path) {
-        return Err("--no-block-cache requires --cpu-loop unified and --fast-path".to_owned());
-    }
-    // PERF-33 (E5, step 4): the block check runs with the blocks only, and the fast-path check
-    // runs without them.
-    if block_cache_verify && fast_path_verify {
-        return Err("--block-cache-verify does not combine with --fast-path-verify".to_owned());
-    }
-    // The fast-path check is a diagnostic mode (ADR-0018, section 4): `--fast-path
-    // --fast-path-verify` runs without blocks, and that is no error.
-    let block_cache = unified && fast_path && !no_block_cache && !fast_path_verify;
-    if block_cache_verify && !block_cache {
-        return Err(
-            "--block-cache-verify requires the block cache (--cpu-loop unified and --fast-path, \
-             without --no-block-cache)"
-                .to_owned(),
-        );
-    }
-    // E9 (step 7, ADR-0019, section 5): the check of the short boundary needs the blocks and is
-    // the only check of its run.
-    if block_boundary_verify && (block_cache_verify || fast_path_verify || data_cache_verify) {
-        return Err(
-            "--block-boundary-verify does not combine with --block-cache-verify, \
-             --fast-path-verify or --data-cache-verify"
-                .to_owned(),
-        );
-    }
-    if block_boundary_verify && !block_cache {
-        return Err(
-            "--block-boundary-verify requires the block cache (--cpu-loop unified and --fast-path, \
-             without --no-block-cache)"
-                .to_owned(),
-        );
-    }
-    // PERF-33: the counters are those of the block cache.
-    if block_stats && !block_cache {
-        return Err(
-            "--block-stats requires the block cache (--cpu-loop unified and --fast-path, without \
-             --no-block-cache or --fast-path-verify)"
-                .to_owned(),
-        );
+    if turbo_stats && !unified {
+        return Err("--turbo-stats requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -2310,222 +2093,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         trace_calls,
         trace_system_table,
         op_histogram_out,
-        fast_path_verify,
-        fast_path,
-        data_cache_prototype,
-        data_cache_verify,
-        block_cache,
-        block_stats,
-        block_cache_verify,
-        block_boundary_verify,
-    })
-}
-
-/// PERF-31 (ADR-0018, section 5, M1): `unified.block_stats`: the counters of the predecoded block
-/// cache and the shares over the instructions the run retired (`retired`). Blocks hold only
-/// G1-G5 forms and their instructions run only through the fast path, so
-/// `share_retired_from_blocks` is the share of instructions executed from blocks of G1-G5 only.
-///
-/// PERF-33 (E4, step 2): with `ends`, also `end_reasons` (runs by why they ended, every key of
-/// `BLOCK_RUN_END_REASONS`; the sum is `runs`), `end_outside_fast_path_by_key` (the runs that
-/// ended before an instruction outside the filter, by its PERF-20 key
-/// `Operation/operands/bytes/cplN`), `general_by_reason` (every key of `BLOCK_GENERAL_REASONS`),
-/// `general_by_key` (`<reason>:<PERF-20 key>` -> instructions the general step retired),
-/// `general_retired`, `share_retired_general` and `sum_equals_retired`
-/// (`general_retired + retired_from_blocks == retired`).
-fn block_stats_summary(
-    stats: &od_machine::DecodedBlockCacheStats,
-    ends: Option<&od_machine::BlockEndReport>,
-    retired: u64,
-) -> Value {
-    let share = |part: u64| {
-        if retired == 0 {
-            0.0
-        } else {
-            part as f64 / retired as f64
-        }
-    };
-    let buckets = ["1", "2", "3", "4-7", "8-15", "16-31", "32+"];
-    debug_assert_eq!(buckets.len(), od_machine::BLOCK_RUN_LENGTH_BUCKETS.len());
-    let mut summary = json!({
-        "lookups": stats.lookups,
-        "hits": stats.hits,
-        "empty_hits": stats.empty_hits,
-        "misses": stats.misses,
-        "stale": stats.stale,
-        "built_blocks": stats.built_blocks,
-        "built_instructions": stats.built_instructions,
-        "flushes": stats.flushes,
-        "resets": stats.resets,
-        "holds_failed": stats.holds_failed,
-        "runs": stats.runs,
-        "retired_from_blocks": stats.retired,
-        "retired_in_runs_of_two_or_more": stats.retired_in_runs_of_two_or_more,
-        "run_lengths": buckets
-            .iter()
-            .zip(stats.run_lengths)
-            .map(|(bucket, count)| (bucket.to_string(), json!(count)))
-            .collect::<serde_json::Map<_, _>>(),
-        "mean_run_length": if stats.runs == 0 { 0.0 } else { stats.retired as f64 / stats.runs as f64 },
-        "mean_built_block_length": if stats.built_blocks == 0 {
-            0.0
-        } else {
-            stats.built_instructions as f64 / stats.built_blocks as f64
-        },
-        "share_retired_from_blocks": share(stats.retired),
-        "share_retired_in_runs_of_two_or_more": share(stats.retired_in_runs_of_two_or_more),
-    });
-    if let Some(ends) = ends {
-        let key = |entry: &od_machine::OpHistogramEntry| {
-            format!(
-                "{}/{}/{}/cpl{}",
-                entry.operation, entry.operands, entry.operand_bytes, entry.cpl
-            )
-        };
-        let named = |names: &[&str], counts: &[u64]| {
-            names
-                .iter()
-                .zip(counts)
-                .map(|(name, count)| (name.to_string(), json!(count)))
-                .collect::<serde_json::Map<_, _>>()
-        };
-        let fields = summary.as_object_mut().expect("an object");
-        fields.insert(
-            "end_reasons".into(),
-            Value::Object(named(&od_machine::BLOCK_RUN_END_REASONS, &ends.end_reasons)),
-        );
-        fields.insert(
-            "end_outside_fast_path_by_key".into(),
-            Value::Object(
-                ends.end_outside_fast_path
-                    .iter()
-                    .map(|entry| (key(entry), json!(entry.count)))
-                    .collect(),
-            ),
-        );
-        fields.insert(
-            "general_by_reason".into(),
-            Value::Object(named(
-                &od_machine::BLOCK_GENERAL_REASONS,
-                &ends.general_by_reason,
-            )),
-        );
-        fields.insert(
-            "general_by_key".into(),
-            Value::Object(
-                ends.general
-                    .iter()
-                    .map(|(reason, entry)| (format!("{reason}:{}", key(entry)), json!(entry.count)))
-                    .collect(),
-            ),
-        );
-        fields.insert("general_retired".into(), json!(ends.general_retired));
-        fields.insert(
-            "share_retired_general".into(),
-            json!(share(ends.general_retired)),
-        );
-        fields.insert(
-            "sum_equals_retired".into(),
-            json!(ends.general_retired + stats.retired == retired),
-        );
-    }
-    summary
-}
-
-/// PERF-22: the counters of the fast-path check for the run report, or the report of its first
-/// divergence as an error (the run stopped there).
-fn fast_path_check_summary(report: &od_machine::FastPathCheckReport) -> Result<Value, String> {
-    if let Some(divergence) = &report.divergence {
-        return Err(divergence.to_string());
-    }
-    Ok(fast_path_check_counters(report))
-}
-
-/// PERF-22: the counters of the fast-path check as JSON (also kept when a divergence stops the run).
-fn fast_path_check_counters(report: &od_machine::FastPathCheckReport) -> Value {
-    let counters = &report.counters;
-    json!({
-        "compared": counters.compared,
-        "refused_by_admission": counters.refused_by_admission,
-        "before_decode": counters.before_decode,
-        "not_decoded": counters.not_decoded,
-        "memory_calls_compared": counters.memory_calls_compared,
-        "divergences": counters.divergences,
-    })
-}
-
-/// PERF-33 (E5, step 4): the counters of the block check for the run report, or the report of its
-/// first divergence (RIP, bytes, both instructions) as an error (the run stopped there).
-fn block_cache_check_summary(report: &od_machine::BlockCheckReport) -> Result<Value, String> {
-    if let Some(divergence) = &report.divergence {
-        return Err(divergence.to_string());
-    }
-    Ok(block_cache_check_counters(report))
-}
-
-/// PERF-33 (E5, step 4): the counters of the block check as JSON (also kept when a divergence stops
-/// the run).
-fn block_cache_check_counters(report: &od_machine::BlockCheckReport) -> Value {
-    let counters = &report.counters;
-    json!({
-        "compared": counters.compared,
-        "not_decoded": counters.not_decoded,
-        "divergences": counters.divergences,
-    })
-}
-
-/// E8 (step 8): the counters of the check of the data translation cache for the run report, or the
-/// report of its first divergence as an error (the run stopped there). A run that counted a
-/// divergence without keeping one is a failure too.
-fn data_cache_check_summary(report: &od_machine::DataCacheCheckReport) -> Result<Value, String> {
-    if let Some(divergence) = &report.divergence {
-        return Err(divergence.to_string());
-    }
-    if report.counters.divergences != 0 {
-        return Err(format!(
-            "data cache check: {} divergences counted",
-            report.counters.divergences
-        ));
-    }
-    Ok(data_cache_check_counters(report))
-}
-
-/// E8 (step 8): the counters of the check of the data translation cache as JSON (also kept when a
-/// divergence stops the run).
-fn data_cache_check_counters(report: &od_machine::DataCacheCheckReport) -> Value {
-    let counters = &report.counters;
-    json!({
-        "verified_reads": counters.verified_reads,
-        "verified_writes": counters.verified_writes,
-        "divergences": counters.divergences,
-    })
-}
-
-/// E9 (step 7): the counters of the check of the short boundary for the run report, or the report of
-/// its first divergence as an error (the run stopped there). A run that counted a divergence
-/// without keeping one is a failure too.
-fn block_boundary_check_summary(
-    report: &od_machine::BlockBoundaryCheckReport,
-) -> Result<Value, String> {
-    if let Some(divergence) = &report.divergence {
-        return Err(divergence.to_string());
-    }
-    if report.counters.divergences != 0 {
-        return Err(format!(
-            "block boundary check: {} divergences counted",
-            report.counters.divergences
-        ));
-    }
-    Ok(block_boundary_check_counters(report))
-}
-
-/// E9 (step 7): the counters of the check of the short boundary as JSON (also kept when a
-/// divergence stops the run).
-fn block_boundary_check_counters(report: &od_machine::BlockBoundaryCheckReport) -> Value {
-    let counters = &report.counters;
-    json!({
-        "verified_boundaries": counters.verified,
-        "divergences": counters.divergences,
+        no_turbo,
+        turbo_stats,
     })
 }
 
@@ -2869,93 +2438,6 @@ mod tests {
         assert!(parse(&given).is_err());
     }
 
-    #[test]
-    fn fast_path_verify_needs_the_unified_loop_and_is_taken_once() {
-        let mut given = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-            "--fast-path-verify",
-        ]);
-        assert!(
-            parse(&given)
-                .err()
-                .unwrap()
-                .contains("--fast-path-verify requires --cpu-loop unified")
-        );
-        given.extend(args(&["--cpu-loop", "unified"]));
-        assert!(parse(&given).unwrap().fast_path_verify);
-        given.extend(args(&["--fast-path-verify"]));
-        assert!(parse(&given).is_err());
-    }
-
-    #[test]
-    fn fast_path_needs_the_unified_loop_is_taken_once_and_is_off_by_default() {
-        let base = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-        ]);
-        let mut unified = base.clone();
-        unified.extend(args(&["--cpu-loop", "unified"]));
-        assert!(!parse(&unified).unwrap().fast_path);
-        let mut given = base;
-        given.extend(args(&["--fast-path"]));
-        assert!(
-            parse(&given)
-                .err()
-                .unwrap()
-                .contains("--fast-path requires --cpu-loop unified")
-        );
-        given.extend(args(&["--cpu-loop", "unified"]));
-        let options = parse(&given).unwrap();
-        assert!(options.fast_path && !options.fast_path_verify);
-        let mut both = given.clone();
-        both.extend(args(&["--fast-path-verify"]));
-        let options = parse(&both).unwrap();
-        assert!(options.fast_path && options.fast_path_verify);
-        given.extend(args(&["--fast-path"]));
-        assert!(parse(&given).is_err());
-    }
-
-    #[test]
-    fn data_cache_prototype_needs_the_unified_loop_is_taken_once_and_is_off_by_default() {
-        let base = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-        ]);
-        let mut unified = base.clone();
-        unified.extend(args(&["--cpu-loop", "unified"]));
-        assert!(!parse(&unified).unwrap().data_cache_prototype);
-        let mut given = base;
-        given.extend(args(&["--data-cache-prototype"]));
-        assert!(
-            parse(&given)
-                .err()
-                .unwrap()
-                .contains("--data-cache-prototype requires --cpu-loop unified")
-        );
-        given.extend(args(&["--cpu-loop", "unified"]));
-        let options = parse(&given).unwrap();
-        assert!(options.data_cache_prototype && !options.fast_path);
-        let mut both = given.clone();
-        both.extend(args(&["--fast-path"]));
-        let options = parse(&both).unwrap();
-        assert!(options.data_cache_prototype && options.fast_path);
-        given.extend(args(&["--data-cache-prototype"]));
-        assert!(parse(&given).is_err());
-    }
-
     /// The required arguments of the unified loop, then `extra`.
     fn unified_with(extra: &[&str]) -> Vec<String> {
         let mut given = args(&[
@@ -2972,510 +2454,70 @@ mod tests {
         given
     }
 
-    /// PERF-33 (E1): with `--fast-path` the unified loop runs the block cache by default;
-    /// `--no-block-cache` turns it off, `--fast-path-verify` runs without it (no error), and
-    /// without `--fast-path` there are no blocks.
+    /// `--no-turbo` and `--turbo-stats` belong to the unified loop, are off by default and are
+    /// taken once each; without `--cpu-loop unified` (the firmware profile loop, given or by
+    /// default) each is refused.
     #[test]
-    fn the_block_cache_is_on_by_default_with_the_fast_path_and_off_with_no_block_cache() {
-        let firmware_loop = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
-        ]);
-        assert!(!parse(&firmware_loop).unwrap().block_cache);
-        assert!(!parse(&unified_with(&[])).unwrap().block_cache);
-        for extra in [&["--data-cache-prototype"][..], &["--fast-path-verify"][..]] {
-            assert!(
-                !parse(&unified_with(extra)).unwrap().block_cache,
-                "{extra:?}"
-            );
+    fn no_turbo_and_turbo_stats_need_the_unified_loop_are_taken_once_and_are_off_by_default() {
+        let options = parse(&unified_with(&[])).unwrap();
+        assert!(!options.no_turbo && !options.turbo_stats);
+        let options = parse(&unified_with(&["--no-turbo"])).unwrap();
+        assert!(options.no_turbo && !options.turbo_stats);
+        let options = parse(&unified_with(&["--turbo-stats"])).unwrap();
+        assert!(!options.no_turbo && options.turbo_stats);
+        let options = parse(&unified_with(&["--no-turbo", "--turbo-stats"])).unwrap();
+        assert!(options.no_turbo && options.turbo_stats);
+        for flag in ["--no-turbo", "--turbo-stats"] {
+            assert!(parse(&unified_with(&[flag, flag])).is_err(), "{flag} twice");
+            let required = [
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "out.com1",
+                "--budget",
+                "10",
+            ];
+            for firmware_loop in [&[][..], &["--cpu-loop", "firmware"][..]] {
+                let mut given = args(&required);
+                given.extend(args(firmware_loop));
+                given.extend(args(&[flag]));
+                let error = parse(&given).err().unwrap();
+                assert!(
+                    error.contains(&format!("{flag} requires --cpu-loop unified")),
+                    "{firmware_loop:?} {flag}: {error}"
+                );
+            }
         }
-        let options = parse(&unified_with(&["--fast-path"])).unwrap();
-        assert!(options.block_cache && options.fast_path);
-        let options = parse(&unified_with(&["--fast-path", "--data-cache-prototype"])).unwrap();
-        assert!(options.block_cache && options.data_cache_prototype);
-        // The control of the measurements: the same fast path without blocks.
-        let options = parse(&unified_with(&["--fast-path", "--no-block-cache"])).unwrap();
-        assert!(!options.block_cache && options.fast_path);
-        let options = parse(&unified_with(&[
-            "--no-block-cache",
+    }
+
+    /// The flags of the removed acceleration engine of the unified loop (the fast path, the
+    /// predecoded block cache, the data translation cache and their checks) are gone: the parser
+    /// refuses each like any unknown flag, in both loops.
+    #[test]
+    fn the_removed_flags_of_the_old_unified_engine_are_refused() {
+        for flag in [
             "--fast-path",
-            "--data-cache-prototype",
-        ]))
-        .unwrap();
-        assert!(!options.block_cache && options.fast_path && options.data_cache_prototype);
-        // The fast-path check is a diagnostic mode: no blocks, and no error.
-        for extra in [
-            &["--fast-path", "--fast-path-verify"][..],
-            &["--fast-path-verify", "--fast-path"][..],
-            &["--fast-path", "--fast-path-verify", "--no-block-cache"][..],
-        ] {
-            let options = parse(&unified_with(extra)).unwrap();
-            assert!(
-                !options.block_cache && options.fast_path && options.fast_path_verify,
-                "{extra:?}"
-            );
-        }
-        // `--no-block-cache` without the fast path is a parse error, in either loop.
-        let message = "--no-block-cache requires --cpu-loop unified and --fast-path";
-        for extra in [
-            &[][..],
-            &["--fast-path-verify"][..],
-            &["--data-cache-prototype"][..],
-        ] {
-            let mut given = unified_with(extra);
-            given.extend(args(&["--no-block-cache"]));
-            assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
-        }
-        let mut plain = firmware_loop.clone();
-        plain.extend(args(&["--no-block-cache"]));
-        assert!(parse(&plain).err().unwrap().contains(message));
-        plain.extend(args(&["--cpu-loop", "firmware"]));
-        assert!(parse(&plain).err().unwrap().contains(message));
-        // Taken once.
-        assert!(
-            parse(&unified_with(&[
-                "--fast-path",
-                "--no-block-cache",
-                "--no-block-cache"
-            ]))
-            .is_err()
-        );
-    }
-
-    /// PERF-33 (E1): `--block-cache-prototype` is gone (the blocks are the default with
-    /// `--fast-path`); the parser refuses it like any unknown flag.
-    #[test]
-    fn the_removed_block_cache_prototype_flag_is_refused() {
-        for extra in [
-            &["--block-cache-prototype"][..],
-            &["--fast-path", "--block-cache-prototype"][..],
-        ] {
-            assert!(parse(&unified_with(extra)).is_err(), "{extra:?}");
-        }
-    }
-
-    #[test]
-    fn block_stats_need_the_block_cache_are_taken_once_and_are_off_by_default() {
-        assert!(!parse(&unified_with(&["--fast-path"])).unwrap().block_stats);
-        let message = "--block-stats requires the block cache (--cpu-loop unified and --fast-path, \
-                       without --no-block-cache or --fast-path-verify)";
-        for extra in [
-            &[][..],
-            &["--fast-path", "--no-block-cache"][..],
-            &["--fast-path", "--fast-path-verify"][..],
-            &["--fast-path-verify"][..],
-        ] {
-            let mut given = unified_with(extra);
-            given.extend(args(&["--block-stats"]));
-            assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
-        }
-        let mut firmware_loop = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
+            "--fast-path-verify",
+            "--no-block-cache",
+            "--block-cache-prototype",
             "--block-stats",
-        ]);
-        assert!(parse(&firmware_loop).err().unwrap().contains(message));
-        firmware_loop.extend(args(&["--cpu-loop", "firmware"]));
-        assert!(parse(&firmware_loop).is_err());
-        // With the default blocks.
-        let mut blocks = unified_with(&["--fast-path"]);
-        blocks.extend(args(&["--block-stats"]));
-        let options = parse(&blocks).unwrap();
-        assert!(options.block_stats && options.block_cache && options.fast_path);
-        blocks.extend(args(&["--block-stats"]));
-        assert!(parse(&blocks).is_err());
-    }
-
-    /// PERF-33 (E5, step 4; E1): `--block-cache-verify` needs the blocks (refused with
-    /// `--no-block-cache` and without `--fast-path`), does not combine with `--fast-path-verify`,
-    /// is taken once and is off by default.
-    #[test]
-    fn block_cache_verify_needs_the_blocks_and_does_not_combine_with_the_fast_path_check() {
-        assert!(
-            !parse(&unified_with(&["--fast-path"]))
-                .unwrap()
-                .block_cache_verify
-        );
-        let message = "--block-cache-verify requires the block cache (--cpu-loop unified and \
-                       --fast-path, without --no-block-cache)";
-        for extra in [
-            &[][..],
-            &["--data-cache-prototype"][..],
-            &["--fast-path", "--no-block-cache"][..],
-        ] {
-            let mut given = unified_with(extra);
-            given.extend(args(&["--block-cache-verify"]));
-            assert!(parse(&given).err().unwrap().contains(message), "{extra:?}");
-        }
-        let firmware_loop = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
             "--block-cache-verify",
-        ]);
-        assert!(parse(&firmware_loop).err().unwrap().contains(message));
-        for extra in [
-            &["--fast-path", "--block-cache-verify", "--fast-path-verify"][..],
-            &["--fast-path-verify", "--block-cache-verify"][..],
-        ] {
-            assert!(
-                parse(&unified_with(extra))
-                    .err()
-                    .unwrap()
-                    .contains("--block-cache-verify does not combine with --fast-path-verify"),
-                "{extra:?}"
-            );
-        }
-        let mut blocks = unified_with(&["--fast-path"]);
-        blocks.extend(args(&["--block-cache-verify", "--block-stats"]));
-        let options = parse(&blocks).unwrap();
-        assert!(options.block_cache_verify && options.block_cache && options.block_stats);
-        blocks.extend(args(&["--block-cache-verify"]));
-        assert!(parse(&blocks).is_err());
-    }
-
-    /// E8 (step 8): `--data-cache-verify` needs `--data-cache-prototype` (and with it the unified
-    /// loop), does not combine with `--fast-path-verify` or `--block-cache-verify`, is taken once
-    /// and is off by default; with the fast path it runs with the blocks.
-    #[test]
-    fn data_cache_verify_needs_the_data_cache_and_combines_with_no_other_check() {
-        assert!(
-            !parse(&unified_with(&["--fast-path", "--data-cache-prototype"]))
-                .unwrap()
-                .data_cache_verify
-        );
-        for extra in [&[][..], &["--fast-path"][..]] {
-            let mut given = unified_with(extra);
-            given.extend(args(&["--data-cache-verify"]));
-            assert!(
-                parse(&given)
-                    .err()
-                    .unwrap()
-                    .contains("--data-cache-verify requires --data-cache-prototype"),
-                "{extra:?}"
-            );
-        }
-        let firmware_loop = args(&[
-            "--image",
-            "rom.bin",
-            "--com1-out",
-            "out.com1",
-            "--budget",
-            "10",
+            "--block-boundary-verify",
             "--data-cache-prototype",
             "--data-cache-verify",
-        ]);
-        assert!(
-            parse(&firmware_loop)
-                .err()
-                .unwrap()
-                .contains("--data-cache-prototype requires --cpu-loop unified")
-        );
-        for extra in [
-            &[
-                "--fast-path",
-                "--data-cache-prototype",
-                "--data-cache-verify",
-                "--fast-path-verify",
-            ][..],
-            &[
-                "--fast-path",
-                "--data-cache-prototype",
-                "--block-cache-verify",
-                "--data-cache-verify",
-            ][..],
         ] {
-            assert!(
-                parse(&unified_with(extra)).err().unwrap().contains(
-                    "--data-cache-verify does not combine with --fast-path-verify or \
-                     --block-cache-verify"
-                ),
-                "{extra:?}"
-            );
+            assert!(parse(&unified_with(&[flag])).is_err(), "{flag}");
+            let mut firmware_loop = args(&[
+                "--image",
+                "rom.bin",
+                "--com1-out",
+                "out.com1",
+                "--budget",
+                "10",
+            ]);
+            firmware_loop.push(flag.to_owned());
+            assert!(parse(&firmware_loop).is_err(), "{flag}");
         }
-        let mut checked = unified_with(&["--fast-path", "--data-cache-prototype"]);
-        checked.extend(args(&["--data-cache-verify", "--block-stats"]));
-        let options = parse(&checked).unwrap();
-        assert!(
-            options.data_cache_verify
-                && options.data_cache_prototype
-                && options.block_cache
-                && options.block_stats
-        );
-        let without_fast_path = parse(&unified_with(&[
-            "--data-cache-prototype",
-            "--data-cache-verify",
-        ]))
-        .unwrap();
-        assert!(without_fast_path.data_cache_verify && !without_fast_path.block_cache);
-        checked.extend(args(&["--data-cache-verify"]));
-        assert!(parse(&checked).is_err());
-    }
-
-    /// E9 (step 7): `--block-boundary-verify` needs the block cache (the unified loop and the fast
-    /// path, without `--no-block-cache`), does not combine with another check, is taken once and is
-    /// off by default.
-    #[test]
-    fn block_boundary_verify_needs_the_blocks_and_combines_with_no_other_check() {
-        assert!(
-            !parse(&unified_with(&["--fast-path"]))
-                .unwrap()
-                .block_boundary_verify
-        );
-        let needs = "--block-boundary-verify requires the block cache";
-        for extra in [
-            &["--block-boundary-verify"][..],
-            &["--fast-path", "--no-block-cache", "--block-boundary-verify"][..],
-        ] {
-            assert!(
-                parse(&unified_with(extra)).err().unwrap().contains(needs),
-                "{extra:?}"
-            );
-        }
-        let alone = "--block-boundary-verify does not combine with --block-cache-verify, \
-                     --fast-path-verify or --data-cache-verify";
-        for extra in [
-            &[
-                "--fast-path",
-                "--block-boundary-verify",
-                "--block-cache-verify",
-            ][..],
-            &[
-                "--fast-path",
-                "--block-boundary-verify",
-                "--fast-path-verify",
-            ][..],
-            &[
-                "--fast-path",
-                "--data-cache-prototype",
-                "--data-cache-verify",
-                "--block-boundary-verify",
-            ][..],
-        ] {
-            assert!(
-                parse(&unified_with(extra)).err().unwrap().contains(alone),
-                "{extra:?}"
-            );
-        }
-        let mut checked = unified_with(&["--fast-path", "--data-cache-prototype"]);
-        checked.extend(args(&["--block-boundary-verify", "--block-stats"]));
-        let options = parse(&checked).unwrap();
-        assert!(options.block_boundary_verify && options.block_cache && options.block_stats);
-        checked.extend(args(&["--block-boundary-verify"]));
-        assert!(parse(&checked).is_err());
-    }
-
-    /// E9 (step 7): the counters of the check are the summary; a kept divergence, or a counted one,
-    /// is an error with the counters still at hand.
-    #[test]
-    fn a_block_boundary_check_divergence_is_an_error_and_counters_are_a_summary() {
-        let report = od_machine::BlockBoundaryCheckReport {
-            counters: od_machine::BlockBoundaryCheckCounters {
-                verified: 9,
-                divergences: 0,
-            },
-            divergence: None,
-        };
-        let summary = block_boundary_check_summary(&report).unwrap();
-        assert_eq!(summary["verified_boundaries"], 9);
-        assert_eq!(summary["divergences"], 0);
-        let diverged = od_machine::BlockBoundaryCheckReport {
-            counters: od_machine::BlockBoundaryCheckCounters {
-                verified: 9,
-                divergences: 1,
-            },
-            divergence: Some(od_machine::BlockBoundaryCheckDivergence {
-                rip: 0x1234,
-                index: 2,
-                reason: "the full boundary ends the call".to_owned(),
-            }),
-        };
-        let error = block_boundary_check_summary(&diverged).unwrap_err();
-        assert!(
-            error.contains("0x1234") && error.contains("instruction 2"),
-            "{error}"
-        );
-        assert_eq!(block_boundary_check_counters(&diverged)["divergences"], 1);
-        let counted_only = od_machine::BlockBoundaryCheckReport {
-            divergence: None,
-            ..diverged
-        };
-        assert!(block_boundary_check_summary(&counted_only).is_err());
-    }
-
-    /// E8 (step 8): the counters of the check are the summary; a kept divergence, or a counted one,
-    /// is an error with the counters still at hand.
-    #[test]
-    fn a_data_cache_check_divergence_is_an_error_and_counters_are_a_summary() {
-        let report = od_machine::DataCacheCheckReport {
-            counters: od_machine::DataCacheCheckCounters {
-                verified_reads: 7,
-                verified_writes: 3,
-                divergences: 0,
-            },
-            divergence: None,
-        };
-        let summary = data_cache_check_summary(&report).unwrap();
-        assert_eq!(summary["verified_reads"], 7);
-        assert_eq!(summary["verified_writes"], 3);
-        assert_eq!(summary["divergences"], 0);
-        let diverged = od_machine::DataCacheCheckReport {
-            counters: od_machine::DataCacheCheckCounters {
-                verified_reads: 7,
-                verified_writes: 4,
-                divergences: 1,
-            },
-            divergence: Some(od_machine::DataCacheCheckDivergence {
-                linear: 0x40_1000,
-                rip: 0x20_0040,
-                write: true,
-                reason: "dirty bit clear".to_owned(),
-            }),
-        };
-        let error = data_cache_check_summary(&diverged).unwrap_err();
-        assert!(
-            error.contains("write hit at linear 0x401000")
-                && error.contains("rip 0x200040")
-                && error.contains("dirty bit clear"),
-            "{error}"
-        );
-        assert_eq!(data_cache_check_counters(&diverged)["divergences"], 1);
-        let counted_only = od_machine::DataCacheCheckReport {
-            divergence: None,
-            ..diverged
-        };
-        assert!(data_cache_check_summary(&counted_only).is_err());
-    }
-
-    #[test]
-    fn a_block_cache_check_divergence_is_an_error_and_counters_are_a_summary() {
-        let report = od_machine::BlockCheckReport {
-            counters: od_isa::predecoded_block::BlockCheckCounters {
-                compared: 7,
-                not_decoded: 1,
-                divergences: 0,
-            },
-            divergence: None,
-        };
-        let summary = block_cache_check_summary(&report).unwrap();
-        assert_eq!(summary["compared"], 7);
-        assert_eq!(summary["not_decoded"], 1);
-        assert_eq!(summary["divergences"], 0);
-        struct Code(Vec<u8>);
-        impl od_isa::GuestMemory for Code {
-            fn fetch(
-                &mut self,
-                address: u64,
-                _: od_isa::AccessContext,
-            ) -> Result<u8, od_isa::MemoryError> {
-                self.0
-                    .get(address as usize)
-                    .copied()
-                    .ok_or(od_isa::MemoryError::Backend("past the code".into()))
-            }
-            fn read(
-                &mut self,
-                _: u64,
-                _: od_isa::AccessContext,
-                _: &mut [u8],
-            ) -> Result<(), od_isa::MemoryError> {
-                unreachable!()
-            }
-            fn write(
-                &mut self,
-                _: u64,
-                _: od_isa::AccessContext,
-                _: &[u8],
-            ) -> Result<(), od_isa::MemoryError> {
-                unreachable!()
-            }
-            fn mfence(&mut self, _: od_isa::AccessContext) -> Result<(), od_isa::MemoryError> {
-                unreachable!()
-            }
-        }
-        let decode = |bytes: &[u8]| {
-            od_isa::long_decode::decode(
-                &mut Code(bytes.to_vec()),
-                0,
-                od_isa::AccessContext::default(),
-            )
-            .unwrap()
-        };
-        let diverged = od_machine::BlockCheckReport {
-            counters: od_isa::predecoded_block::BlockCheckCounters {
-                compared: 8,
-                not_decoded: 1,
-                divergences: 1,
-            },
-            divergence: Some(od_machine::BlockCheckDivergenceReport {
-                divergence: od_isa::predecoded_block::BlockCheckDivergence {
-                    rip: 0x1000,
-                    index: 1,
-                    block_len: 3,
-                    block: decode(&[0xBA, 0x11, 0x11, 0, 0]),
-                    decoded: Some(decode(&[0xBA, 0x22, 0x22, 0, 0])),
-                    block_handler: od_isa::execute::fast_handler(&decode(&[
-                        0xBA, 0x11, 0x11, 0, 0,
-                    ]))
-                    .unwrap(),
-                    fresh_handler: od_isa::execute::fast_handler(&decode(&[
-                        0xBA, 0x22, 0x22, 0, 0,
-                    ])),
-                },
-                bytes: vec![0xBA, 0x22, 0x22, 0, 0],
-            }),
-        };
-        let error = block_cache_check_summary(&diverged).unwrap_err();
-        assert!(
-            error.contains("rip=0x1000") && error.contains("bytes=ba22220000"),
-            "{error}"
-        );
-        assert!(
-            error.contains("4369") && error.contains("8738"),
-            "both immediates: {error}"
-        );
-        assert_eq!(block_cache_check_counters(&diverged)["divergences"], 1);
-    }
-
-    #[test]
-    fn a_fast_path_divergence_is_an_error_and_counters_are_a_summary() {
-        let report = od_machine::FastPathCheckReport {
-            counters: od_isa::fast_path_check::CheckCounters {
-                compared: 3,
-                refused_by_admission: 5,
-                ..Default::default()
-            },
-            divergence: None,
-        };
-        let summary = fast_path_check_summary(&report).unwrap();
-        assert_eq!(summary["compared"], 3);
-        assert_eq!(summary["refused_by_admission"], 5);
-        assert_eq!(summary["divergences"], 0);
-        let diverged = od_machine::FastPathCheckReport {
-            counters: report.counters,
-            divergence: Some(od_isa::fast_path_check::FastPathDivergence {
-                rip: 0x1000,
-                bytes: vec![0x90],
-                instruction: "Nop".to_owned(),
-                differences: vec!["state.rip: general path 1 | fast path 2".to_owned()],
-            }),
-        };
-        let error = fast_path_check_summary(&diverged).unwrap_err();
-        assert!(
-            error.contains("rip=0x1000") && error.contains("bytes=90"),
-            "{error}"
-        );
     }
 
     #[test]

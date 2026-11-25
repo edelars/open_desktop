@@ -43,7 +43,7 @@ by SHA-256 before tests and execution. The Linux native test group passed with
 220 tests and 0 failures (19 filtered); the focused child-dispatch test passed
 1/1. The local `od-testkit` reducer tests passed 5/5. Formatting and Linux
 x86_64 target checks also passed. Commands, counts and source hashes are in the
-[verification record](../../work/stage2/s2-42ag-native-mov-memory/linux-smoke-20261104/verification.json).
+verification record (`work/stage2/s2-42ag-native-mov-memory/linux-smoke-20261104/verification.json`).
 The Linux binary reports its build revision/compiler as unavailable, so the
 record binds validation to the checked source hashes rather than an embedded
 revision claim.

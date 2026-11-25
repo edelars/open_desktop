@@ -51,7 +51,7 @@ Command: `python3 tests/cpu/stage3_harness.py --suite local`.
   - Profile/dependency/source/context: `5f32aa650d1fae71c3405a0766af0d9617735549ca9f8a84a854bc161653b336`.
   - Guard/capacity/failure lifecycle: `9e946a3614466939b307e744b964452d815ddc59894347750b783febfbdd0a17`.
   - Host reuse/lifetime/parity: `6bc1a6bb604b1a07c64fbb5f026d4c701adb800d3389ff0941491fda17f99d1b`.
-- Evidence remains in ignored local files: [summary](../../work/stage3-harness/stage3-20261031-020824-b7d49a25ce/summary.json) and [input manifest](../../work/stage3-harness/stage3-20261031-020824-b7d49a25ce/input_manifest.json). Mini, physical x86, performance, owner-backed, Stage 2, and VMHost process suites remain `not_run`.
+- Evidence remains in ignored local files: summary (`work/stage3-harness/stage3-20261031-020824-b7d49a25ce/summary.json`) and input manifest (`work/stage3-harness/stage3-20261031-020824-b7d49a25ce/input_manifest.json`). Mini, physical x86, performance, owner-backed, Stage 2, and VMHost process suites remain `not_run`.
 
 The report was finalized after the harness run to record its result, so its
 final evidence text is not part of the run's captured source fingerprint. The

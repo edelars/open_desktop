@@ -85,14 +85,14 @@ software tail `[464,512)` и обе 32-byte guards. Raw MXCSR_MASK во всех
 `/home/senya/projects/open_desktop/work/stage2/s2-39k-fxsave64/fxsave64-1793804985707874526.json`.
 Локальная отдельная копия:
 
-- [Raw evidence JSON](../../work/stage2/s2-39k-acceptance-20261104-01/raw-evidence.json),
+- Raw evidence JSON (`work/stage2/s2-39k-acceptance-20261104-01/raw-evidence.json`),
   сохранённый без изменения байтов.
-- [Run envelope](../../work/stage2/s2-39k-acceptance-20261104-01/run.json):
+- Run envelope (`work/stage2/s2-39k-acceptance-20261104-01/run.json`):
   точные argv/cwd/UTC, stdout/stderr, exit code и бинарные хеши до/после.
-- [Preflight](../../work/stage2/s2-39k-acceptance-20261104-01/preflight.json):
+- Preflight (`work/stage2/s2-39k-acceptance-20261104-01/preflight.json`):
   source hashes, dirty diff, ОС/CPU/toolchain и virtualization observations.
-- [Linked disassembly](../../work/stage2/s2-39k-acceptance-20261104-01/linked-sequence.objdump.txt)
-  и [offline verification](../../work/stage2/s2-39k-acceptance-20261104-01/verification.json).
+- Linked disassembly (`work/stage2/s2-39k-acceptance-20261104-01/linked-sequence.objdump.txt`)
+  и offline verification (`work/stage2/s2-39k-acceptance-20261104-01/verification.json`).
 
 Точная команда внутри remote checkout, с `/home/senya/.cargo/bin` в PATH:
 

@@ -10,17 +10,6 @@ pub mod cli;
 pub mod cpuid;
 pub mod cr8;
 pub mod execute;
-pub mod fast_path_check;
-#[cfg(test)]
-mod fast_step_g1_g3_tests;
-#[cfg(test)]
-mod fast_step_g2_tests;
-#[cfg(test)]
-mod fast_step_g4_tests;
-#[cfg(test)]
-mod fast_step_g5_tests;
-#[cfg(test)]
-mod fast_step_g6_tests;
 #[cfg(test)]
 mod fast_step_static_filter_tests;
 mod finite_arithmetic;
@@ -37,7 +26,6 @@ pub mod mmx_int;
 pub mod msr;
 pub mod paging;
 pub mod port_io;
-pub mod predecoded_block;
 pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;
@@ -107,7 +95,7 @@ const ZF: u64 = 1 << 6;
 const SF: u64 = 1 << 7;
 const OF: u64 = 1 << 11;
 const DF: u64 = 1 << 10;
-const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
+pub const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
 /// RFLAGS bits admitted and observed by the current long-mode integer profile:
 /// the six status flags, DF, and the architecturally fixed bit 1.
 pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF | 2;

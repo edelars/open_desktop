@@ -1972,15 +1972,6 @@ pub struct Cpl0ProfileSet<'a> {
     int3: bool,
     user_mode: bool,
     syscall: bool,
-    /// PERF-22: run every step under the fast-path check (diagnostic; see [`crate::fast_path_check`]).
-    fast_path_verify: bool,
-    /// PERF-23: run the fast path of group G2 in the step (ADR-0017, section 3).
-    fast_path: bool,
-    /// PERF-31 (ADR-0018, variant (a), prototype): batched calls run the fast path from the
-    /// predecoded blocks of the memory (see [`crate::predecoded_block`]).
-    block_cache: bool,
-    /// PERF-33 (E5, step 4): with `block_cache`, the blocks are checked instead of run from.
-    block_verify: bool,
 }
 
 impl<'a> Cpl0ProfileSet<'a> {
@@ -2013,69 +2004,7 @@ impl<'a> Cpl0ProfileSet<'a> {
             int3: false,
             user_mode: false,
             syscall: false,
-            fast_path_verify: false,
-            fast_path: false,
-            block_cache: false,
-            block_verify: false,
         }
-    }
-
-    /// PERF-22 (ADR-0017, section 5): diagnostic mode. Every step of the run executes as usual on
-    /// the real memory and is then compared with the fast path (`try_fast_step`, or the mode chosen
-    /// with [`crate::fast_path_check::set_mode`]) replayed on a copy of the CPU state over the
-    /// recorded memory calls: all of the CPU state, the step outcome and the ordered memory calls
-    /// must agree. The first disagreement ends the run with `RunExit::MemoryError(Backend(report))`
-    /// and is kept for [`crate::fast_path_check::take_divergence`]. Without this call the loop has
-    /// no check for it and nothing changes. The counters and the last divergence live in the
-    /// thread that runs the loop (thread-local), so the mode is for the single-threaded unified
-    /// loop only; it does not fit `host_parallel` or SMP, where steps run on other threads.
-    pub const fn with_fast_path_verify(mut self) -> Self {
-        self.fast_path_verify = true;
-        self
-    }
-
-    /// PERF-23 (ADR-0017, section 3): run the fast path of group G2 (`Arithmetic`, `Logic` and
-    /// `Shift` on registers and immediates at CPL0) in the step, right after the decode. The path
-    /// returns exactly what the general path returns, calling memory the same way, and "not handled"
-    /// leaves the instruction to the general path, so a run with it retires the same instructions
-    /// and ends in the same state as a run without it. Off by default. For the single-threaded
-    /// unified loop; with [`Self::with_fast_path_verify`] the check wins: the general path runs
-    /// for real and the fast path is only replayed for the comparison.
-    pub const fn with_fast_path(mut self) -> Self {
-        self.fast_path = true;
-        self
-    }
-
-    /// The set without the fast path (a loop whose diagnostics keep the general path alone).
-    pub const fn without_fast_path(mut self) -> Self {
-        self.fast_path = false;
-        self
-    }
-
-    /// PERF-31 (ADR-0018, variant (a), prototype): a batched call
-    /// ([`run_with_cpl0_profile_set_and_pio_batched`]) of a set that also has the fast path
-    /// ([`Self::with_fast_path`]) runs the fast path from the predecoded blocks its memory answers
-    /// ([`GuestMemory::cached_block`], see [`crate::predecoded_block`]); a memory without blocks
-    /// answers none and nothing changes. Ignored without the fast path, with
-    /// [`Self::with_fast_path_verify`] (the check wins) and by one-instruction calls. The run
-    /// retires the same instructions with the same effects, exits and boundaries as without it.
-    /// Off by default.
-    pub const fn with_block_cache_prototype(mut self) -> Self {
-        self.block_cache = true;
-        self
-    }
-
-    /// PERF-33 (E5, step 4): [`Self::with_block_cache_prototype`] in the block check mode (the
-    /// runner's `--block-cache-verify`): the batched call looks the blocks up and walks them as
-    /// usual, but runs every instruction through the general step with a fresh decode and compares
-    /// that decode with the one the block holds (see [`crate::predecoded_block`]); the first
-    /// difference ends the run with `RunExit::MemoryError(Backend(report))`. Under the same
-    /// conditions as the blocks (the fast path, no fast-path check, batched calls); the memory must
-    /// answer `GuestMemory::take_decoded_for_block_check`, or nothing is compared.
-    pub const fn with_block_cache_verify(mut self) -> Self {
-        self.block_cache = true;
-        self.block_verify = true;
-        self
     }
 
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
@@ -3002,9 +2931,6 @@ struct ExecutionProfiles<'a> {
     /// CPL0 set. Only a `Cpl0ProfileSet` run sets it; the step then returns an `Unsupported`
     /// placeholder that the caller replaces with [`Cpl0ProfileSetExit::UserEntry`].
     iretq_user_entry: Option<&'a IretqUserBoundary>,
-    /// PERF-23 (ADR-0017, section 3): the fast path of one decoded instruction runs right after
-    /// the decode. Set only by a `Cpl0ProfileSet` built with `with_fast_path`; off everywhere else.
-    fast_path: bool,
 }
 
 impl<'a> ExecutionProfiles<'a> {
@@ -3148,7 +3074,6 @@ impl<'a> ExecutionProfiles<'a> {
         sti_cpl0: false,
         int3_cpl0: false,
         iretq_user_entry: None,
-        fast_path: false,
     };
 }
 
@@ -4056,7 +3981,7 @@ pub fn run(
 ) -> RunResult {
     // Preserve the historical fresh-entry behavior. Callers that resume a
     // tracked execution can pass the preceding result's mask explicitly.
-    run_configured_with_profile_mode::<true, false, false, false, _>(
+    run_configured_with_profile_mode::<true, _>(
         state,
         memory,
         config,
@@ -4344,7 +4269,6 @@ pub fn run_with_maxss_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -4508,7 +4432,6 @@ pub fn run_with_minsd_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -4672,7 +4595,6 @@ pub fn run_with_maxsd_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -4836,7 +4758,6 @@ pub fn run_with_minpd_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5000,7 +4921,6 @@ pub fn run_with_minps_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5164,7 +5084,6 @@ pub fn run_with_maxps_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5328,7 +5247,6 @@ pub fn run_with_maxpd_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5492,7 +5410,6 @@ pub fn run_with_cvtsi2sd_r32_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5656,7 +5573,6 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5820,7 +5736,6 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -5984,7 +5899,6 @@ pub fn run_with_cvtsi2sd_r64_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6148,7 +6062,6 @@ pub fn run_with_cvtsi2sd_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6312,7 +6225,6 @@ pub fn run_with_cvtsi2ss_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6476,7 +6388,6 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6640,7 +6551,6 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6804,7 +6714,6 @@ pub fn run_with_cvtss2si_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -6968,7 +6877,6 @@ pub fn run_with_cvttss2si_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -7131,7 +7039,6 @@ pub fn run_with_cvtsd2si_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -7328,7 +7235,6 @@ fn run_with_cvtsd2si_r32_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -7492,7 +7398,6 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -7691,7 +7596,6 @@ fn run_with_cvttsd2si_r32_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -7859,7 +7763,6 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8056,7 +7959,6 @@ fn run_with_cvtss2si_r32_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8220,7 +8122,6 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8384,7 +8285,6 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8581,7 +8481,6 @@ fn run_with_cvttss2si_r32_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8746,7 +8645,6 @@ pub fn run_with_cvttsd2si_registers_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -8910,7 +8808,6 @@ pub fn run_with_cvtdq2pd_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9074,7 +8971,6 @@ pub fn run_with_cvtdq2pd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9237,7 +9133,6 @@ pub fn run_with_cvtdq2pd_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9401,7 +9296,6 @@ pub fn run_with_cvtdq2ps_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9598,7 +9492,6 @@ fn run_with_cvtdq2ps_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9762,7 +9655,6 @@ pub fn run_with_cvtps2dq_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -9926,7 +9818,6 @@ pub fn run_with_cvttps2dq_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -10123,7 +10014,6 @@ fn run_with_cvtps2dq_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -10320,7 +10210,6 @@ fn run_with_cvttps2dq_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -10517,7 +10406,6 @@ fn run_with_cvttpd2dq_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -10714,7 +10602,6 @@ fn run_with_cvtpd2dq_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -10878,7 +10765,6 @@ pub fn run_with_cvtpd2dq_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -11042,7 +10928,6 @@ pub fn run_with_cvtpd2ps_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -11206,7 +11091,6 @@ pub fn run_with_cvttpd2dq_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -11370,7 +11254,6 @@ pub fn run_with_cvtss2sd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -11534,7 +11417,6 @@ pub fn run_with_cvtpi2pd_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -11734,7 +11616,6 @@ fn run_with_cvtpi2ps_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12065,7 +11946,6 @@ pub fn run_with_cvtsd2ss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12229,7 +12109,6 @@ pub fn run_with_cvtps2pd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12393,7 +12272,6 @@ pub fn run_with_cvtps2pd_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12557,7 +12435,6 @@ pub fn run_with_cvtss2sd_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12720,7 +12597,6 @@ pub fn run_with_cvtsd2ss_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -12884,7 +12760,6 @@ pub fn run_with_comiss_ucomiss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13106,7 +12981,6 @@ fn run_with_cmpss_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13270,7 +13144,6 @@ pub fn run_with_cmpsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13434,7 +13307,6 @@ pub fn run_with_cmppd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13597,7 +13469,6 @@ pub fn run_with_cmppd_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13760,7 +13631,6 @@ pub fn run_with_cmpps_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -13946,7 +13816,6 @@ fn run_with_minsd_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -14110,7 +13979,6 @@ pub fn run_with_maxsd_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -14301,7 +14169,6 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -14477,7 +14344,6 @@ fn run_with_minpd_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -14676,7 +14542,6 @@ fn run_with_minps_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -14840,7 +14705,6 @@ pub fn run_with_rcpps_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15004,7 +14868,6 @@ pub fn run_with_rcpss_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15167,7 +15030,6 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15330,7 +15192,6 @@ pub fn run_with_sqrtss_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15493,7 +15354,6 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15689,7 +15549,6 @@ fn run_with_sqrtps_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -15852,7 +15711,6 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -16047,7 +15905,6 @@ fn run_with_sqrtpd_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -16242,7 +16099,6 @@ fn run_with_sqrtsd_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -16444,7 +16300,6 @@ fn run_with_maxpd_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -16646,7 +16501,6 @@ fn run_with_maxps_memory_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -16862,7 +16716,6 @@ fn run_minss_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -17068,7 +16921,6 @@ fn run_maxss_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -17231,7 +17083,6 @@ pub fn run_with_cmpps_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -17395,7 +17246,6 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -17612,7 +17462,6 @@ pub fn run_with_efer_rdmsr_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -18021,7 +17870,6 @@ pub fn run_with_cr0_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -18244,7 +18092,6 @@ fn run_with_cr4_profile_and_rflags_defined(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -34401,13 +34248,7 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
     if let Some(cell) = set.fp_state {
         state.sse = Some(cell.borrow().sse.clone());
     }
-    // PERF-31: blocks only for a batched call of a set with the fast path (see
-    // `Cpl0ProfileSet::with_block_cache_prototype`); the checked instance never has them.
-    let blocks = set.block_cache && set.fast_path && batch.is_some();
-    let result = run_configured_checked(
-        set.fast_path_verify,
-        blocks,
-        blocks && set.block_verify,
+    let result = run_configured_with_profile_mode::<false, M>(
         state,
         memory,
         config,
@@ -34594,7 +34435,6 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
             sti_cpl0: set.sti.is_some(),
             int3_cpl0: set.int3,
             iretq_user_entry: Some(&user_entry),
-            fast_path: set.fast_path,
             cr4: None,
         },
         StepRuntime {
@@ -34629,7 +34469,7 @@ fn run_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> RunResult {
-    run_configured_with_profile_mode::<false, false, false, false, _>(
+    run_configured_with_profile_mode::<false, _>(
         state,
         memory,
         config,
@@ -34640,101 +34480,10 @@ fn run_configured(
     )
 }
 
-/// PERF-22: the entry of the CPL0 set loops. `verify` selects the checked instance of the loop
-/// (`Cpl0ProfileSet::with_fast_path_verify`); the other instance has no code for the check.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn run_configured_checked<M: GuestMemory>(
-    verify: bool,
-    blocks: bool,
-    block_verify: bool,
-    state: &mut LongModeState,
-    memory: &mut M,
-    config: RunConfig,
-    rflags_defined: u64,
-    profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
-    batch: Option<BatchBoundary<'_, M>>,
-) -> RunResult {
-    if verify {
-        run_configured_with_profile_mode::<false, true, false, false, M>(
-            state,
-            memory,
-            config,
-            rflags_defined,
-            profiles,
-            runtime,
-            batch,
-        )
-    } else if block_verify {
-        // PERF-33 (E5, step 4): the instance that checks the blocks.
-        run_configured_with_profile_mode::<false, false, true, true, M>(
-            state,
-            memory,
-            config,
-            rflags_defined,
-            profiles,
-            runtime,
-            batch,
-        )
-    } else if blocks {
-        // PERF-31 (ADR-0018, variant (a), prototype): the instance that runs from blocks.
-        run_configured_with_profile_mode::<false, false, true, false, M>(
-            state,
-            memory,
-            config,
-            rflags_defined,
-            profiles,
-            runtime,
-            batch,
-        )
-    } else {
-        run_configured_with_profile_mode::<false, false, false, false, M>(
-            state,
-            memory,
-            config,
-            rflags_defined,
-            profiles,
-            runtime,
-            batch,
-        )
-    }
-}
-
-/// PERF-22: [`run`] with every step under the fast-path check of [`crate::fast_path_check`]
-/// (no profile, the integer-flags definedness of a fresh entry). The first divergence ends the run
-/// with `RunExit::MemoryError(MemoryError::Backend(report))` and is kept for
-/// [`crate::fast_path_check::take_divergence`]; the counters are read with
-/// [`crate::fast_path_check::counters`]. For tests and diagnostics.
-pub fn run_with_fast_path_check(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    config: RunConfig,
-    mut stop_requested: impl FnMut() -> bool,
-) -> RunResult {
-    run_configured_with_profile_mode::<false, true, false, false, _>(
-        state,
-        memory,
-        config,
-        crate::INTEGER_FLAGS,
-        ExecutionProfiles::EMPTY,
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
-        None,
-    )
-}
-
-/// E10 (ADR-0018, «Дополнение E10»): the handler of the fast path for one decoded instruction,
-/// chosen once by [`fast_handler`] (the only place of the static rule) and run by
-/// [`run_fast_handler`]. A block (`crate::predecoded_block::DecodedBlock`) keeps it next to the
-/// decode, so the run of a block does not choose again; outside blocks [`try_fast_step`] chooses it
-/// from the fresh decode and runs the same executor. The variant is the (operation, operand form)
-/// and carries the operands ready to use; a variant never holds an `Operand` (the size of a block
-/// entry is bounded, `decoded_block_cache::the_memory_of_the_table_is_bounded` in `od-machine`).
+/// E10 (ADR-0018, «Дополнение E10»): the class of one decoded instruction under the static rule of
+/// the former fast path, chosen by [`fast_handler`] (the only place of the rule). The turbo engine
+/// of the unified loop (`od-machine`) admits an instruction to generated code only when the rule
+/// gives it a class. The variant is the (operation, operand form) with its operands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FastHandler(FastOp);
 
@@ -34743,16 +34492,6 @@ pub struct FastHandler(FastOp);
 enum ShiftCount {
     Register(RegisterView),
     Immediate(u64),
-}
-
-impl ShiftCount {
-    #[inline(always)]
-    fn operand(self) -> Operand {
-        match self {
-            ShiftCount::Register(view) => Operand::Register(view),
-            ShiftCount::Immediate(value) => Operand::Immediate(value),
-        }
-    }
 }
 
 /// The variants of [`FastHandler`] (groups G1-G6 of ADR-0017 and PERF-33 E4). `effects` is
@@ -34910,22 +34649,8 @@ enum FastOp {
     NopModrm,
 }
 
-impl FastHandler {
-    /// Whether the handler changes the flow (Jcc, JMP, CALL, RET): a block ends after it.
-    #[inline(always)]
-    pub fn changes_flow(self) -> bool {
-        matches!(
-            self.0,
-            FastOp::Branch { .. }
-                | FastOp::Jump { .. }
-                | FastOp::Call { .. }
-                | FastOp::Return { .. }
-        )
-    }
-}
-
-/// E10 (ADR-0018, «Дополнение E10», decision 1): the static rule of the fast path, its only place.
-/// The handler of `instruction`, or `None` when the fast path never runs it: a LOCK/REP/REPNE
+/// E10 (ADR-0018, «Дополнение E10», decision 1): the static rule of the former fast path, its only
+/// place. The class of `instruction`, or `None` when the rule refuses it: a LOCK/REP/REPNE
 /// prefix, an FS/GS segment prefix, an operation outside groups G1-G6, an operand form the fast
 /// path has no arm for (`Shift` with memory, `Extend` of an immediate, shapes the decoder does not
 /// produce), a control transfer outside the form of `executable` (ADR-0017, 2.2: opcode map and
@@ -35119,723 +34844,7 @@ pub fn fast_handler(instruction: &crate::long_decode::Instruction) -> Option<Fas
     Some(FastHandler(op))
 }
 
-/// E10 (ADR-0018, «Дополнение E10»): the dynamic admission of the fast path (ADR-0017, section 4):
-/// CPL0, RF = 0, TF = 0, no STI/MOV SS shadow. Reads only.
-#[inline(always)]
-pub(crate) fn fast_admitted(state: &LongModeState, context: AccessContext) -> bool {
-    const TF: u64 = 1 << 8;
-    const RF: u64 = 1 << 16;
-    context.privilege == PrivilegeLevel::Ring0
-        && state.rflags & (TF | RF) == 0
-        && state.sti_shadow == Some(crate::StiShadow::Clear)
-}
-
-/// E10 (ADR-0018, «Дополнение E10»): the instruction a block holds, run by its stored handler
-/// after the dynamic admission (asked by the caller). The run of a block calls it for every
-/// instruction it runs; outside blocks [`try_fast_step`] runs the same executor.
-#[inline(never)]
-pub(crate) fn run_block_instruction(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    entry: &crate::predecoded_block::BlockInstruction,
-) -> Option<Result<StepOutcome, MemoryError>> {
-    run_fast_handler(
-        &entry.handler(),
-        entry.instruction(),
-        state,
-        memory,
-        context,
-        rflags_defined,
-        true,
-    )
-}
-
-/// PERF-21/22/23 (ADR-0017, section 3): the fast path of one decoded instruction, placed right
-/// after the decode in the step. The contract: `None` ("not handled") only before any side effect,
-/// from an admission that reads `instruction`, `state` and `context` and writes nothing; after it
-/// the function returns `Some` with exactly what the general path returns, calling `memory` the
-/// same way in the same order. The step calls it right after the decode when the fast path is on
-/// (`Cpl0ProfileSet::with_fast_path`, off by default, ADR-0017, section 3, "Включение"); the check
-/// of [`crate::fast_path_check`] calls it too, on a replay.
-///
-/// E10 (ADR-0018, «Дополнение E10»): the dynamic admission ([`fast_admitted`]), the static rule
-/// ([`fast_handler`]) and the executor ([`run_fast_handler`]), the one a block runs too.
-#[inline(never)]
-pub(crate) fn try_fast_step(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    instruction: &crate::long_decode::Instruction,
-    control_policy_present: bool,
-) -> Option<Result<StepOutcome, MemoryError>> {
-    if !fast_admitted(state, context) {
-        return None;
-    }
-    let handler = fast_handler(instruction)?;
-    run_fast_handler(
-        &handler,
-        instruction,
-        state,
-        memory,
-        context,
-        rflags_defined,
-        control_policy_present,
-    )
-}
-
-/// E10 (ADR-0018, «Дополнение E10»): the executor of the fast path: `handler` (from
-/// [`fast_handler`] of `instruction`) after the dynamic admission. Every arm calls the functions of
-/// the general path for its operand form; no flag or address formula lives here.
-///
-/// PERF-23, group G2: `Arithmetic`, `Logic` and `Shift` whose operands are registers or
-/// immediates: for `Arithmetic`/`Logic` the pieces of `exec_arithmetic`/`exec_logic` at CPL0
-/// ([`fast_alu_register`]: the register reads, `arithmetic_result`/`logic_result` of the operand
-/// size, the write unless CMP/TEST, the flags; ADR-0018, «Дополнение E10», deviation 1), for
-/// `Shift` `exec_shift` itself.
-///
-/// PERF-24, group G1: `Mov` and `MovImmediate` with a register destination and a register or
-/// immediate source. Group G3: relative `Branch` (Jcc) and `Jump` (JMP rel8/rel32), the target
-/// from `relative_target` (the canonical check of the general path). Group G4 (PERF-24b): `Mov`
-/// and `MovImmediate` with a memory operand, `Extend` (MOVZX/MOVSX/MOVSXD, register or memory
-/// source) and `Lea`, through the pieces of `transfer`. A memory access is not refused ahead
-/// (whether it faults is known only to the memory, whose page walk already has effects): it is
-/// made with the calls of the general path, and its error ends the instruction as there.
-///
-/// PERF-25, group G5: `Arithmetic` and `Logic` with a memory operand (`fast_alu_into_memory` /
-/// `fast_alu_from_memory`: the memory calls of `exec_arithmetic`/`exec_logic` in their order, one
-/// address check), PUSH/POP of a register (`exec_stack_register`), `CALL rel32` (`exec_call`) and
-/// `RET`/`RET imm16` (`exec_return`), the last three shared with the general arms.
-///
-/// PERF-33 (E4), group G6: the two-operand `Imul` (`0F AF`, register or memory source, through
-/// `exec_imul`, shared with the general arm), `Nop` (`90`, `66 90`) and `NopModrm` (`0F 1F /0`,
-/// `0F 18` hints; the operand is never evaluated), both retiring with nothing but RIP changed.
-///
-/// The only refusal left here is `NopModrm` without a control-register policy (the admission of
-/// `executable`), before any effect.
-#[inline(always)]
-fn run_fast_handler(
-    handler: &FastHandler,
-    instruction: &crate::long_decode::Instruction,
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    control_policy_present: bool,
-) -> Option<Result<StepOutcome, MemoryError>> {
-    debug_assert_eq!(fast_handler(instruction), Some(*handler), "{instruction:?}");
-    let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    // The arms that end in the common tail below give the result of the operation and the flag
-    // definedness of the instruction (PERF-25, group G5, and G2: an ALU operation goes to its form,
-    // the calls of `exec_arithmetic`/`exec_logic` in their order, the flag formulas of
-    // `arithmetic_result`/`logic_result`; a fault or an error leaves RIP and the definedness).
-    let (result, effects) = match handler.0 {
-        FastOp::ArithRegReg {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => {
-            let rhs = state.read(src);
-            fast_alu_register(
-                state,
-                dst,
-                rhs,
-                kind != ArithmeticKind::Cmp,
-                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-            );
-            (Ok(()), effects)
-        }
-        FastOp::ArithRegImm {
-            kind,
-            size,
-            dst,
-            value,
-            effects,
-        } => {
-            fast_alu_register(
-                state,
-                dst,
-                value,
-                kind != ArithmeticKind::Cmp,
-                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-            );
-            (Ok(()), effects)
-        }
-        FastOp::ArithRegMem {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => (
-            fast_alu_from_memory(
-                state,
-                memory,
-                context,
-                next_rip,
-                dst,
-                src,
-                kind != ArithmeticKind::Cmp,
-                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-            ),
-            effects,
-        ),
-        FastOp::ArithMemReg {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => {
-            let rhs = state.read(src);
-            (
-                fast_alu_into_memory(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    dst,
-                    rhs,
-                    kind != ArithmeticKind::Cmp,
-                    |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-                ),
-                effects,
-            )
-        }
-        FastOp::ArithMemImm {
-            kind,
-            size,
-            dst,
-            value,
-            effects,
-        } => (
-            fast_alu_into_memory(
-                state,
-                memory,
-                context,
-                next_rip,
-                dst,
-                value,
-                kind != ArithmeticKind::Cmp,
-                |lhs, rhs, previous| arithmetic_result(size, kind, lhs, rhs, previous),
-            ),
-            effects,
-        ),
-        FastOp::LogicRegReg {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => {
-            let rhs = state.read(src);
-            fast_alu_register(
-                state,
-                dst,
-                rhs,
-                kind != LogicKind::Test,
-                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-            );
-            (Ok(()), effects)
-        }
-        FastOp::LogicRegImm {
-            kind,
-            size,
-            dst,
-            value,
-            effects,
-        } => {
-            fast_alu_register(
-                state,
-                dst,
-                value,
-                kind != LogicKind::Test,
-                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-            );
-            (Ok(()), effects)
-        }
-        FastOp::LogicRegMem {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => (
-            fast_alu_from_memory(
-                state,
-                memory,
-                context,
-                next_rip,
-                dst,
-                src,
-                kind != LogicKind::Test,
-                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-            ),
-            effects,
-        ),
-        FastOp::LogicMemReg {
-            kind,
-            size,
-            dst,
-            src,
-            effects,
-        } => {
-            let rhs = state.read(src);
-            (
-                fast_alu_into_memory(
-                    state,
-                    memory,
-                    context,
-                    next_rip,
-                    dst,
-                    rhs,
-                    kind != LogicKind::Test,
-                    |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-                ),
-                effects,
-            )
-        }
-        FastOp::LogicMemImm {
-            kind,
-            size,
-            dst,
-            value,
-            effects,
-        } => (
-            fast_alu_into_memory(
-                state,
-                memory,
-                context,
-                next_rip,
-                dst,
-                value,
-                kind != LogicKind::Test,
-                |lhs, rhs, previous| logic_result(size, kind, lhs, rhs, previous),
-            ),
-            effects,
-        ),
-        FastOp::Shift {
-            kind,
-            dst,
-            source,
-            count,
-        } => {
-            let shift = exec_shift(
-                state,
-                memory,
-                context,
-                next_rip,
-                rflags_defined,
-                instruction,
-                control_policy_present,
-                kind,
-                Operand::Register(dst),
-                source.map(Operand::Register),
-                count.operand(),
-            );
-            // As in the general path: `exec_shift` applied the flag definedness itself.
-            return Some(match shift {
-                Ok(()) => {
-                    state.rip = next_rip;
-                    Ok(StepOutcome::Advanced)
-                }
-                Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
-                Err(error) => Err(error),
-            });
-        }
-        // PERF-24, groups G1 and G4: MOV in every operand form, MOVZX/MOVSX/MOVSXD, LEA (the arm
-        // of `transfer` in the general path). The pieces of `transfer` are called directly, without
-        // its dispatch: for registers and immediates `state.read`/`state.write` (the masking, the
-        // dword zero extension and the high byte registers live there; this is what
-        // `read_operand`/`write_operand` do for them), for memory `read_memory_operand` and
-        // `write_memory_operand` (the memory arms of `read_operand`/`write_operand`), for the
-        // extension `extended_source` and for LEA `exec_lea`. The order is that of `transfer`:
-        // the source is read, then the destination written; a register destination is written only
-        // after its memory read succeeded. A memory error is not a refusal: it is mapped like the
-        // arm of the general path (`Architectural` -> `Fault`, nothing written, RIP and
-        // `rflags_defined` unchanged; any other error is returned). These operations change no flag
-        // and their flag definedness is the identity (`FlagEffects::default()`), so the tail only
-        // sets RIP.
-        FastOp::MovRegReg { dst, src } => {
-            state.write(dst, state.read(src));
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-        FastOp::MovRegImm { dst, value } => {
-            state.write(dst, value);
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-        FastOp::MovRegMem { dst, src } => {
-            let moved = read_memory_operand(state, memory, context, next_rip, src)
-                .map(|value| state.write(dst, value));
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                moved,
-            ));
-        }
-        FastOp::MovMemReg { dst, src } => {
-            let value = state.read(src);
-            let moved = write_memory_operand(state, memory, context, next_rip, dst, value);
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                moved,
-            ));
-        }
-        FastOp::MovMemImm { dst, value } => {
-            let moved = write_memory_operand(state, memory, context, next_rip, dst, value);
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                moved,
-            ));
-        }
-        FastOp::ExtendReg { dst, src, signed } => {
-            let moved = extended_source(
-                state,
-                memory,
-                context,
-                next_rip,
-                Operand::Register(src),
-                signed,
-            )
-            .map(|value| state.write(dst, value));
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                moved,
-            ));
-        }
-        FastOp::ExtendMem { dst, src, signed } => {
-            let moved = extended_source(
-                state,
-                memory,
-                context,
-                next_rip,
-                Operand::Memory(src),
-                signed,
-            )
-            .map(|value| state.write(dst, value));
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                moved,
-            ));
-        }
-        FastOp::Lea { dst, src } => {
-            exec_lea(state, next_rip, dst, src);
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-        // PERF-24, group G3 (the form of `executable` is the static rule of `fast_handler`): a
-        // taken branch goes to `relative_target` (a non-canonical target is its #GP, nothing
-        // written) and is `Branched` without the tail; a branch not taken retires like any
-        // instruction (its flag definedness is the identity).
-        FastOp::Branch {
-            condition,
-            displacement,
-        } => {
-            if condition.evaluate(state.rflags) {
-                return Some(Ok(match relative_target(next_rip, displacement) {
-                    Ok(target) => {
-                        state.rip = target;
-                        StepOutcome::Branched
-                    }
-                    Err(fault) => StepOutcome::Fault(fault),
-                }));
-            }
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-        FastOp::Jump { displacement } => {
-            return Some(Ok(match relative_target(next_rip, displacement) {
-                Ok(target) => {
-                    state.rip = target;
-                    StepOutcome::Branched
-                }
-                Err(fault) => StepOutcome::Fault(fault),
-            }));
-        }
-        // PERF-25, group G5: the stack forms, through the functions of the general arms. PUSH/POP r
-        // (16/64-bit, any register, REX.B, 66, a CS/DS/ES/SS prefix as the decoder admits them)
-        // retire like the general arm (its flag definedness is the identity); a #SS (non-canonical
-        // slot, before any call), a #PF or a backend error of the access is mapped by
-        // `report_memory_error` with nothing committed. CALL rel32 and RET/RET imm16 only in the
-        // form of `executable` with default prefixes (ADR-0017, 2.2; `2E E8`, `66 C3` and the
-        // CPL3 addr32 CALL stay in the general path); they are `Branched` without the tail.
-        FastOp::StackRegister {
-            push,
-            register,
-            width,
-        } => {
-            let pushed = exec_stack_register(state, memory, context, width, push, register);
-            return Some(retire_transfer(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-                pushed,
-            ));
-        }
-        FastOp::Call { displacement } => {
-            return Some(exec_call(state, memory, context, next_rip, displacement));
-        }
-        FastOp::Return { stack_adjust } => {
-            return Some(exec_return(state, memory, context, stack_adjust));
-        }
-        // PERF-33 (E4), group G6: the arm of the general path (`exec_imul`), then the common tail
-        // below (the flag definedness of `Imul`, RIP, `Advanced`; a fault of the source read
-        // leaves everything).
-        FastOp::ImulReg { dst, src, effects } => (
-            exec_imul(
-                state,
-                memory,
-                context,
-                next_rip,
-                dst,
-                Operand::Register(src),
-            ),
-            effects,
-        ),
-        FastOp::ImulMem { dst, src, effects } => (
-            exec_imul(state, memory, context, next_rip, dst, Operand::Memory(src)),
-            effects,
-        ),
-        // PERF-33 (E4), group G6: NOP and the ModRM NOP change nothing but RIP (the general arms are
-        // empty, `transfer` does nothing for `Nop`; the flag definedness is the identity).
-        // `executable` admits `Nop` always and `NopModrm` only under a control-register policy.
-        FastOp::Nop => {
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-        FastOp::NopModrm => {
-            if !control_policy_present {
-                return None;
-            }
-            return Some(retire_without_flag_effects(
-                state,
-                *rflags_defined,
-                instruction,
-                next_rip,
-            ));
-        }
-    };
-    debug_assert_eq!(effects, instruction.flag_effects(), "{instruction:?}");
-    // The common tail of the general path (flag definedness, RIP, `Advanced`).
-    Some(match result {
-        Ok(()) => {
-            *rflags_defined = effects.apply(*rflags_defined);
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
-        Err(error) => Err(error),
-    })
-}
-
-/// PERF-24 (group G4): the arm of `transfer` in the general path after the transfer: success
-/// retires through [`retire_without_flag_effects`]; an architectural fault is the `Fault`
-/// outcome (the transfer wrote nothing, RIP and `rflags_defined` stay); any other memory error is
-/// returned as it is.
-#[inline(always)]
-fn retire_transfer(
-    state: &mut LongModeState,
-    rflags_defined: u64,
-    instruction: &crate::long_decode::Instruction,
-    next_rip: u64,
-    transferred: Result<(), MemoryError>,
-) -> Result<StepOutcome, MemoryError> {
-    match transferred {
-        Ok(()) => retire_without_flag_effects(state, rflags_defined, instruction, next_rip),
-        Err(MemoryError::Architectural(fault)) => Ok(StepOutcome::Fault(fault)),
-        Err(error) => Err(error),
-    }
-}
-
-/// PERF-24: the common tail of the general path for an instruction whose flag definedness is the
-/// identity (`FlagEffects::default()`: MOV, Jcc not taken): `rflags_defined` stays as it is, RIP
-/// goes to the next instruction, `Advanced`. Debug builds check the identity against
-/// `Instruction::flag_effects`, so a later change of the flag table cannot pass unnoticed.
-#[inline(always)]
-fn retire_without_flag_effects(
-    state: &mut LongModeState,
-    rflags_defined: u64,
-    instruction: &crate::long_decode::Instruction,
-    next_rip: u64,
-) -> Result<StepOutcome, MemoryError> {
-    debug_assert_eq!(
-        instruction.flag_effects().apply(rflags_defined),
-        rflags_defined,
-        "{instruction:?}"
-    );
-    let _ = (rflags_defined, instruction);
-    state.rip = next_rip;
-    Ok(StepOutcome::Advanced)
-}
-
-/// PERF-22: one step of the checked loop: the general path runs for real on `memory` through the
-/// recording [`crate::fast_path_check::CheckMemory`], then the checker replays the fast path on a
-/// copy of the state taken before the step and compares (ADR-0017, section 5).
-#[allow(clippy::too_many_arguments)]
-#[inline(never)]
-fn step_checked(
-    checker: &mut crate::fast_path_check::FastPathChecker,
-    state: &mut LongModeState,
-    memory: &mut dyn GuestMemory,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
-) -> Result<StepOutcome, MemoryError> {
-    use crate::fast_path_check::FastPathMode;
-    // The check wins over the switch: the general path must run for real, and the replay of the
-    // `GeneralPath` mode must stay general.
-    let profiles = ExecutionProfiles {
-        fast_path: false,
-        ..profiles
-    };
-    let before = state.clone();
-    let defined_before = *rflags_defined;
-    let policy_present = profiles.control_policy.is_some();
-    let mut recording = checker.record(memory);
-    let outcome = step_configured_with_profile_mode::<false>(
-        state,
-        &mut recording,
-        context,
-        rflags_defined,
-        profiles,
-        runtime,
-    );
-    let mode = checker.mode();
-    checker.finish(
-        recording,
-        before,
-        defined_before,
-        context,
-        state,
-        *rflags_defined,
-        &outcome,
-        |fast_state, replay, context, fast_defined, instruction| match mode {
-            FastPathMode::Tree => try_fast_step(
-                fast_state,
-                replay,
-                context,
-                fast_defined,
-                instruction,
-                policy_present,
-            ),
-            FastPathMode::Custom(draft) => draft(
-                fast_state,
-                replay,
-                context,
-                fast_defined,
-                instruction,
-                policy_present,
-            ),
-            FastPathMode::GeneralPath => {
-                let mut never = || false;
-                Some(step_configured_with_profile_mode::<false>(
-                    fast_state,
-                    replay,
-                    context,
-                    fast_defined,
-                    profiles,
-                    StepRuntime {
-                        rdtsc_source: None,
-                        sti_sequence: None,
-                        exact_hlt_only: false,
-                        stop_requested: &mut never,
-                    },
-                ))
-            }
-        },
-    );
-    outcome
-}
-
-/// One step of the run loop: the plain step, or (`VERIFY`) the checked one.
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-fn step_with_optional_check<const NO_PROFILES: bool, const VERIFY: bool, M: GuestMemory>(
-    checker: &mut Option<crate::fast_path_check::FastPathChecker>,
-    state: &mut LongModeState,
-    memory: &mut M,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
-) -> Result<StepOutcome, MemoryError> {
-    if VERIFY {
-        let checker = checker.as_mut().expect("a checked run creates its checker");
-        step_checked(
-            checker,
-            state,
-            memory,
-            context,
-            rflags_defined,
-            profiles,
-            runtime,
-        )
-    } else {
-        step_configured_with_profile_mode::<NO_PROFILES>(
-            state,
-            memory,
-            context,
-            rflags_defined,
-            profiles,
-            runtime,
-        )
-    }
-}
-
-/// `BLOCKS` (PERF-31, ADR-0018, variant (a), prototype): the instance that runs the fast path from
-/// the predecoded blocks of the memory (see [`crate::predecoded_block`]); every other instance has
-/// no code for them. `BLOCK_VERIFY` (PERF-33, E5, step 4; only with `BLOCKS`): the instance that
-/// checks the blocks instead: every instruction runs through the general step, and its fresh decode
-/// is compared with the block's.
-fn run_configured_with_profile_mode<
-    const NO_PROFILES: bool,
-    const VERIFY: bool,
-    const BLOCKS: bool,
-    const BLOCK_VERIFY: bool,
-    M: GuestMemory,
->(
+fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
     state: &mut LongModeState,
     memory: &mut M,
     config: RunConfig,
@@ -36049,17 +35058,6 @@ fn run_configured_with_profile_mode<
     }
     let mut sti_sequence = sti_profile.map(|_| StiSequenceProgress::new(state));
     let mut retired = 0;
-    // PERF-22: only the checked instance of the loop has a checker.
-    let mut checker = VERIFY.then(crate::fast_path_check::FastPathChecker::new);
-    // PERF-31: the block the instance with blocks is running, if any.
-    let mut block_cursor: Option<crate::predecoded_block::BlockCursor> = None;
-    // PERF-33 (E4, step 2): the instance with blocks tells a counting memory (`--block-stats`)
-    // of every instruction the general step retired; asked once, so a run that does not count only
-    // tests this local.
-    let block_stats = BLOCKS && memory.block_stats_counted();
-    // E10 (ADR-0018, «Дополнение E10», decision 3, variant Д2 of the screening F100): the dynamic
-    // admission once per pass of a block, only where the memory allows it for this call.
-    let admit_once = BLOCKS && !BLOCK_VERIFY && memory.block_admission_once();
     loop {
         // The harness address is checked first; STOP then budget are checked
         // before fetch at every instruction boundary. A fault does not retire.
@@ -36073,40 +35071,8 @@ fn run_configured_with_profile_mode<
             Some(RunExit::Halted)
         } else {
             let old_shadow = state.sti_shadow;
-            // PERF-33 (E5, step 4): the instance that checks the blocks only finds the instruction
-            // the block walk has for this RIP; the general step below runs it.
-            let block_check_rip = state.rip;
-            let block_expected = if BLOCK_VERIFY {
-                crate::predecoded_block::block_check_expect(
-                    &mut block_cursor,
-                    state,
-                    memory,
-                    config.context,
-                )
-            } else {
-                None
-            };
-            // PERF-31: the instance with blocks runs the fast path from a block first; `None` (no
-            // block, or the fast path refused, before any effect) leaves the instruction to the
-            // general step below, as without blocks.
-            let mut from_block = false;
-            let outcome = if BLOCKS
-                && !BLOCK_VERIFY
-                && let Some(outcome) = crate::predecoded_block::block_step(
-                    &mut block_cursor,
-                    state,
-                    memory,
-                    config.context,
-                    &mut rflags_defined,
-                    admit_once,
-                ) {
-                #[cfg(debug_assertions)]
-                crate::fast_path_check::note_fast_step_taken();
-                from_block = true;
-                outcome
-            } else if let Some(source) = rdtsc_source.take() {
-                let outcome = step_with_optional_check::<NO_PROFILES, VERIFY, _>(
-                    &mut checker,
+            let outcome = if let Some(source) = rdtsc_source.take() {
+                let outcome = step_configured_with_profile_mode::<NO_PROFILES>(
                     state,
                     memory,
                     config.context,
@@ -36122,8 +35088,7 @@ fn run_configured_with_profile_mode<
                 *rdtsc_source = Some(source);
                 outcome
             } else {
-                step_with_optional_check::<NO_PROFILES, VERIFY, _>(
-                    &mut checker,
+                step_configured_with_profile_mode::<NO_PROFILES>(
                     state,
                     memory,
                     config.context,
@@ -36137,69 +35102,6 @@ fn run_configured_with_profile_mode<
                     },
                 )
             };
-            // PERF-33 (E5, step 4): the fresh decode of the step against the block; the first
-            // divergence ends the run, its report in the exit and in
-            // `predecoded_block::take_block_check_divergence`.
-            if BLOCK_VERIFY
-                && let Some(report) = crate::predecoded_block::block_check_after(
-                    &mut block_cursor,
-                    block_expected,
-                    block_check_rip,
-                    &outcome,
-                    state,
-                    memory,
-                )
-            {
-                return RunResult {
-                    exit: RunExit::MemoryError(MemoryError::Backend(report)),
-                    instructions_executed: retired,
-                    rflags_defined,
-                };
-            }
-            // PERF-22: the first divergence of the checked loop ends the run; the report is in
-            // the exit and in `fast_path_check::take_divergence`.
-            if VERIFY
-                && let Some(failure) = checker
-                    .as_ref()
-                    .and_then(crate::fast_path_check::FastPathChecker::failure)
-            {
-                return RunResult {
-                    exit: RunExit::MemoryError(MemoryError::Backend(failure.to_owned())),
-                    instructions_executed: retired,
-                    rflags_defined,
-                };
-            }
-            // E9 (ADR-0019, section 2.1): the short boundary inside a pass of a block. After an
-            // instruction a block ran (`Advanced`) whose next one is the next of the same block,
-            // below the budget of the call, the memory may answer for the whole boundary: then the
-            // caller's check and the checks of the tail below (the shadow, the CPU-owned MOV CR3,
-            // the committed IRETQ, HLT, the admission key), which no instruction of a block can
-            // change (ADR-0019, section 1), are skipped. Every other boundary is the full one.
-            if BLOCKS
-                && !BLOCK_VERIFY
-                && from_block
-                && matches!(outcome, Ok(StepOutcome::Advanced))
-                && retired + 1 != config.instruction_budget
-                && batch.is_some()
-                && let Some(index) = crate::predecoded_block::block_pass_goes_on(&block_cursor)
-                && memory.block_pass_boundary(state.rip, index)
-            {
-                retired += 1;
-                debug_assert!(old_shadow != Some(crate::StiShadow::Blocking));
-                debug_assert!(batch.as_ref().is_some_and(|batch| batch.key.holds(state)));
-                debug_assert!(
-                    profiles
-                        .cpu_owned_cr3
-                        .is_none_or(|effect| effect.get().is_none())
-                );
-                debug_assert!(
-                    !profiles
-                        .iretq_user_entry
-                        .is_some_and(|boundary| boundary.committed.get())
-                );
-                debug_assert!(state.activity != Some(crate::CpuActivity::Halted));
-                continue;
-            }
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
                     // The CPL0 profile set's shadow sources are MOV SS and, under
@@ -36210,9 +35112,6 @@ fn run_configured_with_profile_mode<
                         state.sti_shadow = Some(crate::StiShadow::Clear);
                     }
                     retired += 1;
-                    if block_stats && !from_block {
-                        memory.block_general_retired(block_check_rip, config.context);
-                    }
                     // Stop right after a retired CPU-owned MOV CR3, before the
                     // next fetch; the effect stays in the cell for the caller.
                     if profiles
@@ -36442,7 +35341,6 @@ pub fn step_with_cr0_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -36848,7 +35746,6 @@ fn step_tracked_with_profiles_and_rdtsc(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -37012,7 +35909,6 @@ pub fn run_with_comisd_ucomisd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -37400,7 +36296,6 @@ fn run_with_comparison_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -37566,7 +36461,6 @@ pub fn run_with_sqrtss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -37730,7 +36624,6 @@ pub fn run_with_sqrtsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -37894,7 +36787,6 @@ pub fn run_with_sqrtps_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -38058,7 +36950,6 @@ pub fn run_with_sqrtpd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -38227,7 +37118,6 @@ fn run_with_subpd_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -38446,7 +37336,6 @@ pub fn run_with_mulpd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -38613,7 +37502,6 @@ fn run_with_addpd_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -38810,7 +37698,6 @@ fn run_with_mulpd_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39029,7 +37916,6 @@ pub fn run_with_addsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39193,7 +38079,6 @@ pub fn run_with_divpd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39390,7 +38275,6 @@ fn run_with_divpd_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39554,7 +38438,6 @@ pub fn run_with_addss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39752,7 +38635,6 @@ fn run_with_addss_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -39949,7 +38831,6 @@ fn run_with_addsd_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -40149,7 +39030,6 @@ fn run_with_addps_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -40313,7 +39193,6 @@ pub fn run_with_divsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -40513,7 +39392,6 @@ fn run_with_divps_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -40677,7 +39555,6 @@ pub fn run_with_divss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -40841,7 +39718,6 @@ pub fn run_with_mulsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -41005,7 +39881,6 @@ pub fn run_with_mulss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -41205,7 +40080,6 @@ fn run_with_mulps_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -41369,7 +40243,6 @@ pub fn run_with_subsd_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -41533,7 +40406,6 @@ pub fn run_with_subss_register_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -41697,7 +40569,6 @@ fn run_with_scalar_float_memory_rax_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -42105,7 +40976,6 @@ fn run_with_subps_profile(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -42268,7 +41138,6 @@ pub fn run_with_cvtpd2ps_memory_controls(
             sti_cpl0: false,
             int3_cpl0: false,
             iretq_user_entry: None,
-            fast_path: false,
             cr4: None,
         },
         StepRuntime {
@@ -43026,7 +41895,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         sti_cpl0,
         int3_cpl0,
         iretq_user_entry,
-        fast_path: fast_path_enabled,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -43315,18 +42183,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
-    // PERF-23/24 (ADR-0017, section 3): the fast path of groups G1-G4, right after the decode and
-    // before the chain of conditions below. Only the CPL0 profile set enables it. `None` is "not
-    // handled", before any side effect, and the general path continues unchanged.
-    if fast_path_enabled
-        && control_policy.is_some()
-        && let Some(outcome) =
-            try_fast_step(state, memory, context, rflags_defined, &instruction, true)
-    {
-        #[cfg(debug_assertions)]
-        crate::fast_path_check::note_fast_step_taken();
-        return outcome;
-    }
     // S2-37: the narrow profile operations of the sixteen arithmetic forms (`AddpsRegister`,
     // `MulsdMemoryRax` and the like) execute only under their own explicit profile. With none of those
     // profiles configured, and outside the CPL0/CPL3 profile set (whose FP member keeps its own state), the
@@ -78954,8 +77810,7 @@ fn conditional_move(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-33, E4, group G6):
-/// the two-operand IMUL r, r/m (`0F AF`). The destination is written and the flags set only after
+/// The two-operand IMUL r, r/m (`0F AF`). The destination is written and the flags set only after
 /// the source read succeeded. The caller maps `MemoryError::Architectural` to a fault.
 #[inline(always)]
 fn exec_imul(
@@ -78974,8 +77829,7 @@ fn exec_imul(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017):
-/// register/memory ALU arithmetic. The caller maps `MemoryError::Architectural` to a fault.
+/// Register/memory ALU arithmetic. The caller maps `MemoryError::Architectural` to a fault.
 #[allow(clippy::too_many_arguments)]
 fn exec_arithmetic(
     state: &mut LongModeState,
@@ -79008,7 +77862,7 @@ fn exec_arithmetic(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017): logic operations.
+/// Logic operations.
 #[allow(clippy::too_many_arguments)]
 fn exec_logic(
     state: &mut LongModeState,
@@ -79039,8 +77893,7 @@ fn exec_logic(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017): shifts and
-/// SHLD/SHRD, including the flag definedness update after the destination write.
+/// Shifts and SHLD/SHRD, including the flag definedness update after the destination write.
 #[allow(clippy::too_many_arguments)]
 fn exec_shift(
     state: &mut LongModeState,
@@ -79092,8 +77945,7 @@ fn exec_shift(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017): the target of a
-/// relative `Jcc`/`JMP`; a non-canonical target is a #GP fault.
+/// The target of a relative `Jcc`/`JMP`; a non-canonical target is a #GP fault.
 fn relative_target(next_rip: u64, displacement: i32) -> Result<u64, ArchitecturalFault> {
     let target = next_rip.wrapping_add_signed(i64::from(displacement));
     if !canonical(target) {
@@ -79105,7 +77957,6 @@ fn relative_target(next_rip: u64, displacement: i32) -> Result<u64, Architectura
     Ok(target)
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5):
 /// PUSH/POP of an opcode-encoded register (`Operation::StackRegister`), 16- or 64-bit. PUSH reads
 /// the source before RSP changes (PUSH SP/RSP pushes the old value), writes the slot below RSP and
 /// only then moves RSP (`push_stack_value`); POP reads the slot at RSP, advances RSP and then
@@ -79135,8 +77986,7 @@ fn exec_stack_register(
     Ok(())
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5): the
-/// near relative `CALL rel32` (`E8`). The target is checked first (`relative_target`: a
+/// The near relative `CALL rel32` (`E8`). The target is checked first (`relative_target`: a
 /// non-canonical target is #GP(0) with no memory call); then the return address is pushed
 /// (`push_stack_value`: #SS(0) for a non-canonical slot before the call, a failed write commits
 /// nothing); RIP moves only after the push. `Branched`, `rflags_defined` untouched.
@@ -79159,8 +78009,7 @@ fn exec_call(
     Ok(StepOutcome::Branched)
 }
 
-/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-25, group G5): the
-/// near `RET` / `RET imm16` (`C3`/`C2`). The qword slot at RSP is checked (#SS(0) before any
+/// The near `RET` / `RET imm16` (`C3`/`C2`). The qword slot at RSP is checked (#SS(0) before any
 /// memory call) and read; a non-canonical return address is #GP(0) after that read with nothing
 /// committed; then RSP moves past the slot and the immediate, and RIP to the target. `Branched`,
 /// `rflags_defined` untouched.
@@ -79193,89 +78042,9 @@ fn exec_return(
     Ok(StepOutcome::Branched)
 }
 
-/// PERF-25, group G5 (ADR-0017, section 1): an ALU operation (`Arithmetic`/`Logic`) whose
-/// destination is memory and whose source is a register or an immediate, in the fast path. The
-/// same calls as `exec_arithmetic`/`exec_logic` → `read_rmw_destination` (CPL0: a plain
-/// `read_integer`) → `write_operand`, in the same order, without their operand dispatch and with
-/// one address computation instead of two: the address check of `access_address_48` (#GP(0), or
-/// #SS(0) for an RSP/RBP base, or the range error, before any memory call) depends only on the
-/// state, which nothing changes between the read and the write, so the second check of the general
-/// path cannot give another answer. Then one `read_integer` of the operand width, the result and
-/// flags from `compute` (`arithmetic_result`/`logic_result`), one `write_integer` unless the
-/// operation only compares (CMP/TEST), and the flags last: a failed read or write (#PF after the
-/// read included) commits neither memory nor flags.
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-fn fast_alu_into_memory(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    next_rip: u64,
-    destination: MemoryOperand,
-    rhs: u64,
-    writes: bool,
-    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
-) -> Result<(), MemoryError> {
-    let address = destination.access_address_48(state, next_rip)?;
-    let lhs = memory.read_integer(address, context, destination.size)?;
-    let (result, flags) = compute(lhs, rhs, state.rflags);
-    if writes {
-        memory.write_integer(address, context, destination.size, result)?;
-    }
-    state.rflags = flags;
-    Ok(())
-}
-
-/// PERF-25, group G5: an ALU operation with a register destination and a memory source in the fast
-/// path: the register (no memory call), then `read_memory_operand` (the memory arm of
-/// `read_operand`), the result and flags from `compute`, the register write unless the operation
-/// only compares, the flags. A failed read commits nothing.
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-fn fast_alu_from_memory(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    next_rip: u64,
-    destination: RegisterView,
-    source: MemoryOperand,
-    writes: bool,
-    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
-) -> Result<(), MemoryError> {
-    let lhs = state.read(destination);
-    let rhs = read_memory_operand(state, memory, context, next_rip, source)?;
-    let (result, flags) = compute(lhs, rhs, state.rflags);
-    if writes {
-        state.write(destination, result);
-    }
-    state.rflags = flags;
-    Ok(())
-}
-
-/// E10 (ADR-0018, «Дополнение E10», deviation 1): an ALU operation with a register destination and a
-/// register or immediate source (`rhs`, already read) in the fast path: the pieces of
-/// `exec_arithmetic`/`exec_logic` at CPL0 (`read_rmw_destination` is `state.read` there), the
-/// result and flags from `compute`, the register write unless the operation only compares, the
-/// flags. No memory call, no error.
-#[inline(always)]
-fn fast_alu_register(
-    state: &mut LongModeState,
-    destination: RegisterView,
-    rhs: u64,
-    writes: bool,
-    compute: impl FnOnce(u64, u64, u64) -> (u64, u64),
-) {
-    let lhs = state.read(destination);
-    let (result, flags) = compute(lhs, rhs, state.rflags);
-    if writes {
-        state.write(destination, result);
-    }
-    state.rflags = flags;
-}
-
 /// MOVZX/MOVSX/MOVSXD (`Operation::Extend`): the source (`read_operand`, so a memory source is
 /// one `read_integer` of the source width) extended to 64 bits, zero or sign, before the write of
-/// the destination register. Shared by `transfer` and the fast path (PERF-24, group G4).
+/// the destination register.
 #[inline(always)]
 fn extended_source(
     state: &LongModeState,
@@ -79303,7 +78072,7 @@ fn extended_source(
 }
 
 /// LEA: the effective address (no canonical check, no memory call) into the destination register.
-/// Shared by `transfer` and the fast path (PERF-24, group G4).
+/// LEA: the effective address of the memory operand into the destination register.
 #[inline(always)]
 fn exec_lea(state: &mut LongModeState, next_rip: u64, dst: RegisterView, src: MemoryOperand) {
     state.write(dst, src.effective_address(state, next_rip));
@@ -79325,8 +78094,7 @@ fn read_operand(
 
 /// The memory arm of [`read_operand`]: the whole-access address check of the zero-base,
 /// canonical48 profile (a non-canonical byte is #GP(0), or #SS(0) for an RSP/RBP base, before any
-/// memory call), then one `read_integer` of the operand width. PERF-24 (group G4): the fast path
-/// calls it for the memory source of MOV and MOVZX/MOVSX/MOVSXD.
+/// memory call), then one `read_integer` of the operand width.
 #[inline(always)]
 fn read_memory_operand(
     state: &LongModeState,
@@ -79389,8 +78157,7 @@ fn write_operand(
 }
 
 /// The memory arm of [`write_operand`]: the address check of [`read_memory_operand`], then one
-/// `write_integer` of the operand width. PERF-24 (group G4): the fast path calls it for the memory
-/// destination of MOV.
+/// `write_integer` of the operand width.
 #[inline(always)]
 fn write_memory_operand(
     state: &LongModeState,

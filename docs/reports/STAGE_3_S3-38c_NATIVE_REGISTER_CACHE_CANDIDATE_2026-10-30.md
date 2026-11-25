@@ -32,7 +32,7 @@ Command: `python3 tests/cpu/stage3_harness.py --suite local`.
 - Source revision at start: `90f6386fd3931702dff30eb9807ab430c2af02de`. Captured source fingerprint matched at start and end: `ac1556a76b2d4ff6da099f669814598df9a37c76323a9a656354f3d86137a331`.
 - Input-manifest SHA-256: `63288b371c0884684accc36026d0ece94d7cbfa25c4941ccdbb23e327839952b`. Summary SHA-256: `cf6215c2c0b3149bd5130c511cbaab49dc124452ee2178c48bd94140822803b6`.
 - S3-38c gate log hashes: strategy-key isolation `c227d19185dfb7843d3c4ad12c77bba68b43455e2588a6d72feb238f63d8f5c0`; lifecycle/guards `03a9cf947bb66c0e21169ff31cbd1eade7d04f9f444bed7b0e275cbbdbba8249`; cold/hit parity `e0c0b48d45bead5b57f8d462b5e015f1ee810f8034267035b5c29889ff6f6d0d`.
-- Evidence remains in ignored local files: [summary](../../work/stage3-harness/stage3-20261031-025712-17744b3142/summary.json) and [input manifest](../../work/stage3-harness/stage3-20261031-025712-17744b3142/input_manifest.json).
+- Evidence remains in ignored local files: summary (`work/stage3-harness/stage3-20261031-025712-17744b3142/summary.json`) and input manifest (`work/stage3-harness/stage3-20261031-025712-17744b3142/input_manifest.json`).
 
 The report was updated after the harness completed to capture its result, so
 the final evidence text is not part of the run's source fingerprint. The

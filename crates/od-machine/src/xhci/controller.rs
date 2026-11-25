@@ -1197,7 +1197,7 @@ impl XhciHandle {
         self.dirty.load(Ordering::Relaxed)
     }
 
-    /// E9 (ADR-0019, section 2.4): the flag of [`Self::wakeup_pending`] itself.
+    /// The flag of [`Self::wakeup_pending`] itself (the board's `stop` reads it).
     pub(crate) fn wakeup_flag(&self) -> &AtomicBool {
         &self.dirty
     }
