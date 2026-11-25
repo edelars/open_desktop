@@ -25,7 +25,37 @@ use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessReque
 use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};
 use od_isa::memory::{AccessContext, AccessKind};
 use od_isa::LongModeState;
-use std::collections::HashMap;
+use std::collections::HashMap as StdHashMap;
+use std::collections::HashSet as StdHashSet;
+
+/// A multiply-rotate hasher for integer keys (the maps here are keyed by RIPs and pages).
+#[derive(Default, Clone, Copy)]
+pub(crate) struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type Fx = std::hash::BuildHasherDefault<FxHasher>;
+pub(crate) type HashMap<K, V> = StdHashMap<K, V, Fx>;
+pub(crate) type HashSet<K> = StdHashSet<K, Fx>;
 
 pub(crate) const TLB_BITS: u32 = 8;
 pub(crate) const TLB_SIZE: usize = 1 << TLB_BITS;
@@ -42,6 +72,9 @@ pub(crate) const EXIT_RDTSC: u64 = 4;
 pub(crate) const EXIT_FLUSH: u64 = 5;
 /// A REP string instruction ran `REP_ITERATION_WORK_LIMIT` iterations and did not retire.
 pub(crate) const EXIT_REP_PARTIAL: u64 = 6;
+/// An RDTSC retired and its boundary belongs to the set loop (no fast transition, or an
+/// interrupt to deliver there).
+pub(crate) const EXIT_BOUNDARY: u64 = 7;
 
 /// Memory helper op bits.
 pub(crate) const OP_WRITE: u64 = 0x10;
@@ -95,6 +128,15 @@ pub(crate) struct TurboCtx {
     pub rep_helper: usize,   // 88
     /// The visible ES, CS, SS, DS, FS, GS selectors (bit 16: modelled), copied at the start of a run.
     pub selectors: [u32; 6], // 96
+    pub rdtsc_helper: usize, // 120
+    /// The budget at the start of the current segment (after the last RDTSC transition).
+    pub seg_start: i64,
+    /// Instructions retired by the run in the segments before the current one.
+    pub run_retired: u64,
+    /// The interrupt source has a vector held back by IF = 0 (every boundary counts a refusal).
+    pub masked: u64,
+    pub div_helper: usize, // 152
+    pub sti_helper: usize, // 160
 }
 
 pub(crate) const CTX_BUDGET: u32 = 0;
@@ -108,6 +150,10 @@ pub(crate) const CTX_LOOKUP: u32 = 56;
 pub(crate) const CTX_MEM_HELPER: u32 = 64;
 pub(crate) const CTX_REP_HELPER: u32 = 88;
 pub(crate) const CTX_SELECTORS: u32 = 96;
+pub(crate) const CTX_RDTSC_HELPER: u32 = 120;
+pub(crate) const CTX_SEG_START: u32 = 128;
+pub(crate) const CTX_DIV_HELPER: u32 = 152;
+pub(crate) const CTX_STI_HELPER: u32 = 160;
 
 /// What a run needs from the set loop (borrowed for the duration of one run).
 pub(crate) struct RunEnv<'a> {
@@ -117,6 +163,21 @@ pub(crate) struct RunEnv<'a> {
     /// Set by the memory helper when a data write hit a page the engine watches.
     pub flush_pending: bool,
     pub engine: *mut TurboEngine,
+    /// The RDTSC source of the set loop.
+    pub rdtsc: Option<*mut (dyn FnMut() -> u64 + 'static)>,
+    /// The board's fast transition between RDTSC quanta.
+    pub fast: Option<
+        *mut (dyn FnMut(FastQuantumEnd, Option<&dyn crate::irq_source::BoardIrqSource>) -> Option<FastQuantumStart>
+             + 'static),
+    >,
+    /// The interrupt hook of the set loop.
+    pub irq: Option<*mut crate::irq_source::IrqBoundaryHook<'static>>,
+    /// The set loop's retired count when the run started.
+    pub executed_at_start: u64,
+    /// The set loop's `quantum_base` and `instruction_budget`.
+    pub quantum_base: *mut u64,
+    pub instruction_budget: *mut u64,
+    pub cpl: usize,
 }
 
 #[repr(C)]
@@ -268,13 +329,15 @@ pub(crate) struct TurboEngine {
     rtlb: Box<[TlbEntry]>,
     wtlb: Box<[TlbEntry]>,
     lookup: Box<[LookupEntry]>,
+    /// The physical page of each lookup entry's code.
+    lookup_page: Box<[u64]>,
     blocks: HashMap<(u64, u64), BlockInfo>,
     /// Physical page -> keys of the blocks on it.
     code_pages: HashMap<u64, Vec<(u64, u64)>>,
     /// Physical page -> bitmap of its bytes that compiled instructions came from.
     code_bytes: HashMap<u64, Box<[u64; 64]>>,
     /// Physical pages known to be page-table frames of cached translations.
-    pt_frames: std::collections::HashSet<u64>,
+    pt_frames: HashSet<u64>,
     offsets: StateOffsets,
     paging_key: Option<(Long64ProbeConfig, u64)>,
     singles: HashMap<(u64, u64), BlockInfo>,
@@ -305,6 +368,8 @@ pub struct TurboStats {
     pub flushes: u64,
     pub code_invalidations: u64,
     pub general_steps: u64,
+    pub code_writes: u64,
+    pub noted_writes: u64,
 }
 
 impl TurboEngine {
@@ -338,6 +403,12 @@ impl TurboEngine {
             status: 0,
             rep_helper: rep_helper as usize,
             selectors: [0; 6],
+            rdtsc_helper: rdtsc_helper as usize,
+            seg_start: 0,
+            run_retired: 0,
+            masked: 0,
+            div_helper: div_helper as usize,
+            sti_helper: sti_helper as usize,
         });
         let mut engine = Box::new(Self {
             arena,
@@ -351,20 +422,21 @@ impl TurboEngine {
             rtlb,
             wtlb,
             lookup,
-            blocks: HashMap::new(),
-            code_pages: HashMap::new(),
-            code_bytes: HashMap::new(),
-            pt_frames: std::collections::HashSet::new(),
+            lookup_page: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
+            blocks: HashMap::default(),
+            code_pages: HashMap::default(),
+            code_bytes: HashMap::default(),
+            pt_frames: HashSet::default(),
             offsets,
             paging_key: None,
-            singles: HashMap::new(),
-            slow_insns: HashMap::new(),
+            singles: HashMap::default(),
+            slow_insns: HashMap::default(),
             slow_decode: None,
             pending_decodes: Vec::new(),
             last_page: u64::MAX,
             collect_slow: std::env::var_os("OD_TURBO_STATS").is_some(),
             debug: std::env::var("OD_TURBO_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            slow_kinds: HashMap::new(),
+            slow_kinds: HashMap::default(),
             stats: TurboStats::default(),
         });
         engine.emit_stubs();
@@ -507,11 +579,23 @@ impl TurboEngine {
             return false;
         };
         let end = (offset + len).min(4096);
-        (offset..end).any(|byte| map[(byte / 64) as usize] & (1 << (byte % 64)) != 0)
+        let mut byte = offset;
+        while byte < end {
+            let word = (byte / 64) as usize;
+            let bit = byte % 64;
+            let take = (64 - bit).min(end - byte);
+            let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << bit };
+            if map[word] & mask != 0 {
+                return true;
+            }
+            byte += take;
+        }
+        false
     }
 
     /// A write of `[address, address + len)` (guest physical): drop the blocks it changes.
     fn note_code_write(&mut self, ram: &PhysicalMemory, address: u64, len: u64) {
+        self.stats.code_writes += 1;
         if len == 0 {
             return;
         }
@@ -547,6 +631,7 @@ impl TurboEngine {
 
     /// Writes committed outside generated code (the general path, deliveries, devices).
     pub(crate) fn note_writes(&mut self, ram: &PhysicalMemory, ranges: &[GuestPhysicalRange]) {
+        self.stats.noted_writes += ranges.len() as u64;
         let mut flush = false;
         for range in ranges {
             if range.len() == 0 {
@@ -583,12 +668,13 @@ impl TurboEngine {
         }
     }
 
-    fn install(&mut self, rip: u64, code: usize) {
+    fn install(&mut self, rip: u64, code: usize, page: u64) {
         let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
         self.lookup[index] = LookupEntry {
             rip,
             code: code as u64,
         };
+        self.lookup_page[index] = page;
     }
 
     /// The code for `rip`: an existing block, a fresh one, or the slow/RDTSC stub. `None` when
@@ -618,7 +704,7 @@ impl TurboEngine {
         }
         if let Some(info) = self.blocks.get(&(rip, page)) {
             let code = info.code;
-            self.install(rip, code);
+            self.install(rip, code, page);
             return Some(code);
         }
         let host_page = env.ram.ram_page_host_ptr(physical)?;
@@ -655,7 +741,13 @@ impl TurboEngine {
                 }
                 code
             }
-            jit::Compiled::Slow => self.slow_stub,
+            jit::Compiled::Slow => {
+                // Remembered like a block, so that a flush of the lookup table does not
+                // translate it again.
+                self.blocks.insert((rip, page), BlockInfo { code: self.slow_stub, page });
+                self.code_pages.entry(page).or_default().push((rip, page));
+                self.slow_stub
+            }
             jit::Compiled::Rdtsc => self.rdtsc_stub,
             jit::Compiled::Crossing => match self.crossing_block(env, rip, physical) {
                 Some(code) => code,
@@ -676,7 +768,7 @@ impl TurboEngine {
                 return None;
             }
         };
-        self.install(rip, code);
+        self.install(rip, code, page);
         Some(code)
     }
 
@@ -846,6 +938,7 @@ impl TurboEngine {
         state: &mut LongModeState,
         rflags_defined: &mut u64,
         budget: u64,
+        masked: bool,
     ) -> TurboOutcome {
         self.stats.runs += 1;
         self.drain_code_watch(env.ram);
@@ -871,7 +964,9 @@ impl TurboEngine {
             known(Some(state.fs_selector)),
             known(Some(state.gs_selector)),
         ];
-        let start_budget = self.ctx.budget;
+        self.ctx.seg_start = self.ctx.budget;
+        self.ctx.run_retired = 0;
+        self.ctx.masked = masked as u64;
         let mut exit = TurboExit::Budget;
         loop {
             if self.ctx.budget <= 0 {
@@ -941,6 +1036,10 @@ impl TurboEngine {
                                     exit = TurboExit::RepPartial;
                                     break;
                                 }
+                                EXIT_BOUNDARY => {
+                                    exit = TurboExit::Budget;
+                                    break;
+                                }
                                 EXIT_FLUSH => {
                                     self.flush_translations();
                                     continue;
@@ -964,6 +1063,10 @@ impl TurboEngine {
                 }
                 EXIT_REP_PARTIAL => {
                     exit = TurboExit::RepPartial;
+                    break;
+                }
+                EXIT_BOUNDARY => {
+                    exit = TurboExit::Budget;
                     break;
                 }
                 EXIT_FLUSH => {
@@ -1006,12 +1109,24 @@ impl TurboEngine {
         }
         state.rflags = flags;
         *rflags_defined = (*rflags_defined & !ARITH) | (self.ctx.defined & ARITH);
-        let retired = (start_budget - self.ctx.budget.max(0)) as u64;
+        let last = (self.ctx.seg_start - self.ctx.budget.max(0)) as u64;
+        let retired = self.ctx.run_retired + last;
+        // Every boundary between two instructions of the last segment polled the source.
+        if self.ctx.masked != 0 && last > 1 {
+            if let Some(irq) = env.irq {
+                // SAFETY: the hook of the set loop, alive for the run.
+                unsafe { (*irq).counters.irq_refused_masked += last - 1 };
+            }
+        }
         self.ctx.env = std::ptr::null_mut();
         if exit == TurboExit::Slow {
             self.stats.slow_exits += 1;
             let rip = state.rip;
-            self.slow_decode = crate::page_walk::translate_long64_2m_ram_read_only(
+            let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
+            let known_page = (self.lookup[index].rip == rip).then(|| self.lookup_page[index]);
+            self.slow_decode = if let Some(page) = known_page {
+                self.slow_insns.get(&(rip, page)).copied().map(|instruction| (rip, instruction))
+            } else { crate::page_walk::translate_long64_2m_ram_read_only(
                 env.ram,
                 &env.paging,
                 rip,
@@ -1021,7 +1136,7 @@ impl TurboEngine {
             )
             .ok()
             .and_then(|physical| self.slow_insns.get(&(rip, physical.get() >> 12)).copied())
-            .map(|instruction| (rip, instruction));
+            .map(|instruction| (rip, instruction)) };
         }
         self.stats.retired += retired;
         TurboOutcome { retired, exit }
@@ -1443,4 +1558,190 @@ pub(crate) fn tlb_host(tlb: *const TlbEntry, address: u64, len: usize) -> Option
     // SAFETY: `tlb` points at the TLB_SIZE entries of the live engine.
     let entry = unsafe { *tlb.add((page as usize) & (TLB_SIZE - 1)) };
     (entry.tag == page).then(|| address.wrapping_add(entry.addend) as *mut u8)
+}
+
+/// RDTSC of generated code at `rip` (bare `0F 31`), `remaining` instructions of budget left before
+/// it. It retires here (the source of the set loop gives the value and raises the tick), which ends
+/// the quantum; the board's fast transition then starts the next one at the boundary after it, and
+/// that boundary polls the interrupt source as the loop would. Returns the budget of the new
+/// quantum (the generated code goes on), or -1 (the boundary belongs to the loop: an interrupt to
+/// deliver, or no fast transition), or -3 (no source: the general path runs the instruction).
+unsafe extern "C" fn rdtsc_helper(
+    ctx: *mut TurboCtx,
+    state: *mut LongModeState,
+    rip: u64,
+    remaining: i64,
+) -> i64 {
+    // SAFETY: called only from generated code during `TurboEngine::run`.
+    let ctx = unsafe { &mut *ctx };
+    let env = unsafe { &mut *ctx.env };
+    let state = unsafe { &mut *state };
+    let Some(source) = env.rdtsc else {
+        return -3;
+    };
+    use od_isa::Register;
+    // SAFETY: the source closure of the set loop, alive for the run.
+    let value = unsafe { (*source)() };
+    state.gpr[Register::Rax as usize] = u64::from(value as u32);
+    state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
+    state.rip = rip.wrapping_add(2);
+    // The segment that ends with this RDTSC.
+    let segment = (ctx.seg_start - remaining) as u64 + 1;
+    if ctx.masked != 0 && segment > 1 {
+        if let Some(irq) = env.irq {
+            // SAFETY: the hook of the set loop.
+            unsafe { (*irq).counters.irq_refused_masked += segment - 1 };
+        }
+    }
+    ctx.run_retired += segment;
+    // Nothing of this segment is left to count at the end of the run.
+    ctx.seg_start = remaining - 1;
+    let executed = env.executed_at_start + ctx.run_retired;
+    let Some(fast) = env.fast else {
+        return -1;
+    };
+    // SAFETY: the loop's locals, alive for the run.
+    let quantum_base = unsafe { &mut *env.quantum_base };
+    let instruction_budget = unsafe { &mut *env.instruction_budget };
+    if executed <= *quantum_base {
+        return -1;
+    }
+    let irq = env.irq.map(|irq| unsafe { &mut *irq });
+    let start = {
+        let source = irq
+            .as_ref()
+            .map(|hook| &*hook.source as &dyn crate::irq_source::BoardIrqSource);
+        // SAFETY: the board's closure, alive for the run.
+        unsafe {
+            (*fast)(
+                FastQuantumEnd {
+                    retired: executed - *quantum_base,
+                    cpl: env.cpl,
+                },
+                source,
+            )
+        }
+    };
+    let Some(start) = start else {
+        return -1;
+    };
+    *quantum_base = executed;
+    *instruction_budget = executed + start.budget;
+    let mut masked = false;
+    if let Some(hook) = irq {
+        hook.polled = None;
+        hook.skip_first_boundary = false;
+        if start.cut_by_deadline {
+            hook.counters.quantum_cut_by_deadline += 1;
+        }
+        // The first boundary of the new quantum.
+        if crate::paged_memory_adapter::poll_pending_irq(hook, state).is_some() {
+            // Deliverable: the loop delivers it at this boundary (its poll answers the same).
+            hook.polled = None;
+            ctx.seg_start = start.budget as i64;
+            ctx.masked = 0;
+            return -2;
+        }
+        masked = hook.polled.is_some_and(|polled| polled.vector.is_some())
+            && state.rflags & (1 << 9) == 0;
+    }
+    ctx.masked = masked as u64;
+    ctx.seg_start = start.budget as i64;
+    start.budget as i64
+}
+
+/// DIV/IDIV of generated code: RDX:RAX (EDX:EAX) by `divisor`; params: size | 0x100 signed.
+/// Returns 0 (done) or 1 (#DE: the general path raises it; nothing changed).
+unsafe extern "C" fn div_helper(state: *mut LongModeState, divisor: u64, params: u64) -> u64 {
+    // SAFETY: called only from generated code during a run.
+    let state = unsafe { &mut *state };
+    use od_isa::Register;
+    let size = params & 0xff;
+    let signed = params & 0x100 != 0;
+    let rax = state.gpr[Register::Rax as usize];
+    let rdx = state.gpr[Register::Rdx as usize];
+    if size == 8 {
+        if signed {
+            let dividend = ((u128::from(rdx) << 64) | u128::from(rax)) as i128;
+            let divisor = divisor as i64 as i128;
+            if divisor == 0 {
+                return 1;
+            }
+            let Some(quotient) = dividend.checked_div(divisor) else {
+                return 1;
+            };
+            if quotient > i128::from(i64::MAX) || quotient < i128::from(i64::MIN) {
+                return 1;
+            }
+            let remainder = dividend - quotient * divisor;
+            state.gpr[Register::Rax as usize] = quotient as i64 as u64;
+            state.gpr[Register::Rdx as usize] = remainder as i64 as u64;
+        } else {
+            let dividend = (u128::from(rdx) << 64) | u128::from(rax);
+            if divisor == 0 {
+                return 1;
+            }
+            let quotient = dividend / u128::from(divisor);
+            if quotient > u128::from(u64::MAX) {
+                return 1;
+            }
+            state.gpr[Register::Rax as usize] = quotient as u64;
+            state.gpr[Register::Rdx as usize] = (dividend % u128::from(divisor)) as u64;
+        }
+    } else {
+        let low = rax & 0xffff_ffff;
+        let high = rdx & 0xffff_ffff;
+        let divisor = divisor & 0xffff_ffff;
+        if signed {
+            let dividend = ((high << 32) | low) as i64;
+            let divisor = divisor as u32 as i32 as i64;
+            if divisor == 0 {
+                return 1;
+            }
+            let Some(quotient) = dividend.checked_div(divisor) else {
+                return 1;
+            };
+            if quotient > i64::from(i32::MAX) || quotient < i64::from(i32::MIN) {
+                return 1;
+            }
+            let remainder = dividend - quotient * divisor;
+            state.gpr[Register::Rax as usize] = u64::from(quotient as i32 as u32);
+            state.gpr[Register::Rdx as usize] = u64::from(remainder as i32 as u32);
+        } else {
+            let dividend = (high << 32) | low;
+            if divisor == 0 {
+                return 1;
+            }
+            let quotient = dividend / divisor;
+            if quotient > u64::from(u32::MAX) {
+                return 1;
+            }
+            state.gpr[Register::Rax as usize] = quotient;
+            state.gpr[Register::Rdx as usize] = dividend % divisor;
+        }
+    }
+    0
+}
+
+/// STI of generated code (bare `FB` at CPL0, the shadow clear before it): IF = 1, and the
+/// one-instruction shadow when IF was 0.
+unsafe extern "C" fn sti_helper(state: *mut LongModeState) {
+    // SAFETY: called only from generated code during a run.
+    let state = unsafe { &mut *state };
+    let was_enabled = state.rflags & (1 << 9) != 0;
+    state.rflags |= 1 << 9;
+    state.sti_shadow = Some(if was_enabled {
+        od_isa::StiShadow::Clear
+    } else {
+        od_isa::StiShadow::Blocking
+    });
+}
+
+/// Admission of one instruction of generated code in the STI shadow (it clears after it).
+pub(crate) fn admits_in_shadow(state: &LongModeState) -> bool {
+    const TF: u64 = 1 << 8;
+    const RF: u64 = 1 << 16;
+    state.rflags & (TF | RF) == 0
+        && state.sti_shadow == Some(od_isa::StiShadow::Blocking)
+        && state.activity.is_none_or(|activity| activity == od_isa::CpuActivity::Running)
 }

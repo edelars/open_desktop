@@ -3410,33 +3410,71 @@ fn run_cpl0_set_loop_impl<
                 None => true,
                 Some(polled) => polled.is_some(),
             };
+            let in_shadow = crate::turbo::admits_in_shadow(state);
             if turbo_force_slow != Some(state.rip)
                 && !cpl3
                 && known
-                && crate::turbo::admits(state)
+                && (crate::turbo::admits(state) || in_shadow)
             {
                 let masked = polled.flatten().is_some_and(|polled| polled.vector.is_some())
                     && state.rflags & RFLAGS_IF == 0;
+                // SAFETY (the transmutes): lifetimes only; every pointer is used by `run` alone,
+                // while the loop does nothing else with what it points at.
+                let rdtsc_ptr = rdtsc.as_deref_mut().map(|source| unsafe {
+                    std::mem::transmute::<&mut dyn FnMut() -> u64, *mut (dyn FnMut() -> u64 + 'static)>(source)
+                });
+                let fast_ptr = hook.fast_quantum.as_deref_mut().map(|fast| unsafe {
+                    std::mem::transmute::<
+                        &mut dyn FnMut(
+                            crate::turbo::FastQuantumEnd,
+                            Option<&dyn crate::irq_source::BoardIrqSource>,
+                        ) -> Option<crate::turbo::FastQuantumStart>,
+                        *mut (dyn FnMut(
+                            crate::turbo::FastQuantumEnd,
+                            Option<&dyn crate::irq_source::BoardIrqSource>,
+                        ) -> Option<crate::turbo::FastQuantumStart>
+                              + 'static),
+                    >(fast)
+                });
+                let irq_ptr = irq.as_mut().map(|irq_hook| unsafe {
+                    std::mem::transmute::<&mut IrqBoundaryHook<'_>, *mut IrqBoundaryHook<'static>>(
+                        irq_hook,
+                    )
+                });
                 let mut env = crate::turbo::RunEnv {
                     ram: bus.ram(),
                     paging,
                     context,
                     flush_pending: false,
                     engine: std::ptr::null_mut(),
+                    rdtsc: rdtsc_ptr,
+                    fast: fast_ptr,
+                    irq: irq_ptr,
+                    executed_at_start: instructions_executed,
+                    quantum_base: &mut quantum_base,
+                    instruction_budget: &mut instruction_budget,
+                    cpl: 0,
                 };
-                let budget = instruction_budget - instructions_executed;
-                let outcome =
-                    hook.engine
-                        .run(&mut env, state, &mut current_rflags_defined, budget);
+                // In the STI shadow: one instruction, then the shadow clears (as after any
+                // retired instruction of the set loop).
+                let budget = if in_shadow {
+                    1
+                } else {
+                    instruction_budget - instructions_executed
+                };
+                let outcome = hook.engine.run(
+                    &mut env,
+                    state,
+                    &mut current_rflags_defined,
+                    budget,
+                    masked && !in_shadow,
+                );
+                if in_shadow && outcome.retired == 1 {
+                    state.sti_shadow = Some(od_isa::StiShadow::Clear);
+                }
                 instructions_executed += outcome.retired;
                 if outcome.retired > 0 {
                     *deliveries_without_retirement = 0;
-                }
-                if masked
-                    && outcome.retired > 1
-                    && let Some(irq_hook) = irq.as_mut()
-                {
-                    irq_hook.counters.irq_refused_masked += outcome.retired - 1;
                 }
                 match outcome.exit {
                     crate::turbo::TurboExit::Budget => continue,
@@ -5174,7 +5212,7 @@ pub(crate) fn deliver_pending_irq(
 /// `None` when there is none or it is held back (IF = 0, the STI shadow), the refusal counted.
 /// PERF-25: the boundary check of a batched set call asks this too, at the boundaries inside the
 /// call, and hands a vector to [`deliver_polled_irq`] of the loop at that same boundary.
-fn poll_pending_irq(hook: &mut IrqBoundaryHook<'_>, state: &LongModeState) -> Option<u8> {
+pub(crate) fn poll_pending_irq(hook: &mut IrqBoundaryHook<'_>, state: &LongModeState) -> Option<u8> {
     if hook.skip_first_boundary {
         hook.skip_first_boundary = false;
         return None;

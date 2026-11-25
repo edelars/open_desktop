@@ -69,6 +69,12 @@ const F_OF: u8 = 32;
 const F_ALL: u8 = 63;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum AluKind {
+    Arith(ArithmeticKind),
+    Logic(LogicKind),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Straight,
     Terminator,
@@ -130,8 +136,72 @@ fn size_bytes(size: OperandSize) -> u32 {
     size.bytes() as u32
 }
 
+fn disabled(group: u32) -> bool {
+    static MASK: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let mask = *MASK.get_or_init(|| {
+        std::env::var("OD_TURBO_DISABLE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    });
+    mask & group != 0
+}
+
 /// The plan of `insn`, or `None` when the block ends before it.
 fn plan(insn: &Instruction) -> Option<Plan> {
+    let group = match insn.operation {
+        Operation::AddGsLoad { .. }
+        | Operation::CmpGsLoad { .. }
+        | Operation::LogicGsLoad { .. }
+        | Operation::CmpGsMemImm { .. }
+        | Operation::AddGsMemImm { .. }
+        | Operation::SubGsMemImm { .. }
+        | Operation::LogicGsMemImm { .. }
+        | Operation::AddGsMem { .. }
+        | Operation::TestGsMemByte { .. }
+        | Operation::TestGsMemWord { .. }
+        | Operation::TestGsMemWide { .. } => 1,
+        Operation::MovGsStore { .. }
+        | Operation::MovGsMemByteImm { .. }
+        | Operation::MovGsMemImm { .. }
+        | Operation::MovzxGsLoadB { .. }
+        | Operation::MovzxGsLoadW { .. }
+        | Operation::MovsxGsLoadB { .. }
+        | Operation::MovsxdGsLoad { .. } => 2,
+        Operation::LockIncMem { .. }
+        | Operation::LockDecMem { .. }
+        | Operation::LockAddMem { .. }
+        | Operation::LockSubMem { .. }
+        | Operation::LockSubDwordImm8 { .. }
+        | Operation::LockAddMemReg { .. }
+        | Operation::LockSubMemReg { .. }
+        | Operation::LockOrMem { .. }
+        | Operation::LockAndMem { .. }
+        | Operation::LockXorMem { .. }
+        | Operation::LockLogicMemReg { .. } => 4,
+        Operation::Bswap { .. } => 8,
+        Operation::Invlpg | Operation::Lfence => 16,
+        Operation::ClearDirectionFlag | Operation::SetDirectionFlag => 32,
+        Operation::Bit { .. } => 64,
+        Operation::Divide { .. } => 128,
+        Operation::Sti => 256,
+        Operation::MovSregStore { .. } => 512,
+        Operation::Shift { count: Operand::Register(_), .. } => 1024,
+        Operation::Shift { kind: ShiftKind::Rol | ShiftKind::Ror, .. } => 2048,
+        Operation::BitScan { .. } => 4096,
+        Operation::PushFlags | Operation::PushImmediate { .. } => 8192,
+        Operation::LockCmpxchgMem { .. }
+        | Operation::CmpxchgMemory { .. }
+        | Operation::LockXaddMem { .. }
+        | Operation::XaddDsMem { .. }
+        | Operation::XaddMemory { .. } => 16384,
+        Operation::Mul { .. } | Operation::ImulImmediate { .. } | Operation::SignExtendAccumulator { .. } => 32768,
+        Operation::Cli => 65536,
+        _ => 0,
+    };
+    if group != 0 && disabled(group) {
+        return None;
+    }
     let fast = od_isa::execute::fast_handler(insn).is_some();
     let size = insn.operand_size;
     let p = |role, reads, writes, can_exit| Some(Plan { role, reads, writes, can_exit });
@@ -346,6 +416,7 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             }
         }
         Operation::Leave => p(Role::Straight, 0, 0, true),
+        Operation::Rdtsc if is_rdtsc(insn) => p(Role::Straight, 0, 0, true),
         Operation::RepMovs { size: _ } | Operation::RepStos { size: _ }
             if insn.opcode.map == OpcodeMap::Primary
                 && insn.prefixes.group1 == Some(0xf3)
@@ -356,6 +427,116 @@ fn plan(insn: &Instruction) -> Option<Plan> {
             p(Role::Straight, 0, 0, true)
         }
         Operation::Pause | Operation::Endbr64Nop => p(Role::Straight, 0, 0, false),
+        Operation::AddGsLoad { dst, src } | Operation::CmpGsLoad { dst, src }
+            if insn.prefixes.group1.is_none()
+                && mem_ok(&src)
+                && matches!(dst.size(), OperandSize::Dword | OperandSize::Qword) =>
+        {
+            p(Role::Straight, 0, F_ALL, true)
+        }
+        Operation::LogicGsLoad { dst, src, .. }
+            if insn.prefixes.group1.is_none()
+                && mem_ok(&src)
+                && matches!(dst.size(), OperandSize::Dword | OperandSize::Qword) =>
+        {
+            p(Role::Straight, 0, F_ALL & !F_AF, true)
+        }
+        Operation::CmpGsMemImm { dst, .. }
+        | Operation::AddGsMemImm { dst, .. }
+        | Operation::SubGsMemImm { dst, .. }
+            if insn.prefixes.group1.is_none() && mem_ok(&dst) =>
+        {
+            p(Role::Straight, 0, F_ALL, true)
+        }
+        Operation::AddGsMem { destination, .. } if insn.prefixes.group1.is_none() && mem_ok(&destination) => {
+            p(Role::Straight, 0, F_ALL, true)
+        }
+        Operation::LogicGsMemImm { dst, .. } if insn.prefixes.group1.is_none() && mem_ok(&dst) => {
+            p(Role::Straight, 0, F_ALL & !F_AF, true)
+        }
+        Operation::TestGsMemByte { src, .. }
+        | Operation::TestGsMemWord { src, .. }
+        | Operation::TestGsMemWide { src, .. }
+            if insn.prefixes.group1.is_none() && mem_ok(&src) =>
+        {
+            p(Role::Straight, 0, F_ALL & !F_AF, true)
+        }
+        Operation::MovGsStore { dst, .. }
+        | Operation::MovGsMemByteImm { dst, .. }
+        | Operation::MovGsMemImm { dst, .. }
+            if insn.prefixes.group1.is_none() && mem_ok(&dst) =>
+        {
+            p(Role::Straight, 0, 0, true)
+        }
+        Operation::MovzxGsLoadB { src, .. }
+        | Operation::MovzxGsLoadW { src, .. }
+        | Operation::MovsxGsLoadB { src, .. }
+        | Operation::MovsxdGsLoad { src, .. }
+            if insn.prefixes.group1.is_none() && mem_ok(&src) =>
+        {
+            p(Role::Straight, 0, 0, true)
+        }
+        Operation::LockIncMem { destination } | Operation::LockDecMem { destination }
+            if mem_ok(&destination) && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        {
+            p(Role::Straight, F_CF, F_ALL & !F_CF, true)
+        }
+        Operation::LockAddMem { destination, .. }
+        | Operation::LockSubMem { destination, .. }
+        | Operation::LockSubDwordImm8 { destination, .. }
+        | Operation::LockAddMemReg { destination, .. }
+        | Operation::LockSubMemReg { destination, .. }
+            if mem_ok(&destination) && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        {
+            p(Role::Straight, 0, F_ALL, true)
+        }
+        Operation::LockOrMem { destination, .. }
+        | Operation::LockAndMem { destination, .. }
+        | Operation::LockXorMem { destination, .. }
+        | Operation::LockLogicMemReg { destination, .. }
+            if mem_ok(&destination) && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        {
+            p(Role::Straight, 0, F_ALL & !F_AF, true)
+        }
+        Operation::Bswap { dst }
+            if matches!(dst.size(), OperandSize::Dword | OperandSize::Qword)
+                && insn.prefixes.segment.is_none()
+                && insn.prefixes.group1.is_none() =>
+        {
+            p(Role::Straight, 0, 0, false)
+        }
+        Operation::Invlpg | Operation::Lfence => p(Role::Straight, 0, 0, false),
+        Operation::ClearDirectionFlag | Operation::SetDirectionFlag
+            if insn.opcode.map == OpcodeMap::Primary
+                && insn.length == 1
+                && insn.prefixes == Prefixes::default() =>
+        {
+            p(Role::Straight, 0, 0, false)
+        }
+        Operation::Bit { dst, offset, .. }
+            if insn.prefixes.group1.is_none() && !matches!(insn.prefixes.segment, Some(0x64 | 0x65)) =>
+        {
+            use od_isa::long_decode::BitOffset;
+            let ok_size = |size: OperandSize| matches!(size, OperandSize::Word | OperandSize::Dword | OperandSize::Qword);
+            match (dst, offset) {
+                (Operand::Register(view), _) if ok_size(view.size()) => p(Role::Straight, 0, F_CF, false),
+                (Operand::Memory(m), BitOffset::Immediate(_)) if ok_size(m.size) && mem_ok(&m) => {
+                    p(Role::Straight, 0, F_CF, true)
+                }
+                _ => None,
+            }
+        }
+        Operation::Divide { divisor, .. }
+            if matches!(size, OperandSize::Dword | OperandSize::Qword)
+                && insn.prefixes.segment.is_none()
+                && insn.prefixes.group1.is_none() =>
+        {
+            match divisor {
+                Operand::Register(_) => p(Role::Straight, 0, 0, true),
+                Operand::Memory(m) if mem_ok(&m) => p(Role::Straight, 0, 0, true),
+                _ => None,
+            }
+        }
         Operation::SubGsMem { dst, src }
             if insn.prefixes.group1.is_none() && mem_ok(&src) && dst.size() == OperandSize::Qword =>
         {
@@ -423,12 +604,17 @@ fn plan(insn: &Instruction) -> Option<Plan> {
                 _ => None,
             }
         }
-        Operation::Cli if insn.prefixes == Prefixes::default() => p(Role::Straight, 0, 0, false),
+        Operation::Cli if insn.prefixes == Prefixes::default() && insn.length == 1 => {
+            p(Role::Straight, 0, 0, false)
+        }
+        Operation::Sti if insn.prefixes == Prefixes::default() && insn.length == 1 => {
+            p(Role::Terminator, 0, 0, true)
+        }
         Operation::MovSregStore {
             dst: Operand::Register(view),
             sreg,
             ..
-        } if sreg <= 5 && sreg != 1 && matches!(view.size(), OperandSize::Dword | OperandSize::Qword | OperandSize::Word) => {
+        } if sreg <= 5 && matches!(view.size(), OperandSize::Dword | OperandSize::Qword | OperandSize::Word) => {
             p(Role::Straight, 0, 0, true)
         }
         Operation::LockCmpxchgMem { destination, source }
@@ -567,6 +753,8 @@ struct Ctx<'e> {
     exits: Vec<(Label, u64, usize, Defined)>,
     /// Exits of a partial REP (the instruction did not retire).
     partials: Vec<(Label, u64, usize, Defined)>,
+    /// After an RDTSC: (boundary exit, short-budget exit, next RIP, index, definedness so far).
+    boundaries: Vec<(Label, Label, u64, usize, Defined)>,
     /// The exit before the current instruction.
     exit_here: Option<Label>,
     rip: u64,
@@ -950,6 +1138,76 @@ impl<'e> Ctx<'e> {
         }
     }
 
+    /// BT/BTS/BTR/BTC with a register base, or a memory base and an immediate offset.
+    fn bit(
+        &mut self,
+        kind: od_isa::long_decode::BitKind,
+        dst: Operand,
+        offset: od_isa::long_decode::BitOffset,
+        live_after: u8,
+    ) -> bool {
+        use od_isa::long_decode::{BitKind, BitOffset};
+        let size = match dst {
+            Operand::Register(view) => view.size(),
+            Operand::Memory(mem) => mem.size,
+            Operand::Immediate(_) => return false,
+        };
+        let width = size_bytes(size) * 8;
+        let x64 = size == OperandSize::Qword;
+        if matches!((dst, offset), (Operand::Memory(_), BitOffset::Register(_))) {
+            return false;
+        }
+        // The base into T0 first (memory: a fault exits before anything changes); the TLB check
+        // uses x13-x15, so the offset goes to x17 after it.
+        match dst {
+            Operand::Register(view) => self.load_reg(T0, view),
+            Operand::Memory(mem) => {
+                if !mem_ok(&mem) {
+                    return false;
+                }
+                self.address(&mem, false);
+                self.load_mem(size_bytes(size), T0, &[]);
+            }
+            Operand::Immediate(_) => return false,
+        }
+        match offset {
+            BitOffset::Register(view) => {
+                self.load_reg(17, view);
+                self.asm.emit(a64::and_imm(false, 17, 17, u64::from(width - 1)).unwrap());
+            }
+            BitOffset::Immediate(value) => {
+                self.asm.emit(a64::movz(false, 17, u32::from(value) & (width - 1), 0));
+            }
+        }
+        let asm = &mut self.asm;
+        // T1 = old bit, x16 = mask.
+        asm.emit(a64::lsrv(true, T1, T0, 17));
+        asm.emit(a64::and_imm(false, T1, T1, 1).unwrap());
+        asm.emit(a64::movz(true, 16, 1, 0));
+        asm.emit(a64::lslv(true, 16, 16, 17));
+        let writes = kind != BitKind::Test;
+        match kind {
+            BitKind::Test => {}
+            BitKind::Set => asm.emit(a64::orr_reg(x64, T2, T0, 16)),
+            BitKind::Reset => asm.emit(a64::bic_reg(x64, T2, T0, 16)),
+            BitKind::Complement => asm.emit(a64::eor_reg(x64, T2, T0, 16)),
+        }
+        if writes {
+            match dst {
+                Operand::Register(view) => self.store_reg(T2, view, true),
+                Operand::Memory(_) => self.store_mem(size_bytes(size), T2, &[T1]),
+                Operand::Immediate(_) => return false,
+            }
+        }
+        if live_after & F_CF != 0 {
+            // C (ARM sense) = !CF.
+            let asm = &mut self.asm;
+            asm.emit(a64::eor_imm(false, T1, T1, 1).unwrap());
+            asm.emit(a64::rmif(T1, 63, 2));
+        }
+        true
+    }
+
     /// T2 = T0 * T1 truncated to `size` (dword or qword); with `live` CF = OF = overflow.
     fn imul_into(&mut self, size: OperandSize, live: bool) {
         let asm = &mut self.asm;
@@ -995,6 +1253,135 @@ impl<'e> Ctx<'e> {
         });
     }
 
+    /// An ALU operation on `dst` and `src` of `size` (memory through the GS base with `gs`; a
+    /// memory destination through the locked walk with `atomic`).
+    fn alu(
+        &mut self,
+        kind: AluKind,
+        dst: Operand,
+        src: Operand,
+        size: OperandSize,
+        gs: bool,
+        atomic: bool,
+        live_after: u8,
+    ) -> bool {
+        let writes = !matches!(
+            kind,
+            AluKind::Arith(ArithmeticKind::Cmp) | AluKind::Logic(LogicKind::Test)
+        );
+        let live = match kind {
+            AluKind::Arith(_) => live_after != 0,
+            AluKind::Logic(_) => live_after & (F_ALL & !F_AF) != 0,
+        };
+        let not = kind == AluKind::Logic(LogicKind::Not);
+        match dst {
+            Operand::Register(view) => {
+                if !not {
+                    match src {
+                        Operand::Register(view) => self.load_reg(T1, view),
+                        Operand::Immediate(value) => self.mov_imm(T1, value & size.mask()),
+                        Operand::Memory(mem) => {
+                            if !mem_ok(&mem) {
+                                return false;
+                            }
+                            self.address(&mem, gs);
+                            self.load_mem(size_bytes(mem.size), T1, &[]);
+                        }
+                    }
+                }
+                self.load_reg(T0, view);
+                self.compute(kind, size, live && !not);
+                if writes {
+                    self.store_reg(T2, view, size == OperandSize::Dword);
+                }
+                true
+            }
+            Operand::Memory(mem) => {
+                if !mem_ok(&mem) {
+                    return false;
+                }
+                let bytes = size_bytes(size);
+                if atomic {
+                    let start = self.asm.label();
+                    self.asm.bind(start);
+                    self.address(&mem, gs);
+                    self.rmw_check(bytes, start);
+                    // ADDR becomes the host address (no slow path after this point).
+                    self.asm.emit(a64::add_reg(true, ADDR, ADDR, 14, LSL, 0));
+                    self.asm.emit(a64::ldr_imm(bytes, T0, ADDR, 0));
+                } else {
+                    self.address(&mem, gs);
+                    self.load_mem(bytes, T0, &[]);
+                }
+                if !not {
+                    match src {
+                        Operand::Register(view) => self.load_reg(T1, view),
+                        Operand::Immediate(value) => self.mov_imm(T1, value & size.mask()),
+                        Operand::Memory(_) => return false,
+                    }
+                }
+                if writes {
+                    self.compute(kind, size, false);
+                    if atomic {
+                        self.asm.emit(a64::str_imm(bytes, T2, ADDR, 0));
+                    } else {
+                        self.store_mem(bytes, T2, &[T0, T1]);
+                    }
+                    if live && !not {
+                        self.compute(kind, size, true);
+                    }
+                } else if live {
+                    self.compute(kind, size, true);
+                }
+                true
+            }
+            Operand::Immediate(_) => false,
+        }
+    }
+
+    fn compute(&mut self, kind: AluKind, size: OperandSize, live: bool) {
+        match kind {
+            AluKind::Arith(kind) => self.arith_flags(kind, size, T0, T1, live),
+            AluKind::Logic(kind) => self.logic(kind, size, T0, T1, live),
+        }
+    }
+
+    /// A load of `mem` (through the GS base with `gs`) into `dst`, zero- or sign-extended.
+    fn load_into(&mut self, dst: RegisterView, mem: MemoryOperand, gs: bool, signed: bool) -> bool {
+        if !mem_ok(&mem) {
+            return false;
+        }
+        self.address(&mem, gs);
+        self.load_mem(size_bytes(mem.size), T0, &[]);
+        if signed {
+            match mem.size {
+                OperandSize::Byte => self.asm.emit(a64::sxtb(T0, T0)),
+                OperandSize::Word => self.asm.emit(a64::sxth(T0, T0)),
+                OperandSize::Dword => self.asm.emit(a64::sxtw(T0, T0)),
+                OperandSize::Qword => {}
+            }
+            self.store_reg(T0, dst, false);
+        } else {
+            self.store_reg(T0, dst, true);
+        }
+        true
+    }
+
+    /// A store of `value` (register or immediate) of `mem.size` bytes (GS base with `gs`).
+    fn store_into(&mut self, mem: MemoryOperand, value: Operand, gs: bool) -> bool {
+        if !mem_ok(&mem) {
+            return false;
+        }
+        match value {
+            Operand::Register(view) => self.load_reg(T0, view),
+            Operand::Immediate(value) => self.mov_imm(T0, value & mem.size.mask()),
+            Operand::Memory(_) => return false,
+        }
+        self.address(&mem, gs);
+        self.store_mem(size_bytes(mem.size), T0, &[]);
+        true
+    }
+
     // ---- instructions -----------------------------------------------------------------------
 
     fn source_value(&mut self, operand: Operand, rd: u32, size: OperandSize, save: &[u32]) {
@@ -1012,79 +1399,10 @@ impl<'e> Ctx<'e> {
         let size = insn.operand_size;
         match insn.operation {
             Operation::Arithmetic { kind, dst, src } => {
-                let live = live_after & (F_ALL) != 0;
-                let writes = kind != ArithmeticKind::Cmp;
-                match dst {
-                    Operand::Register(view) => {
-                        // Memory source first (an exit happens before anything changes).
-                        self.source_value(src, T1, size, &[]);
-                        self.load_reg(T0, view);
-                        self.arith_flags(kind, size, T0, T1, live);
-                        if writes {
-                            self.store_reg(T2, view, size == OperandSize::Dword);
-                        }
-                    }
-                    Operand::Memory(mem) => {
-                        self.address(&mem, false);
-                        self.load_mem(size_bytes(size), T0, &[]);
-                        match src {
-                            Operand::Register(view) => self.load_reg(T1, view),
-                            Operand::Immediate(value) => self.mov_imm(T1, value & size.mask()),
-                            Operand::Memory(_) => return false,
-                        }
-                        if writes {
-                            // Result first without flags, store, then the flags (a failed store
-                            // leaves the flags of before).
-                            self.arith_flags(kind, size, T0, T1, false);
-                            self.store_mem(size_bytes(size), T2, &[T0, T1]);
-                            if live {
-                                self.arith_flags(kind, size, T0, T1, true);
-                            }
-                        } else if live {
-                            self.arith_flags(kind, size, T0, T1, true);
-                        }
-                    }
-                    Operand::Immediate(_) => return false,
-                }
-                true
+                self.alu(AluKind::Arith(kind), dst, src, size, false, false, live_after)
             }
             Operation::Logic { kind, dst, src } => {
-                let live = live_after & (F_ALL & !F_AF) != 0;
-                let writes = kind != LogicKind::Test;
-                match dst {
-                    Operand::Register(view) => {
-                        if kind != LogicKind::Not {
-                            self.source_value(src, T1, size, &[]);
-                        }
-                        self.load_reg(T0, view);
-                        self.logic(kind, size, T0, T1, live && kind != LogicKind::Not);
-                        if writes {
-                            self.store_reg(T2, view, size == OperandSize::Dword);
-                        }
-                    }
-                    Operand::Memory(mem) => {
-                        self.address(&mem, false);
-                        self.load_mem(size_bytes(size), T0, &[]);
-                        if kind != LogicKind::Not {
-                            match src {
-                                Operand::Register(view) => self.load_reg(T1, view),
-                                Operand::Immediate(value) => self.mov_imm(T1, value & size.mask()),
-                                Operand::Memory(_) => return false,
-                            }
-                        }
-                        if writes {
-                            self.logic(kind, size, T0, T1, false);
-                            self.store_mem(size_bytes(size), T2, &[T0, T1]);
-                            if live && kind != LogicKind::Not {
-                                self.logic(kind, size, T0, T1, true);
-                            }
-                        } else if live {
-                            self.logic(kind, size, T0, T1, true);
-                        }
-                    }
-                    Operand::Immediate(_) => return false,
-                }
-                true
+                self.alu(AluKind::Logic(kind), dst, src, size, false, false, live_after)
             }
             Operation::Shift {
                 kind,
@@ -1420,6 +1738,36 @@ impl<'e> Ctx<'e> {
                 self.store_reg(T2, dst, size != OperandSize::Dword);
                 true
             }
+            Operation::Rdtsc => {
+                let exit = self.exit_before();
+                let boundary = self.asm.label();
+                let short = self.asm.label();
+                self.boundaries.push((boundary, short, self.next_rip, self.k, self.defined));
+                let rest = (self.len - self.k - 1) as u32;
+                let here = (self.len - self.k) as u32;
+                let asm = &mut self.asm;
+                asm.emit(a64::mrs_nzcv(25));
+                asm.emit(a64::mov_reg(true, 0, 21));
+                asm.emit(a64::mov_reg(true, 1, 19));
+                asm.mov_imm64(2, self.rip);
+                asm.emit(a64::add_imm(true, 3, 20, here, false));
+                asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_RDTSC_HELPER));
+                asm.emit(a64::blr(16));
+                asm.emit(a64::msr_nzcv(25));
+                let negative = asm.label();
+                asm.tbnz_to(0, 63, negative);
+                asm.emit(a64::sub_imm(true, 20, 0, rest, false));
+                asm.tbnz_to(20, 63, short);
+                let done = asm.label();
+                asm.b_to(done);
+                asm.bind(negative);
+                // -3: nothing happened, the general path runs it.
+                asm.emit(a64::add_imm(true, 9, 0, 3, false));
+                asm.cbz_to(true, 9, exit);
+                asm.b_to(boundary);
+                asm.bind(done);
+                true
+            }
             Operation::RepMovs { size } | Operation::RepStos { size } => {
                 let movs = matches!(insn.operation, Operation::RepMovs { .. });
                 let exit = self.exit_before();
@@ -1448,6 +1796,244 @@ impl<'e> Ctx<'e> {
                 self.asm.emit(a64::add_imm(true, ADDR, ADDR, 8, false));
                 self.store_gpr64(ADDR, Register::Rsp);
                 self.store_gpr64(T0, Register::Rbp);
+                true
+            }
+            Operation::AddGsLoad { dst, src } => self.alu(
+                AluKind::Arith(ArithmeticKind::Add),
+                Operand::Register(dst),
+                Operand::Memory(src),
+                dst.size(),
+                true,
+                false,
+                live_after,
+            ),
+            Operation::CmpGsLoad { dst, src } => self.alu(
+                AluKind::Arith(ArithmeticKind::Cmp),
+                Operand::Register(dst),
+                Operand::Memory(src),
+                dst.size(),
+                true,
+                false,
+                live_after,
+            ),
+            Operation::LogicGsLoad { kind, dst, src } => self.alu(
+                AluKind::Logic(kind),
+                Operand::Register(dst),
+                Operand::Memory(src),
+                dst.size(),
+                true,
+                false,
+                live_after,
+            ),
+            Operation::CmpGsMemImm { dst, immediate } => self.alu(
+                AluKind::Arith(ArithmeticKind::Cmp),
+                Operand::Memory(dst),
+                Operand::Immediate(immediate),
+                dst.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::AddGsMemImm { dst, immediate } => self.alu(
+                AluKind::Arith(ArithmeticKind::Add),
+                Operand::Memory(dst),
+                Operand::Immediate(immediate),
+                dst.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::SubGsMemImm { dst, immediate } => self.alu(
+                AluKind::Arith(ArithmeticKind::Sub),
+                Operand::Memory(dst),
+                Operand::Immediate(immediate),
+                dst.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::LogicGsMemImm { kind, dst, immediate } => self.alu(
+                AluKind::Logic(kind),
+                Operand::Memory(dst),
+                Operand::Immediate(immediate),
+                dst.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::AddGsMem { destination, source } => self.alu(
+                AluKind::Arith(ArithmeticKind::Add),
+                Operand::Memory(destination),
+                Operand::Register(source),
+                destination.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::TestGsMemByte { src, immediate } => self.alu(
+                AluKind::Logic(LogicKind::Test),
+                Operand::Memory(src),
+                Operand::Immediate(u64::from(immediate)),
+                OperandSize::Byte,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::TestGsMemWord { src, immediate } => self.alu(
+                AluKind::Logic(LogicKind::Test),
+                Operand::Memory(src),
+                Operand::Immediate(u64::from(immediate)),
+                OperandSize::Word,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::TestGsMemWide { src, immediate } => self.alu(
+                AluKind::Logic(LogicKind::Test),
+                Operand::Memory(src),
+                Operand::Immediate(immediate),
+                src.size,
+                true,
+                false,
+                live_after,
+            ),
+            Operation::MovGsStore { dst, src } => self.store_into(dst, Operand::Register(src), true),
+            Operation::MovGsMemByteImm { dst, immediate } => {
+                self.store_into(dst, Operand::Immediate(u64::from(immediate)), true)
+            }
+            Operation::MovGsMemImm { dst, immediate } => {
+                self.store_into(dst, Operand::Immediate(immediate), true)
+            }
+            Operation::MovzxGsLoadB { dst, src } | Operation::MovzxGsLoadW { dst, src } => {
+                self.load_into(dst, src, true, false)
+            }
+            Operation::MovsxGsLoadB { dst, src } | Operation::MovsxdGsLoad { dst, src } => {
+                self.load_into(dst, src, true, true)
+            }
+            Operation::LockIncMem { destination } => self.alu(
+                AluKind::Arith(ArithmeticKind::Inc),
+                Operand::Memory(destination),
+                Operand::Immediate(1),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockDecMem { destination } => self.alu(
+                AluKind::Arith(ArithmeticKind::Dec),
+                Operand::Memory(destination),
+                Operand::Immediate(1),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockAddMem { destination, immediate } => self.alu(
+                AluKind::Arith(ArithmeticKind::Add),
+                Operand::Memory(destination),
+                Operand::Immediate(immediate),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockSubMem { destination, immediate }
+            | Operation::LockSubDwordImm8 { destination, immediate } => self.alu(
+                AluKind::Arith(ArithmeticKind::Sub),
+                Operand::Memory(destination),
+                Operand::Immediate(immediate),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockAddMemReg { destination, source } => self.alu(
+                AluKind::Arith(ArithmeticKind::Add),
+                Operand::Memory(destination),
+                Operand::Register(source),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockSubMemReg { destination, source } => self.alu(
+                AluKind::Arith(ArithmeticKind::Sub),
+                Operand::Memory(destination),
+                Operand::Register(source),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockOrMem { destination, immediate } => self.alu(
+                AluKind::Logic(LogicKind::Or),
+                Operand::Memory(destination),
+                Operand::Immediate(immediate),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockAndMem { destination, immediate } => self.alu(
+                AluKind::Logic(LogicKind::And),
+                Operand::Memory(destination),
+                Operand::Immediate(immediate),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockXorMem { destination, immediate } => self.alu(
+                AluKind::Logic(LogicKind::Xor),
+                Operand::Memory(destination),
+                Operand::Immediate(immediate),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::LockLogicMemReg { kind, destination, source } => self.alu(
+                AluKind::Logic(kind),
+                Operand::Memory(destination),
+                Operand::Register(source),
+                destination.size,
+                false,
+                true,
+                live_after,
+            ),
+            Operation::Bswap { dst } => {
+                self.load_reg(T0, dst);
+                self.asm.emit(a64::rev(dst.size() == OperandSize::Qword, T0, T0));
+                self.store_reg(T0, dst, true);
+                true
+            }
+            Operation::Invlpg | Operation::Lfence => true,
+            Operation::ClearDirectionFlag | Operation::SetDirectionFlag => {
+                let rflags = self.engine.offsets.rflags;
+                let asm = &mut self.asm;
+                asm.emit(a64::ldr_imm(8, T0, 19, rflags));
+                if matches!(insn.operation, Operation::ClearDirectionFlag) {
+                    asm.emit(a64::and_imm(true, T0, T0, !(1u64 << 10)).unwrap());
+                } else {
+                    asm.emit(a64::orr_imm(true, T0, T0, 1u64 << 10).unwrap());
+                }
+                asm.emit(a64::str_imm(8, T0, 19, rflags));
+                true
+            }
+            Operation::Bit { kind, dst, offset } => self.bit(kind, dst, offset, live_after),
+            Operation::Divide { signed, divisor } => {
+                // The source first (an exit happens before anything changes), then the helper.
+                self.source_value(divisor, T1, size, &[]);
+                let exit = self.exit_before();
+                let asm = &mut self.asm;
+                asm.emit(a64::mrs_nzcv(25));
+                asm.emit(a64::mov_reg(true, 0, 19));
+                asm.emit(a64::mov_reg(true, 1, T1));
+                asm.mov_imm64(2, u64::from(size_bytes(size)) | if signed { 0x100 } else { 0 });
+                asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_DIV_HELPER));
+                asm.emit(a64::blr(16));
+                asm.emit(a64::msr_nzcv(25));
+                asm.cbnz_to(true, 0, exit);
                 true
             }
             Operation::SubGsMem { dst, src } => {
@@ -1660,10 +2246,11 @@ impl<'e> Ctx<'e> {
                 self.load_reg(T0, accumulator);
                 self.load_reg(T1, source);
                 let asm = &mut self.asm;
-                asm.emit(a64::ldr_reg(bytes, T2, ADDR, 14));
+                asm.emit(a64::add_reg(true, ADDR, ADDR, 14, LSL, 0));
+                asm.emit(a64::ldr_imm(bytes, T2, ADDR, 0));
                 asm.emit(a64::subs_reg(destination.size == OperandSize::Qword, XZR, T0, T2));
                 asm.emit(a64::csel(true, 13, T1, T2, Cond::Eq));
-                asm.emit(a64::str_reg(bytes, 13, ADDR, 14));
+                asm.emit(a64::str_imm(bytes, 13, ADDR, 0));
                 self.arith_flags(ArithmeticKind::Cmp, destination.size, T0, T2, true);
                 // RAX only on inequality (a dword write zero-extends RAX).
                 let equal = self.asm.label();
@@ -1681,9 +2268,10 @@ impl<'e> Ctx<'e> {
                 self.address(&destination, false);
                 self.rmw_check(bytes, start);
                 self.load_reg(T1, source);
-                self.asm.emit(a64::ldr_reg(bytes, T0, ADDR, 14));
+                self.asm.emit(a64::add_reg(true, ADDR, ADDR, 14, LSL, 0));
+                self.asm.emit(a64::ldr_imm(bytes, T0, ADDR, 0));
                 self.arith_flags(ArithmeticKind::Add, destination.size, T0, T1, true);
-                self.asm.emit(a64::str_reg(bytes, T2, ADDR, 14));
+                self.asm.emit(a64::str_imm(bytes, T2, ADDR, 0));
                 self.store_reg(T0, source, true);
                 true
             }
@@ -1796,6 +2384,22 @@ impl<'e> Ctx<'e> {
                 self.emit_defined(defined);
                 self.asm.emit(a64::mov_reg(true, 0, T1));
                 self.asm.b_abs(self.engine.lookup_stub);
+                true
+            }
+            Operation::Sti => {
+                // IF = 1 and the shadow (the helper); the boundary after it is the loop's.
+                let defined = self.defined;
+                self.emit_defined(defined);
+                let asm = &mut self.asm;
+                asm.emit(a64::mrs_nzcv(25));
+                asm.emit(a64::mov_reg(true, 0, 19));
+                asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_STI_HELPER));
+                asm.emit(a64::blr(16));
+                asm.emit(a64::msr_nzcv(25));
+                asm.mov_imm64(1, self.next_rip);
+                asm.emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
+                let exit_common = self.engine.exit_common;
+                self.asm.b_abs(exit_common);
                 true
             }
             Operation::Return { stack_adjust } => {
@@ -1912,12 +2516,6 @@ pub(crate) fn compile_limited(
         if fetch.crossed && !insns.is_empty() {
             break;
         }
-        if is_rdtsc(&insn) {
-            if insns.is_empty() {
-                return Compiled::Rdtsc;
-            }
-            break;
-        }
         let Some(plan) = plan(&insn) else {
             engine.pending_decodes.push((at, insn));
             break;
@@ -1955,6 +2553,7 @@ pub(crate) fn compile_limited(
         slow: Vec::new(),
         exits: Vec::new(),
         partials: Vec::new(),
+        boundaries: Vec::new(),
         exit_here: None,
         rip,
         next_rip: rip,
@@ -2045,6 +2644,23 @@ pub(crate) fn compile_limited(
         ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k) as u32, false));
         ctx.asm.mov_imm64(1, exit_rip);
         ctx.asm.emit(a64::movz(true, 0, EXIT_SLOW as u32, 0));
+        ctx.asm.b_abs(exit_common);
+    }
+    let boundaries = std::mem::take(&mut ctx.boundaries);
+    for (boundary, short, next, k, defined) in boundaries {
+        // The loop owns the boundary after the RDTSC: the budget the helper left in the context.
+        ctx.asm.bind(boundary);
+        ctx.emit_defined(defined);
+        ctx.asm.emit(a64::ldr_imm(8, 20, 21, super::CTX_SEG_START));
+        ctx.asm.mov_imm64(1, next);
+        ctx.asm.emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
+        ctx.asm.b_abs(exit_common);
+        // The new quantum is shorter than the rest of the block: one instruction at a time.
+        ctx.asm.bind(short);
+        ctx.emit_defined(defined);
+        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
+        ctx.asm.mov_imm64(1, next);
+        ctx.asm.emit(a64::movz(true, 0, EXIT_BUDGET as u32, 0));
         ctx.asm.b_abs(exit_common);
     }
     let partials = std::mem::take(&mut ctx.partials);
