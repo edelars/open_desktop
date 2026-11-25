@@ -159,6 +159,34 @@ impl Slot {
     }
 }
 
+/// An entry filled through a leaf table frame (the arrays never move).
+#[derive(Clone, Copy)]
+enum LeafRef {
+    Tlb(*mut TlbEntry),
+    Lookup(*mut LookupEntry, *const u64),
+}
+
+impl LeafRef {
+    fn holds(self, frame: u64) -> bool {
+        // SAFETY: pointers into the engine's TLB and lookup arrays, alive while the engine is.
+        unsafe {
+            match self {
+                LeafRef::Tlb(entry) => (*entry).leaf == frame,
+                LeafRef::Lookup(_, leaf) => *leaf == frame,
+            }
+        }
+    }
+    fn clear(self) {
+        // SAFETY: as above.
+        unsafe {
+            match self {
+                LeafRef::Tlb(entry) => *entry = EMPTY_TLB,
+                LeafRef::Lookup(entry, _) => *entry = LookupEntry { rip: 1, code: 0 },
+            }
+        }
+    }
+}
+
 /// Cached translation contexts besides the active one.
 const SLOTS: usize = 3;
 
@@ -409,6 +437,10 @@ pub(crate) struct TurboEngine {
     offsets: StateOffsets,
     paging_key: Option<(Long64ProbeConfig, u64)>,
     singles: HashMap<(u64, u64), BlockInfo>,
+    /// Per physical page: the RIPs of its singles, slow decodes and stub lookups.
+    page_extras: HashMap<u64, Vec<u64>>,
+    /// Per leaf table frame: the TLB and lookup entries filled through it.
+    leaf_refs: HashMap<u64, Vec<LeafRef>>,
     /// Decodes of instructions the generated code stops before, by (RIP, physical page).
     slow_insns: HashMap<(u64, u64), od_isa::long_decode::Instruction>,
     /// Decodes made by the last translation (filled by `jit::compile_limited`).
@@ -527,6 +559,8 @@ impl TurboEngine {
             offsets,
             paging_key: None,
             singles: HashMap::default(),
+            page_extras: HashMap::default(),
+            leaf_refs: HashMap::default(),
             slow_insns: HashMap::default(),
             slow_decode: None,
             pending_decodes: Vec::new(),
@@ -646,6 +680,7 @@ impl TurboEngine {
             slot.flush();
         }
         self.pt_frames.clear();
+        self.leaf_refs.clear();
     }
 
     /// A table frame was written: the translations through it are dropped (only those whose
@@ -656,22 +691,27 @@ impl TurboEngine {
             Some(levels) if levels & 2 != 0 => self.flush_translations(),
             Some(_) => {
                 self.stats.leaf_drops += 1;
-                for entry in self.rtlb.iter_mut().chain(self.wtlb.iter_mut()) {
-                    if entry.leaf == frame {
-                        *entry = EMPTY_TLB;
+                if let Some(refs) = self.leaf_refs.remove(&frame) {
+                    for reference in refs {
+                        if reference.holds(frame) {
+                            reference.clear();
+                        }
                     }
-                }
-                for (entry, leaf) in self.lookup.iter_mut().zip(self.lookup_leaf.iter()) {
-                    if *leaf == frame {
-                        *entry = LookupEntry { rip: 1, code: 0 };
-                    }
-                }
-                for slot in &mut self.slots {
-                    slot.drop_leaf(frame);
                 }
                 self.pt_frames.remove(&frame);
             }
         }
+    }
+
+    fn note_leaf_ref(&mut self, frame: u64, reference: LeafRef) {
+        if frame == u64::MAX {
+            return;
+        }
+        let refs = self.leaf_refs.entry(frame).or_default();
+        if refs.len() >= 256 && refs.len().is_power_of_two() {
+            refs.retain(|r| r.holds(frame));
+        }
+        refs.push(reference);
     }
 
     /// Note the table frames of a walk (PML4 first; the last one holds the leaf); `true` when
@@ -701,7 +741,9 @@ impl TurboEngine {
         let mut ranges = Vec::with_capacity(decodes.len());
         for (rip, instruction) in &decodes {
             if (rip & 0xfff) + u64::from(instruction.length) <= 0x1000 {
-                self.slow_insns.insert((*rip, page), *instruction);
+                if self.slow_insns.insert((*rip, page), *instruction).is_none() {
+                    self.page_extras.entry(page).or_default().push(*rip);
+                }
                 ranges.push(((rip & 0xfff) as u16, instruction.length));
             }
         }
@@ -767,11 +809,15 @@ impl TurboEngine {
             self.stats.code_invalidations += 1;
             for key in keys {
                 self.blocks.remove(&key);
+                self.drop_lookup_of(key.0, key.1);
             }
-            self.singles.retain(|_, info| info.page != page);
-            self.slow_insns.retain(|key, _| key.1 != page);
-            // Entries of the lookup table may point at those blocks: drop all of them.
-            self.flush_lookup();
+        }
+        if let Some(rips) = self.page_extras.remove(&page) {
+            for rip in rips {
+                self.singles.remove(&(rip, page));
+                self.slow_insns.remove(&(rip, page));
+                self.drop_lookup_of(rip, page);
+            }
         }
         ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
     }
@@ -847,6 +893,25 @@ impl TurboEngine {
         };
         self.lookup_page[index] = page;
         self.lookup_leaf[index] = self.last_leaf;
+        let reference = LeafRef::Lookup(&mut self.lookup[index], &self.lookup_leaf[index]);
+        let leaf = self.last_leaf;
+        self.note_leaf_ref(leaf, reference);
+        if code == self.rdtsc_stub {
+            self.page_extras.entry(page).or_default().push(rip);
+        }
+    }
+
+    /// Drop the lookup entries (of every context) of the block `(rip, page)`.
+    fn drop_lookup_of(&mut self, rip: u64, page: u64) {
+        let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
+        if self.lookup[index].rip == rip && self.lookup_page[index] == page {
+            self.lookup[index] = LookupEntry { rip: 1, code: 0 };
+        }
+        for slot in &mut self.slots {
+            if slot.lookup[index].rip == rip && slot.lookup_page[index] == page {
+                slot.lookup[index] = LookupEntry { rip: 1, code: 0 };
+            }
+        }
     }
 
     /// The code for `rip`: an existing block, a fresh one, or the slow/RDTSC stub. `None` when
@@ -947,6 +1012,7 @@ impl TurboEngine {
                 self.singles.clear();
                 self.code_bytes.clear();
                 self.slow_insns.clear();
+                self.page_extras.clear();
                 for page in self.code_pages.keys() {
                     env.ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
                 }
@@ -988,6 +1054,7 @@ impl TurboEngine {
             jit::Compiled::Block(code, _, ranges) => {
                 self.mark_code(page, &ranges);
                 self.singles.insert((rip, page), BlockInfo { code, page });
+                self.page_extras.entry(page).or_default().push(rip);
                 self.code_pages.entry(page).or_default();
                 if !env.ram.code_watch(physical) {
                     env.ram.set_code_watch(physical, true);
@@ -1383,11 +1450,14 @@ impl TurboEngine {
             pad: 0,
         };
         self.stats.tlb_fills += 1;
-        if write {
+        let reference = if write {
             self.wtlb[index] = entry;
+            LeafRef::Tlb(&mut self.wtlb[index])
         } else {
             self.rtlb[index] = entry;
-        }
+            LeafRef::Tlb(&mut self.rtlb[index])
+        };
+        self.note_leaf_ref(entry.leaf, reference);
     }
 
     /// Fill a TLB entry from a successful walk.
@@ -1435,11 +1505,14 @@ impl TurboEngine {
             pad: 0,
         };
         self.stats.tlb_fills += 1;
-        if write {
+        let reference = if write {
             self.wtlb[index] = entry;
+            LeafRef::Tlb(&mut self.wtlb[index])
         } else {
             self.rtlb[index] = entry;
-        }
+            LeafRef::Tlb(&mut self.rtlb[index])
+        };
+        self.note_leaf_ref(entry.leaf, reference);
     }
 }
 
