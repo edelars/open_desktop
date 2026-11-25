@@ -958,16 +958,6 @@ pub fn run_host_set_step(
         ExceptionDeliveryMode::HostStep(step.consecutive_faults),
         false,
         None,
-        // PERF-10: the parallel mode does not use the decoded-instruction cache.
-        None,
-        // PERF-11: nor the data translation cache.
-        None,
-        // PERF-25: nor batched calls (one instruction per call, as before).
-        false,
-        // PERF-31: nor the predecoded block cache.
-        None,
-        // E9: nor the short boundary of a pass of a block.
-        None,
     );
     let partial_rep = matches!(
         report.exit,

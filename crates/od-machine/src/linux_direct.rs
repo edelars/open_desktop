@@ -1810,80 +1810,6 @@ pub struct FirmwareUnifiedRun {
     /// The histogram of retired operations (PERF-20): `None` when none was asked for. Its total is
     /// the number of instructions the loop retired.
     pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
-    /// The fast-path check of the run (PERF-22): `None` when it was not asked for.
-    pub fast_path_check: Option<FastPathCheckReport>,
-    /// The block check of the run (PERF-33, E5, step 4, `--block-cache-verify`): `None` when it
-    /// was not asked for.
-    pub block_check: Option<BlockCheckReport>,
-    /// The check of the data translation cache (E8, step 8, `--data-cache-verify`): `None` when
-    /// it was not asked for.
-    pub data_cache_check: Option<DataCacheCheckReport>,
-    /// The check of the short boundary of a pass of a block (E9, step 7,
-    /// `--block-boundary-verify`): `None` when it was not asked for.
-    pub block_boundary_check: Option<BlockBoundaryCheckReport>,
-    /// The counters of the predecoded block cache (PERF-31, ADR-0018, section 5, M1), cumulative
-    /// over the life of the board's cache: `None` when it was not enabled.
-    pub block_stats: Option<crate::DecodedBlockCacheStats>,
-    /// PERF-33 (E4, step 2): the ends of the runs of the blocks and the general step, under the
-    /// same condition as `block_stats`.
-    pub block_ends: Option<crate::BlockEndReport>,
-}
-
-/// What the block check (PERF-33, E5, step 4) did in a unified run: the counters and the first
-/// divergence, which also ended the run (its exit is a `MemoryError::Backend` with the text of the
-/// divergence).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlockCheckReport {
-    pub counters: od_isa::predecoded_block::BlockCheckCounters,
-    pub divergence: Option<BlockCheckDivergenceReport>,
-}
-
-/// What the check of the data translation cache (E8, step 8, ADR-0016 decision Д5) did in a
-/// unified run: the counters and the first divergence, which also ended the run (its exit is a
-/// `MemoryError::Backend` with the text of the divergence).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DataCacheCheckReport {
-    pub counters: crate::data_translation_cache::check::DataCacheCheckCounters,
-    pub divergence: Option<crate::data_translation_cache::check::DataCacheCheckDivergence>,
-}
-
-/// What the check of the short boundary (E9, step 7, ADR-0019, section 5) did in a unified run:
-/// the counters and the first divergence, which also ended the run (its exit is a
-/// `MemoryError::Backend` with the text of the divergence).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlockBoundaryCheckReport {
-    pub counters: crate::decoded_block_cache::boundary_check::BlockBoundaryCheckCounters,
-    pub divergence:
-        Option<crate::decoded_block_cache::boundary_check::BlockBoundaryCheckDivergence>,
-}
-
-/// The first divergence of the block check with the bytes at its RIP.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlockCheckDivergenceReport {
-    pub divergence: od_isa::predecoded_block::BlockCheckDivergence,
-    /// The bytes at the RIP as a fetch would see them after the run (as many as the longer of the
-    /// two instructions; fewer when a byte does not translate or is not RAM).
-    pub bytes: Vec<u8>,
-}
-
-impl std::fmt::Display for BlockCheckDivergenceReport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bytes: String = self
-            .bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        write!(f, "{} bytes={bytes}", self.divergence)
-    }
-}
-
-/// What the fast-path check (PERF-22, ADR-0017 section 5) did in a unified run: how many
-/// instructions were compared with the fast path, how many the fast path refused, and the first
-/// divergence, which also ended the run (its exit is a `MemoryError::Backend` with the same text).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FastPathCheckReport {
-    pub counters: od_isa::fast_path_check::CheckCounters,
-    pub divergence: Option<od_isa::fast_path_check::FastPathDivergence>,
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
@@ -2061,6 +1987,13 @@ pub fn run_firmware_unified_traced(
 /// it after it retired under its operation, operand kind, operand size and CPL (see
 /// [`crate::OpHistogramReport`]). A diagnostic that only observes: the quanta, the clock and the
 /// result are unchanged. Without it the loop has no check for it.
+///
+/// The loop runs through the turbo engine of the board (template JIT, see `crate::turbo`) where
+/// the host supports it and the board was not given [`LoadedFirmwareBoard::disable_turbo`]: the
+/// run creates the engine ([`LoadedFirmwareBoard::enable_turbo`]); what the engine does not
+/// translate, and every quantum with a diagnostic (a checkpoint, a call trace, a marker, the
+/// histogram, the fetch cache report or sweep), runs through the general step, which is also the
+/// reference semantics. Without an engine every instruction runs through the general step.
 pub fn run_firmware_unified_profiled(
     board: &mut LoadedFirmwareBoard,
     instruction_budget: u64,
@@ -2068,63 +2001,6 @@ pub fn run_firmware_unified_profiled(
     trace: Vec<CallTraceTarget>,
     system_table: Option<u64>,
     op_histogram: bool,
-) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
-    run_firmware_unified_checked(
-        board,
-        instruction_budget,
-        marker_rip,
-        trace,
-        system_table,
-        op_histogram,
-        false,
-    )
-}
-
-/// [`run_firmware_unified_profiled`] with the fast-path check (PERF-22) when `fast_path_verify` is
-/// set: every instruction runs as usual on the real memory and is then compared with the fast path
-/// replayed on a copy of the CPU state over the recorded memory calls (all CPU state, the step
-/// outcome, the ordered memory calls; see [`od_isa::fast_path_check`]). The first divergence ends
-/// the run: its exit is a memory error carrying the report, and the report is in
-/// [`FirmwareUnifiedRun::fast_path_check`]. Devices see every access once (the replay never reaches
-/// them). A diagnostic: the run is several times slower, and without it the loop has no check.
-pub fn run_firmware_unified_checked(
-    board: &mut LoadedFirmwareBoard,
-    instruction_budget: u64,
-    marker_rip: Option<u64>,
-    trace: Vec<CallTraceTarget>,
-    system_table: Option<u64>,
-    op_histogram: bool,
-    fast_path_verify: bool,
-) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
-    run_firmware_unified_with_fast_path(
-        board,
-        instruction_budget,
-        marker_rip,
-        trace,
-        system_table,
-        op_histogram,
-        fast_path_verify,
-        false,
-    )
-}
-
-/// [`run_firmware_unified_checked`] with the fast path of the step (PERF-23, ADR-0017, section 3)
-/// when `fast_path` is set: the CPL0 set runs group G2 (register and immediate `Arithmetic`,
-/// `Logic`, `Shift`) through `try_fast_step` right after the decode. The run retires the same
-/// instructions and ends in the same state, with the same COM1 and the same memory calls, as one
-/// without it. With `fast_path_verify` the check wins: the general path runs for real and the fast
-/// path is only replayed for the comparison. Off by default; the loops of `parallel_run`,
-/// `host_parallel`, SMP and `linux_direct` never get it.
-#[allow(clippy::too_many_arguments)]
-pub fn run_firmware_unified_with_fast_path(
-    board: &mut LoadedFirmwareBoard,
-    instruction_budget: u64,
-    marker_rip: Option<u64>,
-    trace: Vec<CallTraceTarget>,
-    system_table: Option<u64>,
-    op_histogram: bool,
-    fast_path_verify: bool,
-    fast_path: bool,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
@@ -2166,23 +2042,8 @@ pub fn run_firmware_unified_with_fast_path(
     let set = profile.bind(&cpu_cells, &pci_cell, |member| {
         names.push(member.to_string())
     });
-    let set = if fast_path_verify {
-        set.with_fast_path_verify()
-    } else {
-        set
-    };
-    let set = if fast_path { set.with_fast_path() } else { set };
-    // PERF-31 (ADR-0018, variant (a), prototype): the board was asked for the predecoded block
-    // cache; the set uses it only with the fast path, without the check, in batched calls.
-    // PERF-33 (E5, step 4): or in the block check mode.
-    let set = if board.block_cache_verify() {
-        set.with_block_cache_verify()
-    } else if board.block_cache_prototype() {
-        set.with_block_cache_prototype()
-    } else {
-        set
-    };
-    let block_check = board.block_cache_verify() && !fast_path_verify && fast_path;
+    // The turbo engine of the loop (none on a host without one or after `disable_turbo`).
+    board.enable_turbo();
     board.serve_firmware_set_windows();
     if let Some(rip) = marker_rip {
         board
@@ -2214,57 +2075,8 @@ pub fn run_firmware_unified_with_fast_path(
     if op_histogram {
         board.enable_op_histogram();
     }
-    if fast_path_verify {
-        od_isa::fast_path_check::reset();
-    }
-    if block_check {
-        od_isa::predecoded_block::reset_block_check();
-    }
-    // E8 (step 8): the check of the data translation cache counts on this thread too.
-    let data_cache_check = board.data_cache_verify();
-    if data_cache_check {
-        crate::data_translation_cache::check::reset_data_cache_check();
-    }
-    // E9 (step 7): the check of the short boundary counts on this thread too.
-    let block_boundary_check = board.block_boundary_verify();
-    if block_boundary_check {
-        crate::decoded_block_cache::boundary_check::reset_block_boundary_check();
-    }
     let result =
         board.run_linux_boot_cpl0_set(instruction_budget, &set, false, members.fetch_cache, true);
-    // The loop runs on this thread, so its counters are this thread's.
-    let fast_path_check = fast_path_verify.then(|| FastPathCheckReport {
-        counters: od_isa::fast_path_check::counters(),
-        divergence: od_isa::fast_path_check::take_divergence(),
-    });
-    // PERF-33 (E5, step 4): the bytes of a divergence are read as a fetch would see them now (a
-    // read-only walk: no accessed or dirty bit, no cache), after the run stopped there.
-    let block_check = block_check.then(|| {
-        let counters = od_isa::predecoded_block::block_check_counters();
-        let divergence =
-            od_isa::predecoded_block::take_block_check_divergence().map(|divergence| {
-                let length = divergence
-                    .decoded
-                    .map_or(divergence.block.length, |decoded| {
-                        decoded.length.max(divergence.block.length)
-                    });
-                let (_, bytes, _) = board.fetch_view_2m(divergence.rip, usize::from(length));
-                BlockCheckDivergenceReport { divergence, bytes }
-            });
-        BlockCheckReport {
-            counters,
-            divergence,
-        }
-    });
-    let data_cache_check = data_cache_check.then(|| DataCacheCheckReport {
-        counters: crate::data_translation_cache::check::data_cache_check_counters(),
-        divergence: crate::data_translation_cache::check::take_data_cache_check_divergence(),
-    });
-    let block_boundary_check = block_boundary_check.then(|| BlockBoundaryCheckReport {
-        counters: crate::decoded_block_cache::boundary_check::block_boundary_check_counters(),
-        divergence:
-            crate::decoded_block_cache::boundary_check::take_block_boundary_check_divergence(),
-    });
     let call_trace = board.take_call_trace();
     let op_histogram = board.take_op_histogram();
     cpu_cells.commit(
@@ -2401,12 +2213,6 @@ pub fn run_firmware_unified_with_fast_path(
         checkpoints,
         call_trace,
         op_histogram,
-        fast_path_check,
-        block_check,
-        data_cache_check,
-        block_boundary_check,
-        block_stats: board.block_cache_stats(),
-        block_ends: board.block_end_report(),
     })
 }
 
@@ -13519,65 +13325,6 @@ mod tests {
     }
 
     #[test]
-    fn batched_calls_keep_the_syscall_journal_and_the_cpl3_entries_of_one_instruction_calls() {
-        // PERF-25: CPL0 NOPs before the `IRETQ` to CPL3 and in the kernel at LSTAR (before
-        // `mov eax, 0x2a; sysretq`): the batched CPL0 calls end right after the `IRETQ` and after
-        // each `SYSRETQ` (a committed return to CPL3), and the journal records both system calls.
-        // The budget: 4 NOPs and IRETQ, 2 user, 3 NOPs, MOV and SYSRETQ, 2 user, 5 kernel.
-        let run = |batches: bool| {
-            let (mut boot, file) = user_mode_board_with(
-                &[0x90; 4],
-                &[
-                    0xb8, 0x53, 0, 0, 0, 0x0f, 0x05, 0xb8, 0x07, 0, 0, 0, 0x0f, 0x05,
-                ],
-                true,
-                0x202,
-            );
-            write_phys(
-                &mut boot,
-                SYSCALL_KERNEL_AT,
-                &[0x90, 0x90, 0x90, 0xb8, 0x2a, 0, 0, 0, 0x48, 0x0f, 0x07],
-            );
-            boot.board.set_instruction_batches(batches);
-            crate::paged_memory_adapter::batch_trace::start();
-            let record = run_syscall_facade(&mut boot, &file, 19, 0xd01);
-            let calls = crate::paged_memory_adapter::batch_trace::take();
-            (record, boot.board.state().clone(), calls)
-        };
-        let (one, one_state, one_calls) = run(false);
-        let (many, many_state, calls) = run(true);
-        assert_eq!(format!("{many:?}"), format!("{one:?}"));
-        assert_eq!(many_state, one_state);
-        assert!(one_calls.iter().all(|call| call.budget == 1));
-        assert!(calls.len() < one_calls.len(), "{calls:?}");
-        assert_eq!(
-            (many.retired, many.cpl3_retired, many.cpl),
-            (19, 4, 3),
-            "{many:?}"
-        );
-        assert_eq!(many.rip, USER_CODE_AT + 14);
-        let journal = &many.syscall_journal;
-        assert_eq!((journal.entered, journal.returned), (2, 2));
-        assert_eq!(
-            journal
-                .entries
-                .iter()
-                .map(|entry| entry.rax_return)
-                .collect::<Vec<_>>(),
-            [Some(0x2a), Some(0x2a)]
-        );
-        // The three batched CPL0 calls of five instructions each.
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|call| call.budget > 1 && call.retired == 5)
-                .count(),
-            3,
-            "{calls:?}"
-        );
-    }
-
-    #[test]
     fn syscall_journal_is_a_ring_and_an_iretq_return_is_not_a_system_call() {
         let mut journal = SyscallJournal::default();
         for nr in 0..(SYSCALL_JOURNAL_CAPACITY as u64 + 3) {
@@ -14817,11 +14564,6 @@ mod tests {
                 None,
                 Some(&sweep),
                 crate::fetch_translation_cache::FetchCacheTag::Page4K,
-                None,
-                crate::data_translation_cache::DataCacheUse::Off,
-                false,
-                None,
-                None,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");
@@ -15261,7 +15003,6 @@ mod tests {
             |_| {},
             true,
             cache,
-            None,
             None,
             None,
             None,
@@ -15750,7 +15491,6 @@ mod tests {
             |range| writes.push((range.start().get(), range.len())),
             true,
             cache.as_ref(),
-            None,
             None,
             None,
             None,
@@ -20763,12 +20503,4 @@ mod tests {
     // ---- S4-09f: system acceptance of the A/D bits through the set loop ----
 
     mod stage4_ad_acceptance;
-
-    // ---- PERF-10: the decoded-instruction cache ----
-
-    mod decoded_instruction_cache;
-
-    // ---- PERF-31: the predecoded block cache (prototype) ----
-
-    mod decoded_block_cache;
 }

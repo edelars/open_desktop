@@ -1,7 +1,6 @@
-//! Experiment (turbo loop): a minimal AArch64 encoder for the turbo JIT. Raw instruction words
-//! only; labels and fixups live in [`Asm`].
-
-#![allow(dead_code)]
+//! Raw AArch64 instruction words for the turbo JIT of the unified loop (`od-machine` `turbo`,
+//! ADR-0022): free functions return one encoded word; [`Asm`] collects words, binds labels and
+//! resolves local and absolute branches once the final address of the code is known.
 
 pub const XZR: u32 = 31;
 pub const SP: u32 = 31;

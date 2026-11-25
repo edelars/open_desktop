@@ -235,16 +235,6 @@ fn quantum_loop(
         exception_delivery,
         stop_after_mmio,
         on_syscall,
-        // PERF-10: the vCPU quantum does not use the decoded-instruction cache.
-        None,
-        // PERF-11: nor the data translation cache.
-        None,
-        // PERF-25: nor batched calls (one instruction per call, as before).
-        false,
-        // PERF-31: nor the predecoded block cache.
-        None,
-        // E9: nor the short boundary of a pass of a block.
-        None,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -717,16 +707,6 @@ pub(crate) fn run_litmus_ram_quantum(
         None,
         ExceptionDeliveryMode::Quantum,
         false,
-        None,
-        // PERF-10: the vCPU quantum does not use the decoded-instruction cache.
-        None,
-        // PERF-11: nor the data translation cache.
-        None,
-        // PERF-25: nor batched calls (one instruction per call, as before).
-        false,
-        // PERF-31: nor the predecoded block cache.
-        None,
-        // E9: nor the short boundary of a pass of a block.
         None,
     );
     quantum_result(report, cpu, vcpu, 0)

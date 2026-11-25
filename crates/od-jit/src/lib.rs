@@ -16,6 +16,7 @@ pub mod block_compile;
 pub mod block_emitter;
 pub mod dispatch;
 pub mod emitter;
+pub mod exec_arena;
 pub mod ir;
 pub mod lowering;
 pub mod memory_bridge;

@@ -1,7 +1,6 @@
 //! Experiment (turbo loop): translation of one guest block (straight-line code on one 4 KiB page)
 //! to AArch64. See the module documentation of `turbo` for the register convention.
 
-use super::a64::{self, Asm, Cond, LSL, Label, XZR};
 use super::{EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_WRITE, TLB_BITS, TurboEngine};
 use od_isa::Register;
 use od_isa::long_decode::{
@@ -10,6 +9,7 @@ use od_isa::long_decode::{
 };
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
 use od_isa::state::{OperandSize, RegisterView};
+use od_jit::arm64::a64::{self, Asm, Cond, LSL, Label, XZR};
 
 pub(crate) enum Compiled {
     /// Code address, instruction count, guest byte ranges (page offset, length) of the

@@ -18,7 +18,6 @@
 #![allow(dead_code)]
 #![allow(clippy::all)]
 
-pub(crate) mod a64;
 mod jit;
 
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
@@ -594,7 +593,7 @@ impl TurboEngine {
     }
 
     fn emit_stubs(&mut self) {
-        use a64::*;
+        use od_jit::arm64::a64::*;
         // entry(state x0, ctx x1, code x2)
         let mut asm = Asm::new();
         asm.emit(stp_pre(29, 30, SP, -96));

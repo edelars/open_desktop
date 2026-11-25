@@ -10,17 +10,6 @@ pub mod cli;
 pub mod cpuid;
 pub mod cr8;
 pub mod execute;
-pub mod fast_path_check;
-#[cfg(test)]
-mod fast_step_g1_g3_tests;
-#[cfg(test)]
-mod fast_step_g2_tests;
-#[cfg(test)]
-mod fast_step_g4_tests;
-#[cfg(test)]
-mod fast_step_g5_tests;
-#[cfg(test)]
-mod fast_step_g6_tests;
 #[cfg(test)]
 mod fast_step_static_filter_tests;
 mod finite_arithmetic;
@@ -37,7 +26,6 @@ pub mod mmx_int;
 pub mod msr;
 pub mod paging;
 pub mod port_io;
-pub mod predecoded_block;
 pub mod protected_exec;
 mod rational_rounding;
 pub mod real_mode_exec;

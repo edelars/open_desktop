@@ -3630,10 +3630,6 @@ pub struct Instruction {
     pub operation: Operation,
 }
 
-/// PERF-31 (ADR-0018, variant (a)): a predecoded straight-line block; E10 keeps the handler of the
-/// fast path next to every decode (see [`crate::predecoded_block::DecodedBlock`]).
-pub use crate::predecoded_block::DecodedBlock;
-
 impl Instruction {
     /// SDM093 scalar instruction flag effects. Undefined bits are metadata,
     /// not assertions about the concrete bits a particular CPU produces.
@@ -13954,10 +13950,9 @@ fn view(encoding: u8, size: OperandSize, rex: bool) -> RegisterView {
     }
 }
 
-/// Decodes the instruction at `rip`. PERF-10: the backend is asked first for a decoded instruction
-/// it remembers ([`GuestMemory::cached_instruction`]; the default has none); on `None` the decoder
-/// reads the bytes as before and tells the backend of a successful result
-/// ([`GuestMemory::remember_instruction`]). The decoder itself is [`decode_uncached`].
+/// Decodes the instruction at `rip`. The backend is asked first for a decoded instruction it
+/// already has ([`GuestMemory::cached_instruction`]; the default has none); on `None` the decoder
+/// reads the bytes. The decoder itself is [`decode_uncached`].
 pub fn decode(
     memory: &mut impl GuestMemory,
     rip: u64,
@@ -13966,11 +13961,7 @@ pub fn decode(
     if let Some(instruction) = memory.cached_instruction(rip, context) {
         return Ok(instruction);
     }
-    let decoded = decode_uncached(&mut *memory, rip, context);
-    if let Ok(instruction) = &decoded {
-        memory.remember_instruction(rip, context, *instruction);
-    }
-    decoded
+    decode_uncached(&mut *memory, rip, context)
 }
 
 fn decode_uncached(

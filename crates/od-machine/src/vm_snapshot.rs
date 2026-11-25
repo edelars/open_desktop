@@ -281,8 +281,9 @@ impl VmSnapshot {
             .local_apic()
             .restore_pair(&self.apic)
             .map_err(|_| SnapshotError::Apic)?;
-        // PERF-10: the restore may put the vCPUs back to another translation context.
-        board.reset_decoded_instruction_cache();
+        // The restore may put the vCPUs back to another translation context: the turbo engine
+        // forgets what it derived from the old one.
+        board.reset_turbo_engine();
         for (cpu, vcpu) in self.vcpus.iter().enumerate() {
             *board.vcpu_mut(cpu).expect("the count was checked") = vcpu.clone();
         }
@@ -297,7 +298,6 @@ mod tests {
     use super::*;
     use crate::apic_pair::{LEVEL, PairState};
     use crate::clock_owner::ClockOwner;
-    use crate::decoded_instruction_cache::test_support::insert_probe;
     use crate::interleaved_harness::HZ;
     use crate::smp_scheduler::{
         BoardSmpHost, Executed, QuantumPolicy, SmpScheduler, StopError, StopRequest,
@@ -527,8 +527,11 @@ mod tests {
         assert_eq!(apic1.vector_state(0x63), (true, false));
     }
 
+    /// A restore resets the turbo engine: the engine forgets what it derived from guest memory,
+    /// including the writes to watched code pages logged before (here one to a page the test
+    /// watches, made after the stop).
     #[test]
-    fn a_restore_empties_the_decoded_instruction_cache() {
+    fn a_restore_resets_the_turbo_engine() {
         let mut board = board(2);
         power_on(&mut board);
         start_ap(&mut board);
@@ -536,15 +539,25 @@ mod tests {
         let mut scheduler = scheduler(2);
         let point = stop(&mut board, &mut scheduler).unwrap();
         let snapshot = VmSnapshot::take(&board, &scheduler, &point).unwrap();
-        let cache = board.decoded_instruction_cache();
-        let (rip, ring0, probe, _) = insert_probe(cache);
-        assert!(cache.entries() > 0);
+        if !board.enable_turbo() {
+            // A host without the engine: nothing to reset.
+            return;
+        }
+        let page = crate::GuestPhysicalAddress::new(0x20_0000);
+        board.bus().physical_memory().set_code_watch(page, true);
+        board
+            .bus_mut()
+            .write_flat_bytes(page, &[0x90], |_| {})
+            .unwrap();
         snapshot
             .restore(&mut board, &mut scheduler, &point)
             .unwrap();
-        let cache = board.decoded_instruction_cache();
-        assert_eq!(cache.entries(), 0, "the table is empty after the restore");
-        assert_eq!(cache.lookup(rip, ring0, probe), None, "the probe is gone");
+        assert!(board.turbo_engine().is_some(), "the engine stays");
+        assert_eq!(
+            board.bus().physical_memory().take_code_watch_hits(),
+            None,
+            "the logged writes were dropped by the restore"
+        );
     }
 
     #[test]

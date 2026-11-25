@@ -586,10 +586,11 @@ fn diagnostic_options_are_validated_before_launch() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// PERF-33 (E2): `unified.block_stats` is in the report only with `--block-stats` (a debug runner
-/// counts anyway, so the flag alone decides the field); the run itself is the same either way.
+/// The unified loop runs through the turbo engine by default; `--no-turbo` (the general step
+/// only) gives the same report, and `--turbo-stats` adds only the statistics of the engine on
+/// stderr. A flag of the removed acceleration engine is refused when the arguments are parsed.
 #[test]
-fn block_stats_are_reported_only_with_the_flag() {
+fn the_unified_run_without_turbo_reports_the_same_and_turbo_stats_go_to_stderr() {
     #[rustfmt::skip]
     let code = [
         0xB9, 0x32, 0x00, 0x00, 0x00, // mov ecx, 50
@@ -605,168 +606,49 @@ fn block_stats_are_reported_only_with_the_flag() {
     rom[0x30..0x34].fill(0);
     let crc = crc32(&rom);
     rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
-    // PERF-33 (E1): the blocks are the default with `--fast-path`.
-    let blocks = ["--cpu-loop", "unified", "--fast-path"];
-    let plain = invoke_with_args(&rom, "10000", &blocks);
-    let counted = invoke_with_args(&rom, "10000", &[&blocks[..], &["--block-stats"]].concat());
-    for run in [&plain, &counted] {
+    let unified = ["--cpu-loop", "unified"];
+    let default = invoke_with_args(&rom, "10000", &unified);
+    let general = invoke_with_args(&rom, "10000", &[&unified[..], &["--no-turbo"]].concat());
+    let counted = invoke_with_args(&rom, "10000", &[&unified[..], &["--turbo-stats"]].concat());
+    for run in [&default, &general, &counted] {
         assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
     }
-    let (plain_report, mut counted_report) = (report(&plain), report(&counted));
-    assert_eq!(plain_report["exit"], "halted");
-    assert_eq!(plain_report["cpu_loop"], "unified");
-    assert!(plain_report["unified"].get("block_stats").is_none());
-    let stats = counted_report["unified"]
-        .as_object_mut()
-        .unwrap()
-        .remove("block_stats")
-        .expect("the counted run reports the block cache");
-    assert!(stats["hits"].as_u64().unwrap() > 0, "{stats}");
-    assert!(
-        stats["retired_from_blocks"].as_u64().unwrap() > 0,
-        "{stats}"
-    );
-    // PERF-33 (E4, step 2): every run has one end reason, every other retired instruction one
-    // general-step key, and both parts sum to what the run retired.
-    let sum = |value: &serde_json::Value| -> u64 {
-        value
-            .as_object()
-            .unwrap()
-            .values()
-            .map(|count| count.as_u64().unwrap())
-            .sum()
-    };
-    let end_reasons = stats["end_reasons"].as_object().unwrap();
-    assert_eq!(
-        end_reasons
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>(),
-        od_machine::BLOCK_RUN_END_REASONS.into_iter().collect(),
-        "{stats}"
-    );
-    assert_eq!(sum(&stats["end_reasons"]), stats["runs"].as_u64().unwrap());
-    assert!(
-        stats["end_reasons"]["branch"].as_u64().unwrap() > 0,
-        "{stats}"
-    );
-    assert_eq!(
-        stats["general_by_reason"].as_object().unwrap().len(),
-        od_machine::BLOCK_GENERAL_REASONS.len()
-    );
-    let general = stats["general_retired"].as_u64().unwrap();
-    assert!(general > 0, "{stats}");
-    assert_eq!(sum(&stats["general_by_key"]), general, "{stats}");
-    assert_eq!(sum(&stats["general_by_reason"]), general, "{stats}");
-    assert!(
-        stats["general_by_key"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .all(|key| key.contains(':') && key.contains("/cpl")),
-        "{stats}"
-    );
-    assert_eq!(
-        general + stats["retired_from_blocks"].as_u64().unwrap(),
-        counted_report["retired"].as_u64().unwrap(),
-        "{stats}"
-    );
-    assert_eq!(stats["sum_equals_retired"], true);
-    // The COM1 path differs between invocations by construction.
-    let mut left = plain_report;
-    for report in [&mut left, &mut counted_report] {
-        report.as_object_mut().unwrap().remove("com1_out");
-    }
-    assert_eq!(left, counted_report, "the field is the only difference");
-    for run in [plain, counted] {
-        fs::remove_file(&run.com1).unwrap();
-    }
-}
-
-/// PERF-33 (E1): with `--fast-path` the unified loop runs the block cache by default (the counters
-/// show block hits), `--no-block-cache` turns it off and is refused without `--fast-path`, and the
-/// report of the default run equals the report of the run without blocks.
-#[test]
-fn the_fast_path_runs_the_block_cache_by_default_and_the_report_is_the_same_without_it() {
-    #[rustfmt::skip]
-    let code = [
-        0xB9, 0x32, 0x00, 0x00, 0x00, // mov ecx, 50
-        0x48, 0x01, 0xCA,             // L: add rdx, rcx
-        0x48, 0x89, 0xD0,             // mov rax, rdx
-        0xFF, 0xC9,                   // dec ecx
-        0x75, 0xF6,                   // jnz L
-        0xF4,                         // hlt
-    ];
-    let mut rom = image(&code);
-    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
-    rom[0x30..0x34].fill(0);
-    let crc = crc32(&rom);
-    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
-    let fast = ["--cpu-loop", "unified", "--fast-path"];
-    let default = invoke_with_args(&rom, "10000", &fast);
-    let without = invoke_with_args(&rom, "10000", &[&fast[..], &["--no-block-cache"]].concat());
-    let counted = invoke_with_args(&rom, "10000", &[&fast[..], &["--block-stats"]].concat());
-    for run in [&default, &without, &counted] {
-        assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
-    }
-    let mut counted_report = report(&counted);
-    let stats = counted_report["unified"]
-        .as_object_mut()
-        .unwrap()
-        .remove("block_stats")
-        .expect("--fast-path runs the block cache by default");
-    assert!(stats["hits"].as_u64().unwrap() > 0, "{stats}");
-    assert!(
-        stats["retired_from_blocks"].as_u64().unwrap() > 0,
-        "{stats}"
-    );
-    let (mut default_report, mut without_report) = (report(&default), report(&without));
+    let stderr = String::from_utf8_lossy(&counted.output.stderr);
+    assert!(stderr.contains("turbo: "), "{stderr}");
+    let (mut default_report, mut general_report, mut counted_report) =
+        (report(&default), report(&general), report(&counted));
     assert_eq!(default_report["exit"], "halted");
-    assert!(default_report["unified"].get("block_stats").is_none());
+    assert_eq!(default_report["cpu_loop"], "unified");
     // The COM1 path differs between invocations by construction.
     for report in [
         &mut default_report,
-        &mut without_report,
+        &mut general_report,
         &mut counted_report,
     ] {
         report.as_object_mut().unwrap().remove("com1_out");
     }
-    assert_eq!(default_report, without_report, "the blocks change no field");
+    assert_eq!(
+        default_report, general_report,
+        "the engine changes no field"
+    );
     assert_eq!(default_report, counted_report);
-    // Without blocks there is nothing to count; without the fast path there are no blocks to
-    // turn off: both are refused when the arguments are parsed.
-    for (extra, error) in [
-        (
-            &[
-                "--cpu-loop",
-                "unified",
-                "--fast-path",
-                "--no-block-cache",
-                "--block-stats",
-            ][..],
-            "--block-stats requires the block cache",
-        ),
-        (
-            &["--cpu-loop", "unified", "--no-block-cache"][..],
-            "--no-block-cache requires --cpu-loop unified and --fast-path",
-        ),
+    for flag in [
+        "--fast-path",
+        "--no-block-cache",
+        "--block-stats",
+        "--data-cache-prototype",
     ] {
-        let refused = invoke_with_args(&rom, "10000", extra);
+        let refused = invoke_with_args(&rom, "10000", &[&unified[..], &[flag]].concat());
         assert_eq!(
             refused.output.status.code(),
             Some(3),
-            "{extra:?}: {:?}",
+            "{flag}: {:?}",
             refused.output
         );
-        let result = report(&refused);
-        assert_eq!(result["status"], "invalid_input");
-        assert!(
-            result["error"]["detail"].as_str().unwrap().contains(error),
-            "{result}"
-        );
+        assert_eq!(report(&refused)["status"], "invalid_input");
         assert!(!refused.com1.exists());
     }
-    for run in [default, without, counted] {
+    for run in [default, general, counted] {
         fs::remove_file(&run.com1).unwrap();
     }
 }

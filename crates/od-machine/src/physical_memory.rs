@@ -294,7 +294,7 @@ struct Region {
     /// `Release` after the data of a write has been stored, read with `Acquire` (see
     /// [`PhysicalMemory::code_page_generation`]); every access is through `&self`.
     page_generations: Vec<AtomicU64>,
-    /// Experiment (turbo loop): one byte per page; nonzero while the turbo JIT has code on the
+    /// The turbo engine: one byte per page; nonzero while the turbo JIT has code on the
     /// page. A committed write to such a page is logged (`PhysicalMemory::take_code_watch_hits`).
     code_watch: Vec<std::sync::atomic::AtomicU8>,
 }
@@ -342,15 +342,6 @@ pub(crate) struct RamFrame {
     large: bool,
 }
 
-/// PERF-10: a byte of plain RAM named by (region, offset inside the region), with the generation of
-/// its 4 KiB page read at that moment (see `PhysicalMemory::ram_frame_code_page`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RamCodePage {
-    pub(crate) region: usize,
-    pub(crate) offset: usize,
-    pub(crate) generation: u64,
-}
-
 impl RamFrame {
     /// A 2 MiB span from `PhysicalMemory::ram_leaf_2m` (not a 4 KiB frame).
     pub(crate) fn is_large(self) -> bool {
@@ -394,7 +385,7 @@ pub struct PhysicalMemory {
     /// accesses and of bulk copies, and the host fence of the guest fences. Set once, before the memory is shared (`&mut self`), so
     /// no access reads it through an atomic. The default is [`ExecutionMode::Interleaved`].
     mode: ExecutionMode,
-    /// Experiment (turbo loop): pages of `code_watch` written since the last take.
+    /// The turbo engine: pages of `code_watch` written since the last take.
     code_watch_hits: std::sync::Mutex<Vec<(u64, u64)>>,
     code_watch_pending: std::sync::atomic::AtomicBool,
     /// The counters that are written while vCPU threads run, on cache lines of their own (S6-34
@@ -1096,7 +1087,7 @@ impl PhysicalMemory {
         )
     }
 
-    /// Experiment (turbo loop): the host address of the plain-RAM 4 KiB page holding `address`.
+    /// The turbo engine: the host address of the plain-RAM 4 KiB page holding `address`.
     pub(crate) fn ram_page_host_ptr(&self, address: GuestPhysicalAddress) -> Option<*mut u8> {
         let base = GuestPhysicalAddress(address.0 & !0xfff);
         let (index, offset) = self.locate_index(base, 0x1000).ok()?;
@@ -1110,7 +1101,7 @@ impl PhysicalMemory {
         region.backing.as_ref()?.operand_ptr(offset, 8)
     }
 
-    /// Experiment (turbo loop): the host address of the RAM (not framebuffer) page of `address`.
+    /// The turbo engine: the host address of the RAM (not framebuffer) page of `address`.
     pub(crate) fn ram_only_page_host_ptr(&self, address: GuestPhysicalAddress) -> Option<*mut u8> {
         let base = GuestPhysicalAddress(address.0 & !0xfff);
         let (index, offset) = self.locate_index(base, 0x1000).ok()?;
@@ -1136,20 +1127,20 @@ impl PhysicalMemory {
         region.code_watch.get(usize::try_from(page).ok()?)
     }
 
-    /// Experiment (turbo loop): whether the page of `address` is watched.
+    /// The turbo engine: whether the page of `address` is watched.
     pub(crate) fn code_watch(&self, address: GuestPhysicalAddress) -> bool {
         self.code_watch_cell(address)
             .is_some_and(|cell| cell.load(Ordering::Relaxed) != 0)
     }
 
-    /// Experiment (turbo loop): watch (or stop watching) the page of `address`.
+    /// The turbo engine: watch (or stop watching) the page of `address`.
     pub(crate) fn set_code_watch(&self, address: GuestPhysicalAddress, on: bool) {
         if let Some(cell) = self.code_watch_cell(address) {
             cell.store(on as u8, Ordering::Relaxed);
         }
     }
 
-    /// Experiment (turbo loop): the watched pages written since the last call, if any.
+    /// The turbo engine: the watched pages written since the last call, if any.
     pub(crate) fn take_code_watch_hits(&self) -> Option<Vec<(u64, u64)>> {
         if !self.code_watch_pending.load(Ordering::Acquire) {
             return None;
@@ -1192,100 +1183,6 @@ impl PhysicalMemory {
             .checked_add(usize::try_from(in_frame & mask).ok()?)?;
         let storage = region.backing.as_ref()?;
         by_mode!(self.mode, order => storage.try_load_u8(at, order))
-    }
-
-    /// PERF-11: the qword at `in_frame` of a 4 KiB frame from [`Self::ram_frame`] (only the low 12
-    /// bits of `in_frame` are used; the qword must not cross the frame), read with the host accesses
-    /// of [`Self::load_bytes`] of 8 bytes, the read of the tracked walk. `None` for a 2 MiB handle,
-    /// a qword past the frame end or a handle that is not of this memory (the caller then walks).
-    #[inline(always)]
-    pub(crate) fn read_ram_frame_qword(&self, frame: RamFrame, in_frame: u64) -> Option<u64> {
-        let in_page = (in_frame & 0xfff) as usize;
-        if frame.large || in_page > 0x1000 - 8 {
-            return None;
-        }
-        let storage = self.regions.get(frame.region)?.backing.as_ref()?;
-        let at = frame.offset + in_page;
-        Some(by_mode!(self.mode, order => storage.load_qword_as_copy(at, order)))
-    }
-
-    /// E8 (PERF-12): the `out.len()` bytes at `in_frame` of a 4 KiB frame from [`Self::ram_frame`]
-    /// (only the low 12 bits of `in_frame` are used; the bytes must not cross the frame), read with
-    /// the host accesses of [`Self::load_bytes`] of that length, the read of the tracked walk.
-    /// `None` for a 2 MiB handle, bytes past the frame end or a handle that is not of this memory
-    /// (the caller then walks).
-    #[inline(always)]
-    pub(crate) fn read_ram_frame_bytes(
-        &self,
-        frame: RamFrame,
-        in_frame: u64,
-        out: &mut [u8],
-    ) -> Option<()> {
-        let in_page = (in_frame & 0xfff) as usize;
-        if frame.large || in_page + out.len() > 0x1000 {
-            return None;
-        }
-        let storage = self.regions.get(frame.region)?.backing.as_ref()?;
-        let at = frame.offset + in_page;
-        by_mode!(self.mode, order => storage.copy_out(at, out, order));
-        Some(())
-    }
-
-    /// PERF-10: where byte `in_frame` of a frame from [`Self::ram_frame`] (or of a span from
-    /// [`Self::ram_leaf_2m`]) lives: the region index, the byte offset inside the region, and the
-    /// current generation of its 4 KiB page (an `Acquire` load, so the caller reads it BEFORE the
-    /// bytes it caches, the reader's rule of [`Self::code_page_generation`]). `in_frame` is any
-    /// address: only its low 12 bits (low 21 bits for a 2 MiB span) are used, like
-    /// [`Self::read_ram_frame_u8`]. `None` for a handle that is not of this memory.
-    pub(crate) fn ram_frame_code_page(
-        &self,
-        frame: RamFrame,
-        in_frame: u64,
-    ) -> Option<RamCodePage> {
-        let region = self.regions.get(frame.region)?;
-        let mask = if frame.large { 0x1f_ffff } else { 0xfff };
-        let offset = frame
-            .offset
-            .checked_add(usize::try_from(in_frame & mask).ok()?)?;
-        let start = region.spec.range.start.get();
-        let page_index = usize::try_from(
-            (start.checked_add(u64::try_from(offset).ok()?)? >> 12) - (start >> 12),
-        )
-        .ok()?;
-        let generation = region
-            .page_generations
-            .get(page_index)?
-            .load(Ordering::Acquire);
-        Some(RamCodePage {
-            region: frame.region,
-            offset,
-            generation,
-        })
-    }
-
-    /// PERF-31: the index of the 4 KiB page of `page` among the page generations of its region
-    /// (for [`Self::ram_code_page_generation_at`]); `None` for a page that is not of this memory.
-    pub(crate) fn ram_code_page_index(&self, page: RamCodePage) -> Option<usize> {
-        let region = self.regions.get(page.region)?;
-        let start = region.spec.range.start.get();
-        let index = usize::try_from(
-            (start.checked_add(u64::try_from(page.offset).ok()?)? >> 12) - (start >> 12),
-        )
-        .ok()?;
-        (index < region.page_generations.len()).then_some(index)
-    }
-
-    /// PERF-31: the current generation of page `index` of region `region` (an `Acquire` load, as
-    /// [`Self::ram_frame_code_page`] reads it).
-    #[inline(always)]
-    pub(crate) fn ram_code_page_generation_at(&self, region: usize, index: usize) -> Option<u64> {
-        Some(
-            self.regions
-                .get(region)?
-                .page_generations
-                .get(index)?
-                .load(Ordering::Acquire),
-        )
     }
 
     pub(crate) fn locate_region_kind(
