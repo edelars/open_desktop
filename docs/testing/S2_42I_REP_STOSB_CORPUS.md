@@ -89,6 +89,6 @@ independent expected results. This is interpreter evidence only.
 Subsequent Linux x86_64 native acceptance passed all 1,060 cases twice at source
 fingerprint
 `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,120
-saved results per backend matched. Evidence: [summary](../../work/stage2-42i-oracle/s2-42i-summary.json)
+saved results per backend matched. Evidence: summary (`work/stage2-42i-oracle/s2-42i-summary.json`)
 and `work/stage2-42i-oracle/stage2-20261104-115224-e036b506/`. Physical Mac
 acceptance remains `not_run`. S2-42 remains open.

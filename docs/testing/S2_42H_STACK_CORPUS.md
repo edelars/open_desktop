@@ -81,7 +81,7 @@ two-repeat matrix checks the verifier success path; it is orchestration evidence
 only. Subsequent Linux x86_64 native acceptance passed all 1,056 cases twice at
 source fingerprint
 `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,112
-saved results per backend matched. Evidence: [summary](../../work/stage2-42h-oracle/s2-42h-summary.json)
+saved results per backend matched. Evidence: summary (`work/stage2-42h-oracle/s2-42h-summary.json`)
 and `work/stage2-42h-oracle/stage2-20261104-114744-b11b1061/`. Physical Mac
 acceptance remains `not_run`. S2-42 remains open for other corpus groups,
 generic reducers, S2-21/S2-39/S2-40 dependencies, and hardware acceptance.

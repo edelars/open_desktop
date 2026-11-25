@@ -11,9 +11,9 @@ no fix or stable pass is claimed, and ISSUE-044 remains open.
 ## Compare of the preserved S3-38b runs
 
 The completed pass was `stage3-20261030-022418-2f31426694`; the timeout was
-`stage3-20261030-023436-6452c1b474`. Their preserved summaries are the [pass
-summary](../../work/stage3-harness/stage3-20261030-022418-2f31426694/summary.json)
-and [timeout summary](../../work/stage3-harness/stage3-20261030-023436-6452c1b474/summary.json).
+`stage3-20261030-023436-6452c1b474`. Their preserved summaries are the pass
+summary (`work/stage3-harness/stage3-20261030-022418-2f31426694/summary.json`)
+and timeout summary (`work/stage3-harness/stage3-20261030-023436-6452c1b474/summary.json`).
 Both record revision
 `8e0a2b289869a224917c8188cbb04cd5edbdfc93`, the same macOS ARM64 host,
 Rust/Cargo 1.99.0, Swift 6.4, Xcode 27.1, `/usr/bin/codesign` hash
@@ -64,7 +64,7 @@ and child wait/signal classification. Without `OD_ISSUE027_TRACE=1`, they emit
 nothing.
 
 Frozen-set manifest:
-[`frozen-set.json`](../../work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/frozen-set.json).
+`work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/frozen-set.json`.
 The static library was copied from the preserved pass build after confirming it
 matched the timeout build; its original revision was
 `8e0a2b289869a224917c8188cbb04cd5edbdfc93` with source fingerprint
@@ -104,12 +104,12 @@ All three attempt records are separate and immutable:
 
 | Attempt | Result | Exit | Duration | Record |
 |---|---|---:|---:|---|
-| 1 | expected SIGSEGV observation | 0 | 9.980 s | [`attempt.json`](../../work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/01/attempt.json) |
-| 2 | expected SIGSEGV observation | 0 | 9.371 s | [`attempt.json`](../../work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/02/attempt.json) |
-| 3 | expected SIGSEGV observation | 0 | 9.468 s | [`attempt.json`](../../work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/03/attempt.json) |
+| 1 | expected SIGSEGV observation | 0 | 9.980 s | `work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/01/attempt.json` |
+| 2 | expected SIGSEGV observation | 0 | 9.371 s | `work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/02/attempt.json` |
+| 3 | expected SIGSEGV observation | 0 | 9.468 s | `work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/attempts/03/attempt.json` |
 
 Aggregate record:
-[`diagnostic-attempts.json`](../../work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/diagnostic-attempts.json).
+`work/stage3-harness/issue027-diag-20261030T032010Z-24c79bbd/diagnostic-attempts.json`.
 Every attempt saved stdout/stderr, launcher child stdout/stderr, full command,
 exit status, duration, source fingerprint after execution, cleanup status, and
 the frozen artifact hashes. No run was skipped after a pass; no build occurred

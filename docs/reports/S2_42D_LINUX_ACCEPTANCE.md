@@ -54,7 +54,7 @@ The Linux debug runner binary SHA-256 was
 `56530a7025fd6f6e7f6f0b183b389587f6085d439aa5cddb997b663f53a9a005`;
 embedded build revision was unavailable. Detailed commands and per-run report
 hashes are preserved in the ignored local evidence record
-[`verification.json`](../../work/stage2/s2-42d-xorpd/verification.json), with
+`work/stage2/s2-42d-xorpd/verification.json`, with
 the raw run artifacts under `work/stage2/s2-42d-xorpd/`.
 
 S2-42 remains open. This slice does not claim native mismatch reduction, known

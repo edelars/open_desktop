@@ -17436,7 +17436,7 @@ execute-only enforcement or guest `#PF`. On 2026-11-04 the unchanged 1,080-case
 selection passed twice on interpreter and Linux native at source fingerprint
 `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; all 2,160
 saved results per backend matched, and saved-run verification passed. Evidence:
-[summary](../../work/stage2-42e-oracle/s2-42e-summary.json) and
+summary (`work/stage2-42e-oracle/s2-42e-summary.json`) and
 `work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/`. Five focused Linux
 mapping/admission regressions passed. The complete `native_v2::tests` group
 initially had the same 50 failures on parent `286b70c` and final `0a0640b`.
@@ -17512,7 +17512,7 @@ byte-stack oracle. Focused Python suites passed (S2-42h: 8; S2-42e regression:
 `python3 tools/check_layout.py`, `git diff --check` and Graphify update passed
 on main. Subsequent Linux x86_64 native acceptance passed all 1,056 cases twice
 at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
-2,112 results per backend matched. Evidence: [summary](../../work/stage2-42h-oracle/s2-42h-summary.json)
+2,112 results per backend matched. Evidence: summary (`work/stage2-42h-oracle/s2-42h-summary.json`)
 and `work/stage2-42h-oracle/stage2-20261104-114744-b11b1061/`. Physical Mac
 acceptance remains `not_run`. This corpus does not implement native execution or close parent
 S2-42, which still needs generic reducer coverage, REP/FP groups, dependencies
@@ -17538,7 +17538,7 @@ saved-result identities replace stale success summaries. Independent Sol/high
 review cleared both findings. Subsequent Linux x86_64 native acceptance passed
 all 1,060 cases twice at fingerprint
 `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,120
-results per backend matched. Evidence: [summary](../../work/stage2-42i-oracle/s2-42i-summary.json)
+results per backend matched. Evidence: summary (`work/stage2-42i-oracle/s2-42i-summary.json`)
 and `work/stage2-42i-oracle/stage2-20261104-115224-e036b506/`. Physical Mac
 acceptance remains `not_run`. The slice changes no CPU/schema/admission code. Fault/restart,
 controlled continuation, larger counts and other string forms remain open, as
@@ -25021,7 +25021,7 @@ for the exact one-instruction register↔memory MOV gate while preserving logica
 permissions. The unchanged 1,080-case suite passed twice on interpreter and
 Linux native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
 saved-run verification passed, including all 56 pinned controls. See the
-[S2-42e final evidence](../../work/stage2-42e-oracle/s2-42e-summary.json). ISSUE-034
+S2-42e final evidence (`work/stage2-42e-oracle/s2-42e-summary.json`). ISSUE-034
 is resolved. Physical hardware remains `not_run`. Parent S2-42 and dependencies S2-21,
 S2-39, and S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42q--56-handwritten-mov-memoryaddressing-controls),
@@ -25070,7 +25070,7 @@ evidence roundtrips passed for both debug and release, with negative tests for
 provenance and process mutations. Subsequent Linux x86_64 native acceptance
 passed all 1,056 cases twice at fingerprint
 `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,112
-results per backend matched. Evidence: [summary](../../work/stage2-42r-oracle/s2-42r-summary.json)
+results per backend matched. Evidence: summary (`work/stage2-42r-oracle/s2-42r-summary.json`)
 and `work/stage2-42r-oracle/stage2-20261104-115710-057e3506/`. Physical
 acceptance remains `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
 open. See the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus).

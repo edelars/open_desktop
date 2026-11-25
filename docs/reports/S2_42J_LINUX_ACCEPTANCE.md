@@ -45,7 +45,7 @@ Each saved original was then replayed with the report's recorded `--fixture
 complete reports, callback journals and replay outputs are under ignored
 `work/stage2/s2-42j-native-stack/acceptance-20261104-push-rax/` and
 `work/stage2/s2-42j-native-stack/acceptance-20261104-pop-rsp/`. The compact
-[verification record](../../work/stage2/s2-42j-native-stack/verification.json)
+verification record (`work/stage2/s2-42j-native-stack/verification.json`)
 contains exact commands, source/binary hashes, report hashes, callback counts,
 and replay results.
 

@@ -80,7 +80,7 @@ debug profile; its embedded source revision/compiler fields were unavailable.
 The OS-reported `execution_kind=unknown` is preserved and does not establish
 physical CPU identity. Raw artifacts and the verification record are preserved
 under ignored `work/stage2/s2-42ai-native-rep-stosb/`; see the
-[verification record](../../work/stage2/s2-42ai-native-rep-stosb/verification.json).
+verification record (`work/stage2/s2-42ai-native-rep-stosb/verification.json`).
 
 S2-42 remains open for the other corpus/reducer requirements and S2-21/39/40
 dependencies. Physical Mac acceptance remains separate.
