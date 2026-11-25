@@ -158,13 +158,13 @@ impl Long64ProbeConfig {
         self.efer
     }
 
-    fn root(self) -> u64 {
+    pub(crate) fn root(self) -> u64 {
         self.cr3 & ENTRY_ADDRESS_MASK
     }
-    fn write_protect(self) -> bool {
+    pub(crate) fn write_protect(self) -> bool {
         self.cr0 & CR0_WP != 0
     }
-    fn nxe(self) -> bool {
+    pub(crate) fn nxe(self) -> bool {
         self.efer & EFER_NXE != 0
     }
 }
@@ -1012,6 +1012,9 @@ fn walk_long64_4k(
     )
 }
 
+/// Diagnostic (turbo experiment): walks done.
+pub(crate) static WALK_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn walk_long64_4k_with_writer(
     memory: &PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -1023,6 +1026,7 @@ fn walk_long64_4k_with_writer(
     table_writer: &mut TrackedTableWriter<'_>,
     allow_2m: bool,
 ) -> WalkResult {
+    WALK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 4];
     let mut ad_update_count = 0;

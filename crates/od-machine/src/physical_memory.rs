@@ -1105,6 +1105,17 @@ impl PhysicalMemory {
         region.backing.as_ref()?.operand_ptr(offset, 8)
     }
 
+    /// Experiment (turbo loop): the host address of the RAM (not framebuffer) page of `address`.
+    pub(crate) fn ram_only_page_host_ptr(&self, address: GuestPhysicalAddress) -> Option<*mut u8> {
+        let base = GuestPhysicalAddress(address.0 & !0xfff);
+        let (index, offset) = self.locate_index(base, 0x1000).ok()?;
+        let region = &self.regions[index];
+        if region.spec.kind != MemoryRegionKind::Ram {
+            return None;
+        }
+        region.backing.as_ref()?.operand_ptr(offset, 8)
+    }
+
     fn code_watch_cell(&self, address: GuestPhysicalAddress) -> Option<&std::sync::atomic::AtomicU8> {
         let (index, _) = self.locate_index(GuestPhysicalAddress(address.0 & !0xfff), 1).ok()?;
         let region = &self.regions[index];

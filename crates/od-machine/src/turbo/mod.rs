@@ -414,6 +414,9 @@ pub(crate) struct TurboEngine {
     debug: u64,
     debug_fb: u64,
     slow_kinds: HashMap<String, u64>,
+    slow_walks: HashMap<String, u64>,
+    last_cause: u8,
+    pending_slow: Option<(String, u64)>,
     pub stats: TurboStats,
 }
 
@@ -433,6 +436,11 @@ pub struct TurboStats {
     pub code_writes: u64,
     pub noted_writes: u64,
     pub leaf_drops: u64,
+    pub rep_refused: [u64; 12],
+    pub loop_cpl3: u64,
+    pub loop_unknown: u64,
+    pub loop_refused: u64,
+    pub loop_forced: u64,
     pub slot_switches: u64,
     pub slot_misses: u64,
     pub singles: u64,
@@ -514,6 +522,9 @@ impl TurboEngine {
             debug: std::env::var("OD_TURBO_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             debug_fb: std::env::var("OD_TURBO_DEBUG_FB").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             slow_kinds: HashMap::default(),
+            slow_walks: HashMap::default(),
+            last_cause: 0,
+            pending_slow: None,
             stats: TurboStats::default(),
         });
         engine.emit_stubs();
@@ -827,6 +838,10 @@ impl TurboEngine {
     /// the fetch itself needs the general path (a fault, not RAM).
     fn code_for(&mut self, env: &mut RunEnv<'_>, rip: u64) -> Option<usize> {
         self.stats.lookups += 1;
+        if let Some(walk) = fast_translate(env.ram, &env.paging, rip, WalkKind::Fetch) {
+            apply_ad(&walk, false);
+            return self.code_for_physical(env, rip, GuestPhysicalAddress::new(walk.physical), walk.tables, walk.host_page);
+        }
         // The fetch walk of the general path (accessed bits) for the first byte of the page.
         let request = TrackedAccessRequest {
             instruction_rip: rip,
@@ -841,8 +856,20 @@ impl TurboEngine {
         report.outcome.ok()?;
         let (physical, tables) =
             crate::page_walk::data_translation_of_walk_trace(&report.trace, GuestLinearAddress::new(rip))?;
+        env.ram.ram_frame(GuestPhysicalAddress::new(physical.get() & !0xfff))?;
+        let host_page = env.ram.ram_only_page_host_ptr(physical)?;
+        self.code_for_physical(env, rip, physical, tables, host_page)
+    }
+
+    fn code_for_physical(
+        &mut self,
+        env: &mut RunEnv<'_>,
+        rip: u64,
+        physical: GuestPhysicalAddress,
+        tables: [Option<GuestPhysicalAddress>; 4],
+        host_page: *mut u8,
+    ) -> Option<usize> {
         let page = physical.get() >> 12;
-        env.ram.ram_frame(physical)?;
         let (new, leaf) = self.watch_tables(&tables);
         if new {
             self.flush_write_tlb();
@@ -853,7 +880,6 @@ impl TurboEngine {
             self.install(rip, code, page);
             return Some(code);
         }
-        let host_page = env.ram.ram_page_host_ptr(physical)?;
         self.pending_decodes.clear();
         let compiled = jit::compile(self, rip, page, host_page as *const u8, env.context);
         self.keep_decodes(page);
@@ -1063,17 +1089,34 @@ impl TurboEngine {
             *self.slow_kinds.entry("fetch-not-ram".into()).or_default() += 1;
             return;
         };
-        let key = jit::describe(rip, host as *const u8, context);
-        *self.slow_kinds.entry(key).or_default() += 1;
+        let mut key = jit::describe(rip, host as *const u8, context);
+        if std::env::var_os("OD_TURBO_RIPS").is_some() {
+            key = format!("{rip:#x} c{} {}", self.last_cause, &key[..key.len().min(40)]);
+        }
+        *self.slow_kinds.entry(key.clone()).or_default() += 1;
+        self.pending_slow = Some((key, crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed)));
+    }
+
+    /// Diagnostic: the walks of the general step just done.
+    pub(crate) fn settle_slow(&mut self) {
+        if let Some((key, before)) = self.pending_slow.take() {
+            let now = crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            *self.slow_walks.entry(key).or_default() += now - before;
+        }
     }
 
     /// Diagnostic: the general-path operations by count.
     pub(crate) fn report(&self) -> String {
         let mut kinds: Vec<_> = self.slow_kinds.iter().collect();
         kinds.sort_by(|a, b| b.1.cmp(a.1));
-        let mut text = format!("{:?}\n", self.stats_summary());
+        let mut text = format!(
+            "{:?} walks {}\n",
+            self.stats_summary(),
+            crate::page_walk::WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+        );
         for (key, count) in kinds.iter().take(60) {
-            text.push_str(&format!("{count:>12} {key}\n"));
+            let walks = self.slow_walks.get(*key).copied().unwrap_or(0);
+            text.push_str(&format!("{count:>12} {walks:>10} {key}\n"));
         }
         text
     }
@@ -1092,6 +1135,7 @@ impl TurboEngine {
         masked: bool,
     ) -> TurboOutcome {
         self.stats.runs += 1;
+        self.last_cause = 0;
         self.drain_code_watch(env.ram);
         self.check_paging(state, &env.paging);
         env.engine = self as *mut _;
@@ -1133,12 +1177,14 @@ impl TurboEngine {
                 match self.code_for(env, rip) {
                     Some(code) => code,
                     None => {
+                        self.last_cause = 1;
                         exit = TurboExit::Slow;
                         break;
                     }
                 }
             };
             if code == self.slow_stub {
+                self.last_cause = 2;
                 exit = TurboExit::Slow;
                 break;
             }
@@ -1176,6 +1222,7 @@ impl TurboEngine {
                             match reason {
                                 EXIT_LOOKUP | EXIT_BUDGET => continue,
                                 EXIT_SLOW => {
+                                    self.last_cause = 3;
                                     exit = TurboExit::Slow;
                                     break;
                                 }
@@ -1199,12 +1246,14 @@ impl TurboEngine {
                             }
                         }
                         None => {
+                            self.last_cause = 4;
                             exit = TurboExit::Slow;
                             break;
                         }
                     }
                 }
                 EXIT_SLOW => {
+                    self.last_cause = 5;
                     exit = TurboExit::Slow;
                     break;
                 }
@@ -1293,6 +1342,32 @@ impl TurboEngine {
         TurboOutcome { retired, exit }
     }
 
+    /// Fill a TLB entry from a fast walk of `address`.
+    fn fill_fast(&mut self, address: u64, walk: &FastWalk, write: bool) {
+        let page = walk.physical >> 12;
+        let (new_tables, leaf) = self.watch_tables(&walk.tables);
+        if new_tables {
+            self.flush_write_tlb();
+        }
+        if write && (self.pt_frames.contains_key(&page) || self.code_bytes.contains_key(&page)) {
+            return;
+        }
+        let linear_page = address >> 12;
+        let index = (linear_page as usize) & (TLB_SIZE - 1);
+        let entry = TlbEntry {
+            tag: linear_page,
+            addend: (walk.host_page as u64).wrapping_sub(linear_page << 12),
+            leaf,
+            pad: 0,
+        };
+        self.stats.tlb_fills += 1;
+        if write {
+            self.wtlb[index] = entry;
+        } else {
+            self.rtlb[index] = entry;
+        }
+    }
+
     /// Fill a TLB entry from a successful walk.
     fn fill(
         &mut self,
@@ -1378,6 +1453,63 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         return fallback;
     }
     let width = width_of(size);
+    // The fast form of the walk: read-only checks, then the accessed/dirty bits and the access.
+    let kind = if write { WalkKind::Write } else { WalkKind::Read };
+    if let Some(walk) = fast_translate(env.ram, &env.paging, address, kind) {
+        let page = walk.physical >> 12;
+        // SAFETY: the host page of the walk holds the whole access (no page crossing).
+        let host = unsafe { walk.host_page.add((address & 0xfff) as usize) };
+        if op & OP_ATOMIC != 0 {
+            if engine.pt_frames.contains_key(&page)
+                || engine.code_bytes.contains_key(&page)
+                || walk.tables.iter().flatten().any(|table| table.get() >> 12 == page)
+            {
+                engine.stats.tlb_fallbacks += 1;
+                return fallback;
+            }
+            apply_ad(&walk, true);
+            engine.fill_fast(address, &walk, true);
+            engine.fill_fast(address, &walk, false);
+            let linear_page = address >> 12;
+            if engine.wtlb[(linear_page as usize) & (TLB_SIZE - 1)].tag == linear_page {
+                return HelperResult { value: 0, status: 0 };
+            }
+            return fallback;
+        }
+        if write {
+            if engine.pt_frames.contains_key(&page)
+                || engine.overlaps_code(page, walk.physical & 0xfff, size)
+                || walk.tables.iter().flatten().any(|table| table.get() >> 12 == page)
+            {
+                engine.stats.tlb_fallbacks += 1;
+                return fallback;
+            }
+            apply_ad(&walk, true);
+            // SAFETY: as above.
+            unsafe {
+                match size {
+                    1 => *host = value as u8,
+                    2 => host.cast::<u16>().write_unaligned(value as u16),
+                    4 => host.cast::<u32>().write_unaligned(value as u32),
+                    _ => host.cast::<u64>().write_unaligned(value),
+                }
+            }
+            engine.fill_fast(address, &walk, true);
+            return HelperResult { value: 0, status: 0 };
+        }
+        apply_ad(&walk, false);
+        // SAFETY: as above.
+        let value = unsafe {
+            match size {
+                1 => u64::from(*host),
+                2 => u64::from(host.cast::<u16>().read_unaligned()),
+                4 => u64::from(host.cast::<u32>().read_unaligned()),
+                _ => host.cast::<u64>().read_unaligned(),
+            }
+        };
+        engine.fill_fast(address, &walk, false);
+        return HelperResult { value, status: 0 };
+    }
     if write {
         // Classify first, without effects: a watched page goes to the general path.
         let Ok((physical, tables)) = crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
@@ -1398,7 +1530,7 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
             || tables.iter().flatten().any(|table| table.get() >> 12 == page)
         {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug_fb > 0 && rip >> 63 != 0 {
+            if engine.debug_fb > 0 {
                 engine.debug_fb -= 1;
                 eprintln!(
                     "turbo write refused rip {rip:#x} addr {address:#x} phys {:#x}: pt {} code {} ram {} own {}",
@@ -1458,7 +1590,7 @@ unsafe extern "C" fn mem_helper(ctx: *mut TurboCtx, address: u64, op: u64, value
         }
         other => {
             engine.stats.tlb_fallbacks += 1;
-            if engine.debug_fb > 0 && rip >> 63 != 0 {
+            if engine.debug_fb > 0 {
                 engine.debug_fb -= 1;
                 let kind = crate::page_walk::translate_long64_2m_ram_read_only(
                     env.ram,
@@ -1543,6 +1675,7 @@ unsafe extern "C" fn rep_helper(
     engine.stats.rep_calls += 1;
     const DF: u64 = 1 << 10;
     if state.rflags & DF != 0 {
+        engine.stats.rep_refused[1] += 1;
         return 1;
     }
     use od_isa::Register;
@@ -1555,149 +1688,182 @@ unsafe extern "C" fn rep_helper(
     let n = count.min(limit);
     let rsi = state.gpr[Register::Rsi as usize];
     let rdi = state.gpr[Register::Rdi as usize];
-    // Pages in the order the iterations first touch them.
-    let mut pages: Vec<(u64, bool, *mut u8)> = Vec::new(); // (linear page, write, host)
-    let mut last_src = u64::MAX;
-    let mut last_dst = u64::MAX;
-    for i in 0..n {
+    // Every element inside one page (the general path splits a crossing element).
+    if rdi & (size - 1) != 0 && (rdi & 0xfff) + n * size > 0x1000 {
+        let crosses = (0..n).any(|i| {
+            let a = rdi.wrapping_add(i * size);
+            (a & 0xfff) + size > 0x1000
+        });
+        if crosses {
+            engine.stats.rep_refused[2] += 1;
+            return 1;
+        }
+    }
+    if movs && rsi & (size - 1) != 0 && (rsi & 0xfff) + n * size > 0x1000 {
+        let crosses = (0..n).any(|i| {
+            let a = rsi.wrapping_add(i * size);
+            (a & 0xfff) + size > 0x1000
+        });
+        if crosses {
+            engine.stats.rep_refused[3] += 1;
+            return 1;
+        }
+    }
+    // Chunks: runs of elements with one source page and one destination page.
+    struct Chunk {
+        count: u64,
+        src: usize,
+        dst: usize,
+    }
+    let mut walks: Vec<(u64, FastWalk)> = Vec::new(); // (linear page, walk), first touch order
+    let mut chunks: Vec<Chunk> = Vec::new();
+    let mut i = 0u64;
+    let mut src_walk = usize::MAX;
+    let mut dst_walk = usize::MAX;
+    let mut src_page = u64::MAX;
+    let mut dst_page = u64::MAX;
+    while i < n {
+        let d = rdi.wrapping_add(i * size);
+        let mut left = (0x1000 - (d & 0xfff)).div_ceil(size);
         if movs {
             let a = rsi.wrapping_add(i * size);
-            if (a & 0xfff) + size > 0x1000 {
-                return 1;
-            }
-            if a >> 12 != last_src {
-                last_src = a >> 12;
-                pages.push((a >> 12, false, std::ptr::null_mut()));
-            }
-        }
-        let a = rdi.wrapping_add(i * size);
-        if (a & 0xfff) + size > 0x1000 {
-            return 1;
-        }
-        if a >> 12 != last_dst {
-            last_dst = a >> 12;
-            pages.push((a >> 12, true, std::ptr::null_mut()));
-        }
-    }
-    engine.stats.rep_pages += pages.len() as u64;
-    for (page, write, host) in pages.iter_mut() {
-        let Ok((physical, tables)) = crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
-            env.ram,
-            &env.paging,
-            rip,
-            GuestLinearAddress::new(*page << 12),
-            env.context,
-            if *write { AccessKind::Write } else { AccessKind::Read },
-        ) else {
-            return 1;
-        };
-        let frame = physical.get() >> 12;
-        if *write
-            && (engine.pt_frames.contains_key(&frame)
-                || engine.code_bytes.contains_key(&frame)
-                || env.ram.code_watch(physical)
-                || tables.iter().flatten().any(|table| table.get() >> 12 == frame))
-        {
-            return 1;
-        }
-        for table in tables.iter().flatten() {
-            if !matches!(
-                env.ram.locate_region_kind(*table, 0x1000),
-                Ok(crate::MemoryRegionKind::Ram)
-            ) {
-                return 1;
-            }
-        }
-        let Some(pointer) = env.ram.ram_page_host_ptr(physical) else {
-            return 1;
-        };
-        *host = pointer;
-    }
-    // The iterations.
-    let width = width_of(size);
-    let mut index = 0usize;
-    let mut src_host: *mut u8 = std::ptr::null_mut();
-    let mut dst_host: *mut u8 = std::ptr::null_mut();
-    last_src = u64::MAX;
-    last_dst = u64::MAX;
-    let value_of = |pointer: *const u8| -> u64 {
-        // SAFETY: an aligned or unaligned read inside a RAM page.
-        unsafe {
-            match size {
-                1 => u64::from(*pointer),
-                2 => u64::from(pointer.cast::<u16>().read_unaligned()),
-                4 => u64::from(pointer.cast::<u32>().read_unaligned()),
-                _ => pointer.cast::<u64>().read_unaligned(),
-            }
-        }
-    };
-    let store = |pointer: *mut u8, value: u64| {
-        // SAFETY: as above, inside a RAM page.
-        unsafe {
-            match size {
-                1 => *pointer = value as u8,
-                2 => pointer.cast::<u16>().write_unaligned(value as u16),
-                4 => pointer.cast::<u32>().write_unaligned(value as u32),
-                _ => pointer.cast::<u64>().write_unaligned(value),
-            }
-        }
-    };
-    let accumulator = state.gpr[Register::Rax as usize];
-    for i in 0..n {
-        let value = if movs {
-            let a = rsi.wrapping_add(i * size);
-            if a >> 12 != last_src {
-                last_src = a >> 12;
-                src_host = pages[index].2;
-                index += 1;
-                // The first read of the page through the tracked walk.
-                let request = TrackedAccessRequest {
-                    instruction_rip: rip,
-                    address: GuestLinearAddress::new(a),
-                    context: env.context,
-                    operation: RamAccessOperation::Read { width },
+            if a >> 12 != src_page {
+                src_page = a >> 12;
+                let Some(walk) = fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read) else {
+                    engine.stats.rep_refused[4] += 1;
+                    return 1;
                 };
-                let report =
-                    crate::page_walk::access_long64_2m_ram(env.ram, &env.paging, request, |_| {});
-                match report.outcome {
-                    Ok(crate::page_walk::TrackedAccessOutcome::Read(value)) => value,
-                    _ => panic!("turbo: REP read failed after its check"),
-                }
-            } else {
-                // SAFETY: `src_host` is the host page of `a`.
-                value_of(unsafe { src_host.add((a & 0xfff) as usize) })
+                walks.push((src_page, walk));
+                src_walk = walks.len() - 1;
             }
-        } else {
-            accumulator & width_mask(size)
-        };
-        let a = rdi.wrapping_add(i * size);
-        if a >> 12 != last_dst {
-            last_dst = a >> 12;
-            dst_host = pages[index].2;
-            index += 1;
-            let request = TrackedAccessRequest {
-                instruction_rip: rip,
-                address: GuestLinearAddress::new(a),
-                context: env.context,
-                operation: RamAccessOperation::Write { width, value },
-            };
-            let report = crate::page_walk::access_long64_2m_ram(env.ram, &env.paging, request, |_| {});
-            if report.outcome.is_err() {
-                panic!("turbo: REP write failed after its check");
-            }
-        } else {
-            // SAFETY: `dst_host` is the host page of `a`.
-            store(unsafe { dst_host.add((a & 0xfff) as usize) }, value);
+            left = left.min((0x1000 - (a & 0xfff)).div_ceil(size));
         }
+        if d >> 12 != dst_page {
+            dst_page = d >> 12;
+            let Some(walk) = fast_translate(env.ram, &env.paging, d & !0xfff, WalkKind::Write) else {
+                engine.stats.rep_refused[5] += 1;
+                return 1;
+            };
+            walks.push((dst_page, walk));
+            dst_walk = walks.len() - 1;
+        }
+        let count = left.min(n - i);
+        chunks.push(Chunk {
+            count,
+            src: src_walk,
+            dst: dst_walk,
+        });
+        i += count;
+    }
+    engine.stats.rep_pages += walks.len() as u64;
+    // The table frames of the walks: no element may read or write one of them while an
+    // accessed/dirty bit of the walks is still to be set (the general path interleaves them), and
+    // none may be written at all (the translation would change between elements).
+    let mut tables: Vec<u64> = Vec::new();
+    for (_, walk) in &walks {
+        for table in walk.tables.iter().flatten() {
+            tables.push(table.get() >> 12);
+        }
+    }
+    let mut ad_pending = false;
+    for (index, (_, walk)) in walks.iter().enumerate() {
+        let write = chunks.iter().any(|chunk| chunk.dst == index);
+        if walk.needs_ad(write) {
+            ad_pending = true;
+        }
+    }
+    let mut table_writes: Vec<u64> = Vec::new();
+    let mut code_writes: Vec<(u64, u64, u64)> = Vec::new(); // (frame, start, end) in the page
+    for chunk in &chunks {
+        let frame = walks[chunk.dst].1.physical >> 12;
+        if tables.contains(&frame) {
+            engine.stats.rep_refused[6] += 1;
+            return 1;
+        }
+        if movs && ad_pending && tables.contains(&(walks[chunk.src].1.physical >> 12)) {
+            engine.stats.rep_refused[7] += 1;
+            return 1;
+        }
+        if engine.pt_frames.contains_key(&frame) && !table_writes.contains(&frame) {
+            table_writes.push(frame);
+        }
+    }
+    for (index, (_, walk)) in walks.iter().enumerate() {
+        let write = chunks.iter().any(|chunk| chunk.dst == index);
+        walk.apply(write);
+    }
+    // The elements.
+    let accumulator = state.gpr[Register::Rax as usize] & width_mask(size);
+    let mut i = 0u64;
+    for chunk in &chunks {
+        let d = rdi.wrapping_add(i * size);
+        let dst_walk = &walks[chunk.dst].1;
+        // SAFETY: the chunk stays inside the destination's host page.
+        let dst = unsafe { dst_walk.host_page.add((d & 0xfff) as usize) };
+        let bytes = (chunk.count * size) as usize;
+        let frame = dst_walk.physical >> 12;
+        if engine.code_bytes.contains_key(&frame) || env.ram.code_watch(GuestPhysicalAddress::new(frame << 12)) {
+            code_writes.push((frame, d & 0xfff, (d & 0xfff) + bytes as u64));
+        }
+        if movs {
+            let a = rsi.wrapping_add(i * size);
+            // SAFETY: as above for the source page.
+            let src = unsafe { walks[chunk.src].1.host_page.add((a & 0xfff) as usize) };
+            let (s0, d0) = (src as usize, dst as usize);
+            if d0 >= s0 + bytes || s0 >= d0 + bytes || d0 <= s0 {
+                // Disjoint, or the destination below the source: a forward copy is exact.
+                // SAFETY: both ranges inside their host pages.
+                unsafe { std::ptr::copy(src, dst, bytes) };
+            } else {
+                // The destination overlaps ahead of the source: element by element.
+                for e in 0..chunk.count as usize {
+                    // SAFETY: as above.
+                    unsafe {
+                        std::ptr::copy(src.add(e * size as usize), dst.add(e * size as usize), size as usize)
+                    };
+                }
+            }
+        } else {
+            // SAFETY: inside the destination's host page.
+            unsafe {
+                match size {
+                    1 => std::ptr::write_bytes(dst, accumulator as u8, bytes),
+                    2 => {
+                        for e in 0..chunk.count as usize {
+                            dst.add(e * 2).cast::<u16>().write_unaligned(accumulator as u16);
+                        }
+                    }
+                    4 => {
+                        for e in 0..chunk.count as usize {
+                            dst.add(e * 4).cast::<u32>().write_unaligned(accumulator as u32);
+                        }
+                    }
+                    _ => {
+                        for e in 0..chunk.count as usize {
+                            dst.add(e * 8).cast::<u64>().write_unaligned(accumulator);
+                        }
+                    }
+                }
+            }
+        }
+        i += chunk.count;
     }
     state.gpr[Register::Rsi as usize] = if movs { rsi.wrapping_add(n * size) } else { rsi };
     state.gpr[Register::Rdi as usize] = rdi.wrapping_add(n * size);
     state.gpr[Register::Rcx as usize] = count - n;
+    let changed = !table_writes.is_empty() || !code_writes.is_empty();
+    for frame in table_writes {
+        engine.table_written(frame);
+    }
+    for (frame, start, end) in code_writes {
+        engine.note_code_write(env.ram, (frame << 12) + start, end - start);
+        // A page the engine holds no code of any more stays watched by memory otherwise.
+    }
     if count > limit {
         return 2;
     }
     state.rip = rip.wrapping_add(length);
-    0
+    if changed { 4 } else { 0 }
 }
 
 fn width_mask(size: u64) -> u64 {
@@ -1919,4 +2085,152 @@ pub(crate) fn admits_in_shadow(state: &LongModeState) -> bool {
     state.rflags & (TF | RF) == 0
         && state.sti_shadow == Some(od_isa::StiShadow::Blocking)
         && state.activity.is_none_or(|activity| activity == od_isa::CpuActivity::Running)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WalkKind {
+    Read,
+    Write,
+    Fetch,
+}
+
+/// A successful read-only translation (see [`fast_translate`]).
+pub(crate) struct FastWalk {
+    /// The physical address of the linear one.
+    pub physical: u64,
+    /// The table frames of the path (PML4 first; `None` past a 2 MiB leaf).
+    pub tables: [Option<GuestPhysicalAddress>; 4],
+    entries: [*mut u64; 4],
+    values: [u64; 4],
+    count: usize,
+    /// The host address of the 4 KiB page of `physical`.
+    pub host_page: *mut u8,
+}
+
+const PTE_PRESENT: u64 = 1;
+const PTE_WRITABLE: u64 = 1 << 1;
+const PTE_ACCESSED: u64 = 1 << 5;
+const PTE_DIRTY: u64 = 1 << 6;
+const PTE_PS: u64 = 1 << 7;
+const PTE_NX: u64 = 1 << 63;
+const PTE_ADDRESS_RESERVED: u64 = ((1u64 << 16) - 1) << 36;
+const PTE_ADDRESS_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
+const PTE_2M_RESERVED: u64 = 0x1fe000;
+
+/// The translation of `linear` for a CPL0 access of `kind` with the checks of the general path's
+/// walker, reading the tables through host pointers and writing nothing; `None` for anything the
+/// fast form does not cover (a fault, a table outside RAM, an operand outside RAM/framebuffer):
+/// the general path's walker decides those. On success [`apply_ad`] makes the accessed and dirty
+/// bits that walker sets.
+pub(crate) fn fast_translate(
+    ram: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    linear: u64,
+    kind: WalkKind,
+) -> Option<FastWalk> {
+    if ((linear as i64) >> 47) != 0 && ((linear as i64) >> 47) != -1 {
+        return None;
+    }
+    let mut base = paging.root();
+    let mut walk = FastWalk {
+        physical: 0,
+        tables: [None; 4],
+        entries: [std::ptr::null_mut(); 4],
+        values: [0; 4],
+        count: 0,
+        host_page: std::ptr::null_mut(),
+    };
+    let nxe = paging.nxe();
+    let mut writable = true;
+    let mut no_execute = false;
+    let mut large = false;
+    let mut leaf = 0;
+    for level in 0..4usize {
+        let table = ram.ram_only_page_host_ptr(GuestPhysicalAddress::new(base))?;
+        walk.tables[level] = Some(GuestPhysicalAddress::new(base));
+        let index = (linear >> (39 - 9 * level)) & 0x1ff;
+        // SAFETY: an aligned u64 entry inside a host RAM page.
+        let entry = unsafe { table.add((index * 8) as usize).cast::<u64>() };
+        let value = unsafe {
+            std::sync::atomic::AtomicU64::from_ptr(entry).load(std::sync::atomic::Ordering::Relaxed)
+        };
+        if value & PTE_PRESENT == 0 {
+            return None;
+        }
+        let mut offending = value & PTE_ADDRESS_RESERVED;
+        if !nxe {
+            offending |= value & PTE_NX;
+        }
+        if level < 2 && value & PTE_PS != 0 {
+            offending |= PTE_PS;
+        }
+        let is_large = level == 2 && value & PTE_PS != 0;
+        if is_large {
+            offending |= value & PTE_2M_RESERVED;
+        }
+        if offending != 0 {
+            return None;
+        }
+        walk.entries[level] = entry;
+        walk.values[level] = value;
+        walk.count = level + 1;
+        writable &= value & PTE_WRITABLE != 0;
+        no_execute |= value & PTE_NX != 0;
+        leaf = value;
+        if is_large {
+            large = true;
+            break;
+        }
+        base = value & PTE_ADDRESS_MASK;
+    }
+    if kind == WalkKind::Write && !writable && paging.write_protect() {
+        return None;
+    }
+    if kind == WalkKind::Fetch && nxe && no_execute {
+        return None;
+    }
+    let offset_mask = if large { 0x1f_ffff } else { 0xfff };
+    walk.physical = (leaf & PTE_ADDRESS_MASK & !offset_mask) | (linear & offset_mask);
+    let page = GuestPhysicalAddress::new(walk.physical & !0xfff);
+    walk.host_page = if kind == WalkKind::Fetch {
+        ram.ram_only_page_host_ptr(page)?
+    } else {
+        ram.ram_page_host_ptr(page)?
+    };
+    Some(walk)
+}
+
+impl FastWalk {
+    fn needs_ad(&self, write: bool) -> bool {
+        (0..self.count).any(|level| {
+            let leaf = level + 1 == self.count;
+            let wanted = if leaf && write { PTE_ACCESSED | PTE_DIRTY } else { PTE_ACCESSED };
+            self.values[level] & wanted != wanted
+        })
+    }
+    fn apply(&self, write: bool) {
+        apply_ad(self, write);
+    }
+}
+
+/// The accessed bits of every level (and with `write` the dirty bit of the leaf) that the general
+/// path's walker sets on the successful walk `walk`.
+pub(crate) fn apply_ad(walk: &FastWalk, write: bool) {
+    for level in 0..walk.count {
+        let mut value = walk.values[level];
+        let leaf = level + 1 == walk.count;
+        let wanted = if leaf && write {
+            PTE_ACCESSED | PTE_DIRTY
+        } else {
+            PTE_ACCESSED
+        };
+        if value & wanted != wanted {
+            value |= wanted;
+            // SAFETY: the entry pointer of the walk, an aligned u64 in host RAM.
+            unsafe {
+                std::sync::atomic::AtomicU64::from_ptr(walk.entries[level])
+                    .store(value, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }

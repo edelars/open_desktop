@@ -785,6 +785,9 @@ struct Ctx<'e> {
     gs_base: u32,
     slow: Vec<SlowStub>,
     exits: Vec<(Label, u64, usize, Defined)>,
+    /// Exits after an instruction that retired and changed code or tables: (label, next RIP,
+    /// index, definedness).
+    leaves: Vec<(Label, u64, usize, Defined)>,
     /// Exits of a partial REP (the instruction did not retire).
     partials: Vec<(Label, u64, usize, Defined)>,
     /// After an RDTSC: (boundary exit, short-budget exit, next RIP, index, definedness so far).
@@ -1981,8 +1984,11 @@ impl<'e> Ctx<'e> {
                 asm.emit(a64::msr_nzcv(25));
                 asm.cbz_to(true, 0, done);
                 asm.tbnz_to(0, 1, partial);
+                let leave = asm.label();
+                asm.tbnz_to(0, 2, leave);
                 asm.b_to(exit);
-                asm.bind(done);
+                self.leaves.push((leave, self.next_rip, self.k, self.defined));
+                self.asm.bind(done);
                 true
             }
             Operation::Leave => {
@@ -2750,6 +2756,7 @@ pub(crate) fn compile_limited(
         gs_base: offsets.gs_base,
         slow: Vec::new(),
         exits: Vec::new(),
+        leaves: Vec::new(),
         partials: Vec::new(),
         boundaries: Vec::new(),
         exit_here: None,
@@ -2859,6 +2866,15 @@ pub(crate) fn compile_limited(
         ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
         ctx.asm.mov_imm64(1, next);
         ctx.asm.emit(a64::movz(true, 0, EXIT_BUDGET as u32, 0));
+        ctx.asm.b_abs(exit_common);
+    }
+    let leaves = std::mem::take(&mut ctx.leaves);
+    for (label, next, k, defined) in leaves {
+        ctx.asm.bind(label);
+        ctx.emit_defined(defined);
+        ctx.asm.emit(a64::add_imm(true, 20, 20, (len - k - 1) as u32, false));
+        ctx.asm.mov_imm64(1, next);
+        ctx.asm.emit(a64::movz(true, 0, super::EXIT_LOOKUP as u32, 0));
         ctx.asm.b_abs(exit_common);
     }
     let partials = std::mem::take(&mut ctx.partials);

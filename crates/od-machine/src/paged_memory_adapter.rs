@@ -3387,6 +3387,7 @@ fn run_cpl0_set_loop_impl<
         }
         // Experiment (turbo loop): generated code runs what it can from here.
         if let Some(hook) = turbo.as_mut() {
+            hook.engine.settle_slow();
             {
                 let mut writes = turbo_writes.borrow_mut();
                 if !writes.is_empty() {
@@ -3413,9 +3414,20 @@ fn run_cpl0_set_loop_impl<
                 Some(polled) => polled.is_some(),
             };
             let in_shadow = crate::turbo::admits_in_shadow(state);
+            if cpl3 {
+                hook.engine.stats.loop_cpl3 += 1;
+            } else if !known {
+                hook.engine.stats.loop_unknown += 1;
+                if !(crate::turbo::admits(state) || in_shadow) {
+                    hook.engine.stats.loop_refused += 1;
+                }
+            } else if !(crate::turbo::admits(state) || in_shadow) {
+                hook.engine.stats.loop_refused += 1;
+            } else if turbo_force_slow == Some(state.rip) {
+                hook.engine.stats.loop_forced += 1;
+            }
             if turbo_force_slow != Some(state.rip)
                 && !cpl3
-                && known
                 && (crate::turbo::admits(state) || in_shadow)
             {
                 let masked = polled.flatten().is_some_and(|polled| polled.vector.is_some())
@@ -3461,7 +3473,9 @@ fn run_cpl0_set_loop_impl<
                 };
                 // In the STI shadow: one instruction, then the shadow clears (as after any
                 // retired instruction of the set loop).
-                let budget = if in_shadow {
+                // With the source's answer not known yet (the first boundaries of a set call): one
+                // instruction too, the loop's next boundary asks the source.
+                let budget = if in_shadow || !known {
                     1
                 } else {
                     instruction_budget - instructions_executed
@@ -3471,7 +3485,7 @@ fn run_cpl0_set_loop_impl<
                     state,
                     &mut current_rflags_defined,
                     budget,
-                    masked && !in_shadow,
+                    masked && !in_shadow && known,
                 );
                 if in_shadow && outcome.retired == 1 {
                     state.sti_shadow = Some(od_isa::StiShadow::Clear);
