@@ -6126,7 +6126,7 @@ pub struct PagedMovMemoryAdapter<'a> {
     pub(crate) turbo_insn: Option<(u64, Instruction)>,
     /// Experiment (turbo loop): the read and write TLBs of the turbo engine (exact: filled by
     /// successful walks, dropped on every change of a table frame).
-    pub(crate) turbo_tlb: Option<(*const crate::turbo::TlbEntry, *const crate::turbo::TlbEntry)>,
+    pub(crate) turbo_tlb: Option<*const crate::turbo::TlbView>,
 }
 
 /// PERF-10: the state of the decoded-instruction cache for the one instruction an adapter serves.
@@ -7716,9 +7716,16 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // loop's adapter goes through the data translation cache, only where the read below would
         // be exactly `self.access(address, context, Read { width })` (`data_cache_read_width`).
         // Everything else below is untouched.
-        if let Some((rtlb, _)) = self.turbo_tlb
+        if let Some(view) = self.turbo_tlb
             && self.data_cache_read_width(address, context, destination.len()).is_some()
-            && let Some(host) = crate::turbo::tlb_host(rtlb, address, destination.len())
+            && let Some(host) = crate::turbo::view_host(
+                view,
+                &self.paging,
+                context.page_privilege() == PrivilegeLevel::Ring0,
+                false,
+                address,
+                destination.len(),
+            )
         {
             // SAFETY: a TLB hit names a host RAM page holding the whole access.
             unsafe {
@@ -7866,13 +7873,20 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // and record) and no stack frame of a delivery (`ImplicitStack`), inside one 4 KiB page
         // (no `write_crossing_page`, no `CrossesPage`), the large-RAM profile, the capture modes
         // off.
-        if let Some((_, wtlb)) = self.turbo_tlb
+        if let Some(view) = self.turbo_tlb
             && context.origin == AccessOrigin::Explicit
             && (address & 0xfff) + expected as u64 <= 0x1000
             && self.large_ram_profile
             && !self.capture_effects
             && !self.capture_page_fault_trace
-            && let Some(host) = crate::turbo::tlb_host(wtlb, address, expected)
+            && let Some(host) = crate::turbo::view_host(
+                view,
+                &self.paging,
+                context.page_privilege() == PrivilegeLevel::Ring0,
+                true,
+                address,
+                expected,
+            )
         {
             // SAFETY: a write TLB hit names a host RAM page (not watched) holding the access.
             unsafe {

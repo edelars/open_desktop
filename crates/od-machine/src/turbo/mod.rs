@@ -109,6 +109,14 @@ const EMPTY_TLB: TlbEntry = TlbEntry {
     pad: 0,
 };
 
+/// What the general path's adapter reads of the active translation context.
+pub(crate) struct TlbView {
+    pub rtlb: *const TlbEntry,
+    pub wtlb: *const TlbEntry,
+    /// The paging of the active context (the TLBs hold translations of it alone).
+    pub paging: Option<Long64ProbeConfig>,
+}
+
 /// One cached translation context (TLBs and the lookup table of one CR3/paging key).
 struct Slot {
     key: Option<(Long64ProbeConfig, u64)>,
@@ -388,6 +396,7 @@ pub(crate) struct TurboEngine {
     lookup_leaf: Box<[u64]>,
     /// Inactive translation contexts.
     slots: Vec<Slot>,
+    view: Box<TlbView>,
     stamp: u64,
     blocks: HashMap<(u64, u64), BlockInfo>,
     /// Physical page -> keys of the blocks on it.
@@ -505,6 +514,11 @@ impl TurboEngine {
             lookup_page: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
             lookup_leaf: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
             slots: (0..SLOTS).map(|_| Slot::new()).collect(),
+            view: Box::new(TlbView {
+                rtlb: std::ptr::null(),
+                wtlb: std::ptr::null(),
+                paging: None,
+            }),
             stamp: 0,
             blocks: HashMap::default(),
             code_pages: HashMap::default(),
@@ -822,6 +836,7 @@ impl TurboEngine {
         self.ctx.wtlb = self.wtlb.as_mut_ptr();
         self.ctx.lookup = self.lookup.as_mut_ptr();
         self.stats.slot_switches += 1;
+        self.sync_view();
     }
 
     fn install(&mut self, rip: u64, code: usize, page: u64) {
@@ -1050,8 +1065,15 @@ impl TurboEngine {
     }
 
     /// The engine's TLBs for the general path's adapter.
-    pub(crate) fn tlbs(&self) -> (*const TlbEntry, *const TlbEntry) {
-        (self.rtlb.as_ptr(), self.wtlb.as_ptr())
+    pub(crate) fn tlbs(&mut self) -> *const TlbView {
+        self.sync_view();
+        &*self.view
+    }
+
+    fn sync_view(&mut self) {
+        self.view.rtlb = self.rtlb.as_ptr();
+        self.view.wtlb = self.wtlb.as_ptr();
+        self.view.paging = self.paging_key.map(|key| key.0);
     }
 
     /// The decode of the instruction at `rip` the last run ended before, if the engine has it.
@@ -1877,6 +1899,24 @@ fn width_mask(size: u64) -> u64 {
 
 /// The host address of an access of `len` bytes at `address` when `tlb` has its page.
 #[inline(always)]
+/// The host address of a CPL0 access through the view's TLB (`write`: the write TLB) when the
+/// view's context is the one of `paging`.
+pub(crate) fn view_host(
+    view: *const TlbView,
+    paging: &Long64ProbeConfig,
+    supervisor: bool,
+    write: bool,
+    address: u64,
+    len: usize,
+) -> Option<*mut u8> {
+    // SAFETY: the view of the live engine.
+    let view = unsafe { &*view };
+    if !supervisor || view.paging.as_ref() != Some(paging) {
+        return None;
+    }
+    tlb_host(if write { view.wtlb } else { view.rtlb }, address, len)
+}
+
 pub(crate) fn tlb_host(tlb: *const TlbEntry, address: u64, len: usize) -> Option<*mut u8> {
     let page = address >> 12;
     if (address & 0xfff) + len as u64 > 0x1000 {
