@@ -23,7 +23,7 @@ mod jit;
 mod tests;
 
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
-use crate::{GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, PhysicalMemory};
+use crate::{GuestLinearAddress, GuestPhysicalAddress, PhysicalMemory};
 use od_isa::LongModeState;
 use od_isa::memory::{AccessContext, AccessKind};
 use od_jit::exec_arena::ExecutableArena;
@@ -71,7 +71,6 @@ pub(crate) const EXIT_LOOKUP: u64 = 2;
 pub(crate) const EXIT_SLOW: u64 = 3;
 pub(crate) const EXIT_RDTSC: u64 = 4;
 /// The instruction before retired and wrote a watched page: leave the run at the next one.
-pub(crate) const EXIT_FLUSH: u64 = 5;
 /// A REP string instruction ran `REP_ITERATION_WORK_LIMIT` iterations and did not retire.
 pub(crate) const EXIT_REP_PARTIAL: u64 = 6;
 /// An RDTSC retired and its boundary belongs to the set loop (no fast transition, or an
@@ -136,7 +135,7 @@ impl Slot {
             key: None,
             rtlb: vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice(),
             wtlb: vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice(),
-            lookup: vec![LookupEntry { rip: 1, code: 0 }; LOOKUP_SIZE].into_boxed_slice(),
+            lookup: vec![EMPTY_LOOKUP; LOOKUP_SIZE].into_boxed_slice(),
             lookup_page: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
             lookup_leaf: vec![u64::MAX; LOOKUP_SIZE].into_boxed_slice(),
             stamp: 0,
@@ -145,7 +144,7 @@ impl Slot {
     fn flush(&mut self) {
         self.rtlb.fill(EMPTY_TLB);
         self.wtlb.fill(EMPTY_TLB);
-        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+        self.lookup.fill(EMPTY_LOOKUP);
     }
     fn drop_leaf(&mut self, frame: u64) {
         for entry in self.rtlb.iter_mut().chain(self.wtlb.iter_mut()) {
@@ -155,7 +154,7 @@ impl Slot {
         }
         for (entry, leaf) in self.lookup.iter_mut().zip(self.lookup_leaf.iter()) {
             if *leaf == frame {
-                *entry = LookupEntry { rip: 1, code: 0 };
+                *entry = EMPTY_LOOKUP;
             }
         }
     }
@@ -165,8 +164,12 @@ impl Slot {
 #[derive(Clone, Copy)]
 enum LeafRef {
     Tlb(*mut TlbEntry),
-    Lookup(*mut LookupEntry, *const u64),
+    Lookup(*mut LookupEntry, *mut u64),
 }
+
+/// The mark of a reference seen once during a compaction (`pad` of a TLB entry, a high bit of a
+/// lookup entry's leaf; frames are far below it). Set and cleared within one compaction.
+const SEEN: u64 = 1 << 62;
 
 impl LeafRef {
     fn holds(self, frame: u64) -> bool {
@@ -174,23 +177,67 @@ impl LeafRef {
         unsafe {
             match self {
                 LeafRef::Tlb(entry) => (*entry).leaf == frame,
-                LeafRef::Lookup(_, leaf) => *leaf == frame,
+                LeafRef::Lookup(_, leaf) => *leaf & !SEEN == frame,
             }
         }
     }
+
     fn clear(self) {
         // SAFETY: as above.
         unsafe {
             match self {
                 LeafRef::Tlb(entry) => *entry = EMPTY_TLB,
-                LeafRef::Lookup(entry, _) => *entry = LookupEntry { rip: 1, code: 0 },
+                LeafRef::Lookup(entry, _) => *entry = EMPTY_LOOKUP,
+            }
+        }
+    }
+
+    /// Mark the entry seen; whether it was marked already (a second reference to it).
+    fn mark(self) -> bool {
+        // SAFETY: as above.
+        unsafe {
+            match self {
+                LeafRef::Tlb(entry) => std::mem::replace(&mut (*entry).pad, SEEN) == SEEN,
+                LeafRef::Lookup(_, leaf) => {
+                    let seen = *leaf & SEEN != 0;
+                    *leaf |= SEEN;
+                    seen
+                }
+            }
+        }
+    }
+
+    fn unmark(self) {
+        // SAFETY: as above.
+        unsafe {
+            match self {
+                LeafRef::Tlb(entry) => (*entry).pad = 0,
+                LeafRef::Lookup(_, leaf) => *leaf &= !SEEN,
             }
         }
     }
 }
 
+/// Keep the references of `refs` whose entry still holds `frame`, each entry once (a slot refilled
+/// through the same leaf is noted again on every fill); one pass, no sort.
+fn compact_refs(refs: &mut Vec<LeafRef>, frame: u64) {
+    refs.retain(|reference| reference.holds(frame) && !reference.mark());
+    for reference in refs.iter() {
+        reference.unmark();
+    }
+}
+
 /// Cached translation contexts besides the active one.
 const SLOTS: usize = 3;
+
+/// The RIP of an empty lookup entry: non-canonical, so no guest RIP ever matches it (generated
+/// code checks every RIP it takes from guest data for canonicity, and the general step never
+/// leaves a non-canonical RIP).
+const EMPTY_LOOKUP_RIP: u64 = 1 << 63;
+const EMPTY_LOOKUP: LookupEntry = LookupEntry {
+    rip: EMPTY_LOOKUP_RIP,
+    code: 0,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -248,8 +295,6 @@ pub(crate) struct RunEnv<'a> {
     pub ram: &'a PhysicalMemory,
     pub paging: Long64ProbeConfig,
     pub context: AccessContext,
-    /// Set by the memory helper when a data write hit a page the engine watches.
-    pub flush_pending: bool,
     pub engine: *mut TurboEngine,
     /// The RDTSC source of the set loop.
     pub rdtsc: Option<*mut (dyn FnMut() -> u64 + 'static)>,
@@ -482,6 +527,10 @@ pub(crate) struct TurboEngine {
     offsets: StateOffsets,
     paging_key: Option<(Long64ProbeConfig, u64)>,
     singles: HashMap<(u64, u64), BlockInfo>,
+    /// Blocks of one instruction crossing a page, by (RIP, first physical page): the physical
+    /// page of the rest and the code. Kept out of `blocks`: every install walks the second page
+    /// again.
+    crossings: HashMap<(u64, u64), (u64, usize)>,
     /// Per physical page: the RIPs of its singles, slow decodes and stub lookups.
     page_extras: HashMap<u64, Vec<u64>>,
     /// Per leaf table frame: the index of the list of TLB and lookup entries filled through it.
@@ -549,14 +598,26 @@ impl TurboEngine {
             fs_base: std::mem::offset_of!(LongModeState, fs_base) as u32,
             gs_base: std::mem::offset_of!(LongModeState, gs_base) as u32,
         };
-        // ldr/str x immediate reach: 32760.
-        if offsets.gpr + 16 * 8 > 32760 || offsets.rip > 32760 || offsets.gs_base > 32760 {
+        // Generated code reaches the fields with scaled unsigned immediates: bytes of any GPR (the
+        // high-byte registers too) below 4096, 8-byte fields 8-aligned below 32768.
+        let qword = |offset: u32| offset % 8 == 0 && offset <= 32760;
+        if offsets.gpr + 16 * 8 > 4095
+            || ![
+                offsets.gpr,
+                offsets.rip,
+                offsets.rflags,
+                offsets.fs_base,
+                offsets.gs_base,
+            ]
+            .into_iter()
+            .all(qword)
+        {
             return None;
         }
         let arena = CodeArena::new(arena)?;
         let mut rtlb = vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice();
         let mut wtlb = vec![EMPTY_TLB; TLB_SIZE].into_boxed_slice();
-        let mut lookup = vec![LookupEntry { rip: 1, code: 0 }; LOOKUP_SIZE].into_boxed_slice();
+        let mut lookup = vec![EMPTY_LOOKUP; LOOKUP_SIZE].into_boxed_slice();
         let ctx = Box::new(TurboCtx {
             budget: 0,
             nzcv: 0,
@@ -606,6 +667,7 @@ impl TurboEngine {
             offsets,
             paging_key: None,
             singles: HashMap::default(),
+            crossings: HashMap::default(),
             page_extras: HashMap::default(),
             leaf_refs: HashMap::default(),
             ref_lists: Vec::new(),
@@ -706,19 +768,22 @@ impl TurboEngine {
     }
 
     fn flush_lookup(&mut self) {
-        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+        self.lookup.fill(EMPTY_LOOKUP);
         for slot in &mut self.slots {
-            slot.lookup.fill(LookupEntry { rip: 1, code: 0 });
+            slot.lookup.fill(EMPTY_LOOKUP);
         }
     }
 
     /// Every translation the engine cached (TLBs, lookup tables, page-table watch), in every
     /// context.
-    pub(crate) fn flush_translations(&mut self) {
+    pub(crate) fn flush_translations(&mut self, ram: &PhysicalMemory) {
         self.stats.flushes += 1;
+        for &frame in self.pt_frames.keys() {
+            ram.set_table_watch(GuestPhysicalAddress::new(frame << 12), false);
+        }
         self.rtlb.fill(EMPTY_TLB);
         self.wtlb.fill(EMPTY_TLB);
-        self.lookup.fill(LookupEntry { rip: 1, code: 0 });
+        self.lookup.fill(EMPTY_LOOKUP);
         for slot in &mut self.slots {
             slot.flush();
         }
@@ -731,10 +796,10 @@ impl TurboEngine {
 
     /// A table frame was written: the translations through it are dropped (only those whose
     /// leaf it holds when it is a leaf table only; everything otherwise).
-    fn table_written(&mut self, frame: u64) {
+    fn table_written(&mut self, ram: &PhysicalMemory, frame: u64) {
         match self.pt_frames.get(&frame).copied() {
             None => {}
-            Some(levels) if levels & 2 != 0 => self.flush_translations(),
+            Some(levels) if levels & 2 != 0 => self.flush_translations(ram),
             Some(_) => {
                 self.stats.leaf_drops += 1;
                 for reference in self.take_leaf_refs(frame) {
@@ -743,6 +808,7 @@ impl TurboEngine {
                     }
                 }
                 self.pt_frames.remove(&frame);
+                ram.set_table_watch(GuestPhysicalAddress::new(frame << 12), false);
             }
         }
     }
@@ -773,7 +839,10 @@ impl TurboEngine {
         };
         let refs = &mut self.ref_lists[index as usize];
         if refs.len() >= 256 && refs.len().is_power_of_two() {
-            refs.retain(|r| r.holds(frame));
+            // Compact: the entries that still hold the frame, each once (a slot refilled through
+            // the same leaf is noted again on every fill). The list then stays within the number
+            // of TLB and lookup entries of all contexts.
+            compact_refs(refs, frame);
         }
         refs.push(reference);
     }
@@ -790,23 +859,27 @@ impl TurboEngine {
         std::mem::take(&mut self.ref_lists[index as usize])
     }
 
-    /// Note the table frames of a walk (PML4 first; the last one holds the leaf); `true` when
-    /// one of them was not watched before.
-    fn watch_tables(&mut self, tables: &[Option<GuestPhysicalAddress>; 4]) -> (bool, u64) {
-        let present: Vec<u64> = tables
-            .iter()
-            .flatten()
-            .map(|table| table.get() >> 12)
-            .collect();
+    /// Note the table frames of a walk (PML4 first; the last one holds the leaf) and watch the new
+    /// ones (every committed write to them is logged by `PhysicalMemory`); `true` when one of them
+    /// was not watched before. Returns the leaf frame too (`u64::MAX` without tables).
+    fn watch_tables(
+        &mut self,
+        ram: &PhysicalMemory,
+        tables: &[Option<GuestPhysicalAddress>; 4],
+    ) -> (bool, u64) {
+        let count = tables.iter().flatten().count();
         let mut new = false;
-        let leaf = present.last().copied().unwrap_or(u64::MAX);
-        for (index, frame) in present.iter().enumerate() {
-            let bit = if index + 1 == present.len() { 1 } else { 2 };
-            let levels = self.pt_frames.entry(*frame).or_insert(0);
+        let mut leaf = u64::MAX;
+        for (index, table) in tables.iter().flatten().enumerate() {
+            let frame = table.get() >> 12;
+            let bit = if index + 1 == count { 1 } else { 2 };
+            let levels = self.pt_frames.entry(frame).or_insert(0);
             if *levels == 0 {
                 new = true;
+                ram.set_table_watch(GuestPhysicalAddress::new(frame << 12), true);
             }
             *levels |= bit;
+            leaf = frame;
         }
         (new, leaf)
     }
@@ -896,6 +969,7 @@ impl TurboEngine {
             self.stats.code_invalidations += 1;
             for key in keys {
                 self.blocks.remove(&key);
+                self.crossings.remove(&key);
                 self.drop_lookup_of(key.0, key.1);
             }
         }
@@ -909,30 +983,23 @@ impl TurboEngine {
         ram.set_code_watch(GuestPhysicalAddress::new(page << 12), false);
     }
 
-    /// Writes committed outside generated code (the general path, deliveries, devices).
-    pub(crate) fn note_writes(&mut self, ram: &PhysicalMemory, ranges: &[GuestPhysicalRange]) {
-        self.stats.noted_writes += ranges.len() as u64;
-        let mut flush = false;
-        for range in ranges {
-            if range.len() == 0 {
-                continue;
-            }
-            let first = range.start().get() >> 12;
-            let last = (range.start().get() + range.len() - 1) >> 12;
-            for page in first..=last {
-                if self.pt_frames.contains_key(&page) {
-                    self.table_written(page);
-                }
-            }
-            self.note_code_write(ram, range.start().get(), range.len());
-        }
-        let _ = &mut flush;
-    }
-
     /// Code pages written by anyone (the RAM's code watch log).
+    /// Writes `PhysicalMemory` logged to watched pages since the last call (by the general step,
+    /// devices, DMA, any run without the engine): drop the translations through written table
+    /// frames and the blocks of written code.
     pub(crate) fn drain_code_watch(&mut self, ram: &PhysicalMemory) {
         if let Some(ranges) = ram.take_code_watch_hits() {
             for (address, len) in ranges {
+                if len == 0 {
+                    continue;
+                }
+                let first = address >> 12;
+                let last = (address + len - 1) >> 12;
+                for page in first..=last {
+                    if self.pt_frames.contains_key(&page) {
+                        self.table_written(ram, page);
+                    }
+                }
                 self.note_code_write(ram, address, len);
             }
         }
@@ -982,7 +1049,7 @@ impl TurboEngine {
         };
         self.lookup_page[index] = page;
         self.lookup_leaf[index] = self.last_leaf;
-        let reference = LeafRef::Lookup(&mut self.lookup[index], &self.lookup_leaf[index]);
+        let reference = LeafRef::Lookup(&mut self.lookup[index], &mut self.lookup_leaf[index]);
         let leaf = self.last_leaf;
         self.note_leaf_ref(leaf, reference);
         if code == self.rdtsc_stub {
@@ -994,6 +1061,7 @@ impl TurboEngine {
     fn drop_code(&mut self, ram: &PhysicalMemory) {
         self.arena.reset(self.stubs_end);
         self.blocks.clear();
+        self.crossings.clear();
         self.singles.clear();
         self.code_bytes.clear();
         self.slow_insns.clear();
@@ -1012,7 +1080,7 @@ impl TurboEngine {
         // Writes logged before the reset concern code that is dropped below.
         let _ = ram.take_code_watch_hits();
         self.drop_code(ram);
-        self.flush_translations();
+        self.flush_translations(ram);
         for slot in &mut self.slots {
             slot.key = None;
         }
@@ -1026,11 +1094,11 @@ impl TurboEngine {
     fn drop_lookup_of(&mut self, rip: u64, page: u64) {
         let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
         if self.lookup[index].rip == rip && self.lookup_page[index] == page {
-            self.lookup[index] = LookupEntry { rip: 1, code: 0 };
+            self.lookup[index] = EMPTY_LOOKUP;
         }
         for slot in &mut self.slots {
             if slot.lookup[index].rip == rip && slot.lookup_page[index] == page {
-                slot.lookup[index] = LookupEntry { rip: 1, code: 0 };
+                slot.lookup[index] = EMPTY_LOOKUP;
             }
         }
     }
@@ -1080,7 +1148,7 @@ impl TurboEngine {
         host_page: *mut u8,
     ) -> Option<usize> {
         let page = physical.get() >> 12;
-        let (new, leaf) = self.watch_tables(&tables);
+        let (new, leaf) = self.watch_tables(env.ram, &tables);
         if new {
             self.flush_write_tlb();
         }
@@ -1187,7 +1255,12 @@ impl TurboEngine {
                 }
                 Some(code)
             }
-            jit::Compiled::Slow | jit::Compiled::NoSpace => None,
+            jit::Compiled::Slow => None,
+            jit::Compiled::NoSpace => {
+                // Start over with an empty code cache (the next lookup translates again).
+                self.drop_code(env.ram);
+                None
+            }
             jit::Compiled::Crossing => self.crossing_block(env, rip, physical),
             jit::Compiled::Rdtsc => Some(self.rdtsc_stub_for(rip)),
         }
@@ -1214,17 +1287,25 @@ impl TurboEngine {
             &report.trace,
             GuestLinearAddress::new(next_linear),
         )?;
-        let (new, _) = self.watch_tables(&tables);
+        let (new, _) = self.watch_tables(env.ram, &tables);
         if new {
             self.flush_write_tlb();
         }
-        // A crossing block depends on two translations: it is never in the lookup table of a
-        // leaf drop it would miss, so drop it with any change of the second table too.
+        // A crossing block depends on two translations; its lookup entry names the leaf of the
+        // first, so any write to the second's leaf table drops all translations (as a write to an
+        // upper level does).
         if let Some(frame) = tables.iter().flatten().last() {
-            self.pt_frames.insert(frame.get() >> 12, 2);
+            *self.pt_frames.entry(frame.get() >> 12).or_insert(0) |= 2;
         }
         let page = physical.get() >> 12;
         let next_page = next_physical.get() >> 12;
+        // A block translated before for the same two physical pages (the walk above is made on
+        // every install, so a changed second translation is never missed).
+        if let Some(&(known_next, code)) = self.crossings.get(&(rip, page))
+            && known_next == next_page
+        {
+            return Some(code);
+        }
         let host = env.ram.ram_page_host_ptr(physical)?;
         let next_host = env.ram.ram_page_host_ptr(next_physical)?;
         self.pending_decodes.clear();
@@ -1252,7 +1333,7 @@ impl TurboEngine {
             }
         }
         self.flush_write_tlb();
-        self.blocks.insert((rip, page), BlockInfo { code, page });
+        self.crossings.insert((rip, page), (next_page, code));
         self.stats.compiled_blocks += 1;
         Some(code)
     }
@@ -1403,10 +1484,6 @@ impl TurboEngine {
                                     exit = TurboExit::Budget;
                                     break;
                                 }
-                                EXIT_FLUSH => {
-                                    self.flush_translations();
-                                    continue;
-                                }
                                 other => panic!("turbo: unknown exit {other}"),
                             }
                         }
@@ -1432,21 +1509,8 @@ impl TurboEngine {
                     exit = TurboExit::Budget;
                     break;
                 }
-                EXIT_FLUSH => {
-                    // A watched page was written by the instruction before.
-                    self.flush_translations();
-                    self.drain_code_watch(env.ram);
-                    if env.flush_pending {
-                        env.flush_pending = false;
-                    }
-                    continue;
-                }
                 other => panic!("turbo: unknown exit {other}"),
             }
-        }
-        if env.flush_pending {
-            env.flush_pending = false;
-            self.flush_translations();
         }
         self.drain_code_watch(env.ram);
         // Host flags back into RFLAGS.
@@ -1511,9 +1575,9 @@ impl TurboEngine {
     }
 
     /// Fill a TLB entry from a fast walk of `address`.
-    fn fill_fast(&mut self, address: u64, walk: &FastWalk, write: bool) {
+    fn fill_fast(&mut self, ram: &PhysicalMemory, address: u64, walk: &FastWalk, write: bool) {
         let page = walk.physical >> 12;
-        let (new_tables, leaf) = self.watch_tables(&walk.tables);
+        let (new_tables, leaf) = self.watch_tables(ram, &walk.tables);
         if new_tables {
             self.flush_write_tlb();
         }
@@ -1565,7 +1629,7 @@ impl TurboEngine {
             }
         }
         let page = physical.get() >> 12;
-        let (new_tables, leaf) = self.watch_tables(&tables);
+        let (new_tables, leaf) = self.watch_tables(ram, &tables);
         if new_tables {
             self.flush_write_tlb();
         }
@@ -1660,8 +1724,8 @@ unsafe extern "C" fn mem_helper(
                 return fallback;
             }
             apply_ad(&walk, true);
-            engine.fill_fast(address, &walk, true);
-            engine.fill_fast(address, &walk, false);
+            engine.fill_fast(env.ram, address, &walk, true);
+            engine.fill_fast(env.ram, address, &walk, false);
             let linear_page = address >> 12;
             if engine.wtlb[(linear_page as usize) & (TLB_SIZE - 1)].tag == linear_page {
                 return HelperResult {
@@ -1693,7 +1757,7 @@ unsafe extern "C" fn mem_helper(
                     _ => host.cast::<u64>().write_unaligned(value),
                 }
             }
-            engine.fill_fast(address, &walk, true);
+            engine.fill_fast(env.ram, address, &walk, true);
             return HelperResult {
                 value: 0,
                 status: 0,
@@ -1709,7 +1773,7 @@ unsafe extern "C" fn mem_helper(
                 _ => host.cast::<u64>().read_unaligned(),
             }
         };
-        engine.fill_fast(address, &walk, false);
+        engine.fill_fast(env.ram, address, &walk, false);
         return HelperResult { value, status: 0 };
     }
     if write {
@@ -2053,7 +2117,7 @@ unsafe extern "C" fn rep_helper(
     state.gpr[Register::Rcx as usize] = count - n;
     let changed = !table_writes.is_empty() || !code_writes.is_empty();
     for frame in table_writes {
-        engine.table_written(frame);
+        engine.table_written(env.ram, frame);
     }
     for (frame, start, end) in code_writes {
         engine.note_code_write(env.ram, (frame << 12) + start, end - start);
@@ -2446,7 +2510,7 @@ impl FastWalk {
 /// path's walker sets on the successful walk `walk`.
 pub(crate) fn apply_ad(walk: &FastWalk, write: bool) {
     for level in 0..walk.count {
-        let mut value = walk.values[level];
+        let value = walk.values[level];
         let leaf = level + 1 == walk.count;
         let wanted = if leaf && write {
             PTE_ACCESSED | PTE_DIRTY
@@ -2454,11 +2518,14 @@ pub(crate) fn apply_ad(walk: &FastWalk, write: bool) {
             PTE_ACCESSED
         };
         if value & wanted != wanted {
-            value |= wanted;
+            // OR into the current value, not the walk's snapshot: another walk of the same
+            // helper may have set bits of the same entry since (a 2 MiB leaf shared by the
+            // source and the destination of a REP MOVS), as the general walker's
+            // compare-and-replace keeps them.
             // SAFETY: the entry pointer of the walk, an aligned u64 in host RAM.
             unsafe {
                 std::sync::atomic::AtomicU64::from_ptr(walk.entries[level])
-                    .store(value, std::sync::atomic::Ordering::Relaxed);
+                    .fetch_or(wanted, std::sync::atomic::Ordering::AcqRel);
             }
         }
     }

@@ -540,7 +540,11 @@ mod tests {
         let point = stop(&mut board, &mut scheduler).unwrap();
         let snapshot = VmSnapshot::take(&board, &scheduler, &point).unwrap();
         if !crate::turbo::test_arena().is_some_and(|arena| board.enable_turbo(arena)) {
-            // A host without the engine: nothing to reset.
+            // A host without the engine: nothing to reset (on macOS/aarch64 it must exist).
+            assert!(
+                !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                "no turbo engine"
+            );
             return;
         }
         let page = crate::GuestPhysicalAddress::new(0x20_0000);

@@ -615,6 +615,19 @@ fn the_unified_run_without_turbo_reports_the_same_and_turbo_stats_go_to_stderr()
     }
     let stderr = String::from_utf8_lossy(&counted.output.stderr);
     assert!(stderr.contains("turbo: "), "{stderr}");
+    // On a host with the engine the run really went through it (else the comparison below would
+    // compare the general step with itself).
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        let retired = stderr
+            .split("retired: ")
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|digits| digits.parse::<u64>().ok());
+        assert!(
+            retired.is_some_and(|retired| retired > 0),
+            "the turbo engine retired nothing: {stderr}"
+        );
+    }
     let (mut default_report, mut general_report, mut counted_report) =
         (report(&default), report(&general), report(&counted));
     assert_eq!(default_report["exit"], "halted");

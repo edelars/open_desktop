@@ -2730,7 +2730,7 @@ pub(crate) enum ExceptionDeliveryMode<'a> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cpl0_set_loop(
     state: &mut LongModeState,
-    mut bus: LoopBus<'_>,
+    bus: LoopBus<'_>,
     split_gate: Option<&dyn crate::bus::SplitLockGate>,
     vcpu: usize,
     cr3: u64,
@@ -2930,9 +2930,6 @@ fn run_cpl0_set_loop_impl<
     let mut quantum_base = 0u64;
     let mut turbo_force_slow: Option<u64> = None;
     let mut turbo_rdtsc_next: Option<u64> = None;
-    let turbo_writes: std::cell::RefCell<Vec<GuestPhysicalRange>> =
-        std::cell::RefCell::new(Vec::new());
-    let turbo_on = turbo.is_some();
     let context = AccessContext {
         origin: od_isa::memory::AccessOrigin::Explicit,
         ..context
@@ -2951,9 +2948,6 @@ fn run_cpl0_set_loop_impl<
     let guest_only =
         cache.is_some_and(|cache| cache.invalidation() == FetchCacheInvalidation::GuestOnly);
     let mut watch = |range: GuestPhysicalRange| {
-        if turbo_on {
-            turbo_writes.borrow_mut().push(range);
-        }
         if let Some(cache) = cache {
             cache.note_write(range);
         }
@@ -3207,13 +3201,6 @@ fn run_cpl0_set_loop_impl<
         }
         // The turbo engine: generated code runs what it can from here.
         if let Some(hook) = turbo.as_mut() {
-            {
-                let mut writes = turbo_writes.borrow_mut();
-                if !writes.is_empty() {
-                    hook.engine.note_writes(bus.ram(), &writes);
-                    writes.clear();
-                }
-            }
             if turbo_rdtsc_next == Some(state.rip)
                 && let Some(source) = rdtsc.as_mut()
             {
@@ -3275,7 +3262,6 @@ fn run_cpl0_set_loop_impl<
                     ram: bus.ram(),
                     paging,
                     context,
-                    flush_pending: false,
                     engine: std::ptr::null_mut(),
                     rdtsc: rdtsc_ptr,
                     fast: fast_ptr,
@@ -5153,6 +5139,15 @@ impl<'a> From<&'a MachineBus> for AdapterBus<'a> {
 }
 
 impl<'a> AdapterBus<'a> {
+    /// The guest RAM behind this adapter.
+    fn physical_memory(&self) -> &crate::PhysicalMemory {
+        match self {
+            Self::Machine(bus, _) => bus.physical_memory(),
+            Self::Shared(bus, _) => bus.physical_memory(),
+            Self::Ram(ram) | Self::RamMmio(ram, _, _) => ram,
+        }
+    }
+
     /// The gate of the split `LOCK` of the vCPU thread this adapter belongs to (S6-34 step 8):
     /// only the set loop's form (`RamMmio`) can carry one.
     fn split_gate(&self) -> Option<&'a dyn crate::bus::SplitLockGate> {
@@ -6332,9 +6327,12 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     ) -> Result<(), MemoryError> {
         // A same-page read of 1, 2, 4 or 8 bytes of the set loop's adapter is served by the TLB of
         // the turbo engine, only where the read below would be exactly
-        // `self.access(address, context, Read { width })` (`direct_read_width`). Everything else
-        // below is untouched.
+        // `self.access(address, context, Read { width })` (`direct_read_width`), and only while no
+        // logged write to a watched page (a page-table frame or code) waits for the engine: such
+        // a write may have changed a translation the TLB holds. Everything else below is
+        // untouched.
         if let Some(view) = self.turbo_tlb
+            && !self.bus.physical_memory().watch_pending()
             && self
                 .direct_read_width(address, context, destination.len())
                 .is_some()
@@ -6489,6 +6487,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         // (no `write_crossing_page`, no `CrossesPage`), the large-RAM profile, the capture modes
         // off.
         if let Some(view) = self.turbo_tlb
+            && !self.bus.physical_memory().watch_pending()
             && context.origin == AccessOrigin::Explicit
             && (address & 0xfff) + expected as u64 <= 0x1000
             && self.large_ram_profile

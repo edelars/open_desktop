@@ -3777,3 +3777,158 @@ fn an_sti_in_the_shadow_of_sti_is_refused_by_the_general_step() {
         &|_| {},
     );
 }
+
+// ---- regressions of the review ------------------------------------------------------------------
+
+/// A jump to RIP 1 (a guest calling through NULL + 1): the empty entries of the lookup table must
+/// never match a guest RIP (they once held RIP 1, and the host jumped to address 0).
+#[test]
+fn a_jump_to_rip_one_runs_like_the_general_step() {
+    for with_idt in [false, true] {
+        let mut asm = Asm::new(CODE);
+        asm.mov_imm(RAX, 1);
+        // jmp rax
+        asm.raw(&[0xFF, 0xE0]);
+        // The comparison of the two runs is the check (and that the host survives it).
+        scenario(&format!("jmp 1 idt {with_idt}"), &asm.bytes, &|machine| {
+            if with_idt {
+                machine.idt();
+            }
+        });
+    }
+}
+
+/// REP MOVSQ inside one 2 MiB page whose PDE has A = D = 0: the destination's walk sets A and D on
+/// the PDE, a later source walk of another 4 KiB part of the same page must keep D (the accessed
+/// and dirty bits are ORed into the current entry, not into the walk's snapshot).
+#[test]
+fn rep_movs_inside_one_2m_page_keeps_the_dirty_bit_of_its_pde() {
+    let mut asm = Asm::new(CODE);
+    asm.raw(&[0xFC]); // cld
+    asm.mov_imm(RSI, BIG + DATA + 0x800);
+    asm.mov_imm(RDI, BIG + DATA + 0x4000);
+    asm.mov_imm(RCX, 384);
+    asm.raw(&[0xF3, 0x48, 0xA5]); // rep movsq
+    asm.hlt();
+    let outcome = scenario("rep movs 2m", &asm.bytes, &|_| {});
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_generated(&outcome, "rep movs 2m");
+    assert!(outcome.stats.rep_calls > 0, "{:?}", outcome.stats);
+}
+
+/// A page-table entry written by the general step as the last instruction of a call of the loop,
+/// then a read through it in the next call: the write must reach the engine although the call
+/// ended right after it (every budget, so that every instruction is once the last of a call).
+#[test]
+fn a_page_table_write_that_ends_a_call_is_seen_by_the_next_one() {
+    let page = DATA + 0x7000;
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm(RDI, page);
+    asm.op(&[], 8, &[0x8B], RAX, Rm::M(RDI, 0), &[]);
+    asm.op(&[], 8, &[0x89], RAX, Rm::M(RDI, 8), &[]);
+    asm.mov_imm(RSI, PT_WINDOW + (page >> 12) * 8);
+    asm.mov_imm(RDX, (ALT + 0x3000) | P | RW);
+    asm.op(&[], 8, &[0x89], RDX, Rm::M(RSI, 0), &[]);
+    asm.op(&[], 8, &[0x8B], RCX, Rm::M(RDI, 0), &[]);
+    asm.op(&[], 8, &[0x89], RCX, Rm::M(RDI, 0x10), &[]);
+    asm.hlt();
+    let program = asm.bytes.clone();
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        put_qword(&machine.bus, ALT + 0x3000, 0xA17_A17);
+    };
+    let nothing = |_: &mut Machine, _: usize| {};
+    for budget in 1..=10 {
+        let outcome = Case::new(format!("pte write budget {budget}"), 7, &prepare)
+            .program(&program)
+            .budget(budget)
+            .calls(12)
+            .between(&nothing)
+            .check();
+        // The calls after the HLT are refused (`NotRunning`); the read went through the new entry.
+        assert_eq!(
+            outcome.state.activity,
+            Some(CpuActivity::Halted),
+            "budget {budget}"
+        );
+        assert_eq!(
+            outcome.state.gpr[RCX as usize], 0xA17_A17,
+            "budget {budget}"
+        );
+    }
+}
+
+/// A device (DMA, outside every run) rewrites a page-table entry between two calls: the next call
+/// reads through the new entry.
+#[test]
+fn a_device_write_into_a_page_table_between_two_calls_is_seen() {
+    let page = DATA + 0x6000;
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm(RDI, page);
+    asm.op(&[], 8, &[0x8B], RAX, Rm::M(RDI, 0), &[]);
+    asm.op(&[], 8, &[0x89], RAX, Rm::M(RDI, 8), &[]);
+    asm.hlt();
+    let program = asm.bytes.clone();
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        put_qword(&machine.bus, ALT + 0x2000, 0xD3A_D3A);
+    };
+    let between = |machine: &mut Machine, _call: usize| {
+        put_qword(
+            &machine.bus,
+            PT_A + (page >> 12) * 8,
+            (ALT + 0x2000) | P | RW,
+        );
+        machine.state.rip = CODE;
+        machine.state.activity = Some(CpuActivity::Running);
+    };
+    let outcome = Case::new("dma pte", 8, &prepare)
+        .program(&program)
+        .between(&between)
+        .calls(2)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_generated(&outcome, "dma pte");
+    assert_eq!(outcome.state.gpr[RAX as usize], 0xD3A_D3A);
+}
+
+/// An instruction crossing into the next code page; between two calls the second linear page is
+/// mapped to another frame with other bytes: the second call executes the new bytes (the block of
+/// the crossing instruction depends on both translations).
+#[test]
+fn a_remapped_second_page_of_a_crossing_instruction_is_seen() {
+    for split in 2..10u64 {
+        let start = CODE + 0x1000 - 3 - split;
+        let mut asm = Asm::new(start);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+        asm.mov_imm(RCX, 0x0102_0304_0506_0708);
+        asm.op(&[], 8, &[0x01], RCX, Rm::R(RDX), &[]);
+        asm.hlt();
+        let program = asm.bytes.clone();
+        let tail = program[(0x1000 - (start - CODE)) as usize..].to_vec();
+        let prepare = |machine: &mut Machine| {
+            machine.code(start, &program);
+            machine.state.rip = start;
+        };
+        let between = |machine: &mut Machine, _call: usize| {
+            // The same tail with its first immediate byte changed, in another frame.
+            let mut other = tail.clone();
+            other[0] ^= 0x5A;
+            put(&machine.bus, ALT + 0x5000, &other);
+            put_qword(
+                &machine.bus,
+                PT_A + ((CODE + 0x1000) >> 12) * 8,
+                (ALT + 0x5000) | P | RW,
+            );
+            machine.state.rip = start;
+            machine.state.activity = Some(CpuActivity::Running);
+        };
+        let outcome = Case::new(format!("crossing remap {split}"), 9, &prepare)
+            .program(&program)
+            .between(&between)
+            .calls(2)
+            .check();
+        assert_eq!(outcome.report.exit, "Run(Halted)");
+        assert_generated(&outcome, "crossing remap");
+    }
+}

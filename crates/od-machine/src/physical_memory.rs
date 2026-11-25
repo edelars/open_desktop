@@ -105,6 +105,11 @@ impl GuestPhysicalRange {
     }
 }
 
+/// Watch bit of a page with code translated by the turbo engine.
+pub(crate) const WATCH_CODE: u8 = 1;
+/// Watch bit of a page-table frame the turbo engine translated through.
+pub(crate) const WATCH_TABLE: u8 = 2;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryRegionKind {
     Ram,
@@ -294,8 +299,10 @@ struct Region {
     /// `Release` after the data of a write has been stored, read with `Acquire` (see
     /// [`PhysicalMemory::code_page_generation`]); every access is through `&self`.
     page_generations: Vec<AtomicU64>,
-    /// The turbo engine: one byte per page; nonzero while the turbo JIT has code on the
-    /// page. A committed write to such a page is logged (`PhysicalMemory::take_code_watch_hits`).
+    /// The turbo engine: one byte of watch bits per page ([`WATCH_CODE`]: the engine has
+    /// translated code on the page; [`WATCH_TABLE`]: the page is a page-table frame the engine
+    /// translated through). A committed write to a page with any bit is logged
+    /// (`PhysicalMemory::take_code_watch_hits`).
     code_watch: Vec<std::sync::atomic::AtomicU8>,
 }
 
@@ -1112,6 +1119,11 @@ impl PhysicalMemory {
         region.backing.as_ref()?.operand_ptr(offset, 8)
     }
 
+    /// The turbo engine: whether a logged write to a watched page is waiting to be taken.
+    pub(crate) fn watch_pending(&self) -> bool {
+        self.code_watch_pending.load(Ordering::Acquire)
+    }
+
     fn code_watch_cell(
         &self,
         address: GuestPhysicalAddress,
@@ -1127,16 +1139,29 @@ impl PhysicalMemory {
         region.code_watch.get(usize::try_from(page).ok()?)
     }
 
-    /// The turbo engine: whether the page of `address` is watched.
+    /// The turbo engine: whether the page of `address` is watched as a page with code.
     pub(crate) fn code_watch(&self, address: GuestPhysicalAddress) -> bool {
         self.code_watch_cell(address)
-            .is_some_and(|cell| cell.load(Ordering::Relaxed) != 0)
+            .is_some_and(|cell| cell.load(Ordering::Relaxed) & WATCH_CODE != 0)
     }
 
-    /// The turbo engine: watch (or stop watching) the page of `address`.
+    /// The turbo engine: watch (or stop watching) the page of `address` as a page with code.
     pub(crate) fn set_code_watch(&self, address: GuestPhysicalAddress, on: bool) {
+        self.set_watch_bit(address, WATCH_CODE, on);
+    }
+
+    /// The turbo engine: watch (or stop watching) the page of `address` as a page-table frame.
+    pub(crate) fn set_table_watch(&self, address: GuestPhysicalAddress, on: bool) {
+        self.set_watch_bit(address, WATCH_TABLE, on);
+    }
+
+    fn set_watch_bit(&self, address: GuestPhysicalAddress, bit: u8, on: bool) {
         if let Some(cell) = self.code_watch_cell(address) {
-            cell.store(on as u8, Ordering::Relaxed);
+            if on {
+                cell.fetch_or(bit, Ordering::Relaxed);
+            } else {
+                cell.fetch_and(!bit, Ordering::Relaxed);
+            }
         }
     }
 

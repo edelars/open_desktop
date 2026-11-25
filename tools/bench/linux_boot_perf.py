@@ -149,7 +149,20 @@ def runner_argv(inputs: dict, budget: int, *, snapshot: bool, no_turbo: bool = F
         # The unified loop runs the general interpreter step only (the reference, the control of the
         # turbo engine); the golden record must not change.
         argv += ["--no-turbo"]
+    else:
+        # The engine's counters on stderr (stdout, the golden record, does not change): the record
+        # says whether the engine actually ran, not only whether it was asked for.
+        argv += ["--turbo-stats"]
     return argv
+
+
+def turbo_engaged(stderr: str) -> bool:
+    """Whether the runner's `--turbo-stats` line reports instructions retired by the turbo engine."""
+    for line in stderr.splitlines():
+        if line.startswith("turbo: TurboStats"):
+            match = re.search(r"\bretired: (\d+)", line)
+            return bool(match) and int(match.group(1)) > 0
+    return False
 
 
 def clean_run_dir() -> None:
@@ -196,7 +209,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         "label": args.label,
         "budget": args.budget,
         "runner_exit_code": proc.returncode,
-        "turbo": not args.no_turbo,
+        "turbo_requested": not args.no_turbo,
+        "turbo": turbo_engaged(proc.stderr),
         "runner_stdout": report,
         "com1_sha256": digest_if_exists(COM1),
         "nvram_sha256": digest_if_exists(NVRAM_OUT),
@@ -326,7 +340,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         timing = parse_time(time_out.read_text()) if time_out.exists() else {}
         retired = report["retired"]
         row = {"wall_s": round(wall, 3), "time_real_s": timing.get("real"), "retired": retired, **timing,
-               "minst_per_s": round(retired / wall / 1e6, 4)}
+               "minst_per_s": round(retired / wall / 1e6, 4), "turbo": turbo_engaged(proc.stderr)}
         if timing.get("host_instructions"):
             row["host_instr_per_guest"] = round(timing["host_instructions"] / retired, 2)
         runs.append(row)
@@ -344,7 +358,8 @@ def cmd_measure(args: argparse.Namespace) -> int:
     result = {
         "schema": "od-cpu-core-perf-measure-v1",
         "label": args.label, "budget": args.budget, "runs_requested": args.runs,
-        "priority": priority, "preliminary": preliminary, "turbo": not args.no_turbo,
+        "priority": priority, "preliminary": preliminary, "turbo_requested": not args.no_turbo,
+        "turbo": all(row["turbo"] for row in runs),
         "inputs": inputs["inputs"], "runner_sha256": sha256_file(runner_path()),
         "build_profile": inputs.get("build_profile"), "host": bench.host_fingerprint(),
         "fingerprint": fingerprint, "runs": runs, "summary": summary, **git_state(),
@@ -869,7 +884,8 @@ def cmd_profile(args: argparse.Namespace) -> int:
     tables = {"self": top_table(profile, "self"), "inclusive": top_table(profile, "inclusive")}
     result = {
         "schema": "od-cpu-core-perf-profile-v1",
-        "label": args.label, "budget": args.budget, "turbo": not args.no_turbo,
+        "label": args.label, "budget": args.budget, "turbo_requested": not args.no_turbo,
+        "turbo": turbo_engaged(stderr_file.read_text(errors="replace")) if stderr_file.exists() else False,
         "at_s": args.at, "seconds": args.seconds,
         "sampled_from_s": round(sampled_from, 3) if sampled_from is not None else None,
         "sample_exit_code": sample_rc, "runner_alive_after_sample": runner_alive_after,

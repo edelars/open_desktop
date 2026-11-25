@@ -4081,9 +4081,14 @@ impl LoadedFirmwareBoard {
                 && !cpuid_boundary
                 && irq_hook;
             let report = if turbo_quantum {
+                // The merged transition skips the services between quanta: only for a board
+                // whose devices have no work of their own in virtual time (xHCI port resets, NIC
+                // timers) — the others act only after a guest access, which ends the merging.
                 let fast_allowed = matches!(board.clock_driver, BoardClock::Standalone)
                     && !schedule_standalone
                     && agent.is_none()
+                    && xhci.is_none()
+                    && nic.is_none()
                     && rdtsc_tick.is_some();
                 let shortened_cell = Cell::new(shortened);
                 let device_mark = Cell::new(device_accesses.load(Ordering::Relaxed));
@@ -4119,16 +4124,17 @@ impl LoadedFirmwareBoard {
                         if remaining <= n {
                             return None;
                         }
+                        // The retired instructions and the RDTSC tick: one advance (the same
+                        // end state as the two of the board). An overflow leaves the boundary to
+                        // the board, which reports it.
+                        if clock.advance_standalone(n + RDTSC_TICK_NS).is_err() {
+                            return None;
+                        }
                         // The board after the quantum (services, the UART pump and the PM/PIT
                         // ticks have nothing to do without a device access).
                         quanta += 1;
                         retired += n;
                         remaining -= n;
-                        // The retired instructions and the RDTSC tick: one advance (the same
-                        // end state as the two of the board).
-                        clock
-                            .advance_standalone(n + RDTSC_TICK_NS)
-                            .expect("turbo: clock advance");
                         let now = now_cell.get() + n + RDTSC_TICK_NS;
                         now_cell.set(now);
                         tick.store(false, Ordering::Relaxed);
@@ -4137,8 +4143,15 @@ impl LoadedFirmwareBoard {
                         // The board before the next quantum. Without a device access and before
                         // the next edge the source's answer cannot change (its catch-up applies
                         // nothing then).
+                        // The answer is kept only for a source that declares it stable between
+                        // device accesses (PERF-05); the others are asked every quantum, as the
+                        // board does.
+                        let stable =
+                            source.is_some_and(|source| source.stable_between_device_accesses());
                         let (deadline, fresh_source) = match deadline_cache.get() {
-                            Some(deadline) if deadline.is_none_or(|deadline| now < deadline) => {
+                            Some(deadline)
+                                if stable && deadline.is_none_or(|deadline| now < deadline) =>
+                            {
                                 (deadline, false)
                             }
                             _ => {
@@ -7797,7 +7810,11 @@ mod tests {
         for kind in [PlatformResetKind::Cold, PlatformResetKind::Warm] {
             let mut board = reset_stopped_board(pm_config());
             if !crate::turbo::test_arena().is_some_and(|arena| board.enable_turbo(arena)) {
-                // A host without the engine: nothing to reset.
+                // A host without the engine: nothing to reset (on macOS/aarch64 it must exist).
+                assert!(
+                    !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                    "no turbo engine"
+                );
                 return;
             }
             let page = GuestPhysicalAddress::new(0x20_0000);
@@ -9376,7 +9393,12 @@ mod tests {
         assert_eq!(turbo.state(), general.state());
         assert_eq!(turbo.com1_transcript(), general.com1_transcript());
         let Some(engine) = turbo.turbo_engine() else {
-            // A host without the engine: the run was the general step's.
+            // A host without the engine: the run was the general step's (on macOS/aarch64 the
+            // engine must exist).
+            assert!(
+                !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                "no turbo engine"
+            );
             return;
         };
         assert!(engine.stats.retired > 0, "{:?}", engine.stats);
