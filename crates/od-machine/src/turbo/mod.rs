@@ -439,8 +439,12 @@ pub(crate) struct TurboEngine {
     singles: HashMap<(u64, u64), BlockInfo>,
     /// Per physical page: the RIPs of its singles, slow decodes and stub lookups.
     page_extras: HashMap<u64, Vec<u64>>,
-    /// Per leaf table frame: the TLB and lookup entries filled through it.
-    leaf_refs: HashMap<u64, Vec<LeafRef>>,
+    /// Per leaf table frame: the index of the list of TLB and lookup entries filled through it.
+    leaf_refs: HashMap<u64, u32>,
+    ref_lists: Vec<Vec<LeafRef>>,
+    free_lists: Vec<u32>,
+    /// The frame of the last noted reference and its list.
+    last_ref: (u64, u32),
     /// Decodes of instructions the generated code stops before, by (RIP, physical page).
     slow_insns: HashMap<(u64, u64), od_isa::long_decode::Instruction>,
     /// Decodes made by the last translation (filled by `jit::compile_limited`).
@@ -561,6 +565,9 @@ impl TurboEngine {
             singles: HashMap::default(),
             page_extras: HashMap::default(),
             leaf_refs: HashMap::default(),
+            ref_lists: Vec::new(),
+            free_lists: Vec::new(),
+            last_ref: (u64::MAX, 0),
             slow_insns: HashMap::default(),
             slow_decode: None,
             pending_decodes: Vec::new(),
@@ -681,6 +688,9 @@ impl TurboEngine {
         }
         self.pt_frames.clear();
         self.leaf_refs.clear();
+        self.ref_lists.clear();
+        self.free_lists.clear();
+        self.last_ref = (u64::MAX, 0);
     }
 
     /// A table frame was written: the translations through it are dropped (only those whose
@@ -691,11 +701,9 @@ impl TurboEngine {
             Some(levels) if levels & 2 != 0 => self.flush_translations(),
             Some(_) => {
                 self.stats.leaf_drops += 1;
-                if let Some(refs) = self.leaf_refs.remove(&frame) {
-                    for reference in refs {
-                        if reference.holds(frame) {
-                            reference.clear();
-                        }
+                for reference in self.take_leaf_refs(frame) {
+                    if reference.holds(frame) {
+                        reference.clear();
                     }
                 }
                 self.pt_frames.remove(&frame);
@@ -707,11 +715,43 @@ impl TurboEngine {
         if frame == u64::MAX {
             return;
         }
-        let refs = self.leaf_refs.entry(frame).or_default();
+        let index = if self.last_ref.0 == frame {
+            self.last_ref.1
+        } else {
+            let index = match self.leaf_refs.get(&frame) {
+                Some(&index) => index,
+                None => {
+                    let index = match self.free_lists.pop() {
+                        Some(index) => index,
+                        None => {
+                            self.ref_lists.push(Vec::new());
+                            (self.ref_lists.len() - 1) as u32
+                        }
+                    };
+                    self.leaf_refs.insert(frame, index);
+                    index
+                }
+            };
+            self.last_ref = (frame, index);
+            index
+        };
+        let refs = &mut self.ref_lists[index as usize];
         if refs.len() >= 256 && refs.len().is_power_of_two() {
             refs.retain(|r| r.holds(frame));
         }
         refs.push(reference);
+    }
+
+    /// The entries filled through leaf table `frame` (the list is emptied).
+    fn take_leaf_refs(&mut self, frame: u64) -> Vec<LeafRef> {
+        let Some(index) = self.leaf_refs.remove(&frame) else {
+            return Vec::new();
+        };
+        if self.last_ref.0 == frame {
+            self.last_ref = (u64::MAX, 0);
+        }
+        self.free_lists.push(index);
+        std::mem::take(&mut self.ref_lists[index as usize])
     }
 
     /// Note the table frames of a walk (PML4 first; the last one holds the leaf); `true` when
