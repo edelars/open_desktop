@@ -520,10 +520,11 @@ fn memory_operands_and_other_operations_are_refused_without_side_effects() {
         ("shrd [rsi], rax, cl", &[0x48, 0x0f, 0xad, 0x06]),
         // PERF-24: the register MOV forms and the relative JMP/Jcc are groups G1 and G3 now
         // (fast_step_g1_g3_tests.rs), the memory MOV forms and LEA group G4 (PERF-24b,
-        // fast_step_g4_tests.rs); the other operations stay refused.
+        // fast_step_g4_tests.rs); PERF-33 (E4): NOP and the two-operand IMUL are group G6
+        // (fast_step_g6_tests.rs); the other operations stay refused.
         ("jmp [rsi]", &[0xff, 0x26]),
-        ("nop", &[0x90]),
-        ("imul rax, rcx", &[0x48, 0x0f, 0xaf, 0xc1]),
+        ("cdq", &[0x99]),
+        ("imul rax, rcx, 5", &[0x48, 0x6b, 0xc1, 0x05]),
     ];
     for &(label, bytes) in refused {
         let mut start = state(5, 2 | CF);
@@ -541,10 +542,11 @@ fn the_step_takes_g2_forms_with_the_flag_and_the_run_is_unchanged() {
         ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, run_with_cpl0_profile_set,
     };
     use crate::fast_path_check;
-    // add rax, rcx; xor edx, edx; shl rax, 3; mov rbx, rax; cmp rax, rdx; nop
+    // add rax, rcx; xor edx, edx; shl rax, 3; mov rbx, rax; cmp rax, rdx; pause (outside the fast
+    // path; a NOP is group G6 since PERF-33, E4)
     let program = [
         0x48, 0x01, 0xC8, 0x31, 0xD2, 0x48, 0xC1, 0xE0, 0x03, 0x48, 0x89, 0xC3, 0x48, 0x39, 0xD0,
-        0x90,
+        0xf3, 0x90,
     ];
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let run_set = |set: &Cpl0ProfileSet<'_>, seed: u64| {
@@ -581,7 +583,7 @@ fn the_step_takes_g2_forms_with_the_flag_and_the_run_is_unchanged() {
         assert_eq!(on_state, off_state, "seed {seed}");
         assert_eq!(taken_off, 0);
         if fast_path_check::FAST_STEPS_COUNTED {
-            // add, xor, shl, cmp (G2) and, since PERF-24, the register MOV (G1); the NOP is not
+            // add, xor, shl, cmp (G2) and, since PERF-24, the register MOV (G1); the PAUSE is not
             // taken.
             assert_eq!(taken_on, 5, "seed {seed}");
         }

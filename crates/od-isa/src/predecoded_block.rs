@@ -1,7 +1,7 @@
 //! PERF-31 (ADR-0018, variant (a), prototype): predecoded straight-line blocks for the fast path.
 //!
 //! A block is the sequence of decoded instructions from one RIP, all on the 4 KiB page of that RIP,
-//! that the fast path (`try_fast_step`, groups G1-G5) may run: it ends after the first instruction
+//! that the fast path (`try_fast_step`, groups G1-G6) may run: it ends after the first instruction
 //! that changes the flow (Jcc, JMP, CALL, RET), before the first one outside the fast path (a port,
 //! a system instruction, `RDTSC`, a LOCK/REP or FS/GS form ...), before an instruction that would
 //! need a byte of another page, at the end of the page or at [`MAX_BLOCK_INSTRUCTIONS`]. Building a
@@ -58,7 +58,7 @@ pub enum FastBlockRole {
 }
 
 /// The role of `instruction` in a block, or `None` when the block ends before it: the operation
-/// classes of the fast path (`try_fast_step`, G1-G5) without a LOCK/REP/REPNE prefix and without an
+/// classes of the fast path (`try_fast_step`, G1-G6) without a LOCK/REP/REPNE prefix and without an
 /// FS/GS segment prefix, and `Shift` only without a memory operand. Only a filter: the fast path's
 /// own admission still decides every execution, and a form this admits but the fast path refuses
 /// ends the run of the block there (before any effect).
@@ -74,7 +74,11 @@ pub fn fast_block_role(instruction: &Instruction) -> Option<FastBlockRole> {
         | Operation::Mov { .. }
         | Operation::MovImmediate { .. }
         | Operation::Lea { .. }
-        | Operation::StackRegister { .. } => Some(FastBlockRole::Straight),
+        | Operation::StackRegister { .. }
+        // PERF-33 (E4), group G6.
+        | Operation::Imul { .. }
+        | Operation::Nop
+        | Operation::NopModrm => Some(FastBlockRole::Straight),
         Operation::Extend { src, .. } if !matches!(src, Operand::Immediate(_)) => {
             Some(FastBlockRole::Straight)
         }

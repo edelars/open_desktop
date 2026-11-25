@@ -567,7 +567,7 @@ fn other_control_transfers_and_operations_are_refused_without_side_effects() {
         ("push imm8", &[0x6a, 0x01]),
         ("pushfq", &[0x9c]),
         ("cmovz rax, rcx", &[0x48, 0x0f, 0x44, 0xc1]),
-        ("nop", &[0x90]),
+        ("cdq", &[0x99]),
     ];
     for &(label, bytes) in refused {
         let mut start = state(5, 2 | CF | ZF);
@@ -589,10 +589,10 @@ fn the_step_takes_g1_and_g3_forms_with_the_flag_and_the_run_is_unchanged() {
     // 0x0e nop; nop          90 90 (skipped)
     // 0x10 mov ah, 0x12      b4 12
     // 0x12 mov rdx, rbx      48 89 da
-    // 0x15 nop               90
+    // 0x15 pause             f3 90 (outside the fast path; a NOP is group G6 since PERF-33, E4)
     let program = [
         0x48, 0x89, 0xc3, 0xb9, 0x05, 0x00, 0x00, 0x00, 0xff, 0xc9, 0x75, 0xfc, 0xeb, 0x02, 0x90,
-        0x90, 0xb4, 0x12, 0x48, 0x89, 0xda, 0x90,
+        0x90, 0xb4, 0x12, 0x48, 0x89, 0xda, 0xf3, 0x90,
     ];
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let run_set = |set: &Cpl0ProfileSet<'_>, seed: u64| {
@@ -620,14 +620,14 @@ fn the_step_takes_g1_and_g3_forms_with_the_flag_and_the_run_is_unchanged() {
         let (off, off_state, taken_off) = run_set(&plain, seed);
         let (on, on_state, taken_on) = run_set(&plain.with_fast_path(), seed);
         assert_eq!(off.exit, Cpl0ProfileSetExit::Run(RunExit::StopAddress));
-        // 2 MOV, 5 x (DEC, JNZ), JMP, 2 MOV, NOP.
+        // 2 MOV, 5 x (DEC, JNZ), JMP, 2 MOV, PAUSE.
         assert_eq!(off.instructions_executed, 16);
         assert_eq!(on, off, "seed {seed}");
         assert_eq!(on_state, off_state, "seed {seed}");
         assert_eq!(off_state.gpr[1] & 0xffff_ffff, 0);
         assert_eq!(taken_off, 0);
         if fast_path_check::FAST_STEPS_COUNTED {
-            // Everything but the final NOP.
+            // Everything but the final PAUSE.
             assert_eq!(taken_on, 15, "seed {seed}");
         }
     }

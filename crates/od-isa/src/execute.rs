@@ -34752,10 +34752,15 @@ pub fn run_with_fast_path_check(
 /// of a register (`exec_stack_register`), `CALL rel32` (`exec_call`) and `RET`/`RET imm16`
 /// (`exec_return`), the last three shared with the general arms.
 ///
+/// PERF-33 (E4), group G6: the two-operand `Imul` (`0F AF`, register or memory source, through
+/// `exec_imul`, shared with the general arm), `Nop` (`90`, `66 90`) and `NopModrm` (`0F 1F /0`,
+/// `0F 18` hints; the operand is never evaluated), both retiring with nothing but RIP changed.
+///
 /// Admission (ADR-0017, section 4): CPL0, RF = 0, TF = 0, no STI/MOV SS shadow, no LOCK/REP/REPNE
 /// prefix, no FS/GS segment prefix; `Shift` also no memory operand; for `Branch`, `Jump`,
 /// `Call` and `Return` also the admission of `executable` (opcode map and byte, default
-/// prefixes). Everything else is "not handled".
+/// prefixes); `NopModrm` also its admission in `executable` (a control-register policy).
+/// Everything else is "not handled".
 #[inline(never)]
 pub(crate) fn try_fast_step(
     state: &mut LongModeState,
@@ -35047,6 +35052,32 @@ pub(crate) fn try_fast_step(
                 return None;
             }
             return Some(exec_return(state, memory, context, stack_adjust));
+        }
+        // PERF-33 (E4), group G6: the arm of the general path (`exec_imul`), then the common tail
+        // below (the flag definedness of `Imul`, RIP, `Advanced`; a fault of the source read
+        // leaves everything).
+        Operation::Imul { dst, src } => exec_imul(state, memory, context, next_rip, dst, src),
+        // PERF-33 (E4), group G6: NOP and the ModRM NOP change nothing but RIP (the general arms are
+        // empty, `transfer` does nothing for `Nop`; the flag definedness is the identity).
+        // `executable` admits `Nop` always and `NopModrm` only under a control-register policy.
+        Operation::Nop => {
+            return Some(retire_without_flag_effects(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+            ));
+        }
+        Operation::NopModrm => {
+            if !control_policy_present {
+                return None;
+            }
+            return Some(retire_without_flag_effects(
+                state,
+                *rflags_defined,
+                instruction,
+                next_rip,
+            ));
         }
         _ => return None,
     };
@@ -67586,17 +67617,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.rflags = flags;
         }
         Operation::Imul { dst, src } => {
-            let lhs = state.read(dst);
-            let rhs = match read_operand(state, memory, context, next_rip, src) {
-                Ok(value) => value,
-                Err(MemoryError::Architectural(fault)) => {
-                    return Ok(StepOutcome::Fault(fault));
-                }
+            match exec_imul(state, memory, context, next_rip, dst, src) {
+                Ok(()) => {}
+                Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
                 Err(error) => return Err(error),
-            };
-            let (result, flags) = multiply_truncated(dst.size(), lhs, rhs, state.rflags);
-            state.write(dst, result);
-            state.rflags = flags;
+            }
         }
         Operation::ImulImmediate {
             dst,
@@ -78315,6 +78340,26 @@ fn conditional_move(
         // A false dword CMOV still zero-extends the destination.
         state.write(destination, state.read(destination));
     }
+    Ok(())
+}
+
+/// Shared by the general dispatch and the interpreter fast path (ADR-0017; PERF-33, E4, group G6):
+/// the two-operand IMUL r, r/m (`0F AF`). The destination is written and the flags set only after
+/// the source read succeeded. The caller maps `MemoryError::Architectural` to a fault.
+#[inline(always)]
+fn exec_imul(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    dst: RegisterView,
+    src: Operand,
+) -> Result<(), MemoryError> {
+    let lhs = state.read(dst);
+    let rhs = read_operand(state, memory, context, next_rip, src)?;
+    let (result, flags) = multiply_truncated(dst.size(), lhs, rhs, state.rflags);
+    state.write(dst, result);
+    state.rflags = flags;
     Ok(())
 }
 

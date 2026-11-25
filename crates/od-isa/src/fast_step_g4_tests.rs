@@ -1073,11 +1073,11 @@ fn the_step_takes_g4_forms_with_the_flag_and_the_run_is_unchanged() {
     // 0x1a mov al, [rsp-1]         8a 44 24 ff
     // 0x1e mov rbx, [rip+0x100]    48 8b 1d 00 01 00 00
     // 0x25 mov [rsi], r8           4c 89 06
-    // 0x28 nop                     90
+    // 0x28 pause                   f3 90 (outside the fast path; a NOP is G6 since PERF-33, E4)
     let program = [
         0x48, 0x89, 0x46, 0x08, 0x48, 0x8b, 0x4e, 0x08, 0x0f, 0xb6, 0x56, 0x09, 0x48, 0x63, 0x7e,
         0x10, 0x4c, 0x8d, 0x44, 0x96, 0x01, 0xc6, 0x44, 0x24, 0xff, 0x7f, 0x8a, 0x44, 0x24, 0xff,
-        0x48, 0x8b, 0x1d, 0x00, 0x01, 0x00, 0x00, 0x4c, 0x89, 0x06, 0x90,
+        0x48, 0x8b, 0x1d, 0x00, 0x01, 0x00, 0x00, 0x4c, 0x89, 0x06, 0xf3, 0x90,
     ];
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let run_set = |set: &Cpl0ProfileSet<'_>, seed: u64| {
@@ -1118,7 +1118,7 @@ fn the_step_takes_g4_forms_with_the_flag_and_the_run_is_unchanged() {
         assert_eq!(on_state, off_state, "seed {seed}");
         assert_eq!(on_ram.written, off_ram.written, "seed {seed}");
         assert_same_calls(&format!("seed {seed}"), &off_log, &on_log);
-        // Eight memory calls: every instruction but the LEA and the NOP.
+        // Eight memory calls: every instruction but the LEA and the PAUSE.
         assert_eq!(off_log.calls().len(), 8);
         let methods: Vec<MemoryMethod> = off_log.calls().iter().map(|call| call.method).collect();
         assert_eq!(
@@ -1136,7 +1136,7 @@ fn the_step_takes_g4_forms_with_the_flag_and_the_run_is_unchanged() {
         );
         assert_eq!(taken_off, 0);
         if fast_path_check::FAST_STEPS_COUNTED {
-            // Everything but the final NOP.
+            // Everything but the final PAUSE.
             assert_eq!(taken_on, 9, "seed {seed}");
         }
     }

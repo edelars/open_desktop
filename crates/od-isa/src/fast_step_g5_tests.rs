@@ -114,7 +114,13 @@ fn compare_on(
     expected
 }
 
-fn compare(label: &str, bytes: &[u8], start: &LongModeState, defined: u64, branch: bool) -> Run {
+pub(super) fn compare(
+    label: &str,
+    bytes: &[u8],
+    start: &LongModeState,
+    defined: u64,
+    branch: bool,
+) -> Run {
     compare_on(
         label,
         bytes,
@@ -126,7 +132,7 @@ fn compare(label: &str, bytes: &[u8], start: &LongModeState, defined: u64, branc
 }
 
 /// A short name of how a run ended, for the coverage counts.
-fn end_name(run: &Run) -> String {
+pub(super) fn end_name(run: &Run) -> String {
     match &run.end {
         End::Retired => "retired".to_owned(),
         End::Fault(fault) => format!("fault {}", fault.vector),
@@ -936,11 +942,11 @@ fn the_step_takes_g5_forms_with_the_flag_and_the_run_is_unchanged() {
     // 0x1b pop r9w                  66 41 59
     // 0x1e ret 0                    c2 00 00
     // 0x21 pop rdx                  5a
-    // 0x22 nop                      90
+    // 0x22 pause                    f3 90 (outside the fast path; a NOP is G6 since PERF-33, E4)
     let program = [
         0x50, 0x53, 0x48, 0x01, 0x04, 0x24, 0x59, 0x48, 0x3b, 0x0c, 0x24, 0xe8, 0x02, 0x00, 0x00,
         0x00, 0xeb, 0x0f, 0x48, 0x83, 0x44, 0x24, 0x08, 0x07, 0x66, 0x41, 0x51, 0x66, 0x41, 0x59,
-        0xc2, 0x00, 0x00, 0x5a, 0x90,
+        0xc2, 0x00, 0x00, 0x5a, 0xf3, 0x90,
     ];
     let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
     let run_set = |set: &Cpl0ProfileSet<'_>, seed: u64| {
@@ -989,7 +995,7 @@ fn the_step_takes_g5_forms_with_the_flag_and_the_run_is_unchanged() {
         assert_eq!(methods, [W, W, R, W, R, R, W, R, W, W, R, R, R]);
         assert_eq!(taken_off, 0);
         if fast_path_check::FAST_STEPS_COUNTED {
-            // Everything but the final NOP.
+            // Everything but the final PAUSE.
             assert_eq!(taken_on, 12, "seed {seed}");
         }
     }

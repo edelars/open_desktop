@@ -271,15 +271,15 @@ fn the_block_role_matches_the_fast_path_on_every_generated_decode() {
             assert_not_handled(label, &bytes, &fast, refused);
         }
     }
-    // The generated set reaches every group: thousands of decodes, both roles, the twelve
-    // operation classes of G1-G5, and the prefixed control transfers the rule admits by design.
+    // The generated set reaches every group: thousands of decodes, both roles, the fifteen
+    // operation classes of G1-G6, and the prefixed control transfers the rule admits by design.
     assert!(decodes > 10_000, "{decodes}");
     assert!(
         straight > 1_000 && terminator > 10,
         "{straight} {terminator}"
     );
     assert!(role_only > 0, "{decodes} decodes");
-    assert_eq!(handled_operations.len(), 12, "{decodes} decodes");
+    assert_eq!(handled_operations.len(), 15, "{decodes} decodes");
 }
 
 /// Known encodings: their role (`None`: the block ends before them) and whether the fast path
@@ -316,6 +316,17 @@ fn the_block_role_and_the_fast_path_on_known_forms() {
         (&[0x67, 0xe8, 0, 0, 0, 0], Some(Terminator), false), // a32 call rel32
         (&[0x66, 0xeb, 0xfe], Some(Terminator), false), // o16 jmp -2
         (&[0x67, 0x75, 0xfe], Some(Terminator), false), // a32 jnz -2
+        // PERF-33 (E4), group G6.
+        (&[0x48, 0x0f, 0xaf, 0xc1], Some(Straight), true), // imul rax, rcx
+        (&[0x0f, 0xaf, 0x00], Some(Straight), true),       // imul eax, [rax]
+        (&[0x90], Some(Straight), true),                   // nop
+        (&[0x66, 0x90], Some(Straight), true),             // o16 nop
+        (&[0x0f, 0x1f, 0x44, 0x00, 0x00], Some(Straight), true), // nop dword [rax+rax]
+        (&[0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00], Some(Straight), true), // nop word [rax+rax]
+        (&[0x0f, 0x18, 0x08], Some(Straight), true),       // prefetcht0 [rax]
+        (&[0x64, 0x0f, 0x1f, 0x00], None, false),          // nop dword fs:[rax]
+        (&[0xf3, 0x90], None, false),                      // pause
+        (&[0x6b, 0xc1, 0x05], None, false),                // imul eax, ecx, 5
     ];
     // Prefixed near branches the decoder itself refuses (`Unsupported`): they never reach the
     // rule. A decoder that learns one of them must add it to the table above.

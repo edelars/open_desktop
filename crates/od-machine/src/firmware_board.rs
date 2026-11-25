@@ -9313,14 +9313,15 @@ mod tests {
 
     /// PERF-22: the fast-path check in the unified loop (ADR-0017, section 5) changes nothing a run
     /// does (retired, quanta, exit, state) and finds no divergence with the fast path of the
-    /// tree (it takes PUSH, POP and CALL and refuses the NOP) nor with the general path as its own fast path (every
+    /// tree (it takes PUSH, POP and CALL and refuses the PAUSE; a NOP is group G6 since PERF-33, E4)
+    /// nor with the general path as its own fast path (every
     /// instruction compared, the memory calls of the board adapter recorded and replayed).
     #[test]
     fn a_fast_path_check_leaves_the_unified_run_unchanged_and_finds_no_divergence() {
         use od_isa::fast_path_check::{self, FastPathMode};
         let mut image = minor2_image(&vec![0x90u8; 0x80]);
-        // nop; push rax; pop rcx; call +0; pop rdx; hlt
-        image[0x40..0x4a].copy_from_slice(&[0x90, 0x50, 0x59, 0xE8, 0, 0, 0, 0, 0x5A, 0xF4]);
+        // pause; push rax; pop rcx; call +0; pop rdx; hlt
+        image[0x40..0x4b].copy_from_slice(&[0xF3, 0x90, 0x50, 0x59, 0xE8, 0, 0, 0, 0, 0x5A, 0xF4]);
         seal(&mut image);
         let mut plain = load_firmware_image(&image, &linux_config()).unwrap();
         let without = crate::run_firmware_unified(&mut plain, 1_000).unwrap();
@@ -9350,7 +9351,7 @@ mod tests {
             let steps = report.counters.compared + report.counters.refused_by_admission;
             assert!(steps >= with.run.retired, "{mode:?} {report:?}");
             match mode {
-                // PERF-25: PUSH, POP, CALL and POP are group G5 of the tree; the NOP is refused.
+                // PERF-25: PUSH, POP, CALL and POP are group G5 of the tree; the PAUSE is refused.
                 FastPathMode::Tree => assert_eq!(report.counters.compared, 4, "{report:?}"),
                 _ => assert_eq!(report.counters.refused_by_admission, 0),
             }
