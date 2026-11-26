@@ -2,9 +2,10 @@
 //!
 //! The reference tables were assembled field by field from the ACPI FADT/FACS layouts (offsets in
 //! the comments of `reference_fadt`) and written out by a separate Python script that shares no
-//! code with the serializer; the checksum 0x69 was also summed by hand (sum of all other bytes =
-//! 3223 = 0xC97 -> 0x97, and 0x100 - 0x97 = 0x69). Offsets are used as literals here, not
-//! through the constants of the serializer.
+//! code with the serializer; the checksum 0x62 was also summed by hand (sum of all other bytes =
+//! 3230 = 0xC9E -> 0x9E, and 0x100 - 0x9E = 0x62). Offsets are used as literals here, not
+//! through the constants of the serializer. S7-32 slice L (ISSUE-698) set the access sizes of the
+//! three `X_` PM GAS (word, word, dword); before it they were 0 and the checksum was 0x69.
 
 use super::*;
 use crate::acpi::blob::{ACPI_REGION_BASE, STAGE4_BLOB_CAPACITY, STAGE4_DEVICES, build_blob};
@@ -77,7 +78,7 @@ fn fix_checksum(table: &mut [u8]) {
 }
 
 /// FADT revision 6 for the board, 276 bytes. Offsets: header 0..36 (signature `FACP`, Length
-/// 0x114, Revision 6, checksum 0x69, OEM ID `OPNDSK`, OEM table ID `ODFWFACP`, OEM rev 1,
+/// 0x114, Revision 6, checksum 0x62, OEM ID `OPNDSK`, OEM table ID `ODFWFACP`, OEM rev 1,
 /// creator `ODFW`, creator rev 1); 36 FIRMWARE_CTRL 0xE_F000; 40 DSDT 0xE_0040; 44 INT_MODEL 0;
 /// 45 Preferred_PM_Profile 1; 46 SCI_INT 9; 48..56 SMI_CMD, ACPI_ENABLE/DISABLE, S4BIOS_REQ,
 /// PSTATE_CNT 0; 56 PM1a_EVT_BLK 0x600; 60 PM1b_EVT 0; 64 PM1a_CNT 0x604; 68 PM1b_CNT 0; 72 PM2_CNT
@@ -87,11 +88,11 @@ fn fix_checksum(table: &mut [u8]) {
 /// CMOS_RTC_NOT_PRESENT bit 5); 111 reserved; 112 Flags 0x471 (bits 0, 4, 5, 6, 10); 116 RESET_REG
 /// (SystemIO 1, width 8, offset 0, access byte 1, address 0x60C); 128 RESET_VALUE 6; 129
 /// ARM_BOOT_ARCH 0; 131 minor version 5; 132 X_FIRMWARE_CTRL; 140 X_DSDT; 148 X_PM1a_EVT_BLK (1,
-/// 32, 0, 0, 0x600); 160 X_PM1b_EVT 0; 172 X_PM1a_CNT_BLK (1, 16, 0, 0, 0x604); 184/196 X_PM1b_CNT,
-/// X_PM2_CNT 0; 208 X_PM_TMR_BLK (1, 32, 0, 0, 0x608); 220..276 GPE, sleep registers and the
-/// hypervisor vendor identity 0.
+/// 32, 0, access word 2, 0x600); 160 X_PM1b_EVT 0; 172 X_PM1a_CNT_BLK (1, 16, 0, access word 2,
+/// 0x604); 184/196 X_PM1b_CNT, X_PM2_CNT 0; 208 X_PM_TMR_BLK (1, 32, 0, access dword 3, 0x608);
+/// 220..276 GPE, sleep registers and the hypervisor vendor identity 0.
 fn reference_fadt() -> Vec<u8> {
-    hex("46 41 43 50 14 01 00 00 06 69 4F 50 4E 44 53 4B \
+    hex("46 41 43 50 14 01 00 00 06 62 4F 50 4E 44 53 4B \
          4F 44 46 57 46 41 43 50 01 00 00 00 4F 44 46 57 \
          01 00 00 00 00 F0 0E 00 40 00 0E 00 00 01 09 00 \
          00 00 00 00 00 00 00 00 00 06 00 00 00 00 00 00 \
@@ -100,11 +101,11 @@ fn reference_fadt() -> Vec<u8> {
          FF 0F FF 0F 00 00 00 00 00 00 00 00 00 24 00 00 \
          71 04 00 00 01 08 00 01 0C 06 00 00 00 00 00 00 \
          06 00 00 05 00 F0 0E 00 00 00 00 00 40 00 0E 00 \
-         00 00 00 00 01 20 00 00 00 06 00 00 00 00 00 00 \
-         00 00 00 00 00 00 00 00 00 00 00 00 01 10 00 00 \
+         00 00 00 00 01 20 00 02 00 06 00 00 00 00 00 00 \
+         00 00 00 00 00 00 00 00 00 00 00 00 01 10 00 02 \
          04 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
-         01 20 00 00 08 06 00 00 00 00 00 00 00 00 00 00 \
+         01 20 00 03 08 06 00 00 00 00 00 00 00 00 00 00 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
@@ -125,7 +126,7 @@ fn fadt_matches_the_hand_assembled_reference() {
     assert_eq!(table, reference_fadt());
     assert_eq!(table.len(), 276);
     assert_eq!(&table[4..8], &276u32.to_le_bytes());
-    assert_eq!(table[9], 0x69);
+    assert_eq!(table[9], 0x62);
     assert_eq!(table.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
 }
 
@@ -180,12 +181,19 @@ fn fadt_fields_equal_the_pm_descriptor_and_the_decisions() {
     assert_eq!(le64(&t, 140), 0xE_0040);
     assert_eq!(le32(&t, 36) as u64, le64(&t, 132));
     assert_eq!(le32(&t, 40) as u64, le64(&t, 140));
-    assert_eq!(&t[148..152], &[1, 32, 0, 0][..]);
+    // SystemIO, bit width, offset 0 and the access size of one register (ISSUE-698): PM1_STS and
+    // PM1_EN are words, PM1_CNT a word, the PM timer a dword (GAS Table 5.1: 2 word, 3 dword).
+    assert_eq!(&t[148..152], &[1, 32, 0, 2][..]);
     assert_eq!(le64(&t, 152), 0x600);
-    assert_eq!(&t[172..176], &[1, 16, 0, 0][..]);
+    assert_eq!(&t[172..176], &[1, 16, 0, 2][..]);
     assert_eq!(le64(&t, 176), 0x604);
-    assert_eq!(&t[208..212], &[1, 32, 0, 0][..]);
+    assert_eq!(&t[208..212], &[1, 32, 0, 3][..]);
     assert_eq!(le64(&t, 212), 0x608);
+    // Every other GAS of the table is the null GAS (all 12 bytes zero): X_PM1b_EVT, X_PM1b_CNT,
+    // X_PM2_CNT, X_GPE0, X_GPE1, SLEEP_CONTROL_REG, SLEEP_STATUS_REG.
+    for at in [160, 184, 196, 220, 232, 244, 256] {
+        assert!(t[at..at + 12].iter().all(|&b| b == 0), "GAS at {at}");
+    }
     // Header identification and revision.
     assert_eq!(&t[0..4], b"FACP");
     assert_eq!(t[8], 6);
@@ -335,6 +343,23 @@ fn fadt_validation_accepts_the_result_and_reports_each_defect() {
         mutate(209, 24),
         Err(FadtError::BadField("PM_TMR_BLK / X_PM_TMR_BLK"))
     );
+    // Access size of each extended PM register (ISSUE-698): every value of 0..=4 but the
+    // register's own (word 2, word 2, dword 3) is rejected, among them 0 (undefined, which the
+    // Windows HAL takes for one byte) and 2 for the PM timer (the HAL needs 4 bytes).
+    for (at, field, own) in [
+        (151, "PM1a_EVT_BLK / X_PM1a_EVT_BLK", 2),
+        (175, "PM1a_CNT_BLK / X_PM1a_CNT_BLK", 2),
+        (211, "PM_TMR_BLK / X_PM_TMR_BLK", 3),
+    ] {
+        for access in (0..=4).filter(|&access| access != own) {
+            assert_eq!(
+                mutate(at, access),
+                Err(FadtError::BadField(field)),
+                "{at}: {access}"
+            );
+        }
+        assert_eq!(mutate(at, own), Ok(()), "{at}");
+    }
     assert_eq!(mutate(116, 0), Err(FadtError::BadField("RESET_REG")));
 }
 

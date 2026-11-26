@@ -74,7 +74,7 @@
       "fv_app": "acpi",
       "fixture": "acpi_com1.txt",
       "fixture_sha256": "4f1fa9b586a7a5a4fd6306624430bda602f1bc4b5c5da585328d7b98b80d162d",
-      "acpi_blob_sha256": "640786919725fe3f8188fb58083b4188a0c9bca348be7ec64b1faf8a9c1d1f01",
+      "acpi_blob_sha256": "3c1a323131c814909f7dfcfe5a9633f8b96dee6800de1b0081f11d3ba740a862",
       "repetitions": 5,
       "returncode": 6,
       "status": "firmware_stop",
@@ -172,7 +172,7 @@
         "code": "0x21",
         "detail": "0x0000000000000000"
       },
-      "instruction_budget": 18000000,
+      "instruction_budget": 8500000,
       "max_quanta": 5000,
       "nvme_image_sha256": "fc96c4644e6bf1a0783b2718f19966ddfc1d148aac982af6d1bb51cc58af20e0"
     }

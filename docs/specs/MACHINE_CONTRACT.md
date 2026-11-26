@@ -3795,6 +3795,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 | `PM_TMR_BLK` / `PM_TMR_LEN` | `0x0608` / 4; флаг `TMR_VAL_EXT = 0` (24-битный счётчик) |
 | `RESET_REG` | SystemIO (address space id 1), `register_bit_width = 8`, `bit_offset = 0`, access size byte, адрес `0x060C`; флаг `RESET_REG_SUP = 1` |
 | `RESET_VALUE` | `0x06` |
+| `X_PM1a_EVT_BLK`, `X_PM1a_CNT_BLK`, `X_PM_TMR_BLK` | те же блоки как SystemIO GAS (ширина 32/16/32 бита, смещение 0) с AccessSize 2 (слово), 2 (слово), 3 (двойное слово) — ширины целого регистра, которые принимает устройство (S7-32, срез L, [ISSUE-698](../KNOWN_ISSUES.md#issue-698); до среза — AccessSize 0) |
 | `\_S5` `SLP_TYP` | `5` (`ACPI_SLP_TYP_S5`; пакет `\_S5` составит S4-31) |
 
 **Регистры.** Доступ — только `IoSpace::Pio`, ширина 1/2/4 (Qword — `UnsupportedWidth`), естественное выравнивание (`Misaligned`), доступ не выходит за один регистр (`CrossesRegister`, в частности 32-битный доступ к `PM1_STS`+`PM1_EN` отвергается), промежутки блока (`0x606`, `0x607`, `0x60D..0x60F`) — `UnknownOffset`; все проверки до изменения состояния.

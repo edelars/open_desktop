@@ -6,7 +6,7 @@ section of the freestanding `od-acpi-blob` binary (`firmware/uefi`, target
 `x86_64-unknown-none`), cut out by `tools/build/build_stage4_acpi_blob.py`. Format:
 `firmware/uefi/src/acpi/blob.rs`.
 
-Current fixture SHA-256: `1070016a0350872a4eff3ac78cb327ee0942ca189f615953cd978b6aa8f0dc29`. The
+Current fixture SHA-256: `5ce8f02c46004d0457edd1c22225c8944fe2c0946c5c1e6b8822dec72717f386`. The
 2026-11-08 [S4-31g evidence record](../../../../../docs/reports/data/stage4/s4-31g-full-blob.json)
 preserves the earlier 1072-byte pre-CPU0 blob; the current 1104-byte replacement is documented
 in the [S4-31b CPU namespace follow-up](../../../../../docs/reports/STAGE_4_S4-31B_2026-11-08.md).
@@ -28,3 +28,8 @@ cp work/stage4/acpi_blob/stage4_acpi_blob.bin tests/fixtures/guest/stage4/acpi_b
 ```
 
 S7-13 updates the FADT minor version, WBINVD bit and corresponding checksum.
+
+S7-32 slice L (ISSUE-698) sets the access sizes of the FADT `X_PM1a_EVT_BLK`, `X_PM1a_CNT_BLK`
+(word) and `X_PM_TMR_BLK` (dword); four FADT bytes change: the three access sizes and the
+checksum (0x69 -> 0x62 in this blob, a board without RTC). The previous fixture SHA-256 was
+`1070016a0350872a4eff3ac78cb327ee0942ca189f615953cd978b6aa8f0dc29`.

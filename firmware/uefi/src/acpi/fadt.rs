@@ -15,6 +15,15 @@
 //! `PM1a_EVT_BLK`/`PM1a_CNT_BLK`/`PM_TMR_BLK` and `RESET_REG`/`RESET_VALUE` come from the PM
 //! entry; the 64-bit `X_*` copies equal the 32-bit fields (ACPICA converts a legacy field to the
 //! `X_` one the same way, `tbfadt.c`, and a mismatch would be reported by it).
+//!
+//! Access sizes of the `X_` GAS (S7-32 slice L, ISSUE-698): §5.2.3.2 Table 5.1 (GAS) gives the
+//! access size of a register (1 byte, 2 word, 3 dword; 0 "undefined" for legacy reasons). The PM1
+//! event block holds two registers of one size, `PM1_STS` and `PM1_EN` (§4.8.1.1; length 4, so 16
+//! bits each), `PM1_CNT` is 16 bits (§4.8.1.2), the PM timer "is accessed as 32 bits" (§4.8.4.3);
+//! so: word, word and dword. These numbers and words were checked in ACPI 6.4 (Context7); the 6.6
+//! pages refused automated reading (HTTP 403). The board's PM block takes the same widths for a
+//! whole register (`od-machine` `acpi_pm.rs`). The Windows HAL (FADT revision >= 5) reads these
+//! GAS and takes access size 0 for one byte: with 0 it stops with bugcheck 0x5C.
 
 use super::bytes::{bytes_eq, copy_at, fill_range, head_mut, sub, tri};
 use super::manifest::{AcpiPmEntry, PM_TMR_LEN, PM1_CNT_LEN, PM1_EVT_LEN, RESET_REG_LEN};
@@ -64,8 +73,15 @@ pub const CMOS_CENTURY_REGISTER: u8 = 0x32;
 
 /// Generic Address Structure (Table 5.1): address space ids and access sizes used here.
 const GAS_SYSTEM_IO: u8 = 1;
-const GAS_ACCESS_UNDEFINED: u8 = 0;
 const GAS_ACCESS_BYTE: u8 = 1;
+const GAS_ACCESS_WORD: u8 = 2;
+const GAS_ACCESS_DWORD: u8 = 3;
+/// Access size of `X_PM1a_EVT_BLK`: each of `PM1_STS` and `PM1_EN` is one 16-bit access.
+const PM1_EVT_ACCESS: u8 = GAS_ACCESS_WORD;
+/// Access size of `X_PM1a_CNT_BLK` (`PM1_CNT`, 16 bits).
+const PM1_CNT_ACCESS: u8 = GAS_ACCESS_WORD;
+/// Access size of `X_PM_TMR_BLK` (the PM timer, read as 32 bits).
+const PM_TMR_ACCESS: u8 = GAS_ACCESS_DWORD;
 
 /// Field offsets of the revision-6 FADT.
 mod at {
@@ -237,21 +253,21 @@ pub const fn build_fadt_with_rtc(
         table,
         at::X_PM1A_EVT_BLK,
         (PM1_EVT_LEN * 8) as u8,
-        GAS_ACCESS_UNDEFINED,
+        PM1_EVT_ACCESS,
         evt as u64,
     );
     write_gas(
         table,
         at::X_PM1A_CNT_BLK,
         (PM1_CNT_LEN * 8) as u8,
-        GAS_ACCESS_UNDEFINED,
+        PM1_CNT_ACCESS,
         cnt as u64,
     );
     write_gas(
         table,
         at::X_PM_TMR_BLK,
         (PM_TMR_LEN * 8) as u8,
-        GAS_ACCESS_UNDEFINED,
+        PM_TMR_ACCESS,
         tmr as u64,
     );
     // X_PM1b_*, X_PM2_CNT_BLK, X_GPE0/1_BLK, SLEEP_CONTROL/STATUS_REG and the hypervisor vendor
@@ -294,7 +310,8 @@ const fn le16(table: &[u8], at: usize) -> u16 {
 
 /// Checks signature, `Length` (exactly 276), checksum, revision 6 and the internal rules of
 /// this board's FADT: `HW_REDUCED_ACPI` clear, non-zero table addresses whose 32-bit and
-/// 64-bit forms agree, the PM registers equal to their `X_` twins and consistent reset fields.
+/// 64-bit forms agree, the PM registers equal to their `X_` twins (with the access size of each
+/// register) and consistent reset fields.
 pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
     tri!(validate_table(table, &FADT_SIGNATURE), FadtError::Table);
     if table.len() != FADT_LEN {
@@ -326,6 +343,7 @@ pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
         at::PM1_EVT_LEN,
         at::X_PM1A_EVT_BLK,
         PM1_EVT_LEN as u8,
+        PM1_EVT_ACCESS,
     ) {
         return Err(FadtError::BadField("PM1a_EVT_BLK / X_PM1a_EVT_BLK"));
     }
@@ -335,6 +353,7 @@ pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
         at::PM1_CNT_LEN,
         at::X_PM1A_CNT_BLK,
         PM1_CNT_LEN as u8,
+        PM1_CNT_ACCESS,
     ) {
         return Err(FadtError::BadField("PM1a_CNT_BLK / X_PM1a_CNT_BLK"));
     }
@@ -344,6 +363,7 @@ pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
         at::PM_TMR_LEN,
         at::X_PM_TMR_BLK,
         PM_TMR_LEN as u8,
+        PM_TMR_ACCESS,
     ) {
         return Err(FadtError::BadField("PM_TMR_BLK / X_PM_TMR_BLK"));
     }
@@ -373,13 +393,15 @@ pub const fn validate_fadt(table: &[u8]) -> Result<(), FadtError> {
 }
 
 /// A legacy PM block address, its length byte (at `length_at`) and the `X_` GAS must describe
-/// the same SystemIO register (a non-zero address, `bit_width = length * 8`).
+/// the same SystemIO register (a non-zero address, `bit_width = length * 8`, bit offset 0) with
+/// the access size of that register.
 const fn pm_twin(
     table: &[u8],
     legacy: usize,
     length_at: usize,
     extended: usize,
     length: u8,
+    access: u8,
 ) -> bool {
     let address = le32(table, legacy);
     address != 0
@@ -387,6 +409,7 @@ const fn pm_twin(
         && table[extended] == GAS_SYSTEM_IO
         && table[extended + 1] == length * 8
         && table[extended + 2] == 0
+        && table[extended + 3] == access
         && le64(table, extended + 4) == address as u64
 }
 

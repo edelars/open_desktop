@@ -426,3 +426,150 @@ fn sequential_reads_continue_the_chain_and_read_consecutive_clusters_at_once() {
         .unwrap();
     assert_eq!(&head, &whole[..16]);
 }
+
+/// Records the offset and length of every read that reaches the device.
+struct Recording<'a> {
+    disk: &'a mut SparseDisk,
+    reads: std::vec::Vec<(u64, usize)>,
+}
+
+impl ReadAt for Recording<'_> {
+    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Status> {
+        self.reads.push((offset, out.len()));
+        self.disk.read_at(offset, out)
+    }
+}
+
+/// ISSUE-697: free space of FAT16 and FAT32 is counted a whole 512-byte window at a time. The
+/// result equals an independent decode of every data-cluster entry (FAT32 with the reserved high
+/// nibble masked off), the reserved entries 0 and 1 and the zero bytes after the last data
+/// cluster are not counted, and the FAT is read once, in aligned windows, the last one ending at
+/// the last entry (a full window when the entries end on a window boundary).
+#[test]
+fn free_space_of_fat16_and_fat32_is_counted_by_whole_windows() {
+    // (data clusters, bits): partial last windows (5000, 70 000) and entries that end exactly on
+    // a window boundary (4094 * 2 + 4 = 16 * 512, (65 534 + 2) * 4 = 512 * 512).
+    for (count, bits) in [
+        (4085, 16),
+        (4094, 16),
+        (5000, 16),
+        (65534, 32),
+        (70_000, 32),
+    ] {
+        let (bpb, len) = fixture(count, bits);
+        let layout = Geometry::parse(&bpb, len).unwrap();
+        let size = (bits / 8) as usize;
+        let entries = (count + 2) as usize;
+        let mut fat = std::vec![0u8; layout.fat_bytes as usize];
+        let mut state = 0x2545_f491u32 ^ count;
+        let mut expected = 0u64;
+        for cluster in 2..entries {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let value = match state >> 28 {
+                0..=3 => 0,
+                4 => 0x1000_0000, // FAT32: free, only the reserved nibble is set.
+                5 => 0xf000_0000,
+                6 => 1,
+                7 => 0x0fff_fff7,
+                8 => 0x0fff_ffff,
+                // Used entries whose low bits are zero: a mask narrower than the type's (FAT32
+                // 0x0000_ffff or 0x00ff_ffff, FAT16 0x0fff or 0x00ff) would count them as free.
+                // In a FAT16 table 0x0001_0000..0x0800_0000 are free (their low word is zero).
+                9 => 0x0001_0000,
+                10 => 0x0080_0000,
+                11 => 0x0800_0000,
+                12 => 0x1000,
+                13 => 0x8000,
+                _ => state & 0x0fff_ffff | 2,
+            };
+            let at = cluster * size;
+            fat[at..at + size].copy_from_slice(&value.to_le_bytes()[..size]);
+            let decoded = if bits == 32 {
+                value & 0x0fff_ffff
+            } else {
+                value & 0xffff
+            };
+            if decoded == 0 {
+                expected += 1;
+            }
+        }
+        // Entries 0 and 1 stay zero and the FAT sector tail after the last entry is zero: neither
+        // may be counted.
+        assert!(fat[..2 * size].iter().all(|&b| b == 0));
+        assert!(fat[entries * size..].iter().all(|&b| b == 0));
+        let mut disk = SparseDisk {
+            len,
+            regions: std::vec::Vec::new(),
+        };
+        disk.put(0, &bpb);
+        disk.put(layout.fat_base, &fat);
+        let volume = Volume::mount(&mut disk, len).unwrap();
+        let mut recording = Recording {
+            disk: &mut disk,
+            reads: std::vec::Vec::new(),
+        };
+        assert_eq!(
+            volume.free_bytes(&mut recording),
+            Ok(expected * 512),
+            "{bits}-bit FAT with {count} clusters"
+        );
+        let end = (entries * size) as u64;
+        let windows = end.div_ceil(512);
+        assert_eq!(recording.reads.len() as u64, windows, "{count}");
+        for (index, &(offset, length)) in recording.reads.iter().enumerate() {
+            let at = index as u64 * 512;
+            assert_eq!(offset, layout.fat_base + at);
+            assert_eq!(
+                length as u64,
+                512.min(end - at),
+                "window {index} of {count}"
+            );
+        }
+    }
+}
+
+/// Fails the `fail_at`-th read (counted from 1) with `DEVICE_ERROR`.
+struct FailingRead<'a> {
+    disk: &'a mut SparseDisk,
+    reads: usize,
+    fail_at: usize,
+}
+
+impl ReadAt for FailingRead<'_> {
+    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Status> {
+        self.reads += 1;
+        if self.reads == self.fail_at {
+            return Err(Status::DEVICE_ERROR);
+        }
+        self.disk.read_at(offset, out)
+    }
+}
+
+/// ISSUE-697: a failed read of any FAT window (the first, a middle and the last one) ends the
+/// free-space count with that error instead of counting a stale or empty window.
+#[test]
+fn free_space_count_returns_the_error_of_a_failed_window_read() {
+    for (count, bits) in [(5000, 16), (70_000, 32)] {
+        let (bpb, len) = fixture(count, bits);
+        let mut disk = SparseDisk {
+            len,
+            regions: std::vec::Vec::new(),
+        };
+        disk.put(0, &bpb);
+        let volume = Volume::mount(&mut disk, len).unwrap();
+        let windows = (u64::from(count + 2) * u64::from(bits / 8)).div_ceil(512) as usize;
+        for fail_at in [1, 2, windows / 2, windows] {
+            let mut failing = FailingRead {
+                disk: &mut disk,
+                reads: 0,
+                fail_at,
+            };
+            assert_eq!(
+                volume.free_bytes(&mut failing),
+                Err(Status::DEVICE_ERROR),
+                "{bits}-bit FAT, read {fail_at} of {windows}"
+            );
+            assert_eq!(failing.reads, fail_at, "no read after the failed one");
+        }
+    }
+}

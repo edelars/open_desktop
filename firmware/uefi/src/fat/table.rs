@@ -102,18 +102,64 @@ fn entry_value(format: FatType, cluster: u32, bytes: [u8; 4]) -> u32 {
 }
 
 impl Volume {
+    /// Bytes of the data clusters whose FAT entry is free (zero).
     pub(crate) fn free_bytes(&self, source: &mut impl ReadAt) -> Result<u64, Status> {
         let geometry = self.geometry;
-        let last = geometry.cluster_count + 2;
-        let mut free = 0u64;
-        let mut window = FatWindow::new();
-        for cluster in 2..last {
-            if window.entry(geometry, source, cluster)? == 0 {
+        let free = match geometry.fat_type {
+            // Packed 12-bit entries can cross a window; a FAT12 volume has at most 4 084 data
+            // clusters, so the entry-by-entry path costs little.
+            FatType::Fat12 => {
+                let mut free = 0u64;
+                let mut window = FatWindow::new();
+                for cluster in 2..geometry.cluster_count + 2 {
+                    if window.entry(geometry, source, cluster)? == 0 {
+                        free += 1;
+                    }
+                }
+                free
+            }
+            FatType::Fat16 => free_entries::<2>(geometry, source, 0xffff)?,
+            FatType::Fat32 => free_entries::<4>(geometry, source, 0x0fff_ffff)?,
+        };
+        Ok(free * u64::from(geometry.cluster_bytes))
+    }
+}
+
+/// Counts the free entries of the data clusters `2..cluster_count + 2` of a FAT16 (`SIZE` 2) or
+/// FAT32 (`SIZE` 4) table a whole window at a time (ISSUE-697). `mask` keeps the bits
+/// [`entry_value`] keeps for that type (FAT32: the low 28 bits). The table is read in aligned
+/// 512-byte windows (the last one ends with the last entry); an entry of 2 or 4 bytes never
+/// crosses a window, so the entries of a window are compared in place, without a bounds check or
+/// a call per entry. The two reserved entries 0 and 1 and the bytes past the last data cluster
+/// (the rest of the last FAT sector) are not counted.
+fn free_entries<const SIZE: usize>(
+    geometry: Geometry,
+    source: &mut impl ReadAt,
+    mask: u32,
+) -> Result<u64, Status> {
+    let end = (u64::from(geometry.cluster_count) + 2) * SIZE as u64;
+    if end > geometry.fat_bytes {
+        return Err(Status::VOLUME_CORRUPTED);
+    }
+    let mut bytes = [0; WINDOW];
+    let mut free = 0u64;
+    let mut at = 0u64;
+    // Entries 0 and 1 are the first `2 * SIZE` bytes of the first window.
+    let mut first = 2 * SIZE;
+    while at < end {
+        let length = WINDOW.min((end - at) as usize);
+        source.read_at(geometry.fat_base + at, &mut bytes[..length])?;
+        for entry in bytes[first..length].chunks_exact(SIZE) {
+            let mut word = [0; 4];
+            word[..SIZE].copy_from_slice(entry);
+            if u32::from_le_bytes(word) & mask == 0 {
                 free += 1;
             }
         }
-        Ok(free * u64::from(geometry.cluster_bytes))
+        first = 0;
+        at += WINDOW as u64;
     }
+    Ok(free)
 }
 
 /// Brent cycle detection plus a hard bound from the volume's data-cluster count.

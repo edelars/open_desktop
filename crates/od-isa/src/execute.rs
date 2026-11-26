@@ -21256,7 +21256,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     kind: LogicKind::Or,
                     ..
                 } => {
-                    // File metadata and path parsing combine word comparisons.
+                    // File metadata and path parsing combine word comparisons. S7-32 slice L:
+                    // `66 [REX] 09 /r` and `66 [REX] 0B /r` with two registers (OR r16, r16;
+                    // Intel SDM Vol. 2) for every register pair, like the dword and qword forms
+                    // above. Which registers the compiler gives a GUID or path comparison follows
+                    // the register allocation of the whole function (`get_info` changed it when
+                    // the FAT free-space scan was inlined); a list of exact pairs broke on that.
+                    // The two encodings are the same operation in either direction; here both
+                    // have a register source (the word OR with a memory source is the arm
+                    // above). Immediate word forms (`66 0D`, `66 81 /1`, `66 83 /1`) stay out.
                     matches!(
                         (instruction.opcode.byte, instruction.operand_size),
                         (0x08 | 0x0a | 0x80, OperandSize::Byte)
@@ -21264,26 +21272,8 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                                 0x09 | 0x0b | 0x0d | 0x81 | 0x83,
                                 OperandSize::Dword | OperandSize::Qword
                             )
-                    ) || (instruction.opcode.byte == 0x09
-                        && instruction.operand_size == OperandSize::Word
-                        && match (instruction.prefixes.rex, source) {
-                            (Some(0x44), Operand::Register(src)) => {
-                                destination == RegisterView::low(Register::Rsi, OperandSize::Word)
-                                    && (src == RegisterView::low(Register::R11, OperandSize::Word)
-                                        || src
-                                            == RegisterView::low(Register::R10, OperandSize::Word))
-                            }
-                            (Some(0x45), Operand::Register(src)) => {
-                                (destination == RegisterView::low(Register::R15, OperandSize::Word)
-                                    && src == RegisterView::low(Register::R14, OperandSize::Word))
-                                    || (instruction.length == 4
-                                        && destination
-                                            == RegisterView::low(Register::R12, OperandSize::Word)
-                                        && src
-                                            == RegisterView::low(Register::R15, OperandSize::Word))
-                            }
-                            _ => false,
-                        })
+                            | (0x09 | 0x0b, OperandSize::Word)
+                    )
                 }
                 Operation::Arithmetic {
                     kind: ArithmeticKind::Add,
@@ -21880,11 +21870,15 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 // structure fields, whose displacement and constant follow its code and data
                 // layout (FAT directory cursor, SHA-384 block count, LoadImage regions, the
                 // default-variable iterator); a list of exact tuples broke on each such change.
+                // S7-32 slice L: the same three operations with `81 /0, /2, /5 id` (imm32,
+                // sign-extended to 64 bits with REX.W). The encoding follows only the constant:
+                // the FAT free-space scan steps its window counter by -0x200, which does not fit
+                // an imm8. Word (`66`) and byte (`80`) widths and the other selectors stay out.
                 (
                     ArithmeticKind::Add | ArithmeticKind::Adc | ArithmeticKind::Sub,
                     Operand::Immediate(_),
                     OperandSize::Dword | OperandSize::Qword,
-                ) => instruction.opcode.byte == 0x83,
+                ) => matches!(instruction.opcode.byte, 0x81 | 0x83),
                 (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
                     instruction.opcode.byte == 0x29
                 }

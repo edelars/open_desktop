@@ -1,0 +1,21 @@
+step                          exit  seconds  key line
+build-runner                  0     0        Finished `release` profile [optimized] target(s) in 0.10s
+build-rom-stock               0     12       sha256: 5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665
+build-rom-test-apps           0     20       sha256: 4e07d9cb91af0600aa7692bfb6056d09bdf0cbc2e7d88c52dc1e456548c3952d
+firmware_boot_smoke           0     184      sha256: 3c1a323131c814909f7dfcfe5a9633f8b96dee6800de1b0081f11d3ba740a862
+firmware_esp_boot_smoke       0     28       sha256: 5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665
+firmware_nvram_smoke          0     29       sha256: 4e07d9cb91af0600aa7692bfb6056d09bdf0cbc2e7d88c52dc1e456548c3952d
+firmware_failure_smoke        0     380      cargo test: 3 passed; 0 failed; 0 ignored (3 result lines)
+firmware_install_media_smoke  0     176      sha256: 5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665
+firmware_pkcs7_smoke          0     11       pkcs7: 5182466 instructions, 3328 quanta
+firmware_secure_boot_smoke    0     130      sha256: 5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665
+firmware_tpm_smoke            0     328      tpm-esp: 368205964 instructions, 4453 quanta
+firmware_xhci_smoke           0     125      firmware xhci smoke passed (image sha256 4e07d9cb91af0600aa7692bfb6056d09bdf0cbc2e7d88c52dc1e456548c3952d)
+firmware_reset_smoke          0     804      sha256: 0c3a4142285d93b6d43b43e21e666ecc57d3f1655924f5d08485453ec02c9ecb
+host-tests-firmware-uefi      0     3        cargo test: 410 passed; 0 failed; 0 ignored (2 result lines)
+ignored-tpm-startup-failure   0     8        cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+ignored-secure-boot-pcr7      0     192      cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+python-selftests              0     60       OK
+
+total 2489 s; 17 of 17 steps passed
+logs: /private/tmp/claude-501/-Users-senya-projects-open-desktop/e8bc49fe-bee7-4ac7-b6cd-33b2e0c2cd2a/scratchpad/fca2/logs

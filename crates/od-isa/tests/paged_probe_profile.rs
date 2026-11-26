@@ -57102,6 +57102,141 @@ fn firmware_boot_word_or_combines_file_metadata_and_path_comparisons() {
     }
 }
 
+/// S7-32 slice L: `66 [REX] 09 /r` and `66 [REX] 0B /r` with two registers (OR r16, r16) for every
+/// register pair, with and without a REX prefix where the registers allow it. The result is the
+/// OR of the low words with the upper 48 bits of the destination kept; CF and OF clear, SF, ZF
+/// and PF from the result (Intel SDM Vol. 2, OR), AF undefined and unchanged; no memory access.
+#[test]
+fn firmware_boot_word_or_registers_for_every_register_pair() {
+    let patterns = gpr_patterns();
+    let mut cases = 0;
+    for opcode in [0x09u8, 0x0b] {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                // `09 /r`: ModRM.rm is the destination; `0B /r`: ModRM.reg is.
+                let (reg, rm) = if opcode == 0x09 {
+                    (source, destination)
+                } else {
+                    (destination, source)
+                };
+                let rex = 0x40 | ((reg >> 3) << 2) | (rm >> 3);
+                let modrm = 0xc0 | ((reg & 7) << 3) | (rm & 7);
+                let mut encodings = vec![vec![0x66, rex, opcode, modrm]];
+                if rex == 0x40 {
+                    encodings.push(vec![0x66, opcode, modrm]);
+                }
+                for code in encodings {
+                    let mut memory = Memory::new(&code);
+                    let mut cpu = state();
+                    cpu.gpr = patterns;
+                    // Make some results zero, some negative, both parities.
+                    cpu.gpr[source as usize] &= !0xffff;
+                    cpu.gpr[source as usize] |= u64::from(source) * 0x1111 & 0x80ff;
+                    cpu.gpr[destination as usize] &= !0xffff;
+                    cpu.gpr[destination as usize] |= u64::from(destination) << 4;
+                    cpu.rflags = 0x602 | 0x8d5;
+                    let lhs = cpu.gpr[destination as usize];
+                    let rhs = cpu.gpr[source as usize];
+                    let word = (lhs | rhs) & 0xffff;
+                    let mut expected = cpu.clone();
+                    expected.gpr[destination as usize] = (lhs & !0xffff) | word;
+                    expected.rip += code.len() as u64;
+                    expected.rflags = (cpu.rflags & !0x8c5)
+                        | (u64::from((word as u8).count_ones() % 2 == 0) << 2)
+                        | (u64::from(word == 0) << 6)
+                        | (u64::from(word & 0x8000 != 0) << 7);
+                    let result = execute::step_paged_firmware_probe(
+                        PagedCpl0FirmwareBootV1,
+                        &mut cpu,
+                        &mut memory,
+                        &mut Pio::default(),
+                        ring0(),
+                        DEFINED | 0x10,
+                    );
+                    let label = format!("{code:02x?}");
+                    assert_eq!(result.exit, PagedProbeExit::Retired, "{label}");
+                    assert_eq!(result.instructions_executed, 1, "{label}");
+                    assert_eq!(result.rflags_defined, DEFINED, "{label}");
+                    assert_eq!(cpu, expected, "{label}");
+                    assert_eq!((memory.reads, memory.writes), (0, 0), "{label}");
+                    cases += 1;
+                }
+            }
+        }
+    }
+    // 2 opcodes x 256 pairs, plus the 64 pairs of the eight legacy registers without REX each.
+    assert_eq!(cases, 2 * (256 + 64));
+}
+
+/// The word OR family of S7-32 slice L stops at its edges: immediate word forms, other word
+/// operations, a memory destination outside the PE loader slot, byte and redundant-`66` qword
+/// forms, REP and address-size prefixes, and the base profile.
+#[test]
+fn firmware_boot_word_or_neighbors_stay_outside() {
+    let firmware_neighbors: [(&[u8], u8); 9] = [
+        (&[0x66, 0x0d, 0x34, 0x12], 0x0d),       // OR AX,imm16
+        (&[0x66, 0x83, 0xc8, 0x01], 0x83),       // OR AX,imm8
+        (&[0x66, 0x81, 0xc8, 0x34, 0x12], 0x81), // OR AX,imm16 (group 1)
+        (&[0x66, 0x31, 0xd8], 0x31),             // XOR AX,BX
+        (&[0x66, 0x21, 0xd8], 0x21),             // AND AX,BX
+        (&[0x66, 0x09, 0x18], 0x09),             // OR word [RAX],BX
+        (&[0x66, 0x08, 0xd8], 0x08),             // OR AL,BL with a redundant 66
+        (&[0xf3, 0x66, 0x09, 0xd8], 0x09),       // REP prefix
+        (&[0x67, 0x66, 0x09, 0xd8], 0x09),       // address-size prefix
+    ];
+    for (code, opcode) in firmware_neighbors {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr = gpr_patterns();
+        cpu.gpr[Register::Rax as usize] = DATA;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(cpu, before, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{code:02x?}");
+    }
+    // A REX.W with a redundant 66 is a qword OR whose prefix the profile does not take.
+    let code = [0x66, 0x4c, 0x09, 0xd8];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    let before = cpu.clone();
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x09 });
+    assert_eq!(cpu, before);
+    // The base profile keeps the word OR outside.
+    for code in [&[0x66, 0x45, 0x09, 0xd3][..], &[0x66, 0x0b, 0xc7][..]] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        let before = cpu.clone();
+        let opcode = code[code.len() - 2];
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(cpu, before);
+    }
+}
+
 #[test]
 fn firmware_boot_dword_imul_scales_nvme_ready_timeout() {
     let code = [0x69, 0xf6, 0x50, 0xc3, 0, 0]; // IMUL ESI,ESI,50000
@@ -57658,14 +57793,21 @@ fn firmware_boot_fat_directory_cursor_adds_commit_only_after_store() {
     }
 }
 
-/// Intel SDM Vol. 2, ADD/ADC/SUB: `83 /0`, `/2`, `/5` with the imm8 sign-extended to the operand
-/// width, written out independently of the CPU semantics. Returns the result and the six
-/// arithmetic flags (CF, PF, AF, ZF, SF, OF).
-fn sdm_group1_imm8(selector: u8, bits: u32, lhs: u64, imm8: u8, carry_in: bool) -> (u64, u64) {
+/// Intel SDM Vol. 2, ADD/ADC/SUB: `83 /0`, `/2`, `/5` (imm8) and `81 /0`, `/2`, `/5` (imm32), the
+/// immediate sign-extended to the operand width, written out independently of the CPU semantics.
+/// `immediate` is the sign-extended value of the encoded imm8 or imm32. Returns the result and
+/// the six arithmetic flags (CF, PF, AF, ZF, SF, OF).
+fn sdm_group1_immediate(
+    selector: u8,
+    bits: u32,
+    lhs: u64,
+    immediate: i64,
+    carry_in: bool,
+) -> (u64, u64) {
     let mask = if bits == 32 { 0xffff_ffff } else { u64::MAX };
     let sign = 1u64 << (bits - 1);
     let lhs = lhs & mask;
-    let src = imm8 as i8 as i64 as u64 & mask;
+    let src = immediate as u64 & mask;
     let (wide, subtract) = match selector {
         0 => (u128::from(lhs) + u128::from(src), false),
         2 => (
@@ -57695,8 +57837,11 @@ fn sdm_group1_imm8(selector: u8, bits: u32, lhs: u64, imm8: u8, carry_in: bool) 
     (result, flags)
 }
 
-#[test]
-fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
+/// Runs ADD, ADC and SUB (`/0`, `/2`, `/5`) of group 1 opcode `opcode` (`0x83` with an imm8 or
+/// `0x81` with an imm32) with a memory destination through the firmware profile for every
+/// addressing form below, both widths, each immediate (its sign-extended value), several initial
+/// values and both carries, against `sdm_group1_immediate`. Returns the number of cases.
+fn check_group1_memory_immediate(opcode: u8, immediates: &[i64]) -> usize {
     // (REX.B/X bits, ModRM with /0 and the bytes after it, registers, effective address). The
     // selector and REX.W are filled in per case. A RIP-relative displacement is computed from the
     // whole instruction (below), so its template carries a placeholder.
@@ -57794,18 +57939,22 @@ fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
         for (qword, values) in [(false, &dword_values[..]), (true, &qword_values[..])] {
             let width = if qword { 8 } else { 4 };
             for selector in [0u8, 2, 5] {
-                for imm8 in [0x00u8, 0x01, 0x20, 0x7f, 0x80, 0xff] {
+                for &immediate in immediates {
                     for &initial in values {
                         for carry_in in [false, true] {
                             let mut code = Vec::new();
                             if *rex_bits != 0 || qword {
                                 code.push(0x40 | rex_bits | if qword { 0x08 } else { 0 });
                             }
-                            code.push(0x83);
+                            code.push(opcode);
                             let modrm = code.len();
                             code.extend(template);
                             code[modrm] |= selector << 3;
-                            code.push(imm8);
+                            if opcode == 0x83 {
+                                code.push(immediate as i8 as u8);
+                            } else {
+                                code.extend((immediate as i32).to_le_bytes());
+                            }
                             if template[0] == 0x05 {
                                 let next_rip = RIP + code.len() as u64;
                                 let disp = address.wrapping_sub(next_rip) as u32;
@@ -57827,11 +57976,11 @@ fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
                             }
                             // IF and DF stay set; the five other arithmetic flags start set.
                             cpu.rflags = 0x602 | 0x8d4 | u64::from(carry_in);
-                            let (value, flags) = sdm_group1_imm8(
+                            let (value, flags) = sdm_group1_immediate(
                                 selector,
                                 if qword { 64 } else { 32 },
                                 initial,
-                                imm8,
+                                immediate,
                                 carry_in,
                             );
                             let mut expected = cpu.clone();
@@ -57870,13 +58019,76 @@ fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
             }
         }
     }
-    assert_eq!(updates, forms.len() * 3 * 6 * 2 * (7 + 8));
+    assert_eq!(updates, forms.len() * 3 * immediates.len() * 2 * (7 + 8));
+    updates
 }
 
 #[test]
-fn firmware_boot_add_imm8_memory_faults_do_not_commit_and_neighbors_stay_outside() {
+fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
+    // imm8 0x00, 0x01, 0x20, 0x7f, 0x80 and 0xff.
+    let updates = check_group1_memory_immediate(0x83, &[0, 1, 0x20, 0x7f, -0x80, -1]);
+    assert_eq!(updates, 12 * 3 * 6 * 2 * (7 + 8));
+}
+
+#[test]
+fn firmware_boot_add_adc_sub_imm32_memory_for_every_addressing_form() {
+    // S7-32 slice L: `81 /0, /2, /5 id`. -0x200 is the step of the FAT free-space window counter
+    // (`48 81 44 24 48 00 FE FF FF`, ADD qword [RSP+0x48],-0x200); 0x80, -0x81 and 0x200 do not
+    // fit an imm8, 0x7fff_ffff and -0x8000_0000 are the ends of the imm32 range.
+    let immediates = [
+        0,
+        1,
+        0x80,
+        -0x81,
+        0x200,
+        -0x200,
+        0x7fff_ffff,
+        -0x8000_0000,
+        -1,
+    ];
+    let updates = check_group1_memory_immediate(0x81, &immediates);
+    assert_eq!(updates, 12 * 3 * 9 * 2 * (7 + 8));
+}
+
+#[test]
+fn firmware_boot_fat_free_space_window_counter_subtracts_0x200_in_its_stack_slot() {
+    // The ROM form of S7-32 slice L once `free_entries` is inlined into `get_info`.
+    let code = [0x48, 0x81, 0x44, 0x24, 0x48, 0x00, 0xfe, 0xff, 0xff];
+    let address = DATA + 0x48;
+    let mut memory = Memory::new(&code);
+    memory.bytes[DATA_PHYSICAL + 0x48..DATA_PHYSICAL + 0x50]
+        .copy_from_slice(&0x0000_0000_0004_e400u64.to_le_bytes());
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    cpu.rflags = 0x602;
+    let mut expected = cpu.clone();
+    expected.rip += code.len() as u64;
+    // 0x4e400 - 0x200 = 0x4e200: a carry out of the 64-bit addition (CF), PF of 0x00, no AF.
+    expected.rflags = 0x602 | 0x01 | 0x04;
+    let result = execute::step_paged_firmware_probe(
+        PagedCpl0FirmwareBootV1,
+        &mut cpu,
+        &mut memory,
+        &mut Pio::default(),
+        ring0(),
+        DEFINED,
+    );
+    assert_eq!(result.exit, PagedProbeExit::Retired);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(cpu, expected);
+    assert_eq!(
+        memory.bytes[DATA_PHYSICAL + 0x48..DATA_PHYSICAL + 0x50],
+        0x0000_0000_0004_e200u64.to_le_bytes()
+    );
+    assert_eq!(memory.read_addresses, [(address, 8)]);
+    assert_eq!(memory.write_addresses, [address]);
+}
+
+#[test]
+fn firmware_boot_group1_immediate_memory_faults_do_not_commit_and_neighbors_stay_outside() {
     // ADD dword [R14+0x238],0x20: a non-canonical address is #GP(0), and #SS(0) with an RSP base
-    // (`48 83 44 24 38 09`, ADD qword [RSP+0x38],9); nothing is read or written.
+    // (`48 83 44 24 38 09`, ADD qword [RSP+0x38],9); the same for the imm32 forms of S7-32
+    // slice L (`41 81 86 …`, `48 81 44 24 48 00 FE FF FF`); nothing is read or written.
     for (code, register, vector) in [
         (
             &[0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20][..],
@@ -57884,6 +58096,16 @@ fn firmware_boot_add_imm8_memory_faults_do_not_commit_and_neighbors_stay_outside
             13,
         ),
         (&[0x48, 0x83, 0x44, 0x24, 0x38, 0x09][..], Register::Rsp, 12),
+        (
+            &[0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0][..],
+            Register::R14,
+            13,
+        ),
+        (
+            &[0x48, 0x81, 0x44, 0x24, 0x48, 0x00, 0xfe, 0xff, 0xff][..],
+            Register::Rsp,
+            12,
+        ),
     ] {
         let mut memory = Memory::new(code);
         let mut cpu = state();
@@ -57912,17 +58134,37 @@ fn firmware_boot_add_imm8_memory_faults_do_not_commit_and_neighbors_stay_outside
         assert_eq!((memory.reads, memory.writes), (0, 0));
     }
 
-    // Other selectors, widths, the imm32 form, address-size override, LOCK and the base profile
-    // stay outside: nothing is executed or stored.
-    let firmware_neighbors: [(&[u8], u8); 8] = [
+    // Other selectors, widths, address-size and segment overrides, LOCK and the base profile stay
+    // outside for both immediate sizes: nothing is executed or stored. (Until S7-32 slice L the
+    // imm32 form `41 81 86 38 02 00 00 20 00 00 00` was in this list; it is admitted now.)
+    let firmware_neighbors: [(&[u8], u8); 15] = [
         (&[0x41, 0x83, 0x9e, 0x38, 0x02, 0, 0, 0x20], 0x83), // SBB dword [R14+0x238],0x20
         (&[0x41, 0x83, 0xa6, 0x38, 0x02, 0, 0, 0x20], 0x83), // AND
         (&[0x41, 0x83, 0x8e, 0x38, 0x02, 0, 0, 0x20], 0x83), // OR
         (&[0x41, 0x83, 0xb6, 0x38, 0x02, 0, 0, 0x20], 0x83), // XOR
         (&[0x66, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // word
-        (&[0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0], 0x81), // imm32
         (&[0x67, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // address32
         (&[0xf0, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // LOCK
+        (&[0x41, 0x81, 0x9e, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0], 0x81), // SBB imm32
+        (&[0x41, 0x81, 0xb6, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0], 0x81), // XOR imm32
+        (&[0x66, 0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0], 0x81), // word imm16
+        (&[0x41, 0x80, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x80), // byte imm8 (`80 /0`)
+        (
+            &[0x67, 0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0],
+            0x81,
+        ), // address32
+        (
+            &[0xf0, 0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0],
+            0x81,
+        ), // LOCK
+        (
+            &[0x64, 0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0],
+            0x81,
+        ), // FS override
+        (
+            &[0x2e, 0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0],
+            0x81,
+        ), // CS override
     ];
     for (code, opcode) in firmware_neighbors {
         let mut memory = Memory::new(code);
@@ -57945,17 +58187,25 @@ fn firmware_boot_add_imm8_memory_faults_do_not_commit_and_neighbors_stay_outside
         assert_eq!(cpu, before, "{code:02x?}");
         assert_eq!((memory.reads, memory.writes), (0, 0), "{code:02x?}");
     }
-    let code = [0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20];
-    let mut memory = Memory::new(&code);
-    let mut cpu = state();
-    cpu.gpr[Register::R14 as usize] = DATA;
-    let before = cpu.clone();
-    assert_eq!(
-        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
-        PagedProbeExit::Unsupported { opcode: 0x83 }
-    );
-    assert_eq!(cpu, before);
-    assert_eq!((memory.reads, memory.writes), (0, 0));
+    for (code, opcode) in [
+        (&[0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20][..], 0x83),
+        (
+            &[0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0][..],
+            0x81,
+        ),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::R14 as usize] = DATA;
+        let before = cpu.clone();
+        assert_eq!(
+            step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
 }
 
 #[test]
@@ -58403,14 +58653,15 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x0f, 0xbe, 0xc0][..], 0xbe),                   // MOVSX EAX,AL
         (&[0x67, 0x0f, 0xb6, 0x44, 0x24, 0x10][..], 0xb6), // address32 MOVZX
         (&[0x48, 0x09, 0x07][..], 0x09),                   // OR qword [RDI],RAX
-        (&[0x66, 0x09, 0xf8][..], 0x09),                   // OR AX,DI
+        // `66 09 F8` (OR AX,DI) was here until S7-32 slice L admitted every OR r16, r16 pair.
+        (&[0x66, 0x31, 0xf8][..], 0x31), // XOR AX,DI
         (&[0x67, 0xe9, 0xfc, 0xfc, 0xff, 0xff][..], 0xe9), // prefix on JMP
-        (&[0x67, 0x66, 0x89, 0x58, 0x4c][..], 0x89),       // address32 word store
+        (&[0x67, 0x66, 0x89, 0x58, 0x4c][..], 0x89), // address32 word store
         (&[0x67, 0x48, 0xbe, 0, 0, 0, 0, 0x10, 0, 0, 0][..], 0xbe), // prefix on MOV r64,imm64
-        (&[0x44, 0x08, 0x11][..], 0x08),                   // OR byte [RCX],R10B
-        (&[0x67, 0x66, 0x0b, 0x03][..], 0x0b),             // address override OR AX,word [EBX]
-        (&[0x0f, 0xaf, 0x10][..], 0xaf),                   // IMUL EDX,dword [RAX]
-        (&[0x67, 0x89, 0x70, 0x48][..], 0x89),             // address32 dword store
+        (&[0x44, 0x08, 0x11][..], 0x08), // OR byte [RCX],R10B
+        (&[0x67, 0x66, 0x0b, 0x03][..], 0x0b), // address override OR AX,word [EBX]
+        (&[0x0f, 0xaf, 0x10][..], 0xaf), // IMUL EDX,dword [RAX]
+        (&[0x67, 0x89, 0x70, 0x48][..], 0x89), // address32 dword store
         // SETAE byte [RCX] is no longer a neighbour: every SETcc memory store is in the set now.
         (&[0x67, 0x0f, 0x93, 0xc1][..], 0x93), // address prefix on SETAE CL
         (&[0xc7, 0x48, 0x28, 0x20, 0, 0, 0][..], 0xc7), // reserved C7 /1
@@ -58453,19 +58704,21 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
         (&[0x48, 0x83, 0x1a, 0x28][..], 0x83), // SBB qword [RDX],0x28
-        (&[0x48, 0x81, 0x03, 0x28, 0, 0, 0][..], 0x81), // ADD qword [RBX],imm32
-        (&[0x66, 0x03, 0x13][..], 0x03),       // ADD DX,[RBX]
-        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83), // ADC SI,-1
-        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
-        (&[0x67, 0x88, 0x58, 0x4c][..], 0x88), // address32 byte store
-        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // address32 store
-        (&[0x44, 0x88, 0xc0][..], 0x88),       // MOV AL,R8B
-        (&[0x67, 0x44, 0x88, 0xc1][..], 0x88), // address32 MOV CL,R8B
+        // `48 81 03 28 00 00 00` (ADD qword [RBX],imm32) was here until S7-32 slice L admitted
+        // `81 /0, /2, /5 id` with memory; SBB keeps the imm32 group outside.
+        (&[0x48, 0x81, 0x1b, 0x28, 0, 0, 0][..], 0x81), // SBB qword [RBX],imm32
+        (&[0x66, 0x03, 0x13][..], 0x03),                // ADD DX,[RBX]
+        (&[0x66, 0x83, 0xd6, 0xff][..], 0x83),          // ADC SI,-1
+        (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89),    // segment override
+        (&[0x67, 0x88, 0x58, 0x4c][..], 0x88),          // address32 byte store
+        (&[0x67, 0x48, 0x89, 0x3c, 0x24][..], 0x89),    // address32 store
+        (&[0x44, 0x88, 0xc0][..], 0x88),                // MOV AL,R8B
+        (&[0x67, 0x44, 0x88, 0xc1][..], 0x88),          // address32 MOV CL,R8B
         (&[0x84, 0x84, 0x24, 0x4d, 1, 0, 0][..], 0x84), // TEST [RSP+0x14d],AL
-        (&[0x8a, 0x3c, 0x24][..], 0x8a),       // byte load
-        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d), // address32 LEA
-        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f), // FS override on NOP
-        (&[0x0f, 0x18, 0x00][..], 0x18),       // PREFETCHNTA
+        (&[0x8a, 0x3c, 0x24][..], 0x8a),                // byte load
+        (&[0x67, 0x4c, 0x8d, 0x1c, 0x30][..], 0x8d),    // address32 LEA
+        (&[0x64, 0x0f, 0x1f, 0x44, 0, 0][..], 0x1f),    // FS override on NOP
+        (&[0x0f, 0x18, 0x00][..], 0x18),                // PREFETCHNTA
         (&[0xc7, 0x54, 0x24, 0x0f, 1, 0, 0, 0][..], 0xc7), // reserved C7 /2
         (&[0x64, 0xc7, 0x44, 0x24, 0x10, 0, 0, 0, 0][..], 0xc7), // segment override on dword immediate store
         (&[0x67, 0x48, 0x89, 0xc9][..], 0x89), // address override on qword register MOV
