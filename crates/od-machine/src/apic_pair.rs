@@ -15,7 +15,7 @@ pub(crate) const PERIODIC: u32 = 1 << 17;
 pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
 pub(crate) const POLARITY_LOW: u32 = 1 << 13;
-/// S7-32: redirection entry destination mode (bit 11): logical (SDM Vol. 3A 11.6.2.2).
+/// S7-32: redirection entry destination mode (bit 11): logical (SDM Vol. 3A 13.6.2.2).
 pub(crate) const DEST_LOGICAL: u32 = 1 << 11;
 /// S7-32: redirection entry delivery mode lowest priority (bits 10:8 = 001).
 pub(crate) const DELIVERY_LOWEST_PRIORITY: u32 = 1 << 8;
@@ -750,7 +750,7 @@ impl PairState {
     /// destination while its line is high, a request awaits EOI or either LAPIC holds the vector,
     /// and no move may make a vector collide with an LVT Timer or entry 2 of the new LAPIC.
     /// S7-32: the vCPU a message destination names (an IOAPIC entry, an MSI, an IPI) under the
-    /// xAPIC destination modes (SDM Vol. 3A 11.6.2): physical — the APIC ID of an existing vCPU
+    /// xAPIC destination modes (SDM Vol. 3A 13.6.2): physical — the APIC ID of an existing vCPU
     /// (the broadcast ID 0xFF is not modelled); logical — the first vCPU whose LDR matches the
     /// message destination address under its DFR model (flat: a bit in common; cluster: the same
     /// cluster and a member bit in common). For lowest-priority delivery the first match is the
@@ -766,7 +766,7 @@ impl PairState {
     }
 
     /// Every vCPU a logical message destination address names (fixed delivery to a logical
-    /// destination reaches all of them, SDM Vol. 3A 11.6.2.2).
+    /// destination reaches all of them, SDM Vol. 3A 13.6.2.2).
     pub(crate) fn logical_targets(&self, destination: u8) -> Vec<usize> {
         (0..self.cpus.len())
             .filter(|&cpu| {
@@ -878,7 +878,7 @@ impl PairState {
 }
 
 /// S7-32: whether a logical message destination address `mda` names the LAPIC with `dfr` and
-/// `ldr` (SDM Vol. 3A 11.6.2.2): the flat model (DFR[31:28] = 1111b) matches a bit in common with
+/// `ldr` (SDM Vol. 3A 13.6.2.2): the flat model (DFR[31:28] = 1111b) matches a bit in common with
 /// LDR[31:24]; the cluster model (0000b) matches the same cluster (bits 7:4) and a member bit in
 /// common (bits 3:0). Other models match nothing.
 pub(crate) fn logical_match(dfr: u32, ldr: u32, mda: u8) -> bool {

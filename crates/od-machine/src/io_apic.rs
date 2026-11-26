@@ -2066,7 +2066,7 @@ mod tests {
         );
     }
 
-    /// S7-32 (SDM Vol. 3A 11.6.2.2, 11.6.2.4 and the 82093AA redirection entry): an entry with the
+    /// S7-32 (SDM Vol. 3A 13.6.2.2, 13.6.2.4 and the 82093AA redirection entry): an entry with the
     /// logical destination mode and the lowest-priority delivery mode, as the Windows HAL programs
     /// it, delivers to the vCPU whose LDR the destination names under the flat model; the raw
     /// destination reads back. Unmasked, a destination that names no vCPU is refused before any
@@ -2169,7 +2169,7 @@ mod tests {
     }
 
     /// S7-32: the cluster model (DFR[31:28] = 0000b) matches the same cluster (bits 7:4) and a
-    /// member bit in common (bits 3:0) (SDM Vol. 3A 11.6.2.2); a logical entry reaches vCPU 1.
+    /// member bit in common (bits 3:0) (SDM Vol. 3A 13.6.2.2); a logical entry reaches vCPU 1.
     #[test]
     fn s7_32_the_cluster_model_names_the_vcpu_of_the_cluster_and_member() {
         let (mut bus, io, cpu0, cpu1) = smp_setup();

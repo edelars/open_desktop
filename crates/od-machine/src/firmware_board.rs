@@ -11168,7 +11168,7 @@ mod tests {
                 })
             ));
             // The rest of the LAPIC answers as before.
-            assert_eq!(apic_read(&mut board, 0x30), Ok(0x0003_0014));
+            assert_eq!(apic_read(&mut board, 0x30), Ok(0x0004_0014));
             assert_eq!(apic_read(&mut board, 0xf0), Ok(0xff));
         }
     }

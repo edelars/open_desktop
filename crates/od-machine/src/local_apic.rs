@@ -1,10 +1,11 @@
 //! A deliberately incomplete xAPIC register and fixed interrupt model, one Local APIC per vCPU
 //! (S6-11; one by default).
 //!
-//! The Version register (S4-25f) advertises an integrated APIC with four LVT
-//! entries (Timer, LINT0, LINT1, Error). LINT0/LINT1/Error LVT, DFR, LDR and
-//! ESR only store state: there is no LINT pin or error source, and no CPU
-//! interrupt delivery is performed. An ICR write raises a Fixed edge request in the IRR of its
+//! The Version register (S4-25f, S7-32 slice M) advertises an integrated APIC with five LVT
+//! entries (Timer, Performance Monitoring Counters, LINT0, LINT1, Error); the Thermal Sensor and
+//! CMCI entries do not exist. The PMC, LINT0/LINT1/Error LVT, DFR, LDR and ESR only store state:
+//! there is no counter-overflow source (no CPUID profile declares a PMU), no LINT pin or error
+//! source, and no CPU interrupt delivery is performed. An ICR write raises a Fixed edge request in the IRR of its
 //! targets (S6-12: self, a physical APIC ID, all, all but self). An NMI (S6-12b: a physical APIC ID
 //! or all but self) is remembered as one pending latch in the LAPIC of every target. INIT assert and
 //! SIPI (S6-13) are queued as pending events in the LAPIC of the target, which the target applies
@@ -46,6 +47,9 @@ pub(crate) struct State {
     pub(crate) lint0: u32,
     pub(crate) lint1: u32,
     pub(crate) error_lvt: u32,
+    /// LVT Performance Monitoring Counters (S7-32 slice M): storage and mask only; there is no
+    /// counter-overflow source, since no CPUID profile declares a PMU.
+    pub(crate) pmc_lvt: u32,
     /// Destination Format and Logical Destination registers: storage only.
     pub(crate) dfr: u32,
     pub(crate) ldr: u32,
@@ -68,9 +72,10 @@ pub(crate) struct State {
     pub(crate) pending_nmi: bool,
 }
 
-/// Version register: version 0x14 (integrated APIC), Max LVT entry 3 (four
-/// LVT entries: Timer, LINT0, LINT1, Error), no EOI-broadcast suppression.
-pub(crate) const VERSION: u32 = 0x0003_0014;
+/// Version register: version 0x14 (integrated APIC), Max LVT entry 4 (five LVT entries: Timer,
+/// Performance Monitoring Counters, LINT0, LINT1, Error; the P6 layout of SDM Vol. 3A 13.4.8,
+/// S7-32 slice M), no EOI-broadcast suppression. Thermal Sensor and CMCI are absent.
+pub(crate) const VERSION: u32 = 0x0004_0014;
 const LVT_RESET: u32 = MASK;
 const DFR_RESET: u32 = 0xffff_ffff;
 /// Writable bits of LINT0/LINT1: vector, delivery mode, polarity, trigger,
@@ -79,6 +84,10 @@ const DFR_RESET: u32 = 0xffff_ffff;
 const LINT_BITS: u32 = 0x1_f7ff;
 /// Error LVT: vector, mask and the read-only Delivery Status (12).
 const ERROR_LVT_BITS: u32 = 0x1_10ff;
+/// LVT Performance Monitoring Counters: vector, delivery mode and mask, plus the read-only
+/// Delivery Status (12), accepted and dropped. The entry has no polarity, Remote IRR or trigger
+/// mode (SDM Vol. 3A Figure 13-8).
+const PMC_LVT_BITS: u32 = 0x1_17ff;
 const LVT_READ_ONLY_BITS: u32 = 0x5000;
 
 impl Default for State {
@@ -95,6 +104,7 @@ impl Default for State {
             lint0: LVT_RESET,
             lint1: LVT_RESET,
             error_lvt: LVT_RESET,
+            pmc_lvt: LVT_RESET,
             dfr: DFR_RESET,
             ldr: 0,
             esr: 0,
@@ -697,9 +707,9 @@ fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand,
                 ICR_SHORTHAND_NONE if !logical && level_trigger == 0b00 => {
                     vec![physical_target()?]
                 }
-                // S7-32: a logical destination reaches every vCPU it names (SDM Vol. 3A 11.6.2.2);
+                // S7-32: a logical destination reaches every vCPU it names (SDM Vol. 3A 13.6.2.2);
                 // Level (bit 14) is accepted set or clear (it must be 1 for non-INIT IPIs on the
-                // P6 family and is ignored on later processors, SDM Vol. 3A 11.6.1), the trigger
+                // P6 family and is ignored on later processors, SDM Vol. 3A 13.6.1), the trigger
                 // stays edge.
                 ICR_SHORTHAND_NONE if logical && matches!(level_trigger, 0b00 | 0b01) => {
                     let targets = pair.logical_targets(destination);
@@ -796,6 +806,19 @@ fn bank(offset: u64, base: u64) -> Option<usize> {
         None
     }
 }
+/// Whether `value` is a valid write of the storage-only LVT entry at `offset` (PMC `0x340`,
+/// LINT0/LINT1 `0x350`/`0x360`, Error `0x370`): only the entry's bits and, for an entry with a
+/// delivery mode, a mode the entry supports (SDM Vol. 3A 13.5.1: `110` is reserved for every
+/// entry, `001` and `011` are not encodings, INIT `101` and ExtINT `111` are not supported for
+/// the PMC entry).
+fn storage_lvt_write_valid(offset: u64, value: u64) -> bool {
+    let (bits, modes): (u32, &[u64]) = match offset {
+        0x340 => (PMC_LVT_BITS, &[0b000, 0b010, 0b100]),
+        0x350 | 0x360 => (LINT_BITS, &[0b000, 0b010, 0b100, 0b101, 0b111]),
+        _ => (ERROR_LVT_BITS, &[0b000]),
+    };
+    value & !u64::from(bits) == 0 && modes.contains(&((value >> 8) & 7))
+}
 impl BusDevice for LocalApic {
     fn read(&mut self, a: DeviceAccess) -> Result<u64, DeviceError> {
         self.read_from_cpu(BOOT_VCPU_INDEX, a)
@@ -836,6 +859,7 @@ impl BusDevice for LocalApic {
                 0xd0 => s.ldr,
                 0xe0 => s.dfr,
                 0x280 => s.esr,
+                0x340 => s.pmc_lvt,
                 0x350 => s.lint0,
                 0x360 => s.lint1,
                 0x370 => s.error_lvt,
@@ -951,6 +975,7 @@ impl BusDevice for LocalApic {
                         pair.cpus[cpu].local.lint0 |= MASK;
                         pair.cpus[cpu].local.lint1 |= MASK;
                         pair.cpus[cpu].local.error_lvt |= MASK;
+                        pair.cpus[cpu].local.pmc_lvt |= MASK;
                     }
                     pair.cpus[cpu].local.svr = value as u16;
                     Ok(())
@@ -978,22 +1003,16 @@ impl BusDevice for LocalApic {
                     pair.cpus[cpu].local.icr_high = value as u32;
                     Ok(())
                 }
-                // LINT0/LINT1/Error LVT: storage and mask only. Unmasking is
-                // refused while software disabled, like the Timer LVT.
-                0x350 | 0x360 | 0x370
-                    if value
-                        & !u64::from(if offset == 0x370 {
-                            ERROR_LVT_BITS
-                        } else {
-                            LINT_BITS
-                        })
-                        == 0
-                        && (offset == 0x370 || !matches!((value >> 8) & 7, 1 | 3 | 6))
+                // PMC/LINT0/LINT1/Error LVT (S4-25f, S7-32 slice M): storage and mask only.
+                // Unmasking is refused while software disabled, like the Timer LVT.
+                0x340 | 0x350 | 0x360 | 0x370
+                    if storage_lvt_write_valid(offset, value)
                         && (value & u64::from(MASK) != 0
                             || pair.cpus[cpu].local.svr & 0x100 != 0) =>
                 {
                     let stored = value as u32 & !LVT_READ_ONLY_BITS;
                     match offset {
+                        0x340 => pair.cpus[cpu].local.pmc_lvt = stored,
                         0x350 => pair.cpus[cpu].local.lint0 = stored,
                         0x360 => pair.cpus[cpu].local.lint1 = stored,
                         _ => pair.cpus[cpu].local.error_lvt = stored,
@@ -1017,9 +1036,8 @@ impl BusDevice for LocalApic {
                         std::mem::take(&mut pair.cpus[cpu].local.esr_pending);
                     Ok(())
                 }
-                0x80 | 0xb0 | 0xf0 | 0x310 | 0x350 | 0x360 | 0x370 | 0xd0 | 0xe0 | 0x280 => {
-                    Err(DeviceError::UnsupportedConfiguration)
-                }
+                0x80 | 0xb0 | 0xf0 | 0x310 | 0x340 | 0x350 | 0x360 | 0x370 | 0xd0 | 0xe0
+                | 0x280 => Err(DeviceError::UnsupportedConfiguration),
                 0x20 | 0x30 | 0xa0 => Err(DeviceError::ReadOnly),
                 _ if bank(offset, 0x100).is_some()
                     || bank(offset, 0x180).is_some()
@@ -2076,6 +2094,8 @@ mod tests {
         write(bus, 0x350, 0x731).unwrap();
         write(bus, 0x360, 0x8400).unwrap();
         write(bus, 0x370, 0xfe).unwrap();
+        // S7-32 slice M: the PMC LVT (NMI, the vector is kept).
+        write(bus, 0x340, 0x4fe).unwrap();
         write(bus, 0xe0, 0x0fff_ffff).unwrap();
         write(bus, 0xd0, 0x0100_0000).unwrap();
         apic.0.lock().unwrap().cpus[0].local.esr_pending = 0x40;
@@ -2106,6 +2126,7 @@ mod tests {
             (0x390, 0),
             (0x3e0, 0),
             (0x30, u64::from(VERSION)),
+            (0x340, u64::from(MASK)),
             (0x350, u64::from(MASK)),
             (0x360, u64::from(MASK)),
             (0x370, u64::from(MASK)),
@@ -2144,10 +2165,12 @@ mod tests {
         );
         assert_reset_matrix(&mut bus, &apic, "fresh");
 
-        let paths: [(&str, fn(&LocalApicHandle)); 4] = [
+        let paths: [(&str, fn(&LocalApicHandle)); 5] = [
             ("reset", |a| a.reset().unwrap()),
             ("reset_checked", |a| a.reset_checked().unwrap()),
             ("reset_pair", |a| a.reset_pair().unwrap()),
+            // The board power-on reset of every Local APIC and the route (S6-24).
+            ("reset_all", |a| a.reset_all().unwrap()),
             ("global disable/enable", |a| {
                 a.set_global_enabled(false).unwrap();
                 a.set_global_enabled(true).unwrap();
@@ -2336,9 +2359,9 @@ mod tests {
     }
 
     #[test]
-    fn lvt_entries_other_than_timer_and_s4_25f_set_are_unsupported_without_effect() {
-        // S4-25f: Version, LINT0/1, Error and ESR were removed from this list.
-        let lvts = [0x2f0, 0x330, 0x340];
+    fn lvt_entries_without_a_model_are_unsupported_without_effect() {
+        // S4-25f: Version, LINT0/1, Error and ESR were removed from this list; S7-32 slice M: PMC.
+        let lvts = [0x2f0, 0x330];
         let (mut bus, timer) = timer_setup(1_000_000_000);
         let (mut plain_bus, plain) = setup();
         for (bus, apic) in [(&mut bus, &timer), (&mut plain_bus, &plain)] {
@@ -2506,6 +2529,7 @@ mod tests {
                     | 0x300
                     | 0x310
                     | 0x320
+                    | 0x340
                     | 0x350
                     | 0x360
                     | 0x370
@@ -2562,6 +2586,24 @@ mod tests {
             (0x370, 0x2000, UC),
             (0x370, 0x8000, UC),
             (0x370, 0x1_0000_00fe, UC),
+            // S7-32 slice M, PMC LVT (SDM Vol. 3A 13.5.1, Figure 13-8): delivery modes 001 and
+            // 011 are no encodings, INIT (101) and ExtINT (111) are not supported for this entry
+            // even masked, 110 is reserved; bit 11, polarity (13), Remote IRR (14), trigger (15)
+            // and bits 31:17 are reserved.
+            (0x340, 0x100, UC),
+            (0x340, 0x300, UC),
+            (0x340, 0x500, UC),
+            (0x340, 0x600, UC),
+            (0x340, 0x700, UC),
+            (0x340, 0x1_0500, UC),
+            (0x340, 0x1_0700, UC),
+            (0x340, 0x800, UC),
+            (0x340, 0x2000, UC),
+            (0x340, 0x4000, UC),
+            (0x340, 0x8000, UC),
+            (0x340, 0x2_0000, UC),
+            (0x340, 0x8000_0000, UC),
+            (0x340, 0x1_0000_00fe, UC),
             (0xd0, 0x01, UC),
             (0xd0, 0x00ff_ffff, UC),
             (0xd0, 0x1_0000_0000, UC),
@@ -2618,32 +2660,40 @@ mod tests {
 
     // ---- S4-25f: Linux probe registers ------------------------------------
 
-    const LVT_REGS: [u64; 3] = [0x350, 0x360, 0x370];
+    /// The storage-only LVT entries: PMC (S7-32 slice M), LINT0, LINT1, Error (S4-25f).
+    const LVT_REGS: [u64; 4] = [0x340, 0x350, 0x360, 0x370];
 
     #[test]
-    fn version_reads_integrated_four_lvt_and_is_read_only() {
+    fn version_reads_integrated_five_lvt_and_is_read_only() {
         let (mut bus, apic) = setup();
-        assert_eq!(read(&mut bus, 0x30), Ok(0x0003_0014));
+        assert_eq!(read(&mut bus, 0x30), Ok(0x0004_0014));
         let before = snapshot(&apic);
-        for value in [0, 0x0003_0014, u64::from(u32::MAX)] {
+        for value in [0, 0x0004_0014, u64::from(u32::MAX)] {
             assert_eq!(
                 write(&mut bus, 0x30, value),
                 Err(error(DeviceError::ReadOnly))
             );
         }
         assert_eq!(snapshot(&apic), before);
-        assert_eq!(read(&mut bus, 0x30), Ok(0x0003_0014));
+        assert_eq!(read(&mut bus, 0x30), Ok(0x0004_0014));
         // Version bits: 7:0 version, 23:16 Max LVT entry, 24 EOI-broadcast.
         assert_eq!(VERSION & 0xff, 0x14);
-        assert_eq!((VERSION >> 16) & 0xff, 3);
+        assert_eq!((VERSION >> 16) & 0xff, 4);
         assert_eq!(VERSION >> 24, 0);
         // Readable with or without an opt-in timer.
         let (mut timer_bus, _) = timer_setup(1_000_000_000);
-        assert_eq!(read(&mut timer_bus, 0x30), Ok(0x0003_0014));
+        assert_eq!(read(&mut timer_bus, 0x30), Ok(0x0004_0014));
+        // SDM Vol. 3A 13.4.8: Max LVT Entry is the number of LVT entries minus 1. With the timer
+        // the device implements exactly that many of the LVT addresses of Table 13-1.
+        let implemented = [0x2f0, 0x320, 0x330, 0x340, 0x350, 0x360, 0x370]
+            .into_iter()
+            .filter(|offset| read(&mut timer_bus, *offset).is_ok())
+            .count();
+        assert_eq!(implemented as u32, ((VERSION >> 16) & 0xff) + 1);
     }
 
     #[test]
-    fn lint_and_error_lvt_reset_masked_and_store_mask_and_vector() {
+    fn storage_lvts_reset_masked_and_store_mask_and_vector() {
         let (mut bus, apic) = setup();
         for offset in LVT_REGS {
             assert_eq!(read(&mut bus, offset), Ok(0x1_0000), "{offset:#x}");
@@ -2669,10 +2719,12 @@ mod tests {
         }
         // LINT entries keep polarity, trigger and every valid delivery mode;
         // Delivery Status (12) and Remote IRR (14) are dropped on write.
-        for mode in [0u64, 2, 4, 5, 7] {
-            let value = 0xa000 | (mode << 8) | 0x33;
-            write(&mut bus, 0x350, value | 0x5000).unwrap();
-            assert_eq!(read(&mut bus, 0x350), Ok(value));
+        for offset in [0x350, 0x360] {
+            for mode in [0u64, 2, 4, 5, 7] {
+                let value = 0xa000 | (mode << 8) | 0x33;
+                write(&mut bus, offset, value | 0x5000).unwrap();
+                assert_eq!(read(&mut bus, offset), Ok(value), "{offset:#x} mode {mode}");
+            }
         }
         write(&mut bus, 0x370, 0x10fe).unwrap();
         assert_eq!(read(&mut bus, 0x370), Ok(0xfe));
@@ -2682,7 +2734,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_and_error_lvt_have_no_effect_on_requests() {
+    fn storage_lvts_have_no_effect_on_requests() {
         let (mut bus, apic) = setup();
         write(&mut bus, 0xf0, 0x1ff).unwrap();
         apic.request_fixed_edge(0x41).unwrap();
@@ -2793,14 +2845,14 @@ mod tests {
     }
 
     #[test]
-    fn perf_thermal_cmci_stay_unknown_offset() {
-        // CPUID must not advertise PMU, thermal monitoring or CMCI while these
-        // registers are absent; Version reports Max LVT = 3.
+    fn thermal_and_cmci_stay_unknown_offset() {
+        // Max LVT = 4 does not include them; no CPUID profile may advertise thermal monitoring
+        // or CMCI while they are absent (`absent_thermal_and_cmci_lvts_match_the_cpu_identity`).
         let (mut bus, timer) = timer_setup(1_000_000_000);
         let (mut plain_bus, plain) = setup();
         for (bus, apic) in [(&mut bus, &timer), (&mut plain_bus, &plain)] {
             let before = snapshot(apic);
-            for offset in [0x2f0, 0x330, 0x340] {
+            for offset in [0x2f0, 0x330] {
                 assert_eq!(
                     read(bus, offset),
                     Err(error(DeviceError::UnknownOffset)),
@@ -2817,6 +2869,183 @@ mod tests {
         }
     }
 
+    // ---- S7-32 slice M: LVT Performance Monitoring Counters -------------------
+
+    /// SDM Vol. 3A 13.4.7.1 (an LVT resets to 0 except the mask), Figure 13-8 (PMC entry: vector,
+    /// delivery mode, read-only Delivery Status, mask) and 13.5.1 (Fixed, SMI and NMI; the mask
+    /// is cleared only by software).
+    #[test]
+    fn pmc_lvt_resets_masked_and_stores_vector_delivery_mode_and_mask() {
+        let (mut bus, apic) = setup();
+        assert_eq!(read(&mut bus, 0x340), Ok(0x1_0000));
+        // Software disabled after reset: a masked write is stored, an unmasked one refused.
+        write(&mut bus, 0x340, 0x1_00d8).unwrap();
+        assert_eq!(read(&mut bus, 0x340), Ok(0x1_00d8));
+        let before = snapshot(&apic);
+        assert_eq!(write(&mut bus, 0x340, 0xd8), Err(error(UC)));
+        assert_eq!(snapshot(&apic), before);
+        write(&mut bus, 0xf0, 0x1ff).unwrap();
+        // Fixed, SMI and NMI, each unmasked and masked.
+        for mode in [0b000u64, 0b010, 0b100] {
+            let value = (mode << 8) | 0xfe;
+            for value in [value, value | 0x1_0000, value] {
+                write(&mut bus, 0x340, value).unwrap();
+                assert_eq!(read(&mut bus, 0x340), Ok(value), "{value:#x}");
+            }
+        }
+        // Delivery Status (12) is read-only: dropped on write, it reads 0 (Idle).
+        write(&mut bus, 0x340, 0x10fe).unwrap();
+        assert_eq!(read(&mut bus, 0x340), Ok(0xfe));
+        // Vector 0 and < 16 are stored: nothing is delivered from this LVT.
+        write(&mut bus, 0x340, 0x5).unwrap();
+        assert_eq!(read(&mut bus, 0x340), Ok(0x5));
+        // Linux `perf_events_lapic_init` (written only with a PMU driver): NMI.
+        write(&mut bus, 0x340, 0x400).unwrap();
+        assert_eq!(read(&mut bus, 0x340), Ok(0x400));
+    }
+
+    /// ISSUE-700: the writes of the Windows HAL local-unit initialisation (`ntkrnlmp` +
+    /// `0x569990`, in its order; the Error LVT value is the one of the MINIEX copy of the
+    /// sequence, `+0xbe92ad`) and of its PMI line (`+0x33e19d`: Fixed, vector 0xFE, first written
+    /// as the disabled line `0x100FF`).
+    #[test]
+    fn windows_hal_local_unit_initialisation_is_accepted() {
+        let (mut bus, apic) = timer_setup(1_000_000_000);
+        for (offset, value) in [
+            (0xf0, 0x1df),
+            (0x320, 0x3_00d8),
+            (0x3e0, 0xb),
+            (0x370, 0xe2),
+            (0x340, 0x1_00d8),
+            (0x350, 0x1_0000),
+            (0x350, 0x1_00d8),
+            (0x360, 0x1_84d8),
+        ] {
+            write(&mut bus, offset, value).unwrap();
+            assert_eq!(read(&mut bus, offset), Ok(value), "{offset:#x}");
+        }
+        assert_eq!(read(&mut bus, 0x20), Ok(0));
+        for value in [0x1_00ff, 0xfe] {
+            write(&mut bus, 0x340, value).unwrap();
+            assert_eq!(read(&mut bus, 0x340), Ok(value));
+        }
+        assert_eq!(apic.pending(), None);
+    }
+
+    /// Linux 7.0 with Max LVT = 4 (`arch/x86/kernel/apic/apic.c`): `lapic_setup_esr` clears ESR
+    /// before and after it enables the Error LVT (`maxlvt > 3`); `clear_local_APIC` masks the PMC
+    /// entry too (`maxlvt >= 4`) and touches neither Thermal (`>= 5`) nor CMCI (`>= 6`).
+    #[test]
+    fn linux_maxlvt_four_paths_are_accepted() {
+        let (mut bus, _apic) = timer_setup(1_000_000_000);
+        // lapic_setup_esr
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        write(&mut bus, 0x370, 0xfe).unwrap();
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        // clear_local_APIC
+        write(&mut bus, 0x370, 0x1_00fe).unwrap();
+        for offset in [0x320, 0x350, 0x360, 0x340] {
+            let v = read(&mut bus, offset).unwrap();
+            write(&mut bus, offset, v | 0x1_0000).unwrap();
+        }
+        for offset in [0x320, 0x350, 0x360, 0x370, 0x340] {
+            write(&mut bus, offset, 0x1_0000).unwrap();
+        }
+        write(&mut bus, 0x280, 0).unwrap();
+        assert_eq!(read(&mut bus, 0x280), Ok(0));
+        for offset in [0x320, 0x340, 0x350, 0x360, 0x370] {
+            assert_eq!(read(&mut bus, offset), Ok(0x1_0000), "{offset:#x}");
+        }
+    }
+
+    /// Linux 7.0 starts an AP with Max LVT > 3 (`arch/x86/kernel/smpboot.c`): `send_init_sequence`
+    /// (line 832) clears ESR and reads it, then sends INIT assert (`0xC500`) and deassert
+    /// (`0x8500`); `wakeup_secondary_cpu_via_init` (lines 880, 916) twice clears ESR, reads it,
+    /// sends STARTUP (`0x600 | vector`), clears ESR again and requires `ESR & 0xEF == 0`. That is
+    /// five ESR writes on the boot processor per AP beyond the unconditional one in `do_boot_cpu`
+    /// (line 1037), which Max LVT = 3 also makes; the AP ends with the INIT and the SIPI pending,
+    /// and the boot processor's Delivery Status stays Idle.
+    #[test]
+    fn linux_ap_startup_with_maxlvt_four_clears_esr_around_init_and_startup() {
+        fn clear_esr(device: &mut LocalApic) -> u64 {
+            device.write_from_cpu(0, dword(0x280), 0).unwrap();
+            device.read_from_cpu(0, dword(0x280)).unwrap()
+        }
+        fn icr_write(device: &mut LocalApic, low: u64) {
+            device.write_from_cpu(0, dword(0x310), 1 << 24).unwrap();
+            device.write_from_cpu(0, dword(0x300), low).unwrap();
+            assert_eq!(
+                device.read_from_cpu(0, dword(0x300)).unwrap() & (1 << 12),
+                0
+            );
+        }
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0xf0), 0x1ff).unwrap();
+        assert_eq!((VERSION >> 16) & 0xff, 4, "the path of Max LVT > 3");
+        let mut esr_writes = 0;
+        assert_eq!(clear_esr(&mut device), 0);
+        esr_writes += 1;
+        icr_write(&mut device, icr(INIT, PHYSICAL, NO_SHORTHAND, LT_11, 0));
+        icr_write(&mut device, icr(INIT, PHYSICAL, NO_SHORTHAND, LT_01, 0));
+        for _ in 0..2 {
+            assert_eq!(clear_esr(&mut device), 0);
+            icr_write(&mut device, icr(SIPI, PHYSICAL, NO_SHORTHAND, LT_00, 0x9a));
+            assert_eq!(clear_esr(&mut device) & 0xef, 0);
+            esr_writes += 2;
+        }
+        assert_eq!(esr_writes, 5);
+        assert_eq!(
+            startup_of(&device, 1),
+            PendingStartup {
+                init: true,
+                sipi: Some(0x9a)
+            }
+        );
+        assert_eq!(startup_of(&device, 0), PendingStartup::default());
+    }
+
+    /// Every CPUID profile, in declaration order. The successor of each variant is an exhaustive
+    /// match without a wildcard, so a new variant does not compile until it is placed in the
+    /// chain, and then the identity check below covers it.
+    fn every_cpuid_profile() -> Vec<od_isa::cpuid::CpuidProfile> {
+        use od_isa::cpuid::CpuidProfile as P;
+        let next = |profile: &P| match profile {
+            P::DiagnosticV1 => Some(P::X8664V1Stage4A),
+            P::X8664V1Stage4A => Some(P::X8664V1Stage4AApic),
+            P::X8664V1Stage4AApic => Some(P::X8664V1Stage4AExt1),
+            P::X8664V1Stage4AExt1 => Some(P::X8664V1Stage4AExt2),
+            P::X8664V1Stage4AExt2 => Some(P::OdX8664V1Neutral),
+            P::OdX8664V1Neutral => Some(P::OdX8664V2Windows),
+            P::OdX8664V2Windows => None,
+        };
+        std::iter::successors(Some(P::DiagnosticV1), next).collect()
+    }
+
+    /// Thermal Sensor `0x330` and CMCI `0x2f0` are absent (S7-32 slice M). That is sound only
+    /// while no CPUID profile reports what makes a guest program them: ACPI (leaf 1 EDX 22) and
+    /// TM (EDX 29) for Linux `intel_thermal_supported`, TM2 (ECX 8), HWP with its notification or
+    /// HFI (leaf 6 EAX 7, 8, 19) for the Windows `intelppm` thermal interrupt, and MCG_CMCI_P
+    /// (IA32_MCG_CAP bit 10) for the Windows and Linux CMCI set-up.
+    #[test]
+    fn absent_thermal_and_cmci_lvts_match_the_cpu_identity() {
+        let hint =
+            "declare the Thermal/CMCI LVT with Max LVT first (MACHINE_CONTRACT, S7-32 slice M)";
+        for profile in every_cpuid_profile() {
+            let one = profile.query(1, 0);
+            assert_eq!(one.edx & (1 << 22 | 1 << 29), 0, "{profile:?}: {hint}");
+            assert_eq!(one.ecx & (1 << 8), 0, "{profile:?}: {hint}");
+            let six = profile.query(6, 0);
+            assert_eq!(
+                six.eax & (1 << 7 | 1 << 8 | 1 << 19),
+                0,
+                "{profile:?}: {hint}"
+            );
+        }
+        assert_eq!(od_isa::msr::IA32_MCG_CAP_VALUE & (1 << 10), 0, "{hint}");
+    }
+
     #[test]
     fn new_registers_reject_bad_width_space_and_alignment_without_change() {
         use AccessWidth::{Byte, Dword, Qword, Word};
@@ -2824,7 +3053,7 @@ mod tests {
         dirty(&mut bus, &apic);
         let before = snapshot(&apic);
         let mut device = LocalApic(Arc::clone(&apic.0));
-        for offset in [0x30u64, 0x280, 0x350, 0x360, 0x370, 0xd0, 0xe0] {
+        for offset in [0x30u64, 0x280, 0x340, 0x350, 0x360, 0x370, 0xd0, 0xe0] {
             for (space, width, delta, expected) in [
                 (IoSpace::Pio, Dword, 0, DeviceError::UnsupportedSpace),
                 (IoSpace::Mmio, Byte, 0, DeviceError::UnsupportedWidth),
@@ -3666,9 +3895,9 @@ mod tests {
 
     #[test]
     fn a_target_with_the_svr_software_enable_clear_accepts_init_and_sipi() {
-        // Owner decision 2026-11-16 (SDM 10.4.3, from memory): a program disable through the
-        // SVR (APIC Software Enable, bit 8, clear; here SVR = 0xFF) with EN set still takes INIT
-        // and SIPI, unlike EN=0.
+        // Owner decision 2026-11-16 (SDM 10.4.3, from memory; 13.4.3 in SDM 093): a program
+        // disable through the SVR (APIC Software Enable, bit 8, clear; here SVR = 0xFF) with EN
+        // set still takes INIT and SIPI, unlike EN=0.
         let mut device = LocalApic::with_cpus(2).unwrap();
         device.write_from_cpu(1, dword(0xf0), 0xff).unwrap();
         assert_eq!(device.read_from_cpu(1, dword(0xf0)), Ok(0xff));
@@ -3702,6 +3931,8 @@ mod tests {
             device.write_from_cpu(cpu, dword(0x80), 0x20).unwrap();
             device.write_from_cpu(cpu, dword(0x320), 0x40).unwrap();
             device.write_from_cpu(cpu, dword(0x380), 100).unwrap();
+            // S7-32 slice M: the INIT reset masks the PMC LVT again (SDM Vol. 3A 13.4.7.3).
+            device.write_from_cpu(cpu, dword(0x340), 0xfe).unwrap();
         }
         cpu0.request_fixed_edge(0x70).unwrap();
         cpu1.request_fixed_edge(0x70).unwrap();
@@ -3817,8 +4048,8 @@ mod tests {
 
     /// S7-32: a fixed IPI to a logical destination reaches every vCPU whose LDR the destination
     /// names (flat model), a lowest-priority IPI reaches one of them (the first; no arbitration is
-    /// modelled), and the cluster model resolves by cluster and member (SDM Vol. 3A 11.6.2.2,
-    /// 11.6.2.4). SVR bit 9 (focus processor checking disable) is stored, bit 12 is refused.
+    /// modelled), and the cluster model resolves by cluster and member (SDM Vol. 3A 13.6.2.2,
+    /// 13.6.2.4). SVR bit 9 (focus processor checking disable) is stored, bit 12 is refused.
     #[test]
     fn s7_32_logical_and_lowest_priority_ipis_and_svr_bit_9() {
         let mut device = LocalApic::with_cpus(2).unwrap();

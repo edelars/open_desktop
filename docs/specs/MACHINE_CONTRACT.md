@@ -2249,7 +2249,7 @@ software disable может снять запрос между выбором и
 снятии маски; событие теряется по контракту, а не откладывается. Остальные LVT
 (CMCI `0x2f0`, Thermal `0x330`, Perf `0x340`, LINT0/1 `0x350`/`0x360`, Error
 `0x370`), Version (`0x30`) и ESR (`0x280`) не были реализованы (LINT0/1, Error,
-Version и ESR добавлены в S4-25f; CMCI, Thermal, Perf остаются так): чтение и запись дают
+Version и ESR добавлены в S4-25f, Perf — в S7-32, срез M; CMCI и Thermal остаются так): чтение и запись дают
 `UnknownOffset` без изменения состояния. Без таймера отсутствуют и `0x320`,
 `0x380`, `0x390`, `0x3e0`.
 
@@ -2264,7 +2264,8 @@ global disable→enable; `reset` при Remote IRR отклоняется без
 | ISR, TMR, IRR (`0x100..0x270`, 24 слова) | `0` |
 | LVT Timer `0x320` | mask (`0x10000`) |
 | Initial/Current/Divide `0x380`/`0x390`/`0x3e0` | `0`, deadline отменён |
-| Version `0x30` | `0x00030014` (с S4-25f; до него `UnknownOffset`) |
+| Version `0x30` | `0x00040014` (с S7-32, срез M; с S4-25f — `0x00030014`; до него `UnknownOffset`) |
+| LVT PMC `0x340` | mask (`0x10000`) (с S7-32, срез M) |
 
 **Приоритет и EOI.** Eligible только самый старший вектор IRR и только если его
 класс (bits 7:4) строго выше класса PPR; PPR берёт TPR, если класс TPR не ниже
@@ -2301,6 +2302,9 @@ Vol. 3A §13.4.8: Max LVT = число LVT минус 1 (Pentium: 4 LVT → 3). 
 Version доступен и без opt-in таймера, хотя Timer LVT без него отсутствует:
 Version описывает профиль APIC, а таймер остаётся opt-in моделью (Linux читает
 Max LVT до таймера и не сверяет его с наличием `0x320`).
+*Обновление S7-32, срез M (2026-11-26):* Version = `0x00040014`, Max LVT Entry = 4 — пять LVT
+(Timer, Performance Monitoring Counters, LINT0, LINT1, Error), раскладка P6 по SDM Vol. 3A §13.4.8
+(P6: 5 LVT → 4). Thermal Sensor и CMCI в модели нет (абзац «Thermal `0x330`, CMCI `0x2f0`» ниже).
 
 **LINT0 `0x350`, LINT1 `0x360`.** Reset `0x10000` (masked). Записываются vector
 (7:0), delivery mode (10:8), polarity (13), trigger (15) и mask (16); допустимые
@@ -2317,10 +2321,11 @@ Delivery Status (12) и Remote IRR (14) read-only: при записи отбр�
 bit 12 отбрасывается; bits 10:8, 11, 13..15 и 31:17 зарезервированы.
 
 **Mask и software disable.** Mask хранится и читается. Software disable SVR bit 8
-= 0 устанавливает mask во всех трёх LVT (SDM §13.4.7.2); снятие mask при
+= 0 устанавливает mask во всех хранимых LVT (LINT0, LINT1, Error; с S7-32, срез M, и PMC)
+(SDM §13.4.7.2); снятие mask при
 software disable отклоняется (`UnsupportedConfiguration`, без изменений), как
 для Timer LVT. Запись masked значения разрешена. Mask не влияет на IRR/ISR/TMR:
-ни одна запись в LINT/Error LVT не создаёт запрос.
+ни одна запись в LINT/Error/PMC LVT не создаёт запрос.
 
 **ESR `0x280`.** SDM §13.5.3: запись защёлкивает в ESR ошибки, накопленные с
 прошлой записи, и очищает лог; записанное значение игнорируется (принимается
@@ -2339,22 +2344,53 @@ DFR reset `0xffffffff` (flat, SDM §13.6.2.2): записывается толь
 только logical ID (31:24); ненулевые bits 23:0 отклоняются. Logical destination
 по этим регистрам не вычисляется, ICR принимает прежний набор (Self shorthand).
 *Обновление S7-32 (2026-11-26):* logical destination вычисляется для записей IOAPIC, MSI-X
-и ICR (SDM Vol. 3A 11.6.2.2): flat — общий бит адреса и `LDR[31:24]`, cluster — тот же
+и ICR (SDM Vol. 3A 13.6.2.2): flat — общий бит адреса и `LDR[31:24]`, cluster — тот же
 кластер (биты 7:4) и общий бит члена (биты 3:0); другие модели не совпадают ни с чем.
 Fixed по логическому адресу доставляется всем совпавшим vCPU, lowest priority — одному,
 первому совпавшему (арбитраж между несколькими не моделируется). Физический
 широковещательный адрес `0xFF` не моделируется.
 
-**Perf `0x340`, Thermal `0x330`, CMCI `0x2f0`.** Не реализованы: чтение и запись
-дают `UnknownOffset` без мутации. Условие: CPUID гостя не объявляет PMU
-(architectural performance monitoring), thermal monitoring (TM) и CMCI
-(MCG_CAP.CMCI), а Version отдаёт Max LVT = 3, поэтому Linux не обращается к
-`LVTPC`, `LVTTHMR` и `LVTCMCI`. При изменении CPUID эти LVT обязаны быть
-добавлены вместе с Max LVT.
+**LVT Performance Monitoring Counters `0x340` (S7-32, срез M, 2026-11-26).** Ядро Windows
+(`ntkrnlmp` + `0x569990`, инициализация локального блока HAL) пишет `0x340` = `0x100D8` безусловно,
+Max LVT не читает ([ISSUE-700](../KNOWN_ISSUES.md#issue-700)); позже HAL программирует линию PMI
+(`+0x33e19d`: Fixed, вектор `0xFE`). Регистр — хранение и маска, как LINT/Error. Reset `0x10000`
+(masked) во всех путях сброса, в том числе INIT (SDM Vol. 3A §13.4.7.1, §13.4.7.3). Записываются
+vector (7:0), delivery mode (10:8) и mask (16); Delivery Status (12) read-only — при записи
+отбрасывается и читается нулём (Idle), как у LINT/Error (Linux пишет прочитанное значение
+`v | MASKED`). Допустимые delivery mode: Fixed, SMI, NMI (`000/010/100`); `101` (INIT) и `111`
+(ExtINT) для PMC не поддерживаются, `110` зарезервирован для всех LVT, `001/011` не кодируют режим
+(§13.5.1); бит 11, polarity (13), Remote IRR (14), trigger (15) и биты 31:17 у PMC зарезервированы
+(Figure 13-8). Такие записи — `UnsupportedConfiguration` без изменения, в том числе маскированные.
+Vector не валидируется (в том числе < 16). Software disable ставит mask, снятие mask при нём
+отклоняется (абзац «Mask и software disable»). Источника PMI нет: ни один CPUID-профиль не
+объявляет PMU (максимальный базовый лист 1, листа 0xA нет), счётчиков нет, запись не создаёт
+запросов; автоматическая установка mask при PMI (§13.5.1) не моделируется. Регистр PMC
+существует независимо от объявления PMU: он появился в P6, до архитектурного PMU, и SDM называет
+его implementation specific (§13.5.1, Table 13-1). Version одна для всех профилей платы: Windows
+Max LVT не читает. Linux 7.0 при Max LVT > 3 пишет `ESR = 0` перед чтением ESR: дважды на каждом
+CPU в `lapic_setup_esr` (`apic.c:1411`, `1422`) и при запуске каждого AP ещё пять раз — один в
+`send_init_sequence` перед INIT (`smpboot.c:832`) и по два вокруг каждого из двух STARTUP в
+`wakeup_secondary_cpu_via_init` (`smpboot.c:880`, `916`; результат `ESR & 0xEF` должен быть 0);
+запись ESR модель поддерживает (S4-25f). `LVTPC` Linux маскирует лишь в `clear_local_APIC`
+(выключение, hotplug).
+
+**Thermal `0x330`, CMCI `0x2f0`.** Не реализованы: чтение и запись дают `UnknownOffset` без
+мутации; Max LVT = 4 их не включает. Условие (закреплено тестом
+`absent_thermal_and_cmci_lvts_match_the_cpu_identity`): ни один CPUID-профиль не объявляет ACPI
+(лист 1 EDX 22), TM (EDX 29), TM2 (ECX 8), HWP с уведомлением и HFI (лист 6 EAX 7, 8, 19), а
+`IA32_MCG_CAP.MCG_CMCI_P` (бит 10) = 0. При этом гости к ним не обращаются: Linux при ACPI и TM в CPUID
+независимо от Max LVT читает `LVTTHMR` без проверки vendor (`therm_lvt_init`, вызов из
+`setup.c:1263`, `therm_throt.c:718–719`), а пишет его только для vendor Intel (`intel_init_thermal`
+из `init_intel`, `cpu/intel.c:625`), а в `clear_local_APIC` — при Max LVT ≥ 5;
+`LVTCMCI` — при vendor Intel, Max LVT ≥ 6 и `MCG_CMCI_P` (`cmci_supported`) или в `clear_local_APIC`
+при Max LVT ≥ 6; Windows пишет CMCI только при `MCG_CAP[10]` (`+0x569bb4`),
+а Thermal — только когда `intelppm.sys` регистрирует тепловое прерывание
+(`HalPrivateDispatchTable+0x3A8`), что он делает лишь при `CPUID.06H:EAX` с HWP и уведомлением или
+HFI. При изменении любого из этих условий LVT добавляются вместе с Max LVT.
 
 Не входят: доставка с LINT-пинов, NMI/SMI/INIT/ExtINT, доставка Error LVT,
-выставление ESR, x2APIC, multi-CPU, IOAPIC (S4-26c), CPU delivery, CPUID,
-Linux acceptance (S4-38). См. [отчёт S4-25f](../reports/STAGE_4_S4-25F_2026-11-09.md)
+выставление ESR, источник PMI и автоматическая маска PMC при PMI, x2APIC, multi-CPU,
+IOAPIC (S4-26c), CPU delivery, CPUID, Linux acceptance (S4-38). См. [отчёт S4-25f](../reports/STAGE_4_S4-25F_2026-11-09.md)
 и [методику](../testing/MACHINE.md#s4-25f-local-apic-для-linux-probe).
 
 ## Fixed-edge IOAPIC route (S4-26a)

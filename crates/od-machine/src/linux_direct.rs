@@ -18706,7 +18706,7 @@ mod tests {
             assert_eq!(run.exit, PagedProbeExit::Halted, "{run:?}");
             assert_eq!(run.memory_error, None);
             let state = boot.board.state();
-            assert_eq!(state.gpr[Register::Rax as usize], 0x0003_0014);
+            assert_eq!(state.gpr[Register::Rax as usize], 0x0004_0014);
             assert_eq!(state.gpr[Register::Rdx as usize], 0x0017_0020);
         }
 

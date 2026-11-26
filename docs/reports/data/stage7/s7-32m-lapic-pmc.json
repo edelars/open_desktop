@@ -1,0 +1,107 @@
+{
+ "task": "S7-32 slice M: LVT Performance Monitoring Counters 0x340 and LAPIC Version 0x00040014 (ISSUE-700)",
+ "base_commit": "17fc5dd",
+ "build": "cargo build --release --locked --offline -p od-runner",
+ "od_runner_sha256": "a1d9bf1948431c62cedb842e3c08cc258e30417a4256407a56f42336f2528b1f",
+ "windows": {
+  "command": "od-runner boot-firmware --image fw-l.bin --disk media.raw,ro --cpu-loop unified --tpm --nvram-in sb-defaults.nv --guest windows --ram-mib 4096 --nvme-pci --budget 80000000000 --stop-snapshot stop.json --peek rip_module+f46be0:40",
+  "rom_sha256": "5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665",
+  "exit": "backend_error",
+  "exit_detail": "Backend(Backend(\"tracked Long64 MMIO access failed: MmioBackend { address: GuestPhysicalAddress(4273995792), message: \\\"MMIO device 2 write failed: UnsupportedConfiguration\\\" }\"))",
+  "retired": 14498780935,
+  "seconds": 15,
+  "rip": "0xfffff805aef69818",
+  "module": "ntkrnlmp.pdb",
+  "module_base": "0xfffff805aea00000",
+  "rva": "0x569818",
+  "rip_bytes": "c74310000000004489238b4b10448923",
+  "previous_stop": {
+   "issue": "ISSUE-700",
+   "retired": 14498755263,
+   "address": "0xFEE00340"
+  },
+  "kibugcheckdata_zero": true,
+  "exceptions_delivered": 0,
+  "com1_sha256": "50aa1d266816daf4d0c23aef1c6554dc6f7670d24031081174de4b3f1ef0b34a",
+  "com1_equal_to_slice_l_run_l4": true,
+  "next_issue": "ISSUE-701"
+ },
+ "linux_stage4a_apic": {
+  "recipe": "work/stage6/s6-21-seeded-ioapic/run.sh arguments with --cpuid-profile stage4a-apic --seed 24301, --vcpus 1, budget 2500000000",
+  "kernel_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+  "initramfs_sha256": "5481c1399df1ebce44316a32a2c29857f596ac7e7b5e2c8af3e93cc4e21a276d",
+  "acpi_blob_sha256": "5ce8f02c46004d0457edd1c22225c8944fe2c0946c5c1e6b8822dec72717f386",
+  "seconds": 1398,
+  "stop": {
+   "exit_kind": "budget_exhausted",
+   "retired": 2499983194,
+   "cpl3_retired": 11286,
+   "halt_wakes": 16806,
+   "irq0_edges": 228,
+   "irqs_delivered": 18072,
+   "quanta": 21002025,
+   "virtual_ns": 1699934364214,
+   "rip": "0xffffffff82379d7e"
+  },
+  "com1_bytes": 23101,
+  "com1_sha256": "0ca15a89e90d2724c5f2515ad072d697e3628f32cd370158250a9b0fec6764a6",
+  "verifier": "build_stage6_smp_initramfs.py --verify-report --nonce SMPUpObservation20261119 --expect-online 1: exit 0",
+  "guest_observation_equal_to_s6_21": true,
+  "timer_line": "0:        228  IO-APIC   2-edge      timer",
+  "com1_vs_s6_21": "same length; differs only in timestamps of 166 lines (1 microsecond) and the sched_clock 'Marking stable' numbers",
+  "s6_21_com1_sha256": "ba4f0392c5e294526a226ed53b31c6eff77279745a21119b718a0ece1885af83"
+ },
+ "linux_unified_loop": {
+  "command": "OD_REQUIRE_UBUNTU_VMLINUZ=1 python3 tests/system/firmware_linux_boot.py",
+  "verdict": "PASS (23/23 checks)",
+  "exit": 0,
+  "seconds": 2970,
+  "note": "CPUID profile X8664V1Stage4AExt2 has no APIC bit; Linux does not touch the LAPIC in this run (acpi/boot.c returns -ENODEV before register_lapic_address)"
+ },
+ "tests": {
+  "od_machine_local_apic_filter": 86,
+  "local_apic_module": 81,
+  "new": 5,
+  "od_machine_lib": {
+   "passed": 2690,
+   "ignored": 18
+  },
+  "od_runner": {
+   "passed": 1114,
+   "ignored": 5
+  },
+  "mutations": {
+   "version_0x00030014": 1,
+   "software_disable_does_not_mask_pmc": 1,
+   "pmc_accepts_init_extint": 1,
+   "pmc_reset_zero": 3,
+   "delivery_status_stored": 1,
+   "pmc_never_unmasks": 9,
+   "lint_loses_extint": 5
+  },
+  "od_machine_lib_after_review": {
+   "passed": 2691,
+   "ignored": 18
+  },
+  "review_mutations": {
+   "reset_all_keeps_pmc": 3,
+   "restore_masks_pmc": 1,
+   "lint1_narrowed": 1
+  }
+ },
+ "linux_stage4a_apic_two_vcpus": {
+  "recipe": "linux-direct --run --set-cpl0 --user-mode --cpuid-profile stage4a-apic --seed 24301 --vcpus 2 --acpi-blob tests/fixtures/guest/stage6/smp-init/acpi-2-vcpus.bin --nonce smpBoot20261119A, budget 2500000000",
+  "seconds": 1283,
+  "exit_kind": "budget_exhausted",
+  "retired": 2500000000,
+  "retired_by_vcpu": [
+   1989565354,
+   510434646
+  ],
+  "verifier": "build_stage6_smp_initramfs.py --verify-report --nonce smpBoot20261119A --expect-online 2: exit 0",
+  "guest_online": "0-1",
+  "bringup_line": "smp: Brought up 1 node, 2 CPUs",
+  "com1_bytes": 23433,
+  "com1_sha256": "35a7bdd54fb8a4240818e1318a1c9fe25fe81cc1fe4c494aefa872742ba5999e"
+ }
+}

@@ -628,6 +628,44 @@ diagnostic_vcpu` (34), `--lib uart` (13), `--lib io_apic` (11), `--test
 stage4_uart_irq_probe` (10), `cargo fmt --all -- --check`. Тесты не проверяют
 доставку с LINT-пинов, NMI, Error LVT delivery, CPUID, x2APIC и Linux (S4-38).
 
+### S7-32, срез M: LVT счётчиков производительности `0x340`
+
+Запуск: `cargo test -p od-machine --lib local_apic --offline -- --test-threads=1`
+(86 тестов фильтра: 81 модуля `local_apic` — 76 прежних и 5 новых — и 5 тестов других модулей с
+`local_apic` в имени). Новые тесты: `pmc_lvt_resets_masked_and_stores_vector_delivery_mode_and_mask`
+(сброс `0x10000`, при software disable маскированная запись хранится, снятие маски отклоняется;
+Fixed/SMI/NMI с маской и без; Delivery Status отбрасывается; вектор < 16 хранится; значение Linux
+`0x400`), `windows_hal_local_unit_initialisation_is_accepted` (записи HAL Windows `ntkrnlmp` +
+`0x569990` по порядку и линия PMI `0x100FF`/`0xFE`, запросов нет),
+`linux_maxlvt_four_paths_are_accepted` (`lapic_setup_esr` и `clear_local_APIC` Linux 7.0 при
+Max LVT = 4), `linux_ap_startup_with_maxlvt_four_clears_esr_around_init_and_startup` (запуск AP
+Linux 7.0 при Max LVT > 3 на двух LAPIC: ESR = 0 и чтение, INIT assert/deassert, дважды ESR / STARTUP /
+ESR, всего пять записей ESR; у AP ждут INIT и SIPI), `absent_thermal_and_cmci_lvts_match_the_cpu_identity`
+(ни один CPUID-профиль не объявляет ACPI/TM/TM2, HWP/HFI листа 6, `IA32_MCG_CAP.MCG_CMCI_P`; профили
+перечисляет `every_cpuid_profile` — цепочка исчерпывающего `match`, новый вариант не скомпилируется,
+пока его туда не добавят). Изменены: Version
+`0x00040014` и согласованность Max LVT + 1 = числу реализованных LVT на устройстве с таймером
+(`version_reads_integrated_five_lvt_and_is_read_only`); `LVT_REGS` включает `0x340`, поэтому
+сброс, маскирование при software disable и отсутствие влияния на IRR/ISR/TMR проверяются и для
+PMC (`storage_lvts_reset_masked_and_store_mask_and_vector`, `storage_lvts_have_no_effect_on_requests`,
+`software_disable_masks_new_lvts_and_unmask_is_refused_until_enable`); перебор ошибочных обращений
+содержит `0x340` в реализованных и 14 отвергаемых записей PMC (режимы `001/011/101/110/111`, в том
+числе маскированные INIT/ExtINT, биты 11, 13, 14, 15, 17, 31, выше 32); `0x340` добавлен в
+`dirty`, reset-матрицу (с ревью — и путь `reset_all`), INIT-сброс и проверку ширины/выравнивания;
+состояние снимков `vm_snapshot` содержит немаскированный PMC (`dirty`: `0x400`), поэтому сброс платы и
+восстановление снимка проверяют и его; перебор режимов доставки LINT (`000/010/100/101/111`) идёт для
+`0x350` и `0x360`; `UnknownOffset` закреплён только
+за `0x2f0`/`0x330` (`lvt_entries_without_a_model_are_unsupported_without_effect`,
+`thermal_and_cmci_stay_unknown_offset`). Литерал Version обновлён в
+`without_the_linux_profile_the_lapic_has_no_timer_as_before` (`firmware_board.rs`) и
+`the_guest_reads_the_lapic_version_and_the_ioapic_version_under_the_apic_profile`
+(`linux_direct.rs`). Инъекции (после каждой файл возвращался копией): Version `0x00030014` — 1
+падение, software disable не маскирует PMC — 1, PMC принимает INIT/ExtINT — 1, сброс PMC = 0 — 3,
+Delivery Status хранится — 1, PMC никогда не снимает маску — 9, LINT теряет ExtINT — 5; по ревью:
+`reset_all` сохраняет PMC — 1 (`local_apic`) и 2 (`vm_snapshot`), восстановление снимка маскирует PMC —
+1 (`vm_snapshot`), LINT1 сужен до Fixed/SMI/NMI — 1. Гостевые
+проверки (Windows, Linux `stage4a-apic`, единый цикл Linux) — в [отчёте этапа 7, срез M](../reports/STAGE_7_REPORT.md#срез-m-lvt-счётчиков-производительности-локального-apic-2026-11-26).
+
 ## S4-26a: fixed-edge IOAPIC route
 
 Run `cargo test -p od-machine --lib io_apic::tests --offline -- --test-threads=1`

@@ -381,6 +381,8 @@ mod tests {
         pair.queue_sipi(0, 0x09).unwrap();
         pair.cpus[0].local.tpr = 0x20;
         pair.cpus[1].local.irr[3] |= 1 << 3;
+        // S7-32 slice M: an unmasked PMC LVT (NMI) is part of the state, reset masks it.
+        pair.cpus[1].local.pmc_lvt = 0x400;
     }
 
     fn quiet(board: &LoadedFirmwareBoard) -> bool {
