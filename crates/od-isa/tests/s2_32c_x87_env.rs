@@ -517,11 +517,25 @@ fn decoder_and_the_fwait_pairs() {
         let instruction = decode(&code).unwrap();
         assert_eq!((instruction.operation, instruction.length), (operation, 2));
         for prefix in [0x66u8, 0xf2, 0xf3, 0x2e, 0x67, 0x48, 0x64] {
+            let decoded = decode(&[prefix, code[0], code[1]]);
+            // S7-32 W4: `67 DD 30` is FNSAVE at [EAX], the general memory form that only the FP
+            // member of the CPL0 set executes (the bare step refuses it).
+            if prefix == 0x67 && operation == Operation::FnsaveRax {
+                assert!(
+                    matches!(
+                        decoded,
+                        Ok(long_decode::Instruction {
+                            operation: Operation::FnsaveMemory { destination },
+                            length: 3,
+                            ..
+                        }) if destination.address_size == od_isa::OperandSize::Dword
+                    ),
+                    "{prefix:02x} {code:02x?}: {decoded:?}"
+                );
+                continue;
+            }
             assert!(
-                matches!(
-                    decode(&[prefix, code[0], code[1]]),
-                    Err(DecodeError::Unsupported { .. })
-                ),
+                matches!(decoded, Err(DecodeError::Unsupported { .. })),
                 "{prefix:02x} {code:02x?}"
             );
         }

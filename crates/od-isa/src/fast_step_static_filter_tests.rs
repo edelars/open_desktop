@@ -215,10 +215,12 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     // null override on a form the profile decoder refused gives the same refused shape, so the
     // admitted set and its hash are unchanged. The W3 add-on: 20 more decodes (`66 8E /r`, MOV
     // Sreg with the operand-size prefix, as `MovToSreg`) and none admitted (the rule gives
-    // `MovToSreg` no class).
+    // `MovToSreg` no class). S7-32 W4: 44 more decodes (FXSAVE/FXRSTOR, FILD m32int and FNSAVE
+    // with memory operands of the W4 fallbacks: `Fxsave`/`Fxrstor`, `FildM32Int`, `FnsaveMemory`)
+    // and none admitted (the rule gives these operations no class).
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (150_087, 32_208, 881, 33_089)
+        (150_131, 32_208, 881, 33_089)
     );
     assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }

@@ -1070,6 +1070,18 @@ impl ConditionCode {
     }
 }
 
+/// The layout of the 512-byte FXSAVE area of a 64-bit-mode FXSAVE/FXRSTOR (Intel SDM Rev. 093,
+/// Vol. 2A FXSAVE, Tables 3-48 and 3-49; Vol. 1 §8.1.8 and §10.5.1, Table 10-2). Both layouts hold FCW, FSW, the
+/// abridged FTW, FOP, MXCSR, MXCSR_MASK, ST0-7 and XMM0-15 at the same offsets; they differ in
+/// bytes 8..24.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FxsaveLayout {
+    /// REX.W = 0 (`FXSAVE`/`FXRSTOR`): FIP[31:0] at 8, FCS at 12, FDP[31:0] at 16, FDS at 20.
+    Plain,
+    /// REX.W = 1 (`FXSAVE64`/`FXRSTOR64`): the 64-bit FIP at 8 and FDP at 16, no selectors.
+    Long64,
+}
+
 /// S7-32: the carry-flag instructions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CarryFlagOp {
@@ -2030,6 +2042,22 @@ pub enum Operation {
     Fxrstor64RipRelative(MemoryOperand),
     /// Exact Linux `48 0F AE 0F` FXRSTOR64 `[RDI]` form.
     Fxrstor64Rdi(MemoryOperand),
+    /// S7-32 (ISA batch W4): `NP [REX.W] 0F AE /0` FXSAVE/FXSAVE64 m512byte at any memory operand
+    /// the exact forms above do not claim: any base, index, scale and displacement, RIP-relative,
+    /// REX.R/X/B, `67`, a null segment override and (through the segment-override fallback) FS/GS.
+    /// `layout` is [`FxsaveLayout::Long64`] with REX.W, [`FxsaveLayout::Plain`] without. Decoded
+    /// only by the fallback `decode_s7_32_system`; executed by the FP member of the CPL0 set (at
+    /// CPL0 and, under the CPL3 entry, at CPL3), like the exact forms.
+    Fxsave {
+        area: MemoryOperand,
+        layout: FxsaveLayout,
+    },
+    /// S7-32 (ISA batch W4): `NP [REX.W] 0F AE /1` FXRSTOR/FXRSTOR64 m512byte, the forms of
+    /// [`Operation::Fxsave`].
+    Fxrstor {
+        area: MemoryOperand,
+        layout: FxsaveLayout,
+    },
     /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
     MovupsRegister {
         destination: u8,
@@ -3382,6 +3410,19 @@ pub enum Operation {
     FistM32IntRax,
     /// Bare `DB 00` FILD dword integer at [RAX], bounded stack-push profile.
     FildM32IntRax,
+    /// S7-32 (ISA batch W4): `[REX] DB /0` FILD m32int at any memory operand without a segment
+    /// override (the exact `[RAX]` form stays [`Operation::FildM32IntRax`]). Decoded only by the
+    /// fallback `decode_s7_32_x87`; executed only by the FP member of the CPL0 set at CPL0.
+    FildM32Int {
+        source: MemoryOperand,
+    },
+    /// S7-32 (ISA batch W4): `[REX] DD /6` FNSAVE m108byte (the 32-bit protected-mode image) at any
+    /// memory operand without a segment override (the exact `[RAX]` form stays
+    /// [`Operation::FnsaveRax`]; the FP member of the CPL0 set runs both through one executor).
+    /// Decoded only by `decode_s7_32_x87`; executed only by the FP member of the CPL0 set at CPL0.
+    FnsaveMemory {
+        destination: MemoryOperand,
+    },
     /// Bare `DF 00` FILD word integer at [RAX], bounded stack-push profile.
     FildM16IntRax,
     /// Bare `DF 28` FILD qword integer at [RAX], bounded stack-push profile.
@@ -13148,6 +13189,64 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }))
     }
 
+    /// S7-32 (ISA batch W4): x87 `DB /0` FILD m32int and `DD /6` FNSAVE m108byte with any ModR/M
+    /// memory operand, tried by [`decode`] after the profile decoder (which owns the exact `[RAX]`
+    /// forms) and `decode_fisttp` refused `DB`/`DD`. LOCK is #UD (SDM Vol. 2A FILD, FSAVE/FNSAVE:
+    /// "If the LOCK prefix is used"). Refused (`Ok(None)`): the register forms, other /r values,
+    /// every segment override (the executor records the default segment's selector in FDS),
+    /// `66` (the 16-bit FNSAVE image), `F2`/`F3` and REX.W (their effect on these opcodes is not
+    /// asserted). REX.R/X/B and `67` take part in the address.
+    fn decode_s7_32_x87(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if !matches!(first, 0xdb | 0xdd)
+            || prefixes.operand_override
+            || prefixes.group1.is_some()
+            || prefixes.segment.is_some()
+            || prefixes.rex.is_some_and(|rex| rex & 8 != 0)
+        {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Primary,
+            byte: first,
+        };
+        let modrm = self.byte()?;
+        let digit = (modrm >> 3) & 7;
+        if modrm >> 6 == 3 || !matches!((first, digit), (0xdb, 0) | (0xdd, 6)) {
+            return Ok(None);
+        }
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        let size = if first == 0xdb {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+            return Ok(None);
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: OperandSize::Qword,
+            address_size: memory.address_size,
+            operation: if first == 0xdb {
+                Operation::FildM32Int { source: memory }
+            } else {
+                Operation::FnsaveMemory {
+                    destination: memory,
+                }
+            },
+        }))
+    }
+
     /// S2-54 slice D: `66 0F 38 00..0B/1C..1E /r` and `66 0F 3A 0F /r ib` (the integer SSSE3 forms) with an
     /// XMM or memory source, tried by [`decode`] only after the profile decoder returned `Unsupported`
     /// for the opcode. Without `66` the same opcodes are the MMX forms (S2-33; [`Operation::MmxSsse3`]): the
@@ -13617,7 +13716,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
     /// opcode (so every form the profile decoder already decodes, or calls `Invalid`, keeps its
     /// answer): `SLDT`/`STR`/`LLDT m` (`0F 00 /0,/1,/2`), `SIDT m` (`0F 01 /1`), RDSSP and ENDBR32
     /// as NOPs (`F3 0F 1E`), `MOV r64, CRn` / `MOV CRn, r64` for CR0, CR2 and CR8 (`0F 20`/`0F 22`),
-    /// `MOV r64, DRn` (`0F 21`), `RDPMC` (`0F 33`), `CLFLUSH m8` (`0F AE /7`), `MOVNTI` (`0F C3`),
+    /// `MOV r64, DRn` (`0F 21`), `RDPMC` (`0F 33`), `CLFLUSH m8` (`0F AE /7`), FXSAVE/FXRSTOR
+    /// m512byte (`[REX.W] 0F AE /0, /1`, S7-32 W4; with LOCK `#UD`), `MOVNTI` (`0F C3`),
     /// `MOV r/m, Sreg` with `66` (`8C`), `MOV Sreg, r/m16` (`8E`), `INT imm8` (`CD`), `CMC`/`CLC`/
     /// `STC` (`F5`/`F8`/`F9`) and the `66 66 .. 90` NOP. Encodings from the Intel SDM Vol. 2
     /// (instruction pages and Appendix A opcode maps). `Ok(None)` keeps the profile decoder's
@@ -13657,6 +13757,25 @@ impl<M: GuestMemory> Fetch<'_, M> {
             return Ok(None);
         };
         if locked {
+            // S7-32 W4: LOCK FXSAVE/FXRSTOR with a memory operand (`F0 [REX] 0F AE /0, /1`, no
+            // mandatory prefix) is #UD (SDM Vol. 2A FXSAVE and FXRSTOR: "If the LOCK prefix is
+            // used"); every other locked form keeps the profile decoder's answer.
+            if first == 0x0f
+                && prefixes.group1.is_none()
+                && !prefixes.operand_override
+                && self.byte()? == 0xae
+            {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 && (modrm >> 3) & 7 <= 1 {
+                    return Err(DecodeError::Invalid {
+                        opcode: Opcode {
+                            map: OpcodeMap::Escape0f,
+                            byte: 0xae,
+                        },
+                        length: self.length,
+                    });
+                }
+            }
             return Ok(None);
         }
         let rex = prefixes.rex.unwrap_or(0);
@@ -13925,23 +14044,56 @@ impl<M: GuestMemory> Fetch<'_, M> {
             0x33 if prefixes.group1.is_none() && !prefixes.operand_override => Ok(Some(
                 instruction(self.length, opcode, OperandSize::Qword, Operation::Rdpmc),
             )),
-            // CLFLUSH m8: no mandatory prefix (66 0F AE /7 is CLFLUSHOPT, not modeled).
+            // CLFLUSH m8 (/7) and, S7-32 W4, FXSAVE/FXRSTOR m512byte (/0, /1): no mandatory prefix
+            // (`66`, `F2` and `F3` select other instructions of the group, such as CLFLUSHOPT
+            // `66 0F AE /7` or RDFSBASE `F3 0F AE /0`, none modeled). REX.W selects the 64-bit
+            // FXSAVE layout; REX.R does not matter (the reg field is the /digit). An FS/GS
+            // override is left to the segment-override fallback, which gives the operand its
+            // segment; a null override is stamped by `rm_operand`.
             0xae if prefixes.group1.is_none() && !prefixes.operand_override && !fs_gs => {
                 let modrm = self.byte()?;
-                if (modrm >> 3) & 7 != 7 || modrm >> 6 == 3 {
+                if modrm >> 6 == 3 {
                     return Ok(None);
                 }
-                let Operand::Memory(memory) =
-                    self.rm_operand(modrm, prefixes, OperandSize::Byte)?
-                else {
-                    unreachable!("a memory ModRM form")
-                };
-                Ok(Some(instruction(
-                    self.length,
-                    opcode,
-                    OperandSize::Byte,
-                    Operation::Clflush { memory },
-                )))
+                match (modrm >> 3) & 7 {
+                    digit @ (0 | 1) => {
+                        let Operand::Memory(area) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                        else {
+                            unreachable!("a memory ModRM form")
+                        };
+                        let layout = if rex & 8 != 0 {
+                            FxsaveLayout::Long64
+                        } else {
+                            FxsaveLayout::Plain
+                        };
+                        let operation = if digit == 0 {
+                            Operation::Fxsave { area, layout }
+                        } else {
+                            Operation::Fxrstor { area, layout }
+                        };
+                        Ok(Some(instruction(
+                            self.length,
+                            opcode,
+                            OperandSize::Qword,
+                            operation,
+                        )))
+                    }
+                    7 => {
+                        let Operand::Memory(memory) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Byte)?
+                        else {
+                            unreachable!("a memory ModRM form")
+                        };
+                        Ok(Some(instruction(
+                            self.length,
+                            opcode,
+                            OperandSize::Byte,
+                            Operation::Clflush { memory },
+                        )))
+                    }
+                    _ => Ok(None),
+                }
             }
             // MOVNTI m32/m64, r32/r64: a plain store for the model (no caches, no write combining).
             // The register form and the 66 form are #UD.
@@ -15126,6 +15278,17 @@ impl Operation {
             | Operation::MovssLoadMemory { source, .. }
             | Operation::LdmxcsrMemory { source } => visit(source),
             Operation::Stmxcsr(memory) => visit(memory),
+            // S7-32 W4: the 512-byte area (`size` is not its width; the executor checks the range).
+            // The exact kernel forms too: without the override they are those operations, and the
+            // FP member runs every FXSAVE/FXRSTOR through one executor that adds the base.
+            Operation::Fxsave { area, .. }
+            | Operation::Fxrstor { area, .. }
+            | Operation::FxsaveRipRelative(area)
+            | Operation::Fxsave64RaxDisp8(area)
+            | Operation::Fxsave64R12(area)
+            | Operation::Fxrstor64RbxDisp8(area)
+            | Operation::Fxrstor64RipRelative(area)
+            | Operation::Fxrstor64Rdi(area) => visit(area),
             Operation::Lea { .. } | Operation::NopModrm => {}
             _ => return false,
         }
@@ -15205,7 +15368,17 @@ fn decode_uncached(
             fetch.decode_mmx_int()
         }
         (OpcodeMap::Escape0f, 0x12 | 0x16 | 0xf0) => fetch.decode_sse3_permute(),
-        (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => fetch.decode_fisttp(),
+        (OpcodeMap::Primary, 0xdb | 0xdd | 0xdf) => match fetch.decode_fisttp() {
+            // S7-32 W4: FILD m32int and FNSAVE at any memory operand after FISTTP.
+            Ok(None) if opcode.byte != 0xdf => Fetch {
+                memory: &mut *fetch.memory,
+                start: rip,
+                length: 0,
+                context,
+            }
+            .decode_s7_32_x87(),
+            other => other,
+        },
         // S2-33: EMMS.
         (OpcodeMap::Escape0f, 0x77) => fetch.decode_emms(),
         // S2-54 slice D: the integer SSSE3 forms.

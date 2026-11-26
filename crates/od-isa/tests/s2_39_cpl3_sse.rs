@@ -1684,3 +1684,251 @@ fn sse_forms_between_ordinary_cpl3_instructions_and_the_budget_per_instruction()
     let (cpl3, _, _) = in_set(Level::Cpl3, &code, &case, 5, |_| {});
     assert_eq!(cpl3.data[0x60..0x64], MXCSR_MASKED.to_le_bytes());
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// S7-32 W4: FXSAVE/FXRSTOR (`NP [REX.W] 0F AE /0, /1`) at CPL3. The SDM does not restrict them to CPL0; at CPL3 the
+// accesses are user accesses (a supervisor page is a #PF with U/S = 1), and a misaligned area with RFLAGS.AC and
+// CR0.AM set is a refusal (the SDM lets the processor raise #AC or #GP there; #AC is not modeled). Otherwise CPL3 and
+// the CPL0 set give the same result (the CPL0 set is checked byte for byte in `cpl0_profile_set.rs`, `s7_32_w4_*`).
+
+struct W4Run {
+    result: Result_,
+    executed: u64,
+    state: LongModeState,
+    ram: Ram,
+    before: GuestFpState,
+    after: GuestFpState,
+}
+
+/// Runs one instruction at `level` with RAX = `area` and, when given, `image` at `area`.
+fn w4_run_at(
+    level: Level,
+    code: &[u8],
+    area: u64,
+    image: Option<&[u8; 512]>,
+    rflags_ac: bool,
+) -> W4Run {
+    let mut case = Case::new(true);
+    case.rax = area;
+    if rflags_ac {
+        case.rflags |= RFLAGS_AC;
+    }
+    let mut state = initial_state(&case, level);
+    let mut ram = initial_memory(code, &case);
+    if let Some(image) = image {
+        ram.put(area, image);
+    }
+    ram.reads = 0;
+    ram.writes = 0;
+    let cell = cell_for(&case);
+    let before = cell.borrow().clone();
+    let (exit, executed) = run_set(level, &mut state, &mut ram, &cell, 1);
+    let after = cell.borrow().clone();
+    W4Run {
+        result: result_of(exit),
+        executed,
+        state,
+        ram,
+        before,
+        after,
+    }
+}
+
+/// A hand-built image: FCW 0x027F, FSW with TOP = 7, physical 7 (ST0) nonempty holding 1.0, FOP 0x123, the bytes
+/// 8..24 (FIP/FCS/FDP/FDS or the 64-bit pointers), MXCSR 0x1F00 and an XMM pattern; the rest junk.
+fn w4_cpl3_image() -> [u8; 512] {
+    let mut image = [0x5au8; 512];
+    image[0..2].copy_from_slice(&0x027fu16.to_le_bytes());
+    image[2..4].copy_from_slice(&0x3800u16.to_le_bytes());
+    image[4] = 0x80;
+    image[6..8].copy_from_slice(&0x0123u16.to_le_bytes());
+    image[8..16].copy_from_slice(&0x0033_0000_0040_1000u64.to_le_bytes());
+    image[16..24].copy_from_slice(&0x002b_0000_0050_2000u64.to_le_bytes());
+    image[24..28].copy_from_slice(&0x1f00u32.to_le_bytes());
+    image[32..42].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]);
+    for register in 0..16 {
+        image[160 + 16 * register..176 + 16 * register].copy_from_slice(&xmm_pattern(register + 3));
+    }
+    image
+}
+
+#[test]
+fn s7_32_w4_fxsave_and_fxrstor_run_at_cpl3_like_the_cpl0_set() {
+    for (save, restore, long64) in [
+        (&[0x0f, 0xae, 0x00][..], &[0x0f, 0xae, 0x08][..], false),
+        (
+            &[0x48, 0x0f, 0xae, 0x00][..],
+            &[0x48, 0x0f, 0xae, 0x08][..],
+            true,
+        ),
+    ] {
+        let cpl3 = w4_run_at(Level::Cpl3, save, DATA, None, false);
+        let cpl0 = w4_run_at(Level::Cpl0, save, DATA, None, false);
+        assert_eq!(cpl3.result, Result_::Retired, "long64 {long64}");
+        assert_eq!(cpl3.executed, 1);
+        assert_eq!(cpl3.state.rip, CODE + save.len() as u64);
+        assert_eq!(
+            cpl3.ram.bytes, cpl0.ram.bytes,
+            "long64 {long64}: the same image"
+        );
+        assert_eq!(cpl3.after, cpl3.before, "FXSAVE changes no FP state");
+        // Literal fields of the image: MXCSR, MXCSR_MASK 0xFFBF and, in the 32-bit layout, FCS 0x2B / FDS 0x53
+        // of the cell (`cell_for`); bytes 14..16 and 22..24 keep what the memory held.
+        let image = &cpl3.ram.bytes[DATA as usize..DATA as usize + 512];
+        let previous =
+            &initial_memory(save, &Case::new(true)).bytes[DATA as usize..DATA as usize + 512];
+        assert_eq!(image[24..32], [0x80, 0x1f, 0, 0, 0xbf, 0xff, 0, 0]);
+        if !long64 {
+            assert_eq!(image[12..14], [0x2b, 0x00]);
+            assert_eq!(image[20..22], [0x53, 0x00]);
+            assert_eq!(image[14..16], previous[14..16]);
+            assert_eq!(image[22..24], previous[22..24]);
+        }
+        assert_eq!(
+            image[416..512],
+            previous[416..512],
+            "416..512 is not written"
+        );
+        let cpl3 = w4_run_at(Level::Cpl3, restore, DATA, Some(&w4_cpl3_image()), false);
+        let cpl0 = w4_run_at(Level::Cpl0, restore, DATA, Some(&w4_cpl3_image()), false);
+        assert_eq!(cpl3.result, Result_::Retired, "long64 {long64}");
+        assert_eq!(
+            cpl3.after, cpl0.after,
+            "long64 {long64}: the same restored state"
+        );
+        assert_eq!(cpl3.ram.writes, 0);
+        let x87 = &cpl3.after.x87;
+        assert_eq!(
+            (x87.control_word, x87.status_word, x87.last_opcode),
+            (0x027f, 0x3800, 0x0123)
+        );
+        // ST0 = physical 7 holds 1.0 (valid, 00); the other seven are empty.
+        assert_eq!(x87.tag_word, 0x3fff);
+        assert_eq!(cpl3.after.sse.mxcsr, 0x1f00);
+        assert_eq!(cpl3.after.sse.xmm[15], xmm_pattern(18));
+        if long64 {
+            assert_eq!(
+                (x87.instruction_pointer, x87.data_pointer),
+                (0x0033_0000_0040_1000, 0x002b_0000_0050_2000)
+            );
+            assert_eq!(
+                (x87.instruction_selector, x87.data_selector),
+                (Some(0), Some(0))
+            );
+        } else {
+            assert_eq!(
+                (x87.instruction_pointer, x87.data_pointer),
+                (0x0040_1000, 0x0050_2000)
+            );
+            assert_eq!(
+                (x87.instruction_selector, x87.data_selector),
+                (Some(0), Some(0))
+            );
+        }
+    }
+    // With selectors in the 32-bit layout: bytes 12..14 and 20..22 are FCS and FDS.
+    let mut image = w4_cpl3_image();
+    image[12..14].copy_from_slice(&0x0033u16.to_le_bytes());
+    image[20..22].copy_from_slice(&0x002bu16.to_le_bytes());
+    let cpl3 = w4_run_at(Level::Cpl3, &[0x0f, 0xae, 0x08], DATA, Some(&image), false);
+    assert_eq!(cpl3.result, Result_::Retired);
+    assert_eq!(
+        (
+            cpl3.after.x87.instruction_selector,
+            cpl3.after.x87.data_selector
+        ),
+        (Some(0x33), Some(0x2b))
+    );
+    // Through GS: the base is added at CPL3 too.
+    let mut case = Case::new(true);
+    case.rax = DATA - 0x100;
+    let (cpl3, _, _) = in_set(Level::Cpl3, &[0x65, 0x0f, 0xae, 0x00], &case, 1, |state| {
+        state.gs_base = 0x100;
+    });
+    assert_eq!(cpl3.result, Result_::Retired);
+    assert_eq!(cpl3.data[28..32], [0xbf, 0xff, 0, 0]);
+}
+
+#[test]
+fn s7_32_w4_fxsave_and_fxrstor_at_cpl3_fault_on_a_supervisor_page_and_refuse_an_ac_misalignment() {
+    for (code, write) in [
+        (&[0x0f, 0xae, 0x00][..], true),
+        (&[0x48, 0x0f, 0xae, 0x00][..], true),
+        (&[0x0f, 0xae, 0x08][..], false),
+        (&[0x48, 0x0f, 0xae, 0x08][..], false),
+    ] {
+        let image = w4_cpl3_image();
+        let page_fault = Result_::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(1 | if write { 2 } else { 0 } | 4),
+            linear_address: Some(SUPERVISOR_PAGE),
+        });
+        // The area on the supervisor page: #PF with U/S = 1, nothing accessed, nothing changed; CPL0 may use it.
+        let cpl3 = w4_run_at(Level::Cpl3, code, SUPERVISOR_PAGE, Some(&image), false);
+        assert_eq!(cpl3.result, page_fault, "{code:02x?}");
+        assert_eq!((cpl3.executed, cpl3.state.rip), (0, CODE));
+        assert_eq!(cpl3.ram.writes, 0);
+        assert_eq!(cpl3.after, cpl3.before);
+        let cpl0 = w4_run_at(Level::Cpl0, code, SUPERVISOR_PAGE, Some(&image), false);
+        assert_eq!(cpl0.result, Result_::Retired, "{code:02x?}");
+        // An area that crosses into the page (0x2F00..0x3100): #PF at the page. FXRSTOR changes nothing; FXSAVE has
+        // written the fields below the page (the image is not a transaction; executed again it writes the same
+        // bytes), CPU state, RIP and the cell are unchanged.
+        let across = SUPERVISOR_PAGE - 0x100;
+        let cpl3 = w4_run_at(Level::Cpl3, code, across, Some(&image), false);
+        assert_eq!(cpl3.result, page_fault, "{code:02x?} across");
+        assert_eq!((cpl3.executed, cpl3.state.rip), (0, CODE));
+        assert_eq!(cpl3.after, cpl3.before);
+        if write {
+            assert!(cpl3.ram.writes > 0);
+            assert_eq!(
+                cpl3.ram.bytes[SUPERVISOR_PAGE as usize..SUPERVISOR_PAGE as usize + 0x100],
+                image[0x100..0x200],
+                "nothing written on the supervisor page"
+            );
+        } else {
+            assert_eq!(cpl3.ram.writes, 0);
+        }
+        // A misaligned area: #GP(0) without RFLAGS.AC; with AC (CR0.AM is set) a refusal at CPL3 and #GP(0) at CPL0.
+        let cpl3 = w4_run_at(Level::Cpl3, code, DATA + 8, Some(&image), false);
+        assert_eq!(cpl3.result, gp0(), "{code:02x?}");
+        assert_eq!((cpl3.ram.reads, cpl3.ram.writes), (0, 0));
+        let cpl3 = w4_run_at(Level::Cpl3, code, DATA + 8, Some(&image), true);
+        assert_eq!(cpl3.result, Result_::Unsupported(0xae), "{code:02x?}");
+        assert_eq!((cpl3.ram.reads, cpl3.ram.writes), (0, 0));
+        assert_eq!(cpl3.after, cpl3.before);
+        let cpl0 = w4_run_at(Level::Cpl0, code, DATA + 8, Some(&image), true);
+        assert_eq!(cpl0.result, gp0(), "{code:02x?}");
+        // Aligned with AC: no misalignment, the instruction retires.
+        let cpl3 = w4_run_at(Level::Cpl3, code, DATA, Some(&image), true);
+        assert_eq!(cpl3.result, Result_::Retired, "{code:02x?}");
+    }
+}
+
+#[test]
+fn s7_32_w4_the_x87_forms_of_the_fxrstor_probe_stay_refused_at_cpl3() {
+    // FNCLEX, FFREE ST(7), FILD m32int ([RAX], [RCX]) and FNSAVE ([RAX], [RCX]) run only at CPL0 of
+    // the set: at CPL3 each is refused with its opcode byte, nothing retired, read or written, and the
+    // cell keeps its state (CPL0: `cpl0_profile_set.rs`, `s7_32_w4_*`).
+    for code in [
+        &[0xdb, 0xe2][..],
+        &[0xdd, 0xc7],
+        &[0xdb, 0x00],
+        &[0xdb, 0x01],
+        &[0xdd, 0x30],
+        &[0xdd, 0x31],
+    ] {
+        let mut case = Case::new(true);
+        case.rcx = DATA;
+        let (cpl3, before, after) = in_set(Level::Cpl3, code, &case, 1, |state| {
+            state.cs_selector = Some(0x33);
+        });
+        assert_eq!(cpl3.result, Result_::Unsupported(code[0]), "{code:02x?}");
+        assert_refused_unchanged(&format!("{code:02x?}"), &cpl3, &before, &after, &case);
+        assert_eq!(
+            cpl3.data,
+            initial_memory(code, &case).bytes[DATA as usize..DATA as usize + 0x500],
+            "{code:02x?}: nothing written"
+        );
+    }
+}

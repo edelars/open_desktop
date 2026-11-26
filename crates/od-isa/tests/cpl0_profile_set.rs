@@ -43746,19 +43746,14 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
     // LDMXCSR/STMXCSR and the integer SSE2 forms there too (tests/s2_39_cpl0_sse_set.rs); S2-39 (integer SSE2
     // remainder) adds the memory forms, the shifts by an XMM count and the moves of tests/s2_39_int_sse2.rs; S2-39
     // (rest) adds MOVNTDQ/MOVNTPS/MOVNTPD, MASKMOVDQU, MOVDQ2Q and MOVQ2DQ (tests/s2_39_rest.rs).
-    let rip_forms: [(&str, &[u8], u8); 10] = [
+    // S7-32 W4: `fxsave [rax]`, `fxrstor [rip+0]`, `fxsave64 [rip+0]` and `fnclex` execute
+    // (FXSAVE/FXRSTOR at any memory operand and the x87 forms of the kernel's FXRSTOR probe, the
+    // `s7_32_w4_*` tests); `66 fxsave` stays refused (no mandatory prefix).
+    let rip_forms: [(&str, &[u8], u8); 6] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
         ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
-        ("fnclex", &[0xdb, 0xe2], 0xdb),
         ("fld1", &[0xd9, 0xe8], 0xd9),
-        ("fxsave [rax]", &[0x0f, 0xae, 0x00], 0xae),
-        ("fxrstor [rip+0]", &[0x0f, 0xae, 0x0d, 0, 0, 0, 0], 0xae),
-        (
-            "fxsave64 [rip+0]",
-            &[0x48, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
-            0xae,
-        ),
         (
             "66 fxsave [rip+0]",
             &[0x66, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
@@ -54759,9 +54754,11 @@ fn fxrstor64_loads_the_hand_built_image_into_x87_xmm_and_mxcsr() {
     assert_eq!(fp.x87.last_opcode, 0x07ff);
     assert_eq!(fp.x87.instruction_pointer, 0x1122_3344_5566_7788);
     assert_eq!(fp.x87.data_pointer, 0x8877_6655_4433_2211);
-    // Selectors are not part of the Long64 image and stay as they were (dirty: 0x2b/0x53).
-    assert_eq!(fp.x87.instruction_selector, Some(0x2b));
-    assert_eq!(fp.x87.data_selector, Some(0x53));
+    // Selectors are not part of the Long64 image: FXRSTOR64 clears FCS and FDS (Intel SDM Vol. 1
+    // §8.1.8, "In 64-bit mode with REX.W = 1 ... Each instruction clears FCS and FDS"; S7-32 W4,
+    // before it they stayed as they were, here the dirty 0x2b/0x53).
+    assert_eq!(fp.x87.instruction_selector, Some(0));
+    assert_eq!(fp.x87.data_selector, Some(0));
     for (logical, expected) in expected_st.iter().enumerate() {
         assert_eq!(
             &fp.x87.registers[(3 + logical) & 7],
@@ -54998,18 +54995,12 @@ fn fxrstor64_outside_the_member_is_unsupported_with_its_opcode() {
     assert_eq!(result.instructions_executed, 0);
     assert!(memory.reads.is_empty());
     assert_eq!(state, before);
-    // With the member, every other encoding of the group stays refused and changes nothing.
+    // With the member, the encodings of the group outside FXRSTOR stay refused and change nothing.
+    // S7-32 W4: FXRSTOR32, other displacements, bases and REX bits, FS and `67` execute
+    // (`s7_32_w4_fxrstor_takes_every_addressing_form`); LOCK is #UD (`s7_32_w4_lock_is_ud`).
     for code in [
-        &[0x0f, 0xae, 0x4b, 0x40][..],             // FXRSTOR32 (no REX.W)
-        &[0x48, 0x0f, 0xae, 0x4b, 0x41][..],       // another displacement
-        &[0x48, 0x0f, 0xae, 0x4a, 0x40][..],       // another ModRM (RDX base)
-        &[0x48, 0x0f, 0xae, 0x0b][..],             // no displacement
-        &[0x64, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // FS segment prefix
         &[0x66, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // operand-size prefix
         &[0x48, 0x0f, 0xae, 0xcb][..],             // mod = 11
-        &[0x49, 0x0f, 0xae, 0x4b, 0x40][..],       // REX.W + REX.B
-        &[0x4c, 0x0f, 0xae, 0x4b, 0x40][..],       // REX.W + REX.R
-        &[0x67, 0x48, 0x0f, 0xae, 0x4b, 0x40][..], // address-size prefix
     ] {
         let cell = RefCell::new(dirty_fp_state());
         let before_cell = cell.borrow().clone();
@@ -55584,20 +55575,13 @@ fn fxsave64_outside_the_member_is_unsupported_with_its_opcode() {
     assert_eq!(result.instructions_executed, 0);
     assert!(memory.writes.is_empty());
     assert_eq!(state, before);
-    // With the member, every other encoding of the group stays refused and changes nothing.
+    // With the member, the encodings of the group outside FXSAVE stay refused and change nothing.
+    // S7-32 W4: FXSAVE32, other displacements, bases and REX bits, FS and `67` execute
+    // (`s7_32_w4_fxsave_takes_every_addressing_form`); LOCK is #UD (`s7_32_w4_lock_is_ud`).
     for code in [
-        &[0x0f, 0xae, 0x40, 0x40][..],             // FXSAVE32 (no REX.W)
-        &[0x48, 0x0f, 0xae, 0x40, 0x41][..],       // another displacement
-        &[0x48, 0x0f, 0xae, 0x41, 0x40][..],       // another ModRM (RCX base)
-        &[0x48, 0x0f, 0xae, 0x00][..],             // no displacement
-        &[0x64, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // FS segment prefix
         &[0x66, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // operand-size prefix
         &[0x48, 0x0f, 0xae, 0xc0][..],             // mod = 11
-        &[0x49, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.B
-        &[0x4c, 0x0f, 0xae, 0x40, 0x40][..],       // REX.W + REX.R
-        &[0x67, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // address-size prefix
         &[0xf3, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // REP prefix
-        &[0xf0, 0x48, 0x0f, 0xae, 0x40, 0x40][..], // LOCK prefix
     ] {
         let cell = RefCell::new(dirty_fp_state());
         let before_cell = cell.borrow().clone();
@@ -58699,4 +58683,1507 @@ fn s7_32_w3_scalar_sse_moves_through_gs() {
     assert_eq!(cell.borrow().sse.xmm[0], expected);
     assert_eq!(memory.qword(W2_DATA + 8), 0xffff_ffff_0506_0708);
     assert_eq!(state.rip, RIP + 20);
+}
+
+// ---- S7-32 W4: FXSAVE/FXRSTOR (`NP [REX.W] 0F AE /0, /1`) at any memory operand in the FP member ----
+//
+// Oracles by hand from the Intel SDM (Vol. 2A FXSAVE/FXRSTOR, Tables 1-42 and 1-43; Vol. 1 §8.1.8,
+// §10.5): both layouts hold FCW at 0, FSW at 2, the abridged FTW at 4 (one bit per nonempty
+// physical register), FOP at 6, MXCSR at 24, MXCSR_MASK at 28 (0xFFBF for this target), ST0-7 (the
+// logical order from TOP) in 16-byte slots from 32 and XMM0-15 from 160. Without REX.W bytes 8..12
+// are FIP[31:0], 12..14 FCS, 16..20 FDP[31:0], 20..22 FDS (14..16 and 22..24 unused); with REX.W
+// bytes 8..16 are the 64-bit FIP and 16..24 the 64-bit FDP. FXRSTOR without REX.W loads the
+// 32-bit pointers with the upper halves cleared and loads FCS/FDS; with REX.W it loads the 64-bit
+// pointers and clears FCS/FDS. Reserved bytes, the upper six bytes of every ST slot and 416..512 are
+// neither written nor used. Faults: an area not 16-byte aligned is #GP(0); a non-canonical area is
+// #SS(0) for a stack reference, #GP(0) otherwise; CR0.EM or CR0.TS is #NM; LOCK is #UD; FXRSTOR
+// with a reserved MXCSR bit (outside 0xFFBF) is #GP(0).
+
+/// The FXSAVE image of `fp` over the sentinel, field by field from the SDM tables (see above).
+fn w4_expected_image(fp: &GuestFpState, long64: bool) -> [u8; 512] {
+    let x87 = &fp.x87;
+    let mut image = [FP_SENTINEL; 512];
+    image[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
+    image[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
+    image[4] = (0..8)
+        .filter(|physical| (x87.tag_word >> (2 * physical)) & 3 != 3)
+        .fold(0, |tags, physical| tags | 1 << physical);
+    image[6..8].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
+    if long64 {
+        image[8..16].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
+        image[16..24].copy_from_slice(&x87.data_pointer.to_le_bytes());
+    } else {
+        image[8..12].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
+        image[12..14].copy_from_slice(&x87.instruction_selector.unwrap().to_le_bytes());
+        image[16..20].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
+        image[20..22].copy_from_slice(&x87.data_selector.unwrap().to_le_bytes());
+    }
+    image[24..28].copy_from_slice(&fp.sse.mxcsr.to_le_bytes());
+    image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
+    let top = usize::from((x87.status_word >> 11) & 7);
+    for logical in 0..8 {
+        image[32 + 16 * logical..42 + 16 * logical]
+            .copy_from_slice(&x87.registers[(top + logical) & 7]);
+    }
+    for (register, lane) in fp.sse.xmm.iter().enumerate() {
+        image[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    image
+}
+
+/// The FXSAVE source of the W4 tests: the S4-39f22 hand-chosen state (TOP = 3, physical 0 valid,
+/// physical 2 zero, the rest empty, 64-bit FIP/FDP above 2^32, FOP with all 11 bits) with the known
+/// nonzero selectors 0x2B (FCS) and 0x53 (FDS) of `dirty_fp_state`.
+fn w4_source_state() -> GuestFpState {
+    let fp = fxsave64_source_state();
+    assert_eq!(
+        (fp.x87.instruction_selector, fp.x87.data_selector),
+        (Some(0x2b), Some(0x53))
+    );
+    fp
+}
+
+/// One addressing form of the W4 tables: the bytes of FXSAVE (`/0`), the setup that makes its area
+/// `FP_AREA`, and whether it is the REX.W (64-bit) layout. FXRSTOR is the same bytes with /1.
+struct W4Form {
+    name: &'static str,
+    code: Vec<u8>,
+    setup: fn(&mut LongModeState),
+    long64: bool,
+}
+
+/// `code` with the ModRM reg field turned from /0 (FXSAVE) into /1 (FXRSTOR): the ModRM is the byte
+/// after `0F AE`.
+fn w4_restore_code(code: &[u8]) -> Vec<u8> {
+    let at = code
+        .windows(2)
+        .position(|pair| pair == [0x0f, 0xae])
+        .expect("0F AE")
+        + 2;
+    let mut restore = code.to_vec();
+    assert_eq!((restore[at] >> 3) & 7, 0);
+    restore[at] |= 0x08;
+    restore
+}
+
+fn w4_forms() -> Vec<W4Form> {
+    let disp32 = |value: u64| (value as u32).to_le_bytes();
+    let with = |prefix: &[u8], tail: &[u8]| [prefix, tail].concat();
+    vec![
+        W4Form {
+            // The Windows kernel form (`ntkrnlmp` + 0xb66e2f, the MXCSR_MASK probe).
+            name: "fxsave 0x90(%rsp)",
+            code: vec![0x0f, 0xae, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00],
+            setup: |s| s.gpr[Register::Rsp as usize] = FP_AREA - 0x90,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave (%rax)",
+            code: vec![0x0f, 0xae, 0x00],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave 0x40(%rax)",
+            code: vec![0x0f, 0xae, 0x40, 0x40],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA - 0x40,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave (%r8), REX.B without W",
+            code: vec![0x41, 0x0f, 0xae, 0x00],
+            setup: |s| s.gpr[Register::R8 as usize] = FP_AREA,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave 0x100(,%rcx,4), SIB without a base",
+            code: with(&[0x0f, 0xae, 0x04, 0x8d], &disp32(FP_AREA - 0x400)),
+            setup: |s| s.gpr[Register::Rcx as usize] = 0x100,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave disp32, SIB absolute",
+            code: with(&[0x0f, 0xae, 0x04, 0x25], &disp32(FP_AREA)),
+            setup: |_| {},
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave %ds:(%rax), a null override",
+            code: vec![0x3e, 0x0f, 0xae, 0x00],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave %gs:0x100",
+            code: with(&[0x65, 0x0f, 0xae, 0x04, 0x25], &disp32(0x100)),
+            setup: |s| s.gs_base = FP_AREA - 0x100,
+            long64: false,
+        },
+        W4Form {
+            name: "fxsave64 0x40(%rcx)",
+            code: vec![0x48, 0x0f, 0xae, 0x41, 0x40],
+            setup: |s| s.gpr[Register::Rcx as usize] = FP_AREA - 0x40,
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 0x100(%rax), disp32",
+            code: vec![0x48, 0x0f, 0xae, 0x80, 0x00, 0x01, 0x00, 0x00],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA - 0x100,
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 -0x40(%rax), negative disp8",
+            code: vec![0x48, 0x0f, 0xae, 0x40, 0xc0],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA + 0x40,
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 0x40(%r8), REX.W + REX.B",
+            code: vec![0x49, 0x0f, 0xae, 0x40, 0x40],
+            setup: |s| s.gpr[Register::R8 as usize] = FP_AREA - 0x40,
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 0x40(%rax), REX.W + REX.R (the reg field is the /digit)",
+            code: vec![0x4c, 0x0f, 0xae, 0x40, 0x40],
+            setup: |s| s.gpr[Register::Rax as usize] = FP_AREA - 0x40,
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 (%r8,%r9,8), REX.W + X + B",
+            code: vec![0x4b, 0x0f, 0xae, 0x04, 0xc8],
+            setup: |s| {
+                s.gpr[Register::R8 as usize] = FP_AREA - 0x80;
+                s.gpr[Register::R9 as usize] = 0x10;
+            },
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 0x40(%eax), 67 truncates the address to 32 bits",
+            code: vec![0x67, 0x48, 0x0f, 0xae, 0x40, 0x40],
+            setup: |s| s.gpr[Register::Rax as usize] = 0xdead_beef_0000_0000 | (FP_AREA - 0x40),
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 disp32(%rip)",
+            // next RIP = RIP + 8: disp32 = FP_AREA - (RIP + 8).
+            code: with(&[0x48, 0x0f, 0xae, 0x05], &disp32(FP_AREA - (RIP + 8))),
+            setup: |_| {},
+            long64: true,
+        },
+        W4Form {
+            name: "fxsave64 %fs:0x40(%rax)",
+            code: vec![0x64, 0x48, 0x0f, 0xae, 0x40, 0x40],
+            setup: |s| {
+                s.fs_base = 0x800;
+                s.gpr[Register::Rax as usize] = FP_AREA - 0x800 - 0x40;
+            },
+            long64: true,
+        },
+    ]
+}
+
+fn w4_run(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+    code: &[u8],
+    setup: impl FnOnce(&mut LongModeState),
+    patch: impl FnOnce(&mut FpMemory),
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = fp_state(cr0, cr4);
+    setup(&mut state);
+    let before = state.clone();
+    let mut memory = FpMemory::new(code);
+    patch(&mut memory);
+    let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+    (before, state, memory, result)
+}
+
+/// The image the FXRSTOR tests restore, built by hand, and the FP state each layout gives from a
+/// cell that starts as `dirty_fp_state` (selectors 0x2B/0x53). Reserved and available bytes carry
+/// junk (0xEE), which FXRSTOR ignores.
+fn w4_restore_image() -> ([u8; 512], GuestFpState, GuestFpState) {
+    let mut image = [0xeeu8; 512];
+    image[0..2].copy_from_slice(&0x037au16.to_le_bytes()); // FCW
+    image[2..4].copy_from_slice(&0x1821u16.to_le_bytes()); // FSW: TOP = 3, PE, IE
+    image[4] = 0b0000_0101; // abridged FTW: physical 0 and 2 nonempty
+    image[6..8].copy_from_slice(&0xffffu16.to_le_bytes()); // FOP: 11 bits are kept
+    image[8..16].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+    image[16..24].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes());
+    image[24..28].copy_from_slice(&0x0000_9fa0u32.to_le_bytes()); // MXCSR (FZ is allowed)
+    image[28..32].copy_from_slice(&0u32.to_le_bytes()); // MXCSR_MASK: ignored
+    let mut st = [[0u8; 10]; 8]; // by logical index
+    for (logical, slot) in st.iter_mut().enumerate() {
+        for (byte, value) in slot.iter_mut().enumerate() {
+            *value = (logical * 16 + byte) as u8 ^ 0x69;
+        }
+    }
+    st[5] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]; // physical 0: a valid number (1.0)
+    st[7] = [0; 10]; // physical 2: zero
+    for (logical, slot) in st.iter().enumerate() {
+        image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(slot);
+    }
+    let mut xmm = [[0u8; 16]; 16];
+    for (register, lane) in xmm.iter_mut().enumerate() {
+        for (byte, value) in lane.iter_mut().enumerate() {
+            *value = (register * 16 + byte) as u8 ^ 0xc3;
+        }
+        image[160 + 16 * register..176 + 16 * register].copy_from_slice(lane);
+    }
+    let mut long64 = dirty_fp_state();
+    long64.x87.control_word = 0x037a;
+    long64.x87.status_word = 0x1821;
+    long64.x87.last_opcode = 0x07ff;
+    for (logical, slot) in st.iter().enumerate() {
+        long64.x87.registers[(3 + logical) & 7] = *slot;
+    }
+    // Physical 0 valid (00), physical 2 zero (01), the other six empty (11).
+    long64.x87.tag_word = 0xffdc;
+    long64.x87.instruction_pointer = 0x1122_3344_5566_7788;
+    long64.x87.data_pointer = 0x8877_6655_4433_2211;
+    long64.x87.instruction_selector = Some(0);
+    long64.x87.data_selector = Some(0);
+    long64.sse = SseState { xmm, mxcsr: 0x9fa0 };
+    let mut plain = long64.clone();
+    plain.x87.instruction_pointer = 0x5566_7788;
+    plain.x87.instruction_selector = Some(0x3344);
+    plain.x87.data_pointer = 0x4433_2211;
+    plain.x87.data_selector = Some(0x6655);
+    (image, plain, long64)
+}
+
+#[test]
+fn s7_32_w4_the_windows_fxsave_stores_the_plain_image_byte_for_byte() {
+    // `fxsave 0x90(%rsp)` (0F AE 84 24 90 00 00 00), REX.W = 0: the 32-bit layout.
+    let cell = RefCell::new(w4_source_state());
+    let before_cell = cell.borrow().clone();
+    let code = [0x0f, 0xae, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00];
+    let (before, state, memory, result) = w4_run(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &code,
+        |s| s.gpr[Register::Rsp as usize] = FP_AREA - 0x90,
+        |_| {},
+    );
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(result.instructions_executed, 1);
+    let image = memory.area(FP_AREA);
+    // The literal pointer fields: FIP[31:0] of 0x1122_3344_5566_7788, FCS 0x2B, bytes 14..16 not
+    // written, FDP[31:0] of 0x8877_6655_4433_2211, FDS 0x53, bytes 22..24 not written.
+    assert_eq!(
+        image[8..16],
+        [0x88, 0x77, 0x66, 0x55, 0x2b, 0x00, 0xa5, 0xa5]
+    );
+    assert_eq!(
+        image[16..24],
+        [0x11, 0x22, 0x33, 0x44, 0x53, 0x00, 0xa5, 0xa5]
+    );
+    assert_eq!(
+        image[0..8],
+        [0x7a, 0x03, 0x21, 0x18, 0x05, 0xa5, 0xff, 0x07]
+    );
+    assert_eq!(image[24..32], [0xa0, 0x9f, 0, 0, 0xbf, 0xff, 0, 0]);
+    assert_eq!(image, &w4_expected_image(&before_cell, false)[..]);
+    // The 13 field stores, ascending, 1/2/4/8 bytes each (363 bytes, the last ending at 416).
+    assert_narrow_ascending_field_stores(&memory.writes, FP_AREA, true);
+    assert!(memory.reads.is_empty());
+    // Nothing outside the area changed; the cell did not change; only RIP moved (+8).
+    let mut untouched = FpMemory::new(&code);
+    untouched.bytes[(FP_AREA - RIP) as usize..(FP_AREA - RIP) as usize + 512]
+        .copy_from_slice(image);
+    assert_eq!(memory.bytes, untouched.bytes);
+    assert_eq!(*cell.borrow(), before_cell);
+    let mut expected_state = before;
+    expected_state.rip += 8;
+    assert_eq!(state, expected_state);
+}
+
+#[test]
+fn s7_32_w4_fxsave_takes_every_addressing_form() {
+    for form in w4_forms() {
+        let cell = RefCell::new(w4_source_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) =
+            w4_run(&cell, CR0_BASE, CR4_FP, &form.code, form.setup, |_| {});
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{}: {result:?}",
+            form.name
+        );
+        assert_eq!(result.instructions_executed, 1, "{}", form.name);
+        assert_eq!(
+            memory.area(FP_AREA),
+            &w4_expected_image(&before_cell, form.long64)[..],
+            "{}",
+            form.name
+        );
+        assert_narrow_ascending_field_stores(&memory.writes, FP_AREA, false);
+        assert!(memory.reads.is_empty(), "{}", form.name);
+        assert_eq!(*cell.borrow(), before_cell, "{}", form.name);
+        let mut expected_state = before;
+        expected_state.rip += form.code.len() as u64;
+        assert_eq!(state, expected_state, "{}", form.name);
+    }
+}
+
+#[test]
+fn s7_32_w4_fxrstor_takes_every_addressing_form() {
+    let (image, plain, long64) = w4_restore_image();
+    for form in w4_forms() {
+        let code = w4_restore_code(&form.code);
+        let cell = RefCell::new(dirty_fp_state());
+        let (before, state, memory, result) =
+            w4_run(&cell, CR0_BASE, CR4_FP, &code, form.setup, |m| {
+                write_image(m, FP_AREA, &image)
+            });
+        assert_eq!(
+            exit(&result),
+            &RunExit::InstructionBudgetExhausted,
+            "{}: {result:?}",
+            form.name
+        );
+        assert_eq!(result.instructions_executed, 1, "{}", form.name);
+        let expected = if form.long64 { &long64 } else { &plain };
+        assert_eq!(&*cell.borrow(), expected, "{}", form.name);
+        // The whole image is read as 64 ascending qwords; nothing is written.
+        assert_eq!(memory.reads.len(), 64, "{}", form.name);
+        for (index, &(address, len)) in memory.reads.iter().enumerate() {
+            assert_eq!(
+                (address, len),
+                (FP_AREA + 8 * index as u64, 8),
+                "{}",
+                form.name
+            );
+        }
+        assert!(memory.writes.is_empty(), "{}", form.name);
+        let mut expected_state = before;
+        expected_state.rip += code.len() as u64;
+        assert_eq!(state, expected_state, "{}", form.name);
+    }
+}
+
+#[test]
+fn s7_32_w4_general_forms_decode_to_fxsave_and_fxrstor_with_their_operand() {
+    use od_isa::long_decode::{AddressBase, FxsaveLayout, MemoryOperand, MemorySegment, Operation};
+    let decode = |code: &[u8]| {
+        od_isa::long_decode::decode(
+            &mut FpMemory::new(code),
+            RIP,
+            context(PrivilegeLevel::Ring0),
+        )
+        .unwrap()
+    };
+    let windows = decode(&[0x0f, 0xae, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00]);
+    assert_eq!(windows.length, 8);
+    assert_eq!(
+        windows.operation,
+        Operation::Fxsave {
+            area: MemoryOperand {
+                base: AddressBase::Register(Register::Rsp),
+                index: None,
+                scale: 1,
+                displacement: 0x90,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+                segment: MemorySegment::Flat,
+            },
+            layout: FxsaveLayout::Plain,
+        }
+    );
+    let indexed = decode(&[0x4b, 0x0f, 0xae, 0x0c, 0xc8]);
+    assert_eq!(
+        indexed.operation,
+        Operation::Fxrstor {
+            area: MemoryOperand {
+                base: AddressBase::Register(Register::R8),
+                index: Some(Register::R9),
+                scale: 8,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+                segment: MemorySegment::Flat,
+            },
+            layout: FxsaveLayout::Long64,
+        }
+    );
+    // GS through the segment-override fallback: the operand carries the segment, the length counts
+    // the prefix, the prefixes keep it.
+    let gs = decode(&[0x65, 0x67, 0x0f, 0xae, 0x08]);
+    assert_eq!(gs.length, 5);
+    assert_eq!(gs.prefixes.segment, Some(0x65));
+    assert_eq!(
+        gs.operation,
+        Operation::Fxrstor {
+            area: MemoryOperand {
+                base: AddressBase::Register(Register::Rax),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Dword,
+                size: OperandSize::Qword,
+                segment: MemorySegment::Gs,
+            },
+            layout: FxsaveLayout::Plain,
+        }
+    );
+    // The exact kernel forms keep their operations.
+    assert!(matches!(
+        decode(&[0x48, 0x0f, 0xae, 0x40, 0x40]).operation,
+        Operation::Fxsave64RaxDisp8(_)
+    ));
+    assert!(matches!(
+        decode(&[0x0f, 0xae, 0x05, 0, 0, 0, 0]).operation,
+        Operation::FxsaveRipRelative(_)
+    ));
+}
+
+#[test]
+fn s7_32_w4_fxsave_then_fxrstor_round_trips_both_layouts() {
+    // The source: all eight registers valid numbers (the abridged FTW restores tag 00), TOP = 3,
+    // FIP/FDP above 2^32 and nonzero selectors.
+    let mut saved = round_trip_fp_state();
+    saved.x87.instruction_pointer = 0xffff_f805_aab6_6e2f;
+    saved.x87.data_pointer = 0x0000_7fff_1234_5670;
+    saved.x87.instruction_selector = Some(0x10);
+    saved.x87.data_selector = Some(0x2b);
+    // fxsave (%rsi) / fxrstor (%rsi) and fxsave64 (%rsi) / fxrstor64 (%rsi).
+    for (save, restore, long64) in [
+        (&[0x0f, 0xae, 0x06][..], &[0x0f, 0xae, 0x0e][..], false),
+        (
+            &[0x48, 0x0f, 0xae, 0x06][..],
+            &[0x48, 0x0f, 0xae, 0x0e][..],
+            true,
+        ),
+    ] {
+        let source = RefCell::new(saved.clone());
+        let at_area = |s: &mut LongModeState| s.gpr[Register::Rsi as usize] = FP_AREA;
+        let (_, _, first, result) = w4_run(&source, CR0_BASE, CR4_FP, save, at_area, |_| {});
+        assert_eq!(result.instructions_executed, 1, "long64 {long64}");
+        let image: [u8; 512] = first.area(FP_AREA).try_into().unwrap();
+        let restored = RefCell::new(GuestFpState::initial());
+        let (_, state, _, result) = w4_run(&restored, CR0_BASE, CR4_FP, restore, at_area, |m| {
+            write_image(m, FP_AREA, &image)
+        });
+        assert_eq!(result.instructions_executed, 1, "long64 {long64}");
+        assert_eq!(state.rip, RIP + restore.len() as u64);
+        let mut expected = saved.clone();
+        if long64 {
+            // FXRSTOR64 clears FCS and FDS; the 64-bit pointers come back whole.
+            expected.x87.instruction_selector = Some(0);
+            expected.x87.data_selector = Some(0);
+        } else {
+            // The 32-bit layout keeps FIP[31:0]/FDP[31:0] and the selectors.
+            expected.x87.instruction_pointer = 0xaab6_6e2f;
+            expected.x87.data_pointer = 0x1234_5670;
+        }
+        assert_eq!(*restored.borrow(), expected, "long64 {long64}");
+    }
+}
+
+#[test]
+fn s7_32_w4_misaligned_non_canonical_and_wrapping_areas_fault_without_any_access() {
+    let canonical_fault = |vector: u8| {
+        RunExit::Fault(ArchitecturalFault {
+            vector,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    };
+    type Setup = fn(&mut LongModeState);
+    let cases: [(&str, &[u8], Setup, RunExit); 10] = [
+        // Not 16-byte aligned: #GP(0), with any base (RSP too) and both layouts.
+        (
+            "fxsave (%rax)+8",
+            &[0x0f, 0xae, 0x00],
+            |s| s.gpr[0] = FP_AREA + 8,
+            gp0(),
+        ),
+        (
+            "fxsave64 (%rax)+1",
+            &[0x48, 0x0f, 0xae, 0x00],
+            |s| s.gpr[0] = FP_AREA + 1,
+            gp0(),
+        ),
+        (
+            "fxsave (%rsp)+4",
+            &[0x0f, 0xae, 0x04, 0x24],
+            |s| s.gpr[Register::Rsp as usize] = FP_AREA + 4,
+            gp0(),
+        ),
+        // A GS base that misaligns the linear address.
+        (
+            "fxsave %gs:(%rax)",
+            &[0x65, 0x0f, 0xae, 0x00],
+            |s| {
+                s.gpr[0] = FP_AREA;
+                s.gs_base = 8;
+            },
+            gp0(),
+        ),
+        // A non-canonical start: #SS(0) for an RSP base, #GP(0) otherwise.
+        (
+            "fxsave (%rsp) non-canonical",
+            &[0x0f, 0xae, 0x04, 0x24],
+            |s| s.gpr[Register::Rsp as usize] = 0x8000_0000_0000_0000,
+            canonical_fault(12),
+        ),
+        (
+            "fxsave (%rax) non-canonical",
+            &[0x0f, 0xae, 0x00],
+            |s| s.gpr[0] = 0x8000_0000_0000_0000,
+            canonical_fault(13),
+        ),
+        // A canonical start whose last byte (start + 511) is not.
+        (
+            "fxsave64 (%rbp) ends non-canonical",
+            &[0x48, 0x0f, 0xae, 0x45, 0x00],
+            |s| s.gpr[Register::Rbp as usize] = 0x0000_7fff_ffff_ff00,
+            canonical_fault(12),
+        ),
+        (
+            "fxsave64 (%rax) ends non-canonical",
+            &[0x48, 0x0f, 0xae, 0x00],
+            |s| s.gpr[0] = 0x0000_7fff_ffff_ff00,
+            canonical_fault(13),
+        ),
+        // A GS reference is a data reference even with an RSP base.
+        (
+            "fxsave %gs:(%rsp) non-canonical",
+            &[0x65, 0x0f, 0xae, 0x04, 0x24],
+            |s| {
+                s.gpr[Register::Rsp as usize] = 0x1000;
+                s.gs_base = 0x7fff_ffff_f000;
+            },
+            canonical_fault(13),
+        ),
+        // The area past the end of the address space: #GP(0) (the S2-39c local policy).
+        (
+            "fxsave (%rax) wraps",
+            &[0x0f, 0xae, 0x00],
+            |s| s.gpr[0] = 0xffff_ffff_ffff_fff0,
+            gp0(),
+        ),
+    ];
+    for (name, code, setup, expected) in cases {
+        for restore in [false, true] {
+            let code = if restore {
+                w4_restore_code(code)
+            } else {
+                code.to_vec()
+            };
+            let cell = RefCell::new(dirty_fp_state());
+            let before_cell = cell.borrow().clone();
+            let (before, state, memory, result) =
+                w4_run(&cell, CR0_BASE, CR4_FP, &code, setup, |_| {});
+            assert_eq!(exit(&result), &expected, "{name} restore {restore}");
+            assert_eq!(result.instructions_executed, 0, "{name}");
+            assert!(
+                memory.reads.is_empty() && memory.writes.is_empty(),
+                "{name} restore {restore}"
+            );
+            assert_eq!(state, before, "{name} restore {restore}");
+            assert_eq!(*cell.borrow(), before_cell, "{name} restore {restore}");
+        }
+    }
+}
+
+#[test]
+fn s7_32_w4_em_ts_are_nm_and_osfxsr_clear_is_refused_before_any_access() {
+    for (code, restore) in [
+        (&[0x0f, 0xae, 0x00][..], false),
+        (&[0x0f, 0xae, 0x08][..], true),
+        (&[0x48, 0x0f, 0xae, 0x00][..], false),
+        (&[0x48, 0x0f, 0xae, 0x08][..], true),
+    ] {
+        // EM, TS or both: #NM even for a misaligned area (the gate comes first).
+        for (cr0, area) in [
+            (CR0_BASE | CR0_TS, FP_AREA),
+            (CR0_BASE | CR0_EM, FP_AREA),
+            (CR0_BASE | CR0_TS | CR0_EM, FP_AREA + 8),
+        ] {
+            let cell = RefCell::new(dirty_fp_state());
+            let before_cell = cell.borrow().clone();
+            let (before, state, memory, result) =
+                w4_run(&cell, cr0, CR4_FP, code, |s| s.gpr[0] = area, |_| {});
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 7,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                "{code:02x?} cr0 {cr0:#x} restore {restore}"
+            );
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            assert_eq!(state, before);
+            assert_eq!(*cell.borrow(), before_cell);
+        }
+        // CR4.OSFXSR clear: the SSE part is implementation-dependent (SDM); the S2-39 convention
+        // refuses (`Unsupported`, opcode 0xAE), also over #NM.
+        for cr0 in [CR0_BASE, CR0_BASE | CR0_TS] {
+            let cell = RefCell::new(dirty_fp_state());
+            let (before, state, memory, result) = w4_run(
+                &cell,
+                cr0,
+                CR4_BASE | (1 << 10),
+                code,
+                |s| s.gpr[0] = FP_AREA,
+                |_| {},
+            );
+            assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+}
+
+#[test]
+fn s7_32_w4_fxrstor_with_reserved_mxcsr_bits_is_gp0_after_the_reads_and_changes_nothing() {
+    // DAZ (bit 6) is outside the target mask 0xFFBF (ISSUE-680), as are bits 31:16.
+    for code in [&[0x0f, 0xae, 0x08][..], &[0x48, 0x0f, 0xae, 0x08][..]] {
+        for mxcsr in [0x0000_1fc0u32, 0x0001_1f80, 0x8000_1f80, 0xffff_ffff] {
+            let cell = RefCell::new(dirty_fp_state());
+            let before_cell = cell.borrow().clone();
+            let (before, state, memory, result) = w4_run(
+                &cell,
+                CR0_BASE,
+                CR4_FP,
+                code,
+                |s| s.gpr[0] = FP_AREA,
+                |m| write_image(m, FP_AREA, &image_with_mxcsr(mxcsr)),
+            );
+            assert_eq!(exit(&result), &gp0(), "{code:02x?} {mxcsr:#x}");
+            assert_eq!(memory.reads.len(), 64, "the image is read before the check");
+            assert!(memory.writes.is_empty());
+            assert_eq!(state, before);
+            assert_eq!(*cell.borrow(), before_cell);
+        }
+        // Every bit of the mask is accepted.
+        let cell = RefCell::new(dirty_fp_state());
+        let (_, _, _, result) = w4_run(
+            &cell,
+            CR0_BASE,
+            CR4_FP,
+            code,
+            |s| s.gpr[0] = FP_AREA,
+            |m| write_image(m, FP_AREA, &image_with_mxcsr(0xffbf)),
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cell.borrow().sse.mxcsr, 0xffbf);
+    }
+}
+
+#[test]
+fn s7_32_w4_memory_failures_commit_no_state() {
+    // The area 0x1f00..0x2100 runs past the test memory (end 0x2000).
+    // FXRSTOR: 32 qword reads succeed, the 33rd fails; nothing is committed.
+    let cell = RefCell::new(dirty_fp_state());
+    let before_cell = cell.borrow().clone();
+    let (before, state, memory, result) = w4_run(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &[0x0f, 0xae, 0x08],
+        |s| s.gpr[0] = 0x1f00,
+        |_| {},
+    );
+    assert!(matches!(
+        exit(&result),
+        RunExit::MemoryError(MemoryError::Unmapped { .. })
+    ));
+    assert_eq!(memory.reads.len(), 32);
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+    // FXSAVE: the stores below 0x2000 are written (the image is not a transaction; executing the
+    // instruction again writes the same bytes), the instruction does not retire, nothing else moves.
+    let cell = RefCell::new(dirty_fp_state());
+    let (before, state, memory, result) = w4_run(
+        &cell,
+        CR0_BASE,
+        CR4_FP,
+        &[0x0f, 0xae, 0x00],
+        |s| s.gpr[0] = 0x1f00,
+        |_| {},
+    );
+    assert!(matches!(
+        exit(&result),
+        RunExit::MemoryError(MemoryError::Unmapped { .. })
+    ));
+    assert_eq!(result.instructions_executed, 0);
+    assert_narrow_ascending_field_stores(&memory.writes, 0x1f00, false);
+    assert_eq!(memory.writes.last(), Some(&(0x1ff8, 8)));
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), before_cell);
+}
+
+#[test]
+fn s7_32_w4_lock_is_ud_and_mandatory_prefixes_stay_refused() {
+    // LOCK FXSAVE/FXRSTOR with memory: #UD (SDM "If the LOCK prefix is used"), with any REX and
+    // segment override; nothing is accessed.
+    for code in [
+        &[0xf0, 0x0f, 0xae, 0x00][..],
+        &[0xf0, 0x48, 0x0f, 0xae, 0x08],
+        &[0xf0, 0x48, 0x0f, 0xae, 0x40, 0x40],
+        &[0xf0, 0x64, 0x0f, 0xae, 0x00],
+        &[0x64, 0xf0, 0x0f, 0xae, 0x08],
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let before_cell = cell.borrow().clone();
+        let (before, state, memory, result) = w4_run(
+            &cell,
+            CR0_BASE,
+            CR4_FP,
+            code,
+            |s| s.gpr[0] = FP_AREA,
+            |_| {},
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            "{code:02x?}"
+        );
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), before_cell);
+    }
+    // `66`, `F2` and `F3` select other instructions of the group (not modeled), and LOCK on the
+    // other memory forms of the group keeps its earlier answer: refused, nothing accessed.
+    for code in [
+        &[0x66, 0x0f, 0xae, 0x00][..],
+        &[0xf3, 0x0f, 0xae, 0x08],
+        &[0xf2, 0x48, 0x0f, 0xae, 0x00],
+        &[0x66, 0x48, 0x0f, 0xae, 0x08],
+        &[0xf0, 0x0f, 0xae, 0x10],
+    ] {
+        let cell = RefCell::new(dirty_fp_state());
+        let (before, state, memory, result) = w4_run(
+            &cell,
+            CR0_BASE,
+            CR4_FP,
+            code,
+            |s| s.gpr[0] = FP_AREA,
+            |_| {},
+        );
+        assert_eq!(
+            exit(&result),
+            &RunExit::Unsupported { opcode: 0xae },
+            "{code:02x?}"
+        );
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn s7_32_w4_without_the_fp_member_the_general_forms_stay_refused() {
+    let set = base().with_cpuid(&CpuidProfile::X8664V1Stage4A);
+    for code in [&[0x0f, 0xae, 0x00][..], &[0x48, 0x0f, 0xae, 0x08]] {
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        state.gpr[0] = FP_AREA;
+        let before = state.clone();
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xae });
+        assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        assert_eq!(state, before);
+    }
+}
+
+// ---- S7-32 W4 (x87 part): FNCLEX, FFREE ST(i), FILD m32int and FNSAVE at any memory operand in the
+// FP member, the forms of the Windows kernel's FXRSTOR probe (`ntkrnlmp` + 0xb596c0). Oracles by hand
+// from the Intel SDM (Vol. 2A FCLEX/FNCLEX, FFREE, FILD, FSAVE/FNSAVE; Vol. 1 §8.1.8: FIP/FCS and,
+// with a memory operand, FDP/FDS name the last non-control instruction, FNCLEX keeps them, FNSAVE
+// clears them; §8.1.9: FOP changes only with an unmasked exception; Figure 8-9: the 32-bit
+// protected-mode image, FCW at 0, FSW at 4, the tag word at 8, FIP at 12, FCS at 16 with FOP in
+// bits 26:16, FDP at 20, FDS at 24, ST(0)..ST(7) from 28). ----
+
+const W4_CS: u16 = 0x10;
+const W4_SS: u16 = 0x18;
+const W4_DS: u16 = 0x2b;
+
+fn w4_x87_state(cr0: u64) -> LongModeState {
+    let mut state = fp_state(cr0, CR4_FP);
+    state.cs_selector = Some(W4_CS);
+    state.ss_selector = Some(W4_SS);
+    state.ds_selector = W4_DS;
+    state
+}
+
+fn w4_x87_run(
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    code: &[u8],
+    budget: u64,
+    setup: impl FnOnce(&mut LongModeState, &mut FpMemory),
+) -> (LongModeState, LongModeState, FpMemory, Cpl0ProfileSetResult) {
+    let set = fp_set(cell);
+    let mut state = w4_x87_state(cr0);
+    let mut memory = FpMemory::new(code);
+    setup(&mut state, &mut memory);
+    let before = state.clone();
+    let result = run_fp(&mut state, &mut memory, &set, budget).unwrap();
+    (before, state, memory, result)
+}
+
+/// An x87 state with TOP = 2, ST(0) (physical 2) = 1.0 valid, the rest empty, FIP/FDP/FOP and the
+/// selectors away from zero, and the six exception flags with C0..C3 set in FSW but no ES (nothing
+/// pending: every flag is masked).
+fn w4_x87_cell() -> GuestFpState {
+    let mut fp = GuestFpState::initial();
+    let x87 = &mut fp.x87;
+    x87.control_word = 0x037f;
+    x87.status_word = (2 << 11) | 0x4700 | 0x003f;
+    x87.tag_word = 0xffcf; // physical 2 valid (00), the others empty
+    x87.registers[2] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+    x87.instruction_pointer = 0xffff_f805_1111_2222;
+    x87.data_pointer = 0xffff_f805_3333_4444;
+    x87.instruction_selector = Some(0x33);
+    x87.data_selector = Some(0x2b);
+    x87.last_opcode = 0x0123;
+    fp
+}
+
+#[test]
+fn s7_32_w4_the_kernel_fxrstor_probe_runs_in_the_set_and_sees_fip_restored() {
+    // ntkrnlmp + 0xb596c0: sub $0x208,%rsp; fxsave64 (%rsp); fnclex; ffree %st(7); fildl (%rsp);
+    // xor %edx,%edx; dec %edx; mov %rdx,0x8(%rsp); fxrstor64 (%rsp); fnsave (%rsp);
+    // mov 0xc(%rsp),%ecx; xor %eax,%eax; cmp %ecx,%edx; je +2; inc %eax; add $0x208,%rsp.
+    // FXRSTOR64 loads FIP = 0xFFFFFFFF from the image and FNSAVE stores FIP[31:0] at 12: EAX = 0.
+    let code = [
+        0x48, 0x81, 0xec, 0x08, 0x02, 0x00, 0x00, 0x48, 0x0f, 0xae, 0x04, 0x24, 0xdb, 0xe2, 0xdd,
+        0xc7, 0xdb, 0x04, 0x24, 0x33, 0xd2, 0xff, 0xca, 0x48, 0x89, 0x54, 0x24, 0x08, 0x48, 0x0f,
+        0xae, 0x0c, 0x24, 0xdd, 0x34, 0x24, 0x8b, 0x4c, 0x24, 0x0c, 0x33, 0xc0, 0x3b, 0xd1, 0x74,
+        0x02, 0xff, 0xc0, 0x48, 0x81, 0xc4, 0x08, 0x02, 0x00, 0x00,
+    ];
+    let cell = RefCell::new(w4_x87_cell());
+    let (_, state, memory, result) = w4_x87_run(&cell, CR0_BASE, &code, 15, |s, _| {
+        s.gpr[Register::Rsp as usize] = 0x1ff8;
+        s.gpr[Register::Rax as usize] = 0x5555;
+    });
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{result:?}"
+    );
+    assert_eq!(result.instructions_executed, 15);
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert_eq!(
+        state.gpr[Register::Rax as usize],
+        0,
+        "FXRSTOR64 restored FIP"
+    );
+    assert_eq!(state.gpr[Register::Rcx as usize], 0xffff_ffff);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x1ff8);
+    // The FNSAVE image at 0x1df0: FIP[31:0] = 0xFFFFFFFF from the FXRSTOR64 image, FCS 0 (FXRSTOR64
+    // cleared it), FOP 0x123 and FCW/FSW of the state FXSAVE64 saved.
+    let image = &memory.bytes[(0x1df0 - RIP) as usize..][..28];
+    assert_eq!(image[0..2], 0x037fu16.to_le_bytes());
+    assert_eq!(image[4..6], ((2u16 << 11) | 0x4700 | 0x003f).to_le_bytes());
+    assert_eq!(image[12..16], [0xff; 4]);
+    assert_eq!(image[16..20], [0x00, 0x00, 0x23, 0x01]);
+    // FNSAVE left the FPU initialized.
+    let fp = cell.borrow();
+    assert_eq!(
+        (fp.x87.control_word, fp.x87.status_word, fp.x87.tag_word),
+        (0x037f, 0, 0xffff)
+    );
+    assert_eq!(
+        (
+            fp.x87.instruction_pointer,
+            fp.x87.data_pointer,
+            fp.x87.last_opcode
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        (fp.x87.instruction_selector, fp.x87.data_selector),
+        (Some(0), Some(0))
+    );
+}
+
+#[test]
+fn s7_32_w4_fnclex_clears_the_exception_flags_and_keeps_the_pointers() {
+    let mut fp = w4_x87_cell();
+    fp.x87.status_word |= 0x8080; // B and ES
+    let cell = RefCell::new(fp.clone());
+    let (_, state, memory, result) = w4_x87_run(&cell, CR0_BASE, &[0xdb, 0xe2], 1, |_, _| {});
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 2);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    let mut expected = fp;
+    expected.x87.status_word = (2 << 11) | 0x4700; // TOP and C0..C3 stay
+    assert_eq!(*cell.borrow(), expected);
+    // FNCLEX is the no-wait form: a pending unmasked exception (FCW 0x037E, ES and IE set) does not
+    // raise #MF; the instruction retires and clears 0x80FF.
+    let mut pending = w4_x87_cell();
+    pending.x87.control_word = 0x037e;
+    pending.x87.status_word |= 0x0081;
+    let cell = RefCell::new(pending.clone());
+    let (_, state, _, result) = w4_x87_run(&cell, CR0_BASE, &[0xdb, 0xe2], 1, |_, _| {});
+    assert_eq!(result.instructions_executed, 1, "{result:?}");
+    assert_eq!(state.rip, RIP + 2);
+    let mut expected = pending;
+    expected.x87.status_word &= !0x80ff;
+    assert_eq!(*cell.borrow(), expected);
+    // #NM with EM or TS; `66 DB E2` is refused; nothing changes.
+    for (cr0, code, outcome) in [
+        (
+            CR0_BASE | CR0_TS,
+            &[0xdb, 0xe2][..],
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+        (
+            CR0_BASE | CR0_EM,
+            &[0xdb, 0xe2],
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+        (
+            CR0_BASE,
+            &[0x66, 0xdb, 0xe2],
+            RunExit::Unsupported { opcode: 0xdb },
+        ),
+    ] {
+        let cell = RefCell::new(w4_x87_cell());
+        let (before, state, _, result) = w4_x87_run(&cell, cr0, code, 1, |_, _| {});
+        assert_eq!(exit(&result), &outcome, "{code:02x?} {cr0:#x}");
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), w4_x87_cell());
+    }
+}
+
+#[test]
+fn s7_32_w4_ffree_empties_st_i_and_names_itself_in_fip_and_fcs() {
+    // ffree %st(1) with TOP = 2: physical 3 becomes empty; ffree %st(0): physical 2.
+    for (code, physical) in [([0xdd, 0xc1], 3u8), ([0xdd, 0xc0], 2)] {
+        let mut fp = w4_x87_cell();
+        fp.x87.tag_word = 0x0000; // all valid
+        let cell = RefCell::new(fp.clone());
+        let (_, state, _, result) = w4_x87_run(&cell, CR0_BASE, &code, 1, |_, _| {});
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, RIP + 2);
+        let mut expected = fp;
+        expected.x87.tag_word = 3 << (2 * physical);
+        expected.x87.instruction_pointer = RIP;
+        expected.x87.instruction_selector = Some(W4_CS);
+        // FDP/FDS and FOP stay; TOP and the registers too.
+        assert_eq!(*cell.borrow(), expected, "{code:02x?}");
+    }
+    // A pending unmasked exception (ES with IE unmasked): #MF (the set's CR0 policy keeps NE set, so
+    // the FERR# path of NE = 0 is not reachable here); #NM comes first.
+    let mut pending = w4_x87_cell();
+    pending.x87.control_word = 0x037e;
+    pending.x87.status_word |= 0x0080;
+    for (cr0, outcome) in [
+        (
+            CR0_BASE,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 16,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+        (
+            CR0_BASE | CR0_TS,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+    ] {
+        let cell = RefCell::new(pending.clone());
+        let (before, state, _, result) = w4_x87_run(&cell, cr0, &[0xdd, 0xc7], 1, |_, _| {});
+        assert_eq!(exit(&result), &outcome, "{cr0:#x}");
+        assert_eq!(state, before);
+        assert_eq!(*cell.borrow(), pending);
+    }
+}
+
+#[test]
+fn s7_32_w4_fild_m32int_pushes_the_exact_value_and_records_the_operand() {
+    // fildl 0x10(%rsp) (DB 44 24 10): RSP-based, FDS = SS. -5 = -1.25 * 2^2: sign 1, exponent
+    // 0x3FFF + 2, significand 0xA000_0000_0000_0000.
+    let cell = RefCell::new(w4_x87_cell());
+    let (_, state, memory, result) =
+        w4_x87_run(&cell, CR0_BASE, &[0xdb, 0x44, 0x24, 0x10], 1, |s, m| {
+            s.gpr[Register::Rsp as usize] = 0x1800;
+            let at = (0x1810 - RIP) as usize;
+            m.bytes[at..at + 4].copy_from_slice(&(-5i32).to_le_bytes());
+        });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 4);
+    assert_eq!(memory.reads, vec![(0x1810, 4)]);
+    let x87 = cell.borrow().x87.clone();
+    assert_eq!(x87.top(), 1);
+    assert_eq!(x87.registers[1], [0, 0, 0, 0, 0, 0, 0, 0xa0, 0x01, 0xc0]);
+    assert_eq!(
+        x87.tag_word, 0xffc3,
+        "physical 1 valid, physical 2 valid, the rest empty"
+    );
+    // C1 cleared, C0/C2/C3 and the flags kept, TOP = 1.
+    assert_eq!(x87.status_word, (1 << 11) | 0x4500 | 0x003f);
+    assert_eq!(x87.instruction_pointer, RIP);
+    assert_eq!(x87.instruction_selector, Some(W4_CS));
+    assert_eq!(x87.data_pointer, 0x1810);
+    assert_eq!(x87.data_selector, Some(W4_SS));
+    assert_eq!(
+        x87.last_opcode, 0x0123,
+        "FOP changes only with an unmasked exception"
+    );
+    // With 0: +0, tag Zero. FDS by the default segment of the operand: DS for `fildl (%rcx)`, the
+    // exact `fildl (%rax)` (DB 00) and `fildl 0x1800` (DB 04 25 disp32, no base); SS for
+    // `fildl -0x10(%rbp)` (DB 45 F0), an RBP base.
+    type Base = fn(&mut LongModeState);
+    let forms: [(&[u8], Base, u16); 4] = [
+        (
+            &[0xdb, 0x01],
+            |s| s.gpr[Register::Rcx as usize] = 0x1800,
+            W4_DS,
+        ),
+        (
+            &[0xdb, 0x00],
+            |s| s.gpr[Register::Rax as usize] = 0x1800,
+            W4_DS,
+        ),
+        (&[0xdb, 0x04, 0x25, 0x00, 0x18, 0x00, 0x00], |_| {}, W4_DS),
+        (
+            &[0xdb, 0x45, 0xf0],
+            |s| s.gpr[Register::Rbp as usize] = 0x1810,
+            W4_SS,
+        ),
+    ];
+    for (code, base, selector) in forms {
+        let cell = RefCell::new(w4_x87_cell());
+        let (_, state, _, result) = w4_x87_run(&cell, CR0_BASE, code, 1, |s, m| {
+            base(s);
+            m.bytes[(0x1800 - RIP) as usize..][..4].fill(0);
+        });
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        let x87 = cell.borrow().x87.clone();
+        assert_eq!(x87.registers[1], [0; 10]);
+        assert_eq!(x87.tag(1), Some(od_isa::state::X87Tag::Zero));
+        assert_eq!(x87.data_selector, Some(selector), "{code:02x?}");
+        assert_eq!(x87.data_pointer, 0x1800, "{code:02x?}");
+    }
+    // 0x7FFF_FFFF through `67` and a REX.B base: [r9d+4] with R9 = 0xdead_0000_0000_17fc.
+    let cell = RefCell::new(w4_x87_cell());
+    let (_, state, _, result) = w4_x87_run(
+        &cell,
+        CR0_BASE,
+        &[0x67, 0x41, 0xdb, 0x41, 0x04],
+        1,
+        |s, m| {
+            s.gpr[Register::R9 as usize] = 0xdead_0000_0000_17fc;
+            m.bytes[(0x1800 - RIP) as usize..][..4].copy_from_slice(&0x7fff_ffffi32.to_le_bytes());
+        },
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 5);
+    let x87 = cell.borrow().x87.clone();
+    // 2^31 - 1 = 1.111..1 (31 ones) * 2^30.
+    assert_eq!(
+        x87.registers[1],
+        [0, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff, 0x1d, 0x40]
+    );
+    assert_eq!(x87.data_pointer, 0x1800);
+}
+
+#[test]
+fn s7_32_w4_fild_m32int_faults_and_refusals_change_nothing() {
+    let nm = RunExit::Fault(ArchitecturalFault {
+        vector: 7,
+        error_code: None,
+        linear_address: None,
+    });
+    let ud = RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    });
+    let canonical = |vector| {
+        RunExit::Fault(ArchitecturalFault {
+            vector,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    };
+    type Setup = fn(&mut LongModeState, &mut GuestFpState);
+    let cases: [(&str, &[u8], u64, Setup, RunExit); 9] = [
+        (
+            "TS",
+            &[0xdb, 0x01],
+            CR0_BASE | CR0_TS,
+            |s, _| s.gpr[1] = 0x1800,
+            nm.clone(),
+        ),
+        (
+            "pending unmasked exception",
+            &[0xdb, 0x01],
+            CR0_BASE,
+            |s, fp| {
+                s.gpr[1] = 0x1800;
+                fp.x87.control_word = 0x037e;
+                fp.x87.status_word |= 0x0080;
+            },
+            RunExit::Fault(ArchitecturalFault {
+                vector: 16,
+                error_code: None,
+                linear_address: None,
+            }),
+        ),
+        (
+            "stack overflow (ST(7) not empty)",
+            &[0xdb, 0x01],
+            CR0_BASE,
+            |s, fp| {
+                s.gpr[1] = 0x1800;
+                fp.x87.tag_word = 0xffc3;
+            },
+            RunExit::Unsupported { opcode: 0xdb },
+        ),
+        (
+            "non-canonical RSP base",
+            &[0xdb, 0x04, 0x24],
+            CR0_BASE,
+            |s, _| s.gpr[Register::Rsp as usize] = 0x8000_0000_0000_0000,
+            canonical(12),
+        ),
+        (
+            "non-canonical RCX base",
+            &[0xdb, 0x01],
+            CR0_BASE,
+            |s, _| s.gpr[1] = 0x8000_0000_0000_0000,
+            canonical(13),
+        ),
+        (
+            "read past the memory",
+            &[0xdb, 0x01],
+            CR0_BASE,
+            |s, _| s.gpr[1] = 0x1ffe,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x1ffe,
+                access: AccessKind::Read,
+            }),
+        ),
+        (
+            "LOCK",
+            &[0xf0, 0xdb, 0x01],
+            CR0_BASE,
+            |s, _| s.gpr[1] = 0x1800,
+            ud.clone(),
+        ),
+        (
+            "GS override",
+            &[0x65, 0xdb, 0x01],
+            CR0_BASE,
+            |s, _| s.gpr[1] = 0x1800,
+            RunExit::Unsupported { opcode: 0xdb },
+        ),
+        (
+            "REX.W",
+            &[0x48, 0xdb, 0x01],
+            CR0_BASE,
+            |s, _| s.gpr[1] = 0x1800,
+            RunExit::Unsupported { opcode: 0xdb },
+        ),
+    ];
+    for (name, code, cr0, setup, outcome) in cases {
+        let mut fp = w4_x87_cell();
+        let mut state = w4_x87_state(cr0);
+        setup(&mut state, &mut fp);
+        let cell = RefCell::new(fp.clone());
+        let before = state.clone();
+        let mut memory = FpMemory::new(code);
+        let result = run_fp(&mut state, &mut memory, &fp_set(&cell), 1).unwrap();
+        assert_eq!(exit(&result), &outcome, "{name}");
+        assert_eq!(result.instructions_executed, 0, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(*cell.borrow(), fp, "{name}");
+        assert!(memory.writes.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn s7_32_w4_fnsave_stores_the_image_of_the_bare_run_in_aligned_pieces_and_initializes() {
+    // The reference: `fnsave (%rax)` (DD 30) in the bare `step` (the S2-32c bounded profile, checked
+    // against the physical rows of S2-32c) on the same x87 state, at 0x1800.
+    let fp = w4_x87_cell();
+    let mut bare_state = LongModeState {
+        rip: RIP,
+        rflags: 2,
+        x87: Some(fp.x87.clone()),
+        sse: Some(fp.sse.clone()),
+        ..LongModeState::default()
+    };
+    bare_state.gpr[Register::Rax as usize] = 0x1800;
+    let mut reference = FpMemory::new(&[0xdd, 0x30]);
+    assert_eq!(
+        od_isa::execute::step(
+            &mut bare_state,
+            &mut reference,
+            context(PrivilegeLevel::Ring0)
+        ),
+        Ok(od_isa::execute::StepOutcome::Advanced)
+    );
+    let expected_image = reference.bytes[(0x1800 - RIP) as usize..][..108].to_vec();
+    let expected_x87 = bare_state.x87.clone().unwrap();
+    // The literal fields of the image (Figure 8-9).
+    assert_eq!(expected_image[0..4], [0x7f, 0x03, 0xff, 0xff]);
+    assert_eq!(expected_image[4..8], [0x3f, 0x57, 0xff, 0xff]);
+    assert_eq!(expected_image[8..10], 0xffcfu16.to_le_bytes());
+    assert_eq!(expected_image[12..16], 0x1111_2222u32.to_le_bytes());
+    assert_eq!(expected_image[16..20], [0x33, 0x00, 0x23, 0x01]);
+    assert_eq!(expected_image[20..24], 0x3333_4444u32.to_le_bytes());
+    assert_eq!(expected_image[24..26], 0x2bu16.to_le_bytes());
+    assert_eq!(
+        expected_image[28..38],
+        [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+    );
+    // The set: `fnsave (%rax)` at 0x1800 and `fnsave 0x4(%rsp)` (DD 74 24 04, not 8-byte aligned)
+    // store the same 108 bytes in naturally aligned ascending pieces and initialize the FPU.
+    for (code, address) in [
+        (&[0xdd, 0x30][..], 0x1800u64),
+        (&[0xdd, 0x74, 0x24, 0x04], 0x1804),
+    ] {
+        let cell = RefCell::new(w4_x87_cell());
+        let (_, state, memory, result) = w4_x87_run(&cell, CR0_BASE, code, 1, |s, _| {
+            s.gpr[Register::Rax as usize] = 0x1800;
+            s.gpr[Register::Rsp as usize] = 0x1800;
+        });
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        assert_eq!(
+            &memory.bytes[(address - RIP) as usize..][..108],
+            &expected_image[..],
+            "{code:02x?}"
+        );
+        let mut at = address;
+        for &(piece, len) in &memory.writes {
+            assert_eq!(piece, at, "{code:02x?}");
+            assert!(
+                [1, 2, 4, 8].contains(&len) && piece % len as u64 == 0,
+                "{piece:#x}+{len}"
+            );
+            at += len as u64;
+        }
+        assert_eq!(at, address + 108, "{code:02x?}");
+        // Nothing around the image changed.
+        assert_eq!(memory.bytes[(address - RIP) as usize - 1], FP_SENTINEL);
+        assert_eq!(memory.bytes[(address + 108 - RIP) as usize], FP_SENTINEL);
+        // The FPU as the bare run left it: FNINIT, FCS/FDS cleared.
+        let after = cell.borrow().x87.clone();
+        assert_eq!(after, expected_x87, "{code:02x?}");
+        assert_eq!(
+            (
+                after.control_word,
+                after.status_word,
+                after.tag_word,
+                after.instruction_pointer
+            ),
+            (0x037f, 0, 0xffff, 0)
+        );
+        assert_eq!(
+            (after.instruction_selector, after.data_selector),
+            (Some(0), Some(0))
+        );
+    }
+}
+
+#[test]
+fn s7_32_w4_fnsave_does_not_wait_and_the_fsave_spelling_does() {
+    // A pending unmasked exception: FCW 0x037E (IE unmasked), FSW with ES and IE. FNSAVE is the
+    // no-wait form: it stores the image with ES/IE and FCW 0x037E, then initializes, without #MF.
+    let mut pending = w4_x87_cell();
+    pending.x87.control_word = 0x037e;
+    pending.x87.status_word |= 0x0081;
+    for code in [&[0xdd, 0x30][..], &[0xdd, 0x74, 0x24, 0x04]] {
+        let cell = RefCell::new(pending.clone());
+        let (_, state, memory, result) = w4_x87_run(&cell, CR0_BASE, code, 1, |s, _| {
+            s.gpr[Register::Rax as usize] = 0x1804;
+            s.gpr[Register::Rsp as usize] = 0x1800;
+        });
+        assert_eq!(result.instructions_executed, 1, "{code:02x?}: {result:?}");
+        assert_eq!(state.rip, RIP + code.len() as u64);
+        let image = &memory.bytes[(0x1804 - RIP) as usize..][..8];
+        assert_eq!(image[0..2], 0x037eu16.to_le_bytes(), "{code:02x?}");
+        assert_eq!(
+            image[4..6],
+            ((2u16 << 11) | 0x4700 | 0x00bf).to_le_bytes(),
+            "{code:02x?}"
+        );
+        let after = cell.borrow().x87.clone();
+        assert_eq!((after.control_word, after.status_word), (0x037f, 0));
+    }
+    // The FSAVE spelling `9B DD 30` waits first: the pending exception is #MF before any store,
+    // RIP stays on the `9B`.
+    let cell = RefCell::new(pending.clone());
+    let (before, state, memory, result) =
+        w4_x87_run(&cell, CR0_BASE, &[0x9b, 0xdd, 0x30], 1, |s, _| {
+            s.gpr[Register::Rax as usize] = 0x1800;
+        });
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 16,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert!(memory.writes.is_empty());
+    assert_eq!(state, before);
+    assert_eq!(*cell.borrow(), pending);
+    // Without a pending exception the FSAVE spelling stores the same image as FNSAVE; with CR0.EM
+    // (no condition of the FWAIT part) the #NM is the FNSAVE part's, RIP after the `9B`.
+    let cell = RefCell::new(w4_x87_cell());
+    let (_, state, memory, result) = w4_x87_run(&cell, CR0_BASE, &[0x9b, 0xdd, 0x30], 1, |s, _| {
+        s.gpr[Register::Rax as usize] = 0x1800;
+    });
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, RIP + 3);
+    assert_eq!(
+        memory.bytes[(0x1800 - RIP) as usize..][..2],
+        0x037fu16.to_le_bytes()
+    );
+    let cell = RefCell::new(w4_x87_cell());
+    let (before, state, _, result) =
+        w4_x87_run(&cell, CR0_BASE | CR0_EM, &[0x9b, 0xdd, 0x30], 1, |s, _| {
+            s.gpr[Register::Rax as usize] = 0x1800
+        });
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(state.rip, before.rip + 1);
+}
+
+#[test]
+fn s7_32_w4_fnsave_faults_change_no_state() {
+    // #NM; a non-canonical range (#SS(0) for an RSP base, #GP(0) otherwise) before any store; a
+    // store failure past the memory after the earlier pieces (not a transaction), the state kept;
+    // LOCK #UD; `66` (the 16-bit image) refused.
+    let cases: [(&str, &[u8], u64, u64, RunExit, bool); 6] = [
+        (
+            "TS",
+            &[0xdd, 0x34, 0x24],
+            CR0_BASE | CR0_TS,
+            0x1800,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }),
+            false,
+        ),
+        (
+            "non-canonical",
+            &[0xdd, 0x34, 0x24],
+            CR0_BASE,
+            0x0000_7fff_ffff_ffc0,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            false,
+        ),
+        (
+            "non-canonical RCX",
+            &[0xdd, 0x31],
+            CR0_BASE,
+            0x8000_0000_0000_0000,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            false,
+        ),
+        (
+            "past the memory",
+            &[0xdd, 0x34, 0x24],
+            CR0_BASE,
+            0x1fc0,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Write,
+            }),
+            true,
+        ),
+        (
+            "LOCK",
+            &[0xf0, 0xdd, 0x34, 0x24],
+            CR0_BASE,
+            0x1800,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            false,
+        ),
+        (
+            "66",
+            &[0x66, 0xdd, 0x34, 0x24],
+            CR0_BASE,
+            0x1800,
+            RunExit::Unsupported { opcode: 0xdd },
+            false,
+        ),
+    ];
+    for (name, code, cr0, address, outcome, partial) in cases {
+        let cell = RefCell::new(w4_x87_cell());
+        let (before, state, memory, result) = w4_x87_run(&cell, cr0, code, 1, |s, _| {
+            s.gpr[Register::Rsp as usize] = address;
+            s.gpr[Register::Rcx as usize] = address;
+        });
+        assert_eq!(exit(&result), &outcome, "{name}");
+        assert_eq!(state, before, "{name}");
+        assert_eq!(*cell.borrow(), w4_x87_cell(), "{name}");
+        assert_eq!(!memory.writes.is_empty(), partial, "{name}");
+    }
+}
+
+#[test]
+fn s7_32_w4_a_model_error_of_the_fsave_spelling_keeps_rip_on_the_fwait_byte() {
+    // A model error of the store is not an x86 exception (S2-32f): RIP stays at the `9B`, the cell is
+    // unchanged. RAX past the end of the test memory (the first pieces below 0x2000 are written, the
+    // piece at 0x2000 fails) and an image past 2^64 (no store at all).
+    for (rax, partial) in [(0x1fc0u64, true), (0xffff_ffff_ffff_ffc0, false)] {
+        let cell = RefCell::new(w4_x87_cell());
+        let (before, state, memory, result) =
+            w4_x87_run(&cell, CR0_BASE, &[0x9b, 0xdd, 0x30], 1, |s, _| {
+                s.gpr[Register::Rax as usize] = rax;
+            });
+        assert!(
+            matches!(exit(&result), RunExit::MemoryError(_)),
+            "{rax:#x}: {result:?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.rip, RIP, "{rax:#x}: RIP on the 9B");
+        assert_eq!(state, before, "{rax:#x}");
+        assert_eq!(*cell.borrow(), w4_x87_cell(), "{rax:#x}");
+        assert_eq!(!memory.writes.is_empty(), partial, "{rax:#x}");
+    }
 }

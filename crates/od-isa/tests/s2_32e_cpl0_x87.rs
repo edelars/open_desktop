@@ -239,6 +239,31 @@ fn image_of(x87: &X87State) -> Vec<u8> {
     bare(&FNSAVE, x87, &data).memory[..108].to_vec()
 }
 
+/// S7-32 W4: the stores of FNSAVE in the set, naturally aligned pieces of 8, 4, 2 and 1 bytes in ascending order
+/// (the paged adapter of the board stores only those widths); the bare run stores the image in one write.
+fn fnsave_pieces(address: u64) -> Vec<(u64, usize)> {
+    let mut pieces = Vec::new();
+    let mut offset = 0;
+    while offset < 108 {
+        let at = address + offset as u64;
+        let width = [8usize, 4, 2, 1]
+            .into_iter()
+            .find(|&width| at % width as u64 == 0 && offset + width <= 108)
+            .unwrap();
+        pieces.push((at, width));
+        offset += width;
+    }
+    pieces
+}
+
+/// `observed` with the stores of `reference`, for comparing everything else with the bare run.
+fn with_writes_of(observed: &Observed, reference: &Observed) -> Observed {
+    Observed {
+        writes: reference.writes.clone(),
+        ..observed.clone()
+    }
+}
+
 fn states() -> Vec<(&'static str, X87State)> {
     let mut top3 = seed();
     top3.status_word = 0x1800 | 0x0041; // TOP = 3, IE and PE sticky
@@ -267,8 +292,18 @@ fn fnstenv_and_fnsave_in_the_set_give_the_image_of_the_bare_run() {
                 reference.exit, "InstructionBudgetExhausted",
                 "{name} {label}"
             );
-            assert_eq!(observed, reference, "{name} {label}");
-            assert_eq!(observed.writes.len(), 1, "{name} {label}: one write");
+            // S7-32 W4: FNSAVE stores the same image in aligned pieces, FNSTENV in one write.
+            let writes = if *name == "fnsave [rax]" {
+                fnsave_pieces(DATA)
+            } else {
+                vec![(DATA, 28)]
+            };
+            assert_eq!(observed.writes, writes, "{name} {label}");
+            assert_eq!(
+                with_writes_of(&observed, &reference),
+                reference,
+                "{name} {label}"
+            );
             assert_eq!(
                 before.sse, after.sse,
                 "{name} {label}: the SSE half is untouched"
@@ -357,8 +392,11 @@ fn a_program_of_environment_forms_in_the_set_equals_the_bare_steps() {
         let reference = bare(&code, &x87, &data);
         let (observed, ..) = in_set(&code, CR0_BASE, CR4_FP, &x87, &data);
         assert_eq!(reference.exit, "InstructionBudgetExhausted", "{label}");
-        assert_eq!(observed, reference, "{label}");
-        assert_eq!(observed.writes.len(), 3, "{label}");
+        assert_eq!(with_writes_of(&observed, &reference), reference, "{label}");
+        // S7-32 W4: FNSAVE in aligned pieces, FNSTENV in one write.
+        let writes: Vec<(u64, usize)> =
+            [fnsave_pieces(DATA), vec![(DATA, 28)], fnsave_pieces(DATA)].concat();
+        assert_eq!(observed.writes, writes, "{label}");
         assert_eq!(observed.reads.len(), 2, "{label}");
     }
 }
@@ -391,7 +429,11 @@ fn a_literal_environment_image_and_the_state_after_fnsave_in_the_set() {
     assert_eq!(after, before, "FNSTENV keeps the cell");
 
     let (observed, _, _, after) = in_set(&FNSAVE, CR0_BASE, CR4_FP, &x87, &data);
-    assert_eq!(observed.writes, vec![(DATA, 108)]);
+    assert_eq!(
+        observed.writes,
+        fnsave_pieces(DATA),
+        "S7-32 W4: aligned pieces"
+    );
     assert_eq!(after.x87.control_word, 0x037f);
     assert_eq!(after.x87.status_word, 0);
     assert_eq!(after.x87.tag_word, 0xffff);
@@ -577,6 +619,48 @@ fn the_set_does_not_admit_a_cell_without_selectors_so_there_is_no_fcs_fds_bypass
     );
 }
 
+/// S7-32 W4: FNSAVE in the set stores the image of any x87 state, also with an unmasked control word, a pending
+/// exception (ES) or B set, where the bounded profile of the bare run refuses (SDM FSAVE/FNSAVE: the no-wait form
+/// stores the environment as it is), then initializes the FPU.
+#[test]
+fn fnsave_in_the_set_stores_any_state_the_bare_profile_refuses() {
+    let mut unmasked_cw = seed();
+    unmasked_cw.control_word = 0x037e;
+    let mut pending = unmasked_cw.clone();
+    pending.status_word |= 0x0081;
+    let mut busy = seed();
+    busy.status_word |= 0x8000;
+    for (name, x87) in [
+        ("unmasked CW", unmasked_cw),
+        ("pending", pending),
+        ("B", busy),
+    ] {
+        let (observed, state, _, after) = in_set(&FNSAVE, CR0_BASE, CR4_FP, &x87, &data);
+        assert_eq!(observed.exit, "InstructionBudgetExhausted", "{name}");
+        assert_eq!(state.rip, CODE + 2, "{name}");
+        assert_eq!(
+            observed.memory[0..2],
+            x87.control_word.to_le_bytes(),
+            "{name}"
+        );
+        assert_eq!(
+            observed.memory[4..6],
+            x87.status_word.to_le_bytes(),
+            "{name}"
+        );
+        assert_eq!(observed.writes, fnsave_pieces(DATA), "{name}");
+        assert_eq!(
+            (
+                after.x87.control_word,
+                after.x87.status_word,
+                after.x87.tag_word
+            ),
+            (0x037f, 0, 0xffff),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn faults_and_refusals_of_the_environment_forms_in_the_set_equal_the_bare_run() {
     let good = image_of(&seed());
@@ -589,27 +673,18 @@ fn faults_and_refusals_of_the_environment_forms_in_the_set_equal_the_bare_run() 
     unmasked_cw.control_word = 0x037e;
     let mut es_set = seed();
     es_set.status_word |= 0x0080;
-    let mut busy = seed();
-    busy.status_word |= 0x8000;
 
     type Prepare = Box<dyn Fn(&mut LongModeState, &mut Ram)>;
     let cases: Vec<(&str, [u8; 2], X87State, Prepare, &str)> = vec![
         (
             "fnstenv unmasked CW",
             FNSTENV,
-            unmasked_cw.clone(),
-            Box::new(data),
-            "Unsupported",
-        ),
-        (
-            "fnsave unmasked CW",
-            FNSAVE,
             unmasked_cw,
             Box::new(data),
             "Unsupported",
         ),
+        // S7-32 W4: FNSAVE with an unmasked control word or B set runs in the set (below).
         ("fnstenv ES", FNSTENV, es_set, Box::new(data), "Unsupported"),
-        ("fnsave B", FNSAVE, busy, Box::new(data), "Unsupported"),
         (
             "frstor unmasked image",
             FRSTOR,
@@ -707,7 +782,14 @@ fn faults_and_refusals_of_the_environment_forms_in_the_set_equal_the_bare_run() 
         assert_eq!(observed.x87, reference.x87, "{name}");
         assert_eq!(observed.memory, reference.memory, "{name}");
         assert_eq!(observed.reads, reference.reads, "{name}");
-        assert_eq!(observed.writes, reference.writes, "{name}");
+        // S7-32 W4: FNSAVE in the set tries the first aligned piece of the image (refused by the page),
+        // the bare run the whole image in one write; nothing is written in either.
+        let writes = if *name == "fnsave #PF" {
+            vec![(DATA, 8)]
+        } else {
+            reference.writes.clone()
+        };
+        assert_eq!(observed.writes, writes, "{name}");
         assert_eq!(after, before, "{name}: the cell is unchanged");
         assert_eq!(state.rip, CODE, "{name}: nothing retired");
         assert_eq!(state.gpr, reference.gpr, "{name}");
@@ -724,7 +806,7 @@ fn other_x87_forms_stay_refused_in_the_set_with_no_change() {
         ("fprem", [0xd9, 0xf8]),
         ("fld1", [0xd9, 0xe8]),
         ("fst qword [rax]", [0xdd, 0x10]),
-        ("fnclex", [0xdb, 0xe2]),
+        // S7-32 W4: `fnclex` (DB E2) runs in the set (tests/cpl0_profile_set.rs, `s7_32_w4_fnclex_*`).
         ("fnstsw ax", [0xdf, 0xe0]),
     ] {
         let (observed, state, before, after) = in_set(&code, CR0_BASE, CR4_FP, &seed(), &data);
@@ -774,8 +856,9 @@ fn set_step(cell: &RefCell<GuestFpState>, ram: &mut Ram, code: [u8; 2], address:
 }
 
 /// The 324 physical rows of S2-32c (Core i5-3210M: FNINIT; FRSTOR in; FNSTENV env; FNSAVE save; FNSTENV env2),
-/// replayed instruction by instruction through the CPL0 set: every byte of the three outputs, the one write per
-/// image and the one 108-byte read are those of the bare run and of the processor.
+/// replayed instruction by instruction through the CPL0 set: every byte of the three outputs and the one 108-byte
+/// read are those of the bare run and of the processor; FNSTENV stores in one write, FNSAVE (S7-32 W4) in aligned
+/// pieces.
 #[test]
 fn the_oracle_rows_of_s2_32c_are_reproduced_byte_for_byte_through_the_set() {
     const IN: u64 = 0x4000;
@@ -808,7 +891,9 @@ fn the_oracle_rows_of_s2_32c_are_reproduced_byte_for_byte_through_the_set() {
             assert_eq!(ram.get(SAVE, 108), &save[..], "save {line}");
             set_step(&cell, &mut ram, FNSTENV, ENV2);
             assert_eq!(ram.get(ENV2, 28), &env2[..], "env2 {line}");
-            assert_eq!(ram.writes, [(ENV, 28), (SAVE, 108), (ENV2, 28)], "{line}");
+            let writes: Vec<(u64, usize)> =
+                [vec![(ENV, 28)], fnsave_pieces(SAVE), vec![(ENV2, 28)]].concat();
+            assert_eq!(ram.writes, writes, "{line}");
             let x87 = cell.borrow().x87.clone();
             assert_eq!(
                 (x87.control_word, x87.status_word, x87.tag_word),

@@ -391,8 +391,24 @@ fn decoder_consumes_exactly_the_two_spellings() {
                 (Operation::Fwait, 1),
                 "{code:02x?}"
             );
+            // S7-32 W4: `67 DD 30` and a REX without W before `DD 30` are the general FNSAVE at
+            // [EAX] or [RAX]/[R8] (only the FP member of the CPL0 set executes it).
+            let rest = decode(&code[1..]);
+            if escape == 0xdd && (prefix == 0x67 || (0x40..=0x47).contains(&prefix)) {
+                assert!(
+                    matches!(
+                        rest,
+                        Ok(long_decode::Instruction {
+                            operation: Operation::FnsaveMemory { .. },
+                            ..
+                        })
+                    ),
+                    "{code:02x?}: {rest:?}"
+                );
+                continue;
+            }
             assert!(
-                matches!(decode(&code[1..]), Err(DecodeError::Unsupported { .. })),
+                matches!(rest, Err(DecodeError::Unsupported { .. })),
                 "{code:02x?}"
             );
         }
@@ -672,7 +688,10 @@ fn in_the_set_the_waiting_spellings_store_the_image_of_the_non_waiting_forms() {
         assert_eq!((state.rip, plain_state.rip), (CODE + 3, CODE + 2));
         assert_eq!(after, plain_after);
         assert_eq!(bytes, plain_bytes);
-        assert_eq!(accesses, 1, "one write of the image");
+        // FSTENV stores in one write; FSAVE, like FNSAVE in the set since S7-32 W4, in 14 aligned pieces
+        // (13 qwords and a dword at the 8-byte aligned DATA).
+        let stores = if waiting == &FSAVE[..] { 14 } else { 1 };
+        assert_eq!(accesses, stores, "the stores of the image");
         assert_eq!(before.sse, after.sse, "the SSE half is untouched");
     }
 }
@@ -703,10 +722,18 @@ fn in_the_set_the_fwait_checks_come_first() {
             assert_eq!(accesses, 0, "{name} {label}: no memory access");
             assert_eq!(bytes, vec![0xa5; 0x200], "{name} {label}");
         }
-        // The non-waiting form does not wait: with the same state it is refused by the profile, no #MF.
+        // The non-waiting form does not wait, no #MF: FNSTENV is refused by the bounded profile for that state;
+        // FNSAVE (S7-32 W4, `step_cpl0_fnsave`) stores it and initializes the FPU.
         let plain: &[u8] = if name == "fstenv" { &FNSTENV } else { &FNSAVE };
-        let (exit, ..) = in_set(plain, CR0_BASE, CR4_FP, &pending);
-        assert!(exit.contains("Unsupported"), "{name}: {exit}");
+        let (exit, _, _, after, bytes, _) = in_set(plain, CR0_BASE, CR4_FP, &pending);
+        if name == "fstenv" {
+            assert!(exit.contains("Unsupported"), "{name}: {exit}");
+        } else {
+            assert_eq!(exit, "InstructionBudgetExhausted", "{name}");
+            assert_eq!(bytes[0..2], 0x037eu16.to_le_bytes(), "{name}");
+            assert_eq!(bytes[4..6], 0x0081u16.to_le_bytes(), "{name}");
+            assert_eq!(after.x87.control_word, 0x037f, "{name}");
+        }
     }
     // The vectors themselves.
     let (exit, ..) = in_set(&FSTENV, CR0_BASE, CR4_FP, &pending);

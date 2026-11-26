@@ -680,13 +680,12 @@ fn fxrstor64_then_fxsave64_round_trips_the_xmm_and_mxcsr_state() {
     let saved = &ram.bytes[IMAGE_OUT as usize..IMAGE_OUT as usize + 512];
     assert_eq!(saved[24..28], image[24..28]);
     assert_eq!(saved[160..416], image[160..416]);
-    // The x87 half came from the image as well (FCW), and its selectors are kept.
+    // The x87 half came from the image as well (FCW); FXRSTOR64 clears FCS and FDS (Intel SDM
+    // Vol. 1 §8.1.8; S7-32 W4, before it the set kept them).
     assert_eq!(after.x87.control_word, 0x027f);
-    assert_eq!(
-        after.x87.instruction_selector,
-        before.x87.instruction_selector
-    );
-    assert_eq!(after.x87.data_selector, before.x87.data_selector);
+    assert_ne!(before.x87.instruction_selector, Some(0));
+    assert_eq!(after.x87.instruction_selector, Some(0));
+    assert_eq!(after.x87.data_selector, Some(0));
 }
 
 #[test]

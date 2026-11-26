@@ -7,10 +7,10 @@ use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
-    FlagEffects, LockedRmwOp, LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes,
-    ShiftKind, Sse3PermuteKind, Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind,
-    SseFpArithKind, SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical,
-    general_protection,
+    FlagEffects, FxsaveLayout, LockedRmwOp, LogicKind, MemoryOperand, OpcodeMap, Operand,
+    Operation, Prefixes, ShiftKind, Sse3PermuteKind, Sse3Source, Sse41FpKind, Sse41Kind,
+    Sse41Operand, Sse128MoveKind, SseFpArithKind, SseFpMiscKind, SseFpShape, SseLogicPermuteKind,
+    Ssse3IntKind, canonical, general_protection,
 };
 use crate::memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, FenceKind, GuestMemory,
@@ -48236,6 +48236,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // S4-38L9d/E, S4-39f22 and S6-22 ISSUE-578: the FP member of the CPL0 set owns `FNINIT`, the
     // plain `FXSAVE` and the exact `FXSAVE64`/`FXRSTOR64` kernel forms; its state lives in the
     // member's cell, so these operations never reach the `state.x87`/`state.sse` paths below.
+    // S7-32 W4: and every other memory form of FXSAVE/FXRSTOR (`Fxsave`/`Fxrstor`), FNCLEX,
+    // FFREE ST(i), FILD m32int and FNSAVE at any memory operand (the Windows kernel's FXRSTOR probe).
     if let Some(fp_cell) = fp_cpl0
         && control_policy.is_some()
         && matches!(
@@ -48248,6 +48250,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | Operation::Fxrstor64RbxDisp8(_)
                 | Operation::Fxrstor64RipRelative(_)
                 | Operation::Fxrstor64Rdi(_)
+                | Operation::Fxsave { .. }
+                | Operation::Fxrstor { .. }
+                | Operation::Fnclex
+                | Operation::FfreeSti { .. }
+                | Operation::FildM32IntRax
+                | Operation::FildM32Int { .. }
+                | Operation::FnsaveRax
+                | Operation::FnsaveMemory { .. }
                 | Operation::FnstswM16 { .. }
                 | Operation::FnstcwM16 { .. }
                 | Operation::LdmxcsrMemory { .. }
@@ -53501,6 +53511,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Fxsave64R12(_)
         | Operation::Fxrstor64RipRelative(_)
         | Operation::Fxrstor64Rdi(_)
+        // S7-32 W4: the general FXSAVE/FXRSTOR, FILD m32int and FNSAVE forms run only in the FP
+        // member of the set.
+        | Operation::Fxsave { .. }
+        | Operation::Fxrstor { .. }
+        | Operation::FildM32Int { .. }
+        | Operation::FnsaveMemory { .. }
         // S7-31d: FNSTSW/FNSTCW with any memory operand run only in the FP member of the set.
         | Operation::FnstswM16 { .. }
         | Operation::FnstcwM16 { .. }
@@ -54739,6 +54755,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::Fxrstor64RipRelative(_) | Operation::Fxrstor64Rdi(_) => {
             unreachable!("FXRSTOR64 commits in its prevalidated field-load path")
+        }
+        Operation::Fxsave { .. }
+        | Operation::Fxrstor { .. }
+        | Operation::FildM32Int { .. }
+        | Operation::FnsaveMemory { .. } => {
+            unreachable!("the W4 forms are not executable outside the FP member of the set")
         }
         Operation::FnstswM16 { .. }
         | Operation::FnstcwM16 { .. }
@@ -73552,8 +73574,9 @@ fn step_mmx_operation(
 }
 
 /// S2-32e: the x87 forms of the bounded S2-32 slices that the CPL0 set connects: the ten transcendental forms
-/// of S2-32a (`D9 F0..FF`), FBLD/FBSTP of S2-32b, FNSTENV/FNSAVE/FRSTOR of S2-32c and FLDENV of S2-32d. Every other x87 form stays
-/// refused in the set (`state.x87` is `None` there).
+/// of S2-32a (`D9 F0..FF`), FBLD/FBSTP of S2-32b, FNSTENV/FRSTOR of S2-32c and FLDENV of S2-32d. FNSAVE (S2-32c) runs
+/// in `step_cpl0_fp` since S7-32 W4 (`step_cpl0_fnsave`, with every memory operand). Every other x87 form stays
+/// refused in the set (`state.x87` is `None` there), except the W4 forms of `step_cpl0_fp`.
 fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
     matches!(
         operation,
@@ -73570,7 +73593,6 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
             | Operation::FbldM80Rax
             | Operation::FbstpM80Rax
             | Operation::FnstenvRax
-            | Operation::FnsaveRax
             | Operation::FrstorRax
             | Operation::FldenvRax
     )
@@ -75353,7 +75375,10 @@ fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
 fn cpl3_sse_set_form(instruction: &long_decode::Instruction) -> bool {
     let operation = instruction.operation;
     // S7-31i LDMXCSR (merge 56c60c9, "main priority"): executed by `step_cpl0_fp` on `state.sse`, also at CPL3.
+    // S7-32 W4: FXSAVE/FXRSTOR (SDM: not privileged) too, every form through `step_cpl0_fx_state`
+    // on the member's cell and `state.sse`, with user accesses.
     matches!(operation, Operation::LdmxcsrMemory { .. })
+        || fx_state_form(operation).is_some()
         || sse_cpl0_form(instruction)
         || sse_cpl0_cpl3_handler_form(&operation)
         || sse_fp_arith_from_narrow(operation).is_some()
@@ -75980,15 +76005,6 @@ fn step_fisttp(
     x87.data_pointer = address;
     state.rip = next_rip;
     Ok(StepOutcome::Advanced)
-}
-
-/// Store the defined fields of the exact bounded plain-Long64 FXSAVE profile.
-/// The callback granularity is deliberately field-driven: failures keep prior
-/// successful private-RAM slices, and no reads or global rollback are implied.
-#[derive(Clone, Copy)]
-enum FxsaveLayout {
-    Plain,
-    Long64,
 }
 
 fn punpcklbw_xmm(xmm: &mut [[u8; 16]; 16], destination: u8, source: u8) {
@@ -76693,17 +76709,18 @@ fn step_cpl3_xmm(
     Ok(StepOutcome::Advanced)
 }
 
-/// S4-38L9d/ISSUE-578: `FNINIT` (`DB E3`), `FWAIT` (`9B`), and the plain RIP-relative `FXSAVE` (`0F AE 05 disp32`) of the CPL0
-/// set under `with_fp_state`. The caller guarantees the operation, a control-register policy and
-/// the admitted CR0/CR4 (both modeled). Order of the checks: exact encoding (else `Unsupported`
-/// with the opcode byte); `FWAIT` raises #UD for LOCK, #NM only for CR0.MP && CR0.TS, then #MF for
-/// a pending unmasked x87 exception when CR0.NE is set. With NE clear, the required FERR#/IRQ13
-/// path has no model here and remains Unsupported. For `FXSAVE`, CR4.OSFXSR = 0 (`Unsupported`,
-/// the S2-39 convention: the architecture leaves it implementation-dependent), then CR0.EM or
-/// CR0.TS (`#NM`, the S2-39 convention), then for `FXSAVE` the image store (16-byte alignment and canonical range are
-/// `#GP(0)`, a page fault is the memory's own fault) before anything commits. The FP cell is
-/// changed only by `FNINIT` and (S4-38L9E, same gates, the image read as the last step before the
-/// commit) `FXRSTOR64`; the CPU state changes only by the RIP.
+/// S4-38L9d/ISSUE-578: the instructions the FP member of the CPL0 set owns (`with_fp_state`):
+/// `FNINIT` (`DB E3`), `FWAIT` (`9B`), FNSTSW/FNSTCW m16 and LDMXCSR (S7-31d/i), and, since S7-32
+/// W4, every FXSAVE/FXRSTOR form (`step_cpl0_fx_state`), FNCLEX, FFREE ST(i), FILD m32int
+/// (`step_cpl0_fild_m32`) and FNSAVE (`step_cpl0_fnsave`, also the FSAVE spelling `9B DD 30`).
+/// The caller guarantees the operation, a control-register policy and the admitted CR0/CR4 (both
+/// modeled). Order of the checks: exact encoding (else `Unsupported` with the opcode byte); `FWAIT`
+/// raises #UD for LOCK, #NM only for CR0.MP && CR0.TS, then #MF for a pending unmasked x87
+/// exception when CR0.NE is set (`x87_pending_exception`; with NE clear the FERR#/IRQ13 path has
+/// no model and remains Unsupported). The other forms check CR0.EM/CR0.TS (`#NM`) first, then
+/// their own rules (see each executor) before anything commits. The FP cell is changed by
+/// `FNINIT`, FXRSTOR/FXRSTOR64, FNCLEX, FFREE, FILD and FNSAVE (`state.sse` by LDMXCSR and
+/// FXRSTOR); the CPU state changes only by the RIP.
 fn step_cpl0_fp(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -76753,26 +76770,123 @@ fn step_cpl0_fp(
             if cr0 & (1 << 1) != 0 && cr0 & (1 << 3) != 0 {
                 return device_not_available;
             }
-            let fp = cell.borrow();
-            let x87 = &fp.x87;
-            let pending_unmasked = x87.status_word & (1 << 7) != 0
-                && x87.status_word & 0x003f & !x87.control_word != 0;
-            if pending_unmasked {
-                // NE=1 routes a pending x87 exception through #MF (Vol. 1 §8.7.1).
-                // With NE=0 the architecture signals FERR#/IRQ13 externally; this bounded
-                // CPU profile has no x87 error-line input, so fail closed without retirement.
-                if cr0 & (1 << 5) == 0 {
-                    return unsupported;
-                }
-                return Ok(StepOutcome::Fault(ArchitecturalFault {
-                    vector: 16,
-                    error_code: None,
-                    linear_address: None,
-                }));
+            if let Some(outcome) = x87_pending_exception(&cell.borrow().x87, cr0, instruction) {
+                return outcome;
             }
-            drop(fp);
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
+        }
+        // S7-32 W4: FNCLEX (`DB E2`), a control instruction: the exception flags, SF, ES and B are
+        // cleared (C0..C3 keep their values, the SDM leaves them undefined); FIP/FDP/FOP and the
+        // selectors stay (Vol. 1 §8.1.8). No pending-exception check (the no-wait form).
+        Operation::Fnclex => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0xdb
+                || instruction.length != 2
+                || instruction.prefixes != Prefixes::default()
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            cell.borrow_mut().x87.fnclex();
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        // S7-32 W4: FFREE ST(i) (`DD C0+i`): the tag of ST(i) becomes empty; TOP and the register
+        // stay. A pending unmasked exception is #MF first (SDM Vol. 2A FFREE). FIP and FCS take the
+        // address and the CS selector of this instruction: Vol. 1 §8.1.8 keeps them only for the
+        // listed control instructions (FCLEX, FLDCW, FSTCW, FSTSW, FSTENV, FLDENV, WAIT), and
+        // FFREE is not among them; FDP/FDS (undefined without a memory operand, §8.1.8) and FOP
+        // (changed only with an unmasked exception, §8.1.9) stay.
+        Operation::FfreeSti { index } => {
+            if instruction.opcode.map != OpcodeMap::Primary
+                || instruction.opcode.byte != 0xdd
+                || instruction.length != 2
+                || instruction.prefixes != Prefixes::default()
+            {
+                return unsupported;
+            }
+            if cr0 & 0xc != 0 {
+                return device_not_available;
+            }
+            if let Some(outcome) = x87_pending_exception(&cell.borrow().x87, cr0, instruction) {
+                return outcome;
+            }
+            let Some(cs) = state.cs_selector else {
+                return unsupported;
+            };
+            let mut fp = cell.borrow_mut();
+            let x87 = &mut fp.x87;
+            let physical = x87.top().wrapping_add(index) & 7;
+            x87.set_tag(physical, X87Tag::Empty);
+            x87.instruction_pointer = state.rip;
+            x87.instruction_selector = Some(cs);
+            state.rip = next_rip;
+            Ok(StepOutcome::Advanced)
+        }
+        Operation::FildM32IntRax | Operation::FildM32Int { .. } => {
+            step_cpl0_fild_m32(state, memory, context, instruction, next_rip, cell, cr0)
+        }
+        // S7-32 W4: FNSAVE at any memory operand, the exact `DD 30` at [RAX] and its S2-32f FSAVE
+        // spelling `9B DD 30` (one instruction of three bytes) have one executor. The FSAVE spelling
+        // is FWAIT first, with the checks of the FWAIT arm (#NM for MP and TS, then a pending
+        // unmasked exception); a fault of the FNSAVE part leaves RIP after the `9B` (the FWAIT part
+        // retired, SDM FSAVE: "the save EIP points to the instruction that caused the exception").
+        Operation::FnsaveRax | Operation::FnsaveMemory { .. } => {
+            let (destination, fwait) = match instruction.operation {
+                Operation::FnsaveMemory { destination }
+                    if instruction.opcode.byte == 0xdd
+                        && instruction.prefixes.segment.is_none()
+                        && instruction.prefixes.group1.is_none()
+                        && !instruction.prefixes.operand_override
+                        && destination.segment == crate::long_decode::MemorySegment::Flat =>
+                {
+                    (destination, false)
+                }
+                Operation::FnsaveRax
+                    if instruction.prefixes == Prefixes::default()
+                        && matches!(
+                            (instruction.opcode.byte, instruction.length),
+                            (0xdd, 2) | (0x9b, 3)
+                        ) =>
+                {
+                    let destination = MemoryOperand {
+                        segment: crate::long_decode::MemorySegment::Flat,
+                        base: AddressBase::Register(Register::Rax),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: OperandSize::Qword,
+                        size: OperandSize::Qword,
+                    };
+                    (destination, instruction.opcode.byte == 0x9b)
+                }
+                _ => return unsupported,
+            };
+            if instruction.opcode.map != OpcodeMap::Primary
+                || context.privilege != PrivilegeLevel::Ring0
+            {
+                return unsupported;
+            }
+            if fwait {
+                if cr0 & (1 << 1) != 0 && cr0 & (1 << 3) != 0 {
+                    return device_not_available;
+                }
+                if let Some(outcome) = x87_pending_exception(&cell.borrow().x87, cr0, instruction) {
+                    return outcome;
+                }
+            }
+            let outcome = if cr0 & 0xc != 0 {
+                device_not_available
+            } else {
+                step_cpl0_fnsave(state, memory, context, next_rip, cell, destination)
+            };
+            if fwait && matches!(outcome, Ok(StepOutcome::Fault(_))) {
+                state.rip = state.rip.wrapping_add(1);
+            }
+            outcome
         }
         Operation::LdmxcsrMemory { source } => {
             // S7-31i. Intel SDM Vol. 2A, LDMXCSR: load MXCSR from a 32-bit memory operand. #UD if
@@ -76888,211 +77002,323 @@ fn step_cpl0_fp(
             state.rip = next_rip;
             Ok(StepOutcome::Advanced)
         }
-        Operation::FxsaveRipRelative(area) => {
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 7
-                || instruction.prefixes != Prefixes::default()
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::NextRip
-                || area.index.is_some()
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let fp = cell.borrow();
-            if fp.x87.instruction_selector.is_none() || fp.x87.data_selector.is_none() {
-                return unsupported;
-            }
-            let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxsave(
-                &fp.x87,
-                sse_ref(state),
-                memory,
-                context,
-                address,
-                FxsaveLayout::Plain,
-                // The paged adapter of the board stores 1/2/4/8 bytes per call.
-                true,
-            ) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Operation::Fxsave64RaxDisp8(area) => {
-            // S4-39f22: `48 0F AE 40 40` (`fxsave64 0x40(%rax)`, the kernel's FP-state save).
-            // The mirror of the FXRSTOR64 arm below: the same encoding checks and CR4/CR0 gates,
-            // only the REX.W form with the fixed base (`rax`) and displacement exists. The image
-            // is the Long64 layout (64-bit FIP/FDP, XMM0-15); the selectors are not part of it, so
-            // they need not be modeled. The cell is not changed; only the RIP.
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 5
-                || instruction.prefixes
-                    != (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::Register(Register::Rax)
-                || area.index.is_some()
-                || area.displacement != 0x40
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let address = area.effective_address(state, next_rip);
-            let fp = cell.borrow();
-            if let Err(error) = fxsave(
-                &fp.x87,
-                sse_ref(state),
-                memory,
-                context,
-                address,
-                FxsaveLayout::Long64,
-                // The paged adapter of the board stores 1/2/4/8 bytes per call.
-                true,
-            ) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Operation::Fxsave64R12(area) => {
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 5
-                || instruction.prefixes
-                    != (Prefixes {
-                        rex: Some(0x49),
-                        ..Prefixes::default()
-                    })
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::Register(Register::R12)
-                || area.index.is_some()
-                || area.displacement != 0
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let address = area.effective_address(state, next_rip);
-            let fp = cell.borrow();
-            if let Err(error) = fxsave(
-                &fp.x87,
-                sse_ref(state),
-                memory,
-                context,
-                address,
-                FxsaveLayout::Long64,
-                true,
-            ) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Operation::Fxrstor64RbxDisp8(area) => {
-            // S4-38L9E: `48 0F AE 4B 40` (`fxrstor64 0x40(%rbx)`, the kernel's
-            // `restore_fpregs_from_fpstate`). The same encoding checks and CR4/CR0 gates as the
-            // FXSAVE above; only the REX.W form with the fixed base and displacement exists.
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 5
-                || instruction.prefixes
-                    != (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::Register(Register::Rbx)
-                || area.index.is_some()
-                || area.displacement != 0x40
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Operation::Fxrstor64RipRelative(area) => {
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 8
-                || instruction.prefixes
-                    != (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::NextRip
-                || area.index.is_some()
-                || area.displacement != 0x01ca_c498
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
-        Operation::Fxrstor64Rdi(area) => {
-            if instruction.opcode.map != OpcodeMap::Escape0f
-                || instruction.opcode.byte != 0xae
-                || instruction.length != 4
-                || instruction.prefixes
-                    != (Prefixes {
-                        rex: Some(0x48),
-                        ..Prefixes::default()
-                    })
-                || instruction.address_size != OperandSize::Qword
-                || area.base != AddressBase::Register(Register::Rdi)
-                || area.index.is_some()
-                || area.displacement != 0
-                || area.size != OperandSize::Qword
-                || cr4 & (1 << 9) == 0
-            {
-                return unsupported;
-            }
-            if cr0 & 0xc != 0 {
-                return device_not_available;
-            }
-            let address = area.effective_address(state, next_rip);
-            if let Err(error) = fxrstor64_cpl0(cell, state, memory, context, address) {
-                return report_memory_error(error);
-            }
-            state.rip = next_rip;
-            Ok(StepOutcome::Advanced)
-        }
+        // S7-32 W4: every FXSAVE/FXRSTOR of the member, the exact S2-39/S4-38L9 kernel forms and
+        // the general forms of the W4 decoder, has one executor.
+        Operation::FxsaveRipRelative(_)
+        | Operation::Fxsave64RaxDisp8(_)
+        | Operation::Fxsave64R12(_)
+        | Operation::Fxrstor64RbxDisp8(_)
+        | Operation::Fxrstor64RipRelative(_)
+        | Operation::Fxrstor64Rdi(_)
+        | Operation::Fxsave { .. }
+        | Operation::Fxrstor { .. } => step_cpl0_fx_state(
+            state,
+            memory,
+            context,
+            instruction,
+            next_rip,
+            cell,
+            cr0,
+            cr4,
+        ),
         _ => unsupported,
     }
+}
+
+/// The pending-exception check of a waiting x87 instruction of the FP member (FWAIT, and the
+/// non-control forms): with ES set and an exception flag whose mask is clear, CR0.NE = 1 delivers
+/// `#MF` before the instruction (Vol. 1 §8.7.1); with NE = 0 the architecture signals FERR#/IRQ13
+/// externally, which this CPU profile has no input for, so the instruction is refused without
+/// retirement. `None` when nothing is pending.
+fn x87_pending_exception(
+    x87: &X87State,
+    cr0: u64,
+    instruction: &long_decode::Instruction,
+) -> Option<Result<StepOutcome, MemoryError>> {
+    let pending =
+        x87.status_word & (1 << 7) != 0 && x87.status_word & 0x003f & !x87.control_word != 0;
+    if !pending {
+        return None;
+    }
+    Some(Ok(if cr0 & (1 << 5) == 0 {
+        StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        }
+    } else {
+        StepOutcome::Fault(ArchitecturalFault {
+            vector: 16,
+            error_code: None,
+            linear_address: None,
+        })
+    }))
+}
+
+/// S7-32 W4: FILD m32int (`DB /0`) of the FP member at CPL0, at any memory operand without a
+/// segment override (Intel SDM Vol. 2A FILD; Vol. 1 §8.1.8, §8.1.9). In order: the encoding (the
+/// exact `[RAX]` form or the general one), CR0.EM/TS `#NM`, a pending unmasked exception (`#MF`,
+/// see [`x87_pending_exception`]), the operand address (`#SS(0)`/`#GP(0)` when not canonical),
+/// a stack overflow (the destination ST(7) not empty: the masked `#IS` response and the unmasked
+/// `#MF` are not modeled, `Unsupported`), then the dword read (its fault changes nothing). The
+/// push: TOP - 1, ST(0) the exact binary80 value (tag Zero for 0, Valid otherwise), C1 = 0
+/// (C0, C2, C3 keep their values, the SDM leaves them undefined); FIP and FCS take this
+/// instruction's address and CS selector, FDP and FDS the operand offset and the selector of its
+/// default segment (SS for an RSP/RBP base, DS otherwise); FOP stays (it changes only with an
+/// unmasked exception, §8.1.9).
+fn step_cpl0_fild_m32(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+) -> Result<StepOutcome, MemoryError> {
+    let unsupported = Ok(StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    });
+    let source = match instruction.operation {
+        Operation::FildM32IntRax
+            if instruction.length == 2 && instruction.prefixes == Prefixes::default() =>
+        {
+            MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
+                base: AddressBase::Register(Register::Rax),
+                index: None,
+                scale: 1,
+                displacement: 0,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Dword,
+            }
+        }
+        Operation::FildM32Int { source }
+            if instruction.prefixes.segment.is_none()
+                && instruction.prefixes.group1.is_none()
+                && !instruction.prefixes.operand_override =>
+        {
+            source
+        }
+        _ => return unsupported,
+    };
+    if instruction.opcode.map != OpcodeMap::Primary
+        || instruction.opcode.byte != 0xdb
+        || source.size != OperandSize::Dword
+        || source.segment != crate::long_decode::MemorySegment::Flat
+        || context.privilege != PrivilegeLevel::Ring0
+    {
+        return unsupported;
+    }
+    if cr0 & 0xc != 0 {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    if let Some(outcome) = x87_pending_exception(&cell.borrow().x87, cr0, instruction) {
+        return outcome;
+    }
+    let stack_segment = matches!(
+        source.base,
+        AddressBase::Register(Register::Rsp | Register::Rbp)
+    );
+    let (Some(cs), Some(data_selector)) = (
+        state.cs_selector,
+        if stack_segment {
+            state.ss_selector
+        } else {
+            Some(state.ds_selector)
+        },
+    ) else {
+        return unsupported;
+    };
+    let address = match source.access_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(error) => return report_memory_error(error),
+    };
+    let destination = cell.borrow().x87.top().wrapping_add(7) & 7;
+    if cell.borrow().x87.tag(destination) != Some(X87Tag::Empty) {
+        return unsupported;
+    }
+    let value = match memory.read_integer(address, context, OperandSize::Dword) {
+        Ok(value) => i64::from(value as u32 as i32),
+        Err(error) => return report_memory_error(error),
+    };
+    let (payload, tag) = pack_i64_binary80(value);
+    let mut fp = cell.borrow_mut();
+    let x87 = &mut fp.x87;
+    x87.registers[usize::from(destination)] = payload;
+    x87.set_tag(destination, tag);
+    x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(destination) << 11);
+    x87.instruction_pointer = state.rip;
+    x87.instruction_selector = Some(cs);
+    x87.data_pointer = source.effective_address(state, next_rip);
+    x87.data_selector = Some(data_selector);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S7-32 W4: FNSAVE m108byte (`DD /6`) of the FP member at CPL0 (Intel SDM Vol. 2A FSAVE/FNSAVE;
+/// Vol. 1 §8.1.8, §8.1.10, Figure 8-9): the 32-bit protected-mode image of S2-32c
+/// (`x87_save_image`: FCW, FSW, the full tag word, FIP[31:0], FCS with FOP, FDP[31:0], FDS, then
+/// ST(0)..ST(7)) at `destination`, without a pending-exception check (the no-wait form). The
+/// 108-byte range must be canonical (`#SS(0)`/`#GP(0)`, before any store); the image is stored in
+/// naturally aligned pieces of 8, 4, 2 and 1 bytes (none crosses a page). A failing piece leaves
+/// the earlier ones written (not a transaction; executed again the instruction stores the same
+/// bytes) and changes no state. After the stores the FPU is initialized as by FNINIT, and FCS and
+/// FDS are cleared (§8.1.8: "FSAVE/FNSAVE clears FIP, FCS, FDP, and FDS").
+fn step_cpl0_fnsave(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+    destination: MemoryOperand,
+) -> Result<StepOutcome, MemoryError> {
+    const IMAGE_BYTES: usize = 108;
+    let address = match destination.access_range_address_48(state, next_rip, IMAGE_BYTES) {
+        Ok(address) => address,
+        Err(error) => return report_memory_error(error),
+    };
+    let image = x87_save_image(&cell.borrow().x87, true);
+    let mut offset = 0;
+    while offset < IMAGE_BYTES {
+        let at = address.wrapping_add(offset as u64);
+        let width = [8, 4, 2, 1]
+            .into_iter()
+            .find(|&width| at % width as u64 == 0 && offset + width <= IMAGE_BYTES)
+            .expect("a one-byte piece always fits");
+        if let Err(error) = memory.write(at, context, &image[offset..offset + width]) {
+            return report_memory_error(error);
+        }
+        offset += width;
+    }
+    let mut fp = cell.borrow_mut();
+    fp.x87.fninit();
+    fp.x87.instruction_selector = Some(0);
+    fp.x87.data_selector = Some(0);
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
+}
+
+/// S7-32 W4: the operands of an FXSAVE/FXRSTOR operation of the FP member: the memory operand of
+/// the 512-byte area, its layout and whether it restores (`None` for any other operation). The
+/// exact kernel forms of the profile decoder have the layout of their REX.W.
+fn fx_state_form(operation: Operation) -> Option<(MemoryOperand, FxsaveLayout, bool)> {
+    Some(match operation {
+        Operation::FxsaveRipRelative(area) => (area, FxsaveLayout::Plain, false),
+        Operation::Fxsave64RaxDisp8(area) | Operation::Fxsave64R12(area) => {
+            (area, FxsaveLayout::Long64, false)
+        }
+        Operation::Fxrstor64RbxDisp8(area)
+        | Operation::Fxrstor64RipRelative(area)
+        | Operation::Fxrstor64Rdi(area) => (area, FxsaveLayout::Long64, true),
+        Operation::Fxsave { area, layout } => (area, layout, false),
+        Operation::Fxrstor { area, layout } => (area, layout, true),
+        _ => return None,
+    })
+}
+
+/// S4-38L9d/E, S4-39f22, S6-22 and S7-32 W4: FXSAVE/FXSAVE64 and FXRSTOR/FXRSTOR64 of the FP member
+/// of the CPL0 set at any memory operand (Intel SDM Vol. 2A FXSAVE and FXRSTOR, Vol. 1 §8.1.8,
+/// §10.5). In order, before any memory access:
+/// - the encoding: `0F AE` without a mandatory prefix (`66`/`F2`/`F3` are other instructions),
+///   REX.W matching the layout, a segment override carried by the operand (FS/GS add their base);
+///   anything else stays `Unsupported`;
+/// - CR4.OSFXSR = 0: `Unsupported` (the SDM leaves the SSE part implementation-dependent; the
+///   S2-39 convention). Without CPUID.FXSR the instruction is #UD, but the member is admitted only
+///   with FXSR declared (`FpFeaturesNotDeclared`), so that case does not reach this step;
+/// - CR0.EM = 1 or CR0.TS = 1: `#NM`;
+/// - the area: the first and the last of its 512 bytes canonical (`#SS(0)` for a stack reference,
+///   `#GP(0)` otherwise, by the operand's segment and base), an area past the end of the address
+///   space `#GP(0)` (local policy of S2-39c), then a linear address that is not 16-byte aligned
+///   `#GP(0)`; at CPL3 with RFLAGS.AC and CR0.AM set a misaligned area is `Unsupported` (the SDM
+///   allows `#AC` or `#GP` there, `#AC` is not modeled).
+///
+/// FXSAVE then stores the 13 defined fields in ascending order (`fxsave`; reserved and available
+/// bytes untouched; the plain layout needs both selectors known, which the member's admission
+/// guarantees). A backend fault in a later store leaves the earlier stores written (the image is
+/// not a transaction, S2-39c; re-executing the instruction after the fault writes the same
+/// bytes); CPU state and RIP do not change. FXRSTOR reads the whole image and commits only after
+/// every read and the MXCSR check ([`fxrstor_cpl0`]). On success only RIP (and, for FXRSTOR, the
+/// FP state) changes.
+#[allow(clippy::too_many_arguments)]
+fn step_cpl0_fx_state(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    instruction: &long_decode::Instruction,
+    next_rip: u64,
+    cell: &RefCell<GuestFpState>,
+    cr0: u64,
+    cr4: u64,
+) -> Result<StepOutcome, MemoryError> {
+    const AREA_BYTES: usize = 512;
+    let unsupported = Ok(StepOutcome::Unsupported {
+        opcode: instruction.opcode.byte,
+    });
+    let gp0 = Ok(StepOutcome::Fault(ArchitecturalFault {
+        vector: 13,
+        error_code: Some(0),
+        linear_address: None,
+    }));
+    let Some((area, layout, restore)) = fx_state_form(instruction.operation) else {
+        return unsupported;
+    };
+    let rex_w = instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0);
+    if instruction.opcode.map != OpcodeMap::Escape0f
+        || instruction.opcode.byte != 0xae
+        || instruction.prefixes.group1.is_some()
+        || instruction.prefixes.operand_override
+        || rex_w != (layout == FxsaveLayout::Long64)
+        || !operand_carries_segment(instruction.prefixes.segment, area.segment)
+        || cr4 & (1 << 9) == 0
+    {
+        return unsupported;
+    }
+    if cr0 & 0xc != 0 {
+        return Ok(StepOutcome::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        }));
+    }
+    let address = match area.access_range_address_48(state, next_rip, AREA_BYTES) {
+        Ok(address) => address,
+        Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
+        Err(MemoryError::AddressOverflow { .. }) => return gp0,
+        Err(error) => return Err(error),
+    };
+    if cpl3_ac_unmodeled(state, context, address, 16) {
+        return unsupported;
+    }
+    if address & 0xf != 0 {
+        return gp0;
+    }
+    let result = if restore {
+        fxrstor_cpl0(cell, state, memory, context, address, layout)
+    } else {
+        let fp = cell.borrow();
+        if layout == FxsaveLayout::Plain
+            && (fp.x87.instruction_selector.is_none() || fp.x87.data_selector.is_none())
+        {
+            return unsupported;
+        }
+        // The paged adapter of the board stores 1/2/4/8 bytes per call.
+        fxsave(
+            &fp.x87,
+            sse_ref(state),
+            memory,
+            context,
+            address,
+            layout,
+            true,
+        )
+    };
+    if let Err(error) = result {
+        return report_memory_error(error);
+    }
+    state.rip = next_rip;
+    Ok(StepOutcome::Advanced)
 }
 
 #[cfg(test)]
@@ -77348,25 +77574,57 @@ fn apply_fxrstor64_fields(
     }
 }
 
-/// S4-38L9E: `FXRSTOR64` of the CPL0 set member (state in its `GuestFpState` cell). Order: the
-/// 16-byte alignment and the canonical range of the whole image (`#GP(0)`, Intel SDM Vol. 2
-/// FXRSTOR, from memory), then the whole 512-byte image is read as 64 ascending qword
+/// S4-38L9E, S7-32 W4: `FXRSTOR`/`FXRSTOR64` of the CPL0 set member (x87 state in its
+/// `GuestFpState` cell, SSE state in `state.sse`) at the linear `address` the caller validated.
+/// Order: the 16-byte alignment and the canonical range of the whole image (`#GP(0)`, Intel SDM
+/// Vol. 2A FXRSTOR), then the whole 512-byte image is read as 64 ascending qword
 /// `GuestMemory::read` calls (the address is 16-byte aligned, so no qword crosses a page and the
 /// paged adapter needs no narrower read width), then reserved MXCSR bits (`MXCSR & !MXCSR_MASK`,
-/// `#GP(0)`, from memory). Only then the x87 half (the cell) and the SSE half (`state.sse`) are
-/// replaced; a failing read or a check leaves both unchanged. The x87 selectors (FCS/FDS) are not part of the Long64 image and stay as they are.
-fn fxrstor64_cpl0(
+/// `#GP(0)`, Vol. 1 §10.5.3). Only then the x87 half (the cell) and the SSE half (`state.sse`)
+/// are replaced; a failing read or a check leaves both unchanged ([`restore_fxsave_image`]).
+fn fxrstor_cpl0(
     cell: &RefCell<GuestFpState>,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     address: u64,
+    layout: FxsaveLayout,
 ) -> Result<(), MemoryError> {
     let image = read_fxrstor64_narrow(memory, context, address)?;
     // The cell is borrowed only after every memory callback has returned. The x87 half lives in the
     // cell, the SSE half in `state.sse` (S2-39).
     let mut fp = cell.borrow_mut();
-    restore_fxrstor64_image(&mut fp.x87, sse_mut(state), &image)
+    restore_fxsave_image(&mut fp.x87, sse_mut(state), &image, layout)
+}
+
+/// S7-32 W4: the FXRSTOR of the CPL0 set by the layout of the image (Intel SDM Vol. 1 §8.1.8 and
+/// §10.5.1): the shared fields and the MXCSR check of [`restore_fxrstor64_image`], then the
+/// pointers. `Long64` (REX.W = 1) loads the 64-bit FIP and FDP and clears FCS and FDS; `Plain`
+/// (REX.W = 0) loads FIP[31:0] (bytes 8..12) and FDP[31:0] (bytes 16..20) with the upper 32 bits
+/// cleared, and FCS (bytes 12..14) and FDS (bytes 20..22). Bytes 14..16 and 22..24 of a plain
+/// image are not used. A failed MXCSR check changes nothing.
+fn restore_fxsave_image(
+    x87: &mut crate::state::X87State,
+    sse: &mut crate::state::SseState,
+    image: &[u8; 512],
+    layout: FxsaveLayout,
+) -> Result<(), MemoryError> {
+    restore_fxrstor64_image(x87, sse, image)?;
+    let word = |at: usize| u16::from_le_bytes([image[at], image[at + 1]]);
+    let dword = |at: usize| u32::from_le_bytes(image[at..at + 4].try_into().expect("4 bytes"));
+    match layout {
+        FxsaveLayout::Long64 => {
+            x87.instruction_selector = Some(0);
+            x87.data_selector = Some(0);
+        }
+        FxsaveLayout::Plain => {
+            x87.instruction_pointer = u64::from(dword(8));
+            x87.instruction_selector = Some(word(12));
+            x87.data_pointer = u64::from(dword(16));
+            x87.data_selector = Some(word(20));
+        }
+    }
+    Ok(())
 }
 
 fn read_fxrstor64_narrow(
