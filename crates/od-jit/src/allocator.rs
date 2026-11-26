@@ -721,6 +721,7 @@ mod tests {
                 Operation::CheckedStore {
                     src: GuestGpr(0),
                     operand: od_isa::long_decode::MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax),
                         index: None,
                         scale: 1,
@@ -988,6 +989,7 @@ mod tests {
                 Operation::CheckedLoad {
                     dst: TempId(9),
                     operand: od_isa::long_decode::MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax),
                         index: None,
                         scale: 1,

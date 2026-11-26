@@ -720,8 +720,28 @@ pub enum AddressBase {
     NextRip,
 }
 
-/// Flat long-mode address expression. CS/DS/ES/SS bases are zero;
-/// FS/GS memory forms are unsupported until actual bases are in CPU state.
+/// S7-32 W3: the segment a 64-bit-mode memory operand is relative to. CS, DS, ES and SS have a zero
+/// base in 64-bit mode (SDM Vol. 1 §3.4.2.1); FS and GS add the 64-bit base of
+/// `LongModeState::fs_base`/`gs_base` (SDM Vol. 3 §3.4.4). The segment also selects the canonical
+/// fault: a stack (SS) reference is #SS(0), any other #GP(0) (SDM Vol. 1 §3.3.7.1).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MemorySegment {
+    /// No override: the default segment of the addressing form (SS for an RSP/RBP base, DS
+    /// otherwise), zero base.
+    #[default]
+    Flat,
+    /// A CS, DS or ES override: zero base, a data reference.
+    Data,
+    /// An SS override: zero base, a stack reference.
+    Stack,
+    Fs,
+    Gs,
+}
+
+/// Long-mode address expression. CS/DS/ES/SS bases are zero; an FS/GS operand adds the segment
+/// base after the address-size truncation of the effective offset (S7-32 W3, `segment`). The
+/// FS/GS-specific operations of the profile decoder keep `segment = Flat` and add the base
+/// themselves through [`Self::access_address_48_with_segment_base`].
 /// Rules: SDM093 Vol.1 §§3.3.7.1,3.4.2.1,3.7.4.1; Vol.2A §§2.1.3–2.2.1.6.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryOperand {
@@ -731,6 +751,7 @@ pub struct MemoryOperand {
     pub displacement: i64,
     pub address_size: OperandSize,
     pub size: OperandSize,
+    pub segment: MemorySegment,
 }
 
 impl MemoryOperand {
@@ -750,14 +771,26 @@ impl MemoryOperand {
             & self.address_size.mask()
     }
 
-    /// Start address in the selected zero-base, canonical48, no-LA57 profile.
-    /// Full access-range checks and ordering belong to the instruction executor.
+    /// The base of [`Self::segment`]: zero for a flat operand, the FS or GS base otherwise.
+    pub fn segment_base(self, state: &LongModeState) -> u64 {
+        match self.segment {
+            MemorySegment::Flat | MemorySegment::Data | MemorySegment::Stack => 0,
+            MemorySegment::Fs => state.fs_base,
+            MemorySegment::Gs => state.gs_base,
+        }
+    }
+
+    /// Start linear address in the canonical48, no-LA57 profile: the effective offset (truncated
+    /// to the address size) plus the segment base. Full access-range checks and ordering belong to
+    /// the instruction executor.
     pub fn linear_address_48(
         self,
         state: &LongModeState,
         next_rip: u64,
     ) -> Result<u64, ArchitecturalFault> {
-        let address = self.effective_address(state, next_rip);
+        let address = self
+            .effective_address(state, next_rip)
+            .wrapping_add(self.segment_base(state));
         if canonical(address) {
             return Ok(address);
         }
@@ -814,6 +847,9 @@ impl MemoryOperand {
         next_rip: u64,
         segment_base: u64,
     ) -> Result<u64, MemoryError> {
+        // The FS/GS-specific operations carry flat operands; a segment operand here would add a
+        // base twice.
+        debug_assert_eq!(self.segment, MemorySegment::Flat);
         let start = self
             .effective_address(state, next_rip)
             .wrapping_add(segment_base);
@@ -836,10 +872,15 @@ impl MemoryOperand {
     fn canonical_fault(self) -> ArchitecturalFault {
         // SDM093 Vol.1 §3.3.7.1: RSP/RBP bases use SS. The extended
         // GPRs R12/R13 remain data references; an index alone does not select SS.
-        let stack = matches!(
-            self.base,
-            AddressBase::Register(Register::Rsp | Register::Rbp)
-        );
+        // S7-32 W3: an override decides instead: SS is a stack reference, CS/DS/ES/FS/GS are not.
+        let stack = match self.segment {
+            MemorySegment::Flat => matches!(
+                self.base,
+                AddressBase::Register(Register::Rsp | Register::Rbp)
+            ),
+            MemorySegment::Stack => true,
+            MemorySegment::Data | MemorySegment::Fs | MemorySegment::Gs => false,
+        };
         ArchitecturalFault {
             vector: if stack { 12 } else { 13 },
             error_code: Some(0),
@@ -1627,9 +1668,11 @@ pub enum Operation {
     LoadLdtMemory {
         source: MemoryOperand,
     },
-    /// S7-32: `MOV Sreg, m16` (`8E /r`, memory source only, no legacy prefix but a lone REX) for ES
-    /// (0), SS (2), DS (3), FS (4) and GS (5); the register forms stay with the profile decoder. The
-    /// selector is the 16-bit source; a non-null selector loads its GDT descriptor
+    /// S7-32: `MOV Sreg, r/m16` (`8E /r`) for ES (0), SS (2), DS (3), FS (4) and GS (5): the memory
+    /// forms and (S7-32 W3 add-on, winload's `66 8E D0`) the register forms with `66`, each with a
+    /// lone REX and no other legacy prefix; the register forms without `66` stay with the profile
+    /// decoder (`LoadSegmentSelectorReg` and its twins). The selector
+    /// is the low 16 bits of the source; a non-null selector loads its GDT descriptor
     /// (`load_sreg_cpl0`). Executed only in the CPL0 profile set at CPL0.
     MovToSreg {
         sreg: u8,
@@ -4223,6 +4266,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 OperandSize::Qword
             },
             size,
+            segment: null_override_class(prefixes),
         }))
     }
 
@@ -9588,6 +9632,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::MovupdLoadMemory {
                         destination: reg,
                         source: MemoryOperand {
+                            segment: MemorySegment::Flat,
                             base: AddressBase::Register(Register::Rax),
                             index: None,
                             scale: 1,
@@ -9602,6 +9647,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                     Operation::MovupdStoreMemory {
                         destination: MemoryOperand {
+                            segment: MemorySegment::Flat,
                             base: AddressBase::Register(Register::Rax),
                             index: None,
                             scale: 1,
@@ -10097,12 +10143,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     .iter()
                     .enumerate()
                     .any(|(i, byte)| (0x40..=0x4f).contains(byte) && i + 1 != prefix_count);
+                // S7-32 W3: an FS/GS override is left to the segment-override fallback, which gives
+                // the operand its segment (a flat operand here would lose the base).
                 if modrm >> 6 != 3
                     && (modrm >> 3) & 7 == 3
                     && prefixes.group1.is_none()
                     && !prefixes.operand_override
                     && !stale_rex
                     && prefixes.rex.is_none_or(|rex| rex & 8 == 0)
+                    && !matches!(prefixes.segment, Some(0x64 | 0x65))
                 {
                     let Operand::Memory(area) =
                         self.rm_operand(modrm, prefixes, OperandSize::Dword)?
@@ -11960,8 +12009,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 };
                 let offset = self.immediate(address_size)?;
                 // No-base addressing is modular. For moffs64 displacement holds
-                // the absolute offset's two's-complement bit pattern, not disp32.
+                // the absolute offset's two's-complement bit pattern, not disp32. A null
+                // override still selects the fault class (36: #SS(0) for a non-canonical offset).
                 let mem = Operand::Memory(MemoryOperand {
+                    segment: null_override_class(prefixes),
                     base: AddressBase::None,
                     index: None,
                     scale: 1,
@@ -13480,6 +13531,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 data: reg,
                 mask: rm,
                 memory: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -13678,16 +13730,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         },
                     )));
                 }
-                // `8E /r` with a memory source (bootmgfw restores DS, ES, FS, GS and SS from memory),
-                // no legacy prefix (a lone REX). The register forms stay with the profile decoder.
+                // `8E /r` with a memory source (bootmgfw restores DS, ES, FS, GS and SS from memory)
+                // and every form with `66` (winload's `66 8E D0`, MOV SS, AX before the kernel
+                // entry), with a lone REX and no other legacy prefix. The operand size does not
+                // matter: the selector is the low 16 bits of r/m (SDM "MOV": MOV Sreg, r/m16; `66`
+                // and REX.W do not change it, a memory source is read as a word).
                 0x8e if prefixes
                     == (Prefixes {
                         rex: prefixes.rex,
+                        operand_override: prefixes.operand_override,
                         ..Prefixes::default()
                     }) =>
                 {
                     let modrm = self.byte()?;
-                    if modrm >> 6 == 3 {
+                    if modrm >> 6 == 3 && !prefixes.operand_override {
+                        // The register forms without `66` stay with the profile decoder (and its
+                        // refusals, e.g. `41 8E E0`).
                         return Ok(None);
                     }
                     let sreg = (modrm >> 3) & 7;
@@ -14821,6 +14879,261 @@ pub fn decode(
     decode_uncached(&mut *memory, rip, context)
 }
 
+/// S7-32 W3: the fault class a null segment override (CS/DS/ES/SS, zero base in 64-bit mode) gives
+/// a memory operand of the form decoders: SS is a stack reference (#SS(0) on a non-canonical
+/// address), CS/DS/ES a data reference (#GP(0)); no override keeps the default of the addressing
+/// form (`Flat`). FS/GS stay `Flat` here: the FS/GS-specific operations of the profile decoder add
+/// the base themselves, and the general FS/GS forms get their segment from the segment-override
+/// fallback.
+#[inline(always)]
+fn null_override_class(prefixes: Prefixes) -> MemorySegment {
+    match prefixes.segment {
+        Some(0x36) => MemorySegment::Stack,
+        Some(0x26 | 0x2e | 0x3e) => MemorySegment::Data,
+        _ => MemorySegment::Flat,
+    }
+}
+
+/// S7-32 W3: the opcodes whose decode can be an operation [`Operation::apply_segment`] admits (a
+/// superset; the operation decides). It keeps the segment fallback away from the other refused
+/// forms, so they keep the fetches they had.
+fn segment_override_candidate(opcode: Opcode) -> bool {
+    match opcode.map {
+        OpcodeMap::Primary => matches!(
+            opcode.byte,
+            0x00..=0x3f | 0x63 | 0x69 | 0x6b | 0x80..=0x8f | 0xa0..=0xa3 | 0xc0 | 0xc1 | 0xc6 | 0xc7
+                | 0xd0..=0xd3 | 0xf6 | 0xf7 | 0xfe | 0xff
+        ),
+        OpcodeMap::Escape0f => matches!(
+            opcode.byte,
+            0x10 | 0x11 | 0x18..=0x1f | 0x40..=0x4f | 0x90..=0x9f | 0xa3 | 0xa4 | 0xa5 | 0xab
+                | 0xac..=0xaf | 0xb0..=0xbf | 0xc0 | 0xc1 | 0xc3 | 0xc7
+        ),
+        OpcodeMap::Escape0f38 => matches!(opcode.byte, 0xf0 | 0xf1),
+        OpcodeMap::Escape0f3a => false,
+    }
+}
+
+/// S7-32 W3: a view of guest code with one prefix byte removed: a fetch at or past `at` reads the
+/// byte after it, so the decoder sees the instruction without that prefix. One type over
+/// `dyn GuestMemory`, so the cold fallback adds one instance of the form decoders, not one per
+/// memory type.
+struct WithoutPrefixByte<'m> {
+    memory: &'m mut dyn GuestMemory,
+    at: u64,
+}
+
+impl GuestMemory for WithoutPrefixByte<'_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        let address = if address >= self.at {
+            address.wrapping_add(1)
+        } else {
+            address
+        };
+        self.memory.fetch(address, context)
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.memory.read(address, context, destination)
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.memory.write(address, context, source)
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.memory.mfence(context)
+    }
+}
+
+/// S7-32 W3: the general segment override. When the form decoders refuse an instruction that has
+/// exactly one segment override among its prefixes (not directly after a REX byte, which the
+/// override would make ignored), the instruction is decoded without that byte; if the result is an
+/// operation whose executor addresses memory only through the `MemoryOperand::*_48` helpers
+/// ([`Operation::apply_segment`]), its memory operands get the segment (FS/GS add their base,
+/// CS/DS/ES/SS are flat in 64-bit mode), the length counts the prefix again, and
+/// `prefixes.segment` keeps the override (so the fast path, the turbo engine and the JIT, which
+/// refuse FS/GS prefixes, leave the instruction to the interpreter). An architectural refusal of
+/// the form without the prefix (`#UD`, a fetch fault) is that of the instruction; any other
+/// refusal keeps the original one (`None`).
+#[cold]
+#[inline(never)]
+fn decode_segment_override(
+    memory: &mut dyn GuestMemory,
+    rip: u64,
+    context: AccessContext,
+) -> Option<Result<Instruction, DecodeError>> {
+    let mut found = None;
+    let mut after_rex = false;
+    for offset in 0..14u64 {
+        let byte = memory.fetch(rip.wrapping_add(offset), context).ok()?;
+        match byte {
+            0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 => {
+                if found.is_some() || after_rex {
+                    return None;
+                }
+                found = Some((offset, byte));
+                after_rex = false;
+            }
+            0xf0 | 0xf2 | 0xf3 | 0x66 | 0x67 => after_rex = false,
+            0x40..=0x4f => after_rex = true,
+            _ => break,
+        }
+    }
+    let (offset, byte) = found?;
+    let segment = match byte {
+        0x64 => MemorySegment::Fs,
+        0x65 => MemorySegment::Gs,
+        0x36 => MemorySegment::Stack,
+        _ => MemorySegment::Data,
+    };
+    let mut view = WithoutPrefixByte {
+        memory,
+        at: rip.wrapping_add(offset),
+    };
+    match decode_uncached(&mut view, rip, context) {
+        Ok(mut instruction) => {
+            // Only forms with a memory operand (and LEA/NOP, which have an address but no access)
+            // take the override: a prefix on a register-only form stays the profile decoder's.
+            if instruction.prefixes.segment.is_some()
+                || !instruction.operation.apply_segment(segment)
+                || (instruction.operation.segment_operand().is_none()
+                    && !matches!(
+                        instruction.operation,
+                        Operation::Lea { .. } | Operation::NopModrm
+                    ))
+            {
+                return None;
+            }
+            // The prefix makes the instruction one byte longer than the form decoded.
+            if instruction.length >= 15 {
+                return Some(Err(general_protection().into()));
+            }
+            instruction.length += 1;
+            instruction.prefixes.segment = Some(byte);
+            Some(Ok(instruction))
+        }
+        Err(DecodeError::Invalid { opcode, length }) => Some(Err(DecodeError::Invalid {
+            opcode,
+            length: length.saturating_add(1),
+        })),
+        Err(error @ DecodeError::Memory(_)) => Some(Err(error)),
+        Err(_) => None,
+    }
+}
+
+impl Operation {
+    /// S7-32 W3: put `segment` on the memory operands of an operation whose executor reaches memory
+    /// only through the `MemoryOperand::*_48` helpers (which add the segment base); `false` for any
+    /// other operation (the segment-override fallback then keeps its refusal). LEA computes an
+    /// offset and ignores segments, so its operand stays flat.
+    pub(crate) fn apply_segment(&mut self, segment: MemorySegment) -> bool {
+        self.visit_segment_operands(&mut |memory| memory.segment = segment)
+    }
+
+    /// The segment the memory operands of this operation carry ([`Self::apply_segment`]): the
+    /// override the segment-override decoder stamped (FS, GS, or the class of a null override),
+    /// [`MemorySegment::Flat`] otherwise.
+    pub fn memory_segment(&self) -> MemorySegment {
+        let mut operation = *self;
+        let mut found = MemorySegment::Flat;
+        operation.visit_segment_operands(&mut |memory| {
+            if memory.segment != MemorySegment::Flat {
+                found = memory.segment;
+            }
+        });
+        found
+    }
+
+    /// The first memory operand of an operation [`Self::apply_segment`] admits (`None` for any other
+    /// operation or one without a memory operand), for diagnostics and tests.
+    pub fn segment_operand(&self) -> Option<MemoryOperand> {
+        let mut operation = *self;
+        let mut first = None;
+        operation.visit_segment_operands(&mut |memory| {
+            first.get_or_insert(*memory);
+        });
+        first
+    }
+
+    /// The memory operands of the operations [`Self::apply_segment`] admits, each passed to `visit`;
+    /// `false` (and no call) for any other operation.
+    fn visit_segment_operands(&mut self, visit: &mut dyn FnMut(&mut MemoryOperand)) -> bool {
+        let operand = |operand: &mut Operand, visit: &mut dyn FnMut(&mut MemoryOperand)| {
+            if let Operand::Memory(memory) = operand {
+                visit(memory);
+            }
+        };
+        match self {
+            Operation::Mov { dst, src }
+            | Operation::Arithmetic { dst, src, .. }
+            | Operation::Logic { dst, src, .. } => {
+                operand(dst, visit);
+                operand(src, visit);
+            }
+            Operation::MovImmediate { dst, .. }
+            | Operation::SetCondition { dst, .. }
+            | Operation::Shift { dst, .. }
+            | Operation::Bit { dst, .. } => operand(dst, visit),
+            Operation::Extend { src, .. }
+            | Operation::Imul { src, .. }
+            | Operation::ImulImmediate { src, .. }
+            | Operation::BitScan { src, .. }
+            | Operation::ConditionalMove { src, .. }
+            | Operation::Popcnt { src, .. }
+            | Operation::Crc32 { src, .. } => operand(src, visit),
+            Operation::Mul { operand: value, .. }
+            | Operation::IndirectJump { operand: value }
+            | Operation::IndirectCall { operand: value } => operand(value, visit),
+            Operation::Divide { divisor, .. } => operand(divisor, visit),
+            Operation::LockedRmw { destination, .. }
+            | Operation::XaddMemory { destination, .. }
+            | Operation::CmpxchgMemory { destination, .. }
+            | Operation::LockXaddMem { destination, .. }
+            | Operation::XaddDsMem { destination, .. }
+            | Operation::LockCmpxchgMem { destination, .. }
+            | Operation::LockIncMem { destination }
+            | Operation::LockDecMem { destination }
+            | Operation::LockOrMem { destination, .. }
+            | Operation::LockAddMem { destination, .. }
+            | Operation::LockSubMem { destination, .. }
+            | Operation::LockSubDwordImm8 { destination, .. }
+            | Operation::LockAddMemReg { destination, .. }
+            | Operation::LockSubMemReg { destination, .. }
+            | Operation::LockAndMem { destination, .. }
+            | Operation::LockXorMem { destination, .. }
+            | Operation::LockLogicMemReg { destination, .. }
+            | Operation::LockBitMemImm { destination, .. }
+            | Operation::Cmpxchg8b { destination }
+            | Operation::Cmpxchg16b { destination }
+            | Operation::PopMemory { destination }
+            | Operation::MovsdStoreMemory { destination, .. }
+            | Operation::MovssStoreMemory { destination, .. } => visit(destination),
+            Operation::LockBitMem { base, .. } => visit(base),
+            Operation::XchgMemory { memory, .. } => visit(memory),
+            Operation::PushMemory { source }
+            | Operation::MovsdLoadMemory { source, .. }
+            | Operation::MovssLoadMemory { source, .. }
+            | Operation::LdmxcsrMemory { source } => visit(source),
+            Operation::Stmxcsr(memory) => visit(memory),
+            Operation::Lea { .. } | Operation::NopModrm => {}
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// The form decoders of [`decode_uncached`]: the profile decoder, then the general fallbacks.
 fn decode_uncached(
     memory: &mut impl GuestMemory,
     rip: u64,
@@ -14947,10 +15260,19 @@ fn decode_uncached(
         .decode_sse2_int(),
         other => other,
     };
-    match general {
-        Ok(Some(instruction)) => Ok(instruction),
+    let refused = match general {
+        Ok(Some(instruction)) => return Ok(instruction),
         Ok(None) => profile,
         Err(error) => Err(error),
+    };
+    match refused {
+        // S7-32 W3, cold (only after every form decoder refused): a form whose opcode can decode
+        // into an operation the segment fallback admits is decoded again without its segment
+        // override (the bytes are fetched again).
+        Err(DecodeError::Unsupported { opcode, .. }) if segment_override_candidate(opcode) => {
+            decode_segment_override(&mut *fetch.memory, rip, context).unwrap_or(refused)
+        }
+        other => other,
     }
 }
 
@@ -15124,6 +15446,7 @@ mod tests {
     fn single_rex_w_mov_keeps_operand_fetch_order() {
         let reg = Operand::Register(RegisterView::low(Register::R8, OperandSize::Qword));
         let operand = Operand::Memory(MemoryOperand {
+            segment: MemorySegment::Flat,
             base: AddressBase::Register(Register::R12),
             index: Some(Register::R13),
             scale: 4,
@@ -16441,6 +16764,7 @@ mod tests {
                 Operation::PcmpeqbMemory {
                     destination: 1,
                     source: MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rdi),
                         index: None,
                         scale: 1,
@@ -16455,6 +16779,7 @@ mod tests {
                 Operation::MovlpdLoadMemory {
                     destination: 1,
                     source: MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rdi),
                         index: None,
                         scale: 1,
@@ -16469,6 +16794,7 @@ mod tests {
                 Operation::MovhpdLoadMemory {
                     destination: 1,
                     source: MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rdi),
                         index: None,
                         scale: 1,
@@ -16483,6 +16809,7 @@ mod tests {
                 Operation::MovhpsLoadMemory {
                     destination: 0,
                     source: MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rax),
                         index: None,
                         scale: 1,
@@ -16505,6 +16832,7 @@ mod tests {
             Operation::MovlpdLoadMemory {
                 destination: 9,
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -21934,6 +22262,7 @@ mod tests {
                 Operation::MovupdLoadMemory {
                     destination,
                     source: MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rax),
                         index: None,
                         scale: 1,
@@ -23442,6 +23771,7 @@ mod tests {
             )
         }
         let word = |base, index, scale, displacement| MemoryOperand {
+            segment: MemorySegment::Flat,
             base,
             index,
             scale,
@@ -25424,6 +25754,7 @@ mod tests {
             Operation::XchgMemory {
                 register: RegisterView::low(Register::Rax, OperandSize::Qword),
                 memory: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25466,6 +25797,7 @@ mod tests {
             Operation::XchgMemory {
                 register: RegisterView::low(Register::Rax, OperandSize::Dword),
                 memory: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::R12),
                     index: None,
                     scale: 1,
@@ -25524,6 +25856,7 @@ mod tests {
             Operation::XchgMemory {
                 register: RegisterView::low(Register::Rax, OperandSize::Qword),
                 memory: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25576,6 +25909,7 @@ mod tests {
             memory_instruction.operation,
             Operation::CmpxchgMemory {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25605,6 +25939,7 @@ mod tests {
             memory_form.decode().unwrap().operation,
             Operation::XaddMemory {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25650,6 +25985,7 @@ mod tests {
             instruction.operation,
             Operation::LockXaddMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::R12),
                     index: None,
                     scale: 1,
@@ -25668,6 +26004,7 @@ mod tests {
             instruction.operation,
             Operation::LockXaddMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25721,6 +26058,7 @@ mod tests {
             instruction.operation,
             Operation::XaddDsMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Data,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -25740,6 +26078,7 @@ mod tests {
             instruction.operation,
             Operation::XaddDsMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Data,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -25785,6 +26124,7 @@ mod tests {
         // S4-38L9x: `[64|65] [66] [REX] 0F C0|C1 /r` with a memory destination. The S4-38L9w
         // boundary `65 0f c1 02` is `xaddl %eax, %gs:(%rdx)`.
         let rdx = |size| MemoryOperand {
+            segment: MemorySegment::Flat,
             base: AddressBase::Register(Register::Rdx),
             index: None,
             scale: 1,
@@ -25849,6 +26189,7 @@ mod tests {
             rex.operation,
             Operation::XaddGsMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::R10),
                     index: None,
                     scale: 1,
@@ -25923,6 +26264,7 @@ mod tests {
         assert_eq!(instruction.prefixes.group1, None);
         let dword = Operation::LockCmpxchgMem {
             destination: MemoryOperand {
+                segment: MemorySegment::Data,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -25934,13 +26276,19 @@ mod tests {
         };
         assert_eq!(instruction.operation, dword);
         assert_eq!(instruction.flag_effects().defined, crate::ARITHMETIC_FLAGS);
-        // The LOCK form of the same instruction decodes to the identical operation.
+        // The LOCK form of the same instruction decodes to the same operation; only the fault
+        // class of the DS override differs (S7-32 W3: `MemorySegment::Data`, a non-canonical
+        // address is #GP(0) whatever the base).
+        let mut lock_dword = dword;
+        if let Operation::LockCmpxchgMem { destination, .. } = &mut lock_dword {
+            destination.segment = MemorySegment::Flat;
+        }
         assert_eq!(
             Memory::new(&[0xf0, 0x0f, 0xb1, 0x17])
                 .decode()
                 .unwrap()
                 .operation,
-            dword
+            lock_dword
         );
 
         let mut memory = Memory::new(&[0x3e, 0x4c, 0x0f, 0xb1, 0x25, 0x34, 0x12, 0x00, 0x00]);
@@ -25950,6 +26298,7 @@ mod tests {
             instruction.operation,
             Operation::LockCmpxchgMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Data,
                     base: AddressBase::NextRip,
                     index: None,
                     scale: 1,
@@ -25966,6 +26315,7 @@ mod tests {
             memory.decode().unwrap().operation,
             Operation::LockCmpxchgMem {
                 destination: MemoryOperand {
+                    segment: MemorySegment::Data,
                     base: AddressBase::Register(Register::Rbx),
                     index: None,
                     scale: 1,
@@ -26230,6 +26580,7 @@ mod tests {
             (
                 &[0xff, 0x20][..],
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -26241,6 +26592,7 @@ mod tests {
             (
                 &[0x41, 0xff, 0x20][..],
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::R8),
                     index: None,
                     scale: 1,
@@ -26252,6 +26604,7 @@ mod tests {
             (
                 &[0x67, 0xff, 0x20][..],
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -26263,6 +26616,7 @@ mod tests {
             (
                 &[0xff, 0x64, 0x88, 0x10][..],
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: Some(Register::Rcx),
                     scale: 4,
@@ -26274,6 +26628,7 @@ mod tests {
             (
                 &[0xff, 0x25, 0, 0, 0, 0][..],
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::NextRip,
                     index: None,
                     scale: 1,
@@ -26562,6 +26917,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::FxsaveRipRelative(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::NextRip,
                 index: None,
                 scale: 1,
@@ -26616,6 +26972,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::Fxsave64RaxDisp8(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rax),
                 index: None,
                 scale: 1,
@@ -26663,6 +27020,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::Fxrstor64RbxDisp8(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rbx),
                 index: None,
                 scale: 1,
@@ -26706,6 +27064,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::Fxsave64R12(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::Register(Register::R12),
                 index: None,
                 scale: 1,
@@ -26721,6 +27080,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::Fxrstor64RipRelative(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::NextRip,
                 index: None,
                 scale: 1,
@@ -26736,6 +27096,7 @@ mod tests {
         assert_eq!(
             instruction.operation,
             Operation::Fxrstor64Rdi(MemoryOperand {
+                segment: MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -28430,6 +28791,7 @@ mod tests {
             Operation::SetCondition {
                 condition: ConditionCode::Equal,
                 dst: Operand::Memory(MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rbp),
                     index: None,
                     scale: 1,
@@ -28516,6 +28878,7 @@ mod tests {
                     Operand::Register(RegisterView::low(Register::R11, size))
                 } else {
                     Operand::Memory(MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(Register::Rbx),
                         index: None,
                         scale: 1,
@@ -28822,6 +29185,7 @@ mod tests {
             assert_eq!(
                 dst,
                 Operand::Memory(MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -28899,6 +29263,7 @@ mod tests {
                 Operation::Bit {
                     kind,
                     dst: Operand::Memory(MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base,
                         index,
                         scale,
@@ -28984,6 +29349,7 @@ mod tests {
                 BitKind::Test,
                 OperandSize::Dword,
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rax),
                     index: None,
                     scale: 1,
@@ -28998,6 +29364,7 @@ mod tests {
                 BitKind::Set,
                 OperandSize::Word,
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rcx),
                     index: None,
                     scale: 1,
@@ -29012,6 +29379,7 @@ mod tests {
                 BitKind::Complement,
                 OperandSize::Qword,
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::R12),
                     index: None,
                     scale: 1,
@@ -29026,6 +29394,7 @@ mod tests {
                 BitKind::Complement,
                 OperandSize::Dword,
                 MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::NextRip,
                     index: None,
                     scale: 1,
@@ -29178,6 +29547,7 @@ mod tests {
                     kind,
                     dst: RegisterView::low(dst, size),
                     src: Operand::Memory(MemoryOperand {
+                        segment: MemorySegment::Flat,
                         base: AddressBase::Register(base),
                         index,
                         scale,
@@ -29738,6 +30108,7 @@ mod tests {
         // with a memory destination decode at the dword (no REX.W) and qword (REX.W) widths to
         // `XaddMemory` / `CmpxchgMemory`; the CPL0 set executes them as the LOCK forms.
         let rax_base = |size| MemoryOperand {
+            segment: MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -31709,6 +32080,7 @@ mod tests {
         // S4-39f1: `[64|65] [REX] FF /6` with a memory operand. The S4-39f boundary is
         // `push %gs:0x3409f64(%rip)`, 7 bytes long.
         let qword = |base, index, scale, displacement| MemoryOperand {
+            segment: MemorySegment::Flat,
             base,
             index,
             scale,
@@ -34589,8 +34961,10 @@ mod tests {
             (&[0x48, 0x8b, 0x45, 0], 12),
             (&[0x49, 0x8b, 0x04, 0x24], 13),
             (&[0x49, 0x8b, 0x45, 0], 13),
-            (&[0x36, 0x48, 0x8b, 0x00], 13),    // SS override ignored
-            (&[0x3e, 0x48, 0x8b, 0x45, 0], 12), // DS override ignored
+            // S7-32 W3: the override selects the fault class (its zero base changes nothing): SS
+            // is a stack reference even with a RAX base, DS a data reference even with RBP.
+            (&[0x36, 0x48, 0x8b, 0x00], 12),
+            (&[0x3e, 0x48, 0x8b, 0x45, 0], 13),
         ] {
             let mut memory = Memory::new(bytes);
             let (_, operand) = memory_source(&mut memory);
@@ -36242,6 +36616,7 @@ mod tests {
             decoded.operation,
             Operation::LoadGdtr {
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rbp),
                     index: None,
                     scale: 1,
@@ -36962,6 +37337,7 @@ mod tests {
             decoded.operation,
             Operation::LoadIdtr {
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsp),
                     index: None,
                     scale: 1,
@@ -36976,6 +37352,7 @@ mod tests {
             negative.decode().unwrap().operation,
             Operation::LoadIdtr {
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsp),
                     index: None,
                     scale: 1,
@@ -36990,6 +37367,7 @@ mod tests {
             positive_boundary.decode().unwrap().operation,
             Operation::LoadIdtr {
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsp),
                     index: None,
                     scale: 1,
@@ -38660,10 +39038,13 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.length, 5);
         assert_eq!(decoded.operation, plain.operation);
+        // A memory operand takes the data fault class of the CS override (S7-32 W3), nothing else.
         let plain = Memory::new(&[0x8b, 0x03]).decode().unwrap();
         let decoded = Memory::new(&[0x2e, 0x2e, 0x8b, 0x03]).decode().unwrap();
         assert_eq!(decoded.length, 4);
-        assert_eq!(decoded.operation, plain.operation);
+        let mut expected = plain.operation;
+        assert!(expected.apply_segment(MemorySegment::Data));
+        assert_eq!(decoded.operation, expected);
         // A repeat across a REX: the legacy prefix after REX cancels it exactly as before.
         let decoded = Memory::new(&[0x2e, 0x48, 0x2e, 0x31, 0xc0])
             .decode()
@@ -38790,6 +39171,7 @@ mod tests {
             Operation::PinsrwMemory {
                 destination: 1,
                 source: MemoryOperand {
+                    segment: MemorySegment::Flat,
                     base: AddressBase::NextRip,
                     index: None,
                     scale: 1,
@@ -38914,10 +39296,49 @@ mod tests {
                 decoded.operation
             );
         }
-        // The register forms stay with the profile decoder (`41 8E E0`, REX.B with FS, is refused).
+        // The register forms without `66` stay with the profile decoder (`41 8E E0`, REX.B with
+        // FS, is refused).
         assert!(matches!(
             general(&[0x41, 0x8e, 0xe0]),
             Err(DecodeError::Unsupported { .. })
+        ));
+        // S7-32 W3 add-on: `66` does not change MOV Sreg, r/m16 (SDM "MOV"): winload's `66 8E D0`
+        // (MOV SS, AX), `66 41 8E E0` (MOV FS, R8W) and `66 8E 59 18` (MOV DS, 0x18(%rcx), still
+        // a word read) decode as `MovToSreg` with a 16-bit source.
+        for (bytes, sreg, source) in [
+            (
+                &[0x66u8, 0x8e, 0xd0][..],
+                2u8,
+                reg(Register::Rax, OperandSize::Word),
+            ),
+            (
+                &[0x66, 0x41, 0x8e, 0xe0],
+                4,
+                reg(Register::R8, OperandSize::Word),
+            ),
+        ] {
+            let decoded = general(bytes).unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+            assert_eq!(
+                decoded.operation,
+                Operation::MovToSreg { sreg, source },
+                "{bytes:02x?}"
+            );
+        }
+        let decoded = general(&[0x66, 0x8e, 0x59, 0x18]).unwrap();
+        assert_eq!(decoded.length, 4);
+        assert!(matches!(
+            decoded.operation,
+            Operation::MovToSreg { sreg: 3, source: Operand::Memory(m) } if m.size == OperandSize::Word && m.displacement == 0x18
+        ));
+        // `66` with another legacy prefix stays refused; `66 8E C8` (MOV CS) is #UD.
+        assert!(matches!(
+            general(&[0x67, 0x66, 0x8e, 0xd0]),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            general(&[0x66, 0x8e, 0xc8]),
+            Err(DecodeError::Invalid { length: 3, .. })
         ));
         // MOV CS, r/m16 and the reserved Sreg 6 are #UD.
         for bytes in [&[0x8eu8, 0x49, 0x00][..], &[0x8e, 0x71, 0x00]] {
@@ -39088,9 +39509,79 @@ mod tests {
         );
     }
 
+    /// S7-32 W3: the segment-override fallback. `mov al, gs:[0x1000]` (65 8A 04 25 disp32) decodes as
+    /// the generic MOV with a GS operand, the prefix counted in the length and kept in the prefixes;
+    /// a REX byte directly before the override and two overrides keep the refusal; LEA keeps a flat
+    /// operand; a null override puts its class (Data for DS) on the operand.
+    #[test]
+    fn s7_32_w3_segment_overrides_decode_onto_the_memory_operand() {
+        let general = |bytes: &[u8]| Memory::new(bytes).decode_general();
+        let instruction = general(&[0x65, 0x8a, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00]).unwrap();
+        assert_eq!(instruction.length, 8);
+        assert_eq!(instruction.prefixes.segment, Some(0x65));
+        let Operation::Mov {
+            src: Operand::Memory(source),
+            ..
+        } = instruction.operation
+        else {
+            panic!("{instruction:?}");
+        };
+        assert_eq!(source.segment, MemorySegment::Gs);
+        assert_eq!(source.base, AddressBase::None);
+        assert_eq!(source.displacement, 0x1000);
+        assert_eq!(instruction.operation.memory_segment(), MemorySegment::Gs);
+        // FS: mov al, fs:[rbx].
+        let instruction = general(&[0x64, 0x8a, 0x03]).unwrap();
+        assert_eq!(instruction.operation.memory_segment(), MemorySegment::Fs);
+        assert_eq!(instruction.length, 3);
+        // A REX byte directly before the override would be ignored by the processor: refused.
+        assert!(matches!(
+            general(&[0x48, 0x65, 0x8a, 0x03]),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        // Two overrides: refused.
+        assert!(matches!(
+            general(&[0x65, 0x64, 0x8a, 0x03]),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        // A null override: DS on a generic MOV carries the Data class (#GP for a non-canonical
+        // reference whatever the base), SS the Stack class.
+        let instruction = general(&[0x3e, 0x8b, 0x45, 0x00]).unwrap();
+        assert_eq!(instruction.operation.memory_segment(), MemorySegment::Data);
+        let instruction = general(&[0x36, 0x8b, 0x00]).unwrap();
+        assert_eq!(instruction.operation.memory_segment(), MemorySegment::Stack);
+        // LEA with GS: the operand stays flat (LEA computes the offset).
+        let instruction = general(&[0x65, 0x48, 0x8d, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00]).unwrap();
+        assert_eq!(instruction.operation.memory_segment(), MemorySegment::Flat);
+        assert_eq!(instruction.length, 9);
+        // RIP-relative with GS: the displacement stays relative to the end of the whole
+        // instruction (the executor's next RIP counts the prefix): 65 8A 05 disp32.
+        let instruction = general(&[0x65, 0x8a, 0x05, 0x10, 0x00, 0x00, 0x00]).unwrap();
+        assert_eq!(instruction.length, 7);
+        let Operation::Mov {
+            src: Operand::Memory(source),
+            ..
+        } = instruction.operation
+        else {
+            panic!("{instruction:?}");
+        };
+        assert_eq!(source.base, AddressBase::NextRip);
+        assert_eq!(source.displacement, 0x10);
+        // A GS-prefixed form whose operation is not admitted (SGDT has its own prefix rules and is
+        // decoded by the profile decoder; RDTSC with GS stays as the profile decoder answers).
+        let rdtsc = general(&[0x65, 0x0f, 0x31]);
+        assert!(!matches!(
+            rdtsc,
+            Ok(Instruction {
+                operation: Operation::Mov { .. },
+                ..
+            })
+        ));
+    }
+
     /// S7-32 W2: the locked read-modify-write forms at every width and the scalar SSE memory moves
     /// with any addressing decode through the fallbacks; LOCK on a register destination or a
-    /// non-RMW member is #UD; FS/GS and the unlocked ALU forms stay with their owners.
+    /// non-RMW member is #UD; FS/GS (W3) and the unlocked ALU forms stay with their owners.
     #[test]
     fn s7_32_w2_locked_and_scalar_sse_forms_decode_through_the_fallback() {
         let general = |bytes: &[u8]| Memory::new(bytes).decode_general();
@@ -39250,8 +39741,18 @@ mod tests {
                 general(bytes)
             );
         }
-        // Not this fallback's: FS/GS (W3), an unlocked ALU memory form, F3 without LOCK.
-        for bytes in [&[0x65u8, 0xf0, 0x09, 0x18][..], &[0xf3, 0x09, 0x18]] {
+        // FS/GS goes through the segment-override fallback (W3): the same locked form with a GS
+        // operand.
+        assert!(matches!(
+            general(&[0x65, 0xf0, 0x09, 0x18]),
+            Ok(Instruction {
+                operation: Operation::LockedRmw { destination, .. },
+                length: 4,
+                ..
+            }) if destination.segment == MemorySegment::Gs
+        ));
+        // Not this fallback's: an unlocked ALU memory form, F3 without LOCK.
+        for bytes in [&[0xf3u8, 0x09, 0x18][..]] {
             assert!(
                 !matches!(
                     general(bytes),

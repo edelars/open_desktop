@@ -225,6 +225,7 @@ fn int_width(size: OperandSize) -> IntWidth {
 
 fn operand(size: OperandSize) -> MemoryOperand {
     MemoryOperand {
+        segment: od_isa::long_decode::MemorySegment::Flat,
         base: GuestBase::None,
         index: None,
         scale: 1,

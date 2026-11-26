@@ -939,6 +939,7 @@ mod tests {
                     kind: ir::AtomicRmwKind::Add,
                     width: IntWidth::W64,
                     operand: od_isa::long_decode::MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: od_isa::long_decode::AddressBase::None,
                         index: None,
                         scale: 1,

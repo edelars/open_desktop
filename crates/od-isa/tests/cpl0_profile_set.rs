@@ -13010,6 +13010,14 @@ fn segment_store_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = StoreMemory::code(code);
         let result = run_store_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -13028,8 +13036,17 @@ fn unsupported_segment_store_forms_report_the_store_opcode() {
         &[0x66, 0x65, 0x48, 0x89, 0x05, 0x34, 0x12, 0x00, 0x00][..],
     ] {
         let mut state = board_state();
+        let before = state.clone();
         let mut memory = StoreMemory::code(code);
         let result = run_store_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x89 });
     }
 }
@@ -13423,6 +13440,14 @@ fn segment_load_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = LoadMemory::code(code);
         let result = run_load_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -13441,8 +13466,17 @@ fn unsupported_segment_load_forms_report_the_load_opcode() {
         &[0x66, 0x65, 0x4c, 0x8b, 0x25, 0x34, 0x12, 0x00, 0x00][..],
     ] {
         let mut state = board_state();
+        let before = state.clone();
         let mut memory = LoadMemory::code(code);
         let result = run_load_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8b });
     }
 }
@@ -13840,6 +13874,14 @@ fn segment_sub_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = LoadMemory::with_value(code, 1);
         let result = run_load_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -15915,6 +15957,14 @@ fn segment_dword_load_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = LoadMemory::code(code);
         let result = run_load_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -17948,6 +17998,14 @@ fn segment_test_byte_forms_outside_the_slice_are_refused_with_the_exact_opcode()
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test8_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -18617,6 +18675,14 @@ fn segment_inc_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_inc_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -19282,6 +19348,14 @@ fn segment_dec_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_inc_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -19905,6 +19979,14 @@ fn segment_test_word_forms_outside_the_slice_are_refused_with_the_exact_opcode()
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test16_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xf7 },
@@ -19925,6 +20007,14 @@ fn segment_test_word_forms_outside_the_slice_are_refused_with_the_exact_opcode()
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test16_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xf6 });
         assert_eq!(state, before);
         assert!(memory.reads.is_empty());
@@ -20660,6 +20750,14 @@ fn segment_test_dword_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xf7 },
@@ -22441,6 +22539,14 @@ fn segment_cmp_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -23133,6 +23239,14 @@ fn segment_movzx_word_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb7 },
@@ -23173,6 +23287,14 @@ fn segment_movsx_word_and_movsxd_memory_forms_stay_refused_with_their_own_opcode
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -23638,6 +23760,14 @@ fn segment_movb_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_movb_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -27242,6 +27372,14 @@ fn segment_mov_imm32_forms_outside_the_slice_are_refused_with_the_exact_opcode()
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_movb_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -27793,6 +27931,14 @@ fn segment_movsxd_forms_outside_the_slice_are_refused_with_the_exact_opcode() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x63 },
@@ -30146,6 +30292,14 @@ fn segment_store_forms_outside_the_slice_are_refused_with_opcode_0x89() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_movb_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x89 },
@@ -30852,6 +31006,14 @@ fn segment_word_store_forms_outside_the_slice_are_refused_with_opcode_0x89() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_movb_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x89 },
@@ -33728,6 +33890,14 @@ fn segment_or_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -34385,6 +34555,14 @@ fn segment_movsx_byte_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xbe },
@@ -35044,6 +35222,14 @@ fn segment_movb_store_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_movb_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x88 },
@@ -35058,15 +35244,20 @@ fn segment_movb_store_forms_outside_the_slice_are_refused_with_the_exact_opcode(
 
 #[test]
 fn segment_movb_store_does_not_widen_to_the_byte_load_8a() {
-    // `8A` (MOV r8, r/m8) with a segment prefix is not part of this slice and keeps refusing with
-    // its own opcode.
+    // `8A` (MOV r8, r/m8) with a segment prefix is not the byte store of this slice: since S7-32 W3
+    // it is the generic byte load with a GS operand (the segment-override fallback), not a store.
     let mut state = movb_store_state();
     let before = state.clone();
-    let mut memory = BitsMemory::new(&[0x65, 0x8a, 0x01]);
+    let code = [0x65, 0x8a, 0x01];
+    let mut memory = BitsMemory::new(&code);
     let result = run_movb_set(&mut state, &mut memory).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x8a });
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert!(w3_owns(
+        &code,
+        &result,
+        &before,
+        state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+    ));
+    assert!(memory.writes.is_empty(), "a load, not a store");
 }
 
 #[test]
@@ -35822,6 +36013,14 @@ fn segment_add_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -36601,6 +36800,14 @@ fn segment_add_load_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -37441,6 +37648,14 @@ fn segment_cmp_load_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -38100,6 +38315,14 @@ fn segment_movzx_byte_forms_outside_the_slice_are_refused_with_the_exact_opcode(
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_test32_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb6 },
@@ -40694,6 +40917,14 @@ fn segment_cmov_load_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -44911,6 +45142,14 @@ fn segment_add_imm32_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(&code, 1);
         let run = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            &code,
+            &run,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&run),
             &RunExit::Unsupported { opcode },
@@ -45368,7 +45607,10 @@ fn ds_xadd_ignores_the_fs_and_gs_bases() {
 }
 
 #[test]
-fn ds_xadd_non_canonical_address_is_gp0_and_non_canonical_rsp_rbp_is_ss0() {
+/// S7-32 W3: the DS override makes every reference a DS (data) reference, so a non-canonical
+/// operand is #GP(0) also with an RSP or RBP base (SDM Vol. 1 §3.3.7.1: #SS(0) is for an SS
+/// reference); until W3 the RSP/RBP forms were #SS(0), the rule of the unprefixed forms.
+fn ds_xadd_non_canonical_address_is_gp0_also_with_an_rsp_or_rbp_base() {
     for (code, width) in [
         (&DS_XADDQ_RAX_RBX_3D[..], 8u64),
         (&DS_XADDL_EAX_RBX_3D[..], 4),
@@ -45417,7 +45659,7 @@ fn ds_xadd_non_canonical_address_is_gp0_and_non_canonical_rsp_rbp_is_ss0() {
         assert_eq!(
             exit(&result),
             &RunExit::Fault(ArchitecturalFault {
-                vector: 12,
+                vector: 13,
                 error_code: Some(0),
                 linear_address: None,
             }),
@@ -45978,8 +46220,16 @@ fn ds_forms_equal_the_lock_forms_on_faults_in_every_base_register() {
                         state.gpr[register as usize] = address;
                         state.rflags = 2 | IF | FLAG_CF | FLAG_OF;
                     };
-                    let from_lock = ds_run(&lock, &seed, 5, fault);
+                    let mut from_lock = ds_run(&lock, &seed, 5, fault);
                     let from_ds = ds_run(&ds, &seed, 5, fault);
+                    // S7-32 W3: a DS override makes the reference a data reference, so a
+                    // non-canonical RBP/RSP-based operand is #GP(0) with `3E` where the unprefixed
+                    // LOCK form (default SS for these bases) is #SS(0) (SDM Vol. 1 §3.3.7.1);
+                    // everything else is equal.
+                    let stack_fault = "Fault(ArchitecturalFault { vector: 12, error_code: Some(0), linear_address: None })";
+                    if matches!(base, DsBase::Rbp | DsBase::Rsp) && from_lock.exit == stack_fault {
+                        from_lock.exit = stack_fault.replace("vector: 12", "vector: 13");
+                    }
                     assert_eq!(
                         from_ds, from_lock,
                         "{} {base:?} {address:#x} {fault:?} source {source:#x}",
@@ -47095,6 +47345,14 @@ fn segment_logic_load_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(&code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            &code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -48874,6 +49132,14 @@ fn segment_81_family_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(&code, 1);
         let run = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            &code,
+            &run,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&run),
             &RunExit::Unsupported { opcode: 0x81 },
@@ -49750,6 +50016,14 @@ fn segment_80_family_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(&code, 1);
         let run = run_cas_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            &code,
+            &run,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&run),
             &RunExit::Unsupported { opcode: 0x80 },
@@ -51944,6 +52218,14 @@ fn word_alu_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -53644,8 +53926,10 @@ fn mov_sreg_register_form_with_a_non_null_selector_is_refused_without_mutation()
 
 #[test]
 fn mov_sreg_register_form_prefix_variants_are_refused_without_mutation() {
-    let forms: [&[u8]; 10] = [
-        &[0x66, 0x8e, 0xef],
+    // S7-32 W3 add-on: `66 8E EF` left this list: `66` does not change MOV Sreg, r/m16 (SDM "MOV":
+    // the selector is the low 16 bits of r/m), so it retires like `8E EF`
+    // (`mov_sreg_register_forms_with_66_retire_like_the_unprefixed_forms`).
+    let forms: [&[u8]; 9] = [
         &[0x67, 0x8e, 0xef],
         &[0xf2, 0x8e, 0xef],
         &[0xf3, 0x8e, 0xef],
@@ -53972,10 +54256,35 @@ fn mov_es_ds_register_form_with_a_non_null_selector_is_refused_without_mutation(
 }
 
 #[test]
-fn mov_ss_register_form_with_a_non_null_selector_or_a_non_zero_rpl_is_refused() {
-    // RPL 1..=3 on a null selector is #GP on hardware (SDM, from memory); the model refuses it.
+fn mov_ss_register_form_with_a_non_zero_rpl_is_gp0_and_a_gdt_selector_without_a_gdtr_is_refused() {
+    // S7-32: the register forms take the general MOV Sreg load (`mov_to_sreg_cpl0`). A null SS
+    // selector with RPL != CPL is #GP(0) (SDM "MOV", 64-bit mode: a null SS loads only at CPL < 3
+    // with RPL = CPL), with nothing changed.
     for rex_b in [false, true] {
-        for value in [1u64, 2, 3, 4, 0x10, 0x18, 0x1_0000 | 0x18, 0xffff] {
+        for value in [1u64, 2, 3, 0x1_0000 | 3] {
+            let mut state = gs9d_state();
+            state.gpr[Register::Rdx as usize] = value;
+            state.gpr[Register::R10 as usize] = value;
+            let before = state.clone();
+            let code: Vec<u8> = if rex_b {
+                vec![0x41, 0x8e, gs9d_modrm(S9D_SS, 2)] // r10
+            } else {
+                vec![0x8e, gs9d_modrm(S9D_SS, 2)] // edx
+            };
+            let result = run_gs9b(&code, &mut state);
+            let label = format!("{code:02x?} value {value:#x}");
+            assert!(
+                matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13 && fault.error_code == Some(0)),
+                "{label}: {:?}",
+                result.exit
+            );
+            assert_eq!(result.instructions_executed, 0, "{label}");
+            assert_eq!(state, before, "{label}");
+        }
+    }
+    // A non-null selector needs the GDT: without a modeled GDTR the load is refused unchanged.
+    for rex_b in [false, true] {
+        for value in [4u64, 0x10, 0x18, 0x1_0000 | 0x18, 0xffff] {
             let mut state = gs9d_state();
             state.gpr[Register::Rdx as usize] = value;
             state.gpr[Register::R10 as usize] = value;
@@ -53996,6 +54305,117 @@ fn mov_ss_register_form_with_a_non_null_selector_or_a_non_zero_rpl_is_refused() 
             assert_eq!(state, before, "{label}");
         }
     }
+}
+
+/// S7-32: winload's `mov %cx, %gs` (`8E E9`) with CX = 0x2b before the kernel entry, and the other
+/// register forms with a non-null GDT selector, load the descriptor like `MOV Sreg, m16`
+/// (`mov_to_sreg_cpl0` / `load_sreg_cpl0`): 0x2b is GDT index 5 with RPL 3, a DPL 3 data
+/// segment, so max(CPL, RPL) = 3 <= DPL (SDM "MOV"); the GS base becomes the 32-bit descriptor
+/// base. `mov %r12d, %ds` (`41 8E DC`) loads index 3 (DPL 0, RPL 0); `mov %edx, %ss` (`8E D2`)
+/// loads the same DPL 0 writable data segment into SS and opens the interrupt shadow. A DPL 0
+/// segment through `mov %edi, %fs` with RPL 3 (0x1b) is #GP(0x18), nothing changed.
+#[test]
+fn mov_sreg_register_forms_load_a_gdt_selector() {
+    let gdt = 0x5000u64;
+    let setup = |state: &mut LongModeState, memory: &mut BitsMemory| {
+        state.gdtr = Some(od_isa::state::Gdtr {
+            base: gdt,
+            limit: 0x37,
+        });
+        state.gs_cache = Some(FS_GS_CACHE);
+        state.fs_cache = Some(FS_GS_CACHE);
+        state.ds_cache = Some(od_isa::state::DsDescriptorCache {
+            base: 0,
+            limit: 0,
+            access: 0,
+            flags: 0,
+        });
+        // Index 3 (0x18): present, writable, accessed data, DPL 0, base 0, 4 GiB.
+        // Index 5 (0x28): present, writable, accessed data, DPL 3, base 0x0012_3000.
+        for (slot, descriptor) in [
+            (3u64, [0xffu8, 0xff, 0, 0, 0, 0x93, 0xcf, 0]),
+            (5, [0xff, 0xff, 0x00, 0x30, 0x12, 0xf3, 0xcf, 0x00]),
+        ] {
+            for (index, byte) in descriptor.into_iter().enumerate() {
+                memory.data.insert(gdt + slot * 8 + index as u64, byte);
+            }
+        }
+    };
+    // mov %cx, %gs with CX = 0x2b.
+    let mut state = gs9b_state();
+    let mut memory = BitsMemory::new(&[0x8e, 0xe9]);
+    setup(&mut state, &mut memory);
+    state.gpr[Register::Rcx as usize] = 0xffff_0000_0000_002b;
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.gs_selector, 0x2b);
+    assert!(!state.gs_unusable);
+    assert_eq!(state.gs_base, 0x0012_3000);
+    // mov %r12d, %ds (0x18) and mov %edx, %ss (0x18).
+    for (code, sreg) in [
+        (&[0x41u8, 0x8e, 0xdc][..], S9D_DS),
+        (&[0x8e, 0xd2][..], S9D_SS),
+    ] {
+        let mut state = gs9d_state();
+        let mut memory = BitsMemory::new(code);
+        setup(&mut state, &mut memory);
+        state.gpr[Register::R12 as usize] = 0x18;
+        state.gpr[Register::Rdx as usize] = 0x18;
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            result.instructions_executed, 1,
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        if sreg == S9D_SS {
+            assert_eq!(state.ss_selector, Some(0x18));
+            assert!(!state.ss_unusable);
+            assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+        } else {
+            assert_eq!(state.ds_selector, 0x18);
+            assert!(!state.ds_unusable);
+        }
+    }
+    // mov %edi, %fs with 0x1b: RPL 3 on a DPL 0 data segment is #GP(selector & !3).
+    let mut state = gs9b_state();
+    let mut memory = BitsMemory::new(&[0x8e, 0xe7]);
+    setup(&mut state, &mut memory);
+    state.gpr[Register::Rdi as usize] = 0x1b;
+    let before = state.clone();
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert!(
+        matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 13 && fault.error_code == Some(0x18)),
+        "{:?}",
+        result.exit
+    );
+    assert_eq!(state, before);
 }
 
 #[test]
@@ -54033,9 +54453,89 @@ fn mov_ss_register_form_keeps_the_s2_46_admission() {
     assert_eq!(state.rflags & IF, IF);
 }
 
+/// S7-32 W3 add-on (winload's `66 8E D0` before the kernel entry): the operand-size prefix does not
+/// change MOV Sreg, r/m16 (SDM "MOV": the selector is the low 16 bits of r/m in every operand size),
+/// so `66 8E /r` (also with REX.B directly before the opcode) retires like `8E /r`: a null selector
+/// (here 0 in the low word of a register whose upper bits are set) makes ES/DS/FS/GS unusable with
+/// the selector as given, and SS null at CPL0 with the one-instruction shadow. These forms decode
+/// as `MovToSreg` (the general MOV Sreg executor: the `mov_ss_state_admitted` conditions for SS, a
+/// non-null selector through `load_sreg_cpl0`).
+#[test]
+fn mov_sreg_register_forms_with_66_retire_like_the_unprefixed_forms() {
+    for (code, sreg, source) in [
+        (&[0x66u8, 0x8e, 0xd0][..], S9D_SS, Register::Rax),
+        (&[0x66, 0x8e, 0xd8][..], S9D_DS, Register::Rax),
+        (&[0x66, 0x8e, 0xc3][..], S9D_ES, Register::Rbx),
+        (&[0x66, 0x8e, 0xdc][..], S9D_DS, Register::Rsp),
+        (&[0x66, 0x41, 0x8e, 0xdc][..], S9D_DS, Register::R12),
+        (&[0x66, 0x41, 0x8e, 0xd7][..], S9D_SS, Register::R15),
+        (&[0x66, 0x48, 0x8e, 0xc1][..], S9D_ES, Register::Rcx),
+    ] {
+        let mut state = gs9d_state();
+        state.gpr[source as usize] = 0xffff_0000;
+        let before = state.clone();
+        let result = run_gs9b(code, &mut state);
+        assert_eq!(
+            result.instructions_executed, 1,
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(
+            state,
+            gs9d_expected(&before, sreg, 0, code.len() as u64),
+            "{code:02x?}"
+        );
+    }
+    // FS/GS: `66 8E EF` (mov %di, %gs) and `66 8E E7` (mov %di, %fs) with DI = 0 keep the bases.
+    for code in [[0x66u8, 0x8e, 0xef], [0x66, 0x8e, 0xe7]] {
+        let mut state = gs9b_state();
+        state.gpr[Register::Rdi as usize] = 0x55aa_0000;
+        let before = state.clone();
+        let result = run_gs9b(&code, &mut state);
+        assert_eq!(
+            result.instructions_executed, 1,
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        let mut expected = before;
+        expected.rip += 3;
+        if code[2] == 0xef {
+            expected.gs_selector = 0;
+            expected.gs_unusable = true;
+        } else {
+            expected.fs_selector = 0;
+            expected.fs_unusable = true;
+        }
+        assert_eq!(state, expected, "{code:02x?}");
+    }
+    // A REX before `66` is not a REX prefix (SDM 2.2.1: it must directly precede the opcode), so
+    // `41 66 8E DC` loads DS from SP (not R12W), with length 4.
+    let mut state = gs9d_state();
+    state.gpr[Register::Rsp as usize] = 0x1_0000;
+    let before = state.clone();
+    let result = run_gs9b(&[0x41, 0x66, 0x8e, 0xdc], &mut state);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state, gs9d_expected(&before, S9D_DS, 0, 4));
+    // MOV CS (reg 1) and the reserved Sreg 6 and 7 are #UD with `66` too.
+    for code in [[0x66u8, 0x8e, 0xc8], [0x66, 0x8e, 0xf0], [0x66, 0x8e, 0xf8]] {
+        let mut state = gs9d_state();
+        let before = state.clone();
+        let result = run_gs9b(&code, &mut state);
+        assert!(
+            matches!(exit(&result), RunExit::Fault(fault) if fault.vector == 6),
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
 #[test]
 fn mov_es_ss_ds_register_form_rex_and_prefix_variants_are_refused_without_mutation() {
-    let forms: [&[u8]; 27] = [
+    // S7-32 W3 add-on: `66 41 8E DC`, `41 66 8E DC` and `66 8E DC` left this list (the `66` forms
+    // retire, `mov_sreg_register_forms_with_66_retire_like_the_unprefixed_forms`).
+    let forms: [&[u8]; 24] = [
         &[0x40, 0x8e, 0xdc],
         &[0x42, 0x8e, 0xdc],
         &[0x44, 0x8e, 0xdc],
@@ -54044,8 +54544,6 @@ fn mov_es_ss_ds_register_form_rex_and_prefix_variants_are_refused_without_mutati
         &[0x45, 0x8e, 0xdc],
         &[0x43, 0x8e, 0xdc],
         &[0x4f, 0x8e, 0xdc],
-        &[0x66, 0x41, 0x8e, 0xdc],
-        &[0x41, 0x66, 0x8e, 0xdc],
         &[0x67, 0x41, 0x8e, 0xdc],
         &[0x64, 0x41, 0x8e, 0xdc],
         &[0x65, 0x41, 0x8e, 0xdc],
@@ -54053,7 +54551,6 @@ fn mov_es_ss_ds_register_form_rex_and_prefix_variants_are_refused_without_mutati
         &[0xf2, 0x41, 0x8e, 0xdc],
         &[0xf3, 0x41, 0x8e, 0xdc],
         &[0x41, 0x41, 0x8e, 0xdc],
-        &[0x66, 0x8e, 0xdc],
         &[0x67, 0x8e, 0xdc],
         &[0x64, 0x8e, 0xdc],
         &[0x65, 0x8e, 0xdc],
@@ -55801,6 +56298,14 @@ fn segment_push_refused_forms_keep_the_exact_opcode_and_change_nothing() {
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_inc_set(&mut state, &mut memory).unwrap();
+        if w3_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: *opcode },
@@ -56700,6 +57205,78 @@ fn s7_32_mov_sreg_from_memory_loads_null_and_gdt_selectors() {
     assert!(memory.writes.is_empty());
 }
 
+/// S7-32 W3 add-on: winload's switch to the kernel, `wbinvd; sub %rax, %rax; mov %ax, %ss` with the
+/// `66` prefix (`0F 09`, `48 29 C0`, `66 8E D0`): WBINVD is a no-op at CPL0 (the model has no data
+/// cache), and `66 8E /r` loads the low 16 bits of the register like `8E /r` (SDM "MOV": the
+/// operand size of MOV Sreg, r/m16 does not matter): SS := 0 (null at CPL0, RPL 0) with the
+/// interrupt shadow of MOV SS. `66 8E D8` (MOV DS, AX) with AX = 0x18 loads the GDT descriptor.
+#[test]
+fn s7_32_winload_wbinvd_and_mov_ss_with_66_and_mov_ds_with_66() {
+    let gdt = 0x5000u64;
+    let code = [0x0f, 0x09, 0x48, 0x29, 0xc0, 0x66, 0x8e, 0xd0];
+    let mut state = board_state();
+    state.ss_selector = Some(0x18);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.gpr[Register::Rax as usize] = 0x1234;
+    let mut memory = BitsMemory::new(&code);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 3),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 3, "{:?}", result.exit);
+    assert_eq!(state.gpr[Register::Rax as usize], 0);
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ss_unusable);
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    assert_eq!(state.rip, RIP + code.len() as u64);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    // 66 8E D8: DS := 0x18 from a present, writable, accessed data descriptor (DPL 0).
+    let mut state = board_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: gdt,
+        limit: 0x1f,
+    });
+    state.ds_cache = Some(od_isa::state::DsDescriptorCache {
+        base: 0,
+        limit: 0,
+        access: 0,
+        flags: 0,
+    });
+    state.gpr[Register::Rax as usize] = 0xffff_0018;
+    let mut memory = BitsMemory::new(&[0x66, 0x8e, 0xd8]);
+    for (index, byte) in [0xffu8, 0xff, 0, 0, 0, 0x93, 0xcf, 0]
+        .into_iter()
+        .enumerate()
+    {
+        memory.data.insert(gdt + 0x18 + index as u64, byte);
+    }
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.ds_selector, 0x18);
+    assert!(!state.ds_unusable);
+    assert_eq!(state.rip, RIP + 3);
+}
+
 #[test]
 fn s7_32_carry_flag_instructions_rdpmc_and_padding_nops() {
     // stc; cmc; cmc; clc is checked by CF after each prefix of the stream.
@@ -57285,6 +57862,9 @@ fn w2_owns(
     unchanged: bool,
 ) -> bool {
     use od_isa::long_decode::{BitOffset, LockedRmwOp, Operation};
+    if w3_owns(code, result, before, unchanged) {
+        return true;
+    }
     let mut memory = BitsMemory::new(code);
     match od_isa::long_decode::decode(&mut memory, RIP, context(PrivilegeLevel::Ring0)) {
         Ok(instruction) => {
@@ -57344,4 +57924,489 @@ fn w2_owns(
         }
         _ => false,
     }
+}
+
+/// S7-32 W3: a form of the segment-override fallback (an operand stamped with FS/GS, or a null
+/// override on an operation that fallback admits) is not refused: it retires once, or stops at the
+/// architectural fault of its operand address, or at the memory error of the test memory (an
+/// unmapped segment base), in both stop cases without a state change. `false` when the form is not
+/// such a form or stays refused (a null override the profile decoder keeps): the caller's own
+/// assertions apply.
+fn w3_owns(
+    code: &[u8],
+    result: &Cpl0ProfileSetResult,
+    before: &LongModeState,
+    unchanged: bool,
+) -> bool {
+    use od_isa::long_decode::{AddressBase, DecodeError, MemorySegment, Operation};
+    let mut memory = BitsMemory::new(code);
+    let instruction =
+        match od_isa::long_decode::decode(&mut memory, RIP, context(PrivilegeLevel::Ring0)) {
+            Ok(instruction) => instruction,
+            // A form that is #UD without its segment override is #UD with it (LOCK on CMP, on a
+            // register destination, ...): the fallback reports that #UD. Checked on the bytes
+            // without the override byte.
+            Err(DecodeError::Invalid { .. })
+                if matches!(
+                    exit(result),
+                    RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+                ) =>
+            {
+                let Some(at) = code
+                    .iter()
+                    .position(|byte| matches!(byte, 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65))
+                else {
+                    return false;
+                };
+                let mut stripped = code.to_vec();
+                stripped.remove(at);
+                assert!(
+                    matches!(
+                        od_isa::long_decode::decode(
+                            &mut BitsMemory::new(&stripped),
+                            RIP,
+                            context(PrivilegeLevel::Ring0)
+                        ),
+                        Err(DecodeError::Invalid { .. })
+                    ),
+                    "{code:02x?}: #UD only where the form without the override is #UD"
+                );
+                assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+                assert!(unchanged, "{code:02x?}: #UD changes nothing");
+                return true;
+            }
+            Err(_) => return false,
+        };
+    let Some(operand) = instruction.operation.segment_operand() else {
+        return false;
+    };
+    if !matches!(
+        instruction.operation.memory_segment(),
+        MemorySegment::Fs | MemorySegment::Gs
+    ) && (instruction.prefixes.segment.is_none()
+        || matches!(exit(result), RunExit::Unsupported { .. }))
+    {
+        return false;
+    }
+    match exit(result) {
+        RunExit::InstructionBudgetExhausted => {
+            assert_eq!(result.instructions_executed, 1, "{code:02x?}: {result:?}");
+        }
+        RunExit::Fault(fault) => {
+            // The address fault by hand (SDM Vol. 1 §3.3.7.1, Vol. 3 §3.4.4): effective offset
+            // truncated to the address size, plus the FS/GS base; a non-canonical first or last byte
+            // is #SS(0) for a stack reference (an SS override, or no override with an RSP/RBP base),
+            // #GP(0) otherwise. A register bit offset moves the element, so that case is not
+            // computed here (its own tests check it).
+            let moved_element = matches!(
+                instruction.operation,
+                Operation::Bit {
+                    offset: od_isa::long_decode::BitOffset::Register(_),
+                    ..
+                }
+            );
+            let base = match operand.base {
+                AddressBase::None => 0,
+                AddressBase::Register(register) => before.gpr[register as usize],
+                AddressBase::NextRip => RIP + u64::from(instruction.length),
+            };
+            let index = operand
+                .index
+                .map_or(0, |register| before.gpr[register as usize]);
+            let mask = if operand.address_size == OperandSize::Dword {
+                0xffff_ffff
+            } else {
+                u64::MAX
+            };
+            let offset = base
+                .wrapping_add(index.wrapping_mul(u64::from(operand.scale)))
+                .wrapping_add_signed(operand.displacement)
+                & mask;
+            let segment_base = match operand.segment {
+                MemorySegment::Fs => before.fs_base,
+                MemorySegment::Gs => before.gs_base,
+                _ => 0,
+            };
+            let first = offset.wrapping_add(segment_base);
+            let last = first.wrapping_add(operand.size.bytes() as u64 - 1);
+            let canonical =
+                |address: u64| (address as i64) >> 47 == 0 || (address as i64) >> 47 == -1;
+            if !moved_element && !(canonical(first) && canonical(last)) {
+                let stack = match operand.segment {
+                    MemorySegment::Stack => true,
+                    MemorySegment::Flat => matches!(
+                        operand.base,
+                        AddressBase::Register(Register::Rsp | Register::Rbp)
+                    ),
+                    _ => false,
+                };
+                assert_eq!(
+                    fault,
+                    &ArchitecturalFault {
+                        vector: if stack { 12 } else { 13 },
+                        error_code: Some(0),
+                        linear_address: None,
+                    },
+                    "{code:02x?}"
+                );
+                assert!(unchanged, "{code:02x?}: the address fault changes nothing");
+            }
+            assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        }
+        // The test memory does not map the segment base: the access attempt is recorded by the
+        // test memory, the instruction does not retire.
+        RunExit::MemoryError(_) => {
+            assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+        }
+        other => panic!("{code:02x?}: a W3 form is not refused: {other:?}"),
+    }
+    true
+}
+
+// ---- S7-32 W3: the general FS/GS segment override of memory operands in the CPL0 set. Expected
+// values by hand from the Intel SDM (Vol. 1 §3.4.2.1: CS/DS/ES/SS bases are zero in 64-bit mode;
+// Vol. 3 §3.4.4: FS/GS add their 64-bit base; Vol. 1 §3.3.7.1: a non-canonical reference is #GP(0),
+// #SS(0) only for an SS reference). GS base 0x2000 + disp32 0x1000 = W2_DATA (0x3000). ----
+
+const W3_GS_BASE: u64 = 0x2000;
+
+fn w3_state(rflags: u64) -> LongModeState {
+    let mut state = w2_state(rflags);
+    state.gs_base = W3_GS_BASE;
+    state.fs_base = W3_GS_BASE;
+    state
+}
+
+#[test]
+fn s7_32_w3_gs_and_fs_overrides_add_the_segment_base_to_generic_forms() {
+    // mov %gs:0x1000, %al (65 8A 04 25 disp32): the byte at 0x3000.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 0x1111_1111_1111_1111;
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x65, 0x8a, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x42)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1111_1111_1111_1142);
+    assert_eq!(state.rip, RIP + 8);
+    // mov %fs:0x1000, %al (64 8A ...): the same through FS.
+    let mut state = w3_state(0);
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x64, 0x8a, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x7f)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize] & 0xff, 0x7f);
+    // mov %gs:0x1000, %ax (66 65 8B ...): the word, upper bits of RAX kept.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 0xaaaa_aaaa_aaaa_aaaa;
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x66, 0x65, 0x8b, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x1234_5678)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xaaaa_aaaa_aaaa_5678);
+    // btl $5, %gs:0x1000 (65 0F BA /4 ib): CF = bit 5 of 0x20 = 1, memory unchanged.
+    let mut state = w3_state(0);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0x0f, 0xba, 0x24, 0x25, 0x00, 0x10, 0x00, 0x00, 0x05],
+        &[(W2_DATA, 0x20)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rflags & W2_CF, W2_CF);
+    assert_eq!(memory.qword(W2_DATA), 0x20);
+    // btrw $2, %gs:0x1000 (66 65 0F BA /6 ib): CF = bit 2 = 1, the bit cleared: 0x0006 -> 0x0002.
+    let mut state = w3_state(0);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[
+            0x66, 0x65, 0x0f, 0xba, 0x34, 0x25, 0x00, 0x10, 0x00, 0x00, 0x02,
+        ],
+        &[(W2_DATA, 0xffff_0006)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rflags & W2_CF, W2_CF);
+    assert_eq!(memory.qword(W2_DATA), 0xffff_0002);
+    // andq $-16, %gs:0x1000 (65 48 83 /4 ib): 0x1234 & ~0xf = 0x1230; CF = OF = 0, ZF = SF = 0.
+    let mut state = w3_state(W2_CF | W2_OF);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0x48, 0x83, 0x24, 0x25, 0x00, 0x10, 0x00, 0x00, 0xf0],
+        &[(W2_DATA, 0x1234)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x1230);
+    assert_eq!(state.rflags & (W2_CF | W2_OF | W2_ZF | W2_SF), 0);
+    // lock incq %gs:0x1000 (65 F0 48 FF /0): 41 -> 42, CF kept.
+    let mut state = w3_state(W2_CF);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0xf0, 0x48, 0xff, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 41)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 42);
+    assert_eq!(state.rflags & W2_CF, W2_CF);
+}
+
+#[test]
+fn s7_32_w3_ldmxcsr_through_gs_loads_mxcsr_from_the_segment() {
+    // ldmxcsr %gs:0x1000 (65 0F AE /2): MXCSR := the dword at 0x3000 (0x1f00: all exceptions
+    // masked but PM, round to nearest), from the initial 0x1f80. The FP member needs a profile that
+    // declares SSE.
+    let cell = RefCell::new(GuestFpState::initial());
+    let mut state = w3_state(0);
+    // CR4.OSFXSR (bit 9) and OSXMMEXCPT (bit 10): LDMXCSR is #UD without OSFXSR.
+    state.cr4 = state.cr4.map(|cr4| cr4 | (1 << 9) | (1 << 10));
+    let mut memory = BitsMemory::new(&[0x65, 0x0f, 0xae, 0x14, 0x25, 0x00, 0x10, 0x00, 0x00]);
+    memory.set_qword(W2_DATA, 0x1f00);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base()
+            .with_cpuid(&CpuidProfile::X8664V1Stage4AExt2)
+            .with_fp_state(&cell),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::InstructionBudgetExhausted);
+    assert_eq!(cell.borrow().sse.mxcsr, 0x1f00);
+    assert_eq!(state.rip, RIP + 9);
+}
+
+#[test]
+fn s7_32_w3_null_overrides_lea_and_faults() {
+    // mov %al, %cs:(%rbx) (2E 88 03) and bt %eax, %ds:(%rbx) (3E 0F A3 03): CS/DS have a zero base.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 0x5a;
+    let (exit, memory) = w2_run(&mut state, &[0x2e, 0x88, 0x03], &[(W2_DATA, 0)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x5a);
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 3;
+    let (exit, _) = w2_run(&mut state, &[0x3e, 0x0f, 0xa3, 0x03], &[(W2_DATA, 0x8)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rflags & W2_CF, W2_CF);
+    // lea %gs:0x1000, %rax (65 48 8D 04 25): LEA computes the offset, the segment base is not added.
+    let mut state = w3_state(0);
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x65, 0x48, 0x8d, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x1000);
+    // A GS base that makes the reference non-canonical: #GP(0), not #SS, and nothing changes.
+    let mut state = w3_state(0);
+    state.gs_base = 0x7fff_ffff_f800;
+    let before = state.clone();
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0x8a, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[],
+    );
+    assert_eq!(
+        exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+    assert_eq!(state, before);
+    assert!(memory.writes.is_empty());
+    // A null override selects the canonical fault: `mov %ds:0(%rbp), %eax` (3E 8B 45 00) with a
+    // non-canonical RBP is a DS reference, #GP(0) (without the override the RBP base would make it
+    // #SS(0)); `mov %ss:(%rax), %eax` (36 8B 00) with a non-canonical RAX is a stack reference,
+    // #SS(0).
+    for (code, register, vector) in [
+        (&[0x3e, 0x8b, 0x45, 0x00][..], Register::Rbp, 13u8),
+        (&[0x36, 0x8b, 0x00][..], Register::Rax, 12),
+        (&[0x8b, 0x45, 0x00][..], Register::Rbp, 12),
+        // moffs: `mov %ss:0x8000000000000000, %eax` (36 A1 imm64) is a stack reference, #SS(0);
+        // with DS (3E A1) and without an override it is #GP(0). The register is unused.
+        (
+            &[0x36, 0xa1, 0, 0, 0, 0, 0, 0, 0, 0x80][..],
+            Register::Rbx,
+            12,
+        ),
+        (
+            &[0x3e, 0xa1, 0, 0, 0, 0, 0, 0, 0, 0x80][..],
+            Register::Rbx,
+            13,
+        ),
+        (&[0xa1, 0, 0, 0, 0, 0, 0, 0, 0x80][..], Register::Rbx, 13),
+    ] {
+        let mut state = w3_state(0);
+        state.gpr[register as usize] = 0x8000_0000_0000_0000;
+        let before = state.clone();
+        let (exit, memory) = w2_run(&mut state, code, &[]);
+        assert_eq!(
+            exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{code:02x?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.reads.is_empty(), "{code:02x?}");
+    }
+    // Even with an RSP base a GS reference faults #GP(0): mov %gs:(%rsp), %al.
+    let mut state = w3_state(0);
+    state.gs_base = 0x7fff_ffff_f800;
+    state.gpr[Register::Rsp as usize] = 0x1000;
+    let (exit, _) = w2_run(&mut state, &[0x65, 0x8a, 0x04, 0x24], &[]);
+    assert_eq!(
+        exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
+    );
+}
+
+#[test]
+fn s7_32_w3_existing_gs_specific_forms_keep_their_operations() {
+    // mov %gs:0x1000, %rax (65 48 8B 04 25): the profile decoder's GS load, unchanged by W3.
+    let code = [0x65, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00];
+    let mut memory = BitsMemory::new(&code);
+    let decoded = od_isa::long_decode::decode(
+        &mut memory,
+        RIP,
+        AccessContext {
+            mode: od_isa::InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: od_isa::AccessOrigin::Explicit,
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            decoded.operation,
+            od_isa::long_decode::Operation::MovGsLoadQ { src, .. }
+                if src.segment == od_isa::long_decode::MemorySegment::Flat
+        ),
+        "{:?}",
+        decoded.operation
+    );
+    let mut state = w3_state(0);
+    let (exit, _) = w2_run(&mut state, &code, &[(W2_DATA, 0x0102_0304_0506_0708)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x0102_0304_0506_0708);
+}
+
+#[test]
+fn s7_32_w3_stack_branch_and_exchange_forms_through_gs() {
+    // push %gs:0x1000 (65 FF /6): the qword at 0x3000 goes to [RSP - 8].
+    let mut state = w3_state(0);
+    state.gpr[Register::Rsp as usize] = 0x5000;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0xff, 0x34, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x1122_3344_5566_7788)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x4ff8);
+    assert_eq!(memory.qword(0x4ff8), 0x1122_3344_5566_7788);
+    // pop %gs:0x1000 (65 8F /0): [RSP] goes to 0x3000, RSP += 8.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rsp as usize] = 0x5000;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0x8f, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(0x5000, 0xabcd), (W2_DATA, 0)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x5008);
+    assert_eq!(memory.qword(W2_DATA), 0xabcd);
+    // jmp *%gs:0x1000 (65 FF /4): RIP := the qword at 0x3000.
+    let mut state = w3_state(0);
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x65, 0xff, 0x24, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x7000)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x7000);
+    // call *%gs:0x1000 (65 FF /2): the return address RIP + 8 is pushed, RIP := [0x3000].
+    let mut state = w3_state(0);
+    state.gpr[Register::Rsp as usize] = 0x5000;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0xff, 0x14, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x7000)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x7000);
+    assert_eq!(memory.qword(0x4ff8), RIP + 8);
+    // xchg %eax, %gs:0x1000 (65 87 /r): the dwords swap, RAX bits 63:32 cleared.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 0xffff_ffff_0000_0001;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x65, 0x87, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 0x9999_0000_0000_0002)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 2);
+    assert_eq!(memory.qword(W2_DATA), 0x9999_0000_0000_0001);
+    // imul %gs:0x1000, %rax (65 48 0F AF /r): 3 * 7 = 21.
+    let mut state = w3_state(0);
+    state.gpr[Register::Rax as usize] = 3;
+    let (exit, _) = w2_run(
+        &mut state,
+        &[0x65, 0x48, 0x0f, 0xaf, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00],
+        &[(W2_DATA, 7)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.gpr[Register::Rax as usize], 21);
+}
+
+#[test]
+fn s7_32_w3_scalar_sse_moves_through_gs() {
+    // movsd %gs:0x1000, %xmm0 (65 F2 0F 10 /r): XMM0 low qword := [0x3000], high qword := 0;
+    // movss %xmm0, %gs:0x1008 (65 F3 0F 11 /r): the low dword of XMM0 to 0x3008.
+    let cell = RefCell::new(GuestFpState::initial());
+    cell.borrow_mut().sse.xmm[0] = [0xee; 16];
+    let code = [
+        0x65, 0xf2, 0x0f, 0x10, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00, 0x65, 0xf3, 0x0f, 0x11, 0x04,
+        0x25, 0x08, 0x10, 0x00, 0x00,
+    ];
+    let mut state = w3_state(0);
+    state.cr4 = state.cr4.map(|cr4| cr4 | (1 << 9) | (1 << 10));
+    let mut memory = BitsMemory::new(&code);
+    memory.set_qword(W2_DATA, 0x0102_0304_0506_0708);
+    memory.set_qword(W2_DATA + 8, 0xffff_ffff_ffff_ffff);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base()
+            .with_cpuid(&CpuidProfile::X8664V1Stage4AExt2)
+            .with_fp_state(&cell),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{result:?}"
+    );
+    let mut expected = [0u8; 16];
+    expected[..8].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+    assert_eq!(cell.borrow().sse.xmm[0], expected);
+    assert_eq!(memory.qword(W2_DATA + 8), 0xffff_ffff_0506_0708);
+    assert_eq!(state.rip, RIP + 20);
 }

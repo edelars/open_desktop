@@ -648,6 +648,7 @@ fn the_decoder_reports_kind_direction_register_and_operand() {
             store: true,
             xmm: 9,
             memory: MemoryOperand {
+                segment: od_isa::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rbp),
                 index: None,
                 scale: 1,
@@ -668,6 +669,7 @@ fn the_decoder_reports_kind_direction_register_and_operand() {
             store: false,
             xmm: 2,
             memory: MemoryOperand {
+                segment: od_isa::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: Some(Register::Rdi),
                 scale: 2,

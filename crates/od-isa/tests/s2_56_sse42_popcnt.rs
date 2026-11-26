@@ -1928,11 +1928,8 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
         ),
         (vec![0xf3, 0xf3, 0x0f, 0xb8, 0xca], "F3 F3"),
         (vec![0xf3, 0x66, 0x66, 0x0f, 0xb8, 0xca], "duplicate 66"),
-        (
-            vec![0x64, 0xf3, 0x0f, 0xb8, 0x00],
-            "FS segment (no segment base in the operand model)",
-        ),
-        (vec![0xf3, 0x65, 0x0f, 0xb8, 0x00], "GS segment"),
+        // S7-32 W3: POPCNT with FS/GS left this list (the segment-override fallback gives it an
+        // FS/GS operand; cpl0_profile_set.rs, s7_32_w3_*).
         (vec![0xf3, 0x40, 0x40, 0x0f, 0xb8, 0xca], "duplicate REX"),
         (vec![0xf0, 0x0f, 0xb8, 0x00], "LOCK without F3"),
         // CRC32 without F2: 0F 38 F0/F1 is MOVBE, owned elsewhere.
@@ -1952,8 +1949,7 @@ fn neighbouring_encodings_stay_unsupported_without_change() {
         (vec![0xf3, 0x0f, 0x38, 0xf1, 0xca], "F3 0F 38 F1"),
         (vec![0xf2, 0xf3, 0x0f, 0x38, 0xf1, 0xca], "F2 F3"),
         (vec![0xf2, 0xf2, 0x0f, 0x38, 0xf1, 0xca], "F2 F2"),
-        (vec![0x64, 0xf2, 0x0f, 0x38, 0xf1, 0x00], "CRC32 with FS"),
-        (vec![0xf2, 0x65, 0x0f, 0x38, 0xf0, 0x00], "CRC32 with GS"),
+        // S7-32 W3: CRC32 with FS/GS left this list, as POPCNT above.
         (
             vec![0xf2, 0x0f, 0x38, 0xf2, 0xca],
             "F2 0F 38 F2 (not CRC32)",

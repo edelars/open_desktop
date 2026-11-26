@@ -129,7 +129,13 @@ fn canonical(address: u64) -> bool {
 }
 
 fn mem_ok(mem: &MemoryOperand) -> bool {
+    // S7-32 W3: an FS/GS-relative operand needs the segment base the templates do not add: the
+    // general step owns it. A null override (zero base) stays with the templates.
     mem.address_size == OperandSize::Qword
+        && !matches!(
+            mem.segment,
+            od_isa::long_decode::MemorySegment::Fs | od_isa::long_decode::MemorySegment::Gs
+        )
 }
 
 fn size_bytes(size: OperandSize) -> u32 {
@@ -138,6 +144,16 @@ fn size_bytes(size: OperandSize) -> u32 {
 
 /// The plan of `insn`, or `None` when the block ends before it.
 fn plan(insn: &Instruction) -> Option<Plan> {
+    // S7-32 W3: an operand stamped with the FS/GS segment needs a base the templates do not add.
+    // Only an FS/GS prefix can stamp one, so the walk of the operation runs for those alone.
+    if matches!(insn.prefixes.segment, Some(0x64 | 0x65))
+        && matches!(
+            insn.operation.memory_segment(),
+            od_isa::long_decode::MemorySegment::Fs | od_isa::long_decode::MemorySegment::Gs
+        )
+    {
+        return None;
+    }
     let fast = od_isa::execute::fast_handler(insn).is_some();
     let size = insn.operand_size;
     let p = |role, reads, writes, can_exit| {

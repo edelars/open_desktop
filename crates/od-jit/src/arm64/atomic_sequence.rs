@@ -452,6 +452,7 @@ mod tests {
 
     fn operand(size: OperandSize) -> MemoryOperand {
         MemoryOperand {
+            segment: od_isa::long_decode::MemorySegment::Flat,
             base: GuestBase::None,
             index: None,
             scale: 1,
@@ -552,6 +553,7 @@ mod tests {
         let checked_load = program(vec![Operation::CheckedLoad {
             dst: TempId(0),
             operand: MemoryOperand {
+                segment: od_isa::long_decode::MemorySegment::Flat,
                 base: GuestBase::Register(od_isa::Register::Rax),
                 index: None,
                 scale: 1,

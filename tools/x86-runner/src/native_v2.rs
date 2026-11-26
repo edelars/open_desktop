@@ -2609,6 +2609,7 @@ fn admission_with_tracee_memory(
                     displacement: 0,
                     address_size: OperandSize::Qword,
                     size,
+                    segment: long_decode::MemorySegment::Flat,
                 })
             };
             admit_operand(implicit_memory(od_isa::Register::Rsi), AccessKind::Read)?;
@@ -2629,6 +2630,7 @@ fn admission_with_tracee_memory(
                 displacement: 0,
                 address_size: OperandSize::Qword,
                 size,
+                segment: long_decode::MemorySegment::Flat,
             });
             admit_operand(destination, AccessKind::Write)
         }

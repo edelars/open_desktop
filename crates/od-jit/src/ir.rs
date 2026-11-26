@@ -2686,6 +2686,7 @@ mod tests {
                 Operation::CheckedLoad {
                     dst: TempId(0),
                     operand: MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: AddressBase::Register(od_isa::Register::Rax),
                         index: None,
                         scale: 1,
@@ -2804,6 +2805,7 @@ mod tests {
             forged.code_end = next_rip;
             if let Operation::CheckedLoad { operand, .. } = &mut forged.operations[1] {
                 *operand = MemoryOperand {
+                    segment: od_isa::long_decode::MemorySegment::Flat,
                     base: AddressBase::None,
                     index: Some(od_isa::Register::Rbp),
                     scale: 1,
@@ -2833,6 +2835,7 @@ mod tests {
         forged.code_end = 0x2005;
         if let Operation::CheckedLoad { operand, .. } = &mut forged.operations[1] {
             *operand = MemoryOperand {
+                segment: od_isa::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(od_isa::Register::Rsi),
                 index: Some(od_isa::Register::Rax),
                 scale: 1,
@@ -2849,6 +2852,7 @@ mod tests {
 
     fn checked_store_program() -> Program {
         let operand = MemoryOperand {
+            segment: od_isa::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(od_isa::Register::Rax),
             index: None,
             scale: 1,
@@ -2879,6 +2883,7 @@ mod tests {
 
     fn checked_store_then_load_program() -> Program {
         let operand = MemoryOperand {
+            segment: od_isa::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(od_isa::Register::Rbx),
             index: None,
             scale: 1,
@@ -3214,6 +3219,7 @@ mod tests {
 
     fn atomic_operand(size: od_isa::OperandSize) -> MemoryOperand {
         MemoryOperand {
+            segment: od_isa::long_decode::MemorySegment::Flat,
             base: AddressBase::None,
             index: None,
             scale: 1,

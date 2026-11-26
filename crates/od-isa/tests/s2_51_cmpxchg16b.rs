@@ -595,7 +595,8 @@ fn neighbouring_forms_stay_unsupported_without_change() {
         // decode as CMPXCHG8B now; their cases live in s2_21_cmpxchg8b.rs.
         ("operand-size 66", &[0x66, 0x48, 0x0f, 0xc7, 0x0f]),
         ("address-size 67", &[0x67, 0x48, 0x0f, 0xc7, 0x0f]),
-        ("fs segment", &[0x64, 0x48, 0x0f, 0xc7, 0x0f]),
+        // S7-32 W3: the FS form left this list: the segment-override fallback decodes it with an
+        // FS operand and it runs (the FS base added).
         ("rep", &[0xf3, 0x48, 0x0f, 0xc7, 0x0f]),
         ("repne", &[0xf2, 0x48, 0x0f, 0xc7, 0x0f]),
         ("lock + rep", &[0xf0, 0xf3, 0x48, 0x0f, 0xc7, 0x0f]),

@@ -991,9 +991,10 @@ fn ldmxcsr_and_stmxcsr_take_every_addressing_form_with_an_unaligned_operand() {
         ];
         for (name, code, change) in forms {
             let (observed, before, after) = in_set_with(code, &case, 1, |state| change(state));
-            // S7-31i (main priority): the `LdmxcsrMemory` executor refuses a REX, a 67 and a segment prefix
-            // (`Unsupported`, nothing changes); only the unprefixed forms with a 64-bit address run.
-            if matches!(*name, "[r8+1]" | "[eax+1] 67" | "ds:[rax+1]") {
+            // S7-31i (main priority): the `LdmxcsrMemory` executor refuses a REX and a 67 (`Unsupported`,
+            // nothing changes); only the unprefixed forms with a 64-bit address run. S7-32 W3: a segment
+            // override is carried by the operand, so `ds:[rax+1]` (a zero base) runs like `[rax+1]`.
+            if matches!(*name, "[r8+1]" | "[eax+1] 67") {
                 assert_eq!(observed.result, Result_::Unsupported(0xae), "{name}");
                 assert_eq!(observed.rip, CODE, "{name}");
                 assert_eq!(after, before, "{name}");
@@ -1104,7 +1105,9 @@ fn stmxcsr_stores_the_live_value_including_flags_of_the_previous_form_and_the_lo
 }
 
 #[test]
-fn movss_movsd_memory_forms_with_an_fs_or_gs_override_are_refused() {
+fn movss_movsd_memory_forms_with_an_fs_or_gs_override_run_with_the_segment_base() {
+    // S7-32 W3: the segment-override fallback gives these forms an FS/GS operand; the case's FS and
+    // GS bases are zero, so each runs like the form without the override.
     let case = Case::new(false);
     for (name, code, opcode) in [
         (
@@ -1128,9 +1131,10 @@ fn movss_movsd_memory_forms_with_an_fs_or_gs_override_are_refused() {
             0x11,
         ),
     ] {
-        let (observed, before, after) = in_set(code, &case);
-        assert_eq!(observed.result, Result_::Unsupported(opcode), "{name}");
-        assert_eq!((after, observed.rip), (before, CODE), "{name}");
+        let _ = opcode;
+        let (observed, _, _) = in_set(code, &case);
+        assert_eq!(observed.result, Result_::Retired, "{name}");
+        assert_eq!(observed.rip, CODE + code.len() as u64, "{name}");
     }
 }
 
@@ -1145,14 +1149,35 @@ fn ldmxcsr_stmxcsr_forms_outside_the_decoded_set_keep_their_opcode_refusal() {
         ("F2 STMXCSR", &[0xf2, 0x0f, 0xae, 0x18]),
         ("LDMXCSR mod 11", &[0x0f, 0xae, 0xd0]),
         ("STMXCSR mod 11", &[0x0f, 0xae, 0xd8]),
-        ("FS: LDMXCSR", &[0x64, 0x0f, 0xae, 0x10]),
-        ("GS: STMXCSR", &[0x65, 0x0f, 0xae, 0x18]),
+        // S7-32 W3: `FS: LDMXCSR` and `GS: STMXCSR` left this list: the segment-override fallback
+        // gives them an FS/GS operand and they run (covered in cpl0_profile_set.rs, s7_32_w3_*).
     ] {
         let (observed, before, after) = in_set(code, &case);
         assert_eq!(observed.result, Result_::Unsupported(0xae), "{name}");
         assert_eq!(after, before, "{name}");
         assert_eq!(observed.rip, CODE, "{name}");
     }
+}
+
+/// S7-32 W3: STMXCSR and LDMXCSR with an FS/GS override address the segment: `stmxcsr gs:[rax]` with
+/// GS base 0x80 and RAX = DATA - 0x80 stores MXCSR (0x1fa5) at DATA; `ldmxcsr fs:[rax]` with FS base
+/// 0x40 and RAX = DATA - 0x40 loads the dword at DATA (0x1f00).
+#[test]
+fn stmxcsr_and_ldmxcsr_with_an_fs_or_gs_override_address_the_segment() {
+    let case = mxcsr_case(0x1f00, 0x1fa5);
+    let (observed, _, _) = in_set_with(&[0x65, 0x0f, 0xae, 0x18], &case, 1, |state| {
+        state.gs_base = 0x80;
+        state.gpr[0] = DATA - 0x80;
+    });
+    assert_eq!(observed.result, Result_::Retired);
+    assert_eq!(observed.data[..4], 0x1fa5u32.to_le_bytes());
+    assert_eq!(observed.rip, CODE + 4);
+    let (observed, _, after) = in_set_with(&[0x64, 0x0f, 0xae, 0x10], &case, 1, |state| {
+        state.fs_base = 0x40;
+        state.gpr[0] = DATA - 0x40;
+    });
+    assert_eq!(observed.result, Result_::Retired);
+    assert_eq!(after.sse.mxcsr, 0x1f00);
 }
 
 fn with_regs(

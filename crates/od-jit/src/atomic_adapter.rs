@@ -233,6 +233,11 @@ pub fn lower_atomic_sequence(
 
 /// The effects of one instruction, between its `BeginInstruction` and `CommitInstruction`.
 fn lower_one(instruction: &Instruction, b: &mut Builder) -> Result<(), AtomicAdapterError> {
+    // S7-32 W3: an FS/GS-relative memory operand needs the segment base, which the IR operand
+    // does not carry: the interpreter owns such a form.
+    if matches!(instruction.prefixes.segment, Some(0x64 | 0x65)) {
+        return Err(AtomicAdapterError::NotAnAtomicForm);
+    }
     match instruction.operation {
         // LOCK ADD m, r  (F0 [REX.W] 01 /r)
         Decoded::LockAddMemReg {

@@ -209,10 +209,16 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     // MOVNTI (`0F C3` with a memory destination), decoded as the plain `Mov` store it is for the
     // model. S7-32 W2: 4 028 more decodes (the locked read-modify-write forms, `LockedRmw`, and
     // the scalar MOVSD/MOVSS memory forms) and none admitted: the rule gives no class to a LOCK
-    // form or to these SSE operations, so the admitted set and its hash are unchanged.
+    // form or to these SSE operations, so the admitted set and its hash are unchanged. S7-32 W3:
+    // 19 251 more decodes (the general FS/GS and null segment overrides of memory forms, through the
+    // segment-override fallback) and none admitted: `fast_handler` refuses an FS/GS prefix, and a
+    // null override on a form the profile decoder refused gives the same refused shape, so the
+    // admitted set and its hash are unchanged. The W3 add-on: 20 more decodes (`66 8E /r`, MOV
+    // Sreg with the operand-size prefix, as `MovToSreg`) and none admitted (the rule gives
+    // `MovToSreg` no class).
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (130_816, 32_208, 881, 33_089)
+        (150_087, 32_208, 881, 33_089)
     );
     assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }

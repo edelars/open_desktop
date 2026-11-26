@@ -107894,6 +107894,7 @@ pub(crate) mod tests {
                     let bytes = encode(opcode, data_register, 6, 0, 0);
                     let code = CodeView::new(ENTRY, &bytes).unwrap();
                     let expected_fault = od_isa::long_decode::MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsi),
                         index: None,
                         scale: 1,

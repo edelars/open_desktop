@@ -692,7 +692,8 @@ fn neighbouring_forms_stay_unsupported_without_change() {
     let forms: &[(&str, &[u8])] = &[
         ("operand-size 66", &[0x66, 0x0f, 0xc7, 0x0f]),
         ("address-size 67", &[0x67, 0x0f, 0xc7, 0x0f]),
-        ("fs segment", &[0x64, 0x0f, 0xc7, 0x0f]),
+        // S7-32 W3: the FS form left this list: the segment-override fallback decodes it with an
+        // FS operand and it runs (the FS base added).
         ("rep", &[0xf3, 0x0f, 0xc7, 0x0f]),
         ("repne", &[0xf2, 0x0f, 0xc7, 0x0f]),
         ("lock + rep", &[0xf0, 0xf3, 0x0f, 0xc7, 0x0f]),

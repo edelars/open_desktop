@@ -644,6 +644,7 @@ mod tests {
                     kind: AtomicRmwKind::Add,
                     width: IntWidth::W32,
                     operand: MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: GuestBase::None,
                         index: None,
                         scale: 1,
@@ -834,6 +835,7 @@ mod tests {
                     kind: AtomicRmwKind::Add,
                     width: IntWidth::W32,
                     operand: MemoryOperand {
+                        segment: od_isa::long_decode::MemorySegment::Flat,
                         base: GuestBase::None,
                         index: None,
                         scale: 1,
@@ -961,6 +963,7 @@ mod tests {
             Operation::CheckedLoad {
                 dst: TempId(9),
                 operand: MemoryOperand {
+                    segment: od_isa::long_decode::MemorySegment::Flat,
                     base: GuestBase::None,
                     index: None,
                     scale: 1,

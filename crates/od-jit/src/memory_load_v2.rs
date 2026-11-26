@@ -1845,6 +1845,11 @@ fn checked_memory_metadata_v2(
         ) if source.size() == od_isa::OperandSize::Qword => (source.register(), operand),
         _ => return Err(MemoryLoadCompileErrorV2::UnsupportedForm),
     };
+    // S7-32 W3: the site addresses memory without a segment base or a segment fault class: only a
+    // flat operand (no override) is compiled.
+    if operand.segment != od_isa::long_decode::MemorySegment::Flat {
+        return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
+    }
     let next_rip = entry_rip
         .checked_add(u64::from(decoded.length))
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;

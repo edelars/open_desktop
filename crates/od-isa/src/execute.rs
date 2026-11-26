@@ -3909,6 +3909,7 @@ fn execute_repne_addr32(
     for _ in 0..REP_ITERATION_WORK_LIMIT {
         let observed = if cmps {
             let source = Operand::Memory(MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: None,
                 scale: 1,
@@ -3925,6 +3926,7 @@ fn execute_repne_addr32(
                 Err(error) => return Err(error),
             };
             let destination = Operand::Memory(MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -3944,6 +3946,7 @@ fn execute_repne_addr32(
             (source_value, destination_value)
         } else {
             let destination = Operand::Memory(MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -20134,6 +20137,7 @@ pub fn step_paged_cr0_wp_page_table_repair_mov(
         }
     }
     let destination = MemoryOperand {
+        segment: crate::long_decode::MemorySegment::Flat,
         base: AddressBase::Register(Register::Rdi),
         index: None,
         scale: 1,
@@ -22893,6 +22897,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
             && source
                 == (MemoryOperand {
+                    segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rbx),
                     index: None,
                     scale: 1,
@@ -22943,6 +22948,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             && source == RegisterView::low(Register::Rcx, OperandSize::Qword)
             && destination
                 == (MemoryOperand {
+                    segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rbx),
                     index: None,
                     scale: 1,
@@ -27033,6 +27039,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
             };
             let operand = |register| {
                 Operand::Memory(MemoryOperand {
+                    segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(register),
                     index: None,
                     scale: 1,
@@ -31182,6 +31189,7 @@ fn cpl3_rep_string(
             state.gpr[Register::Rax as usize]
         } else {
             let source = Operand::Memory(MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: None,
                 scale: 1,
@@ -31196,6 +31204,7 @@ fn cpl3_rep_string(
             }
         };
         let destination = Operand::Memory(MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rdi),
             index: None,
             scale: 1,
@@ -33308,6 +33317,25 @@ fn cpl3_aligned_atomic_destination(
         && operand.address_size == OperandSize::Qword
         && rex_w == (width == OperandSize::Qword))
         .then_some(operand)
+}
+
+/// S7-32 W3: the segment prefix of an instruction is the one its memory operand carries: no prefix
+/// on a flat operand, a null-base override (CS/DS/ES/SS, zero base in 64-bit mode) on a flat or
+/// class-stamped operand, or FS/GS on an operand the segment-override decoder stamped with that
+/// segment (the `*_48` helpers add the base). An FS/GS prefix on a flat operand stays refused: its
+/// executor would ignore the base.
+fn operand_carries_segment(prefix: Option<u8>, segment: long_decode::MemorySegment) -> bool {
+    use long_decode::MemorySegment;
+    match prefix {
+        None => segment == MemorySegment::Flat,
+        // A null override stamps its fault class (`Stack` for SS, `Data` otherwise); an operation
+        // outside the stamped set keeps a flat operand, as before.
+        Some(0x36) => matches!(segment, MemorySegment::Flat | MemorySegment::Stack),
+        Some(0x26 | 0x2e | 0x3e) => matches!(segment, MemorySegment::Flat | MemorySegment::Data),
+        Some(0x64) => segment == MemorySegment::Fs,
+        Some(0x65) => segment == MemorySegment::Gs,
+        Some(_) => false,
+    }
 }
 
 fn cpl3_notrack_register_jump(instruction: &long_decode::Instruction) -> bool {
@@ -42872,6 +42900,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             FxCr0GateControls::Save(controls) => (
                 instruction.operation
                     == Operation::Fxsave64RaxDisp8(long_decode::MemoryOperand {
+                        segment: crate::long_decode::MemorySegment::Flat,
                         base: long_decode::AddressBase::Register(Register::Rax),
                         index: None,
                         scale: 1,
@@ -42884,6 +42913,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             FxCr0GateControls::Restore(controls) => (
                 instruction.operation
                     == Operation::Fxrstor64RbxDisp8(long_decode::MemoryOperand {
+                        segment: crate::long_decode::MemorySegment::Flat,
                         base: long_decode::AddressBase::Register(Register::Rbx),
                         index: None,
                         scale: 1,
@@ -52305,7 +52335,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // executes the null-selector load only (0..=3, any RPL), inside the CPL0 profile set at
         // CPL0 in Long64. A non-null selector (GDT read, descriptor checks) is refused with the
         // opcode and nothing mutated.
-        Operation::LoadFsSelectorReg { source } | Operation::LoadGsSelectorReg { source } => {
+        // S7-32: any selector (the executor checks it through `mov_to_sreg_cpl0`).
+        Operation::LoadFsSelectorReg { .. } | Operation::LoadGsSelectorReg { .. } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8e
                 && instruction.length == 2
@@ -52313,23 +52344,19 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && control_policy.is_some()
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
-                && state.gpr[source as usize] as u16 & !3 == 0
         }
         // S4-38L9D: `MOV ES/SS/DS, r16` (`[REX.B] 8E /r`, mod = 11) with any register but the bare
-        // AX forms: the null-selector load only, inside the CPL0 profile set at CPL0 in Long64.
-        // The decoder accepts REX.B only (length 3, no other prefix). ES/DS take 0..=3 (any RPL).
-        // SS takes exactly 0: a null SS selector with RPL != CPL is #GP on hardware (SDM, from
-        // memory), so RPL 1..=3 is refused, not modeled. SS keeps the S2-46 admission: a loaded SS
-        // cache, a clear interrupt shadow and TF = 0; IF may be 0 or 1 since S7-31g (the shadow
-        // the instruction opens is modeled). A non-null selector (GDT read, descriptor checks)
-        // is refused with the opcode and nothing mutated.
-        Operation::LoadSegmentSelectorReg { sreg, source } => {
+        // AX forms, inside the CPL0 profile set at CPL0 in Long64. The decoder accepts REX.B only
+        // (length 3, no other prefix). SS keeps the S2-46 admission: a loaded SS cache, a clear
+        // interrupt shadow and TF = 0; IF may be 0 or 1 since S7-31g (the shadow the instruction
+        // opens is modeled). S7-32: any selector; the executor checks it through
+        // `mov_to_sreg_cpl0` (a null SS with RPL != 0 is #GP(0), a non-null one is a GDT load).
+        Operation::LoadSegmentSelectorReg { sreg, .. } => {
             let rex_b = instruction.prefixes
                 == Prefixes {
                     rex: Some(0x41),
                     ..Prefixes::default()
                 };
-            let selector = state.gpr[source as usize] as u16;
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8e
                 && (instruction.length == 2 && instruction.prefixes == Prefixes::default()
@@ -52338,8 +52365,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.privilege == PrivilegeLevel::Ring0
                 && context.mode == crate::memory::InstructionMode::Long64
                 && match sreg {
-                    0 | 3 => selector & !3 == 0,
-                    2 => selector == 0 && mov_ss_state_admitted(state, context, true),
+                    0 | 3 => true,
+                    2 => mov_ss_state_admitted(state, context, true),
                     _ => false,
                 }
         }
@@ -52495,7 +52522,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && matches!(instruction.prefixes.group1, None | Some(0xf0))
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
-                && instruction.prefixes.segment.is_none()
+                && operand_carries_segment(instruction.prefixes.segment, memory.segment)
                 && if memory.size == OperandSize::Dword {
                     // S4-38L9p: XCHG r/m32, r32 with memory (`[REX] 87 /r`, no REX.W): the CPL0
                     // set (Ring0) and, new in S6-20, the bare run (no CR profile, no CPL0 set);
@@ -52806,8 +52833,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && instruction.prefixes.rex.is_none_or(|rex| rex == 0x41)
                 }
                 Operation::IndirectCall {
-                    operand: Operand::Memory(_),
-                } => !matches!(instruction.prefixes.segment, Some(0x64 | 0x65)),
+                    operand: Operand::Memory(memory),
+                } => operand_carries_segment(instruction.prefixes.segment, memory.segment),
                 _ => false,
             };
             instruction.opcode.map == OpcodeMap::Primary
@@ -52829,21 +52856,25 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 )
                 && cpl3_notrack_register_jump(&instruction)
         }
-        Operation::IndirectJump { .. } => {
+        Operation::IndirectJump { operand } => {
+            let segment = match operand {
+                Operand::Memory(memory) => memory.segment,
+                _ => crate::long_decode::MemorySegment::Flat,
+            };
             instruction.opcode
                 == crate::long_decode::Opcode {
                     map: OpcodeMap::Primary,
                     byte: 0xff,
                 }
                 && instruction.prefixes.group1.is_none()
-                && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
+                && operand_carries_segment(instruction.prefixes.segment, segment)
                 && !instruction.prefixes.operand_override
         }
         Operation::PushMemory { source } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xff
                 && instruction.prefixes.group1.is_none()
-                && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
+                && operand_carries_segment(instruction.prefixes.segment, source.segment)
                 && instruction.operand_size == source.size
                 && matches!(source.size, OperandSize::Word | OperandSize::Qword)
         }
@@ -53275,7 +53306,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0x8f
                 && instruction.prefixes.group1.is_none()
-                && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65))
+                && operand_carries_segment(instruction.prefixes.segment, destination.segment)
                 && instruction.operand_size == destination.size
                 && matches!(destination.size, OperandSize::Word | OperandSize::Qword)
         }
@@ -53809,6 +53840,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             });
         }
         let source = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54035,6 +54067,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             _ => OperandSize::Dword,
         };
         let source = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54072,6 +54105,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::FnstcwM16Rax | Operation::FnstswM16Rax
     ) {
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54098,6 +54132,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     if let Some((value, inexact, incremented, invalid, underflow, overflow)) = fst_m32fp {
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54140,6 +54175,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     if let Some((value, inexact, incremented, invalid, underflow, overflow)) = fst_m64fp {
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54201,6 +54237,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.rip = state.rip.wrapping_add(1);
         }
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54315,6 +54352,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     if let Some((bcd, flags)) = fbstp {
         // S2-32b: FBSTP stores the whole 10-byte packed BCD in one write, then pops.
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54385,6 +54423,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     if let Some(source) = fstp_m80fp {
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -54437,6 +54476,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             OperandSize::Dword
         };
         let destination = MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -66566,34 +66606,31 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             state.gs_selector = 0;
             state.gs_unusable = true;
         }
-        // S4-38L9B: the selector (0..=3, checked in the admission above) is stored as given; the
-        // FS/GS base and any modeled cache are left untouched, as for the null load from AX.
-        Operation::LoadFsSelectorReg { source } => {
-            state.fs_selector = state.gpr[source as usize] as u16;
-            state.fs_unusable = true;
-        }
-        Operation::LoadGsSelectorReg { source } => {
-            state.gs_selector = state.gpr[source as usize] as u16;
-            state.gs_unusable = true;
-        }
-        // S4-38L9D: the admission above leaves only the null selector; the base and any modeled
-        // cache stay untouched. MOV SS opens the one-instruction interrupt shadow.
-        Operation::LoadSegmentSelectorReg { sreg, source } => {
+        // S4-38L9B/L9D: `MOV Sreg, r16` for ES, SS, DS, FS and GS. S7-32 (winload's
+        // `mov %cx, %gs` with 0x2b before the kernel entry): the general MOV Sreg load of the
+        // memory and `66` forms (`mov_to_sreg_cpl0`). A null selector is stored as given (the
+        // register unusable, the base and any modeled cache untouched; SS takes RPL 0 only, #GP(0)
+        // otherwise); a non-null one loads its GDT descriptor (`load_sreg_cpl0`, FS/GS take the
+        // 32-bit descriptor base). MOV SS opens the one-instruction interrupt shadow. A form
+        // `load_sreg_cpl0` does not model is refused with nothing changed.
+        Operation::LoadFsSelectorReg { source }
+        | Operation::LoadGsSelectorReg { source }
+        | Operation::LoadSegmentSelectorReg { source, .. } => {
+            let sreg = match instruction.operation {
+                Operation::LoadFsSelectorReg { .. } => 4,
+                Operation::LoadGsSelectorReg { .. } => 5,
+                Operation::LoadSegmentSelectorReg { sreg, .. } => sreg,
+                _ => unreachable!("matched a register-form selector load"),
+            };
             let selector = state.gpr[source as usize] as u16;
-            match sreg {
-                0 => {
-                    state.es_selector = selector;
-                    state.es_unusable = true;
+            match mov_to_sreg_cpl0(state, memory, context, sreg, selector) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
                 }
-                2 => {
-                    state.ss_selector = Some(selector);
-                    state.ss_unusable = true;
-                    state.sti_shadow = Some(crate::StiShadow::Blocking);
-                }
-                _ => {
-                    state.ds_selector = selector;
-                    state.ds_unusable = true;
-                }
+                Err(error) => return report_memory_error(error),
             }
         }
         Operation::LoadFsSelector => {
@@ -66666,7 +66703,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // index registers. The current bounded executor policy preserves
             // CPU state when either access faults; destination-fault restart
             // state remains an open hardware question (ISSUE-016).
-            let source = Operand::Memory(MemoryOperand {
+            let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: None,
                 scale: 1,
@@ -66674,7 +66711,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 address_size: instruction.address_size,
                 size,
             });
-            let destination = Operand::Memory(MemoryOperand {
+            let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -66731,7 +66768,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
             while count(state) != 0 {
-                let source = Operand::Memory(MemoryOperand {
+                let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsi),
                     index: None,
                     scale: 1,
@@ -66739,7 +66776,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     address_size,
                     size,
                 });
-                let destination = Operand::Memory(MemoryOperand {
+                let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -66800,7 +66837,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // Long-mode DS is flat. Read the complete source from the
             // pre-instruction RSI before committing either accumulator or
             // index state, so a failed read leaves the instruction atomic.
-            let source = Operand::Memory(MemoryOperand {
+            let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: None,
                 scale: 1,
@@ -66841,7 +66878,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
             while count(state) != 0 {
-                let destination = Operand::Memory(MemoryOperand {
+                let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -66899,7 +66936,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
             while count(state) != 0 {
-                let source = Operand::Memory(MemoryOperand {
+                let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsi),
                     index: None,
                     scale: 1,
@@ -66949,7 +66986,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // Long-mode ES is flat. STOS writes the selected low RAX width to
             // [RDI], then commits only RDI after the store succeeds. RSI and
             // flags are not part of this instruction's state transition.
-            let destination = Operand::Memory(MemoryOperand {
+            let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -66985,7 +67022,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::Scas { size } => {
             // SCAS compares the pre-instruction accumulator against one flat
             // ES:[RDI] read. Only flags and RDI commit after that read succeeds.
-            let destination = Operand::Memory(MemoryOperand {
+            let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -67037,7 +67074,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
             while count(state) != 0 {
-                let destination = Operand::Memory(MemoryOperand {
+                let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -67110,7 +67147,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 }
             };
             while count(state) != 0 {
-                let source = Operand::Memory(MemoryOperand {
+                let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rsi),
                     index: None,
                     scale: 1,
@@ -67125,7 +67162,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     }
                     Err(error) => return Err(error),
                 };
-                let destination = Operand::Memory(MemoryOperand {
+                let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                     base: AddressBase::Register(Register::Rdi),
                     index: None,
                     scale: 1,
@@ -67184,7 +67221,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // CMPS reads pre-state DS:[RSI] completely before touching ES:[RDI].
             // The selected read order is a local bounded-profile policy; it does
             // not establish hardware priority for two invalid addresses.
-            let source = Operand::Memory(MemoryOperand {
+            let source = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rsi),
                 index: None,
                 scale: 1,
@@ -67197,7 +67234,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 Err(MemoryError::Architectural(fault)) => return Ok(StepOutcome::Fault(fault)),
                 Err(error) => return Err(error),
             };
-            let destination = Operand::Memory(MemoryOperand {
+            let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(Register::Rdi),
                 index: None,
                 scale: 1,
@@ -73853,6 +73890,7 @@ fn sse_fp_arith_from_narrow(operation: Operation) -> Option<Operation> {
         shape,
         destination: 0,
         source: Sse3Source::Memory(MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
             base: AddressBase::Register(Register::Rax),
             index: None,
             scale: 1,
@@ -74046,6 +74084,7 @@ fn sse_fp_misc_from_narrow(operation: Operation, double: bool) -> Option<Operati
         immediate,
     };
     let rax_memory = |size| MemoryOperand {
+        segment: crate::long_decode::MemorySegment::Flat,
         base: AddressBase::Register(Register::Rax),
         index: None,
         scale: 1,
@@ -75143,12 +75182,28 @@ fn cpl3_sse_set_form(instruction: &long_decode::Instruction) -> bool {
 }
 
 /// S2-39n: whether the FP member of the CPL0 set runs this instruction on `state.sse` beyond the general SSE core
-/// of S2-39m. A memory form with an FS or GS override is refused: the executors address memory without a segment
-/// base.
+/// of S2-39m. S7-32 W3: a memory form with an FS/GS override runs when its operand carries the segment (the
+/// segment-override fallback stamps it; the `*_48` helpers add the base); an override on a flat operand stays
+/// refused.
 fn sse_cpl0_form(instruction: &long_decode::Instruction) -> bool {
+    // A form without FS/GS keeps a flat or null-class operand (`operand_carries_segment` holds);
+    // the FS/GS check walks the operation and stays out of line (this runs for every step).
     sse_cpl0_register_form(&instruction.operation)
         || (sse_cpl0_memory_form(&instruction.operation)
-            && !matches!(instruction.prefixes.segment, Some(0x64 | 0x65)))
+            && match instruction.prefixes.segment {
+                Some(0x64 | 0x65) => sse_cpl0_memory_segment_carried(instruction),
+                _ => true,
+            })
+}
+
+/// S7-32 W3: whether an SSE memory form with an FS/GS override carries the segment on its operand.
+#[cold]
+#[inline(never)]
+fn sse_cpl0_memory_segment_carried(instruction: &long_decode::Instruction) -> bool {
+    operand_carries_segment(
+        instruction.prefixes.segment,
+        instruction.operation.memory_segment(),
+    )
 }
 
 /// S2-39n: the `#UD` (CR0.EM = 1 or CR4.OSFXSR = 0, wins) and `#NM` (CR0.TS = 1) gates of an SSE form of the CPL0
@@ -76521,9 +76576,15 @@ fn step_cpl0_fp(
             // set's CPUID profile must declare SSE); #NM if CR0.TS = 1; the memory faults of the
             // read; #GP(0) if a reserved MXCSR bit (outside `TARGET_FXSAVE_MXCSR_MASK`) is set.
             // No flag, no register but RIP changes; the new value is committed with the RIP.
+            // S7-32 W3: a segment override is carried by the operand (`source.segment`), which
+            // `access_range_address_48` applies; every other prefix stays refused.
             if instruction.opcode.map != OpcodeMap::Escape0f
                 || instruction.opcode.byte != 0xae
-                || instruction.prefixes != Prefixes::default()
+                || (Prefixes {
+                    segment: None,
+                    ..instruction.prefixes
+                }) != Prefixes::default()
+                || !operand_carries_segment(instruction.prefixes.segment, source.segment)
                 || source.size != OperandSize::Dword
                 || source.address_size != OperandSize::Qword
                 || !sse_declared
@@ -82785,11 +82846,9 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Write, 0x1000, 1)]);
         assert_eq!(memory.bytes[0], 1);
 
-        for code in [
-            &[0xf2, 0x0f, 0x94, 0xc0][..],
-            &[0xf3, 0x0f, 0x94, 0xc0][..],
-            &[0x64, 0x0f, 0x94, 0x00][..],
-        ] {
+        // S7-32 W3: `64 0F 94 00` (SETE fs:[rax]) left this list: the segment-override fallback
+        // decodes it as SETcc with an FS operand, executed through the `*_48` helpers.
+        for code in [&[0xf2, 0x0f, 0x94, 0xc0][..], &[0xf3, 0x0f, 0x94, 0xc0][..]] {
             let mut state = LongModeState {
                 syscall: None,
                 cr2: None,
@@ -89501,12 +89560,34 @@ mod tests {
         ));
         assert_eq!(state, before);
 
+        // S4-38L7i / S7-32 W3 policy. The FS/GS-specific variants of the profile decoder keep their
+        // own behaviour (here: refused outside the CPL0 set); a form the profile decoder refuses
+        // and the segment-override fallback claims is the generic operation with an FS/GS operand
+        // and runs wherever that operation runs, the bare step included. `67 64 48 8B 00` (an
+        // address-size override) is such a form: `mov rax, fs:[eax]` reads at FS base + EAX
+        // (bits 63:32 of RAX are not part of the 32-bit address).
+        let mut state = LongModeState {
+            cr3: None,
+            cr4: None,
+            sti_shadow: None,
+            rip: 0,
+            fs_base: 0x1000,
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rax as usize] = 0xdead_beef_0000_0010;
+        let mut memory = Memory::new(&[0x67, 0x64, 0x48, 0x8b, 0x00]);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1010, 8)]);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x1716_1514_1312_1110);
+        assert_eq!(state.rip, 5);
         for unsupported in [
-            &[0x64, 0x8b, 0x00][..],         // no effective REX.W
-            &[0x64, 0x48, 0x89, 0x00],       // store
-            &[0x67, 0x64, 0x48, 0x8b, 0x00], // address-size override
-            &[0x64, 0x48, 0x8b, 0x08],       // other ModR/M address
-            &[0x48, 0x64, 0x48, 0x8b, 0x00], // earlier ignored REX
+            &[0x64, 0x8b, 0x00][..],   // no effective REX.W (the FS-specific dword load)
+            &[0x64, 0x48, 0x89, 0x00], // store (the FS-specific store)
+            &[0x64, 0x48, 0x8b, 0x08], // other ModR/M address (the FS-specific load)
+            &[0x48, 0x64, 0x48, 0x8b, 0x00], // earlier ignored REX (refused by the fallback too)
         ] {
             let mut state = LongModeState {
                 cr3: None,
@@ -89532,7 +89613,9 @@ mod tests {
     #[test]
     fn segment_qword_load_forms_stay_unsupported_in_bare_run_and_step() {
         // S4-38L7i widened the CPL0-set decoder path only: without the set (no control policy)
-        // bare `run` and `step` refuse the wider FS/GS load forms without mutation.
+        // bare `run` and `step` refuse the wider FS/GS load forms without mutation. These are the
+        // FS/GS-specific variants of the profile decoder; the forms the segment-override fallback
+        // claims (S7-32 W3) run in the bare step too (`fs_base_qword_load_uses_prestate_alias_...`).
         for bytes in [
             &[0x65, 0x4c, 0x8b, 0x25, 0xdc, 0x1a, 0x51, 0x00][..],
             &[0x64, 0x48, 0x8b, 0x40, 0x08][..],
@@ -170288,6 +170371,7 @@ mod tests {
             (Register::R13, 13),
         ] {
             let operand = MemoryOperand {
+                segment: crate::long_decode::MemorySegment::Flat,
                 base: AddressBase::Register(base),
                 index: None,
                 scale: 1,

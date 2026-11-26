@@ -1528,7 +1528,9 @@ fn mmx_and_the_forms_that_need_the_mmx_registers_stay_refused_at_cpl3() {
 }
 
 #[test]
-fn fs_and_gs_overrides_on_the_memory_forms_stay_refused_at_cpl3() {
+fn fs_and_gs_overrides_at_cpl3_run_movss_and_ldmxcsr_and_refuse_the_other_memory_forms() {
+    // S7-32 W3: MOVSS and LDMXCSR take an FS/GS operand through the segment-override fallback and
+    // retire (the case's FS/GS bases are zero); the forms that fallback does not admit stay refused.
     for segment in [0x64u8, 0x65] {
         for (name, body) in [
             ("MOVSS load", &[0xf3u8, 0x0f, 0x10, 0x08][..]),
@@ -1542,6 +1544,20 @@ fn fs_and_gs_overrides_on_the_memory_forms_stay_refused_at_cpl3() {
             code.extend_from_slice(body);
             let case = Case::new(true);
             let (cpl3, before, after) = in_set(Level::Cpl3, &code, &case, 1, |_| {});
+            if name == "MOVSS load" {
+                assert_eq!(cpl3.result, Result_::Retired, "{name} {segment:#x}");
+                continue;
+            }
+            // LDMXCSR runs too: the case's memory holds reserved MXCSR bits, so it is #GP(0) as
+            // the form without the override would be on that memory; not a refusal.
+            if name == "LDMXCSR" {
+                assert!(
+                    !matches!(cpl3.result, Result_::Unsupported(_)),
+                    "{name} {segment:#x}: {:?}",
+                    cpl3.result
+                );
+                continue;
+            }
             assert!(
                 matches!(cpl3.result, Result_::Unsupported(_)),
                 "{name} {segment:#x}: {:?}",
@@ -1550,6 +1566,43 @@ fn fs_and_gs_overrides_on_the_memory_forms_stay_refused_at_cpl3() {
             assert_refused_unchanged(name, &cpl3, &before, &after, &case);
         }
     }
+}
+
+/// S7-32 W3: at CPL3 the FS/GS override adds its base: `movss gs:(%rax), %xmm1` with GS base 0x100
+/// and RAX = DATA - 0x100 loads the dword at DATA (upper lanes zeroed); `ldmxcsr fs:0x10(%rax)` with
+/// FS base 0x40 and RAX = DATA - 0x40 loads the MXCSR value at DATA + 0x10.
+#[test]
+fn fs_and_gs_overrides_at_cpl3_add_the_segment_base() {
+    let case = Case::new(true);
+    let (observed, _, _) = in_set(
+        Level::Cpl3,
+        &[0x65, 0xf3, 0x0f, 0x10, 0x08],
+        &case,
+        1,
+        |state| {
+            state.gs_base = 0x100;
+            state.gpr[0] = DATA - 0x100;
+        },
+    );
+    assert_eq!(observed.result, Result_::Retired);
+    let mut expected = [0u8; 16];
+    expected[..4].copy_from_slice(&case.memory[..4]);
+    assert_eq!(observed.xmm[1], expected);
+    let (observed, _, after) = in_set(
+        Level::Cpl3,
+        &[0x64, 0x0f, 0xae, 0x50, 0x10],
+        &case,
+        1,
+        |state| {
+            state.fs_base = 0x40;
+            state.gpr[0] = DATA - 0x40;
+        },
+    );
+    assert_eq!(observed.result, Result_::Retired);
+    assert_eq!(
+        after.sse.mxcsr,
+        u32::from_le_bytes(case.tail[..4].try_into().unwrap())
+    );
 }
 
 #[test]
