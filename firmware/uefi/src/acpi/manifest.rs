@@ -107,6 +107,13 @@ const fn le64(bytes: &[u8], at: usize) -> u64 {
 }
 
 impl DeviceEntry {
+    /// An NVMe entry of handoff v1.3 with its PCI aperture and INTx route (`gsi`, `irq_flags` or the
+    /// slot in `param0`); the v1.1/v1.2 entry of the fixed polled window has none of them. Whether
+    /// the rest of the entry is consistent is checked by `BoardManifest::with_nvme`.
+    pub(crate) const fn is_pci_nvme(&self) -> bool {
+        !(self.gsi == GSI_NONE && self.irq_flags == 0 && self.param0 == 0 && self.param1 == 0)
+    }
+
     /// Decodes an entry (offsets from FIRMWARE_BOOT.md 6.3: `type` 0x00, `flags` 0x04, `base`
     /// 0x08, `length` 0x10, `gsi` 0x18, `irq_flags` 0x1C, `param0` 0x20, `param1` 0x28).
     pub const fn parse(raw: &[u8; DEVICE_ENTRY_SIZE]) -> Self {
@@ -225,7 +232,7 @@ impl BoardManifest {
 
     pub(super) const fn with_nvme(mut self, entry: &DeviceEntry) -> Result<Self, ManifestError> {
         // Handoff v1.1/v1.2 NVMe is polled at a fixed MMIO address.
-        if entry.gsi == GSI_NONE && entry.irq_flags == 0 && entry.param0 == 0 && entry.param1 == 0 {
+        if !entry.is_pci_nvme() {
             return Ok(self);
         }
         let Some(ecam) = self.device(device_type::PCIE_ECAM) else {

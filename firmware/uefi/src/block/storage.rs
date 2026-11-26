@@ -1,4 +1,5 @@
-//! Publish the fixed NVMe controller, its namespace and valid GPT partitions.
+//! Publish the NVMe controller (the fixed window or the PCI function, S7-32), its namespace and
+//! valid GPT partitions.
 
 use core::{
     ffi::c_void,
@@ -14,7 +15,9 @@ use crate::{
     device_path::{DEVICE_PATH_PROTOCOL_GUID, END_PATH_BYTES, memory_mapped_node},
     handoff::Handoff,
     mem::map::MemoryType,
-    nvme::driver::{BLOCK_BYTES, Controller, NAMESPACE_ID, REGISTERS_BASE, REGISTERS_BYTES},
+    nvme::driver::{
+        BLOCK_BYTES, Controller, Location, NAMESPACE_ID, REGISTERS_BASE, REGISTERS_BYTES,
+    },
     uefi::{
         guid::Guid,
         status::Status,
@@ -47,9 +50,16 @@ pub struct PartitionInfo {
     pub partition: Partition,
 }
 
-const CONTROLLER_PATH: usize = 24 + 4;
-const NAMESPACE_PATH: usize = 24 + 16 + 4;
-const PARTITION_PATH: usize = 24 + 16 + 42 + 4;
+/// The longest controller prefix: the memory-mapped node of the fixed window (24 bytes). The PCI
+/// prefix `PciRoot(0)/Pci(device,0)` is 12 + 6 bytes; a shorter path leaves zeros after its end
+/// node.
+const PREFIX_MAX: usize = 24;
+const CONTROLLER_PATH: usize = PREFIX_MAX + 4;
+const NAMESPACE_PATH: usize = PREFIX_MAX + 16 + 4;
+const PARTITION_PATH: usize = PREFIX_MAX + 16 + 42 + 4;
+/// ACPI device path node (UEFI 2.11 §10.3.3): HID = EISA ID PNP0A03 (PCI host bridge, the
+/// compressed `0x0A0341D0`), UID 0.
+const PCI_ROOT_NODE: [u8; 12] = [2, 1, 12, 0, 0xd0, 0x41, 0x03, 0x0a, 0, 0, 0, 0];
 
 struct Pool(*mut c_void);
 
@@ -72,6 +82,8 @@ struct NamespaceStorage {
     endpoint: MaybeUninit<Endpoint>,
     controller_path: [u8; CONTROLLER_PATH],
     namespace_path: [u8; NAMESPACE_PATH],
+    /// Bytes of `namespace_path` before its end node.
+    namespace_nodes: usize,
     controller_handle: Handle,
     namespace_handle: Handle,
 }
@@ -102,38 +114,67 @@ fn check(status: Status) -> Result<(), Status> {
     }
 }
 
-fn device_paths(eui: u64) -> ([u8; CONTROLLER_PATH], [u8; NAMESPACE_PATH]) {
-    let mmio = memory_mapped_node(REGISTERS_BASE, REGISTERS_BASE + REGISTERS_BYTES - 1);
+/// The device path nodes of the controller (UEFI 2.11 §10.3): the memory-mapped node of the fixed
+/// window, or `PciRoot(0)/Pci(device,0)` (§10.3.3 ACPI node, §10.3.2.1 PCI node: function, then
+/// device) for the PCI function. Returns the nodes and their length.
+fn controller_prefix(location: Location) -> ([u8; PREFIX_MAX], usize) {
+    let mut prefix = [0; PREFIX_MAX];
+    match location {
+        Location::Fixed => {
+            prefix.copy_from_slice(&memory_mapped_node(
+                REGISTERS_BASE,
+                REGISTERS_BASE + REGISTERS_BYTES - 1,
+            ));
+            (prefix, PREFIX_MAX)
+        }
+        Location::Pci { device } => {
+            prefix[..12].copy_from_slice(&PCI_ROOT_NODE);
+            prefix[12..18].copy_from_slice(&[1, 1, 6, 0, 0, device]);
+            (prefix, 18)
+        }
+    }
+}
+
+/// The controller path, the namespace path (with the NVMe namespace node, §10.3.4.21) and the
+/// length of the namespace path's nodes before its end node.
+fn device_paths(
+    location: Location,
+    eui: u64,
+) -> ([u8; CONTROLLER_PATH], [u8; NAMESPACE_PATH], usize) {
+    let (prefix, length) = controller_prefix(location);
     let mut controller = [0; CONTROLLER_PATH];
-    controller[..24].copy_from_slice(&mmio);
-    controller[24..].copy_from_slice(&END_PATH_BYTES);
+    controller[..length].copy_from_slice(&prefix[..length]);
+    controller[length..length + 4].copy_from_slice(&END_PATH_BYTES);
     let mut namespace = [0; NAMESPACE_PATH];
-    namespace[..24].copy_from_slice(&mmio);
-    namespace[24..28].copy_from_slice(&[3, 23, 16, 0]);
-    namespace[28..32].copy_from_slice(&NAMESPACE_ID.to_le_bytes());
-    namespace[32..40].copy_from_slice(&eui.to_le_bytes());
-    namespace[40..].copy_from_slice(&END_PATH_BYTES);
-    (controller, namespace)
+    namespace[..length].copy_from_slice(&prefix[..length]);
+    namespace[length..length + 4].copy_from_slice(&[3, 23, 16, 0]);
+    namespace[length + 4..length + 8].copy_from_slice(&NAMESPACE_ID.to_le_bytes());
+    namespace[length + 8..length + 16].copy_from_slice(&eui.to_le_bytes());
+    let nodes = length + 16;
+    namespace[nodes..nodes + 4].copy_from_slice(&END_PATH_BYTES);
+    (controller, namespace, nodes)
 }
 
 fn partition_path(
     parent: &[u8; NAMESPACE_PATH],
+    parent_nodes: usize,
     slot: u32,
     entry: Partition,
 ) -> [u8; PARTITION_PATH] {
     let mut path = [0; PARTITION_PATH];
-    path[..40].copy_from_slice(&parent[..40]);
-    path[40..44].copy_from_slice(&[4, 1, 42, 0]);
-    path[44..48].copy_from_slice(&slot.to_le_bytes());
-    path[48..56].copy_from_slice(&entry.start.to_le_bytes());
-    path[56..64].copy_from_slice(&(entry.end - entry.start + 1).to_le_bytes());
+    let at = parent_nodes;
+    path[..at].copy_from_slice(&parent[..at]);
+    path[at..at + 4].copy_from_slice(&[4, 1, 42, 0]);
+    path[at + 4..at + 8].copy_from_slice(&slot.to_le_bytes());
+    path[at + 8..at + 16].copy_from_slice(&entry.start.to_le_bytes());
+    path[at + 16..at + 24].copy_from_slice(&(entry.end - entry.start + 1).to_le_bytes());
     let guid = entry.unique_id;
-    path[64..68].copy_from_slice(&guid.data1.to_le_bytes());
-    path[68..70].copy_from_slice(&guid.data2.to_le_bytes());
-    path[70..72].copy_from_slice(&guid.data3.to_le_bytes());
-    path[72..80].copy_from_slice(&guid.data4);
-    path[80..82].copy_from_slice(&[2, 2]); // GPT and GUID signature.
-    path[82..].copy_from_slice(&END_PATH_BYTES);
+    path[at + 24..at + 28].copy_from_slice(&guid.data1.to_le_bytes());
+    path[at + 28..at + 30].copy_from_slice(&guid.data2.to_le_bytes());
+    path[at + 30..at + 32].copy_from_slice(&guid.data3.to_le_bytes());
+    path[at + 32..at + 40].copy_from_slice(&guid.data4);
+    path[at + 40..at + 42].copy_from_slice(&[2, 2]); // GPT and GUID signature.
+    path[at + 42..at + 46].copy_from_slice(&END_PATH_BYTES);
     path
 }
 
@@ -170,7 +211,12 @@ fn collect_partitions(
                     reserved: [0; 7],
                     partition,
                 },
-                path: partition_path(&storage.namespace_path, slot, partition),
+                path: partition_path(
+                    &storage.namespace_path,
+                    storage.namespace_nodes,
+                    slot,
+                    partition,
+                ),
                 handle: ptr::null_mut(),
             });
             Endpoint::init(
@@ -393,13 +439,15 @@ pub unsafe fn install(handoff: &Handoff<'_>, system: *mut SystemTable) -> Status
         };
         let storage = pool.0.cast::<NamespaceStorage>();
         let namespace = controller.namespace();
-        let (controller_path, namespace_path) = device_paths(namespace.eui);
+        let (controller_path, namespace_path, namespace_nodes) =
+            device_paths(controller.location(), namespace.eui);
         unsafe {
             storage.write(NamespaceStorage {
                 controller,
                 endpoint: MaybeUninit::uninit(),
                 controller_path,
                 namespace_path,
+                namespace_nodes,
                 controller_handle: ptr::null_mut(),
                 namespace_handle: ptr::null_mut(),
             });
@@ -490,6 +538,102 @@ pub unsafe fn install(handoff: &Handoff<'_>, system: *mut SystemTable) -> Status
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S7-32: the PCI controller's paths, byte by byte from UEFI 2.11 §10.3: ACPI node (type 2,
+    /// subtype 1, length 12, HID 0x0A0341D0 = PNP0A03, UID 0), PCI node (type 1, subtype 1, length
+    /// 6, function 0, device 4), NVMe namespace node (type 3, subtype 23, length 16, NSID 1, EUI-64),
+    /// end node (type 0x7F, subtype 0xFF, length 4).
+    #[test]
+    fn the_pci_controller_paths_are_pci_root_pci_and_the_namespace_node() {
+        let eui = 0x0102_0304_0506_0708u64;
+        let (controller, namespace, nodes) = device_paths(Location::Pci { device: 4 }, eui);
+        let root_and_pci = [
+            0x02, 0x01, 0x0c, 0x00, 0xd0, 0x41, 0x03, 0x0a, 0x00, 0x00, 0x00,
+            0x00, // PciRoot(0)
+            0x01, 0x01, 0x06, 0x00, 0x00, 0x04, // Pci(4,0)
+        ];
+        let end = [0x7f, 0xff, 0x04, 0x00];
+        assert_eq!(&controller[..18], &root_and_pci);
+        assert_eq!(&controller[18..22], &end);
+        assert!(controller[22..].iter().all(|byte| *byte == 0));
+        assert_eq!(nodes, 34);
+        assert_eq!(&namespace[..18], &root_and_pci);
+        assert_eq!(
+            &namespace[18..34],
+            &[0x03, 0x17, 0x10, 0x00, 1, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1]
+        );
+        assert_eq!(&namespace[34..38], &end);
+    }
+
+    /// A partition with a known GUID for the path tests.
+    fn partition() -> Partition {
+        let zero = Guid {
+            data1: 0,
+            data2: 0,
+            data3: 0,
+            data4: [0; 8],
+        };
+        Partition {
+            partition_type: zero,
+            unique_id: Guid {
+                data1: 0x0011_2233,
+                data2: 0x4455,
+                data3: 0x6677,
+                data4: [0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            },
+            start: 2048,
+            end: 4095,
+            attributes: 0,
+            name: [0; 36],
+        }
+    }
+
+    /// The Hard Drive node (UEFI 2.11 §10.3.5.1): type 4, subtype 1, length 42, partition number,
+    /// start LBA, size in LBAs, the GUID in its mixed-endian byte order, format 2 (GPT), signature
+    /// type 2 (GUID).
+    fn hard_drive_node(slot: u32) -> Vec<u8> {
+        let mut node = vec![4, 1, 42, 0];
+        node.extend_from_slice(&slot.to_le_bytes());
+        node.extend_from_slice(&2048u64.to_le_bytes());
+        node.extend_from_slice(&2048u64.to_le_bytes());
+        node.extend_from_slice(&[
+            0x33, 0x22, 0x11, 0x00, 0x55, 0x44, 0x77, 0x66, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ]);
+        node.extend_from_slice(&[2, 2]);
+        node
+    }
+
+    /// The fixed window keeps its memory-mapped node (type 1, subtype 3, length 24, memory type
+    /// 11, start 0xFC001000, end 0xFC002FFF) and the old layout of the partition path.
+    #[test]
+    fn the_fixed_controller_paths_keep_the_memory_mapped_node() {
+        let (controller, namespace, nodes) = device_paths(Location::Fixed, 0);
+        let mut mmio = vec![0x01, 0x03, 0x18, 0x00, 11, 0, 0, 0];
+        mmio.extend_from_slice(&0xfc00_1000u64.to_le_bytes());
+        mmio.extend_from_slice(&0xfc00_2fffu64.to_le_bytes());
+        assert_eq!(&controller[..24], &mmio[..]);
+        assert_eq!(&controller[24..], &[0x7f, 0xff, 0x04, 0x00]);
+        assert_eq!(nodes, 40);
+        assert_eq!(&namespace[..24], &mmio[..]);
+        assert_eq!(&namespace[40..], &[0x7f, 0xff, 0x04, 0x00]);
+        let path = partition_path(&namespace, nodes, 3, partition());
+        assert_eq!(&path[..40], &namespace[..40]);
+        assert_eq!(&path[40..82], &hard_drive_node(3)[..]);
+        assert_eq!(&path[82..], &[0x7f, 0xff, 0x04, 0x00]);
+    }
+
+    /// Behind the PCI prefix (18 bytes) and the namespace node the Hard Drive node starts at 34
+    /// and the end node at 76; the rest of the fixed-size buffer stays zero.
+    #[test]
+    fn the_pci_partition_path_follows_the_shorter_prefix() {
+        let (_, namespace, nodes) = device_paths(Location::Pci { device: 4 }, 7);
+        let path = partition_path(&namespace, nodes, 1, partition());
+        assert_eq!(&path[..34], &namespace[..34]);
+        assert_eq!(&path[34..76], &hard_drive_node(1)[..]);
+        assert_eq!(&path[76..80], &[0x7f, 0xff, 0x04, 0x00]);
+        assert!(path[80..].iter().all(|byte| *byte == 0));
+    }
 
     #[test]
     fn failed_primary_sector_reads_try_the_backup_but_transport_timeouts_are_reported() {

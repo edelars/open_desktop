@@ -27,7 +27,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--fv-app hello|ebs|vars|rt|acpi|gop|blk|fs|tpm|reboot] [--tpm] [--xhci [--xhci-keys <list>]] [--nvram-reboot-out <file>] \
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
-                    [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
+                    [--acpi-out <file>] [--framebuffer-out <file>] [(--nvme-image <raw> | --disk <path>[,ro]) [--nvme-pci]] \
                     [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
@@ -40,7 +40,10 @@ board is dropped, so the writer lock (LOCK_EX) is released between the two boots
 (limitation until S8-23).\n\
 \x20\x20--cpu-loop unified runs through the turbo engine (a template JIT) where the host has one; \
 --no-turbo runs every instruction through the general interpreter step (the reference mode), and \
---turbo-stats prints the statistics of the engine to stderr at the end of the run.";
+--turbo-stats prints the statistics of the engine to stderr at the end of the run.\n\
+\x20\x20--nvme-pci (--cpu-loop unified, with --nvme-image or --disk): the NVMe controller is a PCI \
+function (bus 0, slot 4, BAR0 0xFC004000, INTx to GSI 16) instead of the firmware's fixed window; \
+the firmware finds it through ECAM and the report records nvme_pci: true.";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -56,6 +59,9 @@ struct Options {
     guest: od_machine::UnifiedGuest,
     /// S7-32: `--ram-mib <n>`: the guest RAM (a multiple of 2 MiB, 128 MiB by default).
     ram_mib: Option<u64>,
+    /// S7-32: `--nvme-pci` (unified loop with an NVMe source): the controller is a PCI function
+    /// (slot 4, BAR0 0xFC004000) instead of the firmware's fixed window.
+    nvme_pci: bool,
     com1_out: String,
     budget: u64,
     fv_app: Option<FirmwareFvApp>,
@@ -377,6 +383,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     if options.nvme_path().is_some() {
         config.nvme = Some(Default::default());
+        config.nvme_pci = options.nvme_pci;
     }
     if options.xhci {
         config.pci_ecam = true;
@@ -1719,6 +1726,9 @@ fn boot(
         });
     }
     result["ram_bytes"] = json!(config.ram_bytes);
+    if config.nvme_pci {
+        result["nvme_pci"] = json!(true);
+    }
     match op_histogram_result {
         Some(Ok(summary)) => result["op_histogram"] = summary,
         Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
@@ -1816,11 +1826,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut turbo_stats = false;
     let mut guest: Option<od_machine::UnifiedGuest> = None;
     let mut ram_mib: Option<u64> = None;
+    let mut nvme_pci = false;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
         if name == "--tpm" && !tpm {
             tpm = true;
+            index += 1;
+            continue;
+        }
+        if name == "--nvme-pci" && !nvme_pci {
+            nvme_pci = true;
             index += 1;
             continue;
         }
@@ -2115,6 +2131,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             return Err("the image and both COM1 output paths must be distinct".to_owned());
         }
     }
+    if nvme_pci && !(unified && (disk.is_some() || nvme_image.is_some())) {
+        return Err("--nvme-pci requires --cpu-loop unified and --nvme-image or --disk".to_owned());
+    }
     if guest.is_some() && !unified {
         return Err("--guest requires --cpu-loop unified".to_owned());
     }
@@ -2122,6 +2141,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         image,
         guest: guest.unwrap_or_default(),
         ram_mib,
+        nvme_pci,
         com1_out,
         budget: budget.ok_or_else(|| format!("--budget is required; usage: {USAGE}"))?,
         fv_app,

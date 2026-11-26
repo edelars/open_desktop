@@ -10,7 +10,6 @@
 use core::{ffi::c_void, ptr};
 
 use crate::{
-    acpi::manifest::device_type,
     bs::event::{EVT_SIGNAL_EXIT_BOOT_SERVICES, Event, TPL_NOTIFY},
     console::key_queue::{KeyQueue, toggle_state},
     handoff::Handoff,
@@ -152,17 +151,7 @@ static DRIVER: Exclusive<Xhci> = Exclusive::empty();
 
 /// The ECAM base of the board, when the handoff carries the window.
 fn ecam_window(handoff: &Handoff<'_>) -> Result<Option<u64>, UsbError> {
-    let (devices, count) = handoff.device_entries();
-    let Some(entry) = devices[..count]
-        .iter()
-        .find(|entry| entry.device_type == device_type::PCIE_ECAM && entry.is_present())
-    else {
-        return Ok(None);
-    };
-    if entry.is_pio() || entry.length < pci::ECAM_BUS_BYTES {
-        return Err(UsbError::new(Step::Ecam, entry.length as u32));
-    }
-    Ok(Some(entry.base))
+    crate::pci::ecam_window(handoff).map_err(|length| UsbError::new(Step::Ecam, length as u32))
 }
 
 /// Discovers the xHCI function and brings the keyboard up. `Ok(None)`: the board has no

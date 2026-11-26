@@ -26,6 +26,7 @@ pub mod idt;
 pub mod image;
 pub mod mem;
 mod nvme;
+pub(crate) mod pci;
 pub mod paging;
 pub mod pe;
 pub mod rt;

@@ -734,6 +734,71 @@ fn the_unified_guest_selects_the_cpuid_profile_and_the_report_records_guest_and_
     }
 }
 
+/// A temporary file removed when the test ends, also when an assertion fails.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// S7-32: `--nvme-pci` needs the unified loop and an NVMe source; the refusals come before launch.
+/// With both, a unified run puts the controller on PCI and the report says so.
+#[test]
+fn nvme_pci_needs_the_unified_loop_and_an_nvme_source() {
+    let disk = TempFile(
+        std::env::temp_dir().join(format!("od-runner-nvme-pci-{}.raw", std::process::id())),
+    );
+    fs::write(&disk.0, vec![0u8; 1 << 20]).unwrap();
+    let disk_arg = disk.0.to_str().unwrap();
+    let rom = image(&[0xf4]);
+    for extra in [
+        &["--nvme-pci"][..],
+        &["--nvme-pci", "--disk", disk_arg],
+        &["--cpu-loop", "unified", "--nvme-pci"],
+    ] {
+        let refused = invoke_with_args(&rom, "100", extra);
+        assert_eq!(
+            refused.output.status.code(),
+            Some(3),
+            "{extra:?}: {:?}",
+            refused.output
+        );
+        let value = report(&refused);
+        assert_eq!(value["status"], "invalid_input", "{extra:?}");
+        assert!(
+            value["error"]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("--nvme-pci")),
+            "{extra:?}: {value}"
+        );
+        assert!(!refused.com1.exists(), "{extra:?}");
+    }
+    // The unified loop's board gives a newer handoff: the image declares that it takes any minor.
+    let mut unified_rom = image(&[0xf4]);
+    unified_rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    unified_rom[0x30..0x34].fill(0);
+    let crc = crc32(&unified_rom);
+    unified_rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let run = invoke_with_args(
+        &unified_rom,
+        "100",
+        &[
+            "--cpu-loop",
+            "unified",
+            "--nvme-pci",
+            "--nvme-image",
+            disk_arg,
+        ],
+    );
+    assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
+    let value = report(&run);
+    assert_eq!(value["exit"], "halted", "{value}");
+    assert_eq!(value["nvme_pci"], true, "{value}");
+    fs::remove_file(&run.com1).unwrap();
+}
+
 /// MOV RBX,imm64; MOV DWORD [RBX],imm32 (the guest-side register or pixel write).
 fn store_dword(code: &mut Vec<u8>, address: u64, value: u32) {
     code.extend_from_slice(&[0x48, 0xbb]);

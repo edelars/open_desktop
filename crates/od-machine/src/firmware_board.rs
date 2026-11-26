@@ -3155,9 +3155,14 @@ impl LoadedFirmwareBoard {
                 crate::nvram_device::NVRAM_MMIO_BYTES,
             ));
         }
-        // A firmware board never has `nvme_pci` (the loader refuses it), so the controller sits
-        // at the firmware's own NVMe window; under the Linux profile it is a bus device.
-        if self.nvme.is_some() {
+        // The controller sits at the firmware's own NVMe window unless it is a PCI function
+        // (S7-32, `nvme_pci`): then its BAR0 window is already one of the set-step windows
+        // (`enable_nvme_pci_mmio_window`).
+        if self
+            .nvme
+            .as_ref()
+            .is_some_and(|nvme| !nvme.has_pci_transport())
+        {
             apertures.push((crate::nvme::NVME_MMIO_BASE, crate::nvme::NVME_MMIO_BYTES));
         }
         if self.tpm.is_some() {
@@ -5554,11 +5559,8 @@ fn load_firmware_image_inner(
 ) -> Result<LoadedFirmwareBoard, FirmwareBoardError> {
     let devices = configured_board_devices(config);
     let entry_offset = validate_image(image, handoff_minor(config, &devices))?;
-    if config.nvme_pci {
-        return Err(FirmwareBoardError::Config(
-            "nvme_pci needs Linux direct boot",
-        ));
-    }
+    // S7-32: `nvme_pci` (validated with `linux_profile` by `validate_config`) is served to a ROM
+    // as well: the firmware finds the function through ECAM (handoff v1.3 entry with the slot).
     let advertised = le_u16(image, 0x2A)?;
     let secure_boot_minor = if advertised >= HANDOFF_MINOR_PKCS7 {
         HANDOFF_MINOR_PKCS7
@@ -9160,6 +9162,40 @@ mod tests {
 
     fn linux_board() -> LoadedFirmwareBoard {
         load_firmware_image(&minor2_image(&[0xf4]), &linux_config()).unwrap()
+    }
+
+    /// S7-32: a ROM board with the Linux profile takes the NVMe controller on PCI. The loader accepts
+    /// `nvme_pci`, the set loop then serves the BAR0 window and not the fixed firmware window (and
+    /// the fixed board the other way round); without the Linux profile `nvme_pci` stays refused.
+    #[test]
+    fn a_rom_board_with_the_linux_profile_takes_the_nvme_controller_on_pci() {
+        use crate::bus::SetStepMmio;
+        let image = test_image(&[0xf4], &[(0x2A, &u16::MAX.to_le_bytes())]);
+        let bar = (NVME_PCI_BAR_BASE, NVME_PCI_BAR_BYTES);
+        let fixed = (crate::nvme::NVME_MMIO_BASE, crate::nvme::NVME_MMIO_BYTES);
+        for (nvme_pci, served, not_served) in [(true, bar, fixed), (false, fixed, bar)] {
+            let config = FirmwareBoardConfig {
+                nvme: Some(NvmeConfig::default()),
+                nvme_pci,
+                ..linux_config()
+            };
+            let mut board = load_firmware_image(&image, &config).unwrap();
+            board.serve_firmware_set_windows();
+            let (_, io) = board.bus.split_for_set_step();
+            assert!(io.windows().contains(&served), "nvme_pci {nvme_pci}");
+            assert!(!io.windows().contains(&not_served), "nvme_pci {nvme_pci}");
+        }
+        let refused = FirmwareBoardConfig {
+            nvme: Some(NvmeConfig::default()),
+            nvme_pci: true,
+            ..tables_config()
+        };
+        assert!(matches!(
+            load_firmware_image(&image, &refused),
+            Err(FirmwareBoardError::Config(
+                "nvme_pci needs nvme and linux_profile"
+            ))
+        ));
     }
 
     #[test]
