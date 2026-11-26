@@ -18,6 +18,51 @@ const GPR_NAMES: [&str; 16] = [
     "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15",
 ];
+/// Most `--peek` reads per run and bytes per read (S7-32).
+pub const MAX_PEEKS: usize = 16;
+pub const MAX_PEEK_BYTES: usize = 4096;
+const DEFAULT_PEEK_BYTES: usize = 64;
+
+/// Where a `--peek` read starts (S7-32): an absolute guest-virtual address, or an offset from the
+/// base of the image that covers RIP at the stop (a kernel base moves with KASLR).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeekBase {
+    Absolute,
+    RipModule,
+}
+
+/// One guest-virtual read written into the stop snapshot (`--peek`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Peek {
+    pub base: PeekBase,
+    pub offset: u64,
+    pub len: usize,
+}
+
+/// Parses `<hex>[:<bytes>]` or `rip_module+<hex>[:<bytes>]`: the address or offset is hexadecimal
+/// (an optional `0x`), `<bytes>` is decimal, 1 to [`MAX_PEEK_BYTES`], 64 when omitted.
+pub fn parse_peek(value: &str) -> Result<Peek, String> {
+    let invalid = || {
+        format!(
+            "invalid --peek '{value}'; expected (<hex>|rip_module+<hex>)[:<bytes>], a hexadecimal \
+             address or offset and 1 to {MAX_PEEK_BYTES} bytes in decimal"
+        )
+    };
+    let (address, len) = match value.split_once(':') {
+        Some((address, len)) => (address, len.parse::<usize>().map_err(|_| invalid())?),
+        None => (value, DEFAULT_PEEK_BYTES),
+    };
+    if len == 0 || len > MAX_PEEK_BYTES {
+        return Err(invalid());
+    }
+    let (base, offset) = match address.strip_prefix("rip_module+") {
+        Some(offset) => (PeekBase::RipModule, offset),
+        None => (PeekBase::Absolute, address),
+    };
+    let offset = offset.strip_prefix("0x").unwrap_or(offset);
+    let offset = u64::from_str_radix(offset, 16).map_err(|_| invalid())?;
+    Ok(Peek { base, offset, len })
+}
 
 /// The guest-virtual space of one vCPU of a board.
 pub struct BoardMemory<'a> {
@@ -93,11 +138,10 @@ fn module_json(memory: &impl GuestMemory, address: u64) -> Value {
 }
 
 /// Bytes at `linear` as lowercase hex, with how many were read and why the read ended.
-fn bytes_json(memory: &impl GuestMemory, linear: u64) -> Value {
-    let mut bytes = [0u8; RIP_BYTES];
-    let result = memory.read(linear, &mut bytes);
-    let (read, error) = match result {
-        Ok(()) => (RIP_BYTES, Value::Null),
+fn bytes_json(memory: &impl GuestMemory, linear: u64, len: usize) -> Value {
+    let mut bytes = vec![0u8; len];
+    let (read, error) = match memory.read(linear, &mut bytes) {
+        Ok(()) => (len, Value::Null),
         Err(fault) => (fault.read, json!(fault.reason)),
     };
     let text: String = bytes[..read]
@@ -131,6 +175,45 @@ fn stack_json(memory: &impl GuestMemory, rsp: u64) -> Value {
     json!({"rsp": hex(rsp), "read_bytes": read, "error": error, "slots": slots})
 }
 
+/// The `--peek` reads: each names its address, the bytes read as lowercase hex and why a read
+/// ended early. The image that covers RIP is looked up once; a read relative to it, with no image
+/// at RIP, has a null address and the reason. Offsets wrap modulo 2^64 (a negative offset in two's
+/// complement reads below the base); a non-canonical result fails as a translation error.
+fn peeks_json(memory: &impl GuestMemory, rip: u64, peeks: &[Peek]) -> Value {
+    let needs_module = peeks.iter().any(|peek| peek.base == PeekBase::RipModule);
+    let rip_module = needs_module.then(|| match find_module(memory, rip) {
+        Lookup::Found { module, .. } => Ok(module.base),
+        Lookup::NotFound { reason, .. } => Err(reason),
+    });
+    let values: Vec<Value> = peeks
+        .iter()
+        .map(|peek| {
+            let offset = json!(format!("0x{:x}", peek.offset));
+            let address = match (peek.base, &rip_module) {
+                (PeekBase::Absolute, _) => peek.offset,
+                (PeekBase::RipModule, Some(Ok(base))) => base.wrapping_add(peek.offset),
+                (PeekBase::RipModule, Some(Err(reason))) => {
+                    return json!({
+                        "address": Value::Null,
+                        "rip_module_offset": offset,
+                        "read": 0,
+                        "hex": "",
+                        "error": format!("no image covers RIP: {reason}"),
+                    });
+                }
+                (PeekBase::RipModule, None) => unreachable!("the RIP image is looked up for these"),
+            };
+            let mut value = bytes_json(memory, address, peek.len);
+            value["address"] = json!(hex(address));
+            if peek.base == PeekBase::RipModule {
+                value["rip_module_offset"] = offset;
+            }
+            value
+        })
+        .collect();
+    Value::Array(values)
+}
+
 /// Builds the snapshot of `vcpu`. `reason` carries the stop reason and its fields as the run
 /// report has them, `counters` the instruction and quantum counters and the virtual clock,
 /// `inputs` the hashes of the run inputs.
@@ -140,6 +223,7 @@ pub fn snapshot(
     reason: Value,
     counters: Value,
     inputs: Value,
+    peeks: &[Peek],
 ) -> Value {
     let gpr: serde_json::Map<String, Value> = GPR_NAMES
         .iter()
@@ -147,7 +231,7 @@ pub fn snapshot(
         .map(|(name, value)| ((*name).to_owned(), json!(hex(value))))
         .collect();
     let rsp = state.gpr[od_isa::Register::Rsp as usize];
-    json!({
+    let mut snapshot = json!({
         "schema_version": 1,
         "command": "boot-firmware",
         "kind": "stop_snapshot",
@@ -158,7 +242,7 @@ pub fn snapshot(
         "cpl": state.cpl,
         "activity": state.activity.map(|activity| format!("{activity:?}")),
         "rip": hex(state.rip),
-        "rip_bytes": bytes_json(memory, state.rip),
+        "rip_bytes": bytes_json(memory, state.rip, RIP_BYTES),
         "module": module_json(memory, state.rip),
         "stack": stack_json(memory, rsp),
         "gpr": gpr,
@@ -170,7 +254,13 @@ pub fn snapshot(
         "efer": hex(state.efer),
         "counters": counters,
         "inputs": inputs,
-    })
+    });
+    // Only with `--peek`: a snapshot without it stays byte-identical to one written before the
+    // option existed (golden comparisons hash the snapshot).
+    if !peeks.is_empty() {
+        snapshot["peeks"] = peeks_json(memory, state.rip, peeks);
+    }
+    snapshot
 }
 
 #[cfg(test)]
@@ -217,6 +307,10 @@ pub(crate) mod tests {
     }
 
     fn stop_snapshot_of(image: &[u8]) -> (PagedProbeExit, Value) {
+        stop_snapshot_with_peeks(image, &[])
+    }
+
+    fn stop_snapshot_with_peeks(image: &[u8], peeks: &[Peek]) -> (PagedProbeExit, Value) {
         let mut board = load_firmware_image(image, &FirmwareBoardConfig::default()).unwrap();
         let report = board.run_boot(1000).unwrap();
         let state = board.diagnostic_vcpu_state(BOOT_VCPU).unwrap();
@@ -230,11 +324,111 @@ pub(crate) mod tests {
             json!({"exit": format!("{:?}", report.exit)}),
             json!({"retired": report.retired, "quanta": report.quanta}),
             json!({"image_sha256": "test"}),
+            peeks,
         );
         (report.exit, snapshot)
     }
 
     const BOOT_VCPU: usize = 0;
+
+    #[test]
+    fn peek_specs_parse_absolute_and_rip_module_forms_and_refuse_bad_lengths() {
+        assert_eq!(
+            parse_peek("0xfffff805ab746be0").unwrap(),
+            Peek {
+                base: PeekBase::Absolute,
+                offset: 0xffff_f805_ab74_6be0,
+                len: 64,
+            }
+        );
+        assert_eq!(
+            parse_peek("rip_module+f46be0:40").unwrap(),
+            Peek {
+                base: PeekBase::RipModule,
+                offset: 0xf4_6be0,
+                len: 40,
+            }
+        );
+        assert_eq!(parse_peek("1000:4096").unwrap().len, 4096);
+        for bad in [
+            "",
+            "1000:0",
+            "1000:4097",
+            "xyz",
+            "rip_module+",
+            "1000:-1",
+            "rip_module+g",
+        ] {
+            assert!(parse_peek(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn peeks_read_absolute_and_rip_module_addresses_and_name_a_failed_read() {
+        // The same image as the PE test below: the machine stops on UD2 at RVA 0x200A.
+        let pe = test_pe("od-test-image.pdb", 0x4000);
+        let code = [0xe8, 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0x0f, 0x0b];
+        let image = rom(0x10_2000, &[(0x10_0000, &pe.bytes), (0x10_2000, &code)]);
+        let base = LOAD_BASE + 0x10_0000;
+        let peeks = [
+            Peek {
+                base: PeekBase::RipModule,
+                offset: 0x2000,
+                len: 12,
+            },
+            Peek {
+                base: PeekBase::Absolute,
+                offset: base + 0x2005,
+                len: 5,
+            },
+            Peek {
+                base: PeekBase::Absolute,
+                offset: 0x8000_0000_0000,
+                len: 8,
+            },
+        ];
+        let (_, snapshot) = stop_snapshot_with_peeks(&image, &peeks);
+        let reads = snapshot["peeks"].as_array().unwrap();
+        assert_eq!(reads.len(), 3);
+        assert_eq!(reads[0]["address"], hex(base + 0x2000));
+        assert_eq!(reads[0]["rip_module_offset"], "0x2000");
+        assert_eq!(reads[0]["hex"], "e800000000e8000000000f0b");
+        assert_eq!(reads[0]["read"], 12);
+        assert_eq!(reads[0]["error"], Value::Null);
+        assert_eq!(reads[1]["address"], hex(base + 0x2005));
+        assert_eq!(reads[1]["hex"], "e800000000");
+        assert!(reads[1].get("rip_module_offset").is_none());
+        assert_eq!(reads[2]["read"], 0);
+        assert_eq!(reads[2]["hex"], "");
+        assert!(
+            reads[2]["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not translate")
+        );
+    }
+
+    #[test]
+    fn a_rip_module_peek_without_an_image_at_rip_says_so() {
+        // UD2 at the ROM entry, no PE image around it.
+        let image = rom(0x1000, &[(0x1000, &[0x0f, 0x0b])]);
+        let peeks = [Peek {
+            base: PeekBase::RipModule,
+            offset: 0x10,
+            len: 4,
+        }];
+        let (_, snapshot) = stop_snapshot_with_peeks(&image, &peeks);
+        let read = &snapshot["peeks"][0];
+        assert_eq!(read["read"], 0);
+        assert_eq!(read["rip_module_offset"], "0x10");
+        assert!(
+            read["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("no image covers RIP")
+        );
+        assert_eq!(read["address"], Value::Null);
+    }
 
     #[test]
     fn a_stop_inside_a_pe_image_names_the_module_rva_and_pdb_and_its_callers() {
@@ -246,6 +440,8 @@ pub(crate) mod tests {
         let image = rom(0x10_2000, &[(0x10_0000, &pe.bytes), (0x10_2000, &code)]);
         let (exit, snapshot) = stop_snapshot_of(&image);
         assert!(matches!(exit, PagedProbeExit::Fault(_)), "{exit:?}");
+        // Without `--peek` the snapshot has no `peeks` key (golden snapshots keep their hash).
+        assert!(snapshot.get("peeks").is_none());
 
         let base = LOAD_BASE + 0x10_0000;
         assert_eq!(snapshot["kind"], "stop_snapshot");
@@ -328,7 +524,7 @@ pub(crate) mod tests {
         let mut memory = FakeMemory::default();
         memory.map(0x1000, &[0x90; 0x1000]);
         // RIP is 6 bytes before the end of the last mapped page.
-        let bytes = bytes_json(&memory, 0x1ffa);
+        let bytes = bytes_json(&memory, 0x1ffa, RIP_BYTES);
         assert_eq!(bytes["read"], 6);
         assert_eq!(bytes["hex"], "909090909090");
         assert!(bytes["error"].as_str().unwrap().contains("no page"));

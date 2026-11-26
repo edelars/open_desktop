@@ -352,7 +352,12 @@ fn stop_snapshot_describes_a_faulting_stop_and_the_run_inputs() {
     let run = invoke_with_args(
         &rom,
         "100",
-        &["--stop-snapshot", snapshot.to_str().unwrap()],
+        &[
+            "--stop-snapshot",
+            snapshot.to_str().unwrap(),
+            "--peek",
+            "200040:2",
+        ],
     );
     assert_eq!(run.output.status.code(), Some(5), "{:?}", run.output);
     let value = report(&run);
@@ -371,6 +376,10 @@ fn stop_snapshot_describes_a_faulting_stop_and_the_run_inputs() {
     );
     assert_eq!(snap["rip"], "0x0000000000200040");
     assert_eq!(snap["rip_bytes"]["hex"].as_str().unwrap()[..4], *"0f0b");
+    // `--peek 200040:2` reads the same two bytes into the snapshot file.
+    assert_eq!(snap["peeks"][0]["address"], "0x0000000000200040");
+    assert_eq!(snap["peeks"][0]["hex"], "0f0b");
+    assert_eq!(snap["peeks"][0]["read"], 2);
     assert_eq!(
         snap["module"]["found"], false,
         "no PE header below the entry"
@@ -460,6 +469,11 @@ fn diagnostic_options_are_validated_before_launch() {
         (
             &["--stop-snapshot", snap, "--stop-snapshot", snap][..],
             "duplicate option",
+        ),
+        (&["--peek", "1000"][..], "--peek requires --stop-snapshot"),
+        (
+            &["--stop-snapshot", snap, "--peek", "1000:0"][..],
+            "invalid --peek",
         ),
     ] {
         let run = invoke_with_args(&rom, "10", extra);

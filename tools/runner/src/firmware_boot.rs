@@ -29,7 +29,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [(--nvme-image <raw> | --disk <path>[,ro]) [--nvme-pci]] \
                     [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
-                    [--stop-snapshot <file>] [--phase-log <file>] \
+                    [--stop-snapshot <file> [--peek (<hex>|rip_module+<hex>)[:<bytes>] ...]] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
 \x20\x20--disk <path>,ro: the file is opened read-only under a shared lock and the namespace is \
@@ -43,7 +43,11 @@ board is dropped, so the writer lock (LOCK_EX) is released between the two boots
 --turbo-stats prints the statistics of the engine to stderr at the end of the run.\n\
 \x20\x20--nvme-pci (--cpu-loop unified, with --nvme-image or --disk): the NVMe controller is a PCI \
 function (bus 0, slot 4, BAR0 0xFC004000, INTx to GSI 16) instead of the firmware's fixed window; \
-the firmware finds it through ECAM and the report records nvme_pci: true.";
+the firmware finds it through ECAM and the report records nvme_pci: true.\n\
+\x20\x20--peek (with --stop-snapshot, up to 16): the snapshot also holds the guest-virtual bytes at the \
+hexadecimal address, or at the hexadecimal offset from the base of the image that covers RIP \
+(rip_module+<hex>), 64 bytes unless :<bytes> (decimal, 1 to 4096) is given; reads only, like the \
+rest of the snapshot.";
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -92,6 +96,8 @@ struct Options {
     sample_rips: Vec<u64>,
     /// S8-10: JSON snapshot of the stopped machine (any stop except machine `Shutdown`).
     stop_snapshot: Option<String>,
+    /// S7-32: guest-virtual reads written into the stop snapshot (`--peek`).
+    peeks: Vec<stop_snapshot::Peek>,
     /// S8-11: JSON lines, one per phase event.
     phase_log: Option<String>,
     /// S8-11: periodic raw screen dumps of any boot.
@@ -409,6 +415,7 @@ pub fn run(args: &[String]) -> ExitCode {
     // unreadable image or NVRAM snapshot, a loader or NVMe refusal) leaves neither file behind.
     let mut diagnostics = Diagnostics {
         stop_snapshot: options.stop_snapshot.clone(),
+        peeks: options.peeks.clone(),
         op_histogram_out: options.op_histogram_out.clone(),
         no_turbo: options.no_turbo,
         turbo_stats: options.turbo_stats,
@@ -1005,6 +1012,8 @@ fn journal_config(options: &Options) -> Option<JournalConfig> {
 #[derive(Default)]
 struct Diagnostics {
     stop_snapshot: Option<String>,
+    /// S7-32: the `--peek` reads of the stop snapshot.
+    peeks: Vec<stop_snapshot::Peek>,
     /// PERF-20: where the unified loop writes the histogram of retired operations.
     op_histogram_out: Option<String>,
     /// The unified loop runs the general interpreter step only (`--no-turbo`).
@@ -1027,6 +1036,7 @@ fn write_stop_snapshot(
     reason: Value,
     counters: Value,
     inputs: Value,
+    peeks: &[stop_snapshot::Peek],
 ) -> Value {
     let Some(state) = board.diagnostic_vcpu_state(BOOT_VCPU) else {
         return json!({"path": path, "written": false, "error": "the board has no boot vCPU"});
@@ -1035,7 +1045,7 @@ fn write_stop_snapshot(
         board,
         vcpu: BOOT_VCPU,
     };
-    let snapshot = stop_snapshot::snapshot(&state, &memory, reason, counters, inputs);
+    let snapshot = stop_snapshot::snapshot(&state, &memory, reason, counters, inputs, peeks);
     let mut text = serde_json::to_string_pretty(&snapshot).expect("a JSON value serializes");
     text.push('\n');
     match fs::write(path, text) {
@@ -1657,6 +1667,7 @@ fn boot(
                     json!({"exit": "run_error", "exit_detail": format!("{error:?}")}),
                     Value::Null,
                     inputs(),
+                    &diagnostics.peeks,
                 );
             }
             if let Err(write_error) = std::fs::write(com1_out, board.com1_transcript()) {
@@ -1789,7 +1800,7 @@ fn boot(
                 "tsc_hz": report.tsc_hz,
                 "budget": budget,
             });
-            write_stop_snapshot(path, &board, reason, counters, inputs())
+            write_stop_snapshot(path, &board, reason, counters, inputs(), &diagnostics.peeks)
         };
     }
     Ok(BootRun {
@@ -1817,6 +1828,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut reboot_kind = PlatformResetKind::Cold;
     let mut sample_rips = Vec::new();
     let mut stop_snapshot = None;
+    let mut peeks = Vec::new();
     let mut phase_log = None;
     let mut framebuffer_dir = None;
     let mut framebuffer_every = None;
@@ -1931,6 +1943,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 fv_app = Some(parse_app(value)?);
             }
             "--stop-snapshot" if stop_snapshot.is_none() => stop_snapshot = Some(value.clone()),
+            "--peek" if peeks.len() < stop_snapshot::MAX_PEEKS => {
+                peeks.push(stop_snapshot::parse_peek(value)?)
+            }
             "--phase-log" if phase_log.is_none() => phase_log = Some(value.clone()),
             "--framebuffer-dir" if framebuffer_dir.is_none() => {
                 framebuffer_dir = Some(value.clone())
@@ -2008,6 +2023,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     .to_owned(),
             );
         }
+    }
+    if !peeks.is_empty() && stop_snapshot.is_none() {
+        return Err("--peek requires --stop-snapshot".to_owned());
     }
     if mark_rip.is_some() && !unified {
         return Err("--mark-rip requires --cpu-loop unified".to_owned());
@@ -2165,6 +2183,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         reboot_kind,
         sample_rips,
         stop_snapshot,
+        peeks,
         phase_log,
         framebuffer,
         unified,
@@ -2747,6 +2766,40 @@ mod tests {
         );
         // The firmware loop with the same options stays accepted.
         assert!(parse(&base(&["--cpu-loop", "firmware", "--sample-rip", "200040"])).is_ok());
+    }
+
+    #[test]
+    fn peeks_are_parsed_up_to_the_limit_and_need_a_stop_snapshot() {
+        let mut requested = args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "boot.com1",
+            "--budget",
+            "4",
+            "--stop-snapshot",
+            "stop.json",
+        ]);
+        for _ in 0..stop_snapshot::MAX_PEEKS {
+            requested.extend(args(&["--peek", "rip_module+f46be0:40"]));
+        }
+        let peeks = parse(&requested).unwrap().peeks;
+        assert_eq!(peeks.len(), stop_snapshot::MAX_PEEKS);
+        assert_eq!(
+            peeks[0],
+            stop_snapshot::Peek {
+                base: stop_snapshot::PeekBase::RipModule,
+                offset: 0xf4_6be0,
+                len: 40,
+            }
+        );
+        requested.extend(args(&["--peek", "1000"]));
+        assert!(
+            parse(&requested)
+                .err()
+                .unwrap()
+                .contains("unexpected or duplicate option --peek")
+        );
     }
 
     #[test]
