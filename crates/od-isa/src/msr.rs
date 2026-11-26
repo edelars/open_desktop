@@ -44,16 +44,44 @@ impl MsrProfile {
 /// paths says the list and numbers of MSRs are not verified; no Windows binary was observed): IA32_APIC_BASE (`0x1B`),
 /// IA32_MISC_ENABLE (`0x1A0`), IA32_PAT (`0x277`), IA32_SYSENTER_CS/ESP/EIP (`0x174..=0x176`),
 /// IA32_EFER (`0xC0000080`), IA32_STAR/LSTAR/CSTAR/FMASK (`0xC0000081..=0xC0000084`) and
-/// IA32_FS_BASE/GS_BASE/KERNEL_GS_BASE (`0xC0000100..=0xC0000102`). IA32_TSC (`0x10`) is NOT in
-/// the list, so `RDMSR`/`WRMSR` of `0x10` raise `#GP(0)` like any unimplemented MSR; CPUID.1:EDX.TSC
-/// is declared since the S7-32 decision of 2026-11-25 (`RDTSC`), the MSR access is a separate gap. MTRR MSRs are not listed because the
-/// Windows profile does not declare MTRR (CPUID.1:EDX[12]).
+/// IA32_FS_BASE/GS_BASE/KERNEL_GS_BASE (`0xC0000100..=0xC0000102`) and, since S7-32 slice F,
+/// IA32_TIME_STAMP_COUNTER (`0x10`, SDM Vol. 4 Table 2-2 10H; bootmgfw reads it with `RDMSR`):
+/// `RDMSR` returns what `RDTSC` returns at that instruction (the set's RDTSC source), `WRMSR` is an
+/// explicit stop (`Unsupported`, the model keeps no TSC offset; hypothesis, not verified: the
+/// Windows HAL writes the TSC only to synchronise processors, and this board runs one vCPU);
+/// IA32_PLATFORM_ID (`0x17`, read-only, [`IA32_PLATFORM_ID_VALUE`]) and IA32_BIOS_SIGN_ID (`0x8B`,
+/// a cell set by the board, `Cpl0ProfileSet::with_msr_bios_sign_id`). MTRR MSRs are not listed
+/// because the Windows profile does not declare MTRR (CPUID.1:EDX[12]).
 pub const fn windows_msr_is_known(index: u32) -> bool {
     matches!(
         index,
-        0x1b | 0x1a0 | 0x277 | 0x174..=0x176 | 0xc000_0080..=0xc000_0084 | 0xc000_0100..=0xc000_0102
+        0x10 | 0x17
+            | 0x1b
+            | 0x8b
+            | 0x1a0
+            | 0x277
+            | 0x174..=0x176
+            | 0xc000_0080..=0xc000_0084
+            | 0xc000_0100..=0xc000_0102
     )
 }
+
+/// IA32_TIME_STAMP_COUNTER (SDM Vol. 4 Table 2-2, 10H).
+pub const IA32_TIME_STAMP_COUNTER: u32 = 0x10;
+
+/// IA32_PLATFORM_ID (SDM Vol. 4 Table 2-2, 17H): read-only; bits 52:50 give the platform ID that
+/// selects a microcode update (SDM Vol. 3A §10.11.4).
+pub const IA32_PLATFORM_ID: u32 = 0x17;
+
+/// The value of IA32_PLATFORM_ID of the virtual CPU (S7-32 slice F decision): 0, platform ID 0 in
+/// bits 52:50. A virtual CPU belongs to no physical platform; with ID 0 a microcode update matches
+/// only if its processor-flags field has bit 0 set (SDM Vol. 3A §10.11.4), and the board reports no
+/// update loaded (IA32_BIOS_SIGN_ID).
+pub const IA32_PLATFORM_ID_VALUE: u64 = 0;
+
+/// IA32_BIOS_SIGN_ID (SDM Vol. 4 Table 2-2, 8BH): EDX holds the signature (revision) of the loaded
+/// microcode update after `WRMSR 0` and `CPUID(1)` (SDM Vol. 3A §10.11.7.1).
+pub const IA32_BIOS_SIGN_ID: u32 = 0x8b;
 
 /// Indexes of the Windows list whose value lives in a cell owned by the Windows member itself or
 /// by one of the guest MSR cells of the set (everything except APIC_BASE, EFER, FS_BASE, GS_BASE).

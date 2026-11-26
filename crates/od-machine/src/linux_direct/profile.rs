@@ -21,6 +21,9 @@ pub(super) struct LinuxVcpuCells {
     sysenter_eip: Cell<u64>,
     syscall_mask: Cell<u64>,
     kernel_gs_base: Cell<u64>,
+    pat: Cell<u64>,
+    misc_enable: Cell<u64>,
+    bios_sign_id: Cell<u64>,
     fp: RefCell<GuestFpState>,
 }
 
@@ -37,6 +40,9 @@ impl LinuxVcpuCells {
             sysenter_eip: Cell::new(vcpu.guest_sysenter_eip),
             syscall_mask: Cell::new(vcpu.guest_syscall_mask),
             kernel_gs_base: Cell::new(vcpu.guest_kernel_gs_base),
+            pat: Cell::new(vcpu.guest_pat),
+            misc_enable: Cell::new(vcpu.guest_misc_enable),
+            bios_sign_id: Cell::new(vcpu.guest_bios_sign_id),
             fp: RefCell::new(vcpu.guest_fp.clone()),
         }
     }
@@ -51,6 +57,9 @@ impl LinuxVcpuCells {
         vcpu.guest_sysenter_eip = self.sysenter_eip.into_inner();
         vcpu.guest_syscall_mask = self.syscall_mask.into_inner();
         vcpu.guest_kernel_gs_base = self.kernel_gs_base.into_inner();
+        vcpu.guest_pat = self.pat.into_inner();
+        vcpu.guest_misc_enable = self.misc_enable.into_inner();
+        vcpu.guest_bios_sign_id = self.bios_sign_id.into_inner();
         vcpu.guest_fp = self.fp.into_inner();
     }
 }
@@ -138,6 +147,17 @@ impl LinuxCpl0Profile {
         if members.msr_apic_base {
             set = set.with_msr_apic_base_for_vcpu(cpu.is_bsp);
             record_member(format_args!("msr:apic_base"));
+        }
+        // S7-32 slice F: the Windows MSR file (IA32_PAT, IA32_MISC_ENABLE, IA32_TSC and read access
+        // to the other MSR cells); it needs the other MSR members (checked at entry).
+        // An MSR outside the modelled list stops the run (decision M1, ADR-0013: known gaps are
+        // stops), IA32_BIOS_SIGN_ID has its cell.
+        if members.msr_windows {
+            set = set
+                .with_msr_windows(&cpu.pat, &cpu.misc_enable)
+                .with_msr_windows_unknown_as_stop()
+                .with_msr_bios_sign_id(&cpu.bios_sign_id);
+            record_member(format_args!("msr:windows"));
         }
         if members.fp_state {
             set = set.with_fp_state(&cpu.fp);

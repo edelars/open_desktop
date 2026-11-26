@@ -246,7 +246,7 @@ pub use linux_direct::{
     LinuxInterleavedRunReport, LinuxInterleavedVcpu, LinuxParallelRunReport, LinuxStopInputs,
     LinuxStopRecord, LinuxThreadedOptions, LinuxThreadedRunReport, LinuxVcpuRunMode,
     LinuxVcpuRunState, SYSCALL_JOURNAL_CAPACITY, SyscallJournal, SyscallJournalEntry, UnifiedGuest,
-    load_linux_direct_board, load_linux_direct_board_with_nvme,
+    UnsupportedMsr, load_linux_direct_board, load_linux_direct_board_with_nvme,
     load_linux_direct_board_with_nvme_and_vcpus, load_linux_direct_board_with_vcpus,
     run_firmware_unified, run_firmware_unified_guest, run_firmware_unified_marked,
     run_firmware_unified_profiled, run_firmware_unified_traced, run_linux_direct_board,

@@ -539,12 +539,11 @@ fn misc_enable_models_only_the_fast_string_bit() {
 
 #[test]
 fn unknown_indexes_are_gp0_for_rdmsr_and_wrmsr() {
-    let unknown: [u32; 24] = [
+    // IA32_TSC (0x10), IA32_PLATFORM_ID (0x17) and IA32_BIOS_SIGN_ID (0x8B) left this list in S7-32
+    // slice F (`tsc_reads_the_rdtsc_source_...`, `platform_id_...`, `bios_sign_id_...`).
+    let unknown: [u32; 21] = [
         0x0,
-        0x10, // IA32_TSC: withheld with the TSC policy (S2-57)
-        0x17,
         0x1c,
-        0x8b,
         0xfe,
         0x3a,
         0x87,
@@ -582,6 +581,182 @@ fn unknown_indexes_are_gp0_for_rdmsr_and_wrmsr() {
     let result = run(&mut state, &RDMSR, &set, 1).unwrap();
     assert_eq!(result.instructions_executed, 1);
     assert_eq!(state.gpr[Register::Rax as usize], 0x0007_0406);
+}
+
+/// S7-32 slice F: IA32_TIME_STAMP_COUNTER (SDM Vol. 4 Table 2-2, 10H) reads what `RDTSC` reads:
+/// the set's RDTSC source, EDX:EAX = high:low, upper halves of RAX/RDX cleared, RCX and the rest
+/// unchanged. Without a source the read is a stop; `WRMSR 0x10` is always a stop (no TSC offset in
+/// the model); neither changes state.
+#[test]
+fn tsc_reads_the_rdtsc_source_and_a_write_is_a_stop() {
+    let cells = Cells::new();
+    let set = cells.windows().with_rdtsc();
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = 0xdead_beef_0000_0010;
+    state.gpr[Register::Rax as usize] = 0x1111_1111_2222_2222;
+    state.gpr[Register::Rdx as usize] = 0x3333_3333_4444_4444;
+    let before = state.clone();
+    let mut memory = Memory::code(&RDMSR);
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        0x1234_5678_9abc_def0u64
+    };
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        Some(&mut source),
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(calls, 1, "one read of the source");
+    assert_eq!(state.gpr[Register::Rax as usize], 0x9abc_def0);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x1234_5678);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0xdead_beef_0000_0010);
+    assert_eq!(state.rip, before.rip + 2);
+    assert!(windows_msr_is_known(0x10));
+    // Without a source, and for WRMSR, a stop without a state change.
+    for code in [RDMSR, WRMSR] {
+        let mut state = before.clone();
+        let result = run(&mut state, &code, &set, 1).unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+    // Like RDTSC, the read needs the RDTSC member: with a source but without the member, a stop and
+    // the source is not called; WRMSR with a source present: a stop, the source is not called.
+    for (set, code, label) in [
+        (cells.windows(), RDMSR, "rdmsr without the rdtsc member"),
+        (cells.windows().with_rdtsc(), WRMSR, "wrmsr with a source"),
+    ] {
+        let mut state = before.clone();
+        let mut memory = Memory::code(&code);
+        let mut calls = 0;
+        let mut source = || {
+            calls += 1;
+            7u64
+        };
+        let result = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &set,
+            Some(&mut source),
+            || false,
+        )
+        .unwrap();
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{label}"
+        );
+        assert_eq!(result.instructions_executed, 0, "{label}");
+        assert_eq!(state, before, "{label}");
+        assert_eq!(calls, 0, "{label}");
+    }
+    // At CPL3 with a source: #GP(0) without a state change, the source is not called.
+    let set = cells.windows().with_rdtsc();
+    let mut state = user_state();
+    state.gpr[Register::Rcx as usize] = 0x10;
+    let user_before = state.clone();
+    let mut memory = Memory::code(&RDMSR);
+    let mut calls = 0;
+    let mut source = || {
+        calls += 1;
+        7u64
+    };
+    let result = run_with_cpl3_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        Some(&mut source),
+        || false,
+    )
+    .unwrap();
+    assert_gp0_unchanged(&result, &user_before, &state, "rdmsr 0x10 at cpl3");
+    assert_eq!(calls, 0);
+}
+
+/// S7-32 slice F: IA32_PLATFORM_ID (SDM Vol. 4 Table 2-2, 17H) is read-only: `RDMSR` gives 0
+/// (platform ID 0), `WRMSR` is #GP(0) without a state change.
+#[test]
+fn platform_id_reads_zero_and_a_write_is_gp0() {
+    let cells = Cells::new();
+    let set = cells.windows();
+    let (result, before, after) = access(&set, RDMSR, 0x17, 0);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(after.gpr[Register::Rax as usize], 0);
+    assert_eq!(after.gpr[Register::Rdx as usize], 0);
+    assert_eq!(
+        after.gpr[Register::Rcx as usize],
+        before.gpr[Register::Rcx as usize]
+    );
+    let (result, before, after) = access(&set, WRMSR, 0x17, 0);
+    assert_gp0_unchanged(&result, &before, &after, "wrmsr 0x17");
+}
+
+/// S7-32 slice F: IA32_BIOS_SIGN_ID (SDM Vol. 4 Table 2-2, 8BH): with the cell, `WRMSR` stores
+/// EDX (bits 63:32; bits 31:0 are reserved and read as 0) and `RDMSR` returns it (the microcode
+/// signature in EDX); without the cell both are a stop without a state change.
+#[test]
+fn bios_sign_id_reads_and_writes_its_cell_and_without_it_is_a_stop() {
+    let cells = Cells::new();
+    let sign = Cell::new(0x0000_0024_0000_0000u64);
+    let set = cells.windows().with_msr_bios_sign_id(&sign);
+    let (result, _, after) = access(&set, RDMSR, 0x8b, 0);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(after.gpr[Register::Rdx as usize], 0x24);
+    assert_eq!(after.gpr[Register::Rax as usize], 0);
+    let (result, _, _) = access(&set, WRMSR, 0x8b, 0);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(sign.get(), 0, "WRMSR 0 (before CPUID(1)) is stored");
+    // EDX:EAX = 0x0000_0077:0x1234_5678: only EDX is kept.
+    let (result, _, _) = access(&set, WRMSR, 0x8b, 0x0000_0077_1234_5678);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(sign.get(), 0x0000_0077_0000_0000);
+    let plain = cells.windows();
+    for code in [RDMSR, WRMSR] {
+        let (result, before, after) = access(&plain, code, 0x8b, 0);
+        assert!(
+            matches!(exit(&result), RunExit::Unsupported { .. }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(after, before);
+    }
+}
+
+/// S7-32 slice F (decision M1): with `with_msr_windows_unknown_as_stop`, an index outside the list
+/// is an explicit stop without a state change (instead of #GP(0)); a listed index still runs.
+#[test]
+fn unknown_indexes_stop_with_the_stop_option() {
+    let cells = Cells::new();
+    let set = cells.windows().with_msr_windows_unknown_as_stop();
+    for index in [0x0u32, 0x3a, 0x79, 0xce, 0x1d9, 0xdead_beef] {
+        for code in [RDMSR, WRMSR] {
+            let (result, before, after) = access(&set, code, index, 0);
+            assert!(
+                matches!(exit(&result), RunExit::Unsupported { .. }),
+                "{code:02x?} {index:#x}: {:?}",
+                result.exit
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(after, before);
+        }
+    }
+    let (result, _, after) = access(&set, RDMSR, IA32_PAT, 0);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(after.gpr[Register::Rax as usize], 0x0007_0406);
 }
 
 #[test]

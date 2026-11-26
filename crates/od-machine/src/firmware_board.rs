@@ -9465,6 +9465,171 @@ mod tests {
         assert!(linux.pit_pic_source.is_some() && linux.pit_ioapic_source.is_none());
     }
 
+    /// S7-32 slice F: one Windows unified run of `code` from a ROM (budget 100).
+    fn windows_msr_run(code: &[u8]) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun) {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x40 + code.len()].copy_from_slice(code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            100,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        (board, run)
+    }
+
+    /// S7-32 slice F: the Windows unified run binds the Windows MSR file: `RDMSR` of IA32_PAT reads
+    /// the power-up value (SDM Vol. 3A 14.12.4), a `WRMSR` of IA32_PAT and of the writable bit of
+    /// IA32_MISC_ENABLE are committed to the vCPU, IA32_TSC (10H) reads the board's TSC like `RDTSC`
+    /// (the same source: each read ends the quantum and charges the RDTSC tick, so the reads are
+    /// strictly increasing and the MSR read follows the `RDTSC` before it), IA32_PLATFORM_ID reads 0
+    /// and IA32_BIOS_SIGN_ID reads its cell. The Linux guest has no such member.
+    #[test]
+    fn s7_32_the_windows_unified_run_binds_the_windows_msr_file() {
+        #[rustfmt::skip]
+        let code = [
+            0xB9, 0x77, 0x02, 0x00, 0x00, // mov ecx, 0x277 (IA32_PAT)
+            0x0F, 0x32,                   // rdmsr
+            0x49, 0x89, 0xC0,             // mov r8, rax
+            0x49, 0x89, 0xD1,             // mov r9, rdx
+            0xB8, 0x06, 0x06, 0x06, 0x06, // mov eax, 0x06060606 (all WB)
+            0xBA, 0x06, 0x06, 0x06, 0x06, // mov edx, 0x06060606
+            0x0F, 0x30,                   // wrmsr
+            0xB9, 0xA0, 0x01, 0x00, 0x00, // mov ecx, 0x1a0 (IA32_MISC_ENABLE)
+            0xB8, 0x00, 0x18, 0x00, 0x00, // mov eax, 0x1800 (fast strings off)
+            0x31, 0xD2,                   // xor edx, edx
+            0x0F, 0x30,                   // wrmsr
+            0x0F, 0x31,                   // rdtsc
+            0x49, 0x89, 0xC4,             // mov r12, rax
+            0x49, 0x89, 0xD5,             // mov r13, rdx
+            0xB9, 0x10, 0x00, 0x00, 0x00, // mov ecx, 0x10 (IA32_TSC)
+            0x0F, 0x32,                   // rdmsr
+            0x49, 0x89, 0xC2,             // mov r10, rax
+            0x49, 0x89, 0xD6,             // mov r14, rdx
+            0x0F, 0x32,                   // rdmsr
+            0x49, 0x89, 0xC3,             // mov r11, rax
+            0xB9, 0x17, 0x00, 0x00, 0x00, // mov ecx, 0x17 (IA32_PLATFORM_ID)
+            0x0F, 0x32,                   // rdmsr
+            0x48, 0x89, 0xC3,             // mov rbx, rax
+            0xB9, 0x8B, 0x00, 0x00, 0x00, // mov ecx, 0x8b (IA32_BIOS_SIGN_ID)
+            0x0F, 0x32,                   // rdmsr
+            0x49, 0x89, 0xD7,             // mov r15, rdx
+            0xF4,                         // hlt (IF = 0: the run ends)
+        ];
+        let (board, run) = windows_msr_run(&code);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert!(run.unsupported_msr.is_none());
+        assert!(
+            run.members.iter().any(|m| m == "msr:windows"),
+            "{:?}",
+            run.members
+        );
+        let gpr = board.state().gpr;
+        assert_eq!(gpr[Register::R8 as usize], 0x0007_0406);
+        assert_eq!(gpr[Register::R9 as usize], 0x0007_0406);
+        assert_eq!(
+            board.vcpus[BOOT_VCPU_INDEX].guest_pat,
+            0x0606_0606_0606_0606
+        );
+        assert_eq!(board.vcpus[BOOT_VCPU_INDEX].guest_misc_enable, 0x1800);
+        let rdtsc = (gpr[Register::R13 as usize] << 32) | gpr[Register::R12 as usize];
+        let first = (gpr[Register::R14 as usize] << 32) | gpr[Register::R10 as usize];
+        // The board's TSC is the clock at the read; every TSC read (RDTSC, and RDMSR 0x10 through
+        // the same source) ends the quantum and charges `RDTSC_TICK_NS`, so each read is later
+        // than the one before by at least that tick.
+        assert!(
+            // TSC ticks and ns agree at the board's default 1 GHz (`tsc_hz`).
+            first >= rdtsc + RDTSC_TICK_NS,
+            "{first:#x} after RDTSC {rdtsc:#x}"
+        );
+        assert!(gpr[Register::R11 as usize] >= gpr[Register::R10 as usize] + RDTSC_TICK_NS);
+        assert_eq!(gpr[Register::Rbx as usize], 0, "IA32_PLATFORM_ID");
+        assert_eq!(gpr[Register::R15 as usize], 0, "no microcode update loaded");
+
+        // The Linux guest: no Windows MSR member, `RDMSR 0x277` is #GP(0) (delivered through the
+        // ROM's IDT, which this image has none of: the run does not halt at the first HLT).
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x40 + code.len()].copy_from_slice(&code);
+        seal(&mut image);
+        let mut linux = load_firmware_image(&image, &linux_config()).unwrap();
+        let run = crate::run_firmware_unified(&mut linux, 100).unwrap();
+        assert!(!run.members.iter().any(|m| m == "msr:windows"));
+        assert_eq!(
+            linux.vcpus[BOOT_VCPU_INDEX].guest_pat,
+            od_isa::msr::IA32_PAT_RESET
+        );
+        assert_ne!(linux.state().gpr[Register::R8 as usize], 0x0007_0406);
+    }
+
+    /// S7-32 slice F (decision M1): in the Windows unified run, `WRMSR 0x10` (no TSC offset in the
+    /// model) and an MSR outside the modelled list (`RDMSR 0xCE`, MSR_PLATFORM_INFO) are stops, and
+    /// the report names the index and the direction; nothing of the access is executed.
+    #[test]
+    fn s7_32_an_msr_the_model_lacks_stops_the_windows_run_and_is_named() {
+        #[rustfmt::skip]
+        let write_tsc = [
+            0xB9, 0x10, 0x00, 0x00, 0x00, // mov ecx, 0x10
+            0x31, 0xC0,                   // xor eax, eax
+            0x31, 0xD2,                   // xor edx, edx
+            0x0F, 0x30,                   // wrmsr
+            0xF4,
+        ];
+        let (board, run) = windows_msr_run(&write_tsc);
+        assert_eq!(
+            run.run.exit,
+            PagedProbeExit::Unsupported { opcode: 0x30 },
+            "{run:?}"
+        );
+        assert_eq!(run.run.retired, 3);
+        assert_eq!(
+            run.unsupported_msr,
+            Some(crate::UnsupportedMsr {
+                index: 0x10,
+                write: true
+            })
+        );
+        assert_eq!(
+            run.rip_bytes.get(..2),
+            Some(&[0x0f, 0x30][..]),
+            "RIP stays on the WRMSR"
+        );
+        assert_eq!(
+            board.vcpus[BOOT_VCPU_INDEX].guest_pat,
+            od_isa::msr::IA32_PAT_RESET
+        );
+        #[rustfmt::skip]
+        let read_unknown = [
+            0xB9, 0xCE, 0x00, 0x00, 0x00, // mov ecx, 0xce
+            0x0F, 0x32,                   // rdmsr
+            0xF4,
+        ];
+        let (board, run) = windows_msr_run(&read_unknown);
+        assert_eq!(
+            run.run.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{run:?}"
+        );
+        assert_eq!(run.run.retired, 1);
+        assert_eq!(
+            run.unsupported_msr,
+            Some(crate::UnsupportedMsr {
+                index: 0xce,
+                write: false
+            })
+        );
+        assert_eq!(
+            board.state().gpr[Register::Rax as usize],
+            0,
+            "RDMSR did not write"
+        );
+    }
+
     /// S7-32: the Windows unified run with a guest IDT: a one-shot LAPIC timer (vector 0x40)
     /// whose initial count is written by `code` runs to the handler at `handler_offset`, which
     /// copies RBX and RCX into R8 and R9, writes EOI and halts at IF = 0. Returns the board and

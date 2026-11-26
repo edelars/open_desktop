@@ -1509,6 +1509,11 @@ fn boot(
                 "cr3_changes": run.cr3_changes,
                 "cpl3_retired": run.cpl3_retired,
                 "cpuid_divergence_leaf": run.cpuid_divergence_leaf,
+                // S7-32 slice F: the MSR the run stopped on, if it stopped on one.
+                "unsupported_msr": run.unsupported_msr.map(|msr| json!({
+                    "index": format!("0x{:x}", msr.index),
+                    "write": msr.write,
+                })),
                 "rip_physical": run.rip_physical.map(|address| format!("0x{address:x}")),
                 "rip_fetch_error": run.rip_fetch_error,
                 "final_state": {

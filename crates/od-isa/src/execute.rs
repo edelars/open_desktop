@@ -1962,6 +1962,8 @@ pub struct Cpl0ProfileSet<'a> {
     msr_apic_base: Option<bool>,
     /// S2-26h: the Windows-boot MSR file; `(IA32_PAT cell, IA32_MISC_ENABLE cell)`.
     msr_windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
+    msr_windows_unknown_stop: bool,
+    msr_bios_sign_id: Option<&'a Cell<u64>>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1995,6 +1997,8 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_tdx_keyid_partitioning_read: false,
             msr_apic_base: None,
             msr_windows: None,
+            msr_windows_unknown_stop: false,
+            msr_bios_sign_id: None,
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2261,7 +2265,8 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// [`crate::msr::windows_msr_write_decision`] (reserved bits and non-canonical addresses are
     /// `#GP(0)`, a MISC_ENABLE bit the model lacks is `Unsupported`, both without a state change;
     /// SYSENTER_CS bits 63:32 are ignored on write and read as zero);
-    /// `RDMSR` and `WRMSR` of any index outside the list (also IA32_TSC, `0x10`) are `#GP(0)`, and
+    /// `RDMSR` of IA32_TSC (`0x10`) returns the set's RDTSC source (`WRMSR 0x10` is a stop, S7-32);
+    /// `RDMSR` and `WRMSR` of any index outside the list are `#GP(0)`, and
     /// at CPL3 every `RDMSR`/`WRMSR` is `#GP(0)`. APIC_BASE, EFER, FS_BASE and GS_BASE keep the
     /// semantics of their own members. The CPUID MSR bit is not declared by this member (S2-57).
     pub const fn with_msr_windows(
@@ -2270,6 +2275,28 @@ impl<'a> Cpl0ProfileSet<'a> {
         misc_enable: &'a Cell<u64>,
     ) -> Self {
         self.msr_windows = Some((pat, misc_enable));
+        self
+    }
+
+    /// S7-32 slice F (decision M1): with the Windows member, an `RDMSR`/`WRMSR` of an index outside
+    /// the modelled list is an explicit stop (`Unsupported`, no state change) instead of the
+    /// architectural `#GP(0)`. ADR-0013 keeps known gaps as stops of a run: a Windows run must not
+    /// turn an MSR the model lacks into a guest fault the guest may swallow. The member without this
+    /// option keeps `#GP(0)` (pinned by the S2-26h tests). The caller names the index from ECX and
+    /// the direction from the opcode at RIP (`0F 32` read, `0F 30` write).
+    pub const fn with_msr_windows_unknown_as_stop(mut self) -> Self {
+        self.msr_windows_unknown_stop = true;
+        self
+    }
+
+    /// S7-32 slice F: IA32_BIOS_SIGN_ID (`0x8B`, SDM Vol. 4 Table 2-2 8BH; Vol. 3A §10.11.7.1)
+    /// for the Windows member. `WRMSR` stores EDX (bits 63:32, the update signature; software
+    /// writes 0 before `CPUID(1)`); bits 31:0 are reserved and read as 0. `RDMSR` returns the cell.
+    /// No microcode update is modelled, so `CPUID(1)` leaves the field as written (SDM: "if the
+    /// field remains zero following CPUID, no update is loaded"). A non-zero modelled revision
+    /// would need `CPUID(1)` to load it from a board value; no such setter exists.
+    pub const fn with_msr_bios_sign_id(mut self, cell: &'a Cell<u64>) -> Self {
+        self.msr_bios_sign_id = Some(cell);
         self
     }
 
@@ -2748,6 +2775,10 @@ struct GuestMsrCells<'a> {
     apic_base: Option<bool>,
     /// S2-26h: the Windows MSR file, `(IA32_PAT cell, IA32_MISC_ENABLE cell)`.
     windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
+    /// S7-32 slice F: an index outside the Windows list is a stop instead of `#GP(0)`.
+    windows_unknown_stop: bool,
+    /// S7-32 slice F: the IA32_BIOS_SIGN_ID cell of the Windows member.
+    bios_sign_id: Option<&'a Cell<u64>>,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -34390,6 +34421,8 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
                     tdx_keyid_partitioning_read: set.msr_tdx_keyid_partitioning_read,
                     apic_base: set.msr_apic_base,
                     windows: set.msr_windows,
+                    windows_unknown_stop: set.msr_windows_unknown_stop,
+                    bios_sign_id: set.msr_bios_sign_id,
                     syscall: set.syscall,
                 })
             } else {
@@ -48919,7 +48952,64 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && msr_index == 0x87
                 && cells.tdx_keyid_partitioning_read;
             if !crate::msr::windows_msr_is_known(msr_index) && !tdx_read {
+                if cells.windows_unknown_stop {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
                 return gp0();
+            }
+            // S7-32 slice F: IA32_PLATFORM_ID (17H) is read-only and reads 0 (platform ID bits
+            // 52:50 = 0, see `IA32_PLATFORM_ID_VALUE`); a write is #GP(0) (SDM Vol. 4 Table 2-2).
+            if msr_index == crate::msr::IA32_PLATFORM_ID {
+                if instruction.operation != Operation::ReadMsr {
+                    return gp0();
+                }
+                state.gpr[Register::Rax as usize] =
+                    crate::msr::IA32_PLATFORM_ID_VALUE & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = crate::msr::IA32_PLATFORM_ID_VALUE >> 32;
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            // S7-32 slice F: IA32_BIOS_SIGN_ID (8BH) reads and writes its cell; without the cell
+            // (a set without `with_msr_bios_sign_id`) the access is a stop.
+            if msr_index == crate::msr::IA32_BIOS_SIGN_ID {
+                let Some(cell) = cells.bios_sign_id else {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                };
+                if instruction.operation == Operation::ReadMsr {
+                    let value = cell.get();
+                    state.gpr[Register::Rax as usize] = u64::from(value as u32);
+                    state.gpr[Register::Rdx as usize] = value >> 32;
+                } else {
+                    // Bits 31:0 are reserved (SDM Vol. 4 Table 2-2, 8BH): only EDX is kept.
+                    cell.set(u64::from(state.gpr[Register::Rdx as usize] as u32) << 32);
+                }
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            // S7-32 slice F: IA32_TIME_STAMP_COUNTER reads the set's RDTSC source, so `RDMSR 0x10`
+            // and `RDTSC` agree at every instruction. Like `RDTSC` it needs the RDTSC member and a
+            // source (otherwise a stop); each read is one more call of the source, so the RDTSC
+            // diagnostics of the caller (counts, quantum cuts on a TSC read) count it as a read of
+            // the TSC. The model keeps no TSC offset, so `WRMSR 0x10` is an explicit stop (see
+            // `windows_msr_is_known`); the source is not called then.
+            if msr_index == crate::msr::IA32_TIME_STAMP_COUNTER {
+                let source = match (instruction.operation, rdtsc_controls, rdtsc_source) {
+                    (Operation::ReadMsr, Some(_), Some(source)) => source,
+                    _ => {
+                        return Ok(StepOutcome::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        });
+                    }
+                };
+                let value = source();
+                state.gpr[Register::Rax as usize] = u64::from(value as u32);
+                state.gpr[Register::Rdx as usize] = value >> 32;
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
             }
             if crate::msr::windows_msr_is_cell_owned(msr_index) {
                 let cell = match msr_index {

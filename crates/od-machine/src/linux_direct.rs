@@ -1175,6 +1175,8 @@ pub struct LinuxCpl0SetMembers {
     /// profile (`X8664V1Stage4AApic`), whose board has the Local APIC enabled at that base, so the
     /// member list of `stage4a` and of the default run does not change.
     pub msr_apic_base: bool,
+    /// S7-32 slice F: the Windows MSR file of the CPL0 set (`with_msr_windows`).
+    pub msr_windows: bool,
     /// `with_fp_state` (S4-38L9d): the FP member of the set: `FNINIT`, the plain RIP-relative
     /// `FXSAVE` and `MOV CR0, RDI` (the `fpu__init_system` path of the kernel), with the guest FP
     /// state kept in the board between runs (`guest_fp`). It needs a CPUID profile that declares
@@ -1267,6 +1269,7 @@ impl LinuxCpl0SetMembers {
             msr_kernel_gs_base: false,
             msr_tdx_keyid_partitioning_read: false,
             msr_apic_base: false,
+            msr_windows: false,
             fp_state: false,
             int3: false,
             halt: false,
@@ -1810,6 +1813,20 @@ pub struct FirmwareUnifiedRun {
     /// The histogram of retired operations (PERF-20): `None` when none was asked for. Its total is
     /// the number of instructions the loop retired.
     pub op_histogram: Option<crate::op_histogram::OpHistogramReport>,
+    /// S7-32 slice F: the MSR access the run stopped on (an unmodelled index under decision M1,
+    /// or a modelled one whose access the set refuses, e.g. `WRMSR` IA32_TSC): the index from ECX
+    /// and whether it was a write, read from the unprefixed `0F 30`/`0F 32` at RIP. `None` for
+    /// every other end of the run (a prefixed form stops on its prefix and is not reported).
+    pub unsupported_msr: Option<UnsupportedMsr>,
+}
+
+/// S7-32 slice F: an `RDMSR`/`WRMSR` a unified run stopped on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnsupportedMsr {
+    /// The MSR index (ECX).
+    pub index: u32,
+    /// `WRMSR` (`0F 30`) rather than `RDMSR` (`0F 32`).
+    pub write: bool,
 }
 
 /// The CPU state a unified run stopped in (S7-31g, diagnostics): what decides whether the set
@@ -2081,6 +2098,7 @@ pub fn run_firmware_unified_guest(
         int3: true,
         halt: true,
         msr_apic_base: windows,
+        msr_windows: windows,
         clock_owner: windows,
         ..LinuxCpl0SetMembers::linux_default()
     };
@@ -2257,6 +2275,18 @@ pub fn run_firmware_unified_guest(
         }
     };
     let (rip_physical, rip_bytes, rip_fetch_error) = board.fetch_view_2m(rip, 32);
+    // The stop on an MSR the set does not model names the index and the direction (decision M1).
+    let unsupported_msr = match (&report.run.exit, rip_bytes.get(..2)) {
+        (PagedProbeExit::Unsupported { opcode }, Some(&[0x0f, byte]))
+            if *opcode == byte && matches!(byte, 0x30 | 0x32) =>
+        {
+            Some(UnsupportedMsr {
+                index: board.state().gpr[od_isa::Register::Rcx as usize] as u32,
+                write: byte == 0x30,
+            })
+        }
+        _ => None,
+    };
     let rip_walk = board
         .raw_page_walk(rip)
         .into_iter()
@@ -2287,6 +2317,7 @@ pub fn run_firmware_unified_guest(
         checkpoints,
         call_trace,
         op_histogram,
+        unsupported_msr,
     })
 }
 

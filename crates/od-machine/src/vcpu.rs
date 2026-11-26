@@ -209,6 +209,17 @@ pub(crate) struct Vcpu {
     /// The guest `IA32_KERNEL_GS_BASE` (S4-38L7au): `0` until a guest `WRMSR` (no canonical
     /// check; `SWAPGS` is not modelled). Only stored.
     pub(crate) guest_kernel_gs_base: u64,
+    /// The guest `IA32_PAT` of the Windows MSR member (S7-32 slice F): the power-up value
+    /// [`od_isa::msr::IA32_PAT_RESET`] until a guest `WRMSR`. Carried between runs like the other
+    /// MSR cells; memory types are not modelled.
+    pub(crate) guest_pat: u64,
+    /// The guest `IA32_MISC_ENABLE` of the Windows MSR member (S7-32 slice F):
+    /// [`od_isa::msr::IA32_MISC_ENABLE_RESET`] until a guest `WRMSR` of its writable bit.
+    pub(crate) guest_misc_enable: u64,
+    /// The guest `IA32_BIOS_SIGN_ID` of the Windows MSR member (S7-32 slice F): 0 at power-up and
+    /// whatever the guest writes; EDX (bits 63:32) is the microcode update signature, 0 = no update
+    /// loaded (the virtual CPU has none).
+    pub(crate) guest_bios_sign_id: u64,
     /// The guest FP state of the CPL0 set's FP member (S4-38L9d): x87 environment and registers,
     /// MXCSR and XMM. `GuestFpState::initial()` until a run with the member changes it; carried
     /// between runs like the MSR cells.
@@ -248,6 +259,9 @@ impl Vcpu {
             guest_sysenter_eip: 0,
             guest_syscall_mask: 0,
             guest_kernel_gs_base: 0,
+            guest_pat: od_isa::msr::IA32_PAT_RESET,
+            guest_misc_enable: od_isa::msr::IA32_MISC_ENABLE_RESET,
+            guest_bios_sign_id: 0,
             guest_fp: GuestFpState::initial(),
             legacy: None,
             skip_first_boundary: false,
@@ -970,6 +984,11 @@ mod tests {
         ap.guest_sysenter_eip = 6;
         ap.guest_syscall_mask = 7;
         ap.guest_kernel_gs_base = 8;
+        // S7-32 slice F: the Windows MSR cells (PAT, MISC_ENABLE, BIOS_SIGN_ID) are not changed by
+        // INIT either (SDM Vol. 3A Table 12-1 names neither; PAT keeps its value across INIT).
+        ap.guest_pat = 0x0606_0606_0606_0606;
+        ap.guest_misc_enable = 0x1800;
+        ap.guest_bios_sign_id = 0x24 << 32;
         let mut fp = GuestFpState::initial();
         fp.sse.mxcsr = 0x1F00;
         ap.guest_fp = fp.clone();
@@ -999,6 +1018,10 @@ mod tests {
                 ap.guest_kernel_gs_base
             ),
             (1, 2, 3, 4, 5, 6, 7, 8)
+        );
+        assert_eq!(
+            (ap.guest_pat, ap.guest_misc_enable, ap.guest_bios_sign_id),
+            (0x0606_0606_0606_0606, 0x1800, 0x24 << 32)
         );
         assert_eq!(ap.guest_fp, fp);
     }
