@@ -256,7 +256,10 @@ fn mixed_case_lfn_and_short_alias_read_fragmented_files_on_all_fat_types() {
             assert_eq!(file.len, 1300);
             assert_eq!(volume.allocation_bytes(&mut disk, &file), Ok(1536));
             let mut data = [0x5a; 832];
-            assert_eq!(volume.read_file(&mut disk, &file, 480, &mut data), Ok(820));
+            assert_eq!(
+                volume.read_file(&mut disk, &file, 480, &mut data, &mut None),
+                Ok(820)
+            );
             assert_eq!(&data[..32], &[0x11; 32]);
             assert_eq!(&data[32..544], &[0x22; 512]);
             assert_eq!(&data[544..820], &[0x33; 276]);
@@ -280,7 +283,7 @@ fn mixed_case_lfn_and_short_alias_read_fragmented_files_on_all_fat_types() {
             Err(Status::VOLUME_CORRUPTED)
         );
         assert_eq!(
-            volume.read_file(&mut disk, &file, 512, &mut [0]),
+            volume.read_file(&mut disk, &file, 512, &mut [0], &mut None),
             Err(Status::VOLUME_CORRUPTED)
         );
     }
@@ -308,7 +311,10 @@ fn last_addressable_clusters_and_free_space_at_the_fat12_and_fat16_limits() {
         let file = volume.open_path(&mut disk, &Entry::root(), &path).unwrap();
         let mut content = [0; 3];
         assert_eq!(volume.allocation_bytes(&mut disk, &file), Ok(512));
-        assert_eq!(volume.read_file(&mut disk, &file, 0, &mut content), Ok(3));
+        assert_eq!(
+            volume.read_file(&mut disk, &file, 0, &mut content, &mut None),
+            Ok(3)
+        );
         assert_eq!(&content, b"end");
         assert_eq!(volume.free_bytes(&mut disk), Ok(u64::from(count - 1) * 512));
     }
@@ -321,4 +327,102 @@ fn case_matching_uses_simple_uppercase_without_expanding_names() {
         &[0x00df],
         &[b'S' as u16, b'S' as u16]
     ));
+}
+
+/// Counts the reads that reach the device under a FAT volume.
+struct Counting<'a> {
+    disk: &'a mut SparseDisk,
+    reads: usize,
+}
+
+impl ReadAt for Counting<'_> {
+    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Status> {
+        self.reads += 1;
+        self.disk.read_at(offset, out)
+    }
+}
+
+/// S7-32: sequential reads of a fragmented file through a chain cursor return the same bytes as
+/// one read, and the device reads grow linearly with the file (not with the square of its cluster
+/// count): runs of physically consecutive clusters are one read, FAT entries come from a
+/// 512-byte window, and each read continues the chain where the previous one stopped.
+#[test]
+fn sequential_reads_continue_the_chain_and_read_consecutive_clusters_at_once() {
+    let (bpb, len) = fixture(70_000, 32);
+    let layout = Geometry::parse(&bpb, len).unwrap();
+    let mut disk = SparseDisk {
+        len,
+        regions: std::vec::Vec::new(),
+    };
+    disk.put(0, &bpb);
+    let end = layout.fat_type.reserved_cluster() + 8;
+    disk.set_link(layout, 2, end);
+    // 600 clusters in runs of 3 consecutive clusters with a gap after each run:
+    // 10, 11, 12, 14, 15, 16, 18, ... (the root directory is cluster 2).
+    let clusters: std::vec::Vec<u32> = (0..600u32).map(|i| 10 + i / 3 * 4 + i % 3).collect();
+    for pair in clusters.windows(2) {
+        disk.set_link(layout, pair[0], pair[1]);
+    }
+    disk.set_link(layout, *clusters.last().unwrap(), end);
+    let size = 600 * 512;
+    for (i, &cluster) in clusters.iter().enumerate() {
+        let fill: std::vec::Vec<u8> = (0..512).map(|b| (i * 7 + b) as u8).collect();
+        disk.put(layout.cluster_offset(cluster).unwrap(), &fill);
+    }
+    let root = layout.cluster_offset(2).unwrap();
+    disk.put(root, &sfn(b"BIG     BIN", 0x20, 10, size));
+    let mut counting = Counting {
+        disk: &mut disk,
+        reads: 0,
+    };
+    let volume = Volume::mount(&mut counting, len).unwrap();
+    let path: std::vec::Vec<_> = "BIG.BIN".encode_utf16().collect();
+    let file = volume
+        .open_path(&mut counting, &Entry::root(), &path)
+        .unwrap();
+    let mut whole = std::vec![0u8; size as usize];
+    assert_eq!(
+        volume.read_file(&mut counting, &file, 0, &mut whole, &mut None),
+        Ok(size as usize)
+    );
+    for (i, chunk) in whole.chunks(512).enumerate() {
+        assert_eq!(chunk[0], (i * 7) as u8, "cluster {i}");
+        assert_eq!(chunk[511], (i * 7 + 511) as u8, "cluster {i}");
+    }
+    // 200 runs; the entries of clusters 10..=808 span 3.2 KB of FAT, 7 windows: about 207 reads,
+    // far below the 600 links and the ~1 200 reads of a per-link FAT read.
+    counting.reads = 0;
+    let mut again = std::vec![0u8; size as usize];
+    volume
+        .read_file(&mut counting, &file, 0, &mut again, &mut None)
+        .unwrap();
+    assert_eq!(again, whole);
+    assert!(counting.reads <= 220, "one read: {}", counting.reads);
+    // In 700-byte pieces with the cursor: the same bytes; without the cursor the chain walk from
+    // the first cluster would make the FAT reads quadratic.
+    counting.reads = 0;
+    let mut cursor = None;
+    let mut pieces = std::vec::Vec::new();
+    let mut offset = 0u64;
+    while offset < u64::from(size) {
+        let mut piece = [0u8; 700];
+        let read = volume
+            .read_file(&mut counting, &file, offset, &mut piece, &mut cursor)
+            .unwrap();
+        pieces.extend_from_slice(&piece[..read]);
+        offset += read as u64;
+    }
+    assert_eq!(pieces, whole);
+    let calls = (size as usize).div_ceil(700);
+    assert!(
+        counting.reads <= 3 * calls,
+        "{} reads for {calls} pieces",
+        counting.reads
+    );
+    // A cursor past the target is not used: reading from the start again works.
+    let mut head = [0u8; 16];
+    volume
+        .read_file(&mut counting, &file, 0, &mut head, &mut cursor)
+        .unwrap();
+    assert_eq!(&head, &whole[..16]);
 }

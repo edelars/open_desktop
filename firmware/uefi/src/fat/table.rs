@@ -12,17 +12,66 @@ enum Link {
     End,
 }
 
-fn link(geometry: Geometry, source: &mut impl ReadAt, cluster: u32) -> Result<Link, Status> {
+/// Bytes of the FAT one [`FatWindow`] read covers.
+const WINDOW: usize = 512;
+
+/// One 512-byte window of the first FAT, read on demand (S7-32). Consecutive entries of a chain
+/// walk or of a scan share one disk read instead of one read per entry: reading a 612 MB file
+/// through Simple File System walked its chain with one Disk I/O read per cluster link.
+pub(super) struct FatWindow {
+    bytes: [u8; WINDOW],
+    at: Option<u64>,
+}
+
+impl FatWindow {
+    pub(super) const fn new() -> Self {
+        Self {
+            bytes: [0; WINDOW],
+            at: None,
+        }
+    }
+
+    /// The raw FAT entry of `cluster`, bounds-checked against the FAT.
+    fn entry(
+        &mut self,
+        geometry: Geometry,
+        source: &mut impl ReadAt,
+        cluster: u32,
+    ) -> Result<u32, Status> {
+        let (position, size) = entry_position(geometry.fat_type, cluster);
+        if position + size as u64 > geometry.fat_bytes {
+            return Err(Status::VOLUME_CORRUPTED);
+        }
+        let within = (position % WINDOW as u64) as usize;
+        let mut bytes = [0; 4];
+        if within + size > WINDOW {
+            // A packed FAT12 entry can start at the last byte of a window.
+            source.read_at(geometry.fat_base + position, &mut bytes[..size])?;
+        } else {
+            let at = position - within as u64;
+            if self.at != Some(at) {
+                // The FAT ends on a sector boundary; a short last window stays inside it.
+                let length = WINDOW.min((geometry.fat_bytes - at) as usize);
+                self.at = None;
+                source.read_at(geometry.fat_base + at, &mut self.bytes[..length])?;
+                self.at = Some(at);
+            }
+            bytes[..size].copy_from_slice(&self.bytes[within..within + size]);
+        }
+        Ok(entry_value(geometry.fat_type, cluster, bytes))
+    }
+}
+
+fn link(
+    geometry: Geometry,
+    window: &mut FatWindow,
+    source: &mut impl ReadAt,
+    cluster: u32,
+) -> Result<Link, Status> {
     geometry
         .cluster_offset(cluster)
         .ok_or(Status::VOLUME_CORRUPTED)?;
-    let (position, size) = entry_position(geometry.fat_type, cluster);
-    if position + size as u64 > geometry.fat_bytes {
-        return Err(Status::VOLUME_CORRUPTED);
-    }
-    let mut bytes = [0; 4];
-    source.read_at(geometry.fat_base + position, &mut bytes[..size])?;
-    let entry = entry_value(geometry.fat_type, cluster, bytes);
+    let entry = window.entry(geometry, source, cluster)?;
     if entry >= geometry.fat_type.reserved_cluster() + 8 {
         return Ok(Link::End);
     }
@@ -54,28 +103,12 @@ fn entry_value(format: FatType, cluster: u32, bytes: [u8; 4]) -> u32 {
 
 impl Volume {
     pub(crate) fn free_bytes(&self, source: &mut impl ReadAt) -> Result<u64, Status> {
-        const CACHE: usize = 512;
         let geometry = self.geometry;
         let last = geometry.cluster_count + 2;
         let mut free = 0u64;
-        let mut scratch = [0; CACHE];
-        let mut sector_at = None;
+        let mut window = FatWindow::new();
         for cluster in 2..last {
-            let (position, size) = entry_position(geometry.fat_type, cluster);
-            let within = position as usize % CACHE;
-            let mut bytes = [0; 4];
-            if within + size > CACHE {
-                // A packed FAT12 entry can start at the last byte in a sector.
-                source.read_at(geometry.fat_base + position, &mut bytes[..size])?;
-            } else {
-                let at = position - within as u64;
-                if sector_at != Some(at) {
-                    source.read_at(geometry.fat_base + at, &mut scratch)?;
-                    sector_at = Some(at);
-                }
-                bytes[..size].copy_from_slice(&scratch[within..within + size]);
-            }
-            if entry_value(geometry.fat_type, cluster, bytes) == 0 {
+            if window.entry(geometry, source, cluster)? == 0 {
                 free += 1;
             }
         }
@@ -90,6 +123,7 @@ pub(super) struct Chain {
     window: u32,
     distance: u32,
     remaining: u32,
+    fat: FatWindow,
 }
 
 impl Chain {
@@ -103,6 +137,7 @@ impl Chain {
             window: 1,
             distance: 0,
             remaining: geometry.cluster_count,
+            fat: FatWindow::new(),
         })
     }
 
@@ -116,7 +151,7 @@ impl Chain {
         geometry: Geometry,
         source: &mut impl ReadAt,
     ) -> Result<bool, Status> {
-        let Link::Next(next) = link(geometry, source, self.current)? else {
+        let Link::Next(next) = link(geometry, &mut self.fat, source, self.current)? else {
             return Ok(false);
         };
         if next == self.anchor || self.remaining <= 1 {

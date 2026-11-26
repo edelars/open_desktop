@@ -7,6 +7,16 @@ use super::{Directory, Entry, ReadAt, Volume, bpb::Root, table::Chain};
 const SEPARATOR: u16 = b'\\' as u16;
 const DOT: u16 = b'.' as u16;
 
+/// Where a previous read left the cluster chain of a file: its `index`-th cluster (counted from
+/// 0) is `cluster` (S7-32). A later read at or past that cluster continues from it instead of
+/// walking the chain from the first cluster again: sequential reads of a large file through
+/// Simple File System were quadratic in the number of clusters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ChainCursor {
+    index: u64,
+    cluster: u32,
+}
+
 impl Volume {
     pub(crate) fn open_path(
         &self,
@@ -72,12 +82,17 @@ impl Volume {
         Ok(allocated)
     }
 
+    /// Read up to `out.len()` bytes of `entry` from `offset`. `cursor` is the chain position a
+    /// previous read of the same file left (or `None`); it is used when it does not lie past the
+    /// target cluster and is updated to the cluster holding the last byte read. Physically
+    /// consecutive clusters are read with one `read_at`.
     pub(crate) fn read_file(
         &self,
         source: &mut impl ReadAt,
         entry: &Entry,
         offset: u64,
         out: &mut [u8],
+        cursor: &mut Option<ChainCursor>,
     ) -> Result<usize, Status> {
         if entry.is_directory() {
             return Err(Status::UNSUPPORTED);
@@ -89,27 +104,57 @@ impl Volume {
         }
         let geometry = self.geometry;
         let cluster_bytes = u64::from(geometry.cluster_bytes);
-        let mut chain = Chain::new(geometry, entry.cluster)?;
-        for _ in 0..offset / cluster_bytes {
+        let target = offset / cluster_bytes;
+        let (mut chain, mut index) = match *cursor {
+            Some(at) if at.index <= target => (Chain::new(geometry, at.cluster)?, at.index),
+            _ => (Chain::new(geometry, entry.cluster)?, 0),
+        };
+        while index < target {
             if !chain.advance(geometry, source)? {
                 return Err(Status::VOLUME_CORRUPTED);
             }
+            index += 1;
         }
         let mut within = offset % cluster_bytes;
         let mut written = 0;
         loop {
+            let first = chain.current();
             let base = geometry
-                .cluster_offset(chain.current())
+                .cluster_offset(first)
                 .ok_or(Status::VOLUME_CORRUPTED)?;
-            let chunk = ((cluster_bytes - within) as usize).min(count - written);
+            // Extend the run over the clusters that follow `first` on the disk while more bytes
+            // are needed; `pending` is a chain cluster that breaks the run and is not read yet.
+            let mut last = first;
+            let mut span = cluster_bytes - within;
+            let mut pending = false;
+            while written as u64 + span < count as u64 {
+                if !chain.advance(geometry, source)? {
+                    return Err(Status::VOLUME_CORRUPTED);
+                }
+                index += 1;
+                if chain.current() == last.wrapping_add(1) {
+                    last = chain.current();
+                    span += cluster_bytes;
+                } else {
+                    pending = true;
+                    break;
+                }
+            }
+            let chunk = span.min((count - written) as u64) as usize;
             source.read_at(base + within, &mut out[written..written + chunk])?;
             written += chunk;
             if written == count {
+                // The run ended inside `last`, which is the chain's current cluster.
+                *cursor = Some(ChainCursor {
+                    index,
+                    cluster: last,
+                });
                 return Ok(written);
             }
-            if !chain.advance(geometry, source)? {
-                return Err(Status::VOLUME_CORRUPTED);
-            }
+            debug_assert!(
+                pending,
+                "a run shorter than the request ends at a chain break"
+            );
             within = 0;
         }
     }

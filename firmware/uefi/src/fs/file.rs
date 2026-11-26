@@ -54,6 +54,8 @@ struct File {
     entry: Entry,
     allocation: u64,
     position: Cell<u64>,
+    /// S7-32: the chain position the last read left (see [`crate::fat::ChainCursor`]).
+    cursor: Cell<Option<crate::fat::ChainCursor>>,
     active: Cell<bool>,
     closing: Cell<bool>,
 }
@@ -97,6 +99,7 @@ pub(super) fn new_handle(mounted: &Mounted, entry: Entry) -> Result<*mut FilePro
             entry,
             allocation,
             position: Cell::new(0),
+            cursor: Cell::new(None),
             active: Cell::new(false),
             closing: Cell::new(false),
         });
@@ -267,7 +270,9 @@ unsafe extern "efiapi" fn read(
                 return Err(Status::INVALID_PARAMETER);
             }
             let out = slice::from_raw_parts_mut(buffer.cast::<u8>(), amount);
-            let copied = volume.read_file(&mut disk, &file.entry, position, out)?;
+            let mut cursor = file.cursor.get();
+            let copied = volume.read_file(&mut disk, &file.entry, position, out, &mut cursor)?;
+            file.cursor.set(cursor);
             file.position.set(position + copied as u64);
             size.write(copied);
             Ok(())

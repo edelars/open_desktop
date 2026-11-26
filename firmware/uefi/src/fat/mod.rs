@@ -11,6 +11,7 @@ mod table;
 
 use bpb::Geometry;
 pub(crate) use dir::{Directory, DirectoryCursor, Entry, Times};
+pub(crate) use file::ChainCursor;
 
 pub(crate) trait ReadAt {
     fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Status>;
