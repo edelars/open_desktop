@@ -850,9 +850,10 @@ impl HostBoardIrqSource<'_> {
             source,
             counters: &mut counters,
             delivered_mirror: None,
-            skip_first_boundary: *skip_first_boundary,
+            boundary_flags: crate::irq_source::boundary_flags(*skip_first_boundary, None),
             device_accesses: None,
             polled: None,
+            cr8: None,
         };
         let outcome = deliver_pending_irq(
             &mut hook,
@@ -864,7 +865,7 @@ impl HostBoardIrqSource<'_> {
             None,
             self.gate,
         );
-        *skip_first_boundary = hook.skip_first_boundary;
+        *skip_first_boundary = hook.boundary_flags & crate::irq_source::BOUNDARY_SKIP_FIRST != 0;
         match outcome {
             IrqBoundaryOutcome::None => HostIrqBoundary::None,
             IrqBoundaryOutcome::Delivered => HostIrqBoundary::Delivered,

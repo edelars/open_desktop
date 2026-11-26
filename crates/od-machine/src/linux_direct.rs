@@ -2053,9 +2053,15 @@ pub fn run_firmware_unified_guest(
             "run_firmware_unified runs one vCPU",
         ));
     }
-    if !board.pit_pic_irq_available() {
+    let windows = guest == UnifiedGuest::Windows;
+    if !windows && !board.pit_pic_irq_available() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs the Linux-profile PIT and 8259",
+        ));
+    }
+    if windows && !board.pit_ioapic_irq_available() {
+        return Err(crate::FirmwareBoardError::Config(
+            "run_firmware_unified (Windows) needs the Linux-profile PIT and no 8259 source",
         ));
     }
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
@@ -2066,12 +2072,16 @@ pub fn run_firmware_unified_guest(
     // `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE and SSE2 in leaf 1 (the
     // kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636). Windows: `OdX8664V2Windows`
     // (ADR-0013). The members are the same for both guests.
+    // S7-32: the Windows guest also reads IA32_APIC_BASE (the BSP and xAPIC enable bits) and
+    // runs with the clock owner (the LAPIC timer); the Linux guest keeps its members.
     let members = LinuxCpl0SetMembers {
         cpuid_profile: guest.cpuid_profile(),
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,
         halt: true,
+        msr_apic_base: windows,
+        clock_owner: windows,
         ..LinuxCpl0SetMembers::linux_default()
     };
     let profile = LinuxCpl0Profile::new(members, true, board.efer());
@@ -2085,7 +2095,8 @@ pub fn run_firmware_unified_guest(
     let set = profile.bind(&cpu_cells, &pci_cell, |member| {
         names.push(member.to_string())
     });
-    board.serve_firmware_set_windows();
+    // The marker is checked before the platform is configured (S7-32: a refused marker leaves the
+    // clock owner and the board source of the Windows guest unclaimed).
     if let Some(rip) = marker_rip {
         board
             .enable_checkpoints(crate::linux_checkpoints::LinuxCheckpointTable {
@@ -2100,16 +2111,38 @@ pub fn run_firmware_unified_guest(
             })
             .map_err(|_| crate::FirmwareBoardError::Config("run_firmware_unified: bad marker"))?;
     }
+    // S7-32: the Windows guest runs on the xAPIC platform the MADT describes (one LAPIC, the
+    // IOAPIC with the ISA overrides): PIT channel 0 -> INTIN2, COM1 -> INTIN4 and the PCI INTx
+    // lines (NVMe GSI 16, xHCI 17, NIC 18) through the IOAPIC, MSI-X to the LAPIC, the LAPIC timer
+    // dispatched by the clock owner, and CR8 bound to the TPR (`with_cr8_tpr`, see
+    // `Cr8TprLink`). The windows of the LAPIC and IOAPIC open here, before the set windows are
+    // taken from the bus. The 8259 is still bound as ports (the firmware masks it) but injects
+    // nothing: one board source at a time.
+    let cr8 = Cell::new(0u8);
+    let set = if windows {
+        names.push("cr8_tpr".to_owned());
+        board.enable_clock_owner()?;
+        assert!(
+            board.enable_pit_ioapic_irq() && board.enable_uart_ioapic_irq4(),
+            "the PIT -> IOAPIC source was checked available"
+        );
+        set.with_cr8_tpr(&cr8)
+    } else {
+        set
+    };
+    board.serve_firmware_set_windows();
     // S7-31m (ISSUE-640): the kernel programs the PIT (channel 0, mode 2) and unmasks IR0 of the
     // 8259, then idles in `sti; hlt` until the timer interrupt (the S7-31m measurement). The
     // board source is the one of the user-mode Linux run (S4-39g, S4-39i): PIT channel 0 -> IR0
     // and the UART THRE line -> IR4 through the 8259. With `halt` and the interrupt hook a
     // `HLT` at IF = 1 is woken at the next timer edge; `HLT` at IF = 0 ends the run as halted.
     // `pit_pic_irq_available` was checked with the refusals at the top, so both installs succeed.
-    assert!(
-        board.enable_pit_pic_irq() && board.enable_uart_irq4(),
-        "the PIT -> 8259 source was checked available"
-    );
+    if !windows {
+        assert!(
+            board.enable_pit_pic_irq() && board.enable_uart_irq4(),
+            "the PIT -> 8259 source was checked available"
+        );
+    }
     if !trace.is_empty() {
         board.enable_call_trace(trace, system_table);
     }
@@ -16460,9 +16493,10 @@ mod tests {
                     source,
                     counters,
                     delivered_mirror,
-                    skip_first_boundary,
+                    boundary_flags: crate::irq_source::boundary_flags(skip_first_boundary, None),
                     device_accesses: None,
                     polled: None,
+                    cr8: None,
                 }),
             );
             (state, report)

@@ -2205,7 +2205,20 @@ operations across the full helper call, including fetch and effect application.
 The instruction/helper makes no architectural serialization guarantee.
 
 This profile does not implement general MOV CR8, interrupt/handler delivery,
-IDT/IF, HLT wakeup, JIT/session integration, or default board wiring. Behavior
+IDT/IF, HLT wakeup, JIT/session integration, or default board wiring.
+
+**S7-32 update (2026-11-26).** The CPL0 profile set has a separate member,
+`Cpl0ProfileSet::with_cr8_tpr`, for `MOV r64, CR8` and `MOV CR8, r64` with any GPR (REX.R
+forms): the set keeps CR8 in a cell, and the unified loop of the Windows guest
+(`--cpu-loop unified --guest windows`) binds the cell to the boot vCPU's TPR (`Cr8TprLink`).
+At every instruction boundary, before an interrupt is selected, a CR8 write becomes
+`TPR = CR8 << 4` (`TPR[3:0]` cleared, also when the class is unchanged after an MMIO write
+that set them), and after any device access (an MMIO TPR write) the cell is read back from
+`TPR[7:4]`; a CR8 write retired as the last instruction of a run is applied after the run.
+Interrupt delivery and HLT wakeup of that loop therefore see the CR8 value; the turbo engine
+does not translate `MOV CR8` (it ends its blocks there). TPR remains the sole state source.
+Other boards and loops do not have the member: a set with it must run with the binding (a
+debug assertion). One vCPU only; INIT does not resynchronise the cell (no INIT on this loop). Behavior
 follows Intel [SDM release 093, Volume 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
 §§13.8.6–13.8.6.1, and [Volume 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
 MOV to/from control registers. See the [S4-25d report](../reports/STAGE_4_S4-25D_2026-11-07.md)
@@ -2325,6 +2338,12 @@ DFR reset `0xffffffff` (flat, SDM §13.6.2.2): записывается толь
 и при записи игнорируются; другой model отклоняется. LDR reset `0`: записывается
 только logical ID (31:24); ненулевые bits 23:0 отклоняются. Logical destination
 по этим регистрам не вычисляется, ICR принимает прежний набор (Self shorthand).
+*Обновление S7-32 (2026-11-26):* logical destination вычисляется для записей IOAPIC, MSI-X
+и ICR (SDM Vol. 3A 11.6.2.2): flat — общий бит адреса и `LDR[31:24]`, cluster — тот же
+кластер (биты 7:4) и общий бит члена (биты 3:0); другие модели не совпадают ни с чем.
+Fixed по логическому адресу доставляется всем совпавшим vCPU, lowest priority — одному,
+первому совпавшему (арбитраж между несколькими не моделируется). Физический
+широковещательный адрес `0xFF` не моделируется.
 
 **Perf `0x340`, Thermal `0x330`, CMCI `0x2f0`.** Не реализованы: чтение и запись
 дают `UnknownOffset` без мутации. Условие: CPUID гостя не объявляет PMU
@@ -2462,6 +2481,15 @@ delivery mode кроме Fixed — lowest priority, SMI, NMI, INIT, ExtINT и з
 `011`/`110`, polarity (кроме masked на входах без линии и формы level/active-low pin 9, S4-38L8e), reserved-биты, ненулевой high dword) всегда
 `UnsupportedConfiguration` и не меняют ни один вход, ID, Remote IRR, IRR/ISR/TMR.
 Тесты сравнивают полный снимок `PairState` до и после.
+*Обновление S7-32 (2026-11-26):* delivery mode lowest priority (`001`) и logical destination
+(бит 11) принимаются на любом входе (их программирует HAL Windows); SMI, NMI, INIT, ExtINT и
+зарезервированные режимы по-прежнему отказ. Адресат хранится как записан (чтение high dword
+возвращает его): пока запись маскирована, принимается любой байт адресата и ничего не
+разрешается; запись low dword, снимающая маску, разрешает его по режиму из этой записи
+(physical — APIC ID существующего vCPU, logical — по LDR/DFR); адресат, не называющий ни
+одного vCPU, у немаскированной записи — отказ. Отказ любой из двух записей восстанавливает
+весь снимок `PairState` (и маршрут, и запросы LAPIC). Разрешение выполняется в момент записи:
+позднее изменение LDR/DFR на уже разрешённые записи не влияет.
 
 **S4-38L8e: SCI на pin 9 (level, active-low).** Запись `0xa020`-формы (бит 15 и бит 13 = 1, без маски)
 в low dword pin 9 принимается (раньше отказ, на нём остановился прогон L8d). Модель: `sci_asserted`
@@ -2490,6 +2518,10 @@ INTIN4 того же LAPIC; Remote IRR вето на сброс IOAPIC и отк
 записи в redirection entries — они будут отказаны, пока не появится logical routing
 (S4-38 покажет, нужен ли он для одного CPU; physical mode с destination 0 принимается).
 PCI MSI и дополнительные IOAPIC вне контракта.
+*Обновление S7-32 (2026-11-26):* logical destination и lowest priority принимаются (см.
+«Недопустимые записи» и DFR/LDR выше; один vCPU — первое совпадение). MSI-X контроллера NVMe
+принимает в адресе RH (бит 3) и DM (бит 2, logical), в данных — delivery mode fixed или lowest
+priority и фронт; остальное остаётся в PBA. Дополнительные IOAPIC и обычный MSI вне контракта.
 
 **Согласование с MADT.** MADT прошивки (`firmware/uefi/src/acpi/madt.rs`, константы
 `IOAPIC_ID = 1`, `IOAPIC_PIN_COUNT = 24`, блоб-фикстура
@@ -4110,7 +4142,7 @@ block, отдаёт `LongModeState`. Это не reset vector и не real mode.
 
 С shorthand байт адресата и Destination Mode игнорируются. Запрос — тот же edge, что у `request_fixed_edge` и IOAPIC: тот же IRR, те же правила резервирования вектора level-входа в LAPIC адресата; одинаковые векторы сливаются в IRR. Адресат выполняет запрос на своей границе исполнения (запуск AP — S6-13), отправитель синхронного исполнения не ждёт.
 
-**Ошибка устройства (`UnsupportedConfiguration`) до любого изменения состояния.** Всё, что не строка таблицы: зарезервированные биты (13, 17:16, 31:20; бит 12 игнорируется), Delivery mode кроме Fixed (Lowest Priority, SMI, зарезервированные 011 и 111), вектор `< 0x10`, logical destination без shorthand, APIC ID, которого нет среди vCPU (включая broadcast `0xFF`, которого в матрице нет), неуказанные пары `(Level, Trigger)` для строки, широкая запись больше 32 бит. Если запрос отказывает любой адресат (LAPIC глобально выключен или вектор зарезервирован level-входом IOAPIC), отказывает вся IPI: ни один LAPIC не меняется (`edge_all` сначала проверяет всех). Строки NMI матрицы SMP_CONTRACT §5 в срезе S6-12a давали эту ошибку; с [S6-12b](#nmi-s6-12b) принимаются обе строки (физический и All-but-self), NMI Self и All остаются ошибкой. Строки INIT и SIPI реализованы в срезе S6-13 ([ниже](#init-sipi-и-ожидание-sipi-s6-13)); в срезе S6-12a они давали эту ошибку.
+**Ошибка устройства (`UnsupportedConfiguration`) до любого изменения состояния.** Всё, что не строка таблицы: зарезервированные биты (13, 17:16, 31:20; бит 12 игнорируется), Delivery mode кроме Fixed (Lowest Priority, SMI, зарезервированные 011 и 111; *с S7-32 Lowest Priority без shorthand принимается — одна цель, первая по адресату*), вектор `< 0x10`, logical destination без shorthand (*с S7-32 Fixed и Lowest Priority по логическому адресу принимаются, бит Level 14 — 0 или 1, триггер — фронт; адрес, не называющий ни одного vCPU, — ошибка*), APIC ID, которого нет среди vCPU (включая broadcast `0xFF`, которого в матрице нет), неуказанные пары `(Level, Trigger)` для строки, широкая запись больше 32 бит. Если запрос отказывает любой адресат (LAPIC глобально выключен или вектор зарезервирован level-входом IOAPIC), отказывает вся IPI: ни один LAPIC не меняется (`edge_all` сначала проверяет всех). Строки NMI матрицы SMP_CONTRACT §5 в срезе S6-12a давали эту ошибку; с [S6-12b](#nmi-s6-12b) принимаются обе строки (физический и All-but-self), NMI Self и All остаются ошибкой. Строки INIT и SIPI реализованы в срезе S6-13 ([ниже](#init-sipi-и-ожидание-sipi-s6-13)); в срезе S6-12a они давали эту ошибку.
 
 **Delivery Status** (бит 12) — read-only: при записи игнорируется, читается Idle, потому что доставка в IRR завершена до возврата из записи. Idle означает «отправка закончена», а не «процессор принял прерывание». Хранимое значение `ICR_LOW` — записанное без бита 12; отказанная запись его не меняет.
 

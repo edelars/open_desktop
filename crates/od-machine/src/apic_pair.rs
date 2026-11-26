@@ -15,6 +15,10 @@ pub(crate) const PERIODIC: u32 = 1 << 17;
 pub(crate) const LEVEL: u32 = 1 << 15;
 pub(crate) const REMOTE_IRR: u32 = 1 << 14;
 pub(crate) const POLARITY_LOW: u32 = 1 << 13;
+/// S7-32: redirection entry destination mode (bit 11): logical (SDM Vol. 3A 11.6.2.2).
+pub(crate) const DEST_LOGICAL: u32 = 1 << 11;
+/// S7-32: redirection entry delivery mode lowest priority (bits 10:8 = 001).
+pub(crate) const DELIVERY_LOWEST_PRIORITY: u32 = 1 << 8;
 /// The input the MADT interrupt source override (S4-31f) describes as level, active low: the SCI
 /// (ISA IRQ 9 -> GSI 9, flags 0x000F).
 pub(crate) const SCI_PIN: usize = 9;
@@ -67,9 +71,12 @@ pub(crate) struct Route {
     /// Stored low dwords of entries other than INTIN4. INTIN2 is an edge input; the
     /// SCI and the NVMe INTA route are level, active low.
     pub pins: [u32; IO_APIC_PINS],
-    /// Destination field (high dword bits 31:24, a physical APIC ID) of every entry. Always an
-    /// existing vCPU index; a write naming another one is refused (SMP_CONTRACT.md 6).
+    /// The vCPU every entry delivers to: the destination field resolved under the entry's
+    /// destination mode. Always an existing vCPU index (SMP_CONTRACT.md 6).
     pub dest: [u8; IO_APIC_PINS],
+    /// S7-32: the destination field (high dword bits 31:24) as the guest wrote it: a physical APIC
+    /// ID or, with the logical destination mode, a message destination address.
+    pub dest_raw: [u8; IO_APIC_PINS],
 }
 impl Default for Route {
     fn default() -> Self {
@@ -92,6 +99,7 @@ impl Default for Route {
             id: IO_APIC_RESET_ID,
             pins: [MASK; IO_APIC_PINS],
             dest: [0; IO_APIC_PINS],
+            dest_raw: [0; IO_APIC_PINS],
         }
     }
 }
@@ -306,7 +314,7 @@ impl PairState {
         }
     }
 
-    /// Low dword of the level-capable entry `pin` (INTIN4, INTIN3 or another level input).
+    /// Low dword of entry `pin` as stored (INTIN4 keeps it in `route.low`).
     fn level_low(&self, pin: usize) -> u32 {
         if pin == 4 {
             self.route.low
@@ -741,6 +749,68 @@ impl PairState {
     /// INTIN4 or INTIN2 follows the rules of a vector change: a level INTIN4 entry keeps its
     /// destination while its line is high, a request awaits EOI or either LAPIC holds the vector,
     /// and no move may make a vector collide with an LVT Timer or entry 2 of the new LAPIC.
+    /// S7-32: the vCPU a message destination names (an IOAPIC entry, an MSI, an IPI) under the
+    /// xAPIC destination modes (SDM Vol. 3A 11.6.2): physical — the APIC ID of an existing vCPU
+    /// (the broadcast ID 0xFF is not modelled); logical — the first vCPU whose LDR matches the
+    /// message destination address under its DFR model (flat: a bit in common; cluster: the same
+    /// cluster and a member bit in common). For lowest-priority delivery the first match is the
+    /// target (no arbitration among several vCPUs is modelled). `None`: no vCPU.
+    pub(crate) fn resolve_destination(&self, destination: u8, logical: bool) -> Option<usize> {
+        if !logical {
+            let cpu = usize::from(destination);
+            return (cpu < self.cpus.len()).then_some(cpu);
+        }
+        self.cpus
+            .iter()
+            .position(|cpu| logical_match(cpu.local.dfr, cpu.local.ldr, destination))
+    }
+
+    /// Every vCPU a logical message destination address names (fixed delivery to a logical
+    /// destination reaches all of them, SDM Vol. 3A 11.6.2.2).
+    pub(crate) fn logical_targets(&self, destination: u8) -> Vec<usize> {
+        (0..self.cpus.len())
+            .filter(|&cpu| {
+                logical_match(
+                    self.cpus[cpu].local.dfr,
+                    self.cpus[cpu].local.ldr,
+                    destination,
+                )
+            })
+            .collect()
+    }
+
+    /// S7-32: a guest write of the destination field of entry `pin`. The raw value is kept for
+    /// reads. While the entry is masked any value is stored and nothing is resolved: the HAL may
+    /// write the destination before the low dword that names its mode, and an unmasking low
+    /// write resolves it then ([`Self::resolve_entry`]). Unmasked, the entry moves to the vCPU the
+    /// value names under the entry's destination mode ([`Self::set_dest`] checks the move); a
+    /// value that names no vCPU is refused. The caller makes a refused write leave no change.
+    pub fn set_dest_raw(&mut self, pin: usize, raw: u8) -> Result<(), DeviceError> {
+        let low = self.level_low(pin);
+        if low & MASK == 0 {
+            self.resolve_entry(pin, raw, low)?;
+        }
+        self.route.dest_raw[pin] = raw;
+        Ok(())
+    }
+
+    /// S7-32: move entry `pin` to the vCPU `raw` names under the destination mode of `low` (the
+    /// entry's low dword, current or about to be written). A masked `low` that names no vCPU keeps
+    /// the entry where it is (it delivers nothing); an unmasked one is refused. The caller makes a
+    /// refused write leave no change.
+    pub(crate) fn resolve_entry(
+        &mut self,
+        pin: usize,
+        raw: u8,
+        low: u32,
+    ) -> Result<(), DeviceError> {
+        match self.resolve_destination(raw, low & DEST_LOGICAL != 0) {
+            Some(cpu) => self.set_dest(pin, cpu as u8),
+            None if low & MASK != 0 => Ok(()),
+            None => Err(DeviceError::UnsupportedConfiguration),
+        }
+    }
+
     pub fn set_dest(&mut self, pin: usize, apic_id: u8) -> Result<(), DeviceError> {
         let new = usize::from(apic_id);
         if new >= self.cpus.len() {
@@ -804,5 +874,18 @@ impl PairState {
             }
         }
         Ok(())
+    }
+}
+
+/// S7-32: whether a logical message destination address `mda` names the LAPIC with `dfr` and
+/// `ldr` (SDM Vol. 3A 11.6.2.2): the flat model (DFR[31:28] = 1111b) matches a bit in common with
+/// LDR[31:24]; the cluster model (0000b) matches the same cluster (bits 7:4) and a member bit in
+/// common (bits 3:0). Other models match nothing.
+pub(crate) fn logical_match(dfr: u32, ldr: u32, mda: u8) -> bool {
+    let id = (ldr >> 24) as u8;
+    match dfr >> 28 {
+        0xf => id & mda != 0,
+        0x0 => id >> 4 == mda >> 4 && id & mda & 0x0f != 0,
+        _ => false,
     }
 }

@@ -2924,6 +2924,12 @@ fn run_cpl0_set_loop_impl<
     mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     turbo: Option<crate::turbo::TurboHook<'_>>,
 ) -> PagedCpl0SetReport {
+    // S7-32: a set with the CR8 member keeps CR8 in a cell the board binds to the LAPIC TPR at
+    // the boundaries of this loop; without the binding the TPR would never see a CR8 write.
+    debug_assert!(
+        set.cr8_tpr().is_none() || irq.as_ref().is_some_and(|hook| hook.cr8.is_some()),
+        "a CPL0 set with the CR8 member runs with its TPR link"
+    );
     let mut turbo = turbo;
     let mut instruction_budget = instruction_budget;
     // The turbo engine: the instructions of the merged quanta before the current one.
@@ -3051,7 +3057,7 @@ fn run_cpl0_set_loop_impl<
                         if start.fresh_source {
                             irq_hook.polled = None;
                         }
-                        irq_hook.skip_first_boundary = false;
+                        irq_hook.boundary_flags &= !crate::irq_source::BOUNDARY_SKIP_FIRST;
                         if start.cut_by_deadline {
                             irq_hook.counters.quantum_cut_by_deadline += 1;
                         }
@@ -4501,14 +4507,33 @@ pub(crate) fn deliver_pending_irq(
     }
 }
 
+/// The flags of [`poll_pending_irq`], out of line: CR8 and the TPR agree before the source is
+/// asked (S7-32: a CR8 write changes the answer, the saved one is dropped); the first boundary of
+/// a call that resumes a partial REP delivers nothing (`true`: hold back).
+#[cold]
+#[inline(never)]
+fn boundary_flags_hold_back(hook: &mut IrqBoundaryHook<'_>) -> bool {
+    if let Some(link) = hook.cr8
+        && link.sync(hook.device_accesses)
+    {
+        hook.polled = None;
+    }
+    if hook.boundary_flags & crate::irq_source::BOUNDARY_SKIP_FIRST != 0 {
+        hook.boundary_flags &= !crate::irq_source::BOUNDARY_SKIP_FIRST;
+        return true;
+    }
+    false
+}
+
 /// The question part of [`deliver_pending_irq`] at one boundary: the vector to deliver now, or
 /// `None` when there is none or it is held back (IF = 0, the STI shadow), the refusal counted.
 pub(crate) fn poll_pending_irq(
     hook: &mut IrqBoundaryHook<'_>,
     state: &LongModeState,
 ) -> Option<u8> {
-    if hook.skip_first_boundary {
-        hook.skip_first_boundary = false;
+    // One test for the rare flags (a partial REP, the CR8 link of S7-32): a hook with neither
+    // runs the same checks per boundary as before S7-32.
+    if hook.boundary_flags != 0 && boundary_flags_hold_back(hook) {
         return None;
     }
     // PERF-05: a source that is stable between device accesses is asked again only when a guest

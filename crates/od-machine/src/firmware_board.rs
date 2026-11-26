@@ -3894,6 +3894,14 @@ impl LoadedFirmwareBoard {
                 .unwrap_or(0),
         );
         let mut previous_halt: Option<(u64, bool)> = None;
+        // S7-32: the CR8 member of the set, bound to the boot vCPU's TPR for the whole run.
+        let cr8_link = set.cr8_tpr().map(|cell| {
+            let lapic = self
+                .lapic
+                .for_cpu(BOOT_VCPU_INDEX)
+                .expect("every board has a local APIC for the boot vCPU");
+            crate::irq_source::Cr8TprLink::new(cell, lapic)
+        });
         let mut run_quantum = |board: &mut Self,
                                scheduler_budget: Option<u64>,
                                scheduler_stop: &mut dyn FnMut() -> bool,
@@ -3938,6 +3946,17 @@ impl LoadedFirmwareBoard {
             }
             let uart = board.uart.clone();
             let agent = board.agent_channel.clone();
+            // S7-32: on a board loaded from a ROM with the IOAPIC source (the Windows guest of
+            // the unified loop) a guest write of a LAPIC timer register ends the quantum, so the
+            // clock owner re-reads the programmed deadline (as the vCPU quantum does). The Linux
+            // unified loop runs the 8259 source and the Linux direct board has no ROM entry: both
+            // unchanged.
+            let lapic_timer = (board.pit_ioapic_source.is_some() && board.has_firmware_entry())
+                .then(|| board.lapic.for_cpu(BOOT_VCPU_INDEX))
+                .flatten();
+            let lapic_timer_writes = lapic_timer
+                .as_ref()
+                .map(LocalApicHandle::timer_register_writes);
             let clock_read = Cell::new(None);
             let quantum_clock_ledger = execution_observations.as_ref().and_then(|observations| {
                 observations.build_rdtsc_clock_trace_if_active(|| {
@@ -4027,6 +4046,9 @@ impl LoadedFirmwareBoard {
                         .as_ref()
                         .is_some_and(AcpiPmHandle::timer_tick_pending)
                     || pit.as_ref().is_some_and(Pit8254Handle::port_tick_pending)
+                    || lapic_timer.as_ref().is_some_and(|lapic| {
+                        Some(lapic.timer_register_writes()) != lapic_timer_writes
+                    })
             };
             // S4-38L8b: the quantum ends at the next edge of the source; the clock moves only
             // after the quantum (one instruction is one ns), so the limit is the time left.
@@ -4204,9 +4226,13 @@ impl LoadedFirmwareBoard {
                             source: &mut *board.irq_source,
                             counters: &mut irq_counters,
                             delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
-                            skip_first_boundary: partial_rep,
+                            boundary_flags: crate::irq_source::boundary_flags(
+                                partial_rep,
+                                cr8_link.as_ref(),
+                            ),
                             device_accesses: Some(&*device_accesses),
                             polled: None,
+                            cr8: cr8_link.as_ref(),
                         }),
                         crate::turbo::TurboHook {
                             engine: board.turbo.as_deref_mut().expect("turbo engine"),
@@ -4238,10 +4264,14 @@ impl LoadedFirmwareBoard {
                         source: &mut *board.irq_source,
                         counters: &mut irq_counters,
                         delivered_mirror: capture_clock_read.then_some(&delivered_irq_mirror),
-                        skip_first_boundary: partial_rep,
+                        boundary_flags: crate::irq_source::boundary_flags(
+                            partial_rep,
+                            cr8_link.as_ref(),
+                        ),
                         // PERF-05: the count of the guest device accesses of this bus.
                         device_accesses: Some(&*device_accesses),
                         polled: None,
+                        cr8: cr8_link.as_ref(),
                     }),
                     board.checkpoints.as_mut(),
                     execution_observations.as_mut(),
@@ -4623,6 +4653,11 @@ impl LoadedFirmwareBoard {
                 rdtsc_reads_by_cpl[0],
                 retired,
             );
+        }
+        // S7-32: a CR8 write retired as the last instruction of the run (the budget or a stop
+        // ended the loop before the next boundary) reaches the TPR here.
+        if let Some(link) = &cr8_link {
+            link.flush();
         }
         // The CPU state carries no CR3 outside this call, whatever way the loop ended.
         self.vcpus[BOOT_VCPU_INDEX].state.cr3 = None;
@@ -9374,6 +9409,225 @@ mod tests {
         assert_eq!(traced.state(), plain.state());
     }
 
+    /// S7-32: the Windows guest of the unified loop runs on the xAPIC platform: CR8 is the TPR of
+    /// the local APIC (`MOV CR8` from the ROM sets TPR = CR8 << 4 and reads back), the LAPIC and
+    /// IOAPIC windows are served, the clock owner and IA32_APIC_BASE are members, and no 8259
+    /// source is installed. The Linux guest keeps the 8259 source and has no CR8 member.
+    #[test]
+    fn s7_32_the_windows_unified_run_binds_cr8_to_the_lapic_tpr() {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        #[rustfmt::skip]
+        let code = [
+            0xB8, 0x0D, 0x00, 0x00, 0x00, // mov eax, 13
+            0x44, 0x0F, 0x22, 0xC0,       // mov cr8, rax
+            0x44, 0x0F, 0x20, 0xC3,       // mov rbx, cr8
+            0xF4,                         // hlt (IF = 0: the run ends)
+        ];
+        image[0x40..0x40 + code.len()].copy_from_slice(&code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            100,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(board.state().gpr[Register::Rbx as usize], 13);
+        assert_eq!(board.lapic.for_cpu(BOOT_VCPU_INDEX).unwrap().tpr(), 0xd0);
+        for member in ["cr8_tpr", "msr:apic_base", "clock_owner"] {
+            assert!(
+                run.members.iter().any(|m| m == member),
+                "{member}: {:?}",
+                run.members
+            );
+        }
+        assert!(board.pit_ioapic_source.is_some() && board.pit_pic_source.is_none());
+        assert!(board.clock_owner_enabled());
+
+        // The Linux guest: `MOV CR8` has no member there and stops the run.
+        let mut linux = load_firmware_image(&image, &linux_config()).unwrap();
+        let linux_entry = linux.state().rip;
+        let run = crate::run_firmware_unified(&mut linux, 100).unwrap();
+        assert!(!run.members.iter().any(|m| m == "cr8_tpr"));
+        // `mov eax, 13` retires; `mov cr8, rax` (opcode 0x22) is refused without the member.
+        assert_eq!(
+            run.run.exit,
+            PagedProbeExit::Unsupported { opcode: 0x22 },
+            "{run:?}"
+        );
+        assert_eq!(run.run.retired, 1);
+        assert_eq!(linux.state().rip, linux_entry + 5);
+        assert!(linux.pit_pic_source.is_some() && linux.pit_ioapic_source.is_none());
+    }
+
+    /// S7-32: the Windows unified run with a guest IDT: a one-shot LAPIC timer (vector 0x40)
+    /// whose initial count is written by `code` runs to the handler at `handler_offset`, which
+    /// copies RBX and RCX into R8 and R9, writes EOI and halts at IF = 0. Returns the board and
+    /// the report.
+    fn windows_lapic_timer_run(
+        code: &[u8],
+        handler_offset: usize,
+        budget: u64,
+    ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun) {
+        const IDT: u64 = 0x2000;
+        let mut rom = code.to_vec();
+        rom.resize(handler_offset, 0x90);
+        #[rustfmt::skip]
+        rom.extend_from_slice(&[
+            0x49, 0x89, 0xD8,                                     // mov r8, rbx
+            0x49, 0x89, 0xC9,                                     // mov r9, rcx
+            0xC7, 0x80, 0xB0, 0x00, 0x00, 0x00, 0, 0, 0, 0,       // mov dword [rax+0xb0], 0 (EOI)
+            0xF4,                                                 // hlt (IF = 0)
+        ]);
+        let mut board = load_firmware_image(&minor2_image(&rom), &linux_config()).unwrap();
+        let handler = board.state().rip + handler_offset as u64;
+        let mut write = |address: u64, bytes: &[u8]| {
+            for (index, byte) in bytes.iter().enumerate() {
+                board
+                    .bus_mut()
+                    .write_physical(
+                        GuestPhysicalAddress::new(address + index as u64),
+                        AccessWidth::Byte,
+                        u64::from(*byte),
+                        |_| {},
+                    )
+                    .unwrap();
+            }
+        };
+        write(8, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xAF, 0]);
+        let mut gate = [0u8; 16];
+        gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+        gate[2..4].copy_from_slice(&8u16.to_le_bytes());
+        gate[5] = 0x8E;
+        gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+        gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+        write(IDT + 0x40 * 16, &gate);
+        let state = board.state_mut();
+        state.idtr = Some(od_isa::state::Idtr {
+            base: IDT,
+            limit: 0xFFF,
+        });
+        state.cs_selector = Some(8);
+        state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9B,
+            flags: 0xA,
+        });
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            budget,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        (board, run)
+    }
+
+    /// The LAPIC set-up of the timer runs: base in RAX, software enable, LVT timer one-shot
+    /// vector 0x40, initial count 0x10 (32 ticks of the 100 MHz LAPIC timer at the reset divide
+    /// by 2: 320 ns).
+    #[rustfmt::skip]
+    const LAPIC_TIMER_SETUP: [u8; 40] = [
+        0x48, 0xB8, 0x00, 0x00, 0xE0, 0xFE, 0, 0, 0, 0,       // mov rax, 0xfee00000
+        0xC7, 0x80, 0xF0, 0x00, 0x00, 0x00, 0xFF, 0x01, 0, 0, // mov dword [rax+0xf0], 0x1ff
+        0xC7, 0x80, 0x20, 0x03, 0x00, 0x00, 0x40, 0, 0, 0,    // mov dword [rax+0x320], 0x40
+        0xC7, 0x80, 0x80, 0x03, 0x00, 0x00, 0x10, 0, 0, 0,    // mov dword [rax+0x380], 0x10
+    ];
+
+    /// S7-32: CR8 holds a pending LAPIC timer vector back through the real unified loop (Windows
+    /// guest, general step): with CR8 = 15 the timer fires during a 4000-instruction loop at
+    /// IF = 1 and nothing is delivered; `mov cr8, 0` releases vector 0x40 at the next boundary,
+    /// so the handler sees RBX = 2, the value set just before CR8 was lowered.
+    #[test]
+    fn s7_32_cr8_holds_a_lapic_timer_vector_back_until_it_is_lowered() {
+        let mut code = LAPIC_TIMER_SETUP.to_vec();
+        #[rustfmt::skip]
+        code.extend_from_slice(&[
+            0xB9, 0x0F, 0, 0, 0,          // mov ecx, 15
+            0x44, 0x0F, 0x22, 0xC1,       // mov cr8, rcx
+            0xBB, 0x01, 0, 0, 0,          // mov ebx, 1
+            0xFB,                         // sti
+            0xB9, 0xD0, 0x07, 0, 0,       // mov ecx, 2000
+            0xFF, 0xC9,                   // L: dec ecx
+            0x75, 0xFC,                   // jnz L
+            0xBB, 0x02, 0, 0, 0,          // mov ebx, 2
+            0x31, 0xC9,                   // xor ecx, ecx
+            0x44, 0x0F, 0x22, 0xC1,       // mov cr8, rcx
+            0x90,                         // nop (the vector is delivered before it)
+            0xF4,                         // hlt
+        ]);
+        let (board, run) = windows_lapic_timer_run(&code, 0x100, 100_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(
+            board.state().gpr[Register::R8 as usize],
+            2,
+            "delivered after CR8 = 0"
+        );
+        assert_eq!(run.interrupts.irqs_delivered, 1, "{run:?}");
+    }
+
+    /// S7-32: a guest write of a LAPIC timer register ends the quantum of the Windows unified run,
+    /// so the clock owner cuts the next quantum at the programmed deadline: the one-shot timer
+    /// (320 ns) interrupts a loop that has no device access, long before its end (the handler
+    /// sees RCX far from 0).
+    #[test]
+    fn s7_32_a_lapic_timer_write_ends_the_quantum_and_the_deadline_is_honoured() {
+        let mut code = vec![0xFB]; // sti
+        code.extend_from_slice(&LAPIC_TIMER_SETUP);
+        #[rustfmt::skip]
+        code.extend_from_slice(&[
+            0xB9, 0x40, 0x9C, 0, 0,       // mov ecx, 40000
+            0xFF, 0xC9,                   // L: dec ecx
+            0x75, 0xFC,                   // jnz L
+            0xF4,                         // hlt
+        ]);
+        let (board, run) = windows_lapic_timer_run(&code, 0x100, 200_000);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(run.interrupts.irqs_delivered, 1, "{run:?}");
+        let rcx = board.state().gpr[Register::R9 as usize];
+        assert!(
+            rcx > 39_000,
+            "delivered near the deadline, not after the loop: rcx = {rcx}"
+        );
+    }
+
+    /// S7-32: a `MOV CR8` retired as the last instruction of a run (the budget ends the loop
+    /// before the next boundary) still reaches the TPR.
+    #[test]
+    fn s7_32_a_cr8_write_at_the_end_of_the_budget_reaches_the_tpr() {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        #[rustfmt::skip]
+        let code = [
+            0xB8, 0x07, 0x00, 0x00, 0x00, // mov eax, 7
+            0x44, 0x0F, 0x22, 0xC0,       // mov cr8, rax
+            0xF4,
+        ];
+        image[0x40..0x40 + code.len()].copy_from_slice(&code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            2,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        assert_eq!(run.run.exit, PagedProbeExit::BudgetExhausted, "{run:?}");
+        assert_eq!(board.lapic.for_cpu(BOOT_VCPU_INDEX).unwrap().tpr(), 0x70);
+    }
+
     /// PERF-20: the histogram alone leaves the call trace off (`call_trace` stays `None`, as in a
     /// run without it), counts every retired instruction and changes nothing else.
     #[test]
@@ -11701,9 +11955,10 @@ mod tests {
                     source,
                     counters,
                     delivered_mirror: None,
-                    skip_first_boundary: false,
+                    boundary_flags: 0,
                     device_accesses: Some(&*device_accesses),
                     polled: None,
+                    cr8: None,
                 }),
                 None,
                 None,

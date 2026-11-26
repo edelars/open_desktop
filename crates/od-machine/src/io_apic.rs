@@ -1,6 +1,6 @@
 use crate::apic_pair::{
-    COM2_PIN, LEVEL, MASK, NIC_PIN, NVME_PIN, POLARITY_LOW, PairState, REMOTE_IRR, SCI_LEVEL_LOW,
-    SCI_PIN, XHCI_PIN,
+    COM2_PIN, DELIVERY_LOWEST_PRIORITY, DEST_LOGICAL, LEVEL, MASK, NIC_PIN, NVME_PIN, POLARITY_LOW,
+    PairState, REMOTE_IRR, SCI_LEVEL_LOW, SCI_PIN, XHCI_PIN,
 };
 use crate::lock_wait_metrics::MeasuredMutex;
 use crate::{AccessWidth, BusDevice, DeviceAccess, DeviceError, IoSpace, LocalApicHandle};
@@ -155,9 +155,14 @@ fn register(selector: u8) -> Option<Register> {
 /// (the MADT declares the SCI on GSI 9 as level/active-low), and unmasked only on the SCI entry
 /// together with the level trigger (bit 15): exactly the entry form the MADT interrupt source
 /// override describes (S4-38L8e). Every other unmasked active-low entry is refused.
+///
+/// S7-32: the logical destination mode (bit 11) and the lowest-priority delivery mode (bits 10:8
+/// = 001) are accepted on every entry (the Windows HAL programs them); with one target they
+/// deliver like the fixed physical form. SMI, NMI, INIT and ExtINT stay refused.
 fn valid_low(pin: usize, value: u64, com2_wired: bool) -> bool {
     let masked = value & u64::from(MASK) != 0;
-    let mut allowed = u64::from(MASK | LEVEL | READ_ONLY_STATUS) | 0xff;
+    let mut allowed =
+        u64::from(MASK | LEVEL | READ_ONLY_STATUS | DEST_LOGICAL | DELIVERY_LOWEST_PRIORITY) | 0xff;
     let level_low_form = matches!(pin, SCI_PIN | NVME_PIN | XHCI_PIN | NIC_PIN)
         && value & u64::from(SCI_LEVEL_LOW) == u64::from(SCI_LEVEL_LOW);
     if pin != 4 && !(pin == COM2_PIN && com2_wired) && (masked || level_low_form) {
@@ -177,7 +182,7 @@ impl BusDevice for IoApic {
         let value = match register(state.route.selector).ok_or(DeviceError::UnknownOffset)? {
             Register::Id | Register::ArbitrationId => u32::from(state.route.id) << 24,
             Register::Version => IO_APIC_VERSION,
-            Register::Redirection { pin, high: true } => u32::from(state.route.dest[pin]) << 24,
+            Register::Redirection { pin, high: true } => u32::from(state.route.dest_raw[pin]) << 24,
             Register::Redirection { pin: 4, .. } => {
                 state.route.low
                     | if state.route.remote_irr {
@@ -245,31 +250,49 @@ impl BusDevice for IoApic {
                 state.route.id = (value >> 24) as u8;
                 Ok(())
             }
-            // Physical destination only: bits 31:24 are the APIC ID of an existing vCPU, the
-            // rest is reserved. An ID no vCPU has is refused before any change.
+            // Bits 31:24 are the destination, the rest is reserved. Physical: the APIC ID of an
+            // existing vCPU, another one is refused before any change; logical (S7-32): a message
+            // destination address resolved through the LDR/DFR of the vCPUs.
+            // S7-32: both redirection writes resolve the destination and then apply the entry;
+            // a refusal in either step restores the whole state, so a refused write changes
+            // nothing (the route, the LAPIC request state).
             Register::Redirection { pin, high: true } if value & !(0xff << 24) == 0 => {
-                state.set_dest(pin, (value >> 24) as u8)
+                let saved = state.clone();
+                let result = state.set_dest_raw(pin, (value >> 24) as u8);
+                if result.is_err() {
+                    *state = saved;
+                }
+                result
             }
             Register::Redirection { pin, high: false }
                 if valid_low(pin, value, state.com2_wired) =>
             {
                 let low = value as u32 & !READ_ONLY_STATUS;
-                if pin == 4 {
-                    state.set_low(low)
-                } else if pin == 2 {
-                    state.set_low2(low)
-                } else if pin == SCI_PIN {
-                    state.set_sci_low(low)
-                } else if (pin == COM2_PIN && state.com2_wired)
-                    || pin == NVME_PIN
-                    || pin == XHCI_PIN
-                    || pin == NIC_PIN
-                {
-                    state.set_level_low(pin, low)
-                } else {
-                    state.route.pins[pin] = low;
-                    Ok(())
+                let saved = state.clone();
+                // S7-32: the destination field is read under the destination mode of this write.
+                let raw = state.route.dest_raw[pin];
+                let result = state.resolve_entry(pin, raw, low).and_then(|()| {
+                    if pin == 4 {
+                        state.set_low(low)
+                    } else if pin == 2 {
+                        state.set_low2(low)
+                    } else if pin == SCI_PIN {
+                        state.set_sci_low(low)
+                    } else if (pin == COM2_PIN && state.com2_wired)
+                        || pin == NVME_PIN
+                        || pin == XHCI_PIN
+                        || pin == NIC_PIN
+                    {
+                        state.set_level_low(pin, low)
+                    } else {
+                        state.route.pins[pin] = low;
+                        Ok(())
+                    }
+                });
+                if result.is_err() {
+                    *state = saved;
                 }
+                result
             }
             // Read-only Version/Arbitration ID, reserved ID bits, reserved or unsupported
             // redirection bits: refused before any state change.
@@ -281,6 +304,7 @@ impl BusDevice for IoApic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apic_pair::{DELIVERY_LOWEST_PRIORITY, DEST_LOGICAL, logical_match};
     use crate::{
         BusAccessError, GuestPhysicalAddress, GuestPhysicalRange, LOCAL_APIC_MMIO_BASE,
         LOCAL_APIC_MMIO_SIZE, LocalApic, MachineBus, MachineMemoryMap, MemoryRegionKind,
@@ -369,7 +393,9 @@ mod tests {
         select(&mut bus, 0x18);
         assert_eq!(read(&mut bus, 0x10), Ok(u64::from(MASK)));
         route(&mut bus, u64::from(MASK) | 0x51);
-        for invalid in [0, 15, 0xff, 0x151, 0x851, 0x2051, 0x20051] {
+        // 0x151 (lowest priority) is accepted since S7-32; 0x851 (logical, unmasked) still
+        // names no vCPU here (LDR 0).
+        for invalid in [0, 15, 0xff, 0x851, 0x2051, 0x20051] {
             assert_eq!(
                 write(&mut bus, IO_APIC_MMIO_BASE, 0x10, invalid),
                 Err(device_error(DeviceError::UnsupportedConfiguration))
@@ -378,10 +404,18 @@ mod tests {
         }
         select(&mut bus, 0x19);
         assert_eq!(read(&mut bus, 0x10), Ok(0));
+        // S7-32: the masked entry stores the destination 1 (no vCPU has it) and reads it back;
+        // unmasking it is refused and leaves the entry masked; destination 0 again.
+        assert_eq!(write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 1 << 24), Ok(()));
+        assert_eq!(read(&mut bus, 0x10), Ok(1 << 24));
+        select(&mut bus, 0x18);
         assert_eq!(
-            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 1 << 24),
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x51),
             Err(device_error(DeviceError::UnsupportedConfiguration))
         );
+        assert_eq!(read(&mut bus, 0x10), Ok(u64::from(MASK) | 0x51));
+        select(&mut bus, 0x19);
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0).unwrap();
         assert_eq!(read(&mut bus, 0x10), Ok(0));
         select(&mut bus, 3); // S4-26c: selector 1 is now Version
         assert_eq!(
@@ -852,15 +886,17 @@ mod tests {
             window_write(&mut bus, low, 0x51).unwrap();
             select(&mut bus, low);
             let before = snapshot(&io);
-            let mut invalid: Vec<u64> = vec![0, 1, 15, 0xff, 0x100 | 0x51];
-            // Every non-Fixed delivery mode (001..111, reserved 011 and 110 included),
-            // masked or not.
-            for mode in 1..8u64 {
+            // 0x100 | 0x51 (lowest priority) is accepted since S7-32.
+            let mut invalid: Vec<u64> = vec![0, 1, 15, 0xff];
+            // Every delivery mode other than fixed and lowest priority (S7-32: 001 accepted;
+            // 010..111, reserved 011 and 110 included), masked or not.
+            for mode in 2..8u64 {
                 invalid.push(mode << 8 | 0x51);
                 invalid.push(mode << 8 | 0x51 | u64::from(MASK));
             }
-            // Logical destination mode, active-low polarity, reserved bits.
-            invalid.extend([0x851, 0x851 | u64::from(MASK), 0x2051, 0x20051, 0x8000_0051]);
+            // Logical destination mode naming no vCPU while unmasked (S7-32: a masked one is
+            // stored), active-low polarity, reserved bits.
+            invalid.extend([0x851, 0x2051, 0x20051, 0x8000_0051]);
             for value in invalid {
                 assert_eq!(
                     write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
@@ -1358,7 +1394,8 @@ mod tests {
             u64::from(SCI_LEVEL_LOW) | 0xff,
             0x2_0000 | sci_entry(0),
         ];
-        for mode in [1u64, 2, 4, 5, 7] {
+        // Lowest priority (001) is accepted since S7-32.
+        for mode in [2u64, 4, 5, 7] {
             invalid.push(mode << 8 | sci_entry(0));
         }
         for value in invalid {
@@ -1451,12 +1488,12 @@ mod tests {
             0x0f,
             0xff,
             0,
-            0x100 | 0x52,       // non-Fixed delivery
-            0x800 | 0x52,       // logical destination
+            0x800 | 0x52,       // logical destination naming no vCPU (LDR 0), unmasked
             0x2000 | 0x52,      // active-low unmasked
             0x2000 | 0x800 | 1, // several at once
         ];
-        for mode in 1..8u64 {
+        // Lowest priority (001) is accepted since S7-32.
+        for mode in 2..8u64 {
             invalid.push(mode << 8 | 0x52);
         }
         for value in invalid {
@@ -1477,9 +1514,11 @@ mod tests {
             refused()
         );
         assert_eq!(snapshot(&io), before);
-        // High dword: only 0 (physical APIC ID 0) is accepted, as for every entry.
+        // High dword: reserved bits 23:0 and a wide value are refused. S7-32: the masked entry
+        // stores a destination no vCPU has (1, 0xFF) and unmasking it is refused; see the S7-32
+        // tests.
         window_write(&mut bus, ENTRY2_HIGH, 0).unwrap();
-        for dest in [1u64 << 24, 0xff << 24, 1, u64::MAX] {
+        for dest in [1u64, u64::MAX] {
             let before = snapshot(&io);
             assert_eq!(window_write(&mut bus, ENTRY2_HIGH, dest), refused());
             assert_eq!(snapshot(&io), before);
@@ -1714,14 +1753,24 @@ mod tests {
                 Err(device_error(DeviceError::UnsupportedConfiguration)),
                 "APIC ID {apic_id}"
             );
-            // Entries without an input line refuse it too: no entry may name a missing vCPU.
+        }
+        assert_unchanged(&io, before);
+        // S7-32: a masked entry (pin 9) stores such a destination, delivers to no missing vCPU
+        // (its route keeps vCPU 0) and refuses to be unmasked with it.
+        for apic_id in [2u64, 3, 0xff] {
+            set_destination(&mut bus, 9, apic_id).unwrap();
+            assert_eq!(destination(&mut bus, 9), apic_id);
+            assert_eq!(io.0.lock().unwrap().route.dest[9], 0);
+            select(&mut bus, 0x10 + 2 * 9);
             assert_eq!(
-                set_destination(&mut bus, 9, apic_id),
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x49),
                 Err(device_error(DeviceError::UnsupportedConfiguration)),
                 "APIC ID {apic_id}"
             );
         }
-        assert_unchanged(&io, before);
+        // Control: with destination 0 the same unmasking write is accepted.
+        set_destination(&mut bus, 9, 0).unwrap();
+        route_pin(&mut bus, 9, 0x49);
         assert_eq!(destination(&mut bus, 4), 1);
         // The route still delivers to the vcpu it had.
         io.set_intin4(true).unwrap();
@@ -1738,6 +1787,17 @@ mod tests {
     fn one_vcpu_accepts_no_destination_but_apic_id_0() {
         let (mut bus, _io, _apic) = setup();
         assert!(set_destination(&mut bus, 4, 0).is_ok());
+        // S7-32: the masked entry stores 1 (read back) and refuses to be unmasked with it.
+        assert!(set_destination(&mut bus, 4, 1).is_ok());
+        assert_eq!(destination(&mut bus, 4), 1);
+        select(&mut bus, 0x18);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x51),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        // Unmasked with destination 0, writing 1 is refused and changes nothing.
+        set_destination(&mut bus, 4, 0).unwrap();
+        route_pin(&mut bus, 4, 0x51);
         assert_eq!(
             set_destination(&mut bus, 4, 1),
             Err(device_error(DeviceError::UnsupportedConfiguration))
@@ -1746,11 +1806,12 @@ mod tests {
     }
 
     #[test]
-    fn logical_destination_and_lowest_priority_stay_refused_with_several_vcpus() {
+    fn a_logical_destination_naming_no_vcpu_and_nmi_stay_refused_with_several_vcpus() {
         let (mut bus, io, _cpu0, _cpu1) = smp_setup();
         let before = snapshot(&io);
-        // Destination mode (bit 11) logical, delivery mode lowest priority (001), NMI (100).
-        for low in [0x41 | (1 << 11), 0x41 | (1 << 8), 0x41 | (4 << 8)] {
+        // Destination mode (bit 11) logical with no LDR programmed, NMI (100). Lowest priority
+        // (001) is accepted since S7-32 (see the S7-32 tests below).
+        for low in [0x41 | (1 << 11), 0x41 | (4 << 8)] {
             select(&mut bus, 0x18);
             assert_eq!(
                 write(&mut bus, IO_APIC_MMIO_BASE, 0x10, low),
@@ -1813,19 +1874,40 @@ mod tests {
         set_destination(&mut bus, 4, 1).unwrap();
         route_pin(&mut bus, 4, 0x41);
         let before = snapshot(&io);
-        for pin in [2u64, 4, 9, 23] {
+        // The unmasked entry (INTIN4) refuses them before any change.
+        for apic_id in [0xffu64, 2, 3] {
+            assert_eq!(
+                set_destination(&mut bus, 4, apic_id),
+                refused(),
+                "pin 4 id {apic_id:#x}"
+            );
+        }
+        assert_unchanged(&io, before);
+        assert_eq!(destination(&mut bus, 4), 1);
+        // S7-32: masked entries store them (a later unmasking low write resolves them), but no
+        // route ever names a missing vCPU and unmasking with them is refused: `0xFF` is still no
+        // delivery to all.
+        for pin in [2u64, 9, 23] {
             for apic_id in [0xffu64, 2, 3] {
+                set_destination(&mut bus, pin, apic_id).unwrap();
+                assert!(usize::from(io.0.lock().unwrap().route.dest[pin as usize]) < 2);
+                select(&mut bus, 0x10 + 2 * pin);
                 assert_eq!(
-                    set_destination(&mut bus, pin, apic_id),
+                    write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x48),
                     refused(),
                     "pin {pin} id {apic_id:#x}"
                 );
             }
         }
-        assert_unchanged(&io, before);
-        assert_eq!(destination(&mut bus, 4), 1);
+        // Control: with destination 1 the same unmasking writes are accepted.
+        for pin in [2u64, 9, 23] {
+            set_destination(&mut bus, pin, 1).unwrap();
+            route_pin(&mut bus, pin, 0x48 + pin);
+            assert_eq!(io.0.lock().unwrap().route.dest[pin as usize], 1);
+        }
         // The same on a board with one vCPU: only ID 0 exists, `0xFF` is no exception.
         let (mut one, io_one, _apic) = setup();
+        route_pin(&mut one, 4, 0x51);
         let before = snapshot(&io_one);
         assert_eq!(set_destination(&mut one, 4, 0xff), refused());
         assert_unchanged(&io_one, before);
@@ -1981,6 +2063,136 @@ mod tests {
         assert_eq!(
             io2.set_intin3(true),
             Err(DeviceError::UnsupportedConfiguration)
+        );
+    }
+
+    /// S7-32 (SDM Vol. 3A 11.6.2.2, 11.6.2.4 and the 82093AA redirection entry): an entry with the
+    /// logical destination mode and the lowest-priority delivery mode, as the Windows HAL programs
+    /// it, delivers to the vCPU whose LDR the destination names under the flat model; the raw
+    /// destination reads back. Unmasked, a destination that names no vCPU is refused before any
+    /// change; masked, it is stored.
+    #[test]
+    fn s7_32_a_logical_lowest_priority_entry_delivers_to_the_vcpu_its_ldr_names() {
+        let (mut bus, io, apic) = setup();
+        {
+            let mut pair = apic.0.lock().unwrap();
+            pair.cpus[0].local.svr = 0x1ff;
+            pair.cpus[0].local.ldr = 0x01 << 24; // flat model (DFR reset 0xFFFF_FFFF), bit 0
+        }
+        const ENTRY2: u64 = 0x14;
+        let logical_lowest = u64::from(DEST_LOGICAL | DELIVERY_LOWEST_PRIORITY);
+        // Masked first, then the destination 0x01, then unmask.
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | logical_lowest | 0x52).unwrap();
+        window_write(&mut bus, ENTRY2 + 1, 0x01 << 24).unwrap();
+        assert_eq!(window(&mut bus, ENTRY2 + 1), Ok(0x01 << 24));
+        window_write(&mut bus, ENTRY2, logical_lowest | 0x52).unwrap();
+        assert_eq!(window(&mut bus, ENTRY2), Ok(logical_lowest | 0x52));
+        io.0.lock().unwrap().set_line2(true).unwrap();
+        assert_eq!(apic.pending(), Some(0x52));
+        // A destination that names no vCPU (bit 1; LDR has bit 0 only): refused unmasked...
+        select(&mut bus, ENTRY2 + 1);
+        let before = snapshot(&io);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x02 << 24),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(snapshot(&io), before);
+        // ...stored masked (and read back as written).
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | logical_lowest | 0x52).unwrap();
+        window_write(&mut bus, ENTRY2 + 1, 0x02 << 24).unwrap();
+        assert_eq!(window(&mut bus, ENTRY2 + 1), Ok(0x02 << 24));
+        // Unmasking it with that destination is refused.
+        assert_eq!(
+            window_write(&mut bus, ENTRY2, logical_lowest | 0x52),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        // The physical lowest-priority form delivers to the physical ID.
+        window_write(&mut bus, ENTRY2 + 1, 0).unwrap();
+        window_write(&mut bus, ENTRY2, u64::from(DELIVERY_LOWEST_PRIORITY) | 0x53).unwrap();
+        io.0.lock().unwrap().set_line2(false).unwrap();
+        io.0.lock().unwrap().set_line2(true).unwrap();
+        assert_eq!(apic.vector_state(0x53).0, true);
+    }
+
+    /// S7-32: the HAL order "destination first, then the low dword with the logical mode": while
+    /// the entry is masked (its reset state) any destination is stored and nothing is resolved,
+    /// so 0x01 and the flat broadcast 0xFF are not read as physical IDs; the unmasking low write
+    /// resolves them under its own mode. An unmasked logical low written first, while the stored
+    /// destination names no vCPU, is refused and changes nothing.
+    #[test]
+    fn s7_32_a_destination_written_before_the_logical_low_dword_is_resolved_at_unmasking() {
+        let (mut bus, io, apic) = setup();
+        {
+            let mut pair = apic.0.lock().unwrap();
+            pair.cpus[0].local.svr = 0x1ff;
+            pair.cpus[0].local.ldr = 0x01 << 24;
+        }
+        const ENTRY4: u64 = 0x18;
+        let logical = u64::from(DEST_LOGICAL | DELIVERY_LOWEST_PRIORITY);
+        // Unmasked logical low first, stored destination 0: names no vCPU, refused.
+        select(&mut bus, ENTRY4);
+        let before = snapshot(&io);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, logical | 0x61),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(snapshot(&io), before);
+        for destination in [0x01u64, 0xff] {
+            window_write(&mut bus, ENTRY4, u64::from(MASK)).unwrap();
+            window_write(&mut bus, ENTRY4 + 1, destination << 24).unwrap();
+            assert_eq!(window(&mut bus, ENTRY4 + 1), Ok(destination << 24));
+            window_write(&mut bus, ENTRY4, logical | 0x61).unwrap();
+            assert_eq!(window(&mut bus, ENTRY4), Ok(logical | 0x61));
+        }
+    }
+
+    /// S7-32: a low write whose destination move succeeds but whose entry is then refused (an
+    /// unmasked level entry on INTIN2) restores the whole state: the route keeps its vCPU.
+    #[test]
+    fn s7_32_a_refused_low_write_leaves_the_destination_and_the_entry_unchanged() {
+        let (mut bus, io, _cpu0, _cpu1) = smp_setup();
+        const ENTRY2: u64 = 0x14;
+        window_write(&mut bus, ENTRY2, u64::from(MASK) | 0x52).unwrap();
+        // Physical ID 1 stored while masked; the entry still delivers to vCPU 0.
+        window_write(&mut bus, ENTRY2 + 1, 1 << 24).unwrap();
+        assert_eq!(io.0.lock().unwrap().route.dest[2], 0);
+        select(&mut bus, ENTRY2);
+        let before = snapshot(&io);
+        assert_eq!(
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, u64::from(LEVEL) | 0x52),
+            Err(device_error(DeviceError::UnsupportedConfiguration))
+        );
+        assert_eq!(snapshot(&io), before);
+        // The edge form unmasks and moves the entry to vCPU 1.
+        write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x52).unwrap();
+        assert_eq!(io.0.lock().unwrap().route.dest[2], 1);
+    }
+
+    /// S7-32: the cluster model (DFR[31:28] = 0000b) matches the same cluster (bits 7:4) and a
+    /// member bit in common (bits 3:0) (SDM Vol. 3A 11.6.2.2); a logical entry reaches vCPU 1.
+    #[test]
+    fn s7_32_the_cluster_model_names_the_vcpu_of_the_cluster_and_member() {
+        let (mut bus, io, cpu0, cpu1) = smp_setup();
+        {
+            let mut pair = cpu0.0.lock().unwrap();
+            for (cpu, ldr) in [(0usize, 0x11u32), (1, 0x12)] {
+                pair.cpus[cpu].local.dfr = 0x0fff_ffff;
+                pair.cpus[cpu].local.ldr = ldr << 24;
+            }
+        }
+        const ENTRY2: u64 = 0x14;
+        window_write(&mut bus, ENTRY2, u64::from(MASK | DEST_LOGICAL) | 0x54).unwrap();
+        window_write(&mut bus, ENTRY2 + 1, 0x12 << 24).unwrap();
+        window_write(&mut bus, ENTRY2, u64::from(DEST_LOGICAL) | 0x54).unwrap();
+        io.0.lock().unwrap().set_line2(true).unwrap();
+        assert_eq!(cpu1.vector_state(0x54).0, true);
+        assert_eq!(cpu0.vector_state(0x54).0, false);
+        // Another cluster with the same member bit names no vCPU.
+        assert!(!logical_match(0x0fff_ffff, 0x11 << 24, 0x21));
+        assert!(logical_match(0xffff_ffff, 0x01 << 24, 0xff));
+        assert!(
+            !logical_match(0x5fff_ffff, 0x01 << 24, 0xff),
+            "undefined model"
         );
     }
 }

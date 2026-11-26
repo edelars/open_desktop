@@ -410,6 +410,17 @@ impl LocalApicHandle {
             Ok(true)
         })
     }
+    /// S7-32: the TPR (offset 0x80), read without any other effect.
+    pub(crate) fn tpr(&self) -> u8 {
+        self.with_state(|state| state.tpr)
+    }
+
+    /// S7-32: the TPR written by `MOV CR8, r64` (TPR = CR8 << 4, TPR[3:0] cleared; SDM Vol. 3A
+    /// 11.8.6.5). The processor priority follows from it as for an MMIO write.
+    pub(crate) fn set_tpr_from_cr8(&self, cr8: u8) {
+        self.with_state(|state| state.tpr = (cr8 & 0xf) << 4);
+    }
+
     /// How many guest writes to the timer registers (`0x320`, `0x380`, `0x3E0`) this LAPIC has
     /// accepted (S6-16d). Read-only; a refused write does not count.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -457,13 +468,19 @@ impl LocalApicHandle {
             .edge(self.1, vector)
     }
 
-    /// Accept a fixed-edge MSI for a physical xAPIC ID in this machine.
-    pub(crate) fn request_msi_edge(&self, destination: u8, vector: u8) -> Result<(), DeviceError> {
+    /// Accept an edge MSI for a physical xAPIC ID in this machine or, with `logical` (S7-32, the
+    /// DM bit of the message address), a logical destination address resolved through the
+    /// LDR/DFR of the vCPUs (the first match: one target, as for lowest priority).
+    pub(crate) fn request_msi_edge(
+        &self,
+        destination: u8,
+        logical: bool,
+        vector: u8,
+    ) -> Result<(), DeviceError> {
         let mut pair = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let cpu = usize::from(destination);
-        if destination == u8::MAX || cpu >= pair.cpus.len() {
-            return Err(DeviceError::UnsupportedConfiguration);
-        }
+        let cpu = pair
+            .resolve_destination(destination, logical)
+            .ok_or(DeviceError::UnsupportedConfiguration)?;
         pair.edge(cpu, vector)
     }
     /// Observe the highest pending vector without consuming it.
@@ -643,14 +660,17 @@ enum IpiCommand {
 
 /// The closed set of ICR commands of SMP_CONTRACT.md 5 that this model accepts: Fixed (LAPIC
 /// indices to raise an edge in, and the vector), NMI (S6-12b: LAPIC indices to latch an NMI in),
-/// INIT assert/deassert and SIPI (S6-13). Everything
-/// else is a device error, decided before any state changes: reserved bits, NMI Self and All and the
-/// delivery modes the matrix refuses, Fixed vectors below 16, INIT
+/// INIT assert/deassert and SIPI (S6-13). S7-32: Fixed to a logical destination (every vCPU whose
+/// LDR the destination names under its DFR model) and Lowest Priority without shorthand (one
+/// target: the physical ID, or the first vCPU the logical destination names), both with Level
+/// (bit 14) set or clear and the edge trigger. Everything else is a device error, decided before
+/// any state changes: reserved bits, NMI Self and All and the delivery modes the matrix refuses
+/// (SMI, the reserved 011 and 111, Lowest Priority with a shorthand), Fixed vectors below 16, INIT
 /// assert addressed to the boot processor (deferred to S6-15/S6-16), INIT with a non-zero
-/// vector, INIT and SIPI with a shorthand, logical destination mode without
-/// shorthand, a destination APIC ID no vCPU has (this includes the xAPIC broadcast ID 0xFF, which
-/// the matrix does not list) and any `(Level, Trigger)` pair the row does not name. Shorthand
-/// ignores the destination byte and Destination Mode.
+/// vector, INIT and SIPI with a shorthand or a logical destination, a logical destination that
+/// names no vCPU, a destination APIC ID no vCPU has (this includes the xAPIC broadcast ID 0xFF,
+/// which the matrix does not list) and any `(Level, Trigger)` pair the row does not name.
+/// Shorthand ignores the destination byte and Destination Mode.
 fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand, DeviceError> {
     let refused = DeviceError::UnsupportedConfiguration;
     let count = pair.cpus.len();
@@ -665,6 +685,8 @@ fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand,
         let apic_id = usize::from((pair.cpus[sender].local.icr_high >> 24) as u8);
         (apic_id < count).then_some(apic_id).ok_or(refused.clone())
     };
+    let destination = (pair.cpus[sender].local.icr_high >> 24) as u8;
+    let logical = value & (1 << 11) != 0;
     match mode {
         // Fixed.
         0 => {
@@ -672,8 +694,19 @@ fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand,
                 return Err(refused);
             }
             let targets = match shorthand {
-                ICR_SHORTHAND_NONE if value & (1 << 11) == 0 && level_trigger == 0b00 => {
+                ICR_SHORTHAND_NONE if !logical && level_trigger == 0b00 => {
                     vec![physical_target()?]
+                }
+                // S7-32: a logical destination reaches every vCPU it names (SDM Vol. 3A 11.6.2.2);
+                // Level (bit 14) is accepted set or clear (it must be 1 for non-INIT IPIs on the
+                // P6 family and is ignored on later processors, SDM Vol. 3A 11.6.1), the trigger
+                // stays edge.
+                ICR_SHORTHAND_NONE if logical && matches!(level_trigger, 0b00 | 0b01) => {
+                    let targets = pair.logical_targets(destination);
+                    if targets.is_empty() {
+                        return Err(refused);
+                    }
+                    targets
                 }
                 ICR_SHORTHAND_SELF if matches!(level_trigger, 0b00 | 0b01) => vec![sender],
                 ICR_SHORTHAND_ALL if level_trigger == 0b00 => (0..count).collect(),
@@ -683,6 +716,21 @@ fn decode_icr(pair: &PairState, sender: usize, value: u64) -> Result<IpiCommand,
                 _ => return Err(refused),
             };
             Ok(IpiCommand::Fixed { targets, vector })
+        }
+        // S7-32: lowest priority (001) without shorthand, physical or logical: one target, the
+        // first vCPU the destination names (no arbitration among several is modelled). Level
+        // (bit 14) set or clear, edge trigger, as for the logical fixed form.
+        1 if shorthand == ICR_SHORTHAND_NONE
+            && matches!(level_trigger, 0b00 | 0b01)
+            && vector >= 16 =>
+        {
+            let target = pair
+                .resolve_destination(destination, logical)
+                .ok_or(refused)?;
+            Ok(IpiCommand::Fixed {
+                targets: vec![target],
+                vector,
+            })
         }
         // NMI (100): physical destination without shorthand, or all-but-self; the vector field is
         // ignored. Self and All are refused (SMP_CONTRACT.md 5).
@@ -882,7 +930,10 @@ impl BusDevice for LocalApic {
                     pair.cpus[cpu].local.tpr = value as u8;
                     Ok(())
                 }
-                0xf0 if value & !0x1ff == 0 => {
+                // S7-32: bit 9 (focus processor checking disable) is stored; with one target per
+                // message it changes nothing. Bit 12 (EOI broadcast suppression) stays refused:
+                // VERSION does not advertise it.
+                0xf0 if value & !0x3ff == 0 => {
                     if value & 0x100 == 0
                         && (pair.awaits_eoi(cpu)
                             || pair.cpus[cpu]
@@ -1946,7 +1997,8 @@ mod tests {
             Err(DeviceError::UnsupportedConfiguration)
         );
         for (offset, value, expected) in [
-            (0xf0, 0x200, DeviceError::UnsupportedConfiguration),
+            // S7-32: bit 9 (focus disable) is stored; bit 12 (EOI broadcast suppression) is not.
+            (0xf0, 0x1000, DeviceError::UnsupportedConfiguration),
             (0xb0, 1, DeviceError::UnsupportedConfiguration),
             (0x20, 0, DeviceError::ReadOnly),
             (0x120, 0, DeviceError::ReadOnly),
@@ -2477,9 +2529,8 @@ mod tests {
             (0x80, 0x100, UC),
             (0x80, 0x1_0000_0040, UC),
             (0x80, u64::MAX, UC),
-            (0xf0, 0x200, UC),
+            (0xf0, 0x1000, UC), // bit 9 is accepted since S7-32, bit 12 is not
             (0xf0, 0x400, UC),
-            (0xf0, 0x1000, UC),
             (0xf0, 0x8000_0000, UC),
             (0xf0, 0x1_0000_00ff, UC),
             (0xb0, 1, UC),
@@ -3158,10 +3209,17 @@ mod tests {
             }
         }
         // Lowest Priority, SMI and the reserved modes 011 and 111 with every addressing form
-        // and every pair; NMI, INIT and SIPI outside the rows the matrix lists.
+        // and every pair; NMI, INIT and SIPI outside the rows the matrix lists. S7-32: Lowest
+        // Priority without shorthand and with the edge pair is accepted (one target).
         for mode in [1u64, 2, 3, 7] {
             for shorthand in [NO_SHORTHAND, SELF_SH, ALL_SH, OTHERS_SH] {
                 for level_trigger in [LT_00, LT_10, LT_01, LT_11] {
+                    if mode == 1
+                        && shorthand == NO_SHORTHAND
+                        && matches!(level_trigger, LT_00 | LT_10)
+                    {
+                        continue;
+                    }
                     assert_ipi_refused(
                         &mut device,
                         0,
@@ -3755,5 +3813,92 @@ mod tests {
         after.cpus[1].local.irr = before.cpus[1].local.irr;
         after.cpus[0].local.icr_low = before.cpus[0].local.icr_low;
         assert_eq!(after, before);
+    }
+
+    /// S7-32: a fixed IPI to a logical destination reaches every vCPU whose LDR the destination
+    /// names (flat model), a lowest-priority IPI reaches one of them (the first; no arbitration is
+    /// modelled), and the cluster model resolves by cluster and member (SDM Vol. 3A 11.6.2.2,
+    /// 11.6.2.4). SVR bit 9 (focus processor checking disable) is stored, bit 12 is refused.
+    #[test]
+    fn s7_32_logical_and_lowest_priority_ipis_and_svr_bit_9() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(0, dword(0xd0), 0x01 << 24).unwrap();
+        device.write_from_cpu(1, dword(0xd0), 0x02 << 24).unwrap();
+        device.write_from_cpu(0, dword(0x310), 0x03 << 24).unwrap();
+        let command = icr(FIXED, LOGICAL, NO_SHORTHAND, LT_00, 0x61);
+        device.write_from_cpu(0, dword(0x300), command).unwrap();
+        assert_eq!(holders(&device, 0x61), [0, 1]);
+        device.write_from_cpu(0, dword(0x310), 0x02 << 24).unwrap();
+        device
+            .write_from_cpu(
+                0,
+                dword(0x300),
+                icr(FIXED, LOGICAL, NO_SHORTHAND, LT_00, 0x62),
+            )
+            .unwrap();
+        assert_eq!(holders(&device, 0x62), [1]);
+        // Lowest priority, logical 0x03: one target.
+        device.write_from_cpu(0, dword(0x310), 0x03 << 24).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(1, LOGICAL, NO_SHORTHAND, LT_00, 0x63))
+            .unwrap();
+        assert_eq!(holders(&device, 0x63), [0]);
+        // Lowest priority, physical ID 1.
+        device.write_from_cpu(0, dword(0x310), 0x01 << 24).unwrap();
+        device
+            .write_from_cpu(0, dword(0x300), icr(1, PHYSICAL, NO_SHORTHAND, LT_00, 0x64))
+            .unwrap();
+        assert_eq!(holders(&device, 0x64), [1]);
+        // Cluster model: cluster 1, member bit 1 of vCPU 1.
+        for (cpu, ldr) in [(0usize, 0x11u64), (1, 0x12)] {
+            device
+                .write_from_cpu(cpu, dword(0xe0), 0x0fff_ffff)
+                .unwrap();
+            device.write_from_cpu(cpu, dword(0xd0), ldr << 24).unwrap();
+        }
+        device.write_from_cpu(0, dword(0x310), 0x12 << 24).unwrap();
+        device
+            .write_from_cpu(
+                0,
+                dword(0x300),
+                icr(FIXED, LOGICAL, NO_SHORTHAND, LT_00, 0x65),
+            )
+            .unwrap();
+        assert_eq!(holders(&device, 0x65), [1]);
+        // A logical destination that names no vCPU is still refused.
+        device.write_from_cpu(0, dword(0x310), 0x21 << 24).unwrap();
+        assert_ipi_refused(
+            &mut device,
+            0,
+            icr(FIXED, LOGICAL, NO_SHORTHAND, LT_00, 0x66),
+        );
+        // SVR: bit 9 stored, bit 12 refused.
+        device.write_from_cpu(0, dword(0xf0), 0x3ff).unwrap();
+        assert_eq!(device.read_from_cpu(0, dword(0xf0)), Ok(0x3ff));
+        assert_eq!(
+            device.write_from_cpu(0, dword(0xf0), 0x11ff),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+    }
+
+    /// S7-32: MSI requests resolve a logical destination through the LDR/DFR of the vCPUs; a
+    /// physical one names the APIC ID; one that names no vCPU is refused.
+    #[test]
+    fn s7_32_msi_requests_resolve_physical_and_logical_destinations() {
+        let mut device = LocalApic::with_cpus(2).unwrap();
+        device.write_from_cpu(1, dword(0xd0), 0x04 << 24).unwrap();
+        let cpu0 = device.handle();
+        cpu0.request_msi_edge(0x04, true, 0x71).unwrap();
+        assert_eq!(holders(&device, 0x71), [1]);
+        cpu0.request_msi_edge(0, false, 0x72).unwrap();
+        assert_eq!(holders(&device, 0x72), [0]);
+        assert_eq!(
+            cpu0.request_msi_edge(0x08, true, 0x73),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
+        assert_eq!(
+            cpu0.request_msi_edge(2, false, 0x73),
+            Err(DeviceError::UnsupportedConfiguration)
+        );
     }
 }

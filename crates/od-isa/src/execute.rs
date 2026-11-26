@@ -2019,6 +2019,12 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// The CR8 cell of [`Self::with_cr8_tpr`], if the set has the member: the owner of the local
+    /// APIC binds it to TPR[7:4] between instructions (S7-32).
+    pub const fn cr8_tpr(&self) -> Option<&'a Cell<u8>> {
+        self.cr8_tpr
+    }
+
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
     pub const fn with_cli(mut self, profile: &'a crate::CliProfile) -> Self {
         self.cli = Some(profile);

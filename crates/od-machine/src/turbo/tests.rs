@@ -508,9 +508,10 @@ fn irq_hook<'a>(
         source: &mut irq.source,
         counters: &mut irq.counters,
         delivered_mirror: None,
-        skip_first_boundary: false,
+        boundary_flags: 0,
         device_accesses: Some(device_accesses),
         polled: None,
+        cr8: None,
     })
 }
 

@@ -2276,7 +2276,7 @@ unsafe extern "C" fn rdtsc_helper(
         if start.fresh_source {
             hook.polled = None;
         }
-        hook.skip_first_boundary = false;
+        hook.boundary_flags &= !crate::irq_source::BOUNDARY_SKIP_FIRST;
         if start.cut_by_deadline {
             hook.counters.quantum_cut_by_deadline += 1;
         }
