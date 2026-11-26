@@ -7968,11 +7968,13 @@ mod tests {
     }
 
     #[test]
-    fn mov_dr4_is_refused_with_opcode_0x23_through_the_board() {
-        // MOV DR4,RAX (`0f 23 e0`): the CR4.DE rule is not modeled, so the facade stops on it.
-        let code = [0x0F, 0x23, 0xE0, 0xF4];
+    fn mov_dr4_aliases_dr6_through_the_board_while_cr4_de_is_clear() {
+        // S7-32 slice I: MOV EAX,0xFFFF0FF0; MOV DR4,RAX (`0f 23 e0`); HLT. With CR4.DE = 0 (the
+        // board's CR4) DR4 is an alias of DR6 (SDM Vol. 3B "Debug Registers DR4 and DR5"), so the
+        // write lands in DR6 with DR6's rules. Before slice I the facade stopped on it.
+        let code = [0xB8, 0xF0, 0x0F, 0xFF, 0xFF, 0x0F, 0x23, 0xE0, 0xF4];
         let (mut boot, file) = boot_with_entry(&code);
-        let rip = boot.board.state().rip;
+        assert_eq!(boot.board.state().cr4.map(|cr4| cr4 & (1 << 3)), Some(0));
         let record = run_set_facade(
             &mut boot,
             &file,
@@ -7982,15 +7984,11 @@ mod tests {
                 ..LinuxCpl0SetMembers::linux_default()
             },
         );
-        assert_eq!(
-            record.exit,
-            PagedProbeExit::Unsupported { opcode: 0x23 },
-            "{record:?}"
-        );
-        assert_eq!(record.retired, 0, "{record:?}");
-        assert_eq!(record.rip, rip, "{record:?}");
-        assert_eq!(record.rip_bytes[..3], [0x0F, 0x23, 0xE0], "{record:?}");
-        assert_eq!(boot.board.state().debug_registers, [None; 8]);
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.retired, 3, "{record:?}");
+        let mut expected = [None; 8];
+        expected[6] = Some(0xFFFF_0FF0);
+        assert_eq!(boot.board.state().debug_registers, expected);
     }
 
     // ---- S4-38L7aj: FS/GS-based MOV m32/m64, imm32 through the board facade ----
@@ -9836,8 +9834,26 @@ mod tests {
         assert_eq!(record.cr0, Some(0x8005_0033));
         assert_eq!(record.gpr[Register::Rax as usize], 0x8005_0033);
 
-        // A CR0 value outside the policy (CD, bit 30) stays the stop, without mutation.
-        let bad = [0xB8, 0x33, 0x00, 0x01, 0xC0, 0x0F, 0x22, 0xC0];
+        // S7-32 slice I: CD (bit 30) is a stored bit of the policy, and the walker snapshot after
+        // the write carries it (the fetch of the next instruction).
+        let (mut boot, file) = boot_with_entry(&[
+            0xB8, 0x33, 0x00, 0x01, 0xC0, 0x0F, 0x22, 0xC0, 0x31, 0xC0, 0x0F, 0x20, 0xC0, 0xF4,
+        ]);
+        let record = run_set_facade(
+            &mut boot,
+            &file,
+            64,
+            LinuxCpl0SetMembers {
+                halt: true,
+                ..LinuxCpl0SetMembers::linux_default()
+            },
+        );
+        assert_eq!(record.exit, PagedProbeExit::Halted, "{record:?}");
+        assert_eq!(record.cr0, Some(0xC001_0033));
+        assert_eq!(record.gpr[Register::Rax as usize], 0xC001_0033);
+
+        // A CR0 value outside the policy (bit 17, reserved) stays the stop, without mutation.
+        let bad = [0xB8, 0x33, 0x00, 0x03, 0x80, 0x0F, 0x22, 0xC0];
         let (mut boot, file) = boot_with_entry(&bad);
         let cr0_before = boot.board.state().cr0;
         let record = run_set_facade(&mut boot, &file, 64, LinuxCpl0SetMembers::linux_default());

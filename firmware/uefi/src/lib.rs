@@ -25,6 +25,7 @@ pub mod handoff;
 pub mod idt;
 pub mod image;
 pub mod mem;
+pub mod mtrr;
 mod nvme;
 pub mod paging;
 pub(crate) mod pci;

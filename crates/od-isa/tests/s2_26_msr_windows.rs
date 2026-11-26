@@ -540,24 +540,29 @@ fn misc_enable_models_only_the_fast_string_bit() {
 #[test]
 fn unknown_indexes_are_gp0_for_rdmsr_and_wrmsr() {
     // IA32_TSC (0x10), IA32_PLATFORM_ID (0x17) and IA32_BIOS_SIGN_ID (0x8B) left this list in S7-32
-    // slice F (`tsc_reads_the_rdtsc_source_...`, `platform_id_...`, `bios_sign_id_...`).
+    // slice F (`tsc_reads_the_rdtsc_source_...`, `platform_id_...`, `bios_sign_id_...`); IA32_MTRRCAP
+    // (0xFE), IA32_MCG_CAP (0x179), the MTRR pairs (0x200, 0x201) and IA32_MTRR_DEF_TYPE (0x2FF) in
+    // slice I (`mtrr_...`, `mca_...`). The MSRs that the declared MTRR/MCA capabilities say do not
+    // exist stay unknown: IA32_MCG_CTL (0x17B, MCG_CTL_P = 0), the ninth variable pair (0x210,
+    // VCNT = 8), IA32_MC0_CTL2 (0x280, MCG_CMCI_P = 0), the fifth bank (0x410, Count = 4) and the
+    // index between the fixed-range MTRRs (0x251).
     let unknown: [u32; 21] = [
         0x0,
         0x1c,
-        0xfe,
         0x3a,
         0x87,
         0x173,
         0x177,
-        0x179,
+        0x17b,
         0x19a,
         0x1a1,
         0x1b0,
-        0x200,
-        0x201,
+        0x210,
+        0x251,
         0x276,
         0x278,
-        0x2ff,
+        0x280,
+        0x410,
         0x6e0,
         0x802,
         0xc000_0085,
@@ -1085,4 +1090,286 @@ fn the_decision_table_matches_the_documented_rules() {
     );
     // Indexes outside the cell-owned list have no decision here.
     assert_eq!(windows_msr_write_decision(IA32_EFER, 0, 0), Unsupported);
+}
+
+// ---- S7-32 slice I: the MTRR and MCA files of the Windows member. Expected values by hand from
+// the Intel SDM (Vol. 4 Table 2-2: IA32_MTRRCAP FEH, IA32_MTRR_PHYSBASEn/PHYSMASKn 200H.., the
+// fixed-range MTRRs 250H/258H/259H/268H..26FH, IA32_MTRR_DEF_TYPE 2FFH, IA32_MCG_CAP 179H,
+// IA32_MCG_STATUS 17AH, IA32_MCi_CTL/STATUS/ADDR/MISC 400H + 4i; Vol. 3A "Memory Type Range
+// Registers (MTRRs)": field layout, valid memory types 0, 1, 4, 5, 6, MTRRs disabled after reset;
+// Vol. 3B "Machine-Check MSRs": STATUS/ADDR/MISC are cleared by writing 0s, writing 1s is #GP). ----
+
+use od_isa::msr::{McaState, MtrrState};
+
+const IA32_MTRRCAP: u32 = 0xfe;
+const IA32_MTRR_DEF_TYPE: u32 = 0x2ff;
+const IA32_MCG_CAP: u32 = 0x179;
+const IA32_MCG_STATUS: u32 = 0x17a;
+
+/// One access in a Windows set with the MTRR and MCA files.
+fn file_access(
+    mtrr: &Cell<MtrrState>,
+    mca: &Cell<McaState>,
+    code: [u8; 2],
+    index: u32,
+    value: u64,
+) -> (Cpl0ProfileSetResult, LongModeState, LongModeState) {
+    let cells = Cells::new();
+    let set = cells.windows().with_msr_mtrr(mtrr).with_msr_mca(mca);
+    access(&set, code, index, value)
+}
+
+/// A retired `RDMSR` returns `value` in EDX:EAX (upper halves of RAX/RDX cleared) and changes
+/// nothing but RAX, RDX and RIP.
+fn assert_read(
+    result: &Cpl0ProfileSetResult,
+    before: &LongModeState,
+    after: &LongModeState,
+    value: u64,
+    label: &str,
+) {
+    assert_eq!(
+        result.instructions_executed, 1,
+        "{label}: {:?}",
+        result.exit
+    );
+    let mut expected = before.clone();
+    expected.gpr[Register::Rax as usize] = value & 0xffff_ffff;
+    expected.gpr[Register::Rdx as usize] = value >> 32;
+    expected.rip += 2;
+    assert_eq!(after, &expected, "{label}");
+}
+
+#[test]
+fn mtrr_file_reports_its_capabilities_and_is_disabled_at_power_up() {
+    let (mtrr, mca) = (
+        Cell::new(MtrrState::default()),
+        Cell::new(McaState::default()),
+    );
+    // VCNT = 8, FIX (bit 8), WC (bit 10); no SMRR.
+    let (result, before, after) = file_access(&mtrr, &mca, RDMSR, IA32_MTRRCAP, 0);
+    assert_read(&result, &before, &after, 0x508, "IA32_MTRRCAP");
+    // E = 0 (and the rest 0) in DEF_TYPE, V = 0 in every PHYSMASK; the fixed ranges read 0.
+    for index in [
+        IA32_MTRR_DEF_TYPE,
+        0x200,
+        0x201,
+        0x20e,
+        0x20f,
+        0x250,
+        0x258,
+        0x259,
+        0x268,
+        0x26f,
+    ] {
+        let (result, before, after) = file_access(&mtrr, &mca, RDMSR, index, 0);
+        assert_read(&result, &before, &after, 0, &format!("{index:#x}"));
+    }
+}
+
+#[test]
+fn mtrr_file_takes_valid_values_and_reads_them_back() {
+    let (mtrr, mca) = (
+        Cell::new(MtrrState::default()),
+        Cell::new(McaState::default()),
+    );
+    // The firmware's layout: WB by default with E = 1, the 128 MiB below 4 GiB UC; one fixed range
+    // of each width with every valid type (UC 0, WC 1, WT 4, WP 5, WB 6).
+    let writes: [(u32, u64); 9] = [
+        (0x200, 0x0000_0000_f800_0000),
+        (0x201, 0x0000_000f_f800_0800),
+        (0x20e, 0x0000_000f_ffff_f006),
+        (0x20f, 0x0000_000f_ffff_f800),
+        (0x250, 0x0606_0606_0606_0606),
+        (0x258, 0x0001_0405_0600_0104),
+        (0x26f, 0x0505_0505_0404_0101),
+        (IA32_MTRR_DEF_TYPE, 0xc06),
+        (IA32_MTRR_DEF_TYPE, 0x806),
+    ];
+    for (index, value) in writes {
+        let (result, before, after) = file_access(&mtrr, &mca, WRMSR, index, value);
+        assert_eq!(
+            result.instructions_executed, 1,
+            "{index:#x}: {:?}",
+            result.exit
+        );
+        let mut expected = before.clone();
+        expected.rip += 2;
+        assert_eq!(after, expected, "WRMSR {index:#x} changes only RIP");
+        let (result, before, after) = file_access(&mtrr, &mca, RDMSR, index, 0);
+        assert_read(&result, &before, &after, value, &format!("{index:#x}"));
+    }
+    assert_eq!(mtrr.get().def_type(), 0x806);
+    assert_eq!(mtrr.get().variable_pair(0), (0xf800_0000, 0xf_f800_0800));
+    assert_eq!(mtrr.get().variable_pair(7), (0xf_ffff_f006, 0xf_ffff_f800));
+    // The other pairs keep their power-up value.
+    assert_eq!(mtrr.get().variable_pair(1), (0, 0));
+}
+
+#[test]
+fn mtrr_reserved_bits_reserved_types_and_the_capability_register_are_gp0_without_change() {
+    let mut programmed = MtrrState::default();
+    assert!(programmed.write(IA32_MTRR_DEF_TYPE, 0x806).is_some());
+    assert!(programmed.write(0x201, 0xf_f800_0800).is_some());
+    let cases: &[(u32, u64, &str)] = &[
+        (IA32_MTRRCAP, 0x508, "read-only IA32_MTRRCAP"),
+        (IA32_MTRRCAP, 0, "read-only IA32_MTRRCAP"),
+        (IA32_MTRR_DEF_TYPE, 0x906, "DEF_TYPE bit 8"),
+        (IA32_MTRR_DEF_TYPE, 0x1806, "DEF_TYPE bit 12"),
+        (IA32_MTRR_DEF_TYPE, 1 << 63 | 0x806, "DEF_TYPE bit 63"),
+        (IA32_MTRR_DEF_TYPE, 0x802, "DEF_TYPE type 2"),
+        (IA32_MTRR_DEF_TYPE, 0x803, "DEF_TYPE type 3"),
+        (IA32_MTRR_DEF_TYPE, 0x807, "DEF_TYPE type 7"),
+        (IA32_MTRR_DEF_TYPE, 0x8ff, "DEF_TYPE type 0xFF"),
+        (0x200, 0xf800_0100, "PHYSBASE bit 8"),
+        (0x200, 0xf800_0800, "PHYSBASE bit 11"),
+        (0x200, 1 << 36, "PHYSBASE above MAXPHYADDR 36"),
+        (0x200, 0xf800_0002, "PHYSBASE type 2"),
+        (0x200, 0xf800_0010, "PHYSBASE type 0x10"),
+        (0x201, 0xf_f800_0801, "PHYSMASK bit 0"),
+        (0x201, 0xf_f800_0c00, "PHYSMASK bit 10"),
+        (0x201, 0x1f_f800_0800, "PHYSMASK above MAXPHYADDR 36"),
+        (0x250, 0x0206_0606_0606_0606, "FIX64K byte 7 type 2"),
+        (0x26b, 0x0000_0000_0000_0007, "FIX4K byte 0 type 7"),
+    ];
+    for &(index, value, label) in cases {
+        let (mtrr, mca) = (Cell::new(programmed), Cell::new(McaState::default()));
+        let (result, before, after) = file_access(&mtrr, &mca, WRMSR, index, value);
+        assert_gp0_unchanged(&result, &before, &after, label);
+        assert_eq!(mtrr.get(), programmed, "{label}");
+    }
+}
+
+#[test]
+fn mca_file_reports_four_banks_and_keeps_only_the_enables_and_mcg_status() {
+    let (mtrr, mca) = (
+        Cell::new(MtrrState::default()),
+        Cell::new(McaState::default()),
+    );
+    // Count = 4; MCG_CTL_P, MCG_EXT_P, MCG_CMCI_P, MCG_TES_P, MCG_SER_P, MCG_LMCE_P are 0.
+    let (result, before, after) = file_access(&mtrr, &mca, RDMSR, IA32_MCG_CAP, 0);
+    assert_read(&result, &before, &after, 4, "IA32_MCG_CAP");
+    for index in [IA32_MCG_STATUS, 0x400, 0x401, 0x402, 0x403, 0x40c, 0x40f] {
+        let (result, before, after) = file_access(&mtrr, &mca, RDMSR, index, 0);
+        assert_read(&result, &before, &after, 0, &format!("power-up {index:#x}"));
+    }
+    // What an OS writes when it enables MCA: every bank's CTL to all 1s, every STATUS to 0, and
+    // MCG_STATUS back to 0 after an #MC (here: the three defined bits, then 0).
+    let writes: [(u32, u64, u64); 9] = [
+        (0x400, u64::MAX, u64::MAX),
+        (0x404, 0x1234_5678_9abc_def0, 0x1234_5678_9abc_def0),
+        (0x40c, u64::MAX, u64::MAX),
+        (0x401, 0, 0),
+        (0x40d, 0, 0),
+        (0x402, 0, 0),
+        (0x40f, 0, 0),
+        (IA32_MCG_STATUS, 0b111, 0b111),
+        (IA32_MCG_STATUS, 0, 0),
+    ];
+    for (index, value, read_back) in writes {
+        let (result, before, after) = file_access(&mtrr, &mca, WRMSR, index, value);
+        assert_eq!(
+            result.instructions_executed, 1,
+            "{index:#x}: {:?}",
+            result.exit
+        );
+        assert_eq!(after.rip, before.rip + 2);
+        let (result, before, after) = file_access(&mtrr, &mca, RDMSR, index, 0);
+        assert_read(&result, &before, &after, read_back, &format!("{index:#x}"));
+    }
+    assert_eq!(mca.get().bank_ctl(0), u64::MAX);
+    assert_eq!(mca.get().bank_ctl(1), 0x1234_5678_9abc_def0);
+    assert_eq!(mca.get().bank_ctl(2), 0);
+    assert_eq!(mca.get().bank_ctl(3), u64::MAX);
+}
+
+#[test]
+fn mca_writes_the_sdm_does_not_define_for_this_cpu_are_gp0_without_change() {
+    let mut programmed = McaState::default();
+    assert!(programmed.write(0x400, u64::MAX).is_some());
+    assert!(programmed.write(IA32_MCG_STATUS, 0b100).is_some());
+    let cases: &[(u32, u64, &str)] = &[
+        (IA32_MCG_CAP, 4, "read-only IA32_MCG_CAP"),
+        (IA32_MCG_CAP, 0, "read-only IA32_MCG_CAP"),
+        (
+            IA32_MCG_STATUS,
+            0b1000,
+            "MCG_STATUS LMCE_S without MCG_LMCE_P",
+        ),
+        (IA32_MCG_STATUS, 1 << 63, "MCG_STATUS reserved bit 63"),
+        (0x401, 1, "MC0_STATUS non-zero"),
+        (0x401, 1 << 63, "MC0_STATUS VAL"),
+        (0x40e, 0x1000, "MC3_ADDR non-zero"),
+        (0x403, u64::MAX, "MC0_MISC non-zero"),
+    ];
+    for &(index, value, label) in cases {
+        let (mtrr, mca) = (Cell::new(MtrrState::default()), Cell::new(programmed));
+        let (result, before, after) = file_access(&mtrr, &mca, WRMSR, index, value);
+        assert_gp0_unchanged(&result, &before, &after, label);
+        assert_eq!(mca.get(), programmed, "{label}");
+    }
+}
+
+/// Without their cells the indexes of the two files are explicit stops (like IA32_BIOS_SIGN_ID),
+/// at CPL3 they are #GP(0) like every MSR, and the Windows list knows them.
+#[test]
+fn mtrr_and_mca_indexes_without_their_cells_stop_and_are_gp0_at_cpl3() {
+    let indexes = [
+        IA32_MTRRCAP,
+        IA32_MTRR_DEF_TYPE,
+        0x200,
+        0x26f,
+        IA32_MCG_CAP,
+        IA32_MCG_STATUS,
+        0x400,
+        0x40f,
+    ];
+    let cells = Cells::new();
+    let set = cells.windows();
+    for index in indexes {
+        assert!(windows_msr_is_known(index), "{index:#x}");
+        for code in [RDMSR, WRMSR] {
+            let (result, before, after) = access(&set, code, index, 0);
+            assert!(
+                matches!(exit(&result), RunExit::Unsupported { .. }),
+                "{code:02x?} {index:#x}: {:?}",
+                result.exit
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(after, before);
+        }
+    }
+    let (mtrr, mca) = (
+        Cell::new(MtrrState::default()),
+        Cell::new(McaState::default()),
+    );
+    let set = cells.windows().with_msr_mtrr(&mtrr).with_msr_mca(&mca);
+    for index in indexes {
+        for code in [RDMSR, WRMSR] {
+            let mut state = user_state();
+            state.gpr[Register::Rcx as usize] = u64::from(index);
+            let before = state.clone();
+            let mut memory = Memory::code(&code);
+            let result = run_with_cpl3_profile_set(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring3, 1),
+                od_isa::INTEGER_FLAGS,
+                &set,
+                None,
+                || false,
+            )
+            .unwrap();
+            assert_gp0_unchanged(
+                &result,
+                &before,
+                &state,
+                &format!("CPL3 {code:02x?} {index:#x}"),
+            );
+        }
+    }
+    assert_eq!(
+        (mtrr.get(), mca.get()),
+        (MtrrState::default(), McaState::default())
+    );
 }

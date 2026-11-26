@@ -20,21 +20,42 @@ const CR0_ET: u64 = 1 << 4;
 const CR0_NE: u64 = 1 << 5;
 const CR0_WP: u64 = 1 << 16;
 const CR0_AM: u64 = 1 << 18;
+const CR0_NW: u64 = 1 << 29;
+const CR0_CD: u64 = 1 << 30;
 const CR0_PG: u64 = 1 << 31;
 // CR0.AM only gates the alignment check of CPL3 accesses (together with EFLAGS.AC), which the model
-// does not perform, and the walker never reads it: a snapshot-only bit (S4-38L7f).
-const CR0_ALLOWED: u64 =
-    CR0_PE | CR0_MP | CR0_EM | CR0_TS | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
+// does not perform, and the walker never reads it: a snapshot-only bit (S4-38L7f). CR0.CD and CR0.NW
+// (S7-32 slice I) control caching; the model has no caches, so they do not change translation or
+// any access, and the walker never reads them: snapshot-only bits. The CPU refuses NW without CD
+// (#GP(0)); the walker does not repeat that check.
+const CR0_ALLOWED: u64 = CR0_PE
+    | CR0_MP
+    | CR0_EM
+    | CR0_TS
+    | CR0_ET
+    | CR0_NE
+    | CR0_WP
+    | CR0_AM
+    | CR0_NW
+    | CR0_CD
+    | CR0_PG;
+const CR4_DE: u64 = 1 << 3;
 const CR4_PAE: u64 = 1 << 5;
 const CR4_PSE: u64 = 1 << 4;
+const CR4_MCE: u64 = 1 << 6;
 const CR4_PGE: u64 = 1 << 7;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 // CR4.PSE does not change IA-32e translation (the PS bit of a PDE is always honored), so it is
 // admitted as a snapshot-only bit (S4-38L7c); the walker never reads it. CR4.PGE only enables
 // global pages (the G bit of a PTE); the model has no TLB and the walker never reads the G bit
-// (bit 8 of a leaf entry), so PGE is likewise a snapshot-only bit (S4-38L7d).
-const CR4_ALLOWED: u64 = CR4_PAE | CR4_PSE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT;
+// (bit 8 of a leaf entry), so PGE is likewise a snapshot-only bit (S4-38L7d). CR4.DE (debug
+// extensions: DR4/DR5 and I/O breakpoints) and CR4.MCE (the #MC exception) are CPU-side bits that do
+// not take part in translation (S7-32 slice I): snapshot-only as well. Which of them a guest may set
+// is the CPU's decision (the CPL0 set's policy and CPUID member), not the walker's; the walker is
+// shared by every profile and only states that these bits do not change a walk.
+const CR4_ALLOWED: u64 =
+    CR4_DE | CR4_PAE | CR4_PSE | CR4_MCE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT;
 const EFER_SCE: u64 = 1;
 const EFER_LME: u64 = 1 << 8;
 const EFER_LMA: u64 = 1 << 10;
@@ -7446,5 +7467,68 @@ mod tests {
             table_read.outcome,
             Err(ProbeError::Access(ProbeAccessError::TableRead { .. }))
         ));
+    }
+
+    /// S7-32 slice I: CR4.DE, CR4.MCE, CR0.CD and CR0.NW take no part in translation; the Long64,
+    /// PAE and 32-bit walkers admit them as snapshot bits and keep them. CR4.VME, PVI and TSD stay
+    /// refused (bits 0, 1 and 2; SDM Vol. 3A "Control Registers").
+    #[test]
+    fn s7_32_slice_i_de_mce_cd_nw_are_snapshot_bits_of_every_walker() {
+        const CR0: u64 = 0x8001_0033;
+        for cr0 in [CR0 | CR0_CD, CR0 | CR0_CD | CR0_NW, CR0] {
+            for cr4 in [
+                CR4_DE,
+                CR4_MCE,
+                CR4_DE | CR4_MCE,
+                CR4_DE | CR4_MCE | CR4_PGE,
+            ] {
+                let long = Long64ProbeConfig::new(cr0, ROOT, CR4_PAE | cr4, EFER_LME | EFER_LMA)
+                    .unwrap_or_else(|error| panic!("{cr0:#x} {cr4:#x}: {error:?}"));
+                assert_eq!((long.cr0(), long.cr4()), (cr0, CR4_PAE | cr4));
+                let pae = pae::PaeProbeConfig::new(cr0, ROOT, CR4_PAE | cr4, 0, [0; 4])
+                    .unwrap_or_else(|error| panic!("{cr0:#x} {cr4:#x}: {error:?}"));
+                assert_eq!((pae.cr0(), pae.cr4()), (cr0, CR4_PAE | cr4));
+                let pg32 = pg32::Pg32ProbeConfig::new(cr0, ROOT, cr4, 0, false)
+                    .unwrap_or_else(|error| panic!("{cr0:#x} {cr4:#x}: {error:?}"));
+                assert_eq!((pg32.cr0(), pg32.cr4()), (cr0, cr4));
+            }
+        }
+        for bit in [1u64 << 0, 1 << 1, 1 << 2] {
+            let refused = |value: u64| ProbeConfigError::UnsupportedBits {
+                register: "CR4",
+                value,
+                offending_bits: bit,
+            };
+            assert_eq!(
+                Long64ProbeConfig::new(CR0, ROOT, CR4_PAE | CR4_MCE | bit, EFER_LME | EFER_LMA),
+                Err(refused(CR4_PAE | CR4_MCE | bit))
+            );
+            assert_eq!(
+                pae::PaeProbeConfig::new(CR0, ROOT, CR4_PAE | CR4_DE | bit, 0, [0; 4]),
+                Err(pae::PaeConfigError::Config(refused(CR4_PAE | CR4_DE | bit)))
+            );
+            assert_eq!(
+                pg32::Pg32ProbeConfig::new(CR0, ROOT, CR4_MCE | bit, 0, false),
+                Err(refused(CR4_MCE | bit))
+            );
+        }
+    }
+
+    /// S7-32 slice I: AM (S4-38L7f) and CD together, the CR0 of a kernel in no-fill cache mode.
+    #[test]
+    fn s7_32_slice_i_cr0_am_with_cd_is_admitted() {
+        let cr0 = 0x8001_0033 | CR0_AM | CR0_CD;
+        assert_eq!(cr0, 0xC005_0033);
+        let long = Long64ProbeConfig::new(cr0, ROOT, CR4_PAE, EFER_LME | EFER_LMA).unwrap();
+        assert_eq!(long.cr0(), cr0);
+        // A bit next to them (bit 17, reserved) is still refused.
+        assert_eq!(
+            Long64ProbeConfig::new(cr0 | (1 << 17), ROOT, CR4_PAE, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::UnsupportedBits {
+                register: "CR0",
+                value: cr0 | (1 << 17),
+                offending_bits: 1 << 17,
+            })
+        );
     }
 }

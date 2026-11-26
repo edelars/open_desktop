@@ -46,6 +46,9 @@ pub const STOP_PAGE_ALLOCATOR: u8 = 0x33;
 pub const STOP_POOL_ALLOCATOR: u8 = 0x34;
 /// A private UEFI Boot Services call failed the guest smoke check.
 pub const STOP_BOOT_SERVICES: u8 = 0x35;
+/// The CPU declares MTRR, but the board's region table admits no correct MTRR layout
+/// (`mtrr::MtrrPlanError`; S7-32 slice I).
+pub const STOP_MTRR: u8 = 0x36;
 
 const PREFIX: &[u8] = b"OD-FW STOP code=0x";
 const MIDDLE: &[u8] = b" detail=0x";

@@ -81,7 +81,9 @@ pub enum CpuidProfile {
     /// default and not a member of the Stage 4 family. Leaf 1 ECX declares SSE3, SSSE3, CMPXCHG16B,
     /// SSE4.1, SSE4.2 and POPCNT, leaf 0x80000001 ECX declares LAHF/SAHF and PREFETCHW; leaf 1 EDX
     /// declares PAE, CX8, APIC and CMOV (`0x8340`; S2-58 and S2-57 slice C) and leaf 0x80000001 EDX stays zero
-    /// (NX deferred until S4-10). The Linux target `OdX8664V1Neutral` is unchanged.
+    /// (NX deferred until S4-10). The Linux target `OdX8664V1Neutral` is unchanged. Since S7-32
+    /// (2026-11-25) leaf 1 EDX is the target table plus, since slice I, DE, MCE, MTRR, MCA and
+    /// CLFSH (`0x0789F3FD`, see `WINDOWS_LEAF1_EDX`), and leaf 0x80000001 EDX is SYSCALL, NX, LM.
     OdX8664V2Windows,
 }
 
@@ -132,9 +134,26 @@ const WINDOWS_LEAF1_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 
 /// outside the bounded profile, FXSAVE forms other than the plain ones, and MSRs the unified set
 /// does not bind (IA32_PAT, IA32_MISC_ENABLE, IA32_APIC_BASE reads and writes; the Windows MSR file
 /// `with_msr_windows` exists in od-isa but no board binds it yet).
-/// Not declared: VME [1], DE [2], MCE [7], SEP [11], MTRR [12], MCA [14], PSE-36 [17], CLFSH [19]
-/// (until CLFLUSH executes), HTT [28] and the rest.
-const WINDOWS_LEAF1_EDX: u32 = 0x0781_A379;
+/// S7-32 slice I (architectural decision, ADR-0013 "S7-32, slice I"): DE [2], MCE [7], MTRR [12],
+/// MCA [14] and CLFSH [19] are declared too, `0x0789F3FD`. The kernel of the Windows media requires
+/// `(CPUID.01H:EDX & 0x0789F3FD) == 0x0789F3FD` and otherwise stops with bug check 0x5D
+/// UNSUPPORTED_PROCESSOR (observed: `KeBugCheckEx(0x5D, 0x0781A379, 0x20100800, 0x101, 0)`); the
+/// Celeron N5105 of the identity has all five. What backs them: CR4.DE and CR4.MCE are stored bits
+/// of the CPL0 set (DR4/DR5 are #UD with CR4.DE = 1; no #MC is ever raised), the MTRR and MCA MSRs
+/// are modelled (`crate::msr::MtrrState`, `crate::msr::McaState`; memory types have no effect: the
+/// model has no caches), `CLFLUSH` is the byte-read access check of the set and leaf 1 EBX[15:8]
+/// gives its line size.
+/// Not declared: VME [1], SEP [11], PSE-36 [17], HTT [28] and the rest.
+const WINDOWS_LEAF1_EDX: u32 = 0x0789_F3FD;
+/// CPUID.01H:EBX of the Windows profile for one vCPU (S7-32 slice I): bits 15:8 = 8, the CLFLUSH
+/// line size in 8-byte units (64 bytes, the line size of the N5105 and of every x86-64 core the
+/// identity could stand for; SDM Vol. 2A CPUID, Table 3-8 "EBX bits 15-08"), which is valid because
+/// CLFSH is declared. Bits 7:0 (brand index) are 0: the brand string of leaves 0x80000002..4 is
+/// used. Bits 23:16 (addressable logical processor IDs, valid only with HTT, which is not declared)
+/// and bits 31:24 (initial APIC ID) are 0 here and set per vCPU by [`CpuidProfile::query_for_vcpu`]
+/// (S6-18a) when the board has more than one vCPU. Until slice I the profile kept the Linux
+/// target's `0x100` (a line size field of 1, meaningless while CLFSH was clear).
+const WINDOWS_LEAF1_EBX: u32 = 8 << 8;
 /// CPUID.80000001H:ECX of the Windows profile: LAHF/SAHF in 64-bit mode [0] (S2-52) and PREFETCHW
 /// [8] (S2-53), from the Intel SDM (Vol. 1, "Leaf 80000001H"). LZCNT [5] is not declared.
 const WINDOWS_EXT1_ECX: u32 = (1 << 0) | (1 << 8);
@@ -181,7 +200,7 @@ const fn windows_brand_leaf(part: usize) -> CpuidResult {
 /// CPUID of `OdX8664V2Windows`: leaves 0, 1, 0x80000000, 0x80000001, 0x80000002..=0x80000004 and
 /// 0x80000008; every other leaf is four zeros. The maximum basic leaf is 1 (as for the Linux
 /// target: leaves 2, 4, 7, 0xB, 0xD are not implemented), the maximum extended leaf is 0x80000008.
-/// Leaf 1 EBX is the Linux target's `0x100` (topology per vCPU by [`CpuidProfile::query_for_vcpu`],
+/// Leaf 1 EBX is [`WINDOWS_LEAF1_EBX`] (topology per vCPU by [`CpuidProfile::query_for_vcpu`],
 /// S6-18); leaf 0x80000008 EAX is the Linux target's `0x3024` (48-bit linear, 36-bit physical).
 const fn windows_query(leaf: u32) -> CpuidResult {
     match leaf {
@@ -193,7 +212,7 @@ const fn windows_query(leaf: u32) -> CpuidResult {
         },
         1 => CpuidResult {
             eax: WINDOWS_LEAF1_EAX,
-            ebx: 0x100,
+            ebx: WINDOWS_LEAF1_EBX,
             ecx: WINDOWS_LEAF1_ECX,
             edx: WINDOWS_LEAF1_EDX,
         },
@@ -768,7 +787,14 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(p.query_for_vcpu(1, 0, 0, 1).ebx, 0x0000_0100);
+            // The CLFLUSH line size field: the contract's 0x100 (size field 1) for the Linux
+            // profiles, 8 (64 bytes) for the Windows profile, which declares CLFSH (S7-32 slice I).
+            let ebx = if p == CpuidProfile::OdX8664V2Windows {
+                0x0000_0800
+            } else {
+                0x0000_0100
+            };
+            assert_eq!(p.query_for_vcpu(1, 0, 0, 1).ebx, ebx);
         }
     }
 
@@ -781,7 +807,12 @@ mod tests {
             for (count, apic_id) in [(2u32, 0u32), (2, 1), (4, 0), (4, 1), (4, 2), (4, 3)] {
                 let one = p.query(1, 0);
                 let got = p.query_for_vcpu(1, 0, apic_id, count);
-                assert_eq!(got.ebx, 0x0000_0100 | (count << 16) | (apic_id << 24));
+                let line = if p == CpuidProfile::OdX8664V2Windows {
+                    0x0000_0800
+                } else {
+                    0x0000_0100
+                };
+                assert_eq!(got.ebx, line | (count << 16) | (apic_id << 24));
                 assert_eq!(got.ebx >> 24, apic_id, "initial APIC ID");
                 assert_eq!((got.ebx >> 16) & 0xFF, count, "logical processor count");
                 assert_eq!(got.ebx & 0xFFFF, one.ebx, "brand index and CLFLUSH size");
@@ -825,31 +856,37 @@ mod tests {
         assert_eq!(leaf0.ecx, 0x6C65_746E, "ASCII ntel");
         let leaf1 = p.query(1, 0);
         assert_eq!(leaf1.eax, 0x0009_06C0);
-        assert_eq!(leaf1.ebx, 0x0000_0100);
+        // S7-32 slice I: EBX[15:8] = 8 (CLFLUSH line size 8 * 8 = 64 bytes), everything else 0.
+        assert_eq!(leaf1.ebx, 0x0000_0800);
         assert_eq!(
             leaf1.ecx,
             0x1 + 0x200 + 0x2000 + 0x8_0000 + 0x10_0000 + 0x80_0000
         );
         assert_eq!(leaf1.ecx, 0x0098_2201);
-        // FPU 0, PSE 3, TSC 4, MSR 5, PAE 6, CX8 8, APIC 9, PGE 13, CMOV 15, PAT 16, MMX 23,
-        // FXSR 24, SSE 25, SSE2 26, by hand from the Intel SDM.
+        // FPU 0, DE 2, PSE 3, TSC 4, MSR 5, PAE 6, MCE 7, CX8 8, APIC 9, MTRR 12, PGE 13, MCA 14,
+        // CMOV 15, PAT 16, CLFSH 19, MMX 23, FXSR 24, SSE 25, SSE2 26, by hand from the Intel SDM.
         assert_eq!(
             leaf1.edx,
-            0x1 + 0x8
+            0x1 + 0x4
+                + 0x8
                 + 0x10
                 + 0x20
                 + 0x40
+                + 0x80
                 + 0x100
                 + 0x200
+                + 0x1000
                 + 0x2000
+                + 0x4000
                 + 0x8000
                 + 0x1_0000
+                + 0x8_0000
                 + 0x80_0000
                 + 0x100_0000
                 + 0x200_0000
                 + 0x400_0000
         );
-        assert_eq!(leaf1.edx, 0x0781_A379);
+        assert_eq!(leaf1.edx, 0x0789_F3FD);
         let ext = p.query(0x8000_0000, 0);
         assert_eq!(ext.eax, 0x8000_0008);
         assert_eq!((ext.ebx, ext.ecx, ext.edx), (0, 0, 0));
@@ -884,24 +921,21 @@ mod tests {
     }
 
     /// S2-57 negative: the bits that ADR-0013 forbids stay clear. Since the S7-32 decision of
-    /// 2026-11-25 leaf 1 EDX and leaf 0x80000001 EDX equal the Linux target table; the bits outside
-    /// that table stay clear.
+    /// 2026-11-25 leaf 1 EDX and leaf 0x80000001 EDX contain the Linux target table; since slice I
+    /// leaf 1 EDX adds DE, MCE, MTRR, MCA and CLFSH (the kernel's 0x0789F3FD); the other bits stay
+    /// clear.
     #[test]
     fn windows_declares_the_target_edx_words_and_no_forbidden_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
         let linux = CpuidProfile::OdX8664V1Neutral;
         let leaf1_edx = p.query(1, 0).edx;
-        assert_eq!(leaf1_edx, linux.query(1, 0).edx);
-        for (bit, name) in [
-            (1, "VME"),
-            (2, "DE"),
-            (7, "MCE"),
-            (11, "SEP"),
-            (12, "MTRR"),
-            (14, "MCA"),
-            (19, "CLFSH"),
-            (28, "HTT"),
-        ] {
+        assert_eq!(leaf1_edx & linux.query(1, 0).edx, linux.query(1, 0).edx);
+        assert_eq!(
+            leaf1_edx & !linux.query(1, 0).edx,
+            (1 << 2) | (1 << 7) | (1 << 12) | (1 << 14) | (1 << 19),
+            "DE, MCE, MTRR, MCA, CLFSH (slice I)"
+        );
+        for (bit, name) in [(1, "VME"), (11, "SEP"), (17, "PSE-36"), (28, "HTT")] {
             assert_eq!(leaf1_edx & (1 << bit), 0, "{name}");
         }
         let ext1_edx = p.query(0x8000_0001, 0).edx;

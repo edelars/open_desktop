@@ -51,7 +51,7 @@ fn register(reg: Reg) -> u32 {
 }
 
 /// (register, bit, name, owner task): declared because the owner task is implemented and merged.
-const DECLARED: [(Reg, u32, &str, &str); 25] = [
+const DECLARED: [(Reg, u32, &str, &str); 30] = [
     // S2-57 slice C (S2-16 and S2-21 accepted, confirmed by the owner 2026-11-21). Bit numbers:
     // Intel SDM rev. 093, Vol. 1, Table 21-10 (pp. 21-12 and 21-13). TSC and the rest of the target
     // table follow below (S7-32 decision of 2026-11-25).
@@ -92,12 +92,24 @@ const DECLARED: [(Reg, u32, &str, &str); 25] = [
         "S7-32 (S4-10 accepted 2026-11-21)",
     ),
     (Reg::Edx80000001, 29, "LM", "S7-32"),
+    // S7-32 slice I: the rest of the kernel's required leaf 1 EDX mask 0x0789F3FD (without them it
+    // stops with bug check 0x5D UNSUPPORTED_PROCESSOR). DE and MCE: CR4.DE/CR4.MCE are stored bits of
+    // the CPL0 set (MOV DR4/DR5 is #UD with CR4.DE = 1, no #MC is raised); MTRR and MCA: their MSRs
+    // are modelled (memory types have no effect without caches); CLFSH: CLFLUSH executes (W1) and
+    // leaf 1 EBX[15:8] gives its line size.
+    (Reg::Edx1, 2, "DE", "S7-32 slice I"),
+    (Reg::Edx1, 7, "MCE", "S7-32 slice I"),
+    (Reg::Edx1, 12, "MTRR", "S7-32 slice I"),
+    (Reg::Edx1, 14, "MCA", "S7-32 slice I"),
+    (Reg::Edx1, 19, "CLFSH", "S7-32 slice I"),
 ];
 
 /// (register, bit, name, why it is clear). The profile is built from the owner-task table of S2-57,
 /// not from the Linux table: a bit whose owner is not accepted, or has no task, stays clear.
-const UNDECLARED: [(Reg, u32, &str, &str); 17] = [
-    (Reg::Edx1, 19, "CLFSH", "no task"),
+const UNDECLARED: [(Reg, u32, &str, &str); 19] = [
+    (Reg::Edx1, 1, "VME", "no task"),
+    (Reg::Edx1, 11, "SEP", "no task"),
+    (Reg::Edx1, 17, "PSE-36", "no task"),
     (Reg::Edx1, 28, "HTT", "ADR-0013, S6-18 (topology)"),
     (Reg::Ecx1, 1, "PCLMULQDQ", "no task"),
     (Reg::Ecx1, 3, "MONITOR", "separate bit, not in S2-54"),
@@ -139,9 +151,10 @@ fn feature_registers_are_exactly_the_declared_bits() {
     );
     assert_eq!(register(Reg::Ecx1), 0x0098_2201);
     assert_eq!(register(Reg::Ecx80000001), 0x0000_0101);
-    // EDX of leaf 1: the target table (S7-32 decision 2026-11-25). 80000001H EDX: SYSCALL [11],
-    // NX [20], LM [29]. No bit is left over that the lists above do not name.
-    assert_eq!(register(Reg::Edx1), 0x0781_A379);
+    // EDX of leaf 1: the target table (S7-32 decision 2026-11-25) plus DE, MCE, MTRR, MCA and CLFSH
+    // (slice I). 80000001H EDX: SYSCALL [11], NX [20], LM [29]. No bit is left over that the lists
+    // above do not name.
+    assert_eq!(register(Reg::Edx1), 0x0789_F3FD);
     assert_eq!(register(Reg::Edx80000001), 0x2010_0800);
     for reg in [Reg::Edx1, Reg::Ecx1, Reg::Ecx80000001, Reg::Edx80000001] {
         let mut declared = 0u32;
@@ -166,9 +179,18 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     assert_eq!(linux.query(0x8000_0001, 0).edx, 0x2010_0800);
     assert_eq!(linux.query(0x8000_0002, 0), CpuidResult::default());
     // The Windows profile has its own identity; since the S7-32 decision (2026-11-25) its EDX
-    // words equal the Linux table's.
+    // words contain the Linux table's, and since slice I leaf 1 EDX adds DE, MCE, MTRR, MCA and
+    // CLFSH, which the Linux table does not declare.
     assert_ne!(WINDOWS.query(0, 0), linux.query(0, 0));
-    assert_eq!(WINDOWS.query(1, 0).edx, linux.query(1, 0).edx);
+    assert_eq!(
+        WINDOWS.query(1, 0).edx & !linux.query(1, 0).edx,
+        0x0008_5084,
+        "DE 0x4, MCE 0x80, MTRR 0x1000, MCA 0x4000, CLFSH 0x8_0000"
+    );
+    assert_eq!(
+        WINDOWS.query(1, 0).edx & linux.query(1, 0).edx,
+        linux.query(1, 0).edx
+    );
     assert_eq!(
         WINDOWS.query(0x8000_0001, 0).edx,
         linux.query(0x8000_0001, 0).edx
@@ -296,10 +318,11 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
 fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     // Order of the result: EAX, EBX, ECX, EDX.
     assert_eq!(cpuid_leaf(0), [1, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
-    // EDX: the target table (S7-32 decision 2026-11-25).
+    // EDX: the target table (S7-32 decision 2026-11-25) plus DE, MCE, MTRR, MCA, CLFSH (slice I);
+    // EBX: CLFLUSH line size 8 * 8 = 64 bytes in bits 15:8.
     assert_eq!(
         cpuid_leaf(1),
-        [0x0009_06c0, 0x100, 0x0098_2201, 0x0781_a379]
+        [0x0009_06c0, 0x800, 0x0098_2201, 0x0789_f3fd]
     );
     assert_eq!(cpuid_leaf(0x8000_0000), [0x8000_0008, 0, 0, 0]);
     // EDX: SYSCALL, NX, LM.

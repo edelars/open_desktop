@@ -657,15 +657,13 @@ fn cr4_write_clearing_pae_is_gp_without_mutation() {
 #[test]
 fn cr0_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    // PE, PG and WP cleared, bit 32 set (reserved), CD and NW set, and zero: the
-    // policy only lets EM/TS vary on top of CR0_BASE.
+    // PE, PG and WP cleared, bit 32 set (reserved), and zero: the policy only lets EM/TS (and AM,
+    // CD, NW: S4-38L7f, S7-32 slice I, tested on their own) vary on top of CR0_BASE.
     for value in [
         CR0_BASE & !1,
         CR0_BASE & !0x8000_0000,
         CR0_BASE & !(1 << 16),
         CR0_BASE | (1 << 32),
-        CR0_BASE | (1 << 30),
-        CR0_BASE | (1 << 29),
         0,
     ] {
         let mut code = movabs_rax(value);
@@ -2800,7 +2798,8 @@ fn mov_cr4_r64_without_pae_is_gp0_without_mutation() {
 
 #[test]
 fn mov_cr4_r64_with_bits_outside_the_policy_is_unsupported_without_mutation() {
-    for bit in [2u32, 3, 6, 8, 11, 12, 14, 16, 17, 18, 20, 21, 22, 40, 63] {
+    // DE (3) and MCE (6) joined the policy in S7-32 slice I (`s7_32_slice_i_...`).
+    for bit in [2u32, 8, 11, 12, 14, 16, 17, 18, 20, 21, 22, 40, 63] {
         let value = CR4_PSE_PAE | (1u64 << bit);
         let mut state = mov_cr4_state(Register::Rcx as usize, value);
         let before = state.clone();
@@ -11903,12 +11902,11 @@ fn cr0_am_is_accepted_by_the_set_policy() {
 #[test]
 fn cr0_am_does_not_widen_the_policy_to_other_bits() {
     let set = cr_set();
-    // Bit 17 (reserved), bit 19, bit 29 (NW), bit 30 (CD), bit 32; PG/PE/WP cleared with AM set.
+    // Bit 17 (reserved), bit 19, bit 32; PG/PE/WP cleared with AM set. CD and NW joined the policy
+    // in S7-32 slice I (`s7_32_slice_i_...`).
     for value in [
         CR0_BASE | CR0_AM | (1 << 17),
         CR0_BASE | CR0_AM | (1 << 19),
-        CR0_BASE | CR0_AM | (1 << 29),
-        CR0_BASE | CR0_AM | (1 << 30),
         CR0_BASE | CR0_AM | (1 << 32),
         (CR0_BASE | CR0_AM) & !1,
         (CR0_BASE | CR0_AM) & !(1 << 16),
@@ -29679,10 +29677,9 @@ fn mov_drn_forms_outside_the_slice_are_refused_without_mutation() {
         &[0x41, 0x66, 0x0f, 0x23, 0xfe], // stale REX
         &[0x41, 0x41, 0x0f, 0x23, 0xfe],
         &[0x66, 0x41, 0x0f, 0x23, 0xfe],
-        &[0x0f, 0x23, 0xe6], // DR4 (CR4.DE rule not modeled)
-        &[0x0f, 0x23, 0xee], // DR5
-        &[0x48, 0x0f, 0x23, 0xe0],
-        &[0x41, 0x0f, 0x23, 0xed],
+        // S7-32 slice I: with CR4.DE = 0 the DR4/DR5 forms (`0F 23 E6/EE`, `48 0F 23 E0`,
+        // `41 0F 23 ED`) alias DR6/DR7 and execute (`s7_32_slice_i_dr4_dr5_...`), so they left
+        // this list.
         &[0x0f, 0x23, 0x3e], // mod != 11: not modeled (hardware ignores mod, SDM from memory)
         &[0x0f, 0x23, 0x7e, 0x08],
         &[0x0f, 0x23, 0xbe, 0, 0, 0, 0],
@@ -43858,27 +43855,37 @@ fn mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedn
             od_isa::INTEGER_FLAGS & !0x8d5, // the six arithmetic flags become undefined
         );
     }
-    // Out of policy: PG cleared, WP cleared, CD set, a high bit: Unsupported 0x22, no change.
-    for value in [
-        CR0_BASE & !(1 << 31),
-        CR0_BASE & !(1 << 16),
-        CR0_BASE | (1 << 30),
-        CR0_BASE | (1 << 29),
-        CR0_BASE | (1 << 32),
-        CR0_BASE & !1,
+    // Out of policy: PG cleared, WP cleared, a high bit: Unsupported 0x22, no change. S7-32 slice I:
+    // CD (bit 30) is in the policy now; NW (bit 29) without CD is #GP(0), no change.
+    for (value, gp) in [
+        (CR0_BASE & !(1 << 31), false),
+        (CR0_BASE & !(1 << 16), false),
+        (CR0_BASE | (1 << 29), true),
+        (CR0_BASE | (1 << 32), false),
+        (CR0_BASE & !1, false),
     ] {
         let mut state = fp_state(CR0_BASE, CR4_FP);
         state.gpr[Register::Rdi as usize] = value;
         let before = state.clone();
         let mut memory = FpMemory::new(&[0x0f, 0x22, 0xc7]);
         let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
-        assert_eq!(
-            exit(&result),
-            &RunExit::Unsupported { opcode: 0x22 },
-            "{value:#x}"
-        );
+        let expected = if gp {
+            RunExit::Fault(GP0)
+        } else {
+            RunExit::Unsupported { opcode: 0x22 }
+        };
+        assert_eq!(exit(&result), &expected, "{value:#x}");
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before, "{value:#x}");
+    }
+    // S7-32 slice I: CD and CD | NW are stored through this form too.
+    for value in [CR0_BASE | (1 << 30), CR0_BASE | (3 << 29)] {
+        let mut state = fp_state(CR0_BASE, CR4_FP);
+        state.gpr[Register::Rdi as usize] = value;
+        let mut memory = FpMemory::new(&[0x0f, 0x22, 0xc7]);
+        let result = run_fp(&mut state, &mut memory, &set, 1).unwrap();
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+        assert_eq!(state.cr0, Some(value));
     }
 }
 
@@ -57076,15 +57083,16 @@ fn s7_32_mov_cr0_and_cr2_with_any_register_follow_the_set_policy() {
     assert_eq!(result.instructions_executed, 2, "{:?}", result.exit);
     assert_eq!(state.gpr[Register::Rcx as usize], CR0_BASE);
     assert_eq!(state.cr2, Some(0xffff_8000_1234_5678));
-    // mov %rcx, %cr0 within the policy (EM set) is accepted; CD (bit 30) stays outside the policy
-    // (the board walker does not model it either) and is refused without a change.
+    // mov %rcx, %cr0 within the policy (EM set) is accepted; a bit outside the policy (bit 17,
+    // reserved) is refused without a change. CD (bit 30) joined the policy in S7-32 slice I
+    // (`s7_32_slice_i_cr0_cd_and_nw_...`).
     let mut state = board_state();
     state.gpr[Register::Rcx as usize] = CR0_BASE | 1 << 2;
     let (result, _) = s7_32_run(&mut state, &[0x0f, 0x22, 0xc1], 1);
     assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
     assert_eq!(state.cr0, Some(CR0_BASE | 1 << 2));
     let mut state = board_state();
-    state.gpr[Register::Rcx as usize] = CR0_BASE | 1 << 30;
+    state.gpr[Register::Rcx as usize] = CR0_BASE | 1 << 17;
     let before = state.clone();
     let (result, _) = s7_32_run(&mut state, &[0x0f, 0x22, 0xc1], 1);
     assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
@@ -57105,8 +57113,265 @@ fn s7_32_mov_from_debug_registers_reads_reset_values_and_aliases_dr4_dr5() {
     assert_eq!(state.gpr[Register::Rcx as usize], 0xffff_0ff0);
     assert_eq!(state.gpr[Register::Rdx as usize], 0x400);
     assert_eq!(state.gpr[Register::Rbx as usize], 0x1234);
-    // CR4.DE (bit 3), which makes DR4/DR5 #UD, is outside the set policy: the #UD branch of the
-    // executor is not reachable in this set.
+    // CR4.DE = 1 (S7-32 slice I): `s7_32_slice_i_dr4_dr5_are_ud_with_cr4_de_and_alias_dr6_dr7_without`.
+}
+
+// ---- S7-32 slice I: CR4.DE, CR4.MCE, CR0.CD and CR0.NW as stored bits of the CPL0 set. Expected
+// values by hand from the Intel SDM (Vol. 2B "MOV—Move to/from Control Registers" and "MOV—Move
+// to/from Debug Registers"; Vol. 3A "Control Registers": DE bit 3, MCE bit 6, NW bit 29, CD bit 30;
+// CPUID.01H:EDX DE bit 2, MCE bit 7). ----
+
+static SLICE_I_WINDOWS: CpuidProfile = CpuidProfile::OdX8664V2Windows;
+static SLICE_I_LINUX_TARGET: CpuidProfile = CpuidProfile::OdX8664V1Neutral;
+const CR4_DE: u64 = 1 << 3;
+const CR4_MCE: u64 = 1 << 6;
+const CR0_NW: u64 = 1 << 29;
+const CR0_CD: u64 = 1 << 30;
+
+#[test]
+fn s7_32_slice_i_cr4_de_and_mce_are_stored_when_the_cpuid_member_declares_them() {
+    let set = base().with_cpuid(&SLICE_I_WINDOWS);
+    for value in [
+        CR4_BASE | CR4_DE,
+        CR4_BASE | CR4_MCE,
+        CR4_BASE | CR4_DE | CR4_MCE,
+        // The kernel's later CR4: PSE, PGE, OSFXSR, OSXMMEXCPT next to DE and MCE.
+        CR4_BASE | CR4_DE | CR4_MCE | 0x10 | 0x80 | 0x600,
+    ] {
+        // mov %rcx, %cr4 and mov %rax, %cr4.
+        for (code, src) in [
+            (&[0x0f, 0x22, 0xe1][..], Register::Rcx),
+            (&[0x0f, 0x22, 0xe0][..], Register::Rax),
+        ] {
+            let mut state = board_state();
+            state.gpr[src as usize] = value;
+            let mut expected = state.clone();
+            let (result, _) = s7_32_run_set(&mut state, code, 1, &set);
+            assert_eq!(
+                result.instructions_executed, 1,
+                "{value:#x}: {:?}",
+                result.exit
+            );
+            expected.cr4 = Some(value);
+            expected.rip += 3;
+            // MOV CR leaves the arithmetic flags undefined; their bits are unchanged.
+            assert_eq!(state, expected, "{value:#x} {code:02x?}");
+        }
+        // The board re-enters the set with that CR4 (entry admission).
+        let mut state = board_state();
+        state.cr4 = Some(value);
+        let (result, _) = s7_32_run_set(&mut state, &[0x90], 1, &set);
+        assert_eq!(result.instructions_executed, 1, "{value:#x}");
+    }
+}
+
+#[test]
+fn s7_32_slice_i_cr4_de_or_mce_without_the_cpuid_feature_is_gp0_and_refused_at_entry() {
+    // The base set (no CPUID member) and the Linux target table (neither DE nor MCE).
+    let linux = base().with_cpuid(&SLICE_I_LINUX_TARGET);
+    for set in [base(), linux] {
+        for value in [
+            CR4_BASE | CR4_DE,
+            CR4_BASE | CR4_MCE,
+            CR4_BASE | CR4_DE | CR4_MCE,
+        ] {
+            for code in [&[0x0f, 0x22, 0xe1][..], &[0x0f, 0x22, 0xe0]] {
+                let mut state = board_state();
+                state.gpr[Register::Rcx as usize] = value;
+                state.gpr[Register::Rax as usize] = value;
+                let before = state.clone();
+                let (result, memory) = s7_32_run_set(&mut state, code, 1, &set);
+                assert_eq!(
+                    exit(&result),
+                    &RunExit::Fault(GP0),
+                    "{value:#x} {code:02x?}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before, "{value:#x} {code:02x?}");
+                assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            }
+        }
+        // Nor does such a set admit a CR4 that holds them at entry (a CR4 from outside the set,
+        // e.g. `ProtectedCpu::into_long_mode`, which does not check CR4 against CPUID).
+        for value in [CR4_BASE | CR4_DE, CR4_BASE | CR4_MCE] {
+            let mut state = board_state();
+            state.cr4 = Some(value);
+            let mut memory = Memory::code(&[0x90]);
+            assert_eq!(
+                run_set(&mut state, &mut memory, &set, 1).unwrap_err(),
+                Cpl0ProfileSetInputError::Cr4OutsidePolicy { value }
+            );
+        }
+    }
+    // A CR4 that holds them (admitted at entry with the Windows member) may drop them.
+    let windows = base().with_cpuid(&SLICE_I_WINDOWS);
+    let mut state = board_state();
+    state.cr4 = Some(CR4_BASE | CR4_DE | CR4_MCE);
+    state.gpr[Register::Rcx as usize] = CR4_BASE;
+    let (result, _) = s7_32_run_set(&mut state, &[0x0f, 0x22, 0xe1], 1, &windows);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.cr4, Some(CR4_BASE));
+}
+
+#[test]
+fn s7_32_slice_i_cr0_cd_and_nw_are_stored_and_nw_without_cd_is_gp0() {
+    for value in [
+        CR0_BASE | CR0_CD,
+        CR0_BASE | CR0_CD | CR0_NW,
+        CR0_BASE | CR0_CD | 0xc,
+    ] {
+        // mov %rcx, %cr0 (general form) and mov %rax, %cr0.
+        for (code, src) in [
+            (&[0x0f, 0x22, 0xc1][..], Register::Rcx),
+            (&[0x0f, 0x22, 0xc0][..], Register::Rax),
+        ] {
+            let mut state = board_state();
+            state.gpr[src as usize] = value;
+            let (result, _) = s7_32_run(&mut state, code, 1);
+            assert_eq!(
+                result.instructions_executed, 1,
+                "{value:#x}: {:?}",
+                result.exit
+            );
+            assert_eq!(state.cr0, Some(value), "{value:#x} {code:02x?}");
+            assert_eq!(state.rip, RIP + 3);
+        }
+        let mut state = board_state();
+        state.cr0 = Some(value);
+        let (result, _) = s7_32_run(&mut state, &[0x90], 1);
+        assert_eq!(result.instructions_executed, 1, "entry with {value:#x}");
+    }
+    // NW = 1 with CD = 0: "an attempt to write invalid bit combinations in CR0" is #GP(0).
+    for value in [CR0_BASE | CR0_NW, CR0_BASE | CR0_NW | 0xc] {
+        for code in [&[0x0f, 0x22, 0xc1][..], &[0x0f, 0x22, 0xc0]] {
+            let mut state = board_state();
+            state.gpr[Register::Rcx as usize] = value;
+            state.gpr[Register::Rax as usize] = value;
+            let before = state.clone();
+            let (result, _) = s7_32_run(&mut state, code, 1);
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(GP0),
+                "{value:#x} {code:02x?}"
+            );
+            assert_eq!(state, before, "{value:#x} {code:02x?}");
+        }
+        // Such a CR0 is not a state the set admits at entry.
+        let mut state = board_state();
+        state.cr0 = Some(value);
+        let mut memory = Memory::code(&[0x90]);
+        assert_eq!(
+            run_set(&mut state, &mut memory, &base(), 1).unwrap_err(),
+            Cpl0ProfileSetInputError::Cr0OutsidePolicy { value }
+        );
+    }
+    // Back to normal cache mode.
+    let mut state = board_state();
+    state.cr0 = Some(CR0_BASE | CR0_CD | CR0_NW);
+    state.gpr[Register::Rcx as usize] = CR0_BASE;
+    let (result, _) = s7_32_run(&mut state, &[0x0f, 0x22, 0xc1], 1);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr0, Some(CR0_BASE));
+}
+
+#[test]
+fn s7_32_slice_i_dr4_dr5_are_ud_with_cr4_de_and_alias_dr6_dr7_without() {
+    // CR4.DE = 1 needs a CPUID member that declares DE (the Windows profile) at the entry.
+    let windows = base().with_cpuid(&SLICE_I_WINDOWS);
+    let ud = RunExit::Fault(ArchitecturalFault {
+        vector: 6,
+        error_code: None,
+        linear_address: None,
+    });
+    // CR4.DE = 0: mov %rcx, %dr4 writes DR6, mov %rdx, %dr5 writes DR7, and the reads alias.
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = 0xffff_0ff0;
+    state.gpr[Register::Rdx as usize] = 0x400;
+    let code = [
+        0x0f, 0x23, 0xe1, // mov %rcx, %dr4
+        0x0f, 0x23, 0xea, // mov %rdx, %dr5
+        0x0f, 0x21, 0xe3, // mov %dr4, %rbx
+        0x0f, 0x21, 0xee, // mov %dr5, %rsi
+    ];
+    let (result, _) = s7_32_run(&mut state, &code, 4);
+    assert_eq!(result.instructions_executed, 4, "{:?}", result.exit);
+    assert_eq!(state.debug_registers[6], Some(0xffff_0ff0));
+    assert_eq!(state.debug_registers[7], Some(0x400));
+    assert_eq!(state.debug_registers[4], None);
+    assert_eq!(state.debug_registers[5], None);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0xffff_0ff0);
+    assert_eq!(state.gpr[Register::Rsi as usize], 0x400);
+    // The alias takes the rules of DR7: an enabled breakpoint stays refused.
+    let mut state = board_state();
+    state.gpr[Register::Rdx as usize] = 0x401;
+    let before = state.clone();
+    let (result, _) = s7_32_run(&mut state, &[0x0f, 0x23, 0xea], 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x23 });
+    assert_eq!(state, before);
+    // CR4.DE = 1: every MOV to or from DR4/DR5 is #UD; nothing changes.
+    for code in [
+        &[0x0f, 0x23, 0xe1][..],
+        &[0x0f, 0x23, 0xea],
+        &[0x0f, 0x21, 0xe3],
+        &[0x0f, 0x21, 0xee],
+    ] {
+        let mut state = board_state();
+        state.cr4 = Some(CR4_BASE | CR4_DE);
+        state.gpr[Register::Rcx as usize] = 0xffff_0ff0;
+        state.gpr[Register::Rdx as usize] = 0x400;
+        let before = state.clone();
+        let (result, _) = s7_32_run_set(&mut state, code, 1, &windows);
+        assert_eq!(exit(&result), &ud, "{code:02x?}");
+        assert_eq!(state, before, "{code:02x?}");
+    }
+    // The other encodings of DR4/DR5 (`0F 23 E6`/`EE`: from RSI; `48 0F 23 E0`: REX.W from RAX;
+    // `41 0F 23 ED`: REX.B from R13): aliases of DR6/DR7 with CR4.DE = 0, #UD with CR4.DE = 1.
+    for (code, dr) in [
+        (&[0x0f, 0x23, 0xe6][..], 6usize),
+        (&[0x0f, 0x23, 0xee], 7),
+        (&[0x48, 0x0f, 0x23, 0xe0], 6),
+        (&[0x41, 0x0f, 0x23, 0xed], 7),
+    ] {
+        for de in [false, true] {
+            let mut state = board_state();
+            if de {
+                state.cr4 = Some(CR4_BASE | CR4_DE);
+            }
+            for gpr in state.gpr.iter_mut() {
+                *gpr = 0x400;
+            }
+            let before = state.clone();
+            let (result, memory) = s7_32_run_set(&mut state, code, 1, &windows);
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+            if de {
+                assert_eq!(exit(&result), &ud, "{code:02x?}");
+                assert_eq!(state, before, "{code:02x?}");
+            } else {
+                assert_eq!(
+                    result.instructions_executed, 1,
+                    "{code:02x?}: {:?}",
+                    result.exit
+                );
+                let mut expected = before;
+                expected.debug_registers[dr] = Some(0x400);
+                expected.rip += code.len() as u64;
+                assert_eq!(state, expected, "{code:02x?}");
+            }
+        }
+    }
+    // DR6/DR7 themselves are not affected by CR4.DE.
+    let mut state = board_state();
+    state.cr4 = Some(CR4_BASE | CR4_DE);
+    state.gpr[Register::Rdx as usize] = 0x400;
+    let (result, _) = s7_32_run_set(
+        &mut state,
+        &[0x0f, 0x23, 0xfa, 0x0f, 0x21, 0xf9],
+        2,
+        &windows,
+    );
+    assert_eq!(result.instructions_executed, 2, "{:?}", result.exit);
+    assert_eq!(state.debug_registers[7], Some(0x400));
+    assert_eq!(state.gpr[Register::Rcx as usize], 0x400);
 }
 
 #[test]
@@ -57308,18 +57573,42 @@ fn s7_32_carry_flag_instructions_rdpmc_and_padding_nops() {
 
 #[test]
 fn s7_32_clflush_is_a_byte_read_check_and_movnti_is_a_store() {
-    // clflush (%rbx): one byte read at RBX; a non-canonical RBX is #GP(0) without access.
+    // clflush (%rbx) in a set whose CPUID member declares CLFSH (S7-32 slice I): one byte read at
+    // RBX; a non-canonical RBX is #GP(0) without access.
+    let windows = base().with_cpuid(&SLICE_I_WINDOWS);
     let mut state = board_state();
     state.gpr[Register::Rbx as usize] = 0x3000;
-    let (result, memory) = s7_32_run(&mut state, &[0x0f, 0xae, 0x3b], 1);
+    let (result, memory) = s7_32_run_set(&mut state, &[0x0f, 0xae, 0x3b], 1, &windows);
     assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
     assert_eq!(memory.reads, vec![(0x3000, 1)]);
     assert!(memory.writes.is_empty());
     let mut state = board_state();
     state.gpr[Register::Rbx as usize] = 0x8000_0000_0000_0000;
-    let (result, memory) = s7_32_run(&mut state, &[0x0f, 0xae, 0x3b], 1);
+    let (result, memory) = s7_32_run_set(&mut state, &[0x0f, 0xae, 0x3b], 1, &windows);
     assert_eq!(exit(&result), &RunExit::Fault(GP0));
     assert!(memory.reads.is_empty());
+    // S7-32 slice I: without CLFSH in the CPUID member (none, or the Linux target table) CLFLUSH is
+    // #UD (SDM Vol. 2A "CLFLUSH": CPUID.01H:EDX.CLFSH[bit 19] = 0), before any access, also for a
+    // non-canonical address.
+    let linux = base().with_cpuid(&SLICE_I_LINUX_TARGET);
+    for set in [base(), linux] {
+        for rbx in [0x3000u64, 0x8000_0000_0000_0000] {
+            let mut state = board_state();
+            state.gpr[Register::Rbx as usize] = rbx;
+            let before = state.clone();
+            let (result, memory) = s7_32_run_set(&mut state, &[0x0f, 0xae, 0x3b], 1, &set);
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.reads.is_empty() && memory.writes.is_empty());
+        }
+    }
     // movnti %rax, (%rbx): eight bytes of RAX.
     let mut state = board_state();
     state.gpr[Register::Rbx as usize] = 0x3000;
@@ -57505,12 +57794,13 @@ fn s7_32_run_memory(
     memory: &mut BitsMemory,
     budget: u64,
 ) -> Cpl0ProfileSetResult {
+    // The Windows CPUID member declares CLFSH, which CLFLUSH needs (S7-32 slice I).
     run_with_cpl0_profile_set(
         state,
         memory,
         config(PrivilegeLevel::Ring0, budget),
         od_isa::INTEGER_FLAGS,
-        &base(),
+        &base().with_cpuid(&SLICE_I_WINDOWS),
         None,
         || false,
     )

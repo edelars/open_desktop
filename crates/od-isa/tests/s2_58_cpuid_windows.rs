@@ -6,7 +6,8 @@
 //! (deviation of S2-58, confirmed by the owner 2026-11-21; `CPU_CONTRACT.md`). NX is declared, and
 //! both EDX registers are the whole target table (leaf 1 EDX `0x0781A379`, 80000001H EDX
 //! `0x20100800`), by the S7-32 decision of 2026-11-25 (NX was deferred until S4-10 was accepted,
-//! and the owner accepted S4-10 on 2026-11-21).
+//! and the owner accepted S4-10 on 2026-11-21). S7-32 slice I adds DE, MCE, MTRR, MCA and CLFSH to
+//! leaf 1 EDX (`0x0789F3FD`).
 //!
 //! Groups:
 //!
@@ -57,8 +58,10 @@ fn pae_apic_and_nx_are_declared_at_their_sdm_positions() {
     // MSR 0x20, PAE 0x40, CX8 0x100, APIC 0x200, PGE 0x2000, CMOV 0x8000, PAT 0x1_0000, MMX
     // 0x80_0000, FXSR 0x100_0000, SSE 0x200_0000, SSE2 0x400_0000. 80000001H EDX is SYSCALL 0x800,
     // NX 0x10_0000 and LM 0x2000_0000.
+    // S7-32 slice I adds DE 0x4, MCE 0x80, MTRR 0x1000, MCA 0x4000 and CLFSH 0x8_0000 to leaf 1
+    // EDX (the kernel's required mask 0x0789F3FD).
     assert_eq!(leaf1.edx & (0x40 | 0x200), 0x0000_0240);
-    assert_eq!(leaf1.edx, 0x0781_A379);
+    assert_eq!(leaf1.edx, 0x0789_F3FD);
     assert_eq!(ext1.edx, 0x2010_0800);
     // The rest of both leaves is the S2-57 table.
     assert_eq!(leaf1.eax, 0x0009_06C0);
@@ -84,24 +87,14 @@ fn nx_is_declared_in_the_windows_profile() {
 }
 
 /// The neighbouring bits that the Windows profile does not declare are clear: after the S7-32
-/// decision of 2026-11-25 (the whole target table in both EDX registers) these are the leaf 1 EDX
-/// bits outside `0x0781A379`, the x2APIC/TSC-deadline/hypervisor bits of leaf 1 ECX and Page1GB and
-/// RDTSCP of 80000001H EDX.
+/// decision of 2026-11-25 (the whole target table in both EDX registers) and slice I (DE, MCE, MTRR,
+/// MCA, CLFSH) these are the leaf 1 EDX bits outside `0x0789F3FD`, the x2APIC/TSC-deadline/hypervisor
+/// bits of leaf 1 ECX and Page1GB and RDTSCP of 80000001H EDX.
 #[test]
 fn every_neighbouring_bit_that_the_windows_profile_does_not_declare_is_clear() {
     let leaf1 = WINDOWS.query(1, 0);
     let ext1 = WINDOWS.query(0x8000_0001, 0);
-    for (bit, name) in [
-        (1, "VME"),
-        (2, "DE"),
-        (7, "MCE"),
-        (11, "SEP"),
-        (12, "MTRR"),
-        (14, "MCA"),
-        (17, "PSE-36"),
-        (19, "CLFSH"),
-        (28, "HTT"),
-    ] {
+    for (bit, name) in [(1, "VME"), (11, "SEP"), (17, "PSE-36"), (28, "HTT")] {
         assert_eq!(leaf1.edx & (1 << bit), 0, "leaf 1 EDX[{bit}] {name}");
     }
     for (bit, name) in [(21, "x2APIC"), (24, "TSC-deadline"), (31, "hypervisor")] {
@@ -138,14 +131,14 @@ fn the_other_profiles_are_unchanged() {
 #[test]
 fn apic_id_of_leaf1_ebx_is_the_vcpu_index() {
     // Leaf 1 EBX: bits 31:24 initial APIC ID, 23:16 logical processor count, 15:8 CLFLUSH line
-    // size in 8-byte units (0x100 is the table's value), 7:0 brand index.
-    assert_eq!(WINDOWS.query(1, 0).ebx, 0x0000_0100);
-    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 0, 1).ebx, 0x0000_0100);
-    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 0, 2).ebx, 0x0002_0100);
-    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).ebx, 0x0102_0100);
-    // EDX does not change with the vCPU (the target table, S7-32 decision of 2026-11-25), HTT
-    // (bit 28) stays clear.
-    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).edx, 0x0781_A379);
+    // size in 8-byte units (8, 64 bytes, since S7-32 slice I declares CLFSH), 7:0 brand index.
+    assert_eq!(WINDOWS.query(1, 0).ebx, 0x0000_0800);
+    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 0, 1).ebx, 0x0000_0800);
+    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 0, 2).ebx, 0x0002_0800);
+    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).ebx, 0x0102_0800);
+    // EDX does not change with the vCPU (S7-32 decision of 2026-11-25 and slice I), HTT (bit 28)
+    // stays clear.
+    assert_eq!(WINDOWS.query_for_vcpu(1, 0, 1, 2).edx, 0x0789_F3FD);
 }
 
 // ---- executing guest code on the Windows member ----
@@ -271,7 +264,7 @@ fn movabs_rax(value: u64) -> Vec<u8> {
 }
 
 /// `CPUID` executed in a set whose CPUID member is the Windows profile returns the declared
-/// registers (S7-32 decision of 2026-11-25: leaf 1 EDX = `0x0781A379`, 80000001H EDX =
+/// registers (S7-32 decision of 2026-11-25 and slice I: leaf 1 EDX = `0x0789F3FD`, 80000001H EDX =
 /// `0x20100800` = SYSCALL | NX | LM).
 #[test]
 fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
@@ -281,7 +274,7 @@ fn cpuid_in_the_cpl0_set_with_the_windows_member_returns_the_declared_bits() {
         .with_cpuid(&WINDOWS);
     // mov eax, leaf; cpuid
     for (leaf, edx, ecx) in [
-        (1u32, 0x0781_A379u64, 0x0098_2201u64),
+        (1u32, 0x0789_F3FDu64, 0x0098_2201u64),
         (0x8000_0001, 0x2010_0800, 0x101),
     ] {
         let mut code = vec![0xb8];

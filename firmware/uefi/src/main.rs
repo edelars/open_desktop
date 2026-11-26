@@ -39,8 +39,8 @@ use od_firmware::rt::time::{RTC_CENTURY_REGISTER, Rtc};
 use od_firmware::rt::variable::RuntimeVariables;
 use od_firmware::stop::{
     STOP_BOOT_SERVICES, STOP_EXCEPTION, STOP_INTERNAL, STOP_INVALID_RDI, STOP_MEMORY_MAP,
-    STOP_NO_BOOT_OPTIONS, STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR, fixed_hex,
-    format_stop_line,
+    STOP_MTRR, STOP_NO_BOOT_OPTIONS, STOP_PAGE_ALLOCATOR, STOP_PAGING, STOP_POOL_ALLOCATOR,
+    fixed_hex, format_stop_line,
 };
 use od_firmware::uefi::guid::Guid;
 use od_firmware::uefi::runtime::ResetType;
@@ -151,6 +151,7 @@ extern "C" fn paging_active(active_cr3: u64) -> ! {
             stop(code, detail);
         }
     };
+    program_mtrrs(handoff);
     let paging = match BootPaging::plan(handoff) {
         Ok(paging) => paging,
         Err(error) => stop(STOP_PAGING, error.stop_detail()),
@@ -1462,24 +1463,33 @@ fn verify_service_boundaries(system: &SystemTable) {
     com1_write(b"OD-FW S7-05 service ABI boundaries verified\r\n");
 }
 
+/// CPUID leaf 1 supplies the architectural SMBIOS Processor ID (EAX, EDX).
 #[inline(never)]
 fn processor_id() -> [u32; 2] {
-    let signature: u32;
-    let features: u32;
-    // CPUID leaf 1 supplies the architectural SMBIOS Processor ID.
-    // Preserve RBX manually because it is reserved by LLVM for some functions.
+    let [signature, _, features] = cpuid(1);
+    [signature, features]
+}
+
+/// `CPUID` of `leaf` as `[EAX, ECX, EDX]`; the leaves read here (1, 0x80000000, 0x80000008) do not
+/// use a sub-leaf, so ECX is not set. RBX is reserved by LLVM for some functions, so it is saved
+/// on the stack around the instruction and its value is not returned (S7-32 slice I: the same
+/// `push rbx; cpuid; pop rbx` the firmware loop admits for the SMBIOS Processor ID).
+#[inline(never)]
+fn cpuid(leaf: u32) -> [u32; 3] {
+    let (eax, ecx, edx): (u32, u32, u32);
+    // SAFETY: CPUID writes only EAX, EBX, ECX and EDX; RBX is restored from the stack.
     unsafe {
         asm!(
             "push rbx",
             "cpuid",
             "pop rbx",
-            inout("eax") 1u32 => signature,
-            out("edx") features,
-            out("ecx") _,
+            inout("eax") leaf => eax,
+            out("ecx") ecx,
+            out("edx") edx,
             options(preserves_flags),
         );
     }
-    [signature, features]
+    [eax, ecx, edx]
 }
 
 #[inline(never)]
@@ -2241,6 +2251,130 @@ fn enable_firmware_fp_controls() {
     // SAFETY: CPL0 with 4-level paging. Keep PAE and enable the FP control
     // bits required at the later EFI entry point.
     unsafe { asm!("mov cr4, rax", in("rax") CR4_FIRMWARE, options(nostack)) };
+}
+
+/// `RDMSR`. SAFETY: the caller runs at CPL0 and `index` is an MSR the CPU declares.
+unsafe fn rdmsr(index: u32) -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("rdmsr", in("ecx") index, out("eax") low, out("edx") high,
+            options(nomem, nostack, preserves_flags));
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+/// `WRMSR`. SAFETY: the caller runs at CPL0 and `value` is valid for the declared MSR `index`.
+unsafe fn wrmsr(index: u32, value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("wrmsr", in("ecx") index, in("eax") value as u32, in("edx") (value >> 32) as u32,
+            options(nostack, preserves_flags));
+    }
+}
+
+/// S7-32 slice I: the platform firmware enables the MTRRs, which are disabled after a reset (SDM
+/// Vol. 3A, "Memory Type Range Registers (MTRRs)"). Only on a CPU that declares MTRR
+/// (CPUID.01H:EDX[12]); otherwise no MSR is touched. The layout comes from the handoff's region
+/// table (`od_firmware::mtrr`): WB by default, UC for the device window below 4 GiB. A layout the
+/// CPU cannot hold is a firmware stop (`STOP_MTRR`). Not inlined: `paging_active` never returns,
+/// so the plan stays off its frame, where the Boot Services table lives.
+#[inline(never)]
+fn program_mtrrs(handoff: &Handoff<'_>) {
+    use od_firmware::mtrr;
+    if cpuid(1)[2] & mtrr::CPUID_LEAF1_EDX_MTRR == 0 {
+        return;
+    }
+    // SAFETY: CPL0, and the CPU declares MTRR, so IA32_MTRRCAP exists.
+    let variable_count = unsafe { rdmsr(mtrr::IA32_MTRRCAP) } as u8;
+    // MAXPHYADDR (CPUID.80000008H:EAX[7:0]); 36 when the leaf is absent (SDM Vol. 3A, "Physical
+    // Address Space": PAE is declared).
+    let physical_bits = if cpuid(0x8000_0000)[0] >= 0x8000_0008 {
+        cpuid(0x8000_0008)[0] as u8
+    } else {
+        36
+    };
+    let plan = match mtrr::plan(handoff, variable_count, physical_bits) {
+        Ok(plan) => plan,
+        Err(error) => stop(STOP_MTRR, error.stop_detail()),
+    };
+    // SAFETY: the BSP at CPL0 with interrupts disabled since `_start` (no `STI` before Boot
+    // Services), the only processor running.
+    unsafe { apply_mtrrs(&plan, variable_count) };
+    com1_write(b"OD-FW S7-32 MTRR enabled def_type=0x");
+    com1_write(&fixed_hex(plan.def_type()));
+    com1_write(b" uc_pairs=0x");
+    com1_write(&fixed_hex(plan.pairs().len() as u64));
+    com1_write(b"\r\n");
+}
+
+/// Writes `plan` with the sequence of SDM Vol. 3A "MTRR Considerations in MP Systems" for one
+/// processor: no-fill cache mode (CD = 1, NW = 0), WBINVD, TLB flush (clearing CR4.PGE when set,
+/// else reloading CR3), MTRRs disabled (DEF_TYPE.E = 0), the pairs written (unused pairs with V = 0),
+/// MTRRs enabled, WBINVD and a second TLB flush (CR3 reload), the previous CR0 (normal cache mode),
+/// then CR4.PGE again if it was set.
+///
+/// SAFETY: CPL0, interrupts disabled, no other processor running, `plan.pairs().len() <=
+/// variable_count` and every value valid for the MSRs of a CPU that reported `variable_count`.
+unsafe fn apply_mtrrs(plan: &od_firmware::mtrr::MtrrPlan, variable_count: u8) {
+    use od_firmware::mtrr::{DEF_TYPE_ENABLE, IA32_MTRR_DEF_TYPE, IA32_MTRR_PHYSBASE0};
+    const CR0_NW: u64 = 1 << 29;
+    const CR0_CD: u64 = 1 << 30;
+    const CR4_PGE: u64 = 1 << 7;
+    let (cr0, cr4): (u64, u64);
+    // SAFETY: control-register reads at CPL0.
+    unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+    let reload_cr3 = || {
+        // SAFETY: CPL0; reloading CR3 with its own value changes no mapping and flushes the
+        // non-global TLB entries.
+        unsafe {
+            asm!("mov {tmp}, cr3", "mov cr3, {tmp}", tmp = out(reg) _,
+                options(nostack, preserves_flags));
+        }
+    };
+    // SAFETY: CPL0 (the caller's contract); CD = 1 with NW = 0 is a valid CR0 value, and clearing
+    // CR4.PGE flushes every TLB entry, the global ones included.
+    unsafe {
+        asm!("mov cr0, {}", in(reg) (cr0 | CR0_CD) & !CR0_NW, options(nostack, preserves_flags));
+        asm!("wbinvd", options(nostack, preserves_flags));
+        if cr4 & CR4_PGE != 0 {
+            asm!("mov cr4, {}", in(reg) cr4 & !CR4_PGE, options(nostack, preserves_flags));
+        } else {
+            reload_cr3();
+        }
+    }
+    // SAFETY: the MSRs exist (MTRR declared) and every value comes from the plan or keeps reserved
+    // bits clear (the caller's contract).
+    unsafe {
+        wrmsr(
+            IA32_MTRR_DEF_TYPE,
+            rdmsr(IA32_MTRR_DEF_TYPE) & !DEF_TYPE_ENABLE,
+        );
+        for pair in 0..u32::from(variable_count) {
+            let base = IA32_MTRR_PHYSBASE0 + 2 * pair;
+            match plan.pairs().get(pair as usize) {
+                Some(&(physbase, physmask)) => {
+                    wrmsr(base, physbase);
+                    wrmsr(base + 1, physmask);
+                }
+                None => wrmsr(base + 1, 0),
+            }
+        }
+        wrmsr(IA32_MTRR_DEF_TYPE, plan.def_type());
+        asm!("wbinvd", options(nostack, preserves_flags));
+    }
+    // PGE is clear here in either case, so a CR3 reload flushes every entry.
+    reload_cr3();
+    // SAFETY: restores the CR0 and CR4 values read above.
+    unsafe {
+        asm!("mov cr0, {}", in(reg) cr0, options(nostack, preserves_flags));
+        if cr4 & CR4_PGE != 0 {
+            asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

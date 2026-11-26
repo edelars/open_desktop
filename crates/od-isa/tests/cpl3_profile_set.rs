@@ -11898,3 +11898,160 @@ fn lock_misuse_is_ud(code: &[u8], result: &Cpl0ProfileSetResult) -> bool {
     assert_eq!(result.instructions_executed, 0, "{code:02x?}");
     true
 }
+
+/// S7-32 slice I: `CLFLUSH m8` executes at CPL3 (Intel SDM Vol. 2A "CLFLUSH": not a privileged
+/// instruction; it faults like a byte read). The model has no caches, so the instruction is the
+/// access check of a one-byte read with the user's privilege: a user page passes, a supervisor page
+/// is the #PF of a user read (error code U = 1, P = 1, W = 0) and nothing retires.
+#[test]
+fn s7_32_slice_i_clflush_runs_at_cpl3_as_a_user_byte_read() {
+    const USER_LINE: u64 = 0x50_0040;
+    const SUPERVISOR_LINE: u64 = 0xffff_8000_0000_1000;
+    struct Lines {
+        code: Vec<u8>,
+        reads: Vec<(u64, usize, PrivilegeLevel)>,
+    }
+    impl GuestMemory for Lines {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            let offset = address.checked_sub(RIP).unwrap_or(u64::MAX) as usize;
+            self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+        }
+        fn read(
+            &mut self,
+            address: u64,
+            context: AccessContext,
+            bytes: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            self.reads
+                .push((address, bytes.len(), context.page_privilege()));
+            if address == SUPERVISOR_LINE && context.page_privilege() == PrivilegeLevel::Ring3 {
+                return Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(page_fault_error_code(
+                        AccessKind::Read,
+                        context,
+                        true,
+                        false,
+                        false,
+                    )),
+                    linear_address: Some(address),
+                }));
+            }
+            bytes.fill(0);
+            Ok(())
+        }
+        fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            Err(MemoryError::Backend(format!(
+                "unexpected write {address:#x}"
+            )))
+        }
+        fn atomic_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            unreachable!()
+        }
+        fn atomic_fetch_add_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            unreachable!()
+        }
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            unreachable!()
+        }
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            unreachable!()
+        }
+    }
+    // The Windows CPUID member declares CLFSH (S7-32 slice I); without it CLFLUSH is #UD (below).
+    static WINDOWS: od_isa::cpuid::CpuidProfile = od_isa::cpuid::CpuidProfile::OdX8664V2Windows;
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1).with_cpuid(&WINDOWS);
+    // clflush (%rbx)
+    for (line, faults) in [(USER_LINE, false), (SUPERVISOR_LINE, true)] {
+        let mut state = user_state();
+        state.gpr[Register::Rbx as usize] = line;
+        let before = state.clone();
+        let mut memory = Lines {
+            code: vec![0x0f, 0xae, 0x3b],
+            reads: Vec::new(),
+        };
+        let result = run_with_cpl3_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3, 1),
+            od_isa::INTEGER_FLAGS,
+            &set,
+            None,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            memory.reads,
+            vec![(line, 1, PrivilegeLevel::Ring3)],
+            "{line:#x}"
+        );
+        if faults {
+            assert_eq!(
+                exit(&result),
+                &RunExit::Fault(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0b101),
+                    linear_address: Some(SUPERVISOR_LINE),
+                }),
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+            let mut expected = before;
+            expected.rip += 3;
+            assert_eq!(state, expected);
+        }
+    }
+    // Without a CPUID member that declares CLFSH: #UD before any access.
+    let plain = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1);
+    let mut state = user_state();
+    state.gpr[Register::Rbx as usize] = USER_LINE;
+    let before = state.clone();
+    let mut memory = Lines {
+        code: vec![0x0f, 0xae, 0x3b],
+        reads: Vec::new(),
+    };
+    let result = run_with_cpl3_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring3, 1),
+        od_isa::INTEGER_FLAGS,
+        &plain,
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(
+        exit(&result),
+        &RunExit::Fault(ArchitecturalFault {
+            vector: 6,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert!(memory.reads.is_empty());
+    assert_eq!(state, before);
+}

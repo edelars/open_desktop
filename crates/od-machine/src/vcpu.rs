@@ -220,6 +220,13 @@ pub(crate) struct Vcpu {
     /// whatever the guest writes; EDX (bits 63:32) is the microcode update signature, 0 = no update
     /// loaded (the virtual CPU has none).
     pub(crate) guest_bios_sign_id: u64,
+    /// The guest MTRR file of the Windows MSR member (S7-32 slice I): disabled at power-up
+    /// (`MtrrState::default()`, SDM Vol. 3A "MTRR Initialization") until the firmware programs it. Carried between
+    /// runs like the other MSR cells; memory types have no effect on accesses (no caches).
+    pub(crate) guest_mtrr: od_isa::msr::MtrrState,
+    /// The guest MCA file of the Windows MSR member (S7-32 slice I): MCG_STATUS and the banks' CTL,
+    /// 0 at power-up; no error is ever logged.
+    pub(crate) guest_mca: od_isa::msr::McaState,
     /// The guest FP state of the CPL0 set's FP member (S4-38L9d): x87 environment and registers,
     /// MXCSR and XMM. `GuestFpState::initial()` until a run with the member changes it; carried
     /// between runs like the MSR cells.
@@ -262,6 +269,8 @@ impl Vcpu {
             guest_pat: od_isa::msr::IA32_PAT_RESET,
             guest_misc_enable: od_isa::msr::IA32_MISC_ENABLE_RESET,
             guest_bios_sign_id: 0,
+            guest_mtrr: od_isa::msr::MtrrState::default(),
+            guest_mca: od_isa::msr::McaState::default(),
             guest_fp: GuestFpState::initial(),
             legacy: None,
             skip_first_boundary: false,
@@ -989,6 +998,20 @@ mod tests {
         ap.guest_pat = 0x0606_0606_0606_0606;
         ap.guest_misc_enable = 0x1800;
         ap.guest_bios_sign_id = 0x24 << 32;
+        // S7-32 slice I: the MTRRs and the MCA MSRs are unchanged by INIT (SDM Vol. 3A, table "IA-32
+        // and Intel 64 Processor States Following Power-up, Reset, or INIT": INIT "Unchanged").
+        let mut mtrr = od_isa::msr::MtrrState::default();
+        assert_eq!(
+            mtrr.write(od_isa::msr::IA32_MTRR_DEF_TYPE, 0xc06),
+            Some(od_isa::msr::MsrWrite::Accept)
+        );
+        ap.guest_mtrr = mtrr;
+        let mut mca = od_isa::msr::McaState::default();
+        assert_eq!(
+            mca.write(od_isa::msr::IA32_MC0_CTL, u64::MAX),
+            Some(od_isa::msr::MsrWrite::Accept)
+        );
+        ap.guest_mca = mca;
         let mut fp = GuestFpState::initial();
         fp.sse.mxcsr = 0x1F00;
         ap.guest_fp = fp.clone();
@@ -1023,6 +1046,8 @@ mod tests {
             (ap.guest_pat, ap.guest_misc_enable, ap.guest_bios_sign_id),
             (0x0606_0606_0606_0606, 0x1800, 0x24 << 32)
         );
+        assert_eq!((ap.guest_mtrr, ap.guest_mca), (mtrr, mca));
+        assert_eq!(ap.guest_mtrr.def_type(), 0xc06);
         assert_eq!(ap.guest_fp, fp);
     }
 

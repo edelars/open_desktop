@@ -476,6 +476,12 @@ const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "FISTTP-m64 (mem)",
 ];
 
+/// Forms the CPL0 set raises #UD for under the survey profile (`X8664V1Stage4A`: FPU, TSC and FXSR
+/// declared) because their own CPUID bit is not declared: `CLFLUSH` needs CLFSH
+/// (CPUID.01H:EDX[19]; S7-32 slice I, SDM Vol. 2A "CLFLUSH"). Such a #UD is the architectural answer
+/// of that profile, not an unexpected #UD of a baseline form.
+const KNOWN_CPUID_UD_CPL0_SET: &[&str] = &["CLFLUSH (mem)"];
+
 const CR0_BASE: u64 = 0x8001_0033;
 const CR4_FP: u64 = 0x20 | (1 << 9) | (1 << 10);
 
@@ -665,6 +671,8 @@ struct Survey {
     bare: Vec<String>,
     set: Vec<String>,
     undefined: Vec<String>,
+    /// #UD of the set listed in [`KNOWN_CPUID_UD_CPL0_SET`].
+    cpuid_undefined: Vec<String>,
 }
 
 fn is_undefined(fault: &ArchitecturalFault) -> bool {
@@ -674,6 +682,7 @@ fn is_undefined(fault: &ArchitecturalFault) -> bool {
 fn survey() -> Survey {
     let mut total = 0;
     let (mut bare, mut set, mut undefined) = (Vec::new(), Vec::new(), Vec::new());
+    let mut cpuid_undefined = Vec::new();
     let verbose = std::env::var("S2_40_SURVEY").is_ok();
     for line in SPEC
         .lines()
@@ -706,7 +715,14 @@ fn survey() -> Survey {
             match &exit {
                 RunExit::Unsupported { .. } => set.push(tag),
                 RunExit::Fault(fault) if is_undefined(fault) => {
-                    undefined.push(format!("set {tag}"));
+                    if KNOWN_CPUID_UD_CPL0_SET
+                        .iter()
+                        .any(|name| tag.starts_with(name))
+                    {
+                        cpuid_undefined.push(tag);
+                    } else {
+                        undefined.push(format!("set {tag}"));
+                    }
                 }
                 _ => {}
             }
@@ -717,6 +733,7 @@ fn survey() -> Survey {
         bare,
         set,
         undefined,
+        cpuid_undefined,
     }
 }
 
@@ -734,6 +751,7 @@ fn refused_baseline_forms_are_exactly_the_recorded_list() {
         bare,
         set,
         undefined,
+        cpuid_undefined,
     } = survey();
     println!(
         "forms checked: {total}; bare refused: {}; CPL0 set refused: {}",
@@ -754,6 +772,13 @@ fn refused_baseline_forms_are_exactly_the_recorded_list() {
         undefined.is_empty(),
         "#UD (vector 6) from a baseline form; it is neither a refusal nor presence: {undefined:#?}"
     );
+    // Every listed CPUID #UD still happens (the list is not stale).
+    for name in KNOWN_CPUID_UD_CPL0_SET {
+        assert!(
+            cpuid_undefined.iter().any(|line| line.starts_with(name)),
+            "{name} is no longer #UD under the survey profile: {cpuid_undefined:?}"
+        );
+    }
     let bare_new = unexpected(&bare, KNOWN_UNSUPPORTED_BARE);
     let set_new = unexpected(&set, KNOWN_UNSUPPORTED_CPL0_SET);
     assert!(

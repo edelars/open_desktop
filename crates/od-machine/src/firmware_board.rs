@@ -9567,6 +9567,55 @@ mod tests {
         assert_ne!(linux.state().gpr[Register::R8 as usize], 0x0007_0406);
     }
 
+    /// S7-32 slice I: the Windows unified run binds the MTRR and MCA files (IA32_MTRRCAP reads
+    /// VCNT 8 | FIX | WC, IA32_MCG_CAP reads 4 banks; the DEF_TYPE and MC0_CTL writes are committed
+    /// to the vCPU) and runs with CR4.DE | CR4.MCE and a CR0.CD round trip: the board's walker takes
+    /// the new CR4 when the CR3 reload rebuilds it (before slice I it refused DE and MCE).
+    #[test]
+    fn s7_32_the_windows_unified_run_binds_the_mtrrs_the_mca_and_the_new_control_bits() {
+        #[rustfmt::skip]
+        let code = [
+            0xB9, 0xFE, 0x00, 0x00, 0x00,       // mov ecx, 0xfe (IA32_MTRRCAP)
+            0x0F, 0x32,                         // rdmsr
+            0x49, 0x89, 0xC0,                   // mov r8, rax
+            0xB9, 0xFF, 0x02, 0x00, 0x00,       // mov ecx, 0x2ff (IA32_MTRR_DEF_TYPE)
+            0xB8, 0x06, 0x08, 0x00, 0x00,       // mov eax, 0x806 (E | WB)
+            0x31, 0xD2,                         // xor edx, edx
+            0x0F, 0x30,                         // wrmsr
+            0xB9, 0x00, 0x04, 0x00, 0x00,       // mov ecx, 0x400 (IA32_MC0_CTL)
+            0xB8, 0xFF, 0xFF, 0xFF, 0xFF,       // mov eax, 0xffffffff
+            0xBA, 0xFF, 0xFF, 0xFF, 0xFF,       // mov edx, 0xffffffff
+            0x0F, 0x30,                         // wrmsr
+            0xB9, 0x79, 0x01, 0x00, 0x00,       // mov ecx, 0x179 (IA32_MCG_CAP)
+            0x0F, 0x32,                         // rdmsr
+            0x49, 0x89, 0xC1,                   // mov r9, rax
+            0x0F, 0x20, 0xE0,                   // mov rax, cr4
+            0x48, 0x83, 0xC8, 0x48,             // or rax, 0x48 (DE | MCE)
+            0x0F, 0x22, 0xE0,                   // mov cr4, rax
+            0x0F, 0x20, 0xC0,                   // mov rax, cr0
+            0x48, 0x0D, 0x00, 0x00, 0x00, 0x40, // or rax, 0x40000000 (CD)
+            0x0F, 0x22, 0xC0,                   // mov cr0, rax
+            0x0F, 0x09,                         // wbinvd
+            0x48, 0x25, 0xFF, 0xFF, 0xFF, 0xBF, // and rax, ~0x40000000
+            0x0F, 0x22, 0xC0,                   // mov cr0, rax
+            0x0F, 0x20, 0xD8,                   // mov rax, cr3
+            0x0F, 0x22, 0xD8,                   // mov cr3, rax (the walker is rebuilt)
+            0x90,                               // nop (fetched through the new walker)
+            0xF4,                               // hlt (IF = 0: the run ends)
+        ];
+        let (board, run) = windows_msr_run(&code);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert!(run.unsupported_msr.is_none());
+        let state = board.state();
+        assert_eq!(state.gpr[Register::R8 as usize], 0x508);
+        assert_eq!(state.gpr[Register::R9 as usize], 4);
+        assert_eq!(state.cr4.map(|cr4| cr4 & 0x48), Some(0x48));
+        assert_eq!(state.cr0.map(|cr0| cr0 & (1 << 30)), Some(0));
+        let vcpu = &board.vcpus[BOOT_VCPU_INDEX];
+        assert_eq!(vcpu.guest_mtrr.def_type(), 0x806);
+        assert_eq!(vcpu.guest_mca.bank_ctl(0), u64::MAX);
+    }
+
     /// S7-32 slice F (decision M1): in the Windows unified run, `WRMSR 0x10` (no TSC offset in the
     /// model) and an MSR outside the modelled list (`RDMSR 0xCE`, MSR_PLATFORM_INFO) are stops, and
     /// the report names the index and the direction; nothing of the access is executed.

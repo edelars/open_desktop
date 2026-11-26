@@ -1290,6 +1290,58 @@ Intel SDM Vol. 2B RDMSR, Vol. 2D WRMSR, Vol. 3A §14.12.4, Figure 6-14, Vol. 4 T
 No physical oracle exists for the accepted CPL0 rows (RDMSR/WRMSR are privileged); they are model-only. Only the
 CPL3 `#GP(0)` of a bare RDMSR/WRMSR could be observed from user space; no oracle count was taken.
 
+**S7-32 slice I (2026-11-26): MTRR and MCA files.** The Windows profile declares MTRR and MCA (CPUID.01H:EDX[12],
+[14]; ADR-0013, addendum «S7-32, срез I»), so the Windows member gains two cell-held files, bound by the unified
+Windows run per vCPU (`Vcpu::guest_mtrr`, `guest_mca`; carried between runs, unchanged by INIT):
+`with_msr_mtrr(&Cell<MtrrState>)` and `with_msr_mca(&Cell<McaState>)` (`crates/od-isa/src/msr.rs`). Without its
+cell an index of a file is a stop. Values are SDM-exact; memory types have no effect on any access (the model has
+no caches and runs every access in order).
+
+| MSR | Index | Read | Write |
+|---|---|---|---|
+| IA32_MTRRCAP | `0xFE` | `0x508`: VCNT 8, FIX, WC; no SMRR | `#GP(0)` (read-only) |
+| IA32_MTRR_DEF_TYPE | `0x2FF` | stored; 0 after reset (E = 0) | Type 7:0 (0, 1, 4, 5, 6), FE 10, E 11; any other bit or type `#GP(0)` |
+| IA32_MTRR_PHYSBASE0..7 | `0x200 + 2n` | stored; 0 after reset | Type 7:0 as above, PhysBase 35:12; bits 11:8 and 63:36 (MAXPHYADDR 36) `#GP(0)` |
+| IA32_MTRR_PHYSMASK0..7 | `0x201 + 2n` | stored; 0 after reset (V = 0) | PhysMask 35:12, V 11; bits 10:0 and 63:36 `#GP(0)` |
+| Fixed-range MTRRs | `0x250`, `0x258`, `0x259`, `0x268..=0x26F` | stored; 0 after reset | each byte a valid type, else `#GP(0)` |
+| IA32_MCG_CAP | `0x179` | `0x4`: 4 banks; MCG_CTL_P, EXT_P, CMCI_P, TES_P, SER_P, EMC_P, ELOG_P, LMCE_P = 0 | `#GP(0)` (read-only) |
+| IA32_MCG_STATUS | `0x17A` | stored; 0 after reset | RIPV, EIPV, MCIP (bits 2:0); LMCE_S and the rest `#GP(0)` |
+| IA32_MCi_CTL, i = 0..3 | `0x400 + 4i` | stored; 0 after reset | any value (all 64 enables) |
+| IA32_MCi_STATUS / ADDR / MISC | `0x401/2/3 + 4i` | 0 (no error is ever logged) | 0 accepted (clear); non-zero `#GP(0)` |
+
+Indexes the declared capabilities say do not exist — IA32_MCG_CTL `0x17B` (MCG_CTL_P = 0), banks 4 and up
+(`0x410..`), IA32_MCi_CTL2 `0x280..` (MCG_CMCI_P = 0), variable pairs 8 and up (`0x210..`) — are not in the file: they
+stay unknown indexes (`#GP(0)`, a stop with `with_msr_windows_unknown_as_stop`). On the declared CPU they are
+architecturally `#GP(0)`; the unified Windows run keeps them as stops so that a guest that probes them is visible.
+The choices VCNT = 8 and 4 banks are model decisions (the physical N5105 values are not sourced). The firmware
+programs the MTRRs at boot when CPUID declares MTRR (`firmware/uefi/src/mtrr.rs`: DEF_TYPE = E | WB = `0x806`,
+FE = 0, the device window from the lowest non-RAM handoff region up to 4 GiB UC; on the Windows board one pair,
+`0xF8000000 | UC`, mask `0xFF8000800`); the Linux profiles do not declare MTRR and see no MTRR access.
+
+**S7-32 slice I: control registers.** The CPL0 set policy (`ControlRegisterPolicy::Cpl0BaseLong64V1`) stores
+CR4.DE (bit 3), CR4.MCE (bit 6), CR0.CD (bit 30) and CR0.NW (bit 29); the board walker admits them as snapshot-only
+bits (they do not take part in translation; `crates/od-machine/src/page_walk.rs`, `CR0_ALLOWED`/`CR4_ALLOWED`,
+shared by the Long64, PAE and 32-bit walkers). The policy checked at every step is a mask only; the rules that need
+more are checked by the writes and at the entry of the set. `MOV CR0` with NW = 1 and CD = 0 is `#GP(0)` (SDM Vol.
+2B MOV CR); such a CR0 is refused at entry (`Cr0OutsidePolicy`). `MOV CR4` setting DE or MCE is `#GP(0)` while the
+set's CPUID member does not declare the feature (CPUID.01H:EDX[2] DE, [7] MCE), and such a CR4 is refused at entry
+(`Cr4OutsidePolicy`, also when it comes from `ProtectedCpu::into_long_mode`): only the Windows profile declares
+them, so the Linux profiles cannot run the CPL0 set with CR4.DE/MCE. The protected-mode model (`ProtectedCpu`) does
+not check CR4 against CPUID ([ISSUE-694](../KNOWN_ISSUES.md#issue-694)). `MOV` to or from DR4/DR5 is `#UD` while
+CR4.DE = 1 and otherwise aliases DR6/DR7 with their rules. No #MC is ever raised; caches are not modelled, so CD/NW
+and `WBINVD` change nothing observable. `CLFLUSH m8` is `#UD` while the set's CPUID member does not declare CLFSH
+(CPUID.01H:EDX[19]; SDM Vol. 2A CLFLUSH), and with it the byte-read access check, also at CPL3 (the user's
+privilege; SDM: not a privileged instruction); the read reaches an MMIO window too
+([ISSUE-695](../KNOWN_ISSUES.md#issue-695)). The Windows member's IA32_BIOS_SIGN_ID, MTRR and MCA cells sit behind one
+reference of the per-step profiles, so the profiles passed to every step did not grow (96-byte `GuestMsrCells`, as
+before the slice).
+
+**Changes for the Linux profiles (S7-32 slice I; architectural answers, CPUID unchanged).** CR0.CD and CR0.NW are
+accepted (before: a stop); DR4/DR5 alias DR6/DR7 (before: a write of them was a stop); `MOV CR4` with DE or MCE is
+`#GP(0)` and such a CR4 is refused at entry (before: a stop); `CLFLUSH` is `#UD`, because no Linux profile declares
+CLFSH (before: the byte-read check of W1). The firmware has no `CLFLUSH`; whether a Linux run reaches one was not
+checked by a run (the kernel guards its `CLFLUSH` paths by the CLFSH feature).
+
 ### Локальный профиль `RdtscSourceV1` (S2-26e)
 
 `RDTSC` исполняется только для точной bare Long64 кодировки `0F 31` в
@@ -32487,9 +32539,9 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 |---|---|---|
 | `0` | EAX = 1 (максимальный базовый лист); EBX/EDX/ECX = `Genu`/`ineI`/`ntel` (`0x756E6547`, `0x49656E69`, `0x6C65746E`) | как у Linux-цели (лист 1 — последний реализованный); порядок регистров — SDM |
 | `1` EAX | `0x000906C0` (family 6, model `0x9C`, stepping 0, type 0) | ADR-0013, UCODE 06-9c-00; раскладка по SDM; `/proc/cpuinfo` внешнего образца (OpenBenchmarking) подтверждает family 6, model 156, stepping 0 |
-| `1` EBX | `0x100` (по vCPU — `query_for_vcpu`, S6-18a: логические процессоры и APIC ID в EBX[23:16], APIC ID в EBX[31:24]) | как у Linux-цели; HTT не объявлен |
+| `1` EBX | `0x800` (по vCPU — `query_for_vcpu`, S6-18a: логические процессоры и APIC ID в EBX[23:16], APIC ID в EBX[31:24]) | S7-32, срез I: EBX[15:8] = 8 — размер строки `CLFLUSH` 8·8 = 64 байта (поле действительно при объявленном CLFSH; SDM Vol. 2A CPUID, EBX биты 15–08), индекс бренда 0; до среза I — `0x100` Linux-цели (поле 1 без смысла при CLFSH = 0); HTT не объявлен |
 | `1` ECX | `0x00982201` | биты ниже |
-| `1` EDX | `0x0781A379` | FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE, SSE2 — решение S7-32 от 2026-11-25 ([ADR-0013, дополнение S7-32](../decisions/ADR-0013-windows-cpu-profile.md#дополнение-s7-32-2026-11-25-весь-edx-целевой-таблицы)); до него `0x00008340` (CX8, CMOV, PAE, APIC) |
+| `1` EDX | `0x0789F3FD` | FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE, SSE2 — решение S7-32 от 2026-11-25 ([ADR-0013, дополнение S7-32](../decisions/ADR-0013-windows-cpu-profile.md#дополнение-s7-32-2026-11-25-весь-edx-целевой-таблицы)); DE, MCE, MTRR, MCA, CLFSH — S7-32, срез I, 2026-11-26 ([ADR-0013, дополнение «S7-32, срез I»](../decisions/ADR-0013-windows-cpu-profile.md#дополнение-s7-32-срез-i-2026-11-26-признаки-обязательные-для-ядра-windows); ядро требует маску `0x0789F3FD`, иначе bugcheck 0x5D); до среза I `0x0781A379`, до 2026-11-25 `0x00008340` (CX8, CMOV, PAE, APIC) |
 | `0x80000000` | EAX = `0x80000008` | как у Linux-цели |
 | `0x80000001` | ECX = `0x101`, EDX = `0x20100800`, EAX = EBX = 0 | EDX: SYSCALL [11], NX [20], LM [29] — решение S7-32 от 2026-11-25 (S4-10 принят 2026-11-21); до него EDX = 0; EAX в SDM зарезервирован |
 | `0x80000002..4` | `Intel(R) Celeron(R) N5105 @ 2.00GHz`, добито нулями до 48 байт | ADR-0013; строка подтверждена только внешним `/proc/cpuinfo` (OpenBenchmarking) и страницей Intel ARK (имя и базовая частота 2.00 GHz); строки физического экземпляра нет |
@@ -32516,6 +32568,7 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 | `80000001` EDX[20] | NX | S2-58 (зависимости S2-25f, S4-08, S4-10d) | объявлен решением S7-32 от 2026-11-25 (было: «не объявлен, отложен до приёмки S4-10 (решение владельца 2026-11-21)») | `pae_apic_and_nx_are_declared_at_their_sdm_positions` (до S7-32 — `pae_and_apic_are_declared_at_their_sdm_positions_and_nx_is_not`), `wrmsr_efer_setting_nxe_is_gp0_with_a_member_that_does_not_declare_nx`, `wrmsr_efer_setting_nxe_is_admitted_with_a_member_that_declares_nx` |
 | `1` EDX[3], [13], [16] | PSE, PGE, PAT | задачи нет | объявлен решением S7-32 от 2026-11-25 (было: «не объявлены») | то же |
 | `80000001` EDX[11], [29] | SYSCALL, LM | S2-27, S2-24/S2-25: не приняты | объявлен решением S7-32 от 2026-11-25 (было: «не объявлены, блокеры (срез C)») | то же |
+| `1` EDX[2], [7], [12], [14], [19] | DE, MCE, MTRR, MCA, CLFSH | S7-32, срез I (CR4.DE/MCE и CR0.CD/NW в политике набора CPL0, MSR MTRR и MCA, `CLFLUSH` с W1, на CPL3 со среза I; EBX[15:8] = 8) | объявлены решением S7-32, срез I, 2026-11-26 (ядро требует маску `0x0789F3FD`, иначе bugcheck 0x5D; было: «не объявлены») | `every_declared_bit_is_set`, `mtrr_*`, `mca_*` (`s2_26_msr_windows.rs`), `s7_32_slice_i_*` (`cpl0_profile_set.rs`, `cpl3_profile_set.rs`) |
 | `1` ECX[3], [5], [26], [27], [28], [31] и др. | MONITOR, VMX, XSAVE, OSXSAVE, AVX, гипервизор | ADR-0013, решения 3 и 4; MONITOR/MWAIT не входят в S2-54 | не объявлены | то же; `windows_does_not_copy_the_linux_table_nor_declare_forbidden_bits` |
 
 Условие «принята» для S2-51…S2-56 по плану (S2-54, S2-57 п.1) — приёмка владельцем задачи; чекбоксы родителей S2-51…S2-56 открыты. **Отклонение от плана, подтверждено владельцем 2026-11-21 (вариант «1»):** 8 битов (SSE3, SSSE3, CX16, SSE4.1, SSE4.2, POPCNT, LAHF-SAHF, PRFCHW) объявлены ДО приёмки владельцем S2-51…S2-56 по решению координатора, на основании слияния реализованных и сверенных срезов в `stage8`. Это не приёмка владельцем; если владелец не подтвердит, объявленные биты откатываются. Следствие: профиль объявляет SSE3…SSE4.2 без SSE/SSE2 (EDX[25], [26]): это промежуточное состояние, а не набор x86-64-v2; Windows не должна запускаться на нём до объявления SSE/SSE2, CMOV, CX8, LM и остальных (PAE и APIC объявлены срезом S2-58, NX отложен до приёмки S4-10, см. ниже). *Обновление 2026-11-25 (S7-32):* SSE/SSE2, LM, NX и остальной EDX целевой таблицы объявлены решением S7-32 ([ADR-0013, дополнение S7-32](../decisions/ADR-0013-windows-cpu-profile.md#дополнение-s7-32-2026-11-25-весь-edx-целевой-таблицы)); профиль используется прогонами `--guest windows`.
@@ -32543,7 +32596,7 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 
 - **TSC** (`1` EDX[4]). Блокера по реализации нет (`RDTSC` работает, см. таблицу выше), но решение владельца 2026-11-21 (пункт 8): не объявлять до отдельного решения владельца; приёмка S2-26 не состоялась. Проверка — строка TSC в `UNDECLARED` теста и `feature_registers_are_exactly_the_declared_bits`.
 - **FPU** (`1` EDX[0]). Набор x87 для CPL0 не полный: `FSIN`, `FCOS`, `FSINCOS`, `FPTAN`, `FPATAN`, `F2XM1`, `FYL2X`, `FYL2XP1`, `FSCALE`, `FXTRACT`, `FBLD`, `FBSTP`, `FNSTENV`, `FNSAVE`, `FRSTOR`, `FLDENV` реализованы в `crates/od-isa` только ограниченно (S2-32a/S2-32b/S2-32c/S2-32d, локальный профиль `step`), и подключены к набору CPL0 в пределах ограниченного профиля (S2-32e: x87-половина ячейки FP-участника берётся на одну инструкцию; после проверки `#NM` по CR0.EM/TS `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` выполняются, а `FSIN`…`FXTRACT` и `FBLD`/`FBSTP` отказывают `Unsupported`, пока в ячейке представлены FCS/FDS, а набор принимает только такие ячейки; остальные x87-формы в наборе отказывают); `FLDENV` подключён к набору после слияния S2-32d (`FldenvRax` в `cpl0_bounded_x87_form`), написания `FSTENV`/`FSAVE` — это `FWAIT` набора плюс форма без ожидания. Бит FPU не объявлен. Проверка — `Unsupported` для этих форм на состоянии без x87, а для `FNSTENV` при чистом x87 тест подтверждает выполнение в ограниченном профиле; подключение к набору — `crates/od-isa/tests/s2_32e_cpl0_x87.rs`. Родители S2-28, S2-29, S2-30, S2-31, S2-32 открыты. Задача для снятия блокера: S2-32 (трансцендентные, `FSCALE`, `FXTRACT`, BCD и `FNSTENV`/`FNSAVE`/`FRSTOR`/`FLDENV` реализованы в ограниченном профиле, S2-32a/b/c/d; остаются FCS/FDS выполненных инструкций (из-за их отсутствия `FSIN`…`FBSTP` в наборе отказывают) и остальные x87-формы в наборе CPL0) после S2-30 и S2-31.
-- **MSR** (`1` EDX[5]). Моделируются отдельные MSR: EFER (S2-25d…f, NXE), `IA32_FS_BASE`/`GS_BASE`/`KERNEL_GS_BASE`, ячейки записи STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP (S4-38L7). Нет `IA32_TIME_STAMP_COUNTER` (`0x10`), `IA32_APIC_BASE` (`0x1B`), `IA32_PAT` (`0x277`), `IA32_MISC_ENABLE`, MTRR, а у STAR/LSTAR/CSTAR нет чтения. *Обновление 2026-11-26 (S7-32, срез F):* единый цикл Windows-гостя подключает файл MSR Windows (`with_msr_windows`): `IA32_PAT`, `IA32_MISC_ENABLE` (ячейки vCPU), чтение ячеек STAR/LSTAR/CSTAR/SYSENTER/FMASK/KERNEL_GS_BASE, `IA32_APIC_BASE` (член `msr_apic_base`), `IA32_TIME_STAMP_COUNTER`, `IA32_PLATFORM_ID`, `IA32_BIOS_SIGN_ID`; MSR вне списка — остановка с индексом в отчёте; MTRR не моделируются (бит MTRR не объявлен). Перечень MSR, которые Windows читает и пишет при загрузке, не составлен. Задача для снятия блокера: S2-25 (CR, MSR) и S2-26 п.2 (RDMSR/WRMSR) — составить перечень и реализовать набор; до этого бит MSR означал бы поддержку набора, которого нет.
+- **MSR** (`1` EDX[5]). Моделируются отдельные MSR: EFER (S2-25d…f, NXE), `IA32_FS_BASE`/`GS_BASE`/`KERNEL_GS_BASE`, ячейки записи STAR, LSTAR, CSTAR, SYSCALL_MASK, SYSENTER_CS/ESP/EIP (S4-38L7). Нет `IA32_TIME_STAMP_COUNTER` (`0x10`), `IA32_APIC_BASE` (`0x1B`), `IA32_PAT` (`0x277`), `IA32_MISC_ENABLE`, MTRR, а у STAR/LSTAR/CSTAR нет чтения. *Обновление 2026-11-26 (S7-32, срез F):* единый цикл Windows-гостя подключает файл MSR Windows (`with_msr_windows`): `IA32_PAT`, `IA32_MISC_ENABLE` (ячейки vCPU), чтение ячеек STAR/LSTAR/CSTAR/SYSENTER/FMASK/KERNEL_GS_BASE, `IA32_APIC_BASE` (член `msr_apic_base`), `IA32_TIME_STAMP_COUNTER`, `IA32_PLATFORM_ID`, `IA32_BIOS_SIGN_ID`; MSR вне списка — остановка с индексом в отчёте; MTRR не моделируются (бит MTRR не объявлен). *Обновление 2026-11-26 (S7-32, срез I):* объявлены MTRR и MCA, файл дополнен MSR MTRR (`IA32_MTRRCAP`, `IA32_MTRR_DEF_TYPE`, 8 пар, фиксированные) и MCA (`IA32_MCG_CAP`, `IA32_MCG_STATUS`, 4 банка) — раздел «Windows MSR file (S2-26h)», абзац «S7-32 slice I». Перечень MSR, которые Windows читает и пишет при загрузке, не составлен. Задача для снятия блокера: S2-25 (CR, MSR) и S2-26 п.2 (RDMSR/WRMSR) — составить перечень и реализовать набор; до этого бит MSR означал бы поддержку набора, которого нет.
 - **SYSCALL** (`80000001` EDX[11]). `SYSCALL` с CPL3 (S4-39e) и `SYSRETQ` с CPL0 (S4-39f) реализованы только в наборах платы Linux, только простые формы (без префиксов), семантика записана «по памяти SDM» и по первоисточнику не сверена (CPU_CONTRACT, S4-39e); не реализованы `SYSRET` без REX.W (32-битный возврат), доставка `#UD` при `EFER.SCE = 0`, переходы из compatibility mode, CSTAR; физического oracle у инструкции нет. Задача для снятия блокера: S2-27 (SYSCALL/SYSRET) со сверкой с SDM Vol. 2B и S2-24 (compatibility mode).
 - **LM** (`80000001` EDX[29]). Набор CPL0 уже в длинном режиме: смена `EFER.LME`/`LMA` отказывает (`Unsupported`), переход из защищённого режима есть только в преобразовании `ProtectedCpu::into_long_mode` (S6-16b, текст SDM «по памяти»), compatibility mode (WoW64) не реализован. Задача для снятия блокера: S2-24 (protected и compatibility mode, критерий WoW64 из ADR-0013), S2-25 (`EFER.LME/LMA`), S2-41, S2-44.
 

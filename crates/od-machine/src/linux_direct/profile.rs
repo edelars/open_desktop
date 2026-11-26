@@ -3,7 +3,7 @@
 use super::LinuxCpl0SetMembers;
 use crate::vcpu::{BOOT_VCPU_INDEX, Vcpu};
 use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSet, GuestFpState, MovCr3Long64V1};
-use od_isa::msr::MsrProfile;
+use od_isa::msr::{McaState, MsrProfile, MtrrState};
 use od_isa::{CliProfile, HaltProfile, StiProfile};
 use std::cell::{Cell, RefCell};
 use std::fmt::Arguments;
@@ -24,6 +24,8 @@ pub(super) struct LinuxVcpuCells {
     pat: Cell<u64>,
     misc_enable: Cell<u64>,
     bios_sign_id: Cell<u64>,
+    mtrr: Cell<MtrrState>,
+    mca: Cell<McaState>,
     fp: RefCell<GuestFpState>,
 }
 
@@ -43,6 +45,8 @@ impl LinuxVcpuCells {
             pat: Cell::new(vcpu.guest_pat),
             misc_enable: Cell::new(vcpu.guest_misc_enable),
             bios_sign_id: Cell::new(vcpu.guest_bios_sign_id),
+            mtrr: Cell::new(vcpu.guest_mtrr),
+            mca: Cell::new(vcpu.guest_mca),
             fp: RefCell::new(vcpu.guest_fp.clone()),
         }
     }
@@ -60,6 +64,8 @@ impl LinuxVcpuCells {
         vcpu.guest_pat = self.pat.into_inner();
         vcpu.guest_misc_enable = self.misc_enable.into_inner();
         vcpu.guest_bios_sign_id = self.bios_sign_id.into_inner();
+        vcpu.guest_mtrr = self.mtrr.into_inner();
+        vcpu.guest_mca = self.mca.into_inner();
         vcpu.guest_fp = self.fp.into_inner();
     }
 }
@@ -151,12 +157,15 @@ impl LinuxCpl0Profile {
         // S7-32 slice F: the Windows MSR file (IA32_PAT, IA32_MISC_ENABLE, IA32_TSC and read access
         // to the other MSR cells); it needs the other MSR members (checked at entry).
         // An MSR outside the modelled list stops the run (decision M1, ADR-0013: known gaps are
-        // stops), IA32_BIOS_SIGN_ID has its cell.
+        // stops), IA32_BIOS_SIGN_ID has its cell. S7-32 slice I: the MTRR and MCA files, which the
+        // Windows profile declares (CPUID.01H:EDX MTRR, MCA), have theirs.
         if members.msr_windows {
             set = set
                 .with_msr_windows(&cpu.pat, &cpu.misc_enable)
                 .with_msr_windows_unknown_as_stop()
-                .with_msr_bios_sign_id(&cpu.bios_sign_id);
+                .with_msr_bios_sign_id(&cpu.bios_sign_id)
+                .with_msr_mtrr(&cpu.mtrr)
+                .with_msr_mca(&cpu.mca);
             record_member(format_args!("msr:windows"));
         }
         if members.fp_state {

@@ -1849,6 +1849,48 @@ const FP_FEATURE_SSE: u32 = 1 << 25;
 const CR4_PSE: u64 = 1 << 4;
 /// CR4.PGE (bit 7), added to the CPL0 set policy in S4-38L7d.
 const CR4_PGE: u64 = 1 << 7;
+/// CR4.DE (bit 3), added to the CPL0 set policy in S7-32 slice I (SDM Vol. 3A "Control Registers",
+/// CR4.DE "Debugging Extensions"): with DE = 1 `MOV` to or from DR4/DR5 is #UD, with DE = 0 DR4/DR5
+/// alias DR6/DR7. I/O breakpoints (DR7 R/W = 10b), the other effect of DE, cannot occur: the set
+/// refuses to enable any breakpoint in DR7. Settable only while the set's CPUID member declares DE
+/// (CPUID.01H:EDX[2]).
+const CR4_DE: u64 = 1 << 3;
+/// CR4.MCE (bit 6), added to the CPL0 set policy in S7-32 slice I: enables the machine-check
+/// exception (#MC, vector 18). The model never raises #MC (no hardware error is modelled), so the
+/// bit is stored and has no other effect. Settable only while the CPUID member declares MCE
+/// (CPUID.01H:EDX[7]).
+const CR4_MCE: u64 = 1 << 6;
+/// CPUID.01H:EDX bit 2 (DE) and bit 7 (MCE), the features CR4.DE and CR4.MCE need declared, and
+/// bit 19 (CLFSH), which `CLFLUSH` needs declared (S7-32 slice I).
+const CPUID_LEAF1_EDX_DE: u32 = 1 << 2;
+const CPUID_LEAF1_EDX_MCE: u32 = 1 << 7;
+const CPUID_LEAF1_EDX_CLFSH: u32 = 1 << 19;
+/// CR0.NW (bit 29) and CR0.CD (bit 30), added to the CPL0 set policy in S7-32 slice I (SDM Vol. 3A
+/// "Control Registers" and "Preventing Caching"): cache control. The model has no caches and
+/// executes every access in program order, so the bits are stored and change nothing observable; a
+/// write with NW = 1 and CD = 0 is the architectural #GP(0) ([`cr0_write_is_gp`]). No CPUID feature
+/// gates them.
+const CR0_NW: u64 = 1 << 29;
+const CR0_CD: u64 = 1 << 30;
+
+/// S7-32 slice I: a CR0 value that `MOV CR0` refuses with #GP(0) before any policy check: NW set
+/// while CD is clear (SDM Vol. 2B "MOV—Move to/from Control Registers", 64-Bit Mode Exceptions:
+/// "an attempt to write invalid bit combinations in CR0 (such as ... setting the CD flag to 0 when
+/// the NW flag is set to 1)").
+const fn cr0_write_is_gp(value: u64) -> bool {
+    value & CR0_NW != 0 && value & CR0_CD == 0
+}
+
+/// S7-32 slice I: a CR4 value that `MOV CR4` refuses with #GP(0) before any policy check, and that
+/// the entry of the set refuses (`Cr4OutsidePolicy`): CR4.DE or CR4.MCE set while the CPUID member
+/// of the set (`leaf1_edx`, CPUID.01H:EDX; 0 without a member) does not declare the feature (SDM
+/// Vol. 2B "MOV—Move to/from Control Registers": #GP(0) on an attempt to set a reserved CR4 bit; a
+/// CR4 bit of a feature the processor does not report is reserved, Vol. 3A "Control Registers").
+/// Clearing them is always allowed.
+const fn cr4_sets_undeclared_feature(value: u64, leaf1_edx: u32) -> bool {
+    (value & CR4_DE != 0 && leaf1_edx & CPUID_LEAF1_EDX_DE == 0)
+        || (value & CR4_MCE != 0 && leaf1_edx & CPUID_LEAF1_EDX_MCE == 0)
+}
 
 /// The bounded mutable CR4 contract used by the S2-25b FP-init composition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1885,22 +1927,32 @@ pub enum ControlRegisterPolicy {
 
 impl ControlRegisterPolicy {
     /// CR0 values of the CPL0 set: the `FpInitLong64V1` values, since S4-38L7f optionally with
-    /// AM (bit 18). `Cr0Profile::accepts` itself is unchanged for the per-register profiles.
+    /// AM (bit 18), since S7-32 slice I optionally with CD (bit 30) and NW (bit 29). The policy is
+    /// a mask only, checked at every step (`admits_state`); NW without CD, which the register
+    /// cannot hold, is refused by every `MOV CR0` (#GP(0), [`cr0_write_is_gp`]) and at the entry
+    /// of the set (`Cr0OutsidePolicy`). `Cr0Profile::accepts` itself is unchanged for the
+    /// per-register profiles.
     /// Clearing PE or PG while PG=1 in long mode is architecturally `#GP(0)` (from memory); the
     /// policy keeps it a conservative `Unsupported` (out-of-policy value, no state change).
     const fn accepts_cr0(self, value: u64) -> bool {
         match self {
-            Self::Cpl0BaseLong64V1 => Cr0Profile::FpInitLong64V1.accepts(value & !CR0_AM),
+            Self::Cpl0BaseLong64V1 => {
+                Cr0Profile::FpInitLong64V1.accepts(value & !(CR0_AM | CR0_CD | CR0_NW))
+            }
         }
     }
 
     /// CR4 values of the CPL0 set: PAE, optionally with OSFXSR/OSXMMEXCPT
-    /// (the `FpInitLong64V1` bits), since S4-38L7c PSE (bit 4) and since S4-38L7d PGE (bit 7).
+    /// (the `FpInitLong64V1` bits), since S4-38L7c PSE (bit 4), since S4-38L7d PGE (bit 7) and
+    /// since S7-32 slice I DE (bit 3) and MCE (bit 6). The policy is a mask only, checked at every
+    /// step; whether DE and MCE may be set also depends on the CPUID member
+    /// ([`cr4_sets_undeclared_feature`], checked by the writes and at the entry of the set).
     /// `Cr4Profile::accepts` itself is unchanged for the per-register profiles.
     const fn accepts_cr4(self, value: u64) -> bool {
         match self {
             Self::Cpl0BaseLong64V1 => {
-                value & !(CR4_PSE | CR4_PGE | (1 << 9) | (1 << 10)) == Cr4Profile::BASE
+                value & !(CR4_DE | CR4_PSE | CR4_MCE | CR4_PGE | (1 << 9) | (1 << 10))
+                    == Cr4Profile::BASE
             }
         }
     }
@@ -1963,7 +2015,8 @@ pub struct Cpl0ProfileSet<'a> {
     /// S2-26h: the Windows-boot MSR file; `(IA32_PAT cell, IA32_MISC_ENABLE cell)`.
     msr_windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     msr_windows_unknown_stop: bool,
-    msr_bios_sign_id: Option<&'a Cell<u64>>,
+    /// S7-32 slices F and I: IA32_BIOS_SIGN_ID and the MTRR and MCA files of the Windows member.
+    msr_files: WindowsMsrFiles<'a>,
     halt: Option<&'a crate::HaltProfile>,
     cpu_owned_cr3: bool,
     pio_u8: bool,
@@ -1998,7 +2051,11 @@ impl<'a> Cpl0ProfileSet<'a> {
             msr_apic_base: None,
             msr_windows: None,
             msr_windows_unknown_stop: false,
-            msr_bios_sign_id: None,
+            msr_files: WindowsMsrFiles {
+                bios_sign_id: None,
+                mtrr: None,
+                mca: None,
+            },
             halt: None,
             cpu_owned_cr3: false,
             pio_u8: false,
@@ -2296,7 +2353,32 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// field remains zero following CPUID, no update is loaded"). A non-zero modelled revision
     /// would need `CPUID(1)` to load it from a board value; no such setter exists.
     pub const fn with_msr_bios_sign_id(mut self, cell: &'a Cell<u64>) -> Self {
-        self.msr_bios_sign_id = Some(cell);
+        self.msr_files.bios_sign_id = Some(cell);
+        self
+    }
+
+    /// S7-32 slice I: the MTRR file of the Windows member ([`crate::msr::MtrrState`]: IA32_MTRRCAP,
+    /// IA32_MTRR_DEF_TYPE, the variable pairs and the fixed-range MTRRs; SDM Vol. 3A "Memory Type
+    /// Range Registers (MTRRs)"). `RDMSR` returns the file's value, `WRMSR` follows
+    /// [`crate::msr::MtrrState::write`] (a reserved bit, a reserved memory type or a write to
+    /// IA32_MTRRCAP is #GP(0) without a change). The memory types have no effect on any access (no
+    /// caches are modelled). Without the cell an access to these indexes is a stop. The caller
+    /// binds it with a CPUID member that declares MTRR (CPUID.01H:EDX[12], the Windows profile);
+    /// the set does not check that pairing.
+    pub const fn with_msr_mtrr(mut self, cell: &'a Cell<crate::msr::MtrrState>) -> Self {
+        self.msr_files.mtrr = Some(cell);
+        self
+    }
+
+    /// S7-32 slice I: the MCA file of the Windows member ([`crate::msr::McaState`]: IA32_MCG_CAP,
+    /// IA32_MCG_STATUS and the banks' CTL/STATUS/ADDR/MISC; SDM Vol. 3B "Machine-Check MSRs").
+    /// `RDMSR` returns the file's value (STATUS/ADDR/MISC always 0: no error is ever logged),
+    /// `WRMSR` follows [`crate::msr::McaState::write`] (IA32_MCG_CAP, reserved MCG_STATUS bits and
+    /// a non-zero STATUS/ADDR/MISC are #GP(0) without a change). Without the cell an access to
+    /// these indexes is a stop. Bound with a CPUID member that declares MCA and MCE
+    /// (CPUID.01H:EDX[14], [7]).
+    pub const fn with_msr_mca(mut self, cell: &'a Cell<crate::msr::McaState>) -> Self {
+        self.msr_files.mca = Some(cell);
         self
     }
 
@@ -2753,6 +2835,16 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
+/// S7-32 slices F and I: the Windows member's MSRs that live in caller-owned cells beyond IA32_PAT
+/// and IA32_MISC_ENABLE: IA32_BIOS_SIGN_ID ([`Cpl0ProfileSet::with_msr_bios_sign_id`]) and the MTRR
+/// and MCA files ([`Cpl0ProfileSet::with_msr_mtrr`], [`Cpl0ProfileSet::with_msr_mca`]).
+#[derive(Clone, Copy, Debug)]
+struct WindowsMsrFiles<'a> {
+    bios_sign_id: Option<&'a Cell<u64>>,
+    mtrr: Option<&'a Cell<crate::msr::MtrrState>>,
+    mca: Option<&'a Cell<crate::msr::McaState>>,
+}
+
 /// S4-38L7ao/S4-38L7ap/S4-38L7aq/S4-38L7ar/S4-38L7as/S4-38L7at/S4-38L7au: the guest-owned write-only
 /// MSR cells of a set: the SYSCALL ones (IA32_STAR, IA32_LSTAR, IA32_CSTAR, IA32_SYSCALL_MASK),
 /// IA32_SYSENTER_CS, _ESP and _EIP, and IA32_KERNEL_GS_BASE.
@@ -2777,8 +2869,10 @@ struct GuestMsrCells<'a> {
     windows: Option<(&'a Cell<u64>, &'a Cell<u64>)>,
     /// S7-32 slice F: an index outside the Windows list is a stop instead of `#GP(0)`.
     windows_unknown_stop: bool,
-    /// S7-32 slice F: the IA32_BIOS_SIGN_ID cell of the Windows member.
-    bios_sign_id: Option<&'a Cell<u64>>,
+    /// S7-32 slices F and I: the IA32_BIOS_SIGN_ID cell and the MTRR and MCA files of the Windows
+    /// member, behind one reference: the profiles are passed to every step by value, so a new
+    /// file does not grow them.
+    files: &'a WindowsMsrFiles<'a>,
     /// S4-39e: the set carries `with_syscall`; `SYSCALL` consumes the EFER cell of the profiles
     /// and the STAR, LSTAR and SYSCALL_MASK cells above.
     syscall: bool,
@@ -31002,12 +31096,18 @@ pub fn run_with_cpl3_profile_set(
             // S2-39: with the FP member the general SSE/SSE2 forms of the CPL0 set run at CPL3 too, on the same
             // `state.sse` (see `cpl3_sse_set_form`); the step decides each of them, the MMX forms and the
             // others stay `Unsupported` there.
+            // S7-32 slice I: `CLFLUSH m8` too, which the SDM allows at every privilege level
+            // ("CLFLUSH": not a privileged instruction); its byte-read access check is a user
+            // access here, so a supervisor page is the #PF of a user read, and without CLFSH in the
+            // CPUID member it is #UD (the step). It is tested after the allow-list (only on its
+            // refusal path), so the admission of the other forms costs nothing more.
             if !cpl3_allows(
                 &instruction,
                 set.syscall,
                 lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
                 set.msr_windows.is_some(),
             ) && !(set.fp_state.is_some() && cpl3_sse_set_form(&instruction))
+                && !matches!(instruction.operation, Operation::Clflush { .. })
             {
                 return Ok(Cpl0ProfileSetResult {
                     exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
@@ -34302,11 +34402,15 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
         });
     }
     let cr0 = state.cr0.ok_or(Error::Cr0Missing)?;
-    if !set.policy.accepts_cr0(cr0) {
+    // S7-32 slice I: NW without CD is not a CR0 the register can hold (the writes refuse it).
+    if !set.policy.accepts_cr0(cr0) || cr0_write_is_gp(cr0) {
         return Err(Error::Cr0OutsidePolicy { value: cr0 });
     }
     let cr4 = state.cr4.ok_or(Error::Cr4Missing)?;
-    if !set.policy.accepts_cr4(cr4) {
+    // S7-32 slice I: CR4.DE/MCE only with the CPUID feature, also when the CR4 comes from outside
+    // the set (e.g. `ProtectedCpu::into_long_mode`, which does not check CR4 against CPUID).
+    let leaf1_edx = set.cpuid.map_or(0, |selection| selection.query(1, 0).edx);
+    if !set.policy.accepts_cr4(cr4) || cr4_sets_undeclared_feature(cr4, leaf1_edx) {
         return Err(Error::Cr4OutsidePolicy { value: cr4 });
     }
     if set.cpu_owned_cr3 {
@@ -34450,7 +34554,7 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
                     apic_base: set.msr_apic_base,
                     windows: set.msr_windows,
                     windows_unknown_stop: set.msr_windows_unknown_stop,
-                    bios_sign_id: set.msr_bios_sign_id,
+                    files: &set.msr_files,
                     syscall: set.syscall,
                 })
             } else {
@@ -41922,6 +42026,35 @@ fn execute_sysret(
     StepOutcome::Advanced
 }
 
+/// S7-32 slice I: the outcome of one access to a cell-held MSR file (MTRR, MCA).
+enum MsrFileAccess {
+    /// `RDMSR`: the value for EDX:EAX.
+    Read(u64),
+    /// `WRMSR`: the file's decision; the cell changed only on `Accept`.
+    Written(crate::msr::MsrWrite),
+}
+
+/// S7-32 slice I: `RDMSR` (`write = None`) or `WRMSR` of `index` on the file in `cell`, through the
+/// file's own `read`/`write` rules. The cell takes the new file only when the write is accepted.
+/// `None` when the file does not hold the index.
+fn msr_file_access<F: Copy>(
+    cell: &Cell<F>,
+    index: u32,
+    write: Option<u64>,
+    read_file: fn(&F, u32) -> Option<u64>,
+    write_file: fn(&mut F, u32, u64) -> Option<crate::msr::MsrWrite>,
+) -> Option<MsrFileAccess> {
+    let mut file = cell.get();
+    let Some(value) = write else {
+        return read_file(&file, index).map(MsrFileAccess::Read);
+    };
+    let written = write_file(&mut file, index, value)?;
+    if written == crate::msr::MsrWrite::Accept {
+        cell.set(file);
+    }
+    Some(MsrFileAccess::Written(written))
+}
+
 #[inline(always)]
 fn step_configured(
     state: &mut LongModeState,
@@ -48318,8 +48451,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
             let value = state.gpr[src as usize];
             // Long mode cannot clear CR4.PAE (SDM Vol. 3 §4.1.2, from memory):
-            // #GP(0), no state change.
-            if value & Cr4Profile::BASE == 0 {
+            // #GP(0), no state change. S7-32 slice I: so is setting DE or MCE without the
+            // CPUID feature.
+            let leaf1_edx = cpuid_profile.map_or(0, |selection| selection.query(1, 0).edx);
+            if value & Cr4Profile::BASE == 0 || cr4_sets_undeclared_feature(value, leaf1_edx) {
                 return Ok(StepOutcome::Fault(ArchitecturalFault {
                     vector: 13,
                     error_code: Some(0),
@@ -48342,7 +48477,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             let is_cr0 = instruction.operation == Operation::WriteCr0;
             // S2-25: the Long64 profiles run with IA-32e active (LMA = 1); clearing CR4.PAE then
             // is #GP(0) with no state change (SDM Vol. 3A §12.8.5), as for `MOV CR4, r64` below.
-            if !is_cr0 && value & Cr4Profile::BASE == 0 {
+            // S7-32 slice I: so are CR0.NW without CD and CR4.DE/MCE without the CPUID feature.
+            let gp = if is_cr0 {
+                cr0_write_is_gp(value)
+            } else {
+                let leaf1_edx = cpuid_profile.map_or(0, |selection| selection.query(1, 0).edx);
+                value & Cr4Profile::BASE == 0 || cr4_sets_undeclared_feature(value, leaf1_edx)
+            };
+            if gp {
                 return Ok(StepOutcome::Fault(ArchitecturalFault {
                     vector: 13,
                     error_code: Some(0),
@@ -48383,7 +48525,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.address_size == OperandSize::Qword;
             let value = state.gpr[Register::Rdi as usize];
-            if !exact_form || !policy.accepts_cr0(value) {
+            if !exact_form {
+                return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+            }
+            // S7-32 slice I: NW without CD is #GP(0) (SDM MOV CR), before the policy.
+            if cr0_write_is_gp(value) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            if !policy.accepts_cr0(value) {
                 return Ok(StepOutcome::Unsupported { opcode: 0x22 });
             }
             state.cr0 = Some(value);
@@ -48584,6 +48737,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             let value = state.gpr[src as usize];
             match cr {
                 0 => {
+                    // S7-32 slice I: NW without CD is #GP(0) (SDM MOV CR), before the policy.
+                    if cr0_write_is_gp(value) {
+                        return Ok(StepOutcome::Fault(ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        }));
+                    }
                     if !policy.accepts_cr0(value) {
                         return Ok(StepOutcome::Unsupported { opcode: 0x22 });
                     }
@@ -48614,7 +48775,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // value (DR0..DR3 0, DR6 0xFFFF0FF0, DR7 0x400; SDM Vol. 3A Table 10-1). CPL > 0 was
         // refused with #GP(0) above; DR7.GD (#DB) is never set (MOV DR7 refuses it).
         Operation::ReadDebugRegister { index, dst } if control_policy.is_some() => {
-            let cr4_de = state.cr4.is_some_and(|cr4| cr4 & (1 << 3) != 0);
+            let cr4_de = state.cr4.is_some_and(|cr4| cr4 & CR4_DE != 0);
             let index = match index {
                 4 | 5 if cr4_de => {
                     return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -49004,7 +49165,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // S7-32 slice F: IA32_BIOS_SIGN_ID (8BH) reads and writes its cell; without the cell
             // (a set without `with_msr_bios_sign_id`) the access is a stop.
             if msr_index == crate::msr::IA32_BIOS_SIGN_ID {
-                let Some(cell) = cells.bios_sign_id else {
+                let Some(cell) = cells.files.bios_sign_id else {
                     return Ok(StepOutcome::Unsupported {
                         opcode: instruction.opcode.byte,
                     });
@@ -49016,6 +49177,55 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 } else {
                     // Bits 31:0 are reserved (SDM Vol. 4 Table 2-2, 8BH): only EDX is kept.
                     cell.set(u64::from(state.gpr[Register::Rdx as usize] as u32) << 32);
+                }
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            // S7-32 slice I: the MTRR and MCA files (SDM Vol. 3A "MTRRs", Vol. 3B "Machine-Check
+            // MSRs"). Each file decides its own reads and writes; without its cell the access is a
+            // stop.
+            let write = (instruction.operation == Operation::WriteMsr).then(|| {
+                (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
+                    | u64::from(state.gpr[Register::Rax as usize] as u32)
+            });
+            let file_access = if crate::msr::MtrrState::handles(msr_index) {
+                Some(cells.files.mtrr.and_then(|cell| {
+                    msr_file_access(
+                        cell,
+                        msr_index,
+                        write,
+                        crate::msr::MtrrState::read,
+                        crate::msr::MtrrState::write,
+                    )
+                }))
+            } else if crate::msr::McaState::handles(msr_index) {
+                Some(cells.files.mca.and_then(|cell| {
+                    msr_file_access(
+                        cell,
+                        msr_index,
+                        write,
+                        crate::msr::McaState::read,
+                        crate::msr::McaState::write,
+                    )
+                }))
+            } else {
+                None
+            };
+            if let Some(access) = file_access {
+                match access {
+                    Some(MsrFileAccess::Read(value)) => {
+                        state.gpr[Register::Rax as usize] = u64::from(value as u32);
+                        state.gpr[Register::Rdx as usize] = value >> 32;
+                    }
+                    Some(MsrFileAccess::Written(crate::msr::MsrWrite::Accept)) => {}
+                    Some(MsrFileAccess::Written(crate::msr::MsrWrite::GeneralProtection)) => {
+                        return gp0();
+                    }
+                    None => {
+                        return Ok(StepOutcome::Unsupported {
+                            opcode: instruction.opcode.byte,
+                        });
+                    }
                 }
                 state.rip = next_rip;
                 return Ok(StepOutcome::Advanced);
@@ -66532,7 +66742,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             };
         }
         // S7-32: no caches are modeled; the access check of a byte read is all CLFLUSH does.
+        // S7-32 slice I: #UD when the CPUID member of the set does not declare CLFSH
+        // (CPUID.01H:EDX[19]; SDM Vol. 2A "CLFLUSH", 64-Bit Mode Exceptions), before any access.
         Operation::Clflush { memory: operand } => {
+            if cpuid_profile
+                .is_none_or(|selection| selection.query(1, 0).edx & CPUID_LEAF1_EDX_CLFSH == 0)
+            {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
             if let Err(error) = read_memory_operand(state, memory, context, next_rip, operand) {
                 return report_memory_error(error);
             }
@@ -66579,11 +66800,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // while no breakpoint is enabled); DR6 and DR7 are narrowed to the modeled values:
             // a one in the upper 32 bits is #GP(0) on hardware (SDM from memory) and DR7 bits
             // L0..G3 (0xff) and GD (bit 13) enable breakpoints / #DB, which are not modeled, so
-            // those writes are refused. Only RIP and the stored slot change. DR4/DR5 depend on
-            // CR4.DE (alias of DR6/DR7 or #UD). Every refusal carries the opcode, no mutation.
+            // those writes are refused. Only RIP and the stored slot change. S7-32 slice I: DR4/DR5
+            // are #UD while CR4.DE = 1 and otherwise alias DR6/DR7 (SDM Vol. 3B "Debug Registers
+            // DR4 and DR5"), exactly as `MOV r64, DR4/DR5` reads them. Every refusal carries the
+            // opcode, no mutation.
             let value = state.gpr[source as usize];
+            let index = match index {
+                4 | 5 if state.cr4.is_some_and(|cr4| cr4 & CR4_DE != 0) => {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                4 | 5 => index + 2,
+                other => other,
+            };
             let refused = match index {
-                4 | 5 => true,
                 6 => value >> 32 != 0,
                 7 => value >> 32 != 0 || value & 0x20ff != 0,
                 _ => false,
