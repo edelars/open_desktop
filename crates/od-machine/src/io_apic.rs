@@ -294,8 +294,13 @@ impl BusDevice for IoApic {
                 }
                 result
             }
-            // Read-only Version/Arbitration ID, reserved ID bits, reserved or unsupported
-            // redirection bits: refused before any state change.
+            // Version and Arbitration ID are read-only (82093AA, document 290566-001, Table 2,
+            // 3.2.2, 3.2.3): a write of any 32-bit value changes nothing. The Windows HAL probes
+            // the IOAPIC by writing 0 to Version and checking that the value it reads back is
+            // unchanged (S7-32 slice N, ISSUE-701).
+            Register::Version | Register::ArbitrationId if value <= u64::from(u32::MAX) => Ok(()),
+            // Reserved ID bits, a Version/Arbitration ID value wider than 32 bits, reserved or
+            // unsupported redirection bits: refused before any state change.
             _ => Err(DeviceError::UnsupportedConfiguration),
         }
     }
@@ -759,9 +764,14 @@ mod tests {
         assert_eq!(read(&mut bus, 0), Ok(1));
     }
 
+    /// 82093AA (290566-001) 3.2.1: the ID is R/W in bits 27:24 only, and the Arbitration ID is
+    /// loaded from it. Table 2, 3.2.2 and 3.2.3: Version and Arbitration ID are read-only, so a
+    /// write of any 32-bit value is accepted and changes nothing (S7-32 slice N; until then it
+    /// was refused). A value wider than 32 bits never reaches the device through a dword access;
+    /// written directly it stays refused.
     #[test]
-    fn id_is_writable_in_27_24_only_and_version_arbitration_are_read_only() {
-        let (mut bus, io, _apic) = setup();
+    fn id_is_writable_in_27_24_only_and_version_arbitration_ignore_writes() {
+        let (mut bus, io, apic) = setup();
         window_write(&mut bus, 0, 0x0500_0000).unwrap();
         assert_eq!(window(&mut bus, 0), Ok(0x0500_0000));
         assert_eq!(
@@ -774,10 +784,6 @@ mod tests {
             (0, 0x0100_0001),
             (0, 0x1000_0000),
             (0, 0x8000_0000),
-            (1, 0x0017_0020),
-            (1, 0),
-            (2, 0x0600_0000),
-            (2, 0),
         ] {
             select(&mut bus, selector);
             let before = snapshot(&io);
@@ -788,10 +794,108 @@ mod tests {
             );
             assert_eq!(snapshot(&io), before);
         }
+        // A state far from reset, so that a write that disturbed any of it would show: INTIN4
+        // an unmasked level route 0x51 with its line high and the request accepted (Remote
+        // IRR), entry 7 masked with vector 0x77 and destination 3 (stored under the mask).
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xf0, 0x1ff).unwrap();
+        route(&mut bus, u64::from(LEVEL) | 0x51);
+        io.set_intin4(true).unwrap();
+        assert_ne!(window(&mut bus, 0x18).unwrap() & u64::from(REMOTE_IRR), 0);
+        window_write(&mut bus, 0x1e, u64::from(MASK) | 0x77).unwrap();
+        window_write(&mut bus, 0x1f, 0x0300_0000).unwrap();
+        for (selector, value) in [
+            (1, 0x0017_0020),
+            (1, 0),
+            (1, 0xffff_ffff),
+            (2, 0x0600_0000),
+            (2, 0),
+            (2, 0xffff_ffff),
+        ] {
+            select(&mut bus, selector);
+            let before = snapshot(&io);
+            assert_eq!(
+                write(&mut bus, IO_APIC_MMIO_BASE, 0x10, value),
+                Ok(()),
+                "selector {selector} value {value:#x}"
+            );
+            assert_eq!(
+                snapshot(&io),
+                before,
+                "selector {selector} value {value:#x}"
+            );
+            assert_eq!(window(&mut bus, 1), Ok(0x0017_0020));
+            assert_eq!(window(&mut bus, 2), Ok(0x0500_0000));
+        }
+        let mut device = IoApic(Arc::clone(&io.0));
+        let iowin = DeviceAccess {
+            space: IoSpace::Mmio,
+            offset: 0x10,
+            width: AccessWidth::Dword,
+        };
+        for selector in [1u64, 2] {
+            select(&mut bus, selector);
+            let before = snapshot(&io);
+            assert_eq!(
+                device.write(iowin, 0x1_0000_0000),
+                Err(DeviceError::UnsupportedConfiguration),
+                "selector {selector}"
+            );
+            assert_eq!(snapshot(&io), before);
+        }
         assert_eq!(window(&mut bus, 1), Ok(0x0017_0020));
         assert_eq!(window(&mut bus, 0), Ok(0x0500_0000));
+        assert_eq!(
+            window(&mut bus, 0x18),
+            Ok(u64::from(LEVEL | REMOTE_IRR) | 0x51)
+        );
+        assert_eq!(window(&mut bus, 0x1e), Ok(u64::from(MASK) | 0x77));
+        assert_eq!(window(&mut bus, 0x1f), Ok(0x0300_0000));
+        // Release the accepted level request (a Remote IRR vetoes the reset).
+        io.set_intin4(false).unwrap();
+        assert_eq!(apic.acknowledge(), Some(0x51));
+        write(&mut bus, LOCAL_APIC_MMIO_BASE, 0xb0, 0).unwrap();
+        // Without the Remote IRR veto a write to Version still leaves the routing alone.
+        window_write(&mut bus, 1, 0).unwrap();
+        assert_eq!(window(&mut bus, 0x1e), Ok(u64::from(MASK) | 0x77));
         io.reset().unwrap();
         assert_eq!(window(&mut bus, 0), Ok(0x0100_0000), "reset reloads ID 1");
+    }
+
+    /// ISSUE-701: the Windows HAL initialisation of the IOAPIC (`ntkrnlmp` + `0x5697b0`, in its
+    /// order). It probes Version by writing 0 twice and requires the same version and maximum
+    /// redirection entry on both reads, ORs the MADT ID (1) into the ID register, and masks every
+    /// entry: low `0x000100FF` (masked, vector 0xFF), high 0. Nothing is requested in the LAPIC.
+    #[test]
+    fn windows_hal_io_unit_initialisation_is_accepted() {
+        let (mut bus, io, apic) = setup();
+        let mut versions = Vec::new();
+        for _ in 0..2 {
+            window_write(&mut bus, 1, 0).unwrap();
+            versions.push(window(&mut bus, 1).unwrap());
+        }
+        assert_eq!(versions, [0x0017_0020, 0x0017_0020]);
+        let id = window(&mut bus, 0).unwrap();
+        window_write(&mut bus, 0, id | 1 << 24).unwrap();
+        let entries = (versions[0] >> 16 & 0xff) + 1;
+        assert_eq!(entries, 24);
+        for pin in 0..entries {
+            let _ = window(&mut bus, 0x10 + 2 * pin).unwrap();
+            write(&mut bus, IO_APIC_MMIO_BASE, 0x10, 0x0001_00ff).unwrap();
+            window_write(&mut bus, 0x11 + 2 * pin, 0).unwrap();
+        }
+        assert_eq!(window(&mut bus, 0), Ok(0x0100_0000));
+        for pin in 0..entries {
+            assert_eq!(
+                window(&mut bus, 0x10 + 2 * pin),
+                Ok(0x0001_00ff),
+                "pin {pin}"
+            );
+            assert_eq!(window(&mut bus, 0x11 + 2 * pin), Ok(0), "pin {pin}");
+        }
+        assert_eq!(apic.pending(), None);
+        // The masked entries take no edge or level from the lines of the board.
+        io.set_intin4(true).unwrap();
+        assert_eq!(apic.pending(), None);
     }
 
     #[test]

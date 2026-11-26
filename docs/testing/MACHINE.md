@@ -710,7 +710,8 @@ discovery.
 Version (`0x00170020`: версия `0x20`, MRE 23) и Arbitration ID (`0x01000000`) через
 IOREGSEL/IOWIN; ID пишется только в битах 27:24 (Arbitration ID следует за ним,
 reset возвращает 1), запись reserved-битов ID и любая запись в Version/Arbitration
-ID — `UnsupportedConfiguration` без изменения снимка `PairState`; чтение и запись
+ID — `UnsupportedConfiguration` без изменения снимка `PairState` (с S7-32, срез N, запись в
+Version/Arbitration ID принимается без изменений, см. ниже); чтение и запись
 всех 24 redirection entries (low/high), независимость входов, запись high только
 0, отсутствие входа 24; записи через окно меняют маску, vector и trigger INTIN4 и
 реально меняют доставку, а остальные входы никогда не доставляют и не имеют
@@ -737,6 +738,26 @@ reset-ID 2 — 3, Version `0x17_0011` — 3, vector < 16 допущен — 2, d
 `--test stage4_uart_irq_probe`, `cargo fmt --all -- --check`. Тесты не
 проверяют logical destination routing, несколько IOAPIC, MSI, доставку с входов
 кроме INTIN4 и приём Linux (S4-38).
+
+### S7-32, срез N: запись в Version и Arbitration ID IOAPIC
+
+Запуск: `cargo test -p od-machine --lib io_apic --offline -- --test-threads=1` (57 тестов: 56
+прежних и 1 новый). Тест `id_is_writable_in_27_24_only_and_version_arbitration_ignore_writes`
+(прежде `…_are_read_only`): запись reserved-битов ID по-прежнему отказ без изменений; запись `0`,
+`0x00170020` и `0xFFFFFFFF` в Version и `0`, `0x06000000`, `0xFFFFFFFF` в Arbitration ID принимается,
+снимок `PairState` не меняется, чтения Version и Arbitration ID прежние (перед записями состояние далеко от сброса: INTIN4 — немаскированный уровневый маршрут `0x51` с поднятой линией и Remote IRR, вход 7 — `MASK | 0x77` с адресатом 3; в конце они читаются прежними); значение `0x1_0000_0000`
+прямо в устройство на этих селекторах — `UnsupportedConfiguration` без изменений (82093AA Table 2,
+§3.2.1–3.2.3). Новый `windows_hal_io_unit_initialisation_is_accepted` повторяет инициализацию IOAPIC
+HAL Windows (`ntkrnlmp` + `0x5697b0`, ISSUE-701): две записи 0 в Version с чтением (оба —
+`0x00170020`), запись ID `чтение | 1 << 24`, для всех 24 входов чтение low, low `0x000100FF`, high `0`;
+итог — ID `0x01000000`, все входы `0x000100FF`/`0`, запросов в LAPIC нет, подъём INTIN4 под маской
+ничего не доставляет. Инъекции (файл возвращался копией): отказ снова — 2 падения, запись в Version
+меняет ID — 1, без проверки ширины — 1, правило только для Version — 1; по ревью — запись сбрасывает
+таблицу перенаправления, снимает Remote IRR INTIN4, маскирует INTIN4, обнуляет адресат входа 7 — по 1. Затем полный
+`cargo test -p od-machine --lib`, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`;
+комментарии `IOAPIC_ID`/`IOAPIC_PIN_COUNT` прошивки (`acpi/madt.rs`) исправлены без изменения числа
+строк — host-тесты прошивки и SHA-256 ROM (`5e47acc1…`, совпадает с `fw-l.bin`) проверены. Гостевой
+прогон — [отчёт этапа 7, срез N](../reports/STAGE_7_REPORT.md#срез-n-запись-в-read-only-регистры-ioapic-2026-11-26).
 
 ## S4-27a: caller-driven APIC interrupt entry
 

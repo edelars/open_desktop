@@ -58,14 +58,14 @@ pub const LOCAL_APIC_ENABLED: u32 = 1;
 pub const CPU_UID: u8 = 0;
 pub const CPU_APIC_ID: u8 = 0;
 /// I/O APIC ID in the MADT. The manifest carries no ID (the handoff entry holds address, length
-/// and GSI base only, and the `IoApic` model has no readable ID register), so the firmware picks
-/// one: 1, distinct from the Local APIC ID 0 so that the two never collide in an OS that keeps
-/// one table of APIC IDs. NOT checked against a guest read of the device.
+/// and GSI base only), so the firmware picks one: 1, distinct from the Local APIC ID 0 so that
+/// the two never collide in an OS that keeps one table of APIC IDs. The `IoApic` model resets
+/// its ID register to the same 1 (S4-26c; `od-machine` test `model_agrees_with_the_firmware_madt`).
 pub const IOAPIC_ID: u8 = 1;
 /// Number of inputs of the I/O APIC: 24, the size of an Intel 82093AA-compatible IOAPIC. The
-/// manifest and the `IoApic` model do not expose it (S4-26a gives one route, INTIN4, and no
-/// Version value), so this is an assumption of the firmware, used to check the GSIs of the
-/// overrides: they must lie in `[gsi_base, gsi_base + 24)`.
+/// manifest does not carry it; the `IoApic` model reports the same 24 in its Version register
+/// (MRE 23, S4-26c; checked by `model_agrees_with_the_firmware_madt`). The firmware uses it to
+/// check the GSIs of the overrides: they must lie in `[gsi_base, gsi_base + 24)`.
 pub const IOAPIC_PIN_COUNT: u32 = 24;
 /// Size and alignment of the APIC register windows (4 KiB, FIRMWARE_BOOT.md 6.3).
 pub const APIC_WINDOW_LEN: u64 = 0x1000;
