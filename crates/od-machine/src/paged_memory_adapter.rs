@@ -5542,13 +5542,23 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         self.access_with(address, context, operation, true)
     }
 
-    fn supports_cpl3_vector(&self, context: AccessContext) -> bool {
+    /// A 16-byte explicit operand (SSE loads and stores) of the large-RAM CPL0 set, at any CPL:
+    /// CPL3 since the glibc TLS vector operations (stage 6), CPL0 since S7-32 (`bootmgfw.efi`
+    /// loads XMM registers from its data at CPL0).
+    fn supports_vector(&self, context: AccessContext) -> bool {
         self.large_ram_profile
             && self.cpl0_set_cross_page_read
             && self.cpl0_set_cross_page_store
             && !self.capture_effects
-            && context.privilege == PrivilegeLevel::Ring3
             && context.origin == AccessOrigin::Explicit
+    }
+
+    fn physical_memory(&self) -> &crate::PhysicalMemory {
+        match &self.bus {
+            AdapterBus::Ram(memory) | AdapterBus::RamMmio(memory, _, _) => memory,
+            AdapterBus::Machine(bus, _) => bus.physical_memory(),
+            AdapterBus::Shared(bus, _) => bus.physical_memory(),
+        }
     }
 
     fn access_vector(
@@ -5713,10 +5723,46 @@ impl<'a> PagedMovMemoryAdapter<'a> {
         match report.outcome {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
+                if let Some(value) = self.rom_read(request, &error) {
+                    return Ok(TrackedAccessOutcome::Read(value));
+                }
                 self.access_error = Some(error.clone());
                 Err(self.map_access_error(error))
             }
         }
+    }
+
+    /// S7-32: a read of the firmware ROM in the large-RAM CPL0 set (the unified loop). The ROM is
+    /// read-only flash, never fetched or written (FIRMWARE_BOOT.md 3.1), but its bytes are readable:
+    /// the measured firmware hashes its own image (with `--tpm` the first stop of the unified loop
+    /// was this read). The walk already translated the whole operand inside one page, so only the
+    /// region refusal is replaced by the bytes. Unlike `PagedProbeMemory` (firmware profile loop)
+    /// it needs no TPM: readable flash is the hardware behaviour. Served: integer reads of 1..8
+    /// bytes whose origin `access_with` normalized to explicit (so a descriptor-table read of ROM is
+    /// served too), and byte by byte through `access_split_byte` for a page-crossing read. Not
+    /// served: writes, read-for-write and atomic targets, fetches and 16-byte vector reads.
+    fn rom_read(&self, request: TrackedAccessRequest, error: &TrackedAccessError) -> Option<u64> {
+        let RamAccessOperation::Read { width } = request.operation else {
+            return None;
+        };
+        let TrackedAccessError::OperandPhysical {
+            address,
+            source: crate::MemoryAccessError::UnreadableRegion(crate::MemoryRegionKind::Rom),
+        } = error
+        else {
+            return None;
+        };
+        if !self.large_ram_profile
+            || !self.cpl0_set_byte_read
+            || (request.address.get() & 0xfff) + u64::from(width.bytes()) > 4096
+        {
+            return None;
+        }
+        let mut bytes = [0; 8];
+        self.physical_memory()
+            .load_bytes(*address, &mut bytes[..usize::from(width.bytes())])
+            .ok()?;
+        Some(u64::from_le_bytes(bytes))
     }
 
     /// The width of a read of `len` bytes at `address` that the TLB of the turbo engine may serve,
@@ -6352,7 +6398,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
             return Ok(());
         }
         if let Ok(vector) = <&mut [u8; 16]>::try_from(&mut *destination)
-            && self.supports_cpl3_vector(context)
+            && self.supports_vector(context)
         {
             return self.access_vector(address, context, VectorRamAccess::Read(vector));
         }
@@ -6448,7 +6494,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
             return Err(Self::unsupported("write"));
         }
         if let Ok(vector) = <&[u8; 16]>::try_from(source)
-            && self.supports_cpl3_vector(context)
+            && self.supports_vector(context)
         {
             return self.access_vector(address, context, VectorRamAccess::Write(vector));
         }
@@ -6624,9 +6670,8 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
     /// dirty bit, no notification), as it refuses a split `LOCK` without the stop-all gate
     /// (S6-34): the serial read and write pair of the trait default is not atomic across host
     /// threads. The interleaving mode keeps the serial pair of the trait default (the scheduler
-    /// switches vCPUs only on instruction boundaries); this adapter's `read` does not serve a
-    /// 16-byte operand yet, so that pair ends in the "read width" refusal before any effect.
-    /// CX16 is not declared until S2-57.
+    /// switches vCPUs only on instruction boundaries); since S7-32 this adapter serves the 16-byte
+    /// read and write of that pair (`supports_vector`, any CPL).
     fn atomic_rmw_u128(
         &mut self,
         address: u64,
@@ -6637,7 +6682,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
             return Err(MemoryError::Backend(format!(
                 "CMPXCHG16B at {address:#x} is refused in the parallel mode: there is no host \
                  128-bit compare-exchange, and the serial read and write pair is not atomic \
-                 across vCPU threads (S2-51; CX16 is not declared until S2-57)"
+                 across vCPU threads (S2-51; CX16 is declared by the Windows profile, ISSUE-687)"
             )));
         }
         let mut bytes = [0u8; 16];
@@ -7557,6 +7602,73 @@ mod tests {
             Err(())
         );
         assert_eq!(bytes, [0xaa; 16]);
+    }
+
+    /// S7-32: the set-loop adapter (unified loop) reads the firmware ROM like readable flash: an
+    /// integer read inside one page returns the ROM bytes; a write, a 16-byte vector read and a read
+    /// of a non-ROM refusal stay refused.
+    #[test]
+    fn the_set_loop_adapter_reads_rom_bytes_and_refuses_writes_and_vector_reads() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let rom = GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(rom, MemoryRegionKind::Rom),
+            ],
+        )
+        .unwrap();
+        let mut memory = crate::PhysicalMemory::new(&map, RamLimits::new(0x9000)).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3020, 0x5007),
+            (0x5000, 0x9007),
+        ] {
+            memory
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let image: Vec<u8> = (0u8..=255).cycle().take(0x1000).collect();
+        memory
+            .load_rom_bytes(GuestPhysicalAddress::new(0x9000), &image)
+            .unwrap();
+        let paging = Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap();
+        let mut writes = |_| {};
+        let mut adapter =
+            set_loop_adapter(&memory, None, paging, 0x0040_0000, &mut writes, None, None);
+        let mut qword = [0u8; 8];
+        adapter
+            .read(DATA_LINEAR + 0x10, context(), &mut qword)
+            .unwrap();
+        assert_eq!(qword, [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]);
+        let mut byte = [0u8; 1];
+        adapter
+            .read(DATA_LINEAR + 0xff, context(), &mut byte)
+            .unwrap();
+        assert_eq!(byte, [0xff]);
+        assert!(
+            adapter
+                .write(DATA_LINEAR + 0x10, context(), &[0; 8])
+                .is_err()
+        );
+        let mut vector = [0u8; 16];
+        assert!(
+            adapter
+                .read(DATA_LINEAR + 0x20, context(), &mut vector)
+                .is_err()
+        );
+        drop(adapter);
+        let mut after = [0u8; 8];
+        memory
+            .load_bytes(GuestPhysicalAddress::new(0x9010), &mut after)
+            .unwrap();
+        assert_eq!(
+            after,
+            [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17],
+            "the ROM is unchanged"
+        );
     }
 
     #[test]
@@ -10483,7 +10595,7 @@ mod tests {
     /// S2-51: `atomic_rmw_u128` (CMPXCHG16B) has no host 128-bit primitive, so the parallel mode
     /// refuses it before any walk: memory, tables and notifications stay untouched and the
     /// update closure is never called. The interleaving mode keeps the trait's serial pair, which
-    /// this adapter's `read` does not serve for 16 bytes: a refusal before any effect too.
+    /// this adapter serves since S7-32 (16-byte operands at any CPL).
     #[test]
     fn a_locked_u128_operation_is_refused_in_the_parallel_mode_and_changes_nothing() {
         let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Parallel);
@@ -10506,16 +10618,25 @@ mod tests {
         assert_eq!(split_state(&memory), before);
         assert!(log.is_empty());
 
+        // S7-32: the adapter serves 16-byte explicit operands at any CPL, so the interleaving
+        // mode runs the trait's serial pair (one 16-byte read, one 16-byte write; the scheduler
+        // switches vCPUs only on instruction boundaries).
         let memory = split_memory(0, 0x7007, 0x8007, crate::ExecutionMode::Interleaved);
-        let before = split_state(&memory);
         let mut note = |_| {};
         let mut adapter = lock_adapter(&memory, &mut note);
-        let result = adapter.atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| !old);
-        assert!(
-            matches!(&result, Err(MemoryError::Backend(m)) if m.contains("read")),
-            "{result:?}"
-        );
-        assert_eq!(split_state(&memory), before);
+        let mut first = [0u8; 16];
+        adapter
+            .read(DATA_LINEAR + 0x40, context(), &mut first)
+            .unwrap();
+        let old = adapter
+            .atomic_rmw_u128(DATA_LINEAR + 0x40, context(), &mut |old| !old)
+            .expect("the interleaving mode runs the serial pair");
+        assert_eq!(old, u128::from_le_bytes(first));
+        let mut after = [0u8; 16];
+        adapter
+            .read(DATA_LINEAR + 0x40, context(), &mut after)
+            .unwrap();
+        assert_eq!(u128::from_le_bytes(after), !old);
     }
 
     /// S2-21: `CMPXCHG8B` reaches this adapter as an eight-byte `atomic_compare_exchange_integer`,

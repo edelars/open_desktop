@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [--nvme-image <raw> | --disk <path>[,ro]] \
-                    [--cpu-loop firmware|unified] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
+                    [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
                     [--stop-snapshot <file>] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -52,6 +52,10 @@ const PREPARE_NVRAM_USAGE: &str =
 
 struct Options {
     image: String,
+    /// S7-32: `--guest linux|windows` (unified loop only): the CPUID profile of the run.
+    guest: od_machine::UnifiedGuest,
+    /// S7-32: `--ram-mib <n>`: the guest RAM (a multiple of 2 MiB, 128 MiB by default).
+    ram_mib: Option<u64>,
     com1_out: String,
     budget: u64,
     fv_app: Option<FirmwareFvApp>,
@@ -356,6 +360,21 @@ pub fn run(args: &[String]) -> ExitCode {
     if options.unified {
         apply_unified(&mut config);
     }
+    if let Some(mib) = options.ram_mib {
+        // The board validates the range and the 2 MiB multiple (`validate_config`); only the
+        // conversion is checked here.
+        let Some(bytes) = mib.checked_mul(1 << 20) else {
+            return emit(
+                failure(
+                    "invalid_input",
+                    "arguments",
+                    format!("--ram-mib {mib} is too large"),
+                ),
+                3,
+            );
+        };
+        config.ram_bytes = bytes;
+    }
     if options.nvme_path().is_some() {
         config.nvme = Some(Default::default());
     }
@@ -398,7 +417,7 @@ pub fn run(args: &[String]) -> ExitCode {
         nvme,
         &options.sample_rips,
         &mut diagnostics,
-        options.unified,
+        options.unified.then_some(options.guest),
         options.mark_rip,
         &options.trace_calls,
         options.trace_system_table,
@@ -547,7 +566,7 @@ pub fn run(args: &[String]) -> ExitCode {
         nvme,
         &[],
         &mut Diagnostics::default(),
-        false,
+        None,
         None,
         &[],
         None,
@@ -1372,7 +1391,7 @@ fn boot(
     nvme: Option<NvmeSource<'_>>,
     sample_rips: &[u64],
     diagnostics: &mut Diagnostics,
-    unified: bool,
+    unified: Option<od_machine::UnifiedGuest>,
     mark_rip: Option<u64>,
     trace_calls: &[od_machine::CallTraceTarget],
     trace_system_table: Option<u64>,
@@ -1442,7 +1461,7 @@ fn boot(
     let mut unified_run = None;
     let mut op_histogram_result: Option<Result<Value, String>> = None;
     let op_histogram_path = diagnostics.op_histogram_out.clone();
-    let run = if unified {
+    let run = if let Some(guest) = unified {
         // The unified loop runs through the turbo engine (ADR-0022) unless `--no-turbo` asks for
         // the general step only: the runner owns the process's executable region and gives it to
         // the board. Without a region (another host, the region taken) the loop runs the general
@@ -1462,13 +1481,14 @@ fn boot(
             }
         }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
-        let unified_run = od_machine::run_firmware_unified_profiled(
+        let unified_run = od_machine::run_firmware_unified_guest(
             &mut board,
             budget,
             mark_rip,
             trace_calls.to_vec(),
             trace_system_table,
             op_histogram_path.is_some(),
+            guest,
         ).map(|run| {
             let report = run.run;
             if let (Some(histogram), Some(path)) = (&run.op_histogram, &op_histogram_path) {
@@ -1693,7 +1713,12 @@ fn boot(
     if let Some(unified_run) = unified_run {
         result["cpu_loop"] = json!("unified");
         result["unified"] = unified_run;
+        result["guest"] = json!(match unified.expect("a unified run has a guest") {
+            od_machine::UnifiedGuest::Linux => "linux",
+            od_machine::UnifiedGuest::Windows => "windows",
+        });
     }
+    result["ram_bytes"] = json!(config.ram_bytes);
     match op_histogram_result {
         Some(Ok(summary)) => result["op_histogram"] = summary,
         Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
@@ -1789,6 +1814,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut op_histogram_out = None;
     let mut no_turbo = false;
     let mut turbo_stats = false;
+    let mut guest: Option<od_machine::UnifiedGuest> = None;
+    let mut ram_mib: Option<u64> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1849,6 +1876,28 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--nvram-reboot-out" if nvram_reboot_out.is_none() => {
                 nvram_reboot_out = Some(value.clone())
+            }
+            "--guest" if guest.is_none() => {
+                guest = Some(match value.as_str() {
+                    "linux" => od_machine::UnifiedGuest::Linux,
+                    "windows" => od_machine::UnifiedGuest::Windows,
+                    _ => {
+                        return Err(format!(
+                            "invalid --guest '{value}'; expected linux or windows"
+                        ));
+                    }
+                });
+            }
+            "--ram-mib" if ram_mib.is_none() => {
+                ram_mib = Some(
+                    value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|mib| *mib > 0 && mib % 2 == 0)
+                        .ok_or_else(|| {
+                            format!("invalid --ram-mib '{value}'; expected an even number of MiB")
+                        })?,
+                );
             }
             "--budget" if budget.is_none() => {
                 budget = Some(
@@ -2066,8 +2115,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
             return Err("the image and both COM1 output paths must be distinct".to_owned());
         }
     }
+    if guest.is_some() && !unified {
+        return Err("--guest requires --cpu-loop unified".to_owned());
+    }
     Ok(Options {
         image,
+        guest: guest.unwrap_or_default(),
+        ram_mib,
         com1_out,
         budget: budget.ok_or_else(|| format!("--budget is required; usage: {USAGE}"))?,
         fv_app,
@@ -3159,7 +3213,7 @@ mod tests {
             }),
             &[],
             &mut Diagnostics::default(),
-            false,
+            None,
             None,
             &[],
             None,

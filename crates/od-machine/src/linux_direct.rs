@@ -2002,6 +2002,47 @@ pub fn run_firmware_unified_profiled(
     system_table: Option<u64>,
     op_histogram: bool,
 ) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
+    run_firmware_unified_guest(
+        board,
+        instruction_budget,
+        marker_rip,
+        trace,
+        system_table,
+        op_histogram,
+        UnifiedGuest::Linux,
+    )
+}
+
+/// S7-32: the guest a unified run presents its CPU to. The loop, the board and the members of the
+/// CPL0 set are the same; the guest selects the CPUID profile the set answers with.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UnifiedGuest {
+    /// `X8664V1Stage4AExt2` (S7-31i), the profile of the Linux runs (S7-31).
+    #[default]
+    Linux,
+    /// `OdX8664V2Windows` (S2-57, ADR-0013), the profile of the Windows runs (S7-32).
+    Windows,
+}
+
+impl UnifiedGuest {
+    const fn cpuid_profile(self) -> CpuidProfile {
+        match self {
+            Self::Linux => CpuidProfile::X8664V1Stage4AExt2,
+            Self::Windows => CpuidProfile::OdX8664V2Windows,
+        }
+    }
+}
+
+/// [`run_firmware_unified_profiled`] for a chosen [`UnifiedGuest`] (S7-32).
+pub fn run_firmware_unified_guest(
+    board: &mut LoadedFirmwareBoard,
+    instruction_budget: u64,
+    marker_rip: Option<u64>,
+    trace: Vec<CallTraceTarget>,
+    system_table: Option<u64>,
+    op_histogram: bool,
+    guest: UnifiedGuest,
+) -> Result<FirmwareUnifiedRun, crate::FirmwareBoardError> {
     if !board.has_firmware_entry() || !board.has_linux_profile() {
         return Err(crate::FirmwareBoardError::Config(
             "run_firmware_unified needs a firmware board with the Linux profile",
@@ -2020,11 +2061,13 @@ pub fn run_firmware_unified_profiled(
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
     crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
 
-    // `X8664V1Stage4AExt2` (S7-31i): Stage4A plus SYSCALL, NX and LM in CPUID.80000001H:EDX (S7-31h:
-    // without NX the kernel strips `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE
-    // and SSE2 in leaf 1 (the kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636).
+    // The CPUID profile comes from the guest (S7-32). Linux: `X8664V1Stage4AExt2` (S7-31i), Stage4A
+    // plus SYSCALL, NX and LM in CPUID.80000001H:EDX (S7-31h: without NX the kernel strips
+    // `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE and SSE2 in leaf 1 (the
+    // kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636). Windows: `OdX8664V2Windows`
+    // (ADR-0013). The members are the same for both guests.
     let members = LinuxCpl0SetMembers {
-        cpuid_profile: CpuidProfile::X8664V1Stage4AExt2,
+        cpuid_profile: guest.cpuid_profile(),
         msr_tdx_keyid_partitioning_read: true,
         fp_state: true,
         int3: true,

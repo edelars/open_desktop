@@ -119,23 +119,31 @@ const WINDOWS_LEAF1_EAX: u32 = 0x0009_06C0;
 /// VMX [5], AES [25], XSAVE [26], OSXSAVE [27], AVX [28], the hypervisor bit [31] and every other
 /// bit (ADR-0013, decisions 3 and 4).
 const WINDOWS_LEAF1_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
-/// CPUID.01H:EDX of the Windows profile: PAE [6], CX8 [8], APIC [9] and CMOV [15] (`0x8340`; bit
-/// numbers from the Intel SDM rev. 093, Vol. 1, Table 21-10, pp. 21-12, 21-13). PAE and APIC (S2-58)
-/// were declared before the owner accepted S2-25 (PAE paging beyond IA-32e is a model without a
-/// hardware oracle), S4-10 and S4-38L8d (deviation, confirmed by the owner 2026-11-21). CX8
-/// (CMPXCHG8B, S2-21i) and CMOV (CMOVcc, S2-16c) are declared by S2-57 slice C, confirmed by the
-/// owner 2026-11-21 (acceptance of S2-21 and S2-16). TSC [4] is NOT declared: the owner decision of
-/// 2026-11-21 holds it (with FPU, MSR, SYSCALL and LM) until a separate owner decision. MMX, FXSR,
-/// SSE and SSE2 wait for their tasks (`CPU_CONTRACT.md`, S2-57); PSE, PGE and PAT have no task.
-const WINDOWS_LEAF1_EDX: u32 = (1 << 6) | (1 << 8) | LEAF1_EDX_APIC | (1 << 15);
+/// CPUID.01H:EDX of the Windows profile: the bits of the full target table `0x0781A379` (FPU [0],
+/// PSE [3], TSC [4], MSR [5], PAE [6], CX8 [8], APIC [9], PGE [13], CMOV [15], PAT [16], MMX [23],
+/// FXSR [24], SSE [25], SSE2 [26]; bit numbers from the Intel SDM rev. 093, Vol. 1, Table 21-10).
+/// Until 2026-11-25 only PAE, CX8, APIC and CMOV (`0x8340`) were declared and the rest was held for
+/// separate owner decisions (S2-57). S7-32 decision of 2026-11-25 (architectural, under the owner's
+/// instruction for S7-32 to decide the architecture): declare the whole set. The Windows kernel needs
+/// them (PAE, NX, SSE2 and CMPXCHG16B are required by M2 §3.5; the CPL0 FP member refuses a profile
+/// without FPU/FXSR/SSE, the first stop of the Windows profile run, `FpFeaturesNotDeclared`), and the
+/// interpreter implements their core forms (the FP member and SSE/MMX cores, RDTSC, RDMSR/WRMSR of
+/// the modelled MSRs, 2 MiB pages). Known gaps are stops of a run, not wrong results: x87 forms
+/// outside the bounded profile, FXSAVE forms other than the plain ones, and MSRs the unified set
+/// does not bind (IA32_PAT, IA32_MISC_ENABLE, IA32_APIC_BASE reads and writes; the Windows MSR file
+/// `with_msr_windows` exists in od-isa but no board binds it yet).
+/// Not declared: VME [1], DE [2], MCE [7], SEP [11], MTRR [12], MCA [14], PSE-36 [17], CLFSH [19]
+/// (until CLFLUSH executes), HTT [28] and the rest.
+const WINDOWS_LEAF1_EDX: u32 = 0x0781_A379;
 /// CPUID.80000001H:ECX of the Windows profile: LAHF/SAHF in 64-bit mode [0] (S2-52) and PREFETCHW
 /// [8] (S2-53), from the Intel SDM (Vol. 1, "Leaf 80000001H"). LZCNT [5] is not declared.
 const WINDOWS_EXT1_ECX: u32 = (1 << 0) | (1 << 8);
-/// CPUID.80000001H:EDX of the Windows profile: zero. NX (Execute Disable) [20] is NOT declared: the
-/// owner deferred it until S4-10 is accepted (decision of 2026-11-21, withdrawing the S2-58
-/// declaration; the bit number is from the Intel SDM rev. 093, Vol. 1, Table 21-90). SYSCALL [11] and
-/// LM [29] wait for S2-27 and S2-24/S2-25; Page1GB [26] is never declared.
-const WINDOWS_EXT1_EDX: u32 = 0;
+/// CPUID.80000001H:EDX of the Windows profile: SYSCALL [11], NX [20] and LM [29] (`0x20100800`, the
+/// target table's; bit numbers from the Intel SDM rev. 093, Vol. 1, Table 21-90). NX was deferred by
+/// the owner until S4-10 was accepted (2026-11-21), and S4-10 was accepted by the owner on
+/// 2026-11-21; SYSCALL and LM wait no longer (S7-32 decision of 2026-11-25, see the leaf 1 EDX note).
+/// Page1GB [26] and RDTSCP [27] are not declared.
+const WINDOWS_EXT1_EDX: u32 = 0x2010_0800;
 /// CPUID.80000002H..80000004H of the Windows profile: the brand string of an Intel Celeron N5105
 /// (ADR-0013, decision 2), NUL-padded to 48 bytes (Intel SDM, Vol. 1, "Methods for Returning
 /// Branding Information Using CPUID").
@@ -805,7 +813,8 @@ mod tests {
     /// S2-57. Oracles written by hand from the Intel SDM tables (Vol. 1, chapter "Processor
     /// identification and feature determination"): GenuineIntel in EBX, EDX, ECX order; the
     /// signature of family 6 model 0x9C stepping 0; ECX bits 0, 9, 13, 19, 20, 23 (0x982201);
-    /// EDX bits 6, 8, 9, 15 (0x8340); 80000001H ECX bits 0 and 8 (0x101).
+    /// EDX the target table `0x0781A379` (S7-32 decision); 80000001H ECX bits 0 and 8 (0x101) and
+    /// EDX bits 11, 20, 29 (0x20100800).
     #[test]
     fn windows_declares_the_identity_and_only_the_accepted_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
@@ -822,24 +831,35 @@ mod tests {
             0x1 + 0x200 + 0x2000 + 0x8_0000 + 0x10_0000 + 0x80_0000
         );
         assert_eq!(leaf1.ecx, 0x0098_2201);
-        // PAE (bit 6), CX8 (8), APIC (9) and CMOV (15) only, by hand from the Intel SDM.
+        // FPU 0, PSE 3, TSC 4, MSR 5, PAE 6, CX8 8, APIC 9, PGE 13, CMOV 15, PAT 16, MMX 23,
+        // FXSR 24, SSE 25, SSE2 26, by hand from the Intel SDM.
         assert_eq!(
             leaf1.edx,
-            0x40 + 0x100 + 0x200 + 0x8000,
-            "only PAE, CX8, APIC and CMOV in leaf 1 EDX"
+            0x1 + 0x8
+                + 0x10
+                + 0x20
+                + 0x40
+                + 0x100
+                + 0x200
+                + 0x2000
+                + 0x8000
+                + 0x1_0000
+                + 0x80_0000
+                + 0x100_0000
+                + 0x200_0000
+                + 0x400_0000
         );
-        assert_eq!(leaf1.edx, 0x8340);
-        assert_eq!(leaf1.edx & (1 << 4), 0, "TSC (bit 4) is not declared");
+        assert_eq!(leaf1.edx, 0x0781_A379);
         let ext = p.query(0x8000_0000, 0);
         assert_eq!(ext.eax, 0x8000_0008);
         assert_eq!((ext.ebx, ext.ecx, ext.edx), (0, 0, 0));
         let ext1 = p.query(0x8000_0001, 0);
         assert_eq!((ext1.eax, ext1.ebx), (0, 0));
         assert_eq!(
-            ext1.edx, 0,
-            "80000001H EDX is zero: NX is deferred until S4-10"
+            ext1.edx,
+            0x800 + 0x10_0000 + 0x2000_0000,
+            "SYSCALL, NX and LM"
         );
-        assert_eq!(ext1.edx & (1 << 20), 0, "NX (bit 20) is not declared");
         assert_eq!(ext1.ecx, 0x1 + 0x100);
         let widths = p.query(0x8000_0008, 0);
         assert_eq!(widths.eax, 0x0000_3024);
@@ -863,35 +883,31 @@ mod tests {
         assert_eq!(bytes, expected);
     }
 
-    /// S2-57 negative: the bits of the Linux table and the bits that ADR-0013 forbids stay clear.
+    /// S2-57 negative: the bits that ADR-0013 forbids stay clear. Since the S7-32 decision of
+    /// 2026-11-25 leaf 1 EDX and leaf 0x80000001 EDX equal the Linux target table; the bits outside
+    /// that table stay clear.
     #[test]
-    fn windows_does_not_copy_the_linux_table_nor_declare_forbidden_bits() {
+    fn windows_declares_the_target_edx_words_and_no_forbidden_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
         let linux = CpuidProfile::OdX8664V1Neutral;
-        // The declared EDX bits (PAE, CX8, APIC, CMOV) are a strict subset of the Linux table's; every
-        // other Linux bit (FPU, PSE, TSC, MSR, PGE, PAT, MMX, FXSR, SSE, SSE2, SYSCALL, NX, LM) stays
-        // clear.
         let leaf1_edx = p.query(1, 0).edx;
-        assert_eq!(leaf1_edx, 0x8340);
+        assert_eq!(leaf1_edx, linux.query(1, 0).edx);
         for (bit, name) in [
-            (0, "FPU"),
-            (3, "PSE"),
-            (4, "TSC"),
-            (5, "MSR"),
-            (13, "PGE"),
-            (16, "PAT"),
-            (23, "MMX"),
-            (24, "FXSR"),
-            (25, "SSE"),
-            (26, "SSE2"),
+            (1, "VME"),
+            (2, "DE"),
+            (7, "MCE"),
+            (11, "SEP"),
+            (12, "MTRR"),
+            (14, "MCA"),
+            (19, "CLFSH"),
+            (28, "HTT"),
         ] {
             assert_eq!(leaf1_edx & (1 << bit), 0, "{name}");
         }
-        assert_ne!(leaf1_edx, linux.query(1, 0).edx);
-        assert_eq!(leaf1_edx & !linux.query(1, 0).edx, 0);
         let ext1_edx = p.query(0x8000_0001, 0).edx;
-        assert_eq!(ext1_edx, 0, "SYSCALL, NX and LM stay clear");
-        assert_ne!(ext1_edx, linux.query(0x8000_0001, 0).edx);
+        assert_eq!(ext1_edx, linux.query(0x8000_0001, 0).edx);
+        assert_eq!(ext1_edx & (1 << 26), 0, "Page1GB");
+        assert_eq!(ext1_edx & (1 << 27), 0, "RDTSCP");
         let ecx = p.query(1, 0).ecx;
         for (bit, name) in [
             (3, "MONITOR"),

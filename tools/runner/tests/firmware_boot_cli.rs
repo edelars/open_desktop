@@ -667,6 +667,73 @@ fn the_unified_run_without_turbo_reports_the_same_and_turbo_stats_go_to_stderr()
     }
 }
 
+/// S7-32: `--guest windows` gives the unified run the Windows CPUID profile (vendor `GenuineIntel`
+/// in EBX of leaf 0, `OpenDesktop ` for the default Linux guest), `--ram-mib` sets the RAM; the report
+/// records both. Invalid values and `--guest` without the unified loop are refused before launch.
+#[test]
+fn the_unified_guest_selects_the_cpuid_profile_and_the_report_records_guest_and_ram() {
+    #[rustfmt::skip]
+    let code = [
+        0x31, 0xC0,       // xor eax, eax
+        0x0F, 0xA2,       // cpuid
+        0x89, 0xD8,       // mov eax, ebx
+        0xF4,             // hlt
+    ];
+    let mut rom = image(&code);
+    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let unified = ["--cpu-loop", "unified"];
+    let windows = invoke_with_args(
+        &rom,
+        "100",
+        &[&unified[..], &["--guest", "windows", "--ram-mib", "256"]].concat(),
+    );
+    let linux = invoke_with_args(&rom, "100", &unified);
+    for run in [&windows, &linux] {
+        assert_eq!(run.output.status.code(), Some(0), "{:?}", run.output);
+    }
+    let (windows_report, linux_report) = (report(&windows), report(&linux));
+    // "Genu" and "Open" as little-endian dwords (CPUID.0:EBX).
+    assert_eq!(
+        windows_report["unified"]["final_state"]["rax"],
+        "0x756e6547"
+    );
+    assert_eq!(linux_report["unified"]["final_state"]["rax"], "0x6e65704f");
+    assert_eq!(windows_report["guest"], "windows");
+    assert_eq!(linux_report["guest"], "linux");
+    assert_eq!(windows_report["ram_bytes"], 256u64 << 20);
+    assert_eq!(linux_report["ram_bytes"], 128u64 << 20);
+    let members = windows_report["unified"]["members"].as_array().unwrap();
+    assert!(
+        members
+            .iter()
+            .any(|member| member == "cpuid:OdX8664V2Windows"),
+        "{members:?}"
+    );
+    for run in [windows, linux] {
+        fs::remove_file(&run.com1).unwrap();
+    }
+    for extra in [
+        &["--guest", "windows"][..],
+        &["--cpu-loop", "unified", "--guest", "macos"],
+        &["--ram-mib", "3"],
+        &["--ram-mib", "0"],
+        &["--ram-mib", "17592186044544"],
+    ] {
+        let refused = invoke_with_args(&rom, "100", extra);
+        assert_eq!(
+            refused.output.status.code(),
+            Some(3),
+            "{extra:?}: {:?}",
+            refused.output
+        );
+        assert_eq!(report(&refused)["status"], "invalid_input", "{extra:?}");
+        assert!(!refused.com1.exists(), "{extra:?}");
+    }
+}
+
 /// MOV RBX,imm64; MOV DWORD [RBX],imm32 (the guest-side register or pixel write).
 fn store_dword(code: &mut Vec<u8>, address: u64, value: u32) {
     code.extend_from_slice(&[0x48, 0xbb]);

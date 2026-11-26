@@ -18,6 +18,7 @@ pub mod integer_flags;
 pub mod interrupt;
 pub mod iretq;
 pub mod legacy_mode;
+pub mod length;
 pub mod long_decode;
 pub mod long_mode_entry;
 pub mod lretq;

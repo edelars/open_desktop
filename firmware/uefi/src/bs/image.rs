@@ -97,11 +97,17 @@ unsafe fn authorize_external(
     bytes: &[u8],
     path: *const DevicePathNode,
 ) -> Result<bool, Status> {
-    if let crate::var::nvram::ImageCheck::Rejected(rejected) =
-        crate::tpm::secure_boot::authorize(nvram, bytes)?
-    {
-        unsafe { execution_info::append(rejected, path_bytes(path)) }?;
-        return Ok(true);
+    match crate::tpm::secure_boot::authorize(nvram, bytes)? {
+        crate::var::nvram::ImageCheck::Rejected(rejected) => {
+            unsafe { execution_info::append(rejected, path_bytes(path)) }?;
+            return Ok(true);
+        }
+        // S7-32: the evidence that an external image passed the signature check against `db`
+        // (the Windows boot manager in the Windows run). Nothing is printed with Secure Boot off.
+        crate::var::nvram::ImageCheck::Authorized(_) => {
+            crate::console::serial_term::write(b"OD-FW S7-32 image authorized by db\r\n");
+        }
+        crate::var::nvram::ImageCheck::Disabled => {}
     }
     Ok(false)
 }

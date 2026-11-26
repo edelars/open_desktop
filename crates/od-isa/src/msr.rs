@@ -45,8 +45,8 @@ impl MsrProfile {
 /// IA32_MISC_ENABLE (`0x1A0`), IA32_PAT (`0x277`), IA32_SYSENTER_CS/ESP/EIP (`0x174..=0x176`),
 /// IA32_EFER (`0xC0000080`), IA32_STAR/LSTAR/CSTAR/FMASK (`0xC0000081..=0xC0000084`) and
 /// IA32_FS_BASE/GS_BASE/KERNEL_GS_BASE (`0xC0000100..=0xC0000102`). IA32_TSC (`0x10`) is NOT in
-/// the list: the TSC policy is withheld pending the owner decision (S2-57), so `RDMSR`/`WRMSR`
-/// of `0x10` raise `#GP(0)` like any unimplemented MSR. MTRR MSRs are not listed because the
+/// the list, so `RDMSR`/`WRMSR` of `0x10` raise `#GP(0)` like any unimplemented MSR; CPUID.1:EDX.TSC
+/// is declared since the S7-32 decision of 2026-11-25 (`RDTSC`), the MSR access is a separate gap. MTRR MSRs are not listed because the
 /// Windows profile does not declare MTRR (CPUID.1:EDX[12]).
 pub const fn windows_msr_is_known(index: u32) -> bool {
     matches!(

@@ -7,7 +7,8 @@
 //!
 //! Slice C of S2-57 (CX8 and CMOV declared; FPU, TSC, MSR, SYSCALL and LM kept clear until a separate
 //! owner decision, 2026-11-21, see CPU_CONTRACT.md) adds CX8 (Vol. 1 Table 21-10, EDX[8]) and CMOV
-//! (EDX[15]) to the declared set below.
+//! (EDX[15]) to the declared set below. The S7-32 decision of 2026-11-25 declares the rest of the
+//! target table's EDX words (leaf 1 and leaf 0x80000001).
 //!
 //! Three groups:
 //!
@@ -50,14 +51,14 @@ fn register(reg: Reg) -> u32 {
 }
 
 /// (register, bit, name, owner task): declared because the owner task is implemented and merged.
-const DECLARED: [(Reg, u32, &str, &str); 12] = [
-    // S2-57 slice C (S2-16 and S2-21 accepted, confirmed by the owner 2026-11-21). TSC [4] is NOT
-    // here: the owner holds it until a separate decision. Bit numbers: Intel SDM rev. 093, Vol. 1,
-    // Table 21-10 (pp. 21-12 and 21-13).
+const DECLARED: [(Reg, u32, &str, &str); 25] = [
+    // S2-57 slice C (S2-16 and S2-21 accepted, confirmed by the owner 2026-11-21). Bit numbers:
+    // Intel SDM rev. 093, Vol. 1, Table 21-10 (pp. 21-12 and 21-13). TSC and the rest of the target
+    // table follow below (S7-32 decision of 2026-11-25).
     (Reg::Edx1, 8, "CX8 (CMPXCHG8B)", "S2-21i"),
     (Reg::Edx1, 15, "CMOV", "S2-16c"),
     // S2-58 (deviation: declared before S2-25 and S4-38L8d are accepted, confirmed by the owner
-    // 2026-11-21). NX [80000001H EDX 20] is NOT here: the owner deferred it until S4-10 is accepted.
+    // 2026-11-21). NX [80000001H EDX 20] follows below (S7-32 decision of 2026-11-25).
     (Reg::Edx1, 6, "PAE", "S2-58"),
     (Reg::Edx1, 9, "APIC", "S2-58"),
     (Reg::Ecx1, 0, "SSE3", "S2-54"),
@@ -68,37 +69,35 @@ const DECLARED: [(Reg, u32, &str, &str); 12] = [
     (Reg::Ecx1, 23, "POPCNT", "S2-56"),
     (Reg::Ecx80000001, 0, "LAHF_SAHF_64", "S2-52"),
     (Reg::Ecx80000001, 8, "PREFETCHW", "S2-53"),
+    // S7-32 decision of 2026-11-25 (architectural, under the owner's instruction to decide the
+    // architecture of S7-32): the rest of the target table, implemented by the interpreter the Linux
+    // runs execute on. Known gaps stay stops of a run, not silent results: x87 transcendental and
+    // environment forms outside the bounded profile (S2-30..S2-32), MSRs outside the modelled set
+    // (#GP or a stop), compatibility mode (S2-24).
+    (Reg::Edx1, 0, "FPU", "S7-32"),
+    (Reg::Edx1, 3, "PSE", "S7-32"),
+    (Reg::Edx1, 4, "TSC", "S7-32"),
+    (Reg::Edx1, 5, "MSR", "S7-32"),
+    (Reg::Edx1, 13, "PGE", "S7-32"),
+    (Reg::Edx1, 16, "PAT", "S7-32"),
+    (Reg::Edx1, 23, "MMX", "S7-32"),
+    (Reg::Edx1, 24, "FXSR", "S7-32"),
+    (Reg::Edx1, 25, "SSE", "S7-32"),
+    (Reg::Edx1, 26, "SSE2", "S7-32"),
+    (Reg::Edx80000001, 11, "SYSCALL", "S7-32"),
+    (
+        Reg::Edx80000001,
+        20,
+        "NX",
+        "S7-32 (S4-10 accepted 2026-11-21)",
+    ),
+    (Reg::Edx80000001, 29, "LM", "S7-32"),
 ];
 
 /// (register, bit, name, why it is clear). The profile is built from the owner-task table of S2-57,
 /// not from the Linux table: a bit whose owner is not accepted, or has no task, stays clear.
-const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
-    (
-        Reg::Edx1,
-        0,
-        "FPU",
-        "x87 is not complete for CPL0: FSIN, FCOS, FSINCOS, FPTAN, FPATAN, F2XM1, FYL2X, FYL2XP1, FSCALE, FXTRACT, FBLD, FBSTP, FNSTENV, FNSAVE, FRSTOR, FLDENV exist only in the bounded profile of S2-32a/S2-32b/S2-32c/S2-32d and run in the CPL0 set only within that profile (S2-32e: FNSTENV, FNSAVE, FRSTOR and FLDENV execute, the rest are refused while FCS/FDS are represented), the FWAIT spellings FSTENV/FSAVE are not implemented in the set (S2-30, S2-31, S2-32 open)",
-    ),
-    (Reg::Edx1, 3, "PSE", "no task"),
-    (
-        Reg::Edx1,
-        4,
-        "TSC",
-        "owner decision 2026-11-21: not declared until a separate owner decision",
-    ),
-    (
-        Reg::Edx1,
-        5,
-        "MSR",
-        "only single MSRs (EFER, FS/GS base, STAR, LSTAR, FMASK, SYSENTER) are modelled, not the Windows set (S2-25 open)",
-    ),
-    (Reg::Edx1, 13, "PGE", "no task"),
-    (Reg::Edx1, 16, "PAT", "no task"),
+const UNDECLARED: [(Reg, u32, &str, &str); 17] = [
     (Reg::Edx1, 19, "CLFSH", "no task"),
-    (Reg::Edx1, 23, "MMX", "S2-33 minimal only"),
-    (Reg::Edx1, 24, "FXSR", "S2-39 not complete"),
-    (Reg::Edx1, 25, "SSE", "S2-34..S2-39 not complete"),
-    (Reg::Edx1, 26, "SSE2", "S2-35..S2-39 not complete"),
     (Reg::Edx1, 28, "HTT", "ADR-0013, S6-18 (topology)"),
     (Reg::Ecx1, 1, "PCLMULQDQ", "no task"),
     (Reg::Ecx1, 3, "MONITOR", "separate bit, not in S2-54"),
@@ -113,26 +112,8 @@ const UNDECLARED: [(Reg, u32, &str, &str); 30] = [
     (Reg::Ecx1, 28, "AVX", "ADR-0013, decision 4"),
     (Reg::Ecx1, 31, "hypervisor", "ADR-0013, decision 3"),
     (Reg::Ecx80000001, 5, "LZCNT", "no task"),
-    (
-        Reg::Edx80000001,
-        11,
-        "SYSCALL",
-        "SYSCALL/SYSRET only in the Linux board sets, semantics from memory of the SDM, no compatibility mode (S2-27, S2-24 open)",
-    ),
-    (
-        Reg::Edx80000001,
-        20,
-        "NX",
-        "S4-10 not accepted (owner decision 2026-11-21: NX deferred)",
-    ),
     (Reg::Edx80000001, 26, "1 GiB pages", "no task"),
     (Reg::Edx80000001, 27, "RDTSCP", "no task"),
-    (
-        Reg::Edx80000001,
-        29,
-        "LM",
-        "EFER.LME/LMA changes and compatibility mode are not modelled (S2-24, S2-25 open)",
-    ),
 ];
 
 #[test]
@@ -158,12 +139,10 @@ fn feature_registers_are_exactly_the_declared_bits() {
     );
     assert_eq!(register(Reg::Ecx1), 0x0098_2201);
     assert_eq!(register(Reg::Ecx80000001), 0x0000_0101);
-    // EDX of leaf 1: CX8 [8], CMOV [15] (S2-57 slice C), PAE [6] and APIC [9] (S2-58); TSC [4] is
-    // held by the owner. 80000001H EDX: zero (NX [20] is deferred until S4-10, owner decision
-    // 2026-11-21). No bit is left over that the lists above do not name.
-    assert_eq!(register(Reg::Edx1), 0x40 | 0x100 | 0x200 | 0x8000);
-    assert_eq!(register(Reg::Edx1), 0x8340);
-    assert_eq!(register(Reg::Edx80000001), 0);
+    // EDX of leaf 1: the target table (S7-32 decision 2026-11-25). 80000001H EDX: SYSCALL [11],
+    // NX [20], LM [29]. No bit is left over that the lists above do not name.
+    assert_eq!(register(Reg::Edx1), 0x0781_A379);
+    assert_eq!(register(Reg::Edx80000001), 0x2010_0800);
     for reg in [Reg::Edx1, Reg::Ecx1, Reg::Ecx80000001, Reg::Edx80000001] {
         let mut declared = 0u32;
         for (r, bit, _, _) in DECLARED {
@@ -186,14 +165,13 @@ fn the_linux_table_is_not_inherited_and_the_linux_profile_is_unchanged() {
     assert_eq!(linux.query(0x8000_0001, 0).ecx, 0);
     assert_eq!(linux.query(0x8000_0001, 0).edx, 0x2010_0800);
     assert_eq!(linux.query(0x8000_0002, 0), CpuidResult::default());
-    // The Windows profile has its own identity and takes from the Linux EDX bits only those it
-    // declares: PAE, CX8, APIC and CMOV in leaf 1; NX in 80000001H is not taken (the other Linux
-    // bits stay clear, TSC included).
+    // The Windows profile has its own identity; since the S7-32 decision (2026-11-25) its EDX
+    // words equal the Linux table's.
     assert_ne!(WINDOWS.query(0, 0), linux.query(0, 0));
-    assert_eq!(WINDOWS.query(1, 0).edx & linux.query(1, 0).edx, 0x8340);
+    assert_eq!(WINDOWS.query(1, 0).edx, linux.query(1, 0).edx);
     assert_eq!(
-        WINDOWS.query(0x8000_0001, 0).edx & linux.query(0x8000_0001, 0).edx,
-        0
+        WINDOWS.query(0x8000_0001, 0).edx,
+        linux.query(0x8000_0001, 0).edx
     );
 }
 
@@ -318,11 +296,14 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
 fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     // Order of the result: EAX, EBX, ECX, EDX.
     assert_eq!(cpuid_leaf(0), [1, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
-    // EDX: PAE | CX8 | APIC | CMOV (S2-57 slice C, S2-58); TSC is clear.
-    assert_eq!(cpuid_leaf(1), [0x0009_06c0, 0x100, 0x0098_2201, 0x8340]);
+    // EDX: the target table (S7-32 decision 2026-11-25).
+    assert_eq!(
+        cpuid_leaf(1),
+        [0x0009_06c0, 0x100, 0x0098_2201, 0x0781_a379]
+    );
     assert_eq!(cpuid_leaf(0x8000_0000), [0x8000_0008, 0, 0, 0]);
-    // EDX: zero (NX deferred until S4-10).
-    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0]);
+    // EDX: SYSCALL, NX, LM.
+    assert_eq!(cpuid_leaf(0x8000_0001), [0, 0, 0x101, 0x2010_0800]);
     // "Inte" "l(R)" " Cel" "eron" | "(R) " "N510" "5 @ " "2.00" | "GHz" NUL and zeros.
     assert_eq!(
         cpuid_leaf(0x8000_0002),
@@ -786,12 +767,13 @@ fn tsc_rdtsc_with_cr4_tsd_is_gp0_outside_cpl0_and_does_not_read_the_source() {
     }
 }
 
-// ---- slice C: the bits that stay clear have a live blocker ----
+// ---- slice C: the known gaps of the FPU, MSR and SYSCALL bits ----
 
-/// Each of these forms is what keeps a bit clear. When a task implements one, the matching
-/// `UNDECLARED` row has to be re-examined, and this test is the reminder.
+/// Until the S7-32 decision (2026-11-25) these forms kept the FPU, MSR and SYSCALL bits clear. The
+/// bits are now declared; the forms stay known gaps that stop a run (`Unsupported`) instead of
+/// giving a wrong result. When a task implements one, this test changes with it.
 #[test]
-fn the_forms_that_block_fpu_msr_and_syscall_are_still_unsupported() {
+fn the_known_gaps_of_the_fpu_msr_and_syscall_bits_are_still_unsupported() {
     let unsupported = |code: &[u8], setup: &dyn Fn(&mut LongModeState)| {
         let mut cpu = cpu();
         setup(&mut cpu);

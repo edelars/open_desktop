@@ -10689,3 +10689,33 @@ cargo test --manifest-path firmware/uefi/Cargo.toml --offline system_table      
 2. [ISSUE-629](../KNOWN_ISSUES.md#issue-629) (замечание 9) не обязательна по ревью, передана владельцем S7-41: вынос журнала срезов ISSUE-257… из FIRMWARE_BOOT.md; условие — читаемость, а не норма в 3000 строк.
 3. Зелёный прогон `tools/build/firmware_check_all.py` целиком выполнен 2026-11-21 на `main` `991dc01`: 16 из 16 шагов, 2229 с (см. «Последний прогон единой проверки» выше).
 4. Чекбокс S7-40 в [плане](../plans/STAGE_7.md) отмечен, строка S7-40 в таблицах статусов отчёта — `accepted` (2026-11-21).
+
+## S7-32 — загрузка установочного образа Windows
+
+Задача возобновлена владельцем проекта 2026-11-25 ([план](../plans/STAGE_7.md#s7-32-загрузить-установочный-образ-windows-через-собственную-uefi-до-экрана-setup)). Хост: Apple M3 Max, macOS 26.7.1, release-сборка `od-runner`, turbo-движок единого цикла (ADR-0022). Носитель — результат S7-35 `windows-x64-26300.9457.raw` (9 013 129 728 байт, SHA-256 `e4155209…a1d05`), подключается только для чтения (`--disk <путь>,ro`); ROM — `tools/build/build_firmware.py` без тестовых приложений; NVRAM с ключами Secure Boot по умолчанию — `od-runner prepare-secure-boot-nvram defaults` (ключи Microsoft в KEK/db/dbx, собственный PK, ADR S7-24).
+
+### Срез A: диагностика и профиль прогона (2026-11-25)
+
+**Статическое покрытие декодера.** `od-runner decode-coverage <образы PE>` проходит каждую функцию из каталога исключений (`.pdata`) линейно и декодирует инструкции декодером `od-isa` в контексте CPL образа (CPL0 для подсистем native, EFI и boot application); длину формы, которую декодер не принимает, даёт `od_isa::length::long64_length` (таблицы опкодов Intel SDM, Vol. 2, приложение A; семантики не содержит). Расхождений длины декодера и длиномера на 23,8 млн декодированных инструкций нет. Файлы извлечены из `boot.wim` (индекс 2, `wimlib-imagex extract`, только для диагностики) в игнорируемый `work/s7-32/`.
+
+| Набор | Образов | Декодировано | Отказов | Форм вне необъявленных расширений |
+|---|---:|---:|---:|---|
+| `bootx64.efi` (= `bootmgfw`), `winload.efi`, `ntoskrnl.exe`, `ci.dll`, `kdcom.dll`, `drivers\*.sys` (CPL0) | 310 | 19 038 751 | 74 396 (0,39 %) | 338 форм, 45 843 вхождения |
+| `ntdll`, `kernel32`, `KernelBase`, `user32`, `win32k*.sys`, `smss`, `csrss`, `winlogon`, `setup.exe` и др. | 28 | 4 765 999 | 18 542 | 150 форм, 11 801 вхождение |
+
+Без счёта оставлены формы, которые гость исполняет только при объявленном бите CPUID, которого профиль не объявляет (AVX/EVEX 9 964, ADX 10 249, AES 1 175, SHA 336, PCLMUL 273, CET 371, SMAP 80, XSAVE/TSX 257, RDTSCP 32), и однобайтовые опкоды, недопустимые в 64-битном режиме (данные в коде, 5 089). Самые частые формы: `INT imm8` (12 095; `int 29h` — `__fastfail`), `MOV r64, CRn` / `MOV CRn, r64` с произвольным регистром (6 263 / 2 401), `MOVSD xmm, m64` и обратно (5 271 / 6 112), LOCK-формы RMW (`lock or [rsp], r32` — барьер MSVC, 5 575; `lock and` 1 177 и др.), `MOV Sreg, m16`, формы с префиксом GS, `XCHG m8`, `MOVNTI`, `SIDT`, `MOV r64, DRn`, `CLFLUSH`.
+
+**Первые остановки прогона** (бюджет 3·10⁹, `--cpu-loop unified`):
+
+| Конфигурация | Остановка | Инструкций | Модуль + RVA | Байты | Что сделано |
+|---|---|---:|---|---|---|
+| `--tpm` | `tracked Long64 RAM access failed: UnreadableRegion(Rom)` | 3 430 922 | ROM (`rax` = `0x3c6ef372`, константа SHA-256) | — | чтение ROM в адаптере единого цикла (`rom_read`, как `PagedProbeMemory`) |
+| без `--tpm` | `paged MOV profile does not support read width` | 6 994 639 | `bootmgfw.pdb` + `0x422ea` | `0f 10 05 …` (`MOVUPS xmm0, [rip+d32]`) | 16-байтные операнды при любом CPL (`supports_vector`) |
+| `--tpm` | `Unsupported { opcode: 1 }` | 629 962 112 | `bootmgfw.pdb` + `0x2b2c03` | `0f 01 49 0a` (`SIDT [rcx+0xa]`) | пакет ISA W1 |
+| `--tpm`, NVRAM defaults | та же | 659 568 120 | та же | та же | COM1: `OD-FW S7-32 image authorized by db` (×2) |
+| `--guest windows --ram-mib 4096` | `Rejected(Cpl0Set(FpFeaturesNotDeclared))` | 71 974 | ROM | — | весь EDX целевой таблицы в Windows-профиле (ADR-0013, дополнение S7-32) |
+| то же после решения | `Unsupported { opcode: 1 }` | 728 688 432 | `bootmgfw.pdb` + `0x2b2c03` | `0f 01 49 0a` | пакет ISA W1 |
+
+Окрестность остановки (сохранение и восстановление контекста прошивки в `bootmgfw`): `SGDT`, `SIDT`, `SLDT m16`, `MOV m16, CS/DS/ES/FS/GS/SS`; затем `LGDT`, `LIDT`, `LLDT m16`, `PUSH CS; PUSH RDX; LRETQ`, `MOV DS/ES/GS/FS/SS, m16`. Скорость: 630 млн инструкций прошивки (measured boot с хешированием ROM) за 2 с.
+
+**Проверки и ревью среза A.** В чистой копии `HEAD` только с файлами среза: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `cargo test -p od-isa --lib` (2 726), `--test s2_57_cpuid_windows` (19) и `s2_58_cpuid_windows` (13), `cargo test -p od-machine --lib` (2 659, 18 ignored), `cargo test -p od-runner` (410 + интеграционные, в том числе `firmware_boot_cli` 16), `python3 tools/check_layout.py`. Независимое ревью Opus high: блокирующих замечаний нет; исправлены длина `Iz` при `66` + REX.W (REX.W главнее), завышенная формулировка о MSR (единый набор не связывает `IA32_PAT`, `IA32_MISC_ENABLE`, `IA32_APIC_BASE` — их первое обращение будет остановкой), паники сканера на усечённых PE, переполнение `--ram-mib`, отсутствие гостя и RAM в отчёте runner, устаревшие тексты; добавлены тесты чтения ROM адаптером и флагов `--guest`/`--ram-mib`; зарегистрирована [ISSUE-687](../KNOWN_ISSUES.md#issue-687). Повторное ревью исправленной части: блокирующего нет. Не покрыто тестом: строка COM1 о проверке по `db` (код только для цели прошивки; наблюдалась на реальном прогоне), отказы `rom_read` на выборке, чтении для записи и чтении через границу страницы.
