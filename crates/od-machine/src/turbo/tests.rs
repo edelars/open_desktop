@@ -3755,12 +3755,12 @@ fn cmpxchg_with_an_unequal_accumulator_loads_the_old_memory_value() {
     check_templates(&["cmpxchg_unequal"], 4);
 }
 
-/// `LOCK SUB m32, imm8` (`F0 83 /5 ib` without REX.W, the decoder's `LockSubDwordImm8`, a CPL3
-/// form): the general CPL0 step refuses it (`Unsupported { opcode: 0x83 }`) and the loop stops
-/// there; `jit::plan` does not admit it, so the turbo run stops at the same place. (Found by these
-/// tests: the engine once executed it.)
+/// `LOCK SUB m32, imm8` (`F0 83 /5 ib` without REX.W, the decoder's `LockSubDwordImm8`): since the
+/// S7-32 ISA batch W2 the general CPL0 step executes it (before, it stopped there as
+/// `Unsupported { opcode: 0x83 }`); `jit::plan` does not admit it, so the turbo run leaves it to the
+/// general step and both runs end alike. (Found by these tests: the engine once executed it.)
 #[test]
-fn lock_sub_dword_imm8_is_refused_by_the_general_step() {
+fn lock_sub_dword_imm8_runs_through_the_general_step() {
     // lock sub dword [rbx + 0x40], 5; hlt
     let program = [0xF0, 0x83, 0x6B, 0x40, 0x05, 0xF4];
     scenario("lock sub m32, imm8", &program, &|_| {});

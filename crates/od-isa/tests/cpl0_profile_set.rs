@@ -14386,6 +14386,14 @@ fn lock_cmpxchg_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mut
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb1 },
@@ -14768,6 +14776,14 @@ fn lock_cmpxchg_dword_forms_outside_the_slice_are_refused_with_opcode_0xb1_witho
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb1 },
@@ -15109,6 +15125,14 @@ fn lock_inc_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutatio
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xff },
@@ -15122,15 +15146,22 @@ fn lock_inc_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutatio
 }
 
 #[test]
-fn lock_inc_byte_form_stays_refused_with_opcode_0xfe() {
+fn lock_inc_byte_form_runs_as_a_locked_rmw_since_s7_32_w2() {
+    // S7-32 W2: `F0 FE /0` (LOCK INC m8) is a locked read-modify-write of the
+    // set (SDM Vol. 2A "INC": 0x7f + 1 = 0x80: SF = OF = AF = 1, CF kept, ZF = 0, PF from the result).
     let mut state = board_state();
+    state.rflags |= 1; // CF, which INC keeps
     state.gpr[Register::Rbx as usize] = 0x20_0000;
-    let before = state.clone();
-    let mut memory = CasMemory::new(&[0xf0, 0xfe, 0x43, 0x58], 5);
+    let mut memory = CasMemory::new(&[0xf0, 0xfe, 0x43, 0x58], 0x7f);
     let result = run_cas_set(&mut state, &mut memory).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfe });
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{result:?}"
+    );
+    assert_eq!(memory.cell & 0xff, 0x80);
+    // OF, SF, ZF, AF, PF, CF.
+    assert_eq!(state.rflags & 0x8d5, 0x800 | 0x80 | 0x10 | 0 | 1);
 }
 
 #[test]
@@ -15528,6 +15559,14 @@ fn lock_dec_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutatio
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xff },
@@ -15541,15 +15580,22 @@ fn lock_dec_forms_outside_the_slice_are_refused_with_opcode_0xff_without_mutatio
 }
 
 #[test]
-fn lock_dec_byte_form_stays_refused_with_opcode_0xfe() {
+fn lock_dec_byte_form_runs_as_a_locked_rmw_since_s7_32_w2() {
+    // S7-32 W2: `F0 FE /1` (LOCK DEC m8) is a locked read-modify-write of the
+    // set (SDM Vol. 2A "DEC": 0x80 - 1 = 0x7f: OF = AF = 1, SF = 0, CF kept, ZF = 0, PF from the result).
     let mut state = board_state();
+    state.rflags |= 1; // CF, which DEC keeps
     state.gpr[Register::Rbx as usize] = 0x20_0000;
-    let before = state.clone();
-    let mut memory = CasMemory::new(&[0xf0, 0xfe, 0x4b, 0x58], 5);
+    let mut memory = CasMemory::new(&[0xf0, 0xfe, 0x4b, 0x58], 0x80);
     let result = run_cas_set(&mut state, &mut memory).unwrap();
-    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0xfe });
-    assert_eq!(state, before);
-    assert!(memory.reads.is_empty() && memory.writes.is_empty());
+    assert_eq!(
+        exit(&result),
+        &RunExit::InstructionBudgetExhausted,
+        "{result:?}"
+    );
+    assert_eq!(memory.cell & 0xff, 0x7f);
+    // OF, SF, ZF, AF, PF, CF.
+    assert_eq!(state.rflags & 0x8d5, 0x800 | 0x10 | 0 | 1);
 }
 
 #[test]
@@ -16532,6 +16578,14 @@ fn lock_bts_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -16980,6 +17034,14 @@ fn lock_btr_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -21063,6 +21125,14 @@ fn lock_or_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mut
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -21630,6 +21700,14 @@ fn lock_add_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mu
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -24305,6 +24383,14 @@ fn lock_and_forms_outside_the_slice_are_refused_with_the_group_opcode_without_mu
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -24958,6 +25044,14 @@ fn segment_cmp_imm8_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -25784,6 +25878,14 @@ fn segment_cmpw_forms_outside_the_slice_are_refused_without_mutation() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 1);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -26501,6 +26603,14 @@ fn lock_add_reg_forms_outside_the_slice_are_refused_with_their_opcode_without_mu
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -32803,6 +32913,14 @@ fn lock_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutati
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xc1 },
@@ -38843,6 +38961,14 @@ fn segment_cmpxchg_byte_forms_outside_the_slice_are_refused_with_opcode_b0_witho
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb0 },
@@ -39407,6 +39533,14 @@ fn lock_bts_imm_forms_outside_the_slice_are_refused_with_the_exact_opcode_withou
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -39875,6 +40009,14 @@ fn lock_btr_imm_forms_outside_the_slice_are_refused_with_the_exact_opcode_withou
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -41594,6 +41736,14 @@ fn segment_cmpxchg_wide_forms_outside_the_slice_are_refused_with_opcode_b1_witho
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb1 },
@@ -45371,6 +45521,14 @@ fn ds_xadd_forms_outside_the_slice_are_refused_with_opcode_0xc1_without_mutation
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xc1 },
@@ -46044,6 +46202,14 @@ fn ds_cmpxchg_forms_outside_the_slice_are_refused_with_opcode_0xb1_without_mutat
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0xb1 },
@@ -46071,6 +46237,14 @@ fn ds_byte_cmpxchg_and_the_ds_xchg_keep_their_own_refusal() {
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -46099,6 +46273,14 @@ fn ds_forms_with_a_lock_byte_stay_equal_to_the_refused_lock_prefixed_pairs() {
             let before = state.clone();
             let mut memory = CasMemory::new(&code, 5);
             let result = run_cas_set(&mut state, &mut memory).unwrap();
+            if w2_owns(
+                &code,
+                &result,
+                &before,
+                state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+            ) {
+                continue;
+            }
             assert_eq!(result.instructions_executed, 0, "{} {code:02x?}", form.name);
             assert!(
                 matches!(exit(&result), RunExit::Unsupported { .. }),
@@ -47680,6 +47862,14 @@ fn plain_xadd_and_cmpxchg_forms_outside_the_slice_are_refused_without_mutation()
         let before = state.clone();
         let mut memory = CasMemory::new(code, 5);
         let result = run_cas_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported {
@@ -50480,6 +50670,14 @@ fn xchg_dword_forms_outside_the_slice_are_refused_with_opcode_0x87_without_mutat
         let mut memory = BitsMemory::new(code);
         set_dword(&mut memory, 0x20_0000, 0x1234_5678);
         let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x87 },
@@ -50927,6 +51125,14 @@ fn xchg_qword_forms_outside_the_slice_are_refused_with_opcode_0x87_without_mutat
         let mut memory = BitsMemory::new(code);
         memory.set_qword(0x20_0000, 0x1234_5678);
         let result = run_xchg_set(&mut state, &mut memory, 1).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x87 },
@@ -53149,6 +53355,14 @@ fn xadd_forms_outside_the_slice_are_refused_with_their_opcode_without_mutation()
         let before = state.clone();
         let mut memory = BitsMemory::new(code);
         let result = run_bts_set(&mut state, &mut memory).unwrap();
+        if w2_owns(
+            code,
+            &result,
+            &before,
+            state == before && memory.reads.is_empty() && memory.writes.is_empty(),
+        ) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode },
@@ -56812,4 +57026,322 @@ fn s7_32_cet_nops_and_rdsspq_rax_execute_at_cpl0_with_cr4_cet_clear() {
     expected.rip += code.len() as u64;
     assert_eq!(state, expected);
     assert!(memory.reads.is_empty() && memory.writes.is_empty());
+}
+
+// ---- S7-32 W2: the locked read-modify-write forms at every width in the CPL0 set. Expected values
+// by hand from the Intel SDM (Vol. 2 "LOCK", "ADD", "ADC", "SUB", "OR", "NOT", "NEG", "INC", "XADD",
+// "CMPXCHG", "XCHG", "BTS", "BTR", "BTC"; the flags of each operation, Vol. 1 Appendix A). ----
+
+const W2_CF: u64 = 1;
+const W2_PF: u64 = 1 << 2;
+const W2_AF: u64 = 1 << 4;
+const W2_ZF: u64 = 1 << 6;
+const W2_SF: u64 = 1 << 7;
+const W2_OF: u64 = 1 << 11;
+const W2_DATA: u64 = 0x3000;
+
+/// One instruction of `code` in the base CPL0 set over memory holding the `data` qwords.
+fn w2_run(state: &mut LongModeState, code: &[u8], data: &[(u64, u64)]) -> (RunExit, BitsMemory) {
+    let mut memory = BitsMemory::new(code);
+    for &(address, value) in data {
+        memory.set_qword(address, value);
+    }
+    let result = run_with_cpl0_profile_set(
+        state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    let exit = exit(&result).clone();
+    (exit, memory)
+}
+
+fn w2_state(rflags: u64) -> LongModeState {
+    let mut state = board_state();
+    state.rflags = 2 | IF | rflags;
+    state.gpr[Register::Rbx as usize] = W2_DATA;
+    state
+}
+
+const W2_ARITH: u64 = W2_CF | W2_PF | W2_AF | W2_ZF | W2_SF | W2_OF;
+
+#[test]
+fn s7_32_w2_locked_alu_forms_of_every_width_update_memory_and_flags() {
+    // lock or %eax, (%rbx): 0xf0 | 0x0f = 0xff in the low dword, upper dword untouched; CF = OF = 0,
+    // ZF = SF = 0, PF = 1 (eight ones).
+    let mut state = w2_state(W2_CF | W2_OF);
+    state.gpr[Register::Rax as usize] = 0x0f;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0xf0, 0x09, 0x03],
+        &[(W2_DATA, 0xaaaa_bbbb_0000_00f0)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0xaaaa_bbbb_0000_00ff);
+    assert_eq!(state.rflags & (W2_ARITH & !W2_AF), W2_PF);
+    assert_eq!(state.rip, RIP + 3);
+    // lock adcb $0x80, (%rbx) with CF = 1: 0x7f + 0x80 + 1 = 0x100 -> 0x00; CF = ZF = AF = PF = 1,
+    // SF = OF = 0 (127 + -128 + 1 = 0 does not overflow).
+    let mut state = w2_state(W2_CF);
+    let (exit, memory) = w2_run(&mut state, &[0xf0, 0x80, 0x13, 0x80], &[(W2_DATA, 0x7f)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_ZF | W2_AF | W2_PF);
+    // lock sub %cx, (%rbx): 1 - 2 = 0xffff; CF = SF = AF = PF = 1, ZF = OF = 0.
+    let mut state = w2_state(0);
+    state.gpr[Register::Rcx as usize] = 0x2;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x66, 0xf0, 0x29, 0x0b],
+        &[(W2_DATA, 0x5555_0001)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x5555_ffff);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_SF | W2_AF | W2_PF);
+    // lock subl $5, (%rbx) (`F0 83 /5 ib` on a dword: the profile decoder's `LockSubDwordImm8`,
+    // admitted at CPL0 in the set since W2): 10 - 5 = 5, all six flags clear except PF (0b101).
+    let mut state = w2_state(W2_ARITH);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0xf0, 0x83, 0x2b, 0x05],
+        &[(W2_DATA, 0x1_0000_000a)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x1_0000_0005);
+    assert_eq!(state.rflags & W2_ARITH, W2_PF);
+    // lock andl $-17, (%rbx) (83 /4 ib, sign-extended): 0xffff_ffff & 0xffff_ffef.
+    let mut state = w2_state(0);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0xf0, 0x83, 0x23, 0xef],
+        &[(W2_DATA, 0xffff_ffff)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0xffff_ffef);
+    assert_eq!(state.rflags & (W2_CF | W2_OF | W2_ZF | W2_SF), W2_SF);
+}
+
+#[test]
+fn s7_32_w2_locked_unary_forms_not_neg_inc() {
+    // lock notb (%rbx): 0x0f -> 0xf0, no flag changes.
+    let mut state = w2_state(W2_CF | W2_ZF);
+    let (exit, memory) = w2_run(&mut state, &[0xf0, 0xf6, 0x13], &[(W2_DATA, 0x0f)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0xf0);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_ZF);
+    // lock negl (%rbx): 1 -> 0xffff_ffff; CF = 1 (source not zero), SF = AF = PF = 1.
+    let mut state = w2_state(0);
+    let (exit, memory) = w2_run(&mut state, &[0xf0, 0xf7, 0x1b], &[(W2_DATA, 1)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0xffff_ffff);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_SF | W2_AF | W2_PF);
+    // lock incw (%rbx) with CF = 1: 0xffff -> 0; ZF = AF = PF = 1, CF kept.
+    let mut state = w2_state(W2_CF);
+    let (exit, memory) = w2_run(&mut state, &[0x66, 0xf0, 0xff, 0x03], &[(W2_DATA, 0xffff)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_ZF | W2_AF | W2_PF);
+}
+
+#[test]
+fn s7_32_w2_locked_exchange_forms_xadd_cmpxchg_xchg() {
+    // lock xadd %cl, (%rbx): memory 0x10 + 5 = 0x15, CL = 0x10, the upper bits of RCX kept.
+    let mut state = w2_state(0);
+    state.gpr[Register::Rcx as usize] = 0xdead_beef_0000_0005;
+    let (exit, memory) = w2_run(&mut state, &[0xf0, 0x0f, 0xc0, 0x0b], &[(W2_DATA, 0x10)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x15);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0xdead_beef_0000_0010);
+    // lock cmpxchg %cx, (%rbx), equal: memory takes CX, ZF = 1, RAX unchanged.
+    let mut state = w2_state(0);
+    state.gpr[Register::Rax as usize] = 0x7777_1234;
+    state.gpr[Register::Rcx as usize] = 0xbeef;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x66, 0xf0, 0x0f, 0xb1, 0x0b],
+        &[(W2_DATA, 0x1234)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0xbeef);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x7777_1234);
+    assert_ne!(state.rflags & W2_ZF, 0);
+    // Unequal: AX takes the memory word (upper bits of RAX kept), memory unchanged, ZF = 0,
+    // CF = 1 (0x1111 - 0x2222 borrows).
+    let mut state = w2_state(0);
+    state.gpr[Register::Rax as usize] = 0x7777_1111;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x66, 0xf0, 0x0f, 0xb1, 0x0b],
+        &[(W2_DATA, 0x2222)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x2222);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x7777_2222);
+    assert_eq!(state.rflags & (W2_ZF | W2_CF), W2_CF);
+    // xchg %al, (%rbx) without LOCK (always locked): swapped, flags unchanged.
+    let mut state = w2_state(W2_CF | W2_PF);
+    state.gpr[Register::Rax as usize] = 0x44;
+    let (exit, memory) = w2_run(&mut state, &[0x86, 0x03], &[(W2_DATA, 0x99)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 0x44);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x99);
+    assert_eq!(state.rflags & W2_ARITH, W2_CF | W2_PF);
+}
+
+#[test]
+fn s7_32_w2_locked_bit_forms_address_the_bit_string_by_width() {
+    // lock bts %eax, (%rbx) with EAX = 35: the dword at RBX+4, bit 3; CF = 0.
+    let mut state = w2_state(W2_CF);
+    state.gpr[Register::Rax as usize] = 35;
+    let (exit, memory) = w2_run(&mut state, &[0xf0, 0x0f, 0xab, 0x03], &[(W2_DATA, 0)]);
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 8 << 32);
+    assert_eq!(state.rflags & W2_CF, 0);
+    // lock btr %ax, (%rbx) with AX = 0xffff (-1): the word at RBX-2, bit 15; CF = 1.
+    let mut state = w2_state(0);
+    state.gpr[Register::Rax as usize] = 0xffff;
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0x66, 0xf0, 0x0f, 0xb3, 0x03],
+        &[(W2_DATA - 8, 0xffff << 48)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA - 8), 0x7fff << 48);
+    assert_eq!(state.rflags & W2_CF, W2_CF);
+    // lock btcq $65, (%rbx): the immediate is taken modulo 64, bit 1 of the qword at RBX.
+    let mut state = w2_state(W2_CF);
+    let (exit, memory) = w2_run(
+        &mut state,
+        &[0xf0, 0x48, 0x0f, 0xba, 0x3b, 0x41],
+        &[(W2_DATA, 0)],
+    );
+    assert_eq!(exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(memory.qword(W2_DATA), 2);
+    assert_eq!(state.rflags & W2_CF, 0);
+}
+
+#[test]
+fn s7_32_w2_a_faulting_locked_write_changes_nothing_and_lock_misuse_is_ud() {
+    // A read-only page: lock xadd faults on the write, CL and the flags stay.
+    let mut state = w2_state(W2_ZF);
+    state.gpr[Register::Rcx as usize] = 5;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&[0xf0, 0x0f, 0xc0, 0x0b]);
+    memory.set_qword(W2_DATA, 0x10);
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(3),
+        linear_address: Some(W2_DATA),
+    };
+    memory.write_fault = Some(fault.clone());
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(state, before);
+    assert_eq!(memory.qword(W2_DATA), 0x10);
+    // LOCK with a register destination, LOCK CMP and LOCK BT are #UD; nothing changes.
+    for code in [
+        &[0xf0u8, 0x09, 0xd8][..],
+        &[0xf0, 0x39, 0x03],
+        &[0xf0, 0x0f, 0xba, 0x23, 0x01],
+    ] {
+        let mut state = w2_state(0);
+        let before = state.clone();
+        let (exit, memory) = w2_run(&mut state, code, &[(W2_DATA, 0x10)]);
+        assert!(
+            matches!(exit, RunExit::Fault(ArchitecturalFault { vector: 6, .. })),
+            "{code:02x?}: {exit:?}"
+        );
+        assert_eq!(state, before, "{code:02x?}");
+        assert!(memory.writes.is_empty(), "{code:02x?}");
+    }
+}
+
+/// S7-32 W2: the locked read-modify-write forms at every width decode to `LockedRmw` (and the dword
+/// `F0 83 /5 ib`, `LockSubDwordImm8`, is admitted at CPL0) and execute in the set, and LOCK on a
+/// register destination or a non-RMW member is #UD (SDM Vol. 2A "LOCK"). The "refused outside the
+/// slice" pins above keep their assertions only for the forms W2 leaves outside (FS/GS overrides, 67,
+/// a repeated LOCK, REP without LOCK, ...): this returns `true` (after checking the W2 outcome) for a
+/// case W2 owns. A W2 form retires its one instruction, unless the address of its operand computed
+/// from the pre-instruction state `before` is not canonical: then it is that #GP(0)/#SS(0) with
+/// nothing executed and nothing changed. A #UD form retires nothing and leaves the state and the
+/// memory as they were (`unchanged`, computed by the caller, which then skips its own checks).
+fn w2_owns(
+    code: &[u8],
+    result: &Cpl0ProfileSetResult,
+    before: &LongModeState,
+    unchanged: bool,
+) -> bool {
+    use od_isa::long_decode::{BitOffset, LockedRmwOp, Operation};
+    let mut memory = BitsMemory::new(code);
+    match od_isa::long_decode::decode(&mut memory, RIP, context(PrivilegeLevel::Ring0)) {
+        Ok(instruction) => {
+            let next_rip = RIP + u64::from(instruction.length);
+            let operand = match instruction.operation {
+                Operation::LockedRmw { op, destination } => match op {
+                    // The element of a register bit offset (SDM BTS/BTR/BTC with a memory operand).
+                    LockedRmwOp::Bit {
+                        offset: BitOffset::Register(view),
+                        ..
+                    } => {
+                        let width = destination.size.bytes() as i64 * 8;
+                        let raw = before.read(view);
+                        let signed = match destination.size {
+                            OperandSize::Word => raw as u16 as i16 as i64,
+                            OperandSize::Dword => raw as u32 as i32 as i64,
+                            _ => raw as i64,
+                        };
+                        let mut element = destination;
+                        element.displacement += signed.div_euclid(width) * (width / 8);
+                        element
+                    }
+                    _ => destination,
+                },
+                Operation::LockSubDwordImm8 { destination, .. } => destination,
+                _ => return false,
+            };
+            match operand.access_address_48(before, next_rip) {
+                Ok(_) => {
+                    assert_eq!(
+                        exit(result),
+                        &RunExit::InstructionBudgetExhausted,
+                        "{code:02x?}: a W2 locked form retires in the set: {result:?}"
+                    );
+                    assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+                }
+                Err(MemoryError::Architectural(fault)) => {
+                    assert_eq!(exit(result), &RunExit::Fault(fault), "{code:02x?}");
+                    assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+                    assert!(unchanged, "{code:02x?}: the fault changes nothing");
+                }
+                Err(error) => panic!("{code:02x?}: {error:?}"),
+            }
+            true
+        }
+        Err(od_isa::long_decode::DecodeError::Invalid { .. }) => {
+            assert!(
+                matches!(
+                    exit(result),
+                    RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+                ),
+                "{code:02x?}: LOCK misuse is #UD: {result:?}"
+            );
+            assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+            assert!(unchanged, "{code:02x?}: #UD changes no state and no memory");
+            true
+        }
+        _ => false,
+    }
 }

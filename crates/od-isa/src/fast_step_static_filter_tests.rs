@@ -207,10 +207,12 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     }
     // S7-32: 385 more decodes (the system-form fallback of `decode`) and 80 more admitted, all
     // MOVNTI (`0F C3` with a memory destination), decoded as the plain `Mov` store it is for the
-    // model.
+    // model. S7-32 W2: 4 028 more decodes (the locked read-modify-write forms, `LockedRmw`, and
+    // the scalar MOVSD/MOVSS memory forms) and none admitted: the rule gives no class to a LOCK
+    // form or to these SSE operations, so the admitted set and its hash are unchanged.
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (126_788, 32_208, 881, 33_089)
+        (130_816, 32_208, 881, 33_089)
     );
     assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }

@@ -812,3 +812,56 @@ fn without_the_fp_member_the_set_keeps_refusing_every_sse_form() {
         assert_eq!(state, before, "{name}");
     }
 }
+
+/// S7-32 W2: MOVSD/MOVSS with any memory addressing in the CPL0 set (bootmgfw: `movsd 0x40(%rbx),
+/// %xmm0`). SDM Vol. 2B MOVSD/MOVSS: the load writes the low 64 (32) bits and zeroes the rest of
+/// the destination XMM register; the store writes exactly 8 (4) bytes; REX.W is ignored, REX.R
+/// selects XMM8..15. Expected values by hand from the memory and register patterns below.
+#[test]
+fn s7_32_scalar_sse_moves_take_any_addressing_in_the_set() {
+    let case = Case::new(false);
+    let mut data = [0u8; 0x40];
+    for (index, byte) in data.iter_mut().enumerate() {
+        *byte = 0x80 + index as u8;
+    }
+    let run = |code: &[u8]| {
+        let mut state = initial_state(&case);
+        let mut ram = initial_memory(code, &case);
+        ram.put(DATA, &data);
+        let cell = cell_for(&case);
+        let (exit, retired) = run_in_set(&mut state, &mut ram, &cell, 1);
+        assert_eq!(
+            (exit, retired),
+            (RunExit::InstructionBudgetExhausted, 1),
+            "{code:02x?}"
+        );
+        assert_eq!(state.rip, CODE + code.len() as u64, "{code:02x?}");
+        let xmm = cell.borrow().sse.xmm;
+        (xmm, ram.bytes[DATA as usize..DATA as usize + 0x40].to_vec())
+    };
+    // movsd 0x10(%rbx), %xmm2: bytes 0x90..0x97, upper half zero.
+    let (xmm, _) = run(&[0xf2, 0x0f, 0x10, 0x53, 0x10]);
+    assert_eq!(
+        xmm[2],
+        [
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+    );
+    // movss 0x4(%rbx), %xmm9 (REX.R): bytes 0x84..0x87, the rest zero.
+    let (xmm, _) = run(&[0xf3, 0x44, 0x0f, 0x10, 0x4b, 0x04]);
+    assert_eq!(
+        xmm[9],
+        [0x84, 0x85, 0x86, 0x87, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    // movsd %xmm1, 0x20(%rbx) with REX.W (ignored): eight bytes of xmm1 at DATA+0x20, nothing
+    // else changes.
+    let (_, memory) = run(&[0xf2, 0x48, 0x0f, 0x11, 0x4b, 0x20]);
+    let mut expected = data.to_vec();
+    expected[0x20..0x28].copy_from_slice(&xmm_pattern(1)[..8]);
+    assert_eq!(memory, expected);
+    // movss %xmm3, 0x30(%rbx): four bytes of xmm3.
+    let (_, memory) = run(&[0xf3, 0x0f, 0x11, 0x5b, 0x30]);
+    let mut expected = data.to_vec();
+    expected[0x30..0x34].copy_from_slice(&xmm_pattern(3)[..4]);
+    assert_eq!(memory, expected);
+}

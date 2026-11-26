@@ -712,27 +712,44 @@ fn movsd_rbp_and_rip_relative_forms_the_decoder_returns_run_in_the_set() {
     assert_eq!(observed.result, Result_::Retired);
     assert_eq!(after.sse.xmm[1][..8], memory[..8]);
     assert_eq!(after.sse.xmm[1][8..], [0u8; 8]);
-    // The other addressing forms of MOVSS/MOVSD memory operands are not decoded (the decoder keeps the measured
-    // encodings, shared with the plain step): the opcode byte is the refusal.
-    for (name, code, opcode) in [
+    // S7-32 W2: the other addressing forms of MOVSS/MOVSD memory operands decode through the scalar
+    // fallback and run in the set (SDM Vol. 2B MOVSD/MOVSS): a load takes the low 64 (32) bits and
+    // zeroes the rest of the register, a store writes 8 (4) bytes. RAX = RBX = DATA.
+    let memory = case.memory;
+    for (name, code, load) in [
         (
             "MOVSD xmm1,[rax+8]",
             &[0xf2u8, 0x0f, 0x10, 0x48, 0x08][..],
-            0x10,
+            Some(8),
         ),
-        ("MOVSD [rax+8],xmm1", &[0xf2, 0x0f, 0x11, 0x48, 0x08], 0x11),
+        ("MOVSD [rax+8],xmm1", &[0xf2, 0x0f, 0x11, 0x48, 0x08], None),
         (
-            "MOVSD [rip+0],xmm1",
-            &[0xf2, 0x0f, 0x11, 0x0d, 0, 0, 0, 0],
-            0x11,
+            "MOVSS xmm1,[rax+8]",
+            &[0xf3, 0x0f, 0x10, 0x48, 0x08],
+            Some(4),
         ),
-        ("MOVSS xmm1,[rax+8]", &[0xf3, 0x0f, 0x10, 0x48, 0x08], 0x10),
-        ("MOVSS [rax+8],xmm1", &[0xf3, 0x0f, 0x11, 0x48, 0x08], 0x11),
-        ("MOVSS xmm1,[rbx]", &[0xf3, 0x0f, 0x10, 0x0b], 0x10),
+        ("MOVSS [rax+8],xmm1", &[0xf3, 0x0f, 0x11, 0x48, 0x08], None),
+        ("MOVSS xmm1,[rbx]", &[0xf3, 0x0f, 0x10, 0x0b], Some(4)),
     ] {
         let (observed, before, after) = in_set(code, &case);
-        assert_eq!(observed.result, Result_::Unsupported(opcode), "{name}");
-        assert_eq!((after, observed.rip), (before, CODE), "{name}");
+        assert_eq!(observed.result, Result_::Retired, "{name}");
+        assert_eq!(observed.rip, CODE + code.len() as u64, "{name}");
+        let offset = if code[3] == 0x0b { 0 } else { 8 };
+        match load {
+            Some(width) => {
+                let mut expected = [0u8; 16];
+                expected[..width].copy_from_slice(&memory[offset..offset + width]);
+                assert_eq!(after.sse.xmm[1], expected, "{name}");
+            }
+            None => {
+                let width = if code[0] == 0xf2 { 8 } else { 4 };
+                assert_eq!(
+                    &observed.data[offset..offset + width],
+                    &before.sse.xmm[1][..width],
+                    "{name}"
+                );
+            }
+        }
     }
 }
 

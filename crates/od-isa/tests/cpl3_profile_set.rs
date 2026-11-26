@@ -969,6 +969,9 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         let before = state.clone();
         let mut memory = Memory::code(bytes);
         let result = run3(&mut state, &mut memory, &set, 8).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: *opcode },
@@ -4319,6 +4322,9 @@ fn cmpb_refusals_stop_as_unsupported_38_without_change() {
         let before = state.clone();
         let mut memory = DataMemory::new(bytes).with_user(DATA, 0xee);
         let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x38 },
@@ -4605,6 +4611,9 @@ fn ff_forms_outside_the_register_inc_r64_are_refused_without_change() {
         let before = state.clone();
         let mut memory = Memory::code(bytes);
         let result = run3(&mut state, &mut memory, &set, 4).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: *opcode },
@@ -5122,6 +5131,9 @@ fn cmpb_imm8_refusals_stop_as_unsupported_80_without_change() {
         let before = state.clone();
         let mut memory = DataMemory::new(bytes).with_user(DATA, 0xee);
         let result = run3_data(&mut state, &mut memory, 4).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x80 },
@@ -5393,6 +5405,9 @@ fn ff_forms_outside_the_register_dec_r32_are_refused_without_change() {
         let before = state.clone();
         let mut memory = Memory::code(bytes);
         let result = run3(&mut state, &mut memory, &set, 4).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: *opcode },
@@ -6003,6 +6018,9 @@ fn test_r8_with_a_prefix_or_a_neighbouring_opcode_stays_outside() {
         let before = state.clone();
         let mut memory = Memory::code(bytes);
         let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        if lock_misuse_is_ud(bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: *opcode },
@@ -6302,6 +6320,9 @@ fn cmp_r64_imm32_with_a_prefix_stays_refused() {
         let before = state.clone();
         let mut memory = Memory::code(&bytes);
         let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        if lock_misuse_is_ud(&bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x81 },
@@ -7063,6 +7084,9 @@ fn sub_r64_with_a_prefix_stays_refused() {
         let before = state.clone();
         let mut memory = Memory::code(&bytes);
         let result = run3(&mut state, &mut memory, &set, 1).unwrap();
+        if lock_misuse_is_ud(&bytes, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported { opcode: 0x29 },
@@ -10174,6 +10198,9 @@ fn cpl3_issue576_scalar_neighbors_keep_prefix_and_operand_limits() {
         let mut state = user_state();
         let mut memory = DataMemory::new(code);
         let result = run3_data(&mut state, &mut memory, 1).unwrap();
+        if lock_misuse_is_ud(code, &result) {
+            continue;
+        }
         assert_eq!(
             exit(&result),
             &RunExit::Unsupported {
@@ -11812,4 +11839,62 @@ fn cpl3_general_sse_forms_run_with_the_fp_member_and_the_mmx_moves_stay_refused(
             assert_eq!(state.rip, expected.rip + code.len() as u64, "{name}");
         }
     }
+}
+
+/// S7-32 W2: LOCK on a register destination or on a non-RMW instruction (CMP, TEST, ...) is #UD
+/// (SDM Vol. 2A "LOCK"); the decoder reports it as `DecodeError::Invalid`. A pinned "refused" case
+/// of that kind now ends in #UD with nothing executed: this checks that and returns `true`.
+fn lock_misuse_is_ud(code: &[u8], result: &Cpl0ProfileSetResult) -> bool {
+    struct Code<'a>(&'a [u8]);
+    impl GuestMemory for Code<'_> {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            self.0
+                .get(address as usize)
+                .copied()
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+        }
+        fn read(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            Ok(())
+        }
+    }
+    let context = AccessContext {
+        mode: InstructionMode::Long64,
+        privilege: PrivilegeLevel::Ring3,
+        origin: AccessOrigin::Explicit,
+    };
+    if !matches!(
+        od_isa::long_decode::decode(&mut Code(code), 0, context),
+        Err(od_isa::long_decode::DecodeError::Invalid { .. })
+    ) {
+        return false;
+    }
+    assert!(
+        matches!(
+            exit(result),
+            RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+        ),
+        "{code:02x?}: LOCK misuse is #UD: {result:?}"
+    );
+    assert_eq!(result.instructions_executed, 0, "{code:02x?}");
+    true
 }

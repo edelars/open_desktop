@@ -479,7 +479,8 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         {
             p(Role::Straight, F_CF, F_ALL & !F_CF, true)
         }
-        // `LockSubDwordImm8` is a CPL3-profile form the general CPL0 step refuses: not admitted.
+        // `LockSubDwordImm8` (executed by the general CPL0 step since S7-32 W2) is not admitted:
+        // the engine leaves it to the general step.
         Operation::LockAddMem { destination, .. }
         | Operation::LockSubMem { destination, .. }
         | Operation::LockAddMemReg { destination, .. }

@@ -3040,11 +3040,17 @@ fn lock_dword_xadd_stays_unsupported_in_the_paged_probe_profile() {
             &mut pio,
             context(InstructionMode::Long64, PrivilegeLevel::Ring0),
         );
-        assert_eq!(
-            result.exit,
-            PagedProbeExit::Unsupported { opcode: 0xc1 },
-            "{bytes:02x?}"
-        );
+        // S7-32 W2: LOCK with a register destination is #UD (SDM Vol. 2A "LOCK").
+        let expected = if bytes.last() == Some(&0xc3) {
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        } else {
+            PagedProbeExit::Unsupported { opcode: 0xc1 }
+        };
+        assert_eq!(result.exit, expected, "{bytes:02x?}");
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(cpu, before);
         assert_eq!((memory.reads, memory.writes), (0, 0));

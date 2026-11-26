@@ -7,8 +7,8 @@ use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::{CpuidProfile, CpuidResult};
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, ConditionCode, DecodeError,
-    FlagEffects, LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind,
-    Sse3PermuteKind, Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind,
+    FlagEffects, LockedRmwOp, LogicKind, MemoryOperand, OpcodeMap, Operand, Operation, Prefixes,
+    ShiftKind, Sse3PermuteKind, Sse3Source, Sse41FpKind, Sse41Kind, Sse41Operand, Sse128MoveKind,
     SseFpArithKind, SseFpMiscKind, SseFpShape, SseLogicPermuteKind, Ssse3IntKind, canonical,
     general_protection,
 };
@@ -51064,7 +51064,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         {
             true
         }
-        Operation::LockSubDwordImm8 { .. } => false,
+        // S7-32 W2: `F0 [REX] 83 /5 ib` on a dword is also a CPL0 form of the set (the Windows
+        // kernel's interlocked decrements); outside the set it stays refused.
+        Operation::LockSubDwordImm8 { .. } => {
+            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
         // S4-38L7i: the same holds for the FS/GS-based qword loads.
@@ -51165,8 +51169,16 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S4-38L7n/S4-38L7t: and for LOCK BTS/BTR m64, r64.
         | Operation::LockBitMem { .. }
         // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
-        | Operation::LockBitMemImm { .. } => {
+        | Operation::LockBitMemImm { .. }
+        => {
             control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
+        // S7-32 W2: the locked read-modify-write forms at every width; a non-RMW kind (CMP, TEST,
+        // BT) never decodes here and is refused if one is built by hand.
+        Operation::LockedRmw { op, .. } => {
+            op.is_lockable()
+                && control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
         // selector is known to the model (CS/SS selectors are optional state).
@@ -66095,6 +66107,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::LockLogicMemReg { .. }
         | Operation::LockBitMem { .. }
         | Operation::LockBitMemImm { .. }
+        | Operation::LockedRmw { .. }
         | Operation::MovSregStore { .. }
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
@@ -78141,6 +78154,128 @@ fn transfer(
             })?;
             state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
         }
+        Operation::LockedRmw { op, .. } if !op.is_lockable() => {
+            // The admission refuses these; a hand-built one is a backend error, never a panic inside
+            // the atomic update.
+            debug_assert!(false, "a LockedRmw of a non-RMW kind reached transfer: {op:?}");
+            return Err(MemoryError::Backend(format!(
+                "LockedRmw of a non-RMW kind {op:?}"
+            )));
+        }
+        Operation::LockedRmw { op, destination } => {
+            // S7-32 W2: one `atomic_rmw_integer` call of the operand width (S6-20: the atomicity of
+            // LOCK forms is defined by the GuestMemory contract). Every register source is read and
+            // the address (non-canonical start or last byte is #GP(0), RSP/RBP bases #SS(0)) is
+            // resolved from the pre-instruction state before any access; the destination is
+            // written back on every branch (a read-only page faults even when the value would not
+            // change); registers and flags commit only after that call succeeded, so a fault leaves
+            // memory, registers and flags unchanged. The update closure is a pure function of the
+            // old value; the flags come from the old value the update replaced.
+            let size = destination.size;
+            let rflags = state.rflags;
+            let read_source = |state: &LongModeState, source: Operand| match source {
+                Operand::Register(view) => state.read(view),
+                Operand::Immediate(value) => value,
+                Operand::Memory(_) => unreachable!("a locked form has no memory source"),
+            };
+            match op {
+                LockedRmwOp::Arithmetic { kind, source } => {
+                    let operand = read_source(state, source);
+                    let address = destination.access_address_48(state, next_rip)?;
+                    let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                        arithmetic_result(size, kind, old, operand, rflags).0
+                    })?;
+                    state.rflags = arithmetic_result(size, kind, old, operand, rflags).1;
+                }
+                LockedRmwOp::Logic { kind, source } => {
+                    let operand = read_source(state, source);
+                    let address = destination.access_address_48(state, next_rip)?;
+                    let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                        logic_result(size, kind, old, operand, rflags).0
+                    })?;
+                    // NOT leaves the flags as they are (`logic_result` returns them unchanged).
+                    state.rflags = logic_result(size, kind, old, operand, rflags).1;
+                }
+                LockedRmwOp::Xadd { register } => {
+                    // SDM XADD: TEMP = SRC + DEST; SRC = DEST; DEST = TEMP; flags of the ADD.
+                    let addend = state.read(register);
+                    let address = destination.access_address_48(state, next_rip)?;
+                    let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                        arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags).0
+                    })?;
+                    let (_, flags) =
+                        arithmetic_result(size, ArithmeticKind::Add, old, addend, rflags);
+                    state.write(register, old);
+                    state.rflags = flags;
+                }
+                LockedRmwOp::Cmpxchg { register } => {
+                    // SDM CMPXCHG: the accumulator of the operand width (AL, AX, EAX, RAX) is
+                    // compared with the destination; equal: DEST = SRC, else the accumulator
+                    // takes DEST and DEST is written back unchanged; the flags are those of
+                    // CMP accumulator, DEST.
+                    let accumulator = RegisterView::low(Register::Rax, size);
+                    let expected = state.read(accumulator);
+                    let replacement = state.read(register);
+                    let address = destination.access_address_48(state, next_rip)?;
+                    let observed = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                        if old == expected { replacement } else { old }
+                    })?;
+                    let (_, flags) =
+                        arithmetic_result(size, ArithmeticKind::Cmp, expected, observed, rflags);
+                    if observed != expected {
+                        state.write(accumulator, observed);
+                    }
+                    state.rflags = flags;
+                }
+                LockedRmwOp::Xchg { register } => {
+                    // SDM XCHG: memory takes the register, the register takes the old value; no
+                    // flag is affected.
+                    let value = state.read(register);
+                    let address = destination.access_address_48(state, next_rip)?;
+                    let old = memory.atomic_rmw_integer(address, context, size, &mut |_| value)?;
+                    state.write(register, old);
+                }
+                LockedRmwOp::Bit { kind, offset } => {
+                    // SDM BTS/BTR/BTC with a memory operand: a register offset is a signed bit
+                    // index of the operand width into the bit string that starts at the operand
+                    // (an arithmetic shift selects the element, so a negative offset reaches the
+                    // preceding elements); an immediate is taken modulo the operand width and
+                    // selects a bit of the operand itself. CF is the old bit; OF/SF/AF/PF are
+                    // undefined and kept, ZF is not affected.
+                    let width = size.bytes() as i64 * 8;
+                    let (element, bit) = match offset {
+                        BitOffset::Register(view) => {
+                            let raw = state.read(view);
+                            let signed = match size {
+                                OperandSize::Word => raw as u16 as i16 as i64,
+                                OperandSize::Dword => raw as u32 as i32 as i64,
+                                _ => raw as i64,
+                            };
+                            let mut element = destination;
+                            element.displacement = element.displacement.wrapping_add(
+                                signed.div_euclid(width).wrapping_mul(width / 8),
+                            );
+                            (element, signed.rem_euclid(width) as u32)
+                        }
+                        BitOffset::Immediate(value) => {
+                            (destination, u32::from(value) % width as u32)
+                        }
+                    };
+                    let address = element.access_address_48(state, next_rip)?;
+                    let mask = 1u64 << bit;
+                    let old = memory.atomic_rmw_integer(address, context, size, &mut |old| {
+                        match kind {
+                            BitKind::Set => old | mask,
+                            BitKind::Reset => old & !mask,
+                            BitKind::Complement => old ^ mask,
+                            // Refused above (`is_lockable`); the update stays a total function.
+                            BitKind::Test => old,
+                        }
+                    })?;
+                    state.rflags = (state.rflags & !crate::CF) | u64::from(old & mask != 0);
+                }
+            }
+        }
         Operation::MovFsStore { dst, src } => {
             // Validate the whole access before the store (SDM Vol.3 3.4.4: the FS base replaces
             // the zero base; a non-canonical result is #GP(0)).
@@ -85494,10 +85629,23 @@ mod tests {
             let before_ram = memory.bytes.clone();
             state.gpr[3] = 0x1000;
             let before = state.clone();
-            assert!(matches!(
-                step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { .. })
-            ));
+            let outcome = step(&mut state, &mut memory, AccessContext::default());
+            // S7-32 W2: LOCK with a register destination is #UD (SDM Vol. 2A "LOCK"); the memory
+            // forms are the locked RMW of the CPL0 set, which the bare run refuses.
+            if code[0] == 0xf0 {
+                assert!(
+                    matches!(
+                        outcome,
+                        Ok(StepOutcome::Fault(ArchitecturalFault { vector: 6, .. }))
+                    ),
+                    "{code:02x?}: {outcome:?}"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Ok(StepOutcome::Unsupported { .. })),
+                    "{code:02x?}: {outcome:?}"
+                );
+            }
             assert_eq!(state, before);
             assert_eq!(memory.bytes, before_ram);
             assert!(memory.accesses.is_empty());
@@ -169435,6 +169583,8 @@ mod tests {
             &[0x42, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x67, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x2e, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
+            // S7-32 W2: MOVSS with any memory addressing decodes (the scalar fallback).
+            &[0xf3, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
         ] {
             let mut memory = Memory::at(code, 0x2000);
             let mut state = LongModeState::default();
@@ -169453,10 +169603,9 @@ mod tests {
             assert_eq!(state, before, "{code:02x?}");
         }
 
-        for code in [
-            &[0xf2, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..],
-            &[0xf3, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
-        ] {
+        // MOVSD outside the `[RAX]` form decodes since S7-32 W2, but the bare run keeps its own
+        // admission (the original `[RAX]` encoding only); MOVSS has no such rule (above).
+        for code in [&[0xf2, 0x0f, 0x11, 0x05, 0, 0, 0, 0][..]] {
             let mut memory = Memory::at(code, 0x2000);
             let mut state = LongModeState::default();
             state.rip = 0x2000;
@@ -169895,13 +170044,78 @@ mod tests {
             assert!(stopped_memory.accesses.is_empty());
         }
 
+        // S7-32 W2: the scalar fallback decodes every memory addressing of MOVSS (REX.B/X/W,
+        // other bases, SIB, displacements), and the bare run executes them like the `[RAX]` form
+        // (SDM Vol. 2B MOVSS: the store writes the low dword of the source, nothing else). The
+        // data window of this mock is `[0x1000, 0x1020)`; each case sets the base so that the
+        // store lands in it.
+        for (decoded_code, setup, address) in [
+            // REX.B: [r8].
+            (
+                &[0xf3, 0x41, 0x0f, 0x11, 0x00][..],
+                (Register::R8, 0x1004),
+                0x1004,
+            ),
+            // REX.X without a SIB byte is ignored: [rax].
+            (
+                &[0xf3, 0x42, 0x0f, 0x11, 0x00][..],
+                (Register::Rax, 0x1001),
+                0x1001,
+            ),
+            // REX.W is ignored: [rax].
+            (
+                &[0xf3, 0x48, 0x0f, 0x11, 0x00][..],
+                (Register::Rax, 0x1001),
+                0x1001,
+            ),
+            // [rcx].
+            (
+                &[0xf3, 0x0f, 0x11, 0x01][..],
+                (Register::Rcx, 0x1008),
+                0x1008,
+            ),
+            // SIB [rax+rax*1].
+            (
+                &[0xf3, 0x0f, 0x11, 0x04, 0x00][..],
+                (Register::Rax, 0x0806),
+                0x100c,
+            ),
+            // [rax+disp8 0].
+            (
+                &[0xf3, 0x0f, 0x11, 0x40, 0x00][..],
+                (Register::Rax, 0x1010),
+                0x1010,
+            ),
+        ] {
+            let mut decoded_memory = Memory::at(decoded_code, 0x2000);
+            let before_bytes = decoded_memory.bytes.clone();
+            let mut decoded_state = before.clone();
+            decoded_state.gpr[setup.0 as usize] = setup.1;
+            let expected_gpr = decoded_state.gpr;
+            assert_eq!(
+                step(
+                    &mut decoded_state,
+                    &mut decoded_memory,
+                    AccessContext::default()
+                ),
+                Ok(StepOutcome::Advanced),
+                "{decoded_code:02x?}"
+            );
+            assert_eq!(decoded_state.rip, 0x2000 + decoded_code.len() as u64);
+            assert_eq!(decoded_state.gpr, expected_gpr, "{decoded_code:02x?}");
+            assert_eq!(decoded_state.sse, before.sse, "{decoded_code:02x?}");
+            let at = (address - 0x1000) as usize;
+            let xmm0 = &before.sse.as_ref().unwrap().xmm[0];
+            let mut expected = before_bytes.clone();
+            expected[at..at + 4].copy_from_slice(&xmm0[..4]);
+            assert_eq!(decoded_memory.bytes, expected, "{decoded_code:02x?}");
+            assert_eq!(
+                decoded_memory.accesses,
+                [(AccessKind::Write, address, 4)],
+                "{decoded_code:02x?}"
+            );
+        }
         for bad_code in [
-            &[0xf3, 0x41, 0x0f, 0x11, 0x00][..], // REX.B
-            &[0xf3, 0x42, 0x0f, 0x11, 0x00][..], // REX.X
-            &[0xf3, 0x48, 0x0f, 0x11, 0x00][..], // REX.W
-            &[0xf3, 0x0f, 0x11, 0x01][..],
-            &[0xf3, 0x0f, 0x11, 0x04, 0x00][..],
-            &[0xf3, 0x0f, 0x11, 0x40, 0x00][..],
             &[0x66, 0xf3, 0x0f, 0x11, 0x00][..],
             &[0xf3, 0x40, 0x41, 0x0f, 0x11, 0x00][..],
         ] {
@@ -183999,7 +184213,19 @@ mod paged_mov_profile_tests {
                 crate::INTEGER_FLAGS & !(1 << 7),
             )
             .unwrap();
-            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc1 });
+            // S7-32 W2: LOCK with a register destination is #UD (SDM Vol. 2A "LOCK").
+            if code.last() == Some(&0xd3) {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None,
+                    })
+                );
+            } else {
+                assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc1 });
+            }
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

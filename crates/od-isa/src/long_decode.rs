@@ -904,6 +904,53 @@ pub enum BitOffset {
     Immediate(u8),
 }
 
+/// S7-32 (ISA batch W2): what a [`Operation::LockedRmw`] does to its memory operand. Every kind is
+/// one atomic read-modify-write of the destination (`GuestMemory::atomic_rmw_integer`); the flags
+/// are computed from the old value the atomic update replaced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockedRmwOp {
+    /// ADD, ADC, SUB, SBB with a register or immediate `source`; INC, DEC and NEG with
+    /// `Operand::Immediate(0)` (the source is not used). CMP is never locked (#UD).
+    Arithmetic {
+        kind: ArithmeticKind,
+        source: Operand,
+    },
+    /// AND, OR, XOR with a register or immediate `source`; NOT with `Operand::Immediate(0)`.
+    /// TEST is never locked (#UD).
+    Logic { kind: LogicKind, source: Operand },
+    /// XADD: the sum goes to memory, the old value to `register`.
+    Xadd { register: RegisterView },
+    /// CMPXCHG with the accumulator of the operand width; the destination is written on both
+    /// branches.
+    Cmpxchg { register: RegisterView },
+    /// XCHG: memory takes `register`, `register` takes the old value (always locked).
+    Xchg { register: RegisterView },
+    /// BTS, BTR, BTC (`kind` Set, Reset, Complement; BT is never locked). A register offset is a
+    /// signed bit index into the bit string that starts at the operand (it may select another
+    /// element of the operand width); an immediate offset is taken modulo the operand width.
+    Bit { kind: BitKind, offset: BitOffset },
+}
+
+impl LockedRmwOp {
+    /// Whether the kind is a read-modify-write that LOCK admits (SDM Vol. 2A "LOCK"): not CMP,
+    /// TEST or BT. The decoder never builds the others; the executor refuses them explicitly.
+    pub const fn is_lockable(self) -> bool {
+        !matches!(
+            self,
+            Self::Arithmetic {
+                kind: ArithmeticKind::Cmp,
+                ..
+            } | Self::Logic {
+                kind: LogicKind::Test,
+                ..
+            } | Self::Bit {
+                kind: BitKind::Test,
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BitScanKind {
     Forward,
@@ -1903,6 +1950,20 @@ pub enum Operation {
         kind: BitKind,
         destination: MemoryOperand,
         bit: u8,
+    },
+    /// S7-32 (ISA batch W2): a locked read-modify-write of memory at any operand width (8, 16, 32,
+    /// 64 bits): the LOCK forms of ADD, OR, ADC, SBB, AND, SUB, XOR (register or immediate source),
+    /// NOT, NEG, INC, DEC, BTS, BTR, BTC, XADD and CMPXCHG, and XCHG with memory (always locked),
+    /// that the profile decoder does not claim; XADD and CMPXCHG with memory and without LOCK
+    /// decode here too (a locked result is a valid refinement of the unlocked one, as for
+    /// `XaddMemory`). `destination.size` is the operand width. Decoded only by the fallback
+    /// `decode_s7_32_locked`; executed only in the CPL0 set at CPL0, through one
+    /// `GuestMemory::atomic_rmw_integer` call. The lock is implied by the operation: the LOCK byte
+    /// is not recorded in `Instruction::prefixes` (`group1` holds only an XACQUIRE/XRELEASE hint),
+    /// so an admission rule (CPL3, the turbo engine) must not look for `group1 == Some(0xf0)`.
+    LockedRmw {
+        op: LockedRmwOp,
+        destination: MemoryOperand,
     },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
@@ -3854,6 +3915,35 @@ impl Instruction {
             Operation::Cmps { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
+            },
+            // S7-32 W2: the locked forms define the flags of their plain counterparts.
+            Operation::LockedRmw { op, .. } => match op {
+                LockedRmwOp::Arithmetic {
+                    kind: ArithmeticKind::Inc | ArithmeticKind::Dec,
+                    ..
+                } => FlagEffects {
+                    defined: crate::ARITHMETIC_FLAGS & !crate::CF,
+                    undefined: 0,
+                },
+                LockedRmwOp::Arithmetic { .. }
+                | LockedRmwOp::Xadd { .. }
+                | LockedRmwOp::Cmpxchg { .. } => FlagEffects {
+                    defined: crate::ARITHMETIC_FLAGS,
+                    undefined: 0,
+                },
+                LockedRmwOp::Logic {
+                    kind: LogicKind::Not,
+                    ..
+                }
+                | LockedRmwOp::Xchg { .. } => FlagEffects::default(),
+                LockedRmwOp::Logic { .. } => FlagEffects {
+                    defined: crate::ARITHMETIC_FLAGS & !crate::AF,
+                    undefined: crate::AF,
+                },
+                LockedRmwOp::Bit { .. } => FlagEffects {
+                    defined: crate::CF,
+                    undefined: crate::PF | crate::AF | crate::SF | crate::OF,
+                },
             },
             Operation::Logic {
                 kind: LogicKind::Not,
@@ -13826,6 +13916,332 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }
     }
 
+    /// S7-32 (ISA batch W2): the locked read-modify-write forms at every operand width, tried by
+    /// [`decode`] only after the profile decoder refused the instruction (the narrow LOCK forms it
+    /// owns keep their `Lock*` operations). Decodes, with a memory destination: LOCK ADD/OR/ADC/SBB/
+    /// AND/SUB/XOR m, r (`00..=31`, the `x0`/`x1` opcodes) and m, imm (`80`, `81`, `83` /0../6);
+    /// LOCK NOT/NEG (`F6`/`F7` /2, /3); LOCK INC/DEC (`FE`/`FF` /0, /1); LOCK BTS/BTR/BTC m, r
+    /// (`0F AB`/`B3`/`BB`) and m, imm8 (`0F BA` /5../7); [LOCK] XADD (`0F C0`/`C1`) and [LOCK]
+    /// CMPXCHG (`0F B0`/`B1`); [LOCK] XCHG (`86`/`87`, always locked). Operand size: byte opcodes 8,
+    /// `66` 16, REX.W 64, else 32 (BTS/BTR/BTC have no byte form). Null segment prefixes are ignored;
+    /// `F2`/`F3` are accepted only as the XACQUIRE/XRELEASE hints of a locked form (no HLE: they have
+    /// no effect). LOCK with a register destination, with CMP, TEST, BT or another non-RMW member of
+    /// these opcodes (and LOCK TEST `84`/`85`, LOCK BT `0F A3`) is #UD (`DecodeError::Invalid`, SDM
+    /// Vol. 2A "LOCK"). Refused (`Ok(None)`): FS/GS
+    /// overrides (no segment base in this operand model), `67`, repeated prefixes, and every form
+    /// without LOCK other than XCHG/XADD/CMPXCHG with memory (the profile decoder owns those).
+    fn decode_s7_32_locked(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if matches!(prefixes.segment, Some(0x64 | 0x65)) || prefixes.address_override {
+            return Ok(None);
+        }
+        let (map, byte) = if first == 0x0f {
+            (OpcodeMap::Escape0f, self.byte()?)
+        } else {
+            (OpcodeMap::Primary, first)
+        };
+        let opcode = Opcode { map, byte };
+        let invalid = |length: u8| DecodeError::Invalid { opcode, length };
+        let modrm = self.byte()?;
+        let reg = (modrm >> 3) & 7;
+        let rex = prefixes.rex.unwrap_or(0);
+        let wide_size = if rex & 8 != 0 {
+            OperandSize::Qword
+        } else if prefixes.operand_override {
+            OperandSize::Word
+        } else {
+            OperandSize::Dword
+        };
+        let register_of =
+            |size: OperandSize| view(reg | ((rex & 4) << 1), size, prefixes.rex.is_some());
+        // What the form is: its operand size, whether LOCK is architecturally allowed with it, and
+        // the immediate it carries (`None`: a register source; the immediate is read after the
+        // memory operand).
+        #[derive(Clone, Copy)]
+        enum Form {
+            Arithmetic(ArithmeticKind),
+            Logic(LogicKind),
+            Unary(ArithmeticKind),
+            Not,
+            Xadd,
+            Cmpxchg,
+            Xchg,
+            Bit(BitKind),
+        }
+        let alu = |op: u8| match op {
+            0 => Some(Form::Arithmetic(ArithmeticKind::Add)),
+            1 => Some(Form::Logic(LogicKind::Or)),
+            2 => Some(Form::Arithmetic(ArithmeticKind::Adc)),
+            3 => Some(Form::Arithmetic(ArithmeticKind::Sbb)),
+            4 => Some(Form::Logic(LogicKind::And)),
+            5 => Some(Form::Arithmetic(ArithmeticKind::Sub)),
+            6 => Some(Form::Logic(LogicKind::Xor)),
+            _ => None,
+        };
+        // (form or None for a LOCK-invalid member, size, immediate width)
+        let (form, size, immediate) = match (map, byte) {
+            (OpcodeMap::Primary, 0x00..=0x3f) if byte & 7 <= 1 => (
+                alu(byte >> 3),
+                if byte & 1 == 0 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            (OpcodeMap::Primary, 0x80) => (alu(reg), OperandSize::Byte, Some(OperandSize::Byte)),
+            (OpcodeMap::Primary, 0x81) => (
+                alu(reg),
+                wide_size,
+                Some(if wide_size == OperandSize::Word {
+                    OperandSize::Word
+                } else {
+                    OperandSize::Dword
+                }),
+            ),
+            (OpcodeMap::Primary, 0x83) => (alu(reg), wide_size, Some(OperandSize::Byte)),
+            (OpcodeMap::Primary, 0xf6 | 0xf7) => (
+                match reg {
+                    2 => Some(Form::Not),
+                    3 => Some(Form::Unary(ArithmeticKind::Neg)),
+                    _ => None,
+                },
+                if byte == 0xf6 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            (OpcodeMap::Primary, 0xfe | 0xff) => (
+                match reg {
+                    0 => Some(Form::Unary(ArithmeticKind::Inc)),
+                    1 => Some(Form::Unary(ArithmeticKind::Dec)),
+                    _ => None,
+                },
+                if byte == 0xfe {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            // TEST r/m, r is not an RMW: LOCK TEST is #UD, the unlocked form is the profile's.
+            (OpcodeMap::Primary, 0x84 | 0x85) => (
+                None,
+                if byte == 0x84 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            (OpcodeMap::Primary, 0x86 | 0x87) => (
+                Some(Form::Xchg),
+                if byte == 0x86 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            (OpcodeMap::Escape0f, 0xb0 | 0xb1) => (
+                Some(Form::Cmpxchg),
+                if byte == 0xb0 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            (OpcodeMap::Escape0f, 0xc0 | 0xc1) => (
+                Some(Form::Xadd),
+                if byte == 0xc0 {
+                    OperandSize::Byte
+                } else {
+                    wide_size
+                },
+                None,
+            ),
+            // BT m, r is not an RMW: LOCK BT is #UD.
+            (OpcodeMap::Escape0f, 0xa3) => (None, wide_size, None),
+            (OpcodeMap::Escape0f, 0xab) => (Some(Form::Bit(BitKind::Set)), wide_size, None),
+            (OpcodeMap::Escape0f, 0xb3) => (Some(Form::Bit(BitKind::Reset)), wide_size, None),
+            (OpcodeMap::Escape0f, 0xbb) => (Some(Form::Bit(BitKind::Complement)), wide_size, None),
+            (OpcodeMap::Escape0f, 0xba) => (
+                match reg {
+                    5 => Some(Form::Bit(BitKind::Set)),
+                    6 => Some(Form::Bit(BitKind::Reset)),
+                    7 => Some(Form::Bit(BitKind::Complement)),
+                    _ => None,
+                },
+                wide_size,
+                Some(OperandSize::Byte),
+            ),
+            _ => return Ok(None),
+        };
+        let always_locked = matches!(form, Some(Form::Xchg));
+        let unlocked_memory_form = matches!(form, Some(Form::Xadd | Form::Cmpxchg | Form::Xchg));
+        if !locked && !unlocked_memory_form {
+            return Ok(None);
+        }
+        // XACQUIRE/XRELEASE only with LOCK (or with XCHG, which is locked without the prefix).
+        if prefixes.group1.is_some() && !(locked || always_locked) {
+            return Ok(None);
+        }
+        if modrm >> 6 == 3 {
+            // LOCK with a register destination is #UD; the unlocked register forms belong to the
+            // profile decoder.
+            return if locked {
+                Err(invalid(self.length))
+            } else {
+                Ok(None)
+            };
+        }
+        let Some(form) = form else {
+            // CMP, TEST, BT, MUL, CALL, ... with LOCK.
+            return if locked {
+                Err(invalid(self.length))
+            } else {
+                Ok(None)
+            };
+        };
+        let Operand::Memory(destination) = self.rm_operand(modrm, prefixes, size)? else {
+            unreachable!("mod != 11 gives a memory operand")
+        };
+        let source = match immediate {
+            Some(width) => {
+                let raw = self.immediate(width)?;
+                let extended = match width {
+                    OperandSize::Byte => raw as u8 as i8 as i64 as u64,
+                    OperandSize::Word => raw as u16 as i16 as i64 as u64,
+                    _ => raw as u32 as i32 as i64 as u64,
+                };
+                Operand::Immediate(extended & size.mask())
+            }
+            None => Operand::Register(register_of(size)),
+        };
+        let register = || match source {
+            Operand::Register(view) => view,
+            _ => unreachable!("the register forms have a register source"),
+        };
+        let op = match form {
+            Form::Arithmetic(kind) => LockedRmwOp::Arithmetic { kind, source },
+            Form::Logic(kind) => LockedRmwOp::Logic { kind, source },
+            Form::Unary(kind) => LockedRmwOp::Arithmetic {
+                kind,
+                source: Operand::Immediate(0),
+            },
+            Form::Not => LockedRmwOp::Logic {
+                kind: LogicKind::Not,
+                source: Operand::Immediate(0),
+            },
+            Form::Xadd => LockedRmwOp::Xadd {
+                register: register(),
+            },
+            Form::Cmpxchg => LockedRmwOp::Cmpxchg {
+                register: register(),
+            },
+            Form::Xchg => LockedRmwOp::Xchg {
+                register: register(),
+            },
+            Form::Bit(kind) => LockedRmwOp::Bit {
+                kind,
+                offset: match source {
+                    Operand::Immediate(bit) => BitOffset::Immediate(bit as u8),
+                    Operand::Register(view) => BitOffset::Register(view),
+                    Operand::Memory(_) => unreachable!("no memory source"),
+                },
+            },
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: size,
+            address_size: OperandSize::Qword,
+            operation: Operation::LockedRmw { op, destination },
+        }))
+    }
+
+    /// S7-32 (ISA batch W2): MOVSD xmm, m64 / MOVSD m64, xmm (`F2 0F 10/11`) and MOVSS xmm, m32 /
+    /// MOVSS m32, xmm (`F3 0F 10/11`) with any memory addressing (base, index, scale, displacement,
+    /// RIP-relative; REX.R/X/B select registers, REX.W is ignored, SDM Vol. 2B MOVSD/MOVSS), tried by
+    /// [`decode`] only after the profile decoder (which owns its narrow `[RAX]`/`[RBP-24]`/RIP forms
+    /// and the register forms) and the 128-bit move fallback refused. LOCK is #UD (memory and register
+    /// forms). Refused (`Ok(None)`): register forms without LOCK, `66`, `67`, FS/GS overrides and
+    /// repeated prefixes.
+    fn decode_scalar_sse_memory_move(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if first != 0x0f
+            || prefixes.operand_override
+            || prefixes.address_override
+            || matches!(prefixes.segment, Some(0x64 | 0x65))
+        {
+            return Ok(None);
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        let double = match (opcode.byte, prefixes.group1) {
+            (0x10 | 0x11, Some(0xf2)) => true,
+            (0x10 | 0x11, Some(0xf3)) => false,
+            _ => return Ok(None),
+        };
+        let modrm = self.byte()?;
+        // LOCK is #UD with the register forms too (the profile decoder owns their unlocked forms).
+        if locked {
+            return Err(DecodeError::Invalid {
+                opcode,
+                length: self.length,
+            });
+        }
+        if modrm >> 6 == 3 {
+            return Ok(None);
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let xmm = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+        let size = if double {
+            OperandSize::Qword
+        } else {
+            OperandSize::Dword
+        };
+        let Operand::Memory(memory) = self.rm_operand(modrm, prefixes, size)? else {
+            unreachable!("mod != 11 gives a memory operand")
+        };
+        let operation = match (double, opcode.byte) {
+            (true, 0x10) => Operation::MovsdLoadMemory {
+                destination: xmm,
+                source: memory,
+            },
+            (true, _) => Operation::MovsdStoreMemory {
+                destination: memory,
+                source: xmm,
+            },
+            (false, 0x10) => Operation::MovssLoadMemory {
+                destination: xmm,
+                source: memory,
+            },
+            (false, _) => Operation::MovssStoreMemory {
+                destination: memory,
+                source: xmm,
+            },
+        };
+        Ok(Some(Instruction {
+            length: self.length,
+            opcode,
+            prefixes,
+            operand_size: size,
+            address_size: OperandSize::Qword,
+            operation,
+        }))
+    }
+
     fn decode_popcnt_crc32(&mut self) -> Result<Option<Instruction>, DecodeError> {
         let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
             return Ok(None);
@@ -14447,7 +14863,27 @@ fn decode_uncached(
             .decode_sse128_memory_move(),
             other => other,
         },
-        (OpcodeMap::Escape0f, 0x10 | 0x11 | 0x28 | 0x29) => fetch.decode_sse128_memory_move(),
+        (OpcodeMap::Escape0f, 0x10 | 0x11) => match fetch.decode_sse128_memory_move() {
+            // S7-32 W2: the scalar MOVSD/MOVSS memory forms after the 128-bit moves.
+            Ok(None) => Fetch {
+                memory: &mut *fetch.memory,
+                start: rip,
+                length: 0,
+                context,
+            }
+            .decode_scalar_sse_memory_move(),
+            other => other,
+        },
+        (OpcodeMap::Escape0f, 0x28 | 0x29) => fetch.decode_sse128_memory_move(),
+        // S7-32 W2: the locked read-modify-write forms at every width.
+        (OpcodeMap::Primary, 0x00..=0x3f) if opcode.byte & 7 <= 1 => fetch.decode_s7_32_locked(),
+        (
+            OpcodeMap::Primary,
+            0x80 | 0x81 | 0x83 | 0x84 | 0x85 | 0x86 | 0x87 | 0xf6 | 0xf7 | 0xfe | 0xff,
+        )
+        | (OpcodeMap::Escape0f, 0xa3 | 0xab | 0xb0 | 0xb1 | 0xb3 | 0xba | 0xbb | 0xc0 | 0xc1) => {
+            fetch.decode_s7_32_locked()
+        }
         // S2-39 (MMX): the rest of the no-prefix MMX forms.
         (OpcodeMap::Escape0f, byte)
             if MmxIntKind::from_opcode(byte).is_some()
@@ -38650,5 +39086,228 @@ mod tests {
             general(&[0xf3, 0x48, 0x0f, 0x1e, 0xc8]).unwrap().operation,
             Operation::RdsspqRax
         );
+    }
+
+    /// S7-32 W2: the locked read-modify-write forms at every width and the scalar SSE memory moves
+    /// with any addressing decode through the fallbacks; LOCK on a register destination or a
+    /// non-RMW member is #UD; FS/GS and the unlocked ALU forms stay with their owners.
+    #[test]
+    fn s7_32_w2_locked_and_scalar_sse_forms_decode_through_the_fallback() {
+        let general = |bytes: &[u8]| Memory::new(bytes).decode_general();
+        let locked = |bytes: &[u8]| match general(bytes) {
+            Ok(Instruction {
+                operation: Operation::LockedRmw { op, destination },
+                length,
+                ..
+            }) => (op, destination, length),
+            other => panic!("{bytes:02x?}: {other:?}"),
+        };
+        let reg = |register, size| RegisterView::low(register, size);
+        // lock or [rsp], ebx (the MSVC barrier): F0 09 1C 24.
+        let (op, destination, length) = locked(&[0xf0, 0x09, 0x1c, 0x24]);
+        assert_eq!(length, 4);
+        assert_eq!(destination.size, OperandSize::Dword);
+        assert_eq!(destination.base, AddressBase::Register(Register::Rsp));
+        assert_eq!(
+            op,
+            LockedRmwOp::Logic {
+                kind: LogicKind::Or,
+                source: Operand::Register(reg(Register::Rbx, OperandSize::Dword)),
+            }
+        );
+        // lock and dword [rbx+0x20c], 0xfffffbff: F0 81 A3 0C 02 00 00 FF FB FF FF.
+        let (op, destination, length) = locked(&[
+            0xf0, 0x81, 0xa3, 0x0c, 0x02, 0x00, 0x00, 0xff, 0xfb, 0xff, 0xff,
+        ]);
+        assert_eq!(length, 11);
+        assert_eq!(destination.displacement, 0x20c);
+        assert_eq!(
+            op,
+            LockedRmwOp::Logic {
+                kind: LogicKind::And,
+                source: Operand::Immediate(0xffff_fbff),
+            }
+        );
+        // lock and dword [rbx+0x20c], -17 (83 /4 ib, sign-extended to the dword width).
+        let (op, _, _) = locked(&[0xf0, 0x83, 0xa3, 0x0c, 0x02, 0x00, 0x00, 0xef]);
+        assert_eq!(
+            op,
+            LockedRmwOp::Logic {
+                kind: LogicKind::And,
+                source: Operand::Immediate(0xffff_ffef),
+            }
+        );
+        // 66 lock add word [r8+0x270], r8w: 66 F0 45 01 80 70 02 00 00 (REX.RB).
+        let (op, destination, _) = locked(&[0x66, 0xf0, 0x45, 0x01, 0x80, 0x70, 0x02, 0x00, 0x00]);
+        assert_eq!(destination.size, OperandSize::Word);
+        assert_eq!(destination.base, AddressBase::Register(Register::R8));
+        assert_eq!(
+            op,
+            LockedRmwOp::Arithmetic {
+                kind: ArithmeticKind::Add,
+                source: Operand::Register(reg(Register::R8, OperandSize::Word)),
+            }
+        );
+        // lock cmpxchg [rsi+0x58], bpl: F0 40 0F B0 6E 58 (REX makes 5 = BPL, not CH).
+        let (op, destination, _) = locked(&[0xf0, 0x40, 0x0f, 0xb0, 0x6e, 0x58]);
+        assert_eq!(destination.size, OperandSize::Byte);
+        let Operand::Register(bpl) = Operand::Register(view(5, OperandSize::Byte, true)) else {
+            unreachable!()
+        };
+        assert_eq!(op, LockedRmwOp::Cmpxchg { register: bpl });
+        // Without REX the byte register 5 is CH: lock xadd [rax], ch (F0 0F C0 28).
+        let (op, _, _) = locked(&[0xf0, 0x0f, 0xc0, 0x28]);
+        assert_eq!(
+            op,
+            LockedRmwOp::Xadd {
+                register: view(5, OperandSize::Byte, false)
+            }
+        );
+        // 66 lock cmpxchg [rbx+0x32], cx; 66 lock xadd [rbx+0x30], ax; xchg [rbx+0x58], bpl
+        // (86 without LOCK is locked); 66 xchg [rsi+0xa], dx.
+        assert!(matches!(
+            locked(&[0x66, 0xf0, 0x0f, 0xb1, 0x4b, 0x32]).0,
+            LockedRmwOp::Cmpxchg { .. }
+        ));
+        assert!(matches!(
+            locked(&[0x66, 0xf0, 0x0f, 0xc1, 0x43, 0x30]).0,
+            LockedRmwOp::Xadd { .. }
+        ));
+        assert!(matches!(
+            locked(&[0x40, 0x86, 0x6b, 0x58]).0,
+            LockedRmwOp::Xchg { .. }
+        ));
+        let (_, destination, _) = locked(&[0x66, 0x87, 0x56, 0x0a]);
+        assert_eq!(destination.size, OperandSize::Word);
+        // lock not byte [rax]; lock neg qword [rax]; lock inc word [rax]; lock dec byte [rax].
+        for (bytes, expected) in [
+            (
+                &[0xf0u8, 0xf6, 0x10][..],
+                LockedRmwOp::Logic {
+                    kind: LogicKind::Not,
+                    source: Operand::Immediate(0),
+                },
+            ),
+            (
+                &[0xf0, 0x48, 0xf7, 0x18],
+                LockedRmwOp::Arithmetic {
+                    kind: ArithmeticKind::Neg,
+                    source: Operand::Immediate(0),
+                },
+            ),
+            (
+                &[0x66, 0xf0, 0xff, 0x00],
+                LockedRmwOp::Arithmetic {
+                    kind: ArithmeticKind::Inc,
+                    source: Operand::Immediate(0),
+                },
+            ),
+            (
+                &[0xf0, 0xfe, 0x08],
+                LockedRmwOp::Arithmetic {
+                    kind: ArithmeticKind::Dec,
+                    source: Operand::Immediate(0),
+                },
+            ),
+        ] {
+            assert_eq!(locked(bytes).0, expected, "{bytes:02x?}");
+        }
+        // lock bts dword [rbx+0xa0], eax (0F AB); lock btc qword [rax], 63 (0F BA /7 ib).
+        assert_eq!(
+            locked(&[0xf0, 0x0f, 0xab, 0x83, 0xa0, 0x00, 0x00, 0x00]).0,
+            LockedRmwOp::Bit {
+                kind: BitKind::Set,
+                offset: BitOffset::Register(reg(Register::Rax, OperandSize::Dword)),
+            }
+        );
+        assert_eq!(
+            locked(&[0xf0, 0x48, 0x0f, 0xba, 0x38, 0x3f]).0,
+            LockedRmwOp::Bit {
+                kind: BitKind::Complement,
+                offset: BitOffset::Immediate(63),
+            }
+        );
+        // XACQUIRE/XRELEASE hints with LOCK are accepted (no HLE: no effect).
+        assert!(matches!(
+            locked(&[0xf2, 0xf0, 0x09, 0x1c, 0x24]).0,
+            LockedRmwOp::Logic { .. }
+        ));
+        // #UD: LOCK with a register destination, LOCK CMP, LOCK BT imm, LOCK TEST imm, LOCK TEST
+        // r/m, r, LOCK BT m, r, LOCK MOVSS with a register operand.
+        for bytes in [
+            &[0xf0u8, 0x09, 0xd8][..],
+            &[0xf0, 0x39, 0x18],
+            &[0xf0, 0x0f, 0xba, 0x20, 0x01],
+            &[0xf0, 0xf7, 0x00, 0x01, 0x00, 0x00, 0x00],
+            &[0xf0, 0x85, 0x18],
+            &[0xf0, 0x84, 0xc3],
+            &[0xf0, 0x0f, 0xa3, 0x18],
+            &[0xf0, 0xf3, 0x0f, 0x10, 0xc1],
+        ] {
+            assert!(
+                matches!(general(bytes), Err(DecodeError::Invalid { .. })),
+                "{bytes:02x?}: {:?}",
+                general(bytes)
+            );
+        }
+        // Not this fallback's: FS/GS (W3), an unlocked ALU memory form, F3 without LOCK.
+        for bytes in [&[0x65u8, 0xf0, 0x09, 0x18][..], &[0xf3, 0x09, 0x18]] {
+            assert!(
+                !matches!(
+                    general(bytes),
+                    Ok(Instruction {
+                        operation: Operation::LockedRmw { .. },
+                        ..
+                    })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+        // MOVSD xmm0, [rbx+0x40] (bootmgfw), MOVSD [rdi+rcx*2], xmm0, MOVSS xmm0, [rsp+0x60],
+        // MOVSS [rsp+8], xmm0, MOVSD xmm9, [r8+r9*8] with REX.W ignored.
+        let scalar = |bytes: &[u8]| general(bytes).unwrap();
+        let decoded = scalar(&[0xf2, 0x0f, 0x10, 0x43, 0x40]);
+        assert_eq!(decoded.length, 5);
+        let Operation::MovsdLoadMemory {
+            destination: 0,
+            source,
+        } = decoded.operation
+        else {
+            panic!("{:?}", decoded.operation)
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::Rbx));
+        assert_eq!(source.displacement, 0x40);
+        assert!(matches!(
+            scalar(&[0xf2, 0x0f, 0x11, 0x04, 0x4f]).operation,
+            Operation::MovsdStoreMemory { source: 0, .. }
+        ));
+        assert!(matches!(
+            scalar(&[0xf3, 0x0f, 0x10, 0x44, 0x24, 0x60]).operation,
+            Operation::MovssLoadMemory { destination: 0, .. }
+        ));
+        assert!(matches!(
+            scalar(&[0xf3, 0x0f, 0x11, 0x44, 0x24, 0x08]).operation,
+            Operation::MovssStoreMemory { source: 0, .. }
+        ));
+        let decoded = scalar(&[0xf2, 0x4f, 0x0f, 0x10, 0x0c, 0xc8]);
+        let Operation::MovsdLoadMemory {
+            destination: 9,
+            source,
+        } = decoded.operation
+        else {
+            panic!("{:?}", decoded.operation)
+        };
+        assert_eq!(source.base, AddressBase::Register(Register::R8));
+        assert_eq!(source.index, Some(Register::R9));
+        assert_eq!(source.scale, 8);
+        // LOCK MOVSD is #UD; 66 F2 0F 10 is not MOVSD.
+        assert!(matches!(
+            general(&[0xf0, 0xf2, 0x0f, 0x10, 0x43, 0x40]),
+            Err(DecodeError::Invalid { .. })
+        ));
+        assert!(!matches!(
+            general(&[0x66, 0xf2, 0x0f, 0x10, 0x43, 0x40]).map(|d| d.operation),
+            Ok(Operation::MovsdLoadMemory { .. })
+        ));
     }
 }

@@ -362,12 +362,12 @@ SAHF|9E|N
 PREFETCHW|0F0D|M1
 ";
 
-/// Forms that the bare step refuses ("name (form)"). Most of them are in the CPL0 set (fences, prefetch,
+/// Forms that the bare step refuses ("name (form)"). S7-32 W2: MOVSS with any memory addressing
+/// decodes and the bare step runs it (its admission has no address rule); MOVSD outside `[RAX]`
+/// decodes too, but the bare step keeps refusing it (its admission keeps the `[RAX]` encoding). Most of them are in the CPL0 set (fences, prefetch,
 /// MOVD/MOVQ, MOVLPD ...) or are narrow-profile forms of S2-34 that decode with a [RAX] base only.
 const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
     "MOVHPS (mem)",
-    "MOVSS (mem)",
-    "MOVSS-store (mem)",
     "LDMXCSR (mem)",
     "STMXCSR (mem)",
     "SFENCE (none)",
@@ -436,8 +436,6 @@ const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "CVTTPS2PI (mem)",
     "CVTPS2PI (reg)",
     "CVTPS2PI (mem)",
-    "MOVSS (mem)",
-    "MOVSS-store (mem)",
     "PINSRW-mmx (reg)",
     "PINSRW-mmx (mem)",
     "PEXTRW-mmx (reg)",
@@ -466,8 +464,6 @@ const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "PMULUDQ-mmx (mem)",
     "PSUBQ-mmx (reg)",
     "PSUBQ-mmx (mem)",
-    "MOVSD (mem)",
-    "MOVSD-store (mem)",
     "CVTPI2PD (reg)",
     "CVTPI2PD (mem)",
     "CVTTPD2PI (reg)",
