@@ -2471,6 +2471,13 @@ impl<'a> Cpl0ProfileSet<'a> {
         self
     }
 
+    /// S7-32: the FP member's cell (`with_fp_state`), `None` without the member. The turbo engine
+    /// of `od-machine` runs the SSE forms of its templates on the XMM registers of this cell
+    /// between the steps of the set (each step moves them into `state.sse` and back).
+    pub const fn fp_state(&self) -> Option<&'a RefCell<GuestFpState>> {
+        self.fp_state
+    }
+
     /// S4-38L9e: admit the bare `INT3` (`CC`, no prefix, no REX) at CPL0 under Long64: the software
     /// breakpoint `#BP` (vector 3) is delivered through the IDT gate of vector 3 with the frame of
     /// the other IA-32e entries (SS, RSP, RFLAGS, CS and the address of the NEXT instruction, five
@@ -67415,7 +67422,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 state.rflags = flags;
                 // S7-31c: after one comparison the six arithmetic flags are those of the
                 // compare (Intel SDM, CMPS: the flags are set as CMP sets them); with a zero
-                // count nothing runs and RFLAGS and its definedness stay as they were.
+                // count nothing runs and the values of RFLAGS stay as they were, while the
+                // retired instruction still counts the six as defined (the static effects of
+                // the decode, `FlagEffects` of `RepCmps`, applied at retirement).
                 *rflags_defined |= crate::ARITHMETIC_FLAGS;
                 let step = if state.rflags & (1 << 10) == 0 {
                     size.bytes() as u64

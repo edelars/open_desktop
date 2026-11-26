@@ -178,7 +178,7 @@ impl OpHistogram {
 /// an explicit match and the shape of the name classify those before the text rule. Known limits:
 /// `Movs`/`Stos`/`Lods`/`Scas`/`Cmps` read memory implicitly and stay `none`; `Lea` carries a
 /// `MemoryOperand` and counts as `mem` though it does not access memory.
-fn classify(instruction: &Instruction) -> (String, &'static str, u8) {
+pub(crate) fn classify(instruction: &Instruction) -> (String, &'static str, u8) {
     let operand_bytes = instruction.operand_size.bytes() as u8;
     // PUSH/POP of a register: one variant, the direction is a field; the key names the direction.
     if let Operation::StackRegister { push, .. } = &instruction.operation {

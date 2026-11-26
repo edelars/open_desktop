@@ -28,7 +28,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--reboot-cycles <n> [--reboot-kind cold|warm]] \
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [(--nvme-image <raw> | --disk <path>[,ro]) [--nvme-pci]] \
-                    [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] \
+                    [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] [--turbo-profile] \
                     [--stop-snapshot <file> [--peek (<hex>|rip_module+<hex>)[:<bytes>] ...]] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -40,7 +40,9 @@ board is dropped, so the writer lock (LOCK_EX) is released between the two boots
 (limitation until S8-23).\n\
 \x20\x20--cpu-loop unified runs through the turbo engine (a template JIT) where the host has one; \
 --no-turbo runs every instruction through the general interpreter step (the reference mode), and \
---turbo-stats prints the statistics of the engine to stderr at the end of the run.\n\
+--turbo-stats prints the statistics of the engine to stderr at the end of the run; --turbo-profile \
+prints them with the profile of its slow exits (the forms the general step ran for it, why, and the \
+host time after them; it reads the clock twice per run: never for speed).\n\
 \x20\x20--nvme-pci (--cpu-loop unified, with --nvme-image or --disk): the NVMe controller is a PCI \
 function (bus 0, slot 4, BAR0 0xFC004000, INTx to GSI 16) instead of the firmware's fixed window; \
 the firmware finds it through ECAM and the report records nvme_pci: true.\n\
@@ -122,6 +124,9 @@ struct Options {
     /// `--turbo-stats` (unified loop only): the statistics of the turbo engine go to stderr at the
     /// end of the run.
     turbo_stats: bool,
+    /// S7-32 `--turbo-profile` (unified loop only): `--turbo-stats` with the profile of the slow
+    /// exits.
+    turbo_profile: bool,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -418,7 +423,8 @@ pub fn run(args: &[String]) -> ExitCode {
         peeks: options.peeks.clone(),
         op_histogram_out: options.op_histogram_out.clone(),
         no_turbo: options.no_turbo,
-        turbo_stats: options.turbo_stats,
+        turbo_stats: options.turbo_stats || options.turbo_profile,
+        turbo_profile: options.turbo_profile,
         journal_config: journal_config(&options),
         journal: None,
     };
@@ -1018,8 +1024,11 @@ struct Diagnostics {
     op_histogram_out: Option<String>,
     /// The unified loop runs the general interpreter step only (`--no-turbo`).
     no_turbo: bool,
-    /// The statistics of the turbo engine go to stderr after the unified run (`--turbo-stats`).
+    /// The statistics of the turbo engine go to stderr after the unified run (`--turbo-stats`,
+    /// also `--turbo-profile`).
     turbo_stats: bool,
+    /// The engine profiles its slow exits (`--turbo-profile`).
+    turbo_profile: bool,
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
@@ -1490,6 +1499,8 @@ fn boot(
                 Ok(arena) => {
                     if !board.enable_turbo(Box::new(arena)) {
                         eprintln!("turbo: not available on this host; the general step runs alone");
+                    } else if diagnostics.turbo_profile {
+                        board.enable_turbo_profile();
                     }
                 }
                 Err(error) => eprintln!(
@@ -1841,6 +1852,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut op_histogram_out = None;
     let mut no_turbo = false;
     let mut turbo_stats = false;
+    let mut turbo_profile = false;
     let mut guest: Option<od_machine::UnifiedGuest> = None;
     let mut ram_mib: Option<u64> = None;
     let mut nvme_pci = false;
@@ -1869,6 +1881,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if name == "--turbo-stats" && !turbo_stats {
             turbo_stats = true;
+            index += 1;
+            continue;
+        }
+        if name == "--turbo-profile" && !turbo_profile {
+            turbo_profile = true;
             index += 1;
             continue;
         }
@@ -2042,6 +2059,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if turbo_stats && !unified {
         return Err("--turbo-stats requires --cpu-loop unified".to_owned());
     }
+    if turbo_profile && !unified {
+        return Err("--turbo-profile requires --cpu-loop unified".to_owned());
+    }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
             return Err("--reboot-cycles requires --fv-app reboot".to_owned());
@@ -2193,6 +2213,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         op_histogram_out,
         no_turbo,
         turbo_stats,
+        turbo_profile,
     })
 }
 
@@ -2552,9 +2573,9 @@ mod tests {
         given
     }
 
-    /// `--no-turbo` and `--turbo-stats` belong to the unified loop, are off by default and are
-    /// taken once each; without `--cpu-loop unified` (the firmware profile loop, given or by
-    /// default) each is refused.
+    /// `--no-turbo`, `--turbo-stats` and `--turbo-profile` belong to the unified loop, are off by
+    /// default and are taken once each; without `--cpu-loop unified` (the firmware profile loop,
+    /// given or by default) each is refused.
     #[test]
     fn no_turbo_and_turbo_stats_need_the_unified_loop_are_taken_once_and_are_off_by_default() {
         let options = parse(&unified_with(&[])).unwrap();
@@ -2565,7 +2586,10 @@ mod tests {
         assert!(!options.no_turbo && options.turbo_stats);
         let options = parse(&unified_with(&["--no-turbo", "--turbo-stats"])).unwrap();
         assert!(options.no_turbo && options.turbo_stats);
-        for flag in ["--no-turbo", "--turbo-stats"] {
+        assert!(!options.turbo_profile);
+        let options = parse(&unified_with(&["--turbo-profile"])).unwrap();
+        assert!(options.turbo_profile && !options.turbo_stats && !options.no_turbo);
+        for flag in ["--no-turbo", "--turbo-stats", "--turbo-profile"] {
             assert!(parse(&unified_with(&[flag, flag])).is_err(), "{flag} twice");
             let required = [
                 "--image",

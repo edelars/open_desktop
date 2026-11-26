@@ -1,13 +1,17 @@
 //! Experiment (turbo loop): translation of one guest block (straight-line code on one 4 KiB page)
 //! to AArch64. See the module documentation of `turbo` for the register convention.
 
-use super::{EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_WRITE, TLB_BITS, TurboEngine};
+use super::{
+    EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_FILL128, OP_MMIO, OP_WRITE, TLB_BITS, TurboEngine,
+};
 use od_isa::Register;
 use od_isa::long_decode::{
     self, AddressBase, ArithmeticKind, ConditionCode, Instruction, LogicKind, MemoryOperand,
-    OpcodeMap, Operand, Operation, Prefixes, ShiftKind,
+    OpcodeMap, Operand, Operation, Prefixes, ShiftKind, Sse3Source, Sse41Operand,
+    SseLogicPermuteKind,
 };
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
+use od_isa::sse2_int::Sse2IntKind;
 use od_isa::state::{OperandSize, RegisterView};
 use od_jit::arm64::a64::{self, Asm, Cond, LSL, Label, XZR};
 
@@ -153,6 +157,16 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         )
     {
         return None;
+    }
+    // S7-32: the SSE forms of the FP member leave when the member's gate is closed (any of them
+    // can exit) and change no flag.
+    if sse_form(insn).is_some() {
+        return Some(Plan {
+            role: Role::Straight,
+            reads: 0,
+            writes: 0,
+            can_exit: true,
+        });
     }
     let fast = od_isa::execute::fast_handler(insn).is_some();
     let size = insn.operand_size;
@@ -438,6 +452,10 @@ fn plan(insn: &Instruction) -> Option<Plan> {
         {
             p(Role::Straight, 0, 0, true)
         }
+        // S7-32: REPE CMPS (forward, 64-bit addresses) through `cmps_helper`; a zero count keeps
+        // the value of every flag, so all of them stay needed before it (the general step counts
+        // the six as defined after it whatever the count: the static effects of the decode).
+        Operation::RepCmps { .. } if repe_cmps_admitted(insn) => p(Role::Straight, F_ALL, 0, true),
         Operation::Pause | Operation::Endbr64Nop => p(Role::Straight, 0, 0, false),
         Operation::AddGsLoad { dst, src } | Operation::CmpGsLoad { dst, src }
             if insn.prefixes.group1.is_none()
@@ -695,9 +713,293 @@ fn plan(insn: &Instruction) -> Option<Plan> {
     }
 }
 
+/// S7-32: a bitwise operation of the SSE templates on two XMM registers (DEST op SRC).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum XmmLogic {
+    And,
+    /// (NOT DEST) AND SRC.
+    Andn,
+    Or,
+    Xor,
+}
+
+/// S7-32: the SSE forms with a template: the ones the FP member of the CPL0 set runs on its XMM
+/// registers with the gate of the member (`#UD` for CR0.EM = 1 or CR4.OSFXSR = 0, then `#NM` for
+/// CR0.TS = 1) and nothing else that depends on the state: no flag, no MXCSR bit, no SIMD
+/// exception. An operand with a segment prefix stays with the general step.
+#[derive(Clone, Copy, Debug)]
+enum SseForm {
+    /// The raw 16-byte moves between XMM `xmm` and memory (`step_sse128_memory_move`, and
+    /// MOVNTPS/MOVNTPD/MOVNTDQ of `step_sse2_int`): `aligned` is `#GP(0)` for an address that is
+    /// not 16-byte aligned.
+    Move128 {
+        store: bool,
+        aligned: bool,
+        xmm: u8,
+        mem: MemoryOperand,
+    },
+    /// XMM `dst` := XMM `src` (MOVAPS/MOVUPS/MOVAPD/MOVUPD/MOVDQA register forms).
+    Copy { dst: u8, src: u8 },
+    /// MOVD/MOVQ xmm, r/m32/r/m64: the value zero-extended to 128 bits.
+    FromInteger { dst: u8, src: Operand },
+    /// PAND/PANDN/POR/PXOR, ANDPS/ANDNPS/ORPS/XORPS and their PD spellings; a memory source is a
+    /// 16-byte aligned operand (ANDPS & co.).
+    Logic {
+        op: XmmLogic,
+        dst: u8,
+        src: Sse3Source,
+    },
+    /// PADDD, dword-wise wrapping addition.
+    Paddd { dst: u8, src: u8 },
+    /// PADDQ, qword-wise wrapping addition.
+    Paddq { dst: u8, src: u8 },
+    /// PUNPCKLDQ: DEST := DEST[31:0], SRC[31:0], DEST[63:32], SRC[63:32] (dwords, low first).
+    Punpckldq { dst: u8, src: u8 },
+    /// PUNPCKLQDQ: DEST[127:64] := SRC[63:0].
+    Punpcklqdq { dst: u8, src: u8 },
+    /// PSHUFD: dword `i` of DEST := dword `(control >> 2i) & 3` of SRC.
+    Pshufd { dst: u8, src: u8, control: u8 },
+}
+
+/// The SSE template of `insn`, if it has one.
+fn sse_form(insn: &Instruction) -> Option<SseForm> {
+    if insn.prefixes.segment.is_some() {
+        return None;
+    }
+    let mem128 = |store: bool, aligned: bool, xmm: u8, mem: MemoryOperand| {
+        mem_ok(&mem).then_some(SseForm::Move128 {
+            store,
+            aligned,
+            xmm,
+            mem,
+        })
+    };
+    let logic = |op: XmmLogic, dst: u8, src: u8| {
+        Some(SseForm::Logic {
+            op,
+            dst,
+            src: Sse3Source::Register(src),
+        })
+    };
+    match insn.operation {
+        Operation::Sse128MemoryMove {
+            kind,
+            store,
+            xmm,
+            memory,
+        } => mem128(store, kind.requires_alignment(), xmm, memory),
+        Operation::MovupsLoadMemory {
+            destination,
+            source,
+        }
+        | Operation::MovupdLoadMemory {
+            destination,
+            source,
+        }
+        | Operation::MovdquLoadMemory {
+            destination,
+            source,
+        } => mem128(false, false, destination, source),
+        Operation::MovapsLoadMemory {
+            destination,
+            source,
+        }
+        | Operation::MovdqaLoadMemory {
+            destination,
+            source,
+        } => mem128(false, true, destination, source),
+        Operation::MovupsStoreMemory {
+            destination,
+            source,
+        }
+        | Operation::MovupdStoreMemory {
+            destination,
+            source,
+        } => mem128(true, false, source, destination),
+        Operation::MovapsStoreMemory {
+            destination,
+            source,
+        } => mem128(true, true, source, destination),
+        Operation::Sse2Int {
+            kind: Sse2IntKind::Movnt128,
+            xmm,
+            operand: Sse41Operand::Memory(memory),
+            ..
+        } => mem128(true, true, xmm, memory),
+        Operation::MovapsRegister {
+            destination,
+            source,
+        }
+        | Operation::MovupsRegister {
+            destination,
+            source,
+        }
+        | Operation::MovdqaRegister {
+            destination,
+            source,
+        }
+        | Operation::MovapdRegister {
+            destination,
+            source,
+        }
+        | Operation::MovupdRegister {
+            destination,
+            source,
+        }
+        | Operation::MovapsReverseRegister {
+            destination,
+            source,
+        }
+        | Operation::MovapdReverseRegister {
+            destination,
+            source,
+        }
+        | Operation::MovupdReverseRegister {
+            destination,
+            source,
+        } => Some(SseForm::Copy {
+            dst: destination,
+            src: source,
+        }),
+        Operation::MoveIntegerToXmm {
+            destination,
+            source,
+        } => match source {
+            Operand::Register(view)
+                if view.shift() == 0
+                    && matches!(view.size(), OperandSize::Dword | OperandSize::Qword) =>
+            {
+                Some(SseForm::FromInteger {
+                    dst: destination,
+                    src: source,
+                })
+            }
+            Operand::Memory(mem)
+                if mem_ok(&mem) && matches!(mem.size, OperandSize::Dword | OperandSize::Qword) =>
+            {
+                Some(SseForm::FromInteger {
+                    dst: destination,
+                    src: source,
+                })
+            }
+            _ => None,
+        },
+        Operation::PandRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::And, destination, source),
+        Operation::PandnRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Andn, destination, source),
+        Operation::PorRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Or, destination, source),
+        Operation::PxorRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Xor, destination, source),
+        Operation::AndpsRegister {
+            destination,
+            source,
+        }
+        | Operation::AndpdRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::And, destination, source),
+        Operation::AndnpsRegister {
+            destination,
+            source,
+        }
+        | Operation::AndnpdRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Andn, destination, source),
+        Operation::OrpsRegister {
+            destination,
+            source,
+        }
+        | Operation::OrpdRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Or, destination, source),
+        Operation::XorpsRegister {
+            destination,
+            source,
+        }
+        | Operation::XorpdRegister {
+            destination,
+            source,
+        } => logic(XmmLogic::Xor, destination, source),
+        Operation::SseLogicPermute {
+            kind,
+            destination,
+            source,
+            ..
+        } => {
+            let op = match kind {
+                SseLogicPermuteKind::And => XmmLogic::And,
+                SseLogicPermuteKind::Andn => XmmLogic::Andn,
+                SseLogicPermuteKind::Or => XmmLogic::Or,
+                SseLogicPermuteKind::Xor => XmmLogic::Xor,
+                _ => return None,
+            };
+            if let Sse3Source::Memory(mem) = source
+                && !mem_ok(&mem)
+            {
+                return None;
+            }
+            Some(SseForm::Logic {
+                op,
+                dst: destination,
+                src: source,
+            })
+        }
+        Operation::PadddRegister {
+            destination,
+            source,
+        } => Some(SseForm::Paddd {
+            dst: destination,
+            src: source,
+        }),
+        Operation::PaddqRegister {
+            destination,
+            source,
+        } => Some(SseForm::Paddq {
+            dst: destination,
+            src: source,
+        }),
+        Operation::PunpckldqRegister {
+            destination,
+            source,
+        } => Some(SseForm::Punpckldq {
+            dst: destination,
+            src: source,
+        }),
+        Operation::PunpcklqdqRegister {
+            destination,
+            source,
+        } => Some(SseForm::Punpcklqdq {
+            dst: destination,
+            src: source,
+        }),
+        Operation::PshufdRegister {
+            destination,
+            source,
+            control,
+        } => Some(SseForm::Pshufd {
+            dst: destination,
+            src: source,
+            control,
+        }),
+        _ => None,
+    }
+}
+
 /// Whether the translator admits `insn` (its `plan`): the differential tests check that their
-/// templates exercise generated code, not only the general path.
-#[cfg(test)]
+/// templates exercise generated code, not only the general path; the slow-exit profile tells a
+/// missing template from a refusal at run time.
 pub(super) fn admitted(insn: &Instruction) -> bool {
     plan(insn).is_some()
 }
@@ -734,6 +1036,42 @@ fn rep_admitted(insn: &Instruction) -> bool {
         }
         _ => false,
     }
+}
+
+/// S7-32: the REPE CMPS forms the general CPL0 step admits with 64-bit addresses: `F3 A6`, and
+/// `F3 A7` with the size of its 66/REX.W prefixes.
+fn repe_cmps_admitted(insn: &Instruction) -> bool {
+    let Operation::RepCmps { size } = insn.operation else {
+        return false;
+    };
+    let p = insn.prefixes;
+    insn.opcode.map == OpcodeMap::Primary
+        && p.group1 == Some(0xf3)
+        && p.segment.is_none()
+        && !p.address_override
+        && insn.address_size == OperandSize::Qword
+        && match insn.opcode.byte {
+            0xa6 => {
+                insn.length == 2
+                    && p == (Prefixes {
+                        group1: Some(0xf3),
+                        ..Prefixes::default()
+                    })
+                    && size == OperandSize::Byte
+            }
+            0xa7 => {
+                p.rex.is_none_or(|rex| rex & 8 != 0)
+                    && size
+                        == if p.rex.is_some_and(|rex| rex & 8 != 0) {
+                            OperandSize::Qword
+                        } else if p.operand_override {
+                            OperandSize::Word
+                        } else {
+                            OperandSize::Dword
+                        }
+            }
+            _ => false,
+        }
 }
 
 fn is_rdtsc(insn: &Instruction) -> bool {
@@ -791,6 +1129,28 @@ struct SlowStub {
     dst: Option<u32>,
     save: Vec<u32>,
     rip: u64,
+    /// S7-32 (`OP_MMIO`): where the code goes on after an access through a device (status 2).
+    mmio: Option<Label>,
+}
+
+/// S7-32: the rest of a plain load or store after its access ([`Ctx::load_end`]): in the main
+/// line, and after an access through a device before the end of the run at the boundary after it.
+#[derive(Clone, Copy)]
+enum MmioRest {
+    /// A store: nothing is left.
+    Store,
+    /// A load into `view` of the value in x9 (T0), zero-extended.
+    Load(RegisterView),
+    /// A sign-extending load of `size` bytes into `view`.
+    Signed(OperandSize, RegisterView),
+}
+
+struct MmioTail {
+    label: Label,
+    rest: MmioRest,
+    next: u64,
+    k: usize,
+    defined: Defined,
 }
 
 struct Ctx<'e> {
@@ -805,6 +1165,8 @@ struct Ctx<'e> {
     leaves: Vec<(Label, u64, usize, Defined)>,
     /// Exits of a partial REP (the instruction did not retire).
     partials: Vec<(Label, u64, usize, Defined)>,
+    /// S7-32: the ends of plain loads and stores whose access went to a device.
+    mmio_tails: Vec<MmioTail>,
     /// After an RDTSC: (boundary exit, short-budget exit, next RIP, index, definedness so far).
     boundaries: Vec<(Label, Label, u64, usize, Defined)>,
     /// The exit before the current instruction.
@@ -954,42 +1316,87 @@ impl<'e> Ctx<'e> {
 
     /// Load `size` bytes at ADDR into `dst` (zero-extended). `save`: temps live across the access.
     fn load_mem(&mut self, size: u32, dst: u32, save: &[u32]) {
+        self.load_mem_with(size, dst, save, None);
+    }
+
+    fn load_mem_with(&mut self, size: u32, dst: u32, save: &[u32], mmio: Option<MmioRest>) {
         let slow = self.asm.label();
         let resume = self.asm.label();
         self.tlb_check(size, false, slow);
         self.asm.emit(a64::ldr_reg(size, dst, ADDR, 14));
         self.asm.bind(resume);
         let exit = self.exit_before();
+        let tail = mmio.map(|rest| self.mmio_tail(rest));
         self.slow.push(SlowStub {
             entry: slow,
             resume,
             exit,
-            op: u64::from(size),
+            op: u64::from(size) | if tail.is_some() { OP_MMIO } else { 0 },
             value: None,
             dst: Some(dst),
             save: save.to_vec(),
             rip: self.rip,
+            mmio: tail,
         });
     }
 
     /// Store the low `size` bytes of `value` at ADDR.
     fn store_mem(&mut self, size: u32, value: u32, save: &[u32]) {
+        self.store_mem_with(size, value, save, false);
+    }
+
+    /// [`Self::store_mem`]; with `mmio` the store is the last effect of the instruction and may
+    /// go to a device.
+    fn store_mem_with(&mut self, size: u32, value: u32, save: &[u32], mmio: bool) {
         let slow = self.asm.label();
         let resume = self.asm.label();
         self.tlb_check(size, true, slow);
         self.asm.emit(a64::str_reg(size, value, ADDR, 14));
         self.asm.bind(resume);
         let exit = self.exit_before();
+        let tail = mmio.then(|| self.mmio_tail(MmioRest::Store));
         self.slow.push(SlowStub {
             entry: slow,
             resume,
             exit,
-            op: u64::from(size) | OP_WRITE,
+            op: u64::from(size) | OP_WRITE | if tail.is_some() { OP_MMIO } else { 0 },
             value: Some(value),
             dst: None,
             save: save.to_vec(),
             rip: self.rip,
+            mmio: tail,
         });
+    }
+
+    /// The write of the value of a plain load in T0 into its register (nothing for a store): the
+    /// main line and the end after a device access share it.
+    fn load_end(&mut self, rest: MmioRest) {
+        match rest {
+            MmioRest::Store => {}
+            MmioRest::Load(view) => self.store_reg(T0, view, true),
+            MmioRest::Signed(size, view) => {
+                match size {
+                    OperandSize::Byte => self.asm.emit(a64::sxtb(T0, T0)),
+                    OperandSize::Word => self.asm.emit(a64::sxth(T0, T0)),
+                    OperandSize::Dword => self.asm.emit(a64::sxtw(T0, T0)),
+                    OperandSize::Qword => {}
+                }
+                self.store_reg(T0, view, false);
+            }
+        }
+    }
+
+    /// S7-32: the out-of-line end of the current instruction after an access through a device.
+    fn mmio_tail(&mut self, rest: MmioRest) -> Label {
+        let label = self.asm.label();
+        self.mmio_tails.push(MmioTail {
+            label,
+            rest,
+            next: self.next_rip,
+            k: self.k,
+            defined: self.defined,
+        });
+        label
     }
 
     /// Jump to the code of guest `target` (through the lookup stub).
@@ -1357,6 +1764,7 @@ impl<'e> Ctx<'e> {
             dst: None,
             save: Vec::new(),
             rip: self.rip,
+            mmio: None,
         });
     }
 
@@ -1489,6 +1897,177 @@ impl<'e> Ctx<'e> {
         true
     }
 
+    // ---- SSE (S7-32) ---------------------------------------------------------------------------
+
+    /// The XMM registers of the FP member into x16, or the exit before the instruction when the
+    /// general step would not run it here (no member, or the member's `#UD`/`#NM` gate is closed;
+    /// the run decides it once, see `TurboEngine::run`). Nothing has happened before it.
+    fn xmm_gate(&mut self) {
+        let exit = self.exit_before();
+        self.asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_XMM));
+        self.asm.cbz_to(true, 16, exit);
+    }
+
+    /// The XMM base into x16 again (a helper call clobbers it).
+    fn xmm_reload(&mut self) {
+        self.asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_XMM));
+    }
+
+    /// The host address of a 16-byte access at ADDR into x13: the TLB entry of its page, which
+    /// the memory helper fills on a miss (with the accessed/dirty bits of the general path's walk)
+    /// before the check runs again; an access the helper does not take (a crossing, not RAM, a
+    /// fault, a watched page) leaves before the instruction. x16 is clobbered.
+    fn host128(&mut self, write: bool) {
+        let restart = self.asm.label();
+        let slow = self.asm.label();
+        self.asm.bind(restart);
+        self.tlb_check(16, write, slow);
+        let exit = self.exit_before();
+        self.slow.push(SlowStub {
+            entry: slow,
+            resume: restart,
+            exit,
+            op: OP_FILL128 | if write { OP_WRITE } else { 0 },
+            value: None,
+            dst: None,
+            save: Vec::new(),
+            rip: self.rip,
+            mmio: None,
+        });
+        self.asm.emit(a64::add_reg(true, 13, ADDR, 14, LSL, 0));
+    }
+
+    /// `#GP(0)` of a 16-byte operand at ADDR that is not 16-byte aligned: the general step raises
+    /// it (no flag is touched here).
+    fn aligned128(&mut self) {
+        let exit = self.exit_before();
+        self.asm.emit(a64::and_imm(true, 15, ADDR, 0xf).unwrap());
+        self.asm.cbnz_to(true, 15, exit);
+    }
+
+    fn emit_sse(&mut self, form: SseForm) -> bool {
+        let at = |xmm: u8| 16 * i32::from(xmm);
+        self.xmm_gate();
+        match form {
+            SseForm::Move128 {
+                store,
+                aligned,
+                xmm,
+                mem,
+            } => {
+                self.address(&mem, false);
+                if aligned {
+                    self.aligned128();
+                }
+                self.host128(store);
+                self.xmm_reload();
+                if store {
+                    self.asm.emit(a64::ldp(T0, T1, 16, at(xmm)));
+                    self.asm.emit(a64::stp(T0, T1, 13, 0));
+                } else {
+                    self.asm.emit(a64::ldp(T0, T1, 13, 0));
+                    self.asm.emit(a64::stp(T0, T1, 16, at(xmm)));
+                }
+            }
+            SseForm::Copy { dst, src } => {
+                self.asm.emit(a64::ldp(T0, T1, 16, at(src)));
+                self.asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+            SseForm::FromInteger { dst, src } => {
+                match src {
+                    Operand::Register(view) => self.load_reg(T0, view),
+                    Operand::Memory(mem) => {
+                        self.address(&mem, false);
+                        self.load_mem(size_bytes(mem.size), T0, &[]);
+                        self.xmm_reload();
+                    }
+                    Operand::Immediate(_) => return false,
+                }
+                self.asm.emit(a64::stp(T0, XZR, 16, at(dst)));
+            }
+            SseForm::Logic { op, dst, src } => {
+                // x9:x10 the destination, x14:x15 the source.
+                match src {
+                    Sse3Source::Register(src) => self.asm.emit(a64::ldp(14, 15, 16, at(src))),
+                    Sse3Source::Memory(mem) => {
+                        self.address(&mem, false);
+                        self.aligned128();
+                        self.host128(false);
+                        self.xmm_reload();
+                        self.asm.emit(a64::ldp(14, 15, 13, 0));
+                    }
+                }
+                self.asm.emit(a64::ldp(T0, T1, 16, at(dst)));
+                for (d, s) in [(T0, 14), (T1, 15)] {
+                    self.asm.emit(match op {
+                        XmmLogic::And => a64::and_reg(true, d, d, s),
+                        XmmLogic::Andn => a64::bic_reg(true, d, s, d),
+                        XmmLogic::Or => a64::orr_reg(true, d, d, s),
+                        XmmLogic::Xor => a64::eor_reg(true, d, d, s),
+                    });
+                }
+                self.asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+            SseForm::Paddd { dst, src } => {
+                self.asm.emit(a64::ldp(T0, T1, 16, at(dst)));
+                self.asm.emit(a64::ldp(14, 15, 16, at(src)));
+                for (d, s) in [(T0, 14), (T1, 15)] {
+                    let asm = &mut self.asm;
+                    // The low dword (a W operation zero-extends), then the high one above it.
+                    asm.emit(a64::add_reg(false, 13, d, s, LSL, 0));
+                    asm.emit(a64::lsr_imm(true, d, d, 32));
+                    asm.emit(a64::lsr_imm(true, s, s, 32));
+                    asm.emit(a64::add_reg(false, d, d, s, LSL, 0));
+                    asm.emit(a64::orr_reg_shift(true, d, 13, d, LSL, 32));
+                }
+                self.asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+            SseForm::Paddq { dst, src } => {
+                self.asm.emit(a64::ldp(T0, T1, 16, at(dst)));
+                self.asm.emit(a64::ldp(14, 15, 16, at(src)));
+                self.asm.emit(a64::add_reg(true, T0, T0, 14, LSL, 0));
+                self.asm.emit(a64::add_reg(true, T1, T1, 15, LSL, 0));
+                self.asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+            SseForm::Punpckldq { dst, src } => {
+                // Only the low quadwords take part: d1:d0 in x9, s1:s0 in x14.
+                let asm = &mut self.asm;
+                asm.emit(a64::ldr_imm(8, T0, 16, at(dst) as u32));
+                asm.emit(a64::ldr_imm(8, 14, 16, at(src) as u32));
+                asm.emit(a64::lsr_imm(true, T1, T0, 32));
+                asm.emit(a64::lsr_imm(true, 15, 14, 32));
+                asm.emit(a64::uxtw(T0, T0));
+                asm.emit(a64::orr_reg_shift(true, T0, T0, 14, LSL, 32));
+                asm.emit(a64::orr_reg_shift(true, T1, T1, 15, LSL, 32));
+                asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+            SseForm::Punpcklqdq { dst, src } => {
+                let asm = &mut self.asm;
+                asm.emit(a64::ldr_imm(8, T0, 16, at(src) as u32));
+                asm.emit(a64::str_imm(8, T0, 16, at(dst) as u32 + 8));
+            }
+            SseForm::Pshufd { dst, src, control } => {
+                // The source quadwords x14 (dwords 0, 1) and x15 (2, 3); each result dword picks
+                // one of them.
+                let asm = &mut self.asm;
+                asm.emit(a64::ldp(14, 15, 16, at(src)));
+                let lane = |i: u8| {
+                    let select = (control >> (2 * i)) & 3;
+                    (if select < 2 { 14 } else { 15 }, 32 * u32::from(select & 1))
+                };
+                for (rd, low, high) in [(T0, 0u8, 1u8), (T1, 2, 3)] {
+                    let (lo_reg, lo_shift) = lane(low);
+                    let (hi_reg, hi_shift) = lane(high);
+                    asm.emit(a64::ubfx(true, rd, lo_reg, lo_shift, 32));
+                    asm.emit(a64::ubfx(true, 13, hi_reg, hi_shift, 32));
+                    asm.emit(a64::orr_reg_shift(true, rd, rd, 13, LSL, 32));
+                }
+                asm.emit(a64::stp(T0, T1, 16, at(dst)));
+            }
+        }
+        true
+    }
+
     // ---- instructions -----------------------------------------------------------------------
 
     fn source_value(&mut self, operand: Operand, rd: u32, size: OperandSize, save: &[u32]) {
@@ -1503,6 +2082,9 @@ impl<'e> Ctx<'e> {
     }
 
     fn emit_insn(&mut self, insn: &Instruction, live_after: u8) -> bool {
+        if let Some(form) = sse_form(insn) {
+            return self.emit_sse(form);
+        }
         let size = insn.operand_size;
         match insn.operation {
             Operation::Arithmetic { kind, dst, src } => self.alu(
@@ -1834,18 +2416,19 @@ impl<'e> Ctx<'e> {
                     }
                     (Operand::Register(d), Operand::Memory(mem)) => {
                         self.address(&mem, false);
-                        self.load_mem(size_bytes(mem.size), T0, &[]);
-                        self.store_reg(T0, d, true);
+                        let end = MmioRest::Load(d);
+                        self.load_mem_with(size_bytes(mem.size), T0, &[], Some(end));
+                        self.load_end(end);
                     }
                     (Operand::Memory(mem), Operand::Register(s)) => {
                         self.load_reg(T0, s);
                         self.address(&mem, false);
-                        self.store_mem(size_bytes(mem.size), T0, &[]);
+                        self.store_mem_with(size_bytes(mem.size), T0, &[], true);
                     }
                     (Operand::Memory(mem), Operand::Immediate(value)) => {
                         self.mov_imm(T0, value & mem.size.mask());
                         self.address(&mem, false);
-                        self.store_mem(size_bytes(mem.size), T0, &[]);
+                        self.store_mem_with(size_bytes(mem.size), T0, &[], true);
                     }
                     _ => return false,
                 }
@@ -1860,36 +2443,34 @@ impl<'e> Ctx<'e> {
                     Operand::Memory(mem) => {
                         self.mov_imm(T0, value & mem.size.mask());
                         self.address(&mem, false);
-                        self.store_mem(size_bytes(mem.size), T0, &[]);
+                        self.store_mem_with(size_bytes(mem.size), T0, &[], true);
                     }
                     Operand::Immediate(_) => return false,
                 }
                 true
             }
             Operation::Extend { dst, src, signed } => {
-                let source_size = match src {
+                let end = |source_size| {
+                    if signed {
+                        MmioRest::Signed(source_size, dst)
+                    } else {
+                        MmioRest::Load(dst)
+                    }
+                };
+                let end = match src {
                     Operand::Register(view) => {
                         self.load_reg(T0, view);
-                        view.size()
+                        end(view.size())
                     }
                     Operand::Memory(mem) => {
                         self.address(&mem, false);
-                        self.load_mem(size_bytes(mem.size), T0, &[]);
-                        mem.size
+                        let end = end(mem.size);
+                        self.load_mem_with(size_bytes(mem.size), T0, &[], Some(end));
+                        end
                     }
                     Operand::Immediate(_) => return false,
                 };
-                if signed {
-                    match source_size {
-                        OperandSize::Byte => self.asm.emit(a64::sxtb(T0, T0)),
-                        OperandSize::Word => self.asm.emit(a64::sxth(T0, T0)),
-                        OperandSize::Dword => self.asm.emit(a64::sxtw(T0, T0)),
-                        OperandSize::Qword => {}
-                    }
-                    self.store_reg(T0, dst, false);
-                } else {
-                    self.store_reg(T0, dst, true);
-                }
+                self.load_end(end);
                 true
             }
             Operation::Lea { dst, src } => {
@@ -2044,6 +2625,42 @@ impl<'e> Ctx<'e> {
                 self.leaves
                     .push((leave, self.next_rip, self.k, self.defined));
                 self.asm.bind(done);
+                true
+            }
+            Operation::RepCmps { size } => {
+                // The composition so far first: this one is decided at run time.
+                let defined = self.defined;
+                self.emit_defined(defined);
+                self.defined = Defined::IDENTITY;
+                let exit = self.exit_before();
+                let partial = self.asm.label();
+                self.partials
+                    .push((partial, self.rip, self.k, Defined::IDENTITY));
+                let no_compare = self.asm.label();
+                let asm = &mut self.asm;
+                asm.emit(a64::mrs_nzcv(25));
+                asm.emit(a64::mov_reg(true, 0, 21));
+                asm.emit(a64::mov_reg(true, 1, 19));
+                asm.mov_imm64(2, size.bytes() as u64);
+                asm.mov_imm64(3, u64::from(insn.length));
+                asm.mov_imm64(4, self.rip);
+                asm.emit(a64::ldr_imm(8, 16, 21, super::CTX_CMPS_HELPER));
+                asm.emit(a64::blr(16));
+                asm.emit(a64::msr_nzcv(25));
+                asm.tbnz_to(0, 0, exit);
+                asm.emit(a64::mov_reg(true, 17, 0));
+                asm.tbz_to(17, 2, no_compare);
+                // The flags of the last compare (CMP of the RSI element with the RDI one), all six
+                // defined from here (also at a partial exit, where the general step's iterations
+                // made them so; a retired one gets the static effects of the decode).
+                asm.emit(a64::ldr_imm(8, T0, 21, super::CTX_CMP_A));
+                asm.emit(a64::ldr_imm(8, T1, 21, super::CTX_CMP_B));
+                self.arith_flags(ArithmeticKind::Cmp, size, T0, T1, true);
+                let asm = &mut self.asm;
+                asm.mov_imm32(T2, od_isa::ARITHMETIC_FLAGS as u32);
+                asm.emit(a64::orr_reg(true, 24, 24, T2));
+                asm.bind(no_compare);
+                asm.tbnz_to(17, 1, partial);
                 true
             }
             Operation::Leave => {
@@ -2850,6 +3467,7 @@ pub(crate) fn compile_limited(
         exits: Vec::new(),
         leaves: Vec::new(),
         partials: Vec::new(),
+        mmio_tails: Vec::new(),
         boundaries: Vec::new(),
         exit_here: None,
         rip,
@@ -2925,6 +3543,13 @@ pub(crate) fn compile_limited(
             asm.emit(a64::ldp_post(pair[0], second, a64::SP, 16));
         }
         asm.emit(a64::msr_nzcv(25));
+        let via_device = stub.mmio.map(|tail| {
+            // Status 2: the access went to a device (x17 is free here).
+            let label = asm.label();
+            asm.emit(a64::eor_imm(true, 17, 1, 2).unwrap());
+            asm.cbz_to(true, 17, label);
+            (label, tail)
+        });
         asm.cbnz_to(true, 1, stub.exit);
         if let Some(dst) = stub.dst {
             if dst != 0 {
@@ -2932,6 +3557,29 @@ pub(crate) fn compile_limited(
             }
         }
         asm.b_to(stub.resume);
+        if let Some((label, tail)) = via_device {
+            asm.bind(label);
+            if let Some(dst) = stub.dst {
+                if dst != 0 {
+                    asm.emit(a64::mov_reg(true, dst, 0));
+                }
+            }
+            asm.b_to(tail);
+        }
+    }
+    // S7-32: the ends of the loads and stores that went to a device: the rest of the instruction,
+    // then the boundary after it belongs to the loop (it asks the interrupt source again).
+    let tails = std::mem::take(&mut ctx.mmio_tails);
+    for tail in tails {
+        ctx.asm.bind(tail.label);
+        ctx.load_end(tail.rest);
+        ctx.emit_defined(tail.defined);
+        ctx.asm
+            .emit(a64::add_imm(true, 20, 20, (len - tail.k - 1) as u32, false));
+        ctx.asm.mov_imm64(1, tail.next);
+        ctx.asm
+            .emit(a64::movz(true, 0, super::EXIT_BOUNDARY as u32, 0));
+        ctx.asm.b_abs(exit_common);
     }
     // Exits before an instruction.
     let exits = std::mem::take(&mut ctx.exits);

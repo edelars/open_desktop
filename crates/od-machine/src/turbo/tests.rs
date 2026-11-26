@@ -32,7 +32,8 @@ use crate::{
     MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
 };
 use od_isa::execute::{
-    ControlRegisterPolicy, Cpl0ProfileSet, MovCr3Long64V1, REP_ITERATION_WORK_LIMIT, RunExit,
+    ControlRegisterPolicy, Cpl0ProfileSet, GuestFpState, MovCr3Long64V1, REP_ITERATION_WORK_LIMIT,
+    RunExit,
 };
 use od_isa::memory::PrivilegeLevel;
 use od_isa::memory::{AccessContext, AccessOrigin, GuestMemory, InstructionMode, MemoryError};
@@ -41,12 +42,15 @@ use od_isa::{
     ARITHMETIC_FLAGS, CliProfile, CpuActivity, HaltProfile, INTEGER_FLAGS, LongModeState, Register,
     StiProfile, StiShadow,
 };
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 // ---- machine layout ------------------------------------------------------------------------------
 
 const RAM_LEN: u64 = 0x10_0000;
 const MMIO_PHYS: u64 = 0x0100_0000;
+/// S7-32: a page of ROM (the firmware flash of the board).
+const ROM_PHYS: u64 = 0x0110_0000;
 
 const PML4_A: u64 = 0x1000;
 const PDPT_A: u64 = 0x2000;
@@ -79,6 +83,8 @@ const ALT: u64 = 0x40000;
 const MMIO_LINEAR: u64 = 0x50000;
 /// A linear page whose PTE is not present.
 const UNMAPPED: u64 = 0x60000;
+/// The linear page that maps the ROM page.
+const ROM_LINEAR: u64 = 0x63000;
 /// A read-only linear page (ALT + 0x9000), followed by a writable one (ALT + 0xA000).
 const READ_ONLY: u64 = 0x61000;
 const AFTER_READ_ONLY: u64 = 0x62000;
@@ -100,6 +106,8 @@ const NX: u64 = 1 << 63;
 
 const CR0: u64 = 0x8001_0033;
 const CR4: u64 = 0x20;
+/// CR4.OSFXSR: the SSE forms of the FP member run (S7-32).
+const CR4_OSFXSR: u64 = 1 << 9;
 const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
 
 const CF: u64 = 1;
@@ -143,10 +151,17 @@ fn width_bytes(width: AccessWidth) -> usize {
     }
 }
 
+/// S7-32: device registers that refuse every access (logged with the value 0).
+const REFUSING: std::ops::Range<u64> = 0xFE0..0xFF0;
+
 impl BusDevice for MmioDevice {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
         let mut state = self.0.lock().unwrap();
         let len = width_bytes(access.width);
+        if REFUSING.contains(&access.offset) {
+            state.log.push((false, access.offset, len as u64, 0));
+            return Err(DeviceError::ReadOnly);
+        }
         let offset = access.offset as usize;
         let mut value = [0u8; 8];
         value[..len].copy_from_slice(&state.bytes[offset..offset + len]);
@@ -158,6 +173,10 @@ impl BusDevice for MmioDevice {
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
         let mut state = self.0.lock().unwrap();
         let len = width_bytes(access.width);
+        if REFUSING.contains(&access.offset) {
+            state.log.push((true, access.offset, len as u64, 0));
+            return Err(DeviceError::ReadOnly);
+        }
         let offset = access.offset as usize;
         state.bytes[offset..offset + len].copy_from_slice(&value.to_le_bytes()[..len]);
         state.log.push((true, access.offset, len as u64, value));
@@ -238,6 +257,9 @@ struct Machine {
     irq: Option<TestIrq>,
     /// The device-access count of the bus (the board hands it to its interrupt hook).
     device_accesses: Arc<std::sync::atomic::AtomicU64>,
+    /// S7-32: the FP member of the set and its state (the board's Windows set has it); `None`:
+    /// the set has no FP member.
+    fp: Option<GuestFpState>,
 }
 
 /// The interrupt source of a case and the counters of its hook.
@@ -253,16 +275,42 @@ struct TestIrq {
 struct TestSource {
     pending: Option<u8>,
     acknowledged: Vec<u8>,
+    /// S7-32: an interrupt line of the MMIO device (see [`DeviceLine`]).
+    line: DeviceLine,
 }
+
+/// S7-32: with the device state, the source also has the vector the guest wrote into device
+/// register `LINE_REGISTER` pending (0: none), until it is acknowledged: the answer of the source
+/// changes by a device access, as an interrupt controller's does.
+#[derive(Debug, Default)]
+struct DeviceLine(Option<Arc<Mutex<MmioState>>>);
+
+impl PartialEq for DeviceLine {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DeviceLine {}
+
+/// The device register of [`DeviceLine`].
+const LINE_REGISTER: usize = 0xFF0;
 
 impl crate::irq_source::BoardIrqSource for TestSource {
     fn pending_vector(&self) -> Option<u8> {
-        self.pending
+        self.pending.or_else(|| {
+            let device = self.line.0.as_ref()?;
+            let vector = device.lock().unwrap().bytes[LINE_REGISTER];
+            (vector != 0).then_some(vector)
+        })
     }
 
     fn acknowledge(&mut self, vector: u8) {
         self.acknowledged.push(vector);
         self.pending = None;
+        if let Some(device) = self.line.0.as_ref() {
+            device.lock().unwrap().bytes[LINE_REGISTER] = 0;
+        }
     }
 
     fn next_deadline_ns(&self) -> Option<u64> {
@@ -305,6 +353,7 @@ fn leaf_entries(space_b: bool) -> Vec<(u64, u64)> {
         entries.push((page, page | P | RW));
     }
     entries.push((MMIO_LINEAR, MMIO_PHYS | P | RW | NX));
+    entries.push((ROM_LINEAR, ROM_PHYS | P | RW | NX));
     entries.push((READ_ONLY, (ALT + 0x9000) | P | NX));
     entries.push((AFTER_READ_ONLY, (ALT + 0xA000) | P | RW | NX));
     entries.push((PT_WINDOW, PT_A | P | RW | NX));
@@ -334,8 +383,12 @@ impl Machine {
                 GuestPhysicalRange::new(at(MMIO_PHYS), 0x1000).unwrap(),
                 MemoryRegionKind::Mmio,
             ),
+            MemoryRegionSpec::new(
+                GuestPhysicalRange::new(at(ROM_PHYS), 0x1000).unwrap(),
+                MemoryRegionKind::Rom,
+            ),
         ];
-        let bus = MachineBus::new(
+        let mut bus = MachineBus::new(
             MachineMemoryMap::new(36, regions).unwrap(),
             RamLimits::new(RAM_LEN),
             vec![Box::new(MmioDevice(Arc::clone(&mmio)))],
@@ -346,6 +399,12 @@ impl Machine {
             vec![],
         )
         .unwrap();
+        // The set loop reaches the device, as it reaches the firmware's devices on the board.
+        bus.serve_firmware_set_windows(&[(MMIO_PHYS, 0x1000)]);
+        let rom: Vec<u8> = (0..0x1000u64)
+            .map(|i| (i.wrapping_mul(0x9D) ^ (i >> 5) ^ 0x5A) as u8)
+            .collect();
+        bus.load_rom_bytes(at(ROM_PHYS), &rom).unwrap();
         // Tables: every entry starts with A = D = 0.
         put_qword(&bus, PML4_A, PDPT_A | P | RW);
         put_qword(&bus, PML4_A + 511 * 8, PDPT_A | P | RW);
@@ -434,11 +493,27 @@ impl Machine {
                 source: TestSource {
                     pending: None,
                     acknowledged: Vec::new(),
+                    line: DeviceLine::default(),
                 },
                 counters: Default::default(),
             }),
             device_accesses,
+            fp: None,
         }
+    }
+
+    /// S7-32: the set gets the FP member (with a CPUID profile that declares FPU and FXSR), XMM
+    /// registers random from `seed`, and CR4.OSFXSR (the SSE forms run).
+    fn sse(&mut self, seed: u64) {
+        let mut rng = Rng::new(seed ^ 0x55E);
+        let mut fp = GuestFpState::initial();
+        for xmm in &mut fp.sse.xmm {
+            for half in xmm.chunks_mut(8) {
+                half.copy_from_slice(&rng.value().to_le_bytes());
+            }
+        }
+        self.fp = Some(fp);
+        self.state.cr4 = self.state.cr4.map(|cr4| cr4 | CR4_OSFXSR);
     }
 
     fn code(&mut self, address: u64, bytes: &[u8]) {
@@ -479,8 +554,12 @@ impl Machine {
     }
 }
 
-/// The CPL0 set of the tests: the members the board's unified loop has for these programs.
-fn with_set<R>(f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R) -> R {
+/// The CPU profile of a set with the FP member (it declares FPU and FXSR, which the member needs).
+const FP_CPUID: od_isa::cpuid::CpuidProfile = od_isa::cpuid::CpuidProfile::X8664V1Stage4A;
+
+/// The CPL0 set of the tests: the members the board's unified loop has for these programs, and
+/// the FP member over `fp` when given.
+fn with_set<R>(fp: Option<&RefCell<GuestFpState>>, f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R) -> R {
     let (cli, sti, halt) = (
         CliProfile::NonPviLong64V1,
         StiProfile::NonPviLong64V1,
@@ -493,6 +572,10 @@ fn with_set<R>(f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R) -> R {
         .with_cpu_owned_cr3(MovCr3Long64V1)
         .with_rdtsc()
         .with_popf_cpl0();
+    let set = match fp {
+        Some(cell) => set.with_cpuid(&FP_CPUID).with_fp_state(cell),
+        None => set,
+    };
     f(&set)
 }
 
@@ -518,7 +601,8 @@ fn irq_hook<'a>(
 /// One call of the set loop without a turbo hook: the general step only (the reference).
 fn run_reference(machine: &mut Machine, budget: u64) -> PagedCpl0SetReport {
     let mut tsc = machine.rdtsc;
-    let report = with_set(|set| {
+    let fp = machine.fp.take().map(RefCell::new);
+    let report = with_set(fp.as_ref(), |set| {
         let mut source = || {
             tsc += 1000;
             tsc
@@ -541,6 +625,7 @@ fn run_reference(machine: &mut Machine, budget: u64) -> PagedCpl0SetReport {
         )
     });
     machine.rdtsc = tsc;
+    machine.fp = fp.map(RefCell::into_inner);
     report
 }
 
@@ -548,7 +633,8 @@ fn run_reference(machine: &mut Machine, budget: u64) -> PagedCpl0SetReport {
 /// transition between RDTSC quanta).
 fn run_turbo(machine: &mut Machine, engine: &mut TurboEngine, budget: u64) -> PagedCpl0SetReport {
     let mut tsc = machine.rdtsc;
-    let report = with_set(|set| {
+    let fp = machine.fp.take().map(RefCell::new);
+    let report = with_set(fp.as_ref(), |set| {
         let mut source = || {
             tsc += 1000;
             tsc
@@ -574,6 +660,7 @@ fn run_turbo(machine: &mut Machine, engine: &mut TurboEngine, budget: u64) -> Pa
         )
     });
     machine.rdtsc = tsc;
+    machine.fp = fp.map(RefCell::into_inner);
     report
 }
 
@@ -747,6 +834,33 @@ fn difference(
         return Some(format!(
             "mmio log:\n  reference {:x?}\n  turbo     {:x?}",
             mmio_a.log, mmio_b.log
+        ));
+    }
+    // S7-32: the FP member's state (XMM, MXCSR, x87).
+    if reference.fp != turbo.fp {
+        let lines: Vec<String> = match (&reference.fp, &turbo.fp) {
+            (Some(a), Some(b)) => (0..16)
+                .filter(|&index| a.sse.xmm[index] != b.sse.xmm[index])
+                .map(|index| {
+                    format!(
+                        "  xmm{index}: reference {} turbo {}",
+                        hex(&a.sse.xmm[index]),
+                        hex(&b.sse.xmm[index])
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        return Some(format!(
+            "fp state:\n{}",
+            if lines.is_empty() {
+                format!(
+                    "  reference {:x?}\n  turbo     {:x?}",
+                    reference.fp, turbo.fp
+                )
+            } else {
+                lines.join("\n")
+            }
         ));
     }
     // The source's acknowledgements and the delivered count (the other hook counters are
@@ -2269,6 +2383,67 @@ fn rep(asm: &mut Asm, rng: &mut Rng, v: u64) {
     }
 }
 
+/// S7-32: REPE CMPS of every size over a copied region (REP MOVSB first): counts 0 and 1, a
+/// mismatch inside, equal to the end, more than the iteration limit, elements crossing a page
+/// (the general path), and DF = 1 (the general path).
+fn cmps(asm: &mut Asm, rng: &mut Rng, v: u64) {
+    let size = SIZES[(v % 4) as usize];
+    let case = v / 4 % 7;
+    let elements = match case {
+        0 => 0,
+        1 => 1,
+        2 => 2 + rng.below(60),
+        // Equal to the end, sometimes over exactly the iteration limit (it retires).
+        3 if rng.chance(40) => REP_ITERATION_WORK_LIMIT,
+        3 => 2 + rng.below(60),
+        4 => REP_ITERATION_WORK_LIMIT + 1 + rng.below(100),
+        _ => 3 + rng.below(40),
+    };
+    let bytes = elements * u64::from(size);
+    // Aligned elements, or in case 5 elements across the end of a page.
+    let (src, dst) = if case == 5 {
+        let src = BIG_PTR - 0x1000 - bytes / 2 - 1;
+        (src, DATA + 0x1000 - bytes / 2 - 3)
+    } else {
+        let align = !(u64::from(size) - 1);
+        (
+            (BIG_PTR - 0x8000 + rng.below(0x4000)) & align,
+            (DATA + 0x20 + rng.below(0x800)) & align,
+        )
+    };
+    if case != 1 {
+        // The destination region a copy of the source (in qwords: a few calls for the longest).
+        asm.mov_imm(RSI, src);
+        asm.mov_imm(RDI, dst);
+        asm.mov_imm(RCX, bytes.div_ceil(8));
+        asm.raw(&[0xF3, 0x48, 0xA5]);
+    }
+    if case == 2 && bytes > 0 {
+        // One byte different somewhere (NOT changes no flag).
+        asm.mov_imm(RDX, dst + rng.below(bytes));
+        asm.enc(&[], false, false, &[0xF6], 2, Rm::M(RDX, 0), &[]);
+    }
+    asm.mov_imm(RSI, src);
+    asm.mov_imm(RDI, dst);
+    asm.mov_imm(RCX, elements);
+    let std = case == 6;
+    if std {
+        asm.raw(&[0xFD]);
+    }
+    let mut encoding = vec![0xF3];
+    if size == 2 {
+        encoding.push(0x66);
+    }
+    if size == 8 {
+        encoding.push(0x48);
+    }
+    encoding.push(wide(0xA6, size));
+    asm.raw(&encoding);
+    if std {
+        asm.raw(&[0xFC]);
+    }
+}
+
 /// The GS-relative forms `jit::plan` admits.
 fn gs(asm: &mut Asm, rng: &mut Rng, v: u64) {
     let wide64 = rng.chance(50);
@@ -2366,6 +2541,123 @@ fn sreg(asm: &mut Asm, rng: &mut Rng, v: u64) {
 
 fn rdtsc(asm: &mut Asm, _: &mut Rng, _: u64) {
     asm.raw(&[0x0F, 0x31]);
+}
+
+/// S7-32: a 16-byte operand in the data pages (`aligned`: a multiple of 16), by RBX, RBP, an
+/// absolute address or RIP; sometimes the last bytes of a page (crossing into the next one) when
+/// not aligned.
+fn mem128(rng: &mut Rng, aligned: bool) -> Rm {
+    let disp = if aligned {
+        (rng.below(0x300) as i32 - 0x100) * 16
+    } else if rng.chance(15) {
+        0x1000 - 1 - rng.below(15) as i32
+    } else {
+        rng.below(0x3000) as i32 - 0x1000
+    };
+    match rng.below(5) {
+        0 => Rm::M(RBP, disp),
+        1 => Rm::Abs((DATA_PTR as i32).wrapping_add(disp)),
+        2 => Rm::Rip(DATA_PTR.wrapping_add_signed(i64::from(disp))),
+        _ => Rm::M(RBX, disp),
+    }
+}
+
+/// S7-32: the SSE memory forms with a template: the raw 16-byte moves (aligned and unaligned
+/// kinds, MOVNT*), ANDPS/XORPD with an m128 source, MOVD/MOVQ xmm, m32/m64.
+fn sse_mem(asm: &mut Asm, rng: &mut Rng, v: u64) {
+    let xmm = rng.below(16) as u8;
+    // (mandatory prefix, opcode, aligned)
+    let (prefix, opcode, aligned): (&[u8], u8, bool) = match v {
+        0 => (&[], 0x10, false),
+        1 => (&[], 0x11, false),
+        2 => (&[], 0x28, true),
+        3 => (&[], 0x29, true),
+        4 => (&[0x66], 0x6F, true),
+        5 => (&[0x66], 0x7F, true),
+        6 => (&[0xF3], 0x6F, false),
+        7 => (&[0xF3], 0x7F, false),
+        8 => (&[0x66], 0x10, false),
+        9 => (&[0x66], 0x11, false),
+        10 => (&[0x66], 0x28, true),
+        11 => (&[0x66], 0x29, true),
+        12 => (&[], 0x2B, true),
+        13 => (&[0x66], 0x2B, true),
+        14 => (&[0x66], 0xE7, true),
+        15 => (&[], 0x54, true),
+        16 => (&[0x66], 0x57, true),
+        _ => (&[0x66], 0x6E, false),
+    };
+    if v >= 17 {
+        // MOVD xmm, m32 / MOVQ xmm, m64.
+        let wide = v == 18;
+        let operand = mem(rng, if wide { 8 } else { 4 });
+        asm.enc(&[0x66], wide, false, &[0x0F, 0x6E], xmm, operand, &[]);
+        return;
+    }
+    let operand = mem128(rng, aligned);
+    asm.enc(prefix, false, false, &[0x0F, opcode], xmm, operand, &[]);
+}
+
+/// S7-32: the SSE register forms with a template: the XMM moves, the bitwise operations, PADDD,
+/// PADDQ, PUNPCKLDQ, PUNPCKLQDQ, PSHUFD, MOVD/MOVQ xmm, r32/r64.
+fn sse_reg(asm: &mut Asm, rng: &mut Rng, v: u64) {
+    let (dst, src) = (rng.below(16) as u8, rng.below(16) as u8);
+    let (prefix, opcode): (&[u8], u8) = match v {
+        0 => (&[], 0x28),
+        1 => (&[], 0x29),
+        2 => (&[], 0x10),
+        3 => (&[], 0x11),
+        4 => (&[0x66], 0x6F),
+        5 => (&[0x66], 0x28),
+        6 => (&[0x66], 0x29),
+        7 => (&[0x66], 0x10),
+        8 => (&[0x66], 0x11),
+        9 => (&[0x66], 0xDB),
+        10 => (&[0x66], 0xDF),
+        11 => (&[0x66], 0xEB),
+        12 => (&[0x66], 0xEF),
+        13 => (&[], 0x54),
+        14 => (&[], 0x55),
+        15 => (&[], 0x56),
+        16 => (&[], 0x57),
+        17 => (&[0x66], 0x54),
+        18 => (&[0x66], 0x55),
+        19 => (&[0x66], 0x56),
+        20 => (&[0x66], 0x57),
+        21 => (&[0x66], 0xFE),
+        22 => (&[0x66], 0xD4),
+        23 => (&[0x66], 0x62),
+        24 => (&[0x66], 0x6C),
+        25 => (&[0x66], 0x70),
+        _ => (&[0x66], 0x6E),
+    };
+    match v {
+        25 => {
+            let control = rng.next() as u8;
+            asm.enc(
+                prefix,
+                false,
+                false,
+                &[0x0F, opcode],
+                dst,
+                Rm::R(src),
+                &[control],
+            );
+        }
+        26 | 27 => {
+            let gpr = rng.pick(&FREE);
+            asm.enc(
+                prefix,
+                v == 27,
+                false,
+                &[0x0F, opcode],
+                dst,
+                Rm::R(gpr),
+                &[],
+            );
+        }
+        _ => asm.enc(prefix, false, false, &[0x0F, opcode], dst, Rm::R(src), &[]),
+    }
 }
 
 const TEMPLATES: &[Template] = &[
@@ -2603,6 +2895,24 @@ const TEMPLATES: &[Template] = &[
         jit: yes,
         emit: rdtsc,
     },
+    Template {
+        name: "sse_mem",
+        variants: 19,
+        jit: yes,
+        emit: sse_mem,
+    },
+    Template {
+        name: "cmps",
+        variants: 28,
+        jit: yes,
+        emit: cmps,
+    },
+    Template {
+        name: "sse_reg",
+        variants: 28,
+        jit: yes,
+        emit: sse_reg,
+    },
 ];
 
 /// Templates kept out of the random sequences: known differences (each has an ignored test of its
@@ -2772,6 +3082,8 @@ fn run_program(
         machine.code(CODE + (rip & 0x7FFF), program);
         machine.state.rip = rip;
         randomize(machine, &mut Rng::new(seed ^ 0x5EED));
+        // The set of the board's Windows run: with the FP member (S7-32).
+        machine.sse(seed);
     };
     Case::new(name, seed, &prepare)
         .program(program)
@@ -2945,6 +3257,155 @@ fn general_path_forms_match_inside_generated_code() {
         &["shift_mem", "shld_slow", "mul_narrow", "stack_slow", "xchg"],
         4,
     );
+}
+
+/// S7-32: REPE CMPS through `cmps_helper` (elements across a page and DF = 1 on the general path).
+#[test]
+fn repe_cmps_matches_the_general_step() {
+    let slow: Vec<String> = (0..28)
+        .filter(|v| matches!(v / 4 % 7, 5 | 6))
+        .map(|v| format!("cmps {v}"))
+        .collect();
+    let slow: Vec<&str> = slow.iter().map(String::as_str).collect();
+    check_templates_except(&["cmps"], 6, &slow);
+}
+
+/// S7-32: the SSE forms of the FP member (raw 16-byte moves, XMM moves, bitwise operations,
+/// PADDD/PADDQ, PUNPCKLDQ/PUNPCKLQDQ, PSHUFD, MOVD/MOVQ into XMM).
+#[test]
+fn sse_forms_match_the_general_step() {
+    check_templates(&["sse_mem", "sse_reg"], 6);
+}
+
+/// S7-32: an SSE program (every template variant once, then HLT) where the general step does not
+/// run the forms as the templates do: no FP member (`Unsupported`), CR0.TS = 1 (`#NM`), CR0.EM = 1
+/// and CR4.OSFXSR = 0 (`#UD`), with an IDT (the handler halts) and without one (the loop stops).
+#[test]
+fn sse_forms_with_the_gate_closed_match_the_general_step() {
+    let mut rng = Rng::new(0x55E0);
+    let mut asm = Asm::new(CODE);
+    for (name, variants) in [("sse_reg", 28u64), ("sse_mem", 19)] {
+        let template = template(name);
+        for variant in 0..variants {
+            (template.emit)(&mut asm, &mut rng, variant);
+        }
+    }
+    asm.hlt();
+    let program = asm.bytes;
+    type Setup = fn(&mut Machine);
+    let setups: [(&str, Setup); 4] = [
+        ("no FP member", |machine| {
+            machine.state.cr4 = machine.state.cr4.map(|cr4| cr4 | CR4_OSFXSR);
+        }),
+        ("CR0.TS", |machine| {
+            machine.sse(3);
+            machine.state.cr0 = machine.state.cr0.map(|cr0| cr0 | 1 << 3);
+        }),
+        ("CR0.EM", |machine| {
+            machine.sse(4);
+            machine.state.cr0 = machine.state.cr0.map(|cr0| cr0 | 1 << 2);
+        }),
+        ("CR4.OSFXSR clear", |machine| {
+            machine.sse(5);
+            machine.state.cr4 = machine.state.cr4.map(|cr4| cr4 & !CR4_OSFXSR);
+        }),
+    ];
+    for (name, setup) in setups {
+        for with_idt in [false, true] {
+            let prepare = |machine: &mut Machine| {
+                machine.code(CODE, &program);
+                randomize(machine, &mut Rng::new(11));
+                setup(machine);
+                if with_idt {
+                    machine.idt();
+                }
+            };
+            Case::new(format!("sse gate: {name}, idt {with_idt}"), 1, &prepare)
+                .program(&program)
+                .check();
+        }
+    }
+}
+
+/// S7-32: the edges of the 16-byte accesses of the SSE templates, each against the general step:
+/// an aligned form at an address that is not 16-byte aligned (`#GP`), an access crossing a page,
+/// a non-canonical address, the MMIO page, an unmapped page and the read-only page (`#PF`), a
+/// store into the page table (through its window) and into translated code (both watched).
+#[test]
+fn sse_access_edges_match_the_general_step() {
+    let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut add = |name: &str, build: &dyn Fn(&mut Asm)| {
+        let mut asm = Asm::new(CODE);
+        build(&mut asm);
+        asm.raw(&filler(RAX));
+        asm.hlt();
+        cases.push((name.to_owned(), asm.bytes));
+    };
+    // MOVAPS xmm1, [rbx + 8]; MOVDQA [rbx + 4], xmm2; MOVNTDQ [rbx + 1], xmm3; ANDPS xmm4, [rbx + 2].
+    add("movaps load unaligned", &|asm| {
+        asm.enc(&[], false, false, &[0x0F, 0x28], 1, Rm::M(RBX, 8), &[])
+    });
+    add("movdqa store unaligned", &|asm| {
+        asm.enc(&[0x66], false, false, &[0x0F, 0x7F], 2, Rm::M(RBX, 4), &[])
+    });
+    add("movntdq unaligned", &|asm| {
+        asm.enc(&[0x66], false, false, &[0x0F, 0xE7], 3, Rm::M(RBX, 1), &[])
+    });
+    add("andps unaligned", &|asm| {
+        asm.enc(&[], false, false, &[0x0F, 0x54], 4, Rm::M(RBX, 2), &[])
+    });
+    for (offset, name) in [(0xFF8, "crossing"), (0xFF1, "crossing by one")] {
+        add(&format!("movups load {name}"), &|asm| {
+            asm.enc(&[], false, false, &[0x0F, 0x10], 5, Rm::M(RBX, offset), &[])
+        });
+        add(&format!("movdqu store {name}"), &|asm| {
+            asm.enc(
+                &[0xF3],
+                false,
+                false,
+                &[0x0F, 0x7F],
+                6,
+                Rm::M(RBX, offset),
+                &[],
+            )
+        });
+    }
+    for (address, name) in [
+        (0x0000_8000_0000_0000u64, "non-canonical"),
+        (MMIO_LINEAR + 0x40, "mmio"),
+        (UNMAPPED + 0x10, "unmapped"),
+        (READ_ONLY + 0x20, "read-only"),
+        (PT_WINDOW + 0x100, "page table"),
+        (CODE + 0x10, "translated code"),
+    ] {
+        add(&format!("movups load {name}"), &|asm| {
+            asm.mov_imm(RDI, address);
+            asm.enc(&[], false, false, &[0x0F, 0x10], 7, Rm::M(RDI, 0), &[]);
+        });
+        add(&format!("movups store {name}"), &|asm| {
+            asm.mov_imm(RDI, address);
+            asm.enc(&[], false, false, &[0x0F, 0x11], 7, Rm::M(RDI, 0), &[]);
+        });
+        add(&format!("movd load {name}"), &|asm| {
+            asm.mov_imm(RDI, address);
+            asm.enc(&[0x66], false, false, &[0x0F, 0x6E], 8, Rm::M(RDI, 0), &[]);
+        });
+    }
+    for (name, program) in &cases {
+        for with_idt in [false, true] {
+            let prepare = |machine: &mut Machine| {
+                machine.code(CODE, program);
+                randomize(machine, &mut Rng::new(12));
+                machine.sse(12);
+                if with_idt {
+                    machine.idt();
+                }
+            };
+            Case::new(format!("sse edge: {name}, idt {with_idt}"), 1, &prepare)
+                .program(program)
+                .check();
+        }
+    }
 }
 
 // ---- random sequences ----------------------------------------------------------------------------
@@ -3350,6 +3811,252 @@ fn accesses_to_a_non_ram_region_match_the_general_step() {
     assert_generated(&outcome, "mmio");
 }
 
+/// S7-32: plain loads and stores of every width to the device page (MOV r, m and m, r/imm;
+/// MOVZX/MOVSX of negative values too), each followed by more code of the same block, against
+/// the general step with every budget: the access goes to the device from generated code and the
+/// run ends at the boundary after it, with the definedness of the block so far; a form without an
+/// MMIO end (ALU with memory) leaves it to the general step.
+#[test]
+fn device_loads_and_stores_match_the_general_step() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm(RDI, MMIO_LINEAR);
+    for (size, offset) in [(1u8, 0x11), (2, 0x22), (4, 0x34), (8, 0x48)] {
+        asm.op(&[], size, &[wide(0x8A, size)], RAX, Rm::M(RDI, offset), &[]);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RCX), &[]);
+        asm.op(
+            &[],
+            size,
+            &[wide(0x88, size)],
+            RCX,
+            Rm::M(RDI, offset + 0x100),
+            &[],
+        );
+        asm.op(&[], 8, &[0x31], RCX, Rm::R(RDX), &[]);
+        let immediate = imm(size.min(4), 0x8765_4321);
+        asm.op(
+            &[],
+            size,
+            &[wide(0xC6, size)],
+            0,
+            Rm::M(RDI, offset + 0x200),
+            &immediate,
+        );
+    }
+    // MOVZX/MOVSX of bytes and words, MOVSXD.
+    asm.enc(&[], true, false, &[0x0F, 0xB6], RSI, Rm::M(RDI, 0x13), &[]);
+    asm.enc(&[], false, false, &[0x0F, 0xB7], R8, Rm::M(RDI, 0x16), &[]);
+    asm.enc(&[], true, false, &[0x0F, 0xBE], R10, Rm::M(RDI, 0x81), &[]);
+    asm.enc(&[], true, false, &[0x0F, 0xBF], R11, Rm::M(RDI, 0x82), &[]);
+    asm.op(&[], 8, &[0x63], R12, Rm::M(RDI, 0x84), &[]);
+    asm.op(&[], 8, &[0x01], RSI, Rm::R(R10), &[]);
+    // A read-modify-write (no MMIO end: the general step; a locked one on the device stops the
+    // general step, see `accesses_to_a_non_ram_region_match_the_general_step`).
+    asm.op(&[], 4, &[0x01], RAX, Rm::M(RDI, 0x30), &[]);
+    asm.op(&[], 8, &[0x8B], R13, Rm::M(RBX, 0x10), &[]);
+    // SHL by 5 leaves OF undefined: the end after a device access carries the definedness of the
+    // block so far (nothing after it defines a flag again). Then sign extensions of negative device
+    // values into 32- and 16-bit registers (the upper half of a 32-bit one is zero).
+    asm.op(&[], 8, &[0xC1], 4, Rm::R(RAX), &[5]);
+    asm.enc(&[], false, false, &[0x0F, 0xBE], RCX, Rm::M(RDI, 0x91), &[]);
+    asm.enc(&[], false, false, &[0x0F, 0xBF], RDX, Rm::M(RDI, 0x92), &[]);
+    asm.enc(
+        &[0x66],
+        false,
+        false,
+        &[0x0F, 0xBE],
+        R14,
+        Rm::M(RDI, 0x94),
+        &[],
+    );
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        randomize(machine, &mut Rng::new(21));
+        machine.sse(21);
+        let mut device = machine.mmio.lock().unwrap();
+        for (offset, value) in [
+            (0x81, 0x80),
+            (0x83, 0xC3),
+            (0x91, 0x9C),
+            (0x93, 0xA5),
+            (0x94, 0xF1),
+        ] {
+            device.bytes[offset] = value;
+        }
+    };
+    let outcome = Case::new("device loads and stores", 1, &prepare)
+        .program(&program)
+        .check();
+    assert!(outcome.report.mmio_written, "{:?}", outcome.report);
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(outcome.state.gpr[RCX as usize], 0xFFFF_FF9C);
+    assert_eq!(
+        outcome.state.gpr[RDX as usize],
+        0xFFFF_A500 | outcome.state.gpr[RDX as usize] & 0xFF
+    );
+    assert_eq!(outcome.state.gpr[R14 as usize] & 0xFFFF, 0xFFF1);
+    // Twelve MOV forms and eight extensions; the ALU form runs on the general path.
+    assert_eq!(outcome.stats.mmio_accesses, 20, "{:?}", outcome.stats);
+    for budget in 1..outcome.retired {
+        Case::new(
+            format!("device loads and stores, budget {budget}"),
+            1,
+            &prepare,
+        )
+        .program(&program)
+        .budget(budget)
+        .check();
+    }
+}
+
+/// S7-32: a device that refuses the access of a plain load or store (in the middle of a block):
+/// the call ends with the general step's exit and memory error, and the device is reached once.
+#[test]
+fn a_device_refusing_an_access_is_reached_once() {
+    let forms: [(&str, fn(&mut Asm)); 4] = [
+        ("load", |asm| {
+            asm.op(&[], 4, &[0x8B], RAX, Rm::M(RDI, 0xFE0), &[])
+        }),
+        ("store", |asm| {
+            asm.op(&[], 8, &[0x89], RCX, Rm::M(RDI, 0xFE8), &[])
+        }),
+        ("store immediate", |asm| {
+            asm.op(&[], 1, &[0xC6], 0, Rm::M(RDI, 0xFE4), &[0x5A])
+        }),
+        ("sign extension", |asm| {
+            asm.enc(&[], true, false, &[0x0F, 0xBF], RDX, Rm::M(RDI, 0xFEA), &[])
+        }),
+    ];
+    for (name, form) in forms {
+        let mut asm = Asm::new(CODE);
+        asm.mov_imm(RDI, MMIO_LINEAR);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+        form(&mut asm);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+        asm.hlt();
+        let program = asm.bytes;
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, &program);
+            randomize(machine, &mut Rng::new(51));
+        };
+        let outcome = Case::new(format!("refusing device: {name}"), 1, &prepare)
+            .program(&program)
+            .check();
+        assert!(
+            outcome.report.exit.contains("MemoryError") && outcome.report.memory_error != "None",
+            "{name}: {:?}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.stats.general_steps, 0,
+            "{name}: {:?}",
+            outcome.stats
+        );
+        let mut machine = Machine::new(1);
+        prepare(&mut machine);
+        let mut engine = Engine::take(&machine);
+        run_turbo(&mut machine, engine.get(), 100_000);
+        let log = machine.mmio.lock().unwrap().log.clone();
+        assert_eq!(log.len(), 1, "{name}: the device is reached once: {log:x?}");
+    }
+}
+
+/// S7-32: reads of ROM of every width, by MOV, MOVZX and an ALU source, served by the memory
+/// helper as the general step's adapter serves them; a store into ROM (the general step's error).
+#[test]
+fn rom_reads_match_the_general_step() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm(RSI, ROM_LINEAR);
+    for (size, offset) in [(1u8, 0x15), (2, 0x26), (4, 0x38), (8, 0x40), (8, 0xFF8)] {
+        asm.op(&[], size, &[wide(0x8A, size)], RAX, Rm::M(RSI, offset), &[]);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+    }
+    asm.enc(&[], true, false, &[0x0F, 0xB6], RCX, Rm::M(RSI, 0x77), &[]);
+    asm.op(&[], 8, &[0x03], RDX, Rm::M(RSI, 0x80), &[]);
+    asm.op(&[], 4, &[0x3B], RDX, Rm::M(RSI, 0x90), &[]);
+    asm.raw(&[0x0F, 0x94, 0xC0]);
+    let reads = asm.bytes.clone();
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        randomize(machine, &mut Rng::new(41));
+        machine.sse(41);
+    };
+    let outcome = Case::new("rom reads", 1, &prepare)
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert!(outcome.stats.rom_reads >= 7, "{:?}", outcome.stats);
+    // A store into ROM after the reads.
+    let mut asm = Asm::new(CODE);
+    asm.raw(&reads);
+    asm.op(&[], 4, &[0x89], RAX, Rm::M(RSI, 0x20), &[]);
+    asm.hlt();
+    let store = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &store);
+        randomize(machine, &mut Rng::new(42));
+    };
+    Case::new("rom store", 1, &prepare).program(&store).check();
+}
+
+/// S7-32: a store into a device register that makes a vector pending (IF = 1) is followed by the
+/// delivery at the very next boundary, with more code of the same block after the store; a load
+/// from the device first, the store in the middle of the block, with every budget.
+#[test]
+fn an_interrupt_raised_by_a_device_store_is_delivered_at_the_next_boundary() {
+    for (index, store) in [
+        // mov byte [rdi + 0xFF0], 0x30
+        &[0xC6, 0x87, 0xF0, 0x0F, 0x00, 0x00, 0x30][..],
+        // mov [rdi + 0xFF0], ecx (ECX = 0x31)
+        &[0x89, 0x8F, 0xF0, 0x0F, 0x00, 0x00][..],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut asm = Asm::new(CODE);
+        asm.mov_imm(RDI, MMIO_LINEAR);
+        asm.mov_imm32(RCX, 0x31);
+        asm.op(&[], 4, &[0x8B], RAX, Rm::M(RDI, 0x40), &[]);
+        asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+        asm.raw(store);
+        for _ in 0..4 {
+            asm.op(&[], 8, &[0x01], RAX, Rm::R(RDX), &[]);
+            asm.raw(&filler(RSI));
+        }
+        asm.hlt();
+        let program = asm.bytes;
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, &program);
+            randomize(machine, &mut Rng::new(31));
+            machine.idt();
+            machine.state.rflags |= IF;
+            machine.mmio.lock().unwrap().bytes[LINE_REGISTER] = 0;
+            if let Some(irq) = machine.irq.as_mut() {
+                irq.source.line = DeviceLine(Some(Arc::clone(&machine.mmio)));
+            }
+        };
+        let name = format!("device interrupt {index}");
+        let outcome = Case::new(name.clone(), 1, &prepare)
+            .program(&program)
+            .check();
+        assert_eq!(outcome.acknowledged, [0x30 + index as u8], "{name}");
+        assert!(
+            outcome.stats.mmio_accesses >= 2,
+            "{name}: {:?}",
+            outcome.stats
+        );
+        for budget in 1..outcome.retired {
+            Case::new(format!("{name}, budget {budget}"), 1, &prepare)
+                .program(&program)
+                .budget(budget)
+                .check();
+        }
+    }
+}
+
 /// The faults: a read of an unmapped page, a write to a read-only page, a non-canonical address
 /// (#GP), DIV by zero and IDIV overflow (#DE), in registers and memory; without an IDT (the loop
 /// stops with the fault) and with one (#PF and #GP are delivered, the handler halts).
@@ -3572,6 +4279,7 @@ fn an_external_interrupt_is_delivered_at_the_same_boundary() {
                 source: TestSource {
                     pending: Some(0x30),
                     acknowledged: Vec::new(),
+                    line: DeviceLine::default(),
                 },
                 counters: Default::default(),
             });
@@ -3600,12 +4308,14 @@ fn a_new_engine_and_a_reset_one_run_alike() {
         let prepare = |machine: &mut Machine| {
             machine.code(CODE, &program);
             randomize(machine, &mut Rng::new(seed));
+            machine.sse(seed);
         };
         // Leave state of another program in the pooled engine first.
         let other = sequence(CODE, 4000 + seed, &pool);
         let prepare_other = |machine: &mut Machine| {
             machine.code(CODE, &other);
             randomize(machine, &mut Rng::new(seed + 1));
+            machine.sse(seed + 1);
         };
         Case::new("warm-up", seed, &prepare_other)
             .program(&other)
@@ -3639,6 +4349,7 @@ fn random_sequences_without_an_interrupt_hook_match_the_general_step() {
         let prepare = |machine: &mut Machine| {
             machine.code(CODE, &program);
             randomize(machine, &mut Rng::new(seed));
+            machine.sse(seed);
             machine.irq = None;
         };
         let outcome = Case::new(format!("no hook {seed}"), seed, &prepare)
@@ -3735,6 +4446,18 @@ fn the_comparison_finds_a_difference_in_every_compared_part() {
     assert!(
         difference(&a, &b, &left, &right).is_some(),
         "the interrupt acknowledgements"
+    );
+    let (mut a, mut b) = pair();
+    a.sse(1);
+    b.sse(1);
+    let (left, right) = (report(&mut a), report(&mut b));
+    assert_eq!(difference(&a, &b, &left, &right), None);
+    if let Some(fp) = b.fp.as_mut() {
+        fp.sse.xmm[7][3] ^= 1;
+    }
+    assert!(
+        difference(&a, &b, &left, &right).is_some(),
+        "an XMM register"
     );
 }
 

@@ -19,6 +19,7 @@
 #![allow(clippy::all)]
 
 mod jit;
+mod profile;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,7 @@ use crate::{GuestLinearAddress, GuestPhysicalAddress, PhysicalMemory};
 use od_isa::LongModeState;
 use od_isa::memory::{AccessContext, AccessKind};
 use od_jit::exec_arena::ExecutableArena;
+use profile::{Refusal, SlowProfile, SlowReason};
 use std::collections::HashMap as StdHashMap;
 use std::collections::HashSet as StdHashSet;
 
@@ -81,6 +83,14 @@ pub(crate) const OP_WRITE: u64 = 0x10;
 /// The locked walk of a read-modify-write: fill the TLBs, no data access (the instruction runs
 /// again).
 pub(crate) const OP_ATOMIC: u64 = 0x20;
+/// S7-32: the TLB entry of a 16-byte access (the SSE templates): the walk of the general path
+/// (accessed/dirty bits) and the fill, no data access (the check runs again). The size bits are 0.
+pub(crate) const OP_FILL128: u64 = 0x40;
+/// S7-32: a plain load or store whose operand may be a device register: an access the RAM path
+/// refuses as not RAM goes to the set loop's MMIO dispatch, as the general step's would, and the
+/// helper answers status 2 (done through a device: the template finishes the instruction and the
+/// run ends at the boundary after it, where the loop asks the interrupt source again).
+pub(crate) const OP_MMIO: u64 = 0x80;
 
 const ARITH: u64 = od_isa::ARITHMETIC_FLAGS;
 const CF: u64 = 1;
@@ -274,6 +284,13 @@ pub(crate) struct TurboCtx {
     pub masked: u64,
     pub div_helper: usize, // 152
     pub sti_helper: usize, // 160
+    /// S7-32: the XMM registers of the FP member (`GuestFpState::sse.xmm`) when the SSE templates
+    /// may run (the member is there and its #UD/#NM gate is open), 0 otherwise; set by each run.
+    pub xmm: usize, // 168
+    pub cmps_helper: usize, // 176
+    /// S7-32: the operands of the last compare of a REPE CMPS (`cmps_helper`).
+    pub cmp_a: u64, // 184
+    pub cmp_b: u64,        // 192
 }
 
 pub(crate) const CTX_BUDGET: u32 = 0;
@@ -291,6 +308,15 @@ pub(crate) const CTX_RDTSC_HELPER: u32 = 120;
 pub(crate) const CTX_SEG_START: u32 = 128;
 pub(crate) const CTX_DIV_HELPER: u32 = 152;
 pub(crate) const CTX_STI_HELPER: u32 = 160;
+pub(crate) const CTX_XMM: u32 = 168;
+pub(crate) const CTX_CMPS_HELPER: u32 = 176;
+pub(crate) const CTX_CMP_A: u32 = 184;
+pub(crate) const CTX_CMP_B: u32 = 192;
+// S7-32: the fields generated code reaches by these offsets are where the offsets say.
+const _: () = assert!(std::mem::offset_of!(TurboCtx, xmm) == CTX_XMM as usize);
+const _: () = assert!(std::mem::offset_of!(TurboCtx, cmps_helper) == CTX_CMPS_HELPER as usize);
+const _: () = assert!(std::mem::offset_of!(TurboCtx, cmp_a) == CTX_CMP_A as usize);
+const _: () = assert!(std::mem::offset_of!(TurboCtx, cmp_b) == CTX_CMP_B as usize);
 
 /// What a run needs from the set loop (borrowed for the duration of one run).
 pub(crate) struct RunEnv<'a> {
@@ -321,6 +347,12 @@ pub(crate) struct RunEnv<'a> {
     pub tick: Option<*const std::sync::atomic::AtomicBool>,
     /// The TSC an RDTSC of the current (merged) quantum reads, when the fast transition knows it.
     pub tsc_next: Option<u64>,
+    /// S7-32: the cell of the set's FP member (`Cpl0ProfileSet::fp_state`), not borrowed while the
+    /// run lasts: the SSE templates run on its XMM registers.
+    pub fp: Option<*mut od_isa::execute::GuestFpState>,
+    /// S7-32: the MMIO dispatch of the set loop's step view (the windows and devices the general
+    /// step reaches), for the `OP_MMIO` accesses.
+    pub mmio: Option<*const (dyn crate::bus::SetStepMmio + 'static)>,
 }
 
 #[repr(C)]
@@ -489,6 +521,10 @@ pub(crate) enum TurboExit {
     Rdtsc,
     /// A REP string instruction at `state.rip` stopped at the iteration limit (not retired).
     RepPartial,
+    /// S7-32: the device refused the access of the instruction at `state.rip` (not retired);
+    /// [`TurboEngine::take_device_error`] gives the error the general step's access would have
+    /// returned (the device was reached once).
+    DeviceError,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -554,6 +590,12 @@ pub(crate) struct TurboEngine {
     /// The leaf table frame of the last code translation (for `install`).
     last_leaf: u64,
     pub stats: TurboStats,
+    /// S7-32: the profile of the slow exits (`enable_profile`; `None` otherwise).
+    profile: Option<Box<SlowProfile>>,
+    /// S7-32: why a helper last refused (read and cleared by the profile at a slow exit).
+    refusal: Option<Refusal>,
+    /// S7-32: the error of a device access of generated code (`OP_MMIO`), for the loop.
+    device_error: Option<crate::page_walk::TrackedAccessError>,
 }
 
 // SAFETY: the raw pointers of the engine point at allocations it owns (its TLB and lookup arrays,
@@ -585,6 +627,12 @@ pub struct TurboStats {
     pub fast_transitions: u64,
     pub helper_reads: u64,
     pub helper_writes: u64,
+    /// S7-32: accesses of generated code that went to a device (`OP_MMIO`).
+    pub mmio_accesses: u64,
+    /// S7-32: reads of generated code served from ROM (as the general step's `rom_read`).
+    pub rom_reads: u64,
+    /// S7-32: REPE CMPS executions of generated code (`cmps_helper`).
+    pub cmps_calls: u64,
 }
 
 impl TurboEngine {
@@ -641,6 +689,10 @@ impl TurboEngine {
             masked: 0,
             div_helper: div_helper as *const () as usize,
             sti_helper: sti_helper as *const () as usize,
+            xmm: 0,
+            cmps_helper: cmps_helper as *const () as usize,
+            cmp_a: 0,
+            cmp_b: 0,
         });
         let mut engine = Box::new(Self {
             arena,
@@ -683,6 +735,9 @@ impl TurboEngine {
             last_page: u64::MAX,
             last_leaf: u64::MAX,
             stats: TurboStats::default(),
+            profile: None,
+            refusal: None,
+            device_error: None,
         });
         engine.emit_stubs();
         Some(engine)
@@ -1102,6 +1157,7 @@ impl TurboEngine {
         self.paging_key = None;
         self.last_page = u64::MAX;
         self.last_leaf = u64::MAX;
+        self.device_error = None;
         self.sync_view();
     }
 
@@ -1389,14 +1445,82 @@ impl TurboEngine {
         }
     }
 
-    /// The loop runs one general step (an instruction the engine leaves to it).
-    pub(crate) fn note_general_step(&mut self) {
+    /// The loop runs one general step at `state.rip` (an instruction the engine leaves to it).
+    pub(crate) fn note_general_step(&mut self, state: &LongModeState) {
         self.stats.general_steps += 1;
+        if let Some(profile) = self.profile.as_deref_mut() {
+            profile.general_step(state.rip, cpl_of(state));
+        }
     }
 
-    /// The statistics of the engine as text.
+    /// S7-32: the error of the device access the last run ended with ([`TurboExit::DeviceError`]).
+    pub(crate) fn take_device_error(&mut self) -> Option<crate::page_walk::TrackedAccessError> {
+        self.device_error.take()
+    }
+
+    /// S7-32: profile the slow exits from now on (reported by [`Self::report`]).
+    pub(crate) fn enable_profile(&mut self) {
+        if self.profile.is_none() {
+            self.profile = Some(Box::new(SlowProfile::new()));
+        }
+    }
+
+    /// The statistics of the engine as text, then the profile of the slow exits when it is on.
     pub(crate) fn report(&self) -> String {
-        format!("{:?}", self.stats)
+        let mut text = format!("{:?}", self.stats);
+        if let Some(profile) = self.profile.as_deref() {
+            text.push('\n');
+            text.push_str(&profile.report(40));
+        }
+        text
+    }
+
+    /// The memory helper refuses the access at linear `address` for `refusal` (the general step
+    /// runs the instruction).
+    fn refuse(&mut self, refusal: Refusal, address: u64) {
+        self.refusal = Some(refusal);
+        if let Some(profile) = self.profile.as_deref_mut() {
+            profile.mem_refusal(refusal, address);
+        }
+    }
+
+    /// The reason and the decode of the slow exit at `rip` the last run ended with (profile only).
+    fn slow_site(
+        &mut self,
+        env: &RunEnv<'_>,
+        rip: u64,
+        no_code: bool,
+    ) -> (SlowReason, Option<od_isa::long_decode::Instruction>) {
+        let refusal = self.refusal.take();
+        let instruction = match self.slow_decode {
+            Some((_, instruction)) => Some(instruction),
+            None => crate::paged_memory_adapter::histogram_decode(
+                rip,
+                env.ram,
+                &env.paging,
+                env.context,
+            ),
+        };
+        let reason = match instruction {
+            _ if no_code => SlowReason::NoCode,
+            None => SlowReason::NoCode,
+            Some(instruction) if !jit::admitted(&instruction) => SlowReason::NoTemplate,
+            Some(_) => match refusal {
+                Some(refusal) => SlowReason::Refused(refusal),
+                None => {
+                    let index = ((rip ^ (rip >> 12)) as usize) & (LOOKUP_SIZE - 1);
+                    let entry = self.lookup[index];
+                    if entry.rip == rip && entry.code as usize == self.slow_stub {
+                        // Admitted, yet the RIP has the slow stub: a page-crossing instruction
+                        // without a block.
+                        SlowReason::NoCode
+                    } else {
+                        SlowReason::Refused(Refusal::Check)
+                    }
+                }
+            },
+        };
+        (reason, instruction)
     }
 
     /// Run generated code from `state.rip` for at most `budget` instructions.
@@ -1409,6 +1533,9 @@ impl TurboEngine {
         masked: bool,
     ) -> TurboOutcome {
         self.stats.runs += 1;
+        if let Some(profile) = self.profile.as_deref_mut() {
+            profile.enter();
+        }
         self.drain_code_watch(env.ram);
         self.check_paging(state, &env.paging);
         env.engine = self as *mut _;
@@ -1435,7 +1562,17 @@ impl TurboEngine {
         self.ctx.seg_start = self.ctx.budget;
         self.ctx.run_retired = 0;
         self.ctx.masked = masked as u64;
-        let exit;
+        // S7-32: the SSE templates run where the general step would run the form: the FP member
+        // is there and its gate is open (CR0.EM = 0, CR4.OSFXSR = 1, CR0.TS = 0; the control
+        // registers do not change inside a run: their writes are general steps).
+        self.ctx.xmm = match env.fp {
+            // SAFETY: the cell of the set's FP member, alive and not borrowed for the run.
+            Some(fp) if sse_gate_open(state) => unsafe { (*fp).sse.xmm.as_mut_ptr() as usize },
+            _ => 0,
+        };
+        let mut exit;
+        // The engine had no code for the RIP (profile only).
+        let mut no_code = false;
         loop {
             if self.ctx.budget <= 0 {
                 exit = TurboExit::Budget;
@@ -1450,6 +1587,7 @@ impl TurboEngine {
                 match self.code_for(env, rip) {
                     Some(code) => code,
                     None => {
+                        no_code = true;
                         exit = TurboExit::Slow;
                         break;
                     }
@@ -1512,6 +1650,7 @@ impl TurboEngine {
                             }
                         }
                         None => {
+                            no_code = true;
                             exit = TurboExit::Slow;
                             break;
                         }
@@ -1570,6 +1709,10 @@ impl TurboEngine {
             }
         }
         self.ctx.env = std::ptr::null_mut();
+        if exit == TurboExit::Slow && self.device_error.is_some() {
+            // The device refused the access: the call ends as the general step's would.
+            exit = TurboExit::DeviceError;
+        }
         if exit == TurboExit::Slow {
             self.stats.slow_exits += 1;
             let rip = state.rip;
@@ -1593,6 +1736,15 @@ impl TurboEngine {
                 .and_then(|physical| self.slow_insns.get(&(rip, physical.get() >> 12)).copied())
                 .map(|instruction| (rip, instruction))
             };
+        }
+        if self.profile.is_some() {
+            let slow = (exit == TurboExit::Slow).then(|| {
+                let (reason, instruction) = self.slow_site(env, state.rip, no_code);
+                (state.rip, cpl_of(state), reason, instruction)
+            });
+            if let Some(profile) = self.profile.as_deref_mut() {
+                profile.leave(exit, slow);
+            }
         }
         self.stats.retired += retired;
         TurboOutcome { retired, exit }
@@ -1719,8 +1871,12 @@ unsafe extern "C" fn mem_helper(
         value: 0,
         status: 1,
     };
+    if op & OP_FILL128 != 0 {
+        return fill128(engine, env, address, write, rip);
+    }
     if (address & 0xfff) + size > 0x1000 {
         engine.stats.tlb_fallbacks += 1;
+        engine.refuse(Refusal::CrossPage, address);
         return fallback;
     }
     let width = width_of(size);
@@ -1744,6 +1900,7 @@ unsafe extern "C" fn mem_helper(
                     .any(|table| table.get() >> 12 == page)
             {
                 engine.stats.tlb_fallbacks += 1;
+                engine.refuse(Refusal::Watched, address);
                 return fallback;
             }
             apply_ad(&walk, true);
@@ -1756,6 +1913,7 @@ unsafe extern "C" fn mem_helper(
                     status: 0,
                 };
             }
+            engine.refuse(Refusal::Watched, address);
             return fallback;
         }
         if write {
@@ -1768,6 +1926,7 @@ unsafe extern "C" fn mem_helper(
                     .any(|table| table.get() >> 12 == page)
             {
                 engine.stats.tlb_fallbacks += 1;
+                engine.refuse(Refusal::Watched, address);
                 return fallback;
             }
             apply_ad(&walk, true);
@@ -1801,29 +1960,42 @@ unsafe extern "C" fn mem_helper(
     }
     if write {
         // Classify first, without effects: a watched page goes to the general path.
-        let Ok((physical, tables)) =
-            crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
+        let (physical, tables) =
+            match crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
                 env.ram,
                 &env.paging,
                 rip,
                 GuestLinearAddress::new(address),
                 env.context,
                 AccessKind::Write,
-            )
-        else {
-            engine.stats.tlb_fallbacks += 1;
-            return fallback;
-        };
+            ) {
+                Ok(translation) => translation,
+                Err(error) => {
+                    engine.stats.tlb_fallbacks += 1;
+                    engine.refuse(Refusal::of(&error), address);
+                    return fallback;
+                }
+            };
         let page = physical.get() >> 12;
+        if env.ram.ram_page_host_ptr(physical).is_none() {
+            if op & OP_MMIO != 0
+                && let Some(done) = mmio_access(engine, env, address, size, true, value, rip)
+            {
+                return done;
+            }
+            engine.stats.tlb_fallbacks += 1;
+            engine.refuse(Refusal::NotRam, address);
+            return fallback;
+        }
         if engine.pt_frames.contains_key(&page)
             || engine.overlaps_code(page, physical.get() & 0xfff, size)
-            || env.ram.ram_page_host_ptr(physical).is_none()
             || tables
                 .iter()
                 .flatten()
                 .any(|table| table.get() >> 12 == page)
         {
             engine.stats.tlb_fallbacks += 1;
+            engine.refuse(Refusal::Watched, address);
             return fallback;
         }
     }
@@ -1848,10 +2020,18 @@ unsafe extern "C" fn mem_helper(
                         status: 0,
                     }
                 } else {
+                    engine.refuse(Refusal::Watched, address);
                     fallback
                 }
             }
-            _ => fallback,
+            Err(error) => {
+                engine.refuse(Refusal::of(&error), address);
+                fallback
+            }
+            _ => {
+                engine.refuse(Refusal::Walk, address);
+                fallback
+            }
         };
     }
     let request = TrackedAccessRequest {
@@ -1877,10 +2057,184 @@ unsafe extern "C" fn mem_helper(
                 status: 0,
             }
         }
-        _ => {
+        Err(error) => {
+            let refusal = Refusal::of(&error);
+            // S7-32: a read of ROM, as the general step's adapter serves it (`rom_read`): the
+            // bytes of the region, nothing else happens (the walk set what it sets for any read).
+            if !write
+                && let crate::page_walk::TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: crate::MemoryAccessError::UnreadableRegion(crate::MemoryRegionKind::Rom),
+                } = &error
+            {
+                let mut bytes = [0u8; 8];
+                if env
+                    .ram
+                    .load_bytes(*physical, &mut bytes[..size as usize])
+                    .is_ok()
+                {
+                    engine.stats.rom_reads += 1;
+                    return HelperResult {
+                        value: u64::from_le_bytes(bytes),
+                        status: 0,
+                    };
+                }
+            }
+            if refusal == Refusal::NotRam
+                && op & OP_MMIO != 0
+                && !write
+                && let Some(done) = mmio_access(engine, env, address, size, false, 0, rip)
+            {
+                return done;
+            }
             engine.stats.tlb_fallbacks += 1;
+            engine.refuse(refusal, address);
             fallback
         }
+        _ => {
+            engine.stats.tlb_fallbacks += 1;
+            engine.refuse(Refusal::Walk, address);
+            fallback
+        }
+    }
+}
+
+/// S7-32: an `OP_MMIO` access of `size` bytes at `address` that is not RAM, made as the general
+/// step makes it: the tracked walk (accessed/dirty bits) and the dispatch of the set loop's step
+/// view (its windows, its devices, its `mmio_written` and device-access count). `Some` with status
+/// 2 (and the value of a read) when it was done; `Some` with status 1 and the error kept in the
+/// engine when the dispatch failed (`MmioBackend`: the run ends with [`TurboExit::DeviceError`]
+/// and the loop ends the call as the general step's failed access would, without reaching the
+/// device again); `None` when the general path must run the instruction (no dispatch here, an
+/// address no window serves, a fault: no device was reached and the walk changed nothing the
+/// general step does not set again).
+fn mmio_access(
+    engine: &mut TurboEngine,
+    env: &mut RunEnv<'_>,
+    address: u64,
+    size: u64,
+    write: bool,
+    value: u64,
+    rip: u64,
+) -> Option<HelperResult> {
+    // SAFETY: the step view of the set loop, alive and not otherwise used during the run.
+    let mmio = unsafe { &*env.mmio? };
+    let width = width_of(size);
+    let request = TrackedAccessRequest {
+        instruction_rip: rip,
+        address: GuestLinearAddress::new(address),
+        context: env.context,
+        operation: if write {
+            RamAccessOperation::Write { width, value }
+        } else {
+            RamAccessOperation::Read { width }
+        },
+    };
+    let report = crate::page_walk::access_long64_2m_with_mmio(
+        env.ram,
+        &env.paging,
+        request,
+        |_| {},
+        mmio.windows(),
+        |physical, width, operation| mmio.dispatch(physical, width, operation),
+    );
+    let value = match report.outcome {
+        Ok(crate::page_walk::TrackedAccessOutcome::Read(value)) => value,
+        Ok(crate::page_walk::TrackedAccessOutcome::Written) => 0,
+        Err(error @ crate::page_walk::TrackedAccessError::MmioBackend { .. }) => {
+            engine.device_error = Some(error);
+            return Some(HelperResult {
+                value: 0,
+                status: 1,
+            });
+        }
+        _ => return None,
+    };
+    engine.stats.mmio_accesses += 1;
+    Some(HelperResult { value, status: 2 })
+}
+
+/// S7-32: the TLB entry for a 16-byte access at `address` of the SSE templates (`OP_FILL128`):
+/// the fast walk with the accessed (and, for a write, dirty) bits the general path's walk sets,
+/// then the fill. Status 0: the entry is there (the template checks again); 1: the general path
+/// runs the instruction (a crossing, a walk the fast form does not take, a watched page: nothing
+/// happened).
+fn fill128(
+    engine: &mut TurboEngine,
+    env: &mut RunEnv<'_>,
+    address: u64,
+    write: bool,
+    rip: u64,
+) -> HelperResult {
+    let fallback = HelperResult {
+        value: 0,
+        status: 1,
+    };
+    if (address & 0xfff) + 16 > 0x1000 {
+        engine.stats.tlb_fallbacks += 1;
+        engine.refuse(Refusal::CrossPage, address);
+        return fallback;
+    }
+    let kind = if write {
+        WalkKind::Write
+    } else {
+        WalkKind::Read
+    };
+    let Some(walk) = fast_translate(env.ram, &env.paging, address, kind) else {
+        engine.stats.tlb_fallbacks += 1;
+        let refusal = if engine.profile.is_some() {
+            // Why, for the profile only: the read-only walk of the general path.
+            match crate::page_walk::translate_long64_2m_ram_read_only_with_tables(
+                env.ram,
+                &env.paging,
+                rip,
+                GuestLinearAddress::new(address),
+                env.context,
+                if write {
+                    AccessKind::Write
+                } else {
+                    AccessKind::Read
+                },
+            ) {
+                Err(error) => Refusal::of(&error),
+                Ok((physical, _)) if env.ram.ram_page_host_ptr(physical).is_none() => {
+                    Refusal::NotRam
+                }
+                Ok(_) => Refusal::Walk,
+            }
+        } else {
+            Refusal::Walk
+        };
+        engine.refuse(refusal, address);
+        return fallback;
+    };
+    let page = walk.physical >> 12;
+    if write
+        && (engine.pt_frames.contains_key(&page)
+            || engine.code_bytes.contains_key(&page)
+            || walk
+                .tables
+                .iter()
+                .flatten()
+                .any(|table| table.get() >> 12 == page))
+    {
+        engine.stats.tlb_fallbacks += 1;
+        engine.refuse(Refusal::Watched, address);
+        return fallback;
+    }
+    apply_ad(&walk, write);
+    engine.fill_fast(env.ram, address, &walk, write);
+    let linear_page = address >> 12;
+    let tlb = if write { &engine.wtlb } else { &engine.rtlb };
+    if tlb[(linear_page as usize) & (TLB_SIZE - 1)].tag == linear_page {
+        HelperResult {
+            value: 0,
+            status: 0,
+        }
+    } else {
+        engine.stats.tlb_fallbacks += 1;
+        engine.refuse(Refusal::Watched, address);
+        fallback
     }
 }
 
@@ -1918,6 +2272,24 @@ pub(crate) struct TurboHook<'a> {
     >,
 }
 
+/// Whether the `#UD`/`#NM` gate of the SSE forms of the FP member is open: CR0.EM = 0 and
+/// CR4.OSFXSR = 1 (else `#UD`), CR0.TS = 0 (else `#NM`), both registers carried (the set's
+/// `sse_cpl0_gate`, `step_cpl3_xmm` and the S2-34/S2-38/S2-39 executors).
+fn sse_gate_open(state: &LongModeState) -> bool {
+    const CR0_EM: u64 = 1 << 2;
+    const CR0_TS: u64 = 1 << 3;
+    const CR4_OSFXSR: u64 = 1 << 9;
+    matches!(
+        (state.cr0, state.cr4),
+        (Some(cr0), Some(cr4)) if cr0 & (CR0_EM | CR0_TS) == 0 && cr4 & CR4_OSFXSR != 0
+    )
+}
+
+/// The CPL of `state` (the RPL of CS; 0 while CS is not modelled).
+fn cpl_of(state: &LongModeState) -> u8 {
+    state.cs_selector.map_or(0, |selector| (selector & 3) as u8)
+}
+
 /// Admission of generated code: CPL0, no TF/RF, no STI/MOV SS shadow, running.
 pub(crate) fn admits(state: &LongModeState) -> bool {
     const TF: u64 = 1 << 8;
@@ -1937,6 +2309,39 @@ pub(crate) fn admits(state: &LongModeState) -> bool {
 /// and retired; 1: nothing happened, the general path runs it; 2: the limit was reached (registers
 /// moved, not retired).
 unsafe extern "C" fn rep_helper(
+    ctx: *mut TurboCtx,
+    state: *mut LongModeState,
+    params: u64,
+    length: u64,
+    rip: u64,
+) -> u64 {
+    // SAFETY: called only from generated code during `TurboEngine::run`, which set `env`; the
+    // engine is reached through the raw pointer only before and after `rep_run`.
+    let engine = unsafe { (*(*ctx).env).engine };
+    let started = unsafe { (*engine).profile.is_some() }.then(std::time::Instant::now);
+    // SAFETY: as for `rep_helper`.
+    let status = unsafe { rep_run(ctx, state, params, length, rip) };
+    // SAFETY: `rep_run` returned; nothing else borrows the engine.
+    let engine = unsafe { &mut *engine };
+    if status == 1 {
+        engine.refusal = Some(Refusal::Rep);
+    }
+    // Only with the profile (`started`): no second test of the engine's profile without it.
+    if let Some(started) = started
+        && let Some(profile) = engine.profile.as_deref_mut()
+    {
+        profile.rep_nanos += started.elapsed().as_nanos() as u64;
+        match status {
+            1 => profile.rep_refused += 1,
+            2 => profile.rep_partial += 1,
+            _ => {}
+        }
+    }
+    status
+}
+
+/// The body of [`rep_helper`].
+unsafe fn rep_run(
     ctx: *mut TurboCtx,
     state: *mut LongModeState,
     params: u64,
@@ -2151,6 +2556,106 @@ unsafe extern "C" fn rep_helper(
     }
     state.rip = rip.wrapping_add(length);
     if changed { 4 } else { 0 }
+}
+
+/// S7-32: REPE CMPS of generated code (forward, 64-bit addresses, `size` bytes per element) as the
+/// general path runs it: per element the read at RSI, then the one at RDI, the compare, RSI/RDI
+/// forward, RCX down; up to the end of the count, the first unequal pair or
+/// `REP_ITERATION_WORK_LIMIT` elements. The iterations run on copies of the registers; every page
+/// is reached through the fast walk on its first touch (its accessed bits, as the general path's
+/// walk sets them) and must be RAM. Status: bit 0 refused (the registers are untouched; only
+/// accessed bits the general path sets again on the same pages in the same order may have been
+/// set: the general step runs the instruction); bit 1 the limit was reached (registers moved, not
+/// retired); bit 2 an element was compared (`cmp_a`/`cmp_b` of the context hold the last pair,
+/// the template sets the flags from them). Without bit 1 the instruction retired (RIP is after
+/// it); a zero count compares nothing (status 0).
+unsafe extern "C" fn cmps_helper(
+    ctx: *mut TurboCtx,
+    state: *mut LongModeState,
+    size: u64,
+    length: u64,
+    rip: u64,
+) -> u64 {
+    // SAFETY: called only from generated code during `TurboEngine::run`, which set `env`.
+    let ctx = unsafe { &mut *ctx };
+    let env = unsafe { &mut *ctx.env };
+    let engine = unsafe { &mut *env.engine };
+    let state = unsafe { &mut *state };
+    engine.stats.cmps_calls += 1;
+    const DF: u64 = 1 << 10;
+    if state.rflags & DF != 0 {
+        engine.refusal = Some(Refusal::Rep);
+        return 1;
+    }
+    use od_isa::Register;
+    let mut count = state.gpr[Register::Rcx as usize];
+    if count == 0 {
+        state.rip = rip.wrapping_add(length);
+        return 0;
+    }
+    let mut rsi = state.gpr[Register::Rsi as usize];
+    let mut rdi = state.gpr[Register::Rdi as usize];
+    // The host pages of the last source and destination pages (linear page, host page).
+    let mut pages = [(u64::MAX, std::ptr::null::<u8>()); 2];
+    let host = |pages: &mut [(u64, *const u8); 2], slot: usize, address: u64| {
+        if (address & 0xfff) + size > 0x1000 {
+            return None;
+        }
+        if pages[slot].0 != address >> 12 {
+            let walk = fast_translate(env.ram, &env.paging, address, WalkKind::Read)?;
+            apply_ad(&walk, false);
+            pages[slot] = (address >> 12, walk.host_page);
+        }
+        // SAFETY: inside the host page of the element's page (no crossing, checked above).
+        Some(unsafe { pages[slot].1.add((address & 0xfff) as usize) })
+    };
+    let read = |at: *const u8| -> u64 {
+        // SAFETY: `size` bytes inside one host RAM page.
+        unsafe {
+            match size {
+                1 => u64::from(*at),
+                2 => u64::from(at.cast::<u16>().read_unaligned()),
+                4 => u64::from(at.cast::<u32>().read_unaligned()),
+                _ => at.cast::<u64>().read_unaligned(),
+            }
+        }
+    };
+    let limit = od_isa::execute::REP_ITERATION_WORK_LIMIT;
+    let mut completed = 0;
+    let (mut a, mut b);
+    loop {
+        let Some(source) = host(&mut pages, 0, rsi) else {
+            engine.refusal = Some(Refusal::Rep);
+            return 1;
+        };
+        a = read(source);
+        let Some(destination) = host(&mut pages, 1, rdi) else {
+            engine.refusal = Some(Refusal::Rep);
+            return 1;
+        };
+        b = read(destination);
+        rsi = rsi.wrapping_add(size);
+        rdi = rdi.wrapping_add(size);
+        count -= 1;
+        completed += 1;
+        if count == 0 || a != b {
+            break;
+        }
+        if completed == limit {
+            break;
+        }
+    }
+    state.gpr[Register::Rsi as usize] = rsi;
+    state.gpr[Register::Rdi as usize] = rdi;
+    state.gpr[Register::Rcx as usize] = count;
+    ctx.cmp_a = a;
+    ctx.cmp_b = b;
+    if count != 0 && a == b {
+        // The limit: registers moved, the instruction did not retire.
+        return 2 | 4;
+    }
+    state.rip = rip.wrapping_add(length);
+    4
 }
 
 fn width_mask(size: u64) -> u64 {

@@ -1265,9 +1265,15 @@ impl GuestMemory for HistogramFetch<'_> {
     }
 }
 
+/// The memory error of an operand access a device refused (`MmioBackend`), as the step sees it.
+/// S7-32: also the turbo engine's device access (`TurboExit::DeviceError`).
+fn mmio_backend_error(error: &TrackedAccessError) -> MemoryError {
+    MemoryError::Backend(format!("tracked Long64 MMIO access failed: {error:?}"))
+}
+
 /// PERF-20: the instruction at `rip` decoded without any side effect; `None` when its bytes do not
 /// translate or the decoder refuses them (the step then reports that itself).
-fn histogram_decode(
+pub(crate) fn histogram_decode(
     rip: u64,
     memory: &crate::PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -3264,8 +3270,19 @@ fn run_cpl0_set_loop_impl<
                         irq_hook,
                     )
                 });
+                // S7-32: the step view of the general step, for the plain loads and stores of
+                // generated code that reach a device.
+                let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
+                // SAFETY (the transmute): lifetime only; `run` alone uses the view, which lives
+                // until after it.
+                let mmio_ptr = unsafe {
+                    std::mem::transmute::<
+                        *const (dyn crate::bus::SetStepMmio + '_),
+                        *const (dyn crate::bus::SetStepMmio + 'static),
+                    >(&io as &dyn crate::bus::SetStepMmio)
+                };
                 let mut env = crate::turbo::RunEnv {
-                    ram: bus.ram(),
+                    ram,
                     paging,
                     context,
                     engine: std::ptr::null_mut(),
@@ -3278,6 +3295,8 @@ fn run_cpl0_set_loop_impl<
                     cpl: 0,
                     tick: hook.tick.map(|tick| tick as *const AtomicBool),
                     tsc_next: None,
+                    fp: set.fp_state().map(std::cell::RefCell::as_ptr),
+                    mmio: Some(mmio_ptr),
                 };
                 // In the STI shadow: one instruction, then the shadow clears (as after any
                 // retired instruction of the set loop).
@@ -3295,6 +3314,8 @@ fn run_cpl0_set_loop_impl<
                     budget,
                     masked && !in_shadow && known,
                 );
+                mmio_written |= io.mmio_written();
+                drop(io);
                 if in_shadow && outcome.retired == 1 {
                     state.sti_shadow = Some(od_isa::StiShadow::Clear);
                 }
@@ -3335,10 +3356,23 @@ fn run_cpl0_set_loop_impl<
                             None,
                         );
                     }
+                    // S7-32: a device refused an access of generated code: the end of the call
+                    // the general step's refused access gives, the device reached once.
+                    crate::turbo::TurboExit::DeviceError => {
+                        let error = hook
+                            .engine
+                            .take_device_error()
+                            .expect("a device error ends the run");
+                        break (
+                            PagedCpl0SetExit::Run(RunExit::MemoryError(mmio_backend_error(&error))),
+                            None,
+                            Some(error),
+                        );
+                    }
                 }
             }
             turbo_force_slow = None;
-            hook.engine.note_general_step();
+            hook.engine.note_general_step(state);
         }
         let instruction_rip = state.rip;
         // PERF-20: the instruction about to run, decoded read-only (no accessed/dirty bit, no cache
@@ -6232,9 +6266,9 @@ impl<'a> PagedMovMemoryAdapter<'a> {
                 MemoryError::Architectural(record.fault().clone())
             }
             error @ TrackedAccessError::MmioBackend { .. } => {
-                let message = format!("tracked Long64 MMIO access failed: {error:?}");
+                let message = mmio_backend_error(&error);
                 self.memory_error = Some(error);
-                MemoryError::Backend(message)
+                message
             }
             error => {
                 let message = format!("tracked Long64 RAM access failed: {error:?}");

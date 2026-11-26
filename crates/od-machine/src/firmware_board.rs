@@ -2833,6 +2833,19 @@ impl LoadedFirmwareBoard {
         self.turbo.as_ref().map(|engine| engine.report())
     }
 
+    /// S7-32: the turbo engine profiles its slow exits (forms, reasons, CPL, the host time after
+    /// them; two clock reads per run); [`Self::turbo_report`] then carries the profile. A
+    /// diagnostic: it changes no guest-visible result. `false` without an engine.
+    pub fn enable_turbo_profile(&mut self) -> bool {
+        match self.turbo.as_mut() {
+            Some(engine) => {
+                engine.enable_profile();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// S4-13b: the report the last run left (also after a failed run, with what was counted up to
     /// the failure) and the request removed; `None` when it was not enabled.
     pub fn take_fetch_cache_report(&mut self) -> Option<LinuxFetchCacheReport> {
