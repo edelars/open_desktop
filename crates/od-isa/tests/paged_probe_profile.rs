@@ -53098,12 +53098,13 @@ fn firmware_boot_memory_arithmetic_commits_only_after_write() {
 }
 
 #[test]
-fn load_image_region_addition_requires_the_firmware_profile_and_exact_form() {
+fn load_image_region_addition_requires_the_firmware_profile_and_64_bit_addressing() {
+    // ISSUE-696: the firmware profile takes `83 /0 ib` at any displacement and imm8
+    // (`firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form`); the base profile and
+    // the address-size override stay outside it.
     for (code, firmware) in [
         (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], false),
         (&[0x48, 0x83, 0x84, 0x24, 0xc0, 0, 0, 0, 2][..], false),
-        (&[0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 3][..], true),
-        (&[0x48, 0x83, 0x84, 0x24, 0xd0, 0, 0, 0, 2][..], true),
         (&[0x67, 0x48, 0x83, 0x84, 0x24, 0xc8, 0, 0, 0, 2][..], true),
     ] {
         let mut memory = Memory::new(code);
@@ -57605,6 +57606,9 @@ fn firmware_boot_fat_directory_cursor_adds_commit_only_after_store() {
     for (code, offset, size) in [
         (&[0x41, 0x83, 0x46, 0x28, 0x20][..], 0x28, 4),
         (&[0x49, 0x83, 0x46, 0x30, 0x20][..], 0x30, 8),
+        // ISSUE-696: the same cursor after the FAT window moved it in `DirectoryCursor` (S7-32 G).
+        (&[0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20][..], 0x238, 4),
+        (&[0x49, 0x83, 0x86, 0x40, 0x02, 0, 0, 0x20][..], 0x240, 8),
     ] {
         let address = DATA + offset as u64;
         let region = DATA_PHYSICAL + offset - 1..DATA_PHYSICAL + offset + size + 1;
@@ -57652,6 +57656,306 @@ fn firmware_boot_fat_directory_cursor_adds_commit_only_after_store() {
             assert_eq!(memory.bytes[region.clone()], bytes);
         }
     }
+}
+
+/// Intel SDM Vol. 2, ADD/ADC/SUB: `83 /0`, `/2`, `/5` with the imm8 sign-extended to the operand
+/// width, written out independently of the CPU semantics. Returns the result and the six
+/// arithmetic flags (CF, PF, AF, ZF, SF, OF).
+fn sdm_group1_imm8(selector: u8, bits: u32, lhs: u64, imm8: u8, carry_in: bool) -> (u64, u64) {
+    let mask = if bits == 32 { 0xffff_ffff } else { u64::MAX };
+    let sign = 1u64 << (bits - 1);
+    let lhs = lhs & mask;
+    let src = imm8 as i8 as i64 as u64 & mask;
+    let (wide, subtract) = match selector {
+        0 => (u128::from(lhs) + u128::from(src), false),
+        2 => (
+            u128::from(lhs) + u128::from(src) + u128::from(carry_in),
+            false,
+        ),
+        5 => (u128::from(lhs).wrapping_sub(u128::from(src)), true),
+        _ => unreachable!(),
+    };
+    let result = wide as u64 & mask;
+    let cf = if subtract {
+        lhs < src
+    } else {
+        wide > u128::from(mask)
+    };
+    let of = if subtract {
+        (lhs ^ src) & sign != 0 && (lhs ^ result) & sign != 0
+    } else {
+        (lhs ^ src) & sign == 0 && (lhs ^ result) & sign != 0
+    };
+    let flags = u64::from(cf)
+        | (u64::from((result as u8).count_ones() % 2 == 0) << 2)
+        | ((lhs ^ src ^ result) & 0x10)
+        | (u64::from(result == 0) << 6)
+        | (u64::from(result & sign != 0) << 7)
+        | (u64::from(of) << 11);
+    (result, flags)
+}
+
+#[test]
+fn firmware_boot_add_adc_sub_imm8_memory_for_every_addressing_form() {
+    // (REX.B/X bits, ModRM with /0 and the bytes after it, registers, effective address). The
+    // selector and REX.W are filled in per case. A RIP-relative displacement is computed from the
+    // whole instruction (below), so its template carries a placeholder.
+    let forms: Vec<(u8, Vec<u8>, Vec<(Register, u64)>, u64)> = vec![
+        // The ROM forms of ISSUE-696: ADD dword [R14+0x238],0x20 and ADD qword [R14+0x240],0x20.
+        (
+            0x01,
+            vec![0x86, 0x38, 0x02, 0, 0],
+            vec![(Register::R14, DATA)],
+            DATA + 0x238,
+        ),
+        (
+            0x01,
+            vec![0x46, 0x28],
+            vec![(Register::R14, DATA)],
+            DATA + 0x28,
+        ),
+        (
+            0,
+            vec![0x84, 0x24, 0xc0, 0, 0, 0],
+            vec![(Register::Rsp, DATA)],
+            DATA + 0xc0,
+        ),
+        (
+            0,
+            vec![0x44, 0x24, 0x38],
+            vec![(Register::Rsp, DATA)],
+            DATA + 0x38,
+        ),
+        (
+            0,
+            vec![0x03],
+            vec![(Register::Rbx, DATA + 0x300)],
+            DATA + 0x300,
+        ),
+        (
+            0,
+            vec![0x45, 0xfe],
+            vec![(Register::Rbp, DATA + 0x402)],
+            DATA + 0x400,
+        ),
+        // [RAX+RCX*8+0x10]
+        (
+            0,
+            vec![0x44, 0xc8, 0x10],
+            vec![(Register::Rax, DATA + 0x500), (Register::Rcx, 2)],
+            DATA + 0x520,
+        ),
+        // [R12] needs a SIB byte and [R13] a zero disp8.
+        (
+            0x01,
+            vec![0x04, 0x24],
+            vec![(Register::R12, DATA + 0x600)],
+            DATA + 0x600,
+        ),
+        (
+            0x01,
+            vec![0x45, 0x00],
+            vec![(Register::R13, DATA + 0x640)],
+            DATA + 0x640,
+        ),
+        // [R8+R9*4-0x20]
+        (
+            0x03,
+            vec![0x44, 0x88, 0xe0],
+            vec![(Register::R8, DATA + 0x700), (Register::R9, 0x10)],
+            DATA + 0x720,
+        ),
+        // [RIP+disp32]
+        (0, vec![0x05, 0, 0, 0, 0], vec![], DATA + 0x800),
+        // [disp32] through a SIB byte without base and index.
+        (0, vec![0x04, 0x25, 0, 0, 0, 0], vec![], DATA + 0x840),
+    ];
+    let dword_values = [
+        0,
+        1,
+        0x7fff_ffff,
+        0x8000_0000,
+        0xffff_ffff,
+        0x1234_5678,
+        0xffff_ffe0,
+    ];
+    let qword_values = [
+        0,
+        1,
+        0x7fff_ffff_ffff_ffff,
+        0x8000_0000_0000_0000,
+        u64::MAX,
+        0x0123_4567_89ab_cdef,
+        0xffff_ffff,
+        0xffff_ffff_ffff_ffe0,
+    ];
+    let mut updates = 0;
+    for (rex_bits, template, registers, address) in &forms {
+        for (qword, values) in [(false, &dword_values[..]), (true, &qword_values[..])] {
+            let width = if qword { 8 } else { 4 };
+            for selector in [0u8, 2, 5] {
+                for imm8 in [0x00u8, 0x01, 0x20, 0x7f, 0x80, 0xff] {
+                    for &initial in values {
+                        for carry_in in [false, true] {
+                            let mut code = Vec::new();
+                            if *rex_bits != 0 || qword {
+                                code.push(0x40 | rex_bits | if qword { 0x08 } else { 0 });
+                            }
+                            code.push(0x83);
+                            let modrm = code.len();
+                            code.extend(template);
+                            code[modrm] |= selector << 3;
+                            code.push(imm8);
+                            if template[0] == 0x05 {
+                                let next_rip = RIP + code.len() as u64;
+                                let disp = address.wrapping_sub(next_rip) as u32;
+                                code[modrm + 1..modrm + 5].copy_from_slice(&disp.to_le_bytes());
+                            }
+                            if template.starts_with(&[0x04, 0x25]) {
+                                code[modrm + 2..modrm + 6]
+                                    .copy_from_slice(&(*address as u32).to_le_bytes());
+                            }
+                            let mut memory = Memory::new(&code);
+                            let index = DATA_PHYSICAL + (*address - DATA) as usize;
+                            memory.bytes[index - 1] = 0xa5;
+                            memory.bytes[index + width] = 0xa5;
+                            memory.bytes[index..index + width]
+                                .copy_from_slice(&initial.to_le_bytes()[..width]);
+                            let mut cpu = state();
+                            for (register, value) in registers {
+                                cpu.gpr[*register as usize] = *value;
+                            }
+                            // IF and DF stay set; the five other arithmetic flags start set.
+                            cpu.rflags = 0x602 | 0x8d4 | u64::from(carry_in);
+                            let (value, flags) = sdm_group1_imm8(
+                                selector,
+                                if qword { 64 } else { 32 },
+                                initial,
+                                imm8,
+                                carry_in,
+                            );
+                            let mut expected = cpu.clone();
+                            expected.rip += code.len() as u64;
+                            expected.rflags = (cpu.rflags & !0x8d5) | flags;
+                            let result = execute::step_paged_firmware_probe(
+                                PagedCpl0FirmwareBootV1,
+                                &mut cpu,
+                                &mut memory,
+                                &mut Pio::default(),
+                                ring0(),
+                                DEFINED,
+                            );
+                            let label =
+                                format!("{code:02x?} initial={initial:#x} carry_in={carry_in}");
+                            assert_eq!(result.exit, PagedProbeExit::Retired, "{label}");
+                            assert_eq!(result.instructions_executed, 1, "{label}");
+                            assert_eq!(result.rflags_defined, DEFINED | 0x10, "{label}");
+                            assert_eq!(cpu, expected, "{label}");
+                            assert_eq!(
+                                memory.bytes[index..index + width],
+                                value.to_le_bytes()[..width],
+                                "{label}"
+                            );
+                            assert_eq!(
+                                (memory.bytes[index - 1], memory.bytes[index + width]),
+                                (0xa5, 0xa5),
+                                "{label}"
+                            );
+                            assert_eq!(memory.read_addresses, [(*address, width)], "{label}");
+                            assert_eq!(memory.write_addresses, [*address], "{label}");
+                            updates += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(updates, forms.len() * 3 * 6 * 2 * (7 + 8));
+}
+
+#[test]
+fn firmware_boot_add_imm8_memory_faults_do_not_commit_and_neighbors_stay_outside() {
+    // ADD dword [R14+0x238],0x20: a non-canonical address is #GP(0), and #SS(0) with an RSP base
+    // (`48 83 44 24 38 09`, ADD qword [RSP+0x38],9); nothing is read or written.
+    for (code, register, vector) in [
+        (
+            &[0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20][..],
+            Register::R14,
+            13,
+        ),
+        (&[0x48, 0x83, 0x44, 0x24, 0x38, 0x09][..], Register::Rsp, 12),
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[register as usize] = 0x0001_0000_0000_0000;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{code:02x?}"
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, DEFINED);
+        assert_eq!(cpu, before);
+        assert_eq!((memory.reads, memory.writes), (0, 0));
+    }
+
+    // Other selectors, widths, the imm32 form, address-size override, LOCK and the base profile
+    // stay outside: nothing is executed or stored.
+    let firmware_neighbors: [(&[u8], u8); 8] = [
+        (&[0x41, 0x83, 0x9e, 0x38, 0x02, 0, 0, 0x20], 0x83), // SBB dword [R14+0x238],0x20
+        (&[0x41, 0x83, 0xa6, 0x38, 0x02, 0, 0, 0x20], 0x83), // AND
+        (&[0x41, 0x83, 0x8e, 0x38, 0x02, 0, 0, 0x20], 0x83), // OR
+        (&[0x41, 0x83, 0xb6, 0x38, 0x02, 0, 0, 0x20], 0x83), // XOR
+        (&[0x66, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // word
+        (&[0x41, 0x81, 0x86, 0x38, 0x02, 0, 0, 0x20, 0, 0, 0], 0x81), // imm32
+        (&[0x67, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // address32
+        (&[0xf0, 0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20], 0x83), // LOCK
+    ];
+    for (code, opcode) in firmware_neighbors {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::R14 as usize] = DATA;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(cpu, before, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{code:02x?}");
+    }
+    let code = [0x41, 0x83, 0x86, 0x38, 0x02, 0, 0, 0x20];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::R14 as usize] = DATA;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0x83 }
+    );
+    assert_eq!(cpu, before);
+    assert_eq!((memory.reads, memory.writes), (0, 0));
 }
 
 #[test]
@@ -57801,6 +58105,151 @@ fn firmware_boot_movsx_oem_byte_from_stack_reads_before_commit() {
         assert_eq!(memory.read_addresses, [(address, 1)]);
         assert_eq!(memory.writes, 0);
     }
+}
+
+#[test]
+fn firmware_boot_movsx_dword_from_byte_memory_for_every_addressing_form() {
+    let rip_relative = |length: u64, target: u64| {
+        let mut code = vec![0x0f, 0xbe, 0x15];
+        code.extend((target.wrapping_sub(RIP + length) as u32).to_le_bytes());
+        code
+    };
+    // (code, destination, registers, effective address)
+    let forms: Vec<(Vec<u8>, Register, Vec<(Register, u64)>, u64)> = vec![
+        // ISSUE-696: the short-name decoder after S7-32 G and the same decoder in `get_info`.
+        (
+            vec![0x0f, 0xbe, 0x54, 0x04, 0x30],
+            Register::Rdx,
+            vec![(Register::Rsp, DATA), (Register::Rax, 3)],
+            DATA + 0x33,
+        ),
+        (
+            vec![0x41, 0x0f, 0xbe, 0x54, 0x00, 0x4d],
+            Register::Rdx,
+            vec![(Register::R8, DATA + 0x100), (Register::Rax, 5)],
+            DATA + 0x152,
+        ),
+        (
+            vec![0x0f, 0xbe, 0x03],
+            Register::Rax,
+            vec![(Register::Rbx, DATA + 0x200)],
+            DATA + 0x200,
+        ),
+        (
+            vec![0x0f, 0xbe, 0x4d, 0xfe],
+            Register::Rcx,
+            vec![(Register::Rbp, DATA + 0x302)],
+            DATA + 0x300,
+        ),
+        (
+            vec![0x44, 0x0f, 0xbe, 0x4c, 0xc8, 0x10],
+            Register::R9,
+            vec![(Register::Rax, DATA + 0x400), (Register::Rcx, 2)],
+            DATA + 0x420,
+        ),
+        (
+            vec![0x41, 0x0f, 0xbe, 0x34, 0x24],
+            Register::Rsi,
+            vec![(Register::R12, DATA + 0x500)],
+            DATA + 0x500,
+        ),
+        (
+            vec![0x45, 0x0f, 0xbe, 0x7d, 0x00],
+            Register::R15,
+            vec![(Register::R13, DATA + 0x600)],
+            DATA + 0x600,
+        ),
+        (
+            vec![0x0f, 0xbe, 0xbc, 0x24, 0x00, 0x07, 0, 0],
+            Register::Rdi,
+            vec![(Register::Rsp, DATA)],
+            DATA + 0x700,
+        ),
+        (
+            rip_relative(7, DATA + 0x800),
+            Register::Rdx,
+            vec![],
+            DATA + 0x800,
+        ),
+    ];
+    for (code, destination, registers, address) in &forms {
+        for (byte, extended) in [
+            (0x00u8, 0u64),
+            (0x01, 1),
+            (0x7f, 0x7f),
+            (0x80, 0xffff_ff80),
+            (0x8a, 0xffff_ff8a),
+            (0xff, 0xffff_ffff),
+        ] {
+            let mut memory = Memory::new(code);
+            let index = DATA_PHYSICAL + (*address - DATA) as usize;
+            memory.bytes[index - 1..index + 2].copy_from_slice(&[0x01, byte, 0x80]);
+            let mut cpu = state();
+            cpu.gpr[*destination as usize] = 0xdead_beef_0bad_f00d;
+            for (register, value) in registers {
+                cpu.gpr[*register as usize] = *value;
+            }
+            cpu.rflags = 0xed7;
+            let mut expected = cpu.clone();
+            expected.gpr[*destination as usize] = extended;
+            expected.rip += code.len() as u64;
+            let result = execute::step_paged_firmware_probe(
+                PagedCpl0FirmwareBootV1,
+                &mut cpu,
+                &mut memory,
+                &mut Pio::default(),
+                ring0(),
+                DEFINED,
+            );
+            let label = format!("{code:02x?} byte={byte:#x}");
+            assert_eq!(result.exit, PagedProbeExit::Retired, "{label}");
+            assert_eq!(result.instructions_executed, 1, "{label}");
+            assert_eq!(result.rflags_defined, DEFINED, "{label}");
+            assert_eq!(cpu, expected, "{label}");
+            assert_eq!(memory.read_addresses, [(*address, 1)], "{label}");
+            assert_eq!(memory.writes, 0, "{label}");
+        }
+    }
+
+    // A word or qword destination, a word source and the prefixes outside the profile stay
+    // unsupported; the base profile keeps the form outside.
+    for (code, opcode) in [
+        (&[0x66, 0x0f, 0xbe, 0x54, 0x04, 0x30][..], 0xbe), // MOVSX DX,byte [RSP+RAX+0x30]
+        (&[0x48, 0x0f, 0xbe, 0x54, 0x04, 0x30][..], 0xbe), // MOVSX RDX,byte [RSP+RAX+0x30]
+        (&[0x0f, 0xbf, 0x54, 0x04, 0x30][..], 0xbf),       // MOVSX EDX,word [RSP+RAX+0x30]
+        (&[0x67, 0x0f, 0xbe, 0x54, 0x04, 0x30][..], 0xbe), // address32
+        (&[0x64, 0x0f, 0xbe, 0x54, 0x04, 0x30][..], 0xbe), // FS override
+    ] {
+        let mut memory = Memory::new(code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rsp as usize] = DATA;
+        let before = cpu.clone();
+        let result = execute::step_paged_firmware_probe(
+            PagedCpl0FirmwareBootV1,
+            &mut cpu,
+            &mut memory,
+            &mut Pio::default(),
+            ring0(),
+            DEFINED,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Unsupported { opcode },
+            "{code:02x?}"
+        );
+        assert_eq!(cpu, before, "{code:02x?}");
+        assert_eq!((memory.reads, memory.writes), (0, 0), "{code:02x?}");
+    }
+    let code = [0x0f, 0xbe, 0x54, 0x04, 0x30];
+    let mut memory = Memory::new(&code);
+    let mut cpu = state();
+    cpu.gpr[Register::Rsp as usize] = DATA;
+    let before = cpu.clone();
+    assert_eq!(
+        step(&mut cpu, &mut memory, &mut Pio::default(), ring0()).exit,
+        PagedProbeExit::Unsupported { opcode: 0xbe }
+    );
+    assert_eq!(cpu, before);
 }
 
 #[test]
@@ -58003,8 +58452,8 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0x49, 0xd3, 0xe6][..], 0xd3),       // SHL R14,CL
         (&[0x67, 0x80, 0x7c, 0x2c, 8, 1][..], 0x80), // address32 CMP
         (&[0x67, 0xc6, 0x44, 0x2c, 8, 0x80][..], 0xc6), // address32 store
-        (&[0x48, 0x83, 0x12, 0x28][..], 0x83), // ADC qword [RDX],0x28
-        (&[0x48, 0x83, 0x03, 0x28][..], 0x83), // ADD qword [RBX],0x28
+        (&[0x48, 0x83, 0x1a, 0x28][..], 0x83), // SBB qword [RDX],0x28
+        (&[0x48, 0x81, 0x03, 0x28, 0, 0, 0][..], 0x81), // ADD qword [RBX],imm32
         (&[0x66, 0x03, 0x13][..], 0x03),       // ADD DX,[RBX]
         (&[0x66, 0x83, 0xd6, 0xff][..], 0x83), // ADC SI,-1
         (&[0x3e, 0x48, 0x89, 0x3c, 0x24][..], 0x89), // segment override
@@ -58054,8 +58503,11 @@ fn firmware_boot_mode_rejects_prefixed_and_neighboring_forms() {
         (&[0xf3, 0x41, 0x0f, 0xbc, 0x0b][..], 0xbc),
         (&[0x0f, 0xba, 0x22, 0x02][..], 0xba),
         (&[0x48, 0x0f, 0xba, 0xe2, 0x02][..], 0xba),
-        (&[0x41, 0x83, 0x46, 0x30, 0x20][..], 0x83),
-        (&[0x49, 0x83, 0x46, 0x30, 0x21][..], 0x83),
+        // ISSUE-696: the cursor ADD is admitted at any addressing, not at other widths or prefixes.
+        (&[0x66, 0x41, 0x83, 0x46, 0x28, 0x20][..], 0x83), // ADD word [R14+0x28],0x20
+        (&[0x41, 0x80, 0x46, 0x28, 0x20][..], 0x80),       // ADD byte [R14+0x28],0x20
+        (&[0x64, 0x41, 0x83, 0x86, 0x38, 2, 0, 0, 0x20][..], 0x83), // FS override
+        (&[0xf3, 0x41, 0x83, 0x86, 0x38, 2, 0, 0, 0x20][..], 0x83), // REP prefix
         // Neighboring spills in the SFS image loader remain unsupported.
         (&[0x84, 0x84, 0x24, 0x78, 1, 0, 0][..], 0x84),
         (&[0x48, 0xd1, 0x6c, 0x24, 0x48][..], 0xd1),

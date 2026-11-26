@@ -1,0 +1,21 @@
+step                          exit  seconds  key line
+build-runner                  0     225      Finished `release` profile [optimized] target(s) in 3m 44s
+build-rom-stock               0     11       sha256: f4a7ea2e27fa0cbb309bfc4604e0e8bb90fe16078d36141e779142a1af5ffc73
+build-rom-test-apps           0     16       sha256: 64df7f46adf19aa68cf6c2d178ea418c3810598438640534f7e80f949843434e
+firmware_boot_smoke           0     184      sha256: 640786919725fe3f8188fb58083b4188a0c9bca348be7ec64b1faf8a9c1d1f01
+firmware_esp_boot_smoke       0     28       sha256: f4a7ea2e27fa0cbb309bfc4604e0e8bb90fe16078d36141e779142a1af5ffc73
+firmware_nvram_smoke          0     30       sha256: 64df7f46adf19aa68cf6c2d178ea418c3810598438640534f7e80f949843434e
+firmware_failure_smoke        0     391      cargo test: 3 passed; 0 failed; 0 ignored (3 result lines)
+firmware_install_media_smoke  0     222      sha256: f4a7ea2e27fa0cbb309bfc4604e0e8bb90fe16078d36141e779142a1af5ffc73
+firmware_pkcs7_smoke          0     11       pkcs7: 5182468 instructions, 3328 quanta
+firmware_secure_boot_smoke    0     133      sha256: f4a7ea2e27fa0cbb309bfc4604e0e8bb90fe16078d36141e779142a1af5ffc73
+firmware_tpm_smoke            0     334      tpm-esp: 368256714 instructions, 4453 quanta
+firmware_xhci_smoke           0     122      firmware xhci smoke passed (image sha256 64df7f46adf19aa68cf6c2d178ea418c3810598438640534f7e80f949843434e)
+firmware_reset_smoke          0     807      sha256: 50d41f5fdcf39b5389a92e6a9beb66e163739e36d0ed6777296a2accca36d9e1
+host-tests-firmware-uefi      0     6        cargo test: 408 passed; 0 failed; 0 ignored (2 result lines)
+ignored-tpm-startup-failure   0     8        cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+ignored-secure-boot-pcr7      0     193      cargo test: 1 passed; 0 failed; 0 ignored (1 result lines)
+python-selftests              0     60       OK
+
+total 2780 s; 17 of 17 steps passed
+logs: <work>/logs (temporary checkout of 7070104 with the ISSUE-696 changes)

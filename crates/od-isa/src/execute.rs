@@ -21865,7 +21865,7 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                 | ArithmeticKind::Inc
                 | ArithmeticKind::Dec),
             dst: Operand::Memory(destination),
-            src: source @ (Operand::Register(_) | Operand::Immediate(0 | 1 | 2 | 9 | 0x20)),
+            src: source @ (Operand::Register(_) | Operand::Immediate(_)),
         } if firmware_boot_profile
             && instruction.opcode.map == OpcodeMap::Primary
             && match (kind, source, instruction.operand_size) {
@@ -21874,53 +21874,17 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     Operand::Register(_),
                     OperandSize::Dword | OperandSize::Qword,
                 ) => instruction.opcode.byte == 0x01,
-                (ArithmeticKind::Adc, Operand::Immediate(0), OperandSize::Qword) => {
-                    // Partition enumeration and firmware SHA-384 count with carry.
-                    instruction.opcode.byte == 0x83
-                }
-                (ArithmeticKind::Add, Operand::Immediate(1), OperandSize::Qword) => {
-                    // SHA-384 increments the low word of its block count for a buffered block.
-                    instruction.opcode.byte == 0x83
-                        && instruction.length == 9
-                        && instruction.prefixes.rex == Some(0x48)
-                        && destination.base == AddressBase::Register(Register::Rsp)
-                        && destination.index.is_none()
-                        && destination.scale == 1
-                        && matches!(destination.displacement, 0xf0 | 0x1c0)
-                }
-                (ArithmeticKind::Add, Operand::Immediate(9), OperandSize::Qword) => {
-                    // Current firmware advances its default-variable iterator in a stack slot.
-                    instruction.opcode.byte == 0x83
-                        && instruction.length == 6
-                        && instruction.prefixes.rex == Some(0x48)
-                        && destination.base == AddressBase::Register(Register::Rsp)
-                        && destination.index.is_none()
-                        && destination.scale == 1
-                        && matches!(destination.displacement, 0x10 | 0x38)
-                }
-                (ArithmeticKind::Add, Operand::Immediate(2), OperandSize::Qword) => {
-                    // LoadImage counts the fixup and protected source regions for a caller buffer.
-                    instruction.opcode.byte == 0x83
-                        && instruction.length == 9
-                        && instruction.prefixes.rex == Some(0x48)
-                        && destination.base == AddressBase::Register(Register::Rsp)
-                        && destination.index.is_none()
-                        && destination.scale == 1
-                        && matches!(destination.displacement, 0xc0 | 0xc8)
-                }
-                (ArithmeticKind::Add, Operand::Immediate(0x20), size) => {
-                    // FAT directory traversal updates the sector and logical cursors in place.
-                    instruction.opcode.byte == 0x83
-                        && instruction.length == 5
-                        && destination.base == AddressBase::Register(Register::R14)
-                        && destination.index.is_none()
-                        && destination.scale == 1
-                        && matches!(
-                            (size, instruction.prefixes.rex, destination.displacement),
-                            (OperandSize::Dword, Some(0x41), 0x28)
-                                | (OperandSize::Qword, Some(0x49), 0x30)
-                        )
-                }
+                // ISSUE-696: `83 /0`, `83 /2` and `83 /5` ib (ADD, ADC and SUB r/m32 or, with
+                // REX.W, r/m64 and the sign-extended imm8; Intel SDM Vol. 2) at any memory
+                // addressing and any imm8. The ROM keeps counters and cursors in stack slots and
+                // structure fields, whose displacement and constant follow its code and data
+                // layout (FAT directory cursor, SHA-384 block count, LoadImage regions, the
+                // default-variable iterator); a list of exact tuples broke on each such change.
+                (
+                    ArithmeticKind::Add | ArithmeticKind::Adc | ArithmeticKind::Sub,
+                    Operand::Immediate(_),
+                    OperandSize::Dword | OperandSize::Qword,
+                ) => instruction.opcode.byte == 0x83,
                 (ArithmeticKind::Sub, Operand::Register(_), OperandSize::Qword) => {
                     instruction.opcode.byte == 0x29
                 }
@@ -22259,20 +22223,18 @@ fn step_paged_probe_mode<P: crate::PortIo>(
                     (
                         OpcodeMap::Escape0f,
                         Operation::Extend {
-                            dst,
                             src: Operand::Memory(source),
                             signed: true,
+                            ..
                         },
                     ) => {
-                        // The FAT short-name decoder uses the sign bit of an OEM byte.
+                        // The FAT short-name decoder and `get_info` use the sign bit of an OEM
+                        // byte. ISSUE-696: `[REX] 0F BE /r` (MOVSX r32, m8) at any memory
+                        // addressing, like the dword MOVZX above: the stack slot of the
+                        // short-name buffer moved with the layout of `DirectoryCursor::next`.
                         instruction.opcode.byte == 0xbe
-                            && instruction.prefixes == Prefixes::default()
-                            && dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
+                            && instruction.operand_size == OperandSize::Dword
                             && source.size == OperandSize::Byte
-                            && source.base == AddressBase::Register(Register::Rsp)
-                            && source.index == Some(Register::Rax)
-                            && source.scale == 1
-                            && source.displacement == 0x40
                     }
                     (
                         OpcodeMap::Escape0f,
