@@ -412,7 +412,6 @@ const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
     "PSHUFLW (reg)",
     "PCMPEQB (mem)",
     "MOVQ-load (mem)",
-    "MOVNTI (mem)",
     "PINSRW (mem)",
     "CLFLUSH (mem)",
     "LFENCE (none)",
@@ -421,7 +420,7 @@ const KNOWN_UNSUPPORTED_BARE: &[&str] = &[
 ];
 
 /// Forms that the CPL0 profile set with the FP member refuses. Refused by both lists (no executor runs
-/// them): MOVSS/MOVSD with a base other than [RAX], MOVNTI, CLFLUSH, the SSE integer forms on MMX
+/// them): MOVSS/MOVSD with a base other than [RAX], the SSE integer forms on MMX
 /// registers (PAVGB/PAVGW/PMULHUW/PMINUB/PMAXUB/PMINSW/PMAXSW/PSADBW/PINSRW/PEXTRW/PMOVMSKB),
 /// MOVNTQ, MASKMOVQ and the MMX forms of PADDQ/PSUBQ/PMULUDQ. None of the forms refused by both belongs
 /// to a family whose CPUID bit the Windows profile declares. The forms refused only by the set are the
@@ -475,8 +474,7 @@ const KNOWN_UNSUPPORTED_CPL0_SET: &[&str] = &[
     "CVTTPD2PI (mem)",
     "CVTPD2PI (reg)",
     "CVTPD2PI (mem)",
-    "MOVNTI (mem)",
-    "CLFLUSH (mem)",
+    // S7-32: MOVNTI (a plain store for the model) and CLFLUSH (a byte-read check) execute.
     "FISTTP-m16 (mem)",
     "FISTTP-m32 (mem)",
     "FISTTP-m64 (mem)",

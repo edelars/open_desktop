@@ -982,6 +982,17 @@ impl ConditionCode {
     }
 }
 
+/// S7-32: the carry-flag instructions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CarryFlagOp {
+    /// `CLC` (`F8`): CF = 0.
+    Clear,
+    /// `STC` (`F9`): CF = 1.
+    Set,
+    /// `CMC` (`F5`): CF = !CF.
+    Complement,
+}
+
 /// Architectural definedness changes, independent of concrete RFLAGS values.
 /// Apply only after the corresponding instruction successfully retires.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1550,6 +1561,75 @@ pub enum Operation {
     StoreGdtr {
         dst: MemoryOperand,
     },
+    /// S7-32: `SIDT m` (`0F 01 /1`, memory operand only), the IDTR twin of [`Operation::StoreGdtr`]
+    /// (ten-byte pseudo-descriptor, optional FS/GS override kept in `Instruction::prefixes`).
+    /// Decoded by the S7-32 fallback of [`decode`]; executed only in the CPL0 profile set.
+    StoreIdtr {
+        dst: MemoryOperand,
+    },
+    /// S7-32: `SLDT r/m16` (`0F 00 /0`, `tr == false`) and `STR r/m16` (`0F 00 /1`, `tr == true`):
+    /// store the LDTR or TR selector. A memory destination is 16 bits; a register destination is
+    /// 16 bits with `66` (the upper bits are kept), else 32 bits (zero-extended to 64) or 64 bits
+    /// with REX.W (Intel SDM Vol. 2B "SLDT", "STR"). Executed only in the CPL0 profile set.
+    StoreSystemSelector {
+        tr: bool,
+        dst: Operand,
+    },
+    /// S7-32: `LLDT m16` (`0F 00 /2`, memory operand). Executed only in the CPL0 profile set and
+    /// only for a null selector (0..=3), like the register form [`Operation::LoadLdt`].
+    LoadLdtMemory {
+        source: MemoryOperand,
+    },
+    /// S7-32: `MOV Sreg, m16` (`8E /r`, memory source only, no legacy prefix but a lone REX) for ES
+    /// (0), SS (2), DS (3), FS (4) and GS (5); the register forms stay with the profile decoder. The
+    /// selector is the 16-bit source; a non-null selector loads its GDT descriptor
+    /// (`load_sreg_cpl0`). Executed only in the CPL0 profile set at CPL0.
+    MovToSreg {
+        sreg: u8,
+        source: Operand,
+    },
+    /// S7-32: `MOV r64, CRn` (`0F 20 /r`, mod = 11, a lone REX) for CR0 and CR8 (REX.R + reg 0)
+    /// into any GPR, in the encodings the CR-specific variants above do not cover. Executed only in
+    /// the CPL0 profile set; CR8 needs its TPR member (`with_cr8_tpr`); CPL > 0 is #GP(0).
+    ReadControl {
+        cr: u8,
+        dst: Register,
+    },
+    /// S7-32: `MOV CRn, r64` (`0F 22 /r`, mod = 11, a lone REX) for CR0, CR2 and CR8 from any GPR,
+    /// in the encodings the CR-specific variants above do not cover. Executed only in the CPL0
+    /// profile set; CR8 needs its TPR member (`with_cr8_tpr`); CPL > 0 is #GP(0).
+    WriteControl {
+        cr: u8,
+        src: Register,
+    },
+    /// S7-32: `MOV r64, DRn` (`0F 21 /r`, mod = 11, optional REX without R): `index` is the reg
+    /// field, `dst` the GPR from `rm` and REX.B. Executed only in the CPL0 profile set.
+    ReadDebugRegister {
+        index: u8,
+        dst: Register,
+    },
+    /// S7-32: `INT imm8` (`CD ib`): the software interrupt `vector` through its IDT gate. Executed
+    /// only in the CPL0 profile set.
+    SoftwareInterrupt {
+        vector: u8,
+    },
+    /// S7-32: `CLC` (`F8`), `STC` (`F9`) and `CMC` (`F5`).
+    CarryFlag {
+        op: CarryFlagOp,
+    },
+    /// S7-32: `CLFLUSH m8` (`0F AE /7`, memory, no mandatory prefix): the model has no caches, so
+    /// the instruction is the access check of a one-byte read (SDM: CLFLUSH faults as a byte read)
+    /// and nothing else. Executed only in the CPL0 profile set.
+    Clflush {
+        memory: MemoryOperand,
+    },
+    /// S7-32: `RDSSPD`/`RDSSPQ r` (`F3 [REX.W] 0F 1E /1`, mod = 11) in the forms other than the
+    /// exact [`Operation::RdsspqRax`], and `ENDBR32` (`F3 0F 1E FB`): NOPs while CR4.CET = 0 (SDM
+    /// "RDSSPD/RDSSPQ", "ENDBR32"). Executed only in the CPL0 profile set and only with CR4.CET clear.
+    CetNop,
+    /// S7-32: `RDPMC` (`0F 33`). The profiles declare no performance counters (CPUID leaf 0xA is
+    /// absent), so every counter index is invalid: #GP(0) at any CPL (SDM Vol. 2B "RDPMC").
+    Rdpmc,
     /// S4-38L7am: `LTR r/m16` (`0F 00 /3`, register form only, optional REX without W). The
     /// selector is the low 16 bits of `source`. Executed only in the CPL0 profile set.
     LoadTr {
@@ -3641,6 +3721,11 @@ impl Instruction {
             },
             Operation::ClearDirectionFlag | Operation::SetDirectionFlag => FlagEffects {
                 defined: crate::DF,
+                undefined: 0,
+            },
+            // S7-32: CLC, STC and CMC define CF and nothing else.
+            Operation::CarryFlag { .. } => FlagEffects {
+                defined: crate::CF,
                 undefined: 0,
             },
             Operation::Arithmetic { kind, .. } => FlagEffects {
@@ -13385,6 +13470,362 @@ impl<M: GuestMemory> Fetch<'_, M> {
     /// width: REX.W selects 64 bits, else `66` selects 16 (POPCNT and CRC32 `F1` only), else 32; CRC32
     /// `F0` has an 8-bit source (with a REX prefix the byte registers are SPL, BPL, SIL, DIL) and its
     /// destination is r64 with REX.W, else r32; `66` does not change the destination of CRC32.
+    /// S7-32: system and small forms the Windows boot path executes and the profile decoder does
+    /// not claim, tried by [`decode`] only after the profile decoder returned `Unsupported` for the
+    /// opcode (so every form the profile decoder already decodes, or calls `Invalid`, keeps its
+    /// answer): `SLDT`/`STR`/`LLDT m` (`0F 00 /0,/1,/2`), `SIDT m` (`0F 01 /1`), RDSSP and ENDBR32
+    /// as NOPs (`F3 0F 1E`), `MOV r64, CRn` / `MOV CRn, r64` for CR0, CR2 and CR8 (`0F 20`/`0F 22`),
+    /// `MOV r64, DRn` (`0F 21`), `RDPMC` (`0F 33`), `CLFLUSH m8` (`0F AE /7`), `MOVNTI` (`0F C3`),
+    /// `MOV r/m, Sreg` with `66` (`8C`), `MOV Sreg, r/m16` (`8E`), `INT imm8` (`CD`), `CMC`/`CLC`/
+    /// `STC` (`F5`/`F8`/`F9`) and the `66 66 .. 90` NOP. Encodings from the Intel SDM Vol. 2
+    /// (instruction pages and Appendix A opcode maps). `Ok(None)` keeps the profile decoder's
+    /// `Unsupported` (for example an FS/GS override on a memory form whose executor applies no
+    /// segment base, or a LOCK prefix where the profile decoder reports its own classification).
+    fn decode_s7_32_system(&mut self) -> Result<Option<Instruction>, DecodeError> {
+        let start = self.length;
+        // `66 66 .. 90`: repeated operand-size prefixes only, then XCHG AX, AX = NOP.
+        let mut repeated_66 = 0;
+        let after_66 = loop {
+            let byte = self.byte()?;
+            if byte != 0x66 {
+                break byte;
+            }
+            repeated_66 += 1;
+        };
+        if repeated_66 >= 2 {
+            if after_66 == 0x90 {
+                return Ok(Some(Instruction {
+                    length: self.length,
+                    opcode: Opcode {
+                        map: OpcodeMap::Primary,
+                        byte: 0x90,
+                    },
+                    prefixes: Prefixes {
+                        operand_override: true,
+                        ..Prefixes::default()
+                    },
+                    operand_size: OperandSize::Word,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::Nop,
+                }));
+            }
+        }
+        self.length = start;
+        let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
+            return Ok(None);
+        };
+        if locked {
+            return Ok(None);
+        }
+        let rex = prefixes.rex.unwrap_or(0);
+        let fs_gs = matches!(prefixes.segment, Some(0x64 | 0x65));
+        let address_size = if prefixes.address_override {
+            OperandSize::Dword
+        } else {
+            OperandSize::Qword
+        };
+        let gpr = |encoding: u8| Register::from_encoding(encoding).expect("a four-bit encoding");
+        let instruction = |length: u8, opcode: Opcode, size: OperandSize, operation| Instruction {
+            length,
+            opcode,
+            prefixes,
+            operand_size: size,
+            address_size,
+            operation,
+        };
+        if first != 0x0f {
+            let opcode = Opcode {
+                map: OpcodeMap::Primary,
+                byte: first,
+            };
+            let bare = prefixes.group1.is_none()
+                && prefixes.segment.is_none()
+                && !prefixes.operand_override
+                && !prefixes.address_override;
+            let operation = match first {
+                0xcd if bare => Operation::SoftwareInterrupt {
+                    vector: self.byte()?,
+                },
+                0xf5 if bare => Operation::CarryFlag {
+                    op: CarryFlagOp::Complement,
+                },
+                0xf8 if bare => Operation::CarryFlag {
+                    op: CarryFlagOp::Clear,
+                },
+                0xf9 if bare => Operation::CarryFlag {
+                    op: CarryFlagOp::Set,
+                },
+                // `66 8C /r`: the 16-bit forms of MOV r/m, Sreg the profile decoder refuses (a lone
+                // `66`, optionally with the REX directly before the opcode). Every other prefix
+                // spelling and Sreg 6 and 7 keep the profile decoder's refusal.
+                0x8c if prefixes.operand_override
+                    && prefixes.group1.is_none()
+                    && prefixes.segment.is_none()
+                    && !prefixes.address_override =>
+                {
+                    let modrm = self.byte()?;
+                    let sreg = (modrm >> 3) & 7;
+                    if sreg > 5 {
+                        return Ok(None);
+                    }
+                    let register_form = modrm >> 6 == 3;
+                    let size = if !register_form {
+                        OperandSize::Word
+                    } else if rex & 8 != 0 {
+                        OperandSize::Qword
+                    } else {
+                        OperandSize::Word
+                    };
+                    let dst = self.rm_operand(modrm, prefixes, size)?;
+                    return Ok(Some(instruction(
+                        self.length,
+                        opcode,
+                        size,
+                        Operation::MovSregStore {
+                            dst,
+                            sreg,
+                            segment: None,
+                        },
+                    )));
+                }
+                // `8E /r` with a memory source (bootmgfw restores DS, ES, FS, GS and SS from memory),
+                // no legacy prefix (a lone REX). The register forms stay with the profile decoder.
+                0x8e if prefixes
+                    == (Prefixes {
+                        rex: prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
+                {
+                    let modrm = self.byte()?;
+                    if modrm >> 6 == 3 {
+                        return Ok(None);
+                    }
+                    let sreg = (modrm >> 3) & 7;
+                    // CS (1) and the reserved 6 and 7 are #UD (SDM "MOV": CS cannot be loaded).
+                    if sreg == 1 || sreg > 5 {
+                        return Err(DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
+                    let source = self.rm_operand(modrm, prefixes, OperandSize::Word)?;
+                    return Ok(Some(instruction(
+                        self.length,
+                        opcode,
+                        OperandSize::Word,
+                        Operation::MovToSreg { sreg, source },
+                    )));
+                }
+                _ => return Ok(None),
+            };
+            return Ok(Some(instruction(
+                self.length,
+                opcode,
+                OperandSize::Qword,
+                operation,
+            )));
+        }
+        let opcode = Opcode {
+            map: OpcodeMap::Escape0f,
+            byte: self.byte()?,
+        };
+        match opcode.byte {
+            // SLDT /0, STR /1, LLDT /2 (memory). No mandatory prefix.
+            0x00 if prefixes.group1.is_none() => {
+                let modrm = self.byte()?;
+                let reg = (modrm >> 3) & 7;
+                let register_form = modrm >> 6 == 3;
+                match reg {
+                    0 | 1 => {
+                        // A memory destination has no FS/GS base in this executor; a register
+                        // destination takes no segment prefix.
+                        if fs_gs {
+                            return Ok(None);
+                        }
+                        let size = if !register_form {
+                            OperandSize::Word
+                        } else if rex & 8 != 0 {
+                            OperandSize::Qword
+                        } else if prefixes.operand_override {
+                            OperandSize::Word
+                        } else {
+                            OperandSize::Dword
+                        };
+                        let dst = self.rm_operand(modrm, prefixes, size)?;
+                        Ok(Some(instruction(
+                            self.length,
+                            opcode,
+                            size,
+                            Operation::StoreSystemSelector { tr: reg == 1, dst },
+                        )))
+                    }
+                    2 if !register_form && !fs_gs => {
+                        let Operand::Memory(source) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Word)?
+                        else {
+                            unreachable!("a memory ModRM form")
+                        };
+                        Ok(Some(instruction(
+                            self.length,
+                            opcode,
+                            OperandSize::Word,
+                            Operation::LoadLdtMemory { source },
+                        )))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            // SIDT m: the prefix policy of SGDT (no group-1 prefix; FS/GS kept in the prefixes for
+            // the executor's segment base).
+            0x01 if prefixes.group1.is_none() => {
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 1 || modrm >> 6 == 3 {
+                    return Ok(None);
+                }
+                let Operand::Memory(dst) = self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    unreachable!("a memory ModRM form")
+                };
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    OperandSize::Qword,
+                    Operation::StoreIdtr { dst },
+                )))
+            }
+            // F3 [REX] 0F 1E /1 (mod = 11): RDSSPD/RDSSPQ, and F3 0F 1E FB: ENDBR32. Both are NOPs
+            // while CET is off (SDM "RDSSPD/RDSSPQ": "a NOP if CET shadow stack is not enabled";
+            // ENDBR32 is in the reserved-NOP space); the executor refuses them with CR4.CET set.
+            0x1e if prefixes.group1 == Some(0xf3) && !prefixes.operand_override => {
+                let modrm = self.byte()?;
+                if !(modrm & 0xf8 == 0xc8 || modrm == 0xfb && rex == 0) {
+                    return Ok(None);
+                }
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    OperandSize::Qword,
+                    Operation::CetNop,
+                )))
+            }
+            // MOV r64, CRn (0F 20) / MOV CRn, r64 (0F 22) in the canonical encoding only: no legacy
+            // prefix (a REX alone), mod = 11 (the SDM ignores mod and the operand-size prefix; those
+            // spellings stay refused, conservatively). REX.R extends reg (CR8). CR3 and CR4 are left
+            // to the CR-specific forms; CR1, CR5..CR7 and CR9..CR15 are #UD.
+            0x20 | 0x22
+                if prefixes
+                    == (Prefixes {
+                        rex: prefixes.rex,
+                        ..Prefixes::default()
+                    }) =>
+            {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Ok(None);
+                }
+                let cr = ((modrm >> 3) & 7) | ((rex & 4) << 1);
+                let register = gpr((modrm & 7) | ((rex & 1) << 3));
+                let operation = match cr {
+                    // CR2 reads in this encoding are the profile decoder's `ReadCr2`/`ReadCr2Into`.
+                    0 | 8 if opcode.byte == 0x20 => Operation::ReadControl { cr, dst: register },
+                    0 | 2 | 8 if opcode.byte == 0x22 => {
+                        Operation::WriteControl { cr, src: register }
+                    }
+                    2..=4 => return Ok(None),
+                    _ => {
+                        return Err(DecodeError::Invalid {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
+                };
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    OperandSize::Qword,
+                    operation,
+                )))
+            }
+            // MOV r64, DRn in the canonical encoding (a REX alone, mod = 11, as MOV CR above): REX.R
+            // (DR8..DR15) is #UD.
+            0x21 if prefixes
+                == (Prefixes {
+                    rex: prefixes.rex,
+                    ..Prefixes::default()
+                }) =>
+            {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Ok(None);
+                }
+                if rex & 4 != 0 {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    OperandSize::Qword,
+                    Operation::ReadDebugRegister {
+                        index: (modrm >> 3) & 7,
+                        dst: gpr((modrm & 7) | ((rex & 1) << 3)),
+                    },
+                )))
+            }
+            0x33 if prefixes.group1.is_none() && !prefixes.operand_override => Ok(Some(
+                instruction(self.length, opcode, OperandSize::Qword, Operation::Rdpmc),
+            )),
+            // CLFLUSH m8: no mandatory prefix (66 0F AE /7 is CLFLUSHOPT, not modeled).
+            0xae if prefixes.group1.is_none() && !prefixes.operand_override && !fs_gs => {
+                let modrm = self.byte()?;
+                if (modrm >> 3) & 7 != 7 || modrm >> 6 == 3 {
+                    return Ok(None);
+                }
+                let Operand::Memory(memory) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Byte)?
+                else {
+                    unreachable!("a memory ModRM form")
+                };
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    OperandSize::Byte,
+                    Operation::Clflush { memory },
+                )))
+            }
+            // MOVNTI m32/m64, r32/r64: a plain store for the model (no caches, no write combining).
+            // The register form and the 66 form are #UD.
+            0xc3 if prefixes.group1.is_none() && !fs_gs => {
+                let modrm = self.byte()?;
+                if modrm >> 6 == 3 || prefixes.operand_override {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                let size = if rex & 8 != 0 {
+                    OperandSize::Qword
+                } else {
+                    OperandSize::Dword
+                };
+                let dst = self.rm_operand(modrm, prefixes, size)?;
+                let src = Operand::Register(RegisterView::low(
+                    gpr(((modrm >> 3) & 7) | ((rex & 4) << 1)),
+                    size,
+                ));
+                Ok(Some(instruction(
+                    self.length,
+                    opcode,
+                    size,
+                    Operation::Mov { dst, src },
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn decode_popcnt_crc32(&mut self) -> Result<Option<Instruction>, DecodeError> {
         let Some((prefixes, locked, first)) = self.scan_slice_c_prefixes()? else {
             return Ok(None);
@@ -13990,6 +14431,11 @@ fn decode_uncached(
     // S2-54 slice C: the non-FP SSE3 forms (`0F 12/16/F0`) and x87 FISTTP (`DB/DD/DF /1`) get the
     // same fallback treatment.
     let general = match (opcode.map, opcode.byte) {
+        // S7-32: the system and small forms of the Windows boot path.
+        (OpcodeMap::Primary, 0x8c | 0x8e | 0x90 | 0xcd | 0xf5 | 0xf8 | 0xf9)
+        | (OpcodeMap::Escape0f, 0x00 | 0x01 | 0x1e | 0x20 | 0x21 | 0x22 | 0x33 | 0xae | 0xc3) => {
+            fetch.decode_s7_32_system()
+        }
         // S2-39 (MMX): the no-prefix MOVQ mm forms (`0F 6F/7F`) are tried first, the 128-bit moves after.
         (OpcodeMap::Escape0f, 0x6f | 0x7f) => match fetch.decode_mmx_int() {
             Ok(None) => Fetch {
@@ -37940,5 +38386,269 @@ mod tests {
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
+    }
+
+    /// S7-32: the system forms of the Windows boot path, decoded by the public entry point after
+    /// the profile decoder refused them. Encodings from the Intel SDM Vol. 2 instruction pages.
+    #[test]
+    fn s7_32_system_forms_decode_through_the_fallback() {
+        let general = |bytes: &[u8]| Memory::new(bytes).decode_general();
+        let reg = |register, size| Operand::Register(RegisterView::low(register, size));
+        // SIDT 0xa(%rcx) (bootmgfw), SIDT gs:(%rax), SIDT (%rax) with REX.W.
+        for (bytes, length) in [
+            (&[0x0fu8, 0x01, 0x49, 0x0a][..], 4u8),
+            (&[0x65, 0x0f, 0x01, 0x08], 4),
+            (&[0x48, 0x0f, 0x01, 0x08], 4),
+        ] {
+            let decoded = general(bytes).unwrap();
+            assert_eq!(decoded.length, length, "{bytes:02x?}");
+            assert!(matches!(decoded.operation, Operation::StoreIdtr { .. }));
+        }
+        // The register forms of /1 (MONITOR, MWAIT, ...) are not SIDT.
+        assert!(!matches!(
+            general(&[0x0f, 0x01, 0xc8]).map(|d| d.operation),
+            Ok(Operation::StoreIdtr { .. })
+        ));
+        // SLDT 0x14(%rcx) stores 16 bits; STR %eax, STR %rax, SLDT %ax.
+        let decoded = general(&[0x0f, 0x00, 0x41, 0x14]).unwrap();
+        assert_eq!(decoded.length, 4);
+        let Operation::StoreSystemSelector {
+            tr: false,
+            dst: Operand::Memory(dst),
+        } = decoded.operation
+        else {
+            panic!("{:?}", decoded.operation)
+        };
+        assert_eq!(dst.size, OperandSize::Word);
+        for (bytes, tr, register) in [
+            (
+                &[0x0fu8, 0x00, 0xc8][..],
+                true,
+                reg(Register::Rax, OperandSize::Dword),
+            ),
+            (
+                &[0x48, 0x0f, 0x00, 0xc8],
+                true,
+                reg(Register::Rax, OperandSize::Qword),
+            ),
+            (
+                &[0x66, 0x0f, 0x00, 0xc0],
+                false,
+                reg(Register::Rax, OperandSize::Word),
+            ),
+            (
+                &[0x41, 0x0f, 0x00, 0xc9],
+                true,
+                reg(Register::R9, OperandSize::Dword),
+            ),
+        ] {
+            assert_eq!(
+                general(bytes).unwrap().operation,
+                Operation::StoreSystemSelector { tr, dst: register },
+                "{bytes:02x?}"
+            );
+        }
+        // LLDT 0x14(%rcx).
+        assert!(matches!(
+            general(&[0x0f, 0x00, 0x51, 0x14]).unwrap().operation,
+            Operation::LoadLdtMemory { .. }
+        ));
+        // MOV %cs, %ax (66 8C C8): a 16-bit register destination.
+        assert_eq!(
+            general(&[0x66, 0x8c, 0xc8]).unwrap().operation,
+            Operation::MovSregStore {
+                dst: reg(Register::Rax, OperandSize::Word),
+                sreg: 1,
+                segment: None
+            }
+        );
+        // MOV 0x18(%rcx), %ds; MOV 0x20(%rcx), %ss; MOV 0x1c(%rcx), %fs; MOV %r8w, %fs.
+        for (bytes, sreg) in [
+            (&[0x8eu8, 0x59, 0x18][..], 3u8),
+            (&[0x8e, 0x51, 0x20], 2),
+            (&[0x8e, 0x61, 0x1c], 4),
+            (&[0x8e, 0x69, 0x1e], 5),
+            (&[0x8e, 0x41, 0x1a], 0),
+        ] {
+            let decoded = general(bytes).unwrap();
+            assert_eq!(decoded.length, 3, "{bytes:02x?}");
+            assert!(
+                matches!(decoded.operation, Operation::MovToSreg { sreg: s, source: Operand::Memory(m) } if s == sreg && m.size == OperandSize::Word),
+                "{bytes:02x?}: {:?}",
+                decoded.operation
+            );
+        }
+        // The register forms stay with the profile decoder (`41 8E E0`, REX.B with FS, is refused).
+        assert!(matches!(
+            general(&[0x41, 0x8e, 0xe0]),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        // MOV CS, r/m16 and the reserved Sreg 6 are #UD.
+        for bytes in [&[0x8eu8, 0x49, 0x00][..], &[0x8e, 0x71, 0x00]] {
+            assert!(
+                matches!(general(bytes), Err(DecodeError::Invalid { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        // MOV %cr0, %rcx; MOV %rcx, %cr0; MOV %cr8, %rax (REX.R); MOV %rcx, %cr8; MOV %rcx, %cr2.
+        for (bytes, operation) in [
+            (
+                &[0x0fu8, 0x20, 0xc1][..],
+                Operation::ReadControl {
+                    cr: 0,
+                    dst: Register::Rcx,
+                },
+            ),
+            (
+                &[0x0f, 0x22, 0xc1],
+                Operation::WriteControl {
+                    cr: 0,
+                    src: Register::Rcx,
+                },
+            ),
+            (
+                &[0x44, 0x0f, 0x20, 0xc0],
+                Operation::ReadControl {
+                    cr: 8,
+                    dst: Register::Rax,
+                },
+            ),
+            (
+                &[0x44, 0x0f, 0x22, 0xc1],
+                Operation::WriteControl {
+                    cr: 8,
+                    src: Register::Rcx,
+                },
+            ),
+            (
+                &[0x0f, 0x22, 0xd1],
+                Operation::WriteControl {
+                    cr: 2,
+                    src: Register::Rcx,
+                },
+            ),
+            (
+                &[0x45, 0x0f, 0x20, 0xc7],
+                Operation::ReadControl {
+                    cr: 8,
+                    dst: Register::R15,
+                },
+            ),
+        ] {
+            assert_eq!(general(bytes).unwrap().operation, operation, "{bytes:02x?}");
+        }
+        // The exact profile forms keep their variants.
+        assert_eq!(
+            general(&[0x0f, 0x20, 0xc0]).unwrap().operation,
+            Operation::ReadCr0
+        );
+        // CR1, CR5, CR9 (REX.R + 1) are #UD.
+        for bytes in [
+            &[0x0fu8, 0x20, 0xc8][..],
+            &[0x0f, 0x22, 0xe8],
+            &[0x44, 0x0f, 0x20, 0xc8],
+        ] {
+            assert!(
+                matches!(general(bytes), Err(DecodeError::Invalid { .. })),
+                "{bytes:02x?}"
+            );
+        }
+        // MOV %dr0, %rax; MOV %dr7, %rax; MOV %dr7, %r9; DR8 (REX.R) is #UD.
+        assert_eq!(
+            general(&[0x0f, 0x21, 0xc0]).unwrap().operation,
+            Operation::ReadDebugRegister {
+                index: 0,
+                dst: Register::Rax
+            }
+        );
+        assert_eq!(
+            general(&[0x0f, 0x21, 0xf8]).unwrap().operation,
+            Operation::ReadDebugRegister {
+                index: 7,
+                dst: Register::Rax
+            }
+        );
+        assert_eq!(
+            general(&[0x41, 0x0f, 0x21, 0xf9]).unwrap().operation,
+            Operation::ReadDebugRegister {
+                index: 7,
+                dst: Register::R9
+            }
+        );
+        assert!(matches!(
+            general(&[0x44, 0x0f, 0x21, 0xc0]),
+            Err(DecodeError::Invalid { .. })
+        ));
+        // INT 0x29 (__fastfail); LOCK INT keeps the profile decoder's refusal.
+        let decoded = general(&[0xcd, 0x29]).unwrap();
+        assert_eq!(decoded.length, 2);
+        assert_eq!(
+            decoded.operation,
+            Operation::SoftwareInterrupt { vector: 0x29 }
+        );
+        assert!(general(&[0xf0, 0xcd, 0x29]).is_err());
+        // CLC, STC, CMC.
+        for (byte, op) in [
+            (0xf8u8, CarryFlagOp::Clear),
+            (0xf9, CarryFlagOp::Set),
+            (0xf5, CarryFlagOp::Complement),
+        ] {
+            let decoded = general(&[byte]).unwrap();
+            assert_eq!(decoded.length, 1);
+            assert_eq!(decoded.operation, Operation::CarryFlag { op });
+            assert_eq!(decoded.flag_effects().defined, crate::CF);
+        }
+        // 66 66 90 and 66 66 66 90: NOPs.
+        for bytes in [&[0x66u8, 0x66, 0x90][..], &[0x66, 0x66, 0x66, 0x90]] {
+            let decoded = general(bytes).unwrap();
+            assert_eq!(usize::from(decoded.length), bytes.len());
+            assert_eq!(decoded.operation, Operation::Nop);
+        }
+        // MOVNTI %rax, (%rcx) / %eax, (%rcx): stores; the register form is #UD.
+        let Operation::Mov {
+            dst: Operand::Memory(dst),
+            src,
+        } = general(&[0x48, 0x0f, 0xc3, 0x01]).unwrap().operation
+        else {
+            panic!()
+        };
+        assert_eq!(dst.size, OperandSize::Qword);
+        assert_eq!(src, reg(Register::Rax, OperandSize::Qword));
+        let Operation::Mov {
+            dst: Operand::Memory(dst),
+            ..
+        } = general(&[0x0f, 0xc3, 0x01]).unwrap().operation
+        else {
+            panic!()
+        };
+        assert_eq!(dst.size, OperandSize::Dword);
+        assert!(matches!(
+            general(&[0x0f, 0xc3, 0xc1]),
+            Err(DecodeError::Invalid { .. })
+        ));
+        // CLFLUSH (%rcx); CLFLUSHOPT (66) is not decoded as CLFLUSH.
+        assert!(matches!(
+            general(&[0x0f, 0xae, 0x39]).unwrap().operation,
+            Operation::Clflush { .. }
+        ));
+        assert!(!matches!(
+            general(&[0x66, 0x0f, 0xae, 0x39]).map(|d| d.operation),
+            Ok(Operation::Clflush { .. })
+        ));
+        // RDPMC.
+        assert_eq!(general(&[0x0f, 0x33]).unwrap().operation, Operation::Rdpmc);
+        // RDSSPQ %rdi and ENDBR32 as CET NOPs; the exact RDSSPQ %rax keeps its variant.
+        assert_eq!(
+            general(&[0xf3, 0x48, 0x0f, 0x1e, 0xcf]).unwrap().operation,
+            Operation::CetNop
+        );
+        assert_eq!(
+            general(&[0xf3, 0x0f, 0x1e, 0xfb]).unwrap().operation,
+            Operation::CetNop
+        );
+        assert_eq!(
+            general(&[0xf3, 0x48, 0x0f, 0x1e, 0xc8]).unwrap().operation,
+            Operation::RdsspqRax
+        );
     }
 }

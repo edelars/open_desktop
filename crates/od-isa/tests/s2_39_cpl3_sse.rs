@@ -903,6 +903,8 @@ struct SweepTotals {
     refused_ac: usize,
     refused_mmx: usize,
     refused_crc32: usize,
+    /// S7-32: MOVNTI, a general-register store refused at CPL3.
+    refused_movnti: usize,
     /// (prefix, map, opcode, REX.W, offset from a 16-byte boundary) of the memory forms that retired with AC set at
     /// an operand misaligned for a 16-byte access.
     misaligned_ac_retired: std::collections::BTreeSet<(Option<u8>, u8, u8, bool, u64)>,
@@ -1044,6 +1046,11 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
                 {
                     // CRC32 is a general-register form of S2-56, in the CPL0 set at Ring0 only (not an SSE form).
                     totals.refused_crc32 += 1;
+                } else if sweep.prefix.is_none() && sweep.map == 0 && sweep.opcode == 0xc3 {
+                    // S7-32: MOVNTI is decoded as the plain general-register store it is for the model and
+                    // runs in the CPL0 set at Ring0; CPL3 refuses it (the #AC rule of a misaligned
+                    // operand under AC is not modeled for the general MOV).
+                    totals.refused_movnti += 1;
                 } else {
                     failures.push(format!(
                         "{}: CPL3 refuses (opcode {opcode:#x}) what the CPL0 set runs: {cpl0_result:?}",
@@ -1058,13 +1065,14 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
         }
     }
     eprintln!(
-        "sweep: {} cases, {} equal ({} retired), {} AC refusals, {} MMX refusals, {} CRC32 refusals, {} failures; {} misaligned AC retirements (aligned to their size)",
+        "sweep: {} cases, {} equal ({} retired), {} AC refusals, {} MMX refusals, {} CRC32 refusals, {} MOVNTI refusals, {} failures; {} misaligned AC retirements (aligned to their size)",
         totals.cases,
         totals.equal,
         totals.equal_retired,
         totals.refused_ac,
         totals.refused_mmx,
         totals.refused_crc32,
+        totals.refused_movnti,
         failures.len(),
         totals.misaligned_ac_retired.len()
     );

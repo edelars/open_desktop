@@ -236,10 +236,8 @@ fn endbr64_in_cpl3_retires_as_a_four_byte_nop() {
     assert_eq!(state, initial);
     assert_eq!(memory.accesses, 0);
 
-    for (neighbor, opcode) in [
-        (&[0xf3, 0x0f, 0x1e, 0xfb][..], 0x1e),
-        (&[0xf3, 0x90][..], 0x90),
-    ] {
+    // S7-32: ENDBR32 (`F3 0F 1E FB`) is a NOP while CR4.CET = 0 (`CetNop`) and left this list.
+    for (neighbor, opcode) in [(&[0xf3, 0x90][..], 0x90)] {
         let mut state = initial.clone();
         let mut memory = Memory::code(neighbor);
         let result = run3(&mut state, &mut memory, &set, 1).unwrap();
@@ -9465,6 +9463,8 @@ fn cpl3_reference_rdsspq_preserves_rax_without_shadow_stack() {
     assert!(memory.read_widths.is_empty());
     assert!(memory.writes.is_empty());
 
+    // S7-32: RDSSPD/RDSSPQ with any register (`CetNop`, the stale REX being ignored) are NOPs
+    // while CR4.CET = 0 (SDM "RDSSPD/RDSSPQ"): only RIP changes.
     for code in [
         &[0xf3, 0x0f, 0x1e, 0xc8][..],
         &[0xf3, 0x48, 0x0f, 0x1e, 0xc9][..],
@@ -9473,8 +9473,14 @@ fn cpl3_reference_rdsspq_preserves_rax_without_shadow_stack() {
         let mut state = before.clone();
         let mut memory = DataMemory::new(code);
         let done = run3_data(&mut state, &mut memory, 1).unwrap();
-        assert_eq!(exit(&done), &RunExit::Unsupported { opcode: 0x1e });
-        assert_eq!(state, before);
+        assert_eq!(
+            done.instructions_executed, 1,
+            "{code:02x?}: {:?}",
+            done.exit
+        );
+        let mut expected = before.clone();
+        expected.rip += code.len() as u64;
+        assert_eq!(state, expected, "{code:02x?}");
     }
 }
 

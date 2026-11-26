@@ -197,7 +197,7 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     assert!(decodes > 10_000, "{decodes}");
     assert_eq!(admitted_operations.len(), 15, "{decodes} decodes");
     // The admitted set of HEAD `1500400`: 126 403 decodes, 33 009 admitted (32 128 straight-line,
-    // 881 control transfers), and the same encodings.
+    // 881 control transfers), and the same encodings; S7-32 changes it as noted below.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for encoding in &admitted {
         for &byte in encoding.iter().chain(std::iter::once(&0xffu8)) {
@@ -205,11 +205,14 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
+    // S7-32: 385 more decodes (the system-form fallback of `decode`) and 80 more admitted, all
+    // MOVNTI (`0F C3` with a memory destination), decoded as the plain `Mov` store it is for the
+    // model.
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (126_403, 32_128, 881, 33_009)
+        (126_788, 32_208, 881, 33_089)
     );
-    assert_eq!(hash, 0xed77_1809_cfcb_deab, "the admitted set changed");
+    assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }
 
 /// Known encodings and whether the rule gives them a class.

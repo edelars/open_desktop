@@ -1900,6 +1900,109 @@ fn deliver_int3(
     }
 }
 
+/// S7-32: the outcome of [`deliver_software_interrupt_cpl0_set`].
+#[derive(Debug)]
+pub enum SoftwareInterruptDelivery {
+    /// The gate was entered: RIP, RSP, CS (and SS and the stack, from CPL3) are those of the
+    /// handler; the frame holds the address of the next instruction.
+    Delivered { target_rip: u64, new_rsp: u64 },
+    /// The gate DPL is below the CPL: the caller raises #GP(vector * 8 + 2). Nothing changed.
+    GateDpl,
+    /// A form outside the model (activity, shadow, a gate or stack condition the shared gate
+    /// resolution refuses, an IST gate). Nothing was written; the caller stops.
+    Refused,
+    /// A memory error of the IDT gate read, the GDT read of the target code descriptor or a frame
+    /// store (the CPU state is unchanged; frame words already stored lie below the old RSP).
+    Aborted(MemoryError),
+}
+
+/// S7-32: `INT imm8` in the Long64 CPL0 profile set, from CPL0 or CPL3, through the IDT gate of
+/// `vector` (interrupt or trap gate, IST 0). `return_rip` is the address of the next instruction
+/// (a software interrupt is a trap). From CPL3 the handler stack is TSS.RSP0, as for the `#GP`
+/// delivery of this set. The saved RFLAGS has RF cleared and bit 1 set (as the `INT3` of the set);
+/// the gate DPL is checked against the CPL (the software form's check, Intel SDM Vol. 3A 6.12.1.1
+/// and the `INT n` pseudocode) right after the gate is read and its type is known, before the
+/// present bit and before the target code descriptor is read, as in the SDM order. A gate beyond
+/// the IDT limit, a gate of another type, a not-present gate and an IST gate are refusals (stops),
+/// not the #GP/#NP of hardware. `INT3` keeps [`deliver_int3_cpl0_set`].
+pub fn deliver_software_interrupt_cpl0_set(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    vector: u8,
+    return_rip: u64,
+    context: AccessContext,
+) -> SoftwareInterruptDelivery {
+    let Some(from_cpl3) = delivery_source(state, context) else {
+        return SoftwareInterruptDelivery::Refused;
+    };
+    if state.activity != Some(crate::CpuActivity::Running)
+        || !fault_shadow_admitted(state, from_cpl3, false)
+    {
+        return SoftwareInterruptDelivery::Refused;
+    }
+    // The DPL check of the software form, on the gate alone (attributes byte 5 of the low qword:
+    // type 0xE interrupt or 0xF trap gate with S = 0, DPL in bits 6:5), before anything else of the
+    // gate or the target is examined. A gate the shared resolution below refuses stays a refusal.
+    if let Some(idtr) = state.idtr {
+        let offset = u64::from(vector) * 16;
+        let address = idtr.base.wrapping_add(offset);
+        // A guest IDT base near the top of the address space must not overflow (the shared
+        // resolution below refuses such a gate the same way).
+        let last = idtr.base.checked_add(offset + 15);
+        if offset + 15 <= u64::from(idtr.limit) && canonical(address) && last.is_some_and(canonical)
+        {
+            match memory.read_integer(
+                address,
+                context.descriptor_table(),
+                crate::OperandSize::Qword,
+            ) {
+                Ok(low) => {
+                    let attributes = (low >> 40) as u8;
+                    let dpl = (attributes >> 5) & 3;
+                    if matches!(attributes & 0x1f, 0x0e | 0x0f)
+                        && !software_gate_dpl_ok(if from_cpl3 { 3 } else { 0 }, dpl)
+                    {
+                        return SoftwareInterruptDelivery::GateDpl;
+                    }
+                }
+                Err(cause) => return SoftwareInterruptDelivery::Aborted(cause),
+            }
+        }
+    }
+    let mut gate = match resolve_cpl0_gate(state, memory, context, vector, from_cpl3, false) {
+        Ok(gate) => gate,
+        Err(GateRefused(_)) => return SoftwareInterruptDelivery::Refused,
+        Err(GateAborted { cause, .. }) => return SoftwareInterruptDelivery::Aborted(cause),
+    };
+    if !software_gate_dpl_ok(if from_cpl3 { 3 } else { 0 }, gate.dpl) {
+        return SoftwareInterruptDelivery::GateDpl;
+    }
+    if from_cpl3 {
+        match read_tss_rsp0(state, memory, context) {
+            Ok(rsp0) => gate.new_stack = Some(rsp0),
+            Err(TssFailure::Aborted(cause)) => return SoftwareInterruptDelivery::Aborted(cause),
+            Err(_) => return SoftwareInterruptDelivery::Refused,
+        }
+    }
+    let saved_rflags = (state.rflags & !(1 << 16)) | (1 << 1);
+    match commit_cpl0_gate(
+        state,
+        memory,
+        context,
+        &gate,
+        saved_rflags,
+        return_rip,
+        None,
+    ) {
+        Ok((target_rip, new_rsp)) => SoftwareInterruptDelivery::Delivered {
+            target_rip,
+            new_rsp,
+        },
+        Err(GateRefused(_)) => SoftwareInterruptDelivery::Refused,
+        Err(GateAborted { cause, .. }) => SoftwareInterruptDelivery::Aborted(cause),
+    }
+}
+
 fn int3_gate_failure(failure: GateFailure) -> Cpl0Int3Delivery {
     match failure {
         GateRefused(refusal) => Cpl0Int3Delivery::Refused(refusal.into()),

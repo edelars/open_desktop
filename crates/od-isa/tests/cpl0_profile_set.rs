@@ -1419,7 +1419,7 @@ fn prefixed_mov_cr3_forms_are_unsupported_without_mutation() {
     for bytes in [
         &[0x66, 0x0f, 0x22, 0xd8][..],
         &[0x66, 0x0f, 0x22, 0xdf][..],
-        &[0x44, 0x0f, 0x22, 0xdf][..],
+        // S7-32: `44 0F 22 DF` (CR11) is #UD, see `s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud`.
     ] {
         let mut state = cr3_state(0x1000);
         let before = state.clone();
@@ -1603,7 +1603,7 @@ fn mov_rax_cr3_other_forms_are_unsupported_without_mutation() {
         &[0xf3, 0x0f, 0x20, 0xd8][..],
         &[0x67, 0x0f, 0x20, 0xd8][..],
         &[0x2e, 0x0f, 0x20, 0xd8][..],
-        &[0x4c, 0x0f, 0x20, 0xd8][..],
+        // S7-32: `4C 0F 20 D8` (CR11) is #UD, see `s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud`.
         // Only the REX nearest the opcode is effective, but the length 5 is outside the
         // exact forms: the executor refuses it.
         &[0x40, 0x48, 0x0f, 0x20, 0xd8][..],
@@ -1726,8 +1726,7 @@ fn mov_cr3_r64_beyond_36_bits_is_gp0_without_mutation() {
 fn mov_cr3_r64_other_forms_are_unsupported_without_mutation() {
     for bytes in [
         &[0xf0, 0x0f, 0x22, 0xdf][..], // LOCK with a non-RAX source
-        &[0x44, 0x0f, 0x22, 0xdf][..], // REX.R: CR11
-        &[0x4d, 0x0f, 0x22, 0xdf][..],
+        // S7-32: REX.R (CR11) is #UD, see `s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud`.
         &[0x0f, 0x22, 0x1f][..], // mod 00: conservative refusal (SDM not verified)
         &[0x0f, 0x22, 0x5f, 0x08][..], // mod 01
         &[0x0f, 0x22, 0x9f, 0, 0, 0, 0][..], // mod 10
@@ -1911,10 +1910,7 @@ fn mov_rax_cr2_stays_unsupported_outside_the_set() {
 #[test]
 fn mov_rax_cr2_other_forms_are_unsupported_without_mutation() {
     for bytes in [
-        &[0x0f, 0x22, 0xd0][..], // MOV CR2, RAX: write is not modeled
-        &[0x48, 0x0f, 0x22, 0xd0][..],
-        &[0x0f, 0x20, 0xc8][..],       // CR1
-        &[0x0f, 0x20, 0xe8][..],       // CR5
+        // S7-32: MOV CR2, r64, MOV r64, CR0 / MOV CR0, r64 with any GPR now execute (s7_32_* tests); CR1, CR5 and CR9..CR15 are #UD (s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud).
         &[0xf0, 0x0f, 0x20, 0xd0][..], // LOCK
         &[0x66, 0x0f, 0x20, 0xd0][..],
         &[0xf3, 0x0f, 0x20, 0xd0][..],
@@ -2085,16 +2081,10 @@ fn mov_r64_cr2_writes_the_full_64_bits() {
 #[test]
 fn mov_r64_cr2_other_forms_are_unsupported_without_mutation() {
     for bytes in [
-        &[0x0f, 0x20, 0xc9][..],             // CR1
-        &[0x0f, 0x20, 0xc3][..],             // CR0 into RBX
-        &[0x48, 0x0f, 0x20, 0xc3][..],       // REX.W CR0 into RBX
-        &[0x44, 0x0f, 0x20, 0xd3][..],       // REX.R: CR10
-        &[0x4d, 0x0f, 0x20, 0xdf][..],       // REX.W+R+B: CR10 into R15
-        &[0x0f, 0x20, 0x13][..],             // mod 00: not modeled (SDM ignores mod; conservative)
-        &[0x0f, 0x20, 0x53, 0x08][..],       // mod 01
+        // S7-32: MOV CR2, r64, MOV r64, CR0 / MOV CR0, r64 with any GPR now execute (s7_32_* tests); CR1, CR5 and CR9..CR15 are #UD (s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud).
+        &[0x0f, 0x20, 0x13][..], // mod 00: not modeled (SDM ignores mod; conservative)
+        &[0x0f, 0x20, 0x53, 0x08][..], // mod 01
         &[0x0f, 0x20, 0x93, 0, 0, 0, 0][..], // mod 10
-        &[0x0f, 0x22, 0xd3][..],             // MOV CR2, RBX: write is not modeled
-        &[0x41, 0x0f, 0x22, 0xd0][..],
         &[0xf0, 0x0f, 0x20, 0xd3][..], // LOCK
         &[0xf0, 0x41, 0x0f, 0x20, 0xd3][..],
         &[0x66, 0x0f, 0x20, 0xd3][..],
@@ -2359,8 +2349,7 @@ fn mov_rdi_cr3_follows_a_cr3_write_and_reads_the_new_value() {
 #[test]
 fn mov_r64_cr3_other_forms_are_unsupported_without_mutation() {
     for bytes in [
-        &[0x44, 0x0f, 0x20, 0xdf][..],       // REX.R: CR11
-        &[0x4d, 0x0f, 0x20, 0xdf][..],       // REX.W+R+B
+        // S7-32: MOV CR2, r64, MOV r64, CR0 / MOV CR0, r64 with any GPR now execute (s7_32_* tests); CR1, CR5 and CR9..CR15 are #UD (s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud).
         &[0x0f, 0x20, 0x1f][..],             // mod 00
         &[0x0f, 0x20, 0x5f, 0x08][..],       // mod 01
         &[0x0f, 0x20, 0x9f, 0, 0, 0, 0][..], // mod 10
@@ -2595,12 +2584,10 @@ fn mov_r64_cr4_works_in_the_cr3_owning_set_too() {
 #[test]
 fn mov_r64_cr4_other_forms_are_unsupported_without_mutation() {
     for bytes in [
-        &[0x44, 0x0f, 0x20, 0xe0][..],       // REX.R: CR12
-        &[0x4d, 0x0f, 0x20, 0xe7][..],       // REX.W+R+B: CR12 into R15
+        // S7-32: MOV CR2, r64, MOV r64, CR0 / MOV CR0, r64 with any GPR now execute (s7_32_* tests); CR1, CR5 and CR9..CR15 are #UD (s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud).
         &[0x0f, 0x20, 0x23][..],             // mod 00
         &[0x0f, 0x20, 0x63, 0x08][..],       // mod 01
         &[0x0f, 0x20, 0xa3, 0, 0, 0, 0][..], // mod 10
-        &[0x44, 0x0f, 0x22, 0xe0][..],       // REX.R on the write: CR12
         &[0x66, 0x0f, 0x20, 0xe2][..],
         &[0x66, 0x41, 0x0f, 0x20, 0xe2][..],
         &[0xf3, 0x0f, 0x20, 0xe2][..],
@@ -2610,7 +2597,6 @@ fn mov_r64_cr4_other_forms_are_unsupported_without_mutation() {
         &[0x64, 0x0f, 0x20, 0xe2][..],
         &[0x41, 0x66, 0x0f, 0x20, 0xe2][..],
         &[0x40, 0x41, 0x0f, 0x20, 0xe2][..],
-        &[0x0f, 0x20, 0xea][..], // CR5: not a modeled register
     ] {
         let mut state = cr4_any_reg_state(CR4_DISTINCT);
         let before = state.clone();
@@ -2863,8 +2849,7 @@ fn cr4_with_pse_is_admitted_on_reentry_and_by_the_rax_write() {
 #[test]
 fn mov_cr4_r64_other_forms_are_unsupported_without_mutation() {
     for bytes in [
-        &[0x44, 0x0f, 0x22, 0xe1][..], // REX.R: CR12
-        &[0x4d, 0x0f, 0x22, 0xe1][..],
+        // S7-32: MOV CR2, r64, MOV r64, CR0 / MOV CR0, r64 with any GPR now execute (s7_32_* tests); CR1, CR5 and CR9..CR15 are #UD (s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud).
         &[0x0f, 0x22, 0x21][..],             // mod 00
         &[0x0f, 0x22, 0x61, 0x08][..],       // mod 01
         &[0x0f, 0x22, 0xa1, 0, 0, 0, 0][..], // mod 10
@@ -2877,9 +2862,6 @@ fn mov_cr4_r64_other_forms_are_unsupported_without_mutation() {
         &[0x64, 0x0f, 0x22, 0xe1][..],
         &[0x41, 0x66, 0x0f, 0x22, 0xe1][..],
         &[0x40, 0x41, 0x0f, 0x22, 0xe1][..],
-        &[0x0f, 0x22, 0xe9][..],       // CR5: not a modeled register
-        &[0x41, 0x0f, 0x22, 0xc0][..], // CR0 stays RAX-only
-        &[0x0f, 0x22, 0xc1][..],
         &[0x0f, 0x22, 0xdf][..], // MOV CR3, RDI: outside this CR4-only set
         &[0x41, 0x0f, 0x22, 0xd8][..],
     ] {
@@ -5484,8 +5466,8 @@ fn endbr64_then_push_rbp_retires_both() {
 #[test]
 fn endbr64_lookalikes_stay_unsupported_in_the_set() {
     for code in [
-        &[0xf3u8, 0x0f, 0x1e, 0xfb][..],
-        &[0xf3, 0x0f, 0x1e, 0xf8],
+        // S7-32: F3 0F 1E FB (ENDBR32) is a NOP since S7-32.
+        &[0xf3u8, 0x0f, 0x1e, 0xf8][..],
         &[0x66, 0xf3, 0x0f, 0x1e, 0xfa],
         &[0xf3, 0x66, 0x0f, 0x1e, 0xfa],
         &[0xf2, 0x0f, 0x1e, 0xfa],
@@ -17362,7 +17344,7 @@ fn mov_sreg_write_fault_leaves_registers_rip_and_memory_unchanged() {
 
 #[test]
 fn mov_sreg_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mutation() {
-    let cases: [&[u8]; 28] = [
+    let cases: [&[u8]; 24] = [
         // Reserved Sreg encodings 6 and 7, register and memory forms.
         &[0x8c, 0xf0],
         &[0x8c, 0xf8],
@@ -17377,10 +17359,8 @@ fn mov_sreg_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         &[0xf2, 0x8c, 0xd0],
         &[0xf3, 0x8c, 0x1b],
         &[0xf0, 0x48, 0x8c, 0xd0],
-        // 0x66 (16-bit register form) and 0x67 are refused conservatively.
-        &[0x66, 0x8c, 0xd0],
-        &[0x66, 0x48, 0x8c, 0xd0],
-        &[0x66, 0x8c, 0x1b],
+        // 0x67 is refused conservatively. S7-32: the lone 0x66 forms (`66 8C D0`, `66 48 8C D0`,
+        // `66 8C 1B`, and `48 66 8C D0`, whose REX is ignored) execute.
         &[0x67, 0x8c, 0x1b],
         &[0x67, 0x8c, 0xd0],
         // A segment prefix on a register form, a non-FS/GS prefix on a memory form, and two
@@ -17394,7 +17374,6 @@ fn mov_sreg_forms_outside_the_slice_are_refused_with_the_exact_opcode_without_mu
         &[0x64, 0x65, 0x8c, 0x1b],
         &[0x65, 0x65, 0x8c, 0x1b],
         // A REX that is not immediately before the opcode.
-        &[0x48, 0x66, 0x8c, 0xd0],
         &[0x41, 0x65, 0x8c, 0x03],
         &[0x48, 0xf3, 0x8c, 0xd0],
     ];
@@ -28861,13 +28840,11 @@ fn ltr_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x41, 0x66, 0x0f, 0x00, 0xd8], // stale REX
         &[0x41, 0x41, 0x0f, 0x00, 0xd8],
         &[0x66, 0x41, 0x0f, 0x00, 0xd8],
-        &[0x0f, 0x00, 0xc0], // /0 SLDT
-        &[0x0f, 0x00, 0xc8], // /1 STR
+        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
         &[0x0f, 0x00, 0xe0], // /4 VERR
         &[0x0f, 0x00, 0xe8], // /5 VERW AX
         &[0x0f, 0x00, 0xf0], // /6
         &[0x0f, 0x00, 0xf8], // /7
-        &[0x41, 0x0f, 0x00, 0xc0],
         &[0x41, 0x0f, 0x00, 0xe8],
         &[0x0f, 0x00, 0x18], // /3 memory forms
         &[0x0f, 0x00, 0x1b],
@@ -28875,7 +28852,6 @@ fn ltr_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x0f, 0x00, 0x1d, 0x00, 0x10, 0x00, 0x00],
         &[0x41, 0x0f, 0x00, 0x18],
         &[0x65, 0x0f, 0x00, 0x18],
-        &[0x0f, 0x00, 0x00], // other memory forms
         &[0x0f, 0x00, 0x20],
     ];
     for &code in cases {
@@ -29127,16 +29103,10 @@ fn lldt_forms_outside_the_slice_are_refused_with_0x00_without_mutation() {
         &[0x41, 0x66, 0x0f, 0x00, 0xd6], // stale REX
         &[0x41, 0x41, 0x0f, 0x00, 0xd6],
         &[0x66, 0x41, 0x0f, 0x00, 0xd6],
-        &[0x0f, 0x00, 0xc6], // /0 SLDT
-        &[0x0f, 0x00, 0xce], // /1 STR
+        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
         &[0x0f, 0x00, 0xe6], // /4 VERR
         &[0x0f, 0x00, 0xf6], // /6
         &[0x0f, 0x00, 0xfe], // /7
-        &[0x0f, 0x00, 0x10], // /2 memory forms
-        &[0x0f, 0x00, 0x16],
-        &[0x0f, 0x00, 0x55, 0xf0],
-        &[0x0f, 0x00, 0x15, 0x00, 0x10, 0x00, 0x00],
-        &[0x41, 0x0f, 0x00, 0x10],
         &[0x65, 0x0f, 0x00, 0x10],
         &[0x0f, 0x00, 0x20], // other memory forms
     ];
@@ -29462,9 +29432,7 @@ fn mov_drn_forms_outside_the_slice_are_refused_without_mutation() {
         &[0x0f, 0x23, 0xbe, 0, 0, 0, 0],
         &[0x0f, 0x23, 0x05, 0, 0, 0, 0],
         &[0x41, 0x0f, 0x23, 0x3e],
-        &[0x0f, 0x21, 0xfe], // MOV r64, DR7 (read direction)
-        &[0x0f, 0x21, 0xce],
-        &[0x48, 0x0f, 0x21, 0xc0],
+        // S7-32: MOV r64, DRn (canonical encoding) executes (s7_32_mov_from_debug_registers_*).
         &[0x0f, 0x21, 0x3e],
     ];
     for &code in cases {
@@ -43400,7 +43368,7 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
     // LDMXCSR/STMXCSR and the integer SSE2 forms there too (tests/s2_39_cpl0_sse_set.rs); S2-39 (integer SSE2
     // remainder) adds the memory forms, the shifts by an XMM count and the moves of tests/s2_39_int_sse2.rs; S2-39
     // (rest) adds MOVNTDQ/MOVNTPS/MOVNTPD, MASKMOVDQU, MOVDQ2Q and MOVQ2DQ (tests/s2_39_rest.rs).
-    let rip_forms: [(&str, &[u8], u8); 12] = [
+    let rip_forms: [(&str, &[u8], u8); 10] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
         ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
@@ -43418,8 +43386,7 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
             &[0x66, 0x0f, 0xae, 0x05, 0, 0, 0, 0],
             0xae,
         ),
-        ("mov cr0,rsi", &[0x0f, 0x22, 0xc6], 0x22),
-        ("rex mov cr0,rdi", &[0x48, 0x0f, 0x22, 0xc7], 0x22),
+        // S7-32: `mov cr0, rsi` and `rex mov cr0, rdi` execute (any GPR, s7_32_* tests).
         ("lock mov cr0,rdi", &[0xf0, 0x0f, 0x22, 0xc7], 0x22),
     ];
     for (name, code, opcode) in rip_forms {
@@ -44142,10 +44109,11 @@ fn the_external_interrupt_path_keeps_refusing_a_trap_gate_next_to_the_int3_membe
 
 #[test]
 fn int_n_into_and_int1_are_not_int3_and_stay_unsupported_with_their_own_opcode() {
-    // S4-38L9e regression: only the bare `CC` is INT3. `CD ib` (INT n, also `CD 03`), `CE`
-    // (INTO) and `F1` (INT1) keep their own refusal and never reach the vector-3 delivery.
+    // S4-38L9e regression: only the bare `CC` is INT3. `CE` (INTO) and `F1` (INT1) keep their own
+    // refusal and never reach the vector-3 delivery. S7-32: `CD ib` is INT n (`CD 03` goes through
+    // gate 3 as a software interrupt); `CD 80` stays refused here only because gate 0x80 lies
+    // beyond this IDT's limit (the shared gate resolution refuses it, a stop instead of #GP).
     for (bytes, opcode) in [
-        (&[0xcdu8, 0x03][..], 0xcd),
         (&[0xcd, 0x80][..], 0xcd),
         (&[0xce][..], 0xce),
         (&[0xf1][..], 0xf1),
@@ -50049,16 +50017,15 @@ fn fence_lookalikes_stay_unsupported_with_opcode_0xae_and_no_mutation() {
 
 #[test]
 fn fence_memory_forms_of_0f_ae_stay_unsupported_in_the_set() {
-    // Memory ModRM bytes (FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/XRSTOR/CLFLUSH).
-    let refused: [&[u8]; 8] = [
+    // Memory ModRM bytes (FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/XRSTOR). S7-32: CLFLUSH (/7)
+    // executes (s7_32_clflush_is_a_byte_read_check_and_movnti_is_a_store).
+    let refused: [&[u8]; 6] = [
         &[0x0f, 0xae, 0x00],
-        &[0x0f, 0xae, 0x38],
         &[0x0f, 0xae, 0x28],
         &[0x0f, 0xae, 0x30],
         &[0x0f, 0xae, 0x20],
         &[0x0f, 0xae, 0x15, 0, 0, 0, 0],
         &[0x0f, 0xae, 0x1d, 0, 0, 0, 0],
-        &[0x0f, 0xae, 0x3d, 0, 0, 0, 0],
     ];
     for code in refused {
         let mut state = endbr_state();
@@ -53492,19 +53459,10 @@ fn mov_sreg_register_form_prefix_variants_are_refused_without_mutation() {
 
 #[test]
 fn other_8e_forms_stay_refused_with_a_non_ax_source() {
-    // CS (reg 1) with a non-AX register, reg 6/7, and memory forms (mod != 11). S4-38L9D moved
-    // ES/SS/DS with a register source (`8e c7`, `8e d7`, `8e df`) out of this list: they execute.
-    let forms: [&[u8]; 9] = [
-        &[0x8e, 0xcf],
-        &[0x8e, 0xf7],
-        &[0x8e, 0xff],
-        &[0x8e, 0x28],
-        &[0x8e, 0x20],
-        &[0x8e, 0x6f, 0x08],
-        &[0x8e, 0xa7, 0, 1, 0, 0],
-        &[0x8e, 0x2c, 0x24],
-        &[0x8e, 0x2d, 0, 0, 0, 0],
-    ];
+    // CS (reg 1) with a non-AX register and reg 6/7 (register forms). S4-38L9D moved ES/SS/DS
+    // with a register source (`8e c7`, `8e d7`, `8e df`) out of this list: they execute. S7-32:
+    // the memory forms (mod != 11) execute as MOV Sreg, m16 (s7_32_mov_sreg_from_memory_*).
+    let forms: [&[u8]; 3] = [&[0x8e, 0xcf], &[0x8e, 0xf7], &[0x8e, 0xff]];
     for code in forms {
         let mut state = gs9b_state();
         state.gpr[Register::Rdi as usize] = 0;
@@ -53863,7 +53821,7 @@ fn mov_ss_register_form_keeps_the_s2_46_admission() {
 
 #[test]
 fn mov_es_ss_ds_register_form_rex_and_prefix_variants_are_refused_without_mutation() {
-    let forms: [&[u8]; 28] = [
+    let forms: [&[u8]; 27] = [
         &[0x40, 0x8e, 0xdc],
         &[0x42, 0x8e, 0xdc],
         &[0x44, 0x8e, 0xdc],
@@ -53891,7 +53849,7 @@ fn mov_es_ss_ds_register_form_rex_and_prefix_variants_are_refused_without_mutati
         &[0x41, 0x8e, 0xcc], // CS with REX.B
         &[0x41, 0x8e, 0xe4], // FS with REX.B stays refused
         &[0x41, 0x8e, 0xec], // GS with REX.B stays refused
-        &[0x41, 0x8e, 0x1c], // memory form with REX.B (refused before the SIB is fetched)
+                             // S7-32: `41 8E 1C` (memory form with REX.B) executes as MOV DS, m16.
     ];
     for code in forms {
         let mut state = gs9d_state();
@@ -55301,8 +55259,7 @@ fn verw_with_prefixes_other_group_members_and_the_bare_form_are_refused_without_
         &[0x48, 0x0f, 0x00, 0x28][..],
         &[0x40, 0x48, 0x0f, 0x00, 0x28][..],
         &[0x0f, 0x00, 0x20][..], // VERR m16
-        &[0x0f, 0x00, 0x00][..], // SLDT m16
-        &[0x0f, 0x00, 0x08][..], // STR m16
+        // S7-32: SLDT/STR (/0, /1) and the memory LLDT (/2) execute (s7_32_* tests).
         &[0x0f, 0x00, 0xe8][..], // bare VERW AX stays CPL3-only (`VerwGdt`)
     ] {
         let mut state = verw_state();
@@ -56261,4 +56218,598 @@ fn ist_is_only_supported_for_the_nmi_delivery() {
         )
     );
     assert_eq!((state, memory.writes), (before, 0));
+}
+
+// ---- S7-32: the system forms of the Windows boot path in the CPL0 set. Expected values by hand
+// from the Intel SDM (Vol. 2 instruction pages "INT n", "MOV - Move to/from Control Registers",
+// "MOV - Move to/from Debug Registers", "SIDT", "SLDT", "STR", "MOV" (segment registers), "CLC",
+// "STC", "CMC", "RDPMC", "CLFLUSH", "MOVNTI"; Vol. 3A 2.5 control registers, Table 10-1 reset
+// values). ----
+
+/// Runs `code` at `RIP` in the base CPL0 set for `budget` instructions.
+fn s7_32_run(
+    state: &mut LongModeState,
+    code: &[u8],
+    budget: u64,
+) -> (Cpl0ProfileSetResult, BitsMemory) {
+    let mut memory = BitsMemory::new(code);
+    let result = run_with_cpl0_profile_set(
+        state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    (result, memory)
+}
+
+#[test]
+fn s7_32_int_n_runs_through_its_gate_with_the_address_of_the_next_instruction() {
+    const HANDLER: u64 = RIP + 0x100;
+    let (mut state, mut memory) = pf_state();
+    // `int $0x29` (__fastfail); the gate is a DPL 0 interrupt gate (CPL 0 <= DPL 0).
+    let mut code = vec![0xcd, 0x29, 0x90];
+    code.resize((HANDLER - RIP) as usize, 0x90);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    state.idtr = Some(od_isa::state::Idtr {
+        base: PF_IDT,
+        limit: 0xfff,
+    });
+    ext_put_gate(&mut memory, 0x29, pf_gate_bytes(HANDLER, 0x10, 0, 0x8e));
+    let rsp = state.gpr[Register::Rsp as usize];
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.rip, HANDLER);
+    // Five qwords below the 16-aligned RSP: RIP of the next instruction, CS, RFLAGS, RSP, SS.
+    let frame = (rsp & !15) - 40;
+    assert_eq!(state.gpr[Register::Rsp as usize], frame);
+    assert_eq!(pf_qword(&memory, frame), RIP + 2);
+    assert_eq!(pf_qword(&memory, frame + 8), 0x10);
+    assert_eq!(pf_qword(&memory, frame + 24), rsp);
+    assert_eq!(state.rflags & IF, 0, "an interrupt gate clears IF");
+}
+
+/// Runs `code` at `RIP` in `set` for `budget` instructions.
+fn s7_32_run_set(
+    state: &mut LongModeState,
+    code: &[u8],
+    budget: u64,
+    set: &Cpl0ProfileSet<'_>,
+) -> (Cpl0ProfileSetResult, BitsMemory) {
+    let mut memory = BitsMemory::new(code);
+    let result = run_with_cpl0_profile_set(
+        state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        set,
+        None,
+        || false,
+    )
+    .unwrap();
+    (result, memory)
+}
+
+#[test]
+fn s7_32_mov_cr8_goes_through_the_tpr_member_and_reserved_bits_are_gp0() {
+    // mov %rcx, %cr8; mov %cr8, %rax (SDM Vol. 3A 2.5: CR8 bits 3:0 = TPR[7:4]).
+    let code = [0x44, 0x0f, 0x22, 0xc1, 0x44, 0x0f, 0x20, 0xc0];
+    let tpr = Cell::new(3u8);
+    let set = base().with_cr8_tpr(&tpr);
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = 0xf;
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    let (result, _) = s7_32_run_set(&mut state, &code, 2, &set);
+    assert_eq!(result.instructions_executed, 2, "{:?}", result.exit);
+    assert_eq!(tpr.get(), 0xf);
+    // The read zero-extends the four bits.
+    assert_eq!(state.gpr[Register::Rax as usize], 0xf);
+    assert_eq!(state.rip, RIP + 8);
+    // Bit 4 is reserved: #GP(0), neither the cell nor the CPU changes.
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = 0x10;
+    let before = state.clone();
+    let (result, _) = s7_32_run_set(&mut state, &code, 1, &set);
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    assert_eq!(tpr.get(), 0xf);
+    // Without the member both directions are an explicit stop.
+    for code in [&[0x44u8, 0x0f, 0x22, 0xc1][..], &[0x44, 0x0f, 0x20, 0xc0]] {
+        let mut state = board_state();
+        state.gpr[Register::Rcx as usize] = 0x1;
+        let before = state.clone();
+        let (result, _) = s7_32_run(&mut state, code, 1);
+        assert!(
+            matches!(
+                exit(&result),
+                RunExit::Unsupported {
+                    opcode: 0x20 | 0x22
+                }
+            ),
+            "{code:02x?}: {:?}",
+            result.exit
+        );
+        assert_eq!(state, before, "{code:02x?}");
+    }
+}
+
+#[test]
+fn s7_32_mov_cr0_and_cr2_with_any_register_follow_the_set_policy() {
+    // mov %cr0, %rcx; mov %rdx, %cr2. (`mov %cr2, %r64` is the profile's `ReadCr2Into`, which
+    // needs a set that owns CR3.)
+    let code = [0x0f, 0x20, 0xc1, 0x0f, 0x22, 0xd2];
+    let mut state = board_state();
+    state.gpr[Register::Rdx as usize] = 0xffff_8000_1234_5678;
+    let (result, _) = s7_32_run(&mut state, &code, 2);
+    assert_eq!(result.instructions_executed, 2, "{:?}", result.exit);
+    assert_eq!(state.gpr[Register::Rcx as usize], CR0_BASE);
+    assert_eq!(state.cr2, Some(0xffff_8000_1234_5678));
+    // mov %rcx, %cr0 within the policy (EM set) is accepted; CD (bit 30) stays outside the policy
+    // (the board walker does not model it either) and is refused without a change.
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = CR0_BASE | 1 << 2;
+    let (result, _) = s7_32_run(&mut state, &[0x0f, 0x22, 0xc1], 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.cr0, Some(CR0_BASE | 1 << 2));
+    let mut state = board_state();
+    state.gpr[Register::Rcx as usize] = CR0_BASE | 1 << 30;
+    let before = state.clone();
+    let (result, _) = s7_32_run(&mut state, &[0x0f, 0x22, 0xc1], 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x22 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn s7_32_mov_from_debug_registers_reads_reset_values_and_aliases_dr4_dr5() {
+    // mov %dr7, %rax; mov %dr6, %rcx; mov %dr5, %rdx (DR7 while CR4.DE = 0); mov %dr0, %rbx.
+    let code = [
+        0x0f, 0x21, 0xf8, 0x0f, 0x21, 0xf1, 0x0f, 0x21, 0xea, 0x0f, 0x21, 0xc3,
+    ];
+    let mut state = board_state();
+    state.debug_registers[0] = Some(0x1234);
+    let (result, _) = s7_32_run(&mut state, &code, 4);
+    assert_eq!(result.instructions_executed, 4, "{:?}", result.exit);
+    assert_eq!(state.gpr[Register::Rax as usize], 0x400);
+    assert_eq!(state.gpr[Register::Rcx as usize], 0xffff_0ff0);
+    assert_eq!(state.gpr[Register::Rdx as usize], 0x400);
+    assert_eq!(state.gpr[Register::Rbx as usize], 0x1234);
+    // CR4.DE (bit 3), which makes DR4/DR5 #UD, is outside the set policy: the #UD branch of the
+    // executor is not reachable in this set.
+}
+
+#[test]
+fn s7_32_sidt_sldt_str_store_the_modeled_values() {
+    let at = 0x3000u64;
+    // sidt (%rbx); sldt 0x10(%rbx); str %eax.
+    let code = [0x0f, 0x01, 0x0b, 0x0f, 0x00, 0x43, 0x10, 0x0f, 0x00, 0xc8];
+    let mut state = board_state();
+    state.idtr = Some(od_isa::state::Idtr {
+        base: 0xffff_f800_0000_1000,
+        limit: 0x0fff,
+    });
+    state.tr = Some(od_isa::TaskRegisterCache {
+        selector: 0x40,
+        base: 0,
+        limit: 0x67,
+        access: 0x8b,
+        flags: 0,
+    });
+    state.gpr[Register::Rbx as usize] = at;
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    let (result, memory) = s7_32_run(&mut state, &code, 3);
+    assert_eq!(result.instructions_executed, 3, "{:?}", result.exit);
+    let stored: Vec<u8> = (0..10).map(|i| memory.data[&(at + i)]).collect();
+    assert_eq!(
+        stored,
+        [0xff, 0x0f, 0x00, 0x10, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff]
+    );
+    // LDTR was never loaded: its reset selector 0, two bytes.
+    assert_eq!(
+        (memory.data[&(at + 0x10)], memory.data[&(at + 0x11)]),
+        (0, 0)
+    );
+    assert!(!memory.data.contains_key(&(at + 0x12)));
+    // STR r32 zero-extends the selector.
+    assert_eq!(state.gpr[Register::Rax as usize], 0x40);
+}
+
+#[test]
+fn s7_32_mov_sreg_from_memory_loads_null_and_gdt_selectors() {
+    let gdt = 0x5000u64;
+    let at = 0x3000u64;
+    // mov (%rbx), %ds; mov 2(%rbx), %ss.
+    let code = [0x8e, 0x1b, 0x8e, 0x53, 0x02];
+    let mut state = board_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: gdt,
+        limit: 0x1f,
+    });
+    state.ds_cache = Some(od_isa::state::DsDescriptorCache {
+        base: 0,
+        limit: 0,
+        access: 0,
+        flags: 0,
+    });
+    state.ss_selector = Some(0x18);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.gpr[Register::Rbx as usize] = at;
+    let mut memory = BitsMemory::new(&code);
+    // GDT slot 3 (0x18): a present, writable, accessed data segment, DPL 0, 4 GiB, D/B, G.
+    for (index, byte) in [0xffu8, 0xff, 0, 0, 0, 0x93, 0xcf, 0]
+        .into_iter()
+        .enumerate()
+    {
+        memory.data.insert(gdt + 0x18 + index as u64, byte);
+    }
+    // DS := 0x18 (non-null), SS := 0 (null, RPL 0).
+    for (index, byte) in [0x18u8, 0x00, 0x00, 0x00].into_iter().enumerate() {
+        memory.data.insert(at + index as u64, byte);
+    }
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 2),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 2, "{:?}", result.exit);
+    assert_eq!(state.ds_selector, 0x18);
+    assert!(!state.ds_unusable);
+    let cache = state.ds_cache.unwrap();
+    assert_eq!((cache.base, cache.limit, cache.access), (0, u32::MAX, 0x93));
+    assert_eq!(state.ss_selector, Some(0));
+    assert!(state.ss_unusable);
+    // MOV SS opens the one-instruction interrupt shadow.
+    assert_eq!(state.sti_shadow, Some(StiShadow::Blocking));
+    // The descriptor was already accessed: no write.
+    assert!(memory.writes.is_empty());
+}
+
+#[test]
+fn s7_32_carry_flag_instructions_rdpmc_and_padding_nops() {
+    // stc; cmc; cmc; clc is checked by CF after each prefix of the stream.
+    for (code, budget, cf) in [
+        (&[0xf9u8][..], 1, true),
+        (&[0xf9, 0xf5], 2, false),
+        (&[0xf9, 0xf5, 0xf5], 3, true),
+        (&[0xf9, 0xf8], 2, false),
+    ] {
+        let mut state = board_state();
+        state.rflags &= !FLAG_CF;
+        let (result, _) = s7_32_run(&mut state, code, budget);
+        assert_eq!(result.instructions_executed, budget, "{code:02x?}");
+        assert_eq!(state.rflags & FLAG_CF != 0, cf, "{code:02x?}");
+    }
+    // RDPMC: no counter exists, #GP(0) for any index.
+    let mut state = board_state();
+    let (result, _) = s7_32_run(&mut state, &[0x0f, 0x33], 1);
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    // 66 66 90: one 3-byte NOP.
+    let mut state = board_state();
+    let before = state.clone();
+    let (result, _) = s7_32_run(&mut state, &[0x66, 0x66, 0x90], 1);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    expected.rip += 3;
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn s7_32_clflush_is_a_byte_read_check_and_movnti_is_a_store() {
+    // clflush (%rbx): one byte read at RBX; a non-canonical RBX is #GP(0) without access.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x3000;
+    let (result, memory) = s7_32_run(&mut state, &[0x0f, 0xae, 0x3b], 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(memory.reads, vec![(0x3000, 1)]);
+    assert!(memory.writes.is_empty());
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x8000_0000_0000_0000;
+    let (result, memory) = s7_32_run(&mut state, &[0x0f, 0xae, 0x3b], 1);
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert!(memory.reads.is_empty());
+    // movnti %rax, (%rbx): eight bytes of RAX.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x3000;
+    state.gpr[Register::Rax as usize] = 0x0102_0304_0506_0708;
+    let (result, memory) = s7_32_run(&mut state, &[0x48, 0x0f, 0xc3, 0x03], 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(memory.qword(0x3000), 0x0102_0304_0506_0708);
+}
+
+#[test]
+fn s7_32_mov_cr9_to_cr15_and_the_reserved_crs_are_ud() {
+    // SDM "MOV - Move to/from Control Registers": CR1, CR5..CR7 and CR9..CR15 (REX.R other than CR8)
+    // are #UD; nothing changes.
+    for bytes in [
+        &[0x44u8, 0x0f, 0x22, 0xdf][..],
+        &[0x4d, 0x0f, 0x22, 0xdf],
+        &[0x4c, 0x0f, 0x20, 0xd8],
+        &[0x0f, 0x20, 0xc8],
+        &[0x0f, 0x20, 0xc9],
+        &[0x0f, 0x20, 0xe8],
+        &[0x0f, 0x20, 0xea],
+        &[0x0f, 0x22, 0xe8],
+        &[0x0f, 0x22, 0xe9],
+        &[0x0f, 0x20, 0xf8],
+        &[0x44, 0x0f, 0x20, 0xd3],
+        &[0x44, 0x0f, 0x20, 0xdf],
+        &[0x4d, 0x0f, 0x20, 0xdf],
+        &[0x44, 0x0f, 0x20, 0xe0],
+        &[0x4d, 0x0f, 0x20, 0xe7],
+        &[0x44, 0x0f, 0x22, 0xe0],
+        &[0x44, 0x0f, 0x22, 0xe1],
+        &[0x4d, 0x0f, 0x22, 0xe1],
+    ] {
+        let mut state = cr3_state(0x1000);
+        let before = state.clone();
+        let mut memory = Memory::code(bytes);
+        let result = run_set(&mut state, &mut memory, &cr3_set(), 64).unwrap();
+        assert_eq!(result.instructions_executed, 0, "{bytes:02x?}");
+        assert_eq!(
+            result.exit,
+            Cpl0ProfileSetExit::Run(RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })),
+            "{bytes:02x?}"
+        );
+        assert_eq!(state, before, "{bytes:02x?}");
+    }
+}
+
+#[test]
+fn s7_32_int_n_from_cpl3_checks_the_gate_dpl_first_and_enters_through_tss_rsp0() {
+    // A DPL 0 interrupt gate for vector 0x2e: from CPL3 the software check fails, #GP(0x2e*8+2)
+    // is the caller's (SoftwareInterruptDelivery::GateDpl); nothing is written or changed.
+    let (mut state, mut memory) = u3_state();
+    state.idtr = Some(od_isa::state::Idtr {
+        base: PF_IDT,
+        limit: 0xfff,
+    });
+    ext_put_gate(&mut memory, 0x2e, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0x8e));
+    let before = state.clone();
+    let outcome = od_isa::interrupt::deliver_software_interrupt_cpl0_set(
+        &mut state,
+        &mut memory,
+        0x2e,
+        RIP + 2,
+        context(PrivilegeLevel::Ring3),
+    );
+    assert!(
+        matches!(
+            outcome,
+            od_isa::interrupt::SoftwareInterruptDelivery::GateDpl
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(state, before);
+    assert_eq!(memory.writes, 0);
+    // The check comes before anything else of the gate or the target: only the low qword of the
+    // gate was read (no high qword, no code descriptor, no TSS).
+    assert_eq!(
+        memory.reads,
+        vec![(PF_IDT + 0x2e * 16, 8, AccessOrigin::DescriptorTable)]
+    );
+    memory.reads.clear();
+    // A DPL 3 gate: entered through TSS.RSP0; the frame holds the user SS, RSP, RFLAGS, CS and the
+    // address after the INT.
+    ext_put_gate(&mut memory, 0x2e, pf_gate_bytes(PF_HANDLER, 0x10, 0, 0xee));
+    let outcome = od_isa::interrupt::deliver_software_interrupt_cpl0_set(
+        &mut state,
+        &mut memory,
+        0x2e,
+        RIP + 2,
+        context(PrivilegeLevel::Ring3),
+    );
+    let frame = U3_RSP0 & !15;
+    assert!(
+        matches!(
+            outcome,
+            od_isa::interrupt::SoftwareInterruptDelivery::Delivered { target_rip, new_rsp }
+                if target_rip == PF_HANDLER && new_rsp == frame - 40
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(pf_qword(&memory, frame - 8), u64::from(U3_USER_SS));
+    assert_eq!(pf_qword(&memory, frame - 16), U3_USER_RSP);
+    assert_eq!(pf_qword(&memory, frame - 32), u64::from(U3_USER_CS));
+    assert_eq!(pf_qword(&memory, frame - 40), RIP + 2);
+    assert_eq!(state.cs_selector, Some(0x10));
+}
+
+#[test]
+fn s7_32_int_n_through_a_trap_gate_keeps_if() {
+    const HANDLER: u64 = RIP + 0x100;
+    let (mut state, mut memory) = pf_state();
+    let mut code = vec![0xcd, 0x2d];
+    code.resize((HANDLER - RIP) as usize, 0x90);
+    code.extend_from_slice(&IRETQ);
+    memory.code = code;
+    state.idtr = Some(od_isa::state::Idtr {
+        base: PF_IDT,
+        limit: 0xfff,
+    });
+    // Type 0xF (trap gate), DPL 0, present.
+    ext_put_gate(&mut memory, 0x2d, pf_gate_bytes(HANDLER, 0x10, 0, 0x8f));
+    assert_ne!(state.rflags & IF, 0);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 1),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.rip, HANDLER);
+    assert_ne!(state.rflags & IF, 0, "a trap gate keeps IF");
+}
+
+/// `board_state` with a GDT at `S7_32_GDT` whose slot 3 (0x18) is a present, accessed data
+/// segment with base `0x1234_5678`, modeled SS and FS caches.
+const S7_32_GDT: u64 = 0x5000;
+fn s7_32_segment_state() -> LongModeState {
+    let mut state = board_state();
+    state.gdtr = Some(od_isa::state::Gdtr {
+        base: S7_32_GDT,
+        limit: 0x1f,
+    });
+    state.ss_selector = Some(0x18);
+    state.ss_cache = Some(od_isa::StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0xc,
+    });
+    state.fs_cache = Some(od_isa::state::FsDescriptorCache {
+        limit: 0,
+        access: 0,
+        flags: 0,
+    });
+    state.gpr[Register::Rbx as usize] = 0x3000;
+    state
+}
+
+fn s7_32_segment_memory(code: &[u8], selector: u16) -> BitsMemory {
+    let mut memory = BitsMemory::new(code);
+    for (index, byte) in [0xffu8, 0xff, 0x78, 0x56, 0x34, 0x93, 0xcf, 0x12]
+        .into_iter()
+        .enumerate()
+    {
+        memory.data.insert(S7_32_GDT + 0x18 + index as u64, byte);
+    }
+    for (index, byte) in selector.to_le_bytes().into_iter().enumerate() {
+        memory.data.insert(0x3000 + index as u64, byte);
+    }
+    memory
+}
+
+fn s7_32_run_memory(
+    state: &mut LongModeState,
+    memory: &mut BitsMemory,
+    budget: u64,
+) -> Cpl0ProfileSetResult {
+    run_with_cpl0_profile_set(
+        state,
+        memory,
+        config(PrivilegeLevel::Ring0, budget),
+        od_isa::INTEGER_FLAGS,
+        &base(),
+        None,
+        || false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn s7_32_mov_ss_m16_null_with_rpl_is_gp0_and_mov_fs_m16_loads_the_base() {
+    // mov (%rbx), %ss with selector 0x0001 (null, RPL 1 != CPL 0): #GP(0), no change.
+    let mut state = s7_32_segment_state();
+    let before = state.clone();
+    let mut memory = s7_32_segment_memory(&[0x8e, 0x13], 0x0001);
+    let result = s7_32_run_memory(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::Fault(GP0));
+    assert_eq!(state, before);
+    // mov (%rbx), %fs with 0x18: the selector and the 32-bit descriptor base (upper half zero).
+    let mut state = s7_32_segment_state();
+    state.fs_base = 0xffff_ffff_0000_0000;
+    let mut memory = s7_32_segment_memory(&[0x8e, 0x23], 0x18);
+    let result = s7_32_run_memory(&mut state, &mut memory, 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.fs_selector, 0x18);
+    assert_eq!(state.fs_base, 0x1234_5678);
+    assert!(!state.fs_unusable);
+}
+
+#[test]
+fn s7_32_lldt_m16_takes_the_null_selector_only() {
+    // lldt (%rbx): selector 0 is loaded; 0x18 is an explicit stop without a change.
+    let mut state = s7_32_segment_state();
+    let mut memory = s7_32_segment_memory(&[0x0f, 0x00, 0x13], 0);
+    let result = s7_32_run_memory(&mut state, &mut memory, 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.ldtr_null_selector, Some(0));
+    let mut state = s7_32_segment_state();
+    let before = state.clone();
+    let mut memory = s7_32_segment_memory(&[0x0f, 0x00, 0x13], 0x18);
+    let result = s7_32_run_memory(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::Unsupported { opcode: 0x00 });
+    assert_eq!(state, before);
+}
+
+#[test]
+fn s7_32_mov_ax_sreg_keeps_the_upper_bits_and_movnti_m32_is_a_dword_store() {
+    // 66 8C D8: mov %ds, %ax writes bits 15:0 only.
+    let mut state = board_state();
+    state.ds_selector = 0x18;
+    state.gpr[Register::Rax as usize] = u64::MAX;
+    let (result, _) = s7_32_run(&mut state, &[0x66, 0x8c, 0xd8], 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xffff_ffff_ffff_0018);
+    // 0F C3 03: movnti %eax, (%rbx) stores four bytes.
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x3000;
+    state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+    let (result, memory) = s7_32_run(&mut state, &[0x0f, 0xc3, 0x03], 1);
+    assert_eq!(result.instructions_executed, 1, "{:?}", result.exit);
+    assert_eq!(memory.writes, vec![(0x3000, vec![0x88, 0x77, 0x66, 0x55])]);
+}
+
+#[test]
+fn s7_32_clflush_on_a_not_present_page_raises_the_page_fault_of_a_read() {
+    // The read of CLFLUSH reports the backend's #PF (a not-present read: error code 0).
+    let fault = ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0),
+        linear_address: Some(0x3000),
+    };
+    let mut state = board_state();
+    state.gpr[Register::Rbx as usize] = 0x3000;
+    let before = state.clone();
+    let mut memory = BitsMemory::new(&[0x0f, 0xae, 0x3b]);
+    memory.read_fault = Some(fault.clone());
+    let result = s7_32_run_memory(&mut state, &mut memory, 1);
+    assert_eq!(exit(&result), &RunExit::Fault(fault));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn s7_32_cet_nops_and_rdsspq_rax_execute_at_cpl0_with_cr4_cet_clear() {
+    // rdsspq %rdi, endbr32, rdsspq %rax: three NOPs (CR4.CET = 0), RIP only.
+    let code = [
+        0xf3, 0x48, 0x0f, 0x1e, 0xcf, 0xf3, 0x0f, 0x1e, 0xfb, 0xf3, 0x48, 0x0f, 0x1e, 0xc8,
+    ];
+    let mut state = board_state();
+    let before = state.clone();
+    let (result, memory) = s7_32_run(&mut state, &code, 3);
+    assert_eq!(result.instructions_executed, 3, "{:?}", result.exit);
+    let mut expected = before;
+    expected.rip += code.len() as u64;
+    assert_eq!(state, expected);
+    assert!(memory.reads.is_empty() && memory.writes.is_empty());
 }

@@ -1970,6 +1970,7 @@ pub struct Cpl0ProfileSet<'a> {
     sti: Option<&'a crate::StiProfile>,
     fp_state: Option<&'a RefCell<GuestFpState>>,
     int3: bool,
+    cr8_tpr: Option<&'a Cell<u8>>,
     user_mode: bool,
     syscall: bool,
 }
@@ -2002,9 +2003,20 @@ impl<'a> Cpl0ProfileSet<'a> {
             sti: None,
             fp_state: None,
             int3: false,
+            cr8_tpr: None,
             user_mode: false,
             syscall: false,
         }
+    }
+
+    /// S7-32: admit `MOV r64, CR8` and `MOV CR8, r64` (REX.R, Intel SDM Vol. 3A 2.5 and 11.8.6.5)
+    /// backed by `cell`, the CR8 value 0..=15 the owner keeps as TPR[7:4] of the vCPU's local APIC
+    /// (MACHINE_CONTRACT: the TPR is the only source; this set never holds a copy). A read gives
+    /// the cell zero-extended; a write with bits 63:4 clear stores the low four bits, a write with
+    /// one of them set is #GP(0). Without the member every MOV to or from CR8 is `Unsupported`.
+    pub const fn with_cr8_tpr(mut self, cell: &'a Cell<u8>) -> Self {
+        self.cr8_tpr = Some(cell);
+        self
     }
 
     /// Admit the exact bare CLI form under its non-PVI Long64 profile.
@@ -2927,6 +2939,9 @@ struct ExecutionProfiles<'a> {
     /// S4-38L9e: the bare `INT3` (`CC`) delivered through the IDT gate of vector 3, set only by a
     /// `Cpl0ProfileSet` built with `with_int3`.
     int3_cpl0: bool,
+    /// S7-32: the CR8 value (0..=15) of `MOV CR8` in the CPL0 set, a `Cpl0ProfileSet` built with
+    /// `with_cr8_tpr`; the owner keeps it as TPR[7:4] of the local APIC.
+    cr8_tpr: Option<&'a Cell<u8>>,
     /// S4-38L9H: the cell that receives the validated frame of an `IRETQ` to CPL3 inside the
     /// CPL0 set. Only a `Cpl0ProfileSet` run sets it; the step then returns an `Unsupported`
     /// placeholder that the caller replaces with [`Cpl0ProfileSetExit::UserEntry`].
@@ -3073,6 +3088,7 @@ impl<'a> ExecutionProfiles<'a> {
         popf_cpl0: false,
         sti_cpl0: false,
         int3_cpl0: false,
+        cr8_tpr: None,
         iretq_user_entry: None,
     };
 }
@@ -4268,6 +4284,7 @@ pub fn run_with_maxss_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -4431,6 +4448,7 @@ pub fn run_with_minsd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -4594,6 +4612,7 @@ pub fn run_with_maxsd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -4757,6 +4776,7 @@ pub fn run_with_minpd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -4920,6 +4940,7 @@ pub fn run_with_minps_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5083,6 +5104,7 @@ pub fn run_with_maxps_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5246,6 +5268,7 @@ pub fn run_with_maxpd_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5409,6 +5432,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5572,6 +5596,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5735,6 +5760,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -5898,6 +5924,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6061,6 +6088,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6224,6 +6252,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6387,6 +6416,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6550,6 +6580,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6713,6 +6744,7 @@ pub fn run_with_cvtss2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -6876,6 +6908,7 @@ pub fn run_with_cvttss2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7038,6 +7071,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7234,6 +7268,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7397,6 +7432,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7595,6 +7631,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7762,6 +7799,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -7958,6 +7996,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8121,6 +8160,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8284,6 +8324,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8480,6 +8521,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8644,6 +8686,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8807,6 +8850,7 @@ pub fn run_with_cvtdq2pd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -8970,6 +9014,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -9132,6 +9177,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -9295,6 +9341,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -9491,6 +9538,7 @@ fn run_with_cvtdq2ps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -9654,6 +9702,7 @@ pub fn run_with_cvtps2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -9817,6 +9866,7 @@ pub fn run_with_cvttps2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10013,6 +10063,7 @@ fn run_with_cvtps2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10209,6 +10260,7 @@ fn run_with_cvttps2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10405,6 +10457,7 @@ fn run_with_cvttpd2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10601,6 +10654,7 @@ fn run_with_cvtpd2dq_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10764,6 +10818,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -10927,6 +10982,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -11090,6 +11146,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -11253,6 +11310,7 @@ pub fn run_with_cvtss2sd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -11416,6 +11474,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -11615,6 +11674,7 @@ fn run_with_cvtpi2ps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -11945,6 +12005,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12108,6 +12169,7 @@ pub fn run_with_cvtps2pd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12271,6 +12333,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12434,6 +12497,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12596,6 +12660,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12759,6 +12824,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -12980,6 +13046,7 @@ fn run_with_cmpss_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13143,6 +13210,7 @@ pub fn run_with_cmpsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13306,6 +13374,7 @@ pub fn run_with_cmppd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13468,6 +13537,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13630,6 +13700,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13815,6 +13886,7 @@ fn run_with_minsd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -13978,6 +14050,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -14168,6 +14241,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -14343,6 +14417,7 @@ fn run_with_minpd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -14541,6 +14616,7 @@ fn run_with_minps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -14704,6 +14780,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -14867,6 +14944,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15029,6 +15107,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15191,6 +15270,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15353,6 +15433,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15548,6 +15629,7 @@ fn run_with_sqrtps_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15710,6 +15792,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -15904,6 +15987,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -16098,6 +16182,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -16299,6 +16384,7 @@ fn run_with_maxpd_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -16500,6 +16586,7 @@ fn run_with_maxps_memory_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -16715,6 +16802,7 @@ fn run_minss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -16920,6 +17008,7 @@ fn run_maxss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -17082,6 +17171,7 @@ pub fn run_with_cmpps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -17245,6 +17335,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
@@ -17461,6 +17552,7 @@ pub fn run_with_efer_rdmsr_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
@@ -17869,6 +17961,7 @@ pub fn run_with_cr0_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -18091,6 +18184,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: Some(profile),
         },
@@ -31250,10 +31344,18 @@ fn cpl3_allows(
     // The decoder admits exact ENDBR64 and RDSSPQ forms. The set has no CET IBT or shadow stack.
     if matches!(
         instruction.operation,
-        Operation::Endbr64Nop | Operation::RdsspqRax
+        Operation::Endbr64Nop | Operation::RdsspqRax | Operation::CetNop
     ) {
         return true;
     }
+    // S7-32: `INT imm8` (the gate DPL decides, through TSS.RSP0 from CPL3) and CLC/STC/CMC.
+    if matches!(
+        instruction.operation,
+        Operation::SoftwareInterrupt { .. } | Operation::CarryFlag { .. }
+    ) {
+        return true;
+    }
+
     let prefixes = instruction.prefixes;
     if cpl3_issue576_scalar_form(instruction) {
         return true;
@@ -34434,6 +34536,7 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
             popf_cpl0: set.popf_cpl0,
             sti_cpl0: set.sti.is_some(),
             int3_cpl0: set.int3,
+            cr8_tpr: set.cr8_tpr,
             iretq_user_entry: Some(&user_entry),
             cr4: None,
         },
@@ -35340,6 +35443,7 @@ pub fn step_with_cr0_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -35745,6 +35849,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -35908,6 +36013,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -36295,6 +36401,7 @@ fn run_with_comparison_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -36460,6 +36567,7 @@ pub fn run_with_sqrtss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -36623,6 +36731,7 @@ pub fn run_with_sqrtsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -36786,6 +36895,7 @@ pub fn run_with_sqrtps_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -36949,6 +37059,7 @@ pub fn run_with_sqrtpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -37117,6 +37228,7 @@ fn run_with_subpd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -37335,6 +37447,7 @@ pub fn run_with_mulpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -37501,6 +37614,7 @@ fn run_with_addpd_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -37697,6 +37811,7 @@ fn run_with_mulpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -37915,6 +38030,7 @@ pub fn run_with_addsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -38078,6 +38194,7 @@ pub fn run_with_divpd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -38274,6 +38391,7 @@ fn run_with_divpd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -38437,6 +38555,7 @@ pub fn run_with_addss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -38634,6 +38753,7 @@ fn run_with_addss_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -38830,6 +38950,7 @@ fn run_with_addsd_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39029,6 +39150,7 @@ fn run_with_addps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39192,6 +39314,7 @@ pub fn run_with_divsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39391,6 +39514,7 @@ fn run_with_divps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39554,6 +39678,7 @@ pub fn run_with_divss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39717,6 +39842,7 @@ pub fn run_with_mulsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -39880,6 +40006,7 @@ pub fn run_with_mulss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -40079,6 +40206,7 @@ fn run_with_mulps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -40242,6 +40370,7 @@ pub fn run_with_subsd_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -40405,6 +40534,7 @@ pub fn run_with_subss_register_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -40568,6 +40698,7 @@ fn run_with_scalar_float_memory_rax_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -40975,6 +41106,7 @@ fn run_with_subps_profile(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -41137,6 +41269,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             popf_cpl0: false,
             sti_cpl0: false,
             int3_cpl0: false,
+            cr8_tpr: None,
             iretq_user_entry: None,
             cr4: None,
         },
@@ -41894,6 +42027,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         popf_cpl0,
         sti_cpl0,
         int3_cpl0,
+        cr8_tpr,
         iretq_user_entry,
         cr4: cr4_profile,
     } = profiles;
@@ -42581,6 +42715,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     | Operation::ReadCr4Into(_)
                     | Operation::WriteCr4
                     | Operation::WriteCr4From(_)
+                    // S7-32: the general MOV CRn and MOV r64, DRn forms (SDM: #GP(0) if CPL > 0).
+                    | Operation::ReadControl { .. }
+                    | Operation::WriteControl { .. }
+                    | Operation::ReadDebugRegister { .. }
             ))
         || ((mov_cr3_profile.is_some() || cpu_owned_cr3.is_some())
             && matches!(
@@ -48352,6 +48490,109 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
             return Ok(StepOutcome::Advanced);
         }
+        // S7-32: `MOV r64, CRn` for CR0 and CR8 (CR2, CR3 and CR4 reads have their own variants).
+        // CPL > 0 was refused with #GP(0) above. CR8 is the set's TPR cell (`with_cr8_tpr`),
+        // zero-extended; without the member the read is `Unsupported`.
+        Operation::ReadControl { cr, dst } if control_policy.is_some() => {
+            let value = match cr {
+                0 => state.cr0,
+                8 => cr8_tpr.map(|cell| u64::from(cell.get() & 0xf)),
+                _ => None,
+            };
+            let Some(value) = value else {
+                return Ok(StepOutcome::Unsupported { opcode: 0x20 });
+            };
+            state.write(RegisterView::low(dst, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        // S7-32: `MOV CRn, r64` for CR0 (through the set policy, as `MOV CR0, RAX`), CR2 (any
+        // value) and CR8 (the TPR cell; SDM Vol. 3A 2.5: bits 63:4 reserved, a one there is
+        // #GP(0); without the member the write is `Unsupported`).
+        Operation::WriteControl { cr, src } if control_policy.is_some() => {
+            let policy = control_policy.expect("guarded by the match arm");
+            let value = state.gpr[src as usize];
+            match cr {
+                0 => {
+                    if !policy.accepts_cr0(value) {
+                        return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+                    }
+                    state.cr0 = Some(value);
+                }
+                2 => state.cr2 = Some(value),
+                8 => {
+                    let Some(cell) = cr8_tpr else {
+                        return Ok(StepOutcome::Unsupported { opcode: 0x22 });
+                    };
+                    if value >> 4 != 0 {
+                        return Ok(StepOutcome::Fault(ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        }));
+                    }
+                    cell.set(value as u8);
+                }
+                _ => return Ok(StepOutcome::Unsupported { opcode: 0x22 }),
+            }
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        // S7-32: `MOV r64, DRn`. DR4/DR5 alias DR6/DR7 while CR4.DE = 0 and are #UD while
+        // CR4.DE = 1 (SDM Vol. 3B 18.2.2). A register without a modeled value reads its reset
+        // value (DR0..DR3 0, DR6 0xFFFF0FF0, DR7 0x400; SDM Vol. 3A Table 10-1). CPL > 0 was
+        // refused with #GP(0) above; DR7.GD (#DB) is never set (MOV DR7 refuses it).
+        Operation::ReadDebugRegister { index, dst } if control_policy.is_some() => {
+            let cr4_de = state.cr4.is_some_and(|cr4| cr4 & (1 << 3) != 0);
+            let index = match index {
+                4 | 5 if cr4_de => {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                4 | 5 => index + 2,
+                other => other,
+            };
+            let reset = match index {
+                6 => 0xffff_0ff0,
+                7 => 0x400,
+                _ => 0,
+            };
+            let value = state.debug_registers[usize::from(index)].unwrap_or(reset);
+            state.write(RegisterView::low(dst, OperandSize::Qword), value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
+        // S7-32: `INT imm8` through the IDT gate of `vector`, like the INT3 of the set but for any
+        // vector and from CPL0 or CPL3 (the gate DPL check of a software interrupt, #GP with the
+        // IDT error code `vector * 8 + 2` on a violation; SDM Vol. 2A "INT n", Vol. 3A 6.12.1.1).
+        Operation::SoftwareInterrupt { vector } if control_policy.is_some() => {
+            return match crate::interrupt::deliver_software_interrupt_cpl0_set(
+                state, memory, vector, next_rip, context,
+            ) {
+                crate::interrupt::SoftwareInterruptDelivery::Delivered { .. } => {
+                    Ok(StepOutcome::Branched)
+                }
+                crate::interrupt::SoftwareInterruptDelivery::GateDpl => {
+                    Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(u32::from(vector) * 8 + 2),
+                        linear_address: None,
+                    }))
+                }
+                crate::interrupt::SoftwareInterruptDelivery::Refused => {
+                    Ok(StepOutcome::Unsupported { opcode: 0xcd })
+                }
+                crate::interrupt::SoftwareInterruptDelivery::Aborted(cause) => {
+                    report_memory_error(cause)
+                }
+            };
+        }
         Operation::InDx {
             size: OperandSize::Dword,
         }
@@ -49169,13 +49410,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // maskable interrupt while it lasts. S4-38L6c: a nonzero GDT selector (TI = 0, present
         // GDTR) is admitted too and checked by `load_sreg_cpl0`.
         let selector = state.gpr[Register::Rax as usize] as u16;
-        let admitted = control_policy.is_some()
-            && context.privilege == PrivilegeLevel::Ring0
-            && (selector == 0 || (selector & 4 == 0 && state.gdtr.is_some()))
-            && state.ss_cache.is_some()
-            && state.ss_selector.is_some()
-            && state.sti_shadow == Some(crate::StiShadow::Clear)
-            && state.rflags & (1 << 8) == 0;
+        let admitted = mov_ss_state_admitted(state, context, control_policy.is_some())
+            && (selector == 0 || (selector & 4 == 0 && state.gdtr.is_some()));
         if !admitted {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -51995,13 +52231,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.mode == crate::memory::InstructionMode::Long64
                 && match sreg {
                     0 | 3 => selector & !3 == 0,
-                    2 => {
-                        selector == 0
-                            && state.ss_cache.is_some()
-                            && state.ss_selector.is_some()
-                            && state.sti_shadow == Some(crate::StiShadow::Clear)
-                            && state.rflags & (1 << 8) == 0
-                    }
+                    2 => selector == 0 && mov_ss_state_admitted(state, context, true),
                     _ => false,
                 }
         }
@@ -52329,10 +52559,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         // S2-48: ENDBR64 is a NOP (no CET_IBT) and executes only inside the CPL0 profile set.
         Operation::Endbr64Nop => control_policy.is_some(),
-        Operation::RdsspqRax => {
-            control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring3
-                && state.cr4.is_some_and(|cr4| cr4 & (1 << 23) == 0)
+        // S7-32: at any CPL (the Windows kernel executes it at CPL0): a NOP while CR4.CET is clear.
+        // The other RDSSP forms and ENDBR32 (`CetNop`) take the same rule.
+        Operation::RdsspqRax | Operation::CetNop => {
+            control_policy.is_some() && state.cr4.is_some_and(|cr4| cr4 & (1 << 23) == 0)
         }
         // S4-38L9b: `F3 90` (PAUSE) is a NOP hint; admitted only inside the CPL0 profile set
         // (outside it the previous `Unsupported { opcode: 0x90 }` is kept).
@@ -52355,6 +52585,44 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && context.mode == crate::memory::InstructionMode::Long64
                 && state.gdtr.is_some()
         }
+        // S7-32: SIDT m stores the modeled IDTR. The SDM allows it at any CPL (CR4.UMIP is outside
+        // the set policy); at CPL3 of the set it is refused before this point by `cpl3_allows`.
+        Operation::StoreIdtr { .. } => {
+            control_policy.is_some()
+                && context.mode == crate::memory::InstructionMode::Long64
+                && state.idtr.is_some()
+        }
+        // S7-32: SLDT/STR store a selector (legal at any CPL without UMIP; CPL3 of the set refuses
+        // them in `cpl3_allows`).
+        Operation::StoreSystemSelector { .. } => {
+            control_policy.is_some() && context.mode == crate::memory::InstructionMode::Long64
+        }
+        // S7-32: LLDT m16, null selector only (as the register form), at CPL0.
+        Operation::LoadLdtMemory { .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+        }
+        // S7-32: MOV Sreg, m16 at CPL0 (the selector is checked by the executor: a non-null one
+        // through `load_sreg_cpl0`). MOV SS takes the state conditions of the register forms
+        // (`mov_ss_state_admitted`).
+        Operation::MovToSreg { sreg, .. } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && context.mode == crate::memory::InstructionMode::Long64
+                && (sreg != 2 || mov_ss_state_admitted(state, context, true))
+        }
+        // S7-32: the general MOV CRn and MOV r64, DRn forms commit in the gated path above (CPL > 0
+        // was #GP(0) there); reaching this point means the set has no control policy.
+        Operation::ReadControl { .. }
+        | Operation::WriteControl { .. }
+        | Operation::ReadDebugRegister { .. } => false,
+        // S7-32: INT imm8 is delivered in the gated path above inside the CPL0 profile set.
+        Operation::SoftwareInterrupt { .. } => false,
+        // S7-32: CLC/STC/CMC change CF only.
+        Operation::CarryFlag { .. } => true,
+        // S7-32: CLFLUSH is a byte-read access check; RDPMC is #GP(0) (no counters).
+        Operation::Clflush { .. } | Operation::Rdpmc => control_policy.is_some(),
         // S4-38L9G: VERW m16 reads a 16-bit selector and checks its GDT descriptor (read-only);
         // admitted only inside the CPL0 profile set at CPL0 in Long64 with a modeled GDTR.
         Operation::VerwMem { .. } => {
@@ -66045,6 +66313,94 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 return report_memory_error(error);
             }
         }
+        Operation::StoreIdtr { dst } => {
+            let idtr = state.idtr.expect("SIDT admission requires a modeled IDTR");
+            let segment_base = match instruction.prefixes.segment {
+                Some(0x64) => state.fs_base,
+                Some(0x65) => state.gs_base,
+                _ => 0,
+            };
+            if let Err(error) = store_pseudo_descriptor_qwords(
+                state,
+                memory,
+                context,
+                next_rip,
+                dst,
+                segment_base,
+                instruction.prefixes.segment.is_none(),
+                idtr.limit,
+                idtr.base,
+            ) {
+                return report_memory_error(error);
+            }
+        }
+        // S7-32: SLDT / STR. LDTR and TR hold their reset value 0 until LLDT / LTR loads them.
+        Operation::StoreSystemSelector { tr, dst } => {
+            let selector = if tr {
+                state.tr.map_or(0, |tr| tr.selector)
+            } else {
+                state.ldtr_null_selector.unwrap_or(0)
+            };
+            if let Err(error) =
+                write_operand(state, memory, context, next_rip, dst, u64::from(selector))
+            {
+                return report_memory_error(error);
+            }
+        }
+        // S7-32: LLDT m16, null selector only (as `LoadLdt`).
+        Operation::LoadLdtMemory { source } => {
+            let selector = match read_memory_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value as u16,
+                Err(error) => return report_memory_error(error),
+            };
+            if selector & !3 != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            state.ldtr_null_selector = Some(selector);
+        }
+        Operation::MovToSreg { sreg, source } => {
+            let selector = match read_operand(state, memory, context, next_rip, source) {
+                Ok(value) => value as u16,
+                Err(error) => return report_memory_error(error),
+            };
+            match mov_to_sreg_cpl0(state, memory, context, sreg, selector) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
+                Err(error) => return report_memory_error(error),
+            }
+        }
+        Operation::CarryFlag { op } => {
+            state.rflags = match op {
+                long_decode::CarryFlagOp::Clear => state.rflags & !crate::CF,
+                long_decode::CarryFlagOp::Set => state.rflags | crate::CF,
+                long_decode::CarryFlagOp::Complement => state.rflags ^ crate::CF,
+            };
+        }
+        // S7-32: no caches are modeled; the access check of a byte read is all CLFLUSH does.
+        Operation::Clflush { memory: operand } => {
+            if let Err(error) = read_memory_operand(state, memory, context, next_rip, operand) {
+                return report_memory_error(error);
+            }
+        }
+        Operation::Rdpmc => {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        Operation::ReadControl { .. }
+        | Operation::WriteControl { .. }
+        | Operation::ReadDebugRegister { .. }
+        | Operation::SoftwareInterrupt { .. } => {
+            unreachable!("committed in the gated path or refused by the admission")
+        }
         Operation::LoadTr { source } => {
             let selector = state.gpr[source as usize] as u16;
             match load_tr_cpl0(state, memory, context, selector) {
@@ -67218,6 +67574,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S2-53: PREFETCHW is a hint: no memory access, no fault, no state change but RIP.
         Operation::Endbr64Nop
         | Operation::RdsspqRax
+        | Operation::CetNop
         | Operation::Pause
         | Operation::NopModrm
         | Operation::Prefetchw
@@ -70746,6 +71103,81 @@ fn load_sreg_cpl0(
             state.gs_cache = Some(fs_gs_cache);
             state.gs_unusable = false;
         }
+    }
+    Ok(true)
+}
+
+/// The state conditions of every `MOV SS` form in the CPL0 profile set (S2-46, S7-31g, S7-32):
+/// CPL0 inside the set, a loaded SS cache and selector, a clear interrupt shadow (a MOV SS under an
+/// active shadow is not modeled) and TF = 0 (the single-step trap is not modeled). The selector
+/// rules of each form are checked by the form.
+fn mov_ss_state_admitted(state: &LongModeState, context: AccessContext, in_set: bool) -> bool {
+    in_set
+        && context.privilege == PrivilegeLevel::Ring0
+        && state.ss_cache.is_some()
+        && state.ss_selector.is_some()
+        && state.sti_shadow == Some(crate::StiShadow::Clear)
+        && state.rflags & (1 << 8) == 0
+}
+
+/// S7-32: `MOV Sreg, m16` (`8E`) at CPL0 in 64-bit mode for ES (0), SS (2), DS (3), FS (4) and
+/// GS (5). A non-null selector is [`load_sreg_cpl0`]. A null selector (index 0, TI 0): DS/ES/FS/GS
+/// keep the selector as given (RPL included), become unusable and keep any base and cache, as the
+/// bounded null loads of this set do. Deviation (recorded as a known issue): Intel processors clear
+/// the hidden FS/GS base on a null selector load in 64-bit mode; this set keeps it (the AMD
+/// behaviour), the convention of its existing null loads; SS accepts only RPL = CPL = 0 (SDM "MOV": a null SS with
+/// RPL != CPL is #GP(0); 64-bit mode admits the null SS at CPL < 3). MOV SS opens the
+/// one-instruction interrupt shadow. `Ok(false)`: a form `load_sreg_cpl0` does not model.
+fn mov_to_sreg_cpl0(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    sreg: u8,
+    selector: u16,
+) -> Result<bool, MemoryError> {
+    let register = match sreg {
+        0 => Cpl0Sreg::Es,
+        2 => Cpl0Sreg::Ss,
+        3 => Cpl0Sreg::Ds,
+        4 => Cpl0Sreg::Fs,
+        5 => Cpl0Sreg::Gs,
+        _ => return Ok(false),
+    };
+    if selector & 0xfffc == 0 {
+        match register {
+            Cpl0Sreg::Ss => {
+                if selector & 3 != 0 {
+                    return Err(MemoryError::Architectural(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }));
+                }
+                state.ss_selector = Some(selector);
+                state.ss_unusable = true;
+            }
+            Cpl0Sreg::Es => {
+                state.es_selector = selector;
+                state.es_unusable = true;
+            }
+            Cpl0Sreg::Ds => {
+                state.ds_selector = selector;
+                state.ds_unusable = true;
+            }
+            Cpl0Sreg::Fs => {
+                state.fs_selector = selector;
+                state.fs_unusable = true;
+            }
+            Cpl0Sreg::Gs => {
+                state.gs_selector = selector;
+                state.gs_unusable = true;
+            }
+        }
+    } else if !load_sreg_cpl0(state, memory, context, register, selector, false)? {
+        return Ok(false);
+    }
+    if register == Cpl0Sreg::Ss {
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
     }
     Ok(true)
 }
@@ -169968,6 +170400,23 @@ mod tests {
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Unsupported { opcode: 0x8e })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        // S7-32: the memory form of MOV CS (`8E 08`, MOV CS, [rax]) is #UD (SDM "MOV": the CS
+        // register cannot be loaded with MOV); the register form above stays refused.
+        {
+            let mut state = LongModeState::default();
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x8e, 0x08]);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }))
             );
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());

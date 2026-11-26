@@ -227,6 +227,9 @@ fn classify_by_shape(operation: &Operation, name: &str) -> Option<&'static str> 
             | Operation::ReadCr4Into(_)
             | Operation::WriteCr3From(_)
             | Operation::WriteCr4From(_)
+            | Operation::ReadControl { .. }
+            | Operation::WriteControl { .. }
+            | Operation::ReadDebugRegister { .. }
     ) {
         return Some("reg");
     }
