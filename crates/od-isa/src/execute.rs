@@ -49545,19 +49545,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
-    if matches!(instruction.operation, Operation::RepScas { .. })
-        && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
-            || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
-    {
-        return Ok(StepOutcome::Unsupported {
-            opcode: instruction.opcode.byte,
-        });
-    }
-    // S7-31c: the CPL0 profile set runs `REPE CMPS` from any arithmetic-flag state (the stub of
-    // the Ubuntu kernel runs `F3 A6` after arbitrary code, and a zero count leaves the flags
-    // as they are); every other path keeps the exact entry gate PF|ZF, all six defined.
+    // S7-31c (`REPE CMPS`) and S7-32 slice P (`REPE SCAS`, ISSUE-704): the CPL0 profile set runs
+    // both from any arithmetic-flag state. Intel SDM Vol. 2B, REPE/REPZ: "The ZF flag does not
+    // require initialization because both the CMPS and SCAS instructions affect the ZF flag
+    // according to the results of the comparisons they make"; with a zero count no comparison
+    // runs and the flags stay as they are. The stub of the Ubuntu kernel runs `F3 A6` and the
+    // Windows kernel's `RtlCompareMemoryUlong` runs `F3 AF` after arbitrary code. Every other
+    // path keeps the exact entry gate PF|ZF, all six defined.
     if control_policy.is_none()
-        && matches!(instruction.operation, Operation::RepCmps { .. })
+        && matches!(
+            instruction.operation,
+            Operation::RepScas { .. } | Operation::RepCmps { .. }
+        )
         && (state.rflags & crate::ARITHMETIC_FLAGS != (crate::PF | crate::ZF)
             || *rflags_defined & crate::ARITHMETIC_FLAGS != crate::ARITHMETIC_FLAGS)
     {
@@ -67316,6 +67315,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     state.rflags,
                 );
                 state.rflags = flags;
+                // S7-32 slice P, as `REPE CMPS` (S7-31c): after one comparison the six arithmetic
+                // flags are those of the compare (Intel SDM, SCAS: `temp := EAX - SRC;
+                // SetStatusFlags(temp)`), also when the step ends at the work limit or a stop
+                // before the instruction retires. With a zero count nothing runs: the values of
+                // RFLAGS stay, and retirement counts the six as defined (static effects of the
+                // decode, as for `REPE CMPS` and as the turbo JIT composes them).
+                *rflags_defined |= crate::ARITHMETIC_FLAGS;
                 let step = if state.rflags & (1 << 10) == 0 {
                     size.bytes() as u64
                 } else {
