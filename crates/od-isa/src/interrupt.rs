@@ -8,6 +8,12 @@ use crate::memory::{
 use crate::state::CodeSegmentDescriptorCache;
 use crate::{INTEGER_FLAGS, LongModeState};
 
+mod exception;
+pub use exception::{
+    Cpl0ExceptionDelivery, Cpl0ExceptionPhase, Cpl0ExceptionRefusal, CpuException, ExceptionClass,
+    NestedException, deliver_exception_cpl0_set,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InterruptDeliveryPhase {
     IdtGateRead,
@@ -540,6 +546,11 @@ const GATE_CLEARED_FLAGS: u64 = (1 << 8) | (1 << 14) | (1 << 16) | (1 << 17);
 
 /// Refusal reasons shared by the IDT gate delivery of the CPL0 set (a `#PF` and an external
 /// interrupt). A refusal happens before any memory write.
+///
+/// S7-32 slice Q: the reasons of the target selector and of the target code descriptor carry what
+/// [`exception`] needs to name the exception the CPU raises instead (the selector of the error
+/// code, the kind of descriptor fault); every per-event public refusal maps them back to the one
+/// variant it had (`InvalidTargetSelector`, `TargetBeyondGdtLimit`, `InvalidTargetCodeDescriptor`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GateRefusal {
     MissingCurrentSelectors,
@@ -548,17 +559,63 @@ enum GateRefusal {
     MissingGdtr,
     GateBeyondIdtLimit,
     NonCanonicalIdtSpan,
-    GateNotPresent,
+    /// Gate P = 0; carries the attribute byte (S7-32 slice Q: the type decides between `#GP` and
+    /// `#NP` in [`exception`]).
+    GateNotPresent(u8),
     InvalidGateType(u8),
     UnsupportedIst(u8),
     GateReservedBitsSet,
-    InvalidTargetSelector,
-    TargetBeyondGdtLimit,
+    /// The gate selector is null (index 0 of the GDT, any RPL).
+    NullTargetSelector,
+    /// The gate selector has TI = 1 (an LDT selector; the model has no LDT).
+    LdtTargetSelector,
+    /// The gate selector has RPL != 0 (the CPU ignores it on an implicit call, SDM Vol. 3A
+    /// §7.12.1.2; the model refuses it).
+    TargetSelectorRpl,
+    /// The descriptor of the gate selector lies beyond the GDT limit; carries the selector.
+    TargetBeyondGdtLimit(u16),
     NonCanonicalGdtSpan,
-    InvalidTargetCodeDescriptor,
+    /// The target code descriptor is not a 64-bit CPL0 handler segment; carries the kind of fault
+    /// and the gate selector.
+    InvalidTargetCodeDescriptor(TargetCodeFault, u16),
     NonCanonicalTargetRip,
     StackAddressOverflow,
     NonCanonicalStackSpan,
+}
+
+/// S7-32 slice Q: why a target code descriptor is not a 64-bit CPL0 handler segment, in the order
+/// of the `TRAP-OR-INTERRUPT-GATE` checks of the "INT n/INTO/INT3/INT1" pseudocode (Intel SDM
+/// 325462-093US, Vol. 2A): not a code segment or `DPL > CPL` (`#GP(selector)`), not present
+/// (`#NP(selector)`); then what the model does not run (a conforming segment, a nonconforming one
+/// below CPL3 with DPL 1..=3); then the 64-bit requirement of Vol. 3A §7.14.1 (`L = 1, D = 0`,
+/// else `#GP` with the IDT vector).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetCodeFault {
+    NotCode,
+    DplAboveCpl,
+    NotPresent,
+    Unsupported,
+    Not64Bit,
+}
+
+/// The [`TargetCodeFault`] of a descriptor (access byte, flags nibble) for a delivery at `cpl`
+/// (0 or 3), or `None` for a present nonconforming 64-bit code segment with DPL 0. The Accessed
+/// bit is not looked at (the commit sets it).
+const fn target_code_fault(access: u8, flags: u8, cpl: u8) -> Option<TargetCodeFault> {
+    let dpl = (access >> 5) & 3;
+    if access & 0x18 != 0x18 {
+        Some(TargetCodeFault::NotCode)
+    } else if dpl > cpl {
+        Some(TargetCodeFault::DplAboveCpl)
+    } else if access & 0x80 == 0 {
+        Some(TargetCodeFault::NotPresent)
+    } else if access & 0x04 != 0 || dpl != 0 {
+        Some(TargetCodeFault::Unsupported)
+    } else if flags & 0x2 == 0 || flags & 0x4 != 0 {
+        Some(TargetCodeFault::Not64Bit)
+    } else {
+        None
+    }
 }
 
 /// Where a gate delivery failed on a memory access; `StackWrite` carries the zero-based
@@ -607,90 +664,44 @@ struct ResolvedGate {
     ist: u8,
 }
 
-/// S4-39d: why the read of `TSS.RSP0` failed; the pair of [`GateFailure`] for the one step only a
-/// delivery from CPL3 makes. It is read-only: nothing was written.
-enum TssFailure {
+/// S4-39d/S6-12c: why the read of a stack pointer of the 64-bit TSS (`RSP0` or `IST[n]`) failed;
+/// the pair of [`GateFailure`] for the step a delivery makes only from CPL3 or through an IST gate.
+/// It is read-only: nothing was written. S7-32 slice Q tells a span of the TSS field that is not
+/// canonical (`NonCanonicalSpan`, a TSS base at the end of the address space) from a non-canonical
+/// value read from it (`NonCanonicalValue`, `#SS` on hardware); the per-event refusals keep one
+/// variant for both.
+enum TssStackFailure {
     MissingTaskRegister,
-    TssRsp0BeyondLimit,
-    NonCanonicalRsp0,
+    BeyondLimit,
+    NonCanonicalSpan,
+    NonCanonicalValue,
     Aborted(MemoryError),
 }
 
-/// S4-39d: `RSP0` of the 64-bit TSS at `TR.base + 4`, read as a descriptor-table access (a CPL0
-/// page privilege, also under PTI where the TSS is a supervisor page of the user page tables).
-/// The read is the last check before the first write of a delivery from CPL3.
-fn read_tss_rsp0(
+/// The 8-byte stack pointer at byte `offset` of the 64-bit TSS (`TR.base + offset`), read as a
+/// descriptor-table access (a CPL0 page privilege, also under PTI where the TSS is a supervisor
+/// page of the user page tables). The field must lie inside the TR limit (the limit is the last
+/// valid byte offset), its span and the value must be canonical. The read is the last check before
+/// the first write of the delivery.
+fn read_tss_stack(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
-) -> Result<u64, TssFailure> {
+    offset: u64,
+) -> Result<u64, TssStackFailure> {
     let Some(tr) = state.tr else {
-        return Err(TssFailure::MissingTaskRegister);
+        return Err(TssStackFailure::MissingTaskRegister);
     };
-    // RSP0 occupies bytes 4..=11 of the TSS.
-    if tr.limit < 11 {
-        return Err(TssFailure::TssRsp0BeyondLimit);
-    }
-    let (Some(address), Some(last)) = (tr.base.checked_add(4), tr.base.checked_add(11)) else {
-        return Err(TssFailure::NonCanonicalRsp0);
-    };
-    if !canonical(address) || !canonical(last) {
-        return Err(TssFailure::NonCanonicalRsp0);
-    }
-    let rsp0 = memory
-        .read_integer(
-            address,
-            context.descriptor_table(),
-            crate::OperandSize::Qword,
-        )
-        .map_err(TssFailure::Aborted)?;
-    if !canonical(rsp0) {
-        return Err(TssFailure::NonCanonicalRsp0);
-    }
-    Ok(rsp0)
-}
-
-/// S6-12c: why the read of `TSS.IST[n]` failed; read-only, nothing was written.
-enum TssIstFailure {
-    MissingTaskRegister,
-    TssIstBeyondLimit,
-    NonCanonicalIst,
-    Aborted(MemoryError),
-}
-
-/// S6-12c: `ISTn` (n = 1..=7) of the 64-bit TSS at `TR.base + 0x24 + 8 * (n - 1)` (the same as
-/// `TR.base + 28 + 8 * n`), read like `RSP0`: a descriptor-table access, with the same limit,
-/// address and value checks. The caller passes the IST field of a gate that is not 0; `ist` 0 or
-/// above 7 is refused as beyond the limit (it names no entry).
-///
-/// Intel SDM Vol. 3A, 7.7 (64-bit TSS format: `RSP0` at offset 4, `IST1..IST7` at offsets
-/// 0x24..=0x5B) and 6.14.5 (interrupt stack table; IST is bits 2:0 of byte 4 of the gate): from
-/// memory, the SDM text is not available in the repository.
-fn read_tss_ist(
-    state: &LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    ist: u8,
-) -> Result<u64, TssIstFailure> {
-    let Some(tr) = state.tr else {
-        return Err(TssIstFailure::MissingTaskRegister);
-    };
-    if !(1..=7).contains(&ist) {
-        // unreachable: callers pass a non-zero 3-bit IST field
-        return Err(TssIstFailure::TssIstBeyondLimit);
-    }
-    let offset = 0x24 + 8 * (u64::from(ist) - 1);
-    // ISTn occupies bytes offset..=offset + 7 of the TSS; the limit is the last valid byte offset.
     if u64::from(tr.limit) < offset + 7 {
-        return Err(TssIstFailure::TssIstBeyondLimit);
+        return Err(TssStackFailure::BeyondLimit);
     }
     let (Some(address), Some(last)) =
         (tr.base.checked_add(offset), tr.base.checked_add(offset + 7))
     else {
-        return Err(TssIstFailure::NonCanonicalIst);
+        return Err(TssStackFailure::NonCanonicalSpan);
     };
     if !canonical(address) || !canonical(last) {
-        return Err(TssIstFailure::NonCanonicalIst);
+        return Err(TssStackFailure::NonCanonicalSpan);
     }
     let stack = memory
         .read_integer(
@@ -698,11 +709,39 @@ fn read_tss_ist(
             context.descriptor_table(),
             crate::OperandSize::Qword,
         )
-        .map_err(TssIstFailure::Aborted)?;
+        .map_err(TssStackFailure::Aborted)?;
     if !canonical(stack) {
-        return Err(TssIstFailure::NonCanonicalIst);
+        return Err(TssStackFailure::NonCanonicalValue);
     }
     Ok(stack)
+}
+
+/// S4-39d: `RSP0` of the 64-bit TSS (bytes 4..=11), the CPL0 stack of a delivery from CPL3.
+fn read_tss_rsp0(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+) -> Result<u64, TssStackFailure> {
+    read_tss_stack(state, memory, context, 4)
+}
+
+/// S6-12c: `ISTn` (n = 1..=7) of the 64-bit TSS at `TR.base + 0x24 + 8 * (n - 1)` (the same as
+/// `TR.base + 28 + 8 * n`), read like `RSP0`. The caller passes the IST field of a gate that is not
+/// 0; `ist` 0 or above 7 is refused as beyond the limit (it names no entry).
+///
+/// Intel SDM 325462-093US, Vol. 3A §7.14.5 (IST is bits 2:0 of byte 4 of the gate) and the
+/// `TSSstackAddress := (IDT-gate IST << 3) + 28` of the "INT n" pseudocode (Vol. 2A).
+fn read_tss_ist(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    ist: u8,
+) -> Result<u64, TssStackFailure> {
+    if !(1..=7).contains(&ist) {
+        // unreachable: callers pass a non-zero 3-bit IST field
+        return Err(TssStackFailure::BeyondLimit);
+    }
+    read_tss_stack(state, memory, context, 0x24 + 8 * (u64::from(ist) - 1))
 }
 
 /// Read and check the gate of `vector` and its target code descriptor: no write, no change of
@@ -714,6 +753,43 @@ fn read_tss_ist(
 /// `allow_ist` (S6-12c, only the NMI wrapper passes it) accepts a gate with IST 1..=7 and returns
 /// it in `ResolvedGate::ist`; without it such a gate is `Refused(UnsupportedIst)`.
 fn resolve_cpl0_gate(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    vector: u8,
+    from_cpl3: bool,
+    allow_ist: bool,
+) -> Result<ResolvedGate, GateFailure> {
+    let gate = inspect_idt_gate(state, memory, context, vector, from_cpl3, allow_ist)?;
+    if !canonical(gate.target_rip) {
+        return Err(GateRefused(GateRefusal::NonCanonicalTargetRip));
+    }
+    inspect_target_code(state, memory, context, gate)
+}
+
+/// S7-32 slice Q: the read-only checks of [`resolve_cpl0_gate`] without the canonical check of the
+/// handler RIP, which [`exception`] makes after the new stack is known, as the IA-32e branch of the
+/// "INT n/INTO/INT3/INT1" pseudocode (Intel SDM 325462-093US, Vol. 2A) does.
+fn inspect_cpl0_gate(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    vector: u8,
+    from_cpl3: bool,
+    allow_ist: bool,
+) -> Result<ResolvedGate, GateFailure> {
+    let gate = inspect_idt_gate(state, memory, context, vector, from_cpl3, allow_ist)?;
+    inspect_target_code(state, memory, context, gate)
+}
+
+/// The current state, the IDT gate of `vector` and its selector: the first part of
+/// [`resolve_cpl0_gate`]. The returned gate has no target descriptor yet.
+///
+/// The present bit is checked before the type (the order of the per-event deliveries); a gate
+/// with P = 0 carries its attribute byte in `GateNotPresent`, so that [`exception`] can follow the
+/// SDM order, where the type comes first (`#GP` for a zero gate, `#NP` for a valid type with
+/// P = 0).
+fn inspect_idt_gate(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -743,9 +819,9 @@ fn resolve_cpl0_gate(
     let Some(idtr) = state.idtr else {
         return Err(refuse(Refusal::MissingIdtr));
     };
-    let Some(gdtr) = state.gdtr else {
+    if state.gdtr.is_none() {
         return Err(refuse(Refusal::MissingGdtr));
-    };
+    }
 
     // The gate: 16 bytes at idt_base + 16 * vector, read as two qwords.
     let gate_offset = u64::from(vector) * 16;
@@ -778,7 +854,7 @@ fn resolve_cpl0_gate(
     }
     let attributes = gate[5];
     if attributes & 0x80 == 0 {
-        return Err(refuse(Refusal::GateNotPresent));
+        return Err(refuse(Refusal::GateNotPresent(attributes)));
     }
     let gate_type = attributes & 0x0f;
     if attributes & 0x10 != 0 || (gate_type != 0x0e && gate_type != 0x0f) {
@@ -793,20 +869,51 @@ fn resolve_cpl0_gate(
     }
     let trap_gate = gate_type == 0x0f;
     let target_selector = u16::from_le_bytes([gate[2], gate[3]]);
-    if target_selector & 0xfffc == 0 || target_selector & 4 != 0 || target_selector & 3 != 0 {
-        return Err(refuse(Refusal::InvalidTargetSelector));
+    if target_selector & 0xfffc == 0 {
+        return Err(refuse(Refusal::NullTargetSelector));
+    }
+    if target_selector & 4 != 0 {
+        return Err(refuse(Refusal::LdtTargetSelector));
+    }
+    if target_selector & 3 != 0 {
+        return Err(refuse(Refusal::TargetSelectorRpl));
     }
     let target_rip = u64::from(u16::from_le_bytes([gate[0], gate[1]]))
         | (u64::from(u16::from_le_bytes([gate[6], gate[7]])) << 16)
         | (u64::from(u32::from_le_bytes([gate[8], gate[9], gate[10], gate[11]])) << 32);
-    if !canonical(target_rip) {
-        return Err(refuse(Refusal::NonCanonicalTargetRip));
-    }
+    Ok(ResolvedGate {
+        old_cs,
+        old_ss,
+        target_selector,
+        target_rip,
+        descriptor: [0; 8],
+        descriptor_address: 0,
+        trap_gate,
+        dpl: (attributes >> 5) & 3,
+        privilege_change: from_cpl3,
+        new_stack: None,
+        ist,
+    })
+}
 
-    // The target code segment, from the GDT (never from the cache).
+/// The target code descriptor of a gate from [`inspect_idt_gate`], read from the GDT (never from
+/// the cache): the second part of [`resolve_cpl0_gate`]. S7-32 slice Q: the reasons carry the
+/// selector and the [`TargetCodeFault`], in the order of the `TRAP-OR-INTERRUPT-GATE` checks.
+fn inspect_target_code(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    mut gate: ResolvedGate,
+) -> Result<ResolvedGate, GateFailure> {
+    use GateRefusal as Refusal;
+    let refuse = GateRefused;
+    let Some(gdtr) = state.gdtr else {
+        return Err(refuse(Refusal::MissingGdtr));
+    };
+    let target_selector = gate.target_selector;
     let descriptor_offset = u64::from(target_selector & !7);
     if descriptor_offset + 7 > u64::from(gdtr.limit) {
-        return Err(refuse(Refusal::TargetBeyondGdtLimit));
+        return Err(refuse(Refusal::TargetBeyondGdtLimit(target_selector)));
     }
     let (Some(descriptor_address), Some(descriptor_last)) = (
         gdtr.base.checked_add(descriptor_offset),
@@ -817,6 +924,7 @@ fn resolve_cpl0_gate(
     if !canonical(descriptor_address) || !canonical(descriptor_last) {
         return Err(refuse(Refusal::NonCanonicalGdtSpan));
     }
+    let table = context.descriptor_table();
     let descriptor = match memory.read_integer(descriptor_address, table, crate::OperandSize::Qword)
     {
         Ok(value) => value.to_le_bytes(),
@@ -830,22 +938,16 @@ fn resolve_cpl0_gate(
     let access = descriptor[5];
     let flags = descriptor[6] >> 4;
     // The accessed bit is set at the commit if clear, so it is not a validity condition.
-    if !valid_ring0_long_code(target_selector, access | 1, flags) {
-        return Err(refuse(Refusal::InvalidTargetCodeDescriptor));
+    let cpl = if gate.privilege_change { 3 } else { 0 };
+    if let Some(fault) = target_code_fault(access, flags, cpl) {
+        return Err(refuse(Refusal::InvalidTargetCodeDescriptor(
+            fault,
+            target_selector,
+        )));
     }
-    Ok(ResolvedGate {
-        old_cs,
-        old_ss,
-        target_selector,
-        target_rip,
-        descriptor,
-        descriptor_address,
-        trap_gate,
-        dpl: (attributes >> 5) & 3,
-        privilege_change: from_cpl3,
-        new_stack: None,
-        ist,
-    })
+    gate.descriptor = descriptor;
+    gate.descriptor_address = descriptor_address;
+    Ok(gate)
 }
 
 /// Store the frame, set the target descriptor Accessed bit if clear, and commit CS, RIP, RSP
@@ -862,8 +964,10 @@ fn resolve_cpl0_gate(
 ///
 /// S6-12c: `gate.new_stack = Some(TSS.IST[n])` for a gate with IST = n replaces the stack in the
 /// same way for a CPL0 to CPL0 delivery too: the frame (SS, old RSP, ...) is stored from the IST
-/// stack aligned down to 16, SS is not reloaded without a privilege change (by memory of the SDM,
-/// 6.14.5).
+/// stack aligned down to 16, SS is not reloaded without a privilege change. S7-32 slice Q checked
+/// this against Intel SDM 325462-093US: the `INTRA-PRIVILEGE-LEVEL-INTERRUPT` branch of the
+/// "INT n" pseudocode (Vol. 2A) takes `NewRSP` from the IST and loads no SS (the prose of Vol. 3A
+/// §7.14.5 says the new SS is forced to null with the IST; the pseudocode is followed).
 fn commit_cpl0_gate(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -957,14 +1061,18 @@ macro_rules! impl_from_gate_refusal {
                     GateRefusal::MissingGdtr => Self::MissingGdtr,
                     GateRefusal::GateBeyondIdtLimit => Self::GateBeyondIdtLimit,
                     GateRefusal::NonCanonicalIdtSpan => Self::NonCanonicalIdtSpan,
-                    GateRefusal::GateNotPresent => Self::GateNotPresent,
+                    GateRefusal::GateNotPresent(_) => Self::GateNotPresent,
                     GateRefusal::InvalidGateType(attributes) => Self::InvalidGateType(attributes),
                     GateRefusal::UnsupportedIst(ist) => Self::UnsupportedIst(ist),
                     GateRefusal::GateReservedBitsSet => Self::GateReservedBitsSet,
-                    GateRefusal::InvalidTargetSelector => Self::InvalidTargetSelector,
-                    GateRefusal::TargetBeyondGdtLimit => Self::TargetBeyondGdtLimit,
+                    GateRefusal::NullTargetSelector
+                    | GateRefusal::LdtTargetSelector
+                    | GateRefusal::TargetSelectorRpl => Self::InvalidTargetSelector,
+                    GateRefusal::TargetBeyondGdtLimit(_) => Self::TargetBeyondGdtLimit,
                     GateRefusal::NonCanonicalGdtSpan => Self::NonCanonicalGdtSpan,
-                    GateRefusal::InvalidTargetCodeDescriptor => Self::InvalidTargetCodeDescriptor,
+                    GateRefusal::InvalidTargetCodeDescriptor(..) => {
+                        Self::InvalidTargetCodeDescriptor
+                    }
                     GateRefusal::NonCanonicalTargetRip => Self::NonCanonicalTargetRip,
                     GateRefusal::StackAddressOverflow => Self::StackAddressOverflow,
                     GateRefusal::NonCanonicalStackSpan => Self::NonCanonicalStackSpan,
@@ -1165,18 +1273,18 @@ fn fault_shadow_admitted(state: &LongModeState, from_cpl3: bool, firmware: bool)
     }
 }
 
-fn pf_tss_failure(failure: TssFailure) -> Cpl0PageFaultDelivery {
+fn pf_tss_failure(failure: TssStackFailure) -> Cpl0PageFaultDelivery {
     match failure {
-        TssFailure::MissingTaskRegister => {
+        TssStackFailure::MissingTaskRegister => {
             Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::MissingTaskRegister)
         }
-        TssFailure::TssRsp0BeyondLimit => {
+        TssStackFailure::BeyondLimit => {
             Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::TssRsp0BeyondLimit)
         }
-        TssFailure::NonCanonicalRsp0 => {
+        TssStackFailure::NonCanonicalSpan | TssStackFailure::NonCanonicalValue => {
             Cpl0PageFaultDelivery::Refused(Cpl0PageFaultRefusal::NonCanonicalRsp0)
         }
-        TssFailure::Aborted(cause) => Cpl0PageFaultDelivery::Aborted {
+        TssStackFailure::Aborted(cause) => Cpl0PageFaultDelivery::Aborted {
             phase: Cpl0PageFaultDeliveryPhase::TssRsp0Read,
             cause,
         },
@@ -1418,18 +1526,18 @@ fn gp_gate_failure(failure: GateFailure) -> Cpl0GeneralProtectionDelivery {
     }
 }
 
-fn gp_tss_failure(failure: TssFailure) -> Cpl0GeneralProtectionDelivery {
+fn gp_tss_failure(failure: TssStackFailure) -> Cpl0GeneralProtectionDelivery {
     match failure {
-        TssFailure::MissingTaskRegister => Cpl0GeneralProtectionDelivery::Refused(
+        TssStackFailure::MissingTaskRegister => Cpl0GeneralProtectionDelivery::Refused(
             Cpl0GeneralProtectionRefusal::MissingTaskRegister,
         ),
-        TssFailure::TssRsp0BeyondLimit => {
+        TssStackFailure::BeyondLimit => {
             Cpl0GeneralProtectionDelivery::Refused(Cpl0GeneralProtectionRefusal::TssRsp0BeyondLimit)
         }
-        TssFailure::NonCanonicalRsp0 => {
+        TssStackFailure::NonCanonicalSpan | TssStackFailure::NonCanonicalValue => {
             Cpl0GeneralProtectionDelivery::Refused(Cpl0GeneralProtectionRefusal::NonCanonicalRsp0)
         }
-        TssFailure::Aborted(cause) => Cpl0GeneralProtectionDelivery::Aborted {
+        TssStackFailure::Aborted(cause) => Cpl0GeneralProtectionDelivery::Aborted {
             phase: Cpl0GeneralProtectionPhase::TssRsp0Read,
             cause,
         },
@@ -1691,36 +1799,36 @@ fn external_gate_failure(failure: GateFailure) -> Cpl0ExternalInterruptDelivery 
     }
 }
 
-fn external_tss_ist_failure(failure: TssIstFailure) -> Cpl0ExternalInterruptDelivery {
+fn external_tss_ist_failure(failure: TssStackFailure) -> Cpl0ExternalInterruptDelivery {
     match failure {
-        TssIstFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
+        TssStackFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
             Cpl0ExternalInterruptRefusal::MissingTaskRegister,
         ),
-        TssIstFailure::TssIstBeyondLimit => {
+        TssStackFailure::BeyondLimit => {
             Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::TssIstBeyondLimit)
         }
-        TssIstFailure::NonCanonicalIst => {
+        TssStackFailure::NonCanonicalSpan | TssStackFailure::NonCanonicalValue => {
             Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::NonCanonicalIst)
         }
-        TssIstFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
+        TssStackFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
             phase: Cpl0ExternalInterruptPhase::TssIstRead,
             cause,
         },
     }
 }
 
-fn external_tss_failure(failure: TssFailure) -> Cpl0ExternalInterruptDelivery {
+fn external_tss_failure(failure: TssStackFailure) -> Cpl0ExternalInterruptDelivery {
     match failure {
-        TssFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
+        TssStackFailure::MissingTaskRegister => Cpl0ExternalInterruptDelivery::Refused(
             Cpl0ExternalInterruptRefusal::MissingTaskRegister,
         ),
-        TssFailure::TssRsp0BeyondLimit => {
+        TssStackFailure::BeyondLimit => {
             Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::TssRsp0BeyondLimit)
         }
-        TssFailure::NonCanonicalRsp0 => {
+        TssStackFailure::NonCanonicalSpan | TssStackFailure::NonCanonicalValue => {
             Cpl0ExternalInterruptDelivery::Refused(Cpl0ExternalInterruptRefusal::NonCanonicalRsp0)
         }
-        TssFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
+        TssStackFailure::Aborted(cause) => Cpl0ExternalInterruptDelivery::Aborted {
             phase: Cpl0ExternalInterruptPhase::TssRsp0Read,
             cause,
         },
@@ -1980,7 +2088,9 @@ pub fn deliver_software_interrupt_cpl0_set(
     if from_cpl3 {
         match read_tss_rsp0(state, memory, context) {
             Ok(rsp0) => gate.new_stack = Some(rsp0),
-            Err(TssFailure::Aborted(cause)) => return SoftwareInterruptDelivery::Aborted(cause),
+            Err(TssStackFailure::Aborted(cause)) => {
+                return SoftwareInterruptDelivery::Aborted(cause);
+            }
             Err(_) => return SoftwareInterruptDelivery::Refused,
         }
     }

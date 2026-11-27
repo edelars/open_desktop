@@ -33,7 +33,7 @@
 //! delivers a vector waiting in the vCPU's own Local APIC through the guest IDT (the same
 //! Local APIC source and delivery as the CPL0-set loop), and
 //! [`run_host_set_step`] runs ONE instruction of the CPL0 profile set over `&MachineBus` with the
-//! gate, delivering a guest `#PF` or `#GP(0)` through the guest IDT as the set loop does. The base
+//! gate, delivering a guest exception through the guest IDT as the set loop does. The base
 //! profile of [`crate::run_paged_probe_shared`] stays what it was (it has no `LOCK`, no `IRETQ`).
 //! The boot processor also asks the board's interrupt source. The source lock covers the query
 //! and acknowledgment separately. The host quantum can service queued COM1 transmission and port
@@ -100,8 +100,10 @@ impl HostSplitGate<'static> {
 }
 
 impl HostSplitGate<'_> {
-    /// Enter the handler for a native `#PF` or `#GP(0)` under the worker gate.
-    /// Delivery failures carry the handler phase and the access error.
+    /// Enter the handler for a native fault (the set loop's delivery, S7-32 slice Q) under the
+    /// worker gate: `Delivered`, `NotDelivered` (the fault stays the caller's stop) or `Shutdown`
+    /// (a triple fault; the caller reports it as the set step reports `PagedProbeExit::Shutdown`).
+    /// `Err`: an aborted access of the delivery, with the handler phase and the access error.
     /// A caller without a gate must have exclusive access to guest RAM.
     pub fn deliver_native_fault(
         self,
@@ -113,7 +115,7 @@ impl HostSplitGate<'_> {
         page_fault: Option<&PageFaultRecord>,
         consecutive: u64,
         committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> Result<bool, PagedCpl0ExceptionFailure> {
+    ) -> Result<crate::NativeFaultDelivery, PagedCpl0ExceptionFailure> {
         deliver_host_native_fault_gated(
             state,
             bus,
@@ -908,7 +910,7 @@ pub struct HostSetStepReport {
     /// The call ended inside a `REP` that made progress: the next boundary is inside it and takes no
     /// interrupt (`skip_first_boundary`).
     pub partial_rep: bool,
-    /// `#PF` and `#GP(0)` exceptions delivered through the guest IDT in this step.
+    /// Exceptions delivered through the guest IDT in this step.
     pub delivered_exceptions: u64,
     /// The guest wrote a timer register of its Local APIC (`0x320`, `0x380`, `0x3E0`): the deadline
     /// the call was budgeted for may be stale, so the caller ends its call (as the set quantum does).
@@ -925,7 +927,7 @@ pub struct HostSetStepReport {
 /// (S6-42c): the set loop of the interpreter quantum ([`run_cpl0_set_loop`] over the shared bus,
 /// budget one, no interrupt hook: the caller delivers at its own boundary with
 /// [`host_deliver_pending_irq`]), with the gate of the split `LOCK` of `step.gate` and with the
-/// delivery of a guest `#PF` or `#GP(0)` through the guest IDT when one is loaded, exactly as the
+/// delivery of a guest exception through the guest IDT when one is loaded, exactly as the
 /// loop does. `state.cr3` must be empty (the root is `step.cr3`) unless the set owns CR3. `Err`: an
 /// exit the board does not know how to resume from (an integration error of the set).
 /// Calls with no worker gate require exclusive guest RAM access for descriptor updates.
@@ -968,9 +970,7 @@ pub fn run_host_set_step(
     let (exit, fault_delivery_failure) = match report.exit {
         PagedCpl0SetExit::ExceptionDeliveryFailed {
             fault,
-            failure:
-                failure @ (PagedCpl0ExceptionFailure::Aborted { .. }
-                | PagedCpl0ExceptionFailure::GeneralProtectionAborted { .. }),
+            failure: failure @ PagedCpl0ExceptionFailure::Aborted { .. },
         } if step.gate.0.is_some() => (crate::PagedProbeExit::Fault(fault), Some(failure)),
         exit => {
             let (exit, _) = set_exit_to_probe_exit(exit)

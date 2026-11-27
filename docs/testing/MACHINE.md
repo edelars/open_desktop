@@ -798,6 +798,54 @@ EAX[25:14] (L1 — 0; числа больше 4 — выше предела пл
 [отчёт этапа 7, срез O](../reports/STAGE_7_REPORT.md#срез-o-icw2-8259-и-arat-в-cpuid-windows-профиля-2026-11-26); Linux не повторялся: путь Linux (ICW2
 `0x30`/`0x38`, Linux-профили CPUID) не изменился.
 
+### S7-32, срез Q: доставка исключений гостю по SDM
+
+**Модель SDM** (`cargo test -p od-isa --test s7_32_exception_delivery --offline`, 12 тестов). Модель доставки
+написана в тесте заново по Intel SDM 325462-093US (Vol. 3A Table 7-1, 7-4, 7-5, §7.12–§7.14, Vol. 3B §20.3.1.1,
+порядок проверок псевдокода Vol. 2A «INT n») и проходит те же проверки по виду памяти только на чтение; память
+теста — страницы с отсутствием и защитой от записи (`#PF` с кодом P/W/U) и инъекцией backend-ошибки.
+`every_vector_from_cpl0_and_cpl3_matches_the_model` — 16 событий (fault-векторы 0, 5, 6, 7, 10–14, 16, 17, 19,
+20, 21; trap `#DB`; abort `#MC`) × CPL0/CPL3 × шлюзы `0x8E`/`0x8F`/`0xEE` × IST 0/1/7 × три смещения RSP × три
+набора RFLAGS × бит Accessed: 5 184 доставки, результат, состояние целиком, кадр по словам, CR2;
+`a_broken_delivery_raises_the_sdm_exception_and_table_7_5_decides` — 16 событий × 22 поломки доставки × шлюз `#DF`
+(IST 1, сломан так же, нулевой) × CPL0/CPL3 против модели, достигнуты serial-доставки `#GP`/`#NP`/`#TS`/`#SS`/`#PF`,
+`#DF` и shutdown; `two_broken_checks_raise_the_exception_of_the_earlier_one` — пары поломок в порядке псевдокода (стек и неканонический текущий RSP раньше RIP обработчика, DPL раньше P дескриптора, бит S и тип раньше P шлюза и др.: первое вложенное исключение названо явно); сверка записей — без вложенных исключений ровно слова кадра и бит Accessed по порядку; ручные кадры `#DE`, `#PF` с CPL3 и `#DB`; конструкторы по Table 7-1; классические цепочки;
+кадр поперёк страницы; отказы модели без записи; тень `Blocking`; backend-ошибки; shutdown через IST-`#DF`; форма
+`#DE` Windows. В модуле — `interrupt::exception::tests::table_7_5_pairs`. Прежние тесты доставок
+(`cpl0_profile_set`, 1 682) проходят без правок ожиданий.
+
+**Плата и turbo** (`cargo test -p od-machine --lib --offline`). Новые: `cpl0_set_board_windows_divide_error_under_try_continues_at_the_scope_target`
+(функция ядра `+0xbed1a0` байт в байт с данными, обработчик делает то, что SEH ядра: 23 ретирации, RAX/RDX/R8 не
+тронуты, кадр с RIP `idiv` и RF = 1), `cpl0_set_board_a_not_present_divide_gate_is_a_double_fault_on_the_ist_stack`,
+`cpl0_set_board_delivers_a_ud_through_its_gate`, `cpl0_set_board_page_fault_through_a_gate_beyond_the_idt_limit_is_a_triple_fault`,
+`cpl0_set_board_page_fault_with_an_unmapped_stack_is_a_triple_fault`,
+`user_mode_facade_a_cpl3_ud_is_delivered_through_rsp0_and_through_an_ist`,
+`guest_only_a_nested_page_fault_drops_the_cache_too`, по ревью — `guest_only_a_triple_fault_with_a_page_fault_in_its_chain_drops_the_cache`, `cpl0_set_board_page_fault_observations_are_for_a_page_fault_entered_as_itself`, `native_fault_delivery_needs_the_page_fault_record_of_the_instruction`; od-host — `paged_host_loop::tests::s6_42c::s7_32q_a_native_triple_fault_is_the_shutdown_of_the_vcpu`; `turbo::tests::exceptions_after_generated_code_match_the_general_step`
+(шесть исключений после сгенерированного кода, обработчик `HLT` и обработчик с возвратом: turbo равен общему шагу).
+Переписаны тесты прежних остановок, которые по SDM — вложенные исключения или тройная ошибка (список — в
+[отчёте этапа 7, срез Q](../reports/STAGE_7_REPORT.md#срез-q-доставка-исключений-гостю-по-sdm-2026-11-27)).
+
+**Инъекции** (16, исходный файл возвращался): RF кадра fault, правило contributory → `#PF`, бит EXT, порядок тип/P,
+IST, CR2 вложенного `#PF`, RF кадра trap, `activity` shutdown, селектор `#TS`, код `#DF`, `#GP` 32-битного
+обработчика, `#SS` неканонического стека TSS, сохранённый RIP вложенного исключения, счётчик `#GP` платы, доставка
+только `#PF`/`#GP` на плате — пойманы; сброс кэша при вложенном `#PF` — пойман после добавления
+`guest_only_a_nested_page_fault_drops_the_cache_too`. По ревью ещё 9, все пойманы: тройная ошибка нативного шага как «не доставлено», RIP обработчика раньше стека, без проверки текущего RSP, P дескриптора раньше DPL, тип не present шлюза без бита S, без `FaultRipMismatch`, тройная ошибка без сброса кэша, наблюдения для любого доставленного `#PF` (после проверки `first_page_fault` регистратора), бит Accessed пишется при A = 1.
+
+**Итоговые проверки** (свой `CARGO_TARGET_DIR`; после доработки по ревью — один раз на итоговом коде): `cargo test -p od-isa` —
+7 140 тестов, 53 бинарника, 0 отказов (`s7_32_exception_delivery` 12, `cpl0_profile_set` 1 682);
+`cargo test -p od-machine --lib` — 2 720, 18 ignored, 0 отказов (из них `cpl0_set_board*` 69, `guest_only*` 15,
+`user_mode_facade*` 14, `set_facade*` 29, `irq_hook` 18, `nmi::` 8); `cargo test -p od-host --lib paged_host_loop` — 93,
+1 ignored, 0 отказов; `cargo test -p od-runner` — 1 118, 5 ignored, 0 отказов;
+`cargo check --workspace --all-targets --offline` — чисто (предупреждения прежние: `s7_31i_ldmxcsr`, `page_walk.rs`,
+`bus.rs`, od-host); `cargo fmt --all -- --check` — чисто; `python3 tests/system/firmware_boot_smoke.py` — код 0
+(до доработки; транскрипты прошивки не менялись, доработка путь прошивки не трогает). Linux (рецепт S6-21 `stage4a-apic`, `--seed 24301`, бюджет 2,5·10⁹, 1 296 с):
+до доработки (доработка путь Linux не меняет: см. отчёт) запись остановки совпадает со срезом M поле в поле (`budget_exhausted`, 2 499 983 194 ретирации, 11 286 в CPL3, 18 072
+прерывания, 35 исключений — 34 `#PF` и 1 `#GP`), COM1 тот же (23 101 байт, SHA-256 `0ca15a89…`), проверка
+`build_stage6_smp_initramfs.py --verify-report` — код 0. Гостевой прогон Windows —
+[отчёт этапа 7, срез Q](../reports/STAGE_7_REPORT.md#срез-q-доставка-исключений-гостю-по-sdm-2026-11-27); запись данных —
+[`s7-32q-exception-delivery.json`](../reports/data/stage7/s7-32q-exception-delivery.json). Независимое ревью — «доработать»,
+после исправлений повторное — «принять».
+
 ## S4-27a: caller-driven APIC interrupt entry
 
 Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,

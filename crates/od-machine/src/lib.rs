@@ -370,10 +370,10 @@ pub use paged_exception_delivery::{
     step_paged_iretq_and_user_load, step_paged_iretq_to_cpl3, step_paged_syscall_profile,
 };
 pub use paged_memory_adapter::{
-    PagedAtomicOperand, PagedCpl0ExceptionFailure, PagedDwordStoreStepReport, PagedInvlpgStepError,
-    PagedInvlpgStepReport, PagedMovCr0StepReport, PagedMovCr3StepError, PagedMovCr3StepReport,
-    PagedMovMemoryAdapter, PagedMovMemoryScope, PagedMovStepError, PagedMovStepReport,
-    PagedMovStoreScope, PagedStateOpStepReport, PagedStoreRefusal, deliver_host_native_fault,
+    NativeFaultDelivery, PagedAtomicOperand, PagedCpl0ExceptionFailure, PagedDwordStoreStepReport,
+    PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovCr0StepReport, PagedMovCr3StepError,
+    PagedMovCr3StepReport, PagedMovMemoryAdapter, PagedMovMemoryScope, PagedMovStepError,
+    PagedMovStepReport, PagedMovStoreScope, PagedStateOpStepReport, PagedStoreRefusal,
     locate_paged_atomic_operand, step_paged_hlt, step_paged_invlpg, step_paged_mov,
     step_paged_mov_2m_ram, step_paged_mov_cr0_wp, step_paged_mov_cr3_wp, step_paged_mov_dword_read,
     step_paged_mov_dword_store, step_paged_mov_word_read,

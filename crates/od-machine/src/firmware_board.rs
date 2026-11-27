@@ -1250,12 +1250,14 @@ pub(crate) struct LinuxSetRunReport {
     /// The system calls of this call (S4-39f, `with_user_mode`): `SYSCALL` entries and `SYSRETQ`
     /// returns, as a ring of the last entries. Empty for a set without the member.
     pub(crate) syscall_journal: crate::linux_direct::SyscallJournal,
-    /// `#PF` and `#GP(0)` exceptions delivered to the guest through its IDT in this call; a
-    /// delivery is not a retired instruction.
+    /// Exceptions delivered to the guest through its IDT in this call (S4-38L5c `#PF`, S4-38L9v
+    /// `#GP(0)`, since S7-32 slice Q every fault-class exception, counted once per handler entry
+    /// also when nested exceptions or `#DF` led to it); a delivery is not a retired instruction.
     pub(crate) exceptions_delivered: u64,
     /// Successfully delivered guest `#PF` exceptions in this call.
     pub(crate) page_faults_delivered: u64,
-    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    /// Successfully delivered guest `#GP` exceptions in this call (any error code since S7-32
+    /// slice Q).
     pub(crate) general_protection_faults_delivered: u64,
     /// Present only for a one-shot opt-in execution-observation run.
     pub(crate) execution_observations: Option<LinuxExecutionObservations>,
@@ -1401,7 +1403,13 @@ pub(crate) fn set_exit_to_probe_exit(
             })
         }
         PagedCpl0SetExit::PortIo(error) => PagedProbeExit::PortIo(error),
-        // S4-38L5c: the guest `#PF` stays the stop, as it was before delivery existed; the
+        // S7-32 slice Q: a triple fault is the shutdown of the CPU (Intel SDM Vol. 3A Table 7-5);
+        // the chain of nested exceptions is in the `Debug` text of the set exit (`detail`).
+        PagedCpl0SetExit::ExceptionDeliveryFailed {
+            failure: crate::PagedCpl0ExceptionFailure::TripleFault { .. },
+            ..
+        } => PagedProbeExit::Shutdown,
+        // S4-38L5c: the guest fault stays the stop, as it was before delivery existed; the
         // reason it was not delivered is in the `Debug` text of the set exit (`detail`).
         PagedCpl0SetExit::ExceptionDeliveryFailed { fault, .. } => PagedProbeExit::Fault(fault),
         // A stop of the board, not an exit of the CPU: `Stopped`, told apart by the report's

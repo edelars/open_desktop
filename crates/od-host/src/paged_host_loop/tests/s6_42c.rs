@@ -1496,6 +1496,47 @@ fn s6_42c_a_one_shot_timer_is_delivered_once() {
     drop(region);
 }
 
+/// S7-32 slice Q review: a triple fault of the native step (the native `#PF` of the load, gate 14
+/// not present: `#NP(14 * 8 + 3)` makes a double fault, gate 8 is zero: `#GP(8 * 8 + 3)` while
+/// delivering `#DF` is shutdown) ends the vCPU's call as the shutdown of the CPU
+/// (`HostQuantumExit::Shutdown`), not as an error of the run.
+#[test]
+fn s7_32q_a_native_triple_fault_is_the_shutdown_of_the_vcpu() {
+    let _guard = jit_guard();
+    let program = [mov_ebx(UNMAPPED as u32), vec![0x48, 0x8B, 0x03, 0xEB, 0xFB]].concat();
+    let region = SharedJitRegion::new(1, 4).unwrap();
+    let quantum = quantum_of(&region, 1);
+    let mut board = board(1);
+    let mut not_present = gate(HANDLER_PF);
+    not_present[5] &= !0x80;
+    put(&mut board, IDT_AT + 14 * 16, &not_present);
+    install(&mut board, 0, &program, CODE_0, STACK_TOP_0);
+    let (report, ()) = run_accounted_host_threads(
+        &mut board,
+        host_config(true),
+        &quantum.nmi_paging(),
+        &|call| quantum.run_accounted(call),
+        &|_| quantum.thread_exit(),
+        |control| {
+            assert!(control.wait_finished(WAIT), "the run does not end");
+            assert_eq!(cell(control, COUNTER_PF), 0);
+        },
+    )
+    .expect("the board runs");
+    assert_eq!(report.finished, HostParallelFinish::AllIdle, "{report:?}");
+    let state = board.state();
+    assert_eq!(state.activity, Some(CpuActivity::Shutdown));
+    assert_eq!(state.rip, CODE_0 + 5, "no handler entered: RIP on the load");
+    assert_eq!(state.cr2, Some(UNMAPPED), "CR2 of the #PF of the chain");
+    assert_eq!(quantum.last_failure(), None);
+    let stats = quantum.stats(0);
+    assert_eq!(
+        (stats.exceptions_delivered, stats.jit_faults_delivered),
+        (0, 0),
+        "{stats:?}"
+    );
+}
+
 /// A guest `#PF` of the native path (the walk of a `mov rax,[rbx]` the tables do not map) is
 /// delivered through the guest IDT: the native step retires nothing, the interpreter step takes the
 /// instruction again, raises the fault and delivers it; the handler repairs RBX and `IRETQ`

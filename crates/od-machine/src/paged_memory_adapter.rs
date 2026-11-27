@@ -47,11 +47,9 @@ use od_isa::memory::{
     MemoryError, PageFaultRecord, PrivilegeLevel,
 };
 use od_isa::{
-    Cpl0ExternalInterruptDelivery, Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal,
-    Cpl0GeneralProtectionDelivery, Cpl0GeneralProtectionPhase, Cpl0GeneralProtectionRefusal,
-    Cpl0PageFaultDelivery, Cpl0PageFaultDeliveryPhase, Cpl0PageFaultRefusal,
-    deliver_external_interrupt_cpl0_set, deliver_general_protection_cpl0_set, deliver_nmi_cpl0_set,
-    deliver_page_fault_cpl0_set,
+    Cpl0ExceptionDelivery, Cpl0ExceptionPhase, Cpl0ExceptionRefusal, Cpl0ExternalInterruptDelivery,
+    Cpl0ExternalInterruptPhase, Cpl0ExternalInterruptRefusal, CpuException, NestedException,
+    deliver_exception_cpl0_set, deliver_external_interrupt_cpl0_set, deliver_nmi_cpl0_set,
 };
 use od_isa::{IretqUserEntry, LongModeState};
 use std::rc::Rc;
@@ -918,10 +916,11 @@ pub(crate) enum PagedCpl0SetExit {
     /// The set reported an exit variant this board does not know (the exit enum
     /// is `#[non_exhaustive]`).
     UnknownSetExit,
-    /// A guest `#PF` (vector 14, S4-38L5c) or `#GP(0)` (vector 13, error code 0, S4-38L9v) could
-    /// not be delivered through the guest IDT (the IDT is loaded): the original fault is the
-    /// stop, `failure` says why delivery failed. Without a loaded IDT, and for every other fault
-    /// vector, the fault is a plain `Run(Fault)` as before.
+    /// A guest exception of the set (`Run(Fault)`: S4-38L5c `#PF`, S4-38L9v `#GP(0)`, since S7-32
+    /// slice Q every fault-class exception of Table 7-1) could not be delivered through the guest
+    /// IDT (the IDT is loaded): the original fault is the stop, `failure` says why. A triple fault
+    /// (`failure` = `TripleFault`) is the shutdown of the CPU, not a model stop. Without a loaded
+    /// IDT the fault is a plain `Run(Fault)` as before.
     ExceptionDeliveryFailed {
         fault: ArchitecturalFault,
         failure: PagedCpl0ExceptionFailure,
@@ -951,30 +950,140 @@ pub(crate) enum IrqDeliveryFailure {
     },
 }
 
-/// Why a guest `#PF` or `#GP(0)` did not enter its CPL0 handler.
+/// Why a guest exception did not enter its handler (S4-38L5c, S4-38L9v; S7-32 slice Q: every
+/// fault-class exception through [`od_isa::deliver_exception_cpl0_set`]).
 #[derive(Debug, Eq, PartialEq)]
 pub enum PagedCpl0ExceptionFailure {
-    /// The walker left no precise `PageFaultRecord` for the fault (integration error).
+    /// The walker left no precise `PageFaultRecord` for the `#PF` (integration error).
     NoPageFaultRecord,
-    /// The delivery was refused before any write (see `Cpl0PageFaultRefusal`).
-    Refused(Cpl0PageFaultRefusal),
-    /// A memory access of the delivery failed (a `#PF` there is a double fault, not modeled).
-    /// The CPU state is unchanged; frame words may have been stored below the old RSP.
+    /// The delivery of `vector` (the fault, or the last exception of `nested`) was refused: a form
+    /// outside the model. The CPU state is unchanged.
+    Refused {
+        vector: u8,
+        reason: Cpl0ExceptionRefusal,
+        nested: Vec<NestedException>,
+    },
+    /// A memory access of the delivery of `vector` failed with an error that is not an
+    /// architectural `#PF`. The CPU state is unchanged; frame words may have been stored below
+    /// the stack of the attempt.
     Aborted {
-        phase: Cpl0PageFaultDeliveryPhase,
+        vector: u8,
+        phase: Cpl0ExceptionPhase,
         cause: MemoryError,
+        nested: Vec<NestedException>,
     },
-    /// The `#GP(0)` delivery was refused before any write (S4-38L9v).
-    GeneralProtectionRefused(Cpl0GeneralProtectionRefusal),
-    /// A memory access of the `#GP(0)` delivery failed (S4-38L9v); the CPU state is unchanged.
-    GeneralProtectionAborted {
-        phase: Cpl0GeneralProtectionPhase,
-        cause: MemoryError,
-    },
+    /// S7-32 slice Q: a contributory exception or a page fault while delivering `#DF` (Intel SDM
+    /// Vol. 3A Table 7-5): the CPU entered shutdown (`activity = Shutdown`), `nested` is the chain
+    /// after the original fault. The board reports the stop as `PagedProbeExit::Shutdown`.
+    TripleFault { nested: Vec<NestedException> },
     /// [`MAX_DELIVERIES_WITHOUT_RETIREMENT`] deliveries in a row retired nothing: a fault
     /// that the handler chain does not resolve and that would otherwise never use up the
     /// instruction budget.
     RepeatLimit,
+}
+
+/// S7-32 slice Q: what [`deliver_guest_exception`] did with a fault of the set.
+enum GuestExceptionEntry {
+    /// The CPU entered the handler of `vector`. `page_fault`: a `#PF` was detected in the chain
+    /// (the fault itself or a nested one), so the translations it invalidates must go.
+    Delivered { vector: u8, page_fault: bool },
+    /// Not delivered: a model stop, or the triple fault (the CPU is in shutdown then).
+    Failed {
+        failure: PagedCpl0ExceptionFailure,
+        page_fault: bool,
+    },
+}
+
+/// S7-32 slice Q: deliver the fault the set raised for the instruction at `state.rip` (which did
+/// not retire) through the guest IDT, the one delivery of the set loop and of the host-native step.
+/// A `#PF` must come with the walker's record of that very fault (else `NoPageFaultRecord`) whose
+/// saved RIP is the instruction (else `Refused(FaultRipMismatch)`). Every fault-class vector of
+/// Table 7-1 is delivered ([`CpuException::fault`]); a failed check of the delivery raises the
+/// exception the CPU raises, and Table 7-5 decides between a serial delivery, `#DF` and shutdown
+/// ([`od_isa::deliver_exception_cpl0_set`]).
+fn deliver_guest_exception<'a>(
+    state: &mut LongModeState,
+    memory: &mut PagedMovMemoryAdapter<'a>,
+    gate: Option<&'a dyn crate::bus::SplitLockGate>,
+    fault: &ArchitecturalFault,
+    record: Option<&PageFaultRecord>,
+    context: AccessContext,
+) -> GuestExceptionEntry {
+    let refused = |reason| GuestExceptionEntry::Failed {
+        failure: PagedCpl0ExceptionFailure::Refused {
+            vector: fault.vector,
+            reason,
+            nested: Vec::new(),
+        },
+        page_fault: false,
+    };
+    if fault.vector == 14 {
+        match record {
+            Some(record) if record.fault() == fault => {
+                if record.saved_rip() != state.rip {
+                    return refused(Cpl0ExceptionRefusal::FaultRipMismatch);
+                }
+            }
+            _ => {
+                return GuestExceptionEntry::Failed {
+                    failure: PagedCpl0ExceptionFailure::NoPageFaultRecord,
+                    page_fault: false,
+                };
+            }
+        }
+    }
+    let exception = match CpuException::fault(fault) {
+        Ok(exception) => exception,
+        Err(reason) => return refused(reason),
+    };
+    let delivery = with_gated_cpl0_delivery(memory, gate, |memory| {
+        deliver_exception_cpl0_set(state, memory, exception, context)
+    })
+    .unwrap_or_else(|cause| Cpl0ExceptionDelivery::Aborted {
+        vector: fault.vector,
+        phase: Cpl0ExceptionPhase::IdtGateRead,
+        cause,
+        nested: Vec::new(),
+    });
+    let page_fault = |nested: &[NestedException]| {
+        fault.vector == 14 || nested.iter().any(|exception| exception.vector == 14)
+    };
+    match delivery {
+        Cpl0ExceptionDelivery::Delivered { vector, nested, .. } => GuestExceptionEntry::Delivered {
+            vector,
+            page_fault: page_fault(&nested),
+        },
+        Cpl0ExceptionDelivery::Shutdown { nested } => GuestExceptionEntry::Failed {
+            page_fault: page_fault(&nested),
+            failure: PagedCpl0ExceptionFailure::TripleFault { nested },
+        },
+        Cpl0ExceptionDelivery::Refused {
+            vector,
+            reason,
+            nested,
+        } => GuestExceptionEntry::Failed {
+            failure: PagedCpl0ExceptionFailure::Refused {
+                vector,
+                reason,
+                nested,
+            },
+            page_fault: false,
+        },
+        Cpl0ExceptionDelivery::Aborted {
+            vector,
+            phase,
+            cause,
+            nested,
+        } => GuestExceptionEntry::Failed {
+            failure: PagedCpl0ExceptionFailure::Aborted {
+                vector,
+                phase,
+                cause,
+                nested,
+            },
+            page_fault: false,
+        },
+    }
 }
 
 /// RFLAGS.RF (resume flag), bit 16.
@@ -2278,12 +2387,14 @@ pub(crate) struct PagedCpl0SetReport {
     /// The walker's EFER at the end of the call: the `efer` handed in, with `NXE` as a retired
     /// `WRMSR IA32_EFER` of this call left it (S2-25 NXE slice).
     pub(crate) efer: u64,
-    /// `#PF` and `#GP(0)` exceptions the loop delivered through the guest IDT. A delivery is not
-    /// a retired instruction: `instructions_executed` does not count it.
+    /// Exceptions the loop delivered through the guest IDT (S7-32 slice Q: every fault-class
+    /// exception, one per handler entry, also when nested exceptions or `#DF` led to it). A
+    /// delivery is not a retired instruction: `instructions_executed` does not count it.
     pub(crate) delivered_exceptions: u64,
     /// Successfully delivered guest `#PF` exceptions in this call.
     pub(crate) delivered_page_faults: u64,
-    /// Successfully delivered guest `#GP(0)` exceptions in this call.
+    /// Successfully delivered guest `#GP` exceptions in this call (any error code since S7-32
+    /// slice Q).
     pub(crate) delivered_general_protection_faults: u64,
     pub(crate) pit_written: bool,
     pub(crate) port_accessed: bool,
@@ -3595,186 +3706,138 @@ fn run_cpl0_set_loop_impl<
                     state.rflags &= !RFLAGS_RF;
                 }
             }
-            // S4-38L5c: a guest `#PF` goes through the guest IDT when one is loaded; without
-            // an IDT, and for every other vector, the fault stays the stop it was.
+            // S4-38L5c (#PF), S4-38L9v (#GP(0)), S7-32 slice Q (every fault-class exception of the
+            // set): a guest exception goes through the guest IDT when one is loaded; the instruction
+            // did not retire. Without an IDT the fault stays the stop it was.
             if let Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) = &done.exit
-                && fault.vector == 14
                 && state.idtr.is_some()
             {
-                let faulting_context = execution_observations.as_ref().map(|_| {
-                    let rbp = state.gpr[od_isa::Register::Rbp as usize];
-                    let (frame_chain, frame_chain_end) =
-                        memory.capture_fault_frame_chain(instruction_rip, rbp);
-                    FaultingPageFaultContext {
-                        cr3: reported_cr3,
-                        rsp: state.gpr[od_isa::Register::Rsp as usize],
-                        rbp,
-                        rcx: state.gpr[od_isa::Register::Rcx as usize],
-                        rsi: state.gpr[od_isa::Register::Rsi as usize],
-                        rdi: state.gpr[od_isa::Register::Rdi as usize],
-                        cs_selector: state.cs_selector,
-                        frame_chain,
-                        frame_chain_end,
-                        page_walk: memory.page_fault_trace.clone(),
-                    }
-                });
+                let faulting_context = execution_observations
+                    .as_ref()
+                    .filter(|_| fault.vector == 14)
+                    .map(|_| {
+                        let rbp = state.gpr[od_isa::Register::Rbp as usize];
+                        let (frame_chain, frame_chain_end) =
+                            memory.capture_fault_frame_chain(instruction_rip, rbp);
+                        FaultingPageFaultContext {
+                            cr3: reported_cr3,
+                            rsp: state.gpr[od_isa::Register::Rsp as usize],
+                            rbp,
+                            rcx: state.gpr[od_isa::Register::Rcx as usize],
+                            rsi: state.gpr[od_isa::Register::Rsi as usize],
+                            rdi: state.gpr[od_isa::Register::Rdi as usize],
+                            cs_selector: state.cs_selector,
+                            frame_chain,
+                            frame_chain_end,
+                            page_walk: memory.page_fault_trace.clone(),
+                        }
+                    });
                 let fault = fault.clone();
                 let original_record = memory.page_fault.clone();
-                let failure = if *deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
-                {
-                    Some(PagedCpl0ExceptionFailure::RepeatLimit)
+                let entry = if *deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT {
+                    GuestExceptionEntry::Failed {
+                        failure: PagedCpl0ExceptionFailure::RepeatLimit,
+                        page_fault: false,
+                    }
                 } else {
-                    match &original_record {
-                        Some(record) if record.fault() == &fault => {
-                            match with_gated_cpl0_delivery(&mut memory, split_gate, |memory| {
-                                deliver_page_fault_cpl0_set(state, memory, record, context)
-                            })
-                            .unwrap_or_else(|cause| {
-                                Cpl0PageFaultDelivery::Aborted {
-                                    phase: Cpl0PageFaultDeliveryPhase::IdtGateRead,
-                                    cause,
-                                }
-                            }) {
-                                Cpl0PageFaultDelivery::Delivered { .. } => None,
-                                Cpl0PageFaultDelivery::Refused(reason) => {
-                                    Some(PagedCpl0ExceptionFailure::Refused(reason))
-                                }
-                                Cpl0PageFaultDelivery::Aborted { phase, cause } => {
-                                    Some(PagedCpl0ExceptionFailure::Aborted { phase, cause })
-                                }
-                            }
-                        }
-                        _ => Some(PagedCpl0ExceptionFailure::NoPageFaultRecord),
-                    }
+                    deliver_guest_exception(
+                        state,
+                        &mut memory,
+                        split_gate,
+                        &fault,
+                        original_record.as_ref(),
+                        context,
+                    )
                 };
-                match failure {
-                    None => {
-                        // S4-14h: a delivered `#PF` invalidates the translations of its linear
-                        // address (SDM Vol. 3A, "Invalidation of TLBs and Paging-Structure Caches",
-                        // cited from memory, not checked against the primary source). Under
-                        // `GuestOnly` the whole cache is dropped, which is always allowed; the
-                        // handler may repair the page tables without `INVLPG`.
-                        if let Some(cache) = cache {
-                            if guest_only {
-                                cache.flush_after_page_fault();
-                            } else {
-                                cache.sweep_guest_page_fault();
-                            }
-                        }
-                        delivered_exceptions += 1;
-                        delivered_page_faults += 1;
-                        if let Some((observations, faulting_context)) =
-                            execution_observations.as_deref_mut().zip(faulting_context)
-                        {
-                            if pending_post_iret.is_some() {
-                                observations.note_nested_delivery();
-                            }
-                            observations.record_page_fault(DeliveredPageFaultObservation {
-                                rip: original_record
-                                    .as_ref()
-                                    .map_or(instruction_rip, |record| record.saved_rip()),
-                                cr2: original_record
-                                    .as_ref()
-                                    .map_or(fault.linear_address.unwrap_or(0), |record| {
-                                        record.cr2_value()
-                                    }),
-                                error_code: fault.error_code.unwrap_or_default(),
-                                access: original_record.as_ref().map_or_else(
-                                    || "unknown".to_string(),
-                                    |record| format!("{:?}", record.access()),
-                                ),
-                                cpl: u8::from(cpl3) * 3,
-                                faulting_context,
-                            });
-                        }
-                        *deliveries_without_retirement += 1;
-                        if let Some(recorder) = checkpoints.as_deref_mut() {
-                            recorder.note_page_fault_delivered();
-                            recorder.note_page_fault_detail(
-                                original_record
-                                    .as_ref()
-                                    .map_or(fault.linear_address.unwrap_or(0), |record| {
-                                        record.cr2_value()
-                                    }),
-                                fault.error_code.unwrap_or_default(),
-                            );
-                        }
-                        if yield_after_delivery {
-                            break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
-                        }
-                        continue;
-                    }
-                    Some(failure) => {
-                        // `memory.memory_error` is the walker's classification of an access
-                        // made by the DELIVERY (IDT/GDT read, frame store); the faulting
-                        // instruction itself raised an architectural `#PF`, never a
-                        // non-architectural one. `page_fault` is the original record.
-                        break (
-                            PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
-                            original_record,
-                            memory.memory_error,
-                        );
+                // S4-14h: a `#PF` of the chain invalidates the translations of its linear address
+                // (SDM Vol. 3A, "Invalidation of TLBs and Paging-Structure Caches", cited from
+                // memory, not checked against the primary source). Under `GuestOnly` the whole
+                // cache is dropped, which is always allowed; the handler may repair the page tables
+                // without `INVLPG`.
+                if let GuestExceptionEntry::Delivered {
+                    page_fault: true, ..
+                }
+                | GuestExceptionEntry::Failed {
+                    page_fault: true, ..
+                } = &entry
+                    && let Some(cache) = cache
+                {
+                    if guest_only {
+                        cache.flush_after_page_fault();
+                    } else {
+                        cache.sweep_guest_page_fault();
                     }
                 }
-            }
-            // S4-38L9v: a guest `#GP(0)` (an instruction of the set refused with vector 13 and
-            // code 0, for example `RDMSR` of an MSR the set does not model) goes through the
-            // guest IDT gate of vector 13 when an IDT is loaded; the instruction did not retire.
-            // Without an IDT, and for any other code, the fault stays the stop it was.
-            if let Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) = &done.exit
-                && fault.vector == 13
-                && fault.error_code == Some(0)
-                && state.idtr.is_some()
-            {
-                let fault = fault.clone();
-                let original_record = memory.page_fault.clone();
-                let failure = if *deliveries_without_retirement >= MAX_DELIVERIES_WITHOUT_RETIREMENT
-                {
-                    Some(PagedCpl0ExceptionFailure::RepeatLimit)
-                } else {
-                    match with_gated_cpl0_delivery(&mut memory, split_gate, |memory| {
-                        deliver_general_protection_cpl0_set(state, memory, &fault, context)
-                    })
-                    .unwrap_or_else(|cause| {
-                        Cpl0GeneralProtectionDelivery::Aborted {
-                            phase: Cpl0GeneralProtectionPhase::IdtGateRead,
-                            cause,
-                        }
-                    }) {
-                        Cpl0GeneralProtectionDelivery::Delivered { .. } => None,
-                        Cpl0GeneralProtectionDelivery::Refused(reason) => {
-                            Some(PagedCpl0ExceptionFailure::GeneralProtectionRefused(reason))
-                        }
-                        Cpl0GeneralProtectionDelivery::Aborted { phase, cause } => {
-                            Some(PagedCpl0ExceptionFailure::GeneralProtectionAborted {
-                                phase,
-                                cause,
-                            })
-                        }
-                    }
-                };
-                match failure {
-                    None => {
+                match entry {
+                    GuestExceptionEntry::Delivered { vector, .. } => {
                         delivered_exceptions += 1;
-                        delivered_general_protection_faults += 1;
-                        if ELF_COPY_ENABLED
-                            && let Some(observations) = execution_observations.as_deref_mut()
-                            && observations.tracks_elf_copy_counters()
-                        {
-                            observations.record_elf_copy_general_protection();
+                        // The `#PF` observations and checkpoint notes are those of a `#PF` of the
+                        // instruction that entered its own handler, as before S7-32 slice Q (a
+                        // `#PF` first and `#PF` delivered means no nested exception: Table 7-5 makes
+                        // a `#DF` of any second exception after a `#PF`).
+                        let plain_page_fault = vector == 14 && fault.vector == 14;
+                        if vector == 14 {
+                            delivered_page_faults += 1;
+                        }
+                        if vector == 13 {
+                            delivered_general_protection_faults += 1;
+                            if ELF_COPY_ENABLED
+                                && let Some(observations) = execution_observations.as_deref_mut()
+                                && observations.tracks_elf_copy_counters()
+                            {
+                                observations.record_elf_copy_general_protection();
+                            }
                         }
                         if pending_post_iret.is_some()
                             && let Some(observations) = execution_observations.as_deref_mut()
                         {
                             observations.note_nested_delivery();
                         }
+                        if plain_page_fault {
+                            if let Some((observations, faulting_context)) =
+                                execution_observations.as_deref_mut().zip(faulting_context)
+                            {
+                                observations.record_page_fault(DeliveredPageFaultObservation {
+                                    rip: original_record
+                                        .as_ref()
+                                        .map_or(instruction_rip, |record| record.saved_rip()),
+                                    cr2: original_record
+                                        .as_ref()
+                                        .map_or(fault.linear_address.unwrap_or(0), |record| {
+                                            record.cr2_value()
+                                        }),
+                                    error_code: fault.error_code.unwrap_or_default(),
+                                    access: original_record.as_ref().map_or_else(
+                                        || "unknown".to_string(),
+                                        |record| format!("{:?}", record.access()),
+                                    ),
+                                    cpl: u8::from(cpl3) * 3,
+                                    faulting_context,
+                                });
+                            }
+                            if let Some(recorder) = checkpoints.as_deref_mut() {
+                                recorder.note_page_fault_delivered();
+                                recorder.note_page_fault_detail(
+                                    original_record
+                                        .as_ref()
+                                        .map_or(fault.linear_address.unwrap_or(0), |record| {
+                                            record.cr2_value()
+                                        }),
+                                    fault.error_code.unwrap_or_default(),
+                                );
+                            }
+                        }
                         *deliveries_without_retirement += 1;
                         if yield_after_delivery {
                             break (PagedCpl0SetExit::Run(RunExit::StopRequested), None, None);
                         }
                         continue;
                     }
-                    Some(failure) => {
+                    GuestExceptionEntry::Failed { failure, .. } => {
+                        // `memory.memory_error` is the walker's classification of an access
+                        // made by the DELIVERY (IDT/GDT/TSS read, frame store); the faulting
+                        // instruction itself raised an architectural fault, never a
+                        // non-architectural one. `page_fault` is the original record.
                         break (
                             PagedCpl0SetExit::ExceptionDeliveryFailed { fault, failure },
                             original_record,
@@ -4684,33 +4747,24 @@ fn gate_acquisition_failure(cause: MemoryError) -> Cpl0ExternalInterruptDelivery
     }
 }
 
-/// Deliver a native instruction's already observed CPL0 fault without executing it again.
-/// As in the CPL0 set loop, only #PF with its walk record and #GP(0) enter the guest IDT.
-/// The caller holds exclusive guest RAM access. Running workers use their `HostSplitGate`.
-pub fn deliver_host_native_fault(
-    state: &mut LongModeState,
-    bus: &MachineBus,
-    paging: &Long64ProbeConfig,
-    context: AccessContext,
-    fault: &ArchitecturalFault,
-    page_fault: Option<&PageFaultRecord>,
-    consecutive: u64,
-    committed_write: impl FnMut(GuestPhysicalRange),
-) -> bool {
-    deliver_host_native_fault_gated(
-        state,
-        bus,
-        paging,
-        context,
-        fault,
-        page_fault,
-        consecutive,
-        None,
-        committed_write,
-    )
-    .unwrap_or(false)
+/// S7-32 slice Q: what [`deliver_host_native_fault_gated`] did with a native fault.
+#[derive(Debug, Eq, PartialEq)]
+pub enum NativeFaultDelivery {
+    /// The CPU entered the handler (also after nested exceptions or `#DF`).
+    Delivered,
+    /// Not delivered and nothing changed: the fault is the caller's stop (no IDT, the repeat limit,
+    /// a model refusal, or without a gate an aborted access).
+    NotDelivered,
+    /// A triple fault: the CPU entered shutdown (`activity = Shutdown`, CR2 of the last `#PF` of the
+    /// chain), the native counterpart of the set step's `PagedProbeExit::Shutdown`.
+    Shutdown,
 }
 
+/// Deliver a native instruction's already observed fault without executing it again, through the
+/// one delivery of the CPL0 set loop (S7-32 slice Q: every fault-class exception, nested
+/// exceptions, `#DF` and shutdown; a `#PF` needs its walk record). Without a gate the caller holds
+/// exclusive guest RAM access; running workers pass their `HostSplitGate`. `Err`: with a gate, an
+/// aborted access of the delivery (the CPU state is unchanged).
 pub(crate) fn deliver_host_native_fault_gated(
     state: &mut LongModeState,
     bus: &MachineBus,
@@ -4721,9 +4775,9 @@ pub(crate) fn deliver_host_native_fault_gated(
     consecutive: u64,
     gate: Option<&dyn crate::bus::SplitLockGate>,
     mut committed_write: impl FnMut(GuestPhysicalRange),
-) -> Result<bool, PagedCpl0ExceptionFailure> {
+) -> Result<NativeFaultDelivery, PagedCpl0ExceptionFailure> {
     if state.idtr.is_none() || consecutive >= MAX_DELIVERIES_WITHOUT_RETIREMENT {
-        return Ok(false);
+        return Ok(NativeFaultDelivery::NotDelivered);
     }
     let mut memory = set_loop_adapter(
         bus.physical_memory(),
@@ -4734,43 +4788,17 @@ pub(crate) fn deliver_host_native_fault_gated(
         None,
         None,
     );
-    match (fault.vector, fault.error_code) {
-        (14, _) => {
-            let Some(record) = page_fault.filter(|record| record.fault() == fault) else {
-                return Ok(false);
-            };
-            let delivery = with_gated_cpl0_delivery(&mut memory, gate, |memory| {
-                deliver_page_fault_cpl0_set(state, memory, record, context)
-            })
-            .unwrap_or_else(|cause| Cpl0PageFaultDelivery::Aborted {
-                phase: Cpl0PageFaultDeliveryPhase::IdtGateRead,
-                cause,
-            });
-            match delivery {
-                Cpl0PageFaultDelivery::Delivered { .. } => Ok(true),
-                Cpl0PageFaultDelivery::Aborted { phase, cause } if gate.is_some() => {
-                    Err(PagedCpl0ExceptionFailure::Aborted { phase, cause })
-                }
-                _ => Ok(false),
-            }
-        }
-        (13, Some(0)) => {
-            let delivery = with_gated_cpl0_delivery(&mut memory, gate, |memory| {
-                deliver_general_protection_cpl0_set(state, memory, fault, context)
-            })
-            .unwrap_or_else(|cause| Cpl0GeneralProtectionDelivery::Aborted {
-                phase: Cpl0GeneralProtectionPhase::IdtGateRead,
-                cause,
-            });
-            match delivery {
-                Cpl0GeneralProtectionDelivery::Delivered { .. } => Ok(true),
-                Cpl0GeneralProtectionDelivery::Aborted { phase, cause } if gate.is_some() => {
-                    Err(PagedCpl0ExceptionFailure::GeneralProtectionAborted { phase, cause })
-                }
-                _ => Ok(false),
-            }
-        }
-        _ => Ok(false),
+    match deliver_guest_exception(state, &mut memory, gate, fault, page_fault, context) {
+        GuestExceptionEntry::Delivered { .. } => Ok(NativeFaultDelivery::Delivered),
+        GuestExceptionEntry::Failed {
+            failure: PagedCpl0ExceptionFailure::TripleFault { .. },
+            ..
+        } => Ok(NativeFaultDelivery::Shutdown),
+        GuestExceptionEntry::Failed {
+            failure: failure @ PagedCpl0ExceptionFailure::Aborted { .. },
+            ..
+        } if gate.is_some() => Err(failure),
+        GuestExceptionEntry::Failed { .. } => Ok(NativeFaultDelivery::NotDelivered),
     }
 }
 

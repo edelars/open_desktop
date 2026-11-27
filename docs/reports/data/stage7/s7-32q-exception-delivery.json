@@ -1,0 +1,146 @@
+{
+ "task": "S7-32 slice Q: architectural delivery of every exception of the CPL0 set (Intel SDM 325462-093US Vol. 3A ch. 7), ISSUE-705",
+ "base_commit": "311a035",
+ "build": "CARGO_TARGET_DIR=work/s7-32/q/target cargo build --release -p od-runner (copied to work/s7-32/q/bin/od-runner-q)",
+ "od_runner_sha256": "67dfbfd51c34fd32db71d7b6f7b5f6eaf7403a30c6b8fb44ceead55cda587ba9",
+ "windows": {
+  "command": "D=work/s7-32/q/q1 BIN=work/s7-32/q/bin/od-runner-q DEVICE_ERRORS=log sh work/s7-32/o/wrun.sh (q2: DEVICE_ERRORS=stop)",
+  "rom_sha256": "5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665",
+  "q1_log": {
+   "exit": "unsupported",
+   "exit_detail": "Unsupported { opcode: 34 }",
+   "retired": 16677404797,
+   "seconds": 27,
+   "rip": "0xfffff805b20185ff",
+   "module": "ntkrnlmp.pdb",
+   "module_base": "0xfffff805b1400000",
+   "rva": "0xc185ff",
+   "rip_bytes": "0f22c0eb1f488bbc24300100000fbaaf",
+   "cr0": "0x0000000080050033",
+   "rax": "0x0000000080040033",
+   "rcx": "0x0000000080050033",
+   "exceptions_delivered": 2769,
+   "page_faults_delivered": 2643,
+   "irqs_delivered": 641,
+   "halt_wakes": 0,
+   "kibugcheckdata_zero": true,
+   "com1_sha256": "50aa1d266816daf4d0c23aef1c6554dc6f7670d24031081174de4b3f1ef0b34a",
+   "framebuffer_sha256": "1d1ce7607b1db6d4361bc70c2db58b0d546daf65f7c1114ad44e59f8b47e3217",
+   "device_error_events": 0,
+   "device_error_groups": 0
+  },
+  "q2_stop": {
+   "exit": "unsupported",
+   "exit_detail": "Unsupported { opcode: 34 }",
+   "retired": 16677356779,
+   "seconds": 27,
+   "rip": "0xfffff805b02185ff",
+   "module": "ntkrnlmp.pdb",
+   "module_base": "0xfffff805af600000",
+   "rva": "0xc185ff",
+   "rip_bytes": "0f22c0eb1f488bbc24300100000fbaaf",
+   "cr0": "0x0000000080050033",
+   "rax": "0x0000000080040033",
+   "rcx": "0x0000000080050033",
+   "exceptions_delivered": 2777,
+   "page_faults_delivered": 2651,
+   "irqs_delivered": 647,
+   "halt_wakes": 0,
+   "kibugcheckdata_zero": true,
+   "com1_sha256": "50aa1d266816daf4d0c23aef1c6554dc6f7670d24031081174de4b3f1ef0b34a",
+   "framebuffer_sha256": "1d1ce7607b1db6d4361bc70c2db58b0d546daf65f7c1114ad44e59f8b47e3217"
+  },
+  "previous_stop": {
+   "issue": "ISSUE-705",
+   "retired": 16664379920,
+   "exceptions_delivered": 2768
+  },
+  "next_issue": "ISSUE-709"
+ },
+ "linux_stage4a_apic": {
+  "recipe": "work/stage6/s6-21-seeded-ioapic/run.sh arguments with --cpuid-profile stage4a-apic --seed 24301, --vcpus 1, budget 2500000000, runner od-runner-q",
+  "seconds": 1296,
+  "stop": {
+   "exit_kind": "budget_exhausted",
+   "retired": 2499983194,
+   "cpl3_retired": 11286,
+   "halt_wakes": 16806,
+   "irq0_edges": 228,
+   "irqs_delivered": 18072,
+   "quanta": 21002025,
+   "virtual_ns": 1699934364214,
+   "rip": "0xffffffff82379d7e",
+   "exceptions_delivered": 35,
+   "page_faults_delivered": 34,
+   "general_protection_faults_delivered": 1
+  },
+  "com1_sha256": "0ca15a89e90d2724c5f2515ad072d697e3628f32cd370158250a9b0fec6764a6",
+  "stop_record_equal_to_slice_m": true,
+  "verifier": "build_stage6_smp_initramfs.py --verify-report --nonce SMPUpObservation20261119 --expect-online 1: exit 0"
+ },
+ "tests": {
+  "before_review": {
+   "od_isa": {
+    "passed": 7139,
+    "binaries": 53
+   },
+   "od_machine_lib": {
+    "passed": 2717,
+    "ignored": 18
+   },
+   "od_runner": {
+    "passed": 1118,
+    "ignored": 5
+   },
+   "cargo_check_workspace_all_targets": "ok",
+   "cargo_fmt_all_check": "ok",
+   "firmware_boot_smoke": "exit 0"
+  },
+  "after_review": {
+   "od_isa": {
+    "passed": 7140,
+    "binaries": 53,
+    "s7_32_exception_delivery": 12,
+    "cpl0_profile_set": 1682
+   },
+   "od_machine_lib": {
+    "passed": 2720,
+    "ignored": 18
+   },
+   "od_host_lib_paged_host_loop": {
+    "passed": 93,
+    "ignored": 1
+   },
+   "od_runner": {
+    "passed": 1118,
+    "ignored": 5
+   },
+   "cargo_check_workspace_all_targets": "ok",
+   "cargo_fmt_all_check": "ok"
+  }
+ },
+ "mutations": {
+  "slice": {
+   "injected": 16,
+   "caught": 16,
+   "note": "the board cache-drop mutation was caught after adding guest_only_a_nested_page_fault_drops_the_cache_too"
+  },
+  "review": {
+   "injected": 9,
+   "caught": 9,
+   "note": "the #PF observation rule was caught after the checkpoint recorder assertion was added"
+  }
+ },
+ "review": {
+  "first": {
+   "reviewer": "Claude Opus, high",
+   "verdict": "rework",
+   "findings": "medium: a native-step triple fault ended an SMP native-JIT run as a model error; minor: stack-before-RIP order at CPL0 without IST, DPL/P and S-bit order untested, FaultRipMismatch untested, saved RIP precondition, cache drop and #PF observation rule untested, weak store check, ISSUE-709 wording, contract notes; all fixed"
+  },
+  "second": {
+   "verdict": "accept",
+   "note": "differential probe on 324 deliveries: the previous #PF/#GP(0) deliveries match byte for byte"
+  }
+ },
+ "windows_and_linux_after_review": "not repeated: the rework does not change the path of a successful delivery nor the Linux path"
+}

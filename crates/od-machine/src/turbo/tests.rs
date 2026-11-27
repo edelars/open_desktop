@@ -3408,6 +3408,106 @@ fn sse_access_edges_match_the_general_step() {
     }
 }
 
+/// S7-32 slice Q: an exception of the set (`#DE` of `IDIV`/`DIV`, `#UD`, `#GP`, `#PF`) leaves the
+/// generated code before the instruction (`Slow`) and the general step raises and delivers it; the
+/// turbo run and the general step agree, with a handler that halts and with one that moves the
+/// saved RIP past the instruction and returns (`ADD QWORD [RSP], n; IRETQ`), so that the code after
+/// the fault runs again in generated code.
+#[test]
+fn exceptions_after_generated_code_match_the_general_step() {
+    let mut cases: Vec<(&str, u8, u8, bool, Vec<u8>)> = Vec::new();
+    let mut add = |name: &'static str,
+                   vector: u8,
+                   fault: &[u8],
+                   error_code: bool,
+                   setup: &dyn Fn(&mut Asm)| {
+        let mut asm = Asm::new(CODE);
+        // Translated work before the fault.
+        for reg in [RSI, RDI, R10] {
+            asm.raw(&filler(reg));
+        }
+        setup(&mut asm);
+        asm.raw(fault);
+        asm.raw(&filler(R11));
+        asm.hlt();
+        cases.push((name, vector, fault.len() as u8, error_code, asm.bytes));
+    };
+    // mov eax, 0x80000000; cdq; mov r8d, -1 | idiv r8d (the Windows ISSUE-705 shape).
+    add("idiv overflow", 0, &[0x41, 0xF7, 0xF8], false, &|asm| {
+        asm.mov_imm32(RAX, 0x8000_0000);
+        asm.raw(&[0x99]);
+        asm.mov_imm32(R8, 0xFFFF_FFFF);
+    });
+    // xor ecx, ecx | div rcx.
+    add("div by zero", 0, &[0x48, 0xF7, 0xF1], false, &|asm| {
+        asm.raw(&[0x31, 0xC9])
+    });
+    // mov rdx, 1; mov ecx, 1 | div rcx (quotient 2^64: #DE).
+    add(
+        "div quotient overflow",
+        0,
+        &[0x48, 0xF7, 0xF1],
+        false,
+        &|asm| {
+            asm.mov_imm(RDX, 1);
+            asm.mov_imm32(RCX, 1);
+        },
+    );
+    // ud2.
+    add("ud2", 6, &[0x0F, 0x0B], false, &|_| {});
+    // mov rdi, non-canonical | mov rax, [rdi] (#GP(0)).
+    add(
+        "non-canonical load",
+        13,
+        &[0x48, 0x8B, 0x07],
+        true,
+        &|asm| asm.mov_imm(RDI, 0x0000_8000_0000_0000),
+    );
+    // mov rdi, unmapped | mov [rdi], rax (#PF).
+    add("unmapped store", 14, &[0x48, 0x89, 0x07], true, &|asm| {
+        asm.mov_imm(RDI, UNMAPPED + 0x18)
+    });
+    for (name, vector, length, error_code, program) in &cases {
+        for resume in [false, true] {
+            let prepare = |machine: &mut Machine| {
+                machine.code(CODE, program);
+                randomize(machine, &mut Rng::new(31));
+                machine.idt();
+                if resume {
+                    let mut handler = Vec::new();
+                    if *error_code {
+                        handler.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // ADD RSP, 8
+                    }
+                    handler.extend_from_slice(&[0x48, 0x83, 0x04, 0x24, *length, 0x48, 0xCF]);
+                    let at = HANDLER + 0x100 * u64::from(*vector + 1);
+                    put(&machine.bus, at, &handler);
+                    let mut gate = [0u8; 16];
+                    gate[0..2].copy_from_slice(&(at as u16).to_le_bytes());
+                    gate[2..4].copy_from_slice(&0x08u16.to_le_bytes());
+                    gate[5] = 0x8E;
+                    gate[6..8].copy_from_slice(&((at >> 16) as u16).to_le_bytes());
+                    put(&machine.bus, IDT + u64::from(*vector) * 16, &gate);
+                }
+            };
+            let outcome = Case::new(format!("exception: {name}, resume {resume}"), 31, &prepare)
+                .program(program)
+                .check();
+            assert_eq!(outcome.report.delivered.0, 1, "{name}: one delivery");
+            assert_eq!(
+                outcome.report.delivered.1,
+                u64::from(*vector == 14),
+                "{name}: the #PF count"
+            );
+            assert_eq!(outcome.report.exit, "Run(Halted)", "{name}");
+            assert!(
+                outcome.stats.retired > 0,
+                "{name}: generated code ran {:?}",
+                outcome.stats
+            );
+        }
+    }
+}
+
 // ---- random sequences ----------------------------------------------------------------------------
 
 /// Random straight-line sequences of 20 to 60 templates at a random offset of the first code page

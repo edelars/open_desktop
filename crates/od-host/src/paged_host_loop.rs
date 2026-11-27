@@ -54,7 +54,7 @@
 //!
 //! [`run_paged_host_loop_shared_set`] is the same loop with a [`PagedHostSetEnv`]: the interpreter
 //! step is one instruction of the CPL0 profile set (`od_machine::run_host_set_step`: the profile of
-//! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, `#PF` and `#GP(0)` delivered through
+//! the Linux board's CPL0 quantum, `IRETQ`, `STI`, `LOCK` forms, guest exceptions delivered through
 //! the guest IDT, the split `LOCK` behind the gate of the run) and, before every step, the loop
 //! asks the board source on the BSP and the Local APIC source. A delivery retires nothing and is
 //! followed by the next iteration's checks. The loop delivers
@@ -634,11 +634,22 @@ fn deliver_native_fault(
                 failure,
             }
         })?;
-    if delivered {
-        report.exceptions_delivered += 1;
-        report.jit_faults_delivered += 1;
+    match delivered {
+        od_machine::NativeFaultDelivery::Delivered => {
+            report.exceptions_delivered += 1;
+            report.jit_faults_delivered += 1;
+            Ok(true)
+        }
+        od_machine::NativeFaultDelivery::NotDelivered => Ok(false),
+        // S7-32 slice Q: a triple fault of the native step ends the call like the set step's: the
+        // interpreter exit `Shutdown` (the vCPU's activity is `Shutdown` already).
+        od_machine::NativeFaultDelivery::Shutdown => {
+            report.page_fault = page_fault.cloned();
+            Err(PagedHostLoopExit::Interpreter(
+                od_machine::PagedProbeExit::Shutdown,
+            ))
+        }
     }
-    Ok(delivered)
 }
 
 /// True when the loop must return to its instruction boundary. A pre-entry
