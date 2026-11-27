@@ -1612,6 +1612,10 @@ pub struct LoadedFirmwareBoard {
     fetch_cache_sweep_configs: Option<Vec<SweepConfig>>,
     /// S4-13d: what one entry of the CPL0-set loop's fetch cache covers; 4 KiB unless asked.
     fetch_cache_tag: FetchCacheTag,
+    /// S7-32 slice R (`--cr0-log`): the journal of `MOV CR0` of the unified loop; it lives as
+    /// long as the board and keeps adding the runs of the board; `None` unless
+    /// [`Self::enable_cr0_journal`] was called.
+    cr0_journal: Option<std::sync::Arc<crate::cr0_journal::Cr0Journal>>,
     /// The turbo engine (template JIT) of the unified loop, created by [`Self::enable_turbo`] (the
     /// unified run calls it) on a host that supports it. It lives between quanta and is reset by
     /// `platform_reset`, `restart_vcpus` and a snapshot restore. `None`: every instruction runs
@@ -2839,6 +2843,20 @@ impl LoadedFirmwareBoard {
     /// The statistics of the turbo engine as text (`None` without an engine).
     pub fn turbo_report(&self) -> Option<String> {
         self.turbo.as_ref().map(|engine| engine.report())
+    }
+
+    /// S7-32 slice R: the unified loop journals the instructions that changed CR0 and the failed
+    /// attempts of `MOV CR0` (the first `limit` of them and the count of all; see
+    /// [`crate::Cr0Journal`]). A diagnostic: it changes no guest-visible result.
+    pub fn enable_cr0_journal(&mut self, limit: usize) {
+        self.cr0_journal = Some(std::sync::Arc::new(crate::cr0_journal::Cr0Journal::new(
+            limit,
+        )));
+    }
+
+    /// The journal of [`Self::enable_cr0_journal`], if enabled.
+    pub fn cr0_journal(&self) -> Option<&crate::cr0_journal::Cr0Journal> {
+        self.cr0_journal.as_deref()
     }
 
     /// S7-32: the turbo engine profiles its slow exits (forms, reasons, CPL, the host time after
@@ -4139,6 +4157,12 @@ impl LoadedFirmwareBoard {
             if let Some(log) = &device_error_log {
                 log.set_retired_base(retired);
             }
+            // S7-32 slice R (`--cr0-log`): the same bases for the journal of `MOV CR0`.
+            let cr0_journal = board.cr0_journal.clone();
+            if let Some(journal) = &cr0_journal {
+                journal.set_retired_base(retired);
+                journal.set_exceptions_base(exceptions_delivered);
+            }
             let report = if turbo_quantum {
                 // The merged transition skips the services between quanta: only for a board
                 // whose devices have no work of their own in virtual time (xHCI port resets, NIC
@@ -4196,6 +4220,9 @@ impl LoadedFirmwareBoard {
                         remaining -= n;
                         if let Some(log) = &device_error_log {
                             log.set_retired_base(retired);
+                        }
+                        if let Some(journal) = &cr0_journal {
+                            journal.set_retired_base(retired);
                         }
                         let now = now_cell.get() + n + RDTSC_TICK_NS;
                         now_cell.set(now);
@@ -4270,6 +4297,7 @@ impl LoadedFirmwareBoard {
                             tick: rdtsc_tick.as_deref(),
                             fast_quantum: Some(&mut fast),
                         },
+                        cr0_journal.as_deref(),
                     )
                 };
                 shortened = shortened_cell.get();
@@ -4308,6 +4336,7 @@ impl LoadedFirmwareBoard {
                     execution_observations.as_mut(),
                     fetch_sweep.as_ref(),
                     board.fetch_cache_tag,
+                    cr0_journal.as_deref(),
                 )
             };
             quanta += 1;
@@ -5500,6 +5529,7 @@ impl AssembledBoard {
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
+            cr0_journal: None,
             turbo: None,
             turbo_disabled: false,
             fetch_cache_sweep_report: None,
@@ -5597,6 +5627,7 @@ impl AssembledBoard {
             fetch_cache_report: None,
             fetch_cache_sweep_configs: None,
             fetch_cache_tag: FetchCacheTag::Page4K,
+            cr0_journal: None,
             turbo: None,
             turbo_disabled: false,
             fetch_cache_sweep_report: None,

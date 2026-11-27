@@ -23503,6 +23503,41 @@ shutdown в обработчике NMI не записывается.
 сломан так же, нулевой) × CPL0/CPL3 — serial, `#DF` и shutdown против модели; кадр поперёк страницы; классические
 цепочки вручную; пары поломок в порядке псевдокода (стек раньше RIP обработчика, DPL раньше P дескриптора, бит S и тип раньше P шлюза); сверка записей (без вложенных исключений — ровно слова кадра и бит Accessed); отказы модели без записи; backend-ошибки; форма `#DE` Windows.
 
+### CR0.WP в политике набора CPL0 (S7-32, срез R)
+
+**Основание.** [ISSUE-709](../KNOWN_ISSUES.md#issue-709): ядро Windows (`ntkrnlmp` + `0xc185ff`, секция INIT) на
+IRQL 15 снимает CR0.WP (`btr rax, 16; mov cr0, rax`, RAX = `0x80040033`) и тут же возвращает сохранённое значение
+(`+0xc1862b`, `mov cr0, rcx`); там же проба `+0xc17394` снимает WP, пишет `ret` во второй байт функции в коде только
+для чтения, вызывает её и ждёт EAX = 0, а проверки PatchGuard (`.text` `+0x50a090` и копии) в таком окне пишут PTE,
+копируют данные в страницы только для чтения и пишут `ret` в код. Политика `Cpl0BaseLong64V1` допускала только CR0 с WP:
+запись без WP была `Unsupported { opcode: 0x22 }`. Разбор окон — `work/s7-32/r/plan-r.md`, раздел 2.
+
+**Что изменено.** `ControlRegisterPolicy::accepts_cr0` (`execute.rs`) принимает CR0 с WP = 0 и WP = 1: предикат
+`FpInitLong64V1` берётся от `(value | CR0_WP) & !(AM | CD | NW)`. Все исполнители `MOV CR0` набора (`WriteCr0` —
+`0F 22 C0`, `WriteControl { cr: 0 }` — `[REX] 0F 22 /0` с любым GPR, `WriteCr0Rdi` — `0F 22 C7` с FP-членом) и допуск
+состояния (`admits_state`, вход `Cr0OutsidePolicy`) идут через этот предикат; декодер не менялся. PE, PG, CR0[63:32] и
+зарезервированные биты остаются вне политики (`Unsupported`), NW без CD — `#GP(0)`, как раньше. Набор WP только хранит:
+права записи по WP применяет обходчик платы (MACHINE_CONTRACT, «S7-32, срез R»). CPUID-признака у WP нет.
+
+**SDM 325462-093US.** Vol. 3A §2.5 (CR0.WP: «when clear, allows supervisor-level procedures to write into read-only
+pages»; WP «cannot be cleared as long as CR4.CET = 1»), §5.6.1 (права записи супервизора), Vol. 2B «MOV—Move to/from
+Control Registers» (снятие WP не входит в исключения 64-битного режима). Политика CR4 не допускает CET; это закреплено
+проверкой при компиляции рядом с `CR0_WP` (`accepts_cr4(BASE | CR4_CET)` ложно): допуск CET сломает сборку и потребует
+`#GP(0)` при снятии WP с CR4.CET = 1.
+
+**Тесты** (`crates/od-isa/tests/cpl0_profile_set.rs`): `s7_32_slice_r_cr0_wp_is_cleared_and_restored_by_every_mov_cr0_form`
+(RAX, RCX, R14; с AM/CD и без; состояние, RIP, неопределённость флагов, без обращений к памяти);
+`s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside`;
+`s7_32_slice_r_the_windows_wp_window_clears_and_restores_cr0_and_cr8` (окно `+0xc185d8…+0xc18635` байт в байт с членом
+CR8: после девяти инструкций CR0 без WP и IRQL 15, после шестнадцати — CR0 и CR8 восстановлены, слоты стека ядра
+записаны). Форма RDI — в `mov_cr0_rdi_follows_the_set_policy_...`. Ожидания трёх прежних тестов изменены только в пунктах
+WP (`cr0_write_outside_policy_is_unsupported_without_mutation`, `cr0_am_does_not_widen_the_policy_to_other_bits`,
+`mov_cr0_rdi_follows_the_set_policy_...`).
+
+**Замечание.** Точная форма `0F 22 C7` (`WriteCr0Rdi`) исполняется только с FP-членом (S4-38L9d); без него она
+`Unsupported`, хотя `WriteControl` исполняет `mov cr0, r64` с любым другим GPR. На плате Windows FP-член есть; срез это не
+менял.
+
 ### MOV r64, CR2 в любой регистр общего назначения на CPL0 в наборе (S4-38L5d)
 
 После доставки #PF (L5c) настоящее ядро доходит до `MOV RBX, CR2` (`0F 20 D3`, `0x543_c35e`); L5a знал только

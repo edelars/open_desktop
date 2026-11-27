@@ -2619,6 +2619,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed(
         execution_observations,
         None,
         FetchCacheTag::Page4K,
+        None,
     )
 }
 
@@ -2650,6 +2651,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
     execution_observations: Option<&mut LinuxExecutionObservationCollector>,
     sweep: Option<&Rc<FetchCacheSweep>>,
     tag: FetchCacheTag,
+    cr0_journal: Option<&crate::cr0_journal::Cr0Journal>,
 ) -> PagedCpl0SetReport {
     // S4-13: the translation cache of the instruction fetch lives in this call only.
     let cache = fetch_cache.map(|invalidation| {
@@ -2681,6 +2683,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_observed_with_sweep(
         ExceptionDeliveryMode::Quantum,
         false,
         None,
+        cr0_journal,
     )
 }
 
@@ -2702,6 +2705,7 @@ pub(crate) fn run_cpl0_set_paged_turbo(
     committed_write: impl FnMut(GuestPhysicalRange),
     irq: Option<IrqBoundaryHook<'_>>,
     turbo: crate::turbo::TurboHook<'_>,
+    cr0_journal: Option<&crate::cr0_journal::Cr0Journal>,
 ) -> PagedCpl0SetReport {
     run_cpl0_set_loop_impl::<false, false, false>(
         state,
@@ -2726,6 +2730,7 @@ pub(crate) fn run_cpl0_set_paged_turbo(
         false,
         None,
         Some(turbo),
+        cr0_journal,
     )
 }
 
@@ -2785,6 +2790,7 @@ pub(crate) fn run_cpl0_set_paged_2m_ram_with_cache(
         execution_observations,
         ExceptionDeliveryMode::Quantum,
         false,
+        None,
         None,
     )
 }
@@ -2867,6 +2873,7 @@ pub(crate) fn run_cpl0_set_loop(
     exception_delivery: ExceptionDeliveryMode<'_>,
     stop_after_mmio: bool,
     on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
+    cr0_journal: Option<&crate::cr0_journal::Cr0Journal>,
 ) -> PagedCpl0SetReport {
     let trace = execution_observations
         .as_deref()
@@ -2910,6 +2917,7 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             None,
+            cr0_journal,
         );
     }
     match (trace, elf) {
@@ -2936,6 +2944,7 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             None,
+            cr0_journal,
         ),
         (true, false) => run_cpl0_set_loop_impl::<true, false, false>(
             state,
@@ -2960,6 +2969,7 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             None,
+            cr0_journal,
         ),
         (false, true) => run_cpl0_set_loop_impl::<false, true, false>(
             state,
@@ -2984,6 +2994,7 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             None,
+            cr0_journal,
         ),
         (false, false) => run_cpl0_set_loop_impl::<false, false, false>(
             state,
@@ -3008,6 +3019,7 @@ pub(crate) fn run_cpl0_set_loop(
             stop_after_mmio,
             on_syscall,
             None,
+            cr0_journal,
         ),
     }
 }
@@ -3040,6 +3052,7 @@ fn run_cpl0_set_loop_impl<
     stop_after_mmio: bool,
     mut on_syscall: Option<&mut dyn FnMut(SyscallEvent)>,
     turbo: Option<crate::turbo::TurboHook<'_>>,
+    cr0_journal: Option<&crate::cr0_journal::Cr0Journal>,
 ) -> PagedCpl0SetReport {
     // S7-32: a set with the CR8 member keeps CR8 in a cell the board binds to the LAPIC TPR at
     // the boundaries of this loop; without the binding the TPR would never see a CR8 write.
@@ -3144,6 +3157,13 @@ fn run_cpl0_set_loop_impl<
     let mut port_accessed = false;
     let mut mmio_written = false;
     let (exit, page_fault, memory_error) = loop {
+        // S7-32 slice R: the walker snapshot follows CR0 at every instruction boundary (rebuilt
+        // after a step that changed it, below); nothing else in the loop writes CR0.
+        debug_assert_eq!(
+            state.cr0,
+            Some(paging.cr0()),
+            "the walker snapshot holds the CR0 of the boundary"
+        );
         let stopped = stop();
         if stopped || (stop_after_mmio && mmio_written) {
             // The turbo engine: a quantum ended by the RDTSC tick alone goes on here, after
@@ -3678,6 +3698,39 @@ fn run_cpl0_set_loop_impl<
         mmio_written |= io.mmio_written();
         pit_write_pending |= pit_write_ends_quantum && port.pit_written;
         if let Ok(done) = &result {
+            // S7-32 slice R (`--cr0-log`): a `MOV CR0` that did not retire. Only with the journal:
+            // the instruction is decoded again read-only (no accessed bit, no cache) from the
+            // walker snapshot, on the path of a fault or a refusal only.
+            if let Some(journal) = cr0_journal
+                && done.instructions_executed == 0
+                && let Some(outcome) = match &done.exit {
+                    Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) => {
+                        Some(crate::cr0_journal::Cr0WriteOutcome::Fault {
+                            vector: fault.vector,
+                            error_code: fault.error_code,
+                        })
+                    }
+                    Cpl0ProfileSetExit::Run(RunExit::Unsupported { opcode }) => {
+                        Some(crate::cr0_journal::Cr0WriteOutcome::Unsupported { opcode: *opcode })
+                    }
+                    _ => None,
+                }
+                && histogram_decode(instruction_rip, ram, &paging, context).is_some_and(
+                    |instruction| crate::cr0_journal::writes_cr0(&instruction.operation),
+                )
+            {
+                journal.record(cr0_journal_entry(
+                    journal,
+                    state,
+                    instruction_rip,
+                    cpl3,
+                    paging.cr0(),
+                    outcome,
+                    instructions_executed - quantum_base,
+                    delivered_exceptions,
+                    irq.as_ref().map_or(0, |hook| hook.counters.irqs_delivered),
+                ));
+            }
             if iretq_detected && done.instructions_executed == 1 {
                 if let Some(pending) = pending_post_iret.as_ref() {
                     let restored_context_matches = post_iret_context_matches(pending, state);
@@ -4017,6 +4070,45 @@ fn run_cpl0_set_loop_impl<
             &mut changes,
         ) {
             break (exit, page_fault, memory_error);
+        }
+        // S7-32 slice R (ISSUE-709): a retired change of CR0 (`MOV CR0` is `Advanced` in the set,
+        // not a translation context effect) rebuilds the walker snapshot before the next boundary,
+        // so the next access of this quantum already sees the new CR0.WP. SDM 325462-093US Vol. 3A
+        // §5.6.1 (the rights of a supervisor write depend on CR0.WP) and §5.10.2.2 (a TLB entry
+        // holds the AND of the R/W flags, not the decision): a new WP applies to the next access.
+        // No cache is flushed (§5.10.4.1: MOV CR0 must invalidate only when PG goes 1 -> 0): the
+        // fetch cache, the turbo contexts and the turbo TLB view of the general step are keyed by
+        // the whole snapshot, so the entries made under the old CR0 are never found under the new
+        // one. CR4 is not compared: the CR4 bits the policy lets change (PSE, PGE, DE, MCE,
+        // OSFXSR, OSXMMEXCPT) are not read by the walker, and the Windows kernel toggles PGE on
+        // every global TLB flush. `handle_set_exit` rebuilt the snapshot from the state itself on
+        // a CR3 or NXE change, so the comparison sees only a change of this step.
+        if state.cr0 != Some(paging.cr0()) {
+            let old_cr0 = paging.cr0();
+            paging = match Long64ProbeConfig::from_cpu_state(state, paging.cr3(), efer) {
+                Ok(paging) => paging,
+                // Not reachable: every CR0 of the set policy is a walker CR0 (tested).
+                Err(error) => {
+                    break (
+                        PagedCpl0SetExit::Configuration(error),
+                        page_fault,
+                        memory_error,
+                    );
+                }
+            };
+            if let Some(journal) = cr0_journal {
+                journal.record(cr0_journal_entry(
+                    journal,
+                    state,
+                    instruction_rip,
+                    cpl3,
+                    old_cr0,
+                    crate::cr0_journal::Cr0WriteOutcome::Changed { new: paging.cr0() },
+                    instructions_executed - quantum_base - result.instructions_executed,
+                    delivered_exceptions,
+                    irq.as_ref().map_or(0, |hook| hook.counters.irqs_delivered),
+                ));
+            }
         }
     };
     // S4-14i: the end of the call seals the cache with the context a continuing call is handed;
@@ -4827,6 +4919,35 @@ pub(crate) fn deliver_nmi_at_boundary(
     )
     .map(|(delivery, _, _)| delivery)
     .unwrap_or_else(gate_acquisition_failure)
+}
+
+/// One entry of the `MOV CR0` journal (S7-32 slice R): the run's counters are the journal's bases
+/// plus the counts of this call (`retired_in_quantum`: instructions of the current quantum before
+/// the journaled one).
+#[allow(clippy::too_many_arguments)]
+fn cr0_journal_entry(
+    journal: &crate::cr0_journal::Cr0Journal,
+    state: &LongModeState,
+    rip: u64,
+    cpl3: bool,
+    old: u64,
+    outcome: crate::cr0_journal::Cr0WriteOutcome,
+    retired_in_quantum: u64,
+    delivered_exceptions: u64,
+    interrupts_delivered: u64,
+) -> crate::cr0_journal::Cr0JournalEntry {
+    crate::cr0_journal::Cr0JournalEntry {
+        rip,
+        cpl: if cpl3 { 3 } else { 0 },
+        old,
+        outcome,
+        rax: state.gpr[od_isa::Register::Rax as usize],
+        rcx: state.gpr[od_isa::Register::Rcx as usize],
+        rdi: state.gpr[od_isa::Register::Rdi as usize],
+        retired: journal.retired_base() + retired_in_quantum,
+        exceptions_delivered: journal.exceptions_base() + delivered_exceptions,
+        interrupts_delivered,
+    }
 }
 
 /// What the set loop does with the exit of one set call: `None` continues with the next
@@ -8581,6 +8702,67 @@ mod tests {
             callbacks,
             [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
         );
+    }
+
+    #[test]
+    fn s7_32_slice_r_write_rights_follow_cr0_wp_for_the_supervisor_only() {
+        // SDM 325462-093US Vol. 3A §5.6.1: a supervisor write needs R/W = 1 on the path only while
+        // WP = 1 (to a supervisor or, with SMAP = 0, a user page); a user write needs R/W = 1 and
+        // U/S = 1 whatever WP is. Error codes: P | W (3) for the supervisor, P | W | U (7) for the
+        // user. The PTE of `DATA_LINEAR` varies; the upper levels are P | R/W | U/S.
+        const WP: u64 = 1 << 16;
+        let cases = [
+            // (PTE, WP, user, expected error code or None for a completed write)
+            (0x9001, false, false, None),
+            (0x9001, true, false, Some(3)),
+            (0x9005, false, false, None),
+            (0x9005, true, false, Some(3)),
+            (0x9005, false, true, Some(7)),
+            (0x9005, true, true, Some(7)),
+            (0x9001, false, true, Some(7)),
+            (0x9007, false, true, None),
+            (0x9007, true, true, None),
+        ];
+        for (pte, wp, user, expected) in cases {
+            let label = format!("PTE {pte:#x}, WP {wp}, user {user}");
+            let mut bus = bus(pte);
+            let mut callback = |_| {};
+            let mut memory = adapter(&mut bus, &mut callback);
+            memory.paging =
+                Long64ProbeConfig::new(if wp { CR0 } else { CR0 & !WP }, ROOT, CR4, EFER).unwrap();
+            let context = if user { user_context() } else { context() };
+            let result = memory.write(
+                DATA_LINEAR,
+                context,
+                &0x5a5a_5a5a_5a5a_5a5au64.to_le_bytes(),
+            );
+            match expected {
+                None => {
+                    assert!(result.is_ok(), "{label}: {result:?}");
+                    drop(memory);
+                    let ram = bus.physical_memory();
+                    assert_eq!(
+                        ram.load_u64(GuestPhysicalAddress::new(0x9000)).unwrap(),
+                        0x5a5a_5a5a_5a5a_5a5a,
+                        "{label}"
+                    );
+                    assert_ne!(
+                        ram.load_u64(GuestPhysicalAddress::new(0x5000)).unwrap() & (1 << 6),
+                        0,
+                        "{label}: the dirty bit of the leaf"
+                    );
+                }
+                Some(code) => {
+                    assert!(
+                        matches!(result, Err(MemoryError::Architectural(_))),
+                        "{label}: {result:?}"
+                    );
+                    let record = memory.page_fault.take().expect("a #PF record");
+                    assert_eq!(record.fault().error_code, Some(code), "{label}");
+                    assert_eq!(record.fault().linear_address, Some(DATA_LINEAR), "{label}");
+                }
+            }
+        }
     }
 
     #[test]

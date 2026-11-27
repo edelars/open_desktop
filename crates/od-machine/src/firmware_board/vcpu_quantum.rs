@@ -236,6 +236,7 @@ fn quantum_loop(
         exception_delivery,
         stop_after_mmio,
         on_syscall,
+        None,
     );
 
     vcpu.guest_cr2 = vcpu.state.cr2;
@@ -708,6 +709,7 @@ pub(crate) fn run_litmus_ram_quantum(
         None,
         ExceptionDeliveryMode::Quantum,
         false,
+        None,
         None,
     );
     quantum_result(report, cpu, vcpu, 0)

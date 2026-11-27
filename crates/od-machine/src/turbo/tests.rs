@@ -657,6 +657,7 @@ fn run_turbo(machine: &mut Machine, engine: &mut TurboEngine, budget: u64) -> Pa
                 tick: None,
                 fast_quantum: None,
             },
+            None,
         )
     });
     machine.rdtsc = tsc;
@@ -898,6 +899,8 @@ struct Outcome {
     stats: super::TurboStats,
     /// The vectors the interrupt source saw acknowledged.
     acknowledged: Vec<u8>,
+    /// The turbo machine after the last call (its RAM for checks of what the program wrote).
+    turbo: Machine,
 }
 
 /// A case: two machines prepared alike, run call after call (a call that ends at the REP
@@ -1081,6 +1084,7 @@ impl<'a> Case<'a> {
                 .as_ref()
                 .map(|irq| irq.source.acknowledged.clone())
                 .unwrap_or_default(),
+            turbo,
         })
     }
 
@@ -4797,4 +4801,560 @@ fn a_crossing_instruction_in_two_spaces_uses_the_second_page_of_each() {
         assert_eq!(outcome.report.exit, "Run(Halted)");
         assert_generated(&outcome, "crossing in two spaces");
     }
+}
+
+// ---- S7-32 slice R (ISSUE-709): CR0.WP = 0 -------------------------------------------------------
+//
+// SDM 325462-093US Vol. 3A §2.5 (CR0.WP), §5.6.1 (a supervisor write to a read-only page is allowed
+// while WP = 0), §5.10.2.2 (a TLB entry holds the AND of the R/W flags: a new WP applies to the
+// next access), §11.1.3 (a store into code followed by a jump to it runs the new code). The set
+// loop rebuilds its walker snapshot after a retired change of CR0; the engine keys its translation
+// contexts by that snapshot, so a WP = 0 context never serves a WP = 1 access.
+
+const CR0_WP: u64 = 1 << 16;
+/// The code page the WP tests map read-only (P only): the probe target of the Windows kernel lives
+/// in such a page.
+const RO_CODE: u64 = CODE + 0x1000;
+
+/// `mov rcx, cr0; mov rax, rcx; btr rax, 16; mov cr0, rax`: CR0 saved in RCX, WP cleared.
+const CLEAR_WP: [u8; 15] = [
+    0x0F, 0x20, 0xC1, 0x48, 0x89, 0xC8, 0x48, 0x0F, 0xBA, 0xF0, 0x10, 0x0F, 0x22, 0xC0, 0x90,
+];
+/// `mov cr0, rcx`: CR0 back from RCX.
+const RESTORE_WP: [u8; 3] = [0x0F, 0x22, 0xC1];
+/// `mov r8, cr0; mov rax, r8; btr rax, 16; mov cr0, rax` (CR0 saved in R8, RCX stays free).
+const CLEAR_WP_R8: [u8; 15] = [
+    0x41, 0x0F, 0x20, 0xC0, 0x4C, 0x89, 0xC0, 0x48, 0x0F, 0xBA, 0xF0, 0x10, 0x0F, 0x22, 0xC0,
+];
+/// `mov cr0, r8`.
+const RESTORE_WP_R8: [u8; 4] = [0x41, 0x0F, 0x22, 0xC0];
+
+/// The `#PF` a case stopped on in the `HLT` of the handler of `Machine::idt` (no other push after
+/// the delivery): the error code and the saved RIP of the frame at RSP, and CR2.
+fn delivered_page_fault(outcome: &Outcome) -> (u64, u64, Option<u64>) {
+    let rsp = outcome.state.gpr[Register::Rsp as usize];
+    (
+        get_qword(&outcome.turbo.bus, rsp),
+        get_qword(&outcome.turbo.bus, rsp + 8),
+        outcome.state.cr2,
+    )
+}
+
+fn read_only_code_page(machine: &mut Machine) {
+    put_qword(&machine.bus, PT_A + (RO_CODE >> 12) * 8, RO_CODE | P);
+}
+
+/// `call target` at the current position.
+fn call_to(asm: &mut Asm, target: u64) {
+    let rel = target.wrapping_sub(asm.pc() + 5) as u32;
+    asm.raw(&[0xE8]);
+    asm.raw(&rel.to_le_bytes());
+}
+
+/// `ntkrnlmp` + `0xc185d8`…`+0xc18635` (the ISSUE-709 window: save CR0, clear WP, jump to the
+/// restore, read CR0 back, restore it) byte for byte, except its four CR8 instructions (`mov rdx,
+/// cr8`, `mov cr8, rax` twice: IRQL 15 and back), which are 4-byte NOPs here: the engine tests run
+/// without the CR8 member and its TPR link (the od-isa test runs them).
+fn windows_wp_window_without_cr8() -> Vec<u8> {
+    let mut bytes = vec![
+        0x44, 0x0f, 0x20, 0xc2, 0x88, 0x94, 0x24, 0x48, 0x01, 0x00, 0x00, 0xb8, 0x0f, 0x00, 0x00,
+        0x00, 0x44, 0x0f, 0x22, 0xc0, 0x0f, 0x20, 0xc1, 0x48, 0x89, 0x8c, 0x24, 0x38, 0x01, 0x00,
+        0x00, 0x48, 0x8b, 0xc1, 0x48, 0x0f, 0xba, 0xf0, 0x10, 0x0f, 0x22, 0xc0, 0xeb, 0x1f, 0x48,
+        0x8b, 0xbc, 0x24, 0x30, 0x01, 0x00, 0x00, 0x0f, 0xba, 0xaf, 0xdc, 0x09, 0x00, 0x00, 0x16,
+        0x48, 0x8b, 0x8c, 0x24, 0x38, 0x01, 0x00, 0x00, 0x8a, 0x94, 0x24, 0x48, 0x01, 0x00, 0x00,
+        0x0f, 0x20, 0xc0, 0x48, 0x3b, 0xc8, 0x74, 0x03, 0x0f, 0x22, 0xc1, 0x0f, 0xb6, 0xc2, 0x44,
+        0x0f, 0x22, 0xc0,
+    ];
+    for at in [0x00, 0x10, 0x59] {
+        assert_eq!(bytes[at], 0x44, "a CR8 instruction at {at:#x}");
+        bytes[at..at + 4].copy_from_slice(&[0x0F, 0x1F, 0x40, 0x00]);
+    }
+    bytes
+}
+
+#[test]
+fn s7_32_slice_r_the_windows_wp_window_matches_the_general_step() {
+    let mut program = windows_wp_window_without_cr8();
+    program.push(0xF4);
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        machine.idt();
+    };
+    let outcome = Case::new("windows wp window", 41, &prepare)
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(outcome.state.cr0, Some(CR0), "CR0 restored");
+    assert_eq!(outcome.report.delivered, (0, 0, 0));
+}
+
+/// Translated work, WP cleared, a store into the read-only page (generated code fills the write TLB
+/// of the WP = 0 context), WP restored, then a store into the same page by `last` (`#PF` with the
+/// error code of a supervisor write, through gate 14 to `HLT`).
+fn wp_store_program(last: &[u8]) -> Vec<u8> {
+    let mut asm = Asm::new(CODE);
+    for reg in [RSI, R10] {
+        asm.raw(&filler(reg));
+    }
+    asm.raw(&CLEAR_WP);
+    asm.mov_imm(RDI, READ_ONLY + 0x18);
+    asm.raw(&[0x48, 0x89, 0x07]); // mov [rdi], rax
+    asm.raw(&filler(R11));
+    asm.raw(&RESTORE_WP);
+    asm.raw(&filler(R12));
+    asm.raw(last);
+    asm.hlt();
+    asm.bytes
+}
+
+#[test]
+fn s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step() {
+    // (a) `mov [rdi], rcx`: generated code after the switch to the WP = 1 context. (b) `mov
+    // gs:[disp32], rcx` onto the same address: a form without a template (FS/GS operands, S7-32
+    // W3), so the general step does it.
+    let gs_disp = (READ_ONLY + 0x18 - GS_BASE) as u32;
+    let mut gs_store = vec![0x65, 0x48, 0x89, 0x0C, 0x25];
+    gs_store.extend_from_slice(&gs_disp.to_le_bytes());
+    for (name, last) in [
+        ("generated store", vec![0x48, 0x89, 0x0F]),
+        ("general-step store", gs_store),
+    ] {
+        let program = wp_store_program(&last);
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, &program);
+            machine.idt();
+        };
+        let outcome = Case::new(format!("wp store: {name}"), 43, &prepare)
+            .program(&program)
+            .check();
+        assert_eq!(outcome.report.exit, "Run(Halted)", "{name}");
+        assert_eq!(
+            outcome.report.delivered,
+            (1, 1, 0),
+            "{name}: the #PF after the restore"
+        );
+        assert_eq!(outcome.state.cr0, Some(CR0), "{name}");
+        assert!(outcome.stats.retired > 0, "{name}: {:?}", outcome.stats);
+        assert!(
+            outcome.stats.slot_switches >= 2,
+            "{name}: the WP = 0 context and back: {:?}",
+            outcome.stats
+        );
+        // The store under WP = 0 landed in the read-only frame (ALT + 0x9000).
+        let mut machine = Machine::new(43);
+        prepare(&mut machine);
+        let mut engine = Engine::take(&machine);
+        let report = run_turbo(&mut machine, engine.get(), 100_000);
+        assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+        assert_eq!(
+            get_qword(&machine.bus, ALT + 0x9018),
+            CR0 & !CR0_WP,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing() {
+    // The same programs in calls of k instructions, one engine across the calls (contexts, TLBs,
+    // blocks and remembered decodes live on): every boundary inside the window.
+    let program = wp_store_program(&[0x48, 0x89, 0x0F]);
+    let mut window = windows_wp_window_without_cr8();
+    window.push(0xF4);
+    for (name, code) in [("wp store", &program), ("windows window", &window)] {
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, code);
+            machine.idt();
+        };
+        for budget in [1, 2, 3, 5, 8] {
+            let outcome = Case::new(format!("{name}, budget {budget}"), 47, &prepare)
+                .program(code)
+                .budget(budget)
+                .calls(80)
+                .between(&|_, _| {})
+                .check();
+            // The calls after the HLT find the CPU halted (`Rejected(NotRunning)`).
+            assert_eq!(
+                outcome.state.activity,
+                Some(CpuActivity::Halted),
+                "{name} {budget}: {}",
+                outcome.report.exit
+            );
+            assert_eq!(outcome.state.cr0, Some(CR0), "{name} {budget}: WP restored");
+            if name == "wp store" {
+                // The store under WP = 0 landed; the `#PF` is the one of the store after the
+                // restore (`mov [rdi], rcx`, just before the final `hlt`).
+                assert_eq!(
+                    get_qword(&outcome.turbo.bus, ALT + 0x9018),
+                    CR0 & !CR0_WP,
+                    "{budget}"
+                );
+                let last = CODE + code.len() as u64 - 4;
+                assert_eq!(
+                    delivered_page_fault(&outcome),
+                    (3, last, Some(READ_ONLY + 0x18)),
+                    "{budget}"
+                );
+            }
+        }
+    }
+}
+
+/// The probe of the Windows kernel (`ntkrnlmp` + `0xc17394`): clear WP, write `ret` into the second
+/// byte of a function in read-only code, call it, put the byte back, restore WP; here the target
+/// is called three times before (translated), and once after the restore.
+fn smc_probe_program(target_bytes_at_patch: u64, patch: &[u8], restore: &[u8]) -> Vec<u8> {
+    let mut asm = Asm::new(CODE);
+    for _ in 0..3 {
+        call_to(&mut asm, RO_CODE);
+    }
+    asm.raw(&[0x49, 0x89, 0xC4]); // mov r12, rax
+    asm.raw(&CLEAR_WP);
+    asm.mov_imm(RSI, target_bytes_at_patch);
+    asm.raw(patch);
+    call_to(&mut asm, RO_CODE);
+    asm.raw(&[0x49, 0x89, 0xC5]); // mov r13, rax
+    asm.raw(restore);
+    asm.raw(&RESTORE_WP);
+    call_to(&mut asm, RO_CODE);
+    asm.raw(&[0x49, 0x89, 0xC6]); // mov r14, rax
+    asm.hlt();
+    asm.bytes
+}
+
+#[test]
+fn s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step() {
+    // The target is the kernel's `xor eax, eax; inc eax; ret`; `ret` over `inc` makes it 0.
+    let program = smc_probe_program(RO_CODE + 2, &[0xC6, 0x06, 0xC3], &[0xC6, 0x06, 0xFF]);
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        machine.code(RO_CODE, &[0x33, 0xC0, 0xFF, 0xC0, 0xC3]);
+        read_only_code_page(machine);
+        machine.idt();
+    };
+    let outcome = Case::new("wp smc probe", 53, &prepare)
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(
+        outcome.report.delivered,
+        (0, 0, 0),
+        "no fault in the window"
+    );
+    let gpr = |reg: u8| outcome.state.gpr[usize::from(reg)];
+    assert_eq!(
+        (gpr(12), gpr(13), gpr(14)),
+        (1, 0, 1),
+        "before, patched, after"
+    );
+    assert!(outcome.stats.retired > 0, "{:?}", outcome.stats);
+    // In calls of k instructions too.
+    for budget in [1, 2, 3, 7] {
+        let outcome = Case::new(format!("wp smc probe, budget {budget}"), 53, &prepare)
+            .program(&program)
+            .budget(budget)
+            .calls(120)
+            .between(&|_, _| {})
+            .check();
+        assert_eq!(
+            outcome.state.activity,
+            Some(CpuActivity::Halted),
+            "{budget}"
+        );
+        let gpr = |reg: u8| outcome.state.gpr[usize::from(reg)];
+        assert_eq!((gpr(12), gpr(13), gpr(14)), (1, 0, 1), "{budget}");
+    }
+}
+
+#[test]
+fn s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step() {
+    // The target `mov eax, gs:[disp32]; ret` starts with a form without a template: the engine
+    // keeps its decode (`slow_insns`) and hands it to the general step (`take_slow_decode`). The
+    // probe moves the displacement by 8 under WP = 0; the general step must run the new bytes.
+    const DISP: u32 = 0x100;
+    let mut target = vec![0x65, 0x8B, 0x04, 0x25];
+    target.extend_from_slice(&DISP.to_le_bytes());
+    target.push(0xC3);
+    let mut patch = vec![0xC7, 0x06]; // mov dword [rsi], imm32
+    patch.extend_from_slice(&(DISP + 8).to_le_bytes());
+    let mut restore = vec![0xC7, 0x06];
+    restore.extend_from_slice(&DISP.to_le_bytes());
+    let program = smc_probe_program(RO_CODE + 4, &patch, &restore);
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        machine.code(RO_CODE, &target);
+        read_only_code_page(machine);
+        machine.idt();
+    };
+    let mut reference = Machine::new(59);
+    let mut turbo = Machine::new(59);
+    prepare(&mut reference);
+    prepare(&mut turbo);
+    let mut engine = Engine::take(&turbo);
+    // Two calls of the target (call, mov, ret each): the decode is remembered.
+    let left = run_reference(&mut reference, 6);
+    let right = run_turbo(&mut turbo, engine.get(), 6);
+    if let Some(difference) = difference(&reference, &turbo, &view(&left), &view(&right)) {
+        panic!("before the patch: {difference}");
+    }
+    carry(&mut reference, &left);
+    carry(&mut turbo, &right);
+    assert!(
+        engine
+            .get()
+            .slow_insns
+            .keys()
+            .any(|&(rip, _)| rip == RO_CODE),
+        "the decode of `65 8b 04 25 …` at the target is remembered before the patch"
+    );
+    // Up to and including the patch: the third call (call, mov, ret), `mov r12, rax`, the five of
+    // `CLEAR_WP`, `mov rsi`, the store into the code. The run's journal drain drops the page's
+    // blocks and the remembered decode with them.
+    let left = run_reference(&mut reference, 11);
+    let right = run_turbo(&mut turbo, engine.get(), 11);
+    if let Some(difference) = difference(&reference, &turbo, &view(&left), &view(&right)) {
+        panic!("at the patch: {difference}");
+    }
+    carry(&mut reference, &left);
+    carry(&mut turbo, &right);
+    assert_eq!(
+        get_qword(&turbo.bus, RO_CODE) >> 32 & 0xffff_ffff,
+        u64::from(DISP + 8),
+        "the patch is in memory"
+    );
+    // The call into the patched target and its first instruction: the next run drains the
+    // journal, drops the page's blocks and compiles the target anew; the decode it remembers (and
+    // the general step ran) is that of the new bytes. (A stale entry cannot outlive this: the
+    // recompile replaces it, which is why keeping it in `invalidate_code_page` is not observable.)
+    let left = run_reference(&mut reference, 2);
+    let right = run_turbo(&mut turbo, engine.get(), 2);
+    if let Some(difference) = difference(&reference, &turbo, &view(&left), &view(&right)) {
+        panic!("in the patched target: {difference}");
+    }
+    carry(&mut reference, &left);
+    carry(&mut turbo, &right);
+    let mut patched = target.clone();
+    patched[4..8].copy_from_slice(&(DISP + 8).to_le_bytes());
+    let expected = od_isa::long_decode::decode(
+        &mut Bytes {
+            at: RO_CODE,
+            bytes: &patched,
+        },
+        RO_CODE,
+        context(),
+    )
+    .unwrap();
+    let remembered: Vec<_> = engine
+        .get()
+        .slow_insns
+        .iter()
+        .filter(|&(&(rip, _), _)| rip == RO_CODE)
+        .map(|(_, instruction)| *instruction)
+        .collect();
+    assert_eq!(remembered, [expected], "the decode of the new bytes");
+    let left = run_reference(&mut reference, 100_000);
+    let right = run_turbo(&mut turbo, engine.get(), 100_000);
+    if let Some(difference) = difference(&reference, &turbo, &view(&left), &view(&right)) {
+        panic!("after the patch: {difference}");
+    }
+    assert_eq!(format!("{:?}", right.exit), "Run(Halted)");
+    let gpr = |reg: u8| turbo.state.gpr[usize::from(reg)];
+    let qword = |address: u64| get_qword(&turbo.bus, address) as u32 as u64;
+    assert_eq!(gpr(12), qword(GS_BASE + u64::from(DISP)));
+    assert_eq!(
+        gpr(13),
+        qword(GS_BASE + u64::from(DISP) + 8),
+        "the patched bytes ran"
+    );
+    assert_eq!(gpr(14), gpr(12), "the restored bytes ran");
+    assert_ne!(gpr(12), gpr(13), "the seed gives two different dwords");
+}
+
+#[test]
+fn s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp() {
+    let mut asm = Asm::new(CODE);
+    asm.raw(&CLEAR_WP_R8);
+    asm.mov_imm(RDI, READ_ONLY);
+    asm.mov_imm32(RCX, 64);
+    asm.mov_imm32(RAX, 0x77);
+    asm.raw(&[0xF3, 0xAA]); // rep stosb
+    asm.raw(&RESTORE_WP_R8);
+    asm.mov_imm(RDI, READ_ONLY + 0x100);
+    asm.mov_imm32(RCX, 8);
+    asm.raw(&[0xF3, 0xAA]);
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        machine.idt();
+    };
+    let outcome = Case::new("wp rep stos", 61, &prepare)
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(
+        outcome.report.delivered,
+        (1, 1, 0),
+        "the #PF of the second string"
+    );
+    let mut machine = Machine::new(61);
+    prepare(&mut machine);
+    let mut engine = Engine::take(&machine);
+    run_turbo(&mut machine, engine.get(), 100_000);
+    assert_eq!(
+        get_qword(&machine.bus, ALT + 0x9000 + 56),
+        0x7777_7777_7777_7777
+    );
+}
+
+#[test]
+fn s7_32_slice_r_the_patchguard_window_matches_the_general_step() {
+    // The window of the PatchGuard checks (`ntkrnlmp` + `0x50b1d9`…`+0x50b476`, shortened): WP
+    // cleared; a PTE written (the read-only page becomes writable) and the TLB flushed by toggling
+    // CR4.PGE; the PTE put back and flushed again; 16 bytes copied into the read-only page; `ret`
+    // written into read-only code; WP restored; then a store into the page is a `#PF`.
+    let pte_slot = PT_WINDOW + (READ_ONLY >> 12) * 8;
+    let toggle_pge = [
+        0x0F, 0x20, 0xE2, // mov rdx, cr4
+        0x48, 0x89, 0xD0, // mov rax, rdx
+        0x48, 0x0D, 0x80, 0x00, 0x00, 0x00, // or rax, 0x80
+        0x0F, 0x22, 0xE0, // mov cr4, rax
+        0x0F, 0x22, 0xE2, // mov cr4, rdx
+    ];
+    let mut asm = Asm::new(CODE);
+    asm.raw(&CLEAR_WP_R8);
+    asm.mov_imm(RSI, pte_slot);
+    asm.mov_imm(RAX, (ALT + 0x9000) | P | RW | NX);
+    asm.raw(&[0x48, 0x89, 0x06]); // mov [rsi], rax
+    asm.raw(&toggle_pge);
+    asm.mov_imm(RAX, (ALT + 0x9000) | P | NX);
+    asm.raw(&[0x48, 0x89, 0x06]);
+    asm.raw(&toggle_pge);
+    asm.mov_imm(RDI, READ_ONLY + 0x40);
+    asm.mov_imm(RAX, 0x1111_2222_3333_4444);
+    asm.mov_imm(RDX, 0x5555_6666_7777_8888);
+    asm.raw(&[0x48, 0x89, 0x07]); // mov [rdi], rax
+    asm.raw(&[0x48, 0x89, 0x57, 0x08]); // mov [rdi + 8], rdx
+    asm.mov_imm(RSI, RO_CODE + 0x10);
+    asm.raw(&[0xC6, 0x06, 0xC3]); // mov byte [rsi], 0xc3
+    asm.raw(&RESTORE_WP_R8);
+    let last_store = asm.pc();
+    asm.raw(&[0x48, 0x89, 0x07]); // mov [rdi], rax: #PF
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        read_only_code_page(machine);
+        machine.idt();
+    };
+    let outcome = Case::new("patchguard window", 67, &prepare)
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(outcome.report.delivered, (1, 1, 0));
+    assert_eq!(
+        delivered_page_fault(&outcome),
+        (3, last_store, Some(READ_ONLY + 0x40)),
+        "the #PF is the store after the window, not a store inside it"
+    );
+    assert_eq!(outcome.state.cr0, Some(CR0), "WP restored");
+    assert_eq!(outcome.state.cr4, Some(CR4), "PGE toggled back");
+    let ram = &outcome.turbo.bus;
+    assert_eq!(get_qword(ram, ALT + 0x9040), 0x1111_2222_3333_4444);
+    assert_eq!(get_qword(ram, ALT + 0x9048), 0x5555_6666_7777_8888);
+    assert_eq!(
+        get_qword(ram, RO_CODE + 0x10) & 0xFF,
+        0xC3,
+        "ret written into code"
+    );
+    assert_eq!(
+        get_qword(ram, PT_A + (READ_ONLY >> 12) * 8) & !0x60,
+        (ALT + 0x9000) | P | NX,
+        "the PTE is put back (`pte_slot` is its linear window; A/D set by the walk)"
+    );
+    assert!(outcome.stats.retired > 0, "{:?}", outcome.stats);
+}
+
+#[test]
+fn s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second() {
+    // Window 1 fills the write TLB of the WP = 0 context for the read-only page; with WP = 1 the
+    // program moves the page onto another frame (a store into the leaf table through its window)
+    // or removes it; window 2 writes the page again: the entry of the inactive WP = 0 context must
+    // have gone with the table write.
+    let pte_slot = PT_WINDOW + (READ_ONLY >> 12) * 8;
+    for (name, new_pte) in [("moved", (ALT + 0xA000) | P | NX), ("removed", 0)] {
+        let mut asm = Asm::new(CODE);
+        asm.raw(&CLEAR_WP_R8);
+        asm.mov_imm(RDI, READ_ONLY + 0x18);
+        asm.raw(&[0x48, 0x89, 0x07]); // mov [rdi], rax
+        asm.raw(&RESTORE_WP_R8);
+        asm.mov_imm(RSI, pte_slot);
+        asm.mov_imm(RAX, new_pte);
+        asm.raw(&[0x48, 0x89, 0x06]); // mov [rsi], rax
+        asm.raw(&CLEAR_WP_R8);
+        asm.mov_imm(RCX, 0xABCD_EF01_2345_6789);
+        let window_2_store = asm.pc();
+        asm.raw(&[0x48, 0x89, 0x0F]); // mov [rdi], rcx
+        asm.raw(&RESTORE_WP_R8);
+        asm.hlt();
+        let program = asm.bytes;
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, &program);
+            machine.idt();
+        };
+        let outcome = Case::new(format!("pte between windows: {name}"), 71, &prepare)
+            .program(&program)
+            .check();
+        assert_eq!(outcome.report.exit, "Run(Halted)", "{name}");
+        let ram = &outcome.turbo.bus;
+        assert_eq!(
+            get_qword(ram, ALT + 0x9018),
+            CR0 & !CR0_WP,
+            "{name}: the store of window 1 landed"
+        );
+        if new_pte == 0 {
+            // The store of window 2 (not present: error code W) stops inside window 2.
+            assert_eq!(outcome.report.delivered, (1, 1, 0), "{name}");
+            assert_eq!(
+                delivered_page_fault(&outcome),
+                (2, window_2_store, Some(READ_ONLY + 0x18)),
+                "{name}: the store of window 2"
+            );
+            assert_eq!(outcome.state.cr0, Some(CR0 & !CR0_WP), "{name}");
+        } else {
+            assert_eq!(outcome.report.delivered, (0, 0, 0), "{name}");
+            assert_eq!(get_qword(ram, ALT + 0xA018), 0xABCD_EF01_2345_6789);
+            assert_eq!(outcome.state.cr0, Some(CR0), "{name}");
+        }
+    }
+}
+
+#[test]
+fn s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot() {
+    // A WP = 0 run leaves the active context of the engine with a write entry for the read-only
+    // page; the view serves it to an adapter of the same snapshot only.
+    let mut asm = Asm::new(CODE);
+    asm.raw(&CLEAR_WP_R8);
+    asm.mov_imm(RDI, READ_ONLY + 0x18);
+    asm.raw(&[0x48, 0x89, 0x07]); // mov [rdi], rax
+    asm.raw(&filler(RSI));
+    asm.hlt();
+    let program = asm.bytes;
+    let mut machine = Machine::new(73);
+    machine.code(CODE, &program);
+    machine.idt();
+    let mut engine = Engine::take(&machine);
+    let report = run_turbo(&mut machine, engine.get(), 100_000);
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+    let wp0 = crate::Long64ProbeConfig::new(CR0 & !CR0_WP, PML4_A, CR4, EFER).unwrap();
+    let wp1 = crate::Long64ProbeConfig::new(CR0, PML4_A, CR4, EFER).unwrap();
+    let view = engine.get().tlbs();
+    assert!(
+        super::view_host(view, &wp0, true, true, READ_ONLY + 0x18, 8).is_some(),
+        "the WP = 0 context holds the write entry"
+    );
+    assert!(
+        super::view_host(view, &wp1, true, true, READ_ONLY + 0x18, 8).is_none(),
+        "an adapter with WP = 1 is not served it"
+    );
 }

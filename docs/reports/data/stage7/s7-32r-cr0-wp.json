@@ -1,0 +1,495 @@
+{
+ "schema": "od-s7-32r-cr0-wp-v1",
+ "task": "S7-32 slice R (ISSUE-709): CR0.WP = 0 in the CPL0 set policy, walker snapshot follows CR0",
+ "base_commit": "7b94462",
+ "runner_sha256": "626790f2cc9337236d1848f13f9e963a1b6dca86f13e90cc86b1ede020fe817f",
+ "rom_sha256": "5e47acc1dad4aed19eb571528754ee6ccd278c19e65b921b1b586138749d2665",
+ "command": "work/s7-32/r/wrun.sh (work/s7-32/o/wrun.sh with --cr0-log 64; r1: DEVICE_ERRORS=log EXTRA=--turbo-profile, r2: DEVICE_ERRORS=stop)",
+ "windows_runs": {
+  "r1": {
+   "device_errors": "log",
+   "seconds": 32,
+   "status": "error",
+   "exit": "unsupported",
+   "exit_detail": "Unsupported { opcode: 175 }",
+   "retired": 16927460059,
+   "virtual_ns": 17039522059,
+   "rip": "0xfffff80544dc19d0",
+   "rip_bytes": "66f2af48f7d1492bcd664103cd6603c9",
+   "stop_module": "IaStorV.pdb",
+   "stop_rva": "0x19d0",
+   "exceptions_delivered": 2916,
+   "page_faults_delivered": 2790,
+   "interrupts_delivered": 820,
+   "cpl3_retired": 0,
+   "com1_sha256": "50aa1d266816daf4d0c23aef1c6554dc6f7670d24031081174de4b3f1ef0b34a",
+   "com1_bytes": 3882,
+   "framebuffer_sha256": "f97275db598af801544222a1a2708c1dd9be8fe0983e7dc7499c351ae6d02dae",
+   "cr0_writes": {
+    "count": 7,
+    "entries": [
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000000203000 is not readable: address 0x0000000000203000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x00000000c0010033",
+      "old_cr0": "0x0000000080010033",
+      "outcome": "changed",
+      "rax": "0x00000000c0010033",
+      "rcx": "0x0000000000000620",
+      "rdi": "0x000000000167cba0",
+      "retired": 72273273,
+      "rip": "0x000000000020313d"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000000203000 is not readable: address 0x0000000000203000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x0000000080010033",
+      "old_cr0": "0x00000000c0010033",
+      "outcome": "changed",
+      "rax": "0x0000000080010033",
+      "rcx": "0x00000000000002ff",
+      "rdi": "0x000000000167ca60",
+      "retired": 72273470,
+      "rip": "0x00000000002031fe"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000001f8e000 is not readable: address 0x0000000001f8e000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x0000000080010033",
+      "outcome": "changed",
+      "rax": "0x0000000080050033",
+      "rcx": "0x0000000002039ed0",
+      "rdi": "0x0000000000000001",
+      "retired": 14461999239,
+      "rip": "0x0000000001f8e090"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 125,
+      "interrupts_delivered": 103,
+      "module": {
+       "base": "0xfffff805b1200000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 2940,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xb7be93",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x00000000c0050033",
+      "old_cr0": "0x0000000080050033",
+      "outcome": "changed",
+      "rax": "0x0000000000000000",
+      "rcx": "0x00000000c0050033",
+      "rdi": "0x0000000000000000",
+      "retired": 15653320048,
+      "rip": "0xfffff805b1d7be93"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 125,
+      "interrupts_delivered": 103,
+      "module": {
+       "base": "0xfffff805b1200000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 2940,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xb7bf5a",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x00000000c0050033",
+      "outcome": "changed",
+      "rax": "0x000000000062a000",
+      "rcx": "0x0000000000000638",
+      "rdi": "0x00000000000006b8",
+      "retired": 15653320300,
+      "rip": "0xfffff805b1d7bf5a"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 2769,
+      "interrupts_delivered": 665,
+      "module": {
+       "base": "0xfffff805b1200000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 3097,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xc185ff",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080040033",
+      "old_cr0": "0x0000000080050033",
+      "outcome": "changed",
+      "rax": "0x0000000080040033",
+      "rcx": "0x0000000080050033",
+      "rdi": "0xffffa486e8010000",
+      "retired": 16713276293,
+      "rip": "0xfffff805b1e185ff"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 2769,
+      "interrupts_delivered": 665,
+      "module": {
+       "base": "0xfffff805b1200000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 3097,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xc1862b",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x0000000080040033",
+      "outcome": "changed",
+      "rax": "0x0000000080040033",
+      "rcx": "0x0000000080050033",
+      "rdi": "0xffffa486e8010000",
+      "retired": 16713276298,
+      "rip": "0xfffff805b1e1862b"
+     }
+    ],
+    "limit": 64
+   }
+  },
+  "r2": {
+   "device_errors": "stop",
+   "seconds": 30,
+   "status": "error",
+   "exit": "unsupported",
+   "exit_detail": "Unsupported { opcode: 226 }",
+   "retired": 16739537316,
+   "virtual_ns": 16849508316,
+   "rip": "0xffffe10efc50231b",
+   "rip_bytes": "e2ef8b82080800004803c24883ec28ff",
+   "stop_module": null,
+   "stop_rva": null,
+   "exceptions_delivered": 2815,
+   "page_faults_delivered": 2689,
+   "interrupts_delivered": 684,
+   "cpl3_retired": 0,
+   "com1_sha256": "50aa1d266816daf4d0c23aef1c6554dc6f7670d24031081174de4b3f1ef0b34a",
+   "com1_bytes": 3882,
+   "framebuffer_sha256": "783b2bc8258995088885ccf1cf963a46f726e70bb95c5f7e0c20773740bb053b",
+   "cr0_writes": {
+    "count": 7,
+    "entries": [
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000000203000 is not readable: address 0x0000000000203000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x00000000c0010033",
+      "old_cr0": "0x0000000080010033",
+      "outcome": "changed",
+      "rax": "0x00000000c0010033",
+      "rcx": "0x0000000000000620",
+      "rdi": "0x000000000167cba0",
+      "retired": 72273273,
+      "rip": "0x000000000020313d"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000000203000 is not readable: address 0x0000000000203000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x0000000080010033",
+      "old_cr0": "0x00000000c0010033",
+      "outcome": "changed",
+      "rax": "0x0000000080010033",
+      "rcx": "0x00000000000002ff",
+      "rdi": "0x000000000167ca60",
+      "retired": 72273470,
+      "rip": "0x00000000002031fe"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 0,
+      "interrupts_delivered": 0,
+      "module": {
+       "found": false,
+       "pages_scanned": 0,
+       "reason": "page 0x0000000001f8e000 is not readable: address 0x0000000001f8e000 does not translate: NotPresent { level: 4, entry: 0 }"
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x0000000080010033",
+      "outcome": "changed",
+      "rax": "0x0000000080050033",
+      "rcx": "0x0000000002039ed0",
+      "rdi": "0x0000000000000001",
+      "retired": 14461999156,
+      "rip": "0x0000000001f8e090"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 125,
+      "interrupts_delivered": 103,
+      "module": {
+       "base": "0xfffff805b1400000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 2940,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xb7be93",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x00000000c0050033",
+      "old_cr0": "0x0000000080050033",
+      "outcome": "changed",
+      "rax": "0x0000000000000000",
+      "rcx": "0x00000000c0050033",
+      "rdi": "0x0000000000000000",
+      "retired": 15653524003,
+      "rip": "0xfffff805b1f7be93"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 125,
+      "interrupts_delivered": 103,
+      "module": {
+       "base": "0xfffff805b1400000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 2940,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xb7bf5a",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x00000000c0050033",
+      "outcome": "changed",
+      "rax": "0x000000000062a000",
+      "rcx": "0x0000000000000638",
+      "rdi": "0x00000000000006b8",
+      "retired": 15653524255,
+      "rip": "0xfffff805b1f7bf5a"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 2769,
+      "interrupts_delivered": 649,
+      "module": {
+       "base": "0xfffff805b1400000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 3097,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xc185ff",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080040033",
+      "old_cr0": "0x0000000080050033",
+      "outcome": "changed",
+      "rax": "0x0000000080040033",
+      "rcx": "0x0000000080050033",
+      "rdi": "0xffffe10efd010062",
+      "retired": 16677224577,
+      "rip": "0xfffff805b20185ff"
+     },
+     {
+      "cpl": 0,
+      "exceptions_delivered": 2769,
+      "interrupts_delivered": 649,
+      "module": {
+       "base": "0xfffff805b1400000",
+       "found": true,
+       "machine": "0x8664",
+       "pages_scanned": 3097,
+       "pdb": {
+        "age": 1,
+        "guid": "C29EBFB0-6B78-B3C0-20DC-A66D99713F9E",
+        "path": "ntkrnlmp.pdb",
+        "symbol_key": "C29EBFB06B78B3C020DCA66D99713F9E1"
+       },
+       "pdb_error": null,
+       "rva": "0xc1862b",
+       "size_of_image": 21299200,
+       "time_date_stamp": 4255772020
+      },
+      "new_cr0": "0x0000000080050033",
+      "old_cr0": "0x0000000080040033",
+      "outcome": "changed",
+      "rax": "0x0000000080040033",
+      "rcx": "0x0000000080050033",
+      "rdi": "0xffffe10efd010062",
+      "retired": 16677224582,
+      "rip": "0xfffff805b201862b"
+     }
+    ],
+    "limit": 64
+   }
+  }
+ },
+ "linux_s6_21_stage4a_apic": {
+  "command": "work/s7-32/r/lrun.sh (recipe of work/stage6/s6-21-seeded-ioapic/run.sh, --cpuid-profile stage4a-apic --seed 24301, budget 2500000000)",
+  "seconds": 1293,
+  "exit_kind": "budget_exhausted",
+  "retired": 2499983194,
+  "cpl3_retired": 11286,
+  "exceptions_delivered": 35,
+  "page_faults_delivered": 34,
+  "general_protection_faults_delivered": 1,
+  "boot_json_sha256": "89b4f23e21816da15b3fd507397c7e6b6c23245b215e5ede4d51eb18051aec24",
+  "equal_to_slice_q_record": "all 177 fields of boot.json equal to work/s7-32/q/linux-apic/boot.json",
+  "verify_report_exit": 0
+ },
+ "checks": {
+  "fmt": "clean",
+  "check_workspace": "clean (old warnings only)",
+  "od_isa": {
+   "passed": 7143,
+   "failed": 0
+  },
+  "od_machine_lib": {
+   "passed": 2736,
+   "ignored": 18,
+   "failed": 0
+  },
+  "od_runner": {
+   "passed": 1120,
+   "ignored": 5,
+   "failed": 0
+  },
+  "od_testkit_od_host_od_jit": {
+   "passed": 2046,
+   "ignored": 15,
+   "failed": 0
+  },
+  "firmware_boot_smoke": "exit 0",
+  "golden_turbo_vs_no_turbo": {
+   "G100": "GOLDEN: MATCH",
+   "G3200": "GOLDEN: MATCH (turbo 3.5 s, no-turbo 1440.4 s, Run /init in COM1, 21005 IRQs, 190 CPL3 instructions)"
+  }
+ },
+ "mutations": [
+  "M1 policy keeps WP -> od-machine: 13 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_the_patchguard_window_matches_the_general_step, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_windows_wp_window_matches_the_general_step, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, cpl0_set_board_every_cr0_of_the_set_policy_is_a_walker_cr0, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it; od-isa: 4 failed: mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedness, s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside, s7_32_slice_r_cr0_wp_is_cleared_and_restored_by_every_mov_cr0_form, s7_32_slice_r_the_windows_wp_window_clears_and_restores_cr0_and_cr8",
+  "M2 no snapshot rebuild (and no invariant) -> od-machine: 9 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing",
+  "M3 rebuild only on a CR4 change -> od-machine: 10 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing",
+  "M4 turbo slot key without WP -> od-machine: 4 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step",
+  "M5 view_host without the snapshot compare -> od-machine: 1 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot",
+  "M6 policy also accepts PG = 0 -> od-isa: 4 failed: s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside, cr0_write_outside_policy_is_unsupported_without_mutation, mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedness, cr0_am_does_not_widen_the_policy_to_other_bits",
+  "M7 no block drop on a code write -> od-machine: 2 failed: s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step",
+  "M8 fast_translate ignores WP -> od-machine: 4 failed: s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step",
+  "M9 invalidate_code_page keeps slow_insns -> od-machine: 0 failed: ",
+  "M10 a leaf table write leaves the TLB entries -> od-machine: 0 failed: ",
+  "M11 the journal misses MOV CR0, RAX attempts -> od-machine: 1 failed: cpl0_set_board_the_journal_records_a_faulting_and_a_refused_mov_cr0",
+  "M9 note: not observable by construction — after a code write the page's blocks go and the next run compiles the target again; keep_decodes replaces the slow_insns entry, so a kept entry is never used. The test now checks that the remembered decode after the patched call is the decode of the new bytes (passes with and without M9).",
+  "M10 note: masked — the leaf frame is unwatched by table_written, the next walk through it re-watches it as new and flush_write_tlb clears every slot's write TLB.",
+  "M10' (table_written ignores a leaf frame: no clear, no unwatch) -> od-machine: 1 failed: s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second"
+ ],
+ "after_review": {
+  "changes": "turbo tests (PatchGuard window, PTE between windows, quantum split) check the RAM of the turbo machine, CR0/CR4, the error code, the saved RIP and CR2 of the #PF; new board test of the shortened PatchGuard window (2.4); the journal board test compares the run without the journal; runner test gates and doc comments restored; texts",
+  "checks": {
+   "cargo_fmt_check": "clean",
+   "cargo_check_workspace_all_targets": "clean (old warnings only)",
+   "od_machine_lib": {
+    "passed": 2737,
+    "ignored": 18,
+    "failed": 0
+   },
+   "od_runner": {
+    "passed": 1120,
+    "ignored": 5,
+    "failed": 0
+   }
+  },
+  "mutations": [
+   "M1 policy keeps WP -> od-machine: 14 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_the_patchguard_window_matches_the_general_step, s7_32_slice_r_the_windows_wp_window_matches_the_general_step, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, cpl0_set_board_every_cr0_of_the_set_policy_is_a_walker_cr0, cpl0_set_board_the_patchguard_wp_window_writes_ptes_and_read_only_pages, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing; od-isa: 4 failed: s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside, mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedness, s7_32_slice_r_cr0_wp_is_cleared_and_restored_by_every_mov_cr0_form, s7_32_slice_r_the_windows_wp_window_clears_and_restores_cr0_and_cr8",
+   "M2 no snapshot rebuild (and no invariant) -> od-machine: 12 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it, cpl0_set_board_the_patchguard_wp_window_writes_ptes_and_read_only_pages, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing",
+   "M2a = M2, the PTE test with its 'removed' variant only -> od-machine: 1 failed: s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second",
+   "M2b = M2, the turbo quantum-split test with its 'wp store' program only -> od-machine: 1 failed: s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing",
+   "M3 rebuild only on a CR4 change -> od-machine: 12 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step, s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step, s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second, s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it, cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults, cpl0_set_board_the_patchguard_wp_window_writes_ptes_and_read_only_pages, cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing",
+   "M4 turbo slot key without WP -> od-machine: 4 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot, s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_the_patchguard_window_matches_the_general_step",
+   "M5 view_host without the snapshot compare -> od-machine: 1 failed: s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot",
+   "M6 policy also accepts PG = 0 -> od-isa: 4 failed: s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside, cr0_write_outside_policy_is_unsupported_without_mutation, mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedness, cr0_am_does_not_widen_the_policy_to_other_bits",
+   "M7 no block drop on a code write -> od-machine: 1 failed: s7_32_slice_r_the_wp_smc_probe_runs_the_patched_code_and_matches_the_general_step",
+   "M7 note: the first run had 2 failures (also s7_32_slice_r_a_patched_slow_decode_is_not_reused_by_the_general_step); that test was reworked after the M9 analysis (it checks the remembered decode of the new bytes) and no longer fails under M7; the SMC probe test catches it.",
+   "M8 fast_translate ignores WP -> od-machine: 4 failed: s7_32_slice_r_a_quantum_split_inside_the_wp_window_changes_nothing, s7_32_slice_r_a_store_into_a_read_only_page_follows_wp_in_generated_code_and_the_general_step, s7_32_slice_r_rep_stos_into_a_read_only_page_follows_wp, s7_32_slice_r_the_patchguard_window_matches_the_general_step",
+   "M9 invalidate_code_page keeps slow_insns -> od-machine: 0 failed: ",
+   "M9 note: not observable by construction — after a code write the page's blocks go and the next run compiles the target again; keep_decodes replaces the slow_insns entry, so a kept entry is never used. The test now checks that the remembered decode after the patched call is the decode of the new bytes (passes with and without M9).",
+   "M10 a leaf table write leaves the TLB entries -> od-machine: 0 failed: ",
+   "M10 note: masked — the leaf frame is unwatched by table_written, the next walk through it re-watches it as new and flush_write_tlb clears every slot's write TLB.",
+   "M10' (table_written ignores a leaf frame: no clear, no unwatch) -> od-machine: 1 failed: s7_32_slice_r_a_pte_changed_between_two_wp_windows_is_seen_by_the_second",
+   "M11 the journal misses MOV CR0, RAX attempts -> od-machine: 1 failed: cpl0_set_board_the_journal_records_a_faulting_and_a_refused_mov_cr0"
+  ]
+ }
+}

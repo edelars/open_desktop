@@ -12708,6 +12708,453 @@ mod tests {
         assert_eq!(read_qword(&mut boot, frame - 16), rsp - 8 - 0x28);
     }
 
+    // ---- S7-32 slice R (ISSUE-709): CR0.WP = 0 on the board. SDM 325462-093US Vol. 3A §2.5
+    // (CR0.WP), §5.6.1 (supervisor writes to read-only pages are allowed while WP = 0, to user
+    // pages as well while SMAP = 0), §5.10.2.2 (a new WP applies to the next access), §11.1.3 (a
+    // store into code followed by a jump to it runs the new code). ----
+
+    /// A 2 MiB page of the identity map (100 MiB) that the tests make read-only.
+    const WP_RO_VA: u64 = 0x0640_0000;
+    const CR0_WP: u64 = 1 << 16;
+
+    /// R/W = 0 in the PDE of `WP_RO_VA` (a 2 MiB leaf of the board's identity map); with `user`
+    /// U/S = 1 on the whole path (a user page). Returns the address of the PDE (the table zone is
+    /// identity-mapped too).
+    fn wp_read_only_page(boot: &mut LinuxDirectBoot, user: bool) -> u64 {
+        let cr3 = boot.board.cr3();
+        let pml4 = cr3 + ((WP_RO_VA >> 39) & 0x1ff) * 8;
+        let pml4_value = read_qword(boot, pml4);
+        let pdpt = (pml4_value & 0x000f_ffff_ffff_f000) + ((WP_RO_VA >> 30) & 0x1ff) * 8;
+        let pdpt_value = read_qword(boot, pdpt);
+        let pde = (pdpt_value & 0x000f_ffff_ffff_f000) + ((WP_RO_VA >> 21) & 0x1ff) * 8;
+        let pde_value = read_qword(boot, pde);
+        assert_eq!(
+            pde_value & 0x83,
+            0x83,
+            "a present writable 2 MiB leaf: {pde_value:#x}"
+        );
+        let mut value = pde_value & !2;
+        if user {
+            write_phys(boot, pml4, &(pml4_value | 4).to_le_bytes());
+            write_phys(boot, pdpt, &(pdpt_value | 4).to_le_bytes());
+            value |= 4;
+        }
+        write_phys(boot, pde, &value.to_le_bytes());
+        pde
+    }
+
+    /// `mov rcx, cr0; mov rax, rcx; btr rax, 16; mov cr0, rax`.
+    const WP_CLEAR: [u8; 14] = [
+        0x0F, 0x20, 0xC1, 0x48, 0x89, 0xC8, 0x48, 0x0F, 0xBA, 0xF0, 0x10, 0x0F, 0x22, 0xC0,
+    ];
+
+    /// WP cleared, `mov byte [rbx], 0x5a`, WP restored (`mov cr0, rcx`), `mov byte [rbx], 0x5b`,
+    /// `hlt`: one quantum, no IDT (a fault is the stop).
+    fn wp_store_code(clear: bool) -> Vec<u8> {
+        let mut code = Vec::new();
+        if clear {
+            code.extend_from_slice(&WP_CLEAR);
+        } else {
+            code.extend_from_slice(&[0x0F, 0x20, 0xC1]); // mov rcx, cr0
+        }
+        code.extend_from_slice(&[0xC6, 0x03, 0x5A, 0x0F, 0x22, 0xC1, 0xC6, 0x03, 0x5B, 0xF4]);
+        code
+    }
+
+    #[test]
+    fn cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults() {
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let at = WP_RO_VA + 0x10;
+        let page_fault = |code: u32| ArchitecturalFault {
+            vector: 14,
+            error_code: Some(code),
+            linear_address: Some(at),
+        };
+        // A supervisor page and a user page (U/S = 1, R/W = 0): with WP = 0 the supervisor writes
+        // both, with WP = 1 neither (error code P | W).
+        for user in [false, true] {
+            let (mut boot, _) = boot_with_entry(&wp_store_code(true));
+            wp_read_only_page(&mut boot, user);
+            let cr0 = boot.board.state().cr0.unwrap();
+            assert_ne!(cr0 & CR0_WP, 0);
+            boot.board.state_mut().gpr[Register::Rbx as usize] = at;
+            let (state, report) = run_set(&mut boot, true, 16, &minimal_set(&cli).with_halt(&halt));
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::Fault(page_fault(3))),
+                "user {user}: {report:?}"
+            );
+            // mov, mov, btr, mov cr0, the store, mov cr0; the second store retires nothing.
+            assert_eq!(report.instructions_executed, 6, "user {user}");
+            assert_eq!(state.cr0, Some(cr0), "user {user}: WP restored");
+            assert_eq!(
+                state.rip,
+                ENTRY + 14 + 6,
+                "user {user}: at the second store"
+            );
+            let mut byte = [0u8];
+            boot.board
+                .bus_mut()
+                .read_flat_bytes(GuestPhysicalAddress::new(at), &mut byte)
+                .unwrap();
+            assert_eq!(byte, [0x5A], "user {user}: the store under WP = 0 landed");
+        }
+        // Control: WP never cleared, the first store faults.
+        let (mut boot, _) = boot_with_entry(&wp_store_code(false));
+        wp_read_only_page(&mut boot, false);
+        boot.board.state_mut().gpr[Register::Rbx as usize] = at;
+        let (_, report) = run_set(&mut boot, true, 16, &minimal_set(&cli).with_halt(&halt));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Fault(page_fault(3)))
+        );
+        assert_eq!(report.instructions_executed, 1);
+    }
+
+    #[test]
+    fn cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing() {
+        // The program of the test above in calls of k instructions with one persistent fetch
+        // cache across them (sealed and checked at every call, S4-14i): the same end.
+        use crate::fetch_translation_cache::{FetchCacheInvalidation, FetchTranslationCache};
+        use crate::paged_memory_adapter::run_cpl0_set_paged_2m_ram_with_cache;
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let at = WP_RO_VA + 0x10;
+        for policy in [
+            FetchCacheInvalidation::WriteWatch,
+            FetchCacheInvalidation::GuestOnly,
+        ] {
+            for budget in 1..=7u64 {
+                let (mut boot, _) = boot_with_entry(&wp_store_code(true));
+                wp_read_only_page(&mut boot, false);
+                boot.board.state_mut().gpr[Register::Rbx as usize] = at;
+                let (cr3, efer) = (boot.board.cr3(), boot.board.efer());
+                let mut state = boot.board.state().clone();
+                state.cr3 = Some(cr3);
+                let cache = FetchTranslationCache::persistent(policy);
+                let set = minimal_set(&cli).with_halt(&halt);
+                let mut retired = 0;
+                let exit = loop {
+                    let report = run_cpl0_set_paged_2m_ram_with_cache(
+                        &mut state,
+                        boot.board.bus_mut(),
+                        0,
+                        cr3,
+                        efer,
+                        long64(),
+                        budget,
+                        INTEGER_FLAGS,
+                        &set,
+                        None,
+                        || false,
+                        |_| {},
+                        false,
+                        Some(&cache),
+                        None,
+                        None,
+                        None,
+                    );
+                    retired += report.instructions_executed;
+                    if report.exit != PagedCpl0SetExit::Run(RunExit::InstructionBudgetExhausted) {
+                        break report.exit;
+                    }
+                };
+                assert!(
+                    matches!(
+                        &exit,
+                        PagedCpl0SetExit::Run(RunExit::Fault(fault))
+                            if fault.vector == 14 && fault.error_code == Some(3)
+                    ),
+                    "{policy:?} budget {budget}: {exit:?}"
+                );
+                assert_eq!(retired, 6, "{policy:?} budget {budget}");
+                let mut byte = [0u8];
+                boot.board
+                    .bus_mut()
+                    .read_flat_bytes(GuestPhysicalAddress::new(at), &mut byte)
+                    .unwrap();
+                assert_eq!(byte, [0x5A], "{policy:?} budget {budget}");
+            }
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_every_cr0_of_the_set_policy_is_a_walker_cr0() {
+        // The loop rebuilds its walker snapshot from every CR0 the policy lets a `MOV CR0` write;
+        // this is why that rebuild cannot fail. Entered with each value, the set runs NOP, HLT
+        // (no `Configuration` exit of the walker, no `Cr0OutsidePolicy` of the set).
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let base: u64 = 0x8001_0033;
+        let mut values = Vec::new();
+        for wp in [0, CR0_WP] {
+            for am in [0, 1u64 << 18] {
+                for cache in [0, 1u64 << 30, 3u64 << 29] {
+                    for em_ts in [0, 4, 8, 12] {
+                        values.push((base & !CR0_WP) | wp | am | cache | em_ts);
+                    }
+                }
+            }
+        }
+        for cr0 in values {
+            let (mut boot, _) = boot_with_entry(&[0x90, 0xF4]);
+            boot.board.state_mut().cr0 = Some(cr0);
+            let (state, report) = run_set(&mut boot, true, 4, &minimal_set(&cli).with_halt(&halt));
+            assert_eq!(
+                report.exit,
+                PagedCpl0SetExit::Run(RunExit::Halted),
+                "{cr0:#x}: {report:?}"
+            );
+            assert_eq!(state.cr0, Some(cr0));
+        }
+    }
+
+    #[test]
+    fn cpl0_set_board_the_patchguard_wp_window_writes_ptes_and_read_only_pages() {
+        // The window of the PatchGuard checks (`ntkrnlmp` + `0x50b1d9`…`+0x50b476`, shortened, plan R
+        // 2.4) on the board: WP cleared; the PDE of the read-only 2 MiB page made writable and the
+        // TLB flushed by toggling CR4.PGE; the PDE put back and flushed again; 16 bytes copied into
+        // the page; `ret` written at +0x100 of it; WP restored; the written `ret` called (code
+        // written under WP = 0 runs, SDM Vol. 3A §11.1.3); then a store into the page is the `#PF`
+        // (P | W) of the last instruction — not of a store inside the window.
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let toggle_pge = [
+            0x0F, 0x20, 0xE2, // mov rdx, cr4
+            0x48, 0x89, 0xD0, // mov rax, rdx
+            0x48, 0x35, 0x80, 0x00, 0x00, 0x00, // xor rax, 0x80
+            0x0F, 0x22, 0xE0, // mov cr4, rax
+            0x0F, 0x22, 0xE2, // mov cr4, rdx
+        ];
+        let (mut boot, _) = boot_with_entry(&[0xF4]);
+        let pde = wp_read_only_page(&mut boot, false);
+        let pde_before = read_qword(&mut boot, pde);
+        let at = WP_RO_VA + 0x40;
+        let mut code = WP_CLEAR.to_vec();
+        code.extend_from_slice(&[0x48, 0xBE]); // mov rsi, imm64
+        code.extend_from_slice(&pde.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x8B, 0x06, 0x48, 0x83, 0xC8, 0x02, 0x48, 0x89, 0x06]);
+        code.extend_from_slice(&toggle_pge);
+        code.extend_from_slice(&[0x48, 0x8B, 0x06, 0x48, 0x83, 0xE0, 0xFD, 0x48, 0x89, 0x06]);
+        code.extend_from_slice(&toggle_pge);
+        code.extend_from_slice(&[0x48, 0xBF]); // mov rdi, imm64
+        code.extend_from_slice(&at.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0xB8]);
+        code.extend_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x07]); // mov [rdi], rax
+        code.extend_from_slice(&[0x48, 0xB8]);
+        code.extend_from_slice(&0x5555_6666_7777_8888u64.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0x47, 0x08]); // mov [rdi + 8], rax
+        code.extend_from_slice(&[0xC6, 0x87, 0xC0, 0x00, 0x00, 0x00, 0xC3]); // mov byte [rdi + 0xc0], 0xc3
+        code.extend_from_slice(&[0x0F, 0x22, 0xC1]); // mov cr0, rcx
+        code.extend_from_slice(&[0x48, 0xB8]);
+        code.extend_from_slice(&(WP_RO_VA + 0x100).to_le_bytes());
+        code.extend_from_slice(&[0xFF, 0xD0]); // call rax
+        let last_store = ENTRY + code.len() as u64;
+        code.extend_from_slice(&[0x48, 0x89, 0x0F, 0xF4]); // mov [rdi], rcx; hlt
+        write_phys(&mut boot, ENTRY, &code);
+        let (cr0, cr4) = (boot.board.state().cr0, boot.board.state().cr4);
+        let (state, report) = run_set(&mut boot, true, 64, &minimal_set(&cli).with_halt(&halt));
+        assert_eq!(
+            report.exit,
+            PagedCpl0SetExit::Run(RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(3),
+                linear_address: Some(at),
+            })),
+            "{report:?}"
+        );
+        assert_eq!(
+            state.rip, last_store,
+            "the #PF is the store after the window"
+        );
+        // 4 + 1 + 3 + 5 + 3 + 5 + 1 + 2 + 2 + 1 + 1 instructions of the window, then `mov rax`,
+        // `call rax` and the written `ret`.
+        assert_eq!(report.instructions_executed, 31);
+        assert_eq!((state.cr0, state.cr4), (cr0, cr4), "CR0 and CR4 restored");
+        assert_eq!(read_qword(&mut boot, at), 0x1111_2222_3333_4444);
+        assert_eq!(read_qword(&mut boot, at + 8), 0x5555_6666_7777_8888);
+        assert_eq!(
+            read_qword(&mut boot, WP_RO_VA + 0x100) & 0xff,
+            0xc3,
+            "ret written"
+        );
+        assert_eq!(
+            read_qword(&mut boot, pde) & !0x60,
+            pde_before & !0x60,
+            "the PDE is read-only again (A/D may be set)"
+        );
+    }
+
+    /// `ntkrnlmp` + `0xc17394`…`+0xc17434` of the Windows media kernel (S7-32 slice R, ISSUE-709;
+    /// `work/s7-32/r/dis_wp_smc_probe.txt`) byte for byte: IRQL 15, CR0 saved in RDI, WP cleared,
+    /// `ret` written into the second byte of a function in read-only code, the function called,
+    /// the byte put back, `mov cr0, rdi`, IRQL back, the result in EAX (0: WP clears and the write
+    /// is seen by the fetch). The RIP-relative `lea rbx` (+0x2c, disp at +0x2f, next +0x33) and the
+    /// `call` (+0x47, rel at +0x48, next +0x4c) are relocated by the test onto its target.
+    const WINDOWS_WP_SMC_PROBE: [u8; 160] = [
+        0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x44, 0x0f, 0x20, 0xc0, 0x88, 0x44, 0x24,
+        0x50, 0xb8, 0x0f, 0x00, 0x00, 0x00, 0x44, 0x0f, 0x22, 0xc0, 0x0f, 0x20, 0xc7, 0x48, 0x89,
+        0x7c, 0x24, 0x60, 0x48, 0x8b, 0xc7, 0x48, 0x0f, 0xba, 0xf0, 0x10, 0x0f, 0x22, 0xc0, 0x48,
+        0x8d, 0x1d, 0xe9, 0x14, 0xfd, 0xff, 0x48, 0x83, 0xc3, 0x02, 0x48, 0x89, 0x5c, 0x24, 0x68,
+        0x40, 0x8a, 0x33, 0x40, 0x88, 0x74, 0x24, 0x58, 0xc6, 0x03, 0xc3, 0xe8, 0xd0, 0x14, 0xfd,
+        0xff, 0x8b, 0xc8, 0x89, 0x44, 0x24, 0x20, 0xeb, 0x18, 0xb9, 0x01, 0x00, 0x00, 0x00, 0x89,
+        0x4c, 0x24, 0x20, 0x48, 0x8b, 0x7c, 0x24, 0x60, 0x40, 0x8a, 0x74, 0x24, 0x58, 0x48, 0x8b,
+        0x5c, 0x24, 0x68, 0x40, 0x38, 0x33, 0x74, 0x03, 0x40, 0x88, 0x33, 0x0f, 0x22, 0xc7, 0xeb,
+        0x04, 0x8b, 0x4c, 0x24, 0x20, 0x0f, 0xb6, 0x44, 0x24, 0x50, 0x44, 0x0f, 0x22, 0xc0, 0x8b,
+        0xc1, 0xeb, 0x0e, 0x0f, 0xb6, 0x44, 0x24, 0x50, 0x44, 0x0f, 0x22, 0xc0, 0xb8, 0x01, 0x00,
+        0x00, 0x00, 0x48, 0x83, 0xc4, 0x30, 0x5f, 0x5e, 0x5b, 0xc3,
+    ];
+    /// `INITKDBG` + `0x198b0`: `xor eax, eax; inc eax; ret`.
+    const WINDOWS_WP_SMC_TARGET: [u8; 5] = [0x33, 0xc0, 0xff, 0xc0, 0xc3];
+
+    #[test]
+    fn cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it() {
+        // The board's own loop (`run_linux_boot_cpl0_set`, the CR8 member bound to the TPR) with
+        // the `MOV CR0` journal of `--cr0-log`: `call probe; hlt` at ENTRY, the probe at
+        // ENTRY + 0x40, the target in a read-only 2 MiB page (code: the PDE has no XD).
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        let probe = ENTRY + 0x40;
+        let target = WP_RO_VA + 0x100;
+        let mut caller = vec![0xE8];
+        caller.extend_from_slice(&((probe - (ENTRY + 5)) as u32).to_le_bytes());
+        caller.push(0xF4);
+        let (mut boot, _) = boot_with_entry(&caller);
+        let mut bytes = WINDOWS_WP_SMC_PROBE;
+        bytes[0x2f..0x33].copy_from_slice(&((target - (probe + 0x33)) as u32).to_le_bytes());
+        bytes[0x48..0x4c].copy_from_slice(&((target - (probe + 0x4c)) as u32).to_le_bytes());
+        write_phys(&mut boot, probe, &bytes);
+        write_phys(&mut boot, target, &WINDOWS_WP_SMC_TARGET);
+        wp_read_only_page(&mut boot, false);
+        boot.board.state_mut().rflags = 2;
+        let cr0 = boot.board.state().cr0.unwrap();
+        boot.board.enable_cr0_journal(8);
+        let tpr = Cell::new(0u8);
+        // The FP member (with the Windows CPUID profile, which declares FPU and FXSR) is what
+        // executes the exact `0F 22 C7` (`mov cr0, rdi`, `WriteCr0Rdi`), as on the Windows board.
+        let cpuid = od_isa::cpuid::CpuidProfile::OdX8664V2Windows;
+        let fp = std::cell::RefCell::new(od_isa::GuestFpState::initial());
+        let set = minimal_set(&cli)
+            .with_halt(&halt)
+            .with_cr8_tpr(&tpr)
+            .with_cpuid(&cpuid)
+            .with_fp_state(&fp);
+        let report = boot
+            .board
+            .run_linux_boot_cpl0_set(256, &set, false, false, true)
+            .unwrap();
+        assert_eq!(report.run.exit, PagedProbeExit::Halted, "{report:?}");
+        assert_eq!(report.exceptions_delivered, 0);
+        let state = boot.board.state().clone();
+        assert_eq!(state.rip, ENTRY + 6);
+        assert_eq!(
+            state.gpr[Register::Rax as usize],
+            0,
+            "the probe saw WP clear and the new code"
+        );
+        assert_eq!(state.cr0, Some(cr0));
+        assert_eq!(
+            read_qword(&mut boot, target) & 0xff_ffff_ffff,
+            0xc3_c0ff_c033,
+            "byte back"
+        );
+        let journal = boot.board.cr0_journal().unwrap();
+        assert_eq!(journal.count(), 2);
+        let entries = journal.entries();
+        assert_eq!(
+            (entries[0].rip, entries[0].old, entries[0].outcome),
+            (
+                probe + 0x29,
+                cr0,
+                crate::Cr0WriteOutcome::Changed { new: cr0 & !CR0_WP }
+            )
+        );
+        assert_eq!(
+            (entries[1].rip, entries[1].old, entries[1].outcome),
+            (
+                probe + 0x74,
+                cr0 & !CR0_WP,
+                crate::Cr0WriteOutcome::Changed { new: cr0 }
+            )
+        );
+        assert_eq!(entries[1].rcx, 0, "the result is in ECX at the restore");
+        assert_eq!(entries[1].rdi, cr0);
+        assert_eq!(
+            entries[1].exceptions_delivered, entries[0].exceptions_delivered,
+            "no exception between the clear and the restore"
+        );
+        assert!(entries[1].retired > entries[0].retired);
+        assert!(entries.iter().all(|entry| entry.cpl == 0));
+    }
+
+    #[test]
+    fn cpl0_set_board_the_journal_records_a_faulting_and_a_refused_mov_cr0() {
+        // `mov cr0, rax` with NW = 1 and CD = 0 is #GP(0) (SDM Vol. 2B MOV CR); with PG = 0 it is
+        // outside the set policy (`Unsupported`). No IDT: both are the stop, and the journal names
+        // the attempt. The same run without the journal ends in the same state with the same
+        // counts (the journal only observes).
+        let cli = CliProfile::NonPviLong64V1;
+        let halt = HaltProfile::Long64V1;
+        for (value, outcome) in [
+            (
+                0x8001_0033u64 | (1 << 29),
+                crate::Cr0WriteOutcome::Fault {
+                    vector: 13,
+                    error_code: Some(0),
+                },
+            ),
+            (
+                0x0001_0033,
+                crate::Cr0WriteOutcome::Unsupported { opcode: 0x22 },
+            ),
+        ] {
+            let mut code = vec![0x48, 0xB8];
+            code.extend_from_slice(&value.to_le_bytes());
+            code.extend_from_slice(&[0x0F, 0x22, 0xC0, 0xF4]);
+            let mut ends = Vec::new();
+            for journal in [true, false] {
+                let (mut boot, _) = boot_with_entry(&code);
+                boot.board.state_mut().rflags = 2;
+                let cr0 = boot.board.state().cr0.unwrap();
+                if journal {
+                    boot.board.enable_cr0_journal(8);
+                }
+                let set = minimal_set(&cli).with_halt(&halt);
+                let report = boot
+                    .board
+                    .run_linux_boot_cpl0_set(16, &set, false, false, true)
+                    .unwrap();
+                assert_eq!(boot.board.state().cr0, Some(cr0), "{value:#x}");
+                if journal {
+                    let journal = boot.board.cr0_journal().unwrap();
+                    let entries = journal.entries();
+                    assert_eq!(entries.len(), 1, "{value:#x}: {entries:?}");
+                    assert_eq!(
+                        (entries[0].rip, entries[0].old, entries[0].outcome),
+                        (ENTRY + 10, cr0, outcome),
+                        "{value:#x}"
+                    );
+                    assert_eq!(entries[0].rax, value);
+                    assert_eq!(
+                        entries[0].retired, 1,
+                        "{value:#x}: the movabs retired before"
+                    );
+                } else {
+                    assert!(boot.board.cr0_journal().is_none());
+                }
+                ends.push((
+                    boot.board.state().clone(),
+                    format!("{:?}", report.run.exit),
+                    report.run.retired,
+                    report.exceptions_delivered,
+                ));
+            }
+            assert_eq!(ends[0], ends[1], "{value:#x}: the journal changed the run");
+        }
+    }
+
     #[test]
     fn cpl0_set_board_a_not_present_divide_gate_is_a_double_fault_on_the_ist_stack() {
         // S7-32 slice Q: #DE through a gate with P = 0 raises #NP(0 * 8 + 3): contributory after a
@@ -15217,6 +15664,7 @@ mod tests {
                 None,
                 Some(&sweep),
                 crate::fetch_translation_cache::FetchCacheTag::Page4K,
+                None,
             );
             let stats = report.fetch_cache_stats.take().expect("the cache is on");
             assert_eq!(stats, plain.stats, "the real cache counts the same");

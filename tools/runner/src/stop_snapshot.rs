@@ -100,7 +100,7 @@ fn opt_hex(value: Option<u64>) -> Value {
 }
 
 /// The JSON of one address: `module` fields when an image covers it, else the reason.
-fn module_json(memory: &impl GuestMemory, address: u64) -> Value {
+pub(crate) fn module_json(memory: &impl GuestMemory, address: u64) -> Value {
     match find_module(memory, address) {
         Lookup::Found {
             module,

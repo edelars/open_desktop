@@ -9,6 +9,7 @@ mod apic_pair;
 mod bus;
 mod clock_owner;
 mod console_output_context;
+mod cr0_journal;
 mod crc32;
 mod diagnostic_vcpu;
 mod display_device;
@@ -311,6 +312,7 @@ pub use firmware_board::{
     QuantumProgress, firmware_handoff_block, load_firmware_image,
 };
 
+pub use cr0_journal::{Cr0Journal, Cr0JournalEntry, Cr0WriteOutcome};
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 pub use io_apic::{IO_APIC_MMIO_BASE, IO_APIC_MMIO_SIZE, IoApic, IoApicHandle};
 pub use local_apic::{

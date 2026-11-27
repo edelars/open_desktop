@@ -846,6 +846,69 @@ IST, CR2 вложенного `#PF`, RF кадра trap, `activity` shutdown, с
 [`s7-32q-exception-delivery.json`](../reports/data/stage7/s7-32q-exception-delivery.json). Независимое ревью — «доработать»,
 после исправлений повторное — «принять».
 
+### S7-32, срез R: CR0.WP = 0 в наборе CPL0, снимок обходчика и журнал `MOV CR0`
+
+**ISA** (`cargo test -p od-isa --test cpl0_profile_set --offline`). Новые:
+`s7_32_slice_r_cr0_wp_is_cleared_and_restored_by_every_mov_cr0_form` (формы RAX, RCX, R14; CR0 с AM/CD и без; состояние
+целиком, RIP, неопределённость флагов, без обращений к памяти), `s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside`,
+`s7_32_slice_r_the_windows_wp_window_clears_and_restores_cr0_and_cr8` (окно ядра `+0xc185d8…+0xc18635` байт в байт с
+членом CR8). Ожидания изменены только в пунктах WP: `cr0_write_outside_policy_is_unsupported_without_mutation`,
+`cr0_am_does_not_widen_the_policy_to_other_bits`, `mov_cr0_rdi_follows_the_set_policy_...`.
+
+**Плата, адаптер, turbo** (`cargo test -p od-machine --lib --offline`). Плата (`linux_direct`):
+`cpl0_set_board_a_cleared_wp_writes_a_read_only_page_and_the_restored_wp_faults` (страница супервизора и пользовательская
+страница только для чтения, один квант: запись при WP = 0, `#PF` с кодом 3 после восстановления; контроль без снятия WP),
+`cpl0_set_board_a_quantum_split_inside_the_wp_window_changes_nothing` (вызовы по k = 1…7 инструкций с постоянным кэшем
+выборки `WriteWatch` и `GuestOnly`), `cpl0_set_board_every_cr0_of_the_set_policy_is_a_walker_cr0` (48 значений CR0 политики),
+`cpl0_set_board_the_windows_wp_smc_probe_returns_zero_and_the_journal_shows_it` (проба `+0xc17394…+0xc17434` байт в байт
+на цикле платы с членами CR8 и FP, цель `33 c0 ff c0 c3` в странице только для чтения: EAX = 0, байт восстановлен, журнал —
+две записи с ECX = 0 и равным числом исключений), `cpl0_set_board_the_patchguard_wp_window_writes_ptes_and_read_only_pages`
+(окно 2.4 сокращённое: PDE страницы 2 MiB R/W 0 → 1 → 0 через окно таблиц, переключение CR4.PGE после каждой записи,
+16 байт в страницу только для чтения, `ret` в неё же, восстановление WP, вызов записанного `ret`; затем запись — `#PF` с
+кодом 3 и CR2 на последней инструкции; проверяются RIP остановки, 31 ретирация, CR0 и CR4, 16 байт, байт `c3`, PDE снова
+только для чтения), `cpl0_set_board_the_journal_records_a_faulting_and_a_refused_mov_cr0` (записи `#GP(0)` и `Unsupported`;
+тот же прогон без журнала даёт то же состояние, выход, ретирации и исключения).
+Адаптер: `s7_32_slice_r_write_rights_follow_cr0_wp_for_the_supervisor_only` (PTE супервизора/пользователя × WP × CPL;
+ошибки 3 и 7, бит D). Turbo против общего шага (`turbo::tests::s7_32_slice_r_*`, 9): окно ядра (CR8 — NOP той же длины),
+запись в страницу только для чтения сгенерированным кодом и формой с GS без шаблона, кванты по 1, 2, 3, 5, 8 инструкций,
+проба SMC (кванты 1, 2, 3, 7), цель с медленно декодируемой формой (`65 8b 04 25 …`: до записи её декод лежит в `slow_insns`,
+после — декод новых байтов), `REP STOSB`, окно PatchGuard (запись PTE, переключение CR4.PGE, копирование, `ret` в код), PTE
+между двумя окнами (перенос на другой кадр и снятие P), представление TLB для общего шага. Модуль: `cr0_journal::tests`.
+Сравнение с общим шагом не ловит ошибку, общую для обоих путей (снимок обходчика не пересобран — оба исполняют окно с WP = 1
+одинаково), поэтому тесты окна PatchGuard, PTE между окнами (оба варианта) и разбиения кванта (программа с записью)
+проверяют и абсолютный итог по RAM машины turbo (`Outcome::turbo`): записи окна в кадре страницы только для чтения, байт
+`c3`, PTE, CR0 и CR4 после остановки, код ошибки, сохранённый RIP кадра `#PF` (инструкция после окна, а не запись внутри
+него) и CR2. Окно ядра (`+0xc185d8…`) пишет только в стек (страница для записи): ошибку снимка в нём видит только
+инвариант `debug_assert` на границе (в инъекции он снят).
+
+**Runner** (`cargo test -p od-runner --offline`): `cr0_log_needs_the_unified_loop_and_a_limit_from_1_to_4096`,
+`a_cr0_log_run_reports_the_journal_and_is_no_diagnostic_run`.
+
+**Инъекции** (файл возвращался исходным, `work/s7-32/r/mut/`, второй прогон — после ревью на усиленных тестах): политика без
+WP — 14 + 4 падения (od-machine + od-isa); цикл без пересборки снимка (инвариант снят) — 12, в том числе окно PatchGuard
+turbo и платы, PTE между окнами только с вариантом «снятие P» (отдельный прогон: 1) и разбиение кванта turbo только с
+программой записи (отдельный прогон: 1); окно ядра turbo при ней не падает (записей в страницы только для чтения нет, см. выше), тестов ISA она не касается (цикл — в od-machine);
+пересборка только по CR4 — 12; ключ слота turbo без WP — 4; `view_host` без сравнения снимков — 1; политика допускает и
+PG = 0 — 4 (od-isa, первый прогон: od-isa не менялся); блоки не удаляются при записи в код — 1 (проба SMC; в первом прогоне
+падал и тест медленного декода — до его переделки при разборе следующей инъекции); `fast_translate` без WP — 4;
+`table_written` пропускает листовой кадр — 1 (первый прогон); журнал без формы RAX — 1. Не пойманы и записаны с причиной: запись
+`slow_insns` не удаляется при записи в код — не наблюдаема (следующий прогон компилирует цель заново, и `keep_decodes`
+заменяет запись; тест проверяет, что запомнен декод новых байтов); листовой кадр сбрасывает только записи поиска — маскируется
+(кадр снимается с наблюдения, следующий обход ставит его как новый, и `flush_write_tlb` очищает TLB записи всех слотов).
+
+**Итоговые проверки** (один раз, свой `CARGO_TARGET_DIR`): `cargo fmt --all -- --check` — чисто;
+`cargo check --workspace --all-targets --offline` — чисто (предупреждения прежние: `page_walk.rs`, `bus.rs`, od-host,
+`s7_31i_ldmxcsr`); `cargo test -p od-isa` — 7 143, 0 отказов; `cargo test -p od-machine --lib` — 2 736, 18 ignored,
+0 отказов; `cargo test -p od-runner` — 1 120, 5 ignored, 0 отказов; `cargo test -p od-testkit -p od-host -p od-jit` — 2 046,
+15 ignored, 0 отказов; `python3 tests/system/firmware_boot_smoke.py` — код 0. Linux (рецепт S6-21 `stage4a-apic`, `--seed 24301`, 2,5·10⁹, 1 293 с,
+`work/s7-32/r/lrun.sh`): запись совпадает со срезом Q во всех 177 полях (`budget_exhausted`, 2 499 983 194 ретирации,
+11 286 в CPL3, 18 072 прерывания, 35 исключений — 34 `#PF` и 1 `#GP`, COM1 тот же); `--verify-report` — код 0.
+Статистических полей (счётчиков кэша выборки и обходов) запись `linux-direct` без `OD_FETCH_CACHE_STATS` не содержит, сравнивать
+нечего. Turbo против `--no-turbo` того же runner (`tools/bench/linux_boot_perf.py record` и `compare`, Linux через прошивку, ядро Linux патчит свой код в turbo): G100 и G3200 — `GOLDEN: MATCH` (G3200: 3,5 с turbo и 1 440 с общим шагом, строка `Run /init` в COM1, 21 005 прерываний, 190 инструкций CPL3). Прогоны Windows — [отчёт этапа 7, срез R](../reports/STAGE_7_REPORT.md#срез-r-cr0wp--0-в-наборе-cpl0-2026-11-27).
+После ревью (только затронутые наборы, свой `CARGO_TARGET_DIR`): `cargo fmt --all -- --check` и `cargo check --workspace
+--all-targets --offline` — чисто; `cargo test -p od-machine --lib` — 2 737, 18 ignored; `cargo test -p od-runner` — 1 120,
+5 ignored; 0 отказов.
+
 ## S4-27a: caller-driven APIC interrupt entry
 
 Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,

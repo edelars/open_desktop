@@ -29,7 +29,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [(--nvme-image <raw> | --disk <path>[,ro]) [--nvme-pci]] \
                     [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] [--turbo-profile] \
-                    [--device-errors stop|log[:<n>]] \
+                    [--device-errors stop|log[:<n>]] [--cr0-log <n>] \
                     [--stop-snapshot <file> [--peek (<hex>|rip_module+<hex>)[:<bytes>] ...]] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -56,7 +56,13 @@ MMIO access a device refuses or no device serves; log is a DIAGNOSTIC run: such 
 completed as an open bus (a write is dropped, a read returns all ones) and counted by device, \
 address, direction, width and error in the report's device_errors, up to <n> accesses (100000 \
 by default) and 4096 groups, after which the next refusal stops the run as with stop. The \
-result of a log run is not a compatibility result: the guest runs on past what the model refused.";
+result of a log run is not a compatibility result: the guest runs on past what the model refused.\n\
+\x20\x20--cr0-log <n> (--cpu-loop unified, n from 1 to 4096): the report's cr0_writes lists the first \
+<n> instructions that changed CR0 and failed attempts of MOV CR0 (RIP with its module and RVA, CPL, \
+old and new CR0 or the fault, RAX, RCX, RDI, and the run's retired instructions, delivered \
+exceptions and interrupts at that point) and counts all of them; it changes no result.";
+/// The largest `<n>` of `--cr0-log`.
+const CR0_LOG_MAX_LIMIT: usize = 4096;
 /// `--device-errors log` without a limit: the accesses the log absorbs before it stops the run.
 const DEVICE_ERROR_LOG_DEFAULT_LIMIT: u64 = 100_000;
 /// The largest `<n>` of `--device-errors log:<n>`.
@@ -147,6 +153,9 @@ struct Options {
     /// device accesses the run absorbs and logs; `None` (`stop`, the default) ends the run on
     /// the first one.
     device_error_limit: Option<u64>,
+    /// S7-32 slice R `--cr0-log <n>` (unified loop only): the journal of `MOV CR0` keeps `n`
+    /// entries.
+    cr0_log: Option<usize>,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -448,6 +457,7 @@ pub fn run(args: &[String]) -> ExitCode {
         journal_config: journal_config(&options),
         journal: None,
         device_error_limit: options.device_error_limit,
+        cr0_log: options.cr0_log,
     };
     let nvme = options.nvme_source();
     let mut first = match boot(
@@ -1091,6 +1101,8 @@ struct Diagnostics {
     journal: Option<RunJournal>,
     /// The limit of `--device-errors log` (`None`: stop).
     device_error_limit: Option<u64>,
+    /// The limit of `--cr0-log` (`None`: no journal).
+    cr0_log: Option<usize>,
 }
 
 /// The vCPU the single-processor firmware boot runs on.
@@ -1567,6 +1579,10 @@ fn boot(
                 ),
             }
         }
+        // S7-32 slice R diagnostic: `--cr0-log` journals the `MOV CR0` of the unified loop.
+        if let Some(limit) = diagnostics.cr0_log {
+            board.enable_cr0_journal(limit);
+        }
         // S7-32 diagnostic: `--device-errors log` absorbs and logs refused device accesses.
         if let Some(limit) = diagnostics.device_error_limit {
             board
@@ -1707,6 +1723,7 @@ fn boot(
         })
     };
     let device_error_limit = diagnostics.device_error_limit;
+    let cr0_log_limit = diagnostics.cr0_log;
     let inputs = || {
         let mut inputs = json!({
             "image_sha256": sha256_hex(image),
@@ -1724,6 +1741,9 @@ fn boot(
         // its fields.
         if let Some(limit) = device_error_limit {
             inputs["device_errors"] = json!(format!("log:{limit}"));
+        }
+        if let Some(limit) = cr0_log_limit {
+            inputs["cr0_log"] = json!(limit);
         }
         inputs
     };
@@ -1953,6 +1973,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut ram_mib: Option<u64> = None;
     let mut nvme_pci = false;
     let mut device_errors: Option<Option<u64>> = None;
+    let mut cr0_log: Option<usize> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -2098,6 +2119,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--device-errors" if device_errors.is_none() => {
                 device_errors = Some(parse_device_errors(value)?)
             }
+            "--cr0-log" if cr0_log.is_none() => {
+                cr0_log = Some(
+                    value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|limit| (1..=CR0_LOG_MAX_LIMIT).contains(limit))
+                        .ok_or_else(|| {
+                            format!(
+                                "invalid --cr0-log '{value}'; expected 1 to {CR0_LOG_MAX_LIMIT}"
+                            )
+                        })?,
+                );
+            }
             "--mark-rip" if mark_rip.is_none() => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 mark_rip = Some(
@@ -2165,6 +2199,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let device_error_limit = device_errors.flatten();
     if device_error_limit.is_some() && !unified {
         return Err("--device-errors log requires --cpu-loop unified".to_owned());
+    }
+    if cr0_log.is_some() && !unified {
+        return Err("--cr0-log requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -2319,6 +2356,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         turbo_stats,
         turbo_profile,
         device_error_limit,
+        cr0_log,
     })
 }
 
@@ -2352,10 +2390,62 @@ fn mark_device_error_diagnostic(
     board: &LoadedFirmwareBoard,
     limit: Option<u64>,
 ) {
+    // S7-32 slice R: the journal of `MOV CR0` (`--cr0-log`) goes into every report of the run as
+    // well; it is an observation, not a diagnostic mode, so it adds no `diagnostic_run`.
+    if let Some(journal) = board.cr0_journal() {
+        value["cr0_writes"] = cr0_journal_report(board, journal);
+    }
     if limit.is_some() {
         value["diagnostic_run"] = json!(true);
         value["device_errors"] = device_errors_report(board);
     }
+}
+
+/// The `cr0_writes` field of a `--cr0-log` run: the journaled `MOV CR0` in order, each RIP with the
+/// image that covers it at the end of the run (as the stop snapshot finds it; an INIT section the
+/// guest freed since may not translate any more: then `module` holds the reason).
+fn cr0_journal_report(board: &LoadedFirmwareBoard, journal: &od_machine::Cr0Journal) -> Value {
+    let hex = |value: u64| format!("0x{value:016x}");
+    let memory = BoardMemory { board, vcpu: 0 };
+    let entries: Vec<Value> = journal
+        .entries()
+        .iter()
+        .map(|entry| {
+            let mut value = json!({
+                "rip": hex(entry.rip),
+                "module": stop_snapshot::module_json(&memory, entry.rip),
+                "cpl": entry.cpl,
+                "old_cr0": hex(entry.old),
+                "rax": hex(entry.rax),
+                "rcx": hex(entry.rcx),
+                "rdi": hex(entry.rdi),
+                "retired": entry.retired,
+                "exceptions_delivered": entry.exceptions_delivered,
+                "interrupts_delivered": entry.interrupts_delivered,
+            });
+            match entry.outcome {
+                od_machine::Cr0WriteOutcome::Changed { new } => {
+                    value["outcome"] = json!("changed");
+                    value["new_cr0"] = json!(hex(new));
+                }
+                od_machine::Cr0WriteOutcome::Fault { vector, error_code } => {
+                    value["outcome"] = json!("fault");
+                    value["vector"] = json!(vector);
+                    value["error_code"] = json!(error_code);
+                }
+                od_machine::Cr0WriteOutcome::Unsupported { opcode } => {
+                    value["outcome"] = json!("unsupported");
+                    value["opcode"] = json!(opcode);
+                }
+            }
+            value
+        })
+        .collect();
+    json!({
+        "limit": journal.limit(),
+        "count": journal.count(),
+        "entries": entries,
+    })
 }
 
 /// The `device_errors` field of a `--device-errors log` run: the groups of absorbed accesses in
@@ -2765,6 +2855,43 @@ mod tests {
         ]);
         given.extend(args(extra));
         given
+    }
+
+    /// S7-32 slice R: `--cr0-log <n>` belongs to the unified loop, takes 1 to 4096 and is off by
+    /// default.
+    #[test]
+    fn cr0_log_needs_the_unified_loop_and_a_limit_from_1_to_4096() {
+        assert_eq!(parse(&unified_with(&[])).unwrap().cr0_log, None);
+        assert_eq!(
+            parse(&unified_with(&["--cr0-log", "64"])).unwrap().cr0_log,
+            Some(64)
+        );
+        assert_eq!(
+            parse(&unified_with(&["--cr0-log", "4096"]))
+                .unwrap()
+                .cr0_log,
+            Some(4096)
+        );
+        for value in ["0", "4097", "-1", "x", ""] {
+            let error = parse(&unified_with(&["--cr0-log", value])).err().unwrap();
+            assert!(error.contains("invalid --cr0-log"), "{value}: {error}");
+        }
+        let error = parse(&args(&[
+            "--image",
+            "rom.bin",
+            "--com1-out",
+            "out.com1",
+            "--budget",
+            "10",
+            "--cr0-log",
+            "8",
+        ]))
+        .err()
+        .unwrap();
+        assert!(
+            error.contains("--cr0-log requires --cpu-loop unified"),
+            "{error}"
+        );
     }
 
     /// `--no-turbo`, `--turbo-stats` and `--turbo-profile` belong to the unified loop, are off by
@@ -3601,6 +3728,51 @@ mod tests {
             [5, 5, 6, 5],
             "7 (completed with absorbed refusals) becomes the 5 of error"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// S7-32 slice R: a `--cr0-log` run carries `cr0_writes` in every report (here the run error
+    /// of the unified loop on a board without the Linux profile), and adds no diagnostic mark; a
+    /// run without it has no such field.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_cr0_log_run_reports_the_journal_and_is_no_diagnostic_run() {
+        let rom = halting_rom();
+        let dir = std::env::temp_dir().join(format!("od-runner-cr0-log-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let com1 = dir.join("com1.txt");
+        let config = board_config(None, false, None);
+        for limit in [Some(4), None] {
+            let mut diagnostics = Diagnostics {
+                cr0_log: limit,
+                ..Diagnostics::default()
+            };
+            let result = boot(
+                &rom,
+                &config,
+                100,
+                com1.to_str().unwrap(),
+                None,
+                &[],
+                &mut diagnostics,
+                Some(od_machine::UnifiedGuest::Windows),
+                None,
+                &[],
+                None,
+                &[],
+            );
+            let Err((value, _)) = result else {
+                panic!("the unified loop refuses a board without the Linux profile");
+            };
+            assert!(value.get("diagnostic_run").is_none(), "{value}");
+            if limit.is_some() {
+                assert_eq!(value["cr0_writes"]["limit"], 4, "{value}");
+                assert_eq!(value["cr0_writes"]["count"], 0, "{value}");
+                assert_eq!(value["cr0_writes"]["entries"], json!([]), "{value}");
+            } else {
+                assert!(value.get("cr0_writes").is_none(), "{value}");
+            }
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

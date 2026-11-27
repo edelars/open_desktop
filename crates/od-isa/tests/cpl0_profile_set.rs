@@ -657,12 +657,11 @@ fn cr4_write_clearing_pae_is_gp_without_mutation() {
 #[test]
 fn cr0_write_outside_policy_is_unsupported_without_mutation() {
     let set = cr_set();
-    // PE, PG and WP cleared, bit 32 set (reserved), and zero: the policy only lets EM/TS (and AM,
-    // CD, NW: S4-38L7f, S7-32 slice I, tested on their own) vary on top of CR0_BASE.
+    // PE and PG cleared, bit 32 set (reserved), and zero: the policy only lets EM/TS (and AM, CD,
+    // NW, WP: S4-38L7f, S7-32 slices I and R, tested on their own) vary on top of CR0_BASE.
     for value in [
         CR0_BASE & !1,
         CR0_BASE & !0x8000_0000,
-        CR0_BASE & !(1 << 16),
         CR0_BASE | (1 << 32),
         0,
     ] {
@@ -11902,14 +11901,14 @@ fn cr0_am_is_accepted_by_the_set_policy() {
 #[test]
 fn cr0_am_does_not_widen_the_policy_to_other_bits() {
     let set = cr_set();
-    // Bit 17 (reserved), bit 19, bit 32; PG/PE/WP cleared with AM set. CD and NW joined the policy
-    // in S7-32 slice I (`s7_32_slice_i_...`).
+    // Bit 17 (reserved), bit 19, bit 32; PG/PE cleared with AM set. CD and NW joined the policy in
+    // S7-32 slice I (`s7_32_slice_i_...`), WP in slice R (`s7_32_slice_r_...`).
     for value in [
         CR0_BASE | CR0_AM | (1 << 17),
         CR0_BASE | CR0_AM | (1 << 19),
         CR0_BASE | CR0_AM | (1 << 32),
         (CR0_BASE | CR0_AM) & !1,
-        (CR0_BASE | CR0_AM) & !(1 << 16),
+        (CR0_BASE | CR0_AM) & !(1 << 31),
         CR0_AM,
     ] {
         let mut code = movabs_rax(value);
@@ -43829,12 +43828,14 @@ fn mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedn
     let cell = RefCell::new(GuestFpState::initial());
     let set = fp_set(&cell);
     // In policy: BASE, BASE | TS | EM (the kernel writes the value with TS/EM cleared, but a
-    // write that sets them is the policy's too), BASE | AM.
+    // write that sets them is the policy's too), BASE | AM; S7-32 slice R: WP cleared.
     for value in [
         CR0_BASE,
         CR0_BASE | CR0_TS | CR0_EM,
         CR0_BASE | (1 << 18),
         CR0_BASE | (1 << 18) | CR0_EM,
+        CR0_BASE & !(1 << 16),
+        (CR0_BASE | (1 << 18)) & !(1 << 16),
     ] {
         let mut state = fp_state(CR0_BASE | CR0_TS, CR4_FP);
         state.gpr[Register::Rdi as usize] = value;
@@ -43850,11 +43851,10 @@ fn mov_cr0_rdi_follows_the_set_policy_and_changes_only_cr0_rip_and_flag_definedn
             od_isa::INTEGER_FLAGS & !0x8d5, // the six arithmetic flags become undefined
         );
     }
-    // Out of policy: PG cleared, WP cleared, a high bit: Unsupported 0x22, no change. S7-32 slice I:
-    // CD (bit 30) is in the policy now; NW (bit 29) without CD is #GP(0), no change.
+    // Out of policy: PG cleared, a high bit: Unsupported 0x22, no change. S7-32 slice I: CD (bit 30)
+    // is in the policy now; NW (bit 29) without CD is #GP(0), no change. S7-32 slice R: WP too.
     for (value, gp) in [
         (CR0_BASE & !(1 << 31), false),
-        (CR0_BASE & !(1 << 16), false),
         (CR0_BASE | (1 << 29), true),
         (CR0_BASE | (1 << 32), false),
         (CR0_BASE & !1, false),
@@ -60186,4 +60186,148 @@ fn s7_32_w4_a_model_error_of_the_fsave_spelling_keeps_rip_on_the_fwait_byte() {
         assert_eq!(*cell.borrow(), w4_x87_cell(), "{rax:#x}");
         assert_eq!(!memory.writes.is_empty(), partial, "{rax:#x}");
     }
+}
+
+// ---- S7-32 slice R (ISSUE-709): CR0.WP in the CPL0 set policy. SDM 325462-093US Vol. 3A §2.5
+// (CR0.WP: "when clear, allows supervisor-level procedures to write into read-only pages"), Vol. 2B
+// "MOV—Move to/from Control Registers" (64-bit mode exceptions: clearing WP is none of them). The
+// set only stores WP; the walker of the board applies it (od-machine tests). ----
+
+const CR0_WP: u64 = 1 << 16;
+
+#[test]
+fn s7_32_slice_r_cr0_wp_is_cleared_and_restored_by_every_mov_cr0_form() {
+    // `mov cr0, rax` (`WriteCr0`), `mov cr0, rcx` and `mov cr0, r14` (`WriteControl`); the RDI form
+    // (`WriteCr0Rdi`, FP member) is `mov_cr0_rdi_follows_the_set_policy_...`.
+    let forms: [(&[u8], Register); 3] = [
+        (&[0x0f, 0x22, 0xc0], Register::Rax),
+        (&[0x0f, 0x22, 0xc1], Register::Rcx),
+        (&[0x41, 0x0f, 0x22, 0xc6], Register::R14),
+    ];
+    for (bytes, source) in forms {
+        for (start, value) in [
+            (CR0_BASE, CR0_BASE & !CR0_WP),
+            (CR0_BASE | CR0_AM, (CR0_BASE | CR0_AM | CR0_CD) & !CR0_WP),
+            (CR0_BASE & !CR0_WP, CR0_BASE),
+            ((CR0_BASE | CR0_AM) & !CR0_WP, CR0_BASE | CR0_AM),
+        ] {
+            let label = format!("{bytes:02x?} {start:#x} -> {value:#x}");
+            let mut state = board_state();
+            state.cr0 = Some(start);
+            state.gpr[source as usize] = value;
+            let mut before = state.clone();
+            let (result, memory) = s7_32_run(&mut state, bytes, 1);
+            assert_eq!(
+                result.instructions_executed, 1,
+                "{label}: {:?}",
+                result.exit
+            );
+            before.cr0 = Some(value);
+            before.rip += bytes.len() as u64;
+            assert_eq!(state, before, "{label}");
+            assert_eq!(
+                result.rflags_defined,
+                od_isa::INTEGER_FLAGS & !ARITHMETIC,
+                "{label}"
+            );
+            assert!(
+                memory.writes.is_empty() && memory.reads.is_empty(),
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn s7_32_slice_r_a_cr0_without_wp_is_admitted_at_the_entry_and_pe_pg_stay_outside() {
+    for cr0 in [CR0_BASE & !CR0_WP, (CR0_BASE | CR0_AM) & !CR0_WP] {
+        let mut state = board_state();
+        state.cr0 = Some(cr0);
+        let (result, _) = s7_32_run(&mut state, &[0x90], 1);
+        assert_eq!(result.instructions_executed, 1, "{cr0:#x}");
+        assert_eq!(state.cr0, Some(cr0));
+    }
+    for cr0 in [
+        CR0_BASE & !(CR0_WP | 1),
+        CR0_BASE & !(CR0_WP | (1 << 31)),
+        (CR0_BASE & !CR0_WP) | (1 << 17),
+    ] {
+        let mut state = board_state();
+        state.cr0 = Some(cr0);
+        let before = state.clone();
+        let mut memory = BitsMemory::new(&[0x90]);
+        let error = run_with_cpl0_profile_set(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring0, 1),
+            od_isa::INTEGER_FLAGS,
+            &base(),
+            None,
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            Cpl0ProfileSetInputError::Cr0OutsidePolicy { value: cr0 },
+            "{cr0:#x}"
+        );
+        assert_eq!(state, before);
+    }
+}
+
+/// `ntkrnlmp` + `0xc185d8`…`+0xc18635` (INIT section of the Windows media kernel, S7-32 slice Q stop
+/// ISSUE-709): IRQL 15, save CR0, clear WP, write CR0, jump to the restore, read CR0 back, restore
+/// the saved value, restore CR8. Bytes as in the image (`work/s7-32/r/dis_wp_window_c185ff.txt`).
+const WINDOWS_CR0_WP_WINDOW: [u8; 93] = [
+    0x44, 0x0f, 0x20, 0xc2, 0x88, 0x94, 0x24, 0x48, 0x01, 0x00, 0x00, 0xb8, 0x0f, 0x00, 0x00, 0x00,
+    0x44, 0x0f, 0x22, 0xc0, 0x0f, 0x20, 0xc1, 0x48, 0x89, 0x8c, 0x24, 0x38, 0x01, 0x00, 0x00, 0x48,
+    0x8b, 0xc1, 0x48, 0x0f, 0xba, 0xf0, 0x10, 0x0f, 0x22, 0xc0, 0xeb, 0x1f, 0x48, 0x8b, 0xbc, 0x24,
+    0x30, 0x01, 0x00, 0x00, 0x0f, 0xba, 0xaf, 0xdc, 0x09, 0x00, 0x00, 0x16, 0x48, 0x8b, 0x8c, 0x24,
+    0x38, 0x01, 0x00, 0x00, 0x8a, 0x94, 0x24, 0x48, 0x01, 0x00, 0x00, 0x0f, 0x20, 0xc0, 0x48, 0x3b,
+    0xc8, 0x74, 0x03, 0x0f, 0x22, 0xc1, 0x0f, 0xb6, 0xc2, 0x44, 0x0f, 0x22, 0xc0,
+];
+
+#[test]
+fn s7_32_slice_r_the_windows_wp_window_clears_and_restores_cr0_and_cr8() {
+    const RSP: u64 = 0x8000;
+    const WINDOWS_CR0: u64 = 0x8005_0033;
+    let tpr = Cell::new(0u8);
+    let set = base().with_cr8_tpr(&tpr);
+    let mut state = board_state();
+    state.cr0 = Some(WINDOWS_CR0);
+    state.gpr[Register::Rsp as usize] = RSP;
+    // Up to and including `mov cr0, rax` (+0xc185ff): nine instructions, WP is clear.
+    let (result, _) = s7_32_run_set(&mut state, &WINDOWS_CR0_WP_WINDOW, 9, &set);
+    assert_eq!(result.instructions_executed, 9, "{:?}", result.exit);
+    assert_eq!(state.cr0, Some(WINDOWS_CR0 & !CR0_WP));
+    assert_eq!(tpr.get(), 0xf, "IRQL 15");
+    assert_eq!(state.rip, RIP + 0x2a, "at the jmp to the restore");
+    // The rest: jmp, mov rax, cr0, cmp, je (not taken), mov cr0, rcx, movzx, mov cr8 — seven more.
+    let mut memory = BitsMemory::new(&WINDOWS_CR0_WP_WINDOW);
+    let result = run_with_cpl0_profile_set(
+        &mut state,
+        &mut memory,
+        config(PrivilegeLevel::Ring0, 7),
+        od_isa::INTEGER_FLAGS,
+        &set,
+        None,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(result.instructions_executed, 7, "{:?}", result.exit);
+    assert_eq!(state.rip, RIP + WINDOWS_CR0_WP_WINDOW.len() as u64);
+    assert_eq!(state.cr0, Some(WINDOWS_CR0));
+    assert_eq!(tpr.get(), 0, "CR8 restored");
+    assert_eq!(state.gpr[Register::Rcx as usize], WINDOWS_CR0);
+    // One run of all sixteen instructions writes the two stack slots of the kernel.
+    let mut state = board_state();
+    state.cr0 = Some(WINDOWS_CR0);
+    state.gpr[Register::Rsp as usize] = RSP;
+    tpr.set(2);
+    let (result, memory) = s7_32_run_set(&mut state, &WINDOWS_CR0_WP_WINDOW, 16, &set);
+    assert_eq!(result.instructions_executed, 16, "{:?}", result.exit);
+    assert_eq!(state.cr0, Some(WINDOWS_CR0));
+    assert_eq!(tpr.get(), 2);
+    assert_eq!(memory.qword(RSP + 0x138), WINDOWS_CR0);
+    assert_eq!(memory.data.get(&(RSP + 0x148)).copied(), Some(2));
 }

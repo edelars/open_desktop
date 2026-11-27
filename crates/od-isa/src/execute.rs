@@ -1872,6 +1872,22 @@ const CPUID_LEAF1_EDX_CLFSH: u32 = 1 << 19;
 /// gates them.
 const CR0_NW: u64 = 1 << 29;
 const CR0_CD: u64 = 1 << 30;
+/// CR0.WP (bit 16), free in the CPL0 set policy since S7-32 slice R (ISSUE-709). SDM 325462-093US
+/// Vol. 3A §2.5: "When set, inhibits supervisor-level procedures from writing into read-only pages;
+/// when clear, allows supervisor-level procedures to write into read-only pages (regardless of the
+/// U/S bit setting; see Section 5.1.3 and Section 5.6)". The set only stores it; the board walker
+/// reads it (`Long64ProbeConfig::write_protect`, the rights of Vol. 3A §5.6.1) and the set loop
+/// rebuilds the walker snapshot after any retired CR0 change. No CPUID feature gates it. §2.5 also
+/// says WP "cannot be cleared as long as CR4.CET = 1": the CR4 policy refuses CET (checked below at
+/// compile time), so that #GP(0) is unreachable; admitting CET needs it.
+const CR0_WP: u64 = 1 << 16;
+/// CR4.CET (bit 23): outside the CR4 policy of the set. Clearing CR0.WP is accepted only because of
+/// that (SDM Vol. 3A §2.5); admitting CET must add the #GP(0) of a WP clear while CET = 1.
+const CR4_CET: u64 = 1 << 23;
+// S7-32 slice R: the CR4 policy keeps CET out, which is what lets the CR0 policy accept a WP clear
+// without the #GP(0) of SDM Vol. 3A §2.5 ([`CR0_WP`]). Admitting CET breaks this build.
+const _: () =
+    assert!(!ControlRegisterPolicy::Cpl0BaseLong64V1.accepts_cr4(Cr4Profile::BASE | CR4_CET));
 
 /// S7-32 slice I: a CR0 value that `MOV CR0` refuses with #GP(0) before any policy check: NW set
 /// while CD is clear (SDM Vol. 2B "MOV—Move to/from Control Registers", 64-Bit Mode Exceptions:
@@ -1927,7 +1943,9 @@ pub enum ControlRegisterPolicy {
 
 impl ControlRegisterPolicy {
     /// CR0 values of the CPL0 set: the `FpInitLong64V1` values, since S4-38L7f optionally with
-    /// AM (bit 18), since S7-32 slice I optionally with CD (bit 30) and NW (bit 29). The policy is
+    /// AM (bit 18), since S7-32 slice I optionally with CD (bit 30) and NW (bit 29), since S7-32
+    /// slice R optionally without WP (bit 16, [`CR0_WP`]: the Windows kernel clears it at IRQL 15 to
+    /// write read-only pages and sets it back, ISSUE-709). The policy is
     /// a mask only, checked at every step (`admits_state`); NW without CD, which the register
     /// cannot hold, is refused by every `MOV CR0` (#GP(0), [`cr0_write_is_gp`]) and at the entry
     /// of the set (`Cr0OutsidePolicy`). `Cr0Profile::accepts` itself is unchanged for the
@@ -1937,7 +1955,7 @@ impl ControlRegisterPolicy {
     const fn accepts_cr0(self, value: u64) -> bool {
         match self {
             Self::Cpl0BaseLong64V1 => {
-                Cr0Profile::FpInitLong64V1.accepts(value & !(CR0_AM | CR0_CD | CR0_NW))
+                Cr0Profile::FpInitLong64V1.accepts((value | CR0_WP) & !(CR0_AM | CR0_CD | CR0_NW))
             }
         }
     }
