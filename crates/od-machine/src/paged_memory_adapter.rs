@@ -3156,6 +3156,9 @@ fn run_cpl0_set_loop_impl<
     let mut pit_written = false;
     let mut port_accessed = false;
     let mut mmio_written = false;
+    // S7-32 slice T: the journal of MSR #GP(0) of absent MSRs, taken once per call (not per
+    // instruction: the hot path stays as it was).
+    let msr_gp_journal = bus.machine().msr_gp_journal().cloned();
     let (exit, page_fault, memory_error) = loop {
         // S7-32 slice R: the walker snapshot follows CR0 at every instruction boundary (rebuilt
         // after a step that changed it, below); nothing else in the loop writes CR0.
@@ -3730,6 +3733,34 @@ fn run_cpl0_set_loop_impl<
                     delivered_exceptions,
                     irq.as_ref().map_or(0, |hook| hook.counters.irqs_delivered),
                 ));
+            }
+            // S7-32 slice T: an `RDMSR`/`WRMSR` the set answered with #GP(0) because the virtual
+            // CPU lacks the MSR (`od_isa::msr::windows_msr_absent`). Only with the journal, at CPL0,
+            // on the path of a #GP: the instruction is decoded again read-only, as for the journal
+            // of `MOV CR0` above.
+            if let Some(journal) = msr_gp_journal.as_deref()
+                && !cpl3
+                && done.instructions_executed == 0
+                && matches!(
+                    &done.exit,
+                    Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) if fault.vector == 13
+                )
+                && let index = state.gpr[od_isa::Register::Rcx as usize] as u32
+                && od_isa::msr::windows_msr_absent(index)
+                && let Some(write) = histogram_decode(instruction_rip, ram, &paging, context)
+                    .and_then(|instruction| match instruction.operation {
+                        od_isa::long_decode::Operation::ReadMsr => Some(false),
+                        od_isa::long_decode::Operation::WriteMsr => Some(true),
+                        _ => None,
+                    })
+            {
+                journal.record(crate::msr_gp_journal::MsrGpEntry {
+                    index,
+                    write,
+                    rip: instruction_rip,
+                    cpl: 0,
+                    retired: journal.retired_base() + (instructions_executed - quantum_base),
+                });
             }
             if iretq_detected && done.instructions_executed == 1 {
                 if let Some(pending) = pending_post_iret.as_ref() {

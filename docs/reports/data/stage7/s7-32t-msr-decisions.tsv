@@ -1,0 +1,178 @@
+index	name	sdm	cpuid	rd	wr	files	decision	reason
+0x1	IA32_P5_MC_TYPE;IA32_P5_MC_TYPE (P5_MC_TYPE)	tremont	none	5	4	ntoskrnl.exe:9	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x2	-	undefined	none	1	2	ntoskrnl.exe:3	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x3	-	undefined	none	0	2	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x7	-	undefined	none	3	1	ntoskrnl.exe:3,mssmbios.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x8	-	undefined	none	1	0	mssmbios.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xe	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x10	IA32_TIME_STAMP_COUNTER;IA32_TIME_STAMP_COUNTER 	tremont	none	0	4	ntoskrnl.exe:4	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x17	IA32_PLATFORM_ID (MSR_PLATFORM_ID);MSR_PLATFORM_	tremont	none	3	0	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x1b	IA32_APIC_BASE;IA32_APIC_BASE (APIC_BASE)	tremont	none	1	2	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x20	-	undefined	none	0	1	amdppm.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x30	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x3a	IA32_FEATURE_CONTROL	tremont	none	3	0	ntoskrnl.exe:3	остановка (M1, отложено)	по R1 FEATURE_CONTROL нет (VMX, SMX, SGX, LMCE MCG_CAP[27] = 0); исключение: три чтения ntoskrnl закрыты проверками (0x1404fb86d после MCG_CAP[27], 0x140b687ba в ветви VMX, 0x140b68863 после CPUID.7:EBX[2]) — остановка, чтобы обращение было видно
+0x3b	IA32_TSC_ADJUST	tremont	false	2	1	ntoskrnl.exe:3	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x48	IA32_SPEC_CTRL	arch	false	2	139	ntoskrnl.exe:125,intelppm.sys:5,amdppm.sys:4,amdk8.sys:3	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x49	IA32_PRED_CMD	arch	false	0	76	ntoskrnl.exe:76	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x5d	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x79	IA32_BIOS_UPDT_TRIG;IA32_BIOS_UPDT_TRIG (BIOS_UP	tremont	none	1	2	ntoskrnl.exe:3	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x80	-	undefined	none	1	0	hvservice.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x8b	IA32_BIOS_SIGN_ID;IA32_BIOS_SIGN_ID (BIOS_SIGN/B	tremont	none	11	4	ntoskrnl.exe:12,mssmbios.sys:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xe7	IA32_MPERF	tremont	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xe8	IA32_APERF	tremont	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xfe	IA32_MTRRCAP;IA32_MTRRCAP (MTRRcap)	tremont	none	8	0	ntoskrnl.exe:8	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x10a	IA32_ARCH_CAPABILITIES	arch	false	3	0	ntoskrnl.exe:2,intelppm.sys:1	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x122	IA32_TSX_CTRL	arch	none	0	3	ntoskrnl.exe:3	#GP(0)	условие IA32_ARCH_CAPABILITIES (нет: CPUID.07H.00H:EDX[29] = 0) ложно для профиля
+0x123	IA32_MCU_OPT_CTRL	arch	false	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x174	IA32_SYSENTER_CS	tremont	none	0	2	ntoskrnl.exe:2	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x175	IA32_SYSENTER_ESP	tremont	none	0	2	ntoskrnl.exe:2	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x176	IA32_SYSENTER_EIP	tremont	none	0	2	ntoskrnl.exe:2	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x179	IA32_MCG_CAP;IA32_MCG_CAP (MCG_CAP)	tremont	none	11	0	ntoskrnl.exe:11	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x17a	IA32_MCG_STATUS;IA32_MCG_STATUS (MCG_STATUS)	tremont	none	2	6	ntoskrnl.exe:8	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x199	IA32_PERF_CTL	tremont	none	3	5	intelppm.sys:8	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x19a	IA32_CLOCK_MODULATION	tremont	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1a0	IA32_MISC_ENABLE	tremont	none	7	3	ntoskrnl.exe:9,intelppm.sys:1	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x1b0	IA32_ENERGY_PERF_BIAS	tremont	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1b1	IA32_PACKAGE_THERM_STATUS	arch	false	4	1	ntoskrnl.exe:3,intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1b2	IA32_PACKAGE_THERM_INTERRUPT	arch	false	2	2	intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1c4	IA32_XFD	arch	false	2	3	ntoskrnl.exe:5	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1c5	IA32_XFD_ERR	arch	false	1	1	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x1c8	MSR_LBR_SELECT	tremont	none	0	5	ntoskrnl.exe:5	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x1c9	MSR_LASTBRANCH_TOS	tremont	none	1	3	ntoskrnl.exe:4	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x1d9	IA32_DEBUGCTL;IA32_DEBUGCTL (MSR_DEBUGCTLA, MSR_	tremont	none	11	10	ntoskrnl.exe:21	остановка (M1, отложено)	есть на 06_9CH, модели нет; решать по остановке
+0x250	IA32_MTRR_FIX64K_00000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x258	IA32_MTRR_FIX16K_80000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x259	IA32_MTRR_FIX16K_A0000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x268	IA32_MTRR_FIX4K_C0000;IA32_MTRR_FIX4K_C0000 (MTR	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x269	IA32_MTRR_FIX4K_C8000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26a	IA32_MTRR_FIX4K_D0000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26b	IA32_MTRR_FIX4K_D8000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26c	IA32_MTRR_FIX4K_E0000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26d	IA32_MTRR_FIX4K_E8000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26e	IA32_MTRR_FIX4K_F0000	tremont	true	2	1	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x26f	IA32_MTRR_FIX4K_F8000	tremont	true	4	3	ntoskrnl.exe:7	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x277	IA32_PAT	tremont	true	4	2	ntoskrnl.exe:6	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x2ff	IA32_MTRR_DEF_TYPE	tremont	true	1	4	ntoskrnl.exe:5	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x309	IA32_FIXED_CTR0	tremont	false	1	3	intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x30a	IA32_FIXED_CTR1	tremont	false	1	3	intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x30b	IA32_FIXED_CTR2	tremont	false	2	5	intelppm.sys:7	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x345	IA32_PERF_CAPABILITIES	tremont	false	2	0	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x38d	IA32_FIXED_CTR_CTRL	tremont	false	18	11	ntoskrnl.exe:23,intelppm.sys:6	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x38e	IA32_PERF_GLOBAL_STATUS	tremont	false	9	0	ntoskrnl.exe:9	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x38f	IA32_PERF_GLOBAL_CTRL	tremont	false	20	24	ntoskrnl.exe:40,intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x390	IA32_PERF_GLOBAL_STATUS_RESET	tremont	false	1	11	ntoskrnl.exe:12	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x401	IA32_MC0_STATUS	tremont	none	0	1	ntoskrnl.exe:1	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0x482	IA32_VMX_PROCBASED_CTLS	tremont	false	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x48b	IA32_VMX_PROCBASED_CTLS2	tremont	none	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID.01H:ECX[5] (VMX) ложно для профиля
+0x560	IA32_RTIT_OUTPUT_BASE	tremont	none	1	2	ntoskrnl.exe:3	#GP(0)	условие CPUID.07H.00H:EBX[25] (Intel PT) ложно для профиля
+0x561	IA32_RTIT_OUTPUT_MASK_PTRS	tremont	none	1	2	ntoskrnl.exe:3	#GP(0)	условие CPUID.07H.00H:EBX[25] (Intel PT) ложно для профиля
+0x570	IA32_RTIT_CTL	tremont	none	1	3	ntoskrnl.exe:4	#GP(0)	условие CPUID.07H.00H:EBX[25] (Intel PT) ложно для профиля
+0x571	IA32_RTIT_STATUS	tremont	none	1	2	ntoskrnl.exe:3	#GP(0)	условие CPUID.07H.00H:EBX[25] (Intel PT) ложно для профиля
+0x572	IA32_RTIT_CR3_MATCH	tremont	none	3	6	ntoskrnl.exe:9	#GP(0)	условие CPUID.07H.00H:EBX[25] (Intel PT) ложно для профиля
+0x600	IA32_DS_AREA	tremont	none	0	4	ntoskrnl.exe:4	#GP(0)	условие CPUID.01H:EDX.DS[21] ложно для профиля
+0x606	MSR_RAPL_POWER_UNIT	tremont	none	5	0	intelppm.sys:5	модель: чтение 0x000A0E08 (умолчания SDM 2-12: PU 1000b, ESU 01110b, TU 1010b), запись #GP(0)	RAPL R/O (таблица 2-12); энергию виртуальный CPU не измеряет
+0x6a0	IA32_U_CET	arch	none	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID.07H.00H:ECX.CET_SS[7] ложно для профиля
+0x6a2	IA32_S_CET	arch	none	2	3	ntoskrnl.exe:5	#GP(0)	условие CPUID.07H.00H:ECX.CET_SS[7]/EDX.CET_IBT[20] ложно для профиля
+0x6a7	IA32_PL3_SSP	arch	?	51	46	ntoskrnl.exe:97	#GP(0)	условие CPUID.07H.00H:ECX.CET_SS[7] ложно для профиля
+0x772	IA32_HWP_REQUEST_PKG	arch	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x773	IA32_HWP_INTERRUPT	arch	false	2	2	intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x777	IA32_HWP_STATUS	arch	false	2	2	intelppm.sys:4	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x80b	IA32_X2APIC_EOI	range	false	0	1	ntoskrnl.exe:1	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x830	IA32_X2APIC_ICR	range	false	0	1	ntoskrnl.exe:1	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x832	IA32_X2APIC_LVT_TIMER	range	false	3	0	ntoskrnl.exe:3	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x834	IA32_X2APIC_LVT_PMI	range	false	3	0	ntoskrnl.exe:3	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x83f	IA32_X2APIC_SELF_IPI	range	false	0	1	ntoskrnl.exe:1	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x844	-	range	none	2	2	ntoskrnl.exe:4	#GP(0)	диапазон x2APIC 800H–8FFH (Vol. 3A): CPUID.01H:ECX[21] = 0
+0x982	IA32_TME_ACTIVATE	arch	false	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xc89	IA32_RESOURCE_PRIORITY_PKG	arch	false	1	1	intelppm.sys:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xc8f	IA32_PQR_ASSOC	tremont	none	1	3	intelppm.sys:3,ntoskrnl.exe:1	#GP(0)	условие CPUID.07H.00H:EBX[12] или EBX[15] ложно для профиля
+0xc91	Reserved MSR Address Space for CAT Mask Register	arch	none	0	1	ntoskrnl.exe:1	#GP(0)	условие CPUID.10H.00H:EBX[1] (IA32_L3_MASK_1, диапазон C90H–D8FH; лист 10H не объявлен: максимальный базовый лист = 6) ложно для профиля
+0xd93	IA32_PASID	arch	none	0	1	ntoskrnl.exe:1	#GP(0)	условие CPUID.07H.00H:ECX[29] (ENQCMD) ложно для профиля
+0xda0	IA32_XSS	tremont	none	0	1	ntoskrnl.exe:1	#GP(0)	условие CPUID.0DH.01H:EAX[3] ложно для профиля
+0xdb0	IA32_PKG_HDC_CTL	arch	false	1	1	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xdb2	IA32_THREAD_STALL	arch	false	5	0	ntoskrnl.exe:5	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x14ce	IA32_LBR_CTL	arch	none	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID.07H.00H:EDX[19] (архитектурные LBR) ложно для профиля
+0x14cf	IA32_LBR_DEPTH	arch	none	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID.07H.00H:EDX[19] (архитектурные LBR) ложно для профиля
+0x17d0	IA32_HW_FEEDBACK_PTR	arch	false	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x17d1	IA32_HW_FEEDBACK_CONFIG	arch	false	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x17d2	IA32_THREAD_FEEDBACK_CHAR	arch	false	1	0	ntoskrnl.exe:1	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0x17da	IA32_HRESET_ENABLE	arch	none	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID.07H.01H:EAX[22] (HRESET) ложно для профиля
+0x8000	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xffff	-	undefined	none	0	1	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x100040	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x40000000	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000001	Reserved MSR Address Space	range	none	3	2	ntoskrnl.exe:4,vmbus.sys:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000003	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000004	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000020	Reserved MSR Address Space	range	none	26	0	ntoskrnl.exe:21,kdcom.dll:5	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000022	Reserved MSR Address Space	range	none	1	0	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000023	Reserved MSR Address Space	range	none	1	0	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000030	Reserved MSR Address Space	range	none	1	0	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000031	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000040	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000070	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000071	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000074	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000083	Reserved MSR Address Space	range	none	2	1	ntoskrnl.exe:3	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000084	Reserved MSR Address Space	range	none	0	2	ntoskrnl.exe:2	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000093	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000094	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x400000b0	Reserved MSR Address Space	range	none	0	3	ntoskrnl.exe:3	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x400000b1	Reserved MSR Address Space	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x400000c2	Reserved MSR Address Space	range	none	0	15	ntoskrnl.exe:15	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x400000f0	Reserved MSR Address Space	range	none	1	0	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x400000f6	Reserved MSR Address Space	range	none	7	0	dxgmms1.sys:4,dxgmms2.sys:3	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000101	-	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000102	-	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000103	-	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000104	-	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000110	-	range	none	0	2	ntoskrnl.exe:2	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000111	-	range	none	0	1	ntoskrnl.exe:1	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x40000112	-	range	none	1	1	ntoskrnl.exe:2	#GP(0)	диапазон: Vol. 4 §2.1: 40000000H–4000FFFFH — specially reserved range, процессоры не реализуют MSR в нём
+0x50000001	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x50000002	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000080	IA32_EFER	tremont	none	4	3	ntoskrnl.exe:7	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000081	IA32_STAR	tremont	true	1	2	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000082	IA32_LSTAR	tremont	true	1	3	ntoskrnl.exe:4	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000083	IA32_CSTAR	arch	true	1	2	ntoskrnl.exe:3	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000084	IA32_FMASK	tremont	true	2	4	ntoskrnl.exe:6	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000100	IA32_FS_BASE	tremont	true	2	3	ntoskrnl.exe:5	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000101	IA32_GS_BASE	tremont	true	9	13	ntoskrnl.exe:22	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000102	IA32_KERNEL_GS_BASE	tremont	true	3	6	ntoskrnl.exe:9	модель (есть)	уже в профиле MSR Windows (срезы F, I)
+0xc0000103	IA32_TSC_AUX	tremont	false	0	2	ntoskrnl.exe:2	#GP(0)	условие CPUID таблицы 2-2 ложно для профиля
+0xc000010e	-	undefined	none	3	4	ntoskrnl.exe:7	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc000010f	-	undefined	none	7	11	ntoskrnl.exe:18	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000300	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000302	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000500	-	undefined	none	0	1	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000501	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0000502	-	undefined	none	0	1	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010010	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010015	-	undefined	none	27	29	ntoskrnl.exe:54,amdppm.sys:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc001001f	-	undefined	none	2	2	ntoskrnl.exe:4	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010020	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010041	-	undefined	none	0	4	amdk8.sys:4	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010042	-	undefined	none	6	0	amdk8.sys:6	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010062	-	undefined	none	0	1	amdppm.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010114	-	undefined	none	1	0	ntoskrnl.exe:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010130	-	undefined	none	1	0	vmbus.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0010299	-	undefined	none	3	0	amdppm.sys:3	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc001029a	-	undefined	none	4	0	amdppm.sys:4	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc001029b	-	undefined	none	1	0	amdppm.sys:1	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0011023	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0011028	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc0011029	-	undefined	none	3	3	ntoskrnl.exe:6	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc001102c	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc001102e	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0xc00110e3	-	undefined	none	1	1	ntoskrnl.exe:2	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x60d	MSR_PKG_C2_RESIDENCY	tremont	none	0	0	intelppm.sys (таблица пребывания модели 9C)	модель: чтение 0, запись #GP(0)	счётчик пребывания R/O (Tremont-набор); C-состояний пакета у виртуального CPU нет
+0x3fa	-	undefined	none	0	0	intelppm.sys (таблица пребывания модели 9C)	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x630	-	undefined	none	0	0	intelppm.sys (таблица пребывания модели 9C)	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x631	-	undefined	none	0	0	intelppm.sys (таблица пребывания модели 9C)	#GP(0)	нет в таблицах 2-2/2-6/2-12/2-13/2-14 для 06_9CH
+0x3f8	MSR_PKG_C3_RESIDENCY	tremont	none	0	0	intelppm.sys (таблица пребывания модели 9C)	модель: чтение 0, запись #GP(0)	счётчик пребывания R/O (Tremont-набор); C-состояний пакета у виртуального CPU нет
+0x3f9	MSR_PKG_C6_RESIDENCY	tremont	none	0	0	intelppm.sys (таблица пребывания модели 9C)	модель: чтение 0, запись #GP(0)	счётчик пребывания R/O (Tremont-набор); C-состояний пакета у виртуального CPU нет
+0x632	MSR_PKG_C10_RESIDENCY	tremont	none	0	0	intelppm.sys (таблица пребывания модели 9C)	модель: чтение 0, запись #GP(0)	счётчик пребывания R/O (Tremont-набор); C-состояний пакета у виртуального CPU нет
+0x611	MSR_PKG_ENERGY_STATUS	tremont	none	0	0	intelppm.sys (константа в .data)	модель: чтение 0, запись #GP(0)	RAPL R/O (таблица 2-12); энергию виртуальный CPU не измеряет
+0x619	MSR_DRAM_ENERGY_STATUS	tremont	none	0	0	intelppm.sys (константа в .data)	модель: чтение 0, запись #GP(0)	RAPL R/O (таблица 2-12); энергию виртуальный CPU не измеряет
+0x639	MSR_PP0_ENERGY_STATUS	tremont	none	0	0	intelppm.sys (константа в .data)	модель: чтение 0, запись #GP(0)	RAPL R/O (таблица 2-12); энергию виртуальный CPU не измеряет
+0x641	MSR_PP1_ENERGY_STATUS	tremont	none	0	0	intelppm.sys (константа в .data)	модель: чтение 0, запись #GP(0)	RAPL R/O (таблица 2-12); энергию виртуальный CPU не измеряет

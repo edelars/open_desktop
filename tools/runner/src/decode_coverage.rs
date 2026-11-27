@@ -22,6 +22,7 @@
 //! stdout.
 
 mod exec;
+mod seh;
 
 use od_isa::length::long64_length;
 use od_isa::long_decode::{DecodeError, Opcode, OpcodeMap, Operation, decode};
@@ -40,6 +41,12 @@ struct Image {
     bytes: Vec<u8>,
     subsystem: u16,
     functions: Vec<(u32, u32)>,
+    /// `RUNTIME_FUNCTION` entries (begin, end, unwind info RVA), sorted by begin (S7-32 slice T:
+    /// the `__try` scopes of `--exec`).
+    runtime_functions: Vec<(u32, u32, u32)>,
+    /// Export (index 0) and import (index 1) directories: (RVA, size).
+    export_directory: (usize, usize),
+    import_directory: (usize, usize),
 }
 
 struct ImageMemory<'a> {
@@ -106,6 +113,17 @@ fn load_image(file: &[u8]) -> Result<Image, String> {
     let size_of_headers = u32_at(file, optional + 60).ok_or("short optional header")? as usize;
     let subsystem = u16_at(file, optional + 68).ok_or("short optional header")?;
     let directories = u32_at(file, optional + 108).ok_or("short optional header")?;
+    let directory = |index: usize| -> (usize, usize) {
+        if directories as usize > index {
+            (
+                u32_at(file, optional + 112 + index * 8).unwrap_or(0) as usize,
+                u32_at(file, optional + 112 + index * 8 + 4).unwrap_or(0) as usize,
+            )
+        } else {
+            (0, 0)
+        }
+    };
+    let (export_directory, import_directory) = (directory(0), directory(1));
     let (pdata_rva, pdata_size) = if directories > 3 {
         (
             u32_at(file, optional + 112 + 3 * 8).ok_or("short directories")? as usize,
@@ -138,14 +156,17 @@ fn load_image(file: &[u8]) -> Result<Image, String> {
         bytes[rva..rva + length].copy_from_slice(&file[raw..raw + length]);
     }
     let mut functions = Vec::new();
+    let mut runtime_functions = Vec::new();
     for entry in (pdata_rva..pdata_rva + pdata_size).step_by(12) {
         let (Some(begin), Some(end)) = (u32_at(&bytes, entry), u32_at(&bytes, entry + 4)) else {
             break;
         };
         if begin < end && (end as usize) <= size_of_image {
             functions.push((begin, end));
+            runtime_functions.push((begin, end, u32_at(&bytes, entry + 8).unwrap_or(0)));
         }
     }
+    runtime_functions.sort_unstable();
     functions.sort_unstable();
     functions.dedup();
     Ok(Image {
@@ -153,6 +174,9 @@ fn load_image(file: &[u8]) -> Result<Image, String> {
         bytes,
         subsystem,
         functions,
+        runtime_functions,
+        export_directory,
+        import_directory,
     })
 }
 
@@ -384,6 +408,7 @@ fn coverage(
         };
         // `.pdata` ranges first; with `--exec`, then sweeps from the targets of `call rel32` outside
         // `.pdata` (to the first RET, JMP or INT3), which count only in the exec section.
+        let seh_scopes = seh::SehScopes::new(&image);
         let mut queue: VecDeque<(u32, u32, bool)> = image
             .functions
             .iter()
@@ -415,6 +440,12 @@ fn coverage(
                         }
                         if let Some(exec) = image_exec.as_deref_mut() {
                             let bytes = &window[..length.min(window.len())];
+                            // S7-32 slice T: whether an `RDMSR`/`WRMSR` lies inside a `__try` scope
+                            // (only for those: the scope walk is not free).
+                            let in_try = matches!(
+                                instruction.operation,
+                                Operation::ReadMsr | Operation::WriteMsr
+                            ) && seh_scopes.inside_try(rva);
                             if let Err(error) = exec.observe(
                                 &name,
                                 rva,
@@ -423,6 +454,7 @@ fn coverage(
                                 &instruction,
                                 last_ecx,
                                 extra,
+                                in_try,
                             ) {
                                 eprintln!(
                                     "decode-coverage --exec: the sandbox state is refused: {error:?}"
@@ -699,6 +731,293 @@ mod tests {
         assert_eq!(report["exec"]["call_targets_outside_pdata"], 1);
         assert_eq!(report["exec"]["verdicts"]["never"], 1);
         assert_eq!(rows(&report, "extra_decoder_refusals")[0]["form"], "F3 6C");
+    }
+
+    /// S7-32 slice T: `msr_indexes` counts the `RDMSR`/`WRMSR` inside a `__try` scope only under
+    /// `__C_specific_handler` (named through the `jmp [IAT]` stub of a driver), not under
+    /// `__GSHandlerCheck` (no scope table) and not in a `__finally` scope (`JumpTarget` 0); and the
+    /// decision of each (index, direction) is the set's own: `60DH` is modelled, `3FAH` is #GP(0).
+    #[test]
+    fn exec_counts_msr_accesses_inside_try_only_under_the_c_specific_handler() {
+        let le = |value: u32| value.to_le_bytes();
+        let unwind = |handler: u32, scopes: &[(u32, u32, u32, u32)]| -> Vec<u8> {
+            let mut info = vec![0x09, 0, 0, 0]; // version 1, UNW_FLAG_EHANDLER, no codes
+            info.extend(le(handler));
+            info.extend(le(scopes.len() as u32));
+            for &(begin, end, filter, target) in scopes {
+                for value in [begin, end, filter, target] {
+                    info.extend(le(value));
+                }
+            }
+            info
+        };
+        let mut pdata = Vec::new();
+        for (begin, end, info) in [
+            (0x1000u32, 0x1008u32, 0x1100u32),
+            (0x1010, 0x1018, 0x1140),
+            (0x1020, 0x1028, 0x1180),
+            (0x1030, 0x1038, 0x11c0),
+        ] {
+            for value in [begin, end, info] {
+                pdata.extend(le(value));
+            }
+        }
+        let mut import = Vec::new();
+        for value in [0x1300u32, 0, 0, 0x1380, 0x1340, 0, 0, 0, 0, 0] {
+            import.extend(le(value));
+        }
+        let thunks: Vec<u8> = [0x1400u64, 0x1420, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let f1: &[u8] = &[0xb9, 0x0d, 0x06, 0x00, 0x00, 0x0f, 0x32, 0xc3]; // mov ecx, 0x60d; rdmsr; ret
+        let f2: &[u8] = &[0xb9, 0xfa, 0x03, 0x00, 0x00, 0x0f, 0x32, 0xc3]; // mov ecx, 0x3fa; rdmsr; ret
+        let f3: &[u8] = &[0xb9, 0x11, 0x06, 0x00, 0x00, 0x0f, 0x32, 0xc3]; // mov ecx, 0x611; rdmsr; ret
+        let stub_c = [0xff, 0x25, 0xfa, 0x02, 0x00, 0x00]; // jmp [0x1340]
+        let stub_gs = [0xff, 0x25, 0xf2, 0x02, 0x00, 0x00]; // jmp [0x1348]
+        // A static `__GSHandlerCheck_SEH` without a name: it calls the `__C_specific_handler` stub.
+        let static_seh = [0xe8, 0xdb, 0xff, 0xff, 0xff, 0xc3]; // call 0x1040; ret
+        let f4: &[u8] = &[0xb9, 0x06, 0x06, 0x00, 0x00, 0x0f, 0x32, 0xc3]; // mov ecx, 0x606; rdmsr; ret
+        let u4 = unwind(0x1060, &[(0x1035, 0x1037, 1, 0x1037)]);
+        let u1 = unwind(0x1040, &[(0x1005, 0x1007, 1, 0x1007)]);
+        // Under `__GSHandlerCheck` the bytes after the handler are GS data, not a scope table, even
+        // when they would read as a scope that covers the `rdmsr`.
+        let u2 = unwind(0x1050, &[(0x1015, 0x1017, 1, 0x1017)]);
+        let u3 = unwind(0x1040, &[(0x1025, 0x1027, 0x1060, 0)]);
+        let c_name = b"\0\0__C_specific_handler\0";
+        let gs_name = b"\0\0__GSHandlerCheck\0";
+        let code: Vec<(u32, &[u8])> = vec![
+            (0x1000, f1),
+            (0x1010, f2),
+            (0x1020, f3),
+            (0x1030, f4),
+            (0x1040, &stub_c),
+            (0x1050, &stub_gs),
+            (0x1100, &u1),
+            (0x1140, &u2),
+            (0x1180, &u3),
+            (0x11c0, &u4),
+            (0x1060, &static_seh),
+            (0x1200, &import),
+            (0x1300, &thunks),
+            (0x1340, &thunks),
+            (0x1380, b"ntoskrnl.exe\0"),
+            (0x1400, c_name),
+            (0x1420, gs_name),
+        ];
+        let mut file = pe(&code, &[]);
+        // The .pdata table at 0x1800 (four entries) and the import directory (index 1).
+        let optional = 0x98;
+        file[0x200 + 0x800..0x200 + 0x800 + pdata.len()].copy_from_slice(&pdata);
+        file[optional + 112 + 28..optional + 112 + 32]
+            .copy_from_slice(&(pdata.len() as u32).to_le_bytes());
+        file[optional + 112 + 8..optional + 112 + 12].copy_from_slice(&0x1200u32.to_le_bytes());
+        file[optional + 112 + 12..optional + 112 + 16].copy_from_slice(&40u32.to_le_bytes());
+        let report = exec_report("seh", &file);
+        let msr = |index: &str| -> Value {
+            rows(&report, "msr_indexes")
+                .iter()
+                .find(|row| row["index"] == index)
+                .cloned()
+                .unwrap_or_else(|| panic!("{index}: {report}"))
+        };
+        assert_eq!(msr("0x60d")["in_try"], 1, "{report}");
+        assert_eq!(msr("0x60d")["decision"], "model");
+        assert_eq!(
+            msr("0x3fa")["in_try"],
+            0,
+            "__GSHandlerCheck has no scope table"
+        );
+        assert_eq!(msr("0x3fa")["decision"], "gp");
+        assert_eq!(
+            msr("0x611")["in_try"],
+            0,
+            "a __finally scope is not a __try"
+        );
+        assert_eq!(msr("0x606")["in_try"], 1, "a static __GSHandlerCheck_SEH");
+    }
+
+    /// S7-32 slice T: the scope walk follows chained unwind info to the primary entry, places the
+    /// language-specific data after an odd number of unwind codes rounded up to even, and names a
+    /// static handler only by what its straight-line body reaches: a `call`/tail `jmp` to
+    /// `__C_specific_handler` (direct or through the import) counts; a call after `ret`, `ret n`,
+    /// `rep ret`, `int3` or an unconditional `jmp` belongs to another function and does not.
+    #[test]
+    fn exec_in_try_follows_chains_odd_codes_and_the_static_handler_body() {
+        // Layout: functions 0x1000.., the stub 0x1180, handlers 0x1200.., .pdata 0x1800,
+        // unwind info 0x1900.. (0x40 apart: a chained record takes 0x34), imports 0x1e00..
+        const C_STUB: u32 = 0x1180;
+        const C_SLOT: u32 = 0x1e40;
+        let le = |value: u32| value.to_le_bytes();
+        let function = |k: u32| 0x1000 + 0x10 * k;
+        let handler_at = |k: u32| 0x1200 + 0x20 * k;
+        let unwind_at = |k: u32| 0x1900 + 0x40 * k;
+        let rel32 = |from_next: u32, to: u32| (to as i64 - from_next as i64) as i32;
+        // EHANDLER unwind info with `codes` unwind codes, then the handler and one scope over the
+        // `rdmsr` of function `k`.
+        let unwind = |k: u32, codes: u8, handler: u32| -> Vec<u8> {
+            let mut info = vec![0x09, 2 * codes, codes, 0];
+            info.extend(vec![0x11; 2 * usize::from(codes)]);
+            if codes % 2 == 1 {
+                info.extend([0, 0]); // the padding slot
+            }
+            info.extend(le(handler));
+            info.extend(le(1));
+            for value in [function(k) + 5, function(k) + 7, 1, function(k) + 7] {
+                info.extend(le(value));
+            }
+            info
+        };
+        let call_c = |at: u32| -> Vec<u8> {
+            let mut code = vec![0xe8];
+            code.extend(rel32(at + 5, C_STUB).to_le_bytes());
+            code
+        };
+        let mut code: Vec<(u32, Vec<u8>)> = Vec::new();
+        let mut pdata = Vec::new();
+        let mut expected = Vec::new();
+        let mut stub = vec![0xff, 0x25];
+        stub.extend(rel32(C_STUB + 6, C_SLOT).to_le_bytes());
+        code.push((C_STUB, stub));
+        // (static handler body or None for the named stub, unwind codes, chained, expected)
+        let mut handlers: Vec<(Option<Vec<u8>>, u8, bool, u64)> = vec![
+            (None, 0, true, 1), // chained to a primary entry under __C_specific_handler
+            (None, 1, false, 1),
+            (None, 3, false, 1),
+        ];
+        for (prefix, counts) in [
+            (vec![0xc3], 0u64),          // ret, then a call of the next function
+            (vec![0xc2, 0x00, 0x00], 0), // ret 0
+            (vec![0xf3, 0xc3], 0),       // rep ret
+            (vec![0xeb, 0x05], 0),       // jmp over the call
+            (vec![0xcc], 0),             // int3
+            (vec![0xff, 0xe0], 0),       // jmp rax
+            (vec![0x48, 0x89, 0xc8], 1), // mov rax, rcx; call __C_specific_handler
+            (vec![0x48, 0xff, 0xe0], 0), // rex.w jmp rax
+            (vec![0x3e, 0xff, 0xe0], 0), // notrack jmp rax
+            (vec![0xff, 0x28], 0),       // jmp far [rax]
+        ] {
+            handlers.push((Some(prefix), 0, false, counts));
+        }
+        // Tail jumps and an indirect call through the import.
+        handlers.push((Some(vec![0xe9]), 0, false, 1)); // jmp rel32 __C_specific_handler
+        handlers.push((Some(vec![0x48, 0xff, 0x25]), 0, false, 1)); // jmp [rip+slot]
+        handlers.push((Some(vec![0xff, 0x15]), 0, false, 1)); // call [rip+slot]
+        // mov rax, rcx; rex.w jmp [rip+slot]: the tail jump after a prologue.
+        handlers.push((Some(vec![0x48, 0x89, 0xc8, 0x48, 0xff, 0x25]), 0, false, 1));
+        // call [rbp+disp32] with the displacement of the slot: not RIP-relative, not the import.
+        handlers.push((Some(vec![0xff, 0x95]), 0, false, 0));
+        for (k, (body, codes, chained, counts)) in handlers.into_iter().enumerate() {
+            let k = k as u32;
+            let index = 0x701 + k;
+            let mut f = vec![0xb9];
+            f.extend(le(index));
+            f.extend([0x0f, 0x32, 0xc3]);
+            code.push((function(k), f));
+            let handler = match body {
+                None => C_STUB,
+                Some(prefix) => {
+                    let at = handler_at(k);
+                    let mut h = prefix.clone();
+                    let len = h.len() as u32;
+                    match prefix.as_slice() {
+                        [0xe9] => h.extend(rel32(at + 5, C_STUB).to_le_bytes()),
+                        [.., 0xff, 0x25] => h.extend(rel32(at + len + 4, C_SLOT).to_le_bytes()),
+                        [0xff, 0x15] | [0xff, 0x95] => {
+                            h.extend(rel32(at + 6, C_SLOT).to_le_bytes());
+                            h.push(0xc3);
+                        }
+                        _ => {
+                            h.extend(call_c(at + len));
+                            h.push(0xc3);
+                        }
+                    }
+                    code.push((at, h));
+                    at
+                }
+            };
+            let info = if chained {
+                // CHAININFO (flags 4), no codes, then the primary RUNTIME_FUNCTION.
+                let primary = unwind_at(k) + 0x18;
+                let mut info = vec![0x21, 0, 0, 0];
+                for value in [function(k), function(k) + 8, primary] {
+                    info.extend(le(value));
+                }
+                info.resize(0x18, 0);
+                info.extend(unwind(k, 0, handler));
+                info
+            } else {
+                unwind(k, codes, handler)
+            };
+            code.push((unwind_at(k), info));
+            for value in [function(k), function(k) + 8, unwind_at(k)] {
+                pdata.extend(le(value));
+            }
+            expected.push((format!("{index:#x}"), counts));
+        }
+        let mut import = Vec::new();
+        for value in [C_SLOT, 0, 0, 0x1e80, C_SLOT, 0, 0, 0, 0, 0] {
+            import.extend(le(value));
+        }
+        let thunks: Vec<u8> = [0x1ea0u64, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        code.push((0x1e00, import));
+        code.push((C_SLOT, thunks));
+        code.push((0x1e80, b"ntoskrnl.exe\0".to_vec()));
+        code.push((0x1ea0, b"\0\0__C_specific_handler\0".to_vec()));
+        let slices: Vec<(u32, &[u8])> = code.iter().map(|(at, b)| (*at, b.as_slice())).collect();
+        let mut file = pe(&slices, &[]);
+        let optional = 0x98;
+        file[0x200 + 0x800..0x200 + 0x800 + pdata.len()].copy_from_slice(&pdata);
+        file[optional + 112 + 28..optional + 112 + 32]
+            .copy_from_slice(&(pdata.len() as u32).to_le_bytes());
+        file[optional + 112 + 8..optional + 112 + 12].copy_from_slice(&0x1e00u32.to_le_bytes());
+        file[optional + 112 + 12..optional + 112 + 16].copy_from_slice(&40u32.to_le_bytes());
+        // No two pieces overlap (a record that overwrote its neighbour would pass unnoticed).
+        let mut spans: Vec<(u32, u32)> = code
+            .iter()
+            .map(|(at, b)| (*at, *at + b.len() as u32))
+            .collect();
+        spans.push((0x1800, 0x1800 + pdata.len() as u32));
+        spans.sort_unstable();
+        assert!(
+            spans.windows(2).all(|pair| pair[0].1 <= pair[1].0),
+            "{spans:x?}"
+        );
+        let report = exec_report("seh-chain", &file);
+        for (index, counts) in expected {
+            let row = rows(&report, "msr_indexes")
+                .iter()
+                .find(|row| row["index"] == index.as_str())
+                .cloned()
+                .unwrap_or_else(|| panic!("{index}: {report}"));
+            assert_eq!(row["in_try"], counts, "{index}");
+        }
+    }
+
+    /// S7-32 slice T: `decision` is the set's own outcome: `stop` for an index the set refuses
+    /// (`WRMSR 0x10`, a write of the TSC, rule M1), `model` for a modelled read, `gp` for an absent
+    /// MSR.
+    #[test]
+    fn exec_msr_decision_is_stop_model_or_gp() {
+        // mov ecx, 0x10; wrmsr; mov ecx, 0x60d; rdmsr; mov ecx, 0x3fa; rdmsr; ret
+        let code: &[u8] = &[
+            0xb9, 0x10, 0, 0, 0, 0x0f, 0x30, 0xb9, 0x0d, 0x06, 0, 0, 0x0f, 0x32, 0xb9, 0xfa, 0x03,
+            0, 0, 0x0f, 0x32, 0xc3,
+        ];
+        let report = exec_report("decision", &pe(&[(0x1000, code)], &[(0x1000, 0x1016)]));
+        let decision = |op: &str, index: &str| -> Value {
+            rows(&report, "msr_indexes")
+                .iter()
+                .find(|row| row["op"] == op && row["index"] == index)
+                .unwrap_or_else(|| panic!("{op} {index}: {report}"))["decision"]
+                .clone()
+        };
+        assert_eq!(decision("wrmsr", "0x10"), "stop");
+        assert_eq!(decision("rdmsr", "0x60d"), "model");
+        assert_eq!(decision("rdmsr", "0x3fa"), "gp");
     }
 
     #[test]

@@ -2341,7 +2341,11 @@ impl<'a> Cpl0ProfileSet<'a> {
     /// `#GP(0)`, a MISC_ENABLE bit the model lacks is `Unsupported`, both without a state change;
     /// SYSENTER_CS bits 63:32 are ignored on write and read as zero);
     /// `RDMSR` of IA32_TSC (`0x10`) returns the set's RDTSC source (`WRMSR 0x10` is a stop, S7-32);
-    /// `RDMSR` and `WRMSR` of any index outside the list are `#GP(0)`, and
+    /// since S7-32 slice T the read-only MSRs of [`crate::msr::windows_msr_read_only_value`] read
+    /// their value (`WRMSR` is `#GP(0)`) and the MSRs the virtual CPU does not have
+    /// ([`crate::msr::windows_msr_absent`]) are `#GP(0)` for both directions, also with
+    /// [`Self::with_msr_windows_unknown_as_stop`];
+    /// `RDMSR` and `WRMSR` of any other index outside the list are `#GP(0)`, and
     /// at CPL3 every `RDMSR`/`WRMSR` is `#GP(0)`. APIC_BASE, EFER, FS_BASE and GS_BASE keep the
     /// semantics of their own members. The CPUID MSR bit is not declared by this member (S2-57).
     pub const fn with_msr_windows(
@@ -2355,7 +2359,9 @@ impl<'a> Cpl0ProfileSet<'a> {
 
     /// S7-32 slice F (decision M1): with the Windows member, an `RDMSR`/`WRMSR` of an index outside
     /// the modelled list is an explicit stop (`Unsupported`, no state change) instead of the
-    /// architectural `#GP(0)`. ADR-0013 keeps known gaps as stops of a run: a Windows run must not
+    /// architectural `#GP(0)`. Since S7-32 slice T the indexes of
+    /// [`crate::msr::windows_msr_absent`] (rules R1/R2: MSRs the virtual CPU does not have) are
+    /// `#GP(0)` with this option too; the stop stays for the undecided ones. ADR-0013 keeps known gaps as stops of a run: a Windows run must not
     /// turn an MSR the model lacks into a guest fault the guest may swallow. The member without this
     /// option keeps `#GP(0)` (pinned by the S2-26h tests). The caller names the index from ECX and
     /// the direction from the opcode at RIP (`0F 32` read, `0F 30` write).
@@ -49136,6 +49142,13 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             let tdx_read = instruction.operation == Operation::ReadMsr
                 && msr_index == 0x87
                 && cells.tdx_keyid_partitioning_read;
+            // S7-32 slice T, rules R1/R2 (ADR-0013 addendum «срез T»): an MSR the virtual CPU does not
+            // have — its CPUID condition is not declared, or no SDM table gives it to 06_9CH — is
+            // `#GP(0)` for `RDMSR` and `WRMSR` (Vol. 2B RDMSR/WRMSR: «a reserved or unimplemented MSR
+            // address»), not a stop. Every other unknown index stays a stop (M1).
+            if crate::msr::windows_msr_absent(msr_index) {
+                return gp0();
+            }
             if !crate::msr::windows_msr_is_known(msr_index) && !tdx_read {
                 if cells.windows_unknown_stop {
                     return Ok(StepOutcome::Unsupported {
@@ -49153,6 +49166,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 state.gpr[Register::Rax as usize] =
                     crate::msr::IA32_PLATFORM_ID_VALUE & 0xffff_ffff;
                 state.gpr[Register::Rdx as usize] = crate::msr::IA32_PLATFORM_ID_VALUE >> 32;
+                state.rip = next_rip;
+                return Ok(StepOutcome::Advanced);
+            }
+            // S7-32 slice T, rule R3: the read-only MSRs of the Tremont set the member models
+            // (package C-state residency, RAPL units and energy status): `RDMSR` reads the value,
+            // `WRMSR` is #GP(0) (R/O in SDM Vol. 4, as IA32_PLATFORM_ID).
+            if let Some(value) = crate::msr::windows_msr_read_only_value(msr_index) {
+                if instruction.operation != Operation::ReadMsr {
+                    return gp0();
+                }
+                state.gpr[Register::Rax as usize] = value & 0xffff_ffff;
+                state.gpr[Register::Rdx as usize] = value >> 32;
                 state.rip = next_rip;
                 return Ok(StepOutcome::Advanced);
             }

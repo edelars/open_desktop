@@ -1,0 +1,340 @@
+{
+ "schema": "od-s7-32-slice-record-v1",
+ "slice": "S7-32 slice T",
+ "date": "2026-11-27",
+ "base_commit": "9b4d52d",
+ "runner": {
+  "path": "work/s7-32/t/bin/od-runner-t",
+  "sha256_prefix": "b4dc4336e7eb0679",
+  "windows_runs_runner": {
+   "path": "work/s7-32/t/bin/od-runner-t-0f78da97",
+   "sha256_prefix": "0f78da97f2c90128",
+   "note": "before the code review fixes; the final runner differs only in decode-coverage"
+  }
+ },
+ "decisions": {
+  "file": "docs/reports/data/stage7/s7-32t-msr-decisions.tsv",
+  "indexes": 177,
+  "existing_model": 32,
+  "model_r3": 9,
+  "gp0": 128,
+  "gp0_by_cpuid_list": 51,
+  "gp0_undefined_list": 42,
+  "gp0_ranges": [
+   "0x800..=0x8ff",
+   "0x40000000..=0x4000ffff"
+  ],
+  "stop_m1": 8,
+  "source": "Intel SDM Vol. 4 335592-093US, 2.1, Table 2-2, 2.7, Tables 2-6/2-12/2-13/2-14",
+  "r1_condition": "any-of list of CPUID alternatives (mask of a bit or a field); rows 0x122, 0x48b, 0xd93, 0x14ce, 0x14cf, 0x17da derived (no If CPUID in 093)",
+  "tsv_status_range_rows": 35
+ },
+ "ports": {
+  "region": "AbsentPortRegion::VmwareBackdoor",
+  "ports": "0x5658..0x5660",
+  "widths": [
+   1,
+   2,
+   4
+  ],
+  "read": "all ones",
+  "write": "ignored",
+  "under": "linux_profile"
+ },
+ "exec_coverage": {
+  "images": 311,
+  "excluded": [
+   "clipsp.sys",
+   "drmk.sys"
+  ],
+  "after_s": {
+   "exec": 17913976,
+   "cond": 118,
+   "never": 1131,
+   "msr_never": {
+    "rdmsr": 420,
+    "wrmsr": 623
+   }
+  },
+  "after_t": {
+   "exec": 17914766,
+   "cond": 118,
+   "never": 341,
+   "msr_never": {
+    "rdmsr": 130,
+    "wrmsr": 123
+   },
+   "msr_unknown_index_never": 188,
+   "known_stop_pairs": 16,
+   "known_stop_pairs_from_table": 13,
+   "known_stop_value_writes": [
+    "0x1b",
+    "0x1a0",
+    "0xc0000080"
+   ],
+   "exec_single_fault_forms": 54,
+   "in_try_sites": 57,
+   "msr_sites": 1207
+  },
+  "decoder_refusals_pdata": 19045,
+  "refused_forms": 242,
+  "file": "docs/reports/data/stage7/s7-32t-exec-coverage-after.json"
+ },
+ "windows_runs": {
+  "rom": "work/s7-32/fw-l.bin (5e47acc1...)",
+  "command": "work/s7-32/r/wrun.sh (BIN=, --tpm, budget 8e10, --cr0-log 64); t1 and t2 ran concurrently",
+  "t1": {
+   "device_errors": "log",
+   "extra": "--turbo-profile",
+   "seconds": 56,
+   "retired": 28369783534,
+   "cpl3_retired": 2,
+   "exit": "unsupported",
+   "detail": "Unsupported { opcode: 0x8b }",
+   "rip": "0x00007ffc98ca1426",
+   "module": "ntdll.dll+0xe1426 (LdrInitializeThunk+6, by bytes)",
+   "interrupts": 66947,
+   "exceptions": 14806,
+   "page_faults": 14679,
+   "cr3_changes": 49619,
+   "absorbed_device_errors": 0,
+   "msr_gp": {
+    "count": 1,
+    "entries": [
+     {
+      "op": "rdmsr",
+      "index": "0x3fa",
+      "rip": "0xfffff80b25d56d2c",
+      "module": "intelppm.sys+0x46d2c presumed: page offset 0xd2c and index 0x3fa of the intelppm residency table; the module scan found no header (unmapped)"
+     }
+    ]
+   },
+   "cr0_journal_entries": 9,
+   "issue": "ISSUE-719"
+  },
+  "t2": {
+   "device_errors": "stop",
+   "seconds": 54,
+   "retired": 28380662699,
+   "cpl3_retired": 2,
+   "exit": "unsupported",
+   "detail": "Unsupported { opcode: 0x8b }",
+   "rip": "0x00007ff840561426",
+   "module": "ntdll.dll+0xe1426",
+   "interrupts": 66952,
+   "exceptions": 14807,
+   "page_faults": 14680,
+   "cr3_changes": 49621,
+   "msr_gp": {
+    "count": 1,
+    "entries": [
+     {
+      "op": "rdmsr",
+      "index": "0x3fa",
+      "rip": "0xfffff8067c4c6d2c"
+     }
+    ]
+   },
+   "cr0_journal_entries": 9,
+   "issue": "ISSUE-719"
+  },
+  "slice_s_times": {
+   "s1_log": 54,
+   "s2_stop": 28
+  },
+  "com1": {
+   "bytes": 3882,
+   "sha256_prefix": "50aa1d26"
+  }
+ },
+ "checks": {
+  "od_isa": 7163,
+  "od_machine_lib": {
+   "passed": 2744,
+   "ignored": 18
+  },
+  "od_runner": {
+   "passed": 1127,
+   "ignored": 5
+  },
+  "od_testkit_host_jit": {
+   "passed": 2046,
+   "ignored": 15
+  },
+  "od_x86_runner": 27,
+  "failed": 0,
+  "fmt": "clean",
+  "check": "clean (old warnings)",
+  "firmware_boot_smoke": 0,
+  "check_layout": "ok",
+  "linux_s6_21": {
+   "seconds": 1267,
+   "fields_equal_to_slice_s": 358,
+   "differences": 0,
+   "verify_report": 0
+  },
+  "golden_turbo_vs_noturbo": {
+   "G100": "MATCH",
+   "G3200": "MATCH"
+  },
+  "after_code_review": {
+   "fmt": "clean",
+   "check": "clean (old warnings)",
+   "od_isa": 7163,
+   "od_machine_lib": {
+    "passed": 2746,
+    "ignored": 18
+   },
+   "od_runner": {
+    "passed": 1129,
+    "ignored": 5
+   },
+   "failed": 0,
+   "exec_coverage_after_t": "byte-identical to s7-32t-exec-coverage-after.json",
+   "not_repeated": "od-testkit/od-host/od-jit, od-x86-runner, Linux S6-21, golden, Windows runs: the execution path did not change"
+  },
+  "after_second_review": {
+   "fmt": "clean",
+   "check": "clean (old warnings)",
+   "od_machine_lib": {
+    "passed": 2747,
+    "ignored": 18
+   },
+   "od_runner": {
+    "passed": 1129,
+    "ignored": 5
+   },
+   "failed": 0,
+   "exec_coverage_after_t": "byte-identical"
+  }
+ },
+ "defect_injections": [
+  {
+   "id": "I1",
+   "where": "R1 condition 0x345 -> CPUID.01H:ECX[19] (declared)",
+   "caught_by": "slice_t_every_r1_condition_is_undeclared_by_the_windows_cpuid"
+  },
+  {
+   "id": "I2",
+   "where": "R2 x2APIC range 0x800..=0x8fe",
+   "caught_by": "slice_t_absent_msrs_are_gp0_also_with_the_stop_option"
+  },
+  {
+   "id": "I3",
+   "where": "executor R2 check removed",
+   "caught_by": "slice_t_absent_msrs_are_gp0_also_with_the_stop_option"
+  },
+  {
+   "id": "I4",
+   "where": "R3 value 0x606 ^ 1",
+   "caught_by": "slice_t_read_only_msrs_read_their_value_and_a_write_is_gp0"
+  },
+  {
+   "id": "I5",
+   "where": "R3 extra index 0x3fb",
+   "caught_by": "slice_t_undecided_neighbours_stay_a_stop"
+  },
+  {
+   "id": "I6",
+   "where": "backdoor region length 4",
+   "caught_by": "the_vmware_backdoor_reads_all_ones_at_every_width_and_ignores_writes, linux_profile_binds_the_vmware_backdoor_as_absent"
+  },
+  {
+   "id": "I7",
+   "where": "word/dword for every absent region except COM2",
+   "caught_by": "word_dword_and_qword_are_refused_by_the_device, wide_accesses_through_the_bus"
+  },
+  {
+   "id": "I8",
+   "where": "journal never records",
+   "caught_by": "s7_32_slice_t_the_windows_run_with_turbo_equals_the_general_step"
+  },
+  {
+   "id": "I9",
+   "where": "journal retired base not set per quantum",
+   "caught_by": "s7_32_slice_t_the_windows_run_with_turbo_equals_the_general_step (after adding a COM1 write that ends the quantum; first attempt survived)"
+  },
+  {
+   "id": "I10",
+   "where": "SEH accepts __GSHandlerCheck",
+   "caught_by": "exec_counts_msr_accesses_inside_try_only_under_the_c_specific_handler (after making the GS data look like a scope; first attempt survived)"
+  },
+  {
+   "id": "I11",
+   "where": "SEH counts __finally",
+   "caught_by": "exec_counts_msr_accesses_inside_try_only_under_the_c_specific_handler"
+  }
+ ],
+ "code_review_injections": [
+  {
+   "id": "J3",
+   "where": "R3 read before the CPL check",
+   "caught_by": "every_access_at_cpl3_is_gp0_without_change"
+  },
+  {
+   "id": "J4",
+   "where": "a non-zero WRMSR to R3 accepted",
+   "caught_by": "slice_t_read_only_msrs_read_their_value_and_a_write_is_gp0"
+  },
+  {
+   "id": "J5",
+   "where": "!cpl3 removed from the journal condition",
+   "caught_by": "s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_gp0_and_not_journaled (second review: the Windows set lets bare RDMSR reach the step at CPL3)"
+  },
+  {
+   "id": "J6",
+   "where": "windows_msr_absent removed from the journal condition",
+   "caught_by": "s7_32_slice_t_the_journal_records_only_absent_msrs"
+  },
+  {
+   "id": "J6b",
+   "where": "the RDMSR/WRMSR decode check of the journal removed",
+   "caught_by": "s7_32_slice_t_the_journal_records_only_absent_msrs"
+  },
+  {
+   "id": "J7",
+   "where": "UNW_FLAG_CHAININFO not followed",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "J8",
+   "where": "unwind codes not rounded up to even",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "J11",
+   "where": "static handler scan does not stop at ret / jmp rel8",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "J14",
+   "where": "decision stop reported as model",
+   "caught_by": "exec_msr_decision_is_stop_model_or_gp"
+  },
+  {
+   "id": "R1-or",
+   "where": "a declared alternative (CPUID.01H:ECX[9]) in 0xc8f",
+   "caught_by": "slice_t_every_r1_condition_is_undeclared_by_the_windows_cpuid"
+  },
+  {
+   "id": "N3",
+   "where": "REX prefix not skipped before FF (48 FF 25 / 48 FF E0)",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "N4",
+   "where": "RIP-relative check modrm & 0xc7 == 0x05 dropped (FF 95 counted)",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "N5",
+   "where": "notrack (3E) not skipped before FF",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  },
+  {
+   "id": "N6",
+   "where": "FF /5 does not end the scan",
+   "caught_by": "exec_in_try_follows_chains_odd_codes_and_the_static_handler_body"
+  }
+ ]
+}

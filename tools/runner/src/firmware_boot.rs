@@ -2395,10 +2395,36 @@ fn mark_device_error_diagnostic(
     if let Some(journal) = board.cr0_journal() {
         value["cr0_writes"] = cr0_journal_report(board, journal);
     }
+    // S7-32 slice T: the MSR accesses refused with #GP(0) because the virtual CPU lacks the MSR
+    // (Windows unified runs install the journal); an observation, not a diagnostic mode.
+    if let Some(journal) = board.bus().msr_gp_journal() {
+        value["msr_gp"] = msr_gp_journal_report(board, journal);
+    }
     if limit.is_some() {
         value["diagnostic_run"] = json!(true);
         value["device_errors"] = device_errors_report(board);
     }
+}
+
+/// The `msr_gp` field of a Windows unified run: the `RDMSR`/`WRMSR` the set answered with #GP(0)
+/// because the virtual CPU lacks the MSR (ADR-0013, addendum «срез T»), each RIP with its image.
+fn msr_gp_journal_report(board: &LoadedFirmwareBoard, journal: &od_machine::MsrGpJournal) -> Value {
+    let memory = BoardMemory { board, vcpu: 0 };
+    let entries: Vec<Value> = journal
+        .entries()
+        .iter()
+        .map(|entry| {
+            json!({
+                "index": format!("{:#x}", entry.index),
+                "op": if entry.write { "wrmsr" } else { "rdmsr" },
+                "rip": format!("0x{:016x}", entry.rip),
+                "module": stop_snapshot::module_json(&memory, entry.rip),
+                "cpl": entry.cpl,
+                "retired": entry.retired,
+            })
+        })
+        .collect();
+    json!({"limit": journal.limit(), "count": journal.count(), "entries": entries})
 }
 
 /// The `cr0_writes` field of a `--cr0-log` run: the journaled `MOV CR0` in order, each RIP with the

@@ -484,6 +484,16 @@ impl Bucket {
     }
 }
 
+/// The decision of the set for one `RDMSR`/`WRMSR` (see `msr_indexes` of the report).
+fn msr_decision(classified: &Classified) -> &'static str {
+    match classified.verdict {
+        Verdict::Never => "stop",
+        Verdict::Exec if classified.faults.is_empty() => "model",
+        Verdict::Exec if classified.single_fault == Some(13) => "gp",
+        _ => "mixed",
+    }
+}
+
 /// The name of the operation: its `Debug` text up to the first `{`, `(` or space (diagnostic).
 fn operation_name(operation: &Operation) -> String {
     let text = format!("{operation:?}");
@@ -502,7 +512,8 @@ pub(super) struct ExecCoverage {
     families: HashMap<(Verdict, String), Bucket>,
     forms: HashMap<(Verdict, String, String), Bucket>,
     single_fault: HashMap<(String, String, u8), Bucket>,
-    msrs: BTreeMap<(bool, u32), (u64, BTreeMap<String, u64>)>,
+    /// (WRMSR, index) -> (sites, sites inside `__try`, files).
+    msrs: BTreeMap<(bool, u32), (u64, u64, BTreeMap<String, u64>)>,
     odd_widths: BTreeMap<usize, u64>,
     decoded: u64,
     extra_instructions: u64,
@@ -637,10 +648,17 @@ impl ExecCoverage {
                 _ => None,
             })
             .collect();
-        let single_fault = (faults.len() == outcomes.len()
-            && faults.iter().all(|vector| *vector == faults[0])
-            && faults[0] != 14)
-            .then(|| faults[0]);
+        // One vector (not #PF) in every variant; no variants or a mix — none.
+        let single_fault = match faults.split_first() {
+            Some((&first, rest))
+                if faults.len() == outcomes.len()
+                    && first != 14
+                    && rest.iter().all(|&vector| vector == first) =>
+            {
+                Some(first)
+            }
+            _ => None,
+        };
         Ok(Classified {
             verdict,
             operation: operation_name(&instruction.operation),
@@ -663,6 +681,7 @@ impl ExecCoverage {
         instruction: &Instruction,
         last_ecx: Option<u32>,
         extra: bool,
+        in_try: bool,
     ) -> Result<(), Cpl0ProfileSetInputError> {
         self.decoded += 1;
         if extra {
@@ -681,7 +700,8 @@ impl ExecCoverage {
                 .entry((instruction.operation == Operation::WriteMsr, index))
                 .or_default();
             entry.0 += 1;
-            *entry.1.entry(file.to_owned()).or_default() += 1;
+            entry.1 += u64::from(in_try);
+            *entry.2.entry(file.to_owned()).or_default() += 1;
         }
         let classified = match self.cache.get(&key) {
             Some(classified) => classified.clone(),
@@ -788,15 +808,22 @@ impl ExecCoverage {
                 let Value::Object(fields) = object(vec![("operation", json!(operation)), ("form", json!(form)), ("vector", json!(vector))]) else { unreachable!() };
                 bucket.json(fields)
             }).collect::<Vec<_>>(),
-            "msr_indexes": self.msrs.iter().map(|((write, index), (count, files))| {
+            "msr_indexes": self.msrs.iter().map(|((write, index), (count, in_try, files))| {
                 let mut key = vec![0x0f, if *write { 0x30 } else { 0x32 }];
                 key.extend(index.to_le_bytes());
+                let classified = self.cache.get(&key);
                 json!({
                     "op": if *write { "wrmsr" } else { "rdmsr" },
                     "index": format!("{index:#x}"),
                     "index_known": *index != UNKNOWN_MSR,
                     "count": count,
-                    "verdict": self.cache.get(&key).map_or("?", |classified| classified.verdict.name()),
+                    "in_try": in_try,
+                    "verdict": classified.map_or("?", |classified| classified.verdict.name()),
+                    // S7-32 slice T: what the set did with this (index, direction) in the sandbox:
+                    // `model` (retired), `gp` (#GP(0) in every variant), `stop` (Unsupported),
+                    // `mixed` otherwise. The bare `0F 30`/`0F 32` forms only (other encodings carry
+                    // their own key).
+                    "decision": classified.map_or("?", msr_decision),
                     "files": files.iter().map(|(name, count)| format!("{name}:{count}")).collect::<Vec<_>>(),
                 })
             }).collect::<Vec<_>>(),
@@ -920,7 +947,16 @@ mod tests {
         polluted.efer = 0xd00;
         coverage.cells.reset(&polluted);
         coverage
-            .observe("t.sys", 0x1000, &sysret, &sysret, &instruction, None, false)
+            .observe(
+                "t.sys",
+                0x1000,
+                &sysret,
+                &sysret,
+                &instruction,
+                None,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(coverage.verdicts.get(&Verdict::Never), Some(&1));
         assert_eq!(coverage.verdicts.get(&Verdict::Exec), None);

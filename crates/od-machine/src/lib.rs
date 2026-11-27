@@ -34,6 +34,7 @@ mod lapic_irq_source;
 mod linux_boot;
 mod linux_boot_params;
 mod linux_checkpoints;
+mod msr_gp_journal;
 pub use linux_checkpoints::{
     CALL_TRACE_MAX_ENTRIES, CallTraceEntry, CallTraceReport, CallTraceTarget,
 };
@@ -319,6 +320,7 @@ pub use local_apic::{
     InterruptAcknowledge, LOCAL_APIC_MMIO_BASE, LOCAL_APIC_MMIO_SIZE, LocalApic, LocalApicHandle,
     step_apic_base_msr, step_local_apic_cr8,
 };
+pub use msr_gp_journal::{MsrGpEntry, MsrGpJournal};
 
 pub use page_walk::pae::{
     PaeAccessRequest, PaeConfigError, PaeOperandOperation, PaePageSize, PaeProbeConfig,

@@ -46,6 +46,12 @@ pub const UART4_PORT: u16 = 0x2E8;
 pub const ABSENT_UART_PORT_BYTES: u32 = 8;
 /// What a read of an absent port returns.
 pub const ABSENT_PORT_READ_VALUE: u8 = 0xFF;
+/// The ports of the VMware backdoor (S7-32 slice T, ISSUE-714): `0x5658` (the command port, read
+/// with `in eax, dx` and EAX = `VMXh`) and `0x5659` (the high-bandwidth port), bound as eight ports so
+/// that a word or dword access at either does not cross the end of the binding.
+pub const VMWARE_BACKDOOR_PORT: u16 = 0x5658;
+/// Ports of the VMware backdoor binding.
+pub const VMWARE_BACKDOOR_PORT_BYTES: u32 = 8;
 
 /// Which group of absent ports a device stands for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +68,11 @@ pub enum AbsentPortRegion {
     Uart3,
     /// `0x2E8..0x2F0`: COM4, not declared by the board (S7-31j, Linux profile only).
     Uart4,
+    /// `0x5658..0x5660`: the VMware backdoor, not present on the board (S7-32 slice T, Linux profile
+    /// only). `pvscsii.sys` of the Windows setup media probes it with `in eax, dx`; on a PC without
+    /// VMware nothing decodes the port and the read gives all ones. Unlike the other regions it
+    /// takes word and dword accesses (the probe is a dword read).
+    VmwareBackdoor,
 }
 
 impl AbsentPortRegion {
@@ -74,6 +85,7 @@ impl AbsentPortRegion {
             Self::Uart2 => UART2_PORT,
             Self::Uart3 => UART3_PORT,
             Self::Uart4 => UART4_PORT,
+            Self::VmwareBackdoor => VMWARE_BACKDOOR_PORT,
         }
     }
 
@@ -84,6 +96,7 @@ impl AbsentPortRegion {
             Self::IoDelay => IO_DELAY_PORT_BYTES,
             Self::Post => POST_PORT_BYTES,
             Self::Uart2 | Self::Uart3 | Self::Uart4 => ABSENT_UART_PORT_BYTES,
+            Self::VmwareBackdoor => VMWARE_BACKDOOR_PORT_BYTES,
         }
     }
 }
@@ -110,7 +123,15 @@ impl AbsentPorts {
         if access.space != IoSpace::Pio {
             return Err(DeviceError::UnsupportedSpace);
         }
-        if access.width != AccessWidth::Byte {
+        // Byte only, except the VMware backdoor, which also takes words and dwords (S7-32 slice T).
+        let width_ok = match access.width {
+            AccessWidth::Byte => true,
+            AccessWidth::Word | AccessWidth::Dword => {
+                self.region == AbsentPortRegion::VmwareBackdoor
+            }
+            _ => false,
+        };
+        if !width_ok {
             return Err(DeviceError::UnsupportedWidth);
         }
         if access.offset >= u64::from(self.region.port_bytes()) {
@@ -123,7 +144,12 @@ impl AbsentPorts {
 impl BusDevice for AbsentPorts {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
         self.check(access)?;
-        Ok(u64::from(ABSENT_PORT_READ_VALUE))
+        // All ones in every byte of the access (an absent port on the PC/AT bus).
+        Ok(match access.width {
+            AccessWidth::Word => 0xFFFF,
+            AccessWidth::Dword => 0xFFFF_FFFF,
+            _ => u64::from(ABSENT_PORT_READ_VALUE),
+        })
     }
 
     fn write(&mut self, access: DeviceAccess, _value: u64) -> Result<(), DeviceError> {
@@ -146,13 +172,14 @@ mod tests {
     const BYTE: AccessWidth = AccessWidth::Byte;
     /// Every region, including `Post`, which the board binds only under the
     /// Linux profile; these tests use the devices directly or on a private bus.
-    const ALL_REGIONS: [AbsentPortRegion; 6] = [
+    const ALL_REGIONS: [AbsentPortRegion; 7] = [
         AbsentPortRegion::Cmos,
         AbsentPortRegion::IoDelay,
         AbsentPortRegion::Post,
         AbsentPortRegion::Uart2,
         AbsentPortRegion::Uart3,
         AbsentPortRegion::Uart4,
+        AbsentPortRegion::VmwareBackdoor,
     ];
 
     fn acc(offset: u64, width: AccessWidth) -> DeviceAccess {
@@ -274,10 +301,16 @@ mod tests {
 
     #[test]
     fn word_dword_and_qword_are_refused_by_the_device() {
-        // Policy: byte only (see the module comment). Refused before any effect.
+        // Policy: byte only (see the module comment). Refused before any effect. The VMware
+        // backdoor takes words and dwords (its own test); a qword is refused there too.
         for region in ALL_REGIONS {
             let mut dev = AbsentPorts::new(region);
-            for width in [AccessWidth::Word, AccessWidth::Dword, AccessWidth::Qword] {
+            let widths: &[AccessWidth] = if region == AbsentPortRegion::VmwareBackdoor {
+                &[AccessWidth::Qword]
+            } else {
+                &[AccessWidth::Word, AccessWidth::Dword, AccessWidth::Qword]
+            };
+            for &width in widths {
                 assert_eq!(dev.read(acc(0, width)), Err(DeviceError::UnsupportedWidth));
                 assert_eq!(
                     dev.write(acc(0, width), 0x1234),
@@ -286,6 +319,75 @@ mod tests {
             }
             assert_eq!(dev.read(acc(0, BYTE)), Ok(0xFF));
         }
+    }
+
+    /// S7-32 slice T (ISSUE-714): the VMware backdoor reads all ones at every width 1, 2, 4 and
+    /// every offset of its eight ports and ignores writes; through the bus a word or dword that
+    /// would leave the binding (`in ax/eax` at `0x565f`/`0x565d`) crosses its end, and the ports
+    /// around it stay unbound.
+    #[test]
+    fn the_vmware_backdoor_reads_all_ones_at_every_width_and_ignores_writes() {
+        let mut dev = AbsentPorts::new(AbsentPortRegion::VmwareBackdoor);
+        for offset in 0..u64::from(VMWARE_BACKDOOR_PORT_BYTES) {
+            for (width, ones) in [
+                (BYTE, 0xFF),
+                (AccessWidth::Word, 0xFFFF),
+                (AccessWidth::Dword, 0xFFFF_FFFF),
+            ] {
+                assert_eq!(dev.read(acc(offset, width)), Ok(ones), "{offset} {width:?}");
+                assert_eq!(dev.write(acc(offset, width), 0x5658_4d56), Ok(()));
+                assert_eq!(dev.read(acc(offset, width)), Ok(ones), "{offset} {width:?}");
+            }
+        }
+        let region = AbsentPortRegion::VmwareBackdoor;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 1 << 20).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(1 << 20),
+            vec![Box::new(AbsentPorts::new(region))],
+            Vec::new(),
+            vec![PortRegionBinding {
+                range: PortRange::new(p(region.base_port()), region.port_bytes()).unwrap(),
+                device_index: 0,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            bus.read_port(p(0x5658), AccessWidth::Dword),
+            Ok(0xFFFF_FFFF)
+        );
+        assert_eq!(
+            bus.read_port(p(0x5659), AccessWidth::Dword),
+            Ok(0xFFFF_FFFF)
+        );
+        assert_eq!(
+            bus.read_port(p(0x565c), AccessWidth::Dword),
+            Ok(0xFFFF_FFFF)
+        );
+        assert_eq!(bus.read_port(p(0x565e), AccessWidth::Word), Ok(0xFFFF));
+        assert_eq!(
+            bus.read_port(p(0x565f), AccessWidth::Word),
+            Err(BusAccessError::CrossesRegion)
+        );
+        assert_eq!(
+            bus.read_port(p(0x565d), AccessWidth::Dword),
+            Err(BusAccessError::CrossesRegion)
+        );
+        assert_eq!(
+            bus.read_port(p(0x5657), BYTE),
+            Err(BusAccessError::UnmappedPort(p(0x5657)))
+        );
+        assert_eq!(
+            bus.read_port(p(0x5660), BYTE),
+            Err(BusAccessError::UnmappedPort(p(0x5660)))
+        );
     }
 
     #[test]
@@ -423,8 +525,13 @@ mod tests {
             Box::new(pair.master),
             Box::new(pair.slave),
             Box::new(pm),
+            Box::new(AbsentPorts::new(AbsentPortRegion::VmwareBackdoor)),
         ];
         let ports = vec![
+            PortRegionBinding {
+                range: range(VMWARE_BACKDOOR_PORT, VMWARE_BACKDOOR_PORT_BYTES),
+                device_index: 5,
+            },
             PortRegionBinding {
                 range: range(CMOS_INDEX_PORT, CMOS_PORT_BYTES),
                 device_index: 0,

@@ -310,6 +310,9 @@ pub struct MachineBus {
     /// S7-32 diagnostic (`--device-errors log`): the log of refused guest accesses the general
     /// step of the set loop absorbs; `None` (the default) keeps every refusal a stop.
     device_errors: Option<Arc<DeviceErrorLog>>,
+    /// S7-32 slice T: the journal of the MSR accesses the CPL0 set answered with `#GP(0)` because
+    /// the virtual CPU lacks the MSR; `None` (the default) journals nothing.
+    msr_gp_journal: Option<Arc<crate::msr_gp_journal::MsrGpJournal>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1335,6 +1338,7 @@ impl MachineBus {
             ports,
             device_accesses,
             device_errors,
+            msr_gp_journal: _,
         } = self;
         (
             memory,
@@ -1429,6 +1433,19 @@ impl MachineBus {
     /// The log of [`Self::enable_device_error_log`], if installed.
     pub fn device_error_log(&self) -> Option<&Arc<DeviceErrorLog>> {
         self.device_errors.as_ref()
+    }
+
+    /// S7-32 slice T: installs the journal of the MSR accesses the set answered with `#GP(0)`
+    /// because the virtual CPU lacks the MSR (first `limit` entries, see
+    /// [`crate::MsrGpJournal`]). Observation only; one vCPU (one retired base, set by the firmware
+    /// board loop).
+    pub fn enable_msr_gp_journal(&mut self, limit: usize) {
+        self.msr_gp_journal = Some(Arc::new(crate::msr_gp_journal::MsrGpJournal::new(limit)));
+    }
+
+    /// The journal of [`Self::enable_msr_gp_journal`], if installed.
+    pub fn msr_gp_journal(&self) -> Option<&Arc<crate::msr_gp_journal::MsrGpJournal>> {
+        self.msr_gp_journal.as_ref()
     }
 
     pub(crate) fn enable_nvme_pci_mmio_window(&mut self) {
@@ -1838,6 +1855,7 @@ impl MachineBus {
             ports,
             device_accesses: Arc::new(AtomicU64::new(0)),
             device_errors: None,
+            msr_gp_journal: None,
         })
     }
 

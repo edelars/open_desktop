@@ -2077,6 +2077,9 @@ impl UnifiedGuest {
     }
 }
 
+/// S7-32 slice T: entries the MSR #GP journal of a Windows unified run keeps.
+pub const MSR_GP_JOURNAL_LIMIT: usize = 64;
+
 /// S7-32 slice S: what a caller seeds into [`UnifiedGuestCpl0Cells`] before a diagnostic step.
 /// The other cells (SYSENTER, IA32_KERNEL_GS_BASE, PAT, MISC_ENABLE, BIOS_SIGN_ID, MTRR, MCA,
 /// the PCI address latch) go back to the values of a fresh boot vCPU.
@@ -2218,6 +2221,11 @@ pub fn run_firmware_unified_guest(
     // taken from the bus. The 8259 is still bound as ports (the firmware masks it) but injects
     // nothing: one board source at a time.
     let cr8 = Cell::new(0u8);
+    // S7-32 slice T: the Windows guest journals the MSR accesses the set refuses with #GP(0)
+    // because the virtual CPU lacks the MSR (the first 64; observation only, cold path).
+    if windows && board.bus().msr_gp_journal().is_none() {
+        board.bus_mut().enable_msr_gp_journal(MSR_GP_JOURNAL_LIMIT);
+    }
     let set = if windows {
         names.push("cr8_tpr".to_owned());
         board.enable_clock_owner()?;
@@ -14156,6 +14164,28 @@ mod tests {
             ["cli", "cpu_owned_cr3", "halt", "irq", "user_mode"]
         );
         assert_eq!(record.path, "cpl0_set");
+    }
+
+    /// S7-32 slice T: on the user-mode board of S4-39c (the Linux set, no Windows MSR member) a
+    /// CPL3 `rdmsr` of an absent MSR is refused by the CPL3 allow-list (`Unsupported`) before any
+    /// #GP, and nothing is journaled. The CPL3 #GP(0) of the Windows set, where only `!cpl3` keeps
+    /// the access out of the journal, is
+    /// `firmware_board::tests::s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_gp0_and_not_journaled`.
+    #[test]
+    fn s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_not_journaled() {
+        // mov ecx, 0x3fa; rdmsr
+        let (mut boot, file) = user_mode_board(&[0xb9, 0xfa, 0x03, 0, 0, 0x0f, 0x32], true);
+        boot.board.bus_mut().enable_msr_gp_journal(4);
+        let record = run_user_facade(&mut boot, &file, 8);
+        assert_eq!(record.cpl, 3, "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 5, "{record:?}");
+        assert_eq!(
+            record.exit,
+            PagedProbeExit::Unsupported { opcode: 0x32 },
+            "{record:?}"
+        );
+        let journal = boot.board.bus().msr_gp_journal().expect("installed");
+        assert_eq!(journal.count(), 0, "{record:?}");
     }
 
     #[test]

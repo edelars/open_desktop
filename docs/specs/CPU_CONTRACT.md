@@ -1431,6 +1431,24 @@ accepted (before: a stop); DR4/DR5 alias DR6/DR7 (before: a write of them was a 
 CLFSH (before: the byte-read check of W1). The firmware has no `CLFLUSH`; whether a Linux run reaches one was not
 checked by a run (the kernel guards its `CLFLUSH` paths by the CLFSH feature).
 
+### MSR Windows-профиля: решения по SDM (S7-32, срез T)
+
+Правило — [ADR-0013, дополнение «срез T»](../decisions/ADR-0013-windows-cpu-profile.md#дополнение-s7-32-срез-t-2026-11-27-msr-windows-профиля-по-таблицам-sdm-правила-r1r4); источник — Intel SDM Vol. 4 335592-093US (§2.1, таблица 2-2, §2.7 и таблицы 2-6, 2-12, 2-13, 2-14 набора Tremont для 06_9CH), Vol. 2B «RDMSR»/«WRMSR». Полная таблица решений со ссылками — `docs/reports/data/stage7/s7-32t-msr-decisions.tsv` (177 индексов; наши решения, не таблица SDM). Член MSR Windows (`with_msr_windows`) проверяет по порядку:
+
+1. CPL3 — `#GP(0)` для любого индекса (как прежде).
+2. **Отсутствующий MSR** (`od_isa::msr::windows_msr_absent`) — `#GP(0)` для `RDMSR` и `WRMSR`, с опцией `with_msr_windows_unknown_as_stop` и без неё; RAX, RDX и RIP не меняются. Состав: `WINDOWS_MSR_ABSENT_BY_CPUID` — 51 индекс таблицы 2-2, чьё условие «If CPUID…» профиль не объявляет (условие строки — список альтернатив «или» таблицы 2-2: лист, подлист, регистр и маска бита или поля; MSR отсутствует, только если ложны все; для листов выше 6 — лист не объявлен: максимальный базовый лист = 6, профиль отвечает нулями; строки без «If CPUID…» в редакции 093 — `0x122`, `0x48B`, `0xD93`, `0x14CE`, `0x14CF`, `0x17DA` — несут выведенное условие с пометкой в коде); `WINDOWS_MSR_ABSENT_UNDEFINED` — 42 индекса, которых нет в таблицах для 06_9CH (в том числе `0x3FA`, `0x630`, `0x631`, `0x5000_0001`, `0x5000_0002` и индексы AMD `0xC001_xxxx` поштучно); диапазоны x2APIC `0x800..=0x8FF` (CPUID.01H:ECX[21] = 0) и гипервизора `0x4000_0000..=0x4000_FFFF` (Vol. 4 §2.1, «specially reserved range»). Множество не пересекается с известными индексами (`windows_msr_is_known`).
+3. **Известные**, в том числе новые R/O-регистры среза T (`windows_msr_read_only_value`): чтение — значение, запись — `#GP(0)`:
+
+| MSR | Индекс | Чтение | Основание |
+|---|---|---|---|
+| `MSR_PKG_C2_RESIDENCY`, `MSR_PKG_C3_RESIDENCY`, `MSR_PKG_C6_RESIDENCY`, `MSR_PKG_C10_RESIDENCY` | `0x60D`, `0x3F8`, `0x3F9`, `0x632` | 0 | таблица 2-12, R/O; у виртуального CPU нет C-состояний пакета |
+| `MSR_RAPL_POWER_UNIT` | `0x606` | `0x000A_0E08` | таблица 2-12, R/O; умолчания PU = 1000b, ESU = 01110b, TU = 1010b |
+| `MSR_PKG_ENERGY_STATUS`, `MSR_DRAM_ENERGY_STATUS`, `MSR_PP0_ENERGY_STATUS`, `MSR_PP1_ENERGY_STATUS` | `0x611`, `0x619`, `0x639`, `0x641` | 0 | таблица 2-12, R/O; энергию модель не измеряет |
+
+4. Иначе — остановка `Unsupported` с `with_msr_windows_unknown_as_stop` (единый прогон Windows; правило M1), без опции — `#GP(0)`. Остановкой остаются и существующие на 06_9CH R/W-регистры без модели (`0x1`, запись `0x10`, `0x79`, `0x199`, `0x1C8`, `0x1C9`, `0x1D9`) и `0x3A` (исключение, ADR).
+
+Решение — по паре (индекс, направление): `WRMSR 0x10` — остановка, хотя чтение TSC смоделировано. Единый прогон Windows журналирует обращения шага 2 (первые 64: индекс, направление, RIP, CPL, ретированные; и общее число — поле `msr_gp` отчёта runner; `od_machine::MsrGpJournal`); журнал только наблюдает. Тесты — `crates/od-isa/tests/s2_26_msr_windows.rs` (`slice_t_*`: каждая строка обоих списков и края диапазонов, условия R1 против настоящего CPUID `OdX8664V2Windows`, непересечение с известными на `0..0x2000`, `0x4000_0000..0x4001_0000`, `0xC000_0000..0xC000_2000`, `0xC001_0000..0xC001_2000`, значения R3, соседи — остановка) и тест платы `s7_32_slice_t_the_windows_run_with_turbo_equals_the_general_step` (`firmware_board.rs`: turbo против общего шага, журнал). Turbo `RDMSR`/`WRMSR` не компилирует: общий шаг.
+
 ### Локальный профиль `RdtscSourceV1` (S2-26e)
 
 `RDTSC` исполняется только для точной bare Long64 кодировки `0F 31` в

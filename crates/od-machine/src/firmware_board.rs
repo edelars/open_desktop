@@ -4157,6 +4157,11 @@ impl LoadedFirmwareBoard {
             if let Some(log) = &device_error_log {
                 log.set_retired_base(retired);
             }
+            // S7-32 slice T: the same base for the journal of MSR #GP(0) of absent MSRs.
+            let msr_gp_journal = board.bus.msr_gp_journal().cloned();
+            if let Some(journal) = &msr_gp_journal {
+                journal.set_retired_base(retired);
+            }
             // S7-32 slice R (`--cr0-log`): the same bases for the journal of `MOV CR0`.
             let cr0_journal = board.cr0_journal.clone();
             if let Some(journal) = &cr0_journal {
@@ -4222,6 +4227,9 @@ impl LoadedFirmwareBoard {
                             log.set_retired_base(retired);
                         }
                         if let Some(journal) = &cr0_journal {
+                            journal.set_retired_base(retired);
+                        }
+                        if let Some(journal) = &msr_gp_journal {
                             journal.set_retired_base(retired);
                         }
                         let now = now_cell.get() + n + RDTSC_TICK_NS;
@@ -5322,13 +5330,15 @@ fn assemble_board_with_layout(
         bind(PIC_SLAVE_BASE_PORT, PIC_PORT_BYTES, Box::new(pair.slave))?;
         bind(PIC_ELCR_BASE_PORT, PIC_ELCR_PORT_BYTES, Box::new(pair.elcr))?;
         // COM3 and COM4 (and COM2 unless the agent channel owns it) are not declared by the board:
-        // absent UARTs read 0xFF (S7-31j).
+        // absent UARTs read 0xFF (S7-31j). The VMware backdoor `0x5658..0x5660` is absent too and
+        // reads all ones at widths 1, 2 and 4 (S7-32 slice T, ISSUE-714: `pvscsii.sys` probes it).
         for region in [
             AbsentPortRegion::IoDelay,
             AbsentPortRegion::Post,
             AbsentPortRegion::Uart2,
             AbsentPortRegion::Uart3,
             AbsentPortRegion::Uart4,
+            AbsentPortRegion::VmwareBackdoor,
         ]
         .into_iter()
         .filter(|region| !(config.agent_channel && *region == AbsentPortRegion::Uart2))
@@ -10995,6 +11005,266 @@ mod tests {
         }
         // COM1 unchanged by the new bindings.
         assert_eq!(inb(&mut board, 0x3fd), Ok(com1_lsr));
+    }
+
+    /// S7-32 slice T (ISSUE-714): the Linux-profile board (the board of the Windows and Linux unified
+    /// runs) binds the VMware backdoor `0x5658..0x5660` as absent: reads of width 1, 2 and 4 give all
+    /// ones, writes are ignored, a word or dword that leaves the binding crosses its end, and the
+    /// neighbours stay traps; without the profile the ports are unbound.
+    #[test]
+    fn linux_profile_binds_the_vmware_backdoor_as_absent() {
+        let mut board = linux_board();
+        for port in 0x5658u16..0x5660 {
+            assert_eq!(inb(&mut board, port), Ok(0xff), "byte {port:#x}");
+        }
+        for (port, width, ones) in [
+            (0x5658u16, AccessWidth::Word, 0xffff),
+            (0x5658, AccessWidth::Dword, 0xffff_ffff),
+            (0x5659, AccessWidth::Dword, 0xffff_ffff),
+            (0x565c, AccessWidth::Dword, 0xffff_ffff),
+        ] {
+            assert_eq!(
+                board.bus_mut().read_port(io_port(port), width),
+                Ok(ones),
+                "{port:#x} {width:?}"
+            );
+            board
+                .bus_mut()
+                .write_port(io_port(port), width, 0x564d_5868)
+                .unwrap();
+        }
+        for (port, width) in [(0x565fu16, AccessWidth::Word), (0x565d, AccessWidth::Dword)] {
+            assert_eq!(
+                board.bus_mut().read_port(io_port(port), width),
+                Err(BusAccessError::CrossesRegion),
+                "{port:#x} {width:?}"
+            );
+        }
+        for port in [0x5657u16, 0x5660] {
+            assert_eq!(
+                inb(&mut board, port),
+                Err(BusAccessError::UnmappedPort(io_port(port))),
+                "{port:#x}"
+            );
+        }
+        let mut plain = load_firmware_image(&minor2_image(&[0xf4]), &tables_config()).unwrap();
+        assert_eq!(
+            inb(&mut plain, 0x5658),
+            Err(BusAccessError::UnmappedPort(io_port(0x5658)))
+        );
+    }
+
+    /// S7-32 slice T: the program of the turbo test of the slice. The probe of `pvscsii.sys` (`in
+    /// eax, dx` from the VMware backdoor with EAX = `VMXh`), two modelled MSRs (`60DH` PC2
+    /// residency, `606H` RAPL units) and, last, an MSR the virtual CPU lacks (`3FAH` PC7), which is
+    /// #GP(0). The board has no guest IDT here, so the fault is not delivered: the run ends with
+    /// the set's `Fault(#GP(0))` at the `rdmsr` (MACHINE_CONTRACT: without an IDT a fault stays
+    /// the stop it was), the same exit for both engines. The results are kept in R8..R13. First a
+    /// byte to COM1: the UART write ends the quantum, so the journal's retired count crosses a
+    /// quantum boundary.
+    #[rustfmt::skip]
+    const SLICE_T_PROGRAM: [u8; 82] = [
+        0x66, 0xBA, 0xF8, 0x03, 0xB0, 0x54, 0xEE,                   //  0: mov dx, 0x3f8; mov al, 'T'; out dx, al
+        0x48, 0xB8, 0x68, 0x58, 0x4D, 0x56, 0x22, 0x22, 0x11, 0x11, //  7: mov rax, 0x11112222_564d5868
+        0x48, 0xBB, 0x34, 0x12, 0x00, 0x00, 0x44, 0x44, 0x33, 0x33, // 17: mov rbx, 0x33334444_00001234
+        0x48, 0xB9, 0xAA, 0x55, 0x00, 0x00, 0x66, 0x66, 0x55, 0x55, // 27: mov rcx, 0x55556666_000055aa
+        0xBA, 0x58, 0x56, 0x00, 0x00,                               // 37: mov edx, 0x5658
+        0xED,                                                       // 42: in eax, dx
+        0x49, 0x89, 0xC0,                                           // 43: mov r8, rax
+        0x49, 0x89, 0xD3,                                           // 46: mov r11, rdx
+        0x49, 0x89, 0xCC,                                           // 49: mov r12, rcx
+        0xB9, 0x0D, 0x06, 0x00, 0x00,                               // 52: mov ecx, 0x60d
+        0x0F, 0x32,                                                 // 57: rdmsr
+        0x49, 0x89, 0xC1,                                           // 59: mov r9, rax
+        0x49, 0x89, 0xD5,                                           // 62: mov r13, rdx
+        0xB9, 0x06, 0x06, 0x00, 0x00,                               // 65: mov ecx, 0x606
+        0x0F, 0x32,                                                 // 70: rdmsr
+        0x49, 0x89, 0xC2,                                           // 72: mov r10, rax
+        0xB9, 0xFA, 0x03, 0x00, 0x00,                               // 75: mov ecx, 0x3fa
+        0x0F, 0x32,                                                 // 80: rdmsr (#GP)
+    ];
+
+    /// S7-32 slice T: the Windows unified run of [`SLICE_T_PROGRAM`] through the turbo engine equals
+    /// the run of the general step (run, exit, state, COM1), the absent port and the R3 MSRs give
+    /// their values, the MSR the CPU lacks is #GP(0) and is journaled once with its RIP.
+    #[test]
+    fn s7_32_slice_t_the_windows_run_with_turbo_equals_the_general_step() {
+        let (general, without, entry) = device_error_run_of(&SLICE_T_PROGRAM, None, false);
+        let (turbo, with, _) = device_error_run_of(&SLICE_T_PROGRAM, None, true);
+        assert_eq!(with.run, without.run);
+        assert_eq!(with.set_exit_detail, without.set_exit_detail);
+        assert_eq!(turbo.state(), general.state());
+        assert_eq!(turbo.com1_transcript(), general.com1_transcript());
+        let state = general.state();
+        let gpr = |register: od_isa::Register| state.gpr[register as usize];
+        // `in eax, dx` writes EAX and clears RAX[63:32]; RBX, RCX and RDX stay (no VMware).
+        assert_eq!(gpr(od_isa::Register::R8), 0x0000_0000_ffff_ffff);
+        assert_eq!(gpr(od_isa::Register::Rbx), 0x3333_4444_0000_1234);
+        assert_eq!(gpr(od_isa::Register::R11), 0x5658);
+        assert_eq!(gpr(od_isa::Register::R12), 0x5555_6666_0000_55aa);
+        assert_eq!(gpr(od_isa::Register::R9), 0, "MSR_PKG_C2_RESIDENCY");
+        assert_eq!(gpr(od_isa::Register::R13), 0);
+        assert_eq!(
+            gpr(od_isa::Register::R10),
+            0x000a_0e08,
+            "MSR_RAPL_POWER_UNIT"
+        );
+        assert_eq!(general.com1_transcript(), b"T");
+        let rdmsr_rip = entry + 80;
+        // The exit: #GP(0) of the `rdmsr 0x3fa`, not delivered (no IDT), nothing retired after the
+        // 19 instructions before it.
+        assert_eq!(
+            without.run.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            "{}",
+            without.set_exit_detail
+        );
+        assert_eq!(state.rip, rdmsr_rip);
+        assert_eq!(without.run.retired, 19);
+        for board in [&general, &turbo] {
+            let journal = board
+                .bus()
+                .msr_gp_journal()
+                .expect("the Windows run journals");
+            assert_eq!(journal.count(), 1);
+            let entries = journal.entries();
+            assert_eq!(
+                (
+                    entries[0].index,
+                    entries[0].write,
+                    entries[0].rip,
+                    entries[0].cpl
+                ),
+                (0x3fa, false, rdmsr_rip, 0)
+            );
+            assert_eq!(entries[0].retired, with.run.retired);
+        }
+    }
+
+    /// S7-32 slice T: the Windows unified run of `code`, started at CPL3 without a kernel when
+    /// `cpl3`: CS `0x33`/SS `0x2b` with DPL 3 caches set in the state (no segment load, no GDT
+    /// access) and the user bit on every level of the walk of the code page.
+    fn windows_run_at_cpl(
+        code: &[u8],
+        cpl3: bool,
+    ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun) {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x40 + code.len()].copy_from_slice(code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        board.disable_turbo();
+        if cpl3 {
+            let rip = board.state().rip;
+            let mut table = board.cr3() & 0x000f_ffff_ffff_f000;
+            for level in (0..4).rev() {
+                let entry = table + ((rip >> (12 + 9 * level)) & 0x1ff) * 8;
+                let address = GuestPhysicalAddress::new(entry);
+                let value = board
+                    .bus_mut()
+                    .read_physical(address, AccessWidth::Qword)
+                    .unwrap();
+                board
+                    .bus_mut()
+                    .write_physical(address, AccessWidth::Qword, value | 4, |_| {})
+                    .unwrap();
+                if level == 0 || value & 0x80 != 0 {
+                    break;
+                }
+                table = value & 0x000f_ffff_ffff_f000;
+            }
+            let state = board.state_mut();
+            state.cs_selector = Some(0x33);
+            state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
+                base: 0,
+                limit: 0xffff_ffff,
+                access: 0xfb,
+                flags: 0x2,
+            });
+            state.ss_selector = Some(0x2b);
+            state.ss_cache = Some(od_isa::DataSegmentDescriptorCache {
+                base: 0,
+                limit: 0xffff_ffff,
+                access: 0xf3,
+                flags: 0xc,
+            });
+            (state.ds_selector, state.es_selector) = (0, 0);
+            (state.fs_selector, state.gs_selector) = (0, 0);
+        }
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            100,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        (board, run)
+    }
+
+    /// S7-32 slice T: the Windows set lets the bare `RDMSR` reach the step at CPL3
+    /// (`cpl3_allows` with the Windows MSR member), where it is #GP(0) by the CPL rule — not
+    /// because the CPU lacks the MSR — and the journal (`!cpl3` in the set loop) records nothing;
+    /// the same `rdmsr 0x3fa` at CPL0 is journaled. No guest IDT: the #GP is the stop of the run.
+    #[test]
+    fn s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_gp0_and_not_journaled() {
+        let code = [0xB9, 0xFA, 0x03, 0, 0, 0x0F, 0x32]; // mov ecx, 0x3fa; rdmsr
+        for (cpl3, journaled) in [(true, 0), (false, 1)] {
+            let (board, run) = windows_run_at_cpl(&code, cpl3);
+            assert_eq!(
+                run.run.exit,
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                "cpl3 {cpl3}: {}",
+                run.set_exit_detail
+            );
+            assert_eq!(run.run.retired, 1, "cpl3 {cpl3}");
+            assert_eq!(run.cpl3_retired, u64::from(cpl3), "cpl3 {cpl3}");
+            let journal = board
+                .bus()
+                .msr_gp_journal()
+                .expect("the Windows run journals");
+            assert_eq!(journal.count(), journaled, "cpl3 {cpl3}");
+        }
+    }
+
+    /// S7-32 slice T: the journal records only an `RDMSR`/`WRMSR` the set refused because the CPU
+    /// lacks the MSR. A `WRMSR` of a modelled read-only MSR (`606H`, rule R3) is #GP(0) but not
+    /// journaled; a #GP(0) of another instruction (a non-canonical load) with an absent index in
+    /// ECX is not journaled; the `RDMSR 3FAH` is. Each program ends in its #GP (no guest IDT). The
+    /// CPL3 case is `s7_32_slice_t_a_cpl3_rdmsr_of_an_absent_msr_is_gp0_and_not_journaled`.
+    #[test]
+    fn s7_32_slice_t_the_journal_records_only_absent_msrs() {
+        #[rustfmt::skip]
+        let programs: [(&[u8], u64); 3] = [
+            // mov ecx, 0x606; xor eax, eax; xor edx, edx; wrmsr
+            (&[0xB9, 0x06, 0x06, 0, 0, 0x31, 0xC0, 0x31, 0xD2, 0x0F, 0x30], 0),
+            // mov ecx, 0x3fa; mov rax, 0x8000_0000_0000_0000; mov al, [rax]
+            (&[0xB9, 0xFA, 0x03, 0, 0, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x8A, 0x00], 0),
+            // mov ecx, 0x3fa; rdmsr
+            (&[0xB9, 0xFA, 0x03, 0, 0, 0x0F, 0x32], 1),
+        ];
+        for (code, journaled) in programs {
+            let (board, run, _) = device_error_run_of(code, None, false);
+            assert!(
+                matches!(run.run.exit, PagedProbeExit::Fault(fault) if fault.vector == 13),
+                "{code:02x?}: {}",
+                run.set_exit_detail
+            );
+            let journal = board
+                .bus()
+                .msr_gp_journal()
+                .expect("the Windows run journals");
+            assert_eq!(journal.count(), journaled, "{code:02x?}");
+        }
     }
 
     /// S7-31k: without the Linux profile the absent UARTs are not bound: COM2..COM4 stay traps

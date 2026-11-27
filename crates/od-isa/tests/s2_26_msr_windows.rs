@@ -6,14 +6,16 @@
 //! is observable there, and no oracle count was taken for it), so there is no hardware oracle count
 //! for this slice (all rows are modelled).
 
+use od_isa::cpuid::CpuidProfile;
 use od_isa::execute::{
     ControlRegisterPolicy, Cpl0ProfileSet, Cpl0ProfileSetExit, Cpl0ProfileSetInputError,
     Cpl0ProfileSetResult, RunConfig, RunExit, run_with_cpl0_profile_set, run_with_cpl3_profile_set,
 };
 use od_isa::msr::{
-    IA32_MISC_ENABLE_RESET, IA32_PAT_RESET, MsrProfile, WindowsMsrWrite,
-    windows_msr_cell_value_valid, windows_msr_is_known, windows_msr_stored_value,
-    windows_msr_write_decision,
+    IA32_MISC_ENABLE_RESET, IA32_PAT_RESET, MsrProfile, WINDOWS_MSR_ABSENT_BY_CPUID,
+    WINDOWS_MSR_ABSENT_UNDEFINED, WindowsMsrWrite, windows_msr_absent,
+    windows_msr_cell_value_valid, windows_msr_is_known, windows_msr_read_only_value,
+    windows_msr_stored_value, windows_msr_write_decision,
 };
 use od_isa::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, CodeSegmentDescriptorCache,
@@ -847,11 +849,34 @@ fn prefixed_and_other_forms_keep_their_refusal() {
     }
 }
 
+/// CPL3 comes first: every class of index — cell-owned, the read-only MSRs of rule R3 (S7-32 slice
+/// T), the absent ones of R1/R2 and the undecided stops of M1 — is #GP(0) at CPL3, with and without
+/// the stop option.
 #[test]
 fn every_access_at_cpl3_is_gp0_without_change() {
     let cells = Cells::new();
-    let set = cells.windows();
-    for index in [IA32_PAT, IA32_LSTAR, IA32_EFER, IA32_APIC_BASE, 0x10] {
+    for (set, index) in [
+        cells.windows(),
+        cells.windows().with_msr_windows_unknown_as_stop(),
+    ]
+    .iter()
+    .flat_map(|set| {
+        [
+            IA32_PAT,
+            IA32_LSTAR,
+            IA32_EFER,
+            IA32_APIC_BASE,
+            0x10,
+            0x60d,
+            0x606,
+            0x3fa,
+            0x800,
+            0x4000_0000,
+            0x1,
+            0xdead_0000,
+        ]
+        .map(|index| (set, index))
+    }) {
         for code in [RDMSR, WRMSR] {
             let mut state = user_state();
             state.gpr[Register::Rcx as usize] = u64::from(index);
@@ -1372,4 +1397,192 @@ fn mtrr_and_mca_indexes_without_their_cells_stop_and_are_gp0_at_cpl3() {
         (mtrr.get(), mca.get()),
         (MtrrState::default(), McaState::default())
     );
+}
+
+/// The index list of rules R1 and R2 (S7-32 slice T), every row and the edges of the two ranges.
+fn slice_t_absent_indexes() -> Vec<u32> {
+    let mut indexes: Vec<u32> = WINDOWS_MSR_ABSENT_BY_CPUID
+        .iter()
+        .map(|(index, _)| *index)
+        .chain(WINDOWS_MSR_ABSENT_UNDEFINED.iter().copied())
+        .collect();
+    indexes.extend([
+        0x800,
+        0x80b,
+        0x830,
+        0x844,
+        0x8ff,
+        0x4000_0000,
+        0x4000_0020,
+        0x4000_ffff,
+    ]);
+    indexes
+}
+
+/// S7-32 slice T, rules R1/R2 (ADR-0013 addendum «срез T»): an MSR the virtual CPU does not have is
+/// #GP(0) for RDMSR and WRMSR without a state change, also with the stop option of decision M1.
+#[test]
+fn slice_t_absent_msrs_are_gp0_also_with_the_stop_option() {
+    let cells = Cells::new();
+    for set in [
+        cells.windows(),
+        cells.windows().with_msr_windows_unknown_as_stop(),
+    ] {
+        for index in slice_t_absent_indexes() {
+            assert!(windows_msr_absent(index), "{index:#x}");
+            for (code, name) in [(RDMSR, "rdmsr"), (WRMSR, "wrmsr")] {
+                let (result, before, after) = access(&set, code, index, 0x1234_5678);
+                assert_gp0_unchanged(&result, &before, &after, &format!("{name} {index:#x}"));
+            }
+        }
+    }
+}
+
+/// The edges of the ranges and the neighbours of listed indexes stay undecided: a stop with the
+/// option (M1), as before the slice. The AMD MSRs are a list, not a range.
+#[test]
+fn slice_t_undecided_neighbours_stay_a_stop() {
+    let cells = Cells::new();
+    let set = cells.windows().with_msr_windows_unknown_as_stop();
+    for index in [
+        0x7ffu32,
+        0x900,
+        0x3fff_ffff,
+        0x4001_0000,
+        0xc001_0000,
+        0xc001_0016,
+        0x3fb,
+        0x62f,
+        0x633,
+        0x1,
+        0x3a,
+        0x79,
+        0x199,
+        0x1d9,
+    ] {
+        assert!(!windows_msr_absent(index), "{index:#x}");
+        for code in [RDMSR, WRMSR] {
+            let (result, before, after) = access(&set, code, index, 0);
+            assert!(
+                matches!(exit(&result), RunExit::Unsupported { .. }),
+                "{code:02x?} {index:#x}: {:?}",
+                result.exit
+            );
+            assert_eq!(after, before);
+        }
+    }
+}
+
+/// S7-32 slice T, rule R3: the read-only MSRs of the Tremont set (SDM Vol. 4 Table 2-12) read their
+/// value into EDX:EAX (upper halves cleared, RCX and the rest unchanged); a WRMSR is #GP(0) (R/O).
+#[test]
+fn slice_t_read_only_msrs_read_their_value_and_a_write_is_gp0() {
+    let expected: [(u32, u64); 9] = [
+        (0x60d, 0),
+        (0x3f8, 0),
+        (0x3f9, 0),
+        (0x632, 0),
+        (0x611, 0),
+        (0x619, 0),
+        (0x639, 0),
+        (0x641, 0),
+        (0x606, 0x000a_0e08),
+    ];
+    let cells = Cells::new();
+    for set in [
+        cells.windows(),
+        cells.windows().with_msr_windows_unknown_as_stop(),
+    ] {
+        for (index, value) in expected {
+            assert_eq!(
+                windows_msr_read_only_value(index),
+                Some(value),
+                "{index:#x}"
+            );
+            assert!(windows_msr_is_known(index));
+            let (result, before, after) = access(&set, RDMSR, index, 0);
+            assert_eq!(result.instructions_executed, 1, "{index:#x}");
+            assert_eq!(after.gpr[Register::Rax as usize], value & 0xffff_ffff);
+            assert_eq!(after.gpr[Register::Rdx as usize], value >> 32);
+            let mut rest = after.clone();
+            rest.gpr[Register::Rax as usize] = before.gpr[Register::Rax as usize];
+            rest.gpr[Register::Rdx as usize] = before.gpr[Register::Rdx as usize];
+            rest.rip = before.rip;
+            assert_eq!(rest, before, "{index:#x}");
+            // A write of any value — 0, the value read, all ones — is #GP(0) without a change.
+            for written in [0, value, u64::MAX] {
+                let (result, before, after) = access(&set, WRMSR, index, written);
+                assert_gp0_unchanged(
+                    &result,
+                    &before,
+                    &after,
+                    &format!("wrmsr {index:#x} {written:#x}"),
+                );
+            }
+        }
+    }
+}
+
+/// S7-32 slice T, rule R1 against the profile itself: for every row every alternative of the CPUID
+/// condition (SDM Table 2-2, any of) is false on `OdX8664V2Windows`. A leaf above the maximum basic
+/// or extended leaf is asserted to read four zeros through the profile itself (not skipped); then
+/// the masked register is 0. The x2APIC range rests on CPUID.01H:ECX[21].
+#[test]
+fn slice_t_every_r1_condition_is_undeclared_by_the_windows_cpuid() {
+    let profile = CpuidProfile::OdX8664V2Windows;
+    let max_basic = profile.query(0, 0).eax;
+    let max_extended = profile.query(0x8000_0000, 0).eax;
+    assert_eq!(max_basic, 6);
+    let mut alternatives = 0;
+    for (index, condition) in WINDOWS_MSR_ABSENT_BY_CPUID {
+        assert!(!condition.is_empty(), "{index:#x}: an empty condition");
+        for alternative in condition.iter() {
+            let result = profile.query(alternative.leaf, alternative.subleaf);
+            let above_maximum = if alternative.leaf >= 0x8000_0000 {
+                alternative.leaf > max_extended
+            } else {
+                alternative.leaf > max_basic
+            };
+            if above_maximum {
+                assert_eq!(
+                    [result.eax, result.ebx, result.ecx, result.edx],
+                    [0; 4],
+                    "{index:#x}: leaf {:#x} above the maximum must read zeros",
+                    alternative.leaf
+                );
+            }
+            let register =
+                [result.eax, result.ebx, result.ecx, result.edx][alternative.register as usize];
+            assert_eq!(
+                register & alternative.mask,
+                0,
+                "{index:#x}: {alternative:?} is declared"
+            );
+            alternatives += 1;
+        }
+    }
+    assert!(
+        alternatives > WINDOWS_MSR_ABSENT_BY_CPUID.len(),
+        "the «or» rows"
+    );
+    assert_eq!(profile.query(1, 0).ecx >> 21 & 1, 0, "x2APIC");
+}
+
+/// The two decisions never meet: no index is both absent (#GP) and modelled.
+#[test]
+fn slice_t_absent_and_known_are_disjoint() {
+    let ranges = [
+        0..0x2000u32,
+        0x4000_0000..0x4001_0000,
+        0xc000_0000..0xc000_2000,
+        0xc001_0000..0xc001_2000,
+    ];
+    for range in ranges {
+        for index in range {
+            assert!(
+                !(windows_msr_absent(index) && windows_msr_is_known(index)),
+                "{index:#x}"
+            );
+        }
+    }
 }

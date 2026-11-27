@@ -53,7 +53,8 @@ impl MsrProfile {
 /// a cell set by the board, `Cpl0ProfileSet::with_msr_bios_sign_id`). Since S7-32 slice I (the
 /// Windows profile declares MTRR and MCA, CPUID.1:EDX[12] and [14]) the MTRR file
 /// ([`MtrrState::handles`]) and the MCA file ([`McaState::handles`]), each with a cell set by the
-/// board (`Cpl0ProfileSet::with_msr_mtrr`, `Cpl0ProfileSet::with_msr_mca`).
+/// board (`Cpl0ProfileSet::with_msr_mtrr`, `Cpl0ProfileSet::with_msr_mca`). Since S7-32 slice T
+/// the read-only MSRs of [`windows_msr_read_only_value`]. Disjoint from [`windows_msr_absent`].
 pub const fn windows_msr_is_known(index: u32) -> bool {
     matches!(
         index,
@@ -67,6 +68,266 @@ pub const fn windows_msr_is_known(index: u32) -> bool {
             | 0xc000_0100..=0xc000_0102
     ) || MtrrState::handles(index)
         || McaState::handles(index)
+        || windows_msr_read_only_value(index).is_some()
+}
+
+/// S7-32 slice T: one alternative of the CPUID condition of an architectural MSR (Intel SDM Vol. 4
+/// 335592-093US, Table 2-2, the "If CPUID…" comment of the MSR): the alternative holds when
+/// `register & mask != 0` in CPUID leaf `leaf`, sub-leaf `subleaf`. A single bit is a one-bit
+/// mask; a field condition («EDX[4:0] > 0», «EAX[7:0] > 1») is the mask of the field — a field
+/// that reads 0 fails every such comparison. A conjunction («EBX[25] = 1 && CPUID.14H…») is stored
+/// by one of its necessary bits: if that bit is 0 the whole alternative is false.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CpuidBits {
+    pub leaf: u32,
+    pub subleaf: u32,
+    /// 0 = EAX, 1 = EBX, 2 = ECX, 3 = EDX.
+    pub register: u8,
+    pub mask: u32,
+}
+
+/// S7-32 slice T: the CPUID condition of an MSR as a list of alternatives (any of): the MSR exists
+/// if any alternative holds, and is absent (rule R1) only when all of them are false on the
+/// profile.
+pub type CpuidCondition = &'static [CpuidBits];
+
+const fn bit(leaf: u32, subleaf: u32, register: u8, bit: u8) -> CpuidBits {
+    CpuidBits {
+        leaf,
+        subleaf,
+        register,
+        mask: 1 << bit,
+    }
+}
+
+const fn field(leaf: u32, subleaf: u32, register: u8, mask: u32) -> CpuidBits {
+    CpuidBits {
+        leaf,
+        subleaf,
+        register,
+        mask,
+    }
+}
+
+const EAX: u8 = 0;
+const EBX: u8 = 1;
+const ECX: u8 = 2;
+const EDX: u8 = 3;
+
+/// IA32_SPEC_CTRL (48H): «If any one of the enumeration conditions for defined bit field positions
+/// holds» — IBRS CPUID.07H.00H:EDX[26], STIBP [27], SSBD [31]; PSFD, IPRED_DIS, RRSBA_DIS, DDPD_U,
+/// BHI_DIS_S — CPUID.07H.02H:EDX[0..=4].
+const SPEC_CTRL: CpuidCondition = &[
+    bit(7, 0, EDX, 26),
+    bit(7, 0, EDX, 27),
+    bit(7, 0, EDX, 31),
+    field(7, 2, EDX, 0x1f),
+];
+/// The fixed-function counter `n`: «If CPUID.0AH:EDX[4:0] > n || CPUID.0AH:ECX[n] = 1 ||
+/// CPUID.23H.01H:EBX[n] = 1».
+const FIXED_CTR0: CpuidCondition = &[
+    field(0xa, 0, EDX, 0x1f),
+    bit(0xa, 0, ECX, 0),
+    bit(0x23, 1, EBX, 0),
+];
+const FIXED_CTR1: CpuidCondition = &[
+    field(0xa, 0, EDX, 0x1f),
+    bit(0xa, 0, ECX, 1),
+    bit(0x23, 1, EBX, 1),
+];
+const FIXED_CTR2: CpuidCondition = &[
+    field(0xa, 0, EDX, 0x1f),
+    bit(0xa, 0, ECX, 2),
+    bit(0x23, 1, EBX, 2),
+];
+/// The architectural PMU version: «If CPUID.0AH:EAX[7:0] > n».
+const PMU_VERSION: CpuidCondition = &[field(0xa, 0, EAX, 0xff)];
+/// The same or Intel PT with ToPA: «… || (CPUID.07H.00H:EBX[25] = 1 && CPUID.14H.00H:ECX[0] = 1)».
+const PMU_VERSION_OR_PT: CpuidCondition = &[field(0xa, 0, EAX, 0xff), bit(7, 0, EBX, 25)];
+/// Intel PT: «If (CPUID.07H.00H:EBX[25] = 1)» (with conditions of leaf 14H for some registers).
+const PT: CpuidCondition = &[bit(7, 0, EBX, 25)];
+/// CET user and supervisor configuration: bits 1:0 «if CPUID.07H.00H:ECX.CET_SS[7] = 1», bits 5:2
+/// and 63:10 «if CPUID.07H.00H:EDX.CET_IBT[20] = 1» (IA32_S_CET: «See IA32_U_CET»).
+const CET: CpuidCondition = &[bit(7, 0, ECX, 7), bit(7, 0, EDX, 20)];
+
+/// S7-32 slice T, rule R1 (ADR-0013, addendum «срез T»): the MSRs of the Windows code that the SDM
+/// makes conditional on CPUID features the Windows profile does not declare. They do not exist on
+/// the virtual CPU (CPUID wins over the model table of 06_9CH): `RDMSR`/`WRMSR` is `#GP(0)`. A row
+/// is the condition of Table 2-2 (335592-093US), with every alternative of an «or»; the rows
+/// without an «If CPUID…» comment in that edition say how their condition is derived. A test checks
+/// every alternative against the CPUID of the profile (`tests/s2_26_msr_windows.rs`,
+/// `slice_t_every_r1_condition_is_undeclared_by_the_windows_cpuid`).
+pub const WINDOWS_MSR_ABSENT_BY_CPUID: &[(u32, CpuidCondition)] = &[
+    (0x3b, &[bit(7, 0, EBX, 1)]),   // IA32_TSC_ADJUST
+    (0x48, SPEC_CTRL),              // IA32_SPEC_CTRL
+    (0x49, &[bit(7, 0, EDX, 26)]),  // IA32_PRED_CMD (IBPB, the one defined bit)
+    (0xe7, &[bit(6, 0, ECX, 0)]),   // IA32_MPERF
+    (0xe8, &[bit(6, 0, ECX, 0)]),   // IA32_APERF
+    (0x10a, &[bit(7, 0, EDX, 29)]), // IA32_ARCH_CAPABILITIES
+    // IA32_TSX_CTRL: «Available when CPUID.07H.00H:EDX.ARCH_CAPABILITIES[29] = 1 and
+    // IA32_ARCH_CAPABILITIES.bit 7 = 1» (a comment, not an «If CPUID…»; the second part needs the
+    // first).
+    (0x122, &[bit(7, 0, EDX, 29)]),
+    // IA32_MCU_OPT_CTRL: «If CPUID.07H.00H:EDX[9] = 1 or CPUID.07H.00H:EDX[11] = 1 or
+    // IA32_ARCH_CAPABILITIES[18|25|29|30] = 1» — the last four need IA32_ARCH_CAPABILITIES, which
+    // needs CPUID.07H.00H:EDX[29].
+    (
+        0x123,
+        &[bit(7, 0, EDX, 9), bit(7, 0, EDX, 11), bit(7, 0, EDX, 29)],
+    ),
+    (0x19a, &[bit(1, 0, EDX, 22)]),  // IA32_CLOCK_MODULATION
+    (0x1b0, &[bit(6, 0, ECX, 3)]),   // IA32_ENERGY_PERF_BIAS
+    (0x1b1, &[bit(6, 0, EAX, 6)]),   // IA32_PACKAGE_THERM_STATUS
+    (0x1b2, &[bit(6, 0, EAX, 6)]),   // IA32_PACKAGE_THERM_INTERRUPT
+    (0x1c4, &[bit(0xd, 1, EAX, 4)]), // IA32_XFD
+    (0x1c5, &[bit(0xd, 1, EAX, 4)]), // IA32_XFD_ERR
+    (0x309, FIXED_CTR0),             // IA32_FIXED_CTR0
+    (0x30a, FIXED_CTR1),             // IA32_FIXED_CTR1
+    (0x30b, FIXED_CTR2),             // IA32_FIXED_CTR2
+    (0x345, &[bit(1, 0, ECX, 15)]),  // IA32_PERF_CAPABILITIES (PDCM)
+    (0x38d, PMU_VERSION),            // IA32_FIXED_CTR_CTRL (EAX[7:0] > 1)
+    (0x38e, PMU_VERSION_OR_PT),      // IA32_PERF_GLOBAL_STATUS (EAX[7:0] > 0 || PT with ToPA)
+    (0x38f, PMU_VERSION),            // IA32_PERF_GLOBAL_CTRL (EAX[7:0] > 0)
+    (0x390, PMU_VERSION_OR_PT),      // IA32_PERF_GLOBAL_STATUS_RESET (EAX[7:0] > 3 || PT with ToPA)
+    (0x482, &[bit(1, 0, ECX, 5)]),   // IA32_VMX_PROCBASED_CTLS
+    // IA32_VMX_PROCBASED_CTLS2: «If (CPUID.01H:ECX[5] && IA32_VMX_PROCBASED_CTLS[63])» — the second
+    // part needs IA32_VMX_PROCBASED_CTLS, which needs the first.
+    (0x48b, &[bit(1, 0, ECX, 5)]),
+    (0x560, PT),                                        // IA32_RTIT_OUTPUT_BASE
+    (0x561, PT),                                        // IA32_RTIT_OUTPUT_MASK_PTRS
+    (0x570, PT),                                        // IA32_RTIT_CTL
+    (0x571, PT),                                        // IA32_RTIT_STATUS
+    (0x572, PT),                                        // IA32_RTIT_CR3_MATCH
+    (0x600, &[bit(1, 0, EDX, 21)]),                     // IA32_DS_AREA
+    (0x6a0, CET),                                       // IA32_U_CET
+    (0x6a2, CET),                                       // IA32_S_CET
+    (0x6a7, &[bit(7, 0, ECX, 7)]),                      // IA32_PL3_SSP
+    (0x772, &[bit(6, 0, EAX, 11)]),                     // IA32_HWP_REQUEST_PKG
+    (0x773, &[bit(6, 0, EAX, 8)]),                      // IA32_HWP_INTERRUPT
+    (0x777, &[bit(6, 0, EAX, 7)]),                      // IA32_HWP_STATUS
+    (0x982, &[bit(7, 0, ECX, 13)]),                     // IA32_TME_ACTIVATE
+    (0xc89, &[bit(0x10, 6, EAX, 1)]),                   // IA32_RESOURCE_PRIORITY_PKG
+    (0xc8f, &[bit(7, 0, EBX, 12), bit(7, 0, EBX, 15)]), // IA32_PQR_ASSOC (RDT monitoring or allocation)
+    (0xc91, &[bit(0x10, 0, EBX, 1)]),                   // IA32_L3_MASK_1 (range C90H–D8FH)
+    // IA32_PASID: no «If CPUID…» in 335592-093US; derived — the MSR serves ENQCMD
+    // (CPUID.07H.00H:ECX[29]) and the PASID state component of XSAVES.
+    (0xd93, &[bit(7, 0, ECX, 29)]),
+    (0xda0, &[bit(0xd, 1, EAX, 3)]), // IA32_XSS
+    (0xdb0, &[bit(6, 0, EAX, 13)]),  // IA32_PKG_HDC_CTL
+    (0xdb2, &[bit(6, 0, EAX, 13)]),  // IA32_THREAD_STALL
+    // IA32_LBR_CTL, IA32_LBR_DEPTH: no «If CPUID…» in 335592-093US; derived — architectural LBR,
+    // CPUID.07H.00H:EDX[19] (depths in CPUID.1CH).
+    (0x14ce, &[bit(7, 0, EDX, 19)]),
+    (0x14cf, &[bit(7, 0, EDX, 19)]),
+    (0x17d0, &[bit(6, 0, EAX, 19)]), // IA32_HW_FEEDBACK_PTR
+    (0x17d1, &[bit(6, 0, EAX, 19)]), // IA32_HW_FEEDBACK_CONFIG
+    (0x17d2, &[bit(6, 0, EAX, 23)]), // IA32_THREAD_FEEDBACK_CHAR
+    // IA32_HRESET_ENABLE: no «If CPUID…» in 335592-093US; derived — the MSR of the HRESET
+    // instruction, CPUID.07H.01H:EAX[22].
+    (0x17da, &[bit(7, 1, EAX, 22)]),
+    // IA32_TSC_AUX: «If CPUID.80000001H:EDX[27] = 1 or CPUID.07H.00H:ECX[22] = 1» (RDTSCP or RDPID).
+    (
+        0xc000_0103,
+        &[bit(0x8000_0001, 0, EDX, 27), bit(7, 0, ECX, 22)],
+    ),
+];
+
+/// S7-32 slice T, rule R2: the MSR indexes of the Windows code that no table of the SDM gives a CPU
+/// with DisplayFamily_DisplayModel 06_9CH (Table 2-2 and the Tremont set 2-6, 2-12, 2-13, 2-14,
+/// 335592-093US §2.7): other vendors' MSRs (AMD `C001_xxxxH`), other models' package C-state
+/// residency counters (`3FAH` PC7, `630H` PC8, `631H` PC9: `intelppm.sys` reads them for model 9CH
+/// inside `__try`) and indexes no table names. The exact list of the rows «нет в таблицах» of
+/// `docs/reports/data/stage7/s7-32t-msr-decisions.tsv` (indexes covered by the two ranges of
+/// [`windows_msr_absent`] are not repeated here).
+pub const WINDOWS_MSR_ABSENT_UNDEFINED: &[u32] = &[
+    0x2,
+    0x3,
+    0x7,
+    0x8,
+    0xe,
+    0x20,
+    0x30,
+    0x5d,
+    0x80,
+    0x3fa,
+    0x630,
+    0x631,
+    0x8000,
+    0xffff,
+    0x10_0040,
+    0x5000_0001,
+    0x5000_0002,
+    0xc000_010e,
+    0xc000_010f,
+    0xc000_0300,
+    0xc000_0302,
+    0xc000_0500,
+    0xc000_0501,
+    0xc000_0502,
+    0xc001_0010,
+    0xc001_0015,
+    0xc001_001f,
+    0xc001_0020,
+    0xc001_0041,
+    0xc001_0042,
+    0xc001_0062,
+    0xc001_0114,
+    0xc001_0130,
+    0xc001_0299,
+    0xc001_029a,
+    0xc001_029b,
+    0xc001_1023,
+    0xc001_1028,
+    0xc001_1029,
+    0xc001_102c,
+    0xc001_102e,
+    0xc001_10e3,
+];
+
+/// S7-32 slice T: whether the Windows MSR member answers `RDMSR`/`WRMSR` of `index` with `#GP(0)`
+/// because the MSR does not exist on the virtual CPU (rules R1 and R2, ADR-0013 addendum «срез T»):
+/// a row of [`WINDOWS_MSR_ABSENT_BY_CPUID`] or [`WINDOWS_MSR_ABSENT_UNDEFINED`]; the x2APIC range
+/// `800H..=8FFH` (Vol. 3A «x2APIC»: the MSRs exist only with CPUID.01H:ECX[21] = 1, not declared);
+/// the range `4000_0000H..=4000_FFFFH` (Vol. 4 §2.1: «a specially reserved range. All existing and
+/// future processors will not implement any features using any MSR in this range»). Every other
+/// index not modelled stays a stop (rule M1).
+pub const fn windows_msr_absent(index: u32) -> bool {
+    if matches!(index, 0x800..=0x8ff | 0x4000_0000..=0x4000_ffff) {
+        return true;
+    }
+    let mut row = 0;
+    while row < WINDOWS_MSR_ABSENT_BY_CPUID.len() {
+        if WINDOWS_MSR_ABSENT_BY_CPUID[row].0 == index {
+            return true;
+        }
+        row += 1;
+    }
+    let mut row = 0;
+    while row < WINDOWS_MSR_ABSENT_UNDEFINED.len() {
+        if WINDOWS_MSR_ABSENT_UNDEFINED[row] == index {
+            return true;
+        }
+        row += 1;
+    }
+    false
+}
+
+/// `MSR_RAPL_POWER_UNIT` of the virtual CPU: the defaults of Table 2-12 (606H): power units 1000b
+/// (1/256 W, 3.9 mW), energy status units 01110b (61 µJ), time units 1010b (0.977 ms).
+pub const MSR_RAPL_POWER_UNIT_VALUE: u64 = 0x000a_0e08;
+
+/// S7-32 slice T, rule R3: the read-only MSRs of the Tremont set the Windows member models, with
+/// their value (a `WRMSR` is `#GP(0)`: the MSRs are marked R/O in Vol. 4, as IA32_PLATFORM_ID of
+/// slice F). Package C-state residency `60DH` (PC2), `3F8H` (PC3), `3F9H` (PC6), `632H` (PC10),
+/// Table 2-12 («Count at the same frequency as the TSC»): 0, the virtual CPU enters no package
+/// C-state. RAPL `606H` units: [`MSR_RAPL_POWER_UNIT_VALUE`]; energy status `611H` (package),
+/// `619H` (DRAM), `639H` (PP0), `641H` (PP1): 0, the virtual CPU measures no energy.
+pub const fn windows_msr_read_only_value(index: u32) -> Option<u64> {
+    match index {
+        0x60d | 0x3f8 | 0x3f9 | 0x632 | 0x611 | 0x619 | 0x639 | 0x641 => Some(0),
+        0x606 => Some(MSR_RAPL_POWER_UNIT_VALUE),
+        _ => None,
+    }
 }
 
 /// Result of a `WRMSR` to one of the S7-32 slice I files (MTRR, MCA).
