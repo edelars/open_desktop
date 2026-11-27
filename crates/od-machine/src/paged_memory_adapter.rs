@@ -3363,11 +3363,23 @@ fn run_cpl0_set_loop_impl<
                             .engine
                             .take_device_error()
                             .expect("a device error ends the run");
-                        break (
-                            PagedCpl0SetExit::Run(RunExit::MemoryError(mmio_backend_error(&error))),
-                            None,
-                            Some(error),
-                        );
+                        // S7-32 diagnostic (`--device-errors log`): the general step runs the
+                        // instruction again and absorbs the refusal with the instruction's RIP,
+                        // CPL and retired count (or stops on it once the log is full); the
+                        // refused access committed nothing in the device (`BusDevice`).
+                        if bus.machine().device_error_log().is_none() {
+                            break (
+                                PagedCpl0SetExit::Run(RunExit::MemoryError(mmio_backend_error(
+                                    &error,
+                                ))),
+                                None,
+                                Some(error),
+                            );
+                        }
+                        if outcome.retired > 0 {
+                            turbo_force_slow = Some(state.rip);
+                            continue;
+                        }
                     }
                 }
             }
@@ -3478,6 +3490,13 @@ fn run_cpl0_set_loop_impl<
             && invlpg_at_rip(state, bus.ram(), &paging, context, None);
         let control_before = (state.cr0, state.cr4);
         let (ram, io) = bus.split_for_set_step_of_vcpu(vcpu, split_gate);
+        // S7-32 diagnostic: the instruction a refused access of this step belongs to; the bus
+        // reads it only on the error path, and only with a log installed (`--device-errors log`).
+        let io = io.with_device_error_context(crate::bus::DeviceErrorContext {
+            rip: instruction_rip,
+            cpl: if cpl3 { 3 } else { 0 },
+            retired_in_call: instructions_executed - quantum_base,
+        });
         let mut port = SetPortWatch {
             inner: io.port_io(),
             pit_written: false,

@@ -138,10 +138,12 @@ pub use acpi_pm::{
     ACPI_SLP_TYP_S5, ACPI_SMI_CMD, AcpiPm, AcpiPmDescriptor, AcpiPmHandle, MachineStopReason,
 };
 pub use bus::{
-    AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
-    DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
-    PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
-    TrackedCodeSnapshotError, TrackedCrossPageCodeSnapshot,
+    AccessWidth, BusAccessError, BusBuildError, BusDevice, DEVICE_ERROR_LOG_GROUP_LIMIT,
+    DeviceAccess, DeviceError, DeviceErrorDirection, DeviceErrorGroup, DeviceErrorKey,
+    DeviceErrorKind, DeviceErrorLog, DeviceErrorLogReport, DeviceErrorLogStop, DisplayBindingError,
+    FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress, PortRange,
+    PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot, TrackedCodeSnapshotError,
+    TrackedCrossPageCodeSnapshot,
 };
 pub use net_backend::{
     Dropped, FrameQueue, NET_MAX_FRAME, NET_MIN_FRAME, NET_RX_QUEUE_LIMIT, NET_TX_QUEUE_LIMIT,

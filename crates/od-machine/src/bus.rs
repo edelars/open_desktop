@@ -18,6 +18,15 @@ use std::sync::{Arc, MutexGuard, PoisonError};
 // page_walk.rs. Higher PTE bits can contain software metadata or NX.
 const TRACKED_CODE_FRAME_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
 
+mod device_error_log;
+
+pub(crate) use device_error_log::DeviceErrorContext;
+pub use device_error_log::{
+    DEVICE_ERROR_LOG_GROUP_LIMIT, DeviceErrorDirection, DeviceErrorGroup, DeviceErrorKey,
+    DeviceErrorKind, DeviceErrorLog, DeviceErrorLogReport, DeviceErrorLogStop,
+};
+use device_error_log::{DeviceErrorAccess, absorbable};
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PortAddress(u16);
 
@@ -59,7 +68,7 @@ impl PortRange {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AccessWidth {
     Byte,
     Word,
@@ -86,7 +95,7 @@ impl AccessWidth {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum IoSpace {
     Mmio,
     Pio,
@@ -99,7 +108,7 @@ pub struct DeviceAccess {
     pub width: AccessWidth,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DeviceError {
     UnknownOffset,
     UnsupportedWidth,
@@ -298,6 +307,9 @@ pub struct MachineBus {
     /// device flag that is raised only by an access of the guest's own instruction can change
     /// only when this count changes.
     device_accesses: Arc<AtomicU64>,
+    /// S7-32 diagnostic (`--device-errors log`): the log of refused guest accesses the general
+    /// step of the set loop absorbs; `None` (the default) keeps every refusal a stop.
+    device_errors: Option<Arc<DeviceErrorLog>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -753,6 +765,17 @@ pub(crate) struct MachineBusSetStepIo<'a> {
     /// The count of [`MachineBus::device_access_counter`]; every device access of this view adds
     /// one before the device is called.
     device_accesses: &'a AtomicU64,
+    /// S7-32 diagnostic: the log of the bus, if it has one. A refusal is absorbed only when the
+    /// view also has the instruction (`device_error_context`): the general step of the set loop
+    /// gives it; the views of the turbo engine and of every other loop do not, so their refusals
+    /// stay what they were. Both are read on the error path only.
+    device_errors: Option<&'a DeviceErrorLog>,
+    device_error_context: Option<DeviceErrorContext>,
+    /// S7-32 diagnostic: the guest-physical range (start, bytes) of the last MMIO read of this
+    /// instruction the log absorbed. A write of the same instruction that overlaps it (the write
+    /// half of a read-modify-write at CPL0) is not sent to the device: its value derives from
+    /// the all-ones the guest was given. Set only on the error path, so `None` without a log.
+    absorbed_read: Cell<Option<(u64, u64)>>,
 }
 
 /// How the set-step view of one instruction reaches the device table (S6-34). `Exclusive`: the
@@ -833,6 +856,167 @@ impl<'a> MachineBusSetStepIo<'a> {
     pub(crate) fn with_split_gate(mut self, gate: Option<&'a dyn SplitLockGate>) -> Self {
         self.gate = gate;
         self
+    }
+
+    /// S7-32 diagnostic: the same view for the instruction `context` of the general step. With a
+    /// log on the bus a refused access of this view is absorbed (see [`DeviceErrorLog`]); without
+    /// one nothing changes.
+    pub(crate) fn with_device_error_context(mut self, context: DeviceErrorContext) -> Self {
+        self.device_error_context = Some(context);
+        self
+    }
+
+    /// The error path of a port access: with the log and the instruction, a refusal of a device
+    /// (or a port no device is bound to) is recorded and completed as an open bus (a read gives
+    /// all ones of the width, a write is dropped); otherwise, or once a limit is reached, the
+    /// error is returned as it was.
+    #[cold]
+    #[inline(never)]
+    fn absorb_port(
+        &self,
+        error: BusAccessError,
+        port: u16,
+        width: AccessWidth,
+        value: Option<u32>,
+    ) -> Result<u32, BusAccessError> {
+        let (Some(log), Some(context)) = (self.device_errors, self.device_error_context) else {
+            return Err(error);
+        };
+        let (device_index, kind) = match &error {
+            BusAccessError::Device {
+                device_index,
+                source,
+            } if *device_index != usize::MAX && absorbable(source) => {
+                (Some(*device_index), DeviceErrorKind::Device(source.clone()))
+            }
+            BusAccessError::UnmappedPort(_) => (None, DeviceErrorKind::UnmappedPort),
+            BusAccessError::CrossesRegion => (None, DeviceErrorKind::CrossesRegion),
+            _ => return Err(error),
+        };
+        let len = u32::from(width.bytes());
+        let region_base = device_index.and_then(|_| {
+            self.ports
+                .iter()
+                .find(|binding| binding.range.contains(PortAddress::new(port), len))
+                .map(|binding| u64::from(binding.range.start.0))
+        });
+        let access = DeviceErrorAccess {
+            key: DeviceErrorKey {
+                space: IoSpace::Pio,
+                device_index,
+                address: u64::from(port),
+                direction: if value.is_some() {
+                    DeviceErrorDirection::Write
+                } else {
+                    DeviceErrorDirection::Read
+                },
+                width,
+                kind,
+            },
+            region_base,
+            value: value.map(u64::from),
+        };
+        if log.absorb(access, context) {
+            Ok(width.mask() as u32)
+        } else {
+            Err(error)
+        }
+    }
+
+    /// The error path of an MMIO access to a device: as [`Self::absorb_port`] for the refusal
+    /// `error` of device `device_index` (bound at `region_start`).
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn absorb_mmio(
+        &self,
+        error: DeviceError,
+        address: GuestPhysicalAddress,
+        region_start: GuestPhysicalAddress,
+        device_index: usize,
+        width: AccessWidth,
+        value: Option<u64>,
+    ) -> Result<u64, DeviceError> {
+        let (Some(log), Some(context)) = (self.device_errors, self.device_error_context) else {
+            return Err(error);
+        };
+        if !absorbable(&error) {
+            return Err(error);
+        }
+        let access = DeviceErrorAccess {
+            key: DeviceErrorKey {
+                space: IoSpace::Mmio,
+                device_index: Some(device_index),
+                address: address.get(),
+                direction: if value.is_some() {
+                    DeviceErrorDirection::Write
+                } else {
+                    DeviceErrorDirection::Read
+                },
+                width,
+                kind: DeviceErrorKind::Device(error.clone()),
+            },
+            region_base: Some(region_start.get()),
+            value,
+        };
+        if !log.absorb(access, context) {
+            return Err(error);
+        }
+        if value.is_none() {
+            self.absorbed_read
+                .set(Some((address.get(), u64::from(width.bytes()))));
+        }
+        Ok(width.mask())
+    }
+
+    /// Whether an MMIO write of `len` bytes at `address` overlaps the read of this instruction
+    /// the log absorbed (always `false` without a log: nothing is absorbed then).
+    fn follows_an_absorbed_read(&self, address: GuestPhysicalAddress, len: u64) -> bool {
+        self.absorbed_read.get().is_some_and(|(start, bytes)| {
+            u128::from(address.get()) < u128::from(start) + u128::from(bytes)
+                && u128::from(start) < u128::from(address.get()) + u128::from(len)
+        })
+    }
+
+    /// The write that follows an absorbed read of the same instruction (see `absorbed_read`):
+    /// dropped without reaching the device and recorded as its own kind of event; once the log
+    /// is full the run stops on it.
+    #[cold]
+    #[inline(never)]
+    fn suppress_write_after_absorbed_read(
+        &self,
+        address: GuestPhysicalAddress,
+        region_start: GuestPhysicalAddress,
+        device_index: usize,
+        width: AccessWidth,
+        value: u64,
+    ) -> Result<u64, crate::page_walk::MmioDispatchError> {
+        let recorded = match (self.device_errors, self.device_error_context) {
+            (Some(log), Some(context)) => log.absorb(
+                DeviceErrorAccess {
+                    key: DeviceErrorKey {
+                        space: IoSpace::Mmio,
+                        device_index: Some(device_index),
+                        address: address.get(),
+                        direction: DeviceErrorDirection::Write,
+                        width,
+                        kind: DeviceErrorKind::SuppressedAfterAbsorbedRead,
+                    },
+                    region_base: Some(region_start.get()),
+                    value: Some(value),
+                },
+                context,
+            ),
+            _ => false,
+        };
+        if recorded {
+            Ok(0)
+        } else {
+            Err(crate::page_walk::MmioDispatchError::Backend(format!(
+                "MMIO device {device_index} write after an absorbed read of the same \
+                 instruction: not sent, the device error log is full"
+            )))
+        }
     }
 }
 
@@ -959,9 +1143,32 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
                 .with_counted_devices(|devices| devices[device_index].read_from_cpu(vcpu, access))
                 .map_err(|_| Backend("the device table is already borrowed".to_owned()))?
                 .map(|value| value & width.mask())
+                .or_else(|error| {
+                    self.absorb_mmio(
+                        error,
+                        address,
+                        binding.region_start,
+                        device_index,
+                        width,
+                        None,
+                    )
+                })
                 .map_err(|error| {
                     Backend(format!("MMIO device {device_index} read failed: {error:?}"))
                 }),
+            // S7-32 diagnostic: the write half of a read-modify-write whose read the log absorbed
+            // does not reach the device (one `Cell` load: without a log it is always `None`).
+            RamAccessOperation::Write { value, .. }
+                if self.follows_an_absorbed_read(address, len) =>
+            {
+                self.suppress_write_after_absorbed_read(
+                    address,
+                    binding.region_start,
+                    device_index,
+                    width,
+                    value & width.mask(),
+                )
+            }
             RamAccessOperation::Write { value, .. } => self
                 .with_counted_devices(|devices| {
                     devices[device_index].write_from_cpu(vcpu, access, value & width.mask())
@@ -970,6 +1177,18 @@ impl SetStepMmio for MachineBusSetStepIo<'_> {
                 .map(|()| {
                     self.mmio_written.set(true);
                     0
+                })
+                // An absorbed write is dropped: nothing reached the device, `mmio_written` stays.
+                .or_else(|error| {
+                    self.absorb_mmio(
+                        error,
+                        address,
+                        binding.region_start,
+                        device_index,
+                        width,
+                        Some(value & width.mask()),
+                    )
+                    .map(|_| 0)
                 })
                 .map_err(|error| {
                     Backend(format!(
@@ -1016,6 +1235,7 @@ impl PortIo for SetStepPortIo<'_, '_> {
         self.with_devices(|devices| {
             read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Byte)
         })
+        .or_else(|error| self.0.absorb_port(error, port, AccessWidth::Byte, None))
         .map(|value| value as u8)
     }
 
@@ -1030,6 +1250,11 @@ impl PortIo for SetStepPortIo<'_, '_> {
                 u32::from(value),
             )
         })
+        .or_else(|error| {
+            self.0
+                .absorb_port(error, port, AccessWidth::Byte, Some(u32::from(value)))
+                .map(|_| ())
+        })
     }
 
     fn read_u16(&mut self, port: u16) -> Result<u16, Self::Error> {
@@ -1037,6 +1262,7 @@ impl PortIo for SetStepPortIo<'_, '_> {
         self.with_devices(|devices| {
             read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Word)
         })
+        .or_else(|error| self.0.absorb_port(error, port, AccessWidth::Word, None))
         .map(|value| value as u16)
     }
 
@@ -1051,6 +1277,11 @@ impl PortIo for SetStepPortIo<'_, '_> {
                 u32::from(value),
             )
         })
+        .or_else(|error| {
+            self.0
+                .absorb_port(error, port, AccessWidth::Word, Some(u32::from(value)))
+                .map(|_| ())
+        })
     }
 
     fn read_u32(&mut self, port: u16) -> Result<u32, Self::Error> {
@@ -1058,6 +1289,7 @@ impl PortIo for SetStepPortIo<'_, '_> {
         self.with_devices(|devices| {
             read_port_from(devices, ports, PortAddress::new(port), AccessWidth::Dword)
         })
+        .or_else(|error| self.0.absorb_port(error, port, AccessWidth::Dword, None))
     }
 
     fn write_u32(&mut self, port: u16, value: u32) -> Result<(), Self::Error> {
@@ -1070,6 +1302,11 @@ impl PortIo for SetStepPortIo<'_, '_> {
                 AccessWidth::Dword,
                 value,
             )
+        })
+        .or_else(|error| {
+            self.0
+                .absorb_port(error, port, AccessWidth::Dword, Some(value))
+                .map(|_| ())
         })
     }
 }
@@ -1097,6 +1334,7 @@ impl MachineBus {
             firmware_set_windows,
             ports,
             device_accesses,
+            device_errors,
         } = self;
         (
             memory,
@@ -1112,6 +1350,9 @@ impl MachineBus {
                 windows: firmware_set_windows.as_deref().unwrap_or(*set_step_windows),
                 vcpu,
                 device_accesses,
+                device_errors: device_errors.as_deref(),
+                device_error_context: None,
+                absorbed_read: Cell::new(None),
             },
         )
     }
@@ -1139,6 +1380,9 @@ impl MachineBus {
                     .unwrap_or(self.set_step_windows),
                 vcpu,
                 device_accesses: &self.device_accesses,
+                device_errors: self.device_errors.as_deref(),
+                device_error_context: None,
+                absorbed_read: Cell::new(None),
             },
         )
     }
@@ -1169,6 +1413,22 @@ impl MachineBus {
             }
         }
         self.firmware_set_windows = Some(windows);
+    }
+
+    /// S7-32 diagnostic (`--device-errors log`): installs the log of refused guest accesses (see
+    /// [`DeviceErrorLog`]). From now on the general step of the set loop absorbs a refusal of a
+    /// device, or an access to a port no device is bound to, until `event_limit` accesses or
+    /// `group_limit` groups; nothing else of the bus changes. A diagnostic, never a compatibility
+    /// mode. One vCPU only: the log has one retired base, which only the single-vCPU firmware
+    /// board loop (`run_firmware_unified_guest`) sets; on any other loop the retired counts of the
+    /// groups are counted per call from the last base the board set (0 if none).
+    pub fn enable_device_error_log(&mut self, event_limit: u64, group_limit: usize) {
+        self.device_errors = Some(Arc::new(DeviceErrorLog::new(event_limit, group_limit)));
+    }
+
+    /// The log of [`Self::enable_device_error_log`], if installed.
+    pub fn device_error_log(&self) -> Option<&Arc<DeviceErrorLog>> {
+        self.device_errors.as_ref()
     }
 
     pub(crate) fn enable_nvme_pci_mmio_window(&mut self) {
@@ -1577,6 +1837,7 @@ impl MachineBus {
             firmware_set_windows: None,
             ports,
             device_accesses: Arc::new(AtomicU64::new(0)),
+            device_errors: None,
         })
     }
 
@@ -3092,6 +3353,372 @@ mod tests {
         );
         let final_port = PortRange::new(PortAddress::new(u16::MAX), 1).unwrap();
         assert_eq!(final_port.end(), 65_536);
+    }
+
+    const STEP: DeviceErrorContext = DeviceErrorContext {
+        rip: 0x7000,
+        cpl: 0,
+        retired_in_call: 9,
+    };
+
+    /// S7-32 diagnostic: without a log, and with a log but a view without the instruction (the
+    /// turbo engine's, every other loop's), a refusal of the set-step view is the error it was;
+    /// with both a refused port write is dropped (the device keeps its value), a refused or
+    /// unmapped read gives all ones of its width, and the accesses are grouped with the
+    /// instruction of the first one and the retired count from the board's base.
+    #[test]
+    fn the_device_error_log_completes_refused_port_accesses_only_for_the_general_step() {
+        let refused = || BusAccessError::Device {
+            device_index: 0,
+            source: DeviceError::ReadOnly,
+        };
+        let (mut bus, state) = setup(false);
+        state.lock().unwrap().value = 0x5a;
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.port_io().write_u8(0x24, 1), Err(refused()));
+            assert_eq!(
+                io.port_io().read_u8(0x40),
+                Err(BusAccessError::UnmappedPort(PortAddress::new(0x40)))
+            );
+        }
+        bus.enable_device_error_log(10, 8);
+        bus.device_error_log().unwrap().set_retired_base(100);
+        {
+            let (_, io) = bus.split_for_set_step();
+            assert_eq!(io.port_io().write_u8(0x24, 1), Err(refused()));
+        }
+        assert_eq!(bus.device_error_log().unwrap().report().events, 0);
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            let mut port = io.port_io();
+            assert_eq!(port.write_u8(0x24, 0x11), Ok(()));
+            assert_eq!(port.write_u8(0x24, 0x22), Ok(()));
+            // Word at an odd port: the device refuses it (Misaligned); a read gives all ones.
+            assert_eq!(port.read_u16(0x21), Ok(0xffff));
+            assert_eq!(port.read_u32(0x40), Ok(0xffff_ffff));
+            assert_eq!(port.write_u16(0x40, 0x1234), Ok(()));
+            // An access the device serves is untouched by the log.
+            assert_eq!(port.read_u8(0x20), Ok(0x5a));
+        }
+        assert_eq!(
+            state.lock().unwrap().value,
+            0x5a,
+            "the refused write is dropped"
+        );
+        let report = bus.device_error_log().unwrap().report();
+        assert_eq!((report.events, report.stopped), (5, None));
+        let groups: Vec<_> = report
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.key.device_index,
+                    group.key.address,
+                    group.key.direction,
+                    group.key.width,
+                    group.key.kind.clone(),
+                    group.count,
+                    group.first_value,
+                    group.region_base,
+                )
+            })
+            .collect();
+        use DeviceErrorDirection::{Read, Write};
+        assert_eq!(
+            groups,
+            [
+                (
+                    Some(0),
+                    0x24,
+                    Write,
+                    AccessWidth::Byte,
+                    DeviceErrorKind::Device(DeviceError::ReadOnly),
+                    2,
+                    Some(0x11),
+                    Some(0x20)
+                ),
+                (
+                    Some(0),
+                    0x21,
+                    Read,
+                    AccessWidth::Word,
+                    DeviceErrorKind::Device(DeviceError::Misaligned),
+                    1,
+                    None,
+                    Some(0x20)
+                ),
+                (
+                    None,
+                    0x40,
+                    Read,
+                    AccessWidth::Dword,
+                    DeviceErrorKind::UnmappedPort,
+                    1,
+                    None,
+                    None
+                ),
+                (
+                    None,
+                    0x40,
+                    Write,
+                    AccessWidth::Word,
+                    DeviceErrorKind::UnmappedPort,
+                    1,
+                    Some(0x1234),
+                    None
+                ),
+            ]
+        );
+        let first = &report.groups[0];
+        assert_eq!(
+            (first.first_rip, first.first_cpl, first.first_retired),
+            (0x7000, 0, 109)
+        );
+        assert!(
+            report
+                .groups
+                .iter()
+                .all(|group| group.key.space == IoSpace::Pio)
+        );
+    }
+
+    /// S7-32 diagnostic: an MMIO refusal of the set-step view keeps its text without the
+    /// instruction; with it a refused write is dropped (`mmio_written` stays clear) and a refused
+    /// read gives all ones of its width. Once the event limit is reached the next refusal is the
+    /// error it was, and the log says why it stopped.
+    #[test]
+    fn the_device_error_log_completes_refused_mmio_accesses_and_stops_at_its_limit() {
+        let (mut bus, state) = setup(false);
+        state.lock().unwrap().value = 0x77;
+        bus.serve_firmware_set_windows(&[(0x2000, 0x100)]);
+        bus.enable_device_error_log(2, 8);
+        let write = RamAccessOperation::Write {
+            width: AccessWidth::Dword,
+            value: 9,
+        };
+        let read = RamAccessOperation::Read {
+            width: AccessWidth::Qword,
+        };
+        let at = |address| GuestPhysicalAddress::new(address);
+        {
+            let (_, io) = bus.split_for_set_step();
+            assert_eq!(
+                io.dispatch(at(0x2004), 4, write),
+                Err(crate::page_walk::MmioDispatchError::Backend(
+                    "MMIO device 0 write failed: ReadOnly".to_owned()
+                ))
+            );
+        }
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.dispatch(at(0x2004), 4, write), Ok(0));
+            assert!(!io.mmio_written(), "a dropped write reached no device");
+            assert_eq!(io.dispatch(at(0x2010), 8, read), Ok(u64::MAX));
+            // An access the device serves.
+            assert_eq!(io.dispatch(at(0x2000), 8, read), Ok(0x77));
+            // The third refusal: the limit (2) is reached, the error is what it was.
+            assert_eq!(
+                io.dispatch(at(0x2004), 4, write),
+                Err(crate::page_walk::MmioDispatchError::Backend(
+                    "MMIO device 0 write failed: ReadOnly".to_owned()
+                ))
+            );
+        }
+        assert_eq!(state.lock().unwrap().value, 0x77);
+        let report = bus.device_error_log().unwrap().report();
+        assert_eq!(report.events, 2);
+        assert_eq!(report.stopped, Some(DeviceErrorLogStop::EventLimit));
+        let write_group = &report.groups[0];
+        assert_eq!(write_group.key.space, IoSpace::Mmio);
+        assert_eq!(write_group.key.address, 0x2004);
+        assert_eq!(write_group.region_base, Some(0x2000));
+        assert_eq!(write_group.first_value, Some(9));
+        assert_eq!(
+            report.groups[1].key.kind,
+            DeviceErrorKind::Device(DeviceError::UnknownOffset)
+        );
+        assert_eq!(report.groups[1].key.width, AccessWidth::Qword);
+    }
+
+    /// A device that refuses every access with one error, and counts the accesses that reach it.
+    struct RefusingDevice(DeviceError, Arc<Mutex<DeviceState>>);
+
+    impl BusDevice for RefusingDevice {
+        fn read(&mut self, _: DeviceAccess) -> Result<u64, DeviceError> {
+            self.1.lock().unwrap().calls += 1;
+            Err(self.0.clone())
+        }
+
+        fn write(&mut self, _: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+            let mut state = self.1.lock().unwrap();
+            state.calls += 1;
+            state.value = value;
+            Err(self.0.clone())
+        }
+    }
+
+    /// [`setup`] with a [`RefusingDevice`] in place of the counting one.
+    fn refusing_bus(error: DeviceError) -> (MachineBus, Arc<Mutex<DeviceState>>) {
+        let state = Arc::new(Mutex::new(DeviceState::default()));
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                crate::MemoryRegionSpec::new(range(0x1000, 0x100), MemoryRegionKind::Ram),
+                crate::MemoryRegionSpec::new(range(0x2000, 0x100), MemoryRegionKind::Mmio),
+            ],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(0x200),
+            vec![Box::new(RefusingDevice(error, Arc::clone(&state)))],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(0x2000),
+                device_index: 0,
+            }],
+            vec![PortRegionBinding {
+                range: PortRange::new(PortAddress::new(0x20), 16).unwrap(),
+                device_index: 0,
+            }],
+        )
+        .unwrap();
+        bus.serve_firmware_set_windows(&[(0x2000, 0x100)]);
+        bus.enable_device_error_log(10, 8);
+        (bus, state)
+    }
+
+    /// S7-32 diagnostic: what the log never absorbs, even with the instruction: a clock overflow
+    /// of a device (port and MMIO: the end of virtual time, not a gap of the model) and the busy
+    /// device table (`device_index` `usize::MAX`). An access that straddles the end of a port
+    /// binding is absorbed, with no device.
+    #[test]
+    fn the_device_error_log_keeps_a_clock_overflow_and_a_busy_table_and_absorbs_a_crossing() {
+        let (mut bus, state) = refusing_bus(DeviceError::ClockOverflow);
+        let overflow = || BusAccessError::Device {
+            device_index: 0,
+            source: DeviceError::ClockOverflow,
+        };
+        let read = RamAccessOperation::Read {
+            width: AccessWidth::Dword,
+        };
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.port_io().read_u8(0x20), Err(overflow()));
+            assert_eq!(io.port_io().write_u8(0x20, 1), Err(overflow()));
+            assert_eq!(
+                io.dispatch(GuestPhysicalAddress::new(0x2000), 4, read),
+                Err(crate::page_walk::MmioDispatchError::Backend(
+                    "MMIO device 0 read failed: ClockOverflow".to_owned()
+                ))
+            );
+            let busy = || BusAccessError::Device {
+                device_index: usize::MAX,
+                source: DeviceError::Busy,
+            };
+            assert_eq!(
+                io.absorb_port(busy(), 0x20, AccessWidth::Byte, None),
+                Err(busy())
+            );
+            // A dword at 0x2E covers 0x2E..0x32 and the binding ends at 0x30.
+            assert_eq!(io.port_io().read_u32(0x2e), Ok(0xffff_ffff));
+        }
+        assert_eq!(
+            state.lock().unwrap().calls,
+            3,
+            "the crossing reached no device"
+        );
+        let report = bus.device_error_log().unwrap().report();
+        assert_eq!(report.events, 1);
+        let crossing = &report.groups[0];
+        assert_eq!(crossing.key.kind, DeviceErrorKind::CrossesRegion);
+        assert_eq!(
+            (
+                crossing.key.device_index,
+                crossing.key.address,
+                crossing.key.width
+            ),
+            (None, 0x2e, AccessWidth::Dword)
+        );
+    }
+
+    /// S7-32 diagnostic: the write half of a read-modify-write (CPL0 reads the operand with a
+    /// plain read) after an absorbed read of the same instruction is not sent to the device and
+    /// is logged as its own kind; a write elsewhere still reaches the device, and the next
+    /// instruction (a new view) starts with no absorbed read.
+    #[test]
+    fn a_write_after_an_absorbed_read_of_the_same_instruction_is_not_sent_to_the_device() {
+        let (mut bus, state) = refusing_bus(DeviceError::WriteOnly);
+        let at = GuestPhysicalAddress::new;
+        let read = RamAccessOperation::Read {
+            width: AccessWidth::Dword,
+        };
+        let write = |value| RamAccessOperation::Write {
+            width: AccessWidth::Dword,
+            value,
+        };
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.dispatch(at(0x20b0), 4, read), Ok(0xffff_ffff));
+            assert_eq!(io.dispatch(at(0x20b0), 4, write(0xffff_ffff)), Ok(0));
+            // A byte write inside the dword is suppressed as well.
+            assert_eq!(io.dispatch(at(0x20b2), 1, write(0x12)), Ok(0));
+            assert!(!io.mmio_written());
+        }
+        assert_eq!(
+            state.lock().unwrap().calls,
+            1,
+            "only the read reached the device"
+        );
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            // A new instruction: the write goes to the device (which refuses it: absorbed).
+            assert_eq!(io.dispatch(at(0x20b0), 4, write(7)), Ok(0));
+        }
+        {
+            let mut state = state.lock().unwrap();
+            assert_eq!((state.calls, state.value), (2, 7));
+            state.calls = 0;
+        }
+        let report = bus.device_error_log().unwrap().report();
+        let groups: Vec<_> = report
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.key.address,
+                    group.key.direction,
+                    group.key.kind.clone(),
+                    group.count,
+                    group.first_value,
+                )
+            })
+            .collect();
+        use DeviceErrorDirection::{Read, Write};
+        use DeviceErrorKind::{Device, SuppressedAfterAbsorbedRead as Suppressed};
+        assert_eq!(
+            groups,
+            [
+                (0x20b0, Read, Device(DeviceError::WriteOnly), 1, None),
+                (0x20b0, Write, Suppressed, 1, Some(0xffff_ffff)),
+                (0x20b2, Write, Suppressed, 1, Some(0x12)),
+                (0x20b0, Write, Device(DeviceError::WriteOnly), 1, Some(7)),
+            ]
+        );
+        // Without a log nothing is absorbed, so a write always reaches the device.
+        let (mut plain, plain_state) = refusing_bus(DeviceError::WriteOnly);
+        plain.device_errors = None;
+        let (_, io) = plain.split_for_set_step();
+        let io = io.with_device_error_context(STEP);
+        assert!(io.dispatch(at(0x20b0), 4, read).is_err());
+        assert!(io.dispatch(at(0x20b0), 4, write(1)).is_err());
+        assert_eq!(plain_state.lock().unwrap().calls, 2);
     }
 }
 

@@ -29,6 +29,7 @@ const USAGE: &str = "boot-firmware --image <bin> --com1-out <file> --budget <ste
                     [--nvram-in <file>] [--nvram-out <file>] \
                     [--acpi-out <file>] [--framebuffer-out <file>] [(--nvme-image <raw> | --disk <path>[,ro]) [--nvme-pci]] \
                     [--cpu-loop firmware|unified [--guest linux|windows]] [--ram-mib <n>] [--mark-rip <hex>] [--sample-rip <hex> ...] [--op-histogram-out <file>] [--no-turbo] [--turbo-stats] [--turbo-profile] \
+                    [--device-errors stop|log[:<n>]] \
                     [--stop-snapshot <file> [--peek (<hex>|rip_module+<hex>)[:<bytes>] ...]] [--phase-log <file>] \
                     [--framebuffer-every <virtual seconds> --framebuffer-dir <dir> \
                     [--framebuffer-max-files <n>] [--framebuffer-max-bytes <n>]]\n\
@@ -49,7 +50,22 @@ the firmware finds it through ECAM and the report records nvme_pci: true.\n\
 \x20\x20--peek (with --stop-snapshot, up to 16): the snapshot also holds the guest-virtual bytes at the \
 hexadecimal address, or at the hexadecimal offset from the base of the image that covers RIP \
 (rip_module+<hex>), 64 bytes unless :<bytes> (decimal, 1 to 4096) is given; reads only, like the \
-rest of the snapshot.";
+rest of the snapshot.\n\
+\x20\x20--device-errors (--cpu-loop unified): stop (the default) ends the run on the first guest PIO or \
+MMIO access a device refuses or no device serves; log is a DIAGNOSTIC run: such an access is \
+completed as an open bus (a write is dropped, a read returns all ones) and counted by device, \
+address, direction, width and error in the report's device_errors, up to <n> accesses (100000 \
+by default) and 4096 groups, after which the next refusal stops the run as with stop. The \
+result of a log run is not a compatibility result: the guest runs on past what the model refused.";
+/// `--device-errors log` without a limit: the accesses the log absorbs before it stops the run.
+const DEVICE_ERROR_LOG_DEFAULT_LIMIT: u64 = 100_000;
+/// The largest `<n>` of `--device-errors log:<n>`.
+const DEVICE_ERROR_LOG_MAX_LIMIT: u64 = 1_000_000_000;
+/// The status of a `--device-errors log` run that reached a completed stop after it absorbed at
+/// least one refused access, and its exit code (the codes of `boot-firmware`: 0 completed,
+/// 3 invalid input, 4 loader error, 5 error, 6 firmware stop, 7 this).
+const STATUS_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS: &str = "completed_with_absorbed_device_errors";
+const EXIT_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS: u8 = 7;
 // Match the milestones in the given order. Repeated RIPs consume separate
 // visits, and later milestones remain pending until the next expected RIP.
 const MAX_RIP_SAMPLES: usize = 64;
@@ -127,6 +143,10 @@ struct Options {
     /// S7-32 `--turbo-profile` (unified loop only): `--turbo-stats` with the profile of the slow
     /// exits.
     turbo_profile: bool,
+    /// S7-32 diagnostic `--device-errors log[:<n>]` (unified loop only): the number of refused
+    /// device accesses the run absorbs and logs; `None` (`stop`, the default) ends the run on
+    /// the first one.
+    device_error_limit: Option<u64>,
 }
 
 /// `--framebuffer-every`, `--framebuffer-dir` and the limits.
@@ -427,6 +447,7 @@ pub fn run(args: &[String]) -> ExitCode {
         turbo_profile: options.turbo_profile,
         journal_config: journal_config(&options),
         journal: None,
+        device_error_limit: options.device_error_limit,
     };
     let nvme = options.nvme_source();
     let mut first = match boot(
@@ -446,6 +467,13 @@ pub fn run(args: &[String]) -> ExitCode {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
     };
+    // S7-32: a failure after the boot keeps the diagnostic mark and the log of a
+    // `--device-errors log` run (nothing for `stop`).
+    let device_error_limit = options.device_error_limit;
+    let diagnostic = |mut value: Value, board: &LoadedFirmwareBoard| {
+        mark_device_error_diagnostic(&mut value, board, device_error_limit);
+        value
+    };
     if let Some(path) = &options.acpi_out {
         if !first.finished_app(b"OD-FW image acpi: EFI_SUCCESS\r\n") {
             first.report["status"] = json!("error");
@@ -464,7 +492,10 @@ pub fn run(args: &[String]) -> ExitCode {
             })
             .and_then(|bytes| fs::write(path, bytes).map_err(|error| error.to_string()));
         if let Err(error) = write {
-            return emit(failure("run_error", "acpi_out", error), 5);
+            return emit(
+                diagnostic(failure("run_error", "acpi_out", error), &first.board),
+                5,
+            );
         }
     }
     if let Some(path) = &options.framebuffer_out {
@@ -478,7 +509,10 @@ pub fn run(args: &[String]) -> ExitCode {
             return emit(first.report, first.code.max(5));
         }
         if let Err(error) = validate_framebuffer_paths(&options.image, &options.com1_out, path) {
-            return emit(failure("invalid_input", "paths", error), 3);
+            return emit(
+                diagnostic(failure("invalid_input", "paths", error), &first.board),
+                3,
+            );
         }
         let display = first.board.display();
         let mode = display.current_mode();
@@ -487,14 +521,20 @@ pub fn run(args: &[String]) -> ExitCode {
             Ok(frame) => frame,
             Err(error) => {
                 return emit(
-                    failure("run_error", "framebuffer_out", format!("{error:?}")),
+                    diagnostic(
+                        failure("run_error", "framebuffer_out", format!("{error:?}")),
+                        &first.board,
+                    ),
                     5,
                 );
             }
         };
         if let Err(error) = fs::write(path, &pixels) {
             return emit(
-                failure("run_error", "framebuffer_out", error.to_string()),
+                diagnostic(
+                    failure("run_error", "framebuffer_out", error.to_string()),
+                    &first.board,
+                ),
                 5,
             );
         }
@@ -506,16 +546,28 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     if let Some(path) = &options.nvram_out {
         if let Err(error) = validate_nvram_paths(&options) {
-            return emit(failure("invalid_input", "paths", error), 3);
+            return emit(
+                diagnostic(failure("invalid_input", "paths", error), &first.board),
+                3,
+            );
         }
         let Some(snapshot) = first.board.nvram_snapshot() else {
             return emit(
-                failure("run_error", "nvram_out", "NVRAM was not bound".to_owned()),
+                diagnostic(
+                    failure("run_error", "nvram_out", "NVRAM was not bound".to_owned()),
+                    &first.board,
+                ),
                 5,
             );
         };
         if let Err(error) = fs::write(path, &snapshot) {
-            return emit(failure("run_error", "nvram_out", error.to_string()), 5);
+            return emit(
+                diagnostic(
+                    failure("run_error", "nvram_out", error.to_string()),
+                    &first.board,
+                ),
+                5,
+            );
         }
         first.report["nvram_snapshot_sha256"] = json!(sha256_hex(&snapshot));
         // The new snapshot path now has an inode. A previously absent reboot
@@ -523,7 +575,10 @@ pub fn run(args: &[String]) -> ExitCode {
         if options.nvram_reboot_out.is_some()
             && let Err(error) = validate_nvram_paths(&options)
         {
-            return emit(failure("invalid_input", "paths", error), 3);
+            return emit(
+                diagnostic(failure("invalid_input", "paths", error), &first.board),
+                3,
+            );
         }
     }
     let Some(reboot_out) = options.nvram_reboot_out.clone() else {
@@ -1032,6 +1087,8 @@ struct Diagnostics {
     /// What `boot` builds the journal from; taken when the journal is created.
     journal_config: Option<JournalConfig>,
     journal: Option<RunJournal>,
+    /// The limit of `--device-errors log` (`None`: stop).
+    device_error_limit: Option<u64>,
 }
 
 /// The vCPU the single-processor firmware boot runs on.
@@ -1508,6 +1565,12 @@ fn boot(
                 ),
             }
         }
+        // S7-32 diagnostic: `--device-errors log` absorbs and logs refused device accesses.
+        if let Some(limit) = diagnostics.device_error_limit {
+            board
+                .bus_mut()
+                .enable_device_error_log(limit, od_machine::DEVICE_ERROR_LOG_GROUP_LIMIT);
+        }
         // S7-31c: the ROM and the guest in the CPL0 profile set loop (ADR-0013 variant (b)).
         let unified_run = od_machine::run_firmware_unified_guest(
             &mut board,
@@ -1641,8 +1704,9 @@ fn boot(
             }
         })
     };
+    let device_error_limit = diagnostics.device_error_limit;
     let inputs = || {
-        json!({
+        let mut inputs = json!({
             "image_sha256": sha256_hex(image),
             "handoff_sha256": handoff_sha256,
             "budget": budget,
@@ -1653,13 +1717,20 @@ fn boot(
                 _ => Value::Null,
             },
             "nvme": nvme_input,
-        })
+        });
+        // Only a diagnostic `--device-errors log` run names the mode: every other snapshot keeps
+        // its fields.
+        if let Some(limit) = device_error_limit {
+            inputs["device_errors"] = json!(format!("log:{limit}"));
+        }
+        inputs
     };
     let report = match run {
         Ok(report) => report,
         Err(error) => {
             // Keep the bytes the guest already wrote (even an empty transcript).
             let mut value = failure("run_error", "run", format!("{error:?}"));
+            mark_device_error_diagnostic(&mut value, &board, device_error_limit);
             // The machine stays as the failed run left it; the diagnostics only read it.
             if let Some(journal) = &mut diagnostics.journal {
                 value["journal"] = journal.finish(
@@ -1690,7 +1761,9 @@ fn boot(
         }
     };
     if let Err(error) = std::fs::write(com1_out, &report.com1) {
-        return Err((failure("invalid_input", "com1_out", error.to_string()), 3));
+        let mut value = failure("invalid_input", "com1_out", error.to_string());
+        mark_device_error_diagnostic(&mut value, &board, device_error_limit);
+        return Err((value, 3));
     }
     let fw_stop = parse_fw_stop(&report.com1);
     let exit = exit_label(&report.exit);
@@ -1707,6 +1780,21 @@ fn boot(
         (true, None) => ("completed", 0),
         (true, Some(_)) => ("firmware_stop", 6),
         (false, _) => ("error", 5),
+    };
+    // S7-32 diagnostic: a `--device-errors log` run that absorbed a refusal did not complete on
+    // the machine the model claims to be, so it never reports `completed` nor exit code 0.
+    let (status, code) = if status == "completed"
+        && board
+            .bus()
+            .device_error_log()
+            .is_some_and(|log| log.events() > 0)
+    {
+        (
+            STATUS_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS,
+            EXIT_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS,
+        )
+    } else {
+        (status, code)
     };
     let state = board.state();
     let mut result = json!({
@@ -1756,9 +1844,15 @@ fn boot(
     if config.nvme_pci {
         result["nvme_pci"] = json!(true);
     }
+    // S7-32: a `--device-errors log` run is a diagnostic; a `stop` run has neither field.
+    mark_device_error_diagnostic(&mut result, &board, device_error_limit);
     match op_histogram_result {
         Some(Ok(summary)) => result["op_histogram"] = summary,
-        Some(Err(error)) => return Err((failure("run_error", "op_histogram", error), 5)),
+        Some(Err(error)) => {
+            let mut value = failure("run_error", "op_histogram", error);
+            mark_device_error_diagnostic(&mut value, &board, device_error_limit);
+            return Err((value, 5));
+        }
         None => {}
     }
     if !sample_rips.is_empty() {
@@ -1856,6 +1950,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut guest: Option<od_machine::UnifiedGuest> = None;
     let mut ram_mib: Option<u64> = None;
     let mut nvme_pci = false;
+    let mut device_errors: Option<Option<u64>> = None;
     let mut index = 0;
     while index < args.len() {
         let name = args[index].as_str();
@@ -1998,6 +2093,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--trace-call" if trace_calls.len() < MAX_TRACE_CALLS => {
                 trace_calls.push(parse_trace_call(value)?)
             }
+            "--device-errors" if device_errors.is_none() => {
+                device_errors = Some(parse_device_errors(value)?)
+            }
             "--mark-rip" if mark_rip.is_none() => {
                 let hex = value.strip_prefix("0x").unwrap_or(value);
                 mark_rip = Some(
@@ -2061,6 +2159,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if turbo_profile && !unified {
         return Err("--turbo-profile requires --cpu-loop unified".to_owned());
+    }
+    let device_error_limit = device_errors.flatten();
+    if device_error_limit.is_some() && !unified {
+        return Err("--device-errors log requires --cpu-loop unified".to_owned());
     }
     if reboot_cycles.is_some() {
         if fv_app != Some(FirmwareFvApp::Reboot) {
@@ -2214,6 +2316,96 @@ fn parse(args: &[String]) -> Result<Options, String> {
         no_turbo,
         turbo_stats,
         turbo_profile,
+        device_error_limit,
+    })
+}
+
+/// `--device-errors stop|log|log:<n>`: `None` for stop, the limit for log.
+fn parse_device_errors(value: &str) -> Result<Option<u64>, String> {
+    let invalid = || {
+        format!(
+            "invalid --device-errors '{value}'; expected stop, log or log:<n> \
+             (n from 1 to {DEVICE_ERROR_LOG_MAX_LIMIT})"
+        )
+    };
+    match value {
+        "stop" => Ok(None),
+        "log" => Ok(Some(DEVICE_ERROR_LOG_DEFAULT_LIMIT)),
+        _ => {
+            let limit = value
+                .strip_prefix("log:")
+                .filter(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|digits| digits.parse::<u64>().ok())
+                .filter(|limit| (1..=DEVICE_ERROR_LOG_MAX_LIMIT).contains(limit))
+                .ok_or_else(invalid)?;
+            Ok(Some(limit))
+        }
+    }
+}
+
+/// S7-32: every report of a `--device-errors log` run (also a failed one) says that the run is a
+/// diagnostic and carries the log; a `stop` run (`limit` = `None`) gets neither field.
+fn mark_device_error_diagnostic(
+    value: &mut Value,
+    board: &LoadedFirmwareBoard,
+    limit: Option<u64>,
+) {
+    if limit.is_some() {
+        value["diagnostic_run"] = json!(true);
+        value["device_errors"] = device_errors_report(board);
+    }
+}
+
+/// The `device_errors` field of a `--device-errors log` run: the groups of absorbed accesses in
+/// the order of their first access. The run is a diagnostic, and the field says so.
+fn device_errors_report(board: &LoadedFirmwareBoard) -> Value {
+    let Some(log) = board.bus().device_error_log() else {
+        return Value::Null;
+    };
+    let report = log.report();
+    let hex = |value: u64| format!("0x{value:x}");
+    json!({
+        "mode": "log",
+        "diagnostic": true,
+        "compatibility_result": false,
+        "note": "refused guest device accesses were completed as an open bus (writes dropped, \
+                 reads all ones) and the run went on; from the first absorbed access the guest \
+                 may behave differently than on real hardware",
+        "event_limit": report.event_limit,
+        "group_limit": report.group_limit,
+        "events": report.events,
+        "stopped": report.stopped.map(|stop| match stop {
+            od_machine::DeviceErrorLogStop::EventLimit => "event_limit",
+            od_machine::DeviceErrorLogStop::GroupLimit => "group_limit",
+        }),
+        "groups": report.groups.iter().map(|group| json!({
+            "space": match group.key.space {
+                od_machine::IoSpace::Pio => "pio",
+                od_machine::IoSpace::Mmio => "mmio",
+            },
+            "device_index": group.key.device_index,
+            "region_base": group.region_base.map(hex),
+            "address": hex(group.key.address),
+            "direction": match group.key.direction {
+                od_machine::DeviceErrorDirection::Read => "read",
+                od_machine::DeviceErrorDirection::Write => "write",
+            },
+            "width": group.key.width.bytes(),
+            "kind": match &group.key.kind {
+                od_machine::DeviceErrorKind::Device(error) => format!("{error:?}"),
+                od_machine::DeviceErrorKind::UnmappedPort => "UnmappedPort".to_owned(),
+                od_machine::DeviceErrorKind::CrossesRegion => "CrossesRegion".to_owned(),
+                od_machine::DeviceErrorKind::SuppressedAfterAbsorbedRead => {
+                    "SuppressedAfterAbsorbedRead".to_owned()
+                }
+            },
+            "count": group.count,
+            "first_retired": group.first_retired,
+            "last_retired": group.last_retired,
+            "first_rip": hex(group.first_rip),
+            "first_cpl": group.first_cpl,
+            "first_value": group.first_value.map(hex),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -3321,6 +3513,52 @@ mod tests {
             None,
             &[],
         )
+    }
+
+    /// S7-32 diagnostic: a `--device-errors log` run that fails in the run itself (`run_error`;
+    /// here the unified loop refuses a board without the Linux profile) still says that it is a
+    /// diagnostic and carries the log; a `stop` run gets neither field.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_run_error_of_a_device_errors_log_run_keeps_the_diagnostic_mark() {
+        let rom = halting_rom();
+        let dir = std::env::temp_dir().join(format!("od-runner-run-error-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let com1 = dir.join("com1.txt");
+        let config = board_config(None, false, None);
+        for limit in [Some(5), None] {
+            let mut diagnostics = Diagnostics {
+                device_error_limit: limit,
+                ..Diagnostics::default()
+            };
+            let result = boot(
+                &rom,
+                &config,
+                100,
+                com1.to_str().unwrap(),
+                None,
+                &[],
+                &mut diagnostics,
+                Some(od_machine::UnifiedGuest::Windows),
+                None,
+                &[],
+                None,
+                &[],
+            );
+            let Err((value, code)) = result else {
+                panic!("the unified loop refuses a board without the Linux profile");
+            };
+            assert_eq!((value["status"].as_str(), code), (Some("run_error"), 5));
+            if limit.is_some() {
+                assert_eq!(value["diagnostic_run"], true, "{value}");
+                assert_eq!(value["device_errors"]["events"], 0, "{value}");
+                assert_eq!(value["device_errors"]["event_limit"], 5, "{value}");
+            } else {
+                assert!(value.get("diagnostic_run").is_none(), "{value}");
+                assert!(value.get("device_errors").is_none(), "{value}");
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

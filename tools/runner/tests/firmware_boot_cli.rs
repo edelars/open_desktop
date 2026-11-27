@@ -748,6 +748,222 @@ fn the_unified_guest_selects_the_cpuid_profile_and_the_report_records_guest_and_
     }
 }
 
+/// S7-32 diagnostic: `--device-errors stop` is the default and changes no field of the report;
+/// `--device-errors log` completes the refused port accesses as an open bus, marks the report as
+/// a diagnostic run and lists the groups; `log:<n>` stops on the refusal after the n-th; the stop
+/// snapshot of a log run names the mode in its inputs. The option is checked before launch: only
+/// with the unified loop, once, and with a limit from 1 to 10^9.
+#[test]
+fn device_errors_log_is_a_diagnostic_of_the_unified_loop_and_stop_changes_nothing() {
+    #[rustfmt::skip]
+    let code = [
+        0x66, 0xBA, 0x34, 0x12, // mov dx, 0x1234 (no device)
+        0xEC,                   // in al, dx
+        0xEE,                   // out dx, al
+        0xF4,                   // hlt
+    ];
+    let mut rom = image(&code);
+    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let unified = ["--cpu-loop", "unified"];
+    let with = |extra: &[&str]| invoke_with_args(&rom, "100", &[&unified[..], extra].concat());
+    let default = with(&[]);
+    let stop = with(&["--device-errors", "stop"]);
+    for run in [&default, &stop] {
+        assert_eq!(run.output.status.code(), Some(5), "{:?}", run.output);
+    }
+    let (mut default_report, mut stop_report) = (report(&default), report(&stop));
+    assert_eq!(default_report["exit"], "pio_error");
+    for report in [&mut default_report, &mut stop_report] {
+        report.as_object_mut().unwrap().remove("com1_out");
+        assert!(report.get("device_errors").is_none());
+        assert!(report.get("diagnostic_run").is_none());
+    }
+    assert_eq!(default_report, stop_report, "stop is the default");
+
+    let log = with(&["--device-errors", "log"]);
+    // A run that absorbed a refusal is not a completed run: its own status and exit code 7.
+    assert_eq!(log.output.status.code(), Some(7), "{:?}", log.output);
+    let log_report = report(&log);
+    assert_eq!(
+        log_report["status"],
+        "completed_with_absorbed_device_errors"
+    );
+    assert_eq!(log_report["exit"], "halted");
+    assert_eq!(log_report["retired"], 4);
+    assert_eq!(log_report["diagnostic_run"], true);
+    let errors = &log_report["device_errors"];
+    assert_eq!(errors["mode"], "log");
+    assert_eq!(errors["diagnostic"], true);
+    assert_eq!(errors["compatibility_result"], false);
+    assert_eq!(errors["event_limit"], 100_000);
+    assert_eq!(errors["events"], 2);
+    assert_eq!(errors["stopped"], Value::Null);
+    let groups = errors["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2, "{groups:?}");
+    for (group, direction, retired, value) in [
+        (&groups[0], "read", 1, Value::Null),
+        (&groups[1], "write", 2, Value::from("0xff")),
+    ] {
+        assert_eq!(group["space"], "pio");
+        assert_eq!(group["device_index"], Value::Null);
+        assert_eq!(group["region_base"], Value::Null);
+        assert_eq!(group["address"], "0x1234");
+        assert_eq!(group["direction"], direction);
+        assert_eq!(group["width"], 1);
+        assert_eq!(group["kind"], "UnmappedPort");
+        assert_eq!(group["count"], 1);
+        assert_eq!(group["first_retired"], retired);
+        assert_eq!(group["last_retired"], retired);
+        assert_eq!(group["first_cpl"], 0);
+        assert_eq!(group["first_value"], value);
+    }
+    assert_eq!(groups[0]["first_rip"], "0x200044");
+    assert_eq!(log_report["unified"]["final_state"]["rax"], "0xff");
+
+    let dir = scratch("device-errors");
+    let snapshot = dir.join("stop.json");
+    let snapshot_arg = snapshot.to_str().unwrap();
+    let limited = with(&["--device-errors", "log:1", "--stop-snapshot", snapshot_arg]);
+    assert_eq!(
+        limited.output.status.code(),
+        Some(5),
+        "{:?}",
+        limited.output
+    );
+    let limited_report = report(&limited);
+    assert_eq!(limited_report["exit"], "pio_error");
+    assert_eq!(limited_report["retired"], 2, "stopped at the write");
+    assert_eq!(limited_report["device_errors"]["events"], 1);
+    assert_eq!(limited_report["device_errors"]["stopped"], "event_limit");
+    let snap: Value = serde_json::from_str(&fs::read_to_string(&snapshot).unwrap()).unwrap();
+    assert_eq!(snap["inputs"]["device_errors"], "log:1");
+    fs::remove_file(&snapshot).unwrap();
+    let plain = with(&["--stop-snapshot", snapshot_arg]);
+    let snap: Value = serde_json::from_str(&fs::read_to_string(&snapshot).unwrap()).unwrap();
+    assert!(snap["inputs"].get("device_errors").is_none(), "{snap}");
+    for run in [default, stop, log, limited, plain] {
+        fs::remove_file(&run.com1).unwrap();
+    }
+    fs::remove_dir_all(dir).unwrap();
+
+    for extra in [
+        &["--device-errors", "log"][..],
+        &["--cpu-loop", "unified", "--device-errors", "log:0"],
+        &["--cpu-loop", "unified", "--device-errors", "log:"],
+        &["--cpu-loop", "unified", "--device-errors", "log:x"],
+        &["--cpu-loop", "unified", "--device-errors", "log:+5"],
+        &["--cpu-loop", "unified", "--device-errors", "log:1000000001"],
+        &["--cpu-loop", "unified", "--device-errors", "ignore"],
+        &[
+            "--cpu-loop",
+            "unified",
+            "--device-errors",
+            "stop",
+            "--device-errors",
+            "log",
+        ],
+        &["--cpu-loop", "unified", "--device-errors"],
+    ] {
+        let refused = invoke_with_args(&rom, "100", extra);
+        assert_eq!(
+            refused.output.status.code(),
+            Some(3),
+            "{extra:?}: {:?}",
+            refused.output
+        );
+        assert_eq!(report(&refused)["status"], "invalid_input", "{extra:?}");
+        assert!(!refused.com1.exists(), "{extra:?}");
+    }
+    // `stop` is the default, so it is accepted with either loop.
+    let firmware = invoke_with_args(&image(&[0xf4]), "100", &["--device-errors", "stop"]);
+    assert_eq!(
+        firmware.output.status.code(),
+        Some(0),
+        "{:?}",
+        firmware.output
+    );
+    fs::remove_file(&firmware.com1).unwrap();
+
+    // A log run that absorbed nothing completes as usual, still marked as a diagnostic.
+    let mut halting = image(&[0xf4]);
+    halting[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    halting[0x30..0x34].fill(0);
+    let crc = crc32(&halting);
+    halting[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let clean = invoke_with_args(
+        &halting,
+        "100",
+        &[&unified[..], &["--device-errors", "log"]].concat(),
+    );
+    assert_eq!(clean.output.status.code(), Some(0), "{:?}", clean.output);
+    let clean_report = report(&clean);
+    assert_eq!(clean_report["status"], "completed");
+    assert_eq!(clean_report["diagnostic_run"], true);
+    assert_eq!(clean_report["device_errors"]["events"], 0);
+    fs::remove_file(&clean.com1).unwrap();
+}
+
+/// S7-32 diagnostic: a `--device-errors log` run whose output fails after the boot (here the
+/// `--framebuffer-out` and `--nvram-out` paths are directories) keeps the diagnostic mark and
+/// the log in the failure report; the same failure of a `stop` run has neither field.
+#[test]
+fn a_failure_after_a_device_errors_log_boot_keeps_the_diagnostic_mark() {
+    #[rustfmt::skip]
+    let code = [
+        0x66, 0xBA, 0x34, 0x12, // mov dx, 0x1234 (no device)
+        0xEC,                   // in al, dx
+        0xF4,                   // hlt
+    ];
+    let mut rom = image(&code);
+    rom[0x2A..0x2C].copy_from_slice(&u16::MAX.to_le_bytes());
+    rom[0x30..0x34].fill(0);
+    let crc = crc32(&rom);
+    rom[0x30..0x34].copy_from_slice(&crc.to_le_bytes());
+    let dir = scratch("device-errors-out");
+    let target = dir.to_str().unwrap();
+    for (option, kind) in [
+        ("--framebuffer-out", "framebuffer_out"),
+        ("--nvram-out", "nvram_out"),
+    ] {
+        for mode in ["log", "stop"] {
+            let run = invoke_with_args(
+                &rom,
+                "100",
+                &[
+                    "--cpu-loop",
+                    "unified",
+                    "--device-errors",
+                    mode,
+                    option,
+                    target,
+                ],
+            );
+            assert_eq!(
+                run.output.status.code(),
+                Some(5),
+                "{option} {mode}: {:?}",
+                run.output
+            );
+            let value = report(&run);
+            assert_eq!(value["status"], "run_error", "{option} {mode}: {value}");
+            assert_eq!(value["error"]["kind"], kind, "{option} {mode}: {value}");
+            if mode == "log" {
+                assert_eq!(value["diagnostic_run"], true, "{option}: {value}");
+                assert_eq!(value["device_errors"]["events"], 1, "{option}: {value}");
+                assert_eq!(value["device_errors"]["groups"][0]["kind"], "UnmappedPort");
+            } else {
+                assert!(value.get("diagnostic_run").is_none(), "{option}: {value}");
+                assert!(value.get("device_errors").is_none(), "{option}: {value}");
+            }
+            let _ = fs::remove_file(&run.com1);
+        }
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// A temporary file removed when the test ends, also when an assertion fails.
 struct TempFile(PathBuf);
 

@@ -19653,6 +19653,46 @@ mod tests {
             }
         }
 
+        /// S7-32 diagnostic (`--device-errors log`): a refused access of the CPL3 entry of the
+        /// set loop is logged with CPL 3 (a write to the reserved Local APIC offset `0x3F0`
+        /// through a user mapping of the window), and the user code goes on to its stop.
+        #[test]
+        fn the_device_error_log_records_a_refused_cpl3_access_with_cpl_3() {
+            #[rustfmt::skip]
+            let user_code = [
+                0xC7, 0x83, 0xF0, 0x03, 0x00, 0x00, 0x5A, 0, 0, 0, // mov dword [rbx+0x3f0], 0x5a
+                0xB8, 0x53, 0x00, 0x00, 0x00,                      // mov eax, 0x53
+                0x0F, 0x05,                                        // syscall (SCE clear: #UD)
+            ];
+            let (mut boot, file) =
+                user_apic_board(&mov32(3, LOCAL_APIC_MMIO_BASE as u32), &user_code, 0x2);
+            let cr3 = boot.board.cr3();
+            for entry in [
+                cr3 + 0x1000 + 3 * 8,
+                TREE_PML4 + ((LOCAL_APIC_MMIO_BASE >> 21) & 511) * 8,
+            ] {
+                let mut raw = [0u8; 8];
+                read(&mut boot.board, entry, &mut raw).expect("read entry");
+                let user = u64::from_le_bytes(raw) | 4;
+                write_phys(&mut boot, entry, &user.to_le_bytes());
+            }
+            boot.board.bus_mut().enable_device_error_log(10, 8);
+            let record = run_user_apic(&mut boot, &file, 100);
+            // The store and the `mov` retired in CPL3; `syscall` (EFER.SCE clear) is the stop.
+            assert_eq!((record.cpl, record.cpl3_retired), (3, 2), "{record:?}");
+            assert_eq!(record.rip, USER_CODE_AT + 15, "{record:?}");
+            let report = boot.board.bus().device_error_log().unwrap().report();
+            assert_eq!(report.events, 1, "{report:?}");
+            let group = &report.groups[0];
+            assert_eq!(group.key.address, LOCAL_APIC_MMIO_BASE + 0x3f0);
+            assert_eq!(
+                group.key.kind,
+                crate::DeviceErrorKind::Device(crate::DeviceError::UnknownOffset)
+            );
+            assert_eq!((group.first_cpl, group.first_rip), (3, USER_CODE_AT));
+            assert_eq!(group.first_value, Some(0x5a));
+        }
+
         #[test]
         fn a_lapic_timer_irq_in_cpl3_goes_through_the_idt_and_iretq_returns_to_cpl3() {
             // The timer, armed by the host, fires at 200 ns, while the user spin runs (one

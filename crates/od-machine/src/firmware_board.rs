@@ -4124,6 +4124,13 @@ impl LoadedFirmwareBoard {
                 && scheduler_budget.is_none()
                 && !cpuid_boundary
                 && irq_hook;
+            // S7-32 diagnostic (`--device-errors log`): the log counts the retired instructions of
+            // an absorbed access from the run's count before this call (and before each merged
+            // quantum of the turbo engine, below). Once per quantum, nothing per instruction.
+            let device_error_log = board.bus.device_error_log().cloned();
+            if let Some(log) = &device_error_log {
+                log.set_retired_base(retired);
+            }
             let report = if turbo_quantum {
                 // The merged transition skips the services between quanta: only for a board
                 // whose devices have no work of their own in virtual time (xHCI port resets, NIC
@@ -4179,6 +4186,9 @@ impl LoadedFirmwareBoard {
                         quanta += 1;
                         retired += n;
                         remaining -= n;
+                        if let Some(log) = &device_error_log {
+                            log.set_retired_base(retired);
+                        }
                         let now = now_cell.get() + n + RDTSC_TICK_NS;
                         now_cell.set(now);
                         tick.store(false, Ordering::Relaxed);
@@ -9928,6 +9938,412 @@ mod tests {
         turbo.reset_turbo_engine();
         assert!(!turbo.bus().physical_memory().code_watch(code));
         assert!(turbo.turbo_engine().is_some(), "a reset keeps the engine");
+    }
+
+    /// S7-32 diagnostic: the program of the device error log tests. Two refused LAPIC accesses
+    /// (reserved offset 0x3F0: a write, then a read), a read of a port no device serves, two
+    /// dword writes to a byte register of COM1, then `hlt`.
+    #[rustfmt::skip]
+    const DEVICE_ERROR_PROGRAM: [u8; 46] = [
+        0x48, 0xB8, 0x00, 0x00, 0xE0, 0xFE, 0, 0, 0, 0,    //  0: mov rax, 0xfee00000
+        0xC7, 0x80, 0xF0, 0x03, 0x00, 0x00, 0x5A, 0, 0, 0, // 10: mov dword [rax+0x3f0], 0x5a
+        0x8B, 0x98, 0xF0, 0x03, 0x00, 0x00,                // 20: mov ebx, [rax+0x3f0]
+        0x66, 0xBA, 0x34, 0x12,                            // 26: mov dx, 0x1234
+        0xEC,                                              // 30: in al, dx
+        0x0F, 0xB6, 0xC8,                                  // 31: movzx ecx, al
+        0x66, 0xBA, 0xFC, 0x03,                            // 34: mov dx, 0x3fc
+        0xB8, 0x44, 0x33, 0x22, 0x11,                      // 38: mov eax, 0x11223344
+        0xEF,                                              // 43: out dx, eax
+        0xEF,                                              // 44: out dx, eax
+        0xF4,                                              // 45: hlt
+    ];
+
+    /// One Windows unified run of [`DEVICE_ERROR_PROGRAM`], with the log of `limit` accesses
+    /// (`None`: stop, the default) and with or without the turbo engine.
+    fn device_error_run(
+        limit: Option<u64>,
+        turbo: bool,
+    ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun, u64) {
+        device_error_run_of(&DEVICE_ERROR_PROGRAM, limit, turbo)
+    }
+
+    /// [`device_error_run`] of any `code`.
+    fn device_error_run_of(
+        code: &[u8],
+        limit: Option<u64>,
+        turbo: bool,
+    ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun, u64) {
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x40 + code.len()].copy_from_slice(code);
+        seal(&mut image);
+        let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+        if turbo {
+            if let Some(arena) = crate::turbo::test_arena() {
+                board.enable_turbo(arena);
+            }
+        } else {
+            board.disable_turbo();
+        }
+        if let Some(limit) = limit {
+            board.bus_mut().enable_device_error_log(limit, 16);
+        }
+        let entry = board.state().rip;
+        let run = crate::run_firmware_unified_guest(
+            &mut board,
+            100,
+            None,
+            Vec::new(),
+            None,
+            false,
+            crate::UnifiedGuest::Windows,
+        )
+        .unwrap();
+        (board, run, entry)
+    }
+
+    /// S7-32 diagnostic (`--device-errors log`): with the log each refused access of the unified
+    /// loop is completed as an open bus — the LAPIC write is dropped, the LAPIC read and the read
+    /// of an unserved port give all ones — and the program reaches its `hlt`; the groups come in
+    /// the order of their first access with the RIP of that instruction and the instructions
+    /// retired before it. The turbo engine gives the same run (its refused access goes to the
+    /// general step, which logs it). Without the log the run stops on the first refusal as it
+    /// always did.
+    #[test]
+    fn s7_32_the_device_error_log_completes_refused_accesses_and_groups_them() {
+        let (stopped, stop_run, entry) = device_error_run(None, false);
+        assert_eq!(stop_run.run.retired, 1, "{stop_run:?}");
+        assert_eq!(
+            stopped.state().rip,
+            entry + 10,
+            "stopped at the LAPIC write"
+        );
+        assert!(
+            format!("{:?}", stop_run.run.exit)
+                .contains("MMIO device 1 write failed: UnknownOffset"),
+            "{stop_run:?}"
+        );
+        assert!(stopped.bus().device_error_log().is_none());
+        let (stopped_turbo, stop_turbo_run, _) = device_error_run(None, true);
+        assert_eq!(stop_turbo_run.run.retired, stop_run.run.retired);
+        assert_eq!(stopped_turbo.state(), stopped.state());
+
+        let (board, run, entry) = device_error_run(Some(100), false);
+        assert_eq!(run.run.exit, PagedProbeExit::Halted, "{run:?}");
+        assert_eq!(run.run.retired, 11);
+        let gpr = board.state().gpr;
+        assert_eq!(
+            gpr[Register::Rbx as usize],
+            0xffff_ffff,
+            "a refused dword read"
+        );
+        assert_eq!(gpr[Register::Rcx as usize], 0xff, "an unserved port read");
+        let report = board.bus().device_error_log().unwrap().report();
+        assert_eq!((report.events, report.stopped), (5, None));
+        let groups: Vec<_> = report
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.key.space,
+                    group.key.device_index,
+                    group.key.address,
+                    group.key.direction,
+                    group.key.width,
+                    group.key.kind.clone(),
+                    group.count,
+                    group.first_retired,
+                    group.last_retired,
+                    group.first_rip - entry,
+                    group.first_cpl,
+                    group.first_value,
+                )
+            })
+            .collect();
+        use crate::DeviceErrorDirection::{Read, Write};
+        use crate::DeviceErrorKind::{Device, UnmappedPort};
+        let width = |bytes| match bytes {
+            1 => crate::AccessWidth::Byte,
+            _ => crate::AccessWidth::Dword,
+        };
+        assert_eq!(
+            groups,
+            [
+                (
+                    crate::IoSpace::Mmio,
+                    Some(DEV_LAPIC),
+                    0xfee0_03f0,
+                    Write,
+                    width(4),
+                    Device(crate::DeviceError::UnknownOffset),
+                    1,
+                    1,
+                    1,
+                    10,
+                    0,
+                    Some(0x5a)
+                ),
+                (
+                    crate::IoSpace::Mmio,
+                    Some(DEV_LAPIC),
+                    0xfee0_03f0,
+                    Read,
+                    width(4),
+                    Device(crate::DeviceError::UnknownOffset),
+                    1,
+                    2,
+                    2,
+                    20,
+                    0,
+                    None
+                ),
+                (
+                    crate::IoSpace::Pio,
+                    None,
+                    0x1234,
+                    Read,
+                    width(1),
+                    UnmappedPort,
+                    1,
+                    4,
+                    4,
+                    30,
+                    0,
+                    None
+                ),
+                (
+                    crate::IoSpace::Pio,
+                    Some(DEV_COM1),
+                    0x3fc,
+                    Write,
+                    width(4),
+                    Device(crate::DeviceError::UnsupportedWidth),
+                    2,
+                    8,
+                    9,
+                    43,
+                    0,
+                    Some(0x1122_3344)
+                ),
+            ]
+        );
+        assert_eq!(report.groups[0].region_base, Some(LOCAL_APIC_MMIO_BASE));
+        assert_eq!(report.groups[3].region_base, Some(0x3f8));
+
+        let (turbo, turbo_run, _) = device_error_run(Some(100), true);
+        assert_eq!(turbo_run.run, run.run);
+        assert_eq!(turbo.state(), board.state());
+        assert_eq!(turbo.bus().device_error_log().unwrap().report(), report);
+        // On a host with the engine the LAPIC accesses were first made by generated code: the
+        // device refused them there too, so it was reached once more for each of them.
+        let accesses = |board: &LoadedFirmwareBoard| {
+            board.bus().device_access_counter().load(Ordering::Relaxed)
+        };
+        if turbo.turbo_engine().is_some() {
+            assert_eq!(accesses(&turbo), accesses(&board) + 2);
+        } else {
+            assert!(
+                !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                "no turbo engine"
+            );
+        }
+    }
+
+    /// S7-32 diagnostic: once the log has absorbed its limit the next refusal stops the run as
+    /// without the log, and the log says that the limit stopped it.
+    #[test]
+    fn s7_32_the_device_error_log_stops_the_run_at_its_limit() {
+        for turbo in [false, true] {
+            let (board, run, entry) = device_error_run(Some(4), turbo);
+            assert_eq!(
+                run.run.exit,
+                PagedProbeExit::PortIo(crate::BusAccessError::Device {
+                    device_index: DEV_COM1,
+                    source: crate::DeviceError::UnsupportedWidth,
+                }),
+                "{run:?}"
+            );
+            assert_eq!(run.run.retired, 9);
+            assert_eq!(board.state().rip, entry + 44, "stopped at the second write");
+            let report = board.bus().device_error_log().unwrap().report();
+            assert_eq!(report.events, 4);
+            assert_eq!(report.groups[3].count, 1);
+            assert_eq!(report.stopped, Some(crate::DeviceErrorLogStop::EventLimit));
+        }
+        // A full log on an MMIO refusal: generated code makes the LAPIC read, the device refuses
+        // it, the general step finds the log full and stops as without the log, with the engine
+        // and without it.
+        let (general, general_run, entry) = device_error_run(Some(1), false);
+        let (turbo, turbo_run, _) = device_error_run(Some(1), true);
+        assert_eq!(general_run.run.retired, 2, "{general_run:?}");
+        assert_eq!(general.state().rip, entry + 20, "stopped at the LAPIC read");
+        assert!(
+            format!("{:?}", general_run.run.exit)
+                .contains("MMIO device 1 read failed: UnknownOffset"),
+            "{general_run:?}"
+        );
+        assert_eq!(turbo_run.run, general_run.run);
+        assert_eq!(turbo.state(), general.state());
+        for board in [&general, &turbo] {
+            let report = board.bus().device_error_log().unwrap().report();
+            assert_eq!(report.events, 1);
+            assert_eq!(report.stopped, Some(crate::DeviceErrorLogStop::EventLimit));
+        }
+    }
+
+    /// S7-32 diagnostic: a read-modify-write of a LAPIC register at CPL0 reads its operand with a
+    /// plain read; when the log absorbed that read (all ones), the write of the same instruction
+    /// does not reach the device and is logged as `SuppressedAfterAbsorbedRead`: `ADD` to a
+    /// reserved register (the device would refuse the write too) and `OR` of the write-only EOI
+    /// register (the device would accept a write derived from the invented all ones). With the
+    /// engine and without it; without the log the run stops on the first read.
+    #[test]
+    fn s7_32_a_lapic_read_modify_write_after_an_absorbed_read_does_not_write_the_device() {
+        #[rustfmt::skip]
+        let code = [
+            0x48, 0xB8, 0x00, 0x00, 0xE0, 0xFE, 0, 0, 0, 0, //  0: mov rax, 0xfee00000
+            0x83, 0x80, 0xF0, 0x03, 0x00, 0x00, 0x01,       // 10: add dword [rax+0x3f0], 1
+            0x83, 0x88, 0xB0, 0x00, 0x00, 0x00, 0x00,       // 17: or dword [rax+0xb0], 0
+            0xF4,                                           // 24: hlt
+        ];
+        let (stopped, stop_run, entry) = device_error_run_of(&code, None, false);
+        assert_eq!((stop_run.run.retired, stopped.state().rip), (1, entry + 10));
+        assert!(
+            format!("{:?}", stop_run.run.exit).contains("MMIO device 1 read failed: UnknownOffset"),
+            "{stop_run:?}"
+        );
+        let accesses = |board: &LoadedFirmwareBoard| {
+            board.bus().device_access_counter().load(Ordering::Relaxed)
+        };
+        let (general, general_run, _) = device_error_run_of(&code, Some(100), false);
+        assert_eq!(
+            general_run.run.exit,
+            PagedProbeExit::Halted,
+            "{general_run:?}"
+        );
+        assert_eq!(general_run.run.retired, 4);
+        assert_eq!(
+            accesses(&general),
+            2,
+            "the two reads; neither write reached the LAPIC"
+        );
+        let report = general.bus().device_error_log().unwrap().report();
+        let groups: Vec<_> = report
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.key.address,
+                    group.key.direction,
+                    group.key.kind.clone(),
+                    group.count,
+                    group.first_retired,
+                    group.first_rip - entry,
+                    group.first_value,
+                )
+            })
+            .collect();
+        use crate::DeviceErrorDirection::{Read, Write};
+        use crate::DeviceErrorKind::{Device, SuppressedAfterAbsorbedRead as Suppressed};
+        assert_eq!(
+            groups,
+            [
+                (
+                    0xfee0_03f0,
+                    Read,
+                    Device(crate::DeviceError::UnknownOffset),
+                    1,
+                    1,
+                    10,
+                    None
+                ),
+                (0xfee0_03f0, Write, Suppressed, 1, 1, 10, Some(0)),
+                (
+                    0xfee0_00b0,
+                    Read,
+                    Device(crate::DeviceError::WriteOnly),
+                    1,
+                    2,
+                    17,
+                    None
+                ),
+                (0xfee0_00b0, Write, Suppressed, 1, 2, 17, Some(0xffff_ffff)),
+            ]
+        );
+        let (turbo, turbo_run, _) = device_error_run_of(&code, Some(100), true);
+        assert_eq!(turbo_run.run, general_run.run);
+        assert_eq!(turbo.state(), general.state());
+        assert_eq!(turbo.bus().device_error_log().unwrap().report(), report);
+        // The engine may make the plain reads first (refused there too, then again by the
+        // general step); no write reaches the LAPIC either way.
+        assert!(accesses(&turbo) >= accesses(&general));
+    }
+
+    /// S7-32 diagnostic: the retired count of an absorbed access stays that of the run after the
+    /// turbo engine merged quanta at RDTSC ticks (the board moves the log's base at each merge):
+    /// a refusal after a loop of `RDTSC` is logged with the count at which the run without the log
+    /// stops on it, with the engine and without it.
+    #[test]
+    fn s7_32_the_device_error_log_counts_retired_across_merged_turbo_quanta() {
+        #[rustfmt::skip]
+        let code = [
+            0xB9, 0x20, 0x00, 0x00, 0x00, //  0: mov ecx, 32
+            0x0F, 0x31,                   //  5: L: rdtsc
+            0xFF, 0xC9,                   //  7: dec ecx
+            0x75, 0xFA,                   //  9: jnz L
+            0x66, 0xBA, 0x34, 0x12,       // 11: mov dx, 0x1234
+            0xEC,                         // 15: in al, dx (no device)
+            0xF4,                         // 16: hlt
+        ];
+        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        image[0x40..0x40 + code.len()].copy_from_slice(&code);
+        seal(&mut image);
+        let run = |limit: Option<u64>, turbo: bool| {
+            let mut board = load_firmware_image(&image, &linux_config()).unwrap();
+            if turbo {
+                if let Some(arena) = crate::turbo::test_arena() {
+                    board.enable_turbo(arena);
+                }
+            } else {
+                board.disable_turbo();
+            }
+            if let Some(limit) = limit {
+                board.bus_mut().enable_device_error_log(limit, 16);
+            }
+            let run = crate::run_firmware_unified(&mut board, 1_000).unwrap();
+            (board, run)
+        };
+        let (_, stopped) = run(None, true);
+        assert_eq!(
+            stopped.run.exit,
+            PagedProbeExit::PortIo(crate::BusAccessError::UnmappedPort(
+                crate::PortAddress::new(0x1234)
+            )),
+            "{stopped:?}"
+        );
+        assert_eq!(stopped.run.retired, 1 + 32 * 3 + 1);
+        for turbo in [true, false] {
+            let (board, logged) = run(Some(10), turbo);
+            assert_eq!(logged.run.exit, PagedProbeExit::Halted, "{logged:?}");
+            let report = board.bus().device_error_log().unwrap().report();
+            assert_eq!(report.events, 1);
+            assert_eq!(
+                report.groups[0].first_retired, stopped.run.retired,
+                "turbo {turbo}"
+            );
+            if turbo {
+                match board.turbo_engine() {
+                    Some(engine) => assert!(
+                        engine.stats.fast_transitions > 0,
+                        "the loop merged no quanta: {:?}",
+                        engine.stats
+                    ),
+                    None => assert!(
+                        !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                        "no turbo engine"
+                    ),
+                }
+            }
+        }
     }
 
     /// S7-31q: a runtime services table slot is followed once a traced call refreshed it, a NULL
