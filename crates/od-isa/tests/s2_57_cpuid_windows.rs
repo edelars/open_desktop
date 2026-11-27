@@ -205,7 +205,8 @@ fn the_identity_is_the_celeron_n5105_of_adr_0013() {
         vendor.extend_from_slice(&word.to_le_bytes());
     }
     assert_eq!(vendor, b"GenuineIntel");
-    assert_eq!(leaf0.eax, 1);
+    // S7-32 slice O: the maximum basic leaf is 6 (ARAT in leaf 6); it was 1 before.
+    assert_eq!(leaf0.eax, 6);
     // Signature: stepping 0, model 0xC, family 6, type 0, extended model 9, extended family 0.
     let eax = WINDOWS.query(1, 0).eax;
     assert_eq!(eax, 0x0009_06C0);
@@ -279,12 +280,27 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
     let mut code = vec![0xb8];
     code.extend_from_slice(&leaf.to_le_bytes());
     code.extend_from_slice(&[0x31, 0xc9, 0x0f, 0xa2]);
+    run_cpuid(leaf, &code)
+}
+
+/// `mov eax, leaf; mov ecx, subleaf; cpuid` (S7-32 slice O: leaf 4 reads ECX).
+fn cpuid_subleaf(leaf: u32, subleaf: u32) -> [u32; 4] {
+    let mut code = vec![0xb8];
+    code.extend_from_slice(&leaf.to_le_bytes());
+    code.push(0xb9);
+    code.extend_from_slice(&subleaf.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0xa2]);
+    run_cpuid(leaf, &code)
+}
+
+/// Runs the three instructions of `code` and returns EAX, EBX, ECX, EDX.
+fn run_cpuid(leaf: u32, code: &[u8]) -> [u32; 4] {
     let mut state = LongModeState {
         rip: CODE,
         rflags: 0x2,
         ..LongModeState::default()
     };
-    let mut ram = Ram::with_code(&code);
+    let mut ram = Ram::with_code(code);
     let result = execute::run_with_cpuid_profile(
         &mut state,
         &mut ram,
@@ -316,8 +332,8 @@ fn cpuid_leaf(leaf: u32) -> [u32; 4] {
 
 #[test]
 fn cpuid_in_long64_returns_the_table_byte_for_byte() {
-    // Order of the result: EAX, EBX, ECX, EDX.
-    assert_eq!(cpuid_leaf(0), [1, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
+    // Order of the result: EAX, EBX, ECX, EDX. S7-32 slice O: maximum basic leaf 6.
+    assert_eq!(cpuid_leaf(0), [6, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]);
     // EDX: the target table (S7-32 decision 2026-11-25) plus DE, MCE, MTRR, MCA, CLFSH (slice I);
     // EBX: CLFLUSH line size 8 * 8 = 64 bytes in bits 15:8.
     assert_eq!(
@@ -338,8 +354,17 @@ fn cpuid_in_long64_returns_the_table_byte_for_byte() {
     );
     assert_eq!(cpuid_leaf(0x8000_0004), [0x007a_4847, 0, 0, 0]);
     assert_eq!(cpuid_leaf(0x8000_0008), [0x3024, 0, 0, 0]);
-    // Unlisted leaves: four zeros (no leaf 7, no hypervisor leaves, no invariant TSC).
-    for leaf in [2, 4, 7, 0xb, 0xd, 0x4000_0000, 0x8000_0007] {
+    // S7-32 slice O: leaf 2 (01H, descriptor FFH), leaf 6 (ARAT), leaf 4 by ECX.
+    assert_eq!(cpuid_leaf(2), [0xff01, 0, 0, 0]);
+    assert_eq!(cpuid_leaf(6), [0x4, 0, 0, 0]);
+    assert_eq!(cpuid_leaf(4), [0x0000_0121, 0x01c0_003f, 0x3f, 0]);
+    assert_eq!(cpuid_subleaf(4, 1), [0x0000_0122, 0x01c0_003f, 0x3f, 0]);
+    assert_eq!(cpuid_subleaf(4, 2), [0x0000_0143, 0x02c0_003f, 0x7ff, 0]);
+    assert_eq!(cpuid_subleaf(4, 3), [0x0000_0163, 0x03c0_003f, 0xfff, 0x6]);
+    assert_eq!(cpuid_subleaf(4, 4), [0, 0, 0, 0]);
+    // Unlisted leaves: four zeros (no serial number, no MONITOR/MWAIT leaf, no leaf 7 or any
+    // leaf above the maximum, no hypervisor leaves, no invariant TSC).
+    for leaf in [3, 5, 7, 0xb, 0xd, 0x15, 0x4000_0000, 0x8000_0007] {
         assert_eq!(cpuid_leaf(leaf), [0, 0, 0, 0], "{leaf:#x}");
     }
 }

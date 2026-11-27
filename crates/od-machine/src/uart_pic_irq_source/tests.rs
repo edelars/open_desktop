@@ -90,7 +90,7 @@ impl Rig {
 }
 
 /// S4-24f: the 8259 source takes the line from the UART's port spec. A COM2 UART (IRQ3) raises
-/// IR3 and the vector is ICW2 + 3; COM1 on IR4 is not touched.
+/// IR3 and the vector is `(ICW2 & 0xF8) | 3`; COM1 on IR4 is not touched.
 #[test]
 fn a_com2_uart_raises_ir3_and_not_ir4() {
     let clock = VirtualClockHandle::new(1_000_000_000).unwrap();

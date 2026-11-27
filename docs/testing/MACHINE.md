@@ -759,6 +759,45 @@ HAL Windows (`ntkrnlmp` + `0x5697b0`, ISSUE-701): две записи 0 в Versi
 строк — host-тесты прошивки и SHA-256 ROM (`5e47acc1…`, совпадает с `fw-l.bin`) проверены. Гостевой
 прогон — [отчёт этапа 7, срез N](../reports/STAGE_7_REPORT.md#срез-n-запись-в-read-only-регистры-ioapic-2026-11-26).
 
+### S7-32, срез O: ICW2 8259 в режиме 8086 и листы CPUID 2–6 Windows-профиля
+
+**8259** (`cargo test -p od-machine --lib pic_8259 --offline`, 41 тест: 38 прежних с переделанным
+тестом ICW2/ICW3 и 3 новых). `every_icw2_is_accepted_and_stored_as_written` — все 256 значений ICW2
+у обоих кристаллов принимаются, хранятся как записаны и переводят автомат к ICW3, остальное
+состояние ICW1 не меняется (IMR 0); `unsupported_icw3_is_refused_and_the_step_can_be_retried`
+(бывший `unsupported_icw2_icw3_…`) — ICW3 по-прежнему строгий, после ICW2 `0xD8`;
+`windows_hal_init_sequence_is_accepted_on_both_chips` — последовательность HAL Windows
+(`ntkrnlmp` + `0x56a500`: ICW1 `0x11`, ICW2 `0xD8`, ICW3 `0x04`/`0x02`, ICW4 `0x01`, OCW1 `0xFF`)
+через реальные привязки портов шины, полный снимок обоих кристаллов, IMR читается `0xFF`, фронт под
+маской ничего не даёт; `irq_tests::the_vector_is_t7_t3_of_icw2_with_the_line_in_bits_2_to_0` — для
+ICW2 `0xD8`, `0xDF`, `0x30`, `0x37`, `0xFF`, `0x07` и каждой линии 0–7 вектор `(ICW2 & 0xF8) | line`
+(оракул по таблице «Content of Interrupt Vector Byte for 8086 System Mode» даташита 8259A
+231468-003), сумма `ICW2 + line` при ненулевых битах 2:0 не подтверждается и ничего не меняет, INTA
+ставит ISR, EOI снимает. Прежние тесты пути Linux (ICW2 `0x30`/`0x38`, векторы `0x30`–`0x35`,
+`stage4_pit_irq0_probe`) проходят без правок ожиданий. Инъекции (файл возвращался копией): вектор
+`ICW2 + line` в обеих функциях — 1 падение, только в `acknowledge` — 1, маска `0xF0` — 1, ICW2 снова
+строгий — 4, ICW2 хранится маскированным — 1, ICW3 без проверки — 1.
+
+**CPUID** (`cargo test -p od-isa --lib cpuid --offline`, 31 тест, 3 новых;
+`cargo test -p od-isa --test s2_57_cpuid_windows --test s2_58_cpuid_windows --offline`, 19 и 13).
+`windows_leaves_2_3_5_and_6_are_the_slice_o_values` — лист 2 по байтам (AL = 01H, единственный
+ненулевой дескриптор FFH, бит 31 регистров 0), листы 3 и 5 нули (MONITOR не объявлен), лист 6 —
+только ARAT; `windows_leaf_4_enumerates_the_caches_of_the_identity_and_ends` — тип, уровень,
+self-initializing, строка 64 (= строке `CLFLUSH` листа 1), разделы, ассоциативность, наборы и
+размер каждого кэша по формуле SDM Vol. 1 Table 21-14, под-листы 4, 5, `0x100`, `u32::MAX` —
+нули; `windows_leaf_4_follows_the_vcpu_topology` — для 2, 4, 64, 65, 255 vCPU поля EAX[31:26] и
+EAX[25:14] (L1 — 0; числа больше 4 — выше предела платы `MAX_VCPUS` — закрепляют только границу 6-битного поля ядер, 63) и три слова, посчитанные вручную; у прочих профилей листа 4 нет.
+Обновлены ожидания максимального листа (6), список нулевых листов и `CPUID` в Long64 (`mov ecx`
+под-листа для листа 4). Инъекции: максимум 5 — 1 падение (и `cpuid_in_long64_…` интеграционного
+теста), без ARAT — 1, под-лист 4 и выше повторяет L3 (цикл гостя не кончится) — 2, лист 4 без
+под-листа — 2 (и интеграционный тест), общий L1 — 1, без границы поля ядер — 1, дескриптор FEH —
+1, лист 5 как у идентичности — 2, `query_for_vcpu` без под-листа — 2, HWP в листе 6 —
+`absent_thermal_and_cmci_lvts_match_the_cpu_identity` (`od-machine`). Затем полные `cargo test -p od-isa`,
+`cargo test -p od-machine --lib`, `cargo test -p od-runner`, `cargo check --workspace --all-targets`,
+`cargo fmt --all -- --check`, `python3 tests/system/firmware_boot_smoke.py`. Гостевой прогон Windows —
+[отчёт этапа 7, срез O](../reports/STAGE_7_REPORT.md#срез-o-icw2-8259-и-arat-в-cpuid-windows-профиля-2026-11-26); Linux не повторялся: путь Linux (ICW2
+`0x30`/`0x38`, Linux-профили CPUID) не изменился.
+
 ## S4-27a: caller-driven APIC interrupt entry
 
 Run `cargo test -p od-machine --lib diagnostic_vcpu::tests --offline -- --test-threads=1`,

@@ -11,7 +11,8 @@
 //! edge on an input line ([`Pic8259Handle::raise_irq`]: IRR bit, latched even
 //! when the line is masked); [`Pic8259Handle::pending_vector`] is the `INTR`
 //! output (the highest-priority unmasked request that no equal or higher
-//! priority line has in service, fixed priority, IR0 highest, vector = ICW2 + line);
+//! priority line has in service, fixed priority, IR0 highest, vector =
+//! `(ICW2 & 0xF8) | line`);
 //! [`Pic8259Handle::acknowledge`] is the INTA cycle (IRR bit -> ISR bit, with
 //! AEOI no ISR bit); OCW2 non-specific (`0x20`) and specific (`0x60 | n`) EOI
 //! (and their rotate forms, with the rotation ignored) clear ISR bits; OCW3 reads
@@ -19,10 +20,14 @@
 //! (no source raises a slave line); priority rotation, special mask mode, level
 //! trigger and the poll command are not modelled.
 //!
-//! Accepted initialisation (what Linux writes in `init_8259A`, 8086 mode, normal
-//! EOI): ICW1 `0x11` (bits 7:5 and bit 2 are ignored in 8086 mode), ICW2 equal
-//! to [`isa_irq_vector`] of the chip (master `0x30`, slave `0x38`), ICW3 `0x04`
-//! on the master and `0x02` on the slave, ICW4 `0x01`. The master also
+//! Accepted initialisation (8086 mode, normal EOI): ICW1 `0x11` (bits 7:5 and
+//! bit 2 are ignored in 8086 mode), any ICW2 (S7-32 slice O, ISSUE-702: in 8086
+//! mode bits 7:3 are T7–T3 of the vector, the chip supplies bits 2:0 from the
+//! line, and bits 2:0 of ICW2 (A10–A8) are ignored — Intel 8259A data sheet
+//! 231468-003, "Initialization Command Words 1 and 2" and "Content of Interrupt
+//! Vector Byte for 8086 System Mode"; Linux `init_8259A` writes [`isa_irq_vector`]
+//! of the chip, master `0x30` and slave `0x38`, the Windows HAL `0xD8` to both),
+//! ICW3 `0x04` on the master and `0x02` on the slave, ICW4 `0x01`. The master also
 //! accepts ICW4 `0x03` (AEOI, S4-29a2; Linux `check_timer`): the flag is stored
 //! and, since S4-39g, an INTA cycle then sets no ISR bit; the slave refuses it. Single mode, level
 //! trigger, special fully nested mode, buffered mode and the MCS-80 mode are
@@ -116,7 +121,8 @@ impl Pic8259Role {
         }
     }
 
-    /// The ICW2 the chip accepts: `ISA_IRQ_VECTOR(0)` or `ISA_IRQ_VECTOR(8)`.
+    /// The ICW2 Linux writes to the chip (`init_8259A`): `ISA_IRQ_VECTOR(0)` or
+    /// `ISA_IRQ_VECTOR(8)`. The chip accepts any ICW2 (S7-32 slice O).
     pub const fn icw2(self) -> u8 {
         match self {
             Self::Master => isa_irq_vector(0),
@@ -152,7 +158,8 @@ pub struct Pic8259Snapshot {
     pub phase: Pic8259InitPhase,
     /// Interrupt mask register: `0xFF` from reset.
     pub imr: u8,
-    /// Accepted ICW2 (vector base), once written.
+    /// ICW2 as written, once written: bits 7:3 are the vector base (T7–T3), bits 2:0
+    /// are ignored in 8086 mode ([`vector_of`]).
     pub icw2: Option<u8>,
     /// Accepted ICW3, once written.
     pub icw3: Option<u8>,
@@ -165,6 +172,16 @@ pub struct Pic8259Snapshot {
     pub irr: u8,
     /// In-service register (S4-39g): set by INTA, cleared by EOI.
     pub isr: u8,
+}
+
+/// Bits of ICW2 that form the vector in 8086 mode (T7–T3); the chip supplies bits 2:0.
+const ICW2_VECTOR_BASE: u8 = 0xF8;
+
+/// The vector an 8086-mode chip with `icw2` sends for input `line` (`0..8`): T7–T3 from ICW2
+/// and the line number in bits 2:0 (8259A data sheet 231468-003, "Content of Interrupt Vector
+/// Byte for 8086 System Mode").
+const fn vector_of(icw2: u8, line: u8) -> u8 {
+    (icw2 & ICW2_VECTOR_BASE) | line
 }
 
 impl Pic8259Snapshot {
@@ -219,11 +236,12 @@ impl Pic8259Handle {
             .flatten()
     }
 
-    /// The vector of the `INTR` output now (`ICW2 + line`), without acknowledging it. S4-39g.
+    /// The vector of the `INTR` output now (`(ICW2 & 0xF8) | line`), without acknowledging it.
+    /// S4-39g.
     pub fn pending_vector(&self) -> Option<u8> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let line = Self::deliverable_line(&state)?;
-        Some(state.icw2?.wrapping_add(line))
+        Some(vector_of(state.icw2?, line))
     }
 
     /// Whether an edge on `line` raised now would be delivered at once (the chip is initialised,
@@ -244,7 +262,7 @@ impl Pic8259Handle {
         let Some(line) = Self::deliverable_line(&state) else {
             return false;
         };
-        if state.icw2.map(|base| base.wrapping_add(line)) != Some(vector) {
+        if state.icw2.map(|icw2| vector_of(icw2, line)) != Some(vector) {
             return false;
         }
         let bit = 1u8 << line;
@@ -445,9 +463,8 @@ impl Pic8259 {
     fn write_data(&self, state: &mut Pic8259Snapshot, value: u8) -> Result<(), DeviceError> {
         match state.phase {
             Pic8259InitPhase::ExpectIcw2 => {
-                if value != self.role.icw2() {
-                    return Err(DeviceError::UnsupportedConfiguration);
-                }
+                // Every byte is a valid ICW2 in 8086 mode (S7-32 slice O): T7–T3 are the vector
+                // base and A10–A8 (bits 2:0) are ignored; the vector is `vector_of`.
                 state.icw2 = Some(value);
                 state.phase = Pic8259InitPhase::ExpectIcw3;
             }
@@ -706,23 +723,40 @@ mod tests {
         assert_eq!(handle.snapshot().phase, Pic8259InitPhase::Initialized);
     }
 
+    /// S7-32 slice O (ISSUE-702): in 8086 mode every byte is an ICW2 (8259A data sheet
+    /// 231468-003, "Initialization Command Words 1 and 2": T7–T3 are the vector, A10–A8 are
+    /// ignored). It is stored as written and only moves the automaton to ICW3; nothing else
+    /// of the ICW1 state changes.
     #[test]
-    fn unsupported_icw2_icw3_are_refused_and_the_step_can_be_retried() {
+    fn every_icw2_is_accepted_and_stored_as_written() {
+        for role in [Pic8259Role::Master, Pic8259Role::Slave] {
+            let (mut pic, handle) = chip(role);
+            out(&mut pic, 1, 0xA5).unwrap();
+            for icw2 in 0..=u8::MAX {
+                out(&mut pic, 0, PIC_ICW1_ACCEPTED).unwrap();
+                let after_icw1 = handle.snapshot();
+                out(&mut pic, 1, icw2).unwrap();
+                assert_eq!(
+                    handle.snapshot(),
+                    Pic8259Snapshot {
+                        phase: Pic8259InitPhase::ExpectIcw3,
+                        icw2: Some(icw2),
+                        ..after_icw1
+                    },
+                    "{role:?} {icw2:#04x}"
+                );
+                assert_eq!(inb(&mut pic, 1), 0, "IMR stays cleared by ICW1");
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_icw3_is_refused_and_the_step_can_be_retried() {
         for role in [Pic8259Role::Master, Pic8259Role::Slave] {
             let (mut pic, handle) = chip(role);
             out(&mut pic, 0, 0x11).unwrap();
-            let before = handle.snapshot();
-            // Another vector base, including the legacy PC ones and a base with
-            // low bits set (those bits are not part of an 8086 vector base).
-            for icw2 in [0x08u8, 0x70, 0x20, 0x31, 0x00] {
-                assert_eq!(
-                    out(&mut pic, 1, icw2),
-                    Err(DeviceError::UnsupportedConfiguration),
-                    "{role:?} {icw2:#04x}"
-                );
-                assert_eq!(handle.snapshot(), before);
-            }
-            out(&mut pic, 1, role.icw2()).unwrap();
+            // The Windows HAL vector base: ICW2 is no longer the strict step.
+            out(&mut pic, 1, 0xD8).unwrap();
             let before = handle.snapshot();
             for icw3 in [0x00u8, 0x01, 0x03, 0x08, 0x06, 0xFF] {
                 // The accepted value of the other role is refused too.
@@ -1057,6 +1091,48 @@ mod tests {
                 "{port:#x}"
             );
         }
+    }
+
+    /// ISSUE-702: the 8259 initialisation of the Windows HAL (`ntkrnlmp` + `0x56a500`, in its
+    /// order, called once per chip): ICW1 `0x11` to the command port, then ICW2 `0xD8` (the same
+    /// vector base for both chips), ICW3 `0x04` (master) / `0x02` (slave), ICW4 `0x01` and OCW1
+    /// `0xFF` to the data port.
+    #[test]
+    fn windows_hal_init_sequence_is_accepted_on_both_chips() {
+        let (mut bus, master, slave) = bus();
+        let p = |port: u16| PortAddress::new(port);
+        for (cmd, data, icw3) in [(0x20u16, 0x21u16, 0x04u32), (0xA0, 0xA1, 0x02)] {
+            for (port, value) in [
+                (cmd, 0x11u32),
+                (data, 0xD8),
+                (data, icw3),
+                (data, 0x01),
+                (data, 0xFF),
+            ] {
+                bus.write_port(p(port), BYTE, value)
+                    .unwrap_or_else(|e| panic!("{port:#x} <- {value:#x}: {e:?}"));
+            }
+        }
+        for (handle, icw3) in [(&master, 0x04u8), (&slave, 0x02)] {
+            assert_eq!(
+                handle.snapshot(),
+                Pic8259Snapshot {
+                    phase: Pic8259InitPhase::Initialized,
+                    imr: 0xFF,
+                    icw2: Some(0xD8),
+                    icw3: Some(icw3),
+                    read_isr: false,
+                    aeoi: false,
+                    irr: 0,
+                    isr: 0,
+                }
+            );
+        }
+        assert_eq!(bus.read_port(p(0x21), BYTE), Ok(0xFF));
+        assert_eq!(bus.read_port(p(0xA1), BYTE), Ok(0xFF));
+        // Everything is masked: an edge is latched and nothing is pending.
+        master.raise_irq(0);
+        assert_eq!(master.pending_vector(), None);
     }
 
     #[test]

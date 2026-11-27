@@ -1765,8 +1765,9 @@ mod tests {
     //
     // Expectations are from the SDM and the 8259/8254 data sheets (by memory), not from the model:
     // after ICW1..ICW4 and an unmasked IR0 the PIC raises INTR for the PIT's OUT0 edge and the CPU,
-    // with IF = 1, takes vector ICW2 + 0 through its IDT; the guest's EOI (OCW2 0x20 to port 0x20)
-    // frees the line for the next edge; mode 2 gives one edge per `count` PIT ticks (1_193_182 Hz).
+    // with IF = 1, takes vector (ICW2 & 0xF8) | 0 through its IDT; the guest's EOI (OCW2 0x20 to
+    // port 0x20) frees the line for the next edge; mode 2 gives one edge per `count` PIT ticks
+    // (1_193_182 Hz).
 
     /// ICW2 of the master 8259 the board models (`Pic8259Role::icw2`, the base Linux uses).
     const BOARD_VECTOR: u8 = 0x30;

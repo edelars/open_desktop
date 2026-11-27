@@ -1,5 +1,5 @@
 //! The interrupt source of the PIT channel 0 line through the 8259 master (S4-39g): PIT OUT0 ->
-//! master IR0 -> `INTR` -> the guest IDT vector `ICW2 + 0` of the CPL0 set loop.
+//! master IR0 -> `INTR` -> the guest IDT vector `(ICW2 & 0xF8) | 0` of the CPL0 set loop.
 //!
 //! This is the PIC-mode counterpart of [`crate::pit_ioapic_irq_source`] (S4-38L8c): the kernel of
 //! the Linux board runs with `APIC disabled by BIOS` and `Keep in PIC mode(8259)`, so the timer
@@ -21,7 +21,8 @@
 //!
 //! An edge sets the IRR bit of IR0 whether or not IR0 is masked (the chip latches it; unmasking
 //! delivers it; edges coalesce). `pending_vector` is the `INTR` output of the master chip: the
-//! highest-priority unmasked request not blocked by an in-service line, vector `ICW2 + line`
+//! highest-priority unmasked request not blocked by an in-service line, vector
+//! `(ICW2 & 0xF8) | line`
 //! (`None` before the chip is initialised). [`BoardIrqSource::acknowledge`] is the INTA cycle (IRR
 //! -> ISR; with AEOI no ISR). EOI is the guest's own OCW2 write to port `0x20` (the chip is a bus
 //! device); until it, the line is blocked.

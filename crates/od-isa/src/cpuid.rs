@@ -33,6 +33,9 @@
 //! (80000001H EDX[20]) is NOT declared: the owner deferred it until S4-10 is accepted (decision of
 //! 2026-11-21). The interpreter does not gate a form on these bits except one: `WRMSR` setting
 //! `EFER.NXE` needs NX in the set's own CPUID member (S2-25f), so with this profile it is #GP(0).
+//! S7-32 slice O raises its maximum basic leaf from 1 to 6 for ARAT (leaf 6 EAX[2]) and defines
+//! the leaves that become valid with it: 2 (descriptor FFH), 3 (zero), 4 (the caches of the
+//! identity, by sub-leaf) and 5 (zero, MONITOR is not declared).
 
 /// The four architecturally 32-bit outputs of CPUID.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -84,6 +87,8 @@ pub enum CpuidProfile {
     /// (NX deferred until S4-10). The Linux target `OdX8664V1Neutral` is unchanged. Since S7-32
     /// (2026-11-25) leaf 1 EDX is the target table plus, since slice I, DE, MCE, MTRR, MCA and
     /// CLFSH (`0x0789F3FD`, see `WINDOWS_LEAF1_EDX`), and leaf 0x80000001 EDX is SYSCALL, NX, LM.
+    /// Since S7-32 slice O the maximum basic leaf is 6: leaves 2..=6 are defined (`windows_query`),
+    /// leaf 6 declares ARAT only.
     OdX8664V2Windows,
 }
 
@@ -197,15 +202,94 @@ const fn windows_brand_leaf(part: usize) -> CpuidResult {
     }
 }
 
-/// CPUID of `OdX8664V2Windows`: leaves 0, 1, 0x80000000, 0x80000001, 0x80000002..=0x80000004 and
-/// 0x80000008; every other leaf is four zeros. The maximum basic leaf is 1 (as for the Linux
-/// target: leaves 2, 4, 7, 0xB, 0xD are not implemented), the maximum extended leaf is 0x80000008.
-/// Leaf 1 EBX is [`WINDOWS_LEAF1_EBX`] (topology per vCPU by [`CpuidProfile::query_for_vcpu`],
-/// S6-18); leaf 0x80000008 EAX is the Linux target's `0x3024` (48-bit linear, 36-bit physical).
-const fn windows_query(leaf: u32) -> CpuidResult {
+/// CPUID.00H:EAX of the Windows profile, the maximum basic leaf. S7-32 slice O (ISSUE-703,
+/// ADR-0013 "S7-32, slice O"): 6, the lowest value that makes leaf 6 (ARAT) valid; until slice O
+/// it was 1. Leaves 2..=5 become valid with it and are defined below. The leaves above it (7,
+/// 0xB, 0xD, 0x15, ...) stay four zeros, which is not the SDM's "data for the highest basic
+/// information leaf" (Vol. 1, 21.1.3): see [`windows_query`].
+const WINDOWS_MAX_BASIC_LEAF: u32 = 6;
+/// CPUID.02H of the Windows profile (S7-32 slice O; SDM Vol. 1 Table 21-11 and Table 21-12):
+/// EAX[7:0] is the reserved value 01H, EAX[15:8] is descriptor FFH ("CPUID leaf 2 does not report
+/// cache descriptor information, use CPUID leaf 4 to query cache parameters"); every other byte
+/// is the null descriptor 00H and bit 31 of each register is 0 (valid). A Jasper Lake part of the
+/// identity reports `0x00FEFF01` (descriptor FEH: TLBs through leaf 18H); FEH is left out because
+/// leaf 18H is above the maximum basic leaf of the profile.
+const WINDOWS_LEAF2_EAX: u32 = 0x0000_FF01;
+/// CPUID.04H sub-leaves 0..=3 of the Windows profile for one vCPU (S7-32 slice O; field layout
+/// SDM Vol. 1 Table 21-14): the caches of a Jasper Lake part of the identity (family 6, model 0x9C,
+/// stepping 0; values of the InstLatx64 CPUID dumps of the N4505 and N5095A, the same die as the
+/// N5105 of ADR-0013; the L3 size agrees with the "4 MB" of Intel ARK for the N5105). The board has
+/// no caches, so the values are information only: no instruction behaves by them, and the only
+/// field a guest can observe in behaviour, the 64-byte line, is the CLFLUSH line of leaf 1
+/// EBX[15:8]. EAX[25:14] (logical processors sharing the cache, minus 1) and EAX[31:26] (cores
+/// in the package, minus 1) are 0 here, one logical processor; [`CpuidProfile::query_for_vcpu`]
+/// sets them for more vCPUs. Sub-leaf 4 and above are four zeros (type 0, the end).
+/// - 0: L1 data, type 1, level 1, self-initialising; 64-byte lines, 1 partition, 8 ways, 64 sets
+///   (32 KiB).
+/// - 1: L1 instruction, type 2, otherwise as sub-leaf 0 (32 KiB).
+/// - 2: L2 unified, type 3, level 2; 12 ways, 2048 sets (1.5 MiB).
+/// - 3: L3 unified, type 3, level 3; 16 ways, 4096 sets (4 MiB); EDX: inclusive [1] and complex
+///   indexing [2], as the part reports (information only, like the rest).
+const WINDOWS_CACHES: [CpuidResult; 4] = [
+    CpuidResult {
+        eax: 0x0000_0121,
+        ebx: 0x01C0_003F,
+        ecx: 0x3F,
+        edx: 0,
+    },
+    CpuidResult {
+        eax: 0x0000_0122,
+        ebx: 0x01C0_003F,
+        ecx: 0x3F,
+        edx: 0,
+    },
+    CpuidResult {
+        eax: 0x0000_0143,
+        ebx: 0x02C0_003F,
+        ecx: 0x7FF,
+        edx: 0,
+    },
+    CpuidResult {
+        eax: 0x0000_0163,
+        ebx: 0x03C0_003F,
+        ecx: 0xFFF,
+        edx: 0x6,
+    },
+];
+/// The lowest cache level of [`WINDOWS_CACHES`] that every vCPU of the board shares (L2 and L3,
+/// as on the identity, whose four cores share both; L1 is per core).
+const WINDOWS_SHARED_CACHE_LEVEL: u32 = 2;
+/// CPUID.06H:EAX of the Windows profile (S7-32 slice O, ISSUE-703; SDM Vol. 1 Table 21-16): only
+/// ALWAYS_RUNNING_APIC_TIMER [2] (ARAT). SDM Vol. 3A 13.5.4: with ARAT "the processor's APIC timer
+/// runs at a constant rate regardless of P-state transitions and it continues to run at the same
+/// rate in deep C-states"; the board's LAPIC timer counts on the board clock, which has no
+/// P-states and keeps running in `HLT`. Not declared (the model has none of their MSRs or
+/// behaviour): DTS [0], Turbo Boost [1], PLN [4], ECMD [5], PTM [6], HWP [7..=11, 15..=18, 20, 22],
+/// HDC [13], Turbo Boost Max [14], HW feedback [19], Thread Director [23]; EBX (DTS thresholds),
+/// ECX (MPERF/APERF [0], ENERGY_PERF_BIAS [3], Thread Director classes) and EDX are 0. The part of
+/// the identity reports EAX `0x00178FF7`, EBX 2, ECX 9.
+const WINDOWS_LEAF6_EAX: u32 = 1 << 2;
+
+/// CPUID of `OdX8664V2Windows`: leaves 0..=6, 0x80000000, 0x80000001, 0x80000002..=0x80000004
+/// and 0x80000008; every other leaf is four zeros. The maximum basic leaf is
+/// [`WINDOWS_MAX_BASIC_LEAF`] (S7-32 slice O; before it 1), the maximum extended leaf is
+/// 0x80000008. Leaf 1 EBX is [`WINDOWS_LEAF1_EBX`] (topology per vCPU by
+/// [`CpuidProfile::query_for_vcpu`], S6-18); leaf 2 is [`WINDOWS_LEAF2_EAX`]; leaf 3 is zero (no
+/// processor serial number: SDM Vol. 1 Table 21-13, Pentium III only); leaf 4 is
+/// [`WINDOWS_CACHES`] by `subleaf` (the only leaf that reads ECX); leaf 5 is zero because MONITOR
+/// (leaf 1 ECX[3]) is not declared; leaf 6 is [`WINDOWS_LEAF6_EAX`]; leaf 0x80000008 EAX is the
+/// Linux target's `0x3024` (48-bit linear, 36-bit physical).
+///
+/// A leaf above the maximum basic or extended leaf returns four zeros, as every leaf of every
+/// profile that is not listed. The SDM (Vol. 1, 21.1.3) says a processor returns "the data for the
+/// highest basic information leaf" there and that software "should not rely on the values"; zeros
+/// are kept so that a guest that reads leaf 7, 0xB, 0xD, 0x15, ... without checking the maximum
+/// sees no feature (leaf 6 data in leaf 7 would be EAX = 4, four sub-leaves), exactly as before the
+/// maximum was raised.
+const fn windows_query(leaf: u32, subleaf: u32) -> CpuidResult {
     match leaf {
         0 => CpuidResult {
-            eax: 1,
+            eax: WINDOWS_MAX_BASIC_LEAF,
             ebx: u32::from_le_bytes(*b"Genu"),
             ecx: u32::from_le_bytes(*b"ntel"),
             edx: u32::from_le_bytes(*b"ineI"),
@@ -215,6 +299,19 @@ const fn windows_query(leaf: u32) -> CpuidResult {
             ebx: WINDOWS_LEAF1_EBX,
             ecx: WINDOWS_LEAF1_ECX,
             edx: WINDOWS_LEAF1_EDX,
+        },
+        2 => CpuidResult {
+            eax: WINDOWS_LEAF2_EAX,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        },
+        4 if (subleaf as usize) < WINDOWS_CACHES.len() => WINDOWS_CACHES[subleaf as usize],
+        6 => CpuidResult {
+            eax: WINDOWS_LEAF6_EAX,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
         },
         0x8000_0000 => CpuidResult {
             eax: 0x8000_0008,
@@ -254,12 +351,27 @@ impl CpuidProfile {
     }
 
     /// CPUID of one vCPU of a board with `cpu_count` vCPUs (S6-18a, `SMP_CONTRACT.md` section 2).
-    /// Equal to [`Self::query`] except CPUID.01H:EBX when `cpu_count > 1`: bits 23:16 (logical
+    /// Equal to [`Self::query`] except CPUID.01H:EBX when `cpu_count > 1` (and, since S7-32 slice
+    /// O, CPUID.04H EAX of the Windows profile, below): bits 23:16 (logical
     /// processor count) become `cpu_count` and bits 31:24 (initial APIC ID) become `apic_id`
     /// (APIC ID = vCPU index). With `cpu_count <= 1` the result is `query`'s, byte for byte. The
     /// topology leaves `0xB`, `0x1F` and `0x80000026` stay absent (four zeros) at every count, as
     /// the contract says; CPUID.01H:EDX (HTT, bit 28) is not changed. Only the low 8 bits of
     /// `apic_id` and `cpu_count` are used (the fields are 8 bits wide).
+    ///
+    /// S7-32 slice O: the Windows profile's CPUID.04H (the only profile with that leaf) counts
+    /// every vCPU as a core of one package without SMT (the identity has four cores and four
+    /// threads): for each valid sub-leaf EAX[31:26] (cores in the package, minus 1) is
+    /// `cpu_count - 1` and EAX[25:14] (logical processors sharing the cache, minus 1) is
+    /// `cpu_count - 1` for L2 and L3 and 0 for the per-core L1 (SDM Vol. 1 Table 21-14). The
+    /// 6-bit core field is capped at 63 only so that a larger count cannot spill into the other
+    /// fields; a board has at most 4 vCPUs (`SMP_CONTRACT.md` 2), so the cap is not reached, and the
+    /// SDM's saturated value belongs to processors that enumerate leaf 0xB or 0x1F, which this
+    /// profile does not. Sub-leaves past the last cache stay four zeros. With N > 1 this declares
+    /// N cores while HTT (CPUID.01H:EDX[28]) is 0, which by SDM Vol. 1 Table 21-10 means a single
+    /// logical processor in the package: a deliberate extension of the open S6-18a topology (the
+    /// Windows kernel, `ntkrnlmp` + `0x5c9714`, takes the core count from leaf 4 whatever HTT
+    /// says); a guest that follows the SDM sees the contradiction. Not checked with a guest.
     pub const fn query_for_vcpu(
         self,
         leaf: u32,
@@ -272,13 +384,25 @@ impl CpuidProfile {
             result.ebx =
                 (result.ebx & 0x0000_FFFF) | ((cpu_count & 0xFF) << 16) | ((apic_id & 0xFF) << 24);
         }
+        let others = (cpu_count & 0xFF).saturating_sub(1);
+        if matches!(self, Self::OdX8664V2Windows) && leaf == 4 && result.eax & 0x1F != 0 {
+            let cores = if others > 0x3F { 0x3F } else { others };
+            let level = (result.eax >> 5) & 0x7;
+            let sharing = if level >= WINDOWS_SHARED_CACHE_LEVEL {
+                others
+            } else {
+                0
+            };
+            result.eax |= (cores << 26) | (sharing << 14);
+        }
         result
     }
 
-    /// Return a CPUID tuple. This initial slice ignores ECX for every leaf.
-    pub const fn query(self, leaf: u32, _subleaf: u32) -> CpuidResult {
+    /// Return a CPUID tuple. ECX (`subleaf`) is read only by CPUID.04H of the Windows profile
+    /// (S7-32 slice O); every other leaf of every profile ignores it.
+    pub const fn query(self, leaf: u32, subleaf: u32) -> CpuidResult {
         if matches!(self, Self::OdX8664V2Windows) {
-            return windows_query(leaf);
+            return windows_query(leaf, subleaf);
         }
         let leaf1_edx = match self {
             Self::DiagnosticV1 => 0,
@@ -822,6 +946,7 @@ mod tests {
                     0,
                     2,
                     4,
+                    6,
                     0xB,
                     0x1F,
                     0x8000_0000,
@@ -829,6 +954,11 @@ mod tests {
                     0x8000_0008,
                     0x8000_0026,
                 ] {
+                    // S7-32 slice O: the Windows profile's leaf 4 follows the topology too
+                    // (`windows_leaf_4_follows_the_vcpu_topology`).
+                    if p == CpuidProfile::OdX8664V2Windows && leaf == 4 {
+                        continue;
+                    }
                     assert_eq!(p.query_for_vcpu(leaf, 0, apic_id, count), p.query(leaf, 0));
                 }
                 for leaf in [0xB, 0x1F, 0x8000_0026] {
@@ -850,7 +980,10 @@ mod tests {
     fn windows_declares_the_identity_and_only_the_accepted_bits() {
         let p = CpuidProfile::OdX8664V2Windows;
         let leaf0 = p.query(0, 0);
-        assert_eq!(leaf0.eax, 1, "maximum basic leaf");
+        assert_eq!(
+            leaf0.eax, 6,
+            "maximum basic leaf (S7-32 slice O; 1 before it)"
+        );
         assert_eq!(leaf0.ebx, 0x756E_6547, "ASCII Genu");
         assert_eq!(leaf0.edx, 0x4965_6E69, "ASCII ineI");
         assert_eq!(leaf0.ecx, 0x6C65_746E, "ASCII ntel");
@@ -971,8 +1104,8 @@ mod tests {
     fn windows_unlisted_leaves_are_zero_and_ecx_is_ignored() {
         let p = CpuidProfile::OdX8664V2Windows;
         for leaf in [
-            2,
-            4,
+            3,
+            5,
             7,
             0xB,
             0x0D,
@@ -992,6 +1125,8 @@ mod tests {
         for leaf in [
             0,
             1,
+            2,
+            6,
             0x8000_0000,
             0x8000_0001,
             0x8000_0002,
@@ -1001,6 +1136,130 @@ mod tests {
         ] {
             for subleaf in [1, 7, u32::MAX] {
                 assert_eq!(p.query(leaf, subleaf), p.query(leaf, 0), "{leaf:#x}");
+            }
+        }
+    }
+
+    /// S7-32 slice O (ISSUE-703). Oracles by hand from SDM 325462-093US Vol. 1: Table 21-11 and
+    /// 21-12 (leaf 2: AL = 01H, descriptor FFH "use CPUID leaf 4", null descriptors, bit 31 of
+    /// each register 0), Table 21-13 (leaf 3: reserved, no serial number after the Pentium III),
+    /// Table 21-15 (leaf 5: MONITOR/MWAIT, zero because leaf 1 ECX[3] is clear) and Table 21-16
+    /// (leaf 6: EAX[2] ARAT only).
+    #[test]
+    fn windows_leaves_2_3_5_and_6_are_the_slice_o_values() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        let two = p.query(2, 0);
+        assert_eq!(
+            two,
+            CpuidResult {
+                eax: 0x01 | (0xFF << 8),
+                ebx: 0,
+                ecx: 0,
+                edx: 0
+            }
+        );
+        for word in [two.eax, two.ebx, two.ecx, two.edx] {
+            assert_eq!(
+                word & (1 << 31),
+                0,
+                "every register holds valid descriptors"
+            );
+        }
+        let descriptors: Vec<u8> = [two.eax, two.ebx, two.ecx, two.edx]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .skip(1)
+            .filter(|&byte| byte != 0)
+            .collect();
+        assert_eq!(
+            descriptors,
+            [0xFF],
+            "no FEH: leaf 0x18 is above the maximum"
+        );
+        assert_eq!(p.query(3, 0), CpuidResult::default());
+        assert_eq!(p.query(1, 0).ecx & (1 << 3), 0, "MONITOR is not declared");
+        assert_eq!(p.query(5, 0), CpuidResult::default());
+        assert_eq!(
+            p.query(6, 0),
+            CpuidResult {
+                eax: 1 << 2,
+                ebx: 0,
+                ecx: 0,
+                edx: 0
+            }
+        );
+    }
+
+    /// S7-32 slice O. Oracles by hand from SDM Vol. 1 Table 21-14 (cache type 4:0, level 7:5,
+    /// self-initialising 8, line size EBX[11:0] + 1, partitions EBX[21:12] + 1, ways EBX[31:22]
+    /// + 1, sets ECX + 1; size = ways * partitions * line * sets) and the caches of the identity:
+    /// L1D and L1I 32 KiB 8-way, L2 1.5 MiB 12-way, L3 4 MiB 16-way (inclusive, complex index),
+    /// 64-byte lines everywhere (the CLFLUSH line of leaf 1). The enumeration ends with type 0
+    /// at sub-leaf 4; an invalid sub-leaf returns four zeros.
+    #[test]
+    fn windows_leaf_4_enumerates_the_caches_of_the_identity_and_ends() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        // (type, level, ways, sets, size in bytes, EDX)
+        let expected = [
+            (1u32, 1u32, 8u32, 64u32, 32 * 1024u32, 0u32),
+            (2, 1, 8, 64, 32 * 1024, 0),
+            (3, 2, 12, 2048, 1536 * 1024, 0),
+            (3, 3, 16, 4096, 4 * 1024 * 1024, 0b110),
+        ];
+        for (subleaf, &(kind, level, ways, sets, size, edx)) in expected.iter().enumerate() {
+            let r = p.query(4, subleaf as u32);
+            assert_eq!(r.eax & 0x1F, kind, "sub-leaf {subleaf}");
+            assert_eq!((r.eax >> 5) & 0x7, level, "sub-leaf {subleaf}");
+            assert_eq!(r.eax & (1 << 8), 1 << 8, "self-initialising");
+            assert_eq!(r.eax & (1 << 9), 0, "not fully associative");
+            assert_eq!(r.eax >> 14, 0, "one logical processor, one core");
+            assert_eq!((r.ebx & 0xFFF) + 1, 64, "line size");
+            assert_eq!((r.ebx & 0xFFF) + 1, 8 * ((p.query(1, 0).ebx >> 8) & 0xFF));
+            assert_eq!(((r.ebx >> 12) & 0x3FF) + 1, 1, "partitions");
+            assert_eq!((r.ebx >> 22) + 1, ways, "sub-leaf {subleaf}");
+            assert_eq!(r.ecx + 1, sets, "sub-leaf {subleaf}");
+            assert_eq!(ways * 64 * sets, size, "sub-leaf {subleaf}");
+            assert_eq!(r.edx, edx, "sub-leaf {subleaf}");
+        }
+        for subleaf in [4, 5, 0x100, u32::MAX] {
+            assert_eq!(p.query(4, subleaf), CpuidResult::default(), "{subleaf:#x}");
+        }
+    }
+
+    /// S7-32 slice O: the Windows profile's leaf 4 with N vCPUs (all cores of one package, no
+    /// SMT, as leaf 1 EBX[23:16] = N): EAX[31:26] = N - 1 on every valid sub-leaf, EAX[25:14] =
+    /// N - 1 on L2 and L3 and 0 on L1; the rest of the sub-leaf and the end of the enumeration
+    /// do not change. Oracles by hand from SDM Vol. 1 Table 21-14. The counts above 4 (beyond
+    /// the board's vCPU limit) only pin the cap of the 6-bit core field: no field spills.
+    #[test]
+    fn windows_leaf_4_follows_the_vcpu_topology() {
+        let p = CpuidProfile::OdX8664V2Windows;
+        for (count, apic_id) in [(2u32, 0u32), (2, 1), (4, 3), (64, 5), (65, 0), (255, 7)] {
+            for subleaf in 0..4u32 {
+                let one = p.query(4, subleaf);
+                let got = p.query_for_vcpu(4, subleaf, apic_id, count);
+                let cores = (count - 1).min(0x3F);
+                let sharing = if subleaf >= 2 { count - 1 } else { 0 };
+                assert_eq!(
+                    got.eax,
+                    one.eax | (cores << 26) | (sharing << 14),
+                    "{count}"
+                );
+                assert_eq!((got.ebx, got.ecx, got.edx), (one.ebx, one.ecx, one.edx));
+            }
+            assert_eq!(
+                p.query_for_vcpu(4, 4, apic_id, count),
+                CpuidResult::default()
+            );
+        }
+        // The hand-computed words for two vCPUs: L1D 0x04000121, L2 0x04004143.
+        assert_eq!(p.query_for_vcpu(4, 0, 1, 2).eax, 0x0400_0121);
+        assert_eq!(p.query_for_vcpu(4, 2, 1, 2).eax, 0x0400_4143);
+        assert_eq!(p.query_for_vcpu(4, 3, 0, 4).eax, 0x0C00_C163);
+        // No other profile has leaf 4.
+        for other in ALL_PROFILES {
+            if other != p {
+                assert_eq!(other.query_for_vcpu(4, 0, 1, 2), CpuidResult::default());
             }
         }
     }

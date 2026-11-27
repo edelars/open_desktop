@@ -1,5 +1,6 @@
 //! S4-39g: IRR, ISR, INTA and EOI of the master chip. Oracles by hand from the 8259A rules
-//! (fixed priority, IR0 highest; vector = ICW2 + line).
+//! (fixed priority, IR0 highest; in 8086 mode the vector is T7–T3 of ICW2 with the line in
+//! bits 2:0, 8259A data sheet 231468-003, S7-32 slice O).
 
 use super::*;
 
@@ -175,4 +176,56 @@ fn a_new_icw1_clears_irr_and_isr() {
     let s = handle.snapshot();
     assert_eq!((s.irr, s.isr), (0, 0));
     assert_eq!(handle.pending_vector(), None, "not initialised again yet");
+}
+
+/// An initialised master with the given ICW2 and every line unmasked.
+fn master_with_icw2(icw2: u8) -> (Pic8259, Pic8259Handle) {
+    let (mut pic, handle) = Pic8259::new_with_handle(Pic8259Role::Master);
+    out(&mut pic, 0, PIC_ICW1_ACCEPTED);
+    out(&mut pic, 1, icw2);
+    out(&mut pic, 1, Pic8259Role::Master.icw3());
+    out(&mut pic, 1, PIC_ICW4_ACCEPTED);
+    out(&mut pic, 1, 0x00);
+    (pic, handle)
+}
+
+/// S7-32 slice O: in 8086 mode the vector is T7–T3 of ICW2 with the line number in bits 2:0,
+/// and bits 2:0 of ICW2 are ignored (8259A data sheet 231468-003, "Content of Interrupt Vector
+/// Byte for 8086 System Mode"; "In an 8086 system A15–A11 are inserted in the five most
+/// significant bits of the vectoring byte and the 8259A sets the three least significant bits
+/// according to the interrupt level. A10–A5 are ignored"). Oracles by hand: the Windows HAL
+/// base `0xD8` gives `0xD8..=0xDF`; ICW2 `0xDF` and `0x37` give the same vectors as `0xD8` and
+/// `0x30` (an `ICW2 + line` sum would give `0xE0`/`0x38` for line 1 instead).
+#[test]
+fn the_vector_is_t7_t3_of_icw2_with_the_line_in_bits_2_to_0() {
+    for (icw2, base) in [
+        (0xD8u8, 0xD8u8),
+        (0xDF, 0xD8),
+        (0x30, 0x30),
+        (0x37, 0x30),
+        (0xFF, 0xF8),
+        (0x07, 0x00),
+    ] {
+        for line in 0..8u8 {
+            let (mut pic, handle) = master_with_icw2(icw2);
+            handle.raise_irq(line);
+            let vector = base | line;
+            assert_eq!(
+                handle.pending_vector(),
+                Some(vector),
+                "{icw2:#04x} IR{line}"
+            );
+            // The sum `ICW2 + line` is not the vector when bits 2:0 of ICW2 are set.
+            let sum = icw2.wrapping_add(line);
+            if sum != vector {
+                let before = handle.snapshot();
+                assert!(!handle.acknowledge(sum), "{icw2:#04x} IR{line}");
+                assert_eq!(handle.snapshot(), before);
+            }
+            assert!(handle.acknowledge(vector), "{icw2:#04x} IR{line}");
+            assert_eq!(handle.snapshot().isr, 1 << line);
+            out(&mut pic, 0, 0x20);
+            assert_eq!(handle.snapshot().isr, 0);
+        }
+    }
 }
