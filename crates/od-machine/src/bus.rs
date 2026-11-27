@@ -3720,6 +3720,111 @@ mod tests {
         assert!(io.dispatch(at(0x20b0), 4, write(1)).is_err());
         assert_eq!(plain_state.lock().unwrap().calls, 2);
     }
+
+    /// S7-32 diagnostic: the suppression covers exactly the bytes of the absorbed read — a write
+    /// that ends where the read starts, or starts where it ends, reaches the device; a write
+    /// that starts before the read or ends after it and touches one of its bytes does not. An
+    /// absorbed write leaves no range behind (the next write to it reaches the device). With the
+    /// log full, the run stops on the suppressed write with its own text, and the device is not
+    /// reached.
+    #[test]
+    fn the_suppression_covers_exactly_the_bytes_of_the_absorbed_read() {
+        let (mut bus, state) = refusing_bus(DeviceError::WriteOnly);
+        let at = GuestPhysicalAddress::new;
+        let read = RamAccessOperation::Read {
+            width: AccessWidth::Dword,
+        };
+        let write = |width, value| RamAccessOperation::Write { width, value };
+        let calls = |state: &Arc<Mutex<DeviceState>>| state.lock().unwrap().calls;
+        {
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.dispatch(at(0x20b0), 4, read), Ok(0xffff_ffff));
+            assert_eq!(calls(&state), 1);
+            // Adjacent after and adjacent before: no common byte, the device is reached.
+            assert_eq!(
+                io.dispatch(at(0x20b4), 4, write(AccessWidth::Dword, 1)),
+                Ok(0)
+            );
+            assert_eq!(calls(&state), 2);
+            assert_eq!(
+                io.dispatch(at(0x20ac), 4, write(AccessWidth::Dword, 2)),
+                Ok(0)
+            );
+            assert_eq!(calls(&state), 3);
+            // From before into the first bytes, and from the last byte on: suppressed.
+            assert_eq!(
+                io.dispatch(at(0x20ae), 4, write(AccessWidth::Dword, 3)),
+                Ok(0)
+            );
+            assert_eq!(
+                io.dispatch(at(0x20b3), 2, write(AccessWidth::Word, 4)),
+                Ok(0)
+            );
+            assert_eq!(calls(&state), 3);
+        }
+        {
+            // An absorbed write: the next write to the same bytes reaches the device again.
+            let (_, io) = bus.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(
+                io.dispatch(at(0x20c0), 4, write(AccessWidth::Dword, 5)),
+                Ok(0)
+            );
+            assert_eq!(
+                io.dispatch(at(0x20c0), 4, write(AccessWidth::Dword, 6)),
+                Ok(0)
+            );
+            assert_eq!(calls(&state), 5);
+        }
+        let kinds: Vec<_> = bus
+            .device_error_log()
+            .unwrap()
+            .report()
+            .groups
+            .iter()
+            .map(|group| (group.key.address, group.key.kind.clone(), group.count))
+            .collect();
+        use DeviceErrorKind::{Device, SuppressedAfterAbsorbedRead as Suppressed};
+        let refused = Device(DeviceError::WriteOnly);
+        assert_eq!(
+            kinds,
+            [
+                (0x20b0, refused.clone(), 1),
+                (0x20b4, refused.clone(), 1),
+                (0x20ac, refused.clone(), 1),
+                (0x20ae, Suppressed, 1),
+                (0x20b3, Suppressed, 1),
+                (0x20c0, refused, 2),
+            ]
+        );
+
+        // A full log: the read is the last event it takes, the write after it stops the run.
+        let (mut full, full_state) = refusing_bus(DeviceError::WriteOnly);
+        full.enable_device_error_log(1, 8);
+        {
+            let (_, io) = full.split_for_set_step();
+            let io = io.with_device_error_context(STEP);
+            assert_eq!(io.dispatch(at(0x20b0), 4, read), Ok(0xffff_ffff));
+            assert_eq!(
+                io.dispatch(at(0x20b0), 4, write(AccessWidth::Dword, 7)),
+                Err(crate::page_walk::MmioDispatchError::Backend(
+                    "MMIO device 0 write after an absorbed read of the same instruction: not \
+                     sent, the device error log is full"
+                        .to_owned()
+                ))
+            );
+            assert!(!io.mmio_written());
+        }
+        assert_eq!(
+            calls(&full_state),
+            1,
+            "the suppressed write reached no device"
+        );
+        let report = full.device_error_log().unwrap().report();
+        assert_eq!(report.events, 1);
+        assert_eq!(report.stopped, Some(DeviceErrorLogStop::EventLimit));
+    }
 }
 
 #[cfg(test)]

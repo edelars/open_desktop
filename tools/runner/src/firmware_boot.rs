@@ -467,131 +467,20 @@ pub fn run(args: &[String]) -> ExitCode {
         Ok(run) => run,
         Err((value, code)) => return emit(value, code),
     };
-    // S7-32: a failure after the boot keeps the diagnostic mark and the log of a
-    // `--device-errors log` run (nothing for `stop`).
-    let device_error_limit = options.device_error_limit;
-    let diagnostic = |mut value: Value, board: &LoadedFirmwareBoard| {
-        mark_device_error_diagnostic(&mut value, board, device_error_limit);
-        value
-    };
-    if let Some(path) = &options.acpi_out {
-        if !first.finished_app(b"OD-FW image acpi: EFI_SUCCESS\r\n") {
-            first.report["status"] = json!("error");
-            first.report["error"] = json!({
-                "kind": "acpi_out",
-                "detail": "firmware did not complete the acpi application",
-            });
-            return emit(first.report, first.code.max(5));
-        }
-        let write = validate_output_paths(&options.image, &options.com1_out, path)
-            .and_then(|()| {
-                first
-                    .board
-                    .read_acpi_reservations()
-                    .map_err(|error| format!("{error:?}"))
-            })
-            .and_then(|bytes| fs::write(path, bytes).map_err(|error| error.to_string()));
-        if let Err(error) = write {
-            return emit(
-                diagnostic(failure("run_error", "acpi_out", error), &first.board),
-                5,
-            );
-        }
-    }
-    if let Some(path) = &options.framebuffer_out {
-        // The unified loop has no FV application: the frame is whatever the guest left (S7-31p).
-        if !options.unified && !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
-            first.report["status"] = json!("error");
-            first.report["error"] = json!({
-                "kind": "framebuffer_out",
-                "detail": "firmware did not complete the gop application",
-            });
-            return emit(first.report, first.code.max(5));
-        }
-        if let Err(error) = validate_framebuffer_paths(&options.image, &options.com1_out, path) {
-            return emit(
-                diagnostic(failure("invalid_input", "paths", error), &first.board),
-                3,
-            );
-        }
-        let display = first.board.display();
-        let mode = display.current_mode();
-        let mut pixels = vec![0; mode.frame_bytes() as usize];
-        let frame = match display.read_frame_into(first.board.bus_mut(), &mut pixels) {
-            Ok(frame) => frame,
-            Err(error) => {
-                return emit(
-                    diagnostic(
-                        failure("run_error", "framebuffer_out", format!("{error:?}")),
-                        &first.board,
-                    ),
-                    5,
-                );
-            }
-        };
-        if let Err(error) = fs::write(path, &pixels) {
-            return emit(
-                diagnostic(
-                    failure("run_error", "framebuffer_out", error.to_string()),
-                    &first.board,
-                ),
-                5,
-            );
-        }
-        first.report["framebuffer"] = json!({
-            "width": frame.mode.width, "height": frame.mode.height, "stride": frame.mode.stride,
-            "format": frame.mode.format, "generation": frame.generation,
-            "mode_change_count": frame.mode_change_count, "sha256": sha256_hex(&pixels),
-        });
-    }
-    if let Some(path) = &options.nvram_out {
-        if let Err(error) = validate_nvram_paths(&options) {
-            return emit(
-                diagnostic(failure("invalid_input", "paths", error), &first.board),
-                3,
-            );
-        }
-        let Some(snapshot) = first.board.nvram_snapshot() else {
-            return emit(
-                diagnostic(
-                    failure("run_error", "nvram_out", "NVRAM was not bound".to_owned()),
-                    &first.board,
-                ),
-                5,
-            );
-        };
-        if let Err(error) = fs::write(path, &snapshot) {
-            return emit(
-                diagnostic(
-                    failure("run_error", "nvram_out", error.to_string()),
-                    &first.board,
-                ),
-                5,
-            );
-        }
-        first.report["nvram_snapshot_sha256"] = json!(sha256_hex(&snapshot));
-        // The new snapshot path now has an inode. A previously absent reboot
-        // output can resolve to it on a case-insensitive filesystem.
-        if options.nvram_reboot_out.is_some()
-            && let Err(error) = validate_nvram_paths(&options)
-        {
-            return emit(
-                diagnostic(failure("invalid_input", "paths", error), &first.board),
-                3,
-            );
-        }
+    if let Err((value, code)) = write_boot_outputs(&options, &mut first) {
+        return emit(value, code);
     }
     let Some(reboot_out) = options.nvram_reboot_out.clone() else {
         return emit(first.report, first.code);
     };
     if !first.returned_to_firmware() {
         let mut report = first.report;
-        if first.code == 0 {
+        if matches!(first.code, 0 | EXIT_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS) {
             report["status"] = json!("error");
             report["error"] =
                 json!({"kind": "nvram_reboot", "detail": "first boot did not finish vars"});
         }
-        return emit(report, first.code.max(5));
+        return emit(report, error_exit_code(first.code));
     }
     let Some(snapshot) = first.board.nvram_snapshot() else {
         return emit(
@@ -665,6 +554,119 @@ pub fn run(args: &[String]) -> ExitCode {
         }),
         if completed { 0 } else { second.code.max(5) },
     )
+}
+
+/// The outputs a single boot writes after it ran (`--acpi-out`, `--framebuffer-out`,
+/// `--nvram-out`), through the one exit of every failure after the boot (S7-32): the failure
+/// report keeps the diagnostic mark and the log of a `--device-errors log` run (nothing for
+/// `stop`). `Err` is the report and the exit code of the first output that failed.
+fn write_boot_outputs(options: &Options, first: &mut BootRun) -> Result<(), (Value, u8)> {
+    boot_outputs(options, first).map_err(|(mut value, code)| {
+        mark_device_error_diagnostic(&mut value, &first.board, options.device_error_limit);
+        (value, code)
+    })
+}
+
+/// The body of [`write_boot_outputs`], without the diagnostic mark.
+fn boot_outputs(options: &Options, first: &mut BootRun) -> Result<(), (Value, u8)> {
+    if let Some(path) = &options.acpi_out {
+        if !first.finished_app(b"OD-FW image acpi: EFI_SUCCESS\r\n") {
+            first.report["status"] = json!("error");
+            first.report["error"] = json!({
+                "kind": "acpi_out",
+                "detail": "firmware did not complete the acpi application",
+            });
+            return Err((
+                std::mem::take(&mut first.report),
+                error_exit_code(first.code),
+            ));
+        }
+        let write = validate_output_paths(&options.image, &options.com1_out, path)
+            .and_then(|()| {
+                first
+                    .board
+                    .read_acpi_reservations()
+                    .map_err(|error| format!("{error:?}"))
+            })
+            .and_then(|bytes| fs::write(path, bytes).map_err(|error| error.to_string()));
+        if let Err(error) = write {
+            return Err((failure("run_error", "acpi_out", error), 5));
+        }
+    }
+    if let Some(path) = &options.framebuffer_out {
+        // The unified loop has no FV application: the frame is whatever the guest left (S7-31p).
+        if !options.unified && !first.finished_app(b"OD-FW image gop: EFI_SUCCESS\r\n") {
+            first.report["status"] = json!("error");
+            first.report["error"] = json!({
+                "kind": "framebuffer_out",
+                "detail": "firmware did not complete the gop application",
+            });
+            return Err((
+                std::mem::take(&mut first.report),
+                error_exit_code(first.code),
+            ));
+        }
+        if let Err(error) = validate_framebuffer_paths(&options.image, &options.com1_out, path) {
+            return Err((failure("invalid_input", "paths", error), 3));
+        }
+        let display = first.board.display();
+        let mode = display.current_mode();
+        let mut pixels = vec![0; mode.frame_bytes() as usize];
+        let frame = match display.read_frame_into(first.board.bus_mut(), &mut pixels) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err((
+                    failure("run_error", "framebuffer_out", format!("{error:?}")),
+                    5,
+                ));
+            }
+        };
+        if let Err(error) = fs::write(path, &pixels) {
+            return Err((
+                failure("run_error", "framebuffer_out", error.to_string()),
+                5,
+            ));
+        }
+        first.report["framebuffer"] = json!({
+            "width": frame.mode.width, "height": frame.mode.height, "stride": frame.mode.stride,
+            "format": frame.mode.format, "generation": frame.generation,
+            "mode_change_count": frame.mode_change_count, "sha256": sha256_hex(&pixels),
+        });
+    }
+    if let Some(path) = &options.nvram_out {
+        if let Err(error) = validate_nvram_paths(&options) {
+            return Err((failure("invalid_input", "paths", error), 3));
+        }
+        let Some(snapshot) = first.board.nvram_snapshot() else {
+            return Err((
+                failure("run_error", "nvram_out", "NVRAM was not bound".to_owned()),
+                5,
+            ));
+        };
+        if let Err(error) = fs::write(path, &snapshot) {
+            return Err((failure("run_error", "nvram_out", error.to_string()), 5));
+        }
+        first.report["nvram_snapshot_sha256"] = json!(sha256_hex(&snapshot));
+        // The new snapshot path now has an inode. A previously absent reboot
+        // output can resolve to it on a case-insensitive filesystem.
+        if options.nvram_reboot_out.is_some()
+            && let Err(error) = validate_nvram_paths(&options)
+        {
+            return Err((failure("invalid_input", "paths", error), 3));
+        }
+    }
+    Ok(())
+}
+
+/// The exit code of a report whose status the runner turned into `error` after the boot: at
+/// least 5, as always; the 7 of a `--device-errors log` run that completed with absorbed
+/// refusals becomes the 5 of `error`.
+fn error_exit_code(code: u8) -> u8 {
+    if code == EXIT_COMPLETED_WITH_ABSORBED_DEVICE_ERRORS {
+        5
+    } else {
+        code.max(5)
+    }
 }
 
 /// Builds a cold-start Secure Boot store through the machine's provisioning API.
@@ -3515,6 +3517,93 @@ mod tests {
         )
     }
 
+    /// S7-32 diagnostic: every failure after the boot leaves through `write_boot_outputs`, which
+    /// marks the report of a `--device-errors log` run: the `--framebuffer-out` path that aliases
+    /// COM1 (the check after the boot), `NVRAM was not bound` (a board without NVRAM), and an
+    /// `--acpi-out` whose application did not complete — a report the runner turns into `error`,
+    /// with exit code 5, not the 7 the run had (it absorbed a refusal). `stop` adds nothing.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn every_failure_after_the_boot_keeps_the_mark_and_an_error_has_code_5() {
+        // mov dx, 0x1234 (no device); in al, dx; hlt
+        let rom = rom_with_code(&[0x66, 0xBA, 0x34, 0x12, 0xEC, 0xF4]);
+        let dir = std::env::temp_dir().join(format!("od-runner-outputs-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let com1 = dir.join("com1.txt");
+        let com1 = com1.to_str().unwrap();
+        let mut config = board_config(None, false, None);
+        apply_unified(&mut config);
+        assert!(config.nvram.is_none(), "the board binds no NVRAM");
+        let outputs: [(&[&str], &str, &str, u8); 3] = [
+            (&["--framebuffer-out", com1], "paths", "invalid_input", 3),
+            (&["--nvram-out", "nvram.out"], "nvram_out", "run_error", 5),
+            (
+                &["--fv-app", "acpi", "--acpi-out", "acpi.out"],
+                "acpi_out",
+                "error",
+                5,
+            ),
+        ];
+        for (extra, kind, status, code) in outputs {
+            for mode in ["log", "stop"] {
+                let mut arguments = args(&[
+                    "--image",
+                    "rom.bin",
+                    "--com1-out",
+                    com1,
+                    "--budget",
+                    "100",
+                    "--cpu-loop",
+                    "unified",
+                    "--device-errors",
+                    mode,
+                ]);
+                arguments.extend(args(extra));
+                let options = parse(&arguments).unwrap();
+                let mut diagnostics = Diagnostics {
+                    device_error_limit: options.device_error_limit,
+                    ..Diagnostics::default()
+                };
+                let mut first = boot(
+                    &rom,
+                    &config,
+                    100,
+                    com1,
+                    None,
+                    &[],
+                    &mut diagnostics,
+                    Some(od_machine::UnifiedGuest::Linux),
+                    None,
+                    &[],
+                    None,
+                    &[],
+                )
+                .unwrap_or_else(|(value, _)| panic!("{value}"));
+                // The boot itself: a refusal absorbed in log mode, a stop on it in stop mode.
+                assert_eq!(first.code, if mode == "log" { 7 } else { 5 });
+                let (value, got) = write_boot_outputs(&options, &mut first)
+                    .expect_err("the output fails after the boot");
+                assert_eq!(got, code, "{kind} {mode}: {value}");
+                assert_eq!(value["status"], status, "{kind} {mode}: {value}");
+                assert_eq!(value["error"]["kind"], kind, "{kind} {mode}: {value}");
+                if mode == "log" {
+                    assert_eq!(value["diagnostic_run"], true, "{kind}: {value}");
+                    assert_eq!(value["device_errors"]["events"], 1, "{kind}: {value}");
+                } else {
+                    assert!(value.get("diagnostic_run").is_none(), "{kind}: {value}");
+                    assert!(value.get("device_errors").is_none(), "{kind}: {value}");
+                }
+            }
+        }
+        // The codes of a report turned into `error`: at least 5, a firmware stop keeps its 6.
+        assert_eq!(
+            [0, 5, 6, 7].map(error_exit_code),
+            [5, 5, 6, 5],
+            "7 (completed with absorbed refusals) becomes the 5 of error"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     /// S7-32 diagnostic: a `--device-errors log` run that fails in the run itself (`run_error`;
     /// here the unified loop refuses a board without the Linux profile) still says that it is a
     /// diagnostic and carries the log; a `stop` run gets neither field.
@@ -3563,6 +3652,12 @@ mod tests {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn halting_rom() -> Vec<u8> {
+        rom_with_code(&[0xf4]) // hlt
+    }
+
+    /// The ROM of [`halting_rom`] with `code` at its entry.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn rom_with_code(code: &[u8]) -> Vec<u8> {
         const HANDOFF_MINOR_MAX: u16 = 12;
         const IMAGE_BYTES: usize = 0x40_0000;
         let mut image = vec![0u8; IMAGE_BYTES];
@@ -3575,7 +3670,7 @@ mod tests {
         image[0x28..0x2A].copy_from_slice(&1u16.to_le_bytes());
         // The NVMe handoff descriptor needs a ROM that declares its minor version.
         image[0x2a..0x2c].copy_from_slice(&HANDOFF_MINOR_MAX.to_le_bytes());
-        image[0x40] = 0xf4; // hlt
+        image[0x40..0x40 + code.len()].copy_from_slice(code);
         let mut crc = 0xFFFF_FFFFu32;
         for &byte in &image {
             crc ^= u32::from(byte);
