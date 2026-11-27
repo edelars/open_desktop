@@ -576,6 +576,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn the_loop_admission_takes_only_the_bare_rcx_form() {
+        // S7-32 slice S: `67 E2` decodes as `Operation::Loop` with the ECX counter; S6-05 admits
+        // only the bare `E2 cb` (RCX): the prefix check of the admission refuses the `67` form.
+        let instruction = json!({
+            "op": "loop",
+            "operands": {"counter": "rcx", "relative_displacement": -2, "target": ".loop"},
+        });
+        let bare = decode_one(&[0xe2, 0xfe]).unwrap();
+        assert!(validate_decoded_litmus_instruction(&instruction, bare).is_ok());
+        let addr32 = decode_one(&[0x67, 0xe2, 0xfe]).unwrap();
+        assert_eq!(
+            validate_decoded_litmus_instruction(&instruction, addr32),
+            Err("instruction loop uses unsupported prefixes".into())
+        );
+    }
+
+    #[test]
     fn affinity_uses_distinct_cores_before_smt_siblings_and_fails_closed() {
         let topology = BTreeMap::from([
             (1, ("0".into(), "0".into())),

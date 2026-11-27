@@ -1,0 +1,147 @@
+{
+  "schema": "od-s7-32-slice-record-v1",
+  "slice": "S7-32 slice S",
+  "date": "2026-11-27",
+  "base_commit": "6de8375",
+  "runner": {
+    "path": "work/s7-32/s/bin/od-runner-s",
+    "sha256": "814dfdfea3c63e5c8f52a99e7d8f5dd3b4ab84dd8e28b3e1fcc9867c84c4c9dd"
+  },
+  "exec_coverage": {
+    "images": 311,
+    "excluded": [
+      "clipsp.sys",
+      "drmk.sys"
+    ],
+    "variants": 2,
+    "before": {
+      "exec": 17913857,
+      "cond": 118,
+      "never": 1163,
+      "pdata_decoder_refusals": 19141,
+      "refused_forms": 247
+    },
+    "after": {
+      "exec": 17913976,
+      "cond": 118,
+      "never": 1131,
+      "pdata_decoder_refusals": 19054,
+      "refused_forms": 242
+    },
+    "prototype_match": true,
+    "files": [
+      "docs/reports/data/stage7/s7-32s-exec-coverage-before.json",
+      "docs/reports/data/stage7/s7-32s-exec-coverage-after.json"
+    ]
+  },
+  "windows_runs": {
+    "rom": "work/s7-32/fw-l.bin (5e47acc1...)",
+    "command": "work/s7-32/r/wrun.sh (BIN=, --tpm, budget 8e10, --cr0-log 64)",
+    "s1": {
+      "device_errors": "log",
+      "seconds": 54,
+      "retired": 28327500595,
+      "exit": "unsupported",
+      "detail": "Unsupported { opcode: 0x32 }, RDMSR 0x60d",
+      "rip": "0xfffff801a8b16d2c",
+      "module": "intelppm.sys+0x46d2c (by bytes)",
+      "interrupts": 66929,
+      "exceptions": 15071,
+      "page_faults": 14945,
+      "absorbed_device_errors": 6,
+      "absorbed": "port 0x5658 read, dword",
+      "issue": "ISSUE-715"
+    },
+    "s2": {
+      "device_errors": "stop",
+      "seconds": 28,
+      "retired": 16939843082,
+      "exit": "pio_error",
+      "detail": "PortIo(UnmappedPort(PortAddress(0x5658)))",
+      "rip": "0xfffff80543ae4a2f",
+      "module": "pvscsii.sys+0x4a2f",
+      "eax": "0x564d5868",
+      "interrupts": 822,
+      "exceptions": 2916,
+      "page_faults": 2790,
+      "issue": "ISSUE-714"
+    },
+    "com1": {
+      "bytes": 3882,
+      "sha256_prefix": "50aa1d26"
+    },
+    "cr0_journal_entries": 7
+  },
+  "checks": {
+    "od_isa": 7156,
+    "od_machine_lib": {
+      "passed": 2740,
+      "ignored": 18
+    },
+    "od_runner": {
+      "passed": 1125,
+      "ignored": 5
+    },
+    "od_testkit_host_jit": {
+      "passed": 2046,
+      "ignored": 15
+    },
+    "od_x86_runner": 27,
+    "failed": 0,
+    "fmt": "clean",
+    "check": "clean (old warnings)",
+    "firmware_boot_smoke": 0,
+    "check_layout": "ok",
+    "linux_s6_21": {
+      "seconds": 1290,
+      "fields_equal_to_slice_r": 358,
+      "differences": 0,
+      "verify_report": 0
+    },
+    "golden_turbo_vs_noturbo": {
+      "G100": "MATCH",
+      "G3200": "MATCH"
+    }
+  },
+  "measure_s4b": {
+    "a": "HEAD 6de8375, runner 49bf237f...",
+    "b": "slice S, runner 814dfdfe...",
+    "nice": -5,
+    "k3200_turbo": {
+      "rounds": 2,
+      "runs": 3,
+      "host_instr_per_guest_median": {
+        "a": [
+          17.81,
+          17.81
+        ],
+        "b": [
+          17.8,
+          17.81
+        ]
+      },
+      "minst_per_s_median": {
+        "a": [
+          951.06,
+          982.99
+        ],
+        "b": [
+          972.44,
+          930.11
+        ]
+      }
+    },
+    "f10_no_turbo_3e8": {
+      "runs": 3,
+      "host_instr_per_guest_median": {
+        "a": 7434.14,
+        "b": 7406.51
+      },
+      "minst_per_s_median": {
+        "a": 2.2262,
+        "b": 2.2657
+      }
+    },
+    "verdict": "no regression"
+  }
+}

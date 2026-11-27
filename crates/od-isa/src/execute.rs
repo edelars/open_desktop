@@ -48151,7 +48151,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
 
     // S2-32c: FNSTENV, FNSAVE and FRSTOR are exempt: none of them updates FIP/FCS/FDP/FDS from the
-    // instruction, each defines the selectors itself (saved, cleared, loaded).
+    // instruction, each defines the selectors itself (saved, cleared, loaded). S7-32 slice S: and
+    // FNSTSW AX, an x87 control instruction that leaves the pointers and the opcode register as they
+    // are (Intel SDM Vol. 1 §8.1.8), so the represented selectors are neither read nor changed.
     if instruction.opcode.map == long_decode::OpcodeMap::Primary
         && (0xd8..=0xdf).contains(&instruction.opcode.byte)
         && !matches!(
@@ -48160,6 +48162,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 | Operation::FnsaveRax
                 | Operation::FrstorRax
                 | Operation::FldenvRax
+                | Operation::FnstswAx
         )
         && state
             .x87
@@ -51338,8 +51341,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::OutImm8Al { .. }
         | Operation::InDx { .. }
         | Operation::OutDx { .. }
-        // S6-08 currently admits LOOP for corpus boundary validation only.
-        | Operation::Loop { .. }
         // S4-38L9e: INT3 commits in its own gated path before this point.
         | Operation::Int3
         // ISSUE-578: FWAIT is owned only by the CPL0 FP-state member.
@@ -53245,56 +53246,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                         && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
                         && size == OperandSize::Qword))
         }
-        Operation::RepScas { size } => {
-            instruction.opcode.map == OpcodeMap::Primary
-                && instruction.prefixes.group1 == Some(0xf3)
-                && instruction.prefixes.segment.is_none()
-                && if instruction.opcode.byte == 0xae {
-                    ((instruction.length == 2
-                        && instruction.prefixes
-                            == (Prefixes {
-                                group1: Some(0xf3),
-                                ..Prefixes::default()
-                            })
-                        && instruction.address_size == OperandSize::Qword)
-                        || (instruction.length == 3
-                            && instruction.prefixes
-                                == (Prefixes {
-                                    group1: Some(0xf3),
-                                    address_override: true,
-                                    ..Prefixes::default()
-                                })
-                            && instruction.address_size == OperandSize::Dword))
-                        && size == OperandSize::Byte
-                } else if instruction.opcode.byte == 0xaf {
-                    instruction.prefixes.rex.is_none_or(|rex| rex & 8 != 0)
-                        && if instruction.address_size == OperandSize::Dword {
-                            match (
-                                instruction.length,
-                                instruction.prefixes.operand_override,
-                                instruction.prefixes.rex,
-                            ) {
-                                (3 | 4, false, None) => size == OperandSize::Dword,
-                                (4 | 5, true, None) => size == OperandSize::Word,
-                                (4, false, Some(0x48..=0x4f)) | (5, true, Some(0x48..=0x4f)) => {
-                                    size == OperandSize::Qword
-                                }
-                                _ => false,
-                            }
-                        } else {
-                            !instruction.prefixes.address_override
-                                && size
-                                    == if instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
-                                        OperandSize::Qword
-                                    } else if instruction.prefixes.operand_override {
-                                        OperandSize::Word
-                                    } else {
-                                        OperandSize::Dword
-                                    }
-                        }
-                } else {
-                    false
-                }
+        Operation::RepScas { size } => rep_scas_admitted(&instruction, size, 0xf3),
+        // S7-32 slice S (ISSUE-713): LOOP/LOOPE/LOOPNE/JRCXZ (the decoder admits only the bare and
+        // the `67` forms) only in the CPL0 set at CPL0; before the slice LOOP was a decode-only
+        // form (S6-08) and refused everywhere, as it still is outside the set and at CPL3.
+        Operation::Loop { .. }
+        | Operation::Loope { .. }
+        | Operation::Loopne { .. }
+        | Operation::Jrcxz { .. } => {
+            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
+        // S7-32 slice S: REPNE SCAS only in the CPL0 set and at CPL0 (CPL3 is ADR-0023). The CPL
+        // check is a backstop: at CPL3 an earlier gate of the set refuses the form first.
+        Operation::RepneScas { size } => {
+            control_policy.is_some()
+                && context.privilege == PrivilegeLevel::Ring0
+                && instruction.address_size == OperandSize::Qword
+                && rep_scas_admitted(&instruction, size, 0xf2)
         }
         Operation::RepCmps { size } => {
             instruction.opcode.map == OpcodeMap::Primary
@@ -53510,8 +53478,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && instruction.operand_size == destination.size
                 && matches!(destination.size, OperandSize::Word | OperandSize::Qword)
         }
-        Operation::RepneScasbAddr32 => false,
-        Operation::RepneScasWdqAddr32 { .. } => false,
+        // S7-32 slice S: the `67` REPNE SCAS spellings (the decoder checked the form) run in the CPL0
+        // set at CPL0; elsewhere they stay refused (`run_with_rep_continuation` takes them).
+        Operation::RepneScasbAddr32 | Operation::RepneScasWdqAddr32 { .. } => {
+            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+        }
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
         Operation::PminubMemory { .. } => false,
@@ -67299,76 +67270,59 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         Operation::RepScas { size } => {
-            let mut completed = 0;
-            let address32 = instruction.address_size == OperandSize::Dword;
-            let count = |state: &LongModeState| {
-                if address32 {
-                    state.gpr[Register::Rcx as usize] as u32 as u64
-                } else {
-                    state.gpr[Register::Rcx as usize]
-                }
-            };
-            while count(state) != 0 {
-                let destination = Operand::Memory(MemoryOperand { segment: crate::long_decode::MemorySegment::Flat,
-                    base: AddressBase::Register(Register::Rdi),
-                    index: None,
-                    scale: 1,
-                    displacement: 0,
-                    address_size: instruction.address_size,
-                    size,
-                });
-                let observed = match read_operand(state, memory, context, next_rip, destination) {
-                    Ok(value) => value,
-                    Err(MemoryError::Architectural(fault)) => {
-                        return Ok(StepOutcome::Fault(fault));
-                    }
-                    Err(error) => return Err(error),
-                };
-                let accumulator = state.gpr[Register::Rax as usize] & size.mask();
-                let (_, flags) = arithmetic_result(
-                    size,
-                    ArithmeticKind::Cmp,
-                    accumulator,
-                    observed,
-                    state.rflags,
-                );
-                state.rflags = flags;
-                // S7-32 slice P, as `REPE CMPS` (S7-31c): after one comparison the six arithmetic
-                // flags are those of the compare (Intel SDM, SCAS: `temp := EAX - SRC;
-                // SetStatusFlags(temp)`), also when the step ends at the work limit or a stop
-                // before the instruction retires. With a zero count nothing runs: the values of
-                // RFLAGS stay, and retirement counts the six as defined (static effects of the
-                // decode, as for `REPE CMPS` and as the turbo JIT composes them).
-                *rflags_defined |= crate::ARITHMETIC_FLAGS;
-                let step = if state.rflags & (1 << 10) == 0 {
-                    size.bytes() as u64
-                } else {
-                    0u64.wrapping_sub(size.bytes() as u64)
-                };
-                if address32 {
-                    let updated =
-                        (state.gpr[Register::Rdi as usize] as u32).wrapping_add(step as u32);
-                    state.gpr[Register::Rdi as usize] = u64::from(updated);
-                    state.gpr[Register::Rcx as usize] = count(state).wrapping_sub(1);
-                } else {
-                    state.gpr[Register::Rdi as usize] =
-                        state.gpr[Register::Rdi as usize].wrapping_add(step);
-                    state.gpr[Register::Rcx as usize] -= 1;
-                }
-                completed += 1;
-                // Completion or a mismatch terminates REPE before STOP/limit.
-                if count(state) == 0 || state.rflags & crate::ZF == 0 {
-                    break;
-                }
-                if stop_requested() {
-                    return Ok(StepOutcome::StopRequested);
-                }
-                if completed == REP_ITERATION_WORK_LIMIT {
-                    return Ok(StepOutcome::RepIterationBudgetExhausted);
-                }
+            if let Some(outcome) = rep_scas_iterations(
+                state,
+                memory,
+                context,
+                next_rip,
+                size,
+                instruction.address_size,
+                true,
+                rflags_defined,
+                stop_requested,
+            )? {
+                return Ok(outcome);
             }
         }
-        Operation::RepneScasbAddr32 | Operation::RepneScasWdqAddr32 { .. } => {
+        // S7-32 slice S (ISSUE-712): REPNE SCAS of every width and address size runs only in the
+        // CPL0 set (admission); the same iterations as REPE SCAS with the opposite end condition.
+        // Outside the set the `67` spellings keep their `Unsupported` (`run_with_rep_continuation`
+        // relies on it).
+        Operation::RepneScas { size } | Operation::RepneScasWdqAddr32 { size }
+            if control_policy.is_some() =>
+        {
+            if let Some(outcome) = rep_scas_iterations(
+                state,
+                memory,
+                context,
+                next_rip,
+                size,
+                instruction.address_size,
+                false,
+                rflags_defined,
+                stop_requested,
+            )? {
+                return Ok(outcome);
+            }
+        }
+        Operation::RepneScasbAddr32 if control_policy.is_some() => {
+            if let Some(outcome) = rep_scas_iterations(
+                state,
+                memory,
+                context,
+                next_rip,
+                OperandSize::Byte,
+                instruction.address_size,
+                false,
+                rflags_defined,
+                stop_requested,
+            )? {
+                return Ok(outcome);
+            }
+        }
+        Operation::RepneScas { .. }
+        | Operation::RepneScasbAddr32
+        | Operation::RepneScasWdqAddr32 { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -67917,10 +67871,52 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 return Ok(StepOutcome::Branched);
             }
         }
-        Operation::Loop { .. } => {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
+        Operation::Loop { displacement }
+        | Operation::Loope { displacement }
+        | Operation::Loopne { displacement }
+        | Operation::Jrcxz { displacement } => {
+            // S7-32 slice S. Intel SDM 325462-093US Vol. 2A, LOOP/LOOPcc: the count (RCX, or ECX
+            // at address size 32) is decremented without touching the flags; the branch is taken
+            // when the new count is not 0 (LOOPE also needs ZF = 1, LOOPNE ZF = 0). Jcc, JRCXZ /
+            // JECXZ: branch when the count is 0, the count is not changed. A target outside the
+            // canonical space is #GP(0) and the instruction does not execute (RCX and RIP stay).
+            // With address size 32 the new ECX is zero-extended into RCX (Vol. 1 3.4.1.1, as the
+            // `67` REP forms, S2-19m/o).
+            let address32 = instruction.address_size == OperandSize::Dword;
+            let rcx = state.gpr[Register::Rcx as usize];
+            let count = if address32 { rcx & 0xffff_ffff } else { rcx };
+            let zf = state.rflags & crate::ZF != 0;
+            let (branch, new_count) = match instruction.operation {
+                Operation::Jrcxz { .. } => (count == 0, None),
+                _ => {
+                    let decremented = if address32 {
+                        u64::from((count as u32).wrapping_sub(1))
+                    } else {
+                        count.wrapping_sub(1)
+                    };
+                    let condition = match instruction.operation {
+                        Operation::Loope { .. } => zf,
+                        Operation::Loopne { .. } => !zf,
+                        _ => true,
+                    };
+                    (decremented != 0 && condition, Some(decremented))
+                }
+            };
+            let target = if branch {
+                match relative_target(next_rip, i32::from(displacement)) {
+                    Ok(target) => Some(target),
+                    Err(fault) => return Ok(StepOutcome::Fault(fault)),
+                }
+            } else {
+                None
+            };
+            if let Some(count) = new_count {
+                state.gpr[Register::Rcx as usize] = count;
+            }
+            if let Some(target) = target {
+                state.rip = target;
+                return Ok(StepOutcome::Branched);
+            }
         }
         Operation::Jump { displacement } => {
             let target = match relative_target(next_rip, displacement) {
@@ -73613,6 +73609,8 @@ fn cpl0_bounded_x87_form(operation: &Operation) -> bool {
             | Operation::FnstenvRax
             | Operation::FrstorRax
             | Operation::FldenvRax
+            // S7-32 slice S: `DF E0` FNSTSW AX (the x87/SIMD exception path of the Windows kernel).
+            | Operation::FnstswAx
     )
 }
 
@@ -79280,6 +79278,155 @@ fn extended_source(
 #[inline(always)]
 fn exec_lea(state: &mut LongModeState, next_rip: u64, dst: RegisterView, src: MemoryOperand) {
     state.write(dst, src.effective_address(state, next_rip));
+}
+
+/// The exact `REP SCAS` forms of the profile with the group-1 prefix `group1` (`F3` REPE since
+/// S2-19, `F2` REPNE at address size 64 since S7-32 slice S; the decoder yields `RepneScas` only for
+/// those).
+fn rep_scas_admitted(
+    instruction: &long_decode::Instruction,
+    size: OperandSize,
+    group1: u8,
+) -> bool {
+    instruction.opcode.map == OpcodeMap::Primary
+        && instruction.prefixes.group1 == Some(group1)
+        && instruction.prefixes.segment.is_none()
+        && if instruction.opcode.byte == 0xae {
+            ((instruction.length == 2
+                && instruction.prefixes
+                    == (Prefixes {
+                        group1: Some(group1),
+                        ..Prefixes::default()
+                    })
+                && instruction.address_size == OperandSize::Qword)
+                || (instruction.length == 3
+                    && instruction.prefixes
+                        == (Prefixes {
+                            group1: Some(group1),
+                            address_override: true,
+                            ..Prefixes::default()
+                        })
+                    && instruction.address_size == OperandSize::Dword))
+                && size == OperandSize::Byte
+        } else if instruction.opcode.byte == 0xaf {
+            instruction.prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                && if instruction.address_size == OperandSize::Dword {
+                    match (
+                        instruction.length,
+                        instruction.prefixes.operand_override,
+                        instruction.prefixes.rex,
+                    ) {
+                        (3 | 4, false, None) => size == OperandSize::Dword,
+                        (4 | 5, true, None) => size == OperandSize::Word,
+                        (4, false, Some(0x48..=0x4f)) | (5, true, Some(0x48..=0x4f)) => {
+                            size == OperandSize::Qword
+                        }
+                        _ => false,
+                    }
+                } else {
+                    !instruction.prefixes.address_override
+                        && size
+                            == if instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                                OperandSize::Qword
+                            } else if instruction.prefixes.operand_override {
+                                OperandSize::Word
+                            } else {
+                                OperandSize::Dword
+                            }
+                }
+        } else {
+            false
+        }
+}
+
+/// The iterations of one bounded `REP SCAS` step (REPE: `repeat_while_zf`, REPNE: not), shared by
+/// `REPE SCAS` (S7-32 slice P) and `REPNE SCAS` (slice S). Intel SDM 325462-093US Vol. 2B,
+/// REP/REPE/REPZ/REPNE/REPNZ and SCAS: compare AL/AX/EAX/RAX with `[RDI]` as `CMP` does, step RDI by
+/// DF, decrement the count (RCX, or ECX with EDI zero-extended at address size 32); REPE ends when
+/// the count is 0 or ZF = 0, REPNE when the count is 0 or ZF = 1; with a zero count nothing runs.
+/// `None`: the instruction completed (retirement follows); `Some`: the step ends early (a fault,
+/// a stop between iterations, the `REP_ITERATION_WORK_LIMIT` partial exit).
+#[allow(clippy::too_many_arguments)]
+fn rep_scas_iterations(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    size: OperandSize,
+    address_size: OperandSize,
+    repeat_while_zf: bool,
+    rflags_defined: &mut u64,
+    stop_requested: &mut dyn FnMut() -> bool,
+) -> Result<Option<StepOutcome>, MemoryError> {
+    let mut completed = 0;
+    let address32 = address_size == OperandSize::Dword;
+    let count = |state: &LongModeState| {
+        if address32 {
+            state.gpr[Register::Rcx as usize] as u32 as u64
+        } else {
+            state.gpr[Register::Rcx as usize]
+        }
+    };
+    while count(state) != 0 {
+        let destination = Operand::Memory(MemoryOperand {
+            segment: crate::long_decode::MemorySegment::Flat,
+            base: AddressBase::Register(Register::Rdi),
+            index: None,
+            scale: 1,
+            displacement: 0,
+            address_size,
+            size,
+        });
+        let observed = match read_operand(state, memory, context, next_rip, destination) {
+            Ok(value) => value,
+            Err(MemoryError::Architectural(fault)) => {
+                return Ok(Some(StepOutcome::Fault(fault)));
+            }
+            Err(error) => return Err(error),
+        };
+        let accumulator = state.gpr[Register::Rax as usize] & size.mask();
+        let (_, flags) = arithmetic_result(
+            size,
+            ArithmeticKind::Cmp,
+            accumulator,
+            observed,
+            state.rflags,
+        );
+        state.rflags = flags;
+        // S7-32 slice P, as `REPE CMPS` (S7-31c): after one comparison the six arithmetic flags are
+        // those of the compare (Intel SDM, SCAS: `temp := EAX - SRC; SetStatusFlags(temp)`), also
+        // when the step ends at the work limit or a stop before the instruction retires. With a
+        // zero count nothing runs: the values of RFLAGS stay, and retirement counts the six as
+        // defined (static effects of the decode, as for `REPE CMPS` and as the turbo JIT composes
+        // them).
+        *rflags_defined |= crate::ARITHMETIC_FLAGS;
+        let step = if state.rflags & (1 << 10) == 0 {
+            size.bytes() as u64
+        } else {
+            0u64.wrapping_sub(size.bytes() as u64)
+        };
+        if address32 {
+            let updated = (state.gpr[Register::Rdi as usize] as u32).wrapping_add(step as u32);
+            state.gpr[Register::Rdi as usize] = u64::from(updated);
+            state.gpr[Register::Rcx as usize] = count(state).wrapping_sub(1);
+        } else {
+            state.gpr[Register::Rdi as usize] =
+                state.gpr[Register::Rdi as usize].wrapping_add(step);
+            state.gpr[Register::Rcx as usize] -= 1;
+        }
+        completed += 1;
+        // Completion or the end condition terminates the instruction before STOP/limit.
+        if count(state) == 0 || (state.rflags & crate::ZF != 0) != repeat_while_zf {
+            break;
+        }
+        if stop_requested() {
+            return Ok(Some(StepOutcome::StopRequested));
+        }
+        if completed == REP_ITERATION_WORK_LIMIT {
+            return Ok(Some(StepOutcome::RepIterationBudgetExhausted));
+        }
+    }
+    Ok(None)
 }
 
 fn read_operand(

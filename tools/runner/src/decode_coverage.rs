@@ -12,20 +12,28 @@
 //! byte, the ModRM group or register form); a decoded instruction whose length differs from the
 //! measured one is reported separately (a defect of one of the two).
 //!
-//! This is a static diagnostic: it does not run code, does not decide what executes (the profile
-//! set of a run admits a subset of the decoded forms), and a function range may hold data the
-//! sweep reads as code. It writes one JSON report to stdout.
+//! This is a static diagnostic: it does not run guest code, and a function range may hold data the
+//! sweep reads as code. Without `--exec` it does not decide what executes (the profile set of a run
+//! admits a subset of the decoded forms). With `--exec windows` (S7-32 slice S, CPL0 only) every
+//! decoded form is also executed one step in a sandbox by the CPL0 set of the unified loop for the
+//! Windows guest ([`exec`]); the sweep then also follows the targets of `call rel32` outside
+//! `.pdata`, and what it finds there is reported only in the `exec` section (the `images`, `gaps`
+//! and `length_mismatches` fields stay those of the `.pdata` sweep). It writes one JSON report to
+//! stdout.
+
+mod exec;
 
 use od_isa::length::long64_length;
-use od_isa::long_decode::{DecodeError, Opcode, OpcodeMap, decode};
+use od_isa::long_decode::{DecodeError, Opcode, OpcodeMap, Operation, decode};
 use od_isa::memory::{
     AccessContext, AccessOrigin, GuestMemory, InstructionMode, MemoryError, PrivilegeLevel,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: decode-coverage [--cpl 0|3] [--top <n>] <pe32+ image> ...";
+const USAGE: &str =
+    "usage: decode-coverage [--cpl 0|3] [--exec windows] [--top <n>] <pe32+ image> ...";
 
 struct Image {
     base: u64,
@@ -279,6 +287,7 @@ fn hex(bytes: &[u8]) -> String {
 
 pub fn run(args: &[String]) -> ExitCode {
     let mut cpl = None;
+    let mut exec_set = false;
     let mut top = 200usize;
     let mut files = Vec::new();
     let mut iter = args.iter();
@@ -287,6 +296,13 @@ pub fn run(args: &[String]) -> ExitCode {
             "--cpl" => match iter.next().map(String::as_str) {
                 Some("0") => cpl = Some(PrivilegeLevel::Ring0),
                 Some("3") => cpl = Some(PrivilegeLevel::Ring3),
+                _ => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(3);
+                }
+            },
+            "--exec" => match iter.next().map(String::as_str) {
+                Some("windows") => exec_set = true,
                 _ => {
                     eprintln!("{USAGE}");
                     return ExitCode::from(3);
@@ -302,14 +318,33 @@ pub fn run(args: &[String]) -> ExitCode {
             _ => files.push(arg.clone()),
         }
     }
-    if files.is_empty() {
+    // The sandbox runs the CPL0 set: an explicit CPL3 is a usage error.
+    if files.is_empty() || (exec_set && cpl == Some(PrivilegeLevel::Ring3)) {
         eprintln!("{USAGE}");
         return ExitCode::from(3);
     }
+    match coverage(&files, cpl, exec_set, top) {
+        Ok(report) => {
+            println!("{}", serde_json::to_string_pretty(&report).expect("JSON"));
+            ExitCode::SUCCESS
+        }
+        Err(code) => ExitCode::from(code),
+    }
+}
+
+/// The report of the command for `files` (the arguments already checked). `Err` is the exit code:
+/// 4 when the sandbox state of `--exec` is refused by the set (a defect of the tool).
+fn coverage(
+    files: &[String],
+    cpl: Option<PrivilegeLevel>,
+    exec_set: bool,
+    top: usize,
+) -> Result<Value, u8> {
+    let mut exec = exec_set.then(exec::ExecCoverage::windows);
     let mut gaps: HashMap<String, Gap> = HashMap::new();
     let mut reports = Vec::new();
     let mut mismatches = Vec::new();
-    for path in &files {
+    for path in files {
         let name = std::path::Path::new(path)
             .file_name()
             .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
@@ -339,57 +374,140 @@ pub fn run(args: &[String]) -> ExitCode {
             bytes: &image.bytes,
         };
         let (mut decoded, mut refused, mut invalid, mut unmeasured) = (0u64, 0u64, 0u64, 0u64);
-        for &(begin, end) in &image.functions {
+        // The exec sandbox runs CPL0 images only.
+        let mut image_exec = exec.as_mut().filter(|_| privilege == PrivilegeLevel::Ring0);
+        let inside_pdata = |target: u32| {
+            let index = image
+                .functions
+                .partition_point(|function| function.0 <= target);
+            index > 0 && image.functions[index - 1].1 > target
+        };
+        // `.pdata` ranges first; with `--exec`, then sweeps from the targets of `call rel32` outside
+        // `.pdata` (to the first RET, JMP or INT3), which count only in the exec section.
+        let mut queue: VecDeque<(u32, u32, bool)> = image
+            .functions
+            .iter()
+            .map(|&(begin, end)| (begin, end, false))
+            .collect();
+        let mut call_targets = BTreeSet::new();
+        let mut followed = BTreeSet::new();
+        while let Some((begin, end, extra)) = queue.pop_front() {
             let mut rva = begin;
+            let mut last_ecx = None;
             while rva < end {
                 let at = rva as usize;
                 let window = &image.bytes[at..image.bytes.len().min(at + 15)];
                 let measured = long64_length(window);
                 let rip = image.base.wrapping_add(u64::from(rva));
+                let mut stop = false;
                 let step = match decode(&mut memory, rip, context) {
                     Ok(instruction) => {
-                        decoded += 1;
                         let length = usize::from(instruction.length);
-                        if measured != Ok(length) && mismatches.len() < 50 {
-                            mismatches.push(json!({
-                                "file": name, "rva": format!("{rva:#x}"),
-                                "bytes": hex(&window[..window.len().min(length.max(1))]),
-                                "decoder": length, "measured": format!("{measured:?}"),
-                            }));
+                        if !extra {
+                            decoded += 1;
+                            if measured != Ok(length) && mismatches.len() < 50 {
+                                mismatches.push(json!({
+                                    "file": name, "rva": format!("{rva:#x}"),
+                                    "bytes": hex(&window[..window.len().min(length.max(1))]),
+                                    "decoder": length, "measured": format!("{measured:?}"),
+                                }));
+                            }
+                        }
+                        if let Some(exec) = image_exec.as_deref_mut() {
+                            let bytes = &window[..length.min(window.len())];
+                            if let Err(error) = exec.observe(
+                                &name,
+                                rva,
+                                window,
+                                bytes,
+                                &instruction,
+                                last_ecx,
+                                extra,
+                            ) {
+                                eprintln!(
+                                    "decode-coverage --exec: the sandbox state is refused: {error:?}"
+                                );
+                                return Err(4);
+                            }
+                            if bytes.len() == 5 && bytes[0] == 0xb9 {
+                                last_ecx = Some(u32::from_le_bytes([
+                                    bytes[1], bytes[2], bytes[3], bytes[4],
+                                ]));
+                            }
+                            if let Operation::Call { displacement } = instruction.operation {
+                                let target =
+                                    (i64::from(rva) + length as i64 + i64::from(displacement))
+                                        as u32;
+                                call_targets.insert(target);
+                                if (target as usize) < image.bytes.len()
+                                    && !inside_pdata(target)
+                                    && followed.insert(target)
+                                {
+                                    queue.push_back((target, image.bytes.len() as u32, true));
+                                }
+                            }
+                            stop = extra
+                                && matches!(
+                                    instruction.operation,
+                                    Operation::Return { .. }
+                                        | Operation::Jump { .. }
+                                        | Operation::IndirectJump { .. }
+                                        | Operation::Int3
+                                );
                         }
                         length
                     }
                     Err(error) => {
                         let Ok(length) = measured else {
-                            unmeasured += 1;
+                            if !extra {
+                                unmeasured += 1;
+                            }
                             break;
                         };
                         let kind = match error {
-                            DecodeError::Unsupported { .. } => {
-                                refused += 1;
-                                ""
-                            }
+                            DecodeError::Unsupported { .. } => "",
                             DecodeError::Memory(_) => {
-                                unmeasured += 1;
+                                if !extra {
+                                    unmeasured += 1;
+                                }
                                 break;
                             }
-                            _ => {
-                                invalid += 1;
-                                "#UD "
-                            }
+                            _ => "#UD ",
                         };
                         let key = format!("{kind}{}", signature(&window[..length]));
-                        let gap = gaps.entry(key).or_default();
-                        gap.count += 1;
-                        *gap.files.entry(name.clone()).or_default() += 1;
-                        gap.example.get_or_insert_with(|| {
-                            (name.clone(), u64::from(rva), hex(&window[..length]))
-                        });
+                        if extra {
+                            if let Some(exec) = image_exec.as_deref_mut() {
+                                exec.extra_refusal(key);
+                            }
+                        } else {
+                            if kind.is_empty() {
+                                refused += 1;
+                            } else {
+                                invalid += 1;
+                            }
+                            let gap = gaps.entry(key).or_default();
+                            gap.count += 1;
+                            *gap.files.entry(name.clone()).or_default() += 1;
+                            gap.example.get_or_insert_with(|| {
+                                (name.clone(), u64::from(rva), hex(&window[..length]))
+                            });
+                        }
                         length
                     }
                 };
                 rva += step.max(1) as u32;
+                if stop {
+                    break;
+                }
             }
+        }
+        if let Some(exec) = image_exec {
+            exec.call_targets_outside_pdata(
+                call_targets
+                    .iter()
+                    .filter(|target| !inside_pdata(**target))
+                    .count() as u64,
+            );
         }
         reports.push(json!({
             "file": name,
@@ -420,15 +538,17 @@ pub fn run(args: &[String]) -> ExitCode {
             })
         })
         .collect();
-    let report = json!({
+    let mut report = json!({
         "command": "decode-coverage",
         "images": reports,
         "distinct_forms": total_gaps,
         "gaps": gaps,
         "length_mismatches": mismatches,
     });
-    println!("{}", serde_json::to_string_pretty(&report).expect("JSON"));
-    ExitCode::SUCCESS
+    if let Some(exec) = &exec {
+        report["exec"] = exec.report(top);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -495,5 +615,99 @@ mod tests {
         let mut outside = file.clone();
         outside[section + 12..section + 16].copy_from_slice(&0x3000u32.to_le_bytes());
         assert!(load_image(&outside).is_ok());
+    }
+
+    /// A PE32+ with one section at RVA 0x1000 (0x1000 bytes) holding `code` at its start and a
+    /// `.pdata` table at RVA 0x1800 with `functions`; subsystem native (CPL0).
+    fn pe(code: &[(u32, &[u8])], functions: &[(u32, u32)]) -> Vec<u8> {
+        let mut file = vec![0u8; 0x1200];
+        file[0x3c] = 0x80;
+        file[0x80..0x84].copy_from_slice(b"PE\0\0");
+        file[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        file[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        file[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        let optional = 0x98;
+        file[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        file[optional + 24..optional + 32].copy_from_slice(&0x1_4000_0000u64.to_le_bytes());
+        file[optional + 56..optional + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        file[optional + 60..optional + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        file[optional + 68..optional + 70].copy_from_slice(&1u16.to_le_bytes());
+        file[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
+        file[optional + 112 + 24..optional + 112 + 28].copy_from_slice(&0x1800u32.to_le_bytes());
+        let pdata_size = (functions.len() * 12) as u32;
+        file[optional + 112 + 28..optional + 112 + 32].copy_from_slice(&pdata_size.to_le_bytes());
+        let section = optional + 240;
+        file[section + 8..section + 12].copy_from_slice(&0x1000u32.to_le_bytes());
+        file[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        file[section + 16..section + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        file[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
+        for (rva, bytes) in code {
+            let at = 0x200 + (*rva as usize - 0x1000);
+            file[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        for (index, (begin, end)) in functions.iter().enumerate() {
+            let at = 0x200 + 0x800 + index * 12;
+            file[at..at + 4].copy_from_slice(&begin.to_le_bytes());
+            file[at + 4..at + 8].copy_from_slice(&end.to_le_bytes());
+        }
+        file
+    }
+
+    fn exec_report(name: &str, file: &[u8]) -> Value {
+        let path = std::env::temp_dir().join(format!(
+            "od-decode-coverage-{}-{name}.sys",
+            std::process::id()
+        ));
+        std::fs::write(&path, file).unwrap();
+        let report = coverage(&[path.to_string_lossy().into_owned()], None, true, 50);
+        std::fs::remove_file(&path).unwrap();
+        report.unwrap()
+    }
+
+    fn rows<'a>(report: &'a Value, list: &str) -> &'a Vec<Value> {
+        report["exec"][list].as_array().unwrap()
+    }
+
+    #[test]
+    fn exec_reports_a_form_the_set_refuses_and_the_forms_it_runs() {
+        // S7-32 slice S: `67 F2 A6` (REPNE CMPSB, address size 32) decodes and the CPL0 set never
+        // runs it; NOP and RET run; `F3 6C` (REP INSB) is a decoder refusal and stays in `gaps`.
+        let code: &[u8] = &[0x67, 0xf2, 0xa6, 0x90, 0xf3, 0x6c, 0xc3];
+        let report = exec_report("refuse", &pe(&[(0x1000, code)], &[(0x1000, 0x1007)]));
+        assert_eq!(report["exec"]["verdicts"]["never"], 1, "{report}");
+        assert_eq!(report["exec"]["verdicts"]["exec"], 2, "{report}");
+        let never = &rows(&report, "families")[0];
+        assert_eq!(never["verdict"], "never");
+        assert_eq!(never["operation"], "RepneCmpsbAddr32");
+        assert_eq!(rows(&report, "forms")[0]["form"], "67 F2 A6");
+        assert_eq!(report["gaps"][0]["form"], "F3 6C");
+        assert_eq!(report["images"][0]["decoded"], 3);
+        assert_eq!(report["images"][0]["refused"], 1);
+    }
+
+    #[test]
+    fn exec_follows_a_call_target_outside_pdata_only_in_the_exec_section() {
+        // `call 0x1100; ret` in `.pdata`; at 0x1100, outside it, `67 F2 A6; F3 6C; ret`.
+        let call: &[u8] = &[0xe8, 0xfb, 0x00, 0x00, 0x00, 0xc3];
+        let target: &[u8] = &[0x67, 0xf2, 0xa6, 0xf3, 0x6c, 0xc3];
+        let file = pe(&[(0x1000, call), (0x1100, target)], &[(0x1000, 0x1006)]);
+        let report = exec_report("follow", &file);
+        assert_eq!(report["images"][0]["decoded"], 2, "{report}");
+        assert_eq!(report["images"][0]["refused"], 0);
+        assert!(report["gaps"].as_array().unwrap().is_empty());
+        assert_eq!(report["exec"]["extra_instructions"], 2);
+        assert_eq!(report["exec"]["call_targets_outside_pdata"], 1);
+        assert_eq!(report["exec"]["verdicts"]["never"], 1);
+        assert_eq!(rows(&report, "extra_decoder_refusals")[0]["form"], "F3 6C");
+    }
+
+    #[test]
+    fn exec_takes_only_the_windows_set_at_cpl0() {
+        let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let code = |list: &[&str]| format!("{:?}", run(&args(list)));
+        let usage = format!("{:?}", ExitCode::from(3));
+        assert_eq!(code(&["--exec", "linux", "x.sys"]), usage);
+        assert_eq!(code(&["--exec"]), usage);
+        assert_eq!(code(&["--cpl", "3", "--exec", "windows", "x.sys"]), usage);
     }
 }

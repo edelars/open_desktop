@@ -217,10 +217,12 @@ fn the_static_rule_admits_the_pinned_set_of_every_generated_decode() {
     // Sreg with the operand-size prefix, as `MovToSreg`) and none admitted (the rule gives
     // `MovToSreg` no class). S7-32 W4: 44 more decodes (FXSAVE/FXRSTOR, FILD m32int and FNSAVE
     // with memory operands of the W4 fallbacks: `Fxsave`/`Fxrstor`, `FildM32Int`, `FnsaveMemory`)
-    // and none admitted (the rule gives these operations no class).
+    // and none admitted (the rule gives these operations no class). S7-32 slice S: 123 more decodes
+    // (REPNE SCAS without `67`, `RepneScas`, and LOOPNE/LOOPE/JRCXZ and the `67` LOOP forms) and
+    // none admitted (the rule gives these operations no class; they run on the general step).
     assert_eq!(
         (decodes, straight, transfers, admitted.len()),
-        (150_131, 32_208, 881, 33_089)
+        (150_254, 32_208, 881, 33_089)
     );
     assert_eq!(hash, 0x9173_c634_efcd_f113, "the admitted set changed");
 }

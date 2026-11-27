@@ -916,6 +916,13 @@ fn forbidden_forms_stop_as_unsupported_without_change() {
         ("loope rel8 (E1)", &[0xe1, 0x00], 0xe1),
         ("loop rel8 (E2)", &[0xe2, 0x00], 0xe2),
         ("jrcxz rel8 (E3)", &[0xe3, 0x00], 0xe3),
+        // S7-32 slice S: the LOOP family (with `67` too) and REPNE SCAS run in the CPL0 set only
+        // at CPL0; at CPL3 they stay outside (ADR-0023).
+        ("addr32 loop rel8", &[0x67, 0xe2, 0x00], 0xe2),
+        ("addr32 jecxz rel8", &[0x67, 0xe3, 0x00], 0xe3),
+        ("repne scasb", &[0xf2, 0xae], 0xae),
+        ("repne scasw", &[0x66, 0xf2, 0xaf], 0xaf),
+        ("addr32 repne scasd", &[0xf2, 0x67, 0xaf], 0xaf),
         ("cs-hint jne rel8", &[0x2e, 0x75, 0x00], 0x75),
         ("ds-hint je rel8", &[0x3e, 0x74, 0x00], 0x74),
         ("lock je rel8", &[0xf0, 0x74, 0x00], 0x74),

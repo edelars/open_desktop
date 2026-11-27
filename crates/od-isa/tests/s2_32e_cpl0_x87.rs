@@ -807,7 +807,7 @@ fn other_x87_forms_stay_refused_in_the_set_with_no_change() {
         ("fld1", [0xd9, 0xe8]),
         ("fst qword [rax]", [0xdd, 0x10]),
         // S7-32 W4: `fnclex` (DB E2) runs in the set (tests/cpl0_profile_set.rs, `s7_32_w4_fnclex_*`).
-        ("fnstsw ax", [0xdf, 0xe0]),
+        // S7-32 slice S: `fnstsw ax` (DF E0) runs in the set (tests/s7_32_fnstsw_ax_set.rs).
     ] {
         let (observed, state, before, after) = in_set(&code, CR0_BASE, CR4_FP, &seed(), &data);
         assert!(

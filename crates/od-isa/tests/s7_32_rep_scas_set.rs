@@ -619,18 +619,14 @@ fn rtl_compare_memory_ulong_of_the_windows_kernel_runs_through_the_set() {
     }
 }
 
-/// REPNE SCAS/CMPS are not forms of the set (the decoder has only their `67` spellings and the
-/// set refuses them; `F2 AE`/`F2 AF` without `67` do not decode): they stay `Unsupported`
-/// before any access, from any flags. This slice does not add them.
+/// REPNE CMPS is not a form of the set (the decoder has only its `67` spellings and the set
+/// refuses them): it stays `Unsupported` before any access, from any flags. REPNE SCAS runs in
+/// the set since S7-32 slice S (`s7_32_repne_scas_set.rs`).
 #[test]
-fn repne_scas_and_cmps_stay_outside_the_set() {
+fn repne_cmps_stays_outside_the_set() {
     for (code, opcode) in [
-        (&[0xf2, 0x67, 0xae][..], 0xae),
-        (&[0xf2, 0x67, 0xaf][..], 0xaf),
         (&[0xf2, 0x67, 0xa6][..], 0xa6),
         (&[0xf2, 0x67, 0xa7][..], 0xa7),
-        (&[0xf2, 0xae][..], 0xae),
-        (&[0xf2, 0xaf][..], 0xaf),
     ] {
         for flags in [2, 2 | PF | ZF, 2 | ARITHMETIC] {
             let mut memory = Memory::new(code).region(0x4000, vec![0; 16]);

@@ -12180,8 +12180,11 @@ Bare encodings only: no prefix (so no 16-bit image and no REX.W), modrm `/6` or 
   selector stays `None` when it was `None`. `FNSAVE` clears FIP, FDP, FOP and the known selectors (`Some` becomes `Some(0)`,
   `None` stays) and applies the FNINIT values (FCW 037FH, FSW 0, tag word FFFFH); the data registers survive. `FNSTENV` changes
   nothing but the control word (`| 003FH`: all exceptions masked) and RIP; FIP, FDP, FOP and the selectors are kept (control
-  instructions do not update them). All three are exempt from the refusal of every `D8..DF` opcode while a selector is represented
-  (the other bounded x87 forms still refuse then, because they would have to update FCS/FDS from an unmodeled CS).
+  instructions do not update them). All three (and `FLDENV`, S2-32d) are exempt from the refusal of every `D8..DF` opcode while a
+  selector is represented; since S7-32 slice S `FNSTSW AX` (`DF E0`) is exempt too — an x87 control instruction that neither reads
+  nor updates FIP/FCS/FDP/FDS (Vol. 1 §8.1.8), so the bare step and the FP member of the CPL0 set run it with represented
+  selectors (section «REPNE SCAS, LOOP/LOOPcc/JRCXZ и FNSTSW AX в наборе CPL0»). The other bounded x87 forms still refuse then,
+  because they would have to update FCS/FDS from an unmodeled CS.
 - **Admission.** x87 state present, one of the twelve all-exception-masked control words (so `FNSTENV`'s masking is the identity),
   ES (bit 7) and B (bit 15) of the status word clear; the sticky exception flags may hold any value. `FRSTOR` applies the same two
   checks to the image after the 108-byte read, refusing (`Unsupported`) with no change; an image with an unmasked exception, the X
@@ -23538,6 +23541,68 @@ WP (`cr0_write_outside_policy_is_unsupported_without_mutation`, `cr0_am_does_not
 `Unsupported`, хотя `WriteControl` исполняет `mov cr0, r64` с любым другим GPR. На плате Windows FP-член есть; срез это не
 менял.
 
+### REPNE SCAS, LOOP/LOOPcc/JRCXZ и FNSTSW AX в наборе CPL0 (S7-32, срез S)
+
+**Основание.** [ISSUE-712](../KNOWN_ISSUES.md#issue-712): `iaStorV.sys` + `0x19d0`, `66 f2 af` (`repne scasw`, адрес 64,
+встроенный `wcslen`) — `REPNE SCAS` без `67` не декодировался, формы с `67` набор не исполнял.
+[ISSUE-713](../KNOWN_ISSUES.md#issue-713): `e2 ef` (`loop rel8`) в заглушке расшифровки контекста PatchGuard (код
+`ntkrnlmp` + `0xc1871e`, скопированный в пул) — `Operation::Loop` был формой только для декодера (S6-08). Статическое
+покрытие исполнителя (`od-runner decode-coverage --exec windows`, срез S) показало в коде ядра и драйверов ещё
+`LOOPE`/`LOOPNE`/`JRCXZ` (отказ декодера; все попадания — данные в диапазонах `.pdata`, они добавлены как сверка
+семейства `E0–E3`) и `FNSTSW AX` в FP-члене (`ntkrnlmp` + `0x6be08b`, путь x87/SIMD-исключения).
+
+**REPNE SCAS.** Декодер: новая `Operation::RepneScas { size }` для `F2 AE`, `F2 AF` с `66`, без префикса размера или с
+`REX.W` (REX без W — отказ, сегментный префикс — отказ, порядок `66`/`F2` любой; предикат один с `REPE SCAS`,
+`rep_scas_form`), только адрес 64; формы с `67` остаются `RepneScasbAddr32`/`RepneScasWdqAddr32` (их точные порядки
+префиксов прежние). `flag_effects` всех трёх — шесть арифметических флагов определены (как `RepScas` и `RepneCmps*`;
+для `run_with_rep_continuation` это ничего не меняет: он ведёт определённость сам и `flag_effects` этих форм не
+применяет). Исполнение — только в наборе (`control_policy.is_some()`) и только на CPL0 (проверка `context.privilege == Ring0` в допуске — запасная: на CPL3 форму раньше отказывает общий шлюз CPL3 набора, поэтому снятие этой проверки тестами не ловится); вне набора формы с `67`
+по-прежнему `Unsupported` (на этом стоит путь продолжения), а `RepneScas` — `Unsupported` везде вне набора. Итерации —
+общая функция `rep_scas_iterations` вместе с `REPE SCAS`: сравнение `AL/AX/EAX/RAX − [RDI]` с флагами `CMP`, RDI ± размер
+по DF, RCX − 1 (с `67` — ECX и EDI с нулевым расширением, S2-19m/o), конец при счёте 0 или ZF = 1 (REPE — ZF = 0);
+частичный выход каждые 1 024 итерации, стоп между итерациями; после первого сравнения шесть флагов определены. Intel SDM
+325462-093US Vol. 2B «REP/REPE/REPZ/REPNE/REPNZ», «SCAS/SCASB/SCASW/SCASD/SCASQ». Отклонения — те же, что у `REPE SCAS`:
+при нулевом счёте определённость шести флагов ставят статические эффекты ([ISSUE-707](../KNOWN_ISSUES.md#issue-707)),
+fault на k-м элементе (k ≥ 2) оставляет флаги последнего сравнения ([ISSUE-708](../KNOWN_ISSUES.md#issue-708)).
+**Две семантики `67 F2 AE/AF` при fault:** набор — флаги последнего сравнения (отклонение), `run_with_rep_continuation`
+— входные флаги и определённость из токена (`restore_rep_entry_flags`, как SDM); в остальном (RCX, RDI, RIP, число
+чтений, частичные выходы против токена) оба пути совпадают — дифференциальный тест. `REPNE CMPS` в наборе нет (0
+вхождений в 314 образах CPL0 Windows). Turbo форму не компилирует: общий шаг.
+
+**LOOP, LOOPE, LOOPNE, JRCXZ.** Декодер: `E0`/`E1`/`E2`/`E3 cb` без префиксов (счётчик RCX) или ровно с `67` (счётчик
+ECX, JECXZ) — `Operation::Loopne`/`Loope`/`Loop`/`Jrcxz { displacement }` (`Loop` сохранил форму для литмусов S6-05;
+их допуск по-прежнему принимает только `E2 cb` без префиксов). `66` (Intel и AMD расходятся в размере операнда
+ближних переходов), REX, сегментные, `F0`/`F2`/`F3` — отказ декодера. Исполнение — только в наборе и только на CPL0
+(на CPL3 и вне набора — `Unsupported`, как раньше). Семантика — Vol. 2A «LOOP/LOOPcc» и «Jcc»: `Count := Count − 1`
+без изменения флагов, переход при новом счёте ≠ 0 (LOOPE — и ZF = 1, LOOPNE — и ZF = 0); JRCXZ/JECXZ — переход при
+счёте 0, счёт не меняется; цель `next_rip + rel8`, неканоническая — `#GP(0)`, инструкция не исполняется (RCX и RIP
+прежние). **Решение:** при адресе 32 новый ECX записывается с нулевым расширением в RCX (Vol. 1 §3.4.1.1, как у форм
+REP с `67`); SDM в псевдокоде LOOP старшую половину не называет. RFLAGS и их определённость не меняются. Turbo
+формы не компилирует: блок кончается перед ними, общий шаг.
+
+**FNSTSW AX** (`DF E0`, точная форма). FP-член исполняет её через ветвь ограниченных x87-форм
+(`cpl0_bounded_x87_form` → `step_cpl0_bounded_x87`: смоделированный CR0, `#NM` при CR0.EM или CR0.TS, затем
+ограниченный профиль голого шага на x87-половине ячейки): AX := слово состояния, RAX[63:16], флаги, FIP/FDP/FOP и
+ячейка не меняются (Vol. 2A «FSTSW/FNSTSW», Vol. 1 §8.1.8). Чтобы ограниченный профиль её принял, `FnstswAx` добавлена к
+исключениям глобального отказа «x87-форма при представленных FCS/FDS» (рядом с FNSTENV/FNSAVE/FRSTOR/FLDENV): FNSTSW —
+управляющая инструкция и указатели не обновляет. Следствие вне набора: голый шаг с `state.x87`, где селекторы
+представлены, теперь тоже исполняет `FNSTSW AX` (раньше `Unsupported`); других изменений голого шага нет. С REX/`66`
+и без FP-члена — `Unsupported`.
+
+**Тесты.** `crates/od-isa/tests/s7_32_repne_scas_set.rs` (6: модель SDM на 4 ширинах × 2 размерах адреса, 5 счётчиках,
+4 положениях совпадения, DF 0/1, двух состояниях флагов — 320 случаев; fault на k-м элементе; стоп между итерациями;
+`wcslen` `iaStorV` байт в байт; отказ вне набора; набор против `run_with_rep_continuation` для `67`, в том числе EDI
+через 4 ГиБ и 1 500 элементов), `s7_32_loop_set.rs` (5: модель на 4 операциях × 2 адресах × 7 счётчиках × ZF × 4
+смещениях — 448 случаев; RCX = 2³²; `#GP(0)` неканонической цели; заглушка PatchGuard `+0xc1870f…+0xc18720` байт в
+байт на 3 и 0x3a3a итерациях; вне набора `E0..E3` и `67 E0..E3` — прежний `Unsupported`), `s7_32_fnstsw_ax_set.rs` (4, в том числе голый шаг с представленными селекторами), отказы на CPL3 — `cpl3_profile_set.rs`
+(`forbidden_forms_stop_as_unsupported_without_change`: `67 E2`, `67 E3`, REPNE SCAS), декодер —
+`bare_loop_decode_preserves_signed_rel8_but_rejects_prefix_variants`; `s7_32_rep_scas_set.rs` —
+`repne_cmps_stays_outside_the_set` вместо `repne_scas_and_cmps_stay_outside_the_set`; тесты декодера `rep_scasb_admits_only_exact_f3_ae`, `repne_scasb_addr32_admits_only_two_normalized_prefix_orders`, `repne_scas_wdq_addr32_accepts_exact_normalized_width_prefixes` — `F2 AE`/`F2 AF` без `67` теперь `RepneScas`; `s2_32e_cpl0_x87.rs` и `cpl0_profile_set.rs` (`every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member`) — `fnstsw ax`
+убрана из списка форм, отказывающих в наборе; закреплённое число декодов `fast_step_static_filter_tests` — +123
+(допущенный быстрым правилом набор и его хеш не изменились). Turbo против общего шага — `od-machine`
+`turbo::tests::{repne_scas_matches_the_general_step, loop_family_matches_the_general_step,
+s7_32_slice_s_a_quantum_split_inside_a_loop_changes_nothing}`.
+
 ### MOV r64, CR2 в любой регистр общего назначения на CPL0 в наборе (S4-38L5d)
 
 После доставки #PF (L5c) настоящее ядро доходит до `MOV RBX, CR2` (`0F 20 D3`, `0x543_c35e`); L5a знал только
@@ -32992,7 +33057,7 @@ MMX-формы (`step_sse_mmx_convert`): MMn — младшие 64 бита фи
 - `REX.W 83 /4 ib` `AND r/m64, imm8` с операндом в памяти и `F3 0F 1E FA` `ENDBR64`: набор исполнял их и до S7-31c (общая арифметика, NOP без CET IBT); тесты на точные байты и флаги — `crates/od-isa/tests/s7_31c_firmware_forms.rs`.
 - `3E FF /4` `NOTRACK JMP r64` на CPL0 (раньше только CPL3): без CET IBT NOTRACK ничего не меняет.
 - `REPE CMPS` (`F3 A6`, `F3 A7` с `66`/`REX.W`, с `67` и без — все формы набора; Ubuntu-stub исполняет `F3 A6`) из любого состояния арифметических флагов: после первого сравнения шесть флагов определены; при нулевом счёте значения флагов не меняются (определённость — пункт «срез P», ISSUE-707). Входной допуск «флаги ровно PF|ZF» оставлен для путей вне набора.
-- *S7-32, срез P (ISSUE-704):* `REPE SCAS` (`F3 AE`; `F3 AF` с `66` или `REX.W`; с `67` и без — все формы, которые набор допускал и раньше) из любого состояния арифметических флагов, как `REPE CMPS` в S7-31c: входной допуск «флаги ровно PF|ZF, все шесть определены» оставлен только для путей вне набора (`control_policy.is_none()`). Семантика — Intel SDM Vol. 2B «REPE/REPZ—Repeat String Operation While Zero (Prefix)» (с. 4-565: «The ZF flag does not require initialization because both the CMPS and SCAS instructions affect the ZF flag according to the results of the comparisons they make») и «SCAS/SCASB/SCASW/SCASD—Scan String» (с. 4-616–4-618): сравнение `AL/AX/EAX/RAX − [RDI]` с флагами `CMP`, RDI ± размер по DF, RCX − 1, конец при RCX = 0 или ZF = 0; с `67` — ECX и EDI с нулевым расширением (S2-19m/S2-19o). После первого сравнения шесть флагов определены и на границе частичного выхода (предел 1 024 итерации или стоп), как у `REPE CMPS`; при нулевом счёте значения RFLAGS не меняются, а определённость шести флагов ставят статические эффекты ретирации (как у `REPE CMPS` и как их компонует turbo JIT). Соседние формы: `REP STOS/LODS/MOVS` флагов не читают и входного допуска флагов не имели; `REPNE SCAS/CMPS` в наборе нет вовсе (декодер знает только их формы с `67`, набор отвечает `Unsupported`; без `67` они не декодируются) — это отсутствие формы, а не допуск, срез их не добавляет. Turbo JIT `REPE SCAS` не компилирует: инструкция идёт общим шагом, плата возобновляет частичный выход (S4-38L4b). Fault посреди REPE (осознанное отклонение, [ISSUE-708](../KNOWN_ISSUES.md#issue-708)): при архитектурной ошибке на k-м элементе (k ≥ 2) RCX, RSI, RDI сохраняют прогресс и RIP остаётся на инструкции, как по SDM, но RFLAGS и их определённость остаются от последнего завершённого сравнения, тогда как SDM (Vol. 2B, REPE/REPZ, с. 4-566) требует «the EFLAGS value is restored to the state prior to the execution of the instruction» — так у `REPE CMPS` с S7-31c и у `REPE SCAS`; на первом элементе флаги и определённость — входные. Тесты: `crates/od-isa/tests/s7_32_rep_scas_set.rs` (7), прежние тесты допуска вне набора (`rep_scas_rejects_every_bad_value_or_definedness_gate_without_reading`) проходят. Уточнение к пункту S7-31c про `REPE CMPS` выше: «при нулевом счёте флаги и их определённость не меняются» — неточно; значения флагов не меняются, а определённость шести флагов ставят статические эффекты ретирации, так что неопределённые до инструкции флаги после неё считаются определёнными (то же у `REPE SCAS`; [ISSUE-707](../KNOWN_ISSUES.md#issue-707)).
+- *S7-32, срез P (ISSUE-704):* `REPE SCAS` (`F3 AE`; `F3 AF` с `66` или `REX.W`; с `67` и без — все формы, которые набор допускал и раньше) из любого состояния арифметических флагов, как `REPE CMPS` в S7-31c: входной допуск «флаги ровно PF|ZF, все шесть определены» оставлен только для путей вне набора (`control_policy.is_none()`). Семантика — Intel SDM Vol. 2B «REPE/REPZ—Repeat String Operation While Zero (Prefix)» (с. 4-565: «The ZF flag does not require initialization because both the CMPS and SCAS instructions affect the ZF flag according to the results of the comparisons they make») и «SCAS/SCASB/SCASW/SCASD—Scan String» (с. 4-616–4-618): сравнение `AL/AX/EAX/RAX − [RDI]` с флагами `CMP`, RDI ± размер по DF, RCX − 1, конец при RCX = 0 или ZF = 0; с `67` — ECX и EDI с нулевым расширением (S2-19m/S2-19o). После первого сравнения шесть флагов определены и на границе частичного выхода (предел 1 024 итерации или стоп), как у `REPE CMPS`; при нулевом счёте значения RFLAGS не меняются, а определённость шести флагов ставят статические эффекты ретирации (как у `REPE CMPS` и как их компонует turbo JIT). Соседние формы: `REP STOS/LODS/MOVS` флагов не читают и входного допуска флагов не имели; `REPNE CMPS` в наборе нет (декодер знает только формы с `67`, набор отвечает `Unsupported`) — это отсутствие формы, а не допуск; `REPNE SCAS` — срез S (раздел «REPNE SCAS, LOOP/LOOPcc/JRCXZ и FNSTSW AX в наборе CPL0»). Turbo JIT `REPE SCAS` не компилирует: инструкция идёт общим шагом, плата возобновляет частичный выход (S4-38L4b). Fault посреди REPE (осознанное отклонение, [ISSUE-708](../KNOWN_ISSUES.md#issue-708)): при архитектурной ошибке на k-м элементе (k ≥ 2) RCX, RSI, RDI сохраняют прогресс и RIP остаётся на инструкции, как по SDM, но RFLAGS и их определённость остаются от последнего завершённого сравнения, тогда как SDM (Vol. 2B, REPE/REPZ, с. 4-566) требует «the EFLAGS value is restored to the state prior to the execution of the instruction» — так у `REPE CMPS` с S7-31c и у `REPE SCAS`; на первом элементе флаги и определённость — входные. Тесты: `crates/od-isa/tests/s7_32_rep_scas_set.rs` (7), прежние тесты допуска вне набора (`rep_scas_rejects_every_bad_value_or_definedness_gate_without_reading`) проходят. Уточнение к пункту S7-31c про `REPE CMPS` выше: «при нулевом счёте флаги и их определённость не меняются» — неточно; значения флагов не меняются, а определённость шести флагов ставят статические эффекты ретирации, так что неопределённые до инструкции флаги после неё считаются определёнными (то же у `REPE SCAS`; [ISSUE-707](../KNOWN_ISSUES.md#issue-707)).
 - `DD /7` `FNSTSW m2byte` и `D9 /7` `FNSTCW m2byte` с любым адресом памяти без префиксов (кроме точных форм `[RAX]`, которые остаются прежними операциями) — только на CPL0 в наборе с членом FP (`with_fp_state`); на CPL3 форма остаётся `Unsupported` (тест `cpl3_fnstsw_fnstcw_m16_with_any_address_stay_unsupported`): сохраняется слово состояния или управления из ячейки FP, без проверки отложенных исключений (без FWAIT); флаги, регистры, указатели FIP/FDP и регистр кода операции не меняются (управляющая инструкция x87, Vol. 1, 8.1.8); #NM при CR0.EM=1 или CR0.TS=1 до обращения к памяти; обычные #PF/#GP/#SS адреса (для основания RSP/RBP неканонический адрес — #SS(0)). Любой префикс (в том числе REX, например `REX.B` для r8–r15) остаётся `Unsupported`. Тесты: `crates/od-isa/tests/s7_31d_x87_status_store.rs`, `long_decode::tests::fnstsw_and_fnstcw_m16_…`. Следующие за ними формы stub (`66 83 7C 24 0E 00` `CMP r/m16, imm8`, `0F B7 44 24 0C` `MOVZX r32, m16`, `66 25 3F 10` `AND AX, imm16`, `66 83 F8 3F` `CMP AX, imm8`) набор исполнял и до S7-31d; те же тесты проверяют их флаги и результат.
 
 ## S7-31g: `MOV SS` и теневое окно прерываний в наборе CPL0

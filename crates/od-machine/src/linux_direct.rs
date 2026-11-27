@@ -2051,6 +2051,100 @@ impl UnifiedGuest {
             Self::Windows => CpuidProfile::OdX8664V2Windows,
         }
     }
+
+    /// The members of the CPL0 set of a unified run for this guest (the one list
+    /// [`run_firmware_unified_guest`] and [`UnifiedGuestCpl0Cells`] use).
+    ///
+    /// The CPUID profile comes from the guest (S7-32). Linux: `X8664V1Stage4AExt2` (S7-31i),
+    /// Stage4A plus SYSCALL, NX and LM in CPUID.80000001H:EDX (S7-31h: without NX the kernel strips
+    /// `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE and SSE2 in leaf 1 (the
+    /// kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636). Windows: `OdX8664V2Windows`
+    /// (ADR-0013). S7-32: the Windows guest also reads IA32_APIC_BASE (the BSP and xAPIC enable
+    /// bits) and runs with the clock owner (the LAPIC timer); the Linux guest keeps its members.
+    const fn cpl0_set_members(self) -> LinuxCpl0SetMembers {
+        let windows = matches!(self, Self::Windows);
+        LinuxCpl0SetMembers {
+            cpuid_profile: self.cpuid_profile(),
+            msr_tdx_keyid_partitioning_read: true,
+            fp_state: true,
+            int3: true,
+            halt: true,
+            msr_apic_base: windows,
+            msr_windows: windows,
+            clock_owner: windows,
+            ..LinuxCpl0SetMembers::linux_default()
+        }
+    }
+}
+
+/// S7-32 slice S: what a caller seeds into [`UnifiedGuestCpl0Cells`] before a diagnostic step.
+/// The other cells (SYSENTER, IA32_KERNEL_GS_BASE, PAT, MISC_ENABLE, BIOS_SIGN_ID, MTRR, MCA,
+/// the PCI address latch) go back to the values of a fresh boot vCPU.
+#[derive(Clone, Debug)]
+pub struct UnifiedGuestCellSeed {
+    pub fp: od_isa::execute::GuestFpState,
+    pub efer: u64,
+    pub star: u64,
+    pub lstar: u64,
+    pub cstar: u64,
+    pub syscall_mask: u64,
+    /// CR8 (0..=15) for the Windows member `with_cr8_tpr`.
+    pub cr8: u8,
+}
+
+/// S7-32 slice S: the CPL0 set of a unified run for one guest together with the cells it is bound
+/// to, for the static coverage of the executor (`od-runner decode-coverage --exec`). The members
+/// are those of [`run_firmware_unified_guest`] ([`UnifiedGuest`] keeps the one list); the board
+/// devices behind the members (the LAPIC behind the CR8 cell, the clock owner) are not here. The
+/// caller seeds the cells with [`Self::reset`] before every step: the cells of a fresh vCPU
+/// (EFER `FIRMWARE_EFER` without SCE, STAR/LSTAR/CSTAR/mask 0) are not the state of a running
+/// kernel.
+pub struct UnifiedGuestCpl0Cells {
+    guest: UnifiedGuest,
+    profile: LinuxCpl0Profile,
+    cpu: LinuxVcpuCells,
+    initial: LinuxVcpuCells,
+    pci: Cell<u32>,
+    cr8: Cell<u8>,
+}
+
+impl UnifiedGuestCpl0Cells {
+    pub fn new(guest: UnifiedGuest) -> Self {
+        let vcpu = crate::vcpu::Vcpu::new(BOOT_VCPU_INDEX, od_isa::LongModeState::default());
+        Self {
+            guest,
+            profile: LinuxCpl0Profile::new(guest.cpl0_set_members(), true, crate::FIRMWARE_EFER),
+            cpu: LinuxVcpuCells::from_vcpu(&vcpu),
+            initial: LinuxVcpuCells::from_vcpu(&vcpu),
+            pci: Cell::new(0),
+            cr8: Cell::new(0),
+        }
+    }
+
+    /// Every cell back to a fresh boot vCPU, then the seeded ones.
+    pub fn reset(&self, seed: &UnifiedGuestCellSeed) {
+        self.cpu.assign(&self.initial);
+        self.cpu.seed(
+            &seed.fp,
+            seed.efer,
+            seed.star,
+            seed.lstar,
+            seed.cstar,
+            seed.syscall_mask,
+        );
+        self.pci.set(0);
+        self.cr8.set(seed.cr8);
+    }
+
+    /// The set bound to the cells (for Windows with the CR8 member, as the unified run).
+    pub fn set(&self) -> od_isa::execute::Cpl0ProfileSet<'_> {
+        let set = self.profile.bind(&self.cpu, &self.pci, |_| {});
+        if self.guest == UnifiedGuest::Windows {
+            set.with_cr8_tpr(&self.cr8)
+        } else {
+            set
+        }
+    }
 }
 
 /// [`run_firmware_unified_profiled`] for a chosen [`UnifiedGuest`] (S7-32).
@@ -2087,24 +2181,8 @@ pub fn run_firmware_unified_guest(
     // The entry state of a ROM models no descriptors; see `model_unified_entry_descriptors`.
     crate::firmware_board::model_unified_entry_descriptors(board.state_mut());
 
-    // The CPUID profile comes from the guest (S7-32). Linux: `X8664V1Stage4AExt2` (S7-31i), Stage4A
-    // plus SYSCALL, NX and LM in CPUID.80000001H:EDX (S7-31h: without NX the kernel strips
-    // `_PAGE_NX` and its EFI runtime mapping fails, ISSUE-634) plus SSE and SSE2 in leaf 1 (the
-    // kernel's `LDMXCSR` in `kernel_fpu_begin_mask`, ISSUE-636). Windows: `OdX8664V2Windows`
-    // (ADR-0013). The members are the same for both guests.
-    // S7-32: the Windows guest also reads IA32_APIC_BASE (the BSP and xAPIC enable bits) and
-    // runs with the clock owner (the LAPIC timer); the Linux guest keeps its members.
-    let members = LinuxCpl0SetMembers {
-        cpuid_profile: guest.cpuid_profile(),
-        msr_tdx_keyid_partitioning_read: true,
-        fp_state: true,
-        int3: true,
-        halt: true,
-        msr_apic_base: windows,
-        msr_windows: windows,
-        clock_owner: windows,
-        ..LinuxCpl0SetMembers::linux_default()
-    };
+    // The members come from the guest (`UnifiedGuest::cpl0_set_members`, the one list).
+    let members = guest.cpl0_set_members();
     let profile = LinuxCpl0Profile::new(members, true, board.efer());
     let cpu_cells = LinuxVcpuCells::from_vcpu(
         board

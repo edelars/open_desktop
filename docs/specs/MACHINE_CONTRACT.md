@@ -5020,3 +5020,15 @@ ECX = 0 и тем же числом исключений); журнал `#GP(0)`
 ## S11-32 — модель NIC, совместимая с Intel 82540EM (расширение API)
 
 Дата: 2026-11-22. Не меняет модель памяти, порядок замков и нормативный текст других разделов. `od-machine` отдаёт хосту PCI-функцию `00:06.0` (BAR0 `[0xFC02_0000, 0xFC04_0000)`, INTA на GSI 18): `NicDevice`, `NicHandle`, `NicPciFunction`, `NicConfig`, `NicCounters`, `NicServiceReport`. Хост подключает backend через `NicHandle::attach_backend(Box<dyn NetBackend>)` ([NETWORK.md](NETWORK.md) раздел 4) и обслуживает кольца вызовом `NicHandle::service` между квантами; цикл платы `FirmwareBoardConfig` делает это сам, когда задана опция `nic` (по умолчанию `None`, плата, handoff и хеш ACPI-манифеста байт в байт прежние). Линия прерывания — `IoApicHandle::set_nic_line` (GSI 18, level, active-low). Регистры, кольца, EEPROM, PHY, классы ошибок и границы: [NIC_DEVICE.md](NIC_DEVICE.md). `FirmwareMmio` получил поле `nic`, а таблица окон набора прошивки вычисляется из присутствующих устройств вместо статического массива из 64 вариантов.
+
+## S7-32, срез S — набор CPL0 гостя единого цикла для статической диагностики
+
+`run_firmware_unified_guest` берёт список членов набора CPL0 из одной функции `UnifiedGuest::cpl0_set_members`
+(раньше — литерал в теле); состав членов и прогон не изменились. Публичный тип `UnifiedGuestCpl0Cells`
+(`crates/od-machine/src/linux_direct.rs`, реэкспорт из корня крейта) владеет ячейками того же набора для одного
+гостя: `new(guest)` — члены из `cpl0_set_members`, профиль MSR с `FIRMWARE_EFER`, ячейки свежего загрузочного vCPU;
+`reset(&UnifiedGuestCellSeed)` — все ячейки к значениям свежего vCPU, затем затравка (FP, EFER, STAR, LSTAR, CSTAR,
+SYSCALL_MASK, CR8); `set()` — `LinuxCpl0Profile::bind` и для Windows `with_cr8_tpr`, как в прогоне. Устройств за
+членами (LAPIC за ячейкой CR8, владелец часов, шина) тип не содержит: он для статического покрытия исполнителя
+(`od-runner decode-coverage --exec windows`, [FIRMWARE.md](../testing/FIRMWARE.md#статическое-покрытие-decode-coverage-и-decode-coverage---exec-windows-s7-32)),
+которое сбрасывает и затравливает ячейки перед каждым шагом песочницы.

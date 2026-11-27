@@ -3616,6 +3616,12 @@ pub enum Operation {
     RepScas {
         size: OperandSize,
     },
+    /// S7-32 slice S: one bounded invocation of long-mode REPNE SCAS (address size 64) at the
+    /// selected width; the `67` spellings are [`Self::RepneScasbAddr32`] and
+    /// [`Self::RepneScasWdqAddr32`].
+    RepneScas {
+        size: OperandSize,
+    },
     /// Bounded Long64 REPNE SCASB with address-size 32; continuation is explicit.
     RepneScasbAddr32,
     /// Bounded Long64 REPNE SCASW/D/Q with address-size 32.
@@ -3725,10 +3731,21 @@ pub enum Operation {
         condition: ConditionCode,
         displacement: i32,
     },
-    /// Decode-only S6-08 form of the bare Long64 `E2 cb` LOOP instruction.
-    /// The displacement is signed; execution remains unsupported until a
-    /// guest profile owns RCX decrement/branch semantics.
+    /// `E2 cb` LOOP (S6-08 decode form; since S7-32 slice S executed by the CPL0 set at CPL0). The
+    /// displacement is signed; the counter is RCX, or ECX with `67` (`Instruction::address_size`).
     Loop {
+        displacement: i8,
+    },
+    /// S7-32 slice S: `E1 cb` LOOPE/LOOPZ (counter as [`Self::Loop`]; branch also needs ZF = 1).
+    Loope {
+        displacement: i8,
+    },
+    /// S7-32 slice S: `E0 cb` LOOPNE/LOOPNZ (counter as [`Self::Loop`]; branch also needs ZF = 0).
+    Loopne {
+        displacement: i8,
+    },
+    /// S7-32 slice S: `E3 cb` JRCXZ, or JECXZ with `67`: branch when the counter is 0.
+    Jrcxz {
         displacement: i8,
     },
     /// SETcc stores one condition result byte into a register or memory. The raw
@@ -3980,7 +3997,11 @@ impl Instruction {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
-            Operation::RepScas { .. } => FlagEffects {
+            // S7-32 slice S: REPNE SCAS in every spelling, as REPE SCAS and the REPNE CMPS forms.
+            Operation::RepScas { .. }
+            | Operation::RepneScas { .. }
+            | Operation::RepneScasbAddr32
+            | Operation::RepneScasWdqAddr32 { .. } => FlagEffects {
                 defined: crate::ARITHMETIC_FLAGS,
                 undefined: 0,
             },
@@ -4973,7 +4994,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
-            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x9e | 0x9f | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe2 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
+            (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9b | 0x9c | 0x9d | 0x9e | 0x9f | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xcb | 0xcc | 0xcf | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe0..=0xe3 | 0xe4 | 0xe6 | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xee | 0xef | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
                 | (OpcodeMap::Escape0f, 0x00 | 0x0d | 0x10 | 0x12 | 0x16 | 0x23 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x52 | 0x53 | 0x54..=0x57 | 0x58 | 0x59 | 0x5a | 0x5c | 0x5d | 0x5e | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x6e | 0x6f | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x7e | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb0 | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc0 | 0xc1 | 0xc4 | 0xc7 | 0xc8..=0xcf | 0xd4 | 0xd5 | 0xd6 | 0xd7 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xe0 | 0xe3 | 0xe4 | 0xe8 | 0xe9 | 0xea | 0xeb | 0xec | 0xed | 0xee | 0xef | 0xf4 | 0xf5 | 0xf6 | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
@@ -5110,37 +5131,45 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         }))
                     || (opcode.byte == 0xa5 && prefixes.rex.is_none_or(|rex| rex & 8 != 0))
             });
-        let rep_scas = opcode.map == OpcodeMap::Primary
-            && matches!(opcode.byte, 0xae | 0xaf)
-            && prefixes.group1 == Some(0xf3)
-            && prefixes.segment.is_none()
-            && if opcode.byte == 0xae {
-                (self.length == 2
-                    && prefixes
-                        == (Prefixes {
-                            group1: Some(0xf3),
-                            ..Prefixes::default()
-                        }))
-                    || (self.length == 3
+        // `REP SCAS` with the group-1 prefix `group1` (`F3` REPE, `F2` REPNE): the exact forms of
+        // the REPE profile; `67` only where `address32` admits it (S7-32 slice S: REPNE SCAS
+        // without `67`; its `67` spellings are the bounded `RepneScas*Addr32` forms below).
+        let rep_scas_form = |group1: u8, address32: bool| {
+            opcode.map == OpcodeMap::Primary
+                && matches!(opcode.byte, 0xae | 0xaf)
+                && prefixes.group1 == Some(group1)
+                && prefixes.segment.is_none()
+                && (address32 || !prefixes.address_override)
+                && if opcode.byte == 0xae {
+                    (self.length == 2
                         && prefixes
                             == (Prefixes {
-                                group1: Some(0xf3),
-                                address_override: true,
+                                group1: Some(group1),
                                 ..Prefixes::default()
                             }))
-            } else {
-                if prefixes.address_override {
-                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
-                        && match (self.length, prefixes.operand_override, prefixes.rex) {
-                            (3, false, None) | (4, false, None) => true,
-                            (4, true, None) | (4, false, Some(0x48..=0x4f)) => true,
-                            (5, true, None) | (5, true, Some(0x48..=0x4f)) => true,
-                            _ => false,
-                        }
+                        || (self.length == 3
+                            && prefixes
+                                == (Prefixes {
+                                    group1: Some(group1),
+                                    address_override: true,
+                                    ..Prefixes::default()
+                                }))
                 } else {
-                    prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                    if prefixes.address_override {
+                        prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                            && match (self.length, prefixes.operand_override, prefixes.rex) {
+                                (3, false, None) | (4, false, None) => true,
+                                (4, true, None) | (4, false, Some(0x48..=0x4f)) => true,
+                                (5, true, None) | (5, true, Some(0x48..=0x4f)) => true,
+                                _ => false,
+                            }
+                    } else {
+                        prefixes.rex.is_none_or(|rex| rex & 8 != 0)
+                    }
                 }
-            };
+        };
+        let rep_scas = rep_scas_form(0xf3, true);
+        let repne_scas = rep_scas_form(0xf2, false);
         let repne_scasb_addr32 = opcode.map == OpcodeMap::Primary
             && opcode.byte == 0xae
             && prefixes.group1 == Some(0xf2)
@@ -7421,6 +7450,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !rep_lods
                 && !rep_movs
                 && !rep_scas
+                && !repne_scas
                 && !repne_scasb_addr32
                 && !repne_scas_wdq_addr32
                 && !repne_cmpsb_addr32
@@ -10741,6 +10771,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if repne_scasb_addr32 {
                     size = OperandSize::Byte;
                     Operation::RepneScasbAddr32
+                } else if repne_scas {
+                    size = OperandSize::Byte;
+                    Operation::RepneScas { size }
                 } else if rep_scas {
                     size = OperandSize::Byte;
                     Operation::RepScas { size }
@@ -10767,6 +10800,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         OperandSize::Dword
                     };
                     Operation::RepneScasWdqAddr32 { size }
+                } else if repne_scas {
+                    size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
+                        OperandSize::Qword
+                    } else if prefixes.operand_override {
+                        OperandSize::Word
+                    } else {
+                        OperandSize::Dword
+                    };
+                    Operation::RepneScas { size }
                 } else if rep_scas {
                     size = if prefixes.rex.is_some_and(|rex| rex & 8 != 0) {
                         OperandSize::Qword
@@ -12568,13 +12610,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                 }
             }
-            (OpcodeMap::Primary, 0xe2) => {
-                if prefixes != Prefixes::default() {
+            // S7-32 slice S (ISSUE-713): LOOPNE/LOOPE/LOOP/JRCXZ rel8 without a prefix (counter RCX)
+            // or with exactly `67` (counter ECX; JECXZ). `66` (Intel and AMD differ on the operand
+            // size of near branches), REX, segment, LOCK and REP prefixes stay refused.
+            (OpcodeMap::Primary, 0xe0..=0xe3) => {
+                if prefixes != Prefixes::default()
+                    && prefixes
+                        != (Prefixes {
+                            address_override: true,
+                            ..Prefixes::default()
+                        })
+                {
                     return Err(self.unsupported(opcode));
                 }
                 size = OperandSize::Qword;
-                Operation::Loop {
-                    displacement: self.byte()? as i8,
+                let displacement = self.byte()? as i8;
+                match opcode.byte {
+                    0xe0 => Operation::Loopne { displacement },
+                    0xe1 => Operation::Loope { displacement },
+                    0xe2 => Operation::Loop { displacement },
+                    _ => Operation::Jrcxz { displacement },
                 }
             }
             (OpcodeMap::Primary, 0xeb) => {
@@ -27770,8 +27825,9 @@ mod tests {
                 vec![0x67, rex, 0xf3, 0xae],
             ]);
         }
+        // S7-32 slice S: `F2 AE` is REPNE SCASB (`RepneScas`) now; `F2 66 AE` takes its place here.
         rejected.extend([
-            vec![0xf2, 0xae],
+            vec![0xf2, 0x66, 0xae],
             vec![0xf3, 0x66, 0xae],
             vec![0xf3, 0x67, 0x67, 0xae],
             vec![0x67, 0x67, 0xf3, 0xae],
@@ -27798,8 +27854,17 @@ mod tests {
             assert_eq!(instruction.address_size, OperandSize::Dword);
             assert_eq!(instruction.length, 3);
         }
+        // S7-32 slice S: without `67` the REPNE SCASB form is `RepneScas` (address size 64).
+        let bare = Memory::new(&[0xf2, 0xae]).decode().unwrap();
+        assert_eq!(
+            bare.operation,
+            Operation::RepneScas {
+                size: OperandSize::Byte
+            }
+        );
+        assert_eq!(bare.address_size, OperandSize::Qword);
         for bytes in [
-            &[0xf2, 0xae][..],
+            &[0xf2, 0x66, 0xae][..],
             &[0xf2, 0x67, 0x67, 0xae][..],
             &[0xf2, 0x66, 0x67, 0xae][..],
             &[0xf2, 0x48, 0x67, 0xae][..],
@@ -27846,8 +27911,24 @@ mod tests {
                 }
             );
         }
+        // S7-32 slice S: without `67` the REPNE SCAS forms are `RepneScas` (address size 64).
+        for (bytes, size) in [
+            (&[0xf2, 0xaf][..], OperandSize::Dword),
+            (&[0x66, 0xf2, 0xaf][..], OperandSize::Word),
+            (&[0xf2, 0x66, 0xaf][..], OperandSize::Word),
+            (&[0xf2, 0x48, 0xaf][..], OperandSize::Qword),
+        ] {
+            let instruction = Memory::new(bytes).decode().unwrap();
+            assert_eq!(
+                instruction.operation,
+                Operation::RepneScas { size },
+                "{bytes:02x?}"
+            );
+            assert_eq!(instruction.address_size, OperandSize::Qword);
+        }
         for bytes in [
-            &[0xf2, 0xaf][..],
+            &[0xf2, 0x40, 0xaf][..],
+            &[0x26, 0xf2, 0xaf][..],
             &[0xf2, 0xf2, 0x67, 0xaf][..],
             &[0xf2, 0x67, 0xf2, 0xaf][..],
             &[0xf2, 0x67, 0x67, 0xaf][..],
@@ -30258,20 +30339,38 @@ mod tests {
             Err(DecodeError::Memory(MemoryError::Unmapped { .. }))
         ));
 
-        for bytes in [
-            &[0x66, 0xe2, 0xfe][..],
-            &[0x67, 0xe2, 0xfe][..],
-            &[0xf0, 0xe2, 0xfe][..],
-            &[0xf2, 0xe2, 0xfe][..],
-            &[0xf3, 0xe2, 0xfe][..],
-            &[0x2e, 0xe2, 0xfe][..],
-            &[0x48, 0xe2, 0xfe][..],
-        ] {
-            let mut memory = Memory::new(bytes);
-            assert!(
-                matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
-                "{bytes:02x?}"
-            );
+        // S7-32 slice S: `67` selects the ECX counter (address size 32); every other prefix before
+        // LOOP, LOOPE, LOOPNE and JRCXZ stays refused.
+        for opcode in 0xe0..=0xe3u8 {
+            for (bytes, address_size) in [
+                (vec![opcode, 0xfe], OperandSize::Qword),
+                (vec![0x67, opcode, 0xfe], OperandSize::Dword),
+            ] {
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(usize::from(decoded.length), bytes.len(), "{bytes:02x?}");
+                assert_eq!(decoded.address_size, address_size, "{bytes:02x?}");
+                let displacement = -2;
+                assert_eq!(
+                    decoded.operation,
+                    match opcode {
+                        0xe0 => Operation::Loopne { displacement },
+                        0xe1 => Operation::Loope { displacement },
+                        0xe2 => Operation::Loop { displacement },
+                        _ => Operation::Jrcxz { displacement },
+                    },
+                    "{bytes:02x?}"
+                );
+            }
+            for prefix in [0x66u8, 0xf0, 0xf2, 0xf3, 0x2e, 0x40, 0x48] {
+                for bytes in [vec![prefix, opcode, 0xfe], vec![0x67, prefix, opcode, 0xfe]] {
+                    let mut memory = Memory::new(&bytes);
+                    assert!(
+                        matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
+                        "{bytes:02x?}"
+                    );
+                }
+            }
         }
     }
 

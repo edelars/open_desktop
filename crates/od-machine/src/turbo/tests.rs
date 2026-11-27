@@ -2448,6 +2448,81 @@ fn cmps(asm: &mut Asm, rng: &mut Rng, v: u64) {
     }
 }
 
+/// S7-32 slice S: REPNE SCAS at width `SIZES[v % 4]`, with or without `67` (`v / 4 % 2`), DF 0 or 1
+/// (`v / 8 % 2`, restored after), over 0, a few or more than `REP_ITERATION_WORK_LIMIT` elements of
+/// the data pages (`v / 16 % 3`); the scanned value is that of an element in the middle when the
+/// random choice says so.
+fn repne_scas(asm: &mut Asm, rng: &mut Rng, v: u64) {
+    let size = SIZES[(v % 4) as usize];
+    let address32 = v / 4 % 2 == 1;
+    let std = v / 8 % 2 == 1;
+    let elements = match v / 16 % 3 {
+        0 => 0,
+        1 => 1 + rng.below(60),
+        _ => REP_ITERATION_WORK_LIMIT + 1 + rng.below(60),
+    };
+    let align = !(u64::from(size) - 1);
+    let start = if std {
+        (DATA + 0x7ff8 - rng.below(0x100)) & align
+    } else {
+        (DATA + 0x800 + rng.below(0x100)) & align
+    };
+    asm.mov_imm(RDI, start);
+    asm.mov_imm(RCX, elements);
+    if rng.chance(50) && elements > 2 {
+        // The value of an element in the middle: the scan ends there (ZF = 1).
+        let offset = elements / 2 * u64::from(size);
+        let at = if std { start - offset } else { start + offset };
+        asm.mov_imm(RSI, at);
+        asm.raw(&[0x48, 0x8B, 0x06]); // mov rax, [rsi]
+    } else {
+        asm.mov_imm(RAX, rng.next());
+    }
+    if std {
+        asm.raw(&[0xFD]);
+    }
+    let mut encoding = vec![0xF2];
+    if address32 {
+        encoding.push(0x67);
+    }
+    if size == 2 {
+        encoding.push(0x66);
+    }
+    if size == 8 {
+        encoding.push(0x48);
+    }
+    encoding.push(wide(0xAE, size));
+    asm.raw(&encoding);
+    if std {
+        asm.raw(&[0xFC]);
+    }
+}
+
+/// S7-32 slice S: LOOPNE/LOOPE/LOOP/JRCXZ (`E0 + v % 4`), with or without `67` (`v / 4 % 2`). The
+/// loops run a two-instruction body the turbo compiles (`add rax, 1; xor rdx, rax`) for a count of
+/// 1 or 2..9 (`v / 8 % 2`); JRCXZ jumps over two NOPs with a count of 0 or not with a nonzero one.
+fn loop_family(asm: &mut Asm, rng: &mut Rng, v: u64) {
+    let opcode = 0xE0 + (v % 4) as u8;
+    let address32 = v / 4 % 2 == 1;
+    let second = v / 8 % 2 == 1;
+    let prefix: &[u8] = if address32 { &[0x67] } else { &[] };
+    if opcode == 0xE3 {
+        let count = if second { 1 + rng.below(1000) } else { 0 };
+        // Upper bits that JECXZ ignores.
+        asm.mov_imm(RCX, count | (rng.below(2) << 32));
+        asm.raw(prefix);
+        asm.raw(&[0xE3, 0x02, 0x90, 0x90]);
+        return;
+    }
+    let count = if second { 2 + rng.below(8) } else { 1 };
+    asm.mov_imm(RCX, count);
+    let body: [u8; 7] = [0x48, 0x83, 0xC0, 0x01, 0x48, 0x31, 0xC2];
+    asm.raw(&body);
+    let length = (body.len() + prefix.len() + 2) as i8;
+    asm.raw(prefix);
+    asm.raw(&[opcode, (-length) as u8]);
+}
+
 /// The GS-relative forms `jit::plan` admits.
 fn gs(asm: &mut Asm, rng: &mut Rng, v: u64) {
     let wide64 = rng.chance(50);
@@ -2911,6 +2986,20 @@ const TEMPLATES: &[Template] = &[
         jit: yes,
         emit: cmps,
     },
+    // S7-32 slice S: REPNE SCAS and the LOOP family run on the general step (turbo compiles
+    // neither): the block ends before them and goes on after them.
+    Template {
+        name: "repne_scas",
+        variants: 48,
+        jit: no,
+        emit: repne_scas,
+    },
+    Template {
+        name: "loop_family",
+        variants: 16,
+        jit: no,
+        emit: loop_family,
+    },
     Template {
         name: "sse_reg",
         variants: 28,
@@ -3272,6 +3361,68 @@ fn repe_cmps_matches_the_general_step() {
         .collect();
     let slow: Vec<&str> = slow.iter().map(String::as_str).collect();
     check_templates_except(&["cmps"], 6, &slow);
+}
+
+/// S7-32 slice S: REPNE SCAS (general step: partial exits, DF = 1, `67`) inside generated code.
+#[test]
+fn repne_scas_matches_the_general_step() {
+    check_templates(&["repne_scas"], 6);
+    runs_to_the_final_hlt("repne_scas");
+}
+
+/// Every variant of `name` runs to its final HLT (the general step executes the form rather than
+/// both runs stopping on it alike).
+fn runs_to_the_final_hlt(name: &str) {
+    let template = template(name);
+    for variant in 0..template.variants {
+        let program = template_program(template, variant, 7);
+        let outcome = run_program(name, 7, CODE, &program, 100_000).unwrap();
+        assert_eq!(outcome.report.exit, "Run(Halted)", "{name} {variant}");
+    }
+}
+
+/// S7-32 slice S: LOOP, LOOPE, LOOPNE and JRCXZ (general step) around compiled bodies.
+#[test]
+fn loop_family_matches_the_general_step() {
+    check_templates(&["loop_family"], 6);
+    runs_to_the_final_hlt("loop_family");
+}
+
+/// S7-32 slice S: the PatchGuard decryption loop of ISSUE-713 (`xor [rdx+rcx*8+0xc0], rax;
+/// ror rax, cl; btc rax, rax; loop`) in calls of k instructions, one engine across the calls:
+/// every boundary of the loop body is a quantum end.
+#[test]
+fn s7_32_slice_s_a_quantum_split_inside_a_loop_changes_nothing() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm(RDX, DATA);
+    asm.mov_imm(RAX, 0xad1b_6ff5_bc2a_27db);
+    asm.mov_imm(RCX, 40);
+    asm.raw(&[
+        0x48, 0x31, 0x84, 0xCA, 0xC0, 0x00, 0x00, 0x00, // xor [rdx+rcx*8+0xc0], rax
+        0x48, 0xD3, 0xC8, // ror rax, cl
+        0x48, 0x0F, 0xBB, 0xC0, // btc rax, rax
+        0xE2, 0xEF, // loop -0x11
+    ]);
+    asm.hlt();
+    let code = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &code);
+    };
+    for budget in [1, 2, 3, 4, 5, 7] {
+        let outcome = Case::new(format!("patchguard loop, budget {budget}"), 51, &prepare)
+            .program(&code)
+            .budget(budget)
+            .calls(400)
+            .between(&|_, _| {})
+            .check();
+        assert_eq!(
+            outcome.state.activity,
+            Some(CpuActivity::Halted),
+            "{budget}: {}",
+            outcome.report.exit
+        );
+        assert_eq!(outcome.state.gpr[RCX as usize], 0, "{budget}");
+    }
 }
 
 /// S7-32: the SSE forms of the FP member (raw 16-byte moves, XMM moves, bitwise operations,

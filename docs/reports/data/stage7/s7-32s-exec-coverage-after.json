@@ -1,0 +1,8913 @@
+{
+  "command": "decode-coverage",
+  "distinct_forms": 242,
+  "exec": {
+    "call_targets_outside_pdata": 4939,
+    "decoded": 17915225,
+    "distinct": 2496730,
+    "exec_single_fault": [
+      {
+        "count": 2367,
+        "example": "ntoskrnl.exe+0x200967 440f22c2",
+        "faults": {
+          "13": 4734
+        },
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteControl",
+        "top_files": [
+          "ntoskrnl.exe:2367"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1525,
+        "example": "ntoskrnl.exe+0x2041f8 48f7f1",
+        "faults": {
+          "0": 3050
+        },
+        "files": 106,
+        "form": "REX.W F7 /6 reg",
+        "operation": "Divide",
+        "top_files": [
+          "storport.sys:228",
+          "ntoskrnl.exe:181",
+          "dxgmms2.sys:108",
+          "iaStorAVC.sys:73",
+          "spaceport.sys:60",
+          "ntfs.sys:59"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 1516,
+        "example": "ntoskrnl.exe+0x2054e6 0f2945e7",
+        "faults": {
+          "13": 3032
+        },
+        "files": 97,
+        "form": "0F 29 mem",
+        "operation": "MovapsStoreMemory",
+        "top_files": [
+          "cng.sys:188",
+          "ntoskrnl.exe:186",
+          "refs.sys:176",
+          "cdrom.sys:106",
+          "tcpip.sys:88",
+          "dxgkrnl.sys:76"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1269,
+        "example": "ntoskrnl.exe+0x2090da f7f1",
+        "faults": {
+          "0": 2538
+        },
+        "files": 122,
+        "form": "F7 /6 reg",
+        "operation": "Divide",
+        "top_files": [
+          "ntoskrnl.exe:110",
+          "qevbda.sys:74",
+          "refs.sys:56",
+          "storport.sys:49",
+          "fvevol.sys:45",
+          "SmartSAMD.sys:43"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 1049,
+        "example": "ntoskrnl.exe+0x2b4502 0f280527bbf400",
+        "faults": {
+          "13": 2098
+        },
+        "files": 60,
+        "form": "0F 28 mem",
+        "operation": "MovapsLoadMemory",
+        "top_files": [
+          "evbd0a.sys:130",
+          "evbda.sys:130",
+          "tcpip.sys:93",
+          "ntoskrnl.exe:76",
+          "cng.sys:60",
+          "acpi.sys:55"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 886,
+        "example": "ntoskrnl.exe+0x20ae5f 48f7f9",
+        "faults": {
+          "0": 1772
+        },
+        "files": 74,
+        "form": "REX.W F7 /7 reg",
+        "operation": "Divide",
+        "top_files": [
+          "srv2.sys:164",
+          "mrxsmb.sys:143",
+          "ntoskrnl.exe:111",
+          "refs.sys:69",
+          "ntfs.sys:66",
+          "storport.sys:22"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 718,
+        "example": "ntoskrnl.exe+0x2054de 0f2845a7",
+        "faults": {
+          "13": 1436
+        },
+        "files": 77,
+        "form": "0F 28 mem",
+        "operation": "Sse128MemoryMove",
+        "top_files": [
+          "refs.sys:109",
+          "ntoskrnl.exe:77",
+          "scmbus.sys:30",
+          "cimfs.sys:29",
+          "http.sys:27",
+          "dxgmms1.sys:24"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 544,
+        "example": "ntoskrnl.exe+0x202edb 660f6f051dd7e0ff",
+        "faults": {
+          "13": 1088
+        },
+        "files": 100,
+        "form": "66 0F 6F mem",
+        "operation": "MovdqaLoadMemory",
+        "top_files": [
+          "ntoskrnl.exe:80",
+          "cng.sys:77",
+          "dumpfve.sys:32",
+          "refs.sys:27",
+          "tcpip.sys:22",
+          "ci.dll:20"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 498,
+        "example": "ntoskrnl.exe+0x2497b0 660f7f45b7",
+        "faults": {
+          "13": 996
+        },
+        "files": 66,
+        "form": "66 0F 7F mem",
+        "operation": "Sse128MemoryMove",
+        "top_files": [
+          "refs.sys:133",
+          "ntoskrnl.exe:45",
+          "cimfs.sys:33",
+          "netadaptercx.sys:26",
+          "http.sys:23",
+          "nvstor.sys:20"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 279,
+        "example": "ntoskrnl.exe+0x461bf8 f7f9",
+        "faults": {
+          "0": 558
+        },
+        "files": 94,
+        "form": "F7 /7 reg",
+        "operation": "Divide",
+        "top_files": [
+          "dxgkrnl.sys:39",
+          "ntoskrnl.exe:24",
+          "refs.sys:17",
+          "nvraid.sys:12",
+          "hdaudbus.sys:10",
+          "netio.sys:8"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 77,
+        "example": "ntoskrnl.exe+0x22030e 0f22e1",
+        "faults": {
+          "13": 154
+        },
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr4From",
+        "top_files": [
+          "ntoskrnl.exe:77"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 71,
+        "example": "ntoskrnl.exe+0x22062e 0f22d8",
+        "faults": {
+          "13": 142
+        },
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr3",
+        "top_files": [
+          "ntoskrnl.exe:71"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 63,
+        "example": "ntoskrnl.exe+0x220237 0f22df",
+        "faults": {
+          "13": 126
+        },
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr3From",
+        "top_files": [
+          "ntoskrnl.exe:63"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 58,
+        "example": "ntoskrnl.exe+0x22030b 0f22e0",
+        "faults": {
+          "13": 116
+        },
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr4",
+        "top_files": [
+          "ntoskrnl.exe:58"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 34,
+        "example": "ntoskrnl.exe+0x3029b3 48f7742438",
+        "faults": {
+          "0": 68
+        },
+        "files": 11,
+        "form": "REX.W F7 /6 mem",
+        "operation": "Divide",
+        "top_files": [
+          "ibbus.sys:9",
+          "mlx4_bus.sys:9",
+          "ntoskrnl.exe:4",
+          "volmgrx.sys:3",
+          "dxgkrnl.sys:2",
+          "dxgmms2.sys:2"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 25,
+        "example": "ntoskrnl.exe+0x51c806 660f38000df132b0ff",
+        "faults": {
+          "13": 50
+        },
+        "files": 3,
+        "form": "66 0F 38 00 mem",
+        "operation": "Ssse3Int",
+        "top_files": [
+          "cng.sys:15",
+          "ntoskrnl.exe:8",
+          "dumpfve.sys:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 21,
+        "example": "ntoskrnl.exe+0x3447ec 48f77c2420",
+        "faults": {
+          "0": 42
+        },
+        "files": 8,
+        "form": "REX.W F7 /7 mem",
+        "operation": "Divide",
+        "top_files": [
+          "ntoskrnl.exe:11",
+          "mrxsmb20.sys:4",
+          "VerifierExt.sys:1",
+          "acpi.sys:1",
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 21,
+        "example": "ntoskrnl.exe+0x37a139 a03700809f3700e39f",
+        "faults": {
+          "13": 42
+        },
+        "files": 10,
+        "form": "A0",
+        "operation": "Mov",
+        "top_files": [
+          "ntoskrnl.exe:6",
+          "MegaSas2i.sys:3",
+          "bfadfcoei.sys:3",
+          "bfadi.sys:3",
+          "ItSas35i.sys:1",
+          "bxois.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 20,
+        "example": "cng.sys+0x8646 410f5742d8",
+        "faults": {
+          "13": 40
+        },
+        "files": 6,
+        "form": "0F 57 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "cng.sys:9",
+          "dumpfve.sys:4",
+          "refs.sys:3",
+          "ksecpkg.sys:2",
+          "dxgmms2.sys:1",
+          "tpm.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 19,
+        "example": "ntoskrnl.exe+0x51cae1 660ffe050730b0ff",
+        "faults": {
+          "13": 38
+        },
+        "files": 6,
+        "form": "66 0F FE mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:7",
+          "refs.sys:5",
+          "ntoskrnl.exe:4",
+          "ci.dll:1",
+          "ndproxy.sys:1",
+          "spaceport.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 17,
+        "example": "ntoskrnl.exe+0x37a165 a13700d79f3700989f",
+        "faults": {
+          "13": 34
+        },
+        "files": 4,
+        "form": "A1",
+        "operation": "Mov",
+        "top_files": [
+          "ntoskrnl.exe:8",
+          "bfadfcoei.sys:4",
+          "bfadi.sys:4",
+          "lsi_sas2i.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 15,
+        "example": "ntoskrnl.exe+0x2248d9 0f33",
+        "faults": {
+          "13": 30
+        },
+        "files": 1,
+        "form": "0F 33",
+        "operation": "Rdpmc",
+        "top_files": [
+          "ntoskrnl.exe:15"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 14,
+        "example": "cng.sys+0xa1ab3 660ffd15557f0200",
+        "faults": {
+          "13": 28
+        },
+        "files": 1,
+        "form": "66 0F FD mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:14"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 13,
+        "example": "ntoskrnl.exe+0x69bb3c f7742424",
+        "faults": {
+          "0": 26
+        },
+        "files": 9,
+        "form": "F7 /6 mem",
+        "operation": "Divide",
+        "top_files": [
+          "dxgkrnl.sys:4",
+          "ntoskrnl.exe:2",
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1",
+          "dxgmms2.sys:1",
+          "refs.sys:1"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 13,
+        "example": "ntoskrnl.exe+0x8e1538 a2138e002c158e00a4",
+        "faults": {
+          "13": 26
+        },
+        "files": 5,
+        "form": "A2",
+        "operation": "Mov",
+        "top_files": [
+          "bfadfcoei.sys:4",
+          "bfadi.sys:4",
+          "ItSas35i.sys:2",
+          "lsi_sas3i.sys:2",
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 11,
+        "example": "ntoskrnl.exe+0x93584c a3ceb100324093003d",
+        "faults": {
+          "13": 22
+        },
+        "files": 5,
+        "form": "A3",
+        "operation": "Mov",
+        "top_files": [
+          "megasas35i.sys:5",
+          "bfadfcoei.sys:2",
+          "bfadi.sys:2",
+          "ntoskrnl.exe:1",
+          "ql2300i.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 11,
+        "example": "ntoskrnl.exe+0x6836d5 0f541df4f69bff",
+        "faults": {
+          "13": 22
+        },
+        "files": 4,
+        "form": "0F 54 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "refs.sys:5",
+          "cng.sys:2",
+          "dumpfve.sys:2",
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 10,
+        "example": "ntoskrnl.exe+0x9cea74 660fd415e45a64ff",
+        "faults": {
+          "13": 20
+        },
+        "files": 3,
+        "form": "66 0F D4 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:7",
+          "fvevol.sys:2",
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 8,
+        "example": "cng.sys+0xa1aab 660f7505ad570100",
+        "faults": {
+          "13": 16
+        },
+        "files": 1,
+        "form": "66 0F 75 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:8"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 4,
+        "example": "bxois.sys+0x60e5a 660fdb45d7",
+        "faults": {
+          "13": 8
+        },
+        "files": 3,
+        "form": "66 0F DB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "USBAUDIO.sys:2",
+          "bxois.sys:1",
+          "qeois.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 3,
+        "example": "ntoskrnl.exe+0xb594ce 668ed8",
+        "faults": {
+          "13": 6
+        },
+        "files": 1,
+        "form": "66 8E reg",
+        "operation": "MovToSreg",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x9bf6fd f09b",
+        "faults": {
+          "6": 4
+        },
+        "files": 2,
+        "form": "LOCK 9B",
+        "operation": "Fwait",
+        "top_files": [
+          "ntoskrnl.exe:1",
+          "percsas3i.sys:1"
+        ],
+        "vector": 6
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x6b6ab4 8eda",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "8E reg",
+        "operation": "LoadSegmentSelectorReg",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x600e16 660f6225e2f5a0ff",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 62 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "cng.sys+0xa1f9a 660fd50dae7a0200",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F D5 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "cng.sys+0xa1f92 660fe41d867a0200",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F E4 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "cng.sys:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "USBAUDIO.sys+0x1b4e5 660feb1533730000",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F EB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "USBAUDIO.sys:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x600e6b 660ff5158d1fa4ff",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F F5 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x600e5b 660ff60d9df5a0ff",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F F6 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "cng.sys+0x11d49 660ffb1d0f3b0a00",
+        "faults": {
+          "13": 4
+        },
+        "files": 2,
+        "form": "66 0F FB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "USBAUDIO.sys:1",
+          "cng.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "USBAUDIO.sys+0x1b5e3 660f540555710000",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 54 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "USBAUDIO.sys:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x600e45 660f380415e21fa4ff",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 38 04 mem",
+        "operation": "Ssse3Int",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x6b6a8a 8ee0",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "8E reg",
+        "operation": "LoadFsSelector",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x6b6abc 8eea",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "8E reg",
+        "operation": "LoadGsSelectorReg",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0xc1744b 0f011c24",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "0F 01 /3 mem",
+        "operation": "LoadIdtr",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0xbe86db 8ed0",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "8E reg",
+        "operation": "LoadNullSsSelector",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x50101a 660f7405def3b0ff",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F 74 mem",
+        "operation": "PcmpeqbMemory",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x9e29f5 660f6c0d03da62ff",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F 6C mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "USBAUDIO.sys+0x1b8e6 660ffa2dc26f0000",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F FA mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "USBAUDIO.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ndiswan.sys+0x34a77 660ffc05a160feff",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F FC mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ndiswan.sys:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x683752 0f561d576e99ff",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "0F 56 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "USBAUDIO.sys+0x1b7de 660f56054a910000",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F 56 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "USBAUDIO.sys:1"
+        ],
+        "vector": 13
+      }
+    ],
+    "extra_decoder_refusals": [
+      {
+        "count": 18,
+        "form": "F3 C3"
+      }
+    ],
+    "extra_instructions": 54358,
+    "families": [
+      {
+        "count": 623,
+        "distinct": 103,
+        "example": "ntoskrnl.exe+0x211999 0f30",
+        "faults": {},
+        "files": 8,
+        "operation": "WriteMsr",
+        "top_files": [
+          "ntoskrnl.exe:528",
+          "intelppm.sys:48",
+          "amdppm.sys:17",
+          "amdk8.sys:14",
+          "processr.sys:10",
+          "vmbus.sys:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 420,
+        "distinct": 91,
+        "example": "ntoskrnl.exe+0x21197c 0f32",
+        "faults": {},
+        "files": 13,
+        "operation": "ReadMsr",
+        "top_files": [
+          "ntoskrnl.exe:309",
+          "intelppm.sys:55",
+          "amdppm.sys:18",
+          "amdk8.sys:11",
+          "kdcom.dll:5",
+          "processr.sys:5"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 90,
+        "distinct": 15,
+        "example": "ntoskrnl.exe+0x2b9294 4c8e2b",
+        "faults": {},
+        "files": 7,
+        "operation": "MovToSreg",
+        "top_files": [
+          "ntoskrnl.exe:80",
+          "mpi3drvi.sys:3",
+          "bfadfcoei.sys:2",
+          "bfadi.sys:2",
+          "MegaSas2i.sys:1",
+          "elxfcoe.sys:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 42,
+        "distinct": 6,
+        "example": "ntoskrnl.exe+0x4fd3b2 0f23fa",
+        "faults": {},
+        "files": 1,
+        "operation": "WriteDebugRegister",
+        "top_files": [
+          "ntoskrnl.exe:42"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 25,
+        "distinct": 2,
+        "example": "ntoskrnl.exe+0x37a129 9d",
+        "faults": {},
+        "files": 8,
+        "operation": "PopFlags",
+        "top_files": [
+          "ntoskrnl.exe:13",
+          "percsas3i.sys:6",
+          "ItSas35i.sys:1",
+          "MegaSas2i.sys:1",
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 13,
+        "distinct": 1,
+        "example": "ntoskrnl.exe+0x50b1d9 0f22c0",
+        "faults": {},
+        "files": 1,
+        "operation": "WriteCr0",
+        "top_files": [
+          "ntoskrnl.exe:13"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "distinct": 6,
+        "example": "ntoskrnl.exe+0x4b0d4c db0c4b",
+        "faults": {},
+        "files": 1,
+        "operation": "FisttpMemory",
+        "top_files": [
+          "ntoskrnl.exe:6"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "distinct": 3,
+        "example": "ntoskrnl.exe+0x327d00 407732",
+        "faults": {},
+        "files": 4,
+        "operation": "Branch",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1",
+          "mpi3drvi.sys:1",
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "distinct": 1,
+        "example": "ntoskrnl.exe+0x6ae9b2 48cb",
+        "faults": {},
+        "files": 1,
+        "operation": "FarReturn",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 3,
+        "distinct": 1,
+        "example": "MegaSas2i.sys+0xe409 df00",
+        "faults": {},
+        "files": 1,
+        "operation": "FildM16IntRax",
+        "top_files": [
+          "MegaSas2i.sys:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "distinct": 1,
+        "example": "ntoskrnl.exe+0x6a95d4 0f00d0",
+        "faults": {},
+        "files": 1,
+        "operation": "LoadLdt",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "distinct": 1,
+        "example": "ntoskrnl.exe+0x6af2c8 480f07",
+        "faults": {},
+        "files": 1,
+        "operation": "Sysret",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "distinct": 2,
+        "example": "ntoskrnl.exe+0xb7be93 0f22c1",
+        "faults": {},
+        "files": 1,
+        "operation": "WriteControl",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "bfadfcoei.sys+0x3df40 dbde",
+        "faults": {},
+        "files": 2,
+        "operation": "Fcmovnu",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "bfadfcoei.sys+0x3df4c d8dd",
+        "faults": {},
+        "files": 2,
+        "operation": "FcompSt",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "qlfcoei.sys+0x8c97c dec2",
+        "faults": {},
+        "files": 1,
+        "operation": "FaddpStSt0",
+        "top_files": [
+          "qlfcoei.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "lsi_sas2i.sys+0xf678 d8f3",
+        "faults": {},
+        "files": 1,
+        "operation": "FdivSt0St",
+        "top_files": [
+          "lsi_sas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "mpi3drvi.sys+0xdc8d d900",
+        "faults": {},
+        "files": 1,
+        "operation": "FldM32FpRax",
+        "top_files": [
+          "mpi3drvi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "MegaSas2i.sys+0xe3dd dd00",
+        "faults": {},
+        "files": 1,
+        "operation": "FldM64FpRax",
+        "top_files": [
+          "MegaSas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "ql2300i.sys+0x9d144 dcc9",
+        "faults": {},
+        "files": 1,
+        "operation": "FmulStSt0",
+        "top_files": [
+          "ql2300i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "MegaSas2i.sys+0xe3d4 dddc",
+        "faults": {},
+        "files": 1,
+        "operation": "FstpSti",
+        "top_files": [
+          "MegaSas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "ntoskrnl.exe+0xc17408 0f22c7",
+        "faults": {},
+        "files": 1,
+        "operation": "WriteCr0Rdi",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "never"
+      }
+    ],
+    "forms": [
+      {
+        "count": 623,
+        "example": "ntoskrnl.exe+0x211999 0f30",
+        "faults": {},
+        "files": 8,
+        "form": "0F 30",
+        "operation": "WriteMsr",
+        "top_files": [
+          "ntoskrnl.exe:528",
+          "intelppm.sys:48",
+          "amdppm.sys:17",
+          "amdk8.sys:14",
+          "processr.sys:10",
+          "vmbus.sys:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 420,
+        "example": "ntoskrnl.exe+0x21197c 0f32",
+        "faults": {},
+        "files": 13,
+        "form": "0F 32",
+        "operation": "ReadMsr",
+        "top_files": [
+          "ntoskrnl.exe:309",
+          "intelppm.sys:55",
+          "amdppm.sys:18",
+          "amdk8.sys:11",
+          "kdcom.dll:5",
+          "processr.sys:5"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 89,
+        "example": "ntoskrnl.exe+0x6a95e5 8e9fba010000",
+        "faults": {},
+        "files": 7,
+        "form": "8E mem",
+        "operation": "MovToSreg",
+        "top_files": [
+          "ntoskrnl.exe:79",
+          "mpi3drvi.sys:3",
+          "bfadfcoei.sys:2",
+          "bfadi.sys:2",
+          "MegaSas2i.sys:1",
+          "elxfcoe.sys:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 42,
+        "example": "ntoskrnl.exe+0x4fd3b2 0f23fa",
+        "faults": {},
+        "files": 1,
+        "form": "0F 23 reg",
+        "operation": "WriteDebugRegister",
+        "top_files": [
+          "ntoskrnl.exe:42"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 24,
+        "example": "ntoskrnl.exe+0x37a129 9d",
+        "faults": {},
+        "files": 8,
+        "form": "9D",
+        "operation": "PopFlags",
+        "top_files": [
+          "ntoskrnl.exe:12",
+          "percsas3i.sys:6",
+          "ItSas35i.sys:1",
+          "MegaSas2i.sys:1",
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 13,
+        "example": "ntoskrnl.exe+0x50b1d9 0f22c0",
+        "faults": {},
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr0",
+        "top_files": [
+          "ntoskrnl.exe:13"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "example": "ntoskrnl.exe+0x4b0d4c db0c4b",
+        "faults": {},
+        "files": 1,
+        "form": "DB /1 mem",
+        "operation": "FisttpMemory",
+        "top_files": [
+          "ntoskrnl.exe:4"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "example": "ntoskrnl.exe+0x6ae9b2 48cb",
+        "faults": {},
+        "files": 1,
+        "form": "REX.W CB",
+        "operation": "FarReturn",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 3,
+        "example": "MegaSas2i.sys+0xe409 df00",
+        "faults": {},
+        "files": 1,
+        "form": "DF /0 mem",
+        "operation": "FildM16IntRax",
+        "top_files": [
+          "MegaSas2i.sys:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "example": "ntoskrnl.exe+0x6a95d4 0f00d0",
+        "faults": {},
+        "files": 1,
+        "form": "0F 00 /2 reg",
+        "operation": "LoadLdt",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "example": "ntoskrnl.exe+0x6af2c8 480f07",
+        "faults": {},
+        "files": 1,
+        "form": "REX.W 0F 07",
+        "operation": "Sysret",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "example": "ntoskrnl.exe+0xb7be93 0f22c1",
+        "faults": {},
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteControl",
+        "top_files": [
+          "ntoskrnl.exe:3"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "bfadfcoei.sys+0x875b8 467408",
+        "faults": {},
+        "files": 2,
+        "form": "74",
+        "operation": "Branch",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "bfadfcoei.sys+0x3df40 dbde",
+        "faults": {},
+        "files": 2,
+        "form": "DB /3 reg",
+        "operation": "Fcmovnu",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "bfadfcoei.sys+0x3df4c d8dd",
+        "faults": {},
+        "files": 2,
+        "form": "D8 /3 reg",
+        "operation": "FcompSt",
+        "top_files": [
+          "bfadfcoei.sys:1",
+          "bfadi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "ntoskrnl.exe+0x8ede1d dd8e00ff57b1",
+        "faults": {},
+        "files": 1,
+        "form": "DD /1 mem",
+        "operation": "FisttpMemory",
+        "top_files": [
+          "ntoskrnl.exe:2"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x2b9294 4c8e2b",
+        "faults": {},
+        "files": 1,
+        "form": "REX.W 8E mem",
+        "operation": "MovToSreg",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x5af0e7 489d",
+        "faults": {},
+        "files": 1,
+        "form": "REX.W 9D",
+        "operation": "PopFlags",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 1,
+        "example": "mpi3drvi.sys+0x75b0 677200",
+        "faults": {},
+        "files": 1,
+        "form": "67 72",
+        "operation": "Branch",
+        "top_files": [
+          "mpi3drvi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0x327d00 407732",
+        "faults": {},
+        "files": 1,
+        "form": "77",
+        "operation": "Branch",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "qlfcoei.sys+0x8c97c dec2",
+        "faults": {},
+        "files": 1,
+        "form": "DE /0 reg",
+        "operation": "FaddpStSt0",
+        "top_files": [
+          "qlfcoei.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "lsi_sas2i.sys+0xf678 d8f3",
+        "faults": {},
+        "files": 1,
+        "form": "D8 /6 reg",
+        "operation": "FdivSt0St",
+        "top_files": [
+          "lsi_sas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "mpi3drvi.sys+0xdc8d d900",
+        "faults": {},
+        "files": 1,
+        "form": "D9 /0 mem",
+        "operation": "FldM32FpRax",
+        "top_files": [
+          "mpi3drvi.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "MegaSas2i.sys+0xe3dd dd00",
+        "faults": {},
+        "files": 1,
+        "form": "DD /0 mem",
+        "operation": "FldM64FpRax",
+        "top_files": [
+          "MegaSas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ql2300i.sys+0x9d144 dcc9",
+        "faults": {},
+        "files": 1,
+        "form": "DC /1 reg",
+        "operation": "FmulStSt0",
+        "top_files": [
+          "ql2300i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "MegaSas2i.sys+0xe3d4 dddc",
+        "faults": {},
+        "files": 1,
+        "form": "DD /3 reg",
+        "operation": "FstpSti",
+        "top_files": [
+          "MegaSas2i.sys:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ntoskrnl.exe+0xc17408 0f22c7",
+        "faults": {},
+        "files": 1,
+        "form": "0F 22 reg",
+        "operation": "WriteCr0Rdi",
+        "top_files": [
+          "ntoskrnl.exe:1"
+        ],
+        "verdict": "never"
+      }
+    ],
+    "msr_indexes": [
+      {
+        "count": 5,
+        "files": [
+          "ntoskrnl.exe:5"
+        ],
+        "index": "0x1",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x2",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "mssmbios.sys:1",
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x7",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "mssmbios.sys:1"
+        ],
+        "index": "0x8",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xe",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x17",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x1b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x30",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x3a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x3b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x48",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x5d",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x79",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "hvservice.sys:1"
+        ],
+        "index": "0x80",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "mssmbios.sys:1",
+          "ntoskrnl.exe:10"
+        ],
+        "index": "0x8b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xe7",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xe8",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 8,
+        "files": [
+          "ntoskrnl.exe:8"
+        ],
+        "index": "0xfe",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "intelppm.sys:1",
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x10a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x123",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "ntoskrnl.exe:11"
+        ],
+        "index": "0x179",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x17a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "intelppm.sys:3"
+        ],
+        "index": "0x199",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x19a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 7,
+        "files": [
+          "intelppm.sys:1",
+          "ntoskrnl.exe:6"
+        ],
+        "index": "0x1a0",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x1b0",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "intelppm.sys:2",
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x1b1",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x1b2",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x1c4",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x1c5",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x1c9",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "ntoskrnl.exe:11"
+        ],
+        "index": "0x1d9",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x250",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x258",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x259",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x268",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x269",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x26a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x26b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x26c",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x26d",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x26e",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x26f",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x277",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x2ff",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x309",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x30a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x30b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x345",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 18,
+        "files": [
+          "intelppm.sys:4",
+          "ntoskrnl.exe:14"
+        ],
+        "index": "0x38d",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 9,
+        "files": [
+          "ntoskrnl.exe:9"
+        ],
+        "index": "0x38e",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 20,
+        "files": [
+          "intelppm.sys:2",
+          "ntoskrnl.exe:18"
+        ],
+        "index": "0x38f",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x390",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x482",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x48b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x560",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x561",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x570",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x571",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x572",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 5,
+        "files": [
+          "intelppm.sys:5"
+        ],
+        "index": "0x606",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x6a0",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x6a2",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 51,
+        "files": [
+          "ntoskrnl.exe:51"
+        ],
+        "index": "0x6a7",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x772",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x773",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x777",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x832",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x834",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x844",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x982",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xc89",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xc8f",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xdb0",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 5,
+        "files": [
+          "ntoskrnl.exe:5"
+        ],
+        "index": "0xdb2",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x17d2",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x8000",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x100040",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:2",
+          "vmbus.sys:1"
+        ],
+        "index": "0x40000001",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 26,
+        "files": [
+          "kdcom.dll:5",
+          "ntoskrnl.exe:21"
+        ],
+        "index": "0x40000020",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000022",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000023",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000030",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x40000083",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x400000f0",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 7,
+        "files": [
+          "dxgmms1.sys:4",
+          "dxgmms2.sys:3"
+        ],
+        "index": "0x400000f6",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000112",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x50000001",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x50000002",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0xc0000080",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000081",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000082",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000083",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc0000084",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc0000100",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 9,
+        "files": [
+          "ntoskrnl.exe:9"
+        ],
+        "index": "0xc0000101",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0000102",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc000010e",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 7,
+        "files": [
+          "ntoskrnl.exe:7"
+        ],
+        "index": "0xc000010f",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000300",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000302",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000501",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0010010",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 27,
+        "files": [
+          "amdppm.sys:1",
+          "ntoskrnl.exe:26"
+        ],
+        "index": "0xc0010015",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc001001f",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0010020",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "files": [
+          "amdk8.sys:6"
+        ],
+        "index": "0xc0010042",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0010114",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "vmbus.sys:1"
+        ],
+        "index": "0xc0010130",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "amdppm.sys:3"
+        ],
+        "index": "0xc0010299",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "amdppm.sys:4"
+        ],
+        "index": "0xc001029a",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "amdppm.sys:1"
+        ],
+        "index": "0xc001029b",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0011023",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0011028",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0011029",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc001102c",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc001102e",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc00110e3",
+        "index_known": true,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 106,
+        "files": [
+          "amdk8.sys:5",
+          "amdppm.sys:9",
+          "intelppm.sys:21",
+          "ntoskrnl.exe:61",
+          "processr.sys:5",
+          "vmbus.sys:3",
+          "winhv.sys:1",
+          "winhvr.sys:1"
+        ],
+        "index": "0xdead0000",
+        "index_known": false,
+        "op": "rdmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x1",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x2",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x3",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x7",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x10",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x1b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "amdppm.sys:1"
+        ],
+        "index": "0x20",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x3b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 139,
+        "files": [
+          "amdk8.sys:3",
+          "amdppm.sys:4",
+          "intelppm.sys:5",
+          "ntoskrnl.exe:123",
+          "processr.sys:3",
+          "winhvr.sys:1"
+        ],
+        "index": "0x48",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 76,
+        "files": [
+          "ntoskrnl.exe:76"
+        ],
+        "index": "0x49",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x79",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "mssmbios.sys:2",
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x8b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xe7",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xe8",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x122",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x174",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x175",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x176",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 6,
+        "files": [
+          "ntoskrnl.exe:6"
+        ],
+        "index": "0x17a",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 5,
+        "files": [
+          "intelppm.sys:5"
+        ],
+        "index": "0x199",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x19a",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x1a0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x1b0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x1b1",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x1b2",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x1c4",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x1c5",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 5,
+        "files": [
+          "ntoskrnl.exe:5"
+        ],
+        "index": "0x1c8",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x1c9",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 10,
+        "files": [
+          "ntoskrnl.exe:10"
+        ],
+        "index": "0x1d9",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x250",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x258",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x259",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x268",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x269",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x26a",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x26b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x26c",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x26d",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x26e",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x26f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x277",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x2ff",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "intelppm.sys:3"
+        ],
+        "index": "0x309",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "intelppm.sys:3"
+        ],
+        "index": "0x30a",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 5,
+        "files": [
+          "intelppm.sys:5"
+        ],
+        "index": "0x30b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "intelppm.sys:2",
+          "ntoskrnl.exe:9"
+        ],
+        "index": "0x38d",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 24,
+        "files": [
+          "intelppm.sys:2",
+          "ntoskrnl.exe:22"
+        ],
+        "index": "0x38f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "ntoskrnl.exe:11"
+        ],
+        "index": "0x390",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x401",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x560",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x561",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x570",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x571",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "files": [
+          "ntoskrnl.exe:6"
+        ],
+        "index": "0x572",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0x600",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x6a2",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 46,
+        "files": [
+          "ntoskrnl.exe:46"
+        ],
+        "index": "0x6a7",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0x772",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x773",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "intelppm.sys:2"
+        ],
+        "index": "0x777",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x80b",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x830",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x83f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x844",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "intelppm.sys:1"
+        ],
+        "index": "0xc89",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "intelppm.sys:2",
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc8f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc91",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xd93",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xda0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xdb0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x14ce",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x14cf",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x17d0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x17d1",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x17da",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x8000",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xffff",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x100040",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000000",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x40000001",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000003",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000004",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000031",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000040",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000070",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000071",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000074",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000083",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x40000084",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000093",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000094",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0x400000b0",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x400000b1",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 15,
+        "files": [
+          "ntoskrnl.exe:15"
+        ],
+        "index": "0x400000c2",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000101",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000102",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000103",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000104",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0x40000110",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000111",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x40000112",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0x50000002",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0000080",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc0000081",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0000082",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc0000083",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0xc0000084",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0000100",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 13,
+        "files": [
+          "ntoskrnl.exe:13"
+        ],
+        "index": "0xc0000101",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 6,
+        "files": [
+          "ntoskrnl.exe:6"
+        ],
+        "index": "0xc0000102",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "exec"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc0000103",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "ntoskrnl.exe:4"
+        ],
+        "index": "0xc000010e",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 11,
+        "files": [
+          "ntoskrnl.exe:11"
+        ],
+        "index": "0xc000010f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000302",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000500",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0000502",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 29,
+        "files": [
+          "amdppm.sys:1",
+          "ntoskrnl.exe:28"
+        ],
+        "index": "0xc0010015",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "files": [
+          "ntoskrnl.exe:2"
+        ],
+        "index": "0xc001001f",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0010020",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "files": [
+          "amdk8.sys:4"
+        ],
+        "index": "0xc0010041",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "amdppm.sys:1"
+        ],
+        "index": "0xc0010062",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0011023",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc0011028",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "files": [
+          "ntoskrnl.exe:3"
+        ],
+        "index": "0xc0011029",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc001102c",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc001102e",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "files": [
+          "ntoskrnl.exe:1"
+        ],
+        "index": "0xc00110e3",
+        "index_known": true,
+        "op": "wrmsr",
+        "verdict": "never"
+      },
+      {
+        "count": 82,
+        "files": [
+          "amdk8.sys:7",
+          "amdppm.sys:10",
+          "intelppm.sys:9",
+          "ntoskrnl.exe:44",
+          "processr.sys:7",
+          "vmbus.sys:3",
+          "winhv.sys:1",
+          "winhvr.sys:1"
+        ],
+        "index": "0xdead0000",
+        "index_known": false,
+        "op": "wrmsr",
+        "verdict": "never"
+      }
+    ],
+    "odd_widths": [],
+    "set": "windows",
+    "variants": 2,
+    "verdicts": {
+      "cond": 118,
+      "exec": 17913976,
+      "never": 1131
+    }
+  },
+  "gaps": [
+    {
+      "count": 5477,
+      "example": "ntoskrnl.exe+0x2a5964 c4582a0012",
+      "files": 9,
+      "form": "C4 (VEX/EVEX)",
+      "top_files": [
+        "cng.sys:2041",
+        "ntoskrnl.exe:1493",
+        "ci.dll:1466",
+        "dumpfve.sys:464",
+        "iaStorAVC.sys:5",
+        "ItSas35i.sys:2"
+      ]
+    },
+    {
+      "count": 3075,
+      "example": "ntoskrnl.exe+0x52dd2e 66480f38f6f0",
+      "files": 3,
+      "form": "66 REX.W 0F 38 F6 reg",
+      "top_files": [
+        "ci.dll:1025",
+        "cng.sys:1025",
+        "ntoskrnl.exe:1025"
+      ]
+    },
+    {
+      "count": 2817,
+      "example": "ntoskrnl.exe+0x52dd34 f3490f38f6fa",
+      "files": 3,
+      "form": "F3 REX.W 0F 38 F6 reg",
+      "top_files": [
+        "ci.dll:939",
+        "cng.sys:939",
+        "ntoskrnl.exe:939"
+      ]
+    },
+    {
+      "count": 1679,
+      "example": "ntoskrnl.exe+0x3a2d1d 07",
+      "files": 12,
+      "form": "07",
+      "top_files": [
+        "lsi_sas2i.sys:952",
+        "ntoskrnl.exe:300",
+        "percsas3i.sys:112",
+        "MegaSas2i.sys:108",
+        "megasas35i.sys:86",
+        "iaStorAVC.sys:36"
+      ]
+    },
+    {
+      "count": 1622,
+      "example": "ntoskrnl.exe+0x3a2eac c52d3a00",
+      "files": 8,
+      "form": "C5 (VEX/EVEX)",
+      "top_files": [
+        "cng.sys:993",
+        "dumpfve.sys:232",
+        "ci.dll:214",
+        "ntoskrnl.exe:176",
+        "lsi_sas3i.sys:3",
+        "iaStorAVC.sys:2"
+      ]
+    },
+    {
+      "count": 1256,
+      "example": "ntoskrnl.exe+0x3406bd 06",
+      "files": 12,
+      "form": "06",
+      "top_files": [
+        "lsi_sas2i.sys:472",
+        "bfadfcoei.sys:329",
+        "bfadi.sys:329",
+        "mpi3drvi.sys:84",
+        "megasas35i.sys:28",
+        "ntoskrnl.exe:6"
+      ]
+    },
+    {
+      "count": 340,
+      "example": "cng.sys+0x9538 660f38dcf8",
+      "files": 2,
+      "form": "66 0F 38 DC reg",
+      "top_files": [
+        "cng.sys:269",
+        "dumpfve.sys:71"
+      ]
+    },
+    {
+      "count": 235,
+      "example": "ntoskrnl.exe+0x503823 0f01d0",
+      "files": 227,
+      "form": "0F 01 D0",
+      "top_files": [
+        "ntoskrnl.exe:6",
+        "ci.dll:2",
+        "cng.sys:2",
+        "dumpfve.sys:2",
+        "1394ohci.sys:1",
+        "AcpiDev.sys:1"
+      ]
+    },
+    {
+      "count": 216,
+      "example": "ntoskrnl.exe+0x52dd23 f3490f38f633",
+      "files": 3,
+      "form": "F3 REX.W 0F 38 F6 mem",
+      "top_files": [
+        "ci.dll:72",
+        "cng.sys:72",
+        "ntoskrnl.exe:72"
+      ]
+    },
+    {
+      "count": 164,
+      "example": "ntoskrnl.exe+0x469a73 660f3a44cc11",
+      "files": 3,
+      "form": "66 0F 3A 44 reg",
+      "top_files": [
+        "cng.sys:101",
+        "refs.sys:45",
+        "ntoskrnl.exe:18"
+      ]
+    },
+    {
+      "count": 148,
+      "example": "cng.sys+0x86cc 660f38dee3",
+      "files": 2,
+      "form": "66 0F 38 DE reg",
+      "top_files": [
+        "cng.sys:74",
+        "dumpfve.sys:74"
+      ]
+    },
+    {
+      "count": 128,
+      "example": "ntoskrnl.exe+0x51c85e 450f38cbc2",
+      "files": 4,
+      "form": "0F 38 CB reg",
+      "top_files": [
+        "ci.dll:32",
+        "cng.sys:32",
+        "dumpfve.sys:32",
+        "ntoskrnl.exe:32"
+      ]
+    },
+    {
+      "count": 111,
+      "example": "cng.sys+0x956e 660f38ddf8",
+      "files": 2,
+      "form": "66 0F 38 DD reg",
+      "top_files": [
+        "cng.sys:80",
+        "dumpfve.sys:31"
+      ]
+    },
+    {
+      "count": 78,
+      "example": "ntoskrnl.exe+0x6adffb f30f0129",
+      "files": 1,
+      "form": "F3 0F 01 /5 mem",
+      "top_files": [
+        "ntoskrnl.exe:78"
+      ]
+    },
+    {
+      "count": 78,
+      "example": "ntoskrnl.exe+0x6adfff f30f01ea",
+      "files": 1,
+      "form": "F3 0F 01 EA",
+      "top_files": [
+        "ntoskrnl.exe:78"
+      ]
+    },
+    {
+      "count": 72,
+      "example": "ntoskrnl.exe+0x6ae190 f3480faee8",
+      "files": 1,
+      "form": "F3 REX.W 0F AE E8",
+      "top_files": [
+        "ntoskrnl.exe:72"
+      ]
+    },
+    {
+      "count": 68,
+      "example": "ntoskrnl.exe+0x225155 0f01cb",
+      "files": 1,
+      "form": "0F 01 CB",
+      "top_files": [
+        "ntoskrnl.exe:68"
+      ]
+    },
+    {
+      "count": 63,
+      "example": "ntoskrnl.exe+0x3406b8 4c06",
+      "files": 3,
+      "form": "REX.W 06",
+      "top_files": [
+        "bfadfcoei.sys:31",
+        "bfadi.sys:31",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 54,
+      "example": "ntoskrnl.exe+0x52faf1 66490f38f63a",
+      "files": 3,
+      "form": "66 REX.W 0F 38 F6 mem",
+      "top_files": [
+        "ci.dll:18",
+        "cng.sys:18",
+        "ntoskrnl.exe:18"
+      ]
+    },
+    {
+      "count": 48,
+      "example": "ntoskrnl.exe+0x51c84f 0f38ccca",
+      "files": 4,
+      "form": "0F 38 CC reg",
+      "top_files": [
+        "ci.dll:12",
+        "cng.sys:12",
+        "dumpfve.sys:12",
+        "ntoskrnl.exe:12"
+      ]
+    },
+    {
+      "count": 48,
+      "example": "ntoskrnl.exe+0x51c8ca 0f38cdec",
+      "files": 4,
+      "form": "0F 38 CD reg",
+      "top_files": [
+        "ci.dll:12",
+        "cng.sys:12",
+        "dumpfve.sys:12",
+        "ntoskrnl.exe:12"
+      ]
+    },
+    {
+      "count": 48,
+      "example": "cng.sys+0x166ce 660f38dff8",
+      "files": 2,
+      "form": "66 0F 38 DF reg",
+      "top_files": [
+        "cng.sys:24",
+        "dumpfve.sys:24"
+      ]
+    },
+    {
+      "count": 41,
+      "example": "ntoskrnl.exe+0x37a11e 37",
+      "files": 8,
+      "form": "37",
+      "top_files": [
+        "ntoskrnl.exe:15",
+        "bfadfcoei.sys:7",
+        "bfadi.sys:7",
+        "lsi_sas3i.sys:5",
+        "lsi_sas2i.sys:3",
+        "evbda.sys:2"
+      ]
+    },
+    {
+      "count": 36,
+      "example": "ntoskrnl.exe+0x3a7741 6e",
+      "files": 4,
+      "form": "6E",
+      "top_files": [
+        "ntoskrnl.exe:29",
+        "ItSas35i.sys:4",
+        "mpi3drvi.sys:2",
+        "iaStorAVC.sys:1"
+      ]
+    },
+    {
+      "count": 36,
+      "example": "ntoskrnl.exe+0xb160f8 e55f",
+      "files": 4,
+      "form": "E5",
+      "top_files": [
+        "bfadfcoei.sys:17",
+        "bfadi.sys:17",
+        "lsi_sas3i.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 32,
+      "example": "ntoskrnl.exe+0x212a02 0f01f9",
+      "files": 3,
+      "form": "0F 01 F9",
+      "top_files": [
+        "ntoskrnl.exe:28",
+        "scmbus.sys:3",
+        "pmem.sys:1"
+      ]
+    },
+    {
+      "count": 31,
+      "example": "ntoskrnl.exe+0x469b9a 660f3a440ddc01bbff10",
+      "files": 3,
+      "form": "66 0F 3A 44 mem",
+      "top_files": [
+        "cng.sys:24",
+        "refs.sys:5",
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 27,
+      "example": "ntoskrnl.exe+0x935861 2f",
+      "files": 9,
+      "form": "2F",
+      "top_files": [
+        "bfadfcoei.sys:9",
+        "bfadi.sys:9",
+        "lsi_sas2i.sys:2",
+        "ntoskrnl.exe:2",
+        "ItSas35i.sys:1",
+        "acpi.sys:1"
+      ]
+    },
+    {
+      "count": 23,
+      "example": "ntoskrnl.exe+0x3f4b8e 3f",
+      "files": 8,
+      "form": "3F",
+      "top_files": [
+        "ntoskrnl.exe:6",
+        "bfadfcoei.sys:5",
+        "bfadi.sys:5",
+        "ItSas35i.sys:3",
+        "MegaSas2i.sys:1",
+        "elxfcoe.sys:1"
+      ]
+    },
+    {
+      "count": 23,
+      "example": "ntoskrnl.exe+0x327cf4 60",
+      "files": 6,
+      "form": "60",
+      "top_files": [
+        "ntoskrnl.exe:9",
+        "iaStorAVC.sys:8",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "ItSas35i.sys:1",
+        "elxfcoe.sys:1"
+      ]
+    },
+    {
+      "count": 22,
+      "example": "ataport.sys+0xb00f 66f36f",
+      "files": 11,
+      "form": "66 F3 6F",
+      "top_files": [
+        "vsmraid.sys:6",
+        "VSTXRAID.SYS:4",
+        "sisraid2.sys:3",
+        "Diskdump.sys:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1"
+      ]
+    },
+    {
+      "count": 22,
+      "example": "ntoskrnl.exe+0x9bf739 d4",
+      "files": 8,
+      "form": "D4",
+      "top_files": [
+        "mpi3drvi.sys:7",
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "ItSas35i.sys:2",
+        "MegaSas2i.sys:2",
+        "elxstor.sys:2"
+      ]
+    },
+    {
+      "count": 22,
+      "example": "bfadfcoei.sys+0x62aa1 2606",
+      "files": 2,
+      "form": "SEG 06",
+      "top_files": [
+        "bfadfcoei.sys:11",
+        "bfadi.sys:11"
+      ]
+    },
+    {
+      "count": 21,
+      "example": "ntoskrnl.exe+0x8ee210 1e",
+      "files": 5,
+      "form": "1E",
+      "top_files": [
+        "ntoskrnl.exe:15",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "elxfcoe.sys:1",
+        "iaStorAVC.sys:1"
+      ]
+    },
+    {
+      "count": 21,
+      "example": "ataport.sys+0xad8f 66f36d",
+      "files": 11,
+      "form": "66 F3 6D",
+      "top_files": [
+        "vsmraid.sys:7",
+        "sisraid2.sys:3",
+        "Diskdump.sys:2",
+        "VSTXRAID.SYS:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1"
+      ]
+    },
+    {
+      "count": 21,
+      "example": "bfadfcoei.sys+0x2dcad da02",
+      "files": 3,
+      "form": "DA /0 mem",
+      "top_files": [
+        "bfadfcoei.sys:9",
+        "bfadi.sys:9",
+        "mpi3drvi.sys:3"
+      ]
+    },
+    {
+      "count": 20,
+      "example": "acpi.sys+0x107f9 0f0f0f01",
+      "files": 1,
+      "form": "0F 0F mem",
+      "top_files": [
+        "acpi.sys:20"
+      ]
+    },
+    {
+      "count": 19,
+      "example": "ntoskrnl.exe+0x935934 16",
+      "files": 11,
+      "form": "16",
+      "top_files": [
+        "mpi3drvi.sys:4",
+        "lsi_sas2i.sys:3",
+        "ntoskrnl.exe:3",
+        "ItSas35i.sys:2",
+        "MegaSas2i.sys:1",
+        "bfadfcoei.sys:1"
+      ]
+    },
+    {
+      "count": 19,
+      "example": "ntoskrnl.exe+0x996341 61",
+      "files": 4,
+      "form": "61",
+      "top_files": [
+        "iaStorAVC.sys:10",
+        "ntoskrnl.exe:7",
+        "lsi_sas2i.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 19,
+      "example": "cng.sys+0xeec5 660f3adfc800",
+      "files": 2,
+      "form": "66 0F 3A DF reg",
+      "top_files": [
+        "cng.sys:13",
+        "dumpfve.sys:6"
+      ]
+    },
+    {
+      "count": 18,
+      "example": "ntoskrnl.exe+0x6d8452 6d",
+      "files": 7,
+      "form": "6D",
+      "top_files": [
+        "qeois.sys:6",
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "ntoskrnl.exe:3",
+        "ItSas35i.sys:1",
+        "bxvbda.sys:1"
+      ]
+    },
+    {
+      "count": 18,
+      "example": "ntoskrnl.exe+0x20fd58 cf",
+      "files": 6,
+      "form": "CF",
+      "top_files": [
+        "qevbda.sys:10",
+        "ntoskrnl.exe:4",
+        "elxfcoe.sys:1",
+        "megasas35i.sys:1",
+        "mpi3drvi.sys:1",
+        "ql2300i.sys:1"
+      ]
+    },
+    {
+      "count": 17,
+      "example": "ntoskrnl.exe+0x935935 17",
+      "files": 10,
+      "form": "17",
+      "top_files": [
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "ntoskrnl.exe:3",
+        "lsi_sas2i.sys:2",
+        "ItSas35i.sys:1",
+        "evbd0a.sys:1"
+      ]
+    },
+    {
+      "count": 17,
+      "example": "ntoskrnl.exe+0x2a5978 1f",
+      "files": 5,
+      "form": "1F",
+      "top_files": [
+        "ntoskrnl.exe:9",
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "ItSas35i.sys:1",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 17,
+      "example": "ntoskrnl.exe+0x6e9d37 9a",
+      "files": 5,
+      "form": "9A",
+      "top_files": [
+        "bfadfcoei.sys:5",
+        "bfadi.sys:5",
+        "ntoskrnl.exe:5",
+        "lsi_sas2i.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 16,
+      "example": "ntoskrnl.exe+0x937ad5 62930000030301",
+      "files": 8,
+      "form": "62 (VEX/EVEX)",
+      "top_files": [
+        "ntoskrnl.exe:6",
+        "qevbda.sys:3",
+        "lsi_sas2i.sys:2",
+        "ItSas35i.sys:1",
+        "elxstor.sys:1",
+        "iaStorAVC.sys:1"
+      ]
+    },
+    {
+      "count": 16,
+      "example": "cng.sys+0xb198 660f38dda380000000",
+      "files": 2,
+      "form": "66 0F 38 DD mem",
+      "top_files": [
+        "cng.sys:8",
+        "dumpfve.sys:8"
+      ]
+    },
+    {
+      "count": 16,
+      "example": "cng.sys+0x8828 660f38dfa380000000",
+      "files": 2,
+      "form": "66 0F 38 DF mem",
+      "top_files": [
+        "cng.sys:8",
+        "dumpfve.sys:8"
+      ]
+    },
+    {
+      "count": 15,
+      "example": "ntoskrnl.exe+0x8d439c e742",
+      "files": 5,
+      "form": "E7",
+      "top_files": [
+        "bfadfcoei.sys:5",
+        "bfadi.sys:5",
+        "lsi_sas2i.sys:2",
+        "ntoskrnl.exe:2",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 15,
+      "example": "ataport.sys+0x126bf f36e",
+      "files": 11,
+      "form": "F3 6E",
+      "top_files": [
+        "parport.sys:3",
+        "Diskdump.sys:2",
+        "serial.sys:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1",
+        "ataport.sys:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "ntoskrnl.exe+0x721854 27",
+      "files": 5,
+      "form": "27",
+      "top_files": [
+        "bfadfcoei.sys:4",
+        "bfadi.sys:4",
+        "ntoskrnl.exe:4",
+        "cht4sx64.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "ntoskrnl.exe+0x3406b0 cb",
+      "files": 5,
+      "form": "CB",
+      "top_files": [
+        "ntoskrnl.exe:8",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "evbd0a.sys:1",
+        "qlfcoei.sys:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "ntoskrnl.exe+0x40d6a9 d6",
+      "files": 6,
+      "form": "D6",
+      "top_files": [
+        "ntoskrnl.exe:4",
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "mpi3drvi.sys:2",
+        "lsi_sas2i.sys:1",
+        "nvraid.sys:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "ataport.sys+0x1206f f36c",
+      "files": 10,
+      "form": "F3 6C",
+      "top_files": [
+        "parport.sys:4",
+        "Diskdump.sys:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1",
+        "ataport.sys:1",
+        "nvstor.sys:1"
+      ]
+    },
+    {
+      "count": 13,
+      "example": "ntoskrnl.exe+0x3a773c 406f",
+      "files": 8,
+      "form": "6F",
+      "top_files": [
+        "ItSas35i.sys:3",
+        "ntoskrnl.exe:3",
+        "mpi3drvi.sys:2",
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "elxstor.sys:1"
+      ]
+    },
+    {
+      "count": 13,
+      "example": "ntoskrnl.exe+0x39a5b4 caa039",
+      "files": 8,
+      "form": "CA",
+      "top_files": [
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "ntoskrnl.exe:2",
+        "elxfcoe.sys:1",
+        "elxstor.sys:1",
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 13,
+      "example": "ntoskrnl.exe+0x44e005 df440089",
+      "files": 3,
+      "form": "DF /0 mem",
+      "top_files": [
+        "ntoskrnl.exe:7",
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3"
+      ]
+    },
+    {
+      "count": 13,
+      "example": "ataport.sys+0x1208f f36d",
+      "files": 10,
+      "form": "F3 6D",
+      "top_files": [
+        "sisraid2.sys:3",
+        "Diskdump.sys:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1",
+        "ataport.sys:1",
+        "nvstor.sys:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ntoskrnl.exe+0x3a2e94 0e",
+      "files": 6,
+      "form": "0E",
+      "top_files": [
+        "lsi_sas2i.sys:3",
+        "ntoskrnl.exe:3",
+        "MegaSas2i.sys:2",
+        "lsi_sas3i.sys:2",
+        "ItSas35i.sys:1",
+        "bxvbda.sys:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ntoskrnl.exe+0x225178 0f01ca",
+      "files": 1,
+      "form": "0F 01 CA",
+      "top_files": [
+        "ntoskrnl.exe:12"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ntoskrnl.exe+0x22dbca 660f3882442420",
+      "files": 1,
+      "form": "66 0F 38 82 mem",
+      "top_files": [
+        "ntoskrnl.exe:12"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ntoskrnl.exe+0x3a2cfc d7",
+      "files": 6,
+      "form": "D7",
+      "top_files": [
+        "mpi3drvi.sys:3",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "lsi_sas2i.sys:2",
+        "ntoskrnl.exe:2",
+        "percsas3i.sys:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ntoskrnl.exe+0x9bf5f8 ea",
+      "files": 8,
+      "form": "EA",
+      "top_files": [
+        "ItSas35i.sys:3",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "elxfcoe.sys:1",
+        "elxstor.sys:1",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "bfadfcoei.sys+0x1ef64 45ee",
+      "files": 2,
+      "form": "EE",
+      "top_files": [
+        "bfadfcoei.sys:6",
+        "bfadi.sys:6"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "ataport.sys+0x126df f36f",
+      "files": 10,
+      "form": "F3 6F",
+      "top_files": [
+        "Diskdump.sys:2",
+        "sisraid2.sys:2",
+        "Dumpata.sys:1",
+        "Dumpstorport.sys:1",
+        "ataport.sys:1",
+        "nvstor.sys:1"
+      ]
+    },
+    {
+      "count": 11,
+      "example": "ntoskrnl.exe+0x9bf655 c89b0016",
+      "files": 5,
+      "form": "C8",
+      "top_files": [
+        "ntoskrnl.exe:5",
+        "lsi_sas2i.sys:2",
+        "mpi3drvi.sys:2",
+        "lsi_sas3i.sys:1",
+        "qeois.sys:1"
+      ]
+    },
+    {
+      "count": 11,
+      "example": "mpi3drvi.sys+0x7570 646e",
+      "files": 1,
+      "form": "FS 6E",
+      "top_files": [
+        "mpi3drvi.sys:11"
+      ]
+    },
+    {
+      "count": 11,
+      "example": "bfadfcoei.sys+0x74d21 4b07",
+      "files": 3,
+      "form": "REX.W 07",
+      "top_files": [
+        "bfadfcoei.sys:5",
+        "bfadi.sys:5",
+        "mlx4_bus.sys:1"
+      ]
+    },
+    {
+      "count": 10,
+      "example": "ntoskrnl.exe+0x3ea4b9 4c0f38f64208",
+      "files": 1,
+      "form": "REX.W 0F 38 F6 mem",
+      "top_files": [
+        "ntoskrnl.exe:10"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "ntoskrnl.exe+0x93582c 8fcbb10011",
+      "files": 4,
+      "form": "8F",
+      "top_files": [
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "lsi_sas2i.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "ntoskrnl.exe+0x44dffd de4400b2",
+      "files": 4,
+      "form": "DE /0 mem",
+      "top_files": [
+        "ntoskrnl.exe:3",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "MegaSas2i.sys:1"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "ntoskrnl.exe+0x46ff00 f1",
+      "files": 5,
+      "form": "F1",
+      "top_files": [
+        "ntoskrnl.exe:4",
+        "ItSas35i.sys:1",
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "megasas35i.sys:1"
+      ]
+    },
+    {
+      "count": 7,
+      "example": "ntoskrnl.exe+0x937b15 6c",
+      "files": 6,
+      "form": "6C",
+      "top_files": [
+        "ItSas35i.sys:2",
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas3i.sys:1",
+        "mpi3drvi.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 7,
+      "example": "ntoskrnl.exe+0x6d8451 82",
+      "files": 6,
+      "form": "82",
+      "top_files": [
+        "ntoskrnl.exe:2",
+        "ItSas35i.sys:1",
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas3i.sys:1",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 7,
+      "example": "bfadfcoei.sys+0x3d81d d5",
+      "files": 3,
+      "form": "D5",
+      "top_files": [
+        "MegaSas2i.sys:3",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2"
+      ]
+    },
+    {
+      "count": 7,
+      "example": "bfadfcoei.sys+0x3dd41 dc03",
+      "files": 3,
+      "form": "DC /0 mem",
+      "top_files": [
+        "bfadfcoei.sys:3",
+        "bfadi.sys:3",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "bfadfcoei.sys+0x3df44 8dde",
+      "files": 3,
+      "form": "#UD 8D reg",
+      "top_files": [
+        "ItSas35i.sys:2",
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "vmbus.sys+0x17309 660f01cc",
+      "files": 2,
+      "form": "66 0F 01 CC",
+      "top_files": [
+        "vmbus.sys:3",
+        "winhv.sys:3"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "ntoskrnl.exe+0x8ecc09 c68e00f0c68e00",
+      "files": 3,
+      "form": "C6 /1 mem",
+      "top_files": [
+        "qlfcoei.sys:3",
+        "ntoskrnl.exe:2",
+        "ItSas35i.sys:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "ntoskrnl.exe+0x8ecc18 ce",
+      "files": 4,
+      "form": "CE",
+      "top_files": [
+        "lsi_sas3i.sys:2",
+        "ntoskrnl.exe:2",
+        "lsi_sas2i.sys:1",
+        "mpi3drvi.sys:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "bfadfcoei.sys+0x2dcb9 d902",
+      "files": 4,
+      "form": "D9 /0 mem",
+      "top_files": [
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2",
+        "ItSas35i.sys:1",
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "ntoskrnl.exe+0x6b9c26 f30f01e8",
+      "files": 1,
+      "form": "F3 0F 01 E8",
+      "top_files": [
+        "ntoskrnl.exe:6"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "ntoskrnl.exe+0x6adf11 f3480faee9",
+      "files": 1,
+      "form": "F3 REX.W 0F AE E9",
+      "top_files": [
+        "ntoskrnl.exe:6"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ntoskrnl.exe+0x6b8900 0f01c1",
+      "files": 5,
+      "form": "0F 01 C1",
+      "top_files": [
+        "mrxsmb20.sys:1",
+        "ntfs.sys:1",
+        "ntoskrnl.exe:1",
+        "vhdmp.sys:1",
+        "vmbus.sys:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ntoskrnl.exe+0x6b8910 0f01d9",
+      "files": 5,
+      "form": "0F 01 D9",
+      "top_files": [
+        "mrxsmb20.sys:1",
+        "ntfs.sys:1",
+        "ntoskrnl.exe:1",
+        "vhdmp.sys:1",
+        "vmbus.sys:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ntoskrnl.exe+0x3e993c 410fae2a",
+      "files": 1,
+      "form": "0F AE /5 mem",
+      "top_files": [
+        "ntoskrnl.exe:5"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ntoskrnl.exe+0x3e9b59 0fc719",
+      "files": 1,
+      "form": "0F C7 /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:5"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ntoskrnl.exe+0x3ecae0 664c0f38f500",
+      "files": 1,
+      "form": "66 REX.W 0F 38 F5 mem",
+      "top_files": [
+        "ntoskrnl.exe:5"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x6b88f2 0f01d4",
+      "files": 4,
+      "form": "0F 01 D4",
+      "top_files": [
+        "mrxsmb20.sys:1",
+        "ntfs.sys:1",
+        "ntoskrnl.exe:1",
+        "vhdmp.sys:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x209158 0f01fa",
+      "files": 1,
+      "form": "0F 01 FA",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x209187 0f01fb",
+      "files": 1,
+      "form": "0F 01 FB",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "bfadfcoei.sys+0x213ed 0f0200",
+      "files": 2,
+      "form": "0F 02 mem",
+      "top_files": [
+        "bfadfcoei.sys:2",
+        "bfadi.sys:2"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "bfadfcoei.sys+0x3db5d d803",
+      "files": 4,
+      "form": "D8 /0 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas2i.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0xb158f2 dd58b1",
+      "files": 1,
+      "form": "DD /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "bfadfcoei.sys+0x1a758 dfa0010007a1",
+      "files": 4,
+      "form": "DF /4 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas2i.sys:1",
+        "qevbda.sys:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x6af2a7 f3410fae31",
+      "files": 1,
+      "form": "F3 0F AE /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x8ef80d f78e008bf78e0034f78e",
+      "files": 2,
+      "form": "F7 /1 mem",
+      "top_files": [
+        "ntoskrnl.exe:3",
+        "mlx4_bus.sys:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0x6af2bc 650f002c252ab00000",
+      "files": 1,
+      "form": "GS 0F 00 /5 mem",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ntoskrnl.exe+0xb16098 4860",
+      "files": 1,
+      "form": "REX.W 60",
+      "top_files": [
+        "ntoskrnl.exe:4"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0xbe98e8 0f01c8",
+      "files": 3,
+      "form": "0F 01 C8",
+      "top_files": [
+        "amdppm.sys:1",
+        "intelppm.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0xbe98ee 0f01c9",
+      "files": 3,
+      "form": "0F 01 C9",
+      "top_files": [
+        "amdppm.sys:1",
+        "intelppm.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x3ed4b2 410fae21",
+      "files": 1,
+      "form": "0F AE /4 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x3ec491 0fc729",
+      "files": 1,
+      "form": "0F C7 /5 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x3fe163 660fae39",
+      "files": 1,
+      "form": "66 0F AE /7 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x4d1d4e 66480f38f8442440",
+      "files": 1,
+      "form": "66 REX.W 0F 38 F8 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "bfadfcoei.sys+0x1a5a8 c6960100da9601",
+      "files": 3,
+      "form": "C6 /2 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x9bf6a5 c69b002fd49b00",
+      "files": 1,
+      "form": "C6 /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x518a06 c7f800000000",
+      "files": 1,
+      "form": "C7 /7 reg",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "bfadfcoei.sys+0x1a650 df9a01001b9b",
+      "files": 3,
+      "form": "DF /3 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x3a7794 df753a",
+      "files": 1,
+      "form": "DF /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ItSas35i.sys+0xfb49 f20000",
+      "files": 2,
+      "form": "F2 00 mem",
+      "top_files": [
+        "ItSas35i.sys:2",
+        "megasas35i.sys:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "vmbus.sys+0x17280 f20f01d9",
+      "files": 2,
+      "form": "F2 0F 01 D9",
+      "top_files": [
+        "vmbus.sys:2",
+        "winhv.sys:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ItSas35i.sys+0xfb51 f30000",
+      "files": 2,
+      "form": "F3 00 mem",
+      "top_files": [
+        "ItSas35i.sys:2",
+        "megasas35i.sys:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x52ed82 f3410f38f6c1",
+      "files": 3,
+      "form": "F3 0F 38 F6 reg",
+      "top_files": [
+        "ci.dll:1",
+        "cng.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x8e1558 fe13",
+      "files": 3,
+      "form": "FE /2 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x9c6b0d 649c",
+      "files": 3,
+      "form": "FS 9C",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntoskrnl.exe+0x3f4b89 493f",
+      "files": 2,
+      "form": "REX.W 3F",
+      "top_files": [
+        "ntoskrnl.exe:2",
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x6a9618 0f009f00010000",
+      "files": 1,
+      "form": "0F 00 /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x6ae90d 0f01cf",
+      "files": 1,
+      "form": "0F 01 CF",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x518a12 0f01d5",
+      "files": 1,
+      "form": "0F 01 D5",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x6ba21f 0f03c0",
+      "files": 1,
+      "form": "0F 03 reg",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x92564 0f24",
+      "files": 2,
+      "form": "0F 24",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "cng.sys+0xef3c 660f38dbc8",
+      "files": 2,
+      "form": "66 0F 38 DB reg",
+      "top_files": [
+        "cng.sys:1",
+        "dumpfve.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x4fc701 660fae31",
+      "files": 1,
+      "form": "66 0F AE /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x6be7a7 66650f7f042560880000",
+      "files": 1,
+      "form": "66 GS 0F 7F mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x500468 66480fd7c1",
+      "files": 1,
+      "form": "66 REX.W 0F D7 reg",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x1a638 679a",
+      "files": 2,
+      "form": "67 9A",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x1a668 439b",
+      "files": 2,
+      "form": "9B",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x8eddc9 dc8e00ff57b1",
+      "files": 1,
+      "form": "DC /1 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9bf719 dc9b008cbf9b",
+      "files": 1,
+      "form": "DC /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x97cd0 dc7b09",
+      "files": 2,
+      "form": "DC /7 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x24e84 de4c0200",
+      "files": 2,
+      "form": "DE /1 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9c6968 de1f",
+      "files": 1,
+      "form": "DE /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9358c1 deb1009a4493",
+      "files": 2,
+      "form": "DE /6 mem",
+      "top_files": [
+        "lsi_sas3i.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x8ecc14 dfc6",
+      "files": 2,
+      "form": "DF /0 reg",
+      "top_files": [
+        "iaStorAVC.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x52aa0 f2210500432a05",
+      "files": 2,
+      "form": "F2 21 mem",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x1a5fc f297",
+      "files": 2,
+      "form": "F2 97",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9bf701 f29b",
+      "files": 1,
+      "form": "F2 9B",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x1a710 f29e",
+      "files": 2,
+      "form": "F2 9E",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x414a02 f3450f38f81a",
+      "files": 2,
+      "form": "F3 0F 38 F8 mem",
+      "top_files": [
+        "WinAccel.sys:1",
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x417d8 f316",
+      "files": 2,
+      "form": "F3 16",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x1a658 f39a",
+      "files": 2,
+      "form": "F3 9A",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9bf729 f39b",
+      "files": 1,
+      "form": "F3 9B",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x8ec100 ffbe8e001dbf",
+      "files": 1,
+      "form": "FF /7 mem",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x5570c f051",
+      "files": 2,
+      "form": "LOCK 51",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x3e0cc 4ee003",
+      "files": 2,
+      "form": "REX.W E0",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntoskrnl.exe+0x9c689d 269c",
+      "files": 1,
+      "form": "SEG 9C",
+      "top_files": [
+        "ntoskrnl.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "bfadfcoei.sys+0x3d4d4 26d4",
+      "files": 2,
+      "form": "SEG D4",
+      "top_files": [
+        "bfadfcoei.sys:1",
+        "bfadi.sys:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "lsi_sas2i.sys+0xf638 26ee",
+      "files": 1,
+      "form": "SEG EE",
+      "top_files": [
+        "lsi_sas2i.sys:2"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x3a7778 0f723a00",
+      "files": 1,
+      "form": "#UD 0F 72 /7 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas2i.sys+0x4ecc 8e4800",
+      "files": 1,
+      "form": "#UD 8E mem",
+      "top_files": [
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x8ef7fc f0f78e00d5f78e0074f78e",
+      "files": 1,
+      "form": "#UD LOCK F7 /1 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0xb5906d 0f01d1",
+      "files": 1,
+      "form": "0F 01 D1",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x7d5bf5 0f01fc",
+      "files": 1,
+      "form": "0F 01 FC",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x93597e 404144444442430f1f00",
+      "files": 1,
+      "form": "0F 1F mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x6b6614 0fae31",
+      "files": 1,
+      "form": "0F AE /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x3ed497 0fc721",
+      "files": 1,
+      "form": "0F C7 /4 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x422537 0fc7f2",
+      "files": 1,
+      "form": "0F C7 /6 reg",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x212ad6 66410faef1",
+      "files": 1,
+      "form": "66 0F AE F1",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "qevbda.sys+0x1d090 66cf",
+      "files": 1,
+      "form": "66 CF",
+      "top_files": [
+        "qevbda.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "elxstor.sys+0x6bb4 f2660000",
+      "files": 1,
+      "form": "66 F2 00 mem",
+      "top_files": [
+        "elxstor.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x9c6b04 66649c",
+      "files": 1,
+      "form": "66 FS 9C",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x6bef4c 66650f6f042560880000",
+      "files": 1,
+      "form": "66 GS 0F 6F mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0xb88754 6786b8006785b8",
+      "files": 1,
+      "form": "67 86 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x9c6899 679c",
+      "files": 1,
+      "form": "67 9C",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0x3814 8c31",
+      "files": 1,
+      "form": "8C mem",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x20fd3c 8cfa",
+      "files": 1,
+      "form": "8C reg",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0xcc94 8fc6",
+      "files": 1,
+      "form": "8F /0 reg",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0x12c44 c62701",
+      "files": 1,
+      "form": "C6 /4 mem",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x6c3306 c6f800",
+      "files": 1,
+      "form": "C6 /7 reg",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas2i.sys+0x1542c c7530100f75301",
+      "files": 1,
+      "form": "C7 /2 mem",
+      "top_files": [
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x8ede3c c7da8e000cdd",
+      "files": 1,
+      "form": "C7 /3 reg",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x9c6acc c7629c009d4c9c",
+      "files": 1,
+      "form": "C7 /4 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x935831 c7b10057ccb100794593",
+      "files": 1,
+      "form": "C7 /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x935848 45c9",
+      "files": 1,
+      "form": "C9",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x948e6c d88c9400258d94",
+      "files": 1,
+      "form": "D8 /1 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x9bf66d d89b00a6e59b",
+      "files": 1,
+      "form": "D8 /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x439200 d99143005491",
+      "files": 1,
+      "form": "D9 /2 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x9bf6f5 d99b0073f09b",
+      "files": 1,
+      "form": "D9 /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x6addc0 d929",
+      "files": 1,
+      "form": "D9 /5 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x93588d d9b1007c4793",
+      "files": 1,
+      "form": "D9 /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0xb19334 da90b100b390",
+      "files": 1,
+      "form": "DA /2 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x996338 da5f99",
+      "files": 1,
+      "form": "DA /3 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x935895 dab100b3c5b1",
+      "files": 1,
+      "form": "DA /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0x57b4 db5200",
+      "files": 1,
+      "form": "DB /2 mem",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x93589d dbb10068dcb1",
+      "files": 1,
+      "form": "DB /6 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "qeois.sys+0x36e48 dc6d03",
+      "files": 1,
+      "form": "DC /5 mem",
+      "top_files": [
+        "qeois.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "megasas35i.sys+0x3b50 dc33",
+      "files": 1,
+      "form": "DC /6 mem",
+      "top_files": [
+        "megasas35i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas2i.sys+0x145c8 dd440100",
+      "files": 1,
+      "form": "DD /0 mem",
+      "top_files": [
+        "lsi_sas2i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0x15a28 dd5701",
+      "files": 1,
+      "form": "DD /2 mem",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ItSas35i.sys+0x17c7c de7901",
+      "files": 1,
+      "form": "DE /7 mem",
+      "top_files": [
+        "ItSas35i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x100802a f2400100",
+      "files": 1,
+      "form": "F2 01 mem",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "winhv.sys+0x43eb f20f01ff",
+      "files": 1,
+      "form": "F2 0F 01 FF",
+      "top_files": [
+        "winhv.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "WinAccel.sys+0x3ccf f2410faef2",
+      "files": 1,
+      "form": "F2 0F AE F2",
+      "top_files": [
+        "WinAccel.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x697e11 f2410faef4",
+      "files": 1,
+      "form": "F2 0F AE F4",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x43892b f20faef5",
+      "files": 1,
+      "form": "F2 0F AE F5",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x414f2f f20faef6",
+      "files": 1,
+      "form": "F2 0F AE F6",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "megasas35i.sys+0x154c f21000",
+      "files": 1,
+      "form": "F2 10 mem",
+      "top_files": [
+        "megasas35i.sys:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntoskrnl.exe+0x93ad91 f2b100",
+      "files": 1,
+      "form": "F2 B1",
+      "top_files": [
+        "ntoskrnl.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "lsi_sas3i.sys+0xdd68 f2d6",
+      "files": 1,
+      "form": "F2 D6",
+      "top_files": [
+        "lsi_sas3i.sys:1"
+      ]
+    }
+  ],
+  "images": [
+    {
+      "cpl": 0,
+      "decoded": 2656659,
+      "decoded_invalid": 2,
+      "file": "ntoskrnl.exe",
+      "functions": 37910,
+      "refused": 4806,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 189849,
+      "decoded_invalid": 0,
+      "file": "ci.dll",
+      "functions": 2584,
+      "refused": 3793,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3243,
+      "decoded_invalid": 0,
+      "file": "kdcom.dll",
+      "functions": 87,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 52369,
+      "decoded_invalid": 0,
+      "file": "1394ohci.sys",
+      "functions": 423,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 15584,
+      "decoded_invalid": 0,
+      "file": "3ware.sys",
+      "functions": 147,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 159294,
+      "decoded_invalid": 0,
+      "file": "acpi.sys",
+      "functions": 2041,
+      "refused": 28,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3890,
+      "decoded_invalid": 0,
+      "file": "AcpiDev.sys",
+      "functions": 64,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 27631,
+      "decoded_invalid": 0,
+      "file": "acpiex.sys",
+      "functions": 385,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2161,
+      "decoded_invalid": 0,
+      "file": "acpitime.sys",
+      "functions": 40,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 158588,
+      "decoded_invalid": 0,
+      "file": "Acx01000.sys",
+      "functions": 1320,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 268542,
+      "decoded_invalid": 0,
+      "file": "adp80xx.sys",
+      "functions": 597,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 116515,
+      "decoded_invalid": 0,
+      "file": "afd.sys",
+      "functions": 1369,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17147,
+      "decoded_invalid": 0,
+      "file": "agilevpn.sys",
+      "functions": 265,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2068,
+      "decoded_invalid": 0,
+      "file": "amdgpio2.sys",
+      "functions": 32,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7794,
+      "decoded_invalid": 0,
+      "file": "amdi2c.sys",
+      "functions": 85,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 43913,
+      "decoded_invalid": 0,
+      "file": "amdk8.sys",
+      "functions": 496,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 46160,
+      "decoded_invalid": 0,
+      "file": "amdppm.sys",
+      "functions": 617,
+      "refused": 3,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14160,
+      "decoded_invalid": 0,
+      "file": "amdsata.sys",
+      "functions": 94,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 54456,
+      "decoded_invalid": 0,
+      "file": "amdsbs.sys",
+      "functions": 599,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2442,
+      "decoded_invalid": 0,
+      "file": "amdxata.sys",
+      "functions": 33,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 15701,
+      "decoded_invalid": 0,
+      "file": "AppleSSD.sys",
+      "functions": 231,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19790,
+      "decoded_invalid": 0,
+      "file": "arcsas.sys",
+      "functions": 114,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4373,
+      "decoded_invalid": 0,
+      "file": "asyncmac.sys",
+      "functions": 66,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3074,
+      "decoded_invalid": 0,
+      "file": "atapi.sys",
+      "functions": 53,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 40408,
+      "decoded_invalid": 0,
+      "file": "ataport.sys",
+      "functions": 828,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13637,
+      "decoded_invalid": 0,
+      "file": "battc.sys",
+      "functions": 104,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 137225,
+      "decoded_invalid": 2,
+      "file": "bfadfcoei.sys",
+      "functions": 2090,
+      "refused": 523,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 137225,
+      "decoded_invalid": 2,
+      "file": "bfadi.sys",
+      "functions": 2090,
+      "refused": 523,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18708,
+      "decoded_invalid": 0,
+      "file": "bnxfcd.sys",
+      "functions": 231,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 22135,
+      "decoded_invalid": 0,
+      "file": "bowser.sys",
+      "functions": 414,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5723,
+      "decoded_invalid": 0,
+      "file": "bttflt.sys",
+      "functions": 105,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9462,
+      "decoded_invalid": 0,
+      "file": "buttonconverter.sys",
+      "functions": 114,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 44965,
+      "decoded_invalid": 0,
+      "file": "bxfcoe.sys",
+      "functions": 499,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 112266,
+      "decoded_invalid": 0,
+      "file": "bxois.sys",
+      "functions": 1456,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 49677,
+      "decoded_invalid": 0,
+      "file": "bxvbda.sys",
+      "functions": 528,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20996,
+      "decoded_invalid": 0,
+      "file": "cdfs.sys",
+      "functions": 235,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 34989,
+      "decoded_invalid": 0,
+      "file": "cdrom.sys",
+      "functions": 434,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 11018,
+      "decoded_invalid": 0,
+      "file": "CEA.sys",
+      "functions": 168,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 12257,
+      "decoded_invalid": 0,
+      "file": "cht4dx64.sys",
+      "functions": 131,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 62462,
+      "decoded_invalid": 0,
+      "file": "cht4sx64.sys",
+      "functions": 705,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4214,
+      "decoded_invalid": 0,
+      "file": "cht4vfx.sys",
+      "functions": 62,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 46783,
+      "decoded_invalid": 0,
+      "file": "cht4vx64.sys",
+      "functions": 575,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 44787,
+      "decoded_invalid": 0,
+      "file": "cimfs.sys",
+      "functions": 434,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 80280,
+      "decoded_invalid": 0,
+      "file": "Classpnp.sys",
+      "functions": 902,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 103666,
+      "decoded_invalid": 0,
+      "file": "clfs.sys",
+      "functions": 1698,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10864,
+      "decoded_invalid": 0,
+      "file": "CmBatt.sys",
+      "functions": 131,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3486,
+      "decoded_invalid": 0,
+      "file": "cmimcext.sys",
+      "functions": 54,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 169055,
+      "decoded_invalid": 0,
+      "file": "cng.sys",
+      "functions": 2047,
+      "refused": 5751,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7864,
+      "decoded_invalid": 0,
+      "file": "condrv.sys",
+      "functions": 177,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20074,
+      "decoded_invalid": 0,
+      "file": "crashdmp.sys",
+      "functions": 229,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 31887,
+      "decoded_invalid": 0,
+      "file": "dfsc.sys",
+      "functions": 497,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13340,
+      "decoded_invalid": 0,
+      "file": "disk.sys",
+      "functions": 242,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5497,
+      "decoded_invalid": 0,
+      "file": "Diskdump.sys",
+      "functions": 140,
+      "refused": 13,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3068,
+      "decoded_invalid": 0,
+      "file": "Dmpusbstor.sys",
+      "functions": 72,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7142,
+      "decoded_invalid": 0,
+      "file": "dmvsc.sys",
+      "functions": 108,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 64,
+      "decoded_invalid": 0,
+      "file": "drmkaud.sys",
+      "functions": 8,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4719,
+      "decoded_invalid": 0,
+      "file": "Dumpata.sys",
+      "functions": 122,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18749,
+      "decoded_invalid": 0,
+      "file": "dumpfve.sys",
+      "functions": 244,
+      "refused": 977,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 29215,
+      "decoded_invalid": 0,
+      "file": "dumpsd.sys",
+      "functions": 327,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 11115,
+      "decoded_invalid": 0,
+      "file": "Dumpstorport.sys",
+      "functions": 175,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 805553,
+      "decoded_invalid": 0,
+      "file": "dxgkrnl.sys",
+      "functions": 8896,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 86221,
+      "decoded_invalid": 0,
+      "file": "dxgmms1.sys",
+      "functions": 1255,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 214351,
+      "decoded_invalid": 0,
+      "file": "dxgmms2.sys",
+      "functions": 2814,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20566,
+      "decoded_invalid": 0,
+      "file": "EhStorClass.sys",
+      "functions": 235,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 21304,
+      "decoded_invalid": 0,
+      "file": "EhStorTcgDrv.sys",
+      "functions": 242,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 116844,
+      "decoded_invalid": 0,
+      "file": "elxfcoe.sys",
+      "functions": 1140,
+      "refused": 10,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 156000,
+      "decoded_invalid": 0,
+      "file": "elxstor.sys",
+      "functions": 1359,
+      "refused": 10,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 1887,
+      "decoded_invalid": 0,
+      "file": "errdev.sys",
+      "functions": 36,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 239177,
+      "decoded_invalid": 0,
+      "file": "evbd0a.sys",
+      "functions": 1942,
+      "refused": 3,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 242908,
+      "decoded_invalid": 0,
+      "file": "evbda.sys",
+      "functions": 1978,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 16831,
+      "decoded_invalid": 0,
+      "file": "ExecutionContext.sys",
+      "functions": 293,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 75254,
+      "decoded_invalid": 0,
+      "file": "exfat.sys",
+      "functions": 826,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 77478,
+      "decoded_invalid": 0,
+      "file": "fastfat.sys",
+      "functions": 910,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 24052,
+      "decoded_invalid": 0,
+      "file": "fbwf.sys",
+      "functions": 232,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5790,
+      "decoded_invalid": 0,
+      "file": "fdc.sys",
+      "functions": 72,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14526,
+      "decoded_invalid": 0,
+      "file": "fileinfo.sys",
+      "functions": 248,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5760,
+      "decoded_invalid": 0,
+      "file": "filetrace.sys",
+      "functions": 57,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5779,
+      "decoded_invalid": 0,
+      "file": "flpydisk.sys",
+      "functions": 70,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 95055,
+      "decoded_invalid": 0,
+      "file": "fltMgr.sys",
+      "functions": 2272,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3647,
+      "decoded_invalid": 0,
+      "file": "fs_rec.sys",
+      "functions": 77,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10819,
+      "decoded_invalid": 0,
+      "file": "fsdepends.sys",
+      "functions": 95,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 187131,
+      "decoded_invalid": 0,
+      "file": "fvevol.sys",
+      "functions": 1787,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 58460,
+      "decoded_invalid": 0,
+      "file": "FWPKCLNT.SYS",
+      "functions": 1378,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17138,
+      "decoded_invalid": 0,
+      "file": "globmerger.sys",
+      "functions": 210,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 34035,
+      "decoded_invalid": 0,
+      "file": "hdaudbus.sys",
+      "functions": 319,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 106077,
+      "decoded_invalid": 0,
+      "file": "HdAudio.sys",
+      "functions": 1046,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5172,
+      "decoded_invalid": 0,
+      "file": "hidbatt.sys",
+      "functions": 72,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 48701,
+      "decoded_invalid": 0,
+      "file": "hidclass.sys",
+      "functions": 571,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14731,
+      "decoded_invalid": 0,
+      "file": "hidi2c.sys",
+      "functions": 176,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8030,
+      "decoded_invalid": 0,
+      "file": "hidinterrupt.sys",
+      "functions": 116,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10194,
+      "decoded_invalid": 0,
+      "file": "hidparse.sys",
+      "functions": 290,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19938,
+      "decoded_invalid": 0,
+      "file": "hidspi.sys",
+      "functions": 270,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18561,
+      "decoded_invalid": 0,
+      "file": "HidSpiCx.sys",
+      "functions": 248,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7342,
+      "decoded_invalid": 0,
+      "file": "hidusb.sys",
+      "functions": 152,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10162,
+      "decoded_invalid": 0,
+      "file": "HpSAMD.sys",
+      "functions": 95,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 396290,
+      "decoded_invalid": 0,
+      "file": "http.sys",
+      "functions": 5494,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8899,
+      "decoded_invalid": 0,
+      "file": "hvservice.sys",
+      "functions": 168,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 25393,
+      "decoded_invalid": 0,
+      "file": "hvsocket.sys",
+      "functions": 306,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 53,
+      "decoded_invalid": 0,
+      "file": "hwpolicy.sys",
+      "functions": 10,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2140,
+      "decoded_invalid": 0,
+      "file": "hyperkbd.sys",
+      "functions": 44,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5433,
+      "decoded_invalid": 0,
+      "file": "HyperVideo.sys",
+      "functions": 84,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20329,
+      "decoded_invalid": 0,
+      "file": "i8042prt.sys",
+      "functions": 258,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 6456,
+      "decoded_invalid": 0,
+      "file": "iagpio.sys",
+      "functions": 90,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18463,
+      "decoded_invalid": 0,
+      "file": "iai2c.sys",
+      "functions": 218,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 12610,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_GPIO2_BXT_P.sys",
+      "functions": 132,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 16254,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_GPIO2_CNL.sys",
+      "functions": 158,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13122,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_GPIO2_GLK.sys",
+      "functions": 136,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10019,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_GPIO2.sys",
+      "functions": 115,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 31395,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_I2C_BXT_P.sys",
+      "functions": 158,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 31176,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_I2C_CNL.sys",
+      "functions": 160,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 31856,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_I2C_GLK.sys",
+      "functions": 158,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 30849,
+      "decoded_invalid": 0,
+      "file": "iaLPSS2i_I2C.sys",
+      "functions": 157,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2980,
+      "decoded_invalid": 0,
+      "file": "iaLPSSi_GPIO.sys",
+      "functions": 47,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 21737,
+      "decoded_invalid": 0,
+      "file": "iaLPSSi_I2C.sys",
+      "functions": 146,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 181066,
+      "decoded_invalid": 0,
+      "file": "iaStorAVC.sys",
+      "functions": 3205,
+      "refused": 69,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 81443,
+      "decoded_invalid": 0,
+      "file": "iaStorV.sys",
+      "functions": 1043,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 113726,
+      "decoded_invalid": 0,
+      "file": "ibbus.sys",
+      "functions": 1105,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 1481,
+      "decoded_invalid": 0,
+      "file": "intelide.sys",
+      "functions": 24,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 49919,
+      "decoded_invalid": 0,
+      "file": "intelppm.sys",
+      "functions": 700,
+      "refused": 3,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19867,
+      "decoded_invalid": 0,
+      "file": "IPMIDrv.sys",
+      "functions": 289,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 1179,
+      "decoded_invalid": 0,
+      "file": "isapnp.sys",
+      "functions": 34,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 32332,
+      "decoded_invalid": 2,
+      "file": "ItSas35i.sys",
+      "functions": 401,
+      "refused": 68,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9174,
+      "decoded_invalid": 0,
+      "file": "kbdclass.sys",
+      "functions": 169,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8102,
+      "decoded_invalid": 0,
+      "file": "kbdhid.sys",
+      "functions": 99,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3198,
+      "decoded_invalid": 0,
+      "file": "kdnic_legacy.sys",
+      "functions": 67,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19999,
+      "decoded_invalid": 0,
+      "file": "Kerb3961Kernel.sys",
+      "functions": 329,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 6600,
+      "decoded_invalid": 0,
+      "file": "kmpdc.sys",
+      "functions": 111,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 91172,
+      "decoded_invalid": 0,
+      "file": "ks.sys",
+      "functions": 1369,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 28561,
+      "decoded_invalid": 0,
+      "file": "ksecdd.sys",
+      "functions": 550,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 36053,
+      "decoded_invalid": 0,
+      "file": "ksecpkg.sys",
+      "functions": 622,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 6266,
+      "decoded_invalid": 0,
+      "file": "ksthunk.sys",
+      "functions": 133,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 21068,
+      "decoded_invalid": 0,
+      "file": "lsi_sas.sys",
+      "functions": 132,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 22051,
+      "decoded_invalid": 1,
+      "file": "lsi_sas2i.sys",
+      "functions": 307,
+      "refused": 1464,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 23757,
+      "decoded_invalid": 0,
+      "file": "lsi_sas3i.sys",
+      "functions": 325,
+      "refused": 61,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 71870,
+      "decoded_invalid": 0,
+      "file": "mausbhost.sys",
+      "functions": 766,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9232,
+      "decoded_invalid": 0,
+      "file": "mausbip.sys",
+      "functions": 112,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3580,
+      "decoded_invalid": 0,
+      "file": "mcd.sys",
+      "functions": 55,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 12957,
+      "decoded_invalid": 0,
+      "file": "MegaSas2i.sys",
+      "functions": 175,
+      "refused": 119,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17439,
+      "decoded_invalid": 0,
+      "file": "megasas35i.sys",
+      "functions": 229,
+      "refused": 124,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 93913,
+      "decoded_invalid": 0,
+      "file": "megasr.sys",
+      "functions": 1275,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 191038,
+      "decoded_invalid": 0,
+      "file": "mlx4_bus.sys",
+      "functions": 2010,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8141,
+      "decoded_invalid": 0,
+      "file": "mmcss.sys",
+      "functions": 225,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8595,
+      "decoded_invalid": 0,
+      "file": "mouclass.sys",
+      "functions": 167,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5543,
+      "decoded_invalid": 0,
+      "file": "mouhid.sys",
+      "functions": 69,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20956,
+      "decoded_invalid": 0,
+      "file": "mountmgr.sys",
+      "functions": 263,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13802,
+      "decoded_invalid": 0,
+      "file": "mpi3drvi.sys",
+      "functions": 186,
+      "refused": 155,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 15541,
+      "decoded_invalid": 0,
+      "file": "mpsdrv.sys",
+      "functions": 230,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 110327,
+      "decoded_invalid": 0,
+      "file": "mrxsmb.sys",
+      "functions": 1700,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 61572,
+      "decoded_invalid": 0,
+      "file": "mrxsmb20.sys",
+      "functions": 1065,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5620,
+      "decoded_invalid": 0,
+      "file": "msfs.sys",
+      "functions": 147,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 32829,
+      "decoded_invalid": 0,
+      "file": "msgpioclx.sys",
+      "functions": 383,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 615,
+      "decoded_invalid": 0,
+      "file": "mshidkmdf.sys",
+      "functions": 24,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 691,
+      "decoded_invalid": 0,
+      "file": "msisadrv.sys",
+      "functions": 20,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 60032,
+      "decoded_invalid": 0,
+      "file": "msiscsi.sys",
+      "functions": 494,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7340,
+      "decoded_invalid": 0,
+      "file": "mskssrv.sys",
+      "functions": 134,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 399,
+      "decoded_invalid": 0,
+      "file": "mspclock.sys",
+      "functions": 22,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 555,
+      "decoded_invalid": 0,
+      "file": "mspqm.sys",
+      "functions": 15,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 72083,
+      "decoded_invalid": 0,
+      "file": "msquic.sys",
+      "functions": 996,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 71986,
+      "decoded_invalid": 0,
+      "file": "msquicprev.sys",
+      "functions": 995,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 69994,
+      "decoded_invalid": 0,
+      "file": "msrpc.sys",
+      "functions": 1222,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5304,
+      "decoded_invalid": 0,
+      "file": "mssmbios.sys",
+      "functions": 114,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 788,
+      "decoded_invalid": 0,
+      "file": "mstee.sys",
+      "functions": 16,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2118,
+      "decoded_invalid": 0,
+      "file": "MTConfig.sys",
+      "functions": 39,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 22191,
+      "decoded_invalid": 0,
+      "file": "mup.sys",
+      "functions": 438,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4403,
+      "decoded_invalid": 0,
+      "file": "mvumis.sys",
+      "functions": 50,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 26771,
+      "decoded_invalid": 0,
+      "file": "ndfltr.sys",
+      "functions": 400,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 313176,
+      "decoded_invalid": 0,
+      "file": "ndis.sys",
+      "functions": 5872,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4248,
+      "decoded_invalid": 0,
+      "file": "ndistapi.sys",
+      "functions": 58,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 12151,
+      "decoded_invalid": 0,
+      "file": "ndisuio.sys",
+      "functions": 169,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2835,
+      "decoded_invalid": 0,
+      "file": "NdisVirtualBus.sys",
+      "functions": 59,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 42814,
+      "decoded_invalid": 0,
+      "file": "ndiswan.sys",
+      "functions": 594,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18397,
+      "decoded_invalid": 0,
+      "file": "ndproxy.sys",
+      "functions": 233,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 67952,
+      "decoded_invalid": 0,
+      "file": "netadaptercx.sys",
+      "functions": 1018,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10460,
+      "decoded_invalid": 0,
+      "file": "netbios.sys",
+      "functions": 152,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 64618,
+      "decoded_invalid": 0,
+      "file": "netbt.sys",
+      "functions": 767,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 127038,
+      "decoded_invalid": 0,
+      "file": "netio.sys",
+      "functions": 2025,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 58584,
+      "decoded_invalid": 0,
+      "file": "netvsc.sys",
+      "functions": 678,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13276,
+      "decoded_invalid": 0,
+      "file": "npfs.sys",
+      "functions": 177,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3652,
+      "decoded_invalid": 0,
+      "file": "npsvctrig.sys",
+      "functions": 109,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7159,
+      "decoded_invalid": 0,
+      "file": "nsiproxy.sys",
+      "functions": 101,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 604002,
+      "decoded_invalid": 0,
+      "file": "ntfs.sys",
+      "functions": 5232,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 971,
+      "decoded_invalid": 0,
+      "file": "ntosext.sys",
+      "functions": 28,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2126,
+      "decoded_invalid": 0,
+      "file": "null.sys",
+      "functions": 54,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18593,
+      "decoded_invalid": 0,
+      "file": "nvdimm.sys",
+      "functions": 264,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10971,
+      "decoded_invalid": 0,
+      "file": "nvmedisk.sys",
+      "functions": 140,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 24381,
+      "decoded_invalid": 0,
+      "file": "nvraid.sys",
+      "functions": 292,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 27982,
+      "decoded_invalid": 0,
+      "file": "nvstor.sys",
+      "functions": 310,
+      "refused": 6,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 21899,
+      "decoded_invalid": 0,
+      "file": "parport.sys",
+      "functions": 338,
+      "refused": 10,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 31435,
+      "decoded_invalid": 0,
+      "file": "partmgr.sys",
+      "functions": 538,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 109951,
+      "decoded_invalid": 0,
+      "file": "pci.sys",
+      "functions": 1564,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 587,
+      "decoded_invalid": 0,
+      "file": "pciide.sys",
+      "functions": 21,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7332,
+      "decoded_invalid": 0,
+      "file": "pciidex.sys",
+      "functions": 205,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 24029,
+      "decoded_invalid": 0,
+      "file": "pcmcia.sys",
+      "functions": 337,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10981,
+      "decoded_invalid": 0,
+      "file": "pcw.sys",
+      "functions": 176,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 27530,
+      "decoded_invalid": 0,
+      "file": "pdc.sys",
+      "functions": 505,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8772,
+      "decoded_invalid": 0,
+      "file": "percsas2i.sys",
+      "functions": 93,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10209,
+      "decoded_invalid": 0,
+      "file": "percsas3i.sys",
+      "functions": 178,
+      "refused": 117,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18338,
+      "decoded_invalid": 0,
+      "file": "pmem.sys",
+      "functions": 291,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3942,
+      "decoded_invalid": 0,
+      "file": "portcfg.sys",
+      "functions": 55,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 75387,
+      "decoded_invalid": 0,
+      "file": "portcls.sys",
+      "functions": 1503,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 43121,
+      "decoded_invalid": 0,
+      "file": "processr.sys",
+      "functions": 487,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4123,
+      "decoded_invalid": 0,
+      "file": "pvscsii.sys",
+      "functions": 72,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9882,
+      "decoded_invalid": 0,
+      "file": "qefcd.sys",
+      "functions": 173,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 43169,
+      "decoded_invalid": 0,
+      "file": "qefcoe.sys",
+      "functions": 511,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 23927,
+      "decoded_invalid": 0,
+      "file": "qeiscd.sys",
+      "functions": 341,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 131943,
+      "decoded_invalid": 0,
+      "file": "qeois.sys",
+      "functions": 1540,
+      "refused": 9,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 155136,
+      "decoded_invalid": 0,
+      "file": "qevbda.sys",
+      "functions": 1689,
+      "refused": 20,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 187118,
+      "decoded_invalid": 0,
+      "file": "ql2300i.sys",
+      "functions": 622,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 73948,
+      "decoded_invalid": 0,
+      "file": "ql40xx2i.sys",
+      "functions": 527,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 177181,
+      "decoded_invalid": 0,
+      "file": "qlfcoei.sys",
+      "functions": 647,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 44937,
+      "decoded_invalid": 0,
+      "file": "qnxcd.sys",
+      "functions": 524,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5542,
+      "decoded_invalid": 0,
+      "file": "ramdisk.sys",
+      "functions": 60,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2671,
+      "decoded_invalid": 0,
+      "file": "rasacd.sys",
+      "functions": 56,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 20900,
+      "decoded_invalid": 0,
+      "file": "rasl2tp.sys",
+      "functions": 341,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17555,
+      "decoded_invalid": 0,
+      "file": "raspppoe.sys",
+      "functions": 162,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19878,
+      "decoded_invalid": 0,
+      "file": "raspptp.sys",
+      "functions": 302,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17865,
+      "decoded_invalid": 0,
+      "file": "rassstp.sys",
+      "functions": 260,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 95135,
+      "decoded_invalid": 0,
+      "file": "rdbss.sys",
+      "functions": 1659,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 657526,
+      "decoded_invalid": 0,
+      "file": "refs.sys",
+      "functions": 6892,
+      "refused": 51,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 184843,
+      "decoded_invalid": 0,
+      "file": "refsv1.sys",
+      "functions": 2087,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14846,
+      "decoded_invalid": 0,
+      "file": "sacdrv.sys",
+      "functions": 180,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 21642,
+      "decoded_invalid": 0,
+      "file": "sbp2port.sys",
+      "functions": 189,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 29870,
+      "decoded_invalid": 0,
+      "file": "scmbus.sys",
+      "functions": 366,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 35178,
+      "decoded_invalid": 0,
+      "file": "scsiport.sys",
+      "functions": 464,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 54182,
+      "decoded_invalid": 0,
+      "file": "sdbus.sys",
+      "functions": 642,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17173,
+      "decoded_invalid": 0,
+      "file": "sdport.sys",
+      "functions": 269,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18430,
+      "decoded_invalid": 0,
+      "file": "sdstor.sys",
+      "functions": 228,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 12679,
+      "decoded_invalid": 0,
+      "file": "SerCx.sys",
+      "functions": 145,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 24968,
+      "decoded_invalid": 0,
+      "file": "SerCx2.sys",
+      "functions": 420,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4528,
+      "decoded_invalid": 0,
+      "file": "serenum.sys",
+      "functions": 59,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14438,
+      "decoded_invalid": 0,
+      "file": "serial.sys",
+      "functions": 184,
+      "refused": 3,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4109,
+      "decoded_invalid": 0,
+      "file": "sermouse.sys",
+      "functions": 69,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2542,
+      "decoded_invalid": 0,
+      "file": "sfloppy.sys",
+      "functions": 36,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7787,
+      "decoded_invalid": 0,
+      "file": "sisraid2.sys",
+      "functions": 39,
+      "refused": 11,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13831,
+      "decoded_invalid": 0,
+      "file": "sisraid4.sys",
+      "functions": 68,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 45066,
+      "decoded_invalid": 0,
+      "file": "SmartSAMD.sys",
+      "functions": 280,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3085,
+      "decoded_invalid": 0,
+      "file": "smclib.sys",
+      "functions": 47,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 57970,
+      "decoded_invalid": 0,
+      "file": "spacedump.sys",
+      "functions": 890,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 162724,
+      "decoded_invalid": 0,
+      "file": "spaceport.sys",
+      "functions": 2993,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13338,
+      "decoded_invalid": 0,
+      "file": "SpbCx.sys",
+      "functions": 189,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 118613,
+      "decoded_invalid": 0,
+      "file": "srv2.sys",
+      "functions": 1775,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 68034,
+      "decoded_invalid": 0,
+      "file": "srvnet.sys",
+      "functions": 1210,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3714,
+      "decoded_invalid": 0,
+      "file": "stexstor.sys",
+      "functions": 49,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 37097,
+      "decoded_invalid": 0,
+      "file": "storahci.sys",
+      "functions": 528,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 53748,
+      "decoded_invalid": 0,
+      "file": "stornvme.sys",
+      "functions": 684,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 411991,
+      "decoded_invalid": 0,
+      "file": "storport.sys",
+      "functions": 3604,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14088,
+      "decoded_invalid": 0,
+      "file": "storqosflt.sys",
+      "functions": 305,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18293,
+      "decoded_invalid": 0,
+      "file": "storufs.sys",
+      "functions": 296,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8364,
+      "decoded_invalid": 0,
+      "file": "storvsc.sys",
+      "functions": 128,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 13984,
+      "decoded_invalid": 0,
+      "file": "stream.sys",
+      "functions": 218,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5390,
+      "decoded_invalid": 0,
+      "file": "tape.sys",
+      "functions": 66,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3248,
+      "decoded_invalid": 0,
+      "file": "tbs.sys",
+      "functions": 82,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 512640,
+      "decoded_invalid": 0,
+      "file": "tcpip.sys",
+      "functions": 8159,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8802,
+      "decoded_invalid": 0,
+      "file": "tcpipreg.sys",
+      "functions": 157,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5132,
+      "decoded_invalid": 0,
+      "file": "tdi.sys",
+      "functions": 135,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 23456,
+      "decoded_invalid": 0,
+      "file": "tdx.sys",
+      "functions": 395,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 24855,
+      "decoded_invalid": 0,
+      "file": "tm.sys",
+      "functions": 425,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 61377,
+      "decoded_invalid": 0,
+      "file": "tpm.sys",
+      "functions": 942,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14098,
+      "decoded_invalid": 0,
+      "file": "uaspstor.sys",
+      "functions": 160,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 33491,
+      "decoded_invalid": 0,
+      "file": "Ucx01000.sys",
+      "functions": 527,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 10193,
+      "decoded_invalid": 0,
+      "file": "Udecx.sys",
+      "functions": 160,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 76209,
+      "decoded_invalid": 0,
+      "file": "udfs.sys",
+      "functions": 840,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 26987,
+      "decoded_invalid": 0,
+      "file": "ufxsynopsys.sys",
+      "functions": 276,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 79580,
+      "decoded_invalid": 0,
+      "file": "UnionFS.sys",
+      "functions": 635,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 51384,
+      "decoded_invalid": 0,
+      "file": "USBAUDIO.sys",
+      "functions": 647,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 32380,
+      "decoded_invalid": 0,
+      "file": "usbccgp.sys",
+      "functions": 425,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3757,
+      "decoded_invalid": 0,
+      "file": "usbd.sys",
+      "functions": 85,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 18047,
+      "decoded_invalid": 0,
+      "file": "usbehci.sys",
+      "functions": 297,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 92947,
+      "decoded_invalid": 0,
+      "file": "usbhub.sys",
+      "functions": 1037,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 88724,
+      "decoded_invalid": 0,
+      "file": "USBHUB3.SYS",
+      "functions": 1286,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5962,
+      "decoded_invalid": 0,
+      "file": "usbohci.sys",
+      "functions": 125,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 66625,
+      "decoded_invalid": 0,
+      "file": "usbport.sys",
+      "functions": 993,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14903,
+      "decoded_invalid": 0,
+      "file": "usbser.sys",
+      "functions": 213,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 30270,
+      "decoded_invalid": 0,
+      "file": "USBSTOR.SYS",
+      "functions": 416,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7629,
+      "decoded_invalid": 0,
+      "file": "usbuhci.sys",
+      "functions": 136,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 101622,
+      "decoded_invalid": 0,
+      "file": "USBXHCI.SYS",
+      "functions": 1318,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2912,
+      "decoded_invalid": 0,
+      "file": "vdrvroot.sys",
+      "functions": 62,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 27048,
+      "decoded_invalid": 0,
+      "file": "VerifierExt.sys",
+      "functions": 575,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 179729,
+      "decoded_invalid": 0,
+      "file": "vhdmp.sys",
+      "functions": 2537,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9451,
+      "decoded_invalid": 0,
+      "file": "vhf.sys",
+      "functions": 130,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7079,
+      "decoded_invalid": 0,
+      "file": "videoprt.sys",
+      "functions": 176,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19356,
+      "decoded_invalid": 0,
+      "file": "vmbkmcl.sys",
+      "functions": 354,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 30121,
+      "decoded_invalid": 0,
+      "file": "vmbus.sys",
+      "functions": 550,
+      "refused": 8,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3158,
+      "decoded_invalid": 0,
+      "file": "VMBusHID.sys",
+      "functions": 55,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 6068,
+      "decoded_invalid": 0,
+      "file": "vmstorfl.sys",
+      "functions": 90,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14598,
+      "decoded_invalid": 0,
+      "file": "volmgr.sys",
+      "functions": 277,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 86800,
+      "decoded_invalid": 0,
+      "file": "volmgrx.sys",
+      "functions": 1011,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 80429,
+      "decoded_invalid": 0,
+      "file": "volsnap.sys",
+      "functions": 1032,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 280,
+      "decoded_invalid": 0,
+      "file": "volume.sys",
+      "functions": 14,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 23459,
+      "decoded_invalid": 0,
+      "file": "vpci.sys",
+      "functions": 258,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 35473,
+      "decoded_invalid": 0,
+      "file": "vsmraid.sys",
+      "functions": 236,
+      "refused": 13,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 60035,
+      "decoded_invalid": 0,
+      "file": "VSTXRAID.SYS",
+      "functions": 351,
+      "refused": 6,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4704,
+      "decoded_invalid": 0,
+      "file": "wacompen.sys",
+      "functions": 72,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 17551,
+      "decoded_invalid": 0,
+      "file": "wanarp.sys",
+      "functions": 275,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 14587,
+      "decoded_invalid": 0,
+      "file": "watchdog.sys",
+      "functions": 271,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 177147,
+      "decoded_invalid": 0,
+      "file": "Wdf01000.sys",
+      "functions": 3852,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 9819,
+      "decoded_invalid": 0,
+      "file": "WdfLdr.sys",
+      "functions": 180,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 7687,
+      "decoded_invalid": 0,
+      "file": "werkernel.sys",
+      "functions": 98,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 11571,
+      "decoded_invalid": 0,
+      "file": "wimfsf.sys",
+      "functions": 135,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5955,
+      "decoded_invalid": 0,
+      "file": "wimmount.sys",
+      "functions": 79,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 8420,
+      "decoded_invalid": 0,
+      "file": "WinAccel.sys",
+      "functions": 118,
+      "refused": 4,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19814,
+      "decoded_invalid": 0,
+      "file": "WinAccelCx.sys",
+      "functions": 251,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5003,
+      "decoded_invalid": 0,
+      "file": "winhv.sys",
+      "functions": 137,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 19863,
+      "decoded_invalid": 0,
+      "file": "winhvr.sys",
+      "functions": 497,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 3824,
+      "decoded_invalid": 0,
+      "file": "winmad.sys",
+      "functions": 67,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 11578,
+      "decoded_invalid": 0,
+      "file": "winverbs.sys",
+      "functions": 175,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 2654,
+      "decoded_invalid": 0,
+      "file": "wmiacpi.sys",
+      "functions": 49,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 805,
+      "decoded_invalid": 0,
+      "file": "wmilib.sys",
+      "functions": 25,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 45605,
+      "decoded_invalid": 0,
+      "file": "wof.sys",
+      "functions": 673,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 5214,
+      "decoded_invalid": 0,
+      "file": "WppRecorder.sys",
+      "functions": 128,
+      "refused": 1,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 0,
+      "decoded": 4280,
+      "decoded_invalid": 0,
+      "file": "ws2ifsl.sys",
+      "functions": 72,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    }
+  ],
+  "length_mismatches": []
+}

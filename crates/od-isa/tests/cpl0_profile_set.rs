@@ -43748,10 +43748,10 @@ fn every_other_fp_and_sse_form_keeps_its_exact_opcode_refusal_under_the_member()
     // S7-32 W4: `fxsave [rax]`, `fxrstor [rip+0]`, `fxsave64 [rip+0]` and `fnclex` execute
     // (FXSAVE/FXRSTOR at any memory operand and the x87 forms of the kernel's FXRSTOR probe, the
     // `s7_32_w4_*` tests); `66 fxsave` stays refused (no mandatory prefix).
-    let rip_forms: [(&str, &[u8], u8); 6] = [
+    let rip_forms: [(&str, &[u8], u8); 5] = [
         ("fnstcw [rax]", &[0xd9, 0x38], 0xd9),
         ("fldcw [rax]", &[0xd9, 0x28], 0xd9),
-        ("fnstsw ax", &[0xdf, 0xe0], 0xdf),
+        // S7-32 slice S: `fnstsw ax` (DF E0) executes under the member (tests/s7_32_fnstsw_ax_set.rs).
         ("fld1", &[0xd9, 0xe8], 0xd9),
         (
             "66 fxsave [rip+0]",

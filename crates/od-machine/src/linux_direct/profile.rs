@@ -51,6 +51,45 @@ impl LinuxVcpuCells {
         }
     }
 
+    /// Give every cell the value of the same cell of `other` (S7-32 slice S: the static coverage of
+    /// the set resets the cells before each sandbox step). `is_bsp` is not a cell and stays.
+    pub(super) fn assign(&self, other: &Self) {
+        self.efer.set(other.efer.get());
+        self.star.set(other.star.get());
+        self.lstar.set(other.lstar.get());
+        self.cstar.set(other.cstar.get());
+        self.sysenter_cs.set(other.sysenter_cs.get());
+        self.sysenter_esp.set(other.sysenter_esp.get());
+        self.sysenter_eip.set(other.sysenter_eip.get());
+        self.syscall_mask.set(other.syscall_mask.get());
+        self.kernel_gs_base.set(other.kernel_gs_base.get());
+        self.pat.set(other.pat.get());
+        self.misc_enable.set(other.misc_enable.get());
+        self.bios_sign_id.set(other.bios_sign_id.get());
+        self.mtrr.set(other.mtrr.get());
+        self.mca.set(other.mca.get());
+        self.fp.borrow_mut().clone_from(&other.fp.borrow());
+    }
+
+    /// The cells a caller seeds for a diagnostic step (S7-32 slice S, see
+    /// `UnifiedGuestCellSeed`): FP state, EFER and the SYSCALL MSRs.
+    pub(super) fn seed(
+        &self,
+        fp: &GuestFpState,
+        efer: u64,
+        star: u64,
+        lstar: u64,
+        cstar: u64,
+        syscall_mask: u64,
+    ) {
+        self.fp.borrow_mut().clone_from(fp);
+        self.efer.set(efer);
+        self.star.set(star);
+        self.lstar.set(lstar);
+        self.cstar.set(cstar);
+        self.syscall_mask.set(syscall_mask);
+    }
+
     pub(super) fn commit(self, vcpu: &mut Vcpu) {
         vcpu.guest_efer = self.efer.into_inner();
         vcpu.guest_star = self.star.into_inner();
