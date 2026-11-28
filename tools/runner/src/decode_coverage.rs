@@ -14,9 +14,10 @@
 //!
 //! This is a static diagnostic: it does not run guest code, and a function range may hold data the
 //! sweep reads as code. Without `--exec` it does not decide what executes (the profile set of a run
-//! admits a subset of the decoded forms). With `--exec windows` (S7-32 slice S, CPL0 only) every
+//! admits a subset of the decoded forms). With `--exec windows` (S7-32 slice S) every
 //! decoded form is also executed one step in a sandbox by the CPL0 set of the unified loop for the
-//! Windows guest ([`exec`]); the sweep then also follows the targets of `call rel32` outside
+//! Windows guest ([`exec`]): at CPL0 for the CPL0 images, or, with `--cpl 3` (ADR-0023 slice C2a),
+//! through the CPL3 entry of the same set for every image; the sweep then also follows the targets of `call rel32` outside
 //! `.pdata`, and what it finds there is reported only in the `exec` section (the `images`, `gaps`
 //! and `length_mismatches` fields stay those of the `.pdata` sweep). It writes one JSON report to
 //! stdout.
@@ -342,8 +343,8 @@ pub fn run(args: &[String]) -> ExitCode {
             _ => files.push(arg.clone()),
         }
     }
-    // The sandbox runs the CPL0 set: an explicit CPL3 is a usage error.
-    if files.is_empty() || (exec_set && cpl == Some(PrivilegeLevel::Ring3)) {
+    // ADR-0023 slice C2a: `--cpl 3 --exec windows` runs the sandbox through the CPL3 entry.
+    if files.is_empty() {
         eprintln!("{USAGE}");
         return ExitCode::from(3);
     }
@@ -364,7 +365,8 @@ fn coverage(
     exec_set: bool,
     top: usize,
 ) -> Result<Value, u8> {
-    let mut exec = exec_set.then(exec::ExecCoverage::windows);
+    let mut exec =
+        exec_set.then(|| exec::ExecCoverage::windows(cpl == Some(PrivilegeLevel::Ring3)));
     let mut gaps: HashMap<String, Gap> = HashMap::new();
     let mut reports = Vec::new();
     let mut mismatches = Vec::new();
@@ -398,8 +400,8 @@ fn coverage(
             bytes: &image.bytes,
         };
         let (mut decoded, mut refused, mut invalid, mut unmeasured) = (0u64, 0u64, 0u64, 0u64);
-        // The exec sandbox runs CPL0 images only.
-        let mut image_exec = exec.as_mut().filter(|_| privilege == PrivilegeLevel::Ring0);
+        // The exec sandbox runs the images of its privilege only (CPL0, or CPL3 with `--cpl 3`).
+        let mut image_exec = exec.as_mut().filter(|exec| privilege == exec.privilege());
         let inside_pdata = |target: u32| {
             let index = image
                 .functions
@@ -686,12 +688,17 @@ mod tests {
     }
 
     fn exec_report(name: &str, file: &[u8]) -> Value {
+        exec_report_at(name, file, None)
+    }
+
+    /// The report of `--exec windows` for one image, at the CPL `cpl` gives (`None`: the default).
+    fn exec_report_at(name: &str, file: &[u8], cpl: Option<PrivilegeLevel>) -> Value {
         let path = std::env::temp_dir().join(format!(
             "od-decode-coverage-{}-{name}.sys",
             std::process::id()
         ));
         std::fs::write(&path, file).unwrap();
-        let report = coverage(&[path.to_string_lossy().into_owned()], None, true, 50);
+        let report = coverage(&[path.to_string_lossy().into_owned()], cpl, true, 50);
         std::fs::remove_file(&path).unwrap();
         report.unwrap()
     }
@@ -1021,12 +1028,51 @@ mod tests {
     }
 
     #[test]
-    fn exec_takes_only_the_windows_set_at_cpl0() {
+    fn exec_takes_only_the_windows_set_at_cpl0_or_cpl3() {
         let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
         let code = |list: &[&str]| format!("{:?}", run(&args(list)));
         let usage = format!("{:?}", ExitCode::from(3));
         assert_eq!(code(&["--exec", "linux", "x.sys"]), usage);
         assert_eq!(code(&["--exec"]), usage);
-        assert_eq!(code(&["--cpl", "3", "--exec", "windows", "x.sys"]), usage);
+        assert_eq!(code(&["--cpl", "2", "--exec", "windows", "x.sys"]), usage);
+        // ADR-0023 slice C2a: CPL3 runs the sandbox through the CPL3 entry (a missing file is a
+        // report row, not a usage error).
+        let missing = std::env::temp_dir().join("od-decode-coverage-missing-cpl3.dll");
+        let missing = missing.to_string_lossy().into_owned();
+        assert_eq!(
+            code(&["--cpl", "3", "--exec", "windows", &missing]),
+            format!("{:?}", ExitCode::SUCCESS)
+        );
+    }
+
+    #[test]
+    fn exec_cpl3_reports_the_verdict_of_the_cpl3_entry() {
+        // ADR-0023 slice C2a: `mov rbx, rcx` (`48 8b d9`, the stop of ISSUE-719 at
+        // `ntdll!LdrInitializeThunk`) and `mov rax, cr0` (`0f 20 c0`, class `Privileged`: #GP(0)
+        // is an architectural outcome, `exec`) through the CPL3 entry; `ret` ends the range.
+        let code: &[u8] = &[0x48, 0x8b, 0xd9, 0x0f, 0x20, 0xc0, 0xc3];
+        let report = exec_report_at(
+            "cpl3",
+            &pe(&[(0x1000, code)], &[(0x1000, 0x1007)]),
+            Some(PrivilegeLevel::Ring3),
+        );
+        assert_eq!(report["exec"]["cpl"], 3, "{report}");
+        assert_eq!(report["images"][0]["cpl"], 3, "{report}");
+        assert_eq!(report["exec"]["decoded"], 3, "{report}");
+        let family = |operation: &str| {
+            rows(&report, "families")
+                .iter()
+                .find(|row| row["operation"] == operation)
+                .map(|row| row["verdict"].as_str().unwrap().to_owned())
+        };
+        // Slice C1 refused `48 8b d9` (the allow-list, ISSUE-719: `never`); since C2a-4 the class
+        // `Neutral` runs every form the set runs at CPL0.
+        assert_eq!(family("Mov"), None, "{report}");
+        assert_eq!(report["exec"]["verdicts"]["exec"], 3, "{report}");
+        let gp = rows(&report, "exec_single_fault")
+            .iter()
+            .find(|row| row["vector"] == 13)
+            .unwrap_or_else(|| panic!("no #GP(0) row: {report}"));
+        assert_eq!(gp["form"], signature(&[0x0f, 0x20, 0xc0]), "{report}");
     }
 }

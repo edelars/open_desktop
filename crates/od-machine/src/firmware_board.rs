@@ -11152,31 +11152,63 @@ mod tests {
         code: &[u8],
         cpl3: bool,
     ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun) {
-        let mut image = minor2_image(&vec![0x90u8; 0x80]);
+        windows_run_at_cpl_with(code, cpl3, false, 100, false)
+    }
+
+    /// [`windows_run_at_cpl`] with the turbo engine (`turbo`, when the test arena exists), a budget and,
+    /// with `user_stack`, the user bit on the walk of the stack page too.
+    fn windows_run_at_cpl_with(
+        code: &[u8],
+        cpl3: bool,
+        turbo: bool,
+        budget: u64,
+        user_stack: bool,
+    ) -> (LoadedFirmwareBoard, crate::FirmwareUnifiedRun) {
+        let mut image = minor2_image(&vec![0x90u8; 0x100]);
         image[0x40..0x40 + code.len()].copy_from_slice(code);
         seal(&mut image);
         let mut board = load_firmware_image(&image, &linux_config()).unwrap();
-        board.disable_turbo();
+        match crate::turbo::test_arena() {
+            Some(arena) if turbo => {
+                board.enable_turbo(arena);
+            }
+            _ => board.disable_turbo(),
+        }
         if cpl3 {
             let rip = board.state().rip;
-            let mut table = board.cr3() & 0x000f_ffff_ffff_f000;
-            for level in (0..4).rev() {
-                let entry = table + ((rip >> (12 + 9 * level)) & 0x1ff) * 8;
-                let address = GuestPhysicalAddress::new(entry);
-                let value = board
-                    .bus_mut()
-                    .read_physical(address, AccessWidth::Qword)
-                    .unwrap();
-                board
-                    .bus_mut()
-                    .write_physical(address, AccessWidth::Qword, value | 4, |_| {})
-                    .unwrap();
-                if level == 0 || value & 0x80 != 0 {
-                    break;
+            let rsp = board.state().gpr[od_isa::Register::Rsp as usize];
+            let addresses: &[u64] = if user_stack {
+                &[rip, rsp - 0x80]
+            } else {
+                &[rip]
+            };
+            for &linear in addresses {
+                let mut table = board.cr3() & 0x000f_ffff_ffff_f000;
+                for level in (0..4).rev() {
+                    let entry = table + ((linear >> (12 + 9 * level)) & 0x1ff) * 8;
+                    let address = GuestPhysicalAddress::new(entry);
+                    let value = board
+                        .bus_mut()
+                        .read_physical(address, AccessWidth::Qword)
+                        .unwrap();
+                    board
+                        .bus_mut()
+                        .write_physical(address, AccessWidth::Qword, value | 4, |_| {})
+                        .unwrap();
+                    if level == 0 || value & 0x80 != 0 {
+                        break;
+                    }
+                    table = value & 0x000f_ffff_ffff_f000;
                 }
-                table = value & 0x000f_ffff_ffff_f000;
             }
             let state = board.state_mut();
+            if user_stack {
+                // The SSE forms of the program need CR4.OSFXSR (and OSXMMEXCPT), which the entry
+                // state of the ROM leaves clear.
+                state.cr4 = state.cr4.map(|cr4| cr4 | 0x600);
+                // A TEB-like GS base on the user stack page (`mov rax, gs:[0x30]`).
+                state.gs_base = (state.gpr[od_isa::Register::Rsp as usize] - 0x80) & !0xfff;
+            }
             state.cs_selector = Some(0x33);
             state.cs_cache = Some(od_isa::CodeSegmentDescriptorCache {
                 base: 0,
@@ -11196,7 +11228,7 @@ mod tests {
         }
         let run = crate::run_firmware_unified_guest(
             &mut board,
-            100,
+            budget,
             None,
             Vec::new(),
             None,
@@ -11207,8 +11239,53 @@ mod tests {
         (board, run)
     }
 
-    /// S7-32 slice T: the Windows set lets the bare `RDMSR` reach the step at CPL3
-    /// (`cpl3_allows` with the Windows MSR member), where it is #GP(0) by the CPL rule — not
+    /// ADR-0023 slice C2a-7 item 7: a CPL3 phase of the Windows unified run (`windows_run_at_cpl`:
+    /// CS `0x33`, the user bit on the walk of the code page) with the turbo engine equals the run of the
+    /// general step — exit, state, COM1 and `cpl3_retired` — over forms the allow-list refused before
+    /// C2a: `mov rbx, rcx` (ISSUE-719), `add [rsp-0x40], eax`, `lock xadd [rsp-0x48], eax`, `movups
+    /// [rsp-0x60], xmm0`, `mov rax, gs:[0x30]` (the TEB load of ntdll), a loop of `dec ecx; jnz`, and a
+    /// `wrmsr` (#GP(0) at CPL3, the end of the run without an IDT). The turbo engine does not run CPL3
+    /// (decision 7, slice C5), so both runs take the general step; the test pins that the turbo hook
+    /// leaves a CPL3 phase as the general step leaves it. The `SYSCALL`/`SYSRETQ` round trip of the
+    /// plan needs a kernel this helper does not have (the CPL0 phases are the slice T test).
+    #[test]
+    fn a_cpl3_phase_with_turbo_equals_the_general_step() {
+        #[rustfmt::skip]
+        let code: &[u8] = &[
+            0x48, 0x8B, 0xD9,                         // mov rbx, rcx
+            0xB9, 0x10, 0x00, 0x00, 0x00,             // mov ecx, 16
+            0x01, 0x44, 0x24, 0xC0,                   // loop: add [rsp-0x40], eax
+            0xF0, 0x0F, 0xC1, 0x44, 0x24, 0xB8,       // lock xadd [rsp-0x48], eax
+            0x0F, 0x11, 0x44, 0x24, 0xA0,             // movups [rsp-0x60], xmm0
+            0x65, 0x48, 0x8B, 0x04, 0x25, 0x30, 0, 0, 0, // mov rax, gs:[0x30]
+            0xFF, 0xC9,                               // dec ecx
+            0x75, 0xE4,                               // jnz loop
+            0x0F, 0x30,                               // wrmsr (#GP(0) at CPL3)
+        ];
+        let (general, without) = windows_run_at_cpl_with(code, true, false, 10_000, true);
+        let (turbo, with) = windows_run_at_cpl_with(code, true, true, 10_000, true);
+        assert_eq!(with.run, without.run);
+        assert_eq!(with.set_exit_detail, without.set_exit_detail);
+        assert_eq!(with.cpl3_retired, without.cpl3_retired);
+        assert_eq!(turbo.state(), general.state());
+        assert_eq!(turbo.com1_transcript(), general.com1_transcript());
+        // 2 instructions, then 16 rounds of the six-instruction loop at CPL3, then the #GP(0) of
+        // `wrmsr` (not delivered: no IDT).
+        assert_eq!(
+            without.cpl3_retired,
+            2 + 16 * 6,
+            "{}",
+            without.set_exit_detail
+        );
+        assert!(
+            matches!(without.run.exit, PagedProbeExit::Fault(fault) if fault.vector == 13),
+            "{}",
+            without.set_exit_detail
+        );
+    }
+
+    /// S7-32 slice T: the Windows set lets the bare `RDMSR` reach the step at CPL3 (the privilege
+    /// layer of ADR-0023, class `Privileged`), where it is #GP(0) by the CPL rule — not
     /// because the CPU lacks the MSR — and the journal (`!cpl3` in the set loop) records nothing;
     /// the same `rdmsr 0x3fa` at CPL0 is journaled. No guest IDT: the #GP is the stop of the run.
     #[test]

@@ -36,7 +36,7 @@ use od_isa::{
     PrivilegeLevel, Register, StiProfile, StiShadow, TaskRegisterCache, page_fault_error_code,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 // ---- the encoding sweep ---------------------------------------------------------------------------
@@ -226,6 +226,14 @@ pub struct SweepMemory {
     /// Every data access in order (successful or not).
     pub accesses: Vec<Access>,
     pub fetches: usize,
+    /// ADR-0023 slice C2a: CR0.WP = 0 (Vol. 3A §4.6: a supervisor write to a read-only page is
+    /// allowed; a user write still faults). `false` (WP = 1) is the G0 behaviour.
+    pub write_protect_off: bool,
+    /// ADR-0023 slice C2a (review F1): the bytes of a page mapped from now on are
+    /// [`full_address_pattern`] (a hash of the whole address), so that two operands at the same page
+    /// offset of different pages read different bytes. `false` ([`pattern`], the low eight address
+    /// bits) is the G0 behaviour of the frozen machine.
+    pub full_address_pattern: bool,
 }
 
 /// The byte of an on-demand page at `address`.
@@ -233,12 +241,37 @@ pub const fn pattern(address: u64) -> u8 {
     0x5a ^ (address & 0xff) as u8
 }
 
-fn pattern_page(page: u64) -> Rc<[u8; 4096]> {
+/// The byte of a page mapped with `full_address_pattern` at `address` (SplitMix64 of all 64 bits).
+pub const fn full_address_pattern(address: u64) -> u8 {
+    splitmix(address) as u8
+}
+
+thread_local! {
+    static FULL_PATTERN_PAGES: RefCell<BTreeMap<u64, Rc<[u8; 4096]>>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+fn pattern_page(page: u64, full: bool) -> Rc<[u8; 4096]> {
+    if full {
+        // The full-address pages are the same for every run: built once per thread.
+        if let Some(bytes) = FULL_PATTERN_PAGES.with(|pages| pages.borrow().get(&page).cloned()) {
+            return bytes;
+        }
+    }
     let mut bytes = [0u8; 4096];
     for (offset, byte) in bytes.iter_mut().enumerate() {
-        *byte = pattern(page + offset as u64);
+        let address = page + offset as u64;
+        *byte = if full {
+            full_address_pattern(address)
+        } else {
+            pattern(address)
+        };
     }
-    Rc::new(bytes)
+    let bytes = Rc::new(bytes);
+    if full {
+        FULL_PATTERN_PAGES.with(|pages| pages.borrow_mut().insert(page, bytes.clone()));
+    }
+    bytes
 }
 
 impl SweepMemory {
@@ -248,7 +281,7 @@ impl SweepMemory {
         self.pages.insert(
             page,
             Page {
-                bytes: pattern_page(page),
+                bytes: pattern_page(page, self.full_address_pattern),
                 user,
                 writable,
                 present: true,
@@ -336,7 +369,10 @@ impl SweepMemory {
         let user = context.page_privilege() == PrivilegeLevel::Ring3;
         let present = match self.pages.get(&page) {
             Some(entry) if entry.present => {
-                if !(user && !entry.user) && !(access == AccessKind::Write && !entry.writable) {
+                let write_denied = access == AccessKind::Write
+                    && !entry.writable
+                    && (user || !self.write_protect_off);
+                if !(user && !entry.user) && !write_denied {
                     return Ok(());
                 }
                 true
@@ -980,17 +1016,30 @@ pub struct Run {
 }
 
 pub fn run_on(
+    state: LongModeState,
+    memory: SweepMemory,
+    cells: Cells,
+    bytes: &[u8],
+    budget: u64,
+) -> Run {
+    run_on_with(state, memory, cells, bytes, budget, set)
+}
+
+/// [`run_on`] with the set `make` builds over the cells (ADR-0023 slice C2a: the Linux set of the
+/// legacy-path golden, the sweep set without the FP member).
+pub fn run_on_with(
     mut state: LongModeState,
     mut memory: SweepMemory,
     cells: Cells,
     bytes: &[u8],
     budget: u64,
+    make: impl for<'c> Fn(&'c Cells) -> Cpl0ProfileSet<'c>,
 ) -> Run {
     memory.put(state.rip, bytes);
     let mut port = SweepPort::default();
     let cpl = state.cs_selector.map_or(0, |selector| selector & 3);
     let result = {
-        let set = set(&cells);
+        let set = make(&cells);
         let mut tsc = || TSC;
         if cpl == 3 {
             run_with_cpl3_profile_set(
@@ -1428,4 +1477,771 @@ pub fn full_sweep_opcode(
             }
         }
     }
+}
+
+// ---- ADR-0023 slice C2a: the inputs of the legacy-path golden and of the CPL0 <-> CPL3 tests ------
+
+/// The inputs of plan C2a-1 item 3 (`legacy_digest`) and C2a-2.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum InputVariant {
+    /// The machine as [`machine`] builds it: `gpr[i] = DATA + 0x800 + 0x40 i`, RFLAGS `0x202`.
+    A,
+    /// Deterministic "random" GPRs (random offsets in pages of 16..32 MiB; RSP in the stack page,
+    /// 8-aligned) and every status flag set.
+    B,
+    /// A with RCX = 3, RSI and RDI on different pages (strings, `LOOP`).
+    C,
+    /// A with DF = 1.
+    D,
+    /// A with the data page not present and no on-demand mapping.
+    E,
+    /// A with the data page a read-only user page and no on-demand mapping.
+    EPrime,
+}
+
+pub const INPUTS: [InputVariant; 6] = [
+    InputVariant::A,
+    InputVariant::B,
+    InputVariant::C,
+    InputVariant::D,
+    InputVariant::E,
+    InputVariant::EPrime,
+];
+
+/// SplitMix64 of `index` (the deterministic values of input B).
+pub const fn splitmix(index: u64) -> u64 {
+    let mut z = index.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// The status flags CF, PF, AF, ZF, SF, OF.
+pub const STATUS_FLAGS: u64 = 0x8d5;
+
+/// [`machine`] at `cpl` (IOPL 0, `cr4`) shaped by `input`.
+pub fn input_machine(cpl: u8, cr4: u64, input: InputVariant) -> (LongModeState, SweepMemory) {
+    let (mut state, mut memory) = machine_cached(cpl, 0, cr4);
+    match input {
+        InputVariant::A => {}
+        InputVariant::B => {
+            for (index, value) in state.gpr.iter_mut().enumerate() {
+                let random = splitmix(index as u64);
+                *value = if index == Register::Rsp as usize {
+                    STACK_PAGE + 0x800 + (random & 0x7f8)
+                } else {
+                    0x0100_0000 + (random & 0x00ff_ffff)
+                };
+            }
+            state.rflags |= STATUS_FLAGS;
+        }
+        InputVariant::C => {
+            state.gpr[Register::Rcx as usize] = 3;
+            state.gpr[Register::Rsi as usize] = DATA + 0x100;
+            state.gpr[Register::Rdi as usize] = DATA + 0x1000 + 0x140;
+        }
+        InputVariant::D => state.rflags |= 1 << 10,
+        InputVariant::E => {
+            memory.on_demand = false;
+            memory.absent(DATA);
+        }
+        InputVariant::EPrime => {
+            memory.on_demand = false;
+            memory.map(DATA, true, false);
+        }
+    }
+    (state, memory)
+}
+
+/// The signature of a form (plan C2a-1 item 2): the prefix bytes, the map and opcode, ModRM
+/// mod/reg/rm, a SIB byte, the displacement and immediate sizes (`None` if the length decoder
+/// does not measure the bytes).
+pub fn form_signature(bytes: &[u8]) -> Option<String> {
+    let layout = od_isa::length::long64_layout(bytes).ok()?;
+    let mut at = 0;
+    while matches!(
+        bytes.get(at),
+        Some(
+            0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3 | 0x2e | 0x36 | 0x3e | 0x26 | 0x64 | 0x65 | 0x40
+                ..=0x4f
+        )
+    ) {
+        at += 1;
+    }
+    let prefixes: String = bytes[..at]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let rest_start = |end: usize| -> usize {
+        // The opcode bytes of a form without ModRM: the map bytes (`0F`, `0F 38`/`0F 3A`), then
+        // one opcode byte; an immediate follows.
+        let mut opcode = at;
+        if bytes.get(opcode) == Some(&0x0f) {
+            opcode += 1;
+            if matches!(bytes.get(opcode), Some(0x38 | 0x3a)) {
+                opcode += 1;
+            }
+        }
+        (opcode + 1).min(end)
+    };
+    let (opcode_bytes_end, modrm) = match layout.modrm {
+        Some(offset) => (offset, Some(bytes[offset])),
+        None => (rest_start(layout.length), None),
+    };
+    let opcode: String = bytes[at..opcode_bytes_end]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut text = format!("p{prefixes}|o{opcode}");
+    let mut operand_start = opcode_bytes_end;
+    if let Some(modrm) = modrm {
+        let (mode, reg, rm) = (modrm >> 6, (modrm >> 3) & 7, modrm & 7);
+        let sib = mode != 3 && rm == 4;
+        let displacement = match (mode, rm) {
+            (0, 5) => 4,
+            (0, 4)
+                if bytes
+                    .get(opcode_bytes_end + 1)
+                    .is_some_and(|sib| sib & 7 == 5) =>
+            {
+                4
+            }
+            (1, _) => 1,
+            (2, _) => 4,
+            _ => 0,
+        };
+        operand_start = opcode_bytes_end + 1 + usize::from(sib) + displacement;
+        text.push_str(&format!(
+            "|m{mode}r{reg}m{rm}|s{}|d{displacement}",
+            u8::from(sib)
+        ));
+    }
+    text.push_str(&format!(
+        "|i{}",
+        layout.length.saturating_sub(operand_start)
+    ));
+    Some(text)
+}
+
+/// The CPUID member of the Linux recipes S6-21/S6-22 (`--cpuid-profile stage4a-apic`).
+pub static LINUX_CPUID: CpuidProfile = CpuidProfile::X8664V1Stage4AApic;
+/// The CR4 of the Linux recipe S6-21 (`stop.cr4` of its record: PSE, PAE, PGE, OSFXSR, OSXMMEXCPT;
+/// stage4a-apic declares neither DE nor MCE, so [`CR4`] is outside the admission of the set).
+pub const LINUX_CR4: u64 = 0x6b0;
+/// The read-only EFER profile of the Linux recipe (`msr:EferReadOnlyV1(3328)`).
+pub static LINUX_EFER_PROFILE: MsrProfile = MsrProfile::EferReadOnlyV1(0xd00);
+
+/// The set of the Linux recipe S6-21 (`stop.set_members` of `work/s7-32/t/linux-apic/boot.json`
+/// without `pci_config`, `irq` and `clock_owner`, which bind devices of the board) over the sweep
+/// cells; the FP member only with `fp_member` (plan C2a-1 item 3).
+pub fn linux_set(cells: &Cells, fp_member: bool) -> Cpl0ProfileSet<'_> {
+    let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+        .with_cli(&CliProfile::NonPviLong64V1)
+        .with_cpu_owned_cr3(MovCr3Long64V1)
+        .with_cpuid(&LINUX_CPUID)
+        .with_rdtsc()
+        .with_msr(&LINUX_EFER_PROFILE)
+        .with_msr_efer_write(&cells.efer)
+        .with_msr_fs_gs_base()
+        .with_msr_star_write(&cells.star)
+        .with_msr_lstar_write(&cells.lstar)
+        .with_msr_cstar_write(&cells.cstar)
+        .with_msr_sysenter_cs_write(&cells.sysenter_cs)
+        .with_msr_sysenter_stack_write(&cells.sysenter_esp, &cells.sysenter_eip)
+        .with_msr_syscall_mask_write(&cells.fmask)
+        .with_msr_kernel_gs_base_write(&cells.kernel_gs_base)
+        .with_msr_tdx_keyid_partitioning_read()
+        .with_msr_apic_base_for_vcpu(true);
+    let set = if fp_member {
+        set.with_fp_state(&cells.fp)
+    } else {
+        set
+    };
+    set.with_int3()
+        .with_halt(&HaltProfile::Long64V1)
+        .with_pio_u8()
+        .with_sti(&StiProfile::NonPviLong64V1)
+        .with_popf_cpl0()
+        .with_user_mode()
+        .with_syscall()
+}
+
+/// The hex text of bytes.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Bytes from hex text.
+pub fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex"))
+        .collect()
+}
+
+// ---- ADR-0023 slice C2a-2: the CPL0 <-> CPL3 comparison of one encoding (shared by
+// `c2a_cpl3_neutral_differential.rs` and the rewritten refusal tests of `cpl3_profile_set.rs`) ------
+
+use od_isa::Cpl0ProfileSetExit;
+use od_isa::execute::RunExit;
+
+/// The FP cell of an input (the inputs of C2a-1 keep the cell of the sweep).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FpCell {
+    /// `cpl3_sweep::fp_seed`.
+    Seed,
+    /// The x87 half after FNINIT (every register empty, FCS/FDS 0), the SSE half of the seed.
+    EmptyX87,
+    /// Two values on the x87 stack (TOP = 6: ST0 = 1.0, ST1 = 2.0), the SSE half of the seed.
+    TwoX87,
+    /// [`FpCell::EmptyX87`] with a valid 32-bit FNSAVE image (FCW `0x037F`, FTW `0xFFFF`, the rest 0)
+    /// at RAX: the source FRSTOR and FLDENV `[rax]` need.
+    ImageAtRax,
+}
+
+/// The 108-byte FNSAVE image of 32-bit protected mode (Vol. 1 Figure 8-9) of an x87 after FNINIT.
+pub fn fnsave_image() -> [u8; 108] {
+    let mut image = [0u8; 108];
+    image[0..2].copy_from_slice(&0x037fu16.to_le_bytes());
+    image[8..10].copy_from_slice(&0xffffu16.to_le_bytes());
+    image
+}
+
+/// The inputs of the comparison: A-D, E and E' with the cell of the sweep, A with the other cells.
+pub const DIFF_INPUTS: [(InputVariant, FpCell); 9] = [
+    (InputVariant::A, FpCell::Seed),
+    (InputVariant::B, FpCell::Seed),
+    (InputVariant::C, FpCell::Seed),
+    (InputVariant::D, FpCell::Seed),
+    (InputVariant::A, FpCell::EmptyX87),
+    (InputVariant::A, FpCell::TwoX87),
+    (InputVariant::A, FpCell::ImageAtRax),
+    // Review F2: the data page not present and read-only (the rows (a) and (b) of `Allowed`).
+    (InputVariant::E, FpCell::Seed),
+    (InputVariant::EPrime, FpCell::Seed),
+];
+
+/// ADR-0023 slice C2a (review F2): the literal list of the forms whose RMW destination the CPL3 entry
+/// reads with write intent — the list of `cpl3_write_intent_rmw_destination` (`execute.rs`), written out
+/// here by its table: the primary map, a memory destination with 64-bit addressing, no segment, `67`,
+/// `LOCK`/`REP`, `66` exactly for a word, and (opcode, ModRM.reg, operand size):
+/// `83 /0` W/D/Q, `83 /5` D, `01` D/Q, `29` D/Q, `FE /0` B, `FF /0` D/Q, `FF /1` D, `80 /4` B, `20` B,
+/// `81`/`83 /1,/4` D, `83 /1,/4` Q, `81`/`83 /4` W, `81 /6` D, `09` Q, `D0 /7` B. The test
+/// `write_intent_forms_are_exactly_the_literal_list` checks it against the outcome on input E.
+pub fn cpl3_write_intent_form(bytes: &[u8]) -> bool {
+    use od_isa::long_decode::{OpcodeMap, Operand};
+    let Ok(instruction) = decode(bytes) else {
+        return false;
+    };
+    let Ok(layout) = od_isa::length::long64_layout(bytes) else {
+        return false;
+    };
+    let Some(modrm_at) = layout.modrm else {
+        return false;
+    };
+    let modrm = bytes[modrm_at];
+    let prefixes = instruction.prefixes;
+    let size = instruction.operand_size;
+    if instruction.opcode.map != OpcodeMap::Primary
+        || modrm >> 6 == 3
+        || prefixes.segment.is_some()
+        || prefixes.address_override
+        || prefixes.group1.is_some()
+        || prefixes.operand_override != (size == OperandSize::Word)
+    {
+        return false;
+    }
+    let memory_size = match instruction.operation {
+        od_isa::long_decode::Operation::Arithmetic {
+            dst: Operand::Memory(m),
+            ..
+        }
+        | od_isa::long_decode::Operation::Logic {
+            dst: Operand::Memory(m),
+            ..
+        }
+        | od_isa::long_decode::Operation::Shift {
+            dst: Operand::Memory(m),
+            ..
+        } => m,
+        _ => return false,
+    };
+    if memory_size.address_size != OperandSize::Qword || memory_size.size != size {
+        return false;
+    }
+    use OperandSize::{Byte as B, Dword as D, Qword as Q, Word as W};
+    let reg = (modrm >> 3) & 7;
+    match (instruction.opcode.byte, reg, size) {
+        (0x83, 0, W | D | Q) | (0x83, 5, D) => true,
+        (0x01 | 0x29, _, D | Q) => true,
+        (0xfe, 0, B) | (0xff, 0, D | Q) | (0xff, 1, D) => true,
+        (0x80, 4, B) | (0x20, _, B) => true,
+        (0x81 | 0x83, 1 | 4, D) | (0x83, 1 | 4, Q) | (0x81 | 0x83, 4, W) | (0x81, 6, D) => true,
+        (0x09, _, Q) => true,
+        (0xd0, 7, B) => true,
+        _ => false,
+    }
+}
+
+pub fn cells(fp: FpCell) -> Cells {
+    let cells = Cells::new();
+    if fp != FpCell::Seed {
+        let mut cell = cells.fp.borrow_mut();
+        // FCS/FDS known and 0 (the bounded x87 profile of the bare run refuses other selectors).
+        cell.x87 = od_isa::execute::GuestFpState::initial().x87;
+        if fp == FpCell::TwoX87 {
+            cell.x87.registers[6] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+            cell.x87.registers[7] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40];
+            cell.x87.status_word = 6 << 11;
+            cell.x87.tag_word = 0x0fff;
+        }
+    }
+    cells
+}
+
+/// The literal list of allowed differences (plan C2a-2 item 2).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Allowed {
+    /// (a) The U bit of the error code of a `#PF` (U = 1 at CPL3, Vol. 3A "Event 14").
+    PageFaultUserBit,
+    /// (b) The `#PF` of the RMW destination of the forms the old allow-list read with write intent
+    /// (`cpl3_write_intent_rmw_destination`, plan question V3): W = 1 at CPL3 against W = 0 at CPL0.
+    WriteIntentRmw,
+    /// (c) The x87 code selector FCS (`instruction_selector = Some(cs)` of the x87 executors): the
+    /// field of the cell; bytes [16..18) of a 32-bit FNSTENV/FNSAVE image; bytes [12..14) of a
+    /// legacy FXSAVE image (without REX.W).
+    X87CodeSelector,
+    /// (d) `MovSregStore` of CS or SS: the stored value is the selector of the own CPL.
+    StoredCsOrSs,
+    /// (f) The forms of `cpl3_rep_string` (`F3 A4`, `F3 A5`, `F3 AA`, `F3 AB`, `F3 48 AB`): until C2b
+    /// the CPL3 entry charges one budget unit per iteration; RCX = min(RCX, 64) on both sides, the
+    /// calls repeat until the instruction retires, faults or [`REP_CALL_LIMIT`] calls; the retired
+    /// count and the number of calls are not compared (ADR-0023 decision 3, slice C2b).
+    RepStringBudget,
+}
+// (e) `#AC` does not arise: RFLAGS.AC = 0 on every input (checked by `c1_alignment_check.rs`).
+
+/// The forms of `cpl3_rep_string` (plan C2a-2 item 2 (e)).
+pub const REP_STRING_FORMS: [&[u8]; 5] = [
+    &[0xf3, 0xa4],
+    &[0xf3, 0xa5],
+    &[0xf3, 0xaa],
+    &[0xf3, 0xab],
+    &[0xf3, 0x48, 0xab],
+];
+/// The literal N of plan C2a-2 (e): reaching it fails the test.
+pub const REP_CALL_LIMIT: usize = 4096;
+pub fn operation_name(bytes: &[u8]) -> String {
+    let instruction = decode(bytes).expect("decodes");
+    format!("{:?}", instruction.operation)
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or("")
+        .to_owned()
+}
+pub fn is_rep_string_form(bytes: &[u8]) -> bool {
+    REP_STRING_FORMS.contains(&bytes)
+}
+
+thread_local! {
+    static SIDE_MACHINES: RefCell<BTreeMap<(u8, InputVariant, bool), (LongModeState, SweepMemory)>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+/// The machine of one side before the run (built once per thread and cloned).
+fn side_machine(cpl: u8, input: InputVariant, image: bool) -> (LongModeState, SweepMemory) {
+    if let Some(machine) =
+        SIDE_MACHINES.with(|machines| machines.borrow().get(&(cpl, input, image)).cloned())
+    {
+        return machine;
+    }
+    let (state, mut memory) = input_machine(cpl, CR4, input);
+    // Plan C2a-2 item 1: every page is a user page, so that CPL0 and CPL3 reach the same pages (the
+    // descriptor tables, the TSS and the kernel stack of the machine are not read by a `Neutral`
+    // form; a data operand that lands on them is a user access here). The U/S rule is the subject
+    // of `c2a_cpl3_page_rights.rs`.
+    for page in memory.pages.values_mut() {
+        page.user = true;
+    }
+    // Review F1: every pattern page (and every page mapped on demand from now on) holds the bytes of
+    // its full address, so that operands at the same offset of different pages (FS against GS, a
+    // wrong base) read different values.
+    memory.full_address_pattern = true;
+    for (address, page) in memory.pages.iter_mut() {
+        if page.present && *page.bytes == *pattern_page(*address, false) {
+            page.bytes = pattern_page(*address, true);
+        }
+    }
+    if image {
+        memory.put(state.gpr[Register::Rax as usize], &fnsave_image());
+    }
+    SIDE_MACHINES.with(|machines| {
+        machines
+            .borrow_mut()
+            .insert((cpl, input, image), (state.clone(), memory.clone()))
+    });
+    (state, memory)
+}
+
+/// One side: the run of `bytes` at `cpl` on `input` (the REP forms of (f) repeat).
+pub fn side(bytes: &[u8], cpl: u8, (input, fp): (InputVariant, FpCell)) -> Run {
+    let (mut state, memory) = side_machine(cpl, input, fp == FpCell::ImageAtRax);
+    if !is_rep_string_form(bytes) {
+        return run_on(state, memory, cells(fp), bytes, 1);
+    }
+    let rcx = &mut state.gpr[Register::Rcx as usize];
+    *rcx = (*rcx).min(64);
+    let start = state.rip;
+    let mut run = run_on(state, memory, cells(fp), bytes, 1);
+    for _ in 1..REP_CALL_LIMIT {
+        let done = run.state.rip != start
+            || !matches!(
+                &run.result,
+                Ok(result) if matches!(
+                    result.exit,
+                    Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                )
+            );
+        if done {
+            return run;
+        }
+        run = run_on(run.state, run.memory, run.cells, &[], 1);
+    }
+    panic!("{}: no retire after {REP_CALL_LIMIT} calls", hex(bytes));
+}
+
+/// The fields of one side, normalized by the allowed differences that apply to the pair.
+pub fn normalized(
+    run: &Run,
+    bytes: &[u8],
+    name: &str,
+    allowed: &BTreeSet<Allowed>,
+) -> Vec<(&'static str, String)> {
+    let mut fields = outcome_fields(run);
+    fields.retain(|(field, _)| !matches!(*field, "cs" | "ss"));
+    for (field, value) in fields.iter_mut() {
+        match *field {
+            "exit" => {
+                let mut result = run.result.clone();
+                if let Ok(result) = result.as_mut() {
+                    if let Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) = &mut result.exit
+                        && fault.vector == 14
+                        && let Some(code) = fault.error_code.as_mut()
+                    {
+                        if allowed.contains(&Allowed::PageFaultUserBit) {
+                            *code &= !4;
+                        }
+                        if allowed.contains(&Allowed::WriteIntentRmw) {
+                            *code &= !2;
+                        }
+                    }
+                    if allowed.contains(&Allowed::RepStringBudget) {
+                        result.instructions_executed = 0;
+                    }
+                }
+                *value = format!("{result:?}");
+            }
+            "fp" if allowed.contains(&Allowed::X87CodeSelector) => {
+                let mut fp = run.cells.fp.borrow().clone();
+                fp.x87.instruction_selector = None;
+                *value = format!("{fp:x?}");
+            }
+            "writes" => {
+                let mut writes = run.memory.writes.clone();
+                let start = writes.iter().map(|(address, _)| *address).min();
+                for (address, data) in writes.iter_mut() {
+                    for (index, byte) in data.iter_mut().enumerate() {
+                        let at = *address + index as u64;
+                        if masked_byte(at, start, bytes, name, allowed) {
+                            *byte = 0;
+                        }
+                    }
+                }
+                if allowed.contains(&Allowed::RepStringBudget) {
+                    // The per-iteration calls of the CPL3 entry write the same bytes in the same
+                    // order; the log is compared as the final bytes (pages below).
+                    writes.clear();
+                }
+                *value = format!("{writes:x?}");
+            }
+            _ => {}
+        }
+        // (d): only the destination register of `MOV r, CS/SS` (a memory destination: `masked_byte`).
+        if allowed.contains(&Allowed::StoredCsOrSs)
+            && let Some(index) = GPR_FIELDS.iter().position(|gpr| gpr == field)
+            && let Ok(instruction) = decode(bytes)
+            && let od_isa::long_decode::Operation::MovSregStore {
+                dst: od_isa::long_decode::Operand::Register(view),
+                ..
+            } = instruction.operation
+            && view.register() as usize == index
+        {
+            let gpr = run.state.gpr[index];
+            *value = format!("{:#x}", gpr & !0xffff);
+        }
+    }
+    fields
+}
+
+/// The pages that differ between the two sides (masked like the write log); untouched pages share
+/// their bytes with the machine (copy on write) and are skipped without a comparison.
+pub fn page_differences(
+    cpl0: &Run,
+    cpl3: &Run,
+    bytes: &[u8],
+    name: &str,
+    allowed: &BTreeSet<Allowed>,
+) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let keys: BTreeSet<&u64> = cpl0
+        .memory
+        .pages
+        .keys()
+        .chain(cpl3.memory.pages.keys())
+        .collect();
+    let start0 = cpl0.memory.writes.iter().map(|(address, _)| *address).min();
+    let start3 = cpl3.memory.writes.iter().map(|(address, _)| *address).min();
+    for page in keys {
+        let (left, right) = (cpl0.memory.pages.get(page), cpl3.memory.pages.get(page));
+        let same = match (left, right) {
+            (Some(left), Some(right)) => {
+                (left.user, left.writable, left.present)
+                    == (right.user, right.writable, right.present)
+                    && (std::rc::Rc::ptr_eq(&left.bytes, &right.bytes)
+                        || (0..4096).all(|offset| {
+                            let at = page + offset as u64;
+                            left.bytes[offset] == right.bytes[offset]
+                                || masked_byte(at, start0, bytes, name, allowed)
+                                    && masked_byte(at, start3, bytes, name, allowed)
+                        }))
+            }
+            // A page that one side created on demand (a data access to a missing page) and did not
+            // change is the missing page of the other side: the mapping is the fixture's, not
+            // architectural state.
+            (Some(only), None) | (None, Some(only)) => {
+                only.user
+                    && only.writable
+                    && only.present
+                    && (0..4096).all(|offset| {
+                        only.bytes[offset] == full_address_pattern(page + offset as u64)
+                    })
+            }
+            _ => false,
+        };
+        if !same {
+            let describe = |page: Option<&Page>| {
+                page.map_or("absent".to_owned(), |page| {
+                    format!(
+                        "{} {} {} {:016x}",
+                        page.user,
+                        page.writable,
+                        page.present,
+                        fnv1a(FNV_OFFSET, &page.bytes[..])
+                    )
+                })
+            };
+            out.push((format!("page {page:#x}"), describe(left), describe(right)));
+        }
+    }
+    out
+}
+
+pub const GPR_FIELDS: [&str; 16] = [
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
+];
+
+/// Whether the byte at `address` is masked: the FCS bytes of an x87 image (c), the stored selector
+/// of (d). `start` is the lowest written address (the start of the image or of the operand).
+pub fn masked_byte(
+    address: u64,
+    start: Option<u64>,
+    bytes: &[u8],
+    name: &str,
+    allowed: &BTreeSet<Allowed>,
+) -> bool {
+    let Some(start) = start else { return false };
+    let offset = address.wrapping_sub(start);
+    if allowed.contains(&Allowed::X87CodeSelector) {
+        let operand_override =
+            decode(bytes).is_ok_and(|instruction| instruction.prefixes.operand_override);
+        if (name.starts_with("Fnstenv") || name.starts_with("Fnsave")) && !operand_override {
+            return (16..18).contains(&offset);
+        }
+        if name.starts_with("Fxsave") && !rex_w(bytes) {
+            return (12..14).contains(&offset);
+        }
+    }
+    allowed.contains(&Allowed::StoredCsOrSs)
+        && offset < 2
+        && decode(bytes).is_ok_and(|instruction| {
+            matches!(
+                instruction.operation,
+                od_isa::long_decode::Operation::MovSregStore {
+                    dst: od_isa::long_decode::Operand::Memory(_),
+                    ..
+                }
+            )
+        })
+}
+
+pub fn rex_w(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .take_while(|byte| {
+            matches!(
+                byte,
+                0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40
+                    ..=0x4f
+            )
+        })
+        .any(|byte| (0x48..=0x4f).contains(byte))
+}
+
+/// The allowed differences that apply to a pair (from the form and the two runs).
+pub fn applicable(bytes: &[u8], name: &str, cpl0: &Run, cpl3: &Run) -> BTreeSet<Allowed> {
+    let mut allowed = BTreeSet::new();
+    let page_fault = |run: &Run| match &run.result {
+        Ok(result) => match &result.exit {
+            Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) if fault.vector == 14 => {
+                Some((fault.error_code.unwrap_or(0), fault.linear_address))
+            }
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    if let (Some((code0, address0)), Some((code3, address3))) = (page_fault(cpl0), page_fault(cpl3))
+        && address0 == address3
+    {
+        if code0 & 4 == 0 && code3 & 4 != 0 {
+            allowed.insert(Allowed::PageFaultUserBit);
+        }
+    }
+    // (b): the forms of the literal list (review F2: by the form, not by the behaviour) read their
+    // destination with write intent at CPL3: W = 1 of a #PF, `ReadForWrite` in the access log.
+    if cpl3_write_intent_form(bytes) {
+        allowed.insert(Allowed::WriteIntentRmw);
+    }
+    let x87 = name.starts_with('F') && !name.starts_with("Fxrstor") || name.starts_with("Fxsave");
+    if x87 {
+        allowed.insert(Allowed::X87CodeSelector);
+    }
+    if name == "MovSregStore"
+        && let Ok(instruction) = decode(bytes)
+        && let od_isa::long_decode::Operation::MovSregStore { sreg, .. } = instruction.operation
+        && matches!(sreg, 1 | 2)
+    {
+        allowed.insert(Allowed::StoredCsOrSs);
+    }
+    if is_rep_string_form(bytes) {
+        allowed.insert(Allowed::RepStringBudget);
+    }
+    allowed
+}
+
+/// The differences of one encoding on one input: (field, CPL0 value, CPL3 value).
+pub fn differences(
+    bytes: &[u8],
+    input: (InputVariant, FpCell),
+) -> (Vec<(String, String, String)>, Run) {
+    let name = operation_name(bytes);
+    let cpl0 = side(bytes, 0, input);
+    let cpl3 = side(bytes, 3, input);
+    let allowed = applicable(bytes, &name, &cpl0, &cpl3);
+    let a = normalized(&cpl0, bytes, &name, &allowed);
+    let b = normalized(&cpl3, bytes, &name, &allowed);
+    let mut out = Vec::new();
+    for ((field, left), (_, right)) in a.iter().zip(&b) {
+        if left != right {
+            out.push(((*field).into(), left.clone(), right.clone()));
+        }
+    }
+    out.extend(page_differences(&cpl0, &cpl3, bytes, &name, &allowed));
+    // Review F1: the access logs of both sides (kind, address, length, origin; the privilege differs
+    // by construction), normalized by the same literal list: (b) a write-intent read of CPL3 is the
+    // read of CPL0; (f) the per-iteration calls of `cpl3_rep_string` are compared by their final bytes.
+    if !allowed.contains(&Allowed::RepStringBudget) {
+        // (b): a read (CPL0) or a write-intent read (CPL3) of the destination, with the write of the
+        // same operand right after it if there is one, is one RMW access (a form of the list has no
+        // other memory operand; its read faults first at CPL0, its write check first at CPL3).
+        let log = |run: &Run, intent: bool| -> Vec<(&'static str, u64, usize, AccessOrigin)> {
+            let accesses = &run.memory.accesses;
+            let mut out = Vec::new();
+            let mut index = 0;
+            while index < accesses.len() {
+                let access = accesses[index];
+                let key = |kind| (kind, access.address, access.len, access.origin);
+                let next_writes_it = accesses.get(index + 1).is_some_and(|next| {
+                    next.kind == DataAccess::Write
+                        && (next.address, next.len) == (access.address, access.len)
+                });
+                if intent && matches!(access.kind, DataAccess::Read | DataAccess::ReadForWrite) {
+                    out.push(key("rmw"));
+                    index += if next_writes_it { 2 } else { 1 };
+                    continue;
+                }
+                out.push(key(match access.kind {
+                    DataAccess::Read => "read",
+                    DataAccess::ReadForWrite => "read-for-write",
+                    DataAccess::Write => "write",
+                    DataAccess::Atomic => "atomic",
+                }));
+                index += 1;
+            }
+            out
+        };
+        let intent = allowed.contains(&Allowed::WriteIntentRmw);
+        let (left, right) = (log(&cpl0, intent), log(&cpl3, intent));
+        if left != right {
+            out.push((
+                "accesses".into(),
+                format!("{left:x?}"),
+                format!("{right:x?}"),
+            ));
+        }
+    }
+    // Review F4: every explicit and stack access of the CPL3 side has the privilege of CPL3.
+    if let Some(access) = cpl3.memory.accesses.iter().find(|access| {
+        matches!(
+            access.origin,
+            AccessOrigin::Explicit | AccessOrigin::ImplicitStack
+        ) && access.privilege != PrivilegeLevel::Ring3
+    }) {
+        out.push((
+            "access privilege".into(),
+            String::new(),
+            format!("{access:x?}"),
+        ));
+    }
+    // Review F2: a form of the literal list whose destination read faults at CPL0 (W = 0) faults at
+    // CPL3 with W = 1 (the list is not larger than the behaviour of the entry).
+    if allowed.contains(&Allowed::WriteIntentRmw) {
+        let fault = |run: &Run| match &run.result {
+            Ok(result) => match &result.exit {
+                Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) if fault.vector == 14 => {
+                    fault.error_code
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        if let (Some(code0), Some(code3)) = (fault(&cpl0), fault(&cpl3))
+            && code0 & 2 == 0
+            && code3 & 2 == 0
+        {
+            out.push((
+                "write intent".into(),
+                format!("{code0:#x}"),
+                format!("{code3:#x}"),
+            ));
+        }
+    }
+    (out, cpl0)
+}
+
+pub fn unsupported(run: &Run) -> bool {
+    matches!(
+        &run.result,
+        Ok(result) if matches!(result.exit, Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. }))
+    )
 }

@@ -59,8 +59,117 @@ impl Model {
 
 /// Plan C1-7 item 2: operations that the SDM calls `Neutral` but `cpl3_class` puts into `NotAtCpl3`
 /// because the set does not execute them at CPL0 (ADR-0023: "operations of the narrow profiles";
-/// plan question V2). Empty in C1; filled only by the result of C2a-2 with its reason.
-const NEUTRAL_BY_SDM_NOT_EXECUTED_BY_THE_SET: &[(&str, &str)] = &[];
+/// plan question V2). Empty in C1; filled by the result of C2a-2 (`c2a_cpl3_neutral_differential`,
+/// `every_neutral_variant_is_covered`: no encoding of the corpus, the reduced sweep or the
+/// supplement runs at CPL0 on any of its inputs; slice C2a report).
+const NEUTRAL_BY_SDM_NOT_EXECUTED_BY_THE_SET: &[(&str, &str)] = &[
+    ("Cvtpd2piMm0MemoryRax", MMX),
+    ("Cvtpd2piMm0Xmm1", MMX),
+    ("Cvtpi2pdMemoryRax", MMX),
+    ("Cvtpi2pdXmm0Mm1", MMX),
+    ("Cvtpi2psMemoryRax", MMX),
+    ("Cvtpi2psXmm0Mm1", MMX),
+    ("Cvtps2piMm0MemoryRax", MMX),
+    ("Cvtps2piMm0Xmm1", MMX),
+    ("Cvttpd2piMm0MemoryRax", MMX),
+    ("Cvttpd2piMm0Xmm1", MMX),
+    ("Cvttps2piMm0MemoryRax", MMX),
+    ("Cvttps2piMm0Xmm1", MMX),
+    ("F2xm1", X87),
+    ("Fabs", X87),
+    ("FaddSt0St", X87),
+    ("FaddStSt0", X87),
+    ("FaddpStSt0", X87),
+    ("FbldM80Rax", X87),
+    ("FbstpM80Rax", X87),
+    ("Fchs", X87),
+    ("Fcmovb", X87),
+    ("Fcmovbe", X87),
+    ("Fcmove", X87),
+    ("Fcmovnb", X87),
+    ("Fcmovnbe", X87),
+    ("Fcmovne", X87),
+    ("Fcmovnu", X87),
+    ("Fcmovu", X87),
+    ("FcomSt", X87),
+    ("Fcomi", X87),
+    ("Fcomip", X87),
+    ("FcompSt", X87),
+    ("Fcompp", X87),
+    ("Fcos", X87),
+    ("Fdecstp", X87),
+    ("FdivSt0St", X87),
+    ("FdivStSt0", X87),
+    ("FdivpStSt0", X87),
+    ("FdivrSt0St", X87),
+    ("FdivrStSt0", X87),
+    ("FdivrpStSt0", X87),
+    ("FildM16IntRax", X87),
+    ("FildM64IntRax", X87),
+    ("Fincstp", X87),
+    ("FistM16IntRax", X87),
+    ("FistM32IntRax", X87),
+    ("FistpM16IntRax", X87),
+    ("FistpM32IntRax", X87),
+    ("FistpM64IntRax", X87),
+    ("FisttpMemory", X87),
+    ("Fld1", X87),
+    ("FldM32FpRax", X87),
+    ("FldM64FpRax", X87),
+    ("FldM80FpRax", X87),
+    ("FldSti", X87),
+    ("FldcwM16Rax", X87),
+    ("Fldz", X87),
+    ("FmulSt0St", X87),
+    ("FmulStSt0", X87),
+    ("FmulpStSt0", X87),
+    ("Fnop", X87),
+    ("FnstcwM16Rax", X87),
+    ("FnstswM16Rax", X87),
+    ("Fpatan", X87),
+    ("Fprem", X87),
+    ("Fprem1", X87),
+    ("Fptan", X87),
+    ("Frndint", X87),
+    ("Fscale", X87),
+    ("Fsin", X87),
+    ("Fsincos", X87),
+    ("Fsqrt", X87),
+    ("FstM32FpRax", X87),
+    ("FstM64FpRax", X87),
+    ("FstSti", X87),
+    ("FstpM32FpRax", X87),
+    ("FstpM64FpRax", X87),
+    ("FstpM80FpRax", X87),
+    ("FstpSti", X87),
+    ("FsubSt0St", X87),
+    ("FsubStSt0", X87),
+    ("FsubpStSt0", X87),
+    ("FsubrSt0St", X87),
+    ("FsubrStSt0", X87),
+    ("FsubrpStSt0", X87),
+    ("Ftst", X87),
+    ("Fucom", X87),
+    ("Fucomi", X87),
+    ("Fucomip", X87),
+    ("Fucomp", X87),
+    ("Fucompp", X87),
+    ("Fxam", X87),
+    ("FxchSti", X87),
+    ("Fxtract", X87),
+    ("Fyl2x", X87),
+    ("Fyl2xp1", X87),
+    ("RepneCmpsWdqAddr32", REPNE_CMPS),
+    ("RepneCmpsbAddr32", REPNE_CMPS),
+];
+
+/// The reasons of [`NEUTRAL_BY_SDM_NOT_EXECUTED_BY_THE_SET`].
+const X87: &str = "the x87 forms of the bare run refuse the represented FCS/FDS of the FP cell; the set \
+                   runs only the member forms, FNSTENV/FNSAVE/FRSTOR/FLDENV [RAX] and FNSTSW AX (twelve \
+                   bounded forms give #NM at CPL0 with CR0.EM/TS = 1, Unsupported at CPL3: ISSUE-729)";
+const MMX: &str = "the MMX conversions CVT(T)PS2PI/PD2PI/PI2PS/PI2PD refuse in the set: their executor \
+                   (`step_sse_mmx_convert`) needs `state.x87`, which the set keeps in the FP cell (`None`)";
+const REPNE_CMPS: &str = "the `67 F2 A6/A7` REPNE CMPS spellings run only outside the set";
 
 /// The legacy prefix, REX, map, opcode and ModRM of an encoding.
 struct Parsed {
@@ -154,7 +263,6 @@ fn sdm_class(bytes: &[u8]) -> Model {
 
 #[test]
 fn classification_of_every_decoded_encoding_matches_the_sdm_model() {
-    assert!(NEUTRAL_BY_SDM_NOT_EXECUTED_BY_THE_SET.is_empty());
     let mut units = Vec::new();
     for (_, map_bytes) in MAPS {
         for opcode in 0..=255u8 {

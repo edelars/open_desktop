@@ -3283,11 +3283,34 @@ impl<'a> ExecutionProfiles<'a> {
     };
 }
 
-struct StepRuntime<'source, 'sti, 'stop> {
+struct StepRuntime<'source, 'sti, 'stop, 'decoded> {
     rdtsc_source: Option<&'source mut dyn FnMut() -> u64>,
     sti_sequence: Option<&'sti mut StiSequenceProgress>,
     exact_hlt_only: bool,
     stop_requested: &'stop mut dyn FnMut() -> bool,
+    /// ADR-0023 slice C2a: the instruction the CPL3 entry already decoded at `state.rip`. The step
+    /// takes it once in place of its own `long_decode::decode` (between that decode and the step
+    /// neither the state nor the memory changes, so it is the instruction the second decode would
+    /// give); the run loop hands it to the first step of a call only. `None` everywhere else.
+    predecoded: Option<&'decoded long_decode::Instruction>,
+}
+
+impl<'source, 'sti, 'stop, 'decoded> StepRuntime<'source, 'sti, 'stop, 'decoded> {
+    /// The runtime of a step without a predecoded instruction.
+    fn new(
+        rdtsc_source: Option<&'source mut dyn FnMut() -> u64>,
+        sti_sequence: Option<&'sti mut StiSequenceProgress>,
+        exact_hlt_only: bool,
+        stop_requested: &'stop mut dyn FnMut() -> bool,
+    ) -> Self {
+        Self {
+            rdtsc_source,
+            sti_sequence,
+            exact_hlt_only,
+            stop_requested,
+            predecoded: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4196,12 +4219,7 @@ pub fn run(
         config,
         crate::INTEGER_FLAGS,
         ExecutionProfiles::EMPTY,
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
         None,
     )
 }
@@ -4481,12 +4499,7 @@ pub fn run_with_maxss_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -4645,12 +4658,7 @@ pub fn run_with_minsd_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -4809,12 +4817,7 @@ pub fn run_with_maxsd_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -4973,12 +4976,7 @@ pub fn run_with_minpd_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5137,12 +5135,7 @@ pub fn run_with_minps_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5301,12 +5294,7 @@ pub fn run_with_maxps_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5465,12 +5453,7 @@ pub fn run_with_maxpd_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5629,12 +5612,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5793,12 +5771,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -5957,12 +5930,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6121,12 +6089,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6285,12 +6248,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6449,12 +6407,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6613,12 +6566,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6777,12 +6725,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -6941,12 +6884,7 @@ pub fn run_with_cvtss2si_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7105,12 +7043,7 @@ pub fn run_with_cvttss2si_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7268,12 +7201,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7465,12 +7393,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7629,12 +7552,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7828,12 +7746,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -7996,12 +7909,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -8193,12 +8101,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -8357,12 +8260,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -8521,12 +8419,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -8718,12 +8611,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -8883,12 +8771,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9047,12 +8930,7 @@ pub fn run_with_cvtdq2pd_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9211,12 +9089,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9374,12 +9247,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9538,12 +9406,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9735,12 +9598,7 @@ fn run_with_cvtdq2ps_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -9899,12 +9757,7 @@ pub fn run_with_cvtps2dq_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -10063,12 +9916,7 @@ pub fn run_with_cvttps2dq_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -10260,12 +10108,7 @@ fn run_with_cvtps2dq_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -10457,12 +10300,7 @@ fn run_with_cvttps2dq_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -10654,12 +10492,7 @@ fn run_with_cvttpd2dq_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -10851,12 +10684,7 @@ fn run_with_cvtpd2dq_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11015,12 +10843,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11179,12 +11002,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11343,12 +11161,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11507,12 +11320,7 @@ pub fn run_with_cvtss2sd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11671,12 +11479,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -11871,12 +11674,7 @@ fn run_with_cvtpi2ps_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -12202,12 +12000,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -12366,12 +12159,7 @@ pub fn run_with_cvtps2pd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -12530,12 +12318,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -12694,12 +12477,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -12857,12 +12635,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13021,12 +12794,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13243,12 +13011,7 @@ fn run_with_cmpss_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13407,12 +13170,7 @@ pub fn run_with_cmpsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13571,12 +13329,7 @@ pub fn run_with_cmppd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13734,12 +13487,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -13897,12 +13645,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14083,12 +13826,7 @@ fn run_with_minsd_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14247,12 +13985,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14438,12 +14171,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14614,12 +14342,7 @@ fn run_with_minpd_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14813,12 +14536,7 @@ fn run_with_minps_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -14977,12 +14695,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -15141,12 +14854,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -15304,12 +15012,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -15467,12 +15170,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -15630,12 +15328,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -15826,12 +15519,7 @@ fn run_with_sqrtps_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested,
-        },
+        StepRuntime::new(None, None, false, stop_requested),
     )
 }
 
@@ -15989,12 +15677,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -16184,12 +15867,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -16379,12 +16057,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -16581,12 +16254,7 @@ fn run_with_maxpd_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -16783,12 +16451,7 @@ fn run_with_maxps_memory_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -16999,12 +16662,7 @@ fn run_minss_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested,
-        },
+        StepRuntime::new(None, None, false, stop_requested),
     )
 }
 
@@ -17205,12 +16863,7 @@ fn run_maxss_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested,
-        },
+        StepRuntime::new(None, None, false, stop_requested),
     )
 }
 
@@ -17368,12 +17021,7 @@ pub fn run_with_cmpps_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -17532,12 +17180,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             iretq_user_entry: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -17749,12 +17392,7 @@ pub fn run_with_efer_rdmsr_profile(
             iretq_user_entry: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -18158,12 +17796,7 @@ pub fn run_with_cr0_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -18381,12 +18014,7 @@ fn run_with_cr4_profile_and_rflags_defined(
             iretq_user_entry: None,
             cr4: Some(profile),
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -30799,12 +30427,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             halt: halt_profile,
             ..ExecutionProfiles::EMPTY
         },
-        StepRuntime {
-            rdtsc_source,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested,
-        },
+        StepRuntime::new(rdtsc_source, None, false, stop_requested),
     )
 }
 
@@ -30842,6 +30465,7 @@ pub fn run_with_cpl0_profile_set(
         None,
         stop_requested,
         PrivilegeLevel::Ring0,
+        None,
         None,
     )?;
     // A pending effect means the run loop stopped right after the retired
@@ -30981,6 +30605,7 @@ fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
         stop_requested,
         PrivilegeLevel::Ring0,
         boundary,
+        None,
     )?;
     // The failed instruction did not retire, so a port error, a user entry and a CR3 effect
     // cannot be pending together.
@@ -31002,7 +30627,8 @@ fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
 
 /// S4-39a: the CPL3 entry of the profile set. Executes user code (`config.context.privilege`
 /// must be `Ring3`) one instruction at a time through the same `step_configured` as the CPL0
-/// entry, with the same set object. It is not wired to any board: no member of the set selects it.
+/// entry, with the same set object. The board loop (`run_cpl0_set_loop` of `od-machine`) calls it for
+/// every instruction while CS RPL is 3; no member of the set selects it.
 ///
 /// Admission is the CPL0 admission with Ring3 in place of Ring0, plus the Ring3 state check:
 /// the CS selector has RPL 3 and a loaded CS cache with DPL 3 and L = 1, and the SS selector has
@@ -31010,33 +30636,31 @@ fn run_cpl0_profile_set_with_pio<P: crate::PortIo, M: GuestMemory>(
 /// [`Cpl0ProfileSetInputError::WrongPrivilege`] with nothing fetched or changed. The CPL0 entries
 /// keep refusing a Ring3 context with the same error.
 ///
-/// ADR-0023 slice C1: before every instruction the decoded form is classified
-/// ([`crate::cpl3_class::cpl3_class`]). A form of a class other than `Neutral` goes straight to the
-/// step, whose privilege layer decides it: the #UD conditions of the decode list, then the gate of
-/// the class (#GP(0) before any memory access; `NotAtCpl3` is `Unsupported` with nothing changed;
-/// the executors of `IoplSensitive` and `CplSpecific` apply their CPL3 rules). A form of the class
-/// `Neutral` is still checked against a fixed allow-list (see [`cpl3_allows`]; replaced in slice C2a);
-/// any other `Neutral` form ends the run with `Unsupported` before it executes: no architectural
-/// change, no retire, no #GP. This is an honest stop, not guest-visible behavior. A decode failure
-/// or a fetch error skips the allow-list: the step reports it identically and executes nothing. The
-/// run uses single-instruction steps of the CPL0 loop, so the STOP callback is polled up to twice
-/// per instruction boundary. The entry has no port: an `IN`/`OUT` that the TSS bit map allows is
-/// `Unsupported` (`NotAtCpl3`); the CR3 effect and the `IRETQ` boundary of the CPL0 entry are not
-/// reached at CPL3 (MOV CR3 is #GP(0), `IRETQ` returns to the same level).
+/// ADR-0023 slices C1 and C2a: there is no allow-list. Every form goes to the step of the set, decoded
+/// once here and handed over (the step does not decode it again; a decode failure is left to the step,
+/// which reports it identically). The privilege layer of the step (slice C1) decides the classes of
+/// [`crate::cpl3_class::cpl3_class`]: the #UD conditions of the decode list, then the gate of the class
+/// (#GP(0) before any memory access; `NotAtCpl3` is `Unsupported` with nothing changed; the executors of
+/// `IoplSensitive` and `CplSpecific` apply their CPL3 rules). The class `Neutral` runs every form the set
+/// runs at CPL0 with the same result, its explicit accesses with the rights of a user access (U/S and R/W
+/// at every paging level, the #AC of decision 4). The run uses single-instruction steps of the CPL0 loop,
+/// so the STOP callback is polled up to twice per instruction boundary. The entry has no port: an
+/// `IN`/`OUT` that the TSS bit map allows is `Unsupported` (`NotAtCpl3`); the CR3 effect and the `IRETQ`
+/// boundary of the CPL0 entry are not reached at CPL3 (MOV CR3 is #GP(0), `IRETQ` returns to the same
+/// level).
 ///
-/// REP MOVSB (S4-39f20) and REP STOSQ (S6-22) run in [`cpl3_rep_string`] with DF clear.
-/// Each iteration consumes one unit of the budget. The STOP callback is polled before every
-/// iteration. A zero-budget call to the inner entry first checks state admission. A stop within a
-/// string leaves RIP on that instruction and preserves progress from completed iterations.
+/// REP MOVSB/MOVSD and REP STOSB/STOSD/STOSQ (`F3 A4`, `F3 A5`, `F3 AA`, `F3 AB`, `F3 48 AB`; S4-39f20,
+/// S6-22) with DF clear run in [`cpl3_rep_string`] until slice C2b (ADR-0023 decision 3): each iteration
+/// consumes one unit of the budget, the STOP callback is polled before every iteration, and a stop
+/// within a string leaves RIP on that instruction and preserves progress from completed iterations. A
+/// zero-budget call to the inner entry first checks state admission. Every other string form runs the
+/// REP rule of the set (at most `REP_ITERATION_WORK_LIMIT` iterations per call).
 ///
-/// S2-39 (CPL3): with the FP member (`with_fp_state`) the general SSE/SSE2 forms of the CPL0 set (S2-34, S2-37, S2-38,
-/// S2-54, S2-55 and the S2-39 slices) also run here, on `state.sse`, with the results of the bare run and of the CPL0
-/// set (see `cpl3_sse_set_form`); the allow-list above still decides every other form. The CPL3 rules of those forms:
-/// the CR0.EM/TS and CR4.OSFXSR gates, canonical addresses (`#GP`, `#SS` for an RSP/RBP base), the page privilege of the
-/// context, the alignment `#GP` of the aligned forms, and `Unsupported` (nothing changed) for a misaligned operand with
-/// RFLAGS.AC = 1 and CR0.AM = 1 is #AC(0) since ADR-0023 C1 (decision 4, Table 7-7; it was `Unsupported` under
-/// ADR-0015 item 9). MMX and the forms that need the MMX registers
-/// stay refused: the x87 half of the cell is not loaded at CPL3.
+/// FP state (ADR-0023 decision 2): x87, MMX and SSE run on the cell of the FP member (`with_fp_state`) as
+/// at CPL0 (`state.sse` holds its SSE half while the set runs); without the member every FP form is
+/// `Unsupported`, as at CPL0. A `LOCK` form whose operand crosses a cache line or a page runs atomically as
+/// at CPL0 (the split-lock gate of the board, decision 4); with CR0.AM, RFLAGS.AC and a misaligned operand
+/// it is #AC(0).
 ///
 /// S4-39f (ISSUE-087): when a retired instruction leaves CPL3 (`SYSCALL`: CS RPL 0), the run ends
 /// right after it with `Run(StopAddress)` while budget is left; the caller continues with the CPL0
@@ -31064,19 +30688,22 @@ pub fn run_with_cpl3_profile_set(
     let mut rflags_defined = initial_rflags_defined;
     loop {
         let boundary = retired == config.instruction_budget || config.stop_rip == Some(state.rip);
-        // ADR-0023 slice C1: the allow-list decides only the class `Neutral`; every other class goes
-        // straight to the step, whose privilege layer decides it (#GP(0), #UD, the rule of its
-        // executor or `Unsupported` for `NotAtCpl3`): one place of decision.
-        if !boundary
-            && let Ok(instruction) = long_decode::decode(memory, state.rip, config.context)
-            && crate::cpl3_class::cpl3_class(&instruction.operation)
-                == crate::cpl3_class::Cpl3Class::Neutral
-        {
+        // ADR-0023 slice C2a: one decode per instruction. The step gets this instruction in place of
+        // its own decode (nothing changes the state or the memory in between); a decode failure is
+        // left to the step, which reports it as before. The classification and the privilege layer
+        // of the step (slice C1) decide every class; there is no allow-list.
+        let decoded = if boundary {
+            None
+        } else {
+            long_decode::decode(memory, state.rip, config.context).ok()
+        };
+        if let Some(instruction) = decoded.as_ref() {
             // The shared REP step runs the entire string. For these CPL3 forms, charge each
-            // iteration so the scheduler can stop and resume them at a quantum boundary.
-            // Use the same inner entry's zero-budget path for state admission before any
-            // data access. A refused form falls through to the regular allow-list.
-            if let Some((size, store)) = cpl3_rep_string_shape(&instruction)
+            // iteration so the scheduler can stop and resume them at a quantum boundary (until
+            // slice C2b, ADR-0023 decision 3). Use the same inner entry's zero-budget path for
+            // state admission before any data access. Every other string form runs the general
+            // REP rule of the set.
+            if let Some((size, store)) = cpl3_rep_string_shape(instruction)
                 && state.rflags & (1 << 10) == 0
                 && run_cpl0_profile_set_inner(
                     state,
@@ -31092,6 +30719,7 @@ pub fn run_with_cpl3_profile_set(
                     None,
                     || false,
                     PrivilegeLevel::Ring3,
+                    None,
                     None,
                 )
                 .is_ok_and(|(probe, cr3_effect, user_entry)| {
@@ -31121,49 +30749,6 @@ pub fn run_with_cpl3_profile_set(
                 }
                 continue;
             }
-            // S2-39: with the FP member the general SSE/SSE2 forms of the CPL0 set run at CPL3 too, on the same
-            // `state.sse` (see `cpl3_sse_set_form`); the step decides each of them, the MMX forms and the
-            // others stay `Unsupported` there.
-            // S7-32 slice I: `CLFLUSH m8` too, which the SDM allows at every privilege level
-            // ("CLFLUSH": not a privileged instruction); its byte-read access check is a user
-            // access here, so a supervisor page is the #PF of a user read, and without CLFSH in the
-            // CPUID member it is #UD (the step). It is tested after the allow-list (only on its
-            // refusal path), so the admission of the other forms costs nothing more.
-            if !cpl3_allows(
-                &instruction,
-                set.syscall,
-                lea_modrm_selects_sib(memory, state.rip, config.context, &instruction),
-                set.msr_windows.is_some(),
-            ) && !(set.fp_state.is_some() && cpl3_sse_set_form(&instruction))
-                && !matches!(instruction.operation, Operation::Clflush { .. })
-            {
-                return Ok(Cpl0ProfileSetResult {
-                    exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
-                        // The opcode byte as the decoder reports it (the byte after `0F` for the
-                        // two-byte map), like the `Unsupported` of an undecodable form.
-                        opcode: instruction.opcode.byte,
-                    }),
-                    instructions_executed: retired,
-                    rflags_defined,
-                });
-            }
-            // These CPL3 atomic memory forms are naturally aligned. Keep split accesses
-            // out of the backend fallback. Invalid ranges reach the shared architectural checks.
-            if let Some(destination) = cpl3_aligned_atomic_destination(&instruction) {
-                let next_rip = state.rip.wrapping_add(instruction.length as u64);
-                let alignment_mask = destination.size.bytes() as u64 - 1;
-                if let Ok(address) = destination.access_address_48(state, next_rip)
-                    && address & alignment_mask != 0
-                {
-                    return Ok(Cpl0ProfileSetResult {
-                        exit: Cpl0ProfileSetExit::Run(RunExit::Unsupported {
-                            opcode: instruction.opcode.byte,
-                        }),
-                        instructions_executed: retired,
-                        rflags_defined,
-                    });
-                }
-            }
         }
         let step_config = RunConfig {
             instruction_budget: u64::from(!boundary),
@@ -31183,6 +30768,7 @@ pub fn run_with_cpl3_profile_set(
             &mut stop_requested,
             PrivilegeLevel::Ring3,
             None,
+            decoded.as_ref(),
         );
         let Ok((result, cr3_effect, user_entry)) = inner else {
             // An admission error of the step: after a retired instruction changed an admitted
@@ -31198,7 +30784,8 @@ pub fn run_with_cpl3_profile_set(
         retired += result.instructions_executed;
         rflags_defined = result.rflags_defined;
         let mut exit = if cr3_effect.is_some() || user_entry.is_some() {
-            // Unreachable: MOV CR3 and IRETQ are not allow-listed (S4-39b: not committed either).
+            // Unreachable: MOV CR3 at CPL3 is #GP(0) (class `Privileged`) and IRETQ at CPL3 returns
+            // to the same level (`iretq_same_level_cpl3`, S4-39b: not committed either).
             RunExit::Unsupported { opcode: 0x0f }
         } else {
             result.exit
@@ -31387,1860 +30974,16 @@ fn ring3_state_admitted(state: &LongModeState) -> bool {
     cs_selector & 3 == 3 && (cs.access >> 5) & 3 == 3 && cs.flags & 0x2 != 0 && ss_selector & 3 == 3
 }
 
-/// S4-39a CPL3 allow-list: the forms `/init` executes before its first `SYSCALL`
-/// (`tests/fixtures/guest/stage4/initramfs/init.S`: `lea disp(%rip), %rdi; mov $imm32, %esi;
-/// mov $imm32, %eax`), as form classes without prefixes other than REX:
-/// `B8+r imm32` (MOV r32, imm32) and `REX.W 8D /r` with a RIP-relative operand (LEA r64).
-/// Everything else is outside (later slices extend it); `SYSCALL` joins under `with_syscall`.
-///
-/// S4-39f2: `31 /r` (XOR r/m32, r32) in the register form (mod = 11), operand size dword: REX
-/// without W (REX.R and REX.B select r8..r15, as in `45 31 d2` / `45 31 c0` of `/init` after the
-/// first `SYSCALL`). REX.W (qword), a memory operand and the other XOR opcodes (`30`, `32`, `33`,
-/// `34`, `35`, `80`/`81`/`83 /6`) stay outside.
-///
-/// S4-39f3: `REX.W C7 /0 id` (MOV r/m64, imm32 sign-extended to 64 bits) in the register form
-/// (mod = 11; REX.B selects r8..r15) with no prefix other than REX, as in `48 c7 c7 9c ff ff ff`
-/// (`movq $-0x64, %rdi`) of `/init` after its second `SYSCALL`. `C7 /0` without REX.W (MOV r/m32,
-/// imm32) joins in S6-22 for a memory destination, along with the qword memory form.
-///
-/// S4-39f4: `REX.W 85 /r` (TEST r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
-/// r8..r15) with no prefix other than REX, as in `48 85 c0` (`testq %rax, %rax`) of `/init` after
-/// its `openat` `SYSCALL` (the `read` `SYSCALL` follows at `0x40011f`). A memory operand, `84`
-/// (TEST r/m8, r8) and `A8`/`A9`/`F6`/`F7 /0` stay outside.
-///
-/// S4-39f9: `85 /r` without REX.W (TEST r/m32, r32), register form (mod = 11, REX.R and REX.B
-/// select r8d..r15d), as in `85 c9` (`testl %ecx, %ecx`) of `/init` at `0x40016b`: the same CPL0
-/// `Operation::Logic { kind: Test }` is reused (the operand size is dword, no result is written, so
-/// no zero-extension). The memory form and every prefix other than REX stay outside.
-///
-/// S4-39f5: `0F 80`..`0F 8F` (Jcc rel32) without REX and without any prefix (`0f 88 ..` = `js` of
-/// `/init` at `0x400102`): the CPL0 `Operation::Branch` is reused (the condition is evaluated on
-/// RFLAGS, a taken branch goes to `next_rip + rel32`, a non-canonical target is #GP, flags stay).
-/// Short Jcc joined in S4-39f7, short JMP in S4-39f13 and direct CALL in Stage 6. `[REX.W] 89 /r` (MOV r/m64, r64) in the
-/// register form (mod = 11; REX.R and REX.B select r8..r15) with REX.W mandatory, as in `49 89 c4`
-/// / `4c 89 e7` of `/init`: the CPL0 `Operation::Mov` is reused (64-bit write, flags stay). `89`
-/// without REX.W (MOV r/m32, r32) joins in S6-22.
-///
-/// S4-39f6: `[REX] C6 /0 ib` (MOV r/m8, imm8) with a memory operand (mod != 11: SIB, disp8/disp32,
-/// RIP-relative; REX.X and REX.B reach the index and the base) with no prefix other than REX, as in
-/// `43 c6 04 2e 00` (`movb $0x0, (%r14,%r13)`) of `/init` at `0x40013e`. The CPL0
-/// `Operation::MovImmediate` is reused: the byte store goes through `write_operand` with the CPL3
-/// context, so the U/S and W checks of the paged adapter apply (#PF with U and W on a supervisor
-/// page, no write). `C6 /1..7` (the decoder refuses them), the register form (`c6 c0 ib`) and any
-/// prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay outside.
-///
-/// S4-39f7: `REX.W 39 /r` (CMP r/m64, r64) in the register form (mod = 11; REX.R and REX.B select
-/// r8..r15) with no prefix other than REX, as in `4c 39 eb` (`cmpq %r13, %rbx`) of `/init` at
-/// `0x400145`. The CPL0 `Operation::Arithmetic { kind: Cmp }` is reused (flags as `dst - src`, the
-/// result is not written). `39` without REX.W (CMP r/m32, r32), a memory operand stay outside for opcode `39`. `38` with a memory operand joined in S4-39f11.
-///
-/// S4-39f7 (continued): the short `7x rel8` Jcc (`74 08` = `je` of `/init` at `0x400151`) without
-/// REX and without any prefix: the same `Operation::Branch` as `0F 8x` (the decoder sign-extends
-/// rel8). Jcc with REX or a legacy prefix stays outside.
-///
-/// S4-39f8: `REX.W 8D /r` (LEA r64, m) with a SIB operand (ModRM.mod != 11, rm = 100; REX.X and
-/// REX.B reach the index and the base, REX.R the destination), as in `49 8d 3c 1e`
-/// (`leaq (%r14,%rbx), %rdi`) of `/init` at `0x400162`. The CPL0 `Operation::Lea` is reused: the
-/// address is computed by `MemoryOperand::effective_address` (no memory access, no canonical
-/// check, flags stay). The decoder does not record whether a register-based operand came from a SIB
-/// byte, so `lea_sib` is derived from the ModRM byte (see [`lea_modrm_selects_sib`]). S6-22
-/// also admits qword register-base forms without an index.
-///
-/// S4-39f10: `[REX] 8A /r` (MOV r8, r/m8) with a memory operand (mod != 11: SIB, disp8/disp32,
-/// RIP-relative; REX.R, REX.X and REX.B reach the destination, the index and the base) with no
-/// prefix other than REX, as in `8a 06` (`movb (%rsi), %al`) of `/init` at `0x40016f`. The CPL0
-/// `Operation::Mov` is reused: the byte load goes through `read_operand` with the CPL3 context (the
-/// U/S check of the paged adapter applies, #PF with U and no register write), the destination is
-/// the byte view (AL..BL, SPL..DIL with any REX, AH..BH without) and only that byte changes; flags
-/// stay. REX.W does not change a byte load and is accepted as for `C6`. The register form
-/// (`8a c0`, mod = 11) and any prefix (66/67/LOCK/REP/segment, including the 2E/3E hints) stay
-/// outside for opcode `8A`.
-///
-/// S4-39f11: `[REX] 38 /r` (CMP r/m8, r8) with a memory operand (mod != 11: SIB, disp8/disp32,
-/// RIP-relative; REX.R, REX.X and REX.B reach the register, the index and the base) with no prefix
-/// other than REX, as in `38 07` (`cmpb %al, (%rdi)`) of `/init` at `0x400171`. The CPL0
-/// `Operation::Arithmetic { kind: Cmp }` is reused: the byte is read through `read_operand` with
-/// the CPL3 context (the U/S check applies, #PF with U and no state change), the flags are those of
-/// `memory - register` at byte size and nothing is written. REX.W does not change a byte compare
-/// and is accepted as for `8A`/`C6`. S6-22 adds the register form without legacy prefixes.
-///
-/// S4-39f12: `REX.W FF /0` (INC r/m64, `incq %rbx` = `48 ff c3` of `/init` at `0x40017f`), register
-/// form only (mod = 11). The CPL0 `Operation::Arithmetic { kind: Inc, src: Immediate(1) }` is
-/// reused: the 64-bit register is written whole, OF/SF/ZF/AF/PF are those of `reg + 1` and CF is
-/// kept. Without REX.W (dword INC), the memory form and `FF /2..7` stay outside; `FF /1` (DEC r/m32,
-/// register form) joined in S4-39f15
-/// (`FE` has opcode byte `0xfe` and never matches).
-///
-/// S4-39f13: the short `EB cb` (JMP rel8, `eb c1` = `jmp 0x400145` of `/init` at `0x400182`)
-/// without REX and without any prefix. The CPL0 `Operation::Jump` is reused (the decoder
-/// sign-extends rel8): RIP becomes `next + rel8`, a non-canonical target is #GP(0) before RIP
-/// changes, flags and memory are untouched. S6-22 admits the unprefixed `E9` using the same
-/// operation with a rel32 displacement.
-///
-/// S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8, `movzbl (%r8,%rcx), %eax` = `41 0f b6 04 08` of
-/// `/init` at `0x400189`) with a memory source only (mod != 11), no REX.W and no prefix other than
-/// REX. The CPL0 `Operation::Extend { signed: false }` is reused: the byte is read through
-/// `read_operand` with the CPL3 context (U/S check, #PF with U and no register write), the 32-bit
-/// destination is written with the upper half cleared, flags stay.
-///
-/// S4-39f17: `[REX] 84 /r` (TEST r/m8, r8, `testb %al, %al` = `84 c0` of `/init` at `0x40018e`) in
-/// the register form only (mod = 11) with no prefix other than REX. The CPL0
-/// `Operation::Logic { kind: Test }` at byte size is reused: CF = OF = 0, SF/ZF/PF of the byte
-/// `rm & reg`, AF undefined, nothing is written. REX.W does not change a byte test and is accepted
-/// as for `8A`/`38`/`C6`. S6-22 uses `A8` and `F6 /0` during glibc CPU feature detection.
-///
-/// S4-39f18: `3C ib` (CMP AL, imm8, `cmpb $0x20, %al` = `3c 20` of `/init` at `0x400192`) with no
-/// REX and no prefix. The CPL0 `Operation::Arithmetic { kind: Cmp }` at byte size is reused: the
-/// flags are those of `al - imm8` (SUB rules), nothing is written.
-///
-/// S4-39f19: `REX.W 81 /7 id` (CMP r/m64, imm32, `cmpq $0x80, %rcx` = `48 81 f9 80 00 00 00` of
-/// `/init` at `0x40019d`) in the register form only (mod = 11; REX.B reaches r8..r15). The CPL0
-/// `Operation::Arithmetic { kind: Cmp }` at qword size is reused: the imm32 is sign-extended to 64
-/// bits by the decoder, the flags are those of `reg - imm` (SUB rules, 64-bit), nothing is written.
-/// The memory and dword forms of `81 /7` stay outside.
-///
-/// S4-39f20: `F3 A4` (REP MOVSB, `rep movsb` at `0x4001c1` of `/init`) is not matched here (the
-/// prefix check above refuses it): the run loop recognizes it with [`cpl3_rep_string_shape`] and
-/// executes it in [`cpl3_rep_string`], one iteration per unit of the instruction budget, with
-/// DF = 1 refused as `Unsupported { opcode: 0xa4 }`.
-///
-/// S4-39f21: `REX.W 29 /r` (SUB r/m64, r64, `subq %rsi, %rdx` = `48 29 f2` of `/init` at
-/// `0x4001db`) in the register form only (mod = 11; REX.R reaches the source r8..r15, REX.B the
-/// destination). The CPL0 `Operation::Arithmetic { kind: Sub }` at qword size is reused:
-/// `dst = dst - src` is written back in full and CF/OF/SF/ZF/PF/AF are those of the 64-bit SUB.
-/// The memory and dword forms of opcode `29` stay outside.
-///
-/// S4-39e: `SYSCALL` (`0F 05`, no prefix, no REX: the decoder names no other form) is allowed
-/// exactly when the set was built with `with_syscall` (`syscall`).
-fn cpl3_allows(
+/// The read-modify-write forms whose destination the CPL3 entry reads with write intent
+/// (`GuestMemory::read_integer_for_write`: the write check comes first, so a fault on a missing or
+/// read-only page has W = 1). The list is the one the S4-39/S6-22 allow-list accepted; ADR-0023 slice
+/// C2a keeps it unchanged (plan question V3): every other RMW form reads its destination at CPL3 as
+/// at CPL0 (`read_operand`, W = 0 on a fault of the read). A recorded deviation (CPU_CONTRACT,
+/// KNOWN_ISSUES): the rule depends on the form and the CPL until the oracle decides which side is
+/// right.
+fn cpl3_write_intent_rmw_destination(
     instruction: &long_decode::Instruction,
-    syscall: bool,
-    lea_sib: bool,
-    windows_msr: bool,
-) -> bool {
-    // S2-26h: with the Windows MSR member the bare `RDMSR`/`WRMSR` reach the step, where they are
-    // `#GP(0)` at CPL3 (SDM Vol. 2B RDMSR, 64-bit mode exceptions); nothing is read or written.
-    if windows_msr
-        && matches!(
-            instruction.operation,
-            Operation::ReadMsr | Operation::WriteMsr
-        )
-        && instruction.length == 2
-        && instruction.prefixes == Prefixes::default()
-    {
-        return true;
-    }
-    // The decoder admits exact ENDBR64 and RDSSPQ forms. The set has no CET IBT or shadow stack.
-    if matches!(
-        instruction.operation,
-        Operation::Endbr64Nop | Operation::RdsspqRax | Operation::CetNop
-    ) {
-        return true;
-    }
-    // S7-32: `INT imm8` (the gate DPL decides, through TSS.RSP0 from CPL3) and CLC/STC/CMC.
-    if matches!(
-        instruction.operation,
-        Operation::SoftwareInterrupt { .. } | Operation::CarryFlag { .. }
-    ) {
-        return true;
-    }
-
-    let prefixes = instruction.prefixes;
-    if cpl3_issue576_scalar_form(instruction) {
-        return true;
-    }
-    // S6-22: glibc's TLS setup uses a bounded set of FS-relative absolute forms.
-    if cpl3_glibc_tls_fs_form(instruction) {
-        return true;
-    }
-    if cpl3_static_scalar_form(instruction) || cpl3_workload_scalar_form(instruction) {
-        return true;
-    }
-    if cpl3_aligned_atomic_destination(instruction).is_some()
-        || cpl3_ordinary_rmw_destination(instruction).is_some()
-    {
-        return true;
-    }
-    if cpl3_notrack_register_jump(instruction) {
-        return true;
-    }
-    if cpl3_scalar_fp_form(instruction) {
-        return true;
-    }
-    if !cpl3_s6_22_xmm_memory_form(instruction) {
-        return false;
-    }
-    // The owned S6-22 workload contains this exact read-only memory TEST form.
-    if instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0xf7
-        && instruction.prefixes
-            == (Prefixes {
-                operand_override: true,
-                ..Prefixes::default()
-            })
-        && instruction.operand_size == OperandSize::Word
-        && matches!(
-            instruction.operation,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            } if dst.size == OperandSize::Word
-                && dst.address_size == OperandSize::Qword
-                && dst.base == AddressBase::Register(Register::Rsp)
-                && dst.index.is_none()
-                && dst.displacement == 4
-                && matches!(instruction.operation, Operation::Logic { src: Operand::Immediate(0xff7f), .. })
-        )
-    {
-        return true;
-    }
-    // BusyBox uses the operand-size-overridden register TEST word form.
-    if instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0x85
-        && instruction.prefixes
-            == (Prefixes {
-                operand_override: true,
-                ..Prefixes::default()
-            })
-        && instruction.operand_size == OperandSize::Word
-        && matches!(
-            instruction.operation,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                dst: Operand::Register(dst),
-                src: Operand::Register(src),
-            } if dst.size() == OperandSize::Word && src.size() == OperandSize::Word
-        )
-    {
-        return true;
-    }
-    // BusyBox compares a word memory operand with an imm8 under a lone 66 prefix.
-    if instruction.opcode.map == OpcodeMap::Primary
-        && instruction.opcode.byte == 0x83
-        && instruction.prefixes
-            == (Prefixes {
-                operand_override: true,
-                ..Prefixes::default()
-            })
-        && instruction.operand_size == OperandSize::Word
-        && matches!(
-            instruction.operation,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            } if dst.size == OperandSize::Word && dst.address_size == OperandSize::Qword
-                && dst.base == AddressBase::Register(Register::Rdx)
-                && dst.index.is_none() && dst.displacement == 6
-                && matches!(instruction.operation, Operation::Arithmetic { src: Operand::Immediate(0xfff1), .. })
-        )
-    {
-        return true;
-    }
-    if instruction.opcode.map == OpcodeMap::Escape0f
-        && instruction.opcode.byte == 0x1f
-        && instruction.operation == Operation::NopModrm
-        && prefixes.group1.is_none()
-        && !prefixes.address_override
-        && matches!(prefixes.segment, None | Some(0x2e))
-    {
-        return true;
-    }
-    if matches!(
-        instruction.operation,
-        Operation::MoveIntegerToXmm { .. }
-            | Operation::MovqFromXmm { .. }
-            | Operation::PunpckldqRegister { .. }
-            | Operation::PandRegister { .. }
-            | Operation::PunpcklqdqRegister { .. }
-            | Operation::PunpcklbwRegister { .. }
-            | Operation::PunpcklwdRegister { .. }
-            | Operation::PshufdRegister { .. }
-            | Operation::PshuflwRegister { .. }
-            | Operation::PinsrwMemory { .. }
-            | Operation::MovupsStoreMemory { .. }
-            | Operation::MovupsLoadMemory { .. }
-            | Operation::MovdquLoadMemory { .. }
-            | Operation::MovdqaLoadMemory { .. }
-            | Operation::MovdqaRegister { .. }
-            | Operation::MovapsRegister { .. }
-            | Operation::MovapsLoadMemory { .. }
-            | Operation::MovapsStoreMemory { .. }
-            | Operation::PxorRegister { .. }
-            | Operation::PaddbRegister { .. }
-            | Operation::PadddRegister { .. }
-            | Operation::PcmpeqdRegister { .. }
-            | Operation::PsrlwImmediateRegister { .. }
-            | Operation::PunpckhwdRegister { .. }
-            | Operation::PackuswbRegister { .. }
-            | Operation::PcmpeqbRegister { .. }
-            | Operation::PcmpeqbMemory { .. }
-            | Operation::PcmpgtbRegister { .. }
-            | Operation::PandnRegister { .. }
-            | Operation::PminubRegister { .. }
-            | Operation::PminubMemory { .. }
-            | Operation::XorpsRegister { .. }
-            | Operation::MovsdLoadMemory { .. }
-            | Operation::MovsdStoreMemory { .. }
-            | Operation::MovlpdLoadMemory { .. }
-            | Operation::MovhpdLoadMemory { .. }
-            | Operation::MovhpsLoadMemory { .. }
-            | Operation::PsubbRegister { .. }
-            | Operation::PmovmskbXmmToGpr { .. }
-            | Operation::PorRegister { .. }
-            | Operation::PslldqImmediateRegister { .. }
-            | Operation::PsrldqImmediateRegister { .. }
-            | Operation::PaddqRegister { .. }
-    ) {
-        return true;
-    }
-    if instruction.operation == Operation::Nop
-        && instruction.opcode.byte == 0x90
-        && instruction.length == 2
-        && prefixes
-            == (Prefixes {
-                operand_override: true,
-                ..Prefixes::default()
-            })
-    {
-        return true;
-    }
-    if prefixes.address_override {
-        return is_addr32_direct_call(instruction);
-    }
-    if prefixes.operand_override
-        && prefixes.group1.is_none()
-        && prefixes.segment.is_none()
-        && matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (OpcodeMap::Primary, 0x89,
-                Operation::Mov { dst: Operand::Memory(dst), src: Operand::Register(_) })
-            | (OpcodeMap::Primary, 0x83, Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            })
-                if dst.size == OperandSize::Word && dst.address_size == OperandSize::Qword
-        )
-    {
-        return true;
-    }
-    if prefixes.group1.is_some() || prefixes.segment.is_some() || prefixes.operand_override {
-        return false;
-    }
-    match (
-        instruction.opcode.map,
-        instruction.opcode.byte,
-        instruction.operation,
-    ) {
-        (
-            OpcodeMap::Primary,
-            0xb8..=0xbf,
-            Operation::MovImmediate {
-                dst: Operand::Register(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (OpcodeMap::Escape0f, 0x05, Operation::Syscall) => syscall,
-        // S2-27m: `SYSRET` at CPL3 is `#GP(0)` under the same member; the step decides.
-        (OpcodeMap::Escape0f, 0x07, Operation::Sysret) => syscall,
-        (OpcodeMap::Escape0f, 0x80..=0x8f, Operation::Branch { .. }) => prefixes.rex.is_none(),
-        (OpcodeMap::Primary, 0x70..=0x7f, Operation::Branch { .. }) => prefixes.rex.is_none(),
-        (OpcodeMap::Escape0f, 0xa2, Operation::Cpuid) => prefixes.rex.is_none(),
-        (OpcodeMap::Escape0f, 0x31, Operation::Rdtsc) => prefixes.rex.is_none(),
-        (
-            OpcodeMap::Primary,
-            0xc7,
-            Operation::MovImmediate {
-                dst: Operand::Memory(dst),
-                ..
-            },
-        ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x81,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            },
-        ) if dst.size() == OperandSize::Dword => true,
-        (
-            OpcodeMap::Primary,
-            0x81 | 0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            },
-        ) if dst.size() == OperandSize::Dword => true,
-        (
-            OpcodeMap::Primary,
-            0x3d,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            },
-        ) if instruction.operand_size == OperandSize::Dword
-            && prefixes.rex.is_none()
-            && dst == RegisterView::low(Register::Rax, OperandSize::Dword) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: ShiftKind::Shr,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Dword && dst.size() == OperandSize::Dword => {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0x90..=0x9f,
-            Operation::SetCondition {
-                dst: Operand::Register(dst),
-                ..
-            },
-        ) => dst.size() == OperandSize::Byte,
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) if dst.size == OperandSize::Dword => dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x25,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) if matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x81 | 0x83,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) if instruction.operand_size == OperandSize::Dword => true,
-        (
-            OpcodeMap::Primary,
-            0x81,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(0xfff),
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && (dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                || dst == RegisterView::low(Register::R10, OperandSize::Qword)) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x09 | 0x0b,
-            Operation::Logic {
-                kind: LogicKind::Or,
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0xa9 | 0xf7,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => instruction.operand_size == OperandSize::Dword,
-        (
-            OpcodeMap::Escape0f,
-            0x45,
-            Operation::ConditionalMove {
-                src: Operand::Register(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0xa8 | 0xf6,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                src: Operand::Immediate(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        (
-            OpcodeMap::Primary,
-            0xf7,
-            Operation::Logic {
-                kind: LogicKind::Not,
-                dst: Operand::Register(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Dword,
-        (
-            OpcodeMap::Primary,
-            0x80,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: ShiftKind::Sar,
-                dst: Operand::Register(_),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x3d,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (
-            OpcodeMap::Escape0f,
-            0x40..=0x4f,
-            Operation::ConditionalMove {
-                src: Operand::Memory(src),
-                ..
-            },
-        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x39,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) if dst.size == OperandSize::Qword => dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x01,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x25,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x05,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => dst.size() == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectCall {
-                operand: Operand::Memory(source),
-            },
-        ) => source.size == OperandSize::Qword && source.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x6b,
-            Operation::ImulImmediate {
-                src: Operand::Memory(src),
-                ..
-            },
-        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x03,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Register(_),
-                src: Operand::Memory(src),
-            },
-        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x2b,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Sub,
-                dst: Operand::Register(dst),
-                src: Operand::Memory(src),
-            },
-        ) => {
-            dst.size() == OperandSize::Qword
-                && src.size == OperandSize::Qword
-                && src.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x80,
-            Operation::Logic {
-                kind: LogicKind::Or,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Logic {
-                kind: LogicKind::Xor,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                || instruction.operand_size == OperandSize::Dword
-                    && matches!(instruction.operation, Operation::Logic {
-                    kind: LogicKind::Xor,
-                    dst: Operand::Register(dst),
-                    src: Operand::Immediate(1),
-                } if dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
-                    || dst == RegisterView::low(Register::Rsi, OperandSize::Dword))
-        }
-        (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. })
-            if instruction.operand_size == OperandSize::Dword =>
-        {
-            src.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: ShiftKind::Shl,
-                dst: Operand::Register(_),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (OpcodeMap::Primary, 0x98 | 0x99, Operation::SignExtendAccumulator { .. }) => {
-            instruction.operand_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0xf7,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Neg,
-                dst: Operand::Register(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0xf7,
-            Operation::Divide {
-                signed,
-                divisor: Operand::Register(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                || !signed && instruction.operand_size == OperandSize::Dword
-        }
-        (
-            OpcodeMap::Primary,
-            0xf7,
-            Operation::Mul {
-                signed: false,
-                operand: Operand::Register(_),
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0xd0,
-            Operation::Shift {
-                kind: ShiftKind::Shr,
-                dst: Operand::Register(_),
-                source: None,
-                count: Operand::Immediate(1),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        (
-            OpcodeMap::Primary,
-            0x21,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                || matches!(instruction.operation, Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(dst),
-                src: Operand::Register(src),
-            } if (dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                && src == RegisterView::low(Register::Rcx, OperandSize::Dword))
-                || (dst == RegisterView::low(Register::R8, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rax, OperandSize::Dword)))
-        }
-        (
-            OpcodeMap::Primary,
-            0x39,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) if matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x39,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) if dst.size == OperandSize::Dword && dst.address_size == OperandSize::Qword => true,
-        (
-            OpcodeMap::Primary,
-            0x30,
-            Operation::Logic {
-                kind: LogicKind::Xor,
-                dst: Operand::Register(dst),
-                src: Operand::Register(src),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Byte
-                && dst.size() == OperandSize::Byte
-                && src.size() == OperandSize::Byte
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectJump {
-                operand: Operand::Memory(source),
-            },
-        ) => {
-            prefixes.rex.is_none()
-                && source.size == OperandSize::Qword
-                && source.address_size == OperandSize::Qword
-                && source.base == AddressBase::NextRip
-                && source.index.is_none()
-        }
-        (
-            OpcodeMap::Escape0f,
-            0x40..=0x4f,
-            Operation::ConditionalMove {
-                src: Operand::Register(_),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Dword => true,
-        (OpcodeMap::Primary, 0xe8, Operation::Call { .. }) => prefixes.rex.is_none(),
-        (OpcodeMap::Primary, 0xc9, Operation::Leave)
-        | (OpcodeMap::Primary, 0xc3, Operation::Return { stack_adjust: 0 }) => {
-            prefixes.rex.is_none()
-        }
-        (
-            OpcodeMap::Escape0f,
-            0x40..=0x4f,
-            Operation::ConditionalMove {
-                src: Operand::Register(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (OpcodeMap::Primary, 0x90, Operation::Nop) => prefixes.rex.is_none(),
-        (
-            OpcodeMap::Primary,
-            0x69,
-            Operation::ImulImmediate {
-                src: Operand::Register(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x38,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        (OpcodeMap::Primary, 0xe9 | 0xeb, Operation::Jump { .. }) => prefixes.rex.is_none(),
-        (OpcodeMap::Primary, 0x50..=0x5f, Operation::StackRegister { .. }) => {
-            instruction.operand_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x89,
-            Operation::Mov {
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x89,
-            Operation::Mov {
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) => {
-            matches!(dst.size, OperandSize::Dword | OperandSize::Qword)
-                && dst.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x8b,
-            Operation::Mov {
-                dst: Operand::Register(_),
-                src: Operand::Memory(src),
-            },
-        ) => {
-            matches!(src.size, OperandSize::Dword | OperandSize::Qword)
-                && src.address_size == OperandSize::Qword
-        }
-        (OpcodeMap::Escape0f, 0x1f, Operation::NopModrm) => true,
-        (
-            OpcodeMap::Primary,
-            0xc7,
-            Operation::MovImmediate {
-                dst: Operand::Register(_) | Operand::Memory(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0xc6,
-            Operation::MovImmediate {
-                dst: Operand::Memory(dst),
-                ..
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Byte
-                && dst.size == OperandSize::Byte
-                && dst.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add | ArithmeticKind::Sub | ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && dst.size == OperandSize::Qword
-                && dst.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x31,
-            Operation::Logic {
-                kind: LogicKind::Xor,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x39,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => instruction.operand_size == OperandSize::Qword,
-        // S4-39f21 and S6-22: SUB with two registers, including the workload's dword forms.
-        (
-            OpcodeMap::Primary,
-            0x29,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Sub,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x85,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        // S4-39f17: `[REX] 84 /r` (TEST r/m8, r8) in the register form only (both operands are
-        // registers; the memory form decodes to a memory destination and stays refused with
-        // `0x84`). The byte views follow the decoder (AH..BH without REX, SPL..DIL with any REX).
-        (
-            OpcodeMap::Primary,
-            0x84,
-            Operation::Logic {
-                kind: LogicKind::Test,
-                dst: Operand::Register(_),
-                src: Operand::Register(_),
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        // S4-39f18: `3C ib` (CMP AL, imm8) with no REX and no prefix. The decoder names it
-        // `Arithmetic { Cmp, dst: Register(AL), src: Immediate }` at byte size; `3D` (CMP eAX,
-        // imm32), `3A`/`3B` and `A8` have their own opcode bytes and stay outside.
-        (
-            OpcodeMap::Primary,
-            0x3c,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => prefixes.rex.is_none() && instruction.operand_size == OperandSize::Byte,
-        // S4-39f19 and S6-22: qword register ADD, SUB and CMP with sign-extended imm32.
-        (
-            OpcodeMap::Primary,
-            0x81,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp | ArithmeticKind::Sub | ArithmeticKind::Add,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                || matches!(instruction.operation, Operation::Arithmetic {
-                kind: ArithmeticKind::Sub,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            } if instruction.operand_size == OperandSize::Dword
-                && dst.size() == OperandSize::Dword)
-        }
-        (
-            OpcodeMap::Primary,
-            0x8a,
-            Operation::Mov {
-                dst: Operand::Register(_),
-                src: Operand::Memory(src),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Byte
-                && src.size == OperandSize::Byte
-                && src.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x38,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Register(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Byte
-                && dst.size == OperandSize::Byte
-                && dst.address_size == OperandSize::Qword
-        }
-        // S4-39f14: `[REX] 80 /7 ib` (CMP r/m8, imm8) with a memory operand.
-        // S6-22 also admits the byte register form for the tunables scan.
-        (
-            OpcodeMap::Primary,
-            0x80,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Byte
-                && dst.size == OperandSize::Byte
-                && dst.address_size == OperandSize::Qword
-        }
-        (
-            OpcodeMap::Primary,
-            0x80,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(_),
-                src: Operand::Immediate(_),
-            },
-        ) => instruction.operand_size == OperandSize::Byte,
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Inc,
-                dst: Operand::Register(_),
-                ..
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                || matches!(instruction.operation, Operation::Arithmetic {
-                kind: ArithmeticKind::Inc,
-                dst: Operand::Register(dst), ..
-            } if dst == RegisterView::low(Register::Rbx, OperandSize::Dword))
-                    && prefixes.rex.is_none()
-        }
-        // S4-39f15: `[REX] FF /1` (DEC r/m32) with a register destination only, no REX.W. The
-        // memory form decodes to a memory destination and stays refused with `0xff`, as do
-        // `FF /0` INC r/m32 (no REX.W), `REX.W FF /1` (DEC r/m64) and `FF /2..7`.
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Dec,
-                dst: Operand::Register(_),
-                ..
-            },
-        ) => instruction.operand_size == OperandSize::Dword,
-        (
-            OpcodeMap::Primary,
-            0x63,
-            Operation::Extend {
-                dst,
-                src: Operand::Register(src),
-                signed: true,
-            },
-        ) => dst.size() == OperandSize::Qword && src.size() == OperandSize::Dword,
-        // S4-39f16: `[REX] 0F B6 /r` (MOVZX r32, r/m8) with a memory source only, no REX.W; the
-        // register form decodes to a register source and stays refused with `0xb6`.
-        // S6-22 adds `0F B7` for a word memory source and a dword destination.
-        (
-            OpcodeMap::Escape0f,
-            0xb6 | 0xb7,
-            Operation::Extend {
-                src: Operand::Memory(src),
-                signed: false,
-                ..
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Dword
-                && matches!(src.size, OperandSize::Byte | OperandSize::Word)
-                && src.address_size == OperandSize::Qword
-        }
-        (OpcodeMap::Primary, 0x8d, Operation::Lea { src, .. }) => {
-            instruction.operand_size == OperandSize::Qword
-                && src.address_size == OperandSize::Qword
-                && (lea_sib
-                    || (matches!(src.base, AddressBase::Register(_) | AddressBase::NextRip)
-                        && src.index.is_none()))
-        }
-        (
-            OpcodeMap::Primary,
-            0x11,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Adc,
-                dst: Operand::Register(dst),
-                src: Operand::Register(src),
-            },
-        ) if prefixes.rex == Some(0x49)
-            && instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::R14, OperandSize::Qword)
-            && src == RegisterView::low(Register::Rax, OperandSize::Qword) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x00,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Add,
-                dst: Operand::Register(dst),
-                src: Operand::Register(src),
-            },
-        ) if prefixes.rex.is_none()
-            && instruction.operand_size == OperandSize::Byte
-            && dst.size() == OperandSize::Byte
-            && src.size() == OperandSize::Byte =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x3b,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(dst),
-                src: Operand::Memory(src),
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::Rbp, OperandSize::Qword)
-            && src.size == OperandSize::Qword
-            && src.address_size == OperandSize::Qword
-            && src.index.is_none()
-            && src.base == AddressBase::Register(Register::Rsp)
-            && src.displacement == 0x10 =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x3a,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(dst),
-                src: Operand::Memory(src),
-            },
-        ) if instruction.operand_size == OperandSize::Byte
-            && dst == RegisterView::low(Register::R13, OperandSize::Byte)
-            && src.size == OperandSize::Byte
-            && src.address_size == OperandSize::Qword
-            && src.index.is_none()
-            && src.base == AddressBase::Register(Register::Rsp)
-            && src.displacement == 0x0e =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xaf,
-            Operation::Imul {
-                src: Operand::Register(_),
-                ..
-            },
-        ) => matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ),
-        (
-            OpcodeMap::Primary,
-            0x6b,
-            Operation::ImulImmediate {
-                dst,
-                src: Operand::Register(src),
-                immediate,
-            },
-        ) if prefixes.rex == Some(0x48)
-            && instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::Rbx, OperandSize::Qword)
-            && src == RegisterView::low(Register::Rbx, OperandSize::Qword)
-            && immediate == 0x30 =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectJump {
-                operand: Operand::Register(target),
-            },
-        ) if prefixes.rex.is_none()
-            && instruction.operand_size == OperandSize::Qword
-            && target == RegisterView::low(Register::Rax, OperandSize::Qword) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x88,
-            Operation::Mov {
-                dst: Operand::Memory(dst),
-                src: Operand::Register(src),
-            },
-        ) if prefixes.rex.is_none()
-            && instruction.operand_size == OperandSize::Byte
-            && dst.size == OperandSize::Byte
-            && dst.address_size == OperandSize::Qword
-            && dst.index.is_none()
-            && ((dst.base == AddressBase::Register(Register::Rsp)
-                && matches!(dst.displacement, 0x0e | 0x0f)
-                && src == RegisterView::low(Register::Rax, OperandSize::Byte))
-                || (dst.base == AddressBase::NextRip
-                    && dst.displacement == 0x11fed7
-                    && src == RegisterView::low(Register::Rbx, OperandSize::Byte))) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xb6,
-            Operation::Extend {
-                dst,
-                src: Operand::Register(src),
-                signed: false,
-            },
-        ) if prefixes.rex.is_none()
-            && instruction.operand_size == OperandSize::Dword
-            && ((dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                && src == RegisterView::low(Register::Rax, OperandSize::Byte))
-                || (dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rbx, OperandSize::Byte))) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xd1,
-            Operation::Shift {
-                kind: ShiftKind::Sar,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Immediate(1),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::Rsi, OperandSize::Qword) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xd3,
-            Operation::Shift {
-                kind: ShiftKind::Shl,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Register(count),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst == RegisterView::low(Register::Rsi, OperandSize::Qword)
-            && count == RegisterView::low(Register::Rcx, OperandSize::Byte) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: ShiftKind::Shr,
-                dst: Operand::Register(_),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Qword => true,
-        (OpcodeMap::Primary, 0x87, Operation::Xchg { left, right })
-            if matches!(
-                instruction.operand_size,
-                OperandSize::Dword | OperandSize::Qword
-            ) && left.size() == instruction.operand_size
-                && right.size() == instruction.operand_size =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xa3,
-            Operation::Bit {
-                kind: BitKind::Test,
-                dst: Operand::Register(dst),
-                offset: BitOffset::Register(offset),
-            },
-        ) if prefixes.rex == Some(0x48)
-            && instruction.operand_size == OperandSize::Qword
-            && ((dst == RegisterView::low(Register::Rsi, OperandSize::Qword)
-                && offset == RegisterView::low(Register::Rax, OperandSize::Qword))
-                || (dst == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                    && offset == RegisterView::low(Register::Rdx, OperandSize::Qword))) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x63,
-            Operation::Extend {
-                dst,
-                src: Operand::Memory(src),
-                signed: true,
-            },
-        ) if dst.size() == OperandSize::Qword
-            && src.size == OperandSize::Dword
-            && src.address_size == OperandSize::Qword
-            && (src.index.is_none() || src.scale == 4)
-            && matches!(src.base, AddressBase::Register(_)) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xb6,
-            Operation::Extend {
-                dst,
-                src: Operand::Register(src),
-                signed: false,
-            },
-        ) if instruction.operand_size == OperandSize::Dword
-            && ((prefixes.rex.is_none()
-                && ((dst == RegisterView::low(Register::Rcx, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte))
-                    || (dst == RegisterView::low(Register::Rdx, OperandSize::Dword)
-                        && src == RegisterView::low(Register::Rdx, OperandSize::Byte))
-                    || (dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                        && src == RegisterView::low(Register::Rcx, OperandSize::Byte))))
-                || (prefixes.rex == Some(0x41)
-                    && dst == RegisterView::low(Register::Rdi, OperandSize::Dword)
-                    && (src == RegisterView::low(Register::R9, OperandSize::Byte)
-                        || src == RegisterView::low(Register::R14, OperandSize::Byte)))
-                || (prefixes.rex == Some(0x40)
-                    && dst == RegisterView::low(Register::Rsi, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rsi, OperandSize::Byte))) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x3b,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Register(dst),
-                src: Operand::Memory(src),
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst.size() == OperandSize::Qword
-            && src.size == OperandSize::Qword
-            && src.address_size == OperandSize::Qword
-            && src.index.is_none()
-            && matches!(src.base, AddressBase::Register(_) | AddressBase::NextRip) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x81,
-            Operation::Arithmetic {
-                kind: ArithmeticKind::Cmp,
-                dst: Operand::Memory(dst),
-                src: Operand::Immediate(0x821),
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst.size == OperandSize::Qword
-            && dst.address_size == OperandSize::Qword
-            && dst.base == AddressBase::NextRip
-            && dst.index.is_none()
-            && dst.displacement == 0x209302 =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x83,
-            Operation::Logic {
-                kind: LogicKind::Or,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(_),
-            },
-        ) if matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ) && dst.size() == instruction.operand_size =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x88,
-            Operation::Mov {
-                dst: Operand::Memory(dst),
-                src: Operand::Register(src),
-            },
-        ) if instruction.operand_size == OperandSize::Byte
-            && dst.size == OperandSize::Byte
-            && dst.address_size == OperandSize::Qword
-            && dst.index.is_none()
-            && ((prefixes.rex.is_none()
-                && ((dst.base == AddressBase::Register(Register::Rdi)
-                    && dst.displacement == 0
-                    && src == RegisterView::low(Register::Rcx, OperandSize::Byte))
-                    || (dst.base == AddressBase::NextRip
-                        && dst.displacement == 0xf464e
-                        && src == RegisterView::low(Register::Rax, OperandSize::Byte))
-                    || (dst.base == AddressBase::Register(Register::Rsp)
-                        && matches!(dst.displacement, 0x0e | 0x0f)
-                        && src == RegisterView::low(Register::Rax, OperandSize::Byte))
-                    || (dst.base == AddressBase::NextRip
-                        && dst.displacement == 0x11fed7
-                        && src == RegisterView::low(Register::Rbx, OperandSize::Byte))))
-                || (prefixes.rex == Some(0x44)
-                    && ((dst.base == AddressBase::Register(Register::Rbx)
-                        && dst.displacement == 0x354
-                        && src == RegisterView::low(Register::R13, OperandSize::Byte))
-                        || (dst.base == AddressBase::Register(Register::Rbp)
-                            && dst.displacement == -0x60
-                            && src == RegisterView::low(Register::R10, OperandSize::Byte))))
-                || (prefixes.rex == Some(0x41)
-                    && dst.base == AddressBase::Register(Register::R10)
-                    && dst.displacement == 0x356
-                    && src == RegisterView::low(Register::Rdx, OperandSize::Byte))) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x6b,
-            Operation::ImulImmediate {
-                dst,
-                src: Operand::Register(src),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Qword
-            && dst.size() == OperandSize::Qword
-            && src.size() == OperandSize::Qword =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xd1,
-            Operation::Shift {
-                kind: ShiftKind::Sar | ShiftKind::Shr,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Immediate(1),
-                ..
-            },
-        ) if matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ) && dst.size() == instruction.operand_size =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xd3,
-            Operation::Shift {
-                kind: ShiftKind::Shl | ShiftKind::Shr | ShiftKind::Sar,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Register(count),
-                ..
-            },
-        ) if matches!(
-            instruction.operand_size,
-            OperandSize::Dword | OperandSize::Qword
-        ) && dst.size() == instruction.operand_size
-            && count == RegisterView::low(Register::Rcx, OperandSize::Byte) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: ShiftKind::Rol | ShiftKind::Ror,
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Qword && dst.size() == OperandSize::Qword => {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xc0 | 0xd0,
-            Operation::Shift {
-                kind: ShiftKind::Shr,
-                dst: Operand::Register(dst),
-                source: None,
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Byte && dst.size() == OperandSize::Byte => {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x23,
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(dst),
-                src: Operand::Memory(src),
-            },
-        ) if instruction.operand_size == OperandSize::Dword
-            && dst.size() == OperandSize::Dword
-            && src.size == OperandSize::Dword
-            && src.address_size == OperandSize::Qword =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0x33,
-            Operation::Logic {
-                kind: LogicKind::Xor,
-                dst: Operand::Register(_),
-                src: Operand::Memory(src),
-            },
-        ) => src.size == OperandSize::Qword && src.address_size == OperandSize::Qword,
-        (
-            OpcodeMap::Escape0f,
-            0x94,
-            Operation::SetCondition {
-                condition: ConditionCode::Equal,
-                dst: Operand::Memory(dst),
-                ..
-            },
-        ) if dst.size == OperandSize::Byte
-            && dst.address_size == OperandSize::Qword
-            && dst.base == AddressBase::Register(Register::Rbp)
-            && dst.index.is_none()
-            && dst.displacement == -0x70 =>
-        {
-            true
-        }
-        (OpcodeMap::Primary, 0xff, Operation::PushMemory { source })
-            if instruction.operand_size == OperandSize::Qword
-                && source.size == OperandSize::Qword
-                && source.address_size == OperandSize::Qword =>
-        {
-            true
-        }
-        (OpcodeMap::Primary, 0x6a, Operation::PushImmediate { .. })
-            if instruction.operand_size == OperandSize::Qword =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectCall {
-                operand: Operand::Register(target),
-            },
-        ) if prefixes.rex.is_none()
-            && instruction.operand_size == OperandSize::Qword
-            && target == RegisterView::low(Register::Rax, OperandSize::Qword) =>
-        {
-            true
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xbc | 0xbd,
-            Operation::BitScan {
-                kind,
-                dst,
-                src: Operand::Register(src),
-            },
-        ) if ((instruction.opcode.byte == 0xbc && kind == BitScanKind::Forward)
-            || (instruction.opcode.byte == 0xbd && kind == BitScanKind::Reverse))
-            && ((prefixes.rex.is_none()
-                && instruction.operand_size == OperandSize::Dword
-                && ((dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rdx, OperandSize::Dword))
-                    || (instruction.opcode.byte == 0xbd
-                        && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                        && src == RegisterView::low(Register::Rax, OperandSize::Dword))))
-                || (prefixes.rex == Some(0x48)
-                    && instruction.operand_size == OperandSize::Qword
-                    && instruction.opcode.byte == 0xbc
-                    && dst == RegisterView::low(Register::Rdx, OperandSize::Qword)
-                    && src == RegisterView::low(Register::Rdx, OperandSize::Qword))) =>
-        {
-            true
-        }
-        (OpcodeMap::Primary, 0x87 | 0x91..=0x97, Operation::Xchg { left, right })
-            if matches!(
-                instruction.operand_size,
-                OperandSize::Dword | OperandSize::Qword
-            ) && left.size() == instruction.operand_size
-                && right.size() == instruction.operand_size =>
-        {
-            true
-        }
-        _ => false,
-    }
-}
-
-/// S6-22 ISSUE-576: exact scalar operand families found in the pinned BusyBox and workload
-/// instruction inventories. This intentionally reuses the ordinary decoder/executor semantics;
-/// only the listed widths, prefix classes, register forms, and one read-only BT memory shape join
-/// CPL3 admission here.
-fn cpl3_issue576_scalar_form(instruction: &long_decode::Instruction) -> bool {
-    let prefixes = instruction.prefixes;
-    if prefixes.group1.is_some()
-        || prefixes.segment.is_some()
-        || prefixes.operand_override
-        || prefixes.address_override
-    {
-        return false;
-    }
-    let reg = |register, size| RegisterView::low(register, size);
-    match (
-        instruction.opcode.map,
-        instruction.opcode.byte,
-        instruction.operation,
-    ) {
-        (OpcodeMap::Escape0f, 0xc8..=0xcf, Operation::Bswap { dst }) => {
-            let dword = instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && matches!(dst, r if r == reg(Register::Rcx, OperandSize::Dword)
-                    || r == reg(Register::Rdx, OperandSize::Dword));
-            let qword = instruction.operand_size == OperandSize::Qword
-                && prefixes.rex == Some(0x48)
-                && matches!(dst, r if r == reg(Register::Rax, OperandSize::Qword)
-                    || r == reg(Register::Rcx, OperandSize::Qword));
-            dword || qword
-        }
-        (
-            OpcodeMap::Primary,
-            0xc1,
-            Operation::Shift {
-                kind: kind @ (ShiftKind::Rol | ShiftKind::Ror),
-                dst: Operand::Register(dst),
-                source: None,
-                count: Operand::Immediate(_),
-                ..
-            },
-        ) if instruction.operand_size == OperandSize::Dword && dst.size() == OperandSize::Dword => {
-            (prefixes.rex.is_none()
-                && (dst == reg(Register::Rax, OperandSize::Dword)
-                    || dst == reg(Register::Rdx, OperandSize::Dword)
-                    || (kind == ShiftKind::Ror && dst == reg(Register::Rcx, OperandSize::Dword))))
-                || (prefixes.rex == Some(0x41)
-                    && (dst == reg(Register::R9, OperandSize::Dword)
-                        || dst == reg(Register::R11, OperandSize::Dword)))
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xa3,
-            Operation::Bit {
-                kind: BitKind::Test,
-                dst: Operand::Register(dst),
-                offset: BitOffset::Register(offset),
-            },
-        ) => {
-            (instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && matches!(dst, r if r == reg(Register::Rcx, OperandSize::Dword)
-                    || r == reg(Register::Rdx, OperandSize::Dword))
-                && offset == reg(Register::Rax, OperandSize::Dword))
-                || (instruction.operand_size == OperandSize::Qword
-                    && prefixes.rex == Some(0x48)
-                    && dst == reg(Register::Rcx, OperandSize::Qword)
-                    && offset == reg(Register::Rdx, OperandSize::Qword))
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xba,
-            Operation::Bit {
-                kind: BitKind::Test,
-                dst: Operand::Register(dst),
-                offset: BitOffset::Immediate(_),
-            },
-        ) => {
-            (instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && matches!(dst, r if r == reg(Register::Rax, OperandSize::Dword)
-                    || r == reg(Register::Rbx, OperandSize::Dword)
-                    || r == reg(Register::Rsi, OperandSize::Dword)))
-                || (instruction.operand_size == OperandSize::Dword
-                    && prefixes.rex == Some(0x41)
-                    && matches!(dst, r if r == reg(Register::R12, OperandSize::Dword)
-                        || r == reg(Register::R13, OperandSize::Dword)))
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xba,
-            Operation::Bit {
-                kind: BitKind::Test,
-                dst: Operand::Memory(memory),
-                offset: BitOffset::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && memory.size == OperandSize::Dword
-                && memory.address_size == OperandSize::Qword
-                && memory.base == AddressBase::Register(Register::Rbp)
-                && memory.index.is_none()
-                && matches!(memory.displacement, -0xd4 | -0xe0)
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xba,
-            Operation::Bit {
-                kind: BitKind::Reset,
-                dst: Operand::Register(dst),
-                offset: BitOffset::Immediate(_),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && prefixes.rex == Some(0x48)
-                && dst == reg(Register::Rax, OperandSize::Qword)
-        }
-        (
-            OpcodeMap::Escape0f,
-            0xab,
-            Operation::Bit {
-                kind: BitKind::Set,
-                dst: Operand::Register(dst),
-                offset: BitOffset::Register(offset),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && prefixes.rex == Some(0x48)
-                && dst == reg(Register::Rdx, OperandSize::Qword)
-                && offset == reg(Register::Rsi, OperandSize::Qword)
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectCall {
-                operand: Operand::Register(target),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && ((prefixes.rex.is_none() && target == reg(Register::Rdx, OperandSize::Qword))
-                    || (prefixes.rex == Some(0x41)
-                        && matches!(target, r if r == reg(Register::R10, OperandSize::Qword)
-                            || r == reg(Register::R12, OperandSize::Qword)
-                            || r == reg(Register::R13, OperandSize::Qword)
-                            || r == reg(Register::R15, OperandSize::Qword))))
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectJump {
-                operand: Operand::Register(target),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && prefixes.rex.is_none()
-                && target == reg(Register::Rdx, OperandSize::Qword)
-        }
-        (
-            OpcodeMap::Primary,
-            0xff,
-            Operation::IndirectJump {
-                operand: Operand::Memory(memory),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Qword
-                && prefixes.rex.is_none()
-                && memory.size == OperandSize::Qword
-                && memory.address_size == OperandSize::Qword
-                && memory.base == AddressBase::Register(Register::Rax)
-                && memory.index.is_none()
-                && memory.displacement == 0x18
-        }
-        (
-            OpcodeMap::Escape0f,
-            0x44,
-            Operation::ConditionalMove {
-                condition: ConditionCode::Equal,
-                dst,
-                src: Operand::Memory(memory),
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && dst == reg(Register::Rax, OperandSize::Dword)
-                && memory.size == OperandSize::Dword
-                && memory.address_size == OperandSize::Qword
-                && memory.base == AddressBase::Register(Register::Rbp)
-                && memory.index.is_none()
-                && memory.displacement == -0x104
-        }
-        (
-            OpcodeMap::Primary,
-            0x6b,
-            Operation::ImulImmediate {
-                dst,
-                src: Operand::Register(src),
-                immediate: 4,
-            },
-        ) => {
-            instruction.operand_size == OperandSize::Dword
-                && prefixes.rex.is_none()
-                && dst == reg(Register::Rcx, OperandSize::Dword)
-                && src == reg(Register::Rbx, OperandSize::Dword)
-        }
-        _ => false,
-    }
-}
-
-fn cpl3_ordinary_rmw_destination(instruction: &long_decode::Instruction) -> Option<MemoryOperand> {
+) -> Option<MemoryOperand> {
     let prefixes = instruction.prefixes;
     if instruction.opcode.map != OpcodeMap::Primary
         || prefixes.segment.is_some()
@@ -33353,115 +31096,6 @@ fn cpl3_ordinary_rmw_destination(instruction: &long_decode::Instruction) -> Opti
         .then_some(destination)
 }
 
-fn cpl3_s6_22_xmm_memory_form(instruction: &long_decode::Instruction) -> bool {
-    let memory = match instruction.operation {
-        Operation::PminubMemory { source, .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0xda
-                && instruction.prefixes.operand_override
-                && instruction.prefixes.group1.is_none()
-                && instruction.prefixes.segment.is_none()
-                && !instruction.prefixes.address_override
-                && instruction.prefixes.rex.is_none()
-                && source.address_size == OperandSize::Qword
-                && source.base == AddressBase::Register(Register::Rax)
-                && source.index.is_none()
-        }
-        Operation::MovsdLoadMemory { source, .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x10
-                && instruction.prefixes.group1 == Some(0xf2)
-                && instruction.prefixes.segment.is_none()
-                && instruction.prefixes.rex.is_none()
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && source.address_size == OperandSize::Qword
-                && matches!(
-                    source.base,
-                    AddressBase::Register(Register::Rbp) | AddressBase::NextRip
-                )
-                && source.index.is_none()
-        }
-        Operation::MovsdStoreMemory { destination, .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x11
-                && instruction.prefixes.group1 == Some(0xf2)
-                && instruction.prefixes.segment.is_none()
-                && instruction.prefixes.rex.is_none()
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && destination.address_size == OperandSize::Qword
-                && destination.base == AddressBase::Register(Register::Rbp)
-                && destination.index.is_none()
-        }
-        Operation::MovapsLoadMemory { source, .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x28
-                && instruction.prefixes == Prefixes::default()
-                && source.address_size == OperandSize::Qword
-                && source.index.is_none()
-                && matches!(
-                    source.base,
-                    AddressBase::NextRip | AddressBase::Register(Register::Rdi)
-                )
-        }
-        _ => return true,
-    };
-    memory
-}
-
-fn cpl3_aligned_atomic_destination(
-    instruction: &long_decode::Instruction,
-) -> Option<MemoryOperand> {
-    let prefixes = instruction.prefixes;
-    if prefixes.segment.is_some() || prefixes.address_override || prefixes.operand_override {
-        return None;
-    }
-    let (operand, width) = match (
-        instruction.opcode.map,
-        instruction.opcode.byte,
-        instruction.operation,
-    ) {
-        (OpcodeMap::Primary, 0x83, Operation::LockAddMem { destination, .. })
-        | (OpcodeMap::Escape0f, 0xb1, Operation::LockCmpxchgMem { destination, .. })
-        | (OpcodeMap::Escape0f, 0xc1, Operation::LockXaddMem { destination, .. })
-            if prefixes.group1 == Some(0xf0)
-                && matches!(destination.size, OperandSize::Dword | OperandSize::Qword) =>
-        {
-            (destination, destination.size)
-        }
-        (OpcodeMap::Primary, 0x01, Operation::LockAddMemReg { destination, .. })
-            if prefixes.group1 == Some(0xf0) =>
-        {
-            (destination, OperandSize::Qword)
-        }
-        (OpcodeMap::Primary, 0x83, Operation::LockOrMem { destination, .. })
-        | (OpcodeMap::Primary, 0x83, Operation::LockSubDwordImm8 { destination, .. })
-        | (
-            OpcodeMap::Escape0f,
-            0xba,
-            Operation::LockBitMemImm {
-                kind: BitKind::Set,
-                destination,
-                ..
-            },
-        ) if prefixes.group1 == Some(0xf0) => (destination, OperandSize::Dword),
-        (OpcodeMap::Primary, 0x87, Operation::XchgMemory { memory, .. })
-            if prefixes.group1.is_none()
-                && matches!(memory.size, OperandSize::Dword | OperandSize::Qword) =>
-        {
-            (memory, memory.size)
-        }
-        _ => return None,
-    };
-    let rex_w = prefixes.rex.is_some_and(|rex| rex & 8 != 0);
-    (instruction.operand_size == width
-        && operand.size == width
-        && operand.address_size == OperandSize::Qword
-        && rex_w == (width == OperandSize::Qword))
-        .then_some(operand)
-}
-
 /// S7-32 W3: the segment prefix of an instruction is the one its memory operand carries: no prefix
 /// on a flat operand, a null-base override (CS/DS/ES/SS, zero base in 64-bit mode) on a flat or
 /// class-stamped operand, or FS/GS on an operand the segment-override decoder stamped with that
@@ -33481,766 +31115,6 @@ fn operand_carries_segment(prefix: Option<u8>, segment: long_decode::MemorySegme
     }
 }
 
-fn cpl3_notrack_register_jump(instruction: &long_decode::Instruction) -> bool {
-    // The decoder checks the exact DS-prefixed register spellings. This profile has no CET.
-    instruction.prefixes.segment == Some(0x3e)
-        && matches!(
-            instruction.operation,
-            Operation::IndirectJump {
-                operand: Operand::Register(_)
-            }
-        )
-}
-
-fn cpl3_plain_scalar_prefixes(instruction: &long_decode::Instruction) -> bool {
-    let prefixes = instruction.prefixes;
-    prefixes.group1.is_none()
-        && prefixes.segment.is_none()
-        && !prefixes.address_override
-        && prefixes.operand_override == (instruction.operand_size == OperandSize::Word)
-}
-
-fn cpl3_static_scalar_form(instruction: &long_decode::Instruction) -> bool {
-    use ArithmeticKind as A;
-    use LogicKind as L;
-    use OpcodeMap::{Escape0f as M0f, Primary as Mp};
-    use Operand as O;
-    if !cpl3_plain_scalar_prefixes(instruction) {
-        return false;
-    }
-    let p = instruction.prefixes;
-    let sete_memory_store = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (M0f, 0x94, Operation::SetCondition { condition: ConditionCode::Equal, dst: O::Memory(dst), .. })
-            if dst.size == OperandSize::Byte && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && matches!(
-                    (dst.base, dst.displacement),
-                    (AddressBase::Register(Register::Rbx), 0x900)
-                        | (AddressBase::Register(Register::Rbp), -0x4f5)
-                )
-                && p.group1.is_none() && p.segment.is_none()
-                && !p.operand_override && !p.address_override && p.rex.is_none()
-    );
-    let and_dword_registers = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x21, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
-            if instruction.operand_size == OperandSize::Dword
-                && matches!(
-                    (dst, src),
-                    (d, s) if (d == RegisterView::low(Register::R10, OperandSize::Dword)
-                        && s == RegisterView::low(Register::Rcx, OperandSize::Dword))
-                        || (d == RegisterView::low(Register::R11, OperandSize::Dword)
-                            && s == RegisterView::low(Register::Rsi, OperandSize::Dword))
-                        || (d == RegisterView::low(Register::Rax, OperandSize::Dword)
-                            && s == RegisterView::low(Register::R15, OperandSize::Dword))
-                )
-    );
-    let observed = sete_memory_store
-        || and_dword_registers
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (M0f, 0xbc, Operation::BitScan { kind: BitScanKind::Forward, dst, src: O::Register(src) })
-                if p.rex == Some(0x48) && instruction.operand_size == OperandSize::Qword
-                    && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
-                    && (src == RegisterView::low(Register::Rdx, OperandSize::Qword)
-                        || src == RegisterView::low(Register::Rax, OperandSize::Qword))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (M0f, 0xbc, Operation::BitScan { kind: BitScanKind::Forward, dst, src: O::Register(src) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                    && src == RegisterView::low(Register::Rax, OperandSize::Dword)
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0xf7, Operation::Arithmetic { kind: A::Neg, dst: O::Register(dst), .. })
-                if instruction.operand_size == OperandSize::Dword && p == Prefixes::default()
-                    && matches!(dst, d if d == RegisterView::low(Register::Rax, OperandSize::Dword)
-                        || d == RegisterView::low(Register::Rbx, OperandSize::Dword)
-                        || d == RegisterView::low(Register::Rdx, OperandSize::Dword))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x0400_0000) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x0c, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x80) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Byte
-                    && dst == RegisterView::low(Register::Rax, OperandSize::Byte)
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x22, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Memory(src) })
-                if src.size == OperandSize::Byte && src.address_size == OperandSize::Qword
-                    && src.base == AddressBase::Register(Register::Rbp) && src.index.is_none()
-                    && ((p.rex.is_none() && src.displacement == -0x4c0
-                        && dst == RegisterView::low(Register::Rax, OperandSize::Byte))
-                        || (p.rex == Some(0x44) && src.displacement == -0x4bc
-                            && dst == RegisterView::low(Register::R13, OperandSize::Byte)))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x81, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(0x100) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && dst == RegisterView::low(Register::Rsi, OperandSize::Dword)
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x89) })
-                if p.rex == Some(0x40) && instruction.operand_size == OperandSize::Byte
-                    && dst == RegisterView::low(Register::Rsi, OperandSize::Byte)
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x80, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(immediate) })
-                if instruction.operand_size == OperandSize::Byte
-                    && ((p.rex == Some(0x40)
-                        && dst == RegisterView::low(Register::Rsi, OperandSize::Byte)
-                        && matches!(immediate, 0x80 | 0x81))
-                        || (p.rex == Some(0x41)
-                            && dst == RegisterView::low(Register::R9, OperandSize::Byte)
-                            && immediate == 0x81))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x68, Operation::PushImmediate { value: 0xca })
-                if p == Prefixes::default() && instruction.length == 5
-                    && instruction.operand_size == OperandSize::Qword
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x19, Operation::Arithmetic { kind: A::Sbb, dst: O::Register(dst), src: O::Register(src) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && dst == src && matches!(dst, d if d == RegisterView::low(Register::Rax, OperandSize::Dword)
-                        || d == RegisterView::low(Register::Rdx, OperandSize::Dword))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(8) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Byte
-                    && dst == RegisterView::high_byte(Register::Rax, false).unwrap()
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Immediate(0x202) })
-                if p.operand_override && p.group1.is_none() && p.segment.is_none()
-                    && !p.address_override && p.rex.is_none() && instruction.length == 5
-                    && instruction.operand_size == OperandSize::Word && dst.size == OperandSize::Word
-                    && dst.address_size == OperandSize::Qword
-                    && dst.base == AddressBase::Register(Register::Rcx)
-                    && dst.index.is_none() && dst.displacement == 0
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x33, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Memory(src) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
-                    && src.base == AddressBase::Register(Register::Rbp) && src.index.is_none()
-                    && src.displacement == -0x28
-                    && (dst == RegisterView::low(Register::Rbx, OperandSize::Dword)
-                        || dst == RegisterView::low(Register::Rax, OperandSize::Dword))
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0x03, Operation::Arithmetic { kind: A::Add, dst: O::Register(dst), src: O::Memory(src) })
-                if p.rex == Some(0x45) && instruction.operand_size == OperandSize::Dword
-                    && dst == RegisterView::low(Register::R11, OperandSize::Dword)
-                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
-                    && src.base == AddressBase::Register(Register::R10) && src.index.is_none()
-                    && src.displacement == 0x10
-        )
-        || matches!(
-            (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-            (Mp, 0xf7, Operation::Divide { signed: false, divisor: O::Memory(src) })
-                if p == Prefixes::default() && instruction.operand_size == OperandSize::Dword
-                    && src.size == OperandSize::Dword && src.address_size == OperandSize::Qword
-                    && src.base == AddressBase::Register(Register::Rdi) && src.index.is_none()
-                    && src.displacement == 8
-        );
-    observed
-}
-
-fn cpl3_workload_scalar_form(instruction: &long_decode::Instruction) -> bool {
-    use ArithmeticKind as A;
-    use BitScanKind as B;
-    use LogicKind as L;
-    use OpcodeMap::{Escape0f as M0f, Primary as Mp};
-    use Operand as O;
-    if !cpl3_plain_scalar_prefixes(instruction) {
-        return false;
-    }
-    let p = instruction.prefixes;
-    let width = instruction.operand_size;
-    let memory = |value: MemoryOperand, size: OperandSize| {
-        value.size == size && value.address_size == OperandSize::Qword
-    };
-    let byte_register = |value: RegisterView| value.size() == OperandSize::Byte;
-    let no_prefix = p == Prefixes::default();
-    let byte_store = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x88, Operation::Mov { dst: O::Memory(dst), src: O::Register(src) })
-            if memory(dst, OperandSize::Byte) && byte_register(src) && !p.operand_override
-                && !p.rex.is_some_and(|rex| rex & 8 != 0)
-    );
-    let word_immediate_store = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xc7, Operation::MovImmediate { dst: O::Memory(dst), value })
-            if p.operand_override && p.rex.is_none()
-                && instruction.operand_size == OperandSize::Word
-                && memory(dst, OperandSize::Word)
-                && dst.index.is_none()
-                && matches!((dst.base, dst.displacement, value),
-                    (AddressBase::Register(Register::Rax), 0x320, 0x3d)
-                        | (AddressBase::Register(Register::Rbx), 0x10, 1)
-                        | (AddressBase::Register(Register::Rbp), -0xb4, 1))
-    );
-    let byte_immediate_register = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xb0..=0xb7, Operation::MovImmediate { dst: O::Register(dst), value })
-            if instruction.operand_size == OperandSize::Byte
-                && byte_register(dst)
-                && matches!((dst, value, p.rex),
-                    (d, 1 | 2 | 3 | 8, None)
-                        if d == RegisterView::low(Register::Rbx, OperandSize::Byte))
-                    || matches!((dst, value, p.rex),
-                        (d, 2 | 3 | 6 | 9 | 10, None)
-                            if d == RegisterView::low(Register::Rax, OperandSize::Byte))
-                    || matches!((dst, value, p.rex),
-                        (d, 2 | 3 | 0x84, None)
-                            if d == RegisterView::low(Register::Rdx, OperandSize::Byte))
-                    || matches!((dst, value, p.rex),
-                        (d, 0x61, None)
-                            if d == RegisterView::low(Register::Rcx, OperandSize::Byte))
-                    || matches!((dst, value, p.rex),
-                        (d, 1 | 0x0a, Some(0x41))
-                            if d == RegisterView::low(Register::R13, OperandSize::Byte))
-                    || matches!((dst, value, p.rex),
-                        (d, 1, Some(0x41))
-                            if d == RegisterView::low(Register::R9, OperandSize::Byte))
-    );
-    let movzx_register = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (M0f, 0xb6, Operation::Extend { signed: false, dst, src: O::Register(src) })
-            if width == OperandSize::Dword && dst.size() == width && byte_register(src)
-    );
-    let movsx = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (M0f, 0xbe, Operation::Extend { signed: true, dst, src })
-            if match (width, dst, src, p.rex) {
-                (OperandSize::Qword, d, O::Memory(m), Some(0x48))
-                    if d == RegisterView::low(Register::Rcx, OperandSize::Qword)
-                        && memory(m, OperandSize::Byte)
-                        && m.base == AddressBase::Register(Register::Rax)
-                        && m.index.is_none() && m.displacement == 0 => true,
-                (OperandSize::Qword, d, O::Memory(m), Some(0x49))
-                    if d == RegisterView::low(Register::Rdx, OperandSize::Qword)
-                        && memory(m, OperandSize::Byte)
-                        && m.base == AddressBase::Register(Register::R14)
-                        && m.index.is_none() && m.displacement == 0 => true,
-                (OperandSize::Qword, d, O::Memory(m), Some(0x48))
-                    if d == RegisterView::low(Register::Rdx, OperandSize::Qword)
-                        && memory(m, OperandSize::Byte)
-                        && m.base == AddressBase::Register(Register::Rdi)
-                        && m.index.is_none() && m.displacement == 0 => true,
-                (OperandSize::Dword, d, O::Memory(m), _)
-                    if d.size() == OperandSize::Dword && memory(m, OperandSize::Byte) => true,
-                (OperandSize::Dword, d, O::Register(r), _)
-                    if d.size() == OperandSize::Dword && byte_register(r) => true,
-                _ => false,
-            }
-    );
-    let movsxd = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x63, Operation::Extend { signed: true, dst, src: O::Memory(src) })
-            if width == OperandSize::Qword
-                && p.rex == Some(0x48)
-                && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
-                && memory(src, OperandSize::Dword)
-                && src.base == AddressBase::NextRip && src.index.is_none()
-    );
-    let setcc_store = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (M0f, 0x94 | 0x95, Operation::SetCondition { condition, dst: O::Memory(dst), .. })
-            if p.rex.is_none() && !p.operand_override
-                && dst.size == OperandSize::Byte
-                && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && ((condition == ConditionCode::Equal
-                    && (dst.base == AddressBase::Register(Register::Rbx) && dst.displacement == 0x900
-                        || dst.base == AddressBase::Register(Register::Rbp)
-                            && matches!(dst.displacement, -0x4f5 | -0x83 | -0x111 | -0x99)))
-                    || (condition == ConditionCode::NotEqual
-                        && dst.base == AddressBase::Register(Register::Rbp)
-                        && matches!(dst.displacement, -0x39 | -0x12f | -0xbd)))
-    );
-    let push_immediate = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x68, Operation::PushImmediate { value: 0x101 | 0xe6 | 0xca })
-            if no_prefix && width == OperandSize::Qword
-    );
-    let div_memory = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xf7, Operation::Divide { signed: false, divisor: O::Memory(src) })
-            if no_prefix && width == OperandSize::Dword
-                && memory(src, OperandSize::Dword)
-                && src.base == AddressBase::Register(Register::Rdi)
-                && src.index.is_none() && src.displacement == 8
-    );
-    let register_arithmetic = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x03, Operation::Arithmetic { kind: A::Add, dst: O::Register(dst), src: O::Memory(src) })
-            if width == OperandSize::Dword && dst.size() == width && memory(src, width)
-                && ((dst == RegisterView::low(Register::R11, width)
-                    && src.base == AddressBase::Register(Register::R10) && src.displacement == 0x10)
-                    || (dst == RegisterView::low(Register::Rcx, width)
-                        && src.base == AddressBase::Register(Register::Rdx)
-                        && src.index.is_none() && src.displacement == 0x20)
-                    || (dst == RegisterView::low(Register::Rax, width)
-                        && p.rex == Some(0x42)
-                        && src.base == AddressBase::Register(Register::Rdx)
-                        && src.index == Some(Register::R10)
-                        && src.scale == 8 && src.displacement == 4)
-                    || (dst == RegisterView::low(Register::Rax, width)
-                        && p.rex == Some(0x42)
-                        && src.base == AddressBase::Register(Register::Rbp)
-                        && src.index == Some(Register::R10)
-                        && src.scale == 4 && src.displacement == -0x138))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x2b, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Memory(src) })
-            if width == OperandSize::Dword && dst.size() == width && memory(src, width)
-                && matches!(dst, d if d == RegisterView::low(Register::R12, width)
-                    || d == RegisterView::low(Register::Rbx, width)
-                    || d == RegisterView::low(Register::Rax, width)
-                    || d == RegisterView::low(Register::Rsi, width)
-                    || d == RegisterView::low(Register::Rdx, width))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x28, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Register(src) })
-            if width == OperandSize::Byte
-                && dst == RegisterView::low(Register::Rcx, width)
-                && src == RegisterView::low(Register::Rdx, width)
-                && no_prefix
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x2d, Operation::Arithmetic { kind: A::Sub, dst: O::Register(dst), src: O::Immediate(0x88) })
-            if width == OperandSize::Dword && no_prefix
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x83, Operation::Arithmetic { kind: A::Adc, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && ((dst == RegisterView::low(Register::Rax, width) && matches!(value, 0 | u64::MAX))
-                    || (dst == RegisterView::low(Register::Rsi, width) && value == 0))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x19, Operation::Arithmetic { kind: A::Sbb, dst: O::Register(dst), src: O::Register(src) })
-            if width == OperandSize::Dword && dst == src
-                && ((no_prefix && matches!(dst,
-                    r if r == RegisterView::low(Register::Rax, width)
-                        || r == RegisterView::low(Register::Rdx, width)))
-                    || (p.rex == Some(0x45)
-                        && dst == RegisterView::low(Register::R12, width)))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xf7, Operation::Arithmetic { kind: A::Neg, dst: O::Register(dst), .. })
-            if width == OperandSize::Dword
-                && matches!(dst,
-                    r if r == RegisterView::low(Register::Rax, width)
-                        || r == RegisterView::low(Register::Rbx, width)
-                        || r == RegisterView::low(Register::Rcx, width)
-                        || r == RegisterView::low(Register::Rdx, width)
-                        || r == RegisterView::low(Register::R12, width))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xff, Operation::Arithmetic { kind: A::Inc, dst: O::Register(dst), .. })
-            if width == OperandSize::Dword
-                && matches!(dst,
-                    r if r == RegisterView::low(Register::Rax, width)
-                        || r == RegisterView::low(Register::Rdx, width)
-                        || r == RegisterView::low(Register::R9, width)
-                        || r == RegisterView::low(Register::R12, width)
-                        || r == RegisterView::low(Register::R13, width)
-                        || r == RegisterView::low(Register::R14, width)
-                        || r == RegisterView::low(Register::R15, width))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xfe, Operation::Arithmetic { kind: A::Dec, dst: O::Register(dst), .. })
-            if width == OperandSize::Byte
-                && matches!(dst,
-                    r if r == RegisterView::low(Register::Rax, width)
-                        || r == RegisterView::low(Register::Rdx, width)
-                        || r == RegisterView::low(Register::Rbx, width)
-                        || r == RegisterView::low(Register::R9, width))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xff, Operation::Arithmetic { kind: A::Dec, dst: O::Register(dst), .. })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && matches!(dst,
-                    r if r == RegisterView::low(Register::Rax, width)
-                        || r == RegisterView::low(Register::Rbx, width)
-                        || r == RegisterView::low(Register::Rsi, width))
-    );
-    let logic = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x21, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
-            if width == OperandSize::Dword && dst.size() == width && src.size() == width
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x20, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Register(src) })
-            if width == OperandSize::Byte
-                && dst == RegisterView::low(Register::Rax, width)
-                && ((p.rex == Some(0x44) && src == RegisterView::low(Register::R8, width))
-                    || (p.rex == Some(0x40) && src == RegisterView::low(Register::Rsi, width)))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x25, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Immediate(0xfb00) })
-            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x81, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && ((dst == RegisterView::low(Register::Rsi, width) && value == 0xffff_ffff_ffff_f000)
-                    || (dst == RegisterView::low(Register::Rbx, width) && value == 0xffff_ffff_87ff_ffff)
-                    || (dst == RegisterView::low(Register::Rcx, width) && value == 0xffff_ffff_ffff_f000))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x22, Operation::Logic { kind: L::And, dst: O::Register(dst), src: O::Memory(src) })
-            if width == OperandSize::Byte && memory(src, width)
-                && src.base == AddressBase::Register(Register::Rbp)
-                && src.index.is_none()
-                && ((dst == RegisterView::low(Register::Rax, width) && src.displacement == -0x4c0)
-                    || (dst == RegisterView::low(Register::R13, width) && src.displacement == -0x4bc && p.rex == Some(0x44)))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x08, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Register(src) })
-            if width == OperandSize::Byte && byte_register(dst) && byte_register(src)
-                && ((dst == RegisterView::low(Register::Rdx, width) && src == RegisterView::low(Register::Rcx, width) && no_prefix)
-                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rdx, width) && no_prefix)
-                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rcx, width) && no_prefix)
-                    || (dst == RegisterView::low(Register::Rcx, width) && src == RegisterView::low(Register::R9, width) && p.rex == Some(0x44))
-                    || (dst == RegisterView::low(Register::Rax, width) && src == RegisterView::low(Register::Rsi, width) && p.rex == Some(0x40)))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x0c, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x80) })
-            if width == OperandSize::Byte && no_prefix
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x80, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Byte && byte_register(dst)
-                && ((dst == RegisterView::low(Register::Rsi, width) && p.rex == Some(0x40) && value == 0x89)
-                    || (dst == RegisterView::low(Register::Rdi, width) && p.rex == Some(0x40) && value == 0x80)
-                    || (dst == RegisterView::high_byte(Register::Rax, false).unwrap() && no_prefix && value == 8)
-                    || (dst == RegisterView::high_byte(Register::Rdx, false).unwrap() && no_prefix && value == 2))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x0400_0000) })
-            if width == OperandSize::Dword && no_prefix
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x0d, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x401) })
-            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x81, Operation::Logic { kind: L::Or, dst: O::Register(dst), src: O::Immediate(0x100) })
-            if width == OperandSize::Dword && no_prefix
-                && dst == RegisterView::low(Register::Rsi, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x34, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(1) })
-            if width == OperandSize::Byte && no_prefix
-                && dst == RegisterView::low(Register::Rax, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x81, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(0x100) })
-            if width == OperandSize::Dword && no_prefix
-                && dst == RegisterView::low(Register::Rsi, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Dword
-                && ((p.rex.is_none() && dst == RegisterView::low(Register::Rcx, width) && value == 1)
-                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rbx, width) && value == 2)
-                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rax, width) && value == 1)
-                    || (p.rex.is_none() && dst == RegisterView::low(Register::Rsi, width) && value == 0xffff_ffff_ffff_fffe)
-                    || (p.rex == Some(0x41) && dst == RegisterView::low(Register::R12, width) && value == 1))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && dst == RegisterView::low(Register::Rax, width) && value == 1
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x80, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Byte
-                && ((p.rex == Some(0x40) && dst == RegisterView::low(Register::Rsi, width) && matches!(value, 0x80 | 0x81))
-                    || (p.rex == Some(0x41) && dst == RegisterView::low(Register::R9, width) && value == 0x81))
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x83, Operation::Logic { kind: L::Xor, dst: O::Register(dst), src: O::Immediate(value) })
-            if width == OperandSize::Dword && p.rex == Some(0x41)
-                && dst == RegisterView::low(Register::R12, width) && value == 1
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Register(dst), src: O::Immediate(0xffff_ffff_ffff_ffc0) })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && dst == RegisterView::low(Register::Rsi, width)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0xf7, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Immediate(0x202) })
-            if width == OperandSize::Word && p.operand_override && p.rex.is_none()
-                && memory(dst, width) && dst.base == AddressBase::Register(Register::Rcx)
-                && dst.index.is_none() && dst.displacement == 0
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x84, Operation::Logic { kind: L::Test, dst: O::Memory(dst), src: O::Register(src) })
-            if width == OperandSize::Byte && no_prefix && memory(dst, width)
-                && dst.base == AddressBase::Register(Register::Rbp)
-                && dst.index.is_none() && dst.displacement == -0x111
-                && src == RegisterView::low(Register::Rdx, width)
-    );
-    let compare_source = |dst: RegisterView, src: MemoryOperand| {
-        if width == OperandSize::Qword {
-            dst == RegisterView::low(Register::Rax, width)
-                && src.base == AddressBase::Register(Register::Rdi)
-                && src.index == Some(Register::Rax)
-                && src.scale == 1
-                && src.displacement == 0
-        } else if width == OperandSize::Dword {
-            (dst == RegisterView::low(Register::Rdx, width)
-                && ((src.base == AddressBase::Register(Register::Rax)
-                    && src.index.is_none()
-                    && src.displacement == 0x0c)
-                    || (src.base == AddressBase::Register(Register::Rbx)
-                        && src.index.is_none()
-                        && src.displacement == 0x18)
-                    || (src.base == AddressBase::NextRip && src.index.is_none())
-                    || (src.base == AddressBase::Register(Register::R12)
-                        && src.index == Some(Register::Rax)
-                        && src.scale == 8
-                        && src.displacement == 8)))
-                || (dst == RegisterView::low(Register::Rbx, width)
-                    && ((src.base == AddressBase::NextRip && src.index.is_none())
-                        || (src.base == AddressBase::Register(Register::Rax)
-                            && src.index.is_none()
-                            && src.displacement == 0x20)
-                        || (src.base == AddressBase::Register(Register::R15)
-                            && src.index.is_none()
-                            && src.displacement == 0x0c)
-                        || (src.base == AddressBase::Register(Register::R12)
-                            && src.index == Some(Register::R15)
-                            && src.scale == 8
-                            && src.displacement == 0x10)))
-        } else {
-            false
-        }
-    };
-    let compare = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x3b, Operation::Arithmetic { kind: A::Cmp, dst: O::Register(dst), src: O::Memory(src) })
-            if memory(src, width) && compare_source(dst, src)
-    ) || matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (Mp, 0x3a, Operation::Arithmetic { kind: A::Cmp, dst: O::Register(dst), src: O::Memory(src) })
-            if width == OperandSize::Byte && memory(src, width)
-                && ((dst == RegisterView::low(Register::Rcx, width)
-                    && src.base == AddressBase::Register(Register::Rsi)
-                    && src.index == Some(Register::Rax) && src.scale == 1 && src.displacement == 0)
-                    || (dst == RegisterView::low(Register::Rdx, width)
-                        && src.base == AddressBase::Register(Register::Rbp)
-                        && src.index.is_none() && src.displacement == -0x12e))
-    );
-    let bsf = matches!(
-        (instruction.opcode.map, instruction.opcode.byte, instruction.operation),
-        (M0f, 0xbc, Operation::BitScan { kind: B::Forward, dst, src: O::Register(src) })
-            if width == OperandSize::Qword && p.rex == Some(0x48)
-                && dst == RegisterView::low(Register::Rax, width)
-                && matches!(src, s if s == RegisterView::low(Register::Rax, width)
-                    || s == RegisterView::low(Register::Rdx, width))
-    );
-    byte_store
-        || word_immediate_store
-        || byte_immediate_register
-        || movzx_register
-        || movsx
-        || movsxd
-        || setcc_store
-        || push_immediate
-        || div_memory
-        || register_arithmetic
-        || logic
-        || compare
-        || bsf
-}
-
-fn cpl3_glibc_tls_fs_form(instruction: &long_decode::Instruction) -> bool {
-    let prefixes = instruction.prefixes;
-    if instruction.opcode.map != OpcodeMap::Primary
-        || prefixes.segment != Some(0x64)
-        || prefixes.group1.is_some()
-        || prefixes.operand_override
-        || prefixes.address_override
-    {
-        return false;
-    }
-    let absolute = |memory: MemoryOperand, size: OperandSize| {
-        memory.base == AddressBase::None
-            && memory.index.is_none()
-            && memory.address_size == OperandSize::Qword
-            && memory.size == size
-    };
-    let qword_register_base = |memory: MemoryOperand| {
-        memory.address_size == OperandSize::Qword
-            && memory.size == OperandSize::Qword
-            && memory.index.is_none()
-            && memory.scale == 1
-            && matches!(memory.base, AddressBase::Register(_))
-    };
-    let observed_rex_w_only = prefixes.rex == Some(0x48);
-    matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x8b, Operation::MovFsLoad { dst, src })
-            if dst.size() == OperandSize::Qword
-                && observed_rex_w_only
-                && qword_register_base(src)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x8b, Operation::MovFsLoadQ { dst, src })
-            if dst.size() == OperandSize::Qword
-                && (absolute(src, OperandSize::Qword)
-                    || observed_rex_w_only && qword_register_base(src))
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x03, Operation::AddFsLoad { dst, src })
-            if dst.size() == OperandSize::Qword
-                && absolute(src, OperandSize::Qword)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x2b, Operation::SubFsMem { dst, src })
-            if prefixes.rex == Some(0x48)
-                && dst.size() == OperandSize::Qword
-                && absolute(src, OperandSize::Qword)
-                && src.displacement == 0x28
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x33, Operation::LogicFsLoad { kind: LogicKind::Xor, dst, src })
-            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 0x03 == 0)
-                && dst.size() == OperandSize::Qword
-                && absolute(src, OperandSize::Qword)
-                && src.displacement == 0x30
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x80, Operation::CmpFsMemImm { dst, .. })
-            if prefixes.rex.is_none() && absolute(dst, OperandSize::Byte)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x83, Operation::CmpFsMemImm { dst, .. })
-            if observed_rex_w_only && absolute(dst, OperandSize::Qword)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x8b, Operation::MovFsLoadD { dst, src })
-            if dst.size() == OperandSize::Dword
-                && absolute(src, OperandSize::Dword)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x89, Operation::MovFsStore { dst, src })
-            if src.size() == OperandSize::Qword
-                && (absolute(dst, OperandSize::Qword)
-                    || observed_rex_w_only && qword_register_base(dst))
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0xc7, Operation::MovFsMemImm { dst, .. })
-            if dst.size == OperandSize::Dword
-                && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && matches!(dst.base, AddressBase::None | AddressBase::Register(_))
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x88, Operation::MovFsStore { dst, src })
-            if src.size() == OperandSize::Byte
-                && absolute(dst, OperandSize::Byte)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x8b, Operation::MovFsLoadQ { dst, src })
-            if dst.size() == OperandSize::Qword
-                && prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
-                && qword_register_base(src)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x8b, Operation::MovFsLoadD { dst, src })
-            if dst.size() == OperandSize::Dword
-                && src.size == OperandSize::Dword
-                && src.address_size == OperandSize::Qword
-                && src.index.is_none()
-                && src.scale == 1
-                && matches!(src.base, AddressBase::Register(_))
-                && prefixes.rex.is_none_or(|rex| rex & 0x0a == 0)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x89, Operation::MovFsStore { dst, src })
-            if src.size() == OperandSize::Dword
-                && dst.size == OperandSize::Dword
-                && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && dst.scale == 1
-                && matches!(dst.base, AddressBase::Register(_))
-                && prefixes.rex.is_none_or(|rex| rex & 0x0a == 0)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x83, Operation::CmpFsMemImm { dst, .. })
-            if prefixes.rex.is_none()
-                && dst.size == OperandSize::Dword
-                && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && dst.scale == 1
-                && matches!((dst.base, dst.displacement),
-                    (AddressBase::Register(Register::Rcx), 0)
-                        | (AddressBase::None, 0x614))
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0xf6, Operation::TestFsMemByte { src, immediate: 0x80 })
-            if prefixes.rex.is_none()
-                && absolute(src, OperandSize::Byte)
-                && src.displacement == 0x30c
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x39, Operation::CmpFsMem { dst, src })
-            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
-                && dst.size == OperandSize::Qword
-                && src.size() == OperandSize::Qword
-                && absolute(dst, OperandSize::Qword)
-                && dst.displacement == 0x10
-                && src == RegisterView::low(Register::R12, OperandSize::Qword)
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0xc7, Operation::MovFsMemImm { dst, immediate: 0 })
-            if prefixes.rex.is_some_and(|rex| rex & 8 != 0 && rex & 2 == 0)
-                && dst.size == OperandSize::Qword
-                && dst.address_size == OperandSize::Qword
-                && dst.index.is_none()
-                && dst.scale == 1
-                && dst.displacement == 0
-                && matches!(dst.base,
-                    AddressBase::Register(Register::R13 | Register::Rax))
-    ) || matches!(
-        (instruction.opcode.byte, instruction.operation),
-        (0x3b, Operation::CmpFsLoad { dst, src })
-            if prefixes.rex.is_none()
-                && dst == RegisterView::low(Register::Rax, OperandSize::Dword)
-                && absolute(src, OperandSize::Dword)
-                && src.displacement == 0x2d0
-    )
-}
-
 fn is_addr32_direct_call(instruction: &long_decode::Instruction) -> bool {
     matches!(
         (
@@ -34254,40 +31128,6 @@ fn is_addr32_direct_call(instruction: &long_decode::Instruction) -> bool {
             address_override: true,
             ..Prefixes::default()
         })
-}
-
-/// S4-39f8: whether the ModRM byte of a decoded `REX 8D /r` selects a SIB byte (`mod != 11`,
-/// `rm = 100`). The decoder output does not keep this, and `[%rbx]` through a SIB byte and
-/// through ModRM alone decode to the same operand. The byte is read only for the shape with exactly
-/// one prefix, REX: the decoder keeps just the last of several REX bytes, so the byte at `rip + 2`
-/// is a ModRM only when `rip + 1` holds the opcode `8D`, which no prefix byte can be. The bytes were
-/// fetched by the decode a moment ago. Any other prefix is refused by [`cpl3_allows`] before this
-/// value matters.
-fn lea_modrm_selects_sib(
-    memory: &mut impl GuestMemory,
-    rip: u64,
-    context: AccessContext,
-    instruction: &long_decode::Instruction,
-) -> bool {
-    let prefixes = instruction.prefixes;
-    if !matches!(instruction.operation, Operation::Lea { .. })
-        || prefixes.rex.is_none()
-        || prefixes.group1.is_some()
-        || prefixes.segment.is_some()
-        || prefixes.operand_override
-        || prefixes.address_override
-    {
-        return false;
-    }
-    if !memory
-        .fetch(rip.wrapping_add(1), context)
-        .is_ok_and(|opcode| opcode == 0x8d)
-    {
-        return false;
-    }
-    memory
-        .fetch(rip.wrapping_add(2), context)
-        .is_ok_and(|modrm| modrm >> 6 != 3 && modrm & 7 == 4)
 }
 
 /// What an `IRETQ` to CPL3 left in the cell of a set run (S4-38L9H boundary, S4-39b commit).
@@ -34413,6 +31253,7 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
     mut stop_requested: impl FnMut() -> bool,
     required_privilege: PrivilegeLevel,
     boundary: Option<BatchCheck<'_, M>>,
+    predecoded: Option<&long_decode::Instruction>,
 ) -> Result<
     (
         RunResult,
@@ -34421,6 +31262,13 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
     ),
     Cpl0ProfileSetInputError,
 > {
+    // ADR-0023 slice C2a: the CPL3 entry hands a predecoded instruction over only when the first
+    // step of this call runs (budget >= 1 and no stop address at RIP); the run loop gives it to the
+    // first step only, so it never reaches a later instruction or call.
+    debug_assert!(
+        predecoded.is_none()
+            || (config.instruction_budget >= 1 && config.stop_rip != Some(state.rip))
+    );
     use Cpl0ProfileSetInputError as Error;
     // Formally unreachable while `InstructionMode` has the single variant
     // `Long64`: no `RunConfig` can carry another mode, so a test for this
@@ -34755,10 +31603,8 @@ fn run_cpl0_profile_set_inner<M: GuestMemory>(
             cr4: None,
         },
         StepRuntime {
-            rdtsc_source,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
+            predecoded,
+            ..StepRuntime::new(rdtsc_source, None, false, &mut stop_requested)
         },
         batch,
     );
@@ -34784,7 +31630,7 @@ fn run_configured(
     config: RunConfig,
     rflags_defined: u64,
     profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
+    runtime: StepRuntime<'_, '_, '_, '_>,
 ) -> RunResult {
     run_configured_with_profile_mode::<false, _>(
         state,
@@ -35167,7 +32013,7 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
     config: RunConfig,
     mut rflags_defined: u64,
     profiles: ExecutionProfiles<'_>,
-    mut runtime: StepRuntime<'_, '_, '_>,
+    mut runtime: StepRuntime<'_, '_, '_, '_>,
     mut batch: Option<BatchBoundary<'_, M>>,
 ) -> RunResult {
     let profiles = if NO_PROFILES {
@@ -35179,6 +32025,8 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
     let halt_profile = profiles.halt;
     let rdtsc_source = &mut runtime.rdtsc_source;
     let stop_requested = &mut runtime.stop_requested;
+    // ADR-0023 slice C2a: a predecoded instruction belongs to the first step of this call only.
+    let mut predecoded = runtime.predecoded.take();
     let control_policy = profiles.control_policy;
     // S6-20: a `WaitForSipi` or `Shutdown` vCPU executes nothing (before every other check, so
     // no profile decision is taken for it).
@@ -35399,10 +32247,13 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
                     &mut rflags_defined,
                     profiles,
                     StepRuntime {
-                        rdtsc_source: Some(&mut *source),
-                        sti_sequence: sti_sequence.as_mut(),
-                        exact_hlt_only: false,
-                        stop_requested: &mut **stop_requested,
+                        predecoded: predecoded.take(),
+                        ..StepRuntime::new(
+                            Some(&mut *source),
+                            sti_sequence.as_mut(),
+                            false,
+                            &mut **stop_requested,
+                        )
                     },
                 );
                 *rdtsc_source = Some(source);
@@ -35415,10 +32266,13 @@ fn run_configured_with_profile_mode<const NO_PROFILES: bool, M: GuestMemory>(
                     &mut rflags_defined,
                     profiles,
                     StepRuntime {
-                        rdtsc_source: None,
-                        sti_sequence: sti_sequence.as_mut(),
-                        exact_hlt_only: false,
-                        stop_requested: &mut **stop_requested,
+                        predecoded: predecoded.take(),
+                        ..StepRuntime::new(
+                            None,
+                            sti_sequence.as_mut(),
+                            false,
+                            &mut **stop_requested,
+                        )
                     },
                 )
             };
@@ -35664,12 +32518,7 @@ pub fn step_with_cr0_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut || false,
-        },
+        StepRuntime::new(None, None, false, &mut || false),
     )
 }
 
@@ -35830,12 +32679,7 @@ fn step_tracked_with_stop(
         context,
         rflags_defined,
         ExecutionProfiles::EMPTY,
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested,
-        },
+        StepRuntime::new(None, None, false, stop_requested),
     )
 }
 
@@ -36070,12 +32914,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source,
-            sti_sequence,
-            exact_hlt_only,
-            stop_requested,
-        },
+        StepRuntime::new(rdtsc_source, sti_sequence, exact_hlt_only, stop_requested),
     )
 }
 
@@ -36234,12 +33073,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -36622,12 +33456,7 @@ fn run_with_comparison_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -36788,12 +33617,7 @@ pub fn run_with_sqrtss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -36952,12 +33776,7 @@ pub fn run_with_sqrtsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -37116,12 +33935,7 @@ pub fn run_with_sqrtps_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -37280,12 +34094,7 @@ pub fn run_with_sqrtpd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -37449,12 +34258,7 @@ fn run_with_subpd_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -37668,12 +34472,7 @@ pub fn run_with_mulpd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -37835,12 +34634,7 @@ fn run_with_addpd_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38032,12 +34826,7 @@ fn run_with_mulpd_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38251,12 +35040,7 @@ pub fn run_with_addsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38415,12 +35199,7 @@ pub fn run_with_divpd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38612,12 +35391,7 @@ fn run_with_divpd_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38776,12 +35550,7 @@ pub fn run_with_addss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -38974,12 +35743,7 @@ fn run_with_addss_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -39171,12 +35935,7 @@ fn run_with_addsd_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -39371,12 +36130,7 @@ fn run_with_addps_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -39535,12 +36289,7 @@ pub fn run_with_divsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -39735,12 +36484,7 @@ fn run_with_divps_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -39899,12 +36643,7 @@ pub fn run_with_divss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40063,12 +36802,7 @@ pub fn run_with_mulsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40227,12 +36961,7 @@ pub fn run_with_mulss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40427,12 +37156,7 @@ fn run_with_mulps_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40591,12 +37315,7 @@ pub fn run_with_subsd_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40755,12 +37474,7 @@ pub fn run_with_subss_register_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -40919,12 +37633,7 @@ fn run_with_scalar_float_memory_rax_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -41327,12 +38036,7 @@ fn run_with_subps_profile(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -41490,12 +38194,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             iretq_user_entry: None,
             cr4: None,
         },
-        StepRuntime {
-            rdtsc_source: None,
-            sti_sequence: None,
-            exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
-        },
+        StepRuntime::new(None, None, false, &mut stop_requested),
     )
 }
 
@@ -42108,7 +38807,7 @@ fn step_configured(
     context: AccessContext,
     rflags_defined: &mut u64,
     profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
+    runtime: StepRuntime<'_, '_, '_, '_>,
 ) -> Result<StepOutcome, MemoryError> {
     step_configured_with_profile_mode::<false>(
         state,
@@ -42174,7 +38873,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     context: AccessContext,
     rflags_defined: &mut u64,
     profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
+    runtime: StepRuntime<'_, '_, '_, '_>,
 ) -> Result<StepOutcome, MemoryError> {
     let profiles = if NO_PROFILES {
         ExecutionProfiles::EMPTY
@@ -42352,7 +39051,15 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         sti_sequence,
         exact_hlt_only,
         stop_requested,
+        predecoded,
     } = runtime;
+    // ADR-0023 slice C2a: the forms of the class `Neutral` that the set admits run at CPL0 and CPL3
+    // alike (decision 1; the privilege layer of slice C1 decides the other classes before them).
+    let set_cpl = control_policy.is_some()
+        && matches!(
+            context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        );
     // S6-20: a `WaitForSipi` or `Shutdown` vCPU executes nothing; no state changes.
     if activity_is_not_running(state) {
         return Ok(StepOutcome::NotRunning);
@@ -42519,7 +39226,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x66 });
     }
-    let instruction = match long_decode::decode(memory, state.rip, context) {
+    // ADR-0023 slice C2a: the CPL3 entry hands over the instruction it decoded (one decode).
+    let decoded = match predecoded {
+        Some(instruction) => Ok(*instruction),
+        None => long_decode::decode(memory, state.rip, context),
+    };
+    let instruction = match decoded {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
             return Ok(StepOutcome::Unsupported {
@@ -42743,7 +39455,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // operations run through the general SSE core there, as in the bare run. CPL3 keeps its own
     // narrow profile list.
     // S2-39 (CPL3): the same holds at CPL3 of the set. The CPL3 entry runs the same step on the same `state.sse`; the
-    // forms with a handler of their own in `step_cpl3_xmm` keep it (`sse_cpl0_cpl3_handler_form`), every other
+    // forms with a handler of their own in `step_xmm_handler_form` keep it (`xmm_handler_form`), every other
     // SSE/SSE2 form takes the general core, whose executors already carry the CPL3 rules (canonical, #SS, the
     // page privilege of the context, and, since ADR-0023 C1, #AC(0) for a misaligned 2/4/8-byte operand with RFLAGS.AC = 1 and CR0.AM = 1).
     let sse_set = control_policy.is_some()
@@ -45185,18 +41897,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     && !instruction.prefixes.operand_override
                     && !instruction.prefixes.address_override
                     && instruction.prefixes.rex.is_none()
-            }
-            (
-                ScalarFloatMemoryRaxProfile::Mulsd(_),
-                Operation::MulsdMemory { destination: 0, .. },
-            )
-            | (
-                ScalarFloatMemoryRaxProfile::MulsdUnmasked(_),
-                Operation::MulsdMemory { destination: 0, .. },
-            ) => {
-                context.privilege == PrivilegeLevel::Ring3
-                    && control_policy.is_some()
-                    && cpl3_scalar_fp_form(&instruction)
             }
             (
                 ScalarFloatMemoryRaxProfile::Subss(_)
@@ -48318,80 +45018,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    // S2-39 (CPL3): with the FP member only the forms that have no other executor go to `step_cpl3_xmm`
-    // (`sse_cpl0_cpl3_handler_form`); the rest run through the general core below, as at CPL0.
-    if control_policy.is_some()
-        && context.privilege == PrivilegeLevel::Ring3
-        && (fp_cpl0.is_none() || sse_cpl0_cpl3_handler_form(&instruction.operation))
-        && matches!(
-            instruction.operation,
-            Operation::MoveIntegerToXmm { .. }
-                | Operation::MovqFromXmm { .. }
-                | Operation::PunpcklbwRegister { .. }
-                | Operation::PunpcklwdRegister { .. }
-                | Operation::PshufdRegister { .. }
-                | Operation::PunpckldqRegister { .. }
-                | Operation::PandRegister { .. }
-                | Operation::PunpcklqdqRegister { .. }
-                | Operation::PshuflwRegister { .. }
-                | Operation::PinsrwMemory { .. }
-                | Operation::MovupsStoreMemory { .. }
-                | Operation::MovupsLoadMemory { .. }
-                | Operation::MovdquLoadMemory { .. }
-                | Operation::MovdqaLoadMemory { .. }
-                | Operation::MovdqaRegister { .. }
-                | Operation::MovapsRegister { .. }
-                | Operation::MovapsLoadMemory { .. }
-                | Operation::MovapsStoreMemory { .. }
-                | Operation::PxorRegister { .. }
-                | Operation::PaddbRegister { .. }
-                | Operation::PadddRegister { .. }
-                | Operation::PcmpeqdRegister { .. }
-                | Operation::PsrlwImmediateRegister { .. }
-                | Operation::PunpckhwdRegister { .. }
-                | Operation::PackuswbRegister { .. }
-                | Operation::PcmpeqbRegister { .. }
-                | Operation::PcmpeqbMemory { .. }
-                | Operation::PcmpgtbRegister { .. }
-                | Operation::XorpsRegister { .. }
-                | Operation::PandnRegister { .. }
-                | Operation::PminubRegister { .. }
-                | Operation::PminubMemory { .. }
-                | Operation::MovsdLoadMemory { .. }
-                | Operation::MovsdStoreMemory { .. }
-                | Operation::MovlpdLoadMemory { .. }
-                | Operation::MovhpdLoadMemory { .. }
-                | Operation::MovhpsLoadMemory { .. }
-                | Operation::PsubbRegister { .. }
-                | Operation::PmovmskbXmmToGpr { .. }
-                | Operation::PorRegister { .. }
-                | Operation::PslldqImmediateRegister { .. }
-                | Operation::PsrldqImmediateRegister { .. }
-                | Operation::PaddqRegister { .. }
-        )
-    {
-        return step_cpl3_xmm(state, memory, context, &instruction, next_rip);
-    }
-    if context.privilege == PrivilegeLevel::Ring3
-        && control_policy.is_some()
-        && fp_cpl0.is_some()
-        && cpl3_scalar_fp_form(&instruction)
-    {
-        return step_cpl3_scalar_fp(
-            state,
-            memory,
-            context,
-            rflags_defined,
-            profiles,
-            &instruction,
-            StepRuntime {
-                rdtsc_source,
-                sti_sequence: None,
-                exact_hlt_only,
-                stop_requested,
-            },
-        );
-    }
     // S4-38L9d/E, S4-39f22 and S6-22 ISSUE-578: the FP member of the CPL0 set owns `FNINIT`, the
     // plain `FXSAVE` and the exact `FXSAVE64`/`FXRSTOR64` kernel forms; its state lives in the
     // member's cell, so these operations never reach the `state.x87`/`state.sse` paths below.
@@ -48434,9 +45060,9 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     }
     // S2-32e: the bounded x87 forms of S2-32a/b/c/d (FSIN..FXTRACT, FBLD/FBSTP, FNSTENV/FNSAVE/FRSTOR/FLDENV) at CPL0
     // of the set run on the x87 state of the FP member's cell, through the same bounded profile as the bare run.
+    // ADR-0023 slice C2a (decision 2): at CPL3 of the set too, on the same cell.
     if let Some(fp_cell) = fp_cpl0
-        && control_policy.is_some()
-        && context.privilege == PrivilegeLevel::Ring0
+        && set_cpl
         && state.x87.is_none()
         && cpl0_bounded_x87_form(&instruction.operation)
     {
@@ -48449,23 +45075,23 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 fp_cpl0: None,
                 ..profiles
             },
-            StepRuntime {
+            StepRuntime::new(
                 // None of these is read by the x87 forms (the STI sequence exists only under the STI profile).
-                rdtsc_source: None,
-                sti_sequence: None,
+                None,
+                None,
                 exact_hlt_only,
-                stop_requested: &mut *stop_requested,
-            },
+                &mut *stop_requested,
+            ),
             fp_cell,
             instruction.opcode.byte,
             // S2-32f: the spelling `9B D9 30` / `9B DD 30` (opcode `9B`) waits first.
             instruction.opcode.byte == 0x9b,
         );
     }
-    // S2-39: the MMX forms at CPL0 of the set work on the x87 state of the FP member's cell.
+    // S2-39: the MMX forms of the set work on the x87 state of the FP member's cell (ADR-0023 slice C2a,
+    // decision 2: at CPL0 and CPL3).
     if let Some(fp_cell) = fp_cpl0
-        && control_policy.is_some()
-        && context.privilege == PrivilegeLevel::Ring0
+        && set_cpl
         && state.x87.is_none()
         && let Some(outcome) =
             step_cpl0_mmx(state, memory, context, &instruction, next_rip, fp_cell)
@@ -51629,8 +48255,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     // S2-39n: the FP member of the CPL0 set runs the narrow SSE forms on `state.sse` after the CR0/CR4 gates, before
     // any operand access or admission test.
     if sse_set {
-        if sse_cpl0_cpl3_handler_form(&instruction.operation) {
-            return step_cpl3_xmm(state, memory, context, &instruction, next_rip);
+        if xmm_handler_form(&instruction.operation) {
+            return step_xmm_handler_form(state, memory, context, &instruction, next_rip);
         }
         if sse_cpl0_form(&instruction)
             && let Some(fault) = sse_cpl0_gate(state)
@@ -51657,56 +48283,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::Int3
         // ISSUE-578: FWAIT is owned only by the CPL0 FP-state member.
         | Operation::Fwait => false,
-        Operation::TestFsMemByte { .. }
-            if context.privilege == PrivilegeLevel::Ring3
-                && control_policy.is_some()
-                && cpl3_glibc_tls_fs_form(&instruction) =>
-        {
-            true
-        }
         Operation::Swapgs => true,
-        // S6-22: the small glibc TLS FS subset is also executable from CPL3; the
-        // exact operation and addressing form are checked by the helper.
-        Operation::MovFsLoadQ { .. }
-        | Operation::MovFsLoadD { .. }
-        | Operation::MovFsStore { .. }
-        | Operation::MovFsMemImm { .. }
-        | Operation::SubFsMem { .. }
-        | Operation::CmpFsMemImm { .. }
-        | Operation::CmpFsMem { .. }
-        | Operation::CmpFsLoad { .. }
-        | Operation::LogicFsLoad { .. }
-            if context.privilege == PrivilegeLevel::Ring3
-                && control_policy.is_some()
-                && cpl3_glibc_tls_fs_form(&instruction) =>
-        {
-            true
-        }
-        Operation::AddFsLoad { .. }
-            if context.privilege == PrivilegeLevel::Ring3
-                && control_policy.is_some()
-                && cpl3_glibc_tls_fs_form(&instruction) =>
-        {
-            true
-        }
-        Operation::LockAddMem { .. }
-        | Operation::LockCmpxchgMem { .. }
-        | Operation::LockXaddMem { .. }
-        | Operation::LockAddMemReg { .. }
-        | Operation::LockOrMem { .. }
-        | Operation::LockSubDwordImm8 { .. }
-        | Operation::LockBitMemImm { .. }
-        | Operation::XchgMemory { .. }
-            if context.privilege == PrivilegeLevel::Ring3
-                && control_policy.is_some()
-                && cpl3_aligned_atomic_destination(&instruction).is_some() =>
-        {
-            true
-        }
         // S7-32 W2: `F0 [REX] 83 /5 ib` on a dword is also a CPL0 form of the set (the Windows
         // kernel's interlocked decrements); outside the set it stays refused.
         Operation::LockSubDwordImm8 { .. } => {
-            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
         }
         // S4-38L7g: FS/GS-based qword stores exist only in the CPL0 set (the control policy is
         // the set's mark).
@@ -51810,20 +48391,18 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S4-38L7bi: and for LOCK BTS m32/m64, imm8.
         | Operation::LockBitMemImm { .. }
         => {
-            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
         }
         // S7-32 W2: the locked read-modify-write forms at every width; a non-RMW kind (CMP, TEST,
         // BT) never decodes here and is refused if one is built by hand.
         Operation::LockedRmw { op, .. } => {
             op.is_lockable()
-                && control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring0
+                && set_cpl
         }
         // S4-38L7u: MOV r/m, Sreg exists only in the CPL0 set, and only when the visible
         // selector is known to the model (CS/SS selectors are optional state).
         Operation::MovSregStore { sreg, .. } => {
-            control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
                 && visible_selector(state, sreg).is_some()
         }
         Operation::ReadMsr | Operation::WriteMsr => false,
@@ -52901,7 +49480,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         Operation::LockIncMem { destination }
         | Operation::LockCmpxchgMem { destination, .. } => {
             if control_policy.is_some() {
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
             } else {
                 destination.size == OperandSize::Dword
                     && instruction.prefixes.group1 == Some(0xf0)
@@ -52914,15 +49493,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S2-51: CMPXCHG16B (`[F0] REX.W 0F C7 /1 m128`; the decoder has already validated the
         // prefixes and refuses the register form as #UD). It reaches memory through one
         // `GuestMemory::atomic_rmw_u128` call, as `transfer` documents. Admitted in the CPL0 set at
-        // Ring0 and in the bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the
-        // Linux live profile (CPUID does not declare CX16 until S2-57, and `cpl3_allows` does not
-        // list it).
+        // Ring0 and Ring3 (ADR-0023 slice C2a: the class `Neutral`) and in the bare run (no CR
+        // profile, no CPL0 set). The interpreter does not gate on CPUID.CX16.
         Operation::Cmpxchg16b { .. } => {
             instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0xc7
                 && instruction.operand_size == OperandSize::Qword
                 && if control_policy.is_some() {
-                    context.privilege == PrivilegeLevel::Ring0
+                    set_cpl
                 } else {
                     cr0_profile.is_none()
                         && cr4_profile.is_none()
@@ -52933,8 +49511,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S2-21: CMPXCHG8B (`[F0] [REX without W] 0F C7 /1 m64`; the decoder has already validated
         // the prefixes and refuses the register form as #UD). One eight-byte
         // `GuestMemory::atomic_compare_exchange_integer` call. Admitted exactly where CMPXCHG16B
-        // is: the CPL0 set at Ring0 and the bare run; never at CPL3 (`cpl3_allows` does not list
-        // it: the CPL3 set is the Linux live profile). The interpreter does not gate on CPUID.CX8:
+        // is: the CPL0 set at Ring0 and Ring3 (ADR-0023 slice C2a) and the bare run. The interpreter
+        // does not gate on CPUID.CX8:
         // OdX8664V1Neutral already declares the bit (S6-14h); the Windows profile does not declare
         // it until the S2-57 acceptance.
         Operation::Cmpxchg8b { .. } => {
@@ -52943,7 +49521,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && instruction.operand_size == OperandSize::Qword
                 && instruction.prefixes.rex.is_none_or(|rex| rex & 8 == 0)
                 && if control_policy.is_some() {
-                    context.privilege == PrivilegeLevel::Ring0
+                    set_cpl
                 } else {
                     cr0_profile.is_none()
                         && cr4_profile.is_none()
@@ -52992,12 +49570,11 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         | Operation::MmxMovq { .. }
         | Operation::Emms => state.x87.is_some(),
         // S2-56 slice A: POPCNT (`F3 0F B8`) and CRC32 (`F2 0F 38 F0/F1`) are general-register forms with
-        // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and in the
-        // bare run (no CR profile, no CPL0 set); never at CPL3, whose set stays the Linux live profile
-        // (CPUID does not declare POPCNT or SSE4.2 until S2-57, and `cpl3_allows` does not list them).
+        // no CR0/CR4 gate in the SDM. Admitted exactly like CMPXCHG16B: in the CPL0 set at Ring0 and Ring3
+        // (ADR-0023 slice C2a) and in the bare run (no CR profile, no CPL0 set).
         Operation::Popcnt { .. } | Operation::Crc32 { .. } => {
             if control_policy.is_some() {
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
             } else {
                 cr0_profile.is_none()
                     && cr4_profile.is_none()
@@ -53006,9 +49583,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         // S2-52/S2-53: LAHF (`9F`), SAHF (`9E`) and PREFETCHW (`0F 0D /1 m8`). Admitted exactly like
-        // CMPXCHG16B: in the CPL0 set at Ring0 and in the bare run (no CR profile, no CPL0 set);
-        // never at CPL3, whose set stays the Linux live profile (CPUID declares neither LAHF_SAHF_64
-        // nor PREFETCHW until S2-57, and `cpl3_allows` does not list them).
+        // CMPXCHG16B: in the CPL0 set at Ring0 and Ring3 (ADR-0023 slice C2a) and in the bare run (no
+        // CR profile, no CPL0 set).
         Operation::Lahf | Operation::Sahf | Operation::Prefetchw => {
             let opcode_matches = match instruction.operation {
                 Operation::Lahf => {
@@ -53021,7 +49597,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             };
             opcode_matches
                 && if control_policy.is_some() {
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
             } else {
                 cr0_profile.is_none()
                     && cr4_profile.is_none()
@@ -53042,7 +49618,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                     // both run it as one `atomic_rmw_integer` call. Any other profile refuses
                     // the dword form.
                     (if control_policy.is_some() {
-                        context.privilege == PrivilegeLevel::Ring0
+                        set_cpl
                     } else {
                         cr0_profile.is_none()
                             && cr4_profile.is_none()
@@ -53069,7 +49645,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 // the opcode).
                 // S4-38L7ay: the board adapters have no atomic fetch-add, hence the outside-set
                 // gate below keeps the qword-only S2-21d path.
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
                     && instruction.opcode.map == OpcodeMap::Escape0f
                     && instruction.opcode.byte == 0xc1
             } else {
@@ -53088,17 +49664,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         // S4-38L7ay: LOCK XADD m32/m64. In the CPL0 set (Ring0) it is read -> write on the single
         // vCPU; the decoder has already validated the prefixes. Outside the set only the S2-21f
         // qword form exists (one atomic fetch-add call); the dword form is refused there.
-        // S4-38L9g: XADD m32/m64 with a DS override and no LOCK; the CPL0 set only (Ring0), the
+        // S4-38L9g: XADD m32/m64 with a DS override and no LOCK; the CPL0 set only (CPL0 and CPL3), the
         // decoder has already validated the prefixes. Outside the set it is refused.
         Operation::XaddDsMem { .. } => {
-            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
         }
         Operation::LockXaddMem {
             destination,
             source,
         } => {
             if control_policy.is_some() {
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
             } else if destination.size == OperandSize::Dword {
                 // S6-20: the dword form (`F0 [REX] 0F C1 /r`, no REX.W) in the bare run, executed
                 // as one `atomic_rmw_integer` call by `transfer` (the S6-05 corpus form). Any
@@ -53138,7 +49714,7 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 // LOCK form (`LockCmpxchgMem`); see `XaddMemory`. S4-38L7k: the board adapters
                 // have no atomic compare-exchange, hence the outside-set gate below keeps the
                 // qword-only S2-21 path.
-                context.privilege == PrivilegeLevel::Ring0
+                set_cpl
                     && instruction.opcode.map == OpcodeMap::Escape0f
                     && instruction.opcode.byte == 0xb1
             } else {
@@ -53351,9 +49927,12 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                                 operand_override: true,
                                 ..Prefixes::default()
                             }))
-                    || (control_policy.is_some()
-                        && context.privilege == PrivilegeLevel::Ring3
-                        && is_addr32_direct_call(&instruction)))
+                    // `67 E8 cd`: ADR-0023 decision 1 (slice C2a): a `Neutral` form runs alike at every CPL
+                    // of the set. 67h does not change CALL rel32 in 64-bit mode: the address size acts only
+                    // on memory operands and the implicit rCX/rSI/rDI, the stack size is the mode's (SDM
+                    // Vol. 1 §3.6.1, Vol. 2A "CALL"). Before C2a the form ran at CPL3 only (S6-38,
+                    // ISSUE-727).
+                    || (set_cpl && is_addr32_direct_call(&instruction)))
                 && matches!(instruction.opcode.byte, 0xe8 | 0xc2 | 0xc3)
         }
         Operation::IndirectCall { .. } => {
@@ -53382,12 +49961,8 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             // S7-31c: `3E FF /4` (NOTRACK JMP r64). The set models no CET indirect-branch
             // tracking, so NOTRACK has no effect and the instruction is `JMP r64`; the EFI stub
             // of the Ubuntu kernel runs it at CPL0 (`3E FF E0`).
-            control_policy.is_some()
-                && matches!(
-                    context.privilege,
-                    PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
-                )
-                && cpl3_notrack_register_jump(&instruction)
+            // ADR-0023 slice C2a: at CPL0 and CPL3 alike (the guard is the whole form).
+            set_cpl
         }
         Operation::IndirectJump { operand } => {
             let segment = match operand {
@@ -53580,19 +50155,17 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
         }
         Operation::RepScas { size } => rep_scas_admitted(&instruction, size, 0xf3),
         // S7-32 slice S (ISSUE-713): LOOP/LOOPE/LOOPNE/JRCXZ (the decoder admits only the bare and
-        // the `67` forms) only in the CPL0 set at CPL0; before the slice LOOP was a decode-only
-        // form (S6-08) and refused everywhere, as it still is outside the set and at CPL3.
+        // the `67` forms) only in the CPL0 set (ADR-0023 slice C2a: at CPL0 and CPL3); before the slice
+        // LOOP was a decode-only form (S6-08) and refused everywhere, as it still is outside the set.
         Operation::Loop { .. }
         | Operation::Loope { .. }
         | Operation::Loopne { .. }
         | Operation::Jrcxz { .. } => {
-            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
         }
-        // S7-32 slice S: REPNE SCAS only in the CPL0 set and at CPL0 (CPL3 is ADR-0023). The CPL
-        // check is a backstop: at CPL3 an earlier gate of the set refuses the form first.
+        // S7-32 slice S: REPNE SCAS only in the CPL0 set; ADR-0023 slice C2a: at CPL0 and CPL3.
         Operation::RepneScas { size } => {
-            control_policy.is_some()
-                && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
                 && instruction.address_size == OperandSize::Qword
                 && rep_scas_admitted(&instruction, size, 0xf2)
         }
@@ -53811,9 +50384,10 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
                 && matches!(destination.size, OperandSize::Word | OperandSize::Qword)
         }
         // S7-32 slice S: the `67` REPNE SCAS spellings (the decoder checked the form) run in the CPL0
-        // set at CPL0; elsewhere they stay refused (`run_with_rep_continuation` takes them).
+        // set (ADR-0023 slice C2a: at CPL0 and CPL3); elsewhere they stay refused
+        // (`run_with_rep_continuation` takes them).
         Operation::RepneScasbAddr32 | Operation::RepneScasWdqAddr32 { .. } => {
-            control_policy.is_some() && context.privilege == PrivilegeLevel::Ring0
+            set_cpl
         }
         Operation::RepneCmpsbAddr32 | Operation::RepneCmpsWdqAddr32 { .. } => false,
         Operation::MulsdRegister { .. } => false,
@@ -66600,15 +63174,14 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
             }
         }
         // S4-38L9q: XCHG r/m64, r64 with memory (`REX.W 87 /r`, bare or LOCK) in the CPL0 set
-        // (Ring0) is one `atomic_rmw_integer` call (S6-20), like the dword form of S4-38L9p
-        // (`transfer`); the address is resolved first, a failing read or
+        // (ADR-0023 slice C2a: at CPL0 and CPL3) is one `atomic_rmw_integer` call (S6-20), like the
+        // dword form of S4-38L9p (`transfer`); the address is resolved first, a failing read or
         // write leaves memory and the register untouched, flags are not affected. Outside the
-        // set (and at Ring3) the qword form keeps the atomic-exchange call in `transfer`.
+        // set the qword form keeps the atomic-exchange call in `transfer`.
         Operation::XchgMemory {
             register,
             memory: operand,
-        } if control_policy.is_some()
-            && context.privilege == PrivilegeLevel::Ring0
+        } if set_cpl
             && operand.size == OperandSize::Qword =>
         {
             let result = (|| -> Result<(), MemoryError> {
@@ -68451,171 +65024,6 @@ fn step_configured_with_profile_mode<const NO_PROFILES: bool>(
     Ok(StepOutcome::Advanced)
 }
 
-fn step_cpl3_scalar_fp(
-    state: &mut LongModeState,
-    memory: &mut impl GuestMemory,
-    context: AccessContext,
-    rflags_defined: &mut u64,
-    mut profiles: ExecutionProfiles<'_>,
-    instruction: &long_decode::Instruction,
-    runtime: StepRuntime<'_, '_, '_>,
-) -> Result<StepOutcome, MemoryError> {
-    let (Some(cr0), Some(cr4), true) = (state.cr0, state.cr4, state.sse.is_some()) else {
-        return Ok(StepOutcome::Unsupported { opcode: 0x0f });
-    };
-    let controls = |sse2_available| {
-        (
-            sse2_available,
-            cr0 & (1 << 2) != 0,
-            cr0 & (1 << 3) != 0,
-            cr4 & (1 << 9) != 0,
-            cr4 & (1 << 10) != 0,
-        )
-    };
-    let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr, cr4_osxmmexcpt) = controls(true);
-    let gates = AddsdControls {
-        sse2_available,
-        cr0_em,
-        cr0_ts,
-        cr4_osfxsr,
-        cr4_osxmmexcpt,
-    };
-    profiles.addsd_registers =
-        matches!(instruction.operation, Operation::AddsdRegister { .. }).then_some(gates);
-    profiles.mulsd_registers = matches!(instruction.operation, Operation::MulsdRegister { .. })
-        .then_some(MulsdControls {
-            sse2_available,
-            cr0_em,
-            cr0_ts,
-            cr4_osfxsr,
-            cr4_osxmmexcpt,
-        });
-    profiles.subsd_registers = matches!(instruction.operation, Operation::SubsdRegister { .. })
-        .then_some(SubsdControls {
-            sse2_available,
-            cr0_em,
-            cr0_ts,
-            cr4_osfxsr,
-            cr4_osxmmexcpt,
-        });
-    profiles.comisd_ucomisd_registers = matches!(
-        instruction.operation,
-        Operation::ComissUcomissRegister { .. }
-    )
-    .then_some(ComisdUcomisdControls {
-        sse2_available,
-        cr0_em,
-        cr0_ts,
-        cr4_osfxsr,
-        cr4_osxmmexcpt,
-    });
-    profiles.cvtsi2sd_registers =
-        matches!(instruction.operation, Operation::Cvtsi2sdR64Register { .. }).then_some(
-            Cvtsi2sdRegistersControls {
-                sse2_available,
-                cr0_em,
-                cr0_ts,
-                cr4_osfxsr,
-                cr4_osxmmexcpt,
-            },
-        );
-    profiles.cvttsd2si_registers = matches!(
-        instruction.operation,
-        Operation::Cvttsd2siR64Register { .. }
-    )
-    .then_some(Cvtsd2siRegistersControls {
-        sse2_available,
-        cr0_em,
-        cr0_ts,
-        cr4_osfxsr,
-        cr4_osxmmexcpt,
-    });
-    profiles.scalar_float_memory_rax =
-        matches!(instruction.operation, Operation::MulsdMemory { .. }).then_some(
-            ScalarFloatMemoryRaxProfile::MulsdUnmasked(MulsdMemoryRaxUnmaskedControls {
-                sse2_available,
-                cr0_em,
-                cr0_ts,
-                cr4_osfxsr,
-                cr4_osxmmexcpt,
-            }),
-        );
-    profiles.fp_cpl0 = None;
-    // `state.sse` already holds the SSE state of the FP member (S2-39): the nested step works on a
-    // copy, a retired instruction replaces the state, and a fault keeps only the SSE state (MXCSR flags
-    // of an unmasked exception) and nothing else, as before.
-    let mut local = state.clone();
-    let outcome = step_configured(
-        &mut local,
-        memory,
-        context,
-        rflags_defined,
-        profiles,
-        runtime,
-    )?;
-    match outcome {
-        StepOutcome::Advanced => *state = local,
-        StepOutcome::Fault(_) => state.sse = local.sse.take(),
-        _ => {}
-    }
-    Ok(outcome)
-}
-
-fn cpl3_scalar_fp_form(instruction: &long_decode::Instruction) -> bool {
-    let no_rex_scalar_prefix = instruction.prefixes.rex.is_none()
-        && instruction.prefixes.group1 == Some(0xf2)
-        && instruction.prefixes.segment.is_none()
-        && !instruction.prefixes.operand_override
-        && !instruction.prefixes.address_override;
-    match instruction.operation {
-        Operation::AddsdRegister { .. }
-        | Operation::MulsdRegister { .. }
-        | Operation::SubsdRegister { .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && matches!(instruction.opcode.byte, 0x58 | 0x59 | 0x5c)
-                && no_rex_scalar_prefix
-        }
-        Operation::ComissUcomissRegister { .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x2f
-                && instruction.prefixes
-                    == (Prefixes {
-                        operand_override: true,
-                        ..Prefixes::default()
-                    })
-        }
-        Operation::Cvtsi2sdR64Register { .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x2a
-                && instruction.prefixes.group1 == Some(0xf2)
-                && instruction.prefixes.rex == Some(0x48)
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && instruction.prefixes.segment.is_none()
-        }
-        Operation::Cvttsd2siR64Register { .. } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x2c
-                && instruction.prefixes.group1 == Some(0xf2)
-                && instruction.prefixes.rex == Some(0x48)
-                && !instruction.prefixes.operand_override
-                && !instruction.prefixes.address_override
-                && instruction.prefixes.segment.is_none()
-        }
-        Operation::MulsdMemory {
-            destination: 0,
-            source,
-        } => {
-            instruction.opcode.map == OpcodeMap::Escape0f
-                && instruction.opcode.byte == 0x59
-                && no_rex_scalar_prefix
-                && source.address_size == OperandSize::Qword
-                && source.base == AddressBase::NextRip
-                && source.index.is_none()
-        }
-        _ => false,
-    }
-}
 fn commit_bit_scan(state: &mut LongModeState, kind: BitScanKind, dst: RegisterView, source: u64) {
     let zero = source == 0;
     if !zero {
@@ -74084,13 +70492,31 @@ fn mmx_memory_address(
     operand: MemoryOperand,
     next_rip: u64,
 ) -> Result<u64, Result<StepOutcome, MemoryError>> {
+    mmx_memory_address_aligned(
+        state,
+        context,
+        operand,
+        next_rip,
+        operand.size.bytes() as u8,
+    )
+}
+
+/// [`mmx_memory_address`] with the #AC requirement `alignment` of the instruction (ADR-0023 decision
+/// 4): the operand size, except the m32 source of PUNPCKLBW/PUNPCKLWD/PUNPCKLDQ (Vol. 2B
+/// "PUNPCKLBW/PUNPCKLWD/PUNPCKLDQ/PUNPCKLQDQ": `mm, mm/m32`), 4 although the model reads eight bytes.
+fn mmx_memory_address_aligned(
+    state: &LongModeState,
+    context: AccessContext,
+    operand: MemoryOperand,
+    next_rip: u64,
+    alignment: u8,
+) -> Result<u64, Result<StepOutcome, MemoryError>> {
     let address = match operand.access_address_48(state, next_rip) {
         Ok(address) => address,
         Err(error) => return Err(report_memory_error(error)),
     };
     // ADR-0023 decision 4 (Table 7-7; SSE Type 4/5: #AC for 2-, 4- and 8-byte accesses only).
-    if let Some(fault) = alignment_check_fault(state, context, address, operand.size.bytes() as u8)
-    {
+    if let Some(fault) = alignment_check_fault(state, context, address, alignment) {
         return Err(Ok(StepOutcome::Fault(fault)));
     }
     Ok(address)
@@ -74104,6 +70530,7 @@ fn mmx_source_qword(
     context: AccessContext,
     source: Sse3Source,
     next_rip: u64,
+    alignment: u8,
 ) -> Result<[u8; 8], Result<StepOutcome, MemoryError>> {
     match source {
         Sse3Source::Register(index) => Ok(state
@@ -74113,7 +70540,7 @@ fn mmx_source_qword(
             .mmx_register(index)
             .expect("the decoder gives MM0..MM7")),
         Sse3Source::Memory(operand) => {
-            let address = mmx_memory_address(state, context, operand, next_rip)?;
+            let address = mmx_memory_address_aligned(state, context, operand, next_rip, alignment)?;
             let mut raw = [0u8; 8];
             memory
                 .read(address, context, &mut raw)
@@ -74138,7 +70565,17 @@ fn step_mmx_int(
     if let Some(outcome) = mmx_entry_fault(state, opcode) {
         return Ok(outcome);
     }
-    let raw = match mmx_source_qword(state, memory, context, source, next_rip) {
+    // ADR-0023 slice C2a: the unpack-low forms take an m32 source (Vol. 2B), so their #AC requirement
+    // is 4 (the model reads the eight bytes of the qword it combines, ISSUE-725).
+    let alignment = if matches!(
+        kind,
+        MmxIntKind::Punpcklbw | MmxIntKind::Punpcklwd | MmxIntKind::Punpckldq
+    ) {
+        4
+    } else {
+        8
+    };
+    let raw = match mmx_source_qword(state, memory, context, source, next_rip, alignment) {
         Ok(raw) => raw,
         Err(outcome) => return outcome,
     };
@@ -74261,7 +70698,7 @@ fn step_mmx_movq(
         return Ok(outcome);
     }
     if to_mmx {
-        let raw = match mmx_source_qword(state, memory, context, other, next_rip) {
+        let raw = match mmx_source_qword(state, memory, context, other, next_rip, 8) {
             Ok(raw) => raw,
             Err(outcome) => return outcome,
         };
@@ -74422,7 +70859,7 @@ fn step_cpl0_bounded_x87<const NO_PROFILES: bool>(
     context: AccessContext,
     rflags_defined: &mut u64,
     profiles: ExecutionProfiles<'_>,
-    runtime: StepRuntime<'_, '_, '_>,
+    runtime: StepRuntime<'_, '_, '_, '_>,
     cell: &RefCell<GuestFpState>,
     opcode: u8,
     fwait: bool,
@@ -76142,9 +72579,10 @@ fn sse_cpl0_memory_form(operation: &Operation) -> bool {
     )
 }
 
-/// S2-39n: forms with a handler in `step_cpl3_xmm` only (the plain `step` refuses them); the CPL0 set
-/// runs them through the same handler, whose gates and accesses do not depend on the privilege level.
-fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
+/// S2-39n: forms with a handler in `step_xmm_handler_form` only (the plain `step` refuses them); the CPL0 set
+/// runs them through the same handler at CPL0 and CPL3 (ADR-0023 slice C2a: the former CPL3-only path,
+/// `step_cpl3_xmm`), whose gates and accesses do not depend on the privilege level.
+fn xmm_handler_form(operation: &Operation) -> bool {
     matches!(
         operation,
         Operation::MoveIntegerToXmm { .. }
@@ -76157,50 +72595,6 @@ fn sse_cpl0_cpl3_handler_form(operation: &Operation) -> bool {
             | Operation::PminubMemory { .. }
             | Operation::PcmpeqbMemory { .. }
     )
-}
-
-/// S2-39 (CPL3): the instructions the CPL3 entry hands to the step when the set has the FP member: the forms of
-/// the CPL0 set that run on `state.sse` (the narrow register forms and MOVSS/MOVSD/LDMXCSR/STMXCSR of
-/// `sse_cpl0_form`, the handler forms of `step_cpl3_xmm`, the raw 128-bit moves, and every operation of the general
-/// SSE core: the narrow forms the step converts and the general operations). It only decides what reaches the step;
-/// the step still refuses what needs other state (the MMX forms and MOVDQ2Q/MOVQ2DQ need the x87 registers, which
-/// stay in the cell at CPL3) or the form itself (FS/GS overrides, an unsupported addressing shape) as `Unsupported`.
-fn cpl3_sse_set_form(instruction: &long_decode::Instruction) -> bool {
-    let operation = instruction.operation;
-    // S7-31i LDMXCSR (merge 56c60c9, "main priority"): executed by `step_cpl0_fp` on `state.sse`, also at CPL3.
-    // S7-32 W4: FXSAVE/FXRSTOR (SDM: not privileged) too, every form through `step_cpl0_fx_state`
-    // on the member's cell and `state.sse`, with user accesses.
-    matches!(operation, Operation::LdmxcsrMemory { .. })
-        || fx_state_form(operation).is_some()
-        || sse_cpl0_form(instruction)
-        || sse_cpl0_cpl3_handler_form(&operation)
-        || sse_fp_arith_from_narrow(operation).is_some()
-        || sse_fp_misc_from_narrow(operation, instruction.prefixes.operand_override).is_some()
-        || sse_logic_from_narrow(operation).is_some()
-        || matches!(
-            operation,
-            Operation::MovapsLoadMemory { .. }
-                | Operation::MovapsStoreMemory { .. }
-                | Operation::MovdqaLoadMemory { .. }
-                | Operation::MovdquLoadMemory { .. }
-                | Operation::Sse128MemoryMove { .. }
-                | Operation::MovupsLoadMemory { .. }
-                | Operation::MovupsStoreMemory { .. }
-                | Operation::MovupdLoadMemory { .. }
-                | Operation::MovupdStoreMemory { .. }
-                | Operation::Sse3Permute { .. }
-                | Operation::Ssse3Int { .. }
-                | Operation::Sse41 { .. }
-                | Operation::Sse2Int { .. }
-                | Operation::Sse2Maskmov { .. }
-                | Operation::Sse41Fp { .. }
-                | Operation::SseLogicPermute { .. }
-                | Operation::SseMovmsk { .. }
-                | Operation::SseFpArith { .. }
-                | Operation::SseFpMisc { .. }
-                | Operation::SseCvtFromInt { .. }
-                | Operation::SseCvtToInt { .. }
-        )
 }
 
 /// S2-39n: whether the FP member of the CPL0 set runs this instruction on `state.sse` beyond the general SSE core
@@ -76923,7 +73317,10 @@ fn alignment_check(
     }
 }
 
-fn step_cpl3_xmm(
+/// The handler of the [`xmm_handler_form`] forms on `state.sse` (the SSE half of the FP member while the
+/// set runs): any CPL of the set (ADR-0023 slice C2a; formerly `step_cpl3_xmm`). Memory accesses carry
+/// the context of the step (at CPL3 the rights of a user access).
+fn step_xmm_handler_form(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
@@ -77653,7 +74050,8 @@ fn step_cpl0_fp(
                 _ => return unsupported,
             };
             if instruction.opcode.map != OpcodeMap::Primary
-                || context.privilege != PrivilegeLevel::Ring0
+                // ADR-0023 slice C2a (decision 2): the x87 forms of the member run at CPL0 and CPL3 alike.
+                || !matches!(context.privilege, PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3)
             {
                 return unsupported;
             }
@@ -77752,6 +74150,11 @@ fn step_cpl0_fp(
                 Ok(address) => address,
                 Err(error) => return report_memory_error(error),
             };
+            // ADR-0023 decision 4, Table 7-7 (a 16-bit x87 store: word); reachable at CPL3 since
+            // slice C2a (ISSUE-722).
+            if let Some(fault) = alignment_check_fault(state, context, address, 2) {
+                return Ok(StepOutcome::Fault(fault));
+            }
             if let Err(error) =
                 memory.write_integer(address, context, OperandSize::Word, u64::from(value))
             {
@@ -77885,7 +74288,8 @@ fn step_cpl0_fild_m32(
         || instruction.opcode.byte != 0xdb
         || source.size != OperandSize::Dword
         || source.segment != crate::long_decode::MemorySegment::Flat
-        || context.privilege != PrivilegeLevel::Ring0
+        // ADR-0023 slice C2a (decision 2): the x87 forms of the member run at CPL0 and CPL3 alike.
+        || !matches!(context.privilege, PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3)
     {
         return unsupported;
     }
@@ -77920,6 +74324,12 @@ fn step_cpl0_fild_m32(
     let destination = cell.borrow().x87.top().wrapping_add(7) & 7;
     if cell.borrow().x87.tag(destination) != Some(X87Tag::Empty) {
         return unsupported;
+    }
+    // ADR-0023 decision 4, Table 7-7 (an m32int operand: doubleword), before the read; reachable at
+    // CPL3 since slice C2a (ISSUE-722). A full stack is refused first (`Unsupported`, the masked
+    // stack fault is not modeled), so no #AC is invented for a form the set does not execute.
+    if let Some(fault) = alignment_check_fault(state, context, address, 4) {
+        return Ok(StepOutcome::Fault(fault));
     }
     let value = match memory.read_integer(address, context, OperandSize::Dword) {
         Ok(value) => i64::from(value as u32 as i32),
@@ -77961,6 +74371,12 @@ fn step_cpl0_fnsave(
         Ok(address) => address,
         Err(error) => return report_memory_error(error),
     };
+    // ADR-0023 decision 4, Table 7-7 ("FSAVE/FNSAVE ... 2 or 4"): 4 for the 32-bit format (the
+    // member admits no `66`), checked once at the start of the image; reachable at CPL3 since slice
+    // C2a (ISSUE-722).
+    if let Some(fault) = alignment_check_fault(state, context, address, 4) {
+        return Ok(StepOutcome::Fault(fault));
+    }
     let image = x87_save_image(&cell.borrow().x87, true);
     let mut offset = 0;
     while offset < IMAGE_BYTES {
@@ -80331,7 +76747,7 @@ fn read_rmw_destination(
 ) -> Result<u64, MemoryError> {
     if control_policy
         && context.privilege == PrivilegeLevel::Ring3
-        && let Some(operand) = cpl3_ordinary_rmw_destination(instruction)
+        && let Some(operand) = cpl3_write_intent_rmw_destination(instruction)
     {
         let address = operand.access_address_48(state, next_rip)?;
         alignment_check(state, context, address, operand.size.bytes())?;
@@ -153118,12 +149534,7 @@ mod tests {
                         context,
                         &mut defined,
                         ExecutionProfiles::EMPTY,
-                        StepRuntime {
-                            rdtsc_source: None,
-                            sti_sequence: None,
-                            exact_hlt_only: false,
-                            stop_requested: &mut stop_requested,
-                        },
+                        StepRuntime::new(None, None, false, &mut stop_requested),
                     )
                 };
                 (outcome.unwrap(), state, memory, defined, polls)
@@ -232119,6 +228530,8 @@ mod paged_ltr_tests {
     }
 
     #[test]
+    // ADR-0023 slice C2a: the membership asserts of the removed allow-list (`cpl3_allows`) are gone;
+    // the handler semantics below are unchanged.
     fn s6_22_cpl3_vector_subset_runs_and_checks_sse_gates_and_movaps_alignment() {
         use crate::execute::tests::Memory;
         let context = AccessContext::default();
@@ -232129,9 +228542,8 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[11] = [0x5a; 16];
         let mut copy_memory = Memory::new(&[0x66, 0x41, 0x0f, 0x6f, 0xd3]);
         let copy = long_decode::decode(&mut copy_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&copy, false, false, false));
         assert_eq!(
-            step_cpl3_xmm(
+            step_xmm_handler_form(
                 &mut state,
                 &mut copy_memory,
                 context,
@@ -232149,9 +228561,8 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[1] = [1; 16];
         let mut add_memory = Memory::new(&[0x66, 0x44, 0x0f, 0xfc, 0xc1]);
         let add = long_decode::decode(&mut add_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&add, false, false, false));
         assert_eq!(
-            step_cpl3_xmm(
+            step_xmm_handler_form(
                 &mut state,
                 &mut add_memory,
                 context,
@@ -232175,10 +228586,6 @@ mod paged_ltr_tests {
             state.rip = 0;
             let mut memory = Memory::new(code);
             let instruction = long_decode::decode(&mut memory, 0, context).unwrap();
-            assert!(
-                cpl3_allows(&instruction, false, false, false),
-                "{operation}"
-            );
             if operation == "paddd" {
                 state.sse.as_mut().unwrap().xmm[destination as usize] = [0xff; 16];
                 state.sse.as_mut().unwrap().xmm[source as usize] = [1; 16];
@@ -232212,7 +228619,7 @@ mod paged_ltr_tests {
                 state.sse.as_mut().unwrap().xmm[source as usize] = [0xa5; 16];
             }
             assert_eq!(
-                step_cpl3_xmm(
+                step_xmm_handler_form(
                     &mut state,
                     &mut memory,
                     context,
@@ -232251,9 +228658,8 @@ mod paged_ltr_tests {
         state.sse.as_mut().unwrap().xmm[0] = [0xa5; 16];
         let mut store_memory = Memory::new(&[0x0f, 0x29, 0x04, 0x24]);
         let store = long_decode::decode(&mut store_memory, 0, context).unwrap();
-        assert!(cpl3_allows(&store, false, false, false));
         assert_eq!(
-            step_cpl3_xmm(
+            step_xmm_handler_form(
                 &mut state,
                 &mut store_memory,
                 context,
@@ -232270,7 +228676,7 @@ mod paged_ltr_tests {
         let mut misaligned_memory = Memory::new(&[0x0f, 0x29, 0x44, 0x24, 0x01]);
         let misaligned = long_decode::decode(&mut misaligned_memory, 0, context).unwrap();
         assert_eq!(
-            step_cpl3_xmm(
+            step_xmm_handler_form(
                 &mut state,
                 &mut misaligned_memory,
                 context,
@@ -232295,7 +228701,7 @@ mod paged_ltr_tests {
             let mut memory = Memory::new(&[0x66, 0x0f, 0xef, 0xc1]);
             let instruction = long_decode::decode(&mut memory, 0, context).unwrap();
             assert_eq!(
-                step_cpl3_xmm(
+                step_xmm_handler_form(
                     &mut state,
                     &mut memory,
                     context,

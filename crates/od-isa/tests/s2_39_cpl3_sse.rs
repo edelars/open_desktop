@@ -741,19 +741,6 @@ fn needs_imm(map: u8, opcode: u8) -> bool {
     map == 2 || (map == 0 && matches!(opcode, 0x70..=0x73 | 0xc2 | 0xc4..=0xc6))
 }
 
-/// Forms of the MMX class: they use the x87 data registers, which stay in the cell at CPL3, so the CPL3 set refuses them.
-fn mmx_class(prefix: Option<u8>, map: u8, opcode: u8) -> bool {
-    match (prefix, map) {
-        (None, 0) => {
-            matches!(opcode, 0x2a | 0x2c | 0x2d | 0x60..=0x77 | 0x7e | 0x7f | 0xc4 | 0xc5 | 0xd1..=0xfe)
-        }
-        (None, _) => true,
-        (Some(0x66), 0) => matches!(opcode, 0x2a | 0x2c | 0x2d),
-        (Some(0xf2 | 0xf3), 0) => opcode == 0xd6,
-        _ => false,
-    }
-}
-
 fn sweep_cases() -> Vec<SweepCase> {
     let mut cases = Vec::new();
     for prefix in [None, Some(0x66u8), Some(0xf2), Some(0xf3)] {
@@ -901,10 +888,6 @@ struct SweepTotals {
     equal: usize,
     equal_retired: usize,
     refused_ac: usize,
-    refused_mmx: usize,
-    refused_crc32: usize,
-    /// S7-32: MOVNTI, a general-register store refused at CPL3.
-    refused_movnti: usize,
     /// (prefix, map, opcode, REX.W, offset from a 16-byte boundary) of the memory forms that retired with AC set at
     /// an operand misaligned for a 16-byte access.
     misaligned_ac_retired: std::collections::BTreeSet<(Option<u8>, u8, u8, bool, u64)>,
@@ -937,6 +920,13 @@ fn eight_byte_form(prefix: Option<u8>, map: u8, opcode: u8, rex_w: bool) -> bool
         (Some(0x66), 0, 0x6e | 0x7e)
         | (Some(0x66), 2, 0x16 | 0x22)
         | (Some(0xf2 | 0xf3), 0, 0x2a) => rex_w,
+        // ADR-0023 slice C2a: the MMX forms (they run at CPL3 since decision 2): m64 sources and stores
+        // (PUNPCKL* take an m32, the default four), the SSSE3 MMX forms, MOVD/MOVQ mm with REX.W.
+        (None, 0, 0x63..=0x6b | 0x6f | 0x70 | 0x74..=0x76 | 0x7f | 0xd1..=0xfe) => true,
+        (None, 1 | 2, _) => true,
+        (None, 0, 0x6e | 0x7e) => rex_w,
+        // MOVNTI m64 and CRC32 r64, m64 (REX.W): general-register forms that run at CPL3 since C2a.
+        (None, 0, 0xc3) | (Some(0xf2), 1, 0xf1) => rex_w,
         _ => false,
     }
 }
@@ -952,7 +942,13 @@ fn misaligned_for_its_size(
     rex_w: bool,
     offset: u64,
 ) -> bool {
-    if byte_form(prefix, map, opcode) {
+    // EMMS (`0F 77`, no memory operand) and CRC32 r, m8 (`F2 0F 38 F0`, a byte) run at CPL3 since ADR-0023 C2a.
+    if byte_form(prefix, map, opcode)
+        || matches!(
+            (prefix, map, opcode),
+            (None, 0, 0x77) | (Some(0xf2), 1, 0xf0)
+        )
+    {
         false
     } else if word_form(prefix, map, opcode) {
         offset % 2 != 0
@@ -980,9 +976,11 @@ fn sixteen_byte_form(prefix: Option<u8>, map: u8, opcode: u8) -> bool {
 }
 
 #[test]
-fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_the_mmx_forms() {
+fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer() {
     // ADR-0023 C1 (decision 4): the "AC transfer" is now the architectural #AC(0) of a misaligned 2-, 4- or 8-byte
     // operand at CPL3 with nothing changed (it was a refusal); `refused_ac` counts these faults.
+    // ADR-0023 slice C2a (decision 2): the MMX forms run at CPL3 on the x87 half of the FP cell as at CPL0, so the
+    // CPL3 run leaves the cell the CPL0 run leaves (it was: the x87 state never changes at CPL3, MMX refused).
     let mut totals = SweepTotals::default();
     let mut failures = Vec::new();
     for sweep in sweep_cases() {
@@ -994,10 +992,13 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
         }
         totals.cases += 1;
         let (cpl3, before, after) = in_set(Level::Cpl3, &sweep.code, &case, 1, |_| {});
-        let (cpl0, _, _) = in_set(Level::Cpl0, &sweep.code, &case, 1, |_| {});
-        if after.x87 != before.x87 {
+        let (cpl0, _, after_cpl0) = in_set(Level::Cpl0, &sweep.code, &case, 1, |_| {});
+        // A #AC at CPL3 leaves the cell as it was (checked below); otherwise both runs leave the same cell.
+        if after != after_cpl0
+            && !matches!(&cpl3.result, Result_::Fault(fault) if fault.vector == 17)
+        {
             failures.push(format!(
-                "{}: the CPL3 run changed the x87 state",
+                "{}: the CPL3 run left another FP cell than the CPL0 run",
                 sweep.name
             ));
         }
@@ -1068,19 +1069,6 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
                     )
                 {
                     totals.refused_ac += 1;
-                } else if mmx_class(sweep.prefix, sweep.map, sweep.opcode) {
-                    totals.refused_mmx += 1;
-                } else if sweep.prefix == Some(0xf2)
-                    && sweep.map == 1
-                    && matches!(sweep.opcode, 0xf0 | 0xf1)
-                {
-                    // CRC32 is a general-register form of S2-56, in the CPL0 set at Ring0 only (not an SSE form).
-                    totals.refused_crc32 += 1;
-                } else if sweep.prefix.is_none() && sweep.map == 0 && sweep.opcode == 0xc3 {
-                    // S7-32: MOVNTI is decoded as the plain general-register store it is for the model and
-                    // runs in the CPL0 set at Ring0; CPL3 refuses it (the #AC rule of a misaligned
-                    // operand under AC is not modeled for the general MOV).
-                    totals.refused_movnti += 1;
                 } else {
                     failures.push(format!(
                         "{}: CPL3 refuses (opcode {opcode:#x}) what the CPL0 set runs: {cpl0_result:?}",
@@ -1095,14 +1083,11 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
         }
     }
     eprintln!(
-        "sweep: {} cases, {} equal ({} retired), {} AC refusals, {} MMX refusals, {} CRC32 refusals, {} MOVNTI refusals, {} failures; {} misaligned AC retirements (aligned to their size)",
+        "sweep: {} cases, {} equal ({} retired), {} AC refusals, {} failures; {} misaligned AC retirements (aligned to their size)",
         totals.cases,
         totals.equal,
         totals.equal_retired,
         totals.refused_ac,
-        totals.refused_mmx,
-        totals.refused_crc32,
-        totals.refused_movnti,
         failures.len(),
         totals.misaligned_ac_retired.len()
     );
@@ -1129,11 +1114,6 @@ fn the_sse_opcode_space_at_cpl3_equals_the_cpl0_set_except_the_ac_transfer_and_t
         totals.equal_retired
     );
     assert!(totals.refused_ac > 100, "AC refusals {}", totals.refused_ac);
-    assert!(
-        totals.refused_mmx > 100,
-        "MMX refusals {}",
-        totals.refused_mmx
-    );
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1530,7 +1510,9 @@ fn a_misaligned_operand_with_ac_at_cpl3_is_alignment_check_and_the_other_cases_r
 }
 
 #[test]
-fn mmx_and_the_forms_that_need_the_mmx_registers_stay_refused_at_cpl3() {
+fn mmx_and_the_forms_that_need_the_mmx_registers_run_at_cpl3_as_at_cpl0() {
+    // ADR-0023 slice C2a (decision 2): the MMX forms run at CPL3 on the x87 half of the FP cell, as at
+    // CPL0 (they were refused at CPL3): the same outcome, registers, memory and cell.
     let forms: &[(&str, &[u8], u8)] = &[
         ("PADDW mm0,mm1", &[0x0f, 0xfd, 0xc1], 0xfd),
         ("PXOR mm0,[rax]", &[0x0f, 0xef, 0x00], 0xef),
@@ -1553,15 +1535,12 @@ fn mmx_and_the_forms_that_need_the_mmx_registers_stay_refused_at_cpl3() {
         ("PMOVMSKB eax,mm1", &[0x0f, 0xd7, 0xc1], 0xd7),
         ("PEXTRW eax,mm1,2", &[0x0f, 0xc5, 0xc1, 0x02], 0xc5),
     ];
-    for (name, code, opcode) in forms {
+    for (name, code, _) in forms {
         let case = Case::new(true);
-        let (cpl3, before, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
-        assert_eq!(cpl3.result, Result_::Unsupported(*opcode), "{name}");
-        assert_refused_unchanged(name, &cpl3, &before, &after, &case);
-        assert_eq!(
-            cpl3.data,
-            initial_memory(code, &case).bytes[DATA as usize..DATA as usize + 0x500]
-        );
+        let (cpl3, _, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
+        let (cpl0, _, after_cpl0) = in_set(Level::Cpl0, code, &case, 1, |_| {});
+        assert_eq!(cpl3, cpl0, "{name}");
+        assert_eq!(after, after_cpl0, "{name}");
     }
 }
 
@@ -1659,8 +1638,31 @@ fn lock_on_an_sse_form_is_ud_at_cpl3() {
 }
 
 #[test]
-fn without_the_fp_member_the_cpl3_entry_keeps_refusing_every_sse_form() {
-    for (name, code) in FORMS {
+fn without_the_fp_member_the_cpl3_entry_refuses_every_fp_form() {
+    // ADR-0023 decision 2: without the FP member every x87, MMX and SSE form is `Unsupported` at CPL3, as at
+    // CPL0 — the SSE forms of this file, the forms of the XMM handler (`step_xmm_handler_form`, which ran on
+    // `state.sse` without the member before slice C2a), x87 and MMX.
+    const MORE: &[(&str, &[u8])] = &[
+        ("MOVD xmm0,eax", &[0x66, 0x0f, 0x6e, 0xc0]),
+        ("MOVQ rax,xmm0", &[0x66, 0x48, 0x0f, 0x7e, 0xc0]),
+        ("PSHUFLW xmm0,xmm1,0", &[0xf2, 0x0f, 0x70, 0xc1, 0x00]),
+        ("PINSRW xmm0,[rax],1", &[0x66, 0x0f, 0xc4, 0x00, 0x01]),
+        ("MOVLPD xmm0,[rax]", &[0x66, 0x0f, 0x12, 0x00]),
+        ("MOVHPD xmm0,[rax]", &[0x66, 0x0f, 0x16, 0x00]),
+        ("MOVHPS xmm0,[rax]", &[0x0f, 0x16, 0x00]),
+        ("PCMPEQB xmm0,[rax]", &[0x66, 0x0f, 0x74, 0x00]),
+        ("PMINUB xmm0,[rax]", &[0x66, 0x0f, 0xda, 0x00]),
+        ("FNINIT", &[0xdb, 0xe3]),
+        ("FWAIT", &[0x9b]),
+        ("FNSTCW [rax]", &[0xd9, 0x38]),
+        ("FILD dword [rax]", &[0xdb, 0x00]),
+        ("FNSAVE [rax]", &[0xdd, 0x30]),
+        ("FXSAVE [rax]", &[0x0f, 0xae, 0x00]),
+        ("PADDW mm0,mm1", &[0x0f, 0xfd, 0xc1]),
+        ("MOVQ mm0,[rax]", &[0x0f, 0x6f, 0x00]),
+        ("EMMS", &[0x0f, 0x77]),
+    ];
+    for (name, code) in FORMS.iter().copied().chain(MORE.iter().copied()) {
         let case = Case::new(true);
         let mut state = initial_state(&case, Level::Cpl3);
         let mut ram = initial_memory(code, &case);
@@ -1947,10 +1949,10 @@ fn s7_32_w4_fxsave_and_fxrstor_at_cpl3_fault_on_a_supervisor_page_and_gp_on_an_a
 }
 
 #[test]
-fn s7_32_w4_the_x87_forms_of_the_fxrstor_probe_stay_refused_at_cpl3() {
-    // FNCLEX, FFREE ST(7), FILD m32int ([RAX], [RCX]) and FNSAVE ([RAX], [RCX]) run only at CPL0 of
-    // the set: at CPL3 each is refused with its opcode byte, nothing retired, read or written, and the
-    // cell keeps its state (CPL0: `cpl0_profile_set.rs`, `s7_32_w4_*`).
+fn s7_32_w4_the_x87_forms_of_the_fxrstor_probe_run_at_cpl3_as_at_cpl0() {
+    // FNCLEX, FFREE ST(7), FILD m32int ([RAX], [RCX]) and FNSAVE ([RAX], [RCX]): ADR-0023 slice C2a
+    // (decision 2) runs them at CPL3 on the cell of the FP member as at CPL0 (they were refused at
+    // CPL3): the same outcome, registers, memory and cell (CPL0: `cpl0_profile_set.rs`, `s7_32_w4_*`).
     for code in [
         &[0xdb, 0xe2][..],
         &[0xdd, 0xc7],
@@ -1961,15 +1963,49 @@ fn s7_32_w4_the_x87_forms_of_the_fxrstor_probe_stay_refused_at_cpl3() {
     ] {
         let mut case = Case::new(true);
         case.rcx = DATA;
-        let (cpl3, before, after) = in_set(Level::Cpl3, code, &case, 1, |state| {
-            state.cs_selector = Some(0x33);
+        let (cpl3, _, after) = in_set(Level::Cpl3, code, &case, 1, |_| {});
+        // The x87 executors store FCS = CS: the CPL0 state gets the kernel CS selector.
+        let (cpl0, _, after_cpl0) = in_set(Level::Cpl0, code, &case, 1, |state| {
+            state.cs_selector = Some(0x08);
         });
-        assert_eq!(cpl3.result, Result_::Unsupported(code[0]), "{code:02x?}");
-        assert_refused_unchanged(&format!("{code:02x?}"), &cpl3, &before, &after, &case);
+        assert_eq!(cpl3.result, cpl0.result, "{code:02x?}");
         assert_eq!(
-            cpl3.data,
-            initial_memory(code, &case).bytes[DATA as usize..DATA as usize + 0x500],
-            "{code:02x?}: nothing written"
+            (
+                cpl3.executed,
+                cpl3.rip,
+                cpl3.rflags,
+                cpl3.gpr,
+                cpl3.xmm,
+                cpl3.mxcsr
+            ),
+            (
+                cpl0.executed,
+                cpl0.rip,
+                cpl0.rflags,
+                cpl0.gpr,
+                cpl0.xmm,
+                cpl0.mxcsr
+            ),
+            "{code:02x?}"
+        );
+        // The FNSAVE image holds the FCS of the CPL at bytes 16..18 (32-bit protected-mode layout).
+        let masked = |mut data: Vec<u8>| {
+            if code[0] == 0xdd && code[1] < 0xc0 {
+                data[16..18].fill(0);
+            }
+            data
+        };
+        assert_eq!(masked(cpl3.data), masked(cpl0.data), "{code:02x?}");
+        // FNSAVE writes the FCS of the CPL into its image and the x87 executors set FCS: the cell is
+        // compared without the selectors.
+        let selectors_masked = |mut cell: GuestFpState| {
+            cell.x87.instruction_selector = None;
+            cell
+        };
+        assert_eq!(
+            selectors_masked(after),
+            selectors_masked(after_cpl0),
+            "{code:02x?}"
         );
     }
 }

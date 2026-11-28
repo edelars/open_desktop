@@ -14828,6 +14828,41 @@ mod tests {
         )
     }
 
+    /// ADR-0023 slice C2a-3 item 3: a CPL3 `rep stosw` longer than `REP_ITERATION_WORK_LIMIT`
+    /// (1 024 iterations per call) runs through the general REP rule of the set: the board loop
+    /// resumes the partial executions (`RepIterationBudgetExhausted`, no retire) until the string
+    /// ends with one retire; memory, RCX and RDI are those of the whole string (as at CPL0). The
+    /// forms of `cpl3_rep_string` (`F3 AB`, `F3 48 AB`) keep their per-iteration charge until C2b.
+    #[test]
+    fn a_long_cpl3_rep_stosw_resumes_across_partial_executions() {
+        const COUNT: u64 = 3000;
+        let (mut boot, file) = c1_board(&[0xf3, 0x66, 0xab], 0x202, &[]);
+        let data = ENTRY + 0x2000;
+        write_phys(&mut boot, data, &vec![0xee; (COUNT * 2 + 2) as usize]);
+        {
+            let state = boot.board.state_mut();
+            state.gpr[Register::Rdi as usize] = data;
+            state.gpr[Register::Rcx as usize] = COUNT;
+            state.gpr[Register::Rax as usize] = 0x1234_beef;
+        }
+        let record = run_syscall_facade(&mut boot, &file, 2, 0xd01);
+        // IRETQ to CPL3 and the string: two retires, one of them at CPL3.
+        assert_eq!((record.retired, record.cpl3_retired), (2, 1), "{record:?}");
+        assert_eq!(record.rip, USER_CODE_AT + 3, "{record:?}");
+        assert_eq!(record.gpr[Register::Rcx as usize], 0, "{record:?}");
+        assert_eq!(
+            record.gpr[Register::Rdi as usize],
+            data + COUNT * 2,
+            "{record:?}"
+        );
+        let mut bytes = vec![0u8; (COUNT * 2 + 2) as usize];
+        read(&mut boot.board, data, &mut bytes).expect("read the string");
+        for word in bytes[..(COUNT * 2) as usize].chunks(2) {
+            assert_eq!(word, [0xef, 0xbe]);
+        }
+        assert_eq!(&bytes[(COUNT * 2) as usize..], [0xee, 0xee]);
+    }
+
     /// ADR-0023 C1: the privileged forms at CPL3 are a #GP(0) the board delivers through RSP0: the
     /// instruction did not retire, the frame holds its RIP and error code 0, the handler runs in CPL0.
     #[test]

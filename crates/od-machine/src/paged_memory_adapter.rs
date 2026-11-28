@@ -3649,6 +3649,13 @@ fn run_cpl0_set_loop_impl<
         memory.descriptor_gate = split_gate;
         if let Some(hook) = turbo.as_mut() {
             memory.turbo_insn = hook.engine.take_slow_decode(instruction_rip);
+            // ADR-0023 slice C2a (review F12): turbo never runs CPL3 (decision 7, slice C5), so it
+            // leaves no deferred decode for a CPL3 instruction; `cached_instruction` answers only
+            // at CPL0. Debug builds only: the CPL0 hot path is unchanged in release.
+            debug_assert!(
+                !cpl3 || memory.turbo_insn.is_none(),
+                "a turbo decode handed to a CPL3 step at {instruction_rip:#x}"
+            );
             memory.turbo_tlb = Some(hook.engine.tlbs());
         }
         let run_config = RunConfig {
@@ -11379,7 +11386,16 @@ mod tests {
                     .unwrap()
                 };
                 let operand = GuestPhysicalAddress::new(0x7040);
-                if expected_error.is_none() && offset == 0x40 {
+                if expected_error.is_none() && offset == 0x41 {
+                    // ADR-0023 slice C2a (decision 4): the misaligned LOCK CMPXCHG / XCHG that the
+                    // allow-list refused (`cpl3_aligned_atomic_destination`) runs at CPL3 as at CPL0.
+                    assert_eq!(result.instructions_executed, 1, "{code:02x?}");
+                    assert_eq!(
+                        result.exit,
+                        Cpl0ProfileSetExit::Run(RunExit::InstructionBudgetExhausted)
+                    );
+                    assert_eq!(state.rip, before.rip + code.len() as u64);
+                } else if expected_error.is_none() && offset == 0x40 {
                     assert_eq!(result.instructions_executed, 1, "{code:02x?}");
                     assert_eq!(
                         result.exit,
@@ -12035,6 +12051,303 @@ mod tests {
         assert_eq!(
             results[0], results[1],
             "both modes: state, count and every RAM byte"
+        );
+    }
+
+    /// ADR-0023 slice C2a-3 item 2: the page tables of the multi-level test. Code at linear
+    /// 0x400000 under PML4[0] (frame 0x7000); data and stack at `C2A_DATA` (PML4[1]): two 4 KiB
+    /// pages (frames 0xD000, 0xE000) through PDPT 0xA000, PD 0xB000 and PT 0xC000, or one 2 MiB
+    /// page (frame 0x200000, `two_mib`). Every entry P | R/W | U.
+    const C2A_DATA: u64 = 0x0000_0080_0000_0000;
+
+    fn c2a_rights_memory(two_mib: bool) -> crate::PhysicalMemory {
+        const RAM: u64 = 0x40_0000;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM).unwrap(),
+                MemoryRegionKind::Ram,
+            )],
+        )
+        .unwrap();
+        let memory = crate::PhysicalMemory::new(&map, RamLimits::new(RAM)).unwrap();
+        let mut entries = vec![
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x4000, 0x7007),
+            (0x1008, 0xa007),
+            (0xa000, 0xb007),
+        ];
+        if two_mib {
+            entries.push((0xb000, 0x20_0087));
+        } else {
+            entries.extend([(0xb000, 0xc007), (0xc000, 0xd007), (0xc008, 0xe007)]);
+        }
+        for (address, value) in entries {
+            memory
+                .store_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        memory
+    }
+
+    /// The data frames of the multi-level test (both 4 KiB pages, or the first 8 KiB of the 2 MiB page).
+    fn c2a_data_bytes(memory: &crate::PhysicalMemory, two_mib: bool) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x2000];
+        if two_mib {
+            memory
+                .load_bytes(GuestPhysicalAddress::new(0x20_0000), &mut bytes)
+                .unwrap();
+        } else {
+            memory
+                .load_bytes(GuestPhysicalAddress::new(0xd000), &mut bytes[..0x1000])
+                .unwrap();
+            memory
+                .load_bytes(GuestPhysicalAddress::new(0xe000), &mut bytes[0x1000..])
+                .unwrap();
+        }
+        bytes
+    }
+
+    /// ADR-0023 slice C2a-3 item 2 (Vol. 3A §4.6, "Event 14"): a `Neutral` form at CPL3 faults when
+    /// any paging level of its data or stack operand lacks U (a user access) or R/W (a user write,
+    /// whatever CR0.WP): `#PF` with P = 1, U = 1 and W of the access at the faulting linear address,
+    /// no retire, no change of the data. A user read of a page whose path lacks R/W runs.
+    #[test]
+    fn cpl3_neutral_forms_fault_when_any_paging_level_lacks_user_or_write() {
+        use od_isa::Register::{Rax, Rcx, Rdi, Rsi, Rsp};
+        use od_isa::execute::{ControlRegisterPolicy, Cpl0ProfileSetExit, GuestFpState};
+        use od_isa::memory::ArchitecturalFault;
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Kind {
+            Read,
+            Write,
+            /// A read of the source, then a write of the destination (MOVSQ).
+            ReadThenWrite,
+        }
+        let base = C2A_DATA;
+        // (bytes, kind, RDI, RSI, RCX); RSP = base + 0x800.
+        let forms: &[(&str, &[u8], Kind, u64, u64, u64)] = &[
+            (
+                "mov rax, [rdi]",
+                &[0x48, 0x8b, 0x07],
+                Kind::Read,
+                base + 0x40,
+                0,
+                0,
+            ),
+            (
+                "mov [rdi], rax",
+                &[0x48, 0x89, 0x07],
+                Kind::Write,
+                base + 0x40,
+                0,
+                0,
+            ),
+            // A form the old allow-list read with write intent (`cpl3_write_intent_rmw_destination`):
+            // the user-bit fault carries W = 1 (plan question V3).
+            (
+                "add [rdi], eax",
+                &[0x01, 0x07],
+                Kind::Write,
+                base + 0x40,
+                0,
+                0,
+            ),
+            (
+                "lock xadd [rdi], eax",
+                &[0xf0, 0x0f, 0xc1, 0x07],
+                Kind::Write,
+                base + 0x40,
+                0,
+                0,
+            ),
+            (
+                "lock xadd [rdi], eax (split)",
+                &[0xf0, 0x0f, 0xc1, 0x07],
+                Kind::Write,
+                base + 0xffe,
+                0,
+                0,
+            ),
+            ("push rax", &[0x50], Kind::Write, 0, 0, 0),
+            ("call rel32", &[0xe8, 0, 0, 0, 0], Kind::Write, 0, 0, 0),
+            (
+                "movsq",
+                &[0x48, 0xa5],
+                Kind::ReadThenWrite,
+                base + 0x1100,
+                base + 0x100,
+                0,
+            ),
+            (
+                "rep stosq",
+                &[0xf3, 0x48, 0xab],
+                Kind::Write,
+                base + 0x200,
+                0,
+                2,
+            ),
+            (
+                "rep stosw",
+                &[0xf3, 0x66, 0xab],
+                Kind::Write,
+                base + 0x200,
+                0,
+                2,
+            ),
+            (
+                "movups [rdi], xmm0",
+                &[0x0f, 0x11, 0x07],
+                Kind::Write,
+                base + 0x400,
+                0,
+                0,
+            ),
+            (
+                "fxsave [rdi]",
+                &[0x0f, 0xae, 0x07],
+                Kind::Write,
+                base + 0x400,
+                0,
+                0,
+            ),
+            // `fstp qword [rdi]` of the plan (`DD 1F`) is not decoded; its `[RAX]` form `DD 18` is
+            // `NotAtCpl3` (the set does not run it: the bare x87 forms refuse the represented FCS/FDS
+            // of the cell). FNSTCW is the x87 store the set runs.
+            (
+                "fnstcw [rdi]",
+                &[0xd9, 0x3f],
+                Kind::Write,
+                base + 0x400,
+                0,
+                0,
+            ),
+        ];
+        let mut failures = Vec::new();
+        for two_mib in [false, true] {
+            let levels: &[(&str, &[u64])] = if two_mib {
+                &[
+                    ("PML4E", &[0x1008]),
+                    ("PDPTE", &[0xa000]),
+                    ("PDE (2 MiB leaf)", &[0xb000]),
+                ]
+            } else {
+                &[
+                    ("PML4E", &[0x1008]),
+                    ("PDPTE", &[0xa000]),
+                    ("PDE", &[0xb000]),
+                    ("PTE", &[0xc000, 0xc008]),
+                ]
+            };
+            for &(level, entries) in levels {
+                for (clear, lacking) in [(4u64, "U"), (2, "R/W")] {
+                    for &(name, code, kind, rdi, rsi, rcx) in forms {
+                        let memory = c2a_rights_memory(two_mib);
+                        memory
+                            .store_bytes(GuestPhysicalAddress::new(0x7000), code, |_| {})
+                            .unwrap();
+                        for &entry in entries {
+                            let at = GuestPhysicalAddress::new(entry);
+                            let value = memory.load_u64(at).unwrap();
+                            memory.store_u64(at, value & !clear, |_| {}).unwrap();
+                        }
+                        let data_before = c2a_data_bytes(&memory, two_mib);
+                        let mut state = active_cpl3_lock_state();
+                        state.rflags = 0x202;
+                        state.cr4 = Some(0x620);
+                        state.gpr[Rsp as usize] = base + 0x800;
+                        state.gpr[Rdi as usize] = rdi;
+                        state.gpr[Rsi as usize] = rsi;
+                        state.gpr[Rcx as usize] = rcx;
+                        state.gpr[Rax as usize] = 0x1122_3344_5566_7788;
+                        let before = state.clone();
+                        let fp = std::cell::RefCell::new(GuestFpState::initial());
+                        let result = {
+                            let mut note = |_| {};
+                            let mut adapter = set_loop_adapter(
+                                &memory,
+                                None,
+                                Long64ProbeConfig::new(CR0, ROOT, 0x620, EFER).unwrap(),
+                                0x0040_0000,
+                                &mut note,
+                                None,
+                                None,
+                            );
+                            let set = Cpl0ProfileSet::new(ControlRegisterPolicy::Cpl0BaseLong64V1)
+                                .with_cpuid(&od_isa::cpuid::CpuidProfile::OdX8664V2Windows)
+                                .with_fp_state(&fp);
+                            run_with_cpl3_profile_set(
+                                &mut state,
+                                &mut adapter,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: None,
+                                    context: user_context(),
+                                },
+                                od_isa::INTEGER_FLAGS,
+                                &set,
+                                None,
+                                || false,
+                            )
+                        };
+                        let stack_write = base + 0x800 - 8;
+                        let (read_at, write_at) = match kind {
+                            Kind::Read => (Some(rdi), None),
+                            Kind::Write if rdi == 0 => (None, Some(stack_write)),
+                            Kind::Write => (None, Some(rdi)),
+                            Kind::ReadThenWrite => (Some(rsi), Some(rdi)),
+                        };
+                        // The split `LOCK XADD` crosses into the second data page: without the split-lock gate
+                        // of the board loop the adapter reads the operand first (at CPL0 too), so a missing U
+                        // is the #PF of that read (W = 0); the aligned form takes the write walk (W = 1).
+                        let split = name.ends_with("(split)");
+                        let expected = match (lacking, read_at, write_at) {
+                            ("U", Some(read), _) => Some((5, read)),
+                            ("U", None, Some(write)) if split => Some((5, write)),
+                            ("U", None, Some(write)) => Some((7, write)),
+                            ("R/W", _, Some(write)) => Some((7, write)),
+                            _ => None,
+                        };
+                        let label = format!(
+                            "{} {level} without {lacking}: {name}",
+                            if two_mib { "2 MiB" } else { "4 KiB" }
+                        );
+                        let ok = match (expected, &result) {
+                            (Some((error_code, address)), Ok(result)) => {
+                                result.exit
+                                    == Cpl0ProfileSetExit::Run(RunExit::Fault(ArchitecturalFault {
+                                        vector: 14,
+                                        error_code: Some(error_code),
+                                        linear_address: Some(address),
+                                    }))
+                                    && result.instructions_executed == 0
+                                    && state == before
+                                    && c2a_data_bytes(&memory, two_mib) == data_before
+                            }
+                            (None, Ok(result)) => {
+                                result.instructions_executed == 1
+                                    && result.exit
+                                        == Cpl0ProfileSetExit::Run(
+                                            RunExit::InstructionBudgetExhausted,
+                                        )
+                            }
+                            _ => false,
+                        };
+                        if !ok {
+                            failures
+                                .push(format!("{label}: expected {expected:x?}, got {result:x?}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
         );
     }
 }

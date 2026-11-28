@@ -72,7 +72,26 @@ const INTENTIONAL_ENCODINGS: &[(&str, &str, fn(&[u8]) -> bool)] = &[
 /// The groups C1 changes on purpose as a whole (plan C1-0 item 6): a group name starts with one of
 /// these prefixes; its comparison is skipped and printed. Empty on G0; an entry needs its reason in
 /// the slice report.
-const INTENTIONAL_GROUPS: &[(&str, &str)] = &[];
+const INTENTIONAL_GROUPS: &[(&str, &str)] = &[(
+    // Every encoding of this group is a `67 E8 rel32` (56 of the sweep).
+    "P E8 [67]",
+    "ADR-0023, решение 1 (C2a): `Neutral` исполняется одинаково на всех CPL набора. `67h` не меняет `CALL rel32` в 64-битном режиме. Адресный размер действует только на операнды памяти и неявные rCX/rSI/rDI; размер стека задаёт режим (SDM Vol. 1 §3.6.1, Vol. 2A CALL). До C2a форма исполнялась только на CPL3 (наследие S6-38, ISSUE-727)",
+)];
+
+/// Encodings changed on purpose inside a group that stays compared: in the fold of the group their
+/// digests of G0 (`work/s7-32/c1/base/cpl0-outcomes.txt`, the expanded outcomes written on G0, variants
+/// v0..v3) stand in for the digests of the current code, so every other encoding of the group is still
+/// compared with G0. ADR-0023 slice C2a: `67 E8 11 11 11 11` of the group `P 67 []` (`67` as the opcode
+/// byte of the sweep candidate) — ADR-0023, решение 1 (C2a): `Neutral` исполняется одинаково на всех CPL набора. `67h` не меняет `CALL rel32` в 64-битном режиме. Адресный размер действует только на операнды памяти и неявные rCX/rSI/rDI; размер стека задаёт режим (SDM Vol. 1 §3.6.1, Vol. 2A CALL). До C2a форма исполнялась только на CPL3 (наследие S6-38, ISSUE-727).
+const G0_DIGESTS_OF_CHANGED_ENCODINGS: &[(&str, [u64; 4])] = &[(
+    "67e811111111",
+    [
+        0x6fd5_cf51_933f_9391,
+        0xdc78_88fc_5f36_0659,
+        0xe7ff_3700_0cfd_0bb0,
+        0xdb16_6e0d_1e4a_88c8,
+    ],
+)];
 
 /// `(opcode, ModRM, REX.R)` of a two-byte-map (`0F xx`, not `0F 38`/`0F 3A`) encoding after its
 /// legacy prefixes and REX; `None` for any other encoding.
@@ -204,7 +223,11 @@ fn group_digest(outcomes: &[(Vec<u8>, EncodingOutcome)]) -> (usize, u64) {
             continue;
         }
         count += 1;
-        for digest in outcome.digests {
+        let digests = G0_DIGESTS_OF_CHANGED_ENCODINGS
+            .iter()
+            .find(|(encoding, _)| *encoding == hex(bytes))
+            .map_or(outcome.digests, |(_, g0)| *g0);
+        for digest in digests {
             hash = fnv1a(hash, &digest.to_le_bytes());
         }
     }

@@ -1,0 +1,3669 @@
+{
+  "command": "decode-coverage",
+  "distinct_forms": 133,
+  "exec": {
+    "call_targets_outside_pdata": 3740,
+    "cpl": 3,
+    "decoded": 3253599,
+    "distinct": 544818,
+    "exec_single_fault": [
+      {
+        "count": 2001,
+        "example": "ntdll.dll+0x160935 cd2e",
+        "faults": {
+          "13": 4002
+        },
+        "files": 5,
+        "form": "CD",
+        "operation": "SoftwareInterrupt",
+        "top_files": [
+          "win32u.dll:1499",
+          "ntdll.dll:494",
+          "rpcrt4.dll:4",
+          "user32.dll:3",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 660,
+        "example": "advapi32.dll+0x1514a 0f2970a8",
+        "faults": {
+          "13": 1320
+        },
+        "files": 15,
+        "form": "0F 29 mem",
+        "operation": "MovapsStoreMemory",
+        "top_files": [
+          "ucrtbase.dll:360",
+          "combase.dll:72",
+          "ntdll.dll:39",
+          "user32.dll:38",
+          "kernel32.dll:27",
+          "gdi32full.dll:24"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 244,
+        "example": "advapi32.dll+0x4b853 0f280516240400",
+        "faults": {
+          "13": 488
+        },
+        "files": 13,
+        "form": "0F 28 mem",
+        "operation": "MovapsLoadMemory",
+        "top_files": [
+          "rpcrt4.dll:94",
+          "combase.dll:32",
+          "gdi32full.dll:30",
+          "ntdll.dll:19",
+          "kernel32.dll:17",
+          "services.exe:16"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 238,
+        "example": "gdi32full.dll+0x6aa5f 0f5735caaa0500",
+        "faults": {
+          "13": 476
+        },
+        "files": 7,
+        "form": "0F 57 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ucrtbase.dll:177",
+          "msvcrt.dll:39",
+          "ntdll.dll:16",
+          "wininit.exe:3",
+          "KernelBase.dll:1",
+          "gdi32full.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 153,
+        "example": "combase.dll+0xb145 660f7f45e7",
+        "faults": {
+          "13": 306
+        },
+        "files": 16,
+        "form": "66 0F 7F mem",
+        "operation": "Sse128MemoryMove",
+        "top_files": [
+          "combase.dll:57",
+          "KernelBase.dll:42",
+          "ucrtbase.dll:13",
+          "user32.dll:9",
+          "ntdll.dll:5",
+          "wininit.exe:5"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 152,
+        "example": "advapi32.dll+0x28535 f7f9",
+        "faults": {
+          "0": 304
+        },
+        "files": 15,
+        "form": "F7 /7 reg",
+        "operation": "Divide",
+        "top_files": [
+          "user32.dll:53",
+          "ucrtbase.dll:26",
+          "gdi32full.dll:21",
+          "KernelBase.dll:10",
+          "kernel32.dll:10",
+          "ntdll.dll:9"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 138,
+        "example": "advapi32.dll+0x3fe70 48894c0468",
+        "faults": {
+          "12": 276
+        },
+        "files": 23,
+        "form": "REX.W 89 mem",
+        "operation": "Mov",
+        "top_files": [
+          "KernelBase.dll:30",
+          "ntdll.dll:21",
+          "services.exe:11",
+          "ucrtbase.dll:11",
+          "msvcrt.dll:10",
+          "kernel32.dll:9"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 99,
+        "example": "advapi32.dll+0x1530f 0f2875d7",
+        "faults": {
+          "13": 198
+        },
+        "files": 11,
+        "form": "0F 28 mem",
+        "operation": "Sse128MemoryMove",
+        "top_files": [
+          "combase.dll:22",
+          "ntdll.dll:18",
+          "user32.dll:16",
+          "ucrtbase.dll:15",
+          "gdi32full.dll:8",
+          "KernelBase.dll:7"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 73,
+        "example": "combase.dll+0xe8945 660f6f05c30b1e00",
+        "faults": {
+          "13": 146
+        },
+        "files": 12,
+        "form": "66 0F 6F mem",
+        "operation": "MovdqaLoadMemory",
+        "top_files": [
+          "kernel32.dll:12",
+          "ntdll.dll:12",
+          "gdi32full.dll:11",
+          "ucrtbase.dll:10",
+          "KernelBase.dll:9",
+          "combase.dll:8"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 67,
+        "example": "advapi32.dll+0x3381c f7f1",
+        "faults": {
+          "0": 134
+        },
+        "files": 14,
+        "form": "F7 /6 reg",
+        "operation": "Divide",
+        "top_files": [
+          "ntdll.dll:17",
+          "combase.dll:11",
+          "gdi32full.dll:8",
+          "user32.dll:8",
+          "KernelBase.dll:5",
+          "rpcrt4.dll:5"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 64,
+        "example": "advapi32.dll+0x1d4bc 664489640420",
+        "faults": {
+          "12": 128
+        },
+        "files": 12,
+        "form": "66 89 mem",
+        "operation": "Mov",
+        "top_files": [
+          "KernelBase.dll:16",
+          "ntdll.dll:15",
+          "ucrtbase.dll:12",
+          "user32.dll:6",
+          "combase.dll:5",
+          "advapi32.dll:2"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 49,
+        "example": "combase.dll+0x11a51b 488b7cc420",
+        "faults": {
+          "12": 98
+        },
+        "files": 8,
+        "form": "REX.W 8B mem",
+        "operation": "Mov",
+        "top_files": [
+          "ntdll.dll:13",
+          "msvcrt.dll:11",
+          "services.exe:10",
+          "ucrtbase.dll:10",
+          "combase.dll:2",
+          "kernel32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 47,
+        "example": "combase.dll+0x56533 48f7fb",
+        "faults": {
+          "0": 94
+        },
+        "files": 8,
+        "form": "REX.W F7 /7 reg",
+        "operation": "Divide",
+        "top_files": [
+          "ntdll.dll:19",
+          "ucrtbase.dll:9",
+          "user32.dll:6",
+          "KernelBase.dll:5",
+          "combase.dll:3",
+          "rpcrt4.dll:3"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 43,
+        "example": "combase.dll+0x38514 8944bc70",
+        "faults": {
+          "12": 86
+        },
+        "files": 12,
+        "form": "89 mem",
+        "operation": "Mov",
+        "top_files": [
+          "user32.dll:14",
+          "KernelBase.dll:6",
+          "ntdll.dll:5",
+          "ucrtbase.dll:4",
+          "msvcrt.dll:3",
+          "winlogon.exe:3"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 43,
+        "example": "advapi32.dll+0x167fb 8b7c0450",
+        "faults": {
+          "12": 86
+        },
+        "files": 12,
+        "form": "8B mem",
+        "operation": "Mov",
+        "top_files": [
+          "ntdll.dll:12",
+          "ucrtbase.dll:9",
+          "msvcrt.dll:5",
+          "advapi32.dll:3",
+          "csrsrv.dll:3",
+          "gdi32full.dll:3"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 40,
+        "example": "gdi32full.dll+0x2363d 48f7f1",
+        "faults": {
+          "0": 80
+        },
+        "files": 11,
+        "form": "REX.W F7 /6 reg",
+        "operation": "Divide",
+        "top_files": [
+          "KernelBase.dll:11",
+          "gdi32full.dll:5",
+          "ntdll.dll:4",
+          "msvcrt.dll:3",
+          "services.exe:3",
+          "setup.exe:3"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 34,
+        "example": "KernelBase.dll+0xd4406 4488bc1cac000000",
+        "faults": {
+          "12": 68
+        },
+        "files": 7,
+        "form": "88 mem",
+        "operation": "Mov",
+        "top_files": [
+          "msvcrt.dll:13",
+          "ntdll.dll:8",
+          "ucrtbase.dll:6",
+          "winlogon.exe:3",
+          "KernelBase.dll:2",
+          "services.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 32,
+        "example": "combase.dll+0x261d09 00a41c2600b11c",
+        "faults": {
+          "12": 64
+        },
+        "files": 7,
+        "form": "00 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "KernelBase.dll:14",
+          "rpcrt4.dll:6",
+          "ucrtbase.dll:6",
+          "user32.dll:3",
+          "combase.dll:1",
+          "gdi32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 25,
+        "example": "combase.dll+0xab123 440fb6445c20",
+        "faults": {
+          "12": 50
+        },
+        "files": 7,
+        "form": "0F B6 mem",
+        "operation": "Extend",
+        "top_files": [
+          "combase.dll:9",
+          "gdi32full.dll:6",
+          "KernelBase.dll:3",
+          "rpcrt4.dll:3",
+          "ucrtbase.dll:2",
+          "msvcrt.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 24,
+        "example": "advapi32.dll+0x1a798 fa",
+        "faults": {
+          "13": 48
+        },
+        "files": 6,
+        "form": "FA",
+        "operation": "Cli",
+        "top_files": [
+          "user32.dll:13",
+          "winlogon.exe:5",
+          "rpcrt4.dll:3",
+          "advapi32.dll:1",
+          "msvcrt.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 19,
+        "example": "msvcrt.dll+0x53c20 428a440430",
+        "faults": {
+          "12": 38
+        },
+        "files": 3,
+        "form": "8A mem",
+        "operation": "Mov",
+        "top_files": [
+          "msvcrt.dll:8",
+          "ucrtbase.dll:6",
+          "ntdll.dll:5"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 19,
+        "example": "msvcrt.dll+0x75eef 660fdb15c9460100",
+        "faults": {
+          "13": 38
+        },
+        "files": 4,
+        "form": "66 0F DB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ucrtbase.dll:11",
+          "msvcrt.dll:3",
+          "services.exe:3",
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 18,
+        "example": "msvcrt.dll+0x75f45 660feb15e3460100",
+        "faults": {
+          "13": 36
+        },
+        "files": 4,
+        "form": "66 0F EB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ucrtbase.dll:9",
+          "msvcrt.dll:4",
+          "services.exe:3",
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 18,
+        "example": "gdi32full.dll+0x15645 0f543dd4650b00",
+        "faults": {
+          "13": 36
+        },
+        "files": 5,
+        "form": "0F 54 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ucrtbase.dll:13",
+          "gdi32full.dll:2",
+          "kernel32.dll:1",
+          "msvcrt.dll:1",
+          "ntdll.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 17,
+        "example": "KernelBase.dll+0x38691 c644043000",
+        "faults": {
+          "12": 34
+        },
+        "files": 6,
+        "form": "C6 /0 mem",
+        "operation": "MovImmediate",
+        "top_files": [
+          "KernelBase.dll:4",
+          "msvcrt.dll:4",
+          "lsass.exe:3",
+          "ucrtbase.dll:3",
+          "ntdll.dll:2",
+          "services.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 16,
+        "example": "msvcrt.dll+0x3ce99 0fbe4c1450",
+        "faults": {
+          "12": 32
+        },
+        "files": 2,
+        "form": "0F BE mem",
+        "operation": "Extend",
+        "top_files": [
+          "msvcrt.dll:10",
+          "ntdll.dll:6"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 15,
+        "example": "gdi32full.dll+0x7e63 f3420f10449c44",
+        "faults": {
+          "12": 30
+        },
+        "files": 1,
+        "form": "F3 0F 10 mem",
+        "operation": "MovssLoadMemory",
+        "top_files": [
+          "gdi32full.dll:15"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 15,
+        "example": "msvcrt.dll+0x76043 660f540505450100",
+        "faults": {
+          "13": 30
+        },
+        "files": 4,
+        "form": "66 0F 54 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ucrtbase.dll:9",
+          "msvcrt.dll:2",
+          "ntdll.dll:2",
+          "services.exe:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 13,
+        "example": "gdi32full.dll+0x51a70 66837c4c205c",
+        "faults": {
+          "12": 26
+        },
+        "files": 5,
+        "form": "66 83 /7 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "winlogon.exe:7",
+          "KernelBase.dll:2",
+          "services.exe:2",
+          "gdi32full.dll:1",
+          "kernel32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 13,
+        "example": "advapi32.dll+0x1a7bd a1010037a1010037a1",
+        "faults": {
+          "13": 26
+        },
+        "files": 6,
+        "form": "A1",
+        "operation": "Mov",
+        "top_files": [
+          "KernelBase.dll:6",
+          "advapi32.dll:3",
+          "ntdll.dll:1",
+          "rpcrt4.dll:1",
+          "sechost.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 12,
+        "example": "advapi32.dll+0x1a7fc fb",
+        "faults": {
+          "13": 24
+        },
+        "files": 6,
+        "form": "FB",
+        "operation": "Sti",
+        "top_files": [
+          "user32.dll:7",
+          "advapi32.dll:1",
+          "kernel32.dll:1",
+          "ntdll.dll:1",
+          "wininit.exe:1",
+          "winlogon.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 11,
+        "example": "KernelBase.dll+0x7e009 48c78404a80f000008000200",
+        "faults": {
+          "12": 22
+        },
+        "files": 2,
+        "form": "REX.W C7 /0 mem",
+        "operation": "MovImmediate",
+        "top_files": [
+          "KernelBase.dll:9",
+          "ntdll.dll:2"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 10,
+        "example": "ucrtbase.dll+0xf675 f4",
+        "faults": {
+          "13": 20
+        },
+        "files": 2,
+        "form": "F4",
+        "operation": "Hlt",
+        "top_files": [
+          "user32.dll:7",
+          "ucrtbase.dll:3"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 10,
+        "example": "KernelBase.dll+0x11d9f0 a0d911004bd9110032",
+        "faults": {
+          "13": 20
+        },
+        "files": 4,
+        "form": "A0",
+        "operation": "Mov",
+        "top_files": [
+          "ucrtbase.dll:4",
+          "KernelBase.dll:3",
+          "rpcrt4.dll:2",
+          "user32.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 10,
+        "example": "ntdll.dll+0x1da64 65488b00",
+        "faults": {
+          "13": 20
+        },
+        "files": 1,
+        "form": "GS REX.W 8B mem",
+        "operation": "MovGsLoad",
+        "top_files": [
+          "ntdll.dll:10"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 10,
+        "example": "ucrtbase.dll+0xa8262 660f281da6ee0500",
+        "faults": {
+          "13": 20
+        },
+        "files": 1,
+        "form": "66 0F 28 mem",
+        "operation": "Sse128MemoryMove",
+        "top_files": [
+          "ucrtbase.dll:10"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 10,
+        "example": "gdi32full.dll+0x7e6a f3420f58449c40",
+        "faults": {
+          "12": 20
+        },
+        "files": 1,
+        "form": "F3 0F 58 mem",
+        "operation": "SseFpArith",
+        "top_files": [
+          "gdi32full.dll:10"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 9,
+        "example": "msvcrt.dll+0x4d0d3 46397cb450",
+        "faults": {
+          "12": 18
+        },
+        "files": 3,
+        "form": "39 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "rpcrt4.dll:6",
+          "msvcrt.dll:2",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 8,
+        "example": "gdi32full.dll+0x5bbd 0fb7845450010000",
+        "faults": {
+          "12": 16
+        },
+        "files": 4,
+        "form": "0F B7 mem",
+        "operation": "Extend",
+        "top_files": [
+          "gdi32full.dll:3",
+          "KernelBase.dll:2",
+          "ntdll.dll:2",
+          "user32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 8,
+        "example": "advapi32.dll+0x1a799 a20100d0a40100af9c",
+        "faults": {
+          "13": 16
+        },
+        "files": 4,
+        "form": "A2",
+        "operation": "Mov",
+        "top_files": [
+          "rpcrt4.dll:3",
+          "ucrtbase.dll:3",
+          "KernelBase.dll:1",
+          "advapi32.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 8,
+        "example": "combase.dll+0x81011 c74444405c005c00",
+        "faults": {
+          "12": 16
+        },
+        "files": 3,
+        "form": "C7 /0 mem",
+        "operation": "MovImmediate",
+        "top_files": [
+          "ntdll.dll:5",
+          "rpcrt4.dll:2",
+          "combase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 7,
+        "example": "KernelBase.dll+0x9248c 6639b44410010000",
+        "faults": {
+          "12": 14
+        },
+        "files": 3,
+        "form": "66 39 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "user32.dll:3",
+          "KernelBase.dll:2",
+          "setup.exe:2"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 7,
+        "example": "KernelBase.dll+0x1a1ce6 a3181a0083181a00bd",
+        "faults": {
+          "13": 14
+        },
+        "files": 4,
+        "form": "A3",
+        "operation": "Mov",
+        "top_files": [
+          "KernelBase.dll:2",
+          "rpcrt4.dll:2",
+          "ucrtbase.dll:2",
+          "wininit.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 7,
+        "example": "msvcrt.dll+0x76346 660ffa2d72430100",
+        "faults": {
+          "13": 14
+        },
+        "files": 4,
+        "form": "66 0F FA mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ucrtbase.dll:4",
+          "msvcrt.dll:1",
+          "ntdll.dll:1",
+          "services.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 7,
+        "example": "msvcrt.dll+0x75edf 660ffb1de9460100",
+        "faults": {
+          "13": 14
+        },
+        "files": 4,
+        "form": "66 0F FB mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ucrtbase.dll:3",
+          "msvcrt.dll:2",
+          "ntdll.dll:1",
+          "services.exe:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 6,
+        "example": "ntdll.dll+0x59fb3 66443b444c30",
+        "faults": {
+          "12": 12
+        },
+        "files": 4,
+        "form": "66 3B mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ntdll.dll:2",
+          "setup.exe:2",
+          "wininit.exe:1",
+          "winlogon.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 6,
+        "example": "msvcrt.dll+0x62b64 84540430",
+        "faults": {
+          "12": 12
+        },
+        "files": 2,
+        "form": "84 mem",
+        "operation": "Logic",
+        "top_files": [
+          "msvcrt.dll:3",
+          "ntdll.dll:3"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 5,
+        "example": "KernelBase.dll+0xc63cd 010404",
+        "faults": {
+          "12": 10
+        },
+        "files": 3,
+        "form": "01 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "rpcrt4.dll:3",
+          "KernelBase.dll:1",
+          "ntdll.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 5,
+        "example": "KernelBase.dll+0xc379d 48635c8420",
+        "faults": {
+          "12": 10
+        },
+        "files": 3,
+        "form": "REX.W 63 mem",
+        "operation": "Extend",
+        "top_files": [
+          "KernelBase.dll:2",
+          "msvcrt.dll:2",
+          "ntdll.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 5,
+        "example": "gdi32full.dll+0x45396 488364c42000",
+        "faults": {
+          "12": 10
+        },
+        "files": 3,
+        "form": "REX.W 83 /4 mem",
+        "operation": "Logic",
+        "top_files": [
+          "rpcrt4.dll:3",
+          "gdi32full.dll:1",
+          "winlogon.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 5,
+        "example": "kernel32.dll+0x84a00 65488b04cd80140000",
+        "faults": {
+          "13": 10
+        },
+        "files": 3,
+        "form": "GS REX.W 8B mem",
+        "operation": "MovGsLoadQ",
+        "top_files": [
+          "ntdll.dll:3",
+          "KernelBase.dll:1",
+          "kernel32.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 5,
+        "example": "ucrtbase.dll+0xaa042 660f591dd60f0600",
+        "faults": {
+          "13": 10
+        },
+        "files": 1,
+        "form": "66 0F 59 mem",
+        "operation": "SseFpArith",
+        "top_files": [
+          "ucrtbase.dll:5"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 4,
+        "example": "gdi32full.dll+0x75cb 3b4cb430",
+        "faults": {
+          "12": 8
+        },
+        "files": 4,
+        "form": "3B mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "gdi32full.dll:1",
+          "ntdll.dll:1",
+          "services.exe:1",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 4,
+        "example": "gdi32full.dll+0x54946 83bc14a000000010",
+        "faults": {
+          "12": 8
+        },
+        "files": 3,
+        "form": "83 /7 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ntdll.dll:2",
+          "gdi32full.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 4,
+        "example": "ntdll.dll+0x9a74a 0f1144c468",
+        "faults": {
+          "12": 8
+        },
+        "files": 2,
+        "form": "0F 11 mem",
+        "operation": "MovupsStoreMemory",
+        "top_files": [
+          "ntdll.dll:3",
+          "lsass.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 4,
+        "example": "msvcrt.dll+0x62097 660f740541400200",
+        "faults": {
+          "13": 8
+        },
+        "files": 2,
+        "form": "66 0F 74 mem",
+        "operation": "PcmpeqbMemory",
+        "top_files": [
+          "ucrtbase.dll:3",
+          "msvcrt.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 4,
+        "example": "msvcrt.dll+0x7623e 660f5605fa640100",
+        "faults": {
+          "13": 8
+        },
+        "files": 3,
+        "form": "66 0F 56 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ucrtbase.dll:2",
+          "msvcrt.dll:1",
+          "ntdll.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 3,
+        "example": "ntdll.dll+0x3aafa 4883bcc44002000000",
+        "faults": {
+          "12": 6
+        },
+        "files": 3,
+        "form": "REX.W 83 /7 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ntdll.dll:1",
+          "rpcrt4.dll:1",
+          "smss.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 3,
+        "example": "kernel32.dll+0x845c5 658b09",
+        "faults": {
+          "13": 6
+        },
+        "files": 2,
+        "form": "GS 8B mem",
+        "operation": "MovGsLoadD",
+        "top_files": [
+          "kernel32.dll:2",
+          "KernelBase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 3,
+        "example": "ucrtbase.dll+0x6cc85 660f7505b3440900",
+        "faults": {
+          "13": 6
+        },
+        "files": 1,
+        "form": "66 0F 75 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ucrtbase.dll:3"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "rpcrt4.dll+0x18555 030404",
+        "faults": {
+          "12": 4
+        },
+        "files": 2,
+        "form": "03 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "rpcrt4.dll:1",
+          "user32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 2,
+        "example": "KernelBase.dll+0x9cf8c 483b4cc438",
+        "faults": {
+          "12": 4
+        },
+        "files": 1,
+        "form": "REX.W 3B mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "KernelBase.dll:2"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 2,
+        "example": "ucrtbase.dll+0x176ca 48f7742428",
+        "faults": {
+          "0": 4
+        },
+        "files": 1,
+        "form": "REX.W F7 /6 mem",
+        "operation": "Divide",
+        "top_files": [
+          "ucrtbase.dll:2"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 2,
+        "example": "KernelBase.dll+0x1a4e92 09840c0009840c",
+        "faults": {
+          "12": 4
+        },
+        "files": 1,
+        "form": "09 mem",
+        "operation": "Logic",
+        "top_files": [
+          "KernelBase.dll:2"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x110690 440a440430",
+        "faults": {
+          "12": 4
+        },
+        "files": 2,
+        "form": "0A mem",
+        "operation": "Logic",
+        "top_files": [
+          "ntdll.dll:1",
+          "rpcrt4.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 2,
+        "example": "KernelBase.dll+0x107ade 0f1044c428",
+        "faults": {
+          "12": 4
+        },
+        "files": 2,
+        "form": "0F 10 mem",
+        "operation": "MovupsLoadMemory",
+        "top_files": [
+          "KernelBase.dll:1",
+          "ntdll.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x158bba 660f6225cef70100",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 62 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x158c0f 660ff515393e0400",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F F5 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x158bff 660ff60d89f70100",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F F6 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "gdi32full.dll+0x3c515 0f580d644d0b00",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "0F 58 mem",
+        "operation": "SseFpArith",
+        "top_files": [
+          "gdi32full.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ucrtbase.dll+0xa979f 0f5c25bae00500",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "0F 5C mem",
+        "operation": "SseFpArith",
+        "top_files": [
+          "ucrtbase.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ucrtbase.dll+0xa8639 660f581d1fec0500",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 58 mem",
+        "operation": "SseFpArith",
+        "top_files": [
+          "ucrtbase.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x158be9 660f3804157e3e0400",
+        "faults": {
+          "13": 4
+        },
+        "files": 1,
+        "form": "66 0F 38 04 mem",
+        "operation": "Ssse3Int",
+        "top_files": [
+          "ntdll.dll:2"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "KernelBase.dll+0x1a037c 65031a",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "GS 03 mem",
+        "operation": "AddGsLoad",
+        "top_files": [
+          "KernelBase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "rpcrt4.dll+0xe030 020404",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "02 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "ntdll.dll+0x470f0 196c0400",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "19 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ntdll.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "KernelBase.dll+0x40dec 2a0c04",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "2A mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "KernelBase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "wininit.exe+0x56df9 40387c045f",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "38 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "wininit.exe:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "ntdll.dll+0x340d0 66ff448462",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "66 FF /0 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ntdll.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0x1f8d 807c042f00",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "80 /7 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "KernelBase.dll+0xc4d5c 817c045021444142",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "81 /7 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "KernelBase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "kernel32.dll+0x7bdf5 4a397c1448",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "REX.W 39 mem",
+        "operation": "Arithmetic",
+        "top_files": [
+          "kernel32.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "advapi32.dll+0x3175 48f77c2438",
+        "faults": {
+          "0": 2
+        },
+        "files": 1,
+        "form": "REX.W F7 /7 mem",
+        "operation": "Divide",
+        "top_files": [
+          "advapi32.dll:1"
+        ],
+        "vector": 0
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0x42638 69240400d52504",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "69 mem",
+        "operation": "ImulImmediate",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xf5268 0f00d7",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "0F 00 /2 reg",
+        "operation": "LoadLdt",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xf5280 0f0013",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "0F 00 /2 mem",
+        "operation": "LoadLdtMemory",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0x40750 330404",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "33 mem",
+        "operation": "Logic",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "gdi32full.dll+0xa90b9 804c043001",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "80 /1 mem",
+        "operation": "Logic",
+        "top_files": [
+          "gdi32full.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "rpcrt4.dll+0x9dfbc 4283640c4800",
+        "faults": {
+          "12": 2
+        },
+        "files": 1,
+        "form": "83 /4 mem",
+        "operation": "Logic",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "vector": 12
+      },
+      {
+        "count": 1,
+        "example": "ntdll.dll+0x1097d1 0f33",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "0F 33",
+        "operation": "Rdpmc",
+        "top_files": [
+          "ntdll.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "kernel32.dll+0x68ec6 660fd40502610300",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F D4 mem",
+        "operation": "Sse2Int",
+        "top_files": [
+          "kernel32.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xaceae 660f57054af00500",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "66 0F 57 mem",
+        "operation": "SseLogicPermute",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "vector": 13
+      },
+      {
+        "count": 1,
+        "example": "user32.dll+0xb0048 48fb",
+        "faults": {
+          "13": 2
+        },
+        "files": 1,
+        "form": "REX.W FB",
+        "operation": "Sti",
+        "top_files": [
+          "user32.dll:1"
+        ],
+        "vector": 13
+      }
+    ],
+    "extra_decoder_refusals": [
+      {
+        "count": 22,
+        "form": "C5 (VEX/EVEX)"
+      },
+      {
+        "count": 12,
+        "form": "C4 (VEX/EVEX)"
+      },
+      {
+        "count": 1,
+        "form": "REX.W 0F C7 /6 reg"
+      }
+    ],
+    "extra_instructions": 37606,
+    "families": [
+      {
+        "count": 15,
+        "distinct": 1,
+        "example": "advapi32.dll+0x1a7b4 ee",
+        "faults": {},
+        "files": 6,
+        "operation": "OutDxAl",
+        "top_files": [
+          "advapi32.dll:5",
+          "rpcrt4.dll:3",
+          "ucrtbase.dll:3",
+          "ntdll.dll:2",
+          "KernelBase.dll:1",
+          "combase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 8,
+        "distinct": 1,
+        "example": "combase.dll+0x6f1ad ed",
+        "faults": {},
+        "files": 6,
+        "operation": "InDx",
+        "top_files": [
+          "combase.dll:3",
+          "KernelBase.dll:1",
+          "kernel32.dll:1",
+          "ucrtbase.dll:1",
+          "user32.dll:1",
+          "winlogon.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "distinct": 5,
+        "example": "gdi32full.dll+0x4b288 e4b1",
+        "faults": {},
+        "files": 3,
+        "operation": "InAlImm8",
+        "top_files": [
+          "ucrtbase.dll:3",
+          "gdi32full.dll:2",
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "distinct": 6,
+        "example": "gdi32full.dll+0x4c734 e6c6",
+        "faults": {},
+        "files": 5,
+        "operation": "OutImm8Al",
+        "top_files": [
+          "gdi32full.dll:2",
+          "rpcrt4.dll:1",
+          "sechost.dll:1",
+          "ucrtbase.dll:1",
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 4,
+        "distinct": 4,
+        "example": "ntdll.dll+0x17f18 2e7a01",
+        "faults": {},
+        "files": 3,
+        "operation": "Branch",
+        "top_files": [
+          "rpcrt4.dll:2",
+          "ntdll.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "distinct": 3,
+        "example": "gdi32full.dll+0x197b8 df8b0100b38b",
+        "faults": {},
+        "files": 2,
+        "operation": "FisttpMemory",
+        "top_files": [
+          "gdi32full.dll:2",
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 2,
+        "example": "rpcrt4.dll+0x978d 8e00",
+        "faults": {},
+        "files": 2,
+        "operation": "MovToSreg",
+        "top_files": [
+          "rpcrt4.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "rpcrt4.dll+0xdfd5 df00",
+        "faults": {},
+        "files": 2,
+        "operation": "FildM16IntRax",
+        "top_files": [
+          "rpcrt4.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "rpcrt4.dll+0xdfe1 dd00",
+        "faults": {},
+        "files": 1,
+        "operation": "FldM64FpRax",
+        "top_files": [
+          "rpcrt4.dll:2"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "combase.dll+0x6f1a1 ec",
+        "faults": {},
+        "files": 2,
+        "operation": "InAlDx",
+        "top_files": [
+          "combase.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "distinct": 1,
+        "example": "ucrtbase.dll+0x28384 ef",
+        "faults": {},
+        "files": 2,
+        "operation": "OutDx",
+        "top_files": [
+          "ucrtbase.dll:1",
+          "wininit.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "combase.dll+0xe3774 9d",
+        "faults": {},
+        "files": 1,
+        "operation": "PopFlags",
+        "top_files": [
+          "combase.dll:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "user32.dll+0xb0024 65fc",
+        "faults": {},
+        "files": 1,
+        "operation": "ClearDirectionFlag",
+        "top_files": [
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "rpcrt4.dll+0x1d18c dacd",
+        "faults": {},
+        "files": 1,
+        "operation": "Fcmove",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "combase.dll+0x6f188 dadf",
+        "faults": {},
+        "files": 1,
+        "operation": "Fcmovu",
+        "top_files": [
+          "combase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "user32.dll+0x3f5d8 dbf4",
+        "faults": {},
+        "files": 1,
+        "operation": "Fcomi",
+        "top_files": [
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "KernelBase.dll+0xdf638 dff4",
+        "faults": {},
+        "files": 1,
+        "operation": "Fcomip",
+        "top_files": [
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "ucrtbase.dll+0xa8b70 d9f8",
+        "faults": {},
+        "files": 1,
+        "operation": "Fprem",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "ucrtbase.dll+0xab040 d9f5",
+        "faults": {},
+        "files": 1,
+        "operation": "Fprem1",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "ucrtbase.dll+0xeab0 dee9",
+        "faults": {},
+        "files": 1,
+        "operation": "FsubpStSt0",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "distinct": 1,
+        "example": "rpcrt4.dll+0x1a4a4 65a4",
+        "faults": {},
+        "files": 1,
+        "operation": "Movs",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      }
+    ],
+    "forms": [
+      {
+        "count": 15,
+        "example": "advapi32.dll+0x1a7b4 ee",
+        "faults": {},
+        "files": 6,
+        "form": "EE",
+        "operation": "OutDxAl",
+        "top_files": [
+          "advapi32.dll:5",
+          "rpcrt4.dll:3",
+          "ucrtbase.dll:3",
+          "ntdll.dll:2",
+          "KernelBase.dll:1",
+          "combase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 8,
+        "example": "combase.dll+0x6f1ad ed",
+        "faults": {},
+        "files": 6,
+        "form": "ED",
+        "operation": "InDx",
+        "top_files": [
+          "combase.dll:3",
+          "KernelBase.dll:1",
+          "kernel32.dll:1",
+          "ucrtbase.dll:1",
+          "user32.dll:1",
+          "winlogon.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "example": "gdi32full.dll+0x4b288 e4b1",
+        "faults": {},
+        "files": 3,
+        "form": "E4",
+        "operation": "InAlImm8",
+        "top_files": [
+          "ucrtbase.dll:3",
+          "gdi32full.dll:2",
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 6,
+        "example": "gdi32full.dll+0x4c734 e6c6",
+        "faults": {},
+        "files": 5,
+        "form": "E6",
+        "operation": "OutImm8Al",
+        "top_files": [
+          "gdi32full.dll:2",
+          "rpcrt4.dll:1",
+          "sechost.dll:1",
+          "ucrtbase.dll:1",
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 3,
+        "example": "gdi32full.dll+0x197b8 df8b0100b38b",
+        "faults": {},
+        "files": 2,
+        "form": "DF /1 mem",
+        "operation": "FisttpMemory",
+        "top_files": [
+          "gdi32full.dll:2",
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "rpcrt4.dll+0x978d 8e00",
+        "faults": {},
+        "files": 2,
+        "form": "8E mem",
+        "operation": "MovToSreg",
+        "top_files": [
+          "rpcrt4.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 2,
+        "example": "ntdll.dll+0x17f18 2e7a01",
+        "faults": {},
+        "files": 2,
+        "form": "SEG 7A",
+        "operation": "Branch",
+        "top_files": [
+          "ntdll.dll:1",
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "rpcrt4.dll+0xdfd5 df00",
+        "faults": {},
+        "files": 2,
+        "form": "DF /0 mem",
+        "operation": "FildM16IntRax",
+        "top_files": [
+          "rpcrt4.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "rpcrt4.dll+0xdfe1 dd00",
+        "faults": {},
+        "files": 1,
+        "form": "DD /0 mem",
+        "operation": "FldM64FpRax",
+        "top_files": [
+          "rpcrt4.dll:2"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "combase.dll+0x6f1a1 ec",
+        "faults": {},
+        "files": 2,
+        "form": "EC",
+        "operation": "InAlDx",
+        "top_files": [
+          "combase.dll:1",
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 2,
+        "example": "ucrtbase.dll+0x28384 ef",
+        "faults": {},
+        "files": 2,
+        "form": "EF",
+        "operation": "OutDx",
+        "top_files": [
+          "ucrtbase.dll:1",
+          "wininit.exe:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "combase.dll+0xe3774 9d",
+        "faults": {},
+        "files": 1,
+        "form": "9D",
+        "operation": "PopFlags",
+        "top_files": [
+          "combase.dll:1"
+        ],
+        "verdict": "cond"
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0x17e98 657a01",
+        "faults": {},
+        "files": 1,
+        "form": "GS 7A",
+        "operation": "Branch",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "rpcrt4.dll+0x17ff8 4e7301",
+        "faults": {},
+        "files": 1,
+        "form": "REX.W 73",
+        "operation": "Branch",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "user32.dll+0xb0024 65fc",
+        "faults": {},
+        "files": 1,
+        "form": "GS FC",
+        "operation": "ClearDirectionFlag",
+        "top_files": [
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "rpcrt4.dll+0x1d18c dacd",
+        "faults": {},
+        "files": 1,
+        "form": "DA /1 reg",
+        "operation": "Fcmove",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "combase.dll+0x6f188 dadf",
+        "faults": {},
+        "files": 1,
+        "form": "DA /3 reg",
+        "operation": "Fcmovu",
+        "top_files": [
+          "combase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "user32.dll+0x3f5d8 dbf4",
+        "faults": {},
+        "files": 1,
+        "form": "DB /6 reg",
+        "operation": "Fcomi",
+        "top_files": [
+          "user32.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "KernelBase.dll+0xdf638 dff4",
+        "faults": {},
+        "files": 1,
+        "form": "DF /6 reg",
+        "operation": "Fcomip",
+        "top_files": [
+          "KernelBase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xa8b70 d9f8",
+        "faults": {},
+        "files": 1,
+        "form": "D9 /7 reg",
+        "operation": "Fprem",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xab040 d9f5",
+        "faults": {},
+        "files": 1,
+        "form": "D9 /6 reg",
+        "operation": "Fprem1",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "ucrtbase.dll+0xeab0 dee9",
+        "faults": {},
+        "files": 1,
+        "form": "DE /5 reg",
+        "operation": "FsubpStSt0",
+        "top_files": [
+          "ucrtbase.dll:1"
+        ],
+        "verdict": "never"
+      },
+      {
+        "count": 1,
+        "example": "rpcrt4.dll+0x1a4a4 65a4",
+        "faults": {},
+        "files": 1,
+        "form": "GS A4",
+        "operation": "Movs",
+        "top_files": [
+          "rpcrt4.dll:1"
+        ],
+        "verdict": "never"
+      }
+    ],
+    "msr_indexes": [],
+    "odd_widths": [],
+    "set": "windows",
+    "variants": 2,
+    "verdicts": {
+      "cond": 3,
+      "exec": 3253537,
+      "never": 59
+    }
+  },
+  "gaps": [
+    {
+      "count": 3507,
+      "example": "combase.dll+0xdab9d c5fe6f08",
+      "files": 7,
+      "form": "C5 (VEX/EVEX)",
+      "top_files": [
+        "ucrtbase.dll:3274",
+        "services.exe:124",
+        "ntdll.dll:64",
+        "msvcrt.dll:39",
+        "combase.dll:4",
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1125,
+      "example": "advapi32.dll+0x25eb0 c45a020033",
+      "files": 9,
+      "form": "C4 (VEX/EVEX)",
+      "top_files": [
+        "ucrtbase.dll:942",
+        "ntdll.dll:82",
+        "services.exe:60",
+        "msvcrt.dll:33",
+        "sechost.dll:3",
+        "rpcrt4.dll:2"
+      ]
+    },
+    {
+      "count": 1096,
+      "example": "combase.dll+0x6f1d7 07",
+      "files": 8,
+      "form": "07",
+      "top_files": [
+        "rpcrt4.dll:619",
+        "gdi32full.dll:164",
+        "ucrtbase.dll:127",
+        "combase.dll:95",
+        "KernelBase.dll:71",
+        "msvcrt.dll:10"
+      ]
+    },
+    {
+      "count": 647,
+      "example": "combase.dll+0x6682a 06",
+      "files": 9,
+      "form": "06",
+      "top_files": [
+        "rpcrt4.dll:522",
+        "ucrtbase.dll:44",
+        "msvcrt.dll:25",
+        "KernelBase.dll:17",
+        "combase.dll:17",
+        "ntdll.dll:12"
+      ]
+    },
+    {
+      "count": 59,
+      "example": "gdi32.dll+0x1cd4 621b00004e1b00",
+      "files": 5,
+      "form": "62 (VEX/EVEX)",
+      "top_files": [
+        "ntdll.dll:49",
+        "rpcrt4.dll:6",
+        "ucrtbase.dll:2",
+        "gdi32.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 52,
+      "example": "KernelBase.dll+0x750e1 1e",
+      "files": 3,
+      "form": "1E",
+      "top_files": [
+        "ucrtbase.dll:45",
+        "KernelBase.dll:6",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 44,
+      "example": "combase.dll+0x6f1cb 0e",
+      "files": 6,
+      "form": "0E",
+      "top_files": [
+        "combase.dll:31",
+        "ntdll.dll:4",
+        "ucrtbase.dll:3",
+        "user32.dll:3",
+        "sechost.dll:2",
+        "KernelBase.dll:1"
+      ]
+    },
+    {
+      "count": 19,
+      "example": "user32.dll+0x8c4f 0f0f0f0f",
+      "files": 1,
+      "form": "0F 0F mem",
+      "top_files": [
+        "user32.dll:19"
+      ]
+    },
+    {
+      "count": 18,
+      "example": "ntdll.dll+0xef36f 660f3a44cc11",
+      "files": 1,
+      "form": "66 0F 3A 44 reg",
+      "top_files": [
+        "ntdll.dll:18"
+      ]
+    },
+    {
+      "count": 17,
+      "example": "combase.dll+0x261cfe 9a",
+      "files": 5,
+      "form": "9A",
+      "top_files": [
+        "rpcrt4.dll:9",
+        "ucrtbase.dll:5",
+        "combase.dll:1",
+        "ntdll.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 16,
+      "example": "advapi32.dll+0x1a758 60",
+      "files": 3,
+      "form": "60",
+      "top_files": [
+        "user32.dll:11",
+        "advapi32.dll:4",
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 16,
+      "example": "kernel32.dll+0x49da4 ca9004",
+      "files": 5,
+      "form": "CA",
+      "top_files": [
+        "rpcrt4.dll:9",
+        "ucrtbase.dll:4",
+        "kernel32.dll:1",
+        "msvcrt.dll:1",
+        "sechost.dll:1"
+      ]
+    },
+    {
+      "count": 15,
+      "example": "KernelBase.dll+0xcb92c 82",
+      "files": 4,
+      "form": "82",
+      "top_files": [
+        "rpcrt4.dll:8",
+        "ucrtbase.dll:5",
+        "KernelBase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "KernelBase.dll+0x21b05 17",
+      "files": 5,
+      "form": "17",
+      "top_files": [
+        "KernelBase.dll:5",
+        "rpcrt4.dll:3",
+        "user32.dll:3",
+        "ucrtbase.dll:2",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 14,
+      "example": "gdi32full.dll+0x7e859 e707",
+      "files": 3,
+      "form": "E7",
+      "top_files": [
+        "gdi32full.dll:10",
+        "rpcrt4.dll:2",
+        "ucrtbase.dll:2"
+      ]
+    },
+    {
+      "count": 13,
+      "example": "KernelBase.dll+0x21b20 3f",
+      "files": 5,
+      "form": "3F",
+      "top_files": [
+        "ucrtbase.dll:4",
+        "rpcrt4.dll:3",
+        "sechost.dll:3",
+        "KernelBase.dll:2",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "KernelBase.dll+0x24418 6d",
+      "files": 4,
+      "form": "6D",
+      "top_files": [
+        "ucrtbase.dll:5",
+        "rpcrt4.dll:4",
+        "ntdll.dll:2",
+        "KernelBase.dll:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "gdi32full.dll+0x4cef9 ce",
+      "files": 4,
+      "form": "CE",
+      "top_files": [
+        "gdi32full.dll:5",
+        "ucrtbase.dll:4",
+        "rpcrt4.dll:2",
+        "sechost.dll:1"
+      ]
+    },
+    {
+      "count": 12,
+      "example": "KernelBase.dll+0x750b1 2e07",
+      "files": 1,
+      "form": "SEG 07",
+      "top_files": [
+        "KernelBase.dll:12"
+      ]
+    },
+    {
+      "count": 11,
+      "example": "KernelBase.dll+0x416f1 16",
+      "files": 4,
+      "form": "16",
+      "top_files": [
+        "ucrtbase.dll:6",
+        "KernelBase.dll:2",
+        "sechost.dll:2",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 11,
+      "example": "advapi32.dll+0x25e88 ea",
+      "files": 6,
+      "form": "EA",
+      "top_files": [
+        "advapi32.dll:6",
+        "combase.dll:1",
+        "rpcrt4.dll:1",
+        "ucrtbase.dll:1",
+        "user32.dll:1",
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 10,
+      "example": "gdi32full.dll+0x4c768 1f",
+      "files": 5,
+      "form": "1F",
+      "top_files": [
+        "sechost.dll:5",
+        "user32.dll:2",
+        "KernelBase.dll:1",
+        "gdi32full.dll:1",
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 10,
+      "example": "rpcrt4.dll+0x1d565 d5",
+      "files": 2,
+      "form": "D5",
+      "top_files": [
+        "rpcrt4.dll:5",
+        "ucrtbase.dll:5"
+      ]
+    },
+    {
+      "count": 9,
+      "example": "ntdll.dll+0xfd7c 0f01fa",
+      "files": 1,
+      "form": "0F 01 FA",
+      "top_files": [
+        "ntdll.dll:9"
+      ]
+    },
+    {
+      "count": 9,
+      "example": "ntdll.dll+0xfddc 0f01fb",
+      "files": 1,
+      "form": "0F 01 FB",
+      "top_files": [
+        "ntdll.dll:9"
+      ]
+    },
+    {
+      "count": 9,
+      "example": "gdi32full.dll+0x197a8 6c",
+      "files": 5,
+      "form": "6C",
+      "top_files": [
+        "rpcrt4.dll:3",
+        "gdi32full.dll:2",
+        "user32.dll:2",
+        "KernelBase.dll:1",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 9,
+      "example": "KernelBase.dll+0x11d9f9 d811",
+      "files": 1,
+      "form": "D8 /2 mem",
+      "top_files": [
+        "KernelBase.dll:9"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "combase.dll+0x177ecd 0f01d0",
+      "files": 6,
+      "form": "0F 01 D0",
+      "top_files": [
+        "services.exe:2",
+        "ucrtbase.dll:2",
+        "combase.dll:1",
+        "gdi32full.dll:1",
+        "wininit.exe:1",
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "ntdll.dll+0x6bafa 0f01f9",
+      "files": 1,
+      "form": "0F 01 F9",
+      "top_files": [
+        "ntdll.dll:8"
+      ]
+    },
+    {
+      "count": 8,
+      "example": "ntdll.dll+0x15efc e55c",
+      "files": 3,
+      "form": "E5",
+      "top_files": [
+        "ntdll.dll:5",
+        "winlogon.exe:2",
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "msvcrt.dll+0x61e38 66480fd7c1",
+      "files": 3,
+      "form": "66 REX.W 0F D7 reg",
+      "top_files": [
+        "msvcrt.dll:2",
+        "ntdll.dll:2",
+        "ucrtbase.dll:2"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "combase.dll+0x66820 6e",
+      "files": 2,
+      "form": "6E",
+      "top_files": [
+        "ucrtbase.dll:5",
+        "combase.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "ntdll.dll+0x40a10 cf",
+      "files": 3,
+      "form": "CF",
+      "top_files": [
+        "ntdll.dll:2",
+        "rpcrt4.dll:2",
+        "user32.dll:2"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "rpcrt4.dll+0x1d2ac d4",
+      "files": 4,
+      "form": "D4",
+      "top_files": [
+        "rpcrt4.dll:3",
+        "sechost.dll:1",
+        "ucrtbase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "rpcrt4.dll+0xdfe0 d6",
+      "files": 4,
+      "form": "D6",
+      "top_files": [
+        "ucrtbase.dll:3",
+        "rpcrt4.dll:1",
+        "user32.dll:1",
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "advapi32.dll+0x1b6b0 d7",
+      "files": 6,
+      "form": "D7",
+      "top_files": [
+        "advapi32.dll:1",
+        "rpcrt4.dll:1",
+        "sechost.dll:1",
+        "smss.exe:1",
+        "ucrtbase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "KernelBase.dll+0x11da21 d911",
+      "files": 1,
+      "form": "D9 /2 mem",
+      "top_files": [
+        "KernelBase.dll:6"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "KernelBase.dll+0x197162 41d9a800010000",
+      "files": 6,
+      "form": "D9 /5 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "msvcrt.dll:1",
+        "ntdll.dll:1",
+        "smss.exe:1",
+        "ucrtbase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "KernelBase.dll+0x416e4 fe1404",
+      "files": 2,
+      "form": "FE /2 mem",
+      "top_files": [
+        "ucrtbase.dll:5",
+        "KernelBase.dll:1"
+      ]
+    },
+    {
+      "count": 6,
+      "example": "winlogon.exe+0x4e8c0 4dd90400",
+      "files": 1,
+      "form": "REX.W D9 /0 mem",
+      "top_files": [
+        "winlogon.exe:6"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "advapi32.dll+0x1a76c 2f",
+      "files": 3,
+      "form": "2F",
+      "top_files": [
+        "sechost.dll:3",
+        "advapi32.dll:1",
+        "services.exe:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "advapi32.dll+0x1a7bc 37",
+      "files": 4,
+      "form": "37",
+      "top_files": [
+        "advapi32.dll:2",
+        "KernelBase.dll:1",
+        "sechost.dll:1",
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "rpcrt4.dll+0x1c20c 61",
+      "files": 3,
+      "form": "61",
+      "top_files": [
+        "rpcrt4.dll:2",
+        "sechost.dll:2",
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "rpcrt4.dll+0x1db51 da01",
+      "files": 2,
+      "form": "DA /0 mem",
+      "top_files": [
+        "rpcrt4.dll:3",
+        "winlogon.exe:2"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "ucrtbase.dll+0x21eb4 dd1b",
+      "files": 1,
+      "form": "DD /3 mem",
+      "top_files": [
+        "ucrtbase.dll:5"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "combase.dll+0x6f191 df06",
+      "files": 2,
+      "form": "DF /0 mem",
+      "top_files": [
+        "ucrtbase.dll:4",
+        "combase.dll:1"
+      ]
+    },
+    {
+      "count": 5,
+      "example": "KernelBase.dll+0x750a9 4907",
+      "files": 1,
+      "form": "REX.W 07",
+      "top_files": [
+        "KernelBase.dll:5"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "KernelBase.dll+0x75201 27",
+      "files": 4,
+      "form": "27",
+      "top_files": [
+        "KernelBase.dll:1",
+        "rpcrt4.dll:1",
+        "sechost.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "rpcrt4.dll+0x16fa5 6f",
+      "files": 2,
+      "form": "6F",
+      "top_files": [
+        "rpcrt4.dll:3",
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "kernel32.dll+0x4040 8c32",
+      "files": 1,
+      "form": "8C mem",
+      "top_files": [
+        "kernel32.dll:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "rpcrt4.dll+0x1d2d8 8fcc01003dcb01002c",
+      "files": 3,
+      "form": "8F",
+      "top_files": [
+        "ucrtbase.dll:2",
+        "rpcrt4.dll:1",
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "sechost.dll+0x16134 c75d0100c75d01",
+      "files": 1,
+      "form": "C7 /3 mem",
+      "top_files": [
+        "sechost.dll:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "KernelBase.dll+0x1a0371 cb",
+      "files": 3,
+      "form": "CB",
+      "top_files": [
+        "rpcrt4.dll:2",
+        "KernelBase.dll:1",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "gdi32full.dll+0x197ac d98f01006097",
+      "files": 2,
+      "form": "D9 /1 mem",
+      "top_files": [
+        "KernelBase.dll:2",
+        "gdi32full.dll:2"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "ucrtbase.dll+0xa8b5c dd442440",
+      "files": 1,
+      "form": "DD /0 mem",
+      "top_files": [
+        "ucrtbase.dll:4"
+      ]
+    },
+    {
+      "count": 4,
+      "example": "rpcrt4.dll+0x1db68 48db01",
+      "files": 1,
+      "form": "REX.W DB /0 mem",
+      "top_files": [
+        "rpcrt4.dll:4"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "combase.dll+0x66835 6706",
+      "files": 1,
+      "form": "67 06",
+      "top_files": [
+        "combase.dll:3"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "kernel32.dll+0x49dac c8910400",
+      "files": 2,
+      "form": "C8",
+      "top_files": [
+        "msvcrt.dll:2",
+        "kernel32.dll:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "KernelBase.dll+0xcb8b4 d8ae0c0077b8",
+      "files": 3,
+      "form": "D8 /5 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "ucrtbase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "ntdll.dll+0x15edc db5901",
+      "files": 2,
+      "form": "DB /3 mem",
+      "top_files": [
+        "user32.dll:2",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "combase.dll+0xe7ea0 db7a0e",
+      "files": 2,
+      "form": "DB /7 mem",
+      "top_files": [
+        "ucrtbase.dll:2",
+        "combase.dll:1"
+      ]
+    },
+    {
+      "count": 3,
+      "example": "KernelBase.dll+0x1a4668 f082",
+      "files": 1,
+      "form": "LOCK 82",
+      "top_files": [
+        "KernelBase.dll:3"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ucrtbase.dll+0xf5284 0f001d520f0027",
+      "files": 1,
+      "form": "0F 00 /3 mem",
+      "top_files": [
+        "ucrtbase.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x19715d 410fae5034",
+      "files": 2,
+      "form": "0F AE /2 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "smss.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntdll.dll+0x124000 0fae2b",
+      "files": 1,
+      "form": "0F AE /5 mem",
+      "top_files": [
+        "ntdll.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "combase.dll+0x66851 6606",
+      "files": 2,
+      "form": "66 06",
+      "top_files": [
+        "combase.dll:1",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntdll.dll+0xef4c6 660f3a440db01b090010",
+      "files": 1,
+      "form": "66 0F 3A 44 mem",
+      "top_files": [
+        "ntdll.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "user32.dll+0x40af0 d901",
+      "files": 2,
+      "form": "D9 /0 mem",
+      "top_files": [
+        "user32.dll:1",
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x197052 41d9b800010000",
+      "files": 2,
+      "form": "D9 /7 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "smss.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "kernel32.dll+0xac98 daaa00001971",
+      "files": 2,
+      "form": "DA /5 mem",
+      "top_files": [
+        "kernel32.dll:1",
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "rpcrt4.dll+0x46900 db6804",
+      "files": 2,
+      "form": "DB /5 mem",
+      "top_files": [
+        "rpcrt4.dll:1",
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "rpcrt4.dll+0xdfd9 de00",
+      "files": 1,
+      "form": "DE /0 mem",
+      "top_files": [
+        "rpcrt4.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x21b14 df17",
+      "files": 2,
+      "form": "DF /2 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "sechost.dll+0xf181 f1",
+      "files": 2,
+      "form": "F1",
+      "top_files": [
+        "sechost.dll:1",
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "winlogon.exe+0x5f449 f30500b0f105",
+      "files": 1,
+      "form": "F3 05",
+      "top_files": [
+        "winlogon.exe:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x1970bd f3410f0129",
+      "files": 2,
+      "form": "F3 0F 01 /5 mem",
+      "top_files": [
+        "KernelBase.dll:1",
+        "smss.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x1970c2 f30f01ea",
+      "files": 2,
+      "form": "F3 0F 01 EA",
+      "top_files": [
+        "KernelBase.dll:1",
+        "smss.exe:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "ntdll.dll+0x16532b f3480fc7f9",
+      "files": 1,
+      "form": "F3 REX.W 0F C7 /7 reg",
+      "top_files": [
+        "ntdll.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "combase.dll+0x66821 6506",
+      "files": 1,
+      "form": "GS 06",
+      "top_files": [
+        "combase.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "rpcrt4.dll+0x19c5c 4e9a",
+      "files": 2,
+      "form": "REX.W 9A",
+      "top_files": [
+        "rpcrt4.dll:1",
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x11da08 4bd911",
+      "files": 1,
+      "form": "REX.W D9 /2 mem",
+      "top_files": [
+        "KernelBase.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "sechost.dll+0x1612c 2e55",
+      "files": 1,
+      "form": "SEG 55",
+      "top_files": [
+        "sechost.dll:2"
+      ]
+    },
+    {
+      "count": 2,
+      "example": "KernelBase.dll+0x11da58 26d911",
+      "files": 1,
+      "form": "SEG D9 /2 mem",
+      "top_files": [
+        "KernelBase.dll:2"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "KernelBase.dll+0xb158d 0f0b",
+      "files": 1,
+      "form": "#UD 0F 0B",
+      "top_files": [
+        "KernelBase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0xf528c 0f0031",
+      "files": 1,
+      "form": "0F 00 /6 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0xf5274 0f00f5",
+      "files": 1,
+      "form": "0F 00 /6 reg",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0xf5290 0f003b",
+      "files": 1,
+      "form": "0F 00 /7 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0xf5278 0f00ff",
+      "files": 1,
+      "form": "0F 00 /7 reg",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0x95eb3 0fc7f0",
+      "files": 1,
+      "form": "0F C7 /6 reg",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "winlogon.exe+0xf820 0ff000",
+      "files": 1,
+      "form": "0F F0 mem",
+      "top_files": [
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0x1465e1 660fae31",
+      "files": 1,
+      "form": "66 0F AE /6 mem",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0x1465ef 660fae39",
+      "files": 1,
+      "form": "66 0F AE /7 mem",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x2a0c4 669a",
+      "files": 1,
+      "form": "66 9A",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x575c 6756",
+      "files": 1,
+      "form": "67 56",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "wininit.exe+0x8cdd8 47af",
+      "files": 1,
+      "form": "AF",
+      "top_files": [
+        "wininit.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "gdi32full.dll+0x4cef4 c6ce04",
+      "files": 1,
+      "form": "C6 /1 reg",
+      "top_files": [
+        "gdi32full.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x1b464 c6b301003ab301",
+      "files": 1,
+      "form": "C6 /6 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0x3f5b0 c7f30300aff4",
+      "files": 1,
+      "form": "C7 /6 reg",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "winlogon.exe+0x4e8d1 d80400",
+      "files": 1,
+      "form": "D8 /0 mem",
+      "top_files": [
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "sechost.dll+0x4ebc d83f",
+      "files": 1,
+      "form": "D8 /7 mem",
+      "top_files": [
+        "sechost.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x13538 da31",
+      "files": 1,
+      "form": "DA /6 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "sechost.dll+0x5440 db5000",
+      "files": 1,
+      "form": "DB /2 mem",
+      "top_files": [
+        "sechost.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x38998 dc880300fb88",
+      "files": 1,
+      "form": "DC /1 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "gdi32full.dll+0x1988c dd940100bf9301",
+      "files": 1,
+      "form": "DD /2 mem",
+      "top_files": [
+        "gdi32full.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x1a824 dda30100000b",
+      "files": 1,
+      "form": "DD /4 mem",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0x41485 de0a",
+      "files": 1,
+      "form": "DE /1 mem",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1d560 dfd4",
+      "files": 1,
+      "form": "DF /2 reg",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "gdi32.dll+0x1ca4 df1b",
+      "files": 1,
+      "form": "DF /3 mem",
+      "top_files": [
+        "gdi32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0xb000c dffb",
+      "files": 1,
+      "form": "DF /7 reg",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1e888 43e8010070e8",
+      "files": 1,
+      "form": "E8",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "winlogon.exe+0xf811 f20000",
+      "files": 1,
+      "form": "F2 00 mem",
+      "top_files": [
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0xf79d f30000",
+      "files": 1,
+      "form": "F3 00 mem",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0x3f5bd f30300",
+      "files": 1,
+      "form": "F3 03 mem",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0x41e84 f3190400",
+      "files": 1,
+      "form": "F3 19 mem",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "KernelBase.dll+0xdf625 f60d0054f50d00",
+      "files": 1,
+      "form": "F6 /1 mem",
+      "top_files": [
+        "KernelBase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "wininit.exe+0x8cd9c ffab080053ac",
+      "files": 1,
+      "form": "FF /5 mem",
+      "top_files": [
+        "wininit.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0x15f00 645b",
+      "files": 1,
+      "form": "FS 5B",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1d258 64cc",
+      "files": 1,
+      "form": "FS CC",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0xf67c 65f5",
+      "files": 1,
+      "form": "GS F5",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "winlogon.exe+0x5f465 f005002bf205",
+      "files": 1,
+      "form": "LOCK 05",
+      "top_files": [
+        "winlogon.exe:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "gdi32full.dll+0x4c738 f0c604000f",
+      "files": 1,
+      "form": "LOCK C6 /0 mem",
+      "top_files": [
+        "gdi32full.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x21e88 4a16",
+      "files": 1,
+      "form": "REX.W 16",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ucrtbase.dll+0x34160 493f",
+      "files": 1,
+      "form": "REX.W 3F",
+      "top_files": [
+        "ucrtbase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1851c 4c82",
+      "files": 1,
+      "form": "REX.W 82",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1d194 4fce",
+      "files": 1,
+      "form": "REX.W CE",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "user32.dll+0x3f5ec 4ef4",
+      "files": 1,
+      "form": "REX.W F4",
+      "top_files": [
+        "user32.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "combase.dll+0xe37e5 360e",
+      "files": 1,
+      "form": "SEG 0E",
+      "top_files": [
+        "combase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "combase.dll+0x55af8 2e54",
+      "files": 1,
+      "form": "SEG 54",
+      "top_files": [
+        "combase.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0xbaf28 2eac",
+      "files": 1,
+      "form": "SEG AC",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1d28c 2ecb",
+      "files": 1,
+      "form": "SEG CB",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1d1a4 3ecf",
+      "files": 1,
+      "form": "SEG CF",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "ntdll.dll+0x12e620 3ee512",
+      "files": 1,
+      "form": "SEG E5",
+      "top_files": [
+        "ntdll.dll:1"
+      ]
+    },
+    {
+      "count": 1,
+      "example": "rpcrt4.dll+0x1f858 2ef8",
+      "files": 1,
+      "form": "SEG F8",
+      "top_files": [
+        "rpcrt4.dll:1"
+      ]
+    }
+  ],
+  "images": [
+    {
+      "cpl": 3,
+      "decoded": 110145,
+      "decoded_invalid": 0,
+      "file": "advapi32.dll",
+      "functions": 1440,
+      "refused": 15,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 11556,
+      "decoded_invalid": 0,
+      "file": "basesrv.dll",
+      "functions": 150,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 589852,
+      "decoded_invalid": 0,
+      "file": "combase.dll",
+      "functions": 13978,
+      "refused": 162,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 8589,
+      "decoded_invalid": 0,
+      "file": "csrsrv.dll",
+      "functions": 175,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 8729,
+      "decoded_invalid": 0,
+      "file": "gdi32.dll",
+      "functions": 306,
+      "refused": 2,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 173892,
+      "decoded_invalid": 0,
+      "file": "gdi32full.dll",
+      "functions": 2175,
+      "refused": 189,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 126604,
+      "decoded_invalid": 0,
+      "file": "kernel32.dll",
+      "functions": 1530,
+      "refused": 7,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 395512,
+      "decoded_invalid": 1,
+      "file": "KernelBase.dll",
+      "functions": 6448,
+      "refused": 162,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 129101,
+      "decoded_invalid": 0,
+      "file": "msvcrt.dll",
+      "functions": 1645,
+      "refused": 113,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 360947,
+      "decoded_invalid": 0,
+      "file": "ntdll.dll",
+      "functions": 5650,
+      "refused": 293,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 215197,
+      "decoded_invalid": 0,
+      "file": "rpcrt4.dll",
+      "functions": 3223,
+      "refused": 1238,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 111282,
+      "decoded_invalid": 0,
+      "file": "sechost.dll",
+      "functions": 1370,
+      "refused": 35,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 233026,
+      "decoded_invalid": 0,
+      "file": "ucrtbase.dll",
+      "functions": 4509,
+      "refused": 4538,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 175312,
+      "decoded_invalid": 0,
+      "file": "user32.dll",
+      "functions": 2671,
+      "refused": 77,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 12077,
+      "decoded_invalid": 0,
+      "file": "win32u.dll",
+      "functions": 1504,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 695,
+      "decoded_invalid": 0,
+      "file": "winsrv.dll",
+      "functions": 18,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 416,
+      "decoded_invalid": 0,
+      "file": "csrss.exe",
+      "functions": 8,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 4360,
+      "decoded_invalid": 0,
+      "file": "lsass.exe",
+      "functions": 85,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 160214,
+      "decoded_invalid": 0,
+      "file": "services.exe",
+      "functions": 2089,
+      "refused": 187,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 45273,
+      "decoded_invalid": 0,
+      "file": "setup.exe",
+      "functions": 483,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 29077,
+      "decoded_invalid": 0,
+      "file": "smss.exe",
+      "functions": 339,
+      "refused": 6,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 140613,
+      "decoded_invalid": 0,
+      "file": "wininit.exe",
+      "functions": 1551,
+      "refused": 3,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 165479,
+      "decoded_invalid": 0,
+      "file": "winlogon.exe",
+      "functions": 2414,
+      "refused": 23,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 3832,
+      "decoded_invalid": 0,
+      "file": "winpeshl.exe",
+      "functions": 64,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    },
+    {
+      "cpl": 3,
+      "decoded": 4213,
+      "decoded_invalid": 0,
+      "file": "wpeinit.exe",
+      "functions": 67,
+      "refused": 0,
+      "sweeps_stopped_unmeasured": 0
+    }
+  ],
+  "length_mismatches": []
+}

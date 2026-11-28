@@ -145,7 +145,115 @@ pub const fn cpl3_class(operation: &Operation) -> Cpl3Class {
         // An honest `Unsupported` at CPL3 (ADR-0023, decision 1): far returns (`LRETQ`); SYSENTER, which
         // the set does not model from CPL3 (plan C1/C2a, question V12).
         Operation::Sysenter
-        | Operation::FarReturn => Cpl3Class::NotAtCpl3,
+        | Operation::FarReturn
+        // ADR-0023 slice C2a (plan question V2, `c2a_cpl3_neutral_differential`, `every_neutral_variant_is_covered`):
+        // `Neutral` by the SDM, but the set does not run them at CPL0 in any encoding on the inputs of the
+        // test (no retire and no fault of the operation itself), so at CPL3 they are an honest stop too
+        // ("operations of the narrow profiles", decision 1). The x87 forms of the bare run refuse the
+        // represented FCS/FDS of the FP cell (only FNSTENV/FNSAVE/FRSTOR/FLDENV [RAX] and FNSTSW AX, with the
+        // member forms, run in the set); twelve of them (F2XM1 ... FCOS, FBLD, FBSTP) give the #NM of the
+        // bounded path at CPL0 with CR0.EM or CR0.TS = 1, `Unsupported` at CPL3 (ISSUE-729). The MMX
+        // conversions `CVT*PI*`/`CVT*PI2*` refuse in the set because their executor `step_sse_mmx_convert`
+        // needs `state.x87`, which the set keeps in the cell (`None`); the `67 F2 A6/A7` REPNE CMPS spellings
+        // run only outside the set.
+        | Operation::RepneCmpsbAddr32
+        | Operation::RepneCmpsWdqAddr32 { .. }
+        | Operation::Cvtpi2pdMemoryRax
+        | Operation::Cvtpi2psMemoryRax
+        | Operation::Cvtpi2pdXmm0Mm1
+        | Operation::Cvtpi2psXmm0Mm1
+        | Operation::Cvttps2piMm0Xmm1
+        | Operation::Cvttps2piMm0MemoryRax
+        | Operation::Cvttpd2piMm0Xmm1
+        | Operation::Cvttpd2piMm0MemoryRax
+        | Operation::Cvtpd2piMm0MemoryRax
+        | Operation::Cvtps2piMm0Xmm1
+        | Operation::Cvtps2piMm0MemoryRax
+        | Operation::Cvtpd2piMm0Xmm1
+        | Operation::FisttpMemory { .. }
+        | Operation::Fnop
+        | Operation::FnstcwM16Rax
+        | Operation::FldcwM16Rax
+        | Operation::FnstswM16Rax
+        | Operation::FstpM64FpRax
+        | Operation::FstpM80FpRax
+        | Operation::FbldM80Rax
+        | Operation::FbstpM80Rax
+        | Operation::FldM80FpRax
+        | Operation::FstM64FpRax
+        | Operation::FldM64FpRax
+        | Operation::Fchs
+        | Operation::FxchSti { .. }
+        | Operation::FldSti { .. }
+        | Operation::Fincstp
+        | Operation::Fdecstp
+        | Operation::Fld1
+        | Operation::Fldz
+        | Operation::Fabs
+        | Operation::Ftst
+        | Operation::Fxam
+        | Operation::Frndint
+        | Operation::Fsqrt
+        | Operation::Fprem
+        | Operation::Fprem1
+        | Operation::F2xm1
+        | Operation::Fyl2x
+        | Operation::Fptan
+        | Operation::Fpatan
+        | Operation::Fxtract
+        | Operation::Fyl2xp1
+        | Operation::Fsincos
+        | Operation::Fscale
+        | Operation::Fsin
+        | Operation::Fcos
+        | Operation::FstpM32FpRax
+        | Operation::FldM32FpRax
+        | Operation::FstM32FpRax
+        | Operation::FistpM32IntRax
+        | Operation::FistpM16IntRax
+        | Operation::FistpM64IntRax
+        | Operation::FistM16IntRax
+        | Operation::FistM32IntRax
+        | Operation::FildM16IntRax
+        | Operation::FildM64IntRax
+        | Operation::FcomSt { .. }
+        | Operation::Fcomi { .. }
+        | Operation::Fucomi { .. }
+        | Operation::Fcomip { .. }
+        | Operation::Fucomip { .. }
+        | Operation::Fcmovb { .. }
+        | Operation::Fcmovnb { .. }
+        | Operation::Fcmovne { .. }
+        | Operation::Fcmove { .. }
+        | Operation::Fcmovbe { .. }
+        | Operation::Fcmovnbe { .. }
+        | Operation::Fcmovu { .. }
+        | Operation::Fcmovnu { .. }
+        | Operation::FcompSt { .. }
+        | Operation::Fcompp
+        | Operation::Fucompp
+        | Operation::Fucom
+        | Operation::Fucomp
+        | Operation::FstpSti { .. }
+        | Operation::FstSti { .. }
+        | Operation::FmulSt0St { .. }
+        | Operation::FdivSt0St { .. }
+        | Operation::FdivrSt0St { .. }
+        | Operation::FdivrStSt0 { .. }
+        | Operation::FdivStSt0 { .. }
+        | Operation::FdivpStSt0 { .. }
+        | Operation::FdivrpStSt0 { .. }
+        | Operation::FaddSt0St { .. }
+        | Operation::FsubSt0St { .. }
+        | Operation::FsubrSt0St { .. }
+        | Operation::FsubStSt0 { .. }
+        | Operation::FsubrStSt0 { .. }
+        | Operation::FaddStSt0 { .. }
+        | Operation::FmulStSt0 { .. }
+        | Operation::FaddpStSt0 { .. }
+        | Operation::FmulpStSt0 { .. }
+        | Operation::FsubpStSt0 { .. }
+        | Operation::FsubrpStSt0 { .. } => Cpl3Class::NotAtCpl3,
         // Neutral (Vol. 3A §5.6.1: explicit accesses with the privilege of the context, implicit
         // descriptor-table accesses as supervisor) — integer, stack, near branches, strings, flags, fences, hints and NOPs (incl. CET-NOP: neutral while CR4.CET = 0,
         // which the CR4 policy keeps; `const _` with `CR4_CET` in `execute.rs` breaks the build when CET is admitted, and then
@@ -182,8 +290,6 @@ pub const fn cpl3_class(operation: &Operation) -> Cpl3Class {
         | Operation::RepneScas { .. }
         | Operation::RepneScasbAddr32
         | Operation::RepneScasWdqAddr32 { .. }
-        | Operation::RepneCmpsbAddr32
-        | Operation::RepneCmpsWdqAddr32 { .. }
         | Operation::RepCmps { .. }
         | Operation::PushImmediate { .. }
         | Operation::PushMemory { .. }
@@ -482,8 +588,6 @@ pub const fn cpl3_class(operation: &Operation) -> Cpl3Class {
         | Operation::Cvtss2sdMemoryRax
         | Operation::Cvtsd2ssRegister { .. }
         | Operation::Cvtsd2ssMemoryRax
-        | Operation::Cvtpi2pdMemoryRax
-        | Operation::Cvtpi2psMemoryRax
         | Operation::Cvtps2pdRegister { .. }
         | Operation::Cvtps2pdMemoryRax
         | Operation::ComissUcomissRegister { .. }
@@ -563,17 +667,7 @@ pub const fn cpl3_class(operation: &Operation) -> Cpl3Class {
         | Operation::Crc32 { .. } => Cpl3Class::Neutral,
         // Neutral (Vol. 3A §5.6.1: explicit accesses with the privilege of the context, implicit
         // descriptor-table accesses as supervisor) — MMX.
-        Operation::Cvtpi2pdXmm0Mm1
-        | Operation::Cvtpi2psXmm0Mm1
-        | Operation::Cvttps2piMm0Xmm1
-        | Operation::Cvttps2piMm0MemoryRax
-        | Operation::Cvttpd2piMm0Xmm1
-        | Operation::Cvttpd2piMm0MemoryRax
-        | Operation::Cvtpd2piMm0MemoryRax
-        | Operation::Cvtps2piMm0Xmm1
-        | Operation::Cvtps2piMm0MemoryRax
-        | Operation::Cvtpd2piMm0Xmm1
-        | Operation::MmxSsse3 { .. }
+        Operation::MmxSsse3 { .. }
         | Operation::Emms
         | Operation::MmxInt { .. }
         | Operation::MmxShiftImmediate { .. }
@@ -581,104 +675,20 @@ pub const fn cpl3_class(operation: &Operation) -> Cpl3Class {
         | Operation::MmxMovq { .. } => Cpl3Class::Neutral,
         // Neutral (Vol. 3A §5.6.1: explicit accesses with the privilege of the context, implicit
         // descriptor-table accesses as supervisor) — x87.
-        Operation::FisttpMemory { .. }
-        | Operation::Fninit
+        Operation::Fninit
         | Operation::Fwait
         | Operation::Fnclex
         | Operation::FnstswAx
-        | Operation::Fnop
-        | Operation::FnstcwM16Rax
-        | Operation::FldcwM16Rax
-        | Operation::FnstswM16Rax
         | Operation::FnstswM16 { .. }
         | Operation::FnstcwM16 { .. }
-        | Operation::FstpM64FpRax
         | Operation::FfreeSti { .. }
-        | Operation::FstpM80FpRax
-        | Operation::FbldM80Rax
-        | Operation::FbstpM80Rax
         | Operation::FnstenvRax
         | Operation::FnsaveRax
         | Operation::FrstorRax
         | Operation::FldenvRax
-        | Operation::FldM80FpRax
-        | Operation::FstM64FpRax
-        | Operation::FldM64FpRax
-        | Operation::Fchs
-        | Operation::FxchSti { .. }
-        | Operation::FldSti { .. }
-        | Operation::Fincstp
-        | Operation::Fdecstp
-        | Operation::Fld1
-        | Operation::Fldz
-        | Operation::Fabs
-        | Operation::Ftst
-        | Operation::Fxam
-        | Operation::Frndint
-        | Operation::Fsqrt
-        | Operation::Fprem
-        | Operation::Fprem1
-        | Operation::F2xm1
-        | Operation::Fyl2x
-        | Operation::Fptan
-        | Operation::Fpatan
-        | Operation::Fxtract
-        | Operation::Fyl2xp1
-        | Operation::Fsincos
-        | Operation::Fscale
-        | Operation::Fsin
-        | Operation::Fcos
-        | Operation::FstpM32FpRax
-        | Operation::FldM32FpRax
-        | Operation::FstM32FpRax
-        | Operation::FistpM32IntRax
-        | Operation::FistpM16IntRax
-        | Operation::FistpM64IntRax
-        | Operation::FistM16IntRax
-        | Operation::FistM32IntRax
         | Operation::FildM32IntRax
         | Operation::FildM32Int { .. }
-        | Operation::FnsaveMemory { .. }
-        | Operation::FildM16IntRax
-        | Operation::FildM64IntRax
-        | Operation::FcomSt { .. }
-        | Operation::Fcomi { .. }
-        | Operation::Fucomi { .. }
-        | Operation::Fcomip { .. }
-        | Operation::Fucomip { .. }
-        | Operation::Fcmovb { .. }
-        | Operation::Fcmovnb { .. }
-        | Operation::Fcmovne { .. }
-        | Operation::Fcmove { .. }
-        | Operation::Fcmovbe { .. }
-        | Operation::Fcmovnbe { .. }
-        | Operation::Fcmovu { .. }
-        | Operation::Fcmovnu { .. }
-        | Operation::FcompSt { .. }
-        | Operation::Fcompp
-        | Operation::Fucompp
-        | Operation::Fucom
-        | Operation::Fucomp
-        | Operation::FstpSti { .. }
-        | Operation::FstSti { .. }
-        | Operation::FmulSt0St { .. }
-        | Operation::FdivSt0St { .. }
-        | Operation::FdivrSt0St { .. }
-        | Operation::FdivrStSt0 { .. }
-        | Operation::FdivStSt0 { .. }
-        | Operation::FdivpStSt0 { .. }
-        | Operation::FdivrpStSt0 { .. }
-        | Operation::FaddSt0St { .. }
-        | Operation::FsubSt0St { .. }
-        | Operation::FsubrSt0St { .. }
-        | Operation::FsubStSt0 { .. }
-        | Operation::FsubrStSt0 { .. }
-        | Operation::FaddStSt0 { .. }
-        | Operation::FmulStSt0 { .. }
-        | Operation::FaddpStSt0 { .. }
-        | Operation::FmulpStSt0 { .. }
-        | Operation::FsubpStSt0 { .. }
-        | Operation::FsubrpStSt0 { .. } => Cpl3Class::Neutral,
+        | Operation::FnsaveMemory { .. } => Cpl3Class::Neutral,
     }
 }
 

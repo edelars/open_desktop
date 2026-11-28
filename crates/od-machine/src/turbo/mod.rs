@@ -2274,7 +2274,7 @@ pub(crate) struct TurboHook<'a> {
 
 /// Whether the `#UD`/`#NM` gate of the SSE forms of the FP member is open: CR0.EM = 0 and
 /// CR4.OSFXSR = 1 (else `#UD`), CR0.TS = 0 (else `#NM`), both registers carried (the set's
-/// `sse_cpl0_gate`, `step_cpl3_xmm` and the S2-34/S2-38/S2-39 executors).
+/// `sse_cpl0_gate`, `step_xmm_handler_form` and the S2-34/S2-38/S2-39 executors).
 fn sse_gate_open(state: &LongModeState) -> bool {
     const CR0_EM: u64 = 1 << 2;
     const CR0_TS: u64 = 1 << 3;

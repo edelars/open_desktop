@@ -2,7 +2,10 @@
 //! loop (the Windows members, `od_machine::UnifiedGuestCpl0Cells`) does not execute.
 //!
 //! Every distinct decoded byte string is executed once per sandbox variant: one instruction
-//! (budget 1) of `run_with_cpl0_profile_set_and_pio` at CPL0, on a memory that accepts every data
+//! (budget 1) of `run_with_cpl0_profile_set_and_pio` at CPL0 — or, with `--cpl 3` (ADR-0023 slice
+//! C2a), of the CPL3 entry `run_with_cpl3_profile_set` with the same set, user code and data
+//! addresses, CS `0x33` and SS `0x2b` (the sandbox memory checks no page rights, so every page is
+//! as a user page) — on a memory that accepts every data
 //! access (Windows-shaped GDT, IDT and TSS, a stack frame, a fill byte elsewhere), with the cells
 //! of the set reset and seeded before the step. The decision is the library's own step: the
 //! sandbox models no semantics.
@@ -18,7 +21,7 @@
 
 use od_isa::execute::{
     Cpl0ProfileSetExit, Cpl0ProfileSetInputError, GuestFpState, RunConfig, RunExit,
-    run_with_cpl0_profile_set_and_pio,
+    run_with_cpl0_profile_set_and_pio, run_with_cpl3_profile_set,
 };
 use od_isa::long_decode::{Instruction, Operation};
 use od_isa::state::{Gdtr, Idtr};
@@ -33,6 +36,8 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The linear address of the sandbox code (a canonical kernel address, away from a page end).
 pub(super) const CODE: u64 = 0xffff_f800_0040_0100;
+/// The linear address of the sandbox code at CPL3 (a canonical user address, away from a page end).
+const USER_CODE: u64 = 0x0000_7ff8_4000_0100;
 const CR0: u64 = 0x8005_0033;
 const CR4: u64 = 0x6f8;
 const CR3: u64 = 0x1a_a000;
@@ -46,6 +51,7 @@ pub(super) const UNKNOWN_MSR: u32 = 0xdead_0000;
 /// read returns `fill`; every write succeeds. Widths outside the widths of the unified-loop
 /// adapter (1, 2, 4, 8, 16 bytes) are recorded.
 struct Sandbox<'r> {
+    code_base: u64,
     code: [u8; 16],
     fill: u8,
     regions: &'r [(u64, Vec<u8>)],
@@ -87,7 +93,7 @@ impl Sandbox<'_> {
 impl GuestMemory for Sandbox<'_> {
     fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
         address
-            .checked_sub(CODE)
+            .checked_sub(self.code_base)
             .and_then(|offset| self.code.get(usize::try_from(offset).ok()?))
             .copied()
             .ok_or_else(|| MemoryError::Backend("fetch outside the sandbox code".into()))
@@ -176,6 +182,8 @@ impl PortIo for Ports {
 }
 
 struct Variant {
+    /// CPL3 (ADR-0023 slice C2a, `--cpl 3`): the step runs through the CPL3 entry.
+    cpl3: bool,
     gpr: [u64; 16],
     rflags: u64,
     fill: u8,
@@ -256,23 +264,47 @@ fn seed(fp: GuestFpState) -> UnifiedGuestCellSeed {
 /// V0: canonical kernel addresses in every register, a CPL0 IRETQ frame on the stack, reads of 0,
 /// x87 after FNINIT. V1: low-half addresses, DF = 1 with CF/SF/OF, a CPL3 IRETQ frame, reads of
 /// 0xA5, two values on the x87 stack (TOP = 6: ST0 = R6 = 1.0, ST1 = R7 = 2.0).
-fn variants() -> Vec<Variant> {
+///
+/// At CPL3 (`cpl3`, ADR-0023 slice C2a) every register and both stacks hold user addresses and V0
+/// carries a CPL3 frame too (an IRETQ of CPL3 returns to the same level); the descriptor tables and
+/// the stacks of the TSS stay at kernel addresses (supervisor accesses).
+fn variants(cpl3: bool) -> Vec<Variant> {
     let mut v0 = [0u64; 16];
+    let v0_base = if cpl3 {
+        0x0000_7ff7_0100_0000
+    } else {
+        0xffff_f800_0100_0000
+    };
     for (index, register) in v0.iter_mut().enumerate() {
-        *register = 0xffff_f800_0100_0000 + (index as u64) * 0x1_0000 + 0x40;
+        *register = v0_base + (index as u64) * 0x1_0000 + 0x40;
     }
-    let rsp0 = 0xffff_f800_0800_0f00u64;
+    let rsp0 = if cpl3 {
+        0x0000_7ff7_0800_0f00u64
+    } else {
+        0xffff_f800_0800_0f00u64
+    };
     v0[4] = rsp0;
     let mut regions0 = tables(0xffff_f800_0a00_0000);
+    let frame0 = if cpl3 {
+        [USER_CODE + 0x40, 0x33, 0x202, rsp0 + 0x400, 0x2b]
+    } else {
+        [CODE + 0x40, 0x10, 0x202, rsp0 + 0x400, 0x18]
+    };
     regions0.push((
         rsp0,
-        qwords(&[CODE + 0x40, 0x10, 0x202, rsp0 + 0x400, 0x18, 0, 0, 0]),
+        qwords(&[
+            frame0[0], frame0[1], frame0[2], frame0[3], frame0[4], 0, 0, 0,
+        ]),
     ));
     let mut v1 = [0u64; 16];
     for (index, register) in v1.iter_mut().enumerate() {
         *register = 0x0000_0100_0000_0000 + (index as u64) * 0x1_0000 + 0x80;
     }
-    let rsp1 = 0xffff_f800_0900_0800u64;
+    let rsp1 = if cpl3 {
+        0x0000_7ff7_0900_0800u64
+    } else {
+        0xffff_f800_0900_0800u64
+    };
     v1[4] = rsp1;
     let mut regions1 = tables(0xffff_f800_0b00_0000);
     regions1.push((
@@ -295,6 +327,7 @@ fn variants() -> Vec<Variant> {
     fp1.x87.tag_word = 0x0fff;
     vec![
         Variant {
+            cpl3,
             gpr: v0,
             rflags: 0x246,
             fill: 0,
@@ -302,6 +335,7 @@ fn variants() -> Vec<Variant> {
             seed: seed(GuestFpState::initial()),
         },
         Variant {
+            cpl3,
             gpr: v1,
             rflags: 0x2 | 0x200 | 0x400 | 0x1 | 0x80 | 0x800,
             fill: 0xa5,
@@ -327,29 +361,36 @@ fn state(variant: &Variant) -> LongModeState {
         access: 0xf3,
         flags: 0xc,
     };
+    // ADR-0023 slice C2a (`--cpl 3`): the selectors and caches of a Windows thread at CPL3 (CS
+    // `KGDT64_R3_CODE | 3` with L = 1, SS `KGDT64_R3_DATA | 3`) and GS at a user TEB address.
+    let (rip, cs_selector, cs_access, ss_selector, ss_cache, gs_base) = if variant.cpl3 {
+        (USER_CODE, 0x33, 0xfb, 0x2b, user, 0x0000_7ff6_1000_0000)
+    } else {
+        (CODE, 0x10, 0x9b, 0x18, data, 0xffff_f800_0200_0000)
+    };
     LongModeState {
         gpr: variant.gpr,
-        rip: CODE,
+        rip,
         rflags: variant.rflags,
         cr0: Some(CR0),
         cr2: Some(0),
         cr4: Some(CR4),
         cr3: Some(CR3),
-        gs_base: 0xffff_f800_0200_0000,
+        gs_base,
         fs_base: 0,
         ds_selector: 0x2b,
         es_selector: 0x2b,
         fs_selector: 0x53,
         gs_selector: 0x2b,
-        cs_selector: Some(0x10),
+        cs_selector: Some(cs_selector),
         cs_cache: Some(CodeSegmentDescriptorCache {
             base: 0,
             limit: u32::MAX,
-            access: 0x9b,
+            access: cs_access,
             flags: 2,
         }),
-        ss_selector: Some(0x18),
-        ss_cache: Some(data),
+        ss_selector: Some(ss_selector),
+        ss_cache: Some(ss_cache),
         ds_cache: Some(user),
         es_cache: Some(user),
         fs_cache: Some(flat),
@@ -503,8 +544,40 @@ fn operation_name(operation: &Operation) -> String {
         .to_owned()
 }
 
+/// The outcome of one sandbox step from the exit of either entry.
+fn outcome_of<E: std::fmt::Debug>(exit: Cpl0ProfileSetExit<E>) -> (Outcome, String) {
+    match exit {
+        Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. }) => {
+            (Outcome::Unsupported, String::new())
+        }
+        Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) => {
+            (Outcome::Fault(fault.vector), String::new())
+        }
+        Cpl0ProfileSetExit::Run(RunExit::MemoryError(error)) => {
+            (Outcome::MemoryError, format!("{error:?}"))
+        }
+        // `StopAddress`: the CPL3 entry ends its run right after a retired instruction that left
+        // CPL3 (`SYSCALL`, S4-39f); the sandbox sets no stop address.
+        Cpl0ProfileSetExit::Run(
+            RunExit::InstructionBudgetExhausted
+            | RunExit::RepIterationBudgetExhausted
+            | RunExit::Halted
+            | RunExit::StopAddress,
+        ) => (Outcome::Exec, String::new()),
+        Cpl0ProfileSetExit::Run(other) => (Outcome::OtherExit, format!("{other:?}")),
+        Cpl0ProfileSetExit::TranslationContextChange(_)
+        | Cpl0ProfileSetExit::PortIo(_)
+        | Cpl0ProfileSetExit::UserEntry(_)
+        | Cpl0ProfileSetExit::UserModeEntered(_) => (Outcome::Exec, String::new()),
+        // A future exit kind is not claimed as executed.
+        other => (Outcome::OtherExit, format!("{other:?}")),
+    }
+}
+
 /// The exec coverage of one command run.
 pub(super) struct ExecCoverage {
+    /// ADR-0023 slice C2a: the sandbox runs at CPL3 through the CPL3 entry (`--cpl 3`).
+    cpl3: bool,
     cells: UnifiedGuestCpl0Cells,
     variants: Vec<Variant>,
     cache: HashMap<Vec<u8>, Classified>,
@@ -522,10 +595,12 @@ pub(super) struct ExecCoverage {
 }
 
 impl ExecCoverage {
-    pub(super) fn windows() -> Self {
+    /// The sandbox of the Windows set at CPL0, or at CPL3 through the CPL3 entry (`cpl3`).
+    pub(super) fn windows(cpl3: bool) -> Self {
         Self {
+            cpl3,
             cells: UnifiedGuestCpl0Cells::new(UnifiedGuest::Windows),
-            variants: variants(),
+            variants: variants(cpl3),
             cache: HashMap::new(),
             verdicts: BTreeMap::new(),
             families: HashMap::new(),
@@ -537,6 +612,15 @@ impl ExecCoverage {
             extra_instructions: 0,
             extra_refusals: HashMap::new(),
             call_targets_outside_pdata: 0,
+        }
+    }
+
+    /// The privilege the sandbox runs images at.
+    pub(super) fn privilege(&self) -> PrivilegeLevel {
+        if self.cpl3 {
+            PrivilegeLevel::Ring3
+        } else {
+            PrivilegeLevel::Ring0
         }
     }
 
@@ -552,6 +636,7 @@ impl ExecCoverage {
         let length = window.len().min(16);
         code[..length].copy_from_slice(&window[..length]);
         let mut memory = Sandbox {
+            code_base: if variant.cpl3 { USER_CODE } else { CODE },
             code,
             fill: variant.fill,
             regions: &variant.regions,
@@ -565,46 +650,39 @@ impl ExecCoverage {
         }
         let mut tsc = || 0x1234_5678u64;
         let set = self.cells.set();
-        let result = run_with_cpl0_profile_set_and_pio(
-            &mut state,
-            &mut memory,
-            RunConfig {
-                instruction_budget: 1,
-                stop_rip: None,
-                context: AccessContext {
-                    mode: InstructionMode::Long64,
-                    privilege: PrivilegeLevel::Ring0,
-                    origin: AccessOrigin::Explicit,
-                },
+        let config = RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context: AccessContext {
+                mode: InstructionMode::Long64,
+                privilege: self.privilege(),
+                origin: AccessOrigin::Explicit,
             },
-            od_isa::INTEGER_FLAGS,
-            &set,
-            Some(&mut tsc),
-            &mut Ports,
-            || false,
-        )?;
-        let (outcome, detail) = match result.exit {
-            Cpl0ProfileSetExit::Run(RunExit::Unsupported { .. }) => {
-                (Outcome::Unsupported, String::new())
-            }
-            Cpl0ProfileSetExit::Run(RunExit::Fault(fault)) => {
-                (Outcome::Fault(fault.vector), String::new())
-            }
-            Cpl0ProfileSetExit::Run(RunExit::MemoryError(error)) => {
-                (Outcome::MemoryError, format!("{error:?}"))
-            }
-            Cpl0ProfileSetExit::Run(
-                RunExit::InstructionBudgetExhausted
-                | RunExit::RepIterationBudgetExhausted
-                | RunExit::Halted,
-            ) => (Outcome::Exec, String::new()),
-            Cpl0ProfileSetExit::Run(other) => (Outcome::OtherExit, format!("{other:?}")),
-            Cpl0ProfileSetExit::TranslationContextChange(_)
-            | Cpl0ProfileSetExit::PortIo(_)
-            | Cpl0ProfileSetExit::UserEntry(_)
-            | Cpl0ProfileSetExit::UserModeEntered(_) => (Outcome::Exec, String::new()),
-            // A future exit kind is not claimed as executed.
-            other => (Outcome::OtherExit, format!("{other:?}")),
+        };
+        // The CPL3 entry of the board (`run_cpl0_set_loop`) has no port and takes the same set.
+        let (outcome, detail) = if variant.cpl3 {
+            let result = run_with_cpl3_profile_set(
+                &mut state,
+                &mut memory,
+                config,
+                od_isa::INTEGER_FLAGS,
+                &set,
+                Some(&mut tsc),
+                || false,
+            )?;
+            outcome_of(result.exit)
+        } else {
+            let result = run_with_cpl0_profile_set_and_pio(
+                &mut state,
+                &mut memory,
+                config,
+                od_isa::INTEGER_FLAGS,
+                &set,
+                Some(&mut tsc),
+                &mut Ports,
+                || false,
+            )?;
+            outcome_of(result.exit)
         };
         Ok((outcome, memory.odd_width, detail))
     }
@@ -792,6 +870,7 @@ impl ExecCoverage {
         };
         json!({
             "set": "windows",
+            "cpl": if self.cpl3 { 3 } else { 0 },
             "variants": self.variants.len(),
             "decoded": self.decoded,
             "distinct": self.cache.len(),
@@ -849,6 +928,7 @@ mod tests {
         let mut bytes = [0x90u8; 16];
         bytes[..code.len()].copy_from_slice(code);
         let mut memory = Sandbox {
+            code_base: CODE,
             code: bytes,
             fill: variant.fill,
             regions: &variant.regions,
@@ -887,7 +967,7 @@ mod tests {
     fn a_reset_gives_every_step_the_seeded_cells_back() {
         // S7-32 slice S: a WRMSR of one sandbox step must not leak into the next one.
         const IA32_STAR: u64 = 0xc000_0081;
-        let coverage = ExecCoverage::windows();
+        let coverage = ExecCoverage::windows(false);
         let variant = &coverage.variants[0];
         coverage.cells.reset(&variant.seed);
         step(
@@ -911,7 +991,7 @@ mod tests {
     #[test]
     fn the_seeded_efer_is_the_one_a_step_reads() {
         // The cells of a fresh vCPU have EFER `FIRMWARE_EFER` (no SCE); the seed sets SCE.
-        let coverage = ExecCoverage::windows();
+        let coverage = ExecCoverage::windows(false);
         let variant = &coverage.variants[1];
         coverage.cells.reset(&variant.seed);
         let read = step(&coverage.cells, variant, &[0x0f, 0x32], [0xc000_0080, 0, 0]);
@@ -925,9 +1005,10 @@ mod tests {
         // earlier form would leave them); `SYSRET` (REX.W 0F 07) must still get the verdict of the
         // seeded cells (`never`: the set refuses the return to CPL3 in both variants), not the `#UD`
         // of EFER.SCE = 0 (`exec`).
-        let mut coverage = ExecCoverage::windows();
+        let mut coverage = ExecCoverage::windows(false);
         let sysret = [0x48u8, 0x0f, 0x07];
         let mut memory = Sandbox {
+            code_base: CODE,
             code: {
                 let mut code = [0x90u8; 16];
                 code[..3].copy_from_slice(&sysret);
@@ -966,6 +1047,7 @@ mod tests {
         let mut code = [0x90u8; 16];
         code[..3].copy_from_slice(&sysret);
         let mut memory = Sandbox {
+            code_base: CODE,
             code,
             fill: variant.fill,
             regions: &variant.regions,

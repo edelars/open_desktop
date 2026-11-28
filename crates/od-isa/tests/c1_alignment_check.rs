@@ -16,8 +16,9 @@
 //! Reachability in C1 (plan C1-6 item 5): (a) the CPL3 entry of the set — the forms of a class other
 //! than `Neutral` and the `Neutral` forms the C1 allow-list admits; (b) the bare Ring3 step (no set,
 //! `execute::step` with a Ring3 context) — the shared SSE/MMX/x87/POPCNT/CRC32/MASKMOV*/FISTTP
-//! executors; (c) after C2a-4 — the remaining forms (CMPXCHG8B, XADD m, CMPXCHG m, the x87 forms of
-//! the FP member, a misaligned LOCK), see `REACHABILITY`.
+//! executors; (c) since C2a-4 — the remaining forms (CMPXCHG8B, XADD m, CMPXCHG m, the x87 forms of
+//! the FP member, a misaligned LOCK) through the CPL3 entry, see `REACHABILITY`; the x87 m80 and BCD
+//! forms and FSTP m64 `[RAX]` on the bare Ring3 step with FCS/FDS not represented.
 
 mod cpl3_sweep;
 
@@ -134,14 +135,25 @@ pub const REACHABILITY: &[(&str, &str, &str)] = &[
         "fs_and_gs_forms_raise_alignment_check",
     ),
     (
-        "fld/fstp m80, fbld/fbstp, fldenv/frstor [rax] (not covered: refused or state-dependent at CPL3)",
-        "not covered — C2a (ISSUE-722)",
-        "-",
+        "xadd m, cmpxchg m, cmpxchg8b, lock add/xadd/cmpxchg (aligned and split)",
+        "(c) CPL3 entry since C2a-4",
+        "the_forms_reachable_since_c2a_raise_alignment_check_through_the_cpl3_entry, \
+         split_lock_with_ac_at_cpl3_is_alignment_check",
     ),
     (
-        "xadd m, cmpxchg m, lock forms, x87 of the FP member (checks inserted, not covered by a test)",
-        "(c) after C2a-4 (ISSUE-722)",
-        "C2a-3 split_lock_with_ac_at_cpl3_is_alignment_check",
+        "x87 of the FP member: fnstcw/fnstsw m16 (2), fild m32 (4), fnsave m (4)",
+        "(c) CPL3 entry since C2a-4",
+        "the_forms_reachable_since_c2a_raise_alignment_check_through_the_cpl3_entry",
+    ),
+    (
+        "fnstenv/fldenv/frstor [rax] (4) through the bounded x87 path of the set",
+        "(c) CPL3 entry since C2a-4",
+        "the_forms_reachable_since_c2a_raise_alignment_check_through_the_cpl3_entry",
+    ),
+    (
+        "fld/fstp m80, fbld/fbstp [rax] (8; length 10), fstp m64 [rax] (8)",
+        "(b) bare Ring3 step with FCS/FDS not represented, on the FNINIT stack with two values (the set refuses them: NotAtCpl3 since C2a)",
+        "x87_m80_and_bcd_forms_raise_alignment_check_on_the_bare_ring3_step",
     ),
 ];
 
@@ -1080,5 +1092,297 @@ fn fs_and_gs_forms_raise_alignment_check() {
         "CmpFsMemImm",
     ] {
         assert!(covered.contains(variant), "{variant}: {covered:?}");
+    }
+}
+
+// ---- ADR-0023 slice C2a: the forms of column (c) through the CPL3 entry -------------------------
+
+/// The FNSAVE image of 32-bit protected mode (Vol. 1 Figure 8-9) of an x87 after FNINIT: the valid
+/// source of FLDENV (its first 28 bytes) and FRSTOR.
+fn fnsave_image() -> [u8; 108] {
+    let mut image = [0u8; 108];
+    image[0..2].copy_from_slice(&0x037fu16.to_le_bytes());
+    image[8..10].copy_from_slice(&0xffffu16.to_le_bytes());
+    image
+}
+
+/// One instruction of `bytes` through the CPL3 entry (or the CPL0 entry) of the sweep set with the
+/// operand of `base` at `OPERAND + shift`; `empty_x87`: the FP cell after FNINIT (FCS/FDS 0, every
+/// register empty); `image`: a valid FNSAVE image at the operand. The fault, if any; a #AC changes
+/// nothing.
+fn run_entry(
+    bytes: &[u8],
+    base: Base,
+    cpl: u8,
+    (am, ac): (bool, bool),
+    shift: u64,
+    (empty_x87, image): (bool, bool),
+) -> (Option<ArchitecturalFault>, cpl3_sweep::Run) {
+    let (mut state, mut memory) = machine_cached(cpl, 0, CR4);
+    state.cr0 = Some(if am {
+        cpl3_sweep::CR0
+    } else {
+        cpl3_sweep::CR0 & !AM
+    });
+    if ac {
+        state.rflags |= AC;
+    }
+    place(&mut state, base, shift);
+    if image {
+        memory.put(OPERAND + shift, &fnsave_image());
+    }
+    let cells = Cells::new();
+    if empty_x87 {
+        cells.fp.borrow_mut().x87 = execute::GuestFpState::initial().x87;
+    }
+    let before = state.clone();
+    let run = run_on(state, memory, cells, bytes, 1);
+    let fault = match run_exit(run.result.as_ref().unwrap()) {
+        RunExit::Fault(fault) => {
+            if *fault == ALIGNMENT_CHECK {
+                assert_eq!(run.state, before, "{bytes:02x?}");
+                assert!(run.memory.writes.is_empty(), "{bytes:02x?}");
+            }
+            Some(fault.clone())
+        }
+        RunExit::Unsupported { .. } => {
+            panic!("{bytes:02x?} CPL{cpl} shift {shift} is not executed")
+        }
+        _ => None,
+    };
+    (fault, run)
+}
+
+/// ISSUE-722, plan C1-6 item 5 column (c) and C2a-3 item 2a: the forms the CPL3 entry runs since
+/// C2a-4, against Table 7-7 (the requirement of the module doc) × AM × AC × CPL {0, 3} × shift.
+#[test]
+fn the_forms_reachable_since_c2a_raise_alignment_check_through_the_cpl3_entry() {
+    // (name, bytes, base, requirement, empty x87 cell, FNSAVE image at the operand)
+    let forms: &[(&str, &[u8], Base, u64, bool, bool)] = &[
+        (
+            "xadd [rdi], eax",
+            &[0x0f, 0xc1, 0x07],
+            Base::Rdi,
+            4,
+            false,
+            false,
+        ),
+        (
+            "xadd [rdi], rax",
+            &[0x48, 0x0f, 0xc1, 0x07],
+            Base::Rdi,
+            8,
+            false,
+            false,
+        ),
+        (
+            "cmpxchg [rdi], ecx",
+            &[0x0f, 0xb1, 0x0f],
+            Base::Rdi,
+            4,
+            false,
+            false,
+        ),
+        (
+            "cmpxchg [rdi], rcx",
+            &[0x48, 0x0f, 0xb1, 0x0f],
+            Base::Rdi,
+            8,
+            false,
+            false,
+        ),
+        (
+            "cmpxchg8b [rdi]",
+            &[0x0f, 0xc7, 0x0f],
+            Base::Rdi,
+            8,
+            false,
+            false,
+        ),
+        (
+            "lock cmpxchg8b [rdi]",
+            &[0xf0, 0x0f, 0xc7, 0x0f],
+            Base::Rdi,
+            8,
+            false,
+            false,
+        ),
+        (
+            "lock xadd [rdi], eax",
+            &[0xf0, 0x0f, 0xc1, 0x07],
+            Base::Rdi,
+            4,
+            false,
+            false,
+        ),
+        (
+            "lock add dword [rdi], 1",
+            &[0xf0, 0x83, 0x07, 0x01],
+            Base::Rdi,
+            4,
+            false,
+            false,
+        ),
+        (
+            "lock cmpxchg [rdi], rcx",
+            &[0xf0, 0x48, 0x0f, 0xb1, 0x0f],
+            Base::Rdi,
+            8,
+            false,
+            false,
+        ),
+        ("fnstcw [rdi]", &[0xd9, 0x3f], Base::Rdi, 2, false, false),
+        ("fnstsw [rdi]", &[0xdd, 0x3f], Base::Rdi, 2, false, false),
+        ("fild dword [rdi]", &[0xdb, 0x07], Base::Rdi, 4, true, false),
+        ("fnsave [rdi]", &[0xdd, 0x37], Base::Rdi, 4, false, false),
+        ("fnstenv [rax]", &[0xd9, 0x30], Base::Rax, 4, true, false),
+        ("fldenv [rax]", &[0xd9, 0x20], Base::Rax, 4, true, true),
+        ("frstor [rax]", &[0xdd, 0x20], Base::Rax, 4, true, true),
+    ];
+    for &(name, bytes, base, requirement, empty_x87, image) in forms {
+        for cpl in [0u8, 3] {
+            for am in [false, true] {
+                for ac in [false, true] {
+                    for shift in [0u64, 1, 2, 4, 8] {
+                        let expected = cpl == 3 && am && ac && shift % requirement != 0;
+                        let (fault, _) =
+                            run_entry(bytes, base, cpl, (am, ac), shift, (empty_x87, image));
+                        assert_eq!(
+                            fault.as_ref() == Some(&ALIGNMENT_CHECK),
+                            expected,
+                            "{name} CPL{cpl} AM {am} AC {ac} shift {shift}: {fault:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// ADR-0023 decision 4 (C2a-3 item 2a): a misaligned `LOCK XADD` at CPL3 runs atomically as at CPL0
+/// (no refusal of a split lock: the CPL0 set has none) — inside a page and across a page boundary —
+/// and with CR0.AM and RFLAGS.AC it is #AC(0) with nothing changed.
+#[test]
+fn split_lock_with_ac_at_cpl3_is_alignment_check() {
+    let bytes = [0xf0, 0x0f, 0xc1, 0x07]; // lock xadd [rdi], eax
+    for shift in [1u64, 0x1000 - 0x400 - 2] {
+        let (fault0, cpl0) = run_entry(&bytes, Base::Rdi, 0, (true, false), shift, (false, false));
+        let (fault3, cpl3) = run_entry(&bytes, Base::Rdi, 3, (true, false), shift, (false, false));
+        assert_eq!((fault0, fault3.clone()), (None, None), "shift {shift:#x}");
+        assert_eq!(
+            run_exit(cpl3.result.as_ref().unwrap()),
+            &RunExit::InstructionBudgetExhausted
+        );
+        assert_eq!(cpl3.state.gpr, cpl0.state.gpr, "shift {shift:#x}");
+        assert_eq!(cpl3.state.rflags, cpl0.state.rflags, "shift {shift:#x}");
+        assert_eq!(cpl3.memory.writes, cpl0.memory.writes, "shift {shift:#x}");
+        assert!(
+            cpl3.memory
+                .accesses
+                .iter()
+                .any(|access| access.kind == DataAccess::Atomic),
+            "one atomic read-modify-write"
+        );
+        let (fault, _) = run_entry(&bytes, Base::Rdi, 3, (true, true), shift, (false, false));
+        assert_eq!(fault, Some(ALIGNMENT_CHECK), "shift {shift:#x}");
+    }
+}
+
+/// Review F3, G2 (ISSUE-722): the x87 m80 and BCD forms `[RAX]` and FSTP m64 `[RAX]` on the bare Ring3
+/// step with FCS/FDS not represented (`None`: the bare x87 forms refuse represented selectors), shifts
+/// {0, 1, 2, 4, 8}, on three stacks: the stack of the fixture (full), the fixture with two values
+/// (TOP = 6), and the state after FNINIT (`GuestFpState::initial`, all exceptions masked) with two
+/// values. The rule of the completeness test: with AC = 1 an aligned operand is never #AC; a
+/// misaligned one (requirement 8: Table 7-7 «80-bit» and «64-bit», BCD a choice of the model) is #AC(0)
+/// with nothing changed, or — only on the fixture stacks, where the same case with AC = 0 refuses
+/// before any data access — that same refusal. On the FNINIT stack with two values all five forms run
+/// with AC = 0 and every misaligned case is #AC(0).
+#[test]
+fn x87_m80_and_bcd_forms_raise_alignment_check_on_the_bare_ring3_step() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Stack {
+        Fixture,
+        FixtureTwoValues,
+        InitialTwoValues,
+    }
+    let forms: &[(&str, &[u8])] = &[
+        ("fld tbyte [rax]", &[0xdb, 0x28]),
+        ("fstp tbyte [rax]", &[0xdb, 0x38]),
+        ("fbld [rax]", &[0xdf, 0x20]),
+        ("fbstp [rax]", &[0xdf, 0x30]),
+        ("fstp qword [rax]", &[0xdd, 0x18]),
+    ];
+    let run = |bytes: &[u8], stack: Stack, ac: bool, shift: u64| {
+        let mut state = bare_state();
+        let x87 = state.x87.as_mut().unwrap();
+        if stack == Stack::InitialTwoValues {
+            *x87 = execute::GuestFpState::initial().x87;
+        }
+        x87.instruction_selector = None;
+        x87.data_selector = None;
+        if stack != Stack::Fixture {
+            x87.registers[6] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+            x87.registers[7] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40];
+            x87.status_word = 6 << 11;
+            x87.tag_word = 0x0fff;
+        }
+        if ac {
+            state.rflags |= AC;
+        }
+        place(&mut state, Base::Rax, shift);
+        let before = state.clone();
+        let mut memory = SweepMemory::default();
+        memory.on_demand = true;
+        memory.map(RIP, true, true);
+        memory.map(OPERAND, true, true);
+        // A valid source at the operand (zero is a valid BCD and m80 encoding).
+        memory.put(OPERAND + shift, &[0; 10]);
+        let (outcome, after, memory) = bare_run(state, memory, bytes);
+        (outcome, after == before, memory)
+    };
+    for &(name, bytes) in forms {
+        let mut faults = 0;
+        for stack in [
+            Stack::Fixture,
+            Stack::FixtureTwoValues,
+            Stack::InitialTwoValues,
+        ] {
+            for shift in [0u64, 1, 2, 4, 8] {
+                let label = format!("{name} {stack:?} shift {shift}");
+                let (plain, _, plain_memory) = run(bytes, stack, false, shift);
+                assert_ne!(
+                    plain,
+                    Ok(StepOutcome::Fault(ALIGNMENT_CHECK)),
+                    "{label} AC 0"
+                );
+                let reaches = !plain_memory.accesses.is_empty();
+                if stack == Stack::InitialTwoValues {
+                    assert!(
+                        plain == Ok(StepOutcome::Advanced) && reaches,
+                        "{label} AC 0 runs: {plain:?}"
+                    );
+                }
+                let (outcome, unchanged, memory) = run(bytes, stack, true, shift);
+                if shift % 8 != 0 {
+                    // The check of the `[RAX]` forms precedes their preflights (C1): a misaligned
+                    // operand is #AC even where AC = 0 refuses the stack before any access (the masked
+                    // stack fault is not modeled); a case that reaches the operand must be #AC.
+                    if outcome == Ok(StepOutcome::Fault(ALIGNMENT_CHECK)) {
+                        assert!(unchanged && memory.writes.is_empty(), "{label}: changed");
+                        faults += 1;
+                    } else {
+                        assert!(
+                            stack != Stack::InitialTwoValues && !reaches && outcome == plain,
+                            "{label}: {outcome:?} / {plain:?}"
+                        );
+                    }
+                } else {
+                    assert_ne!(outcome, Ok(StepOutcome::Fault(ALIGNMENT_CHECK)), "{label}");
+                }
+            }
+        }
+        // Every form, FSTP m64 included, is #AC on the three misaligned shifts of the FNINIT stack
+        // (I10, I14, C1-6 (1), G2).
+        assert!(faults >= 3, "{name}: {faults} #AC cases");
     }
 }
