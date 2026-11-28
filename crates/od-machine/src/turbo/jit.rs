@@ -2,7 +2,8 @@
 //! to AArch64. See the module documentation of `turbo` for the register convention.
 
 use super::{
-    EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_FILL128, OP_MMIO, OP_WRITE, TLB_BITS, TurboEngine,
+    CodeMode, EXIT_BUDGET, EXIT_SLOW, MAX_BLOCK, OP_FILL128, OP_MMIO, OP_WRITE, TLB_BITS,
+    TurboEngine,
 };
 use od_isa::Register;
 use od_isa::long_decode::{
@@ -997,11 +998,21 @@ fn sse_form(insn: &Instruction) -> Option<SseForm> {
     }
 }
 
-/// Whether the translator admits `insn` (its `plan`): the differential tests check that their
-/// templates exercise generated code, not only the general path; the slow-exit profile tells a
-/// missing template from a refusal at run time.
-pub(super) fn admitted(insn: &Instruction) -> bool {
-    plan(insn).is_some()
+/// The plan of `insn` for code of `mode` (ADR-0023 decision 7): the templates at CPL0; none at
+/// CPL3 until slice C5b (`UserNoCode`: the engine only decodes there and leaves every instruction
+/// to the general step).
+fn plan_for(insn: &Instruction, mode: CodeMode) -> Option<Plan> {
+    match mode {
+        CodeMode::Supervisor => plan(insn),
+        CodeMode::UserNoCode => None,
+    }
+}
+
+/// Whether the translator admits `insn` in code of `mode` (its `plan_for`): the differential tests
+/// check that their templates exercise generated code, not only the general path; the slow-exit
+/// profile tells a missing template from a refusal at run time.
+pub(super) fn admitted(insn: &Instruction, mode: CodeMode) -> bool {
+    plan_for(insn, mode).is_some()
 }
 
 /// The REP MOVS/STOS forms the general path admits with 64-bit addresses.
@@ -3379,24 +3390,28 @@ fn form(operand: &Operand) -> &'static str {
     }
 }
 
-/// Translate the block at `rip` (on physical page `page`, host bytes at `host_page`).
+/// Translate the block of code mode `mode` at `rip` (on physical page `page`, host bytes at
+/// `host_page`).
 pub(crate) fn compile(
     engine: &mut TurboEngine,
     rip: u64,
     page: u64,
     host_page: *const u8,
     context: AccessContext,
+    mode: CodeMode,
 ) -> Compiled {
-    compile_limited(engine, rip, page, host_page, context, MAX_BLOCK, None)
+    compile_limited(engine, rip, page, host_page, context, mode, MAX_BLOCK, None)
 }
 
 /// [`compile`] with at most `max` instructions.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_limited(
     engine: &mut TurboEngine,
     rip: u64,
     page: u64,
     host_page: *const u8,
     context: AccessContext,
+    mode: CodeMode,
     max: usize,
     next_host: Option<*const u8>,
 ) -> Compiled {
@@ -3427,7 +3442,7 @@ pub(crate) fn compile_limited(
         if fetch.crossed && !insns.is_empty() {
             break;
         }
-        let Some(plan) = plan(&insn) else {
+        let Some(plan) = plan_for(&insn, mode) else {
             engine.pending_decodes.push((at, insn));
             break;
         };

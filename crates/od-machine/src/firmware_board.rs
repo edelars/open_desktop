@@ -11244,10 +11244,12 @@ mod tests {
     /// general step — exit, state, COM1 and `cpl3_retired` — over forms the allow-list refused before
     /// C2a: `mov rbx, rcx` (ISSUE-719), `add [rsp-0x40], eax`, `lock xadd [rsp-0x48], eax`, `movups
     /// [rsp-0x60], xmm0`, `mov rax, gs:[0x30]` (the TEB load of ntdll), a loop of `dec ecx; jnz`, and a
-    /// `wrmsr` (#GP(0) at CPL3, the end of the run without an IDT). The turbo engine does not run CPL3
-    /// (decision 7, slice C5), so both runs take the general step; the test pins that the turbo hook
-    /// leaves a CPL3 phase as the general step leaves it. The `SYSCALL`/`SYSRETQ` round trip of the
-    /// plan needs a kernel this helper does not have (the CPL0 phases are the slice T test).
+    /// `wrmsr` (#GP(0) at CPL3, the end of the run without an IDT). ADR-0023 slice C5a: the turbo
+    /// engine runs CPL3 too, without generated code until slice C5b: it decodes every instruction
+    /// and the general step runs it with that decode; the test pins that a CPL3 phase under the
+    /// turbo hook equals the general step and that the engine ran there (runs, no retirements).
+    /// The `SYSCALL`/`SYSRETQ` round trip of the plan needs a kernel this helper does not have (the
+    /// CPL0 phases are the slice T test).
     #[test]
     fn a_cpl3_phase_with_turbo_equals_the_general_step() {
         #[rustfmt::skip]
@@ -11282,6 +11284,20 @@ mod tests {
             "{}",
             without.set_exit_detail
         );
+        let Some(engine) = turbo.turbo_engine() else {
+            // A host without the engine: the run was the general step's (on macOS/aarch64 the
+            // engine must exist).
+            assert!(
+                !cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                "no turbo engine"
+            );
+            return;
+        };
+        // The phase has no CPL0 instruction: every run of the engine was a CPL3 one, at least one
+        // before each of the 98 retired instructions and the `wrmsr`; none ran generated code
+        // (slice C5a; slice C5b turns this into retirements at CPL3).
+        assert!(engine.stats.runs >= 2 + 16 * 6 + 1, "{:?}", engine.stats);
+        assert_eq!(engine.stats.retired, 0, "{:?}", engine.stats);
     }
 
     /// S7-32 slice T: the Windows set lets the bare `RDMSR` reach the step at CPL3 (the privilege

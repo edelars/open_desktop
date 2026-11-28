@@ -30960,6 +30960,17 @@ fn cpl3_rep_string_retire_shadow(state: &mut LongModeState) {
     }
 }
 
+/// ADR-0023 slice C5a (review F1): whether [`run_with_cpl3_profile_set`] admits `state` with `set`:
+/// none of the refusals it returns before any fetch (`WrongPrivilege` of the state,
+/// `SyscallCellsMissing`, the Windows MSR admission). For a caller that must do nothing on a state
+/// the entry refuses (the turbo engine at CPL3: no fetch walk, no decode, no watch). The access
+/// context is the caller's (Ring3 at CPL3).
+pub fn cpl3_entry_admits(state: &LongModeState, set: &Cpl0ProfileSet<'_>) -> bool {
+    ring3_state_admitted(state)
+        && set.syscall_cells_present()
+        && set.windows_msr_admission().is_ok()
+}
+
 /// S4-39a Ring3 admission by the cached state: CS selector RPL 3 over a CS cache with DPL 3 and
 /// L = 1, SS selector RPL 3 over a loaded SS cache.
 fn ring3_state_admitted(state: &LongModeState) -> bool {

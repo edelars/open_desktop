@@ -3350,6 +3350,8 @@ fn run_cpl0_set_loop_impl<
             if turbo_rdtsc_next == Some(state.rip)
                 && let Some(source) = rdtsc.as_mut()
             {
+                // At CPL3 the engine never stops at an RDTSC: it has no template there.
+                debug_assert!(!cpl3, "a turbo RDTSC exit at CPL3 at {:#x}", state.rip);
                 turbo_rdtsc_next = None;
                 let value = source();
                 state.gpr[od_isa::Register::Rax as usize] = u64::from(value as u32);
@@ -3366,8 +3368,11 @@ fn run_cpl0_set_loop_impl<
                 Some(polled) => polled.is_some(),
             };
             let in_shadow = crate::turbo::admits_in_shadow(state);
+            // ADR-0023 slice C5a: the engine runs CPL0 and CPL3 (the code mode of the run, a key of
+            // its code; CPL 1 and 2 and a CPL3 state the CPL3 entry refuses have none and leave the
+            // engine out).
             if turbo_force_slow != Some(state.rip)
-                && !cpl3
+                && let Some(mode) = crate::turbo::CodeMode::of(state, set)
                 && (crate::turbo::admits(state) || in_shadow)
             {
                 let masked = polled
@@ -3426,7 +3431,8 @@ fn run_cpl0_set_loop_impl<
                     executed_at_start: instructions_executed,
                     quantum_base: &mut quantum_base,
                     instruction_budget: &mut instruction_budget,
-                    cpl: 0,
+                    cpl: if cpl3 { 3 } else { 0 },
+                    mode,
                     tick: hook.tick.map(|tick| tick as *const AtomicBool),
                     tsc_next: None,
                     fp: set.fp_state().map(std::cell::RefCell::as_ptr),
@@ -3450,6 +3456,14 @@ fn run_cpl0_set_loop_impl<
                 );
                 mmio_written |= io.mmio_written();
                 drop(io);
+                // C5a: no generated code at CPL3 (slice C5b counts its retirements in
+                // `cpl3_retired`).
+                debug_assert!(
+                    !cpl3 || outcome.retired == 0,
+                    "turbo retired {} CPL3 instructions at {:#x}",
+                    outcome.retired,
+                    state.rip
+                );
                 if in_shadow && outcome.retired == 1 {
                     state.sti_shadow = Some(od_isa::StiShadow::Clear);
                 }
@@ -3648,14 +3662,9 @@ fn run_cpl0_set_loop_impl<
         memory.capture_page_fault_trace = execution_observations.is_some();
         memory.descriptor_gate = split_gate;
         if let Some(hook) = turbo.as_mut() {
+            // ADR-0023 slice C5a: the engine runs CPL3 too (without generated code until C5b) and
+            // hands the step its decode; the decoder does not depend on the CPL.
             memory.turbo_insn = hook.engine.take_slow_decode(instruction_rip);
-            // ADR-0023 slice C2a (review F12): turbo never runs CPL3 (decision 7, slice C5), so it
-            // leaves no deferred decode for a CPL3 instruction; `cached_instruction` answers only
-            // at CPL0. Debug builds only: the CPL0 hot path is unchanged in release.
-            debug_assert!(
-                !cpl3 || memory.turbo_insn.is_none(),
-                "a turbo decode handed to a CPL3 step at {instruction_rip:#x}"
-            );
             memory.turbo_tlb = Some(hook.engine.tlbs());
         }
         let run_config = RunConfig {
@@ -6637,7 +6646,8 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         // A same-page read of 1, 2, 4 or 8 bytes of the set loop's adapter is served by the TLB of
-        // the turbo engine, only where the read below would be exactly
+        // the turbo engine (an entry of the context of the same CPL and paging, `view_host`), only
+        // where the read below would be exactly
         // `self.access(address, context, Read { width })` (`direct_read_width`), and only while no
         // logged write to a watched page (a page-table frame or code) waits for the engine: such
         // a write may have changed a translation the TLB holds. Everything else below is
@@ -6650,7 +6660,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
             && let Some(host) = crate::turbo::view_host(
                 view,
                 &self.paging,
-                context.page_privilege() == PrivilegeLevel::Ring0,
+                context.page_privilege(),
                 false,
                 address,
                 destination.len(),
@@ -6791,7 +6801,8 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
         bytes[..expected].copy_from_slice(source);
         let value = u64::from_le_bytes(bytes);
         // A same-page `Explicit` write of the set loop's adapter is served by the write TLB of the
-        // turbo engine, only where the write below would be exactly
+        // turbo engine (an entry of the context of the same CPL and paging, `view_host`), only
+        // where the write below would be exactly
         // `self.access(address, context, Write { width, value })`: after the refusals of
         // `read_only_qword`, the vector and the width above, no descriptor-table target (its check
         // and record) and no stack frame of a delivery (`ImplicitStack`), inside one 4 KiB page
@@ -6807,7 +6818,7 @@ impl<'a> GuestMemory for PagedMovMemoryAdapter<'a> {
             && let Some(host) = crate::turbo::view_host(
                 view,
                 &self.paging,
-                context.page_privilege() == PrivilegeLevel::Ring0,
+                context.page_privilege(),
                 true,
                 address,
                 expected,

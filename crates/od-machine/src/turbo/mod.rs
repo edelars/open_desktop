@@ -26,7 +26,7 @@ mod tests;
 use crate::page_walk::{Long64ProbeConfig, RamAccessOperation, TrackedAccessRequest};
 use crate::{GuestLinearAddress, GuestPhysicalAddress, PhysicalMemory};
 use od_isa::LongModeState;
-use od_isa::memory::{AccessContext, AccessKind};
+use od_isa::memory::{AccessContext, AccessKind, PrivilegeLevel};
 use od_jit::exec_arena::ExecutableArena;
 use profile::{Refusal, SlowProfile, SlowReason};
 use std::collections::HashMap as StdHashMap;
@@ -125,11 +125,28 @@ pub(crate) struct TlbView {
     pub wtlb: *const TlbEntry,
     /// The paging of the active context (the TLBs hold translations of it alone).
     pub paging: Option<Long64ProbeConfig>,
+    /// The page privilege of the accesses that filled the TLBs of the active context: `Ring3`
+    /// for the context of CPL3, `Ring0` otherwise (ADR-0023 decision 7, slice C5a).
+    pub privilege: PrivilegeLevel,
 }
 
-/// One cached translation context (TLBs and the lookup table of one CR3/paging key).
+/// The key of a translation context: the walker snapshot (CR0, CR3, CR4, EFER), RFLAGS.AC and the
+/// CPL (ADR-0023 decision 7: "the key of the translation slot includes the CPL"). The rights of a
+/// cached translation are those of the accesses of its context: a context of CPL3 holds only
+/// translations filled by user accesses, one of CPL0 only by supervisor ones, so neither
+/// generated code nor `view_host` checks U/S or R/W on a hit. The CPL and AC also keep the code of
+/// different code modes apart: the lookup table of a context is consulted before `code_for`, and
+/// the code mode is a function of this key (plan C5, contract 4.9).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SlotKey {
+    paging: Long64ProbeConfig,
+    ac: bool,
+    cpl: u8,
+}
+
+/// One cached translation context (TLBs and the lookup table of one [`SlotKey`]).
 struct Slot {
-    key: Option<(Long64ProbeConfig, u64)>,
+    key: Option<SlotKey>,
     rtlb: Box<[TlbEntry]>,
     wtlb: Box<[TlbEntry]>,
     lookup: Box<[LookupEntry]>,
@@ -318,6 +335,41 @@ const _: () = assert!(std::mem::offset_of!(TurboCtx, cmps_helper) == CTX_CMPS_HE
 const _: () = assert!(std::mem::offset_of!(TurboCtx, cmp_a) == CTX_CMP_A as usize);
 const _: () = assert!(std::mem::offset_of!(TurboCtx, cmp_b) == CTX_CMP_B as usize);
 
+/// The code mode of a run: which generated code the engine may run (ADR-0023 decision 7). It is a
+/// key of the code cache (`blocks`, `singles`, `crossings`), computed once per run by the set loop
+/// from the state; the engine has no field "current mode" (no global CPL state). A function of the
+/// translation context's [`SlotKey`] (CPL and AC there, CR0.AM in the walker snapshot): the lookup
+/// table of a context holds code of one mode only. Slice C5b adds `User` (templates at CPL3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CodeMode {
+    /// CPL0: every template of `jit::plan`.
+    Supervisor,
+    /// CPL3 without templates (slice C5a): the engine decodes, keeps the code pages and the
+    /// tables watched and hands the general step its decode; it runs no generated instruction.
+    UserNoCode,
+}
+
+impl CodeMode {
+    /// Every mode (the code of a written page is dropped for each).
+    pub(crate) const ALL: [CodeMode; 2] = [CodeMode::Supervisor, CodeMode::UserNoCode];
+
+    /// The mode of a run from `state` under `set`: CPL0 `Supervisor`; CPL3 `UserNoCode` only when
+    /// the CPL3 entry admits the state with the set (`od_isa::execute::cpl3_entry_admits`: CS.L = 1,
+    /// DPL 3, the caches, RPL SS 3, the cells of the set), otherwise `None`: the entry refuses before
+    /// any fetch, so the engine must not walk, decode or watch either (review F1); CPL 1 and 2 `None`
+    /// (not reachable: the CPL0 entry refuses RPL 1 and 2). With `None` the engine does not run.
+    pub(crate) fn of(
+        state: &LongModeState,
+        set: &od_isa::execute::Cpl0ProfileSet<'_>,
+    ) -> Option<CodeMode> {
+        match cpl_of(state) {
+            0 => Some(CodeMode::Supervisor),
+            3 if od_isa::execute::cpl3_entry_admits(state, set) => Some(CodeMode::UserNoCode),
+            _ => None,
+        }
+    }
+}
+
 /// What a run needs from the set loop (borrowed for the duration of one run).
 pub(crate) struct RunEnv<'a> {
     pub ram: &'a PhysicalMemory,
@@ -344,6 +396,8 @@ pub(crate) struct RunEnv<'a> {
     pub quantum_base: *mut u64,
     pub instruction_budget: *mut u64,
     pub cpl: usize,
+    /// The code mode of the run ([`CodeMode::of`] of the state the run starts from).
+    pub mode: CodeMode,
     pub tick: Option<*const std::sync::atomic::AtomicBool>,
     /// The TSC an RDTSC of the current (merged) quantum reads, when the fast transition knows it.
     pub tsc_next: Option<u64>,
@@ -353,6 +407,16 @@ pub(crate) struct RunEnv<'a> {
     /// S7-32: the MMIO dispatch of the set loop's step view (the windows and devices the general
     /// step reaches), for the `OP_MMIO` accesses.
     pub mmio: Option<*const (dyn crate::bus::SetStepMmio + 'static)>,
+}
+
+impl RunEnv<'_> {
+    /// Whether the accesses of the run are user accesses (CPL3): the helpers of the engine make
+    /// only explicit and stack accesses, whose page privilege is the privilege of the context
+    /// (`AccessContext::page_privilege`); the implicit supervisor accesses to descriptor tables
+    /// are general steps.
+    pub(crate) fn user(&self) -> bool {
+        self.context.privilege == PrivilegeLevel::Ring3
+    }
 }
 
 #[repr(C)]
@@ -554,21 +618,22 @@ pub(crate) struct TurboEngine {
     slots: Vec<Slot>,
     view: Box<TlbView>,
     stamp: u64,
-    blocks: HashMap<(u64, u64), BlockInfo>,
+    /// Blocks by (RIP, physical page, code mode).
+    blocks: HashMap<(u64, u64, CodeMode), BlockInfo>,
     /// Physical page -> keys of the blocks on it.
-    code_pages: HashMap<u64, Vec<(u64, u64)>>,
+    code_pages: HashMap<u64, Vec<(u64, u64, CodeMode)>>,
     /// Physical page -> bitmap of its bytes that compiled instructions came from.
     code_bytes: HashMap<u64, Box<[u64; 64]>>,
     /// Physical pages known to be page-table frames of cached translations: bit 0 a leaf
     /// table, bit 1 an upper level.
     pt_frames: HashMap<u64, u8>,
     offsets: StateOffsets,
-    paging_key: Option<(Long64ProbeConfig, u64)>,
-    singles: HashMap<(u64, u64), BlockInfo>,
+    paging_key: Option<SlotKey>,
+    singles: HashMap<(u64, u64, CodeMode), BlockInfo>,
     /// Blocks of one instruction crossing a page, by (RIP, first physical page): the physical
     /// page of the rest and the code. Kept out of `blocks`: every install walks the second page
     /// again.
-    crossings: HashMap<(u64, u64), (u64, usize)>,
+    crossings: HashMap<(u64, u64, CodeMode), (u64, usize)>,
     /// Per physical page: the RIPs of its singles, slow decodes and stub lookups.
     page_extras: HashMap<u64, Vec<u64>>,
     /// Per leaf table frame: the index of the list of TLB and lookup entries filled through it.
@@ -579,7 +644,8 @@ pub(crate) struct TurboEngine {
     free_lists: Vec<u32>,
     /// The frame of the last noted reference and its list.
     last_ref: (u64, u32),
-    /// Decodes of instructions the generated code stops before, by (RIP, physical page).
+    /// Decodes of instructions the generated code stops before, by (RIP, physical page); without
+    /// the code mode: the decoder does not depend on the CPL.
     slow_insns: HashMap<(u64, u64), od_isa::long_decode::Instruction>,
     /// Decodes made by the last translation (filled by `jit::compile_limited`).
     pub(crate) pending_decodes: Vec<(u64, od_isa::long_decode::Instruction)>,
@@ -713,6 +779,7 @@ impl TurboEngine {
                 rtlb: std::ptr::null(),
                 wtlb: std::ptr::null(),
                 paging: None,
+                privilege: PrivilegeLevel::Ring0,
             }),
             stamp: 0,
             blocks: HashMap::default(),
@@ -1040,7 +1107,9 @@ impl TurboEngine {
         }
         if let Some(rips) = self.page_extras.remove(&page) {
             for rip in rips {
-                self.singles.remove(&(rip, page));
+                for mode in CodeMode::ALL {
+                    self.singles.remove(&(rip, page, mode));
+                }
                 self.slow_insns.remove(&(rip, page));
                 self.drop_lookup_of(rip, page);
             }
@@ -1076,7 +1145,11 @@ impl TurboEngine {
     }
 
     fn check_paging(&mut self, state: &LongModeState, paging: &Long64ProbeConfig) {
-        let key = (*paging, state.rflags & (1 << 18));
+        let key = SlotKey {
+            paging: *paging,
+            ac: state.rflags & (1 << 18) != 0,
+            cpl: cpl_of(state),
+        };
         if self.paging_key == Some(key) {
             return;
         }
@@ -1158,6 +1231,7 @@ impl TurboEngine {
         self.last_page = u64::MAX;
         self.last_leaf = u64::MAX;
         self.device_error = None;
+        self.refusal = None;
         self.sync_view();
     }
 
@@ -1178,7 +1252,7 @@ impl TurboEngine {
     /// the fetch itself needs the general path (a fault, not RAM).
     fn code_for(&mut self, env: &mut RunEnv<'_>, rip: u64) -> Option<usize> {
         self.stats.lookups += 1;
-        if let Some(walk) = fast_translate(env.ram, &env.paging, rip, WalkKind::Fetch) {
+        if let Some(walk) = fast_translate(env.ram, &env.paging, rip, WalkKind::Fetch, env.user()) {
             apply_ad(&walk, false);
             return self.code_for_physical(
                 env,
@@ -1224,13 +1298,14 @@ impl TurboEngine {
             self.flush_write_tlb();
         }
         self.last_leaf = leaf;
-        if let Some(info) = self.blocks.get(&(rip, page)) {
+        let mode = env.mode;
+        if let Some(info) = self.blocks.get(&(rip, page, mode)) {
             let code = info.code;
             self.install(rip, code, page);
             return Some(code);
         }
         self.pending_decodes.clear();
-        let compiled = jit::compile(self, rip, page, host_page as *const u8, env.context);
+        let compiled = jit::compile(self, rip, page, host_page as *const u8, env.context, mode);
         self.keep_decodes(page);
         if !matches!(compiled, jit::Compiled::NoSpace) && !env.ram.code_watch(physical) {
             env.ram.set_code_watch(physical, true);
@@ -1242,8 +1317,12 @@ impl TurboEngine {
                 self.mark_code(page, &ranges);
                 self.stats.compiled_blocks += 1;
                 self.stats.compiled_instructions += instructions as u64;
-                self.blocks.insert((rip, page), BlockInfo { code, page });
-                self.code_pages.entry(page).or_default().push((rip, page));
+                self.blocks
+                    .insert((rip, page, mode), BlockInfo { code, page });
+                self.code_pages
+                    .entry(page)
+                    .or_default()
+                    .push((rip, page, mode));
                 if !env.ram.code_watch(physical) {
                     env.ram.set_code_watch(physical, true);
                     // No write entry may point at a code page.
@@ -1255,13 +1334,16 @@ impl TurboEngine {
                 // Remembered like a block, so that a flush of the lookup table does not
                 // translate it again.
                 self.blocks.insert(
-                    (rip, page),
+                    (rip, page, mode),
                     BlockInfo {
                         code: self.slow_stub,
                         page,
                     },
                 );
-                self.code_pages.entry(page).or_default().push((rip, page));
+                self.code_pages
+                    .entry(page)
+                    .or_default()
+                    .push((rip, page, mode));
                 self.slow_stub
             }
             jit::Compiled::Rdtsc => self.rdtsc_stub,
@@ -1295,7 +1377,8 @@ impl TurboEngine {
             GuestLinearAddress::new(rip),
         )?;
         let page = physical.get() >> 12;
-        if let Some(info) = self.singles.get(&(rip, page)) {
+        let mode = env.mode;
+        if let Some(info) = self.singles.get(&(rip, page, mode)) {
             return Some(info.code);
         }
         let host_page = env.ram.ram_page_host_ptr(physical)?;
@@ -1306,6 +1389,7 @@ impl TurboEngine {
             page,
             host_page as *const u8,
             env.context,
+            mode,
             1,
             None,
         );
@@ -1317,7 +1401,8 @@ impl TurboEngine {
         match compiled {
             jit::Compiled::Block(code, _, ranges) => {
                 self.mark_code(page, &ranges);
-                self.singles.insert((rip, page), BlockInfo { code, page });
+                self.singles
+                    .insert((rip, page, mode), BlockInfo { code, page });
                 self.page_extras.entry(page).or_default().push(rip);
                 self.code_pages.entry(page).or_default();
                 if !env.ram.code_watch(physical) {
@@ -1370,9 +1455,10 @@ impl TurboEngine {
         }
         let page = physical.get() >> 12;
         let next_page = next_physical.get() >> 12;
+        let mode = env.mode;
         // A block translated before for the same two physical pages (the walk above is made on
         // every install, so a changed second translation is never missed).
-        if let Some(&(known_next, code)) = self.crossings.get(&(rip, page))
+        if let Some(&(known_next, code)) = self.crossings.get(&(rip, page, mode))
             && known_next == next_page
         {
             return Some(code);
@@ -1386,6 +1472,7 @@ impl TurboEngine {
             page,
             host as *const u8,
             env.context,
+            mode,
             1,
             Some(next_host as *const u8),
         );
@@ -1405,15 +1492,15 @@ impl TurboEngine {
         self.mark_code(next_page, &[(0, 16)]);
         for (p, phys) in [(page, physical), (next_page, next_physical)] {
             let keys = self.code_pages.entry(p).or_default();
-            if !keys.contains(&(rip, page)) {
-                keys.push((rip, page));
+            if !keys.contains(&(rip, page, mode)) {
+                keys.push((rip, page, mode));
             }
             if !env.ram.code_watch(phys) {
                 env.ram.set_code_watch(phys, true);
             }
         }
         self.flush_write_tlb();
-        self.crossings.insert((rip, page), (next_page, code));
+        self.crossings.insert((rip, page, mode), (next_page, code));
         self.stats.compiled_blocks += 1;
         Some(code)
     }
@@ -1431,7 +1518,12 @@ impl TurboEngine {
     fn sync_view(&mut self) {
         self.view.rtlb = self.rtlb.as_ptr();
         self.view.wtlb = self.wtlb.as_ptr();
-        self.view.paging = self.paging_key.map(|key| key.0);
+        self.view.paging = self.paging_key.map(|key| key.paging);
+        // Without a key the view has no paging and answers nothing.
+        self.view.privilege = match self.paging_key {
+            Some(key) if key.cpl == 3 => PrivilegeLevel::Ring3,
+            _ => PrivilegeLevel::Ring0,
+        };
     }
 
     /// The decode of the instruction at `rip` the last run ended before, if the engine has it.
@@ -1504,7 +1596,19 @@ impl TurboEngine {
         let reason = match instruction {
             _ if no_code => SlowReason::NoCode,
             None => SlowReason::NoCode,
-            Some(instruction) if !jit::admitted(&instruction) => SlowReason::NoTemplate,
+            // A CPL3 form without generated code is classified as at CPL0: whether a template
+            // exists for it (slice C5a; the profile line carries the CPL and the operation).
+            Some(instruction)
+                if !jit::admitted(
+                    &instruction,
+                    match env.mode {
+                        CodeMode::UserNoCode => CodeMode::Supervisor,
+                        mode => mode,
+                    },
+                ) =>
+            {
+                SlowReason::NoTemplate
+            }
             Some(_) => match refusal {
                 Some(refusal) => SlowReason::Refused(refusal),
                 None => {
@@ -1886,7 +1990,7 @@ unsafe extern "C" fn mem_helper(
     } else {
         WalkKind::Read
     };
-    if let Some(walk) = fast_translate(env.ram, &env.paging, address, kind) {
+    if let Some(walk) = fast_translate(env.ram, &env.paging, address, kind, env.user()) {
         let page = walk.physical >> 12;
         // SAFETY: the host page of the walk holds the whole access (no page crossing).
         let host = unsafe { walk.host_page.add((address & 0xfff) as usize) };
@@ -2180,7 +2284,7 @@ fn fill128(
     } else {
         WalkKind::Read
     };
-    let Some(walk) = fast_translate(env.ram, &env.paging, address, kind) else {
+    let Some(walk) = fast_translate(env.ram, &env.paging, address, kind, env.user()) else {
         engine.stats.tlb_fallbacks += 1;
         let refusal = if engine.profile.is_some() {
             // Why, for the profile only: the read-only walk of the general path.
@@ -2290,7 +2394,8 @@ fn cpl_of(state: &LongModeState) -> u8 {
     state.cs_selector.map_or(0, |selector| (selector & 3) as u8)
 }
 
-/// Admission of generated code: CPL0, no TF/RF, no STI/MOV SS shadow, running.
+/// Admission of generated code: no TF/RF, no STI/MOV SS shadow, running (the CPL decides
+/// [`CodeMode::of`] in the set loop).
 pub(crate) fn admits(state: &LongModeState) -> bool {
     const TF: u64 = 1 << 8;
     const RF: u64 = 1 << 16;
@@ -2409,7 +2514,8 @@ unsafe fn rep_run(
             let a = rsi.wrapping_add(i * size);
             if a >> 12 != src_page {
                 src_page = a >> 12;
-                let Some(walk) = fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read)
+                let Some(walk) =
+                    fast_translate(env.ram, &env.paging, a & !0xfff, WalkKind::Read, env.user())
                 else {
                     return 1;
                 };
@@ -2420,8 +2526,13 @@ unsafe fn rep_run(
         }
         if d >> 12 != dst_page {
             dst_page = d >> 12;
-            let Some(walk) = fast_translate(env.ram, &env.paging, d & !0xfff, WalkKind::Write)
-            else {
+            let Some(walk) = fast_translate(
+                env.ram,
+                &env.paging,
+                d & !0xfff,
+                WalkKind::Write,
+                env.user(),
+            ) else {
                 return 1;
             };
             walks.push((dst_page, walk));
@@ -2602,7 +2713,7 @@ unsafe extern "C" fn cmps_helper(
             return None;
         }
         if pages[slot].0 != address >> 12 {
-            let walk = fast_translate(env.ram, &env.paging, address, WalkKind::Read)?;
+            let walk = fast_translate(env.ram, &env.paging, address, WalkKind::Read, env.user())?;
             apply_ad(&walk, false);
             pages[slot] = (address >> 12, walk.host_page);
         }
@@ -2667,26 +2778,30 @@ fn width_mask(size: u64) -> u64 {
     }
 }
 
-/// The host address of an access of `len` bytes at `address` when `tlb` has its page.
+/// The host address of an access of `len` bytes at `address` with page privilege `privilege`
+/// (`AccessContext::page_privilege`) through the view's TLB (`write`: the write TLB) when the
+/// view's context is the one of `paging` and of that privilege: an entry of a CPL0 context serves
+/// only an access of page privilege `Ring0` (the implicit descriptor-table accesses at CPL3
+/// included), an entry of a CPL3 context only a user access (ADR-0023 decision 7: "`view_host`
+/// takes the CPL into account"). RFLAGS.AC does not change a translation and is not compared.
 #[inline(always)]
-/// The host address of a CPL0 access through the view's TLB (`write`: the write TLB) when the
-/// view's context is the one of `paging`.
 pub(crate) fn view_host(
     view: *const TlbView,
     paging: &Long64ProbeConfig,
-    supervisor: bool,
+    privilege: PrivilegeLevel,
     write: bool,
     address: u64,
     len: usize,
 ) -> Option<*mut u8> {
     // SAFETY: the view of the live engine.
     let view = unsafe { &*view };
-    if !supervisor || view.paging.as_ref() != Some(paging) {
+    if view.paging.as_ref() != Some(paging) || view.privilege != privilege {
         return None;
     }
     tlb_host(if write { view.wtlb } else { view.rtlb }, address, len)
 }
 
+/// The host address of an access of `len` bytes at `address` when `tlb` has its page.
 pub(crate) fn tlb_host(tlb: *const TlbEntry, address: u64, len: usize) -> Option<*mut u8> {
     let page = address >> 12;
     if (address & 0xfff) + len as u64 > 0x1000 {
@@ -2926,6 +3041,7 @@ pub(crate) struct FastWalk {
 
 const PTE_PRESENT: u64 = 1;
 const PTE_WRITABLE: u64 = 1 << 1;
+const PTE_USER: u64 = 1 << 2;
 const PTE_ACCESSED: u64 = 1 << 5;
 const PTE_DIRTY: u64 = 1 << 6;
 const PTE_PS: u64 = 1 << 7;
@@ -2934,16 +3050,19 @@ const PTE_ADDRESS_RESERVED: u64 = ((1u64 << 16) - 1) << 36;
 const PTE_ADDRESS_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
 const PTE_2M_RESERVED: u64 = 0x1fe000;
 
-/// The translation of `linear` for a CPL0 access of `kind` with the checks of the general path's
-/// walker, reading the tables through host pointers and writing nothing; `None` for anything the
-/// fast form does not cover (a fault, a table outside RAM, an operand outside RAM/framebuffer):
-/// the general path's walker decides those. On success [`apply_ad`] makes the accessed and dirty
-/// bits that walker sets.
+/// The translation of `linear` for an access of `kind` of CPL0 (`user == false`) or CPL3
+/// (`user == true`) with the checks of the general path's walker, reading the tables through host
+/// pointers and writing nothing; `None` for anything the fast form does not cover (a fault, a
+/// table outside RAM, an operand outside RAM/framebuffer): the general path's walker decides
+/// those. A user access needs U/S = 1 at every level, a user write R/W = 1 at every level
+/// regardless of CR0.WP (ADR-0023 decision 7; the walker's `user_denied` and `write_denied`). On
+/// success [`apply_ad`] makes the accessed and dirty bits that walker sets.
 pub(crate) fn fast_translate(
     ram: &PhysicalMemory,
     paging: &Long64ProbeConfig,
     linear: u64,
     kind: WalkKind,
+    user: bool,
 ) -> Option<FastWalk> {
     if ((linear as i64) >> 47) != 0 && ((linear as i64) >> 47) != -1 {
         return None;
@@ -2959,6 +3078,7 @@ pub(crate) fn fast_translate(
     };
     let nxe = paging.nxe();
     let mut writable = true;
+    let mut user_ok = true;
     let mut no_execute = false;
     let mut large = false;
     let mut leaf = 0;
@@ -2992,6 +3112,7 @@ pub(crate) fn fast_translate(
         walk.values[level] = value;
         walk.count = level + 1;
         writable &= value & PTE_WRITABLE != 0;
+        user_ok &= value & PTE_USER != 0;
         no_execute |= value & PTE_NX != 0;
         leaf = value;
         if is_large {
@@ -3000,7 +3121,10 @@ pub(crate) fn fast_translate(
         }
         base = value & PTE_ADDRESS_MASK;
     }
-    if kind == WalkKind::Write && !writable && paging.write_protect() {
+    if user && !user_ok {
+        return None;
+    }
+    if kind == WalkKind::Write && !writable && (user || paging.write_protect()) {
         return None;
     }
     if kind == WalkKind::Fetch && nxe && no_execute {

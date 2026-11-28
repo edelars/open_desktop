@@ -88,6 +88,14 @@ const ROM_LINEAR: u64 = 0x63000;
 /// A read-only linear page (ALT + 0x9000), followed by a writable one (ALT + 0xA000).
 const READ_ONLY: u64 = 0x61000;
 const AFTER_READ_ONLY: u64 = 0x62000;
+/// ADR-0023 slice C5a, the CPL3 machine ([`Machine::user`]): a supervisor page (U = 0 at its PTE,
+/// linear = physical in both spaces), its bytes `(i * 0x6B) ^ 0xA5`.
+const SUPERVISOR: u64 = 0x64000;
+/// The TSS of the CPL3 machine (its RSP0 is `KSTACK_TOP`) and the kernel stack of deliveries
+/// from CPL3.
+const TSS: u64 = 0x3B000;
+const KSTACK: u64 = 0x3C000;
+const KSTACK_TOP: u64 = KSTACK + 0x1000;
 /// Linear windows onto the leaf table and the directory of space A.
 const PT_WINDOW: u64 = 0x70000;
 const PD_WINDOW: u64 = 0x71000;
@@ -101,6 +109,8 @@ const HIGH: u64 = 0xFFFF_FF80_0000_0000;
 
 const P: u64 = 1;
 const RW: u64 = 2;
+/// U/S (ADR-0023 slice C5a).
+const US: u64 = 4;
 const PS: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 
@@ -260,6 +270,9 @@ struct Machine {
     /// S7-32: the FP member of the set and its state (the board's Windows set has it); `None`:
     /// the set has no FP member.
     fp: Option<GuestFpState>,
+    /// ADR-0023 slice C5a: the set has the user-mode member (the CPL3 entry), see
+    /// [`Machine::user`].
+    user: bool,
 }
 
 /// The interrupt source of a case and the counters of its hook.
@@ -499,7 +512,75 @@ impl Machine {
             }),
             device_accesses,
             fp: None,
+            user: false,
         }
+    }
+
+    /// ADR-0023 slice C5a: the machine of `new` at CPL3. U = 1 in every present entry of both
+    /// spaces (PML4, PDPT, PD, PT, the 2 MiB leaf) except the PTE of `SUPERVISOR`; a DPL3 data
+    /// (`0x2b`) and 64-bit code (`0x33`) descriptor and a 64-bit TSS (`0x40`, RSP0 = `KSTACK_TOP`)
+    /// in the GDT, the task register over it; CS `0x33`, SS/DS/ES `0x2b`; the IDT of [`Self::idt`]
+    /// (an exception from CPL3 is delivered through RSP0 to `HANDLER` at CPL0, whose `HLT` ends
+    /// the call); the set gets the user-mode member.
+    fn user(seed: u64) -> Self {
+        let mut machine = Self::new(seed);
+        let bus = &machine.bus;
+        for (linear, entry) in [(TSS, TSS | P | RW | NX), (KSTACK, KSTACK | P | RW | NX)] {
+            put_qword(bus, PT_A + (linear >> 12) * 8, entry);
+            put_qword(bus, PT_B + (linear >> 12) * 8, entry);
+        }
+        for table in [PML4_A, PDPT_A, PD_A, PT_A, PML4_B, PDPT_B, PD_B, PT_B] {
+            let host = bus
+                .physical_memory()
+                .ram_page_host_ptr(at(table))
+                .expect("a RAM page");
+            // SAFETY: the host address of a 4 KiB page of plain RAM; nothing else uses the memory
+            // yet.
+            let entries = unsafe { std::slice::from_raw_parts_mut(host.cast::<u64>(), 512) };
+            for entry in entries.iter_mut().filter(|entry| **entry & P != 0) {
+                *entry |= US;
+            }
+        }
+        for table in [PT_A, PT_B] {
+            put_qword(
+                bus,
+                table + (SUPERVISOR >> 12) * 8,
+                SUPERVISOR | P | RW | NX,
+            );
+        }
+        let host = bus
+            .physical_memory()
+            .ram_page_host_ptr(at(SUPERVISOR))
+            .expect("a RAM page");
+        // SAFETY: as above.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(host, 0x1000) };
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(0x6B) as u8) ^ 0xA5;
+        }
+        // GDT: user data (0x28, selector 0x2b), 64-bit user code (0x30, selector 0x33), a 64-bit
+        // available TSS (0x40, 16 bytes).
+        put_qword(bus, GDT + 0x28, 0x00CF_F300_0000_FFFF);
+        put_qword(bus, GDT + 0x30, 0x00AF_FB00_0000_FFFF);
+        let tss_low =
+            0x67 | ((TSS & 0xFF_FFFF) << 16) | (0x8B << 40) | (((TSS >> 24) & 0xFF) << 56);
+        put_qword(bus, GDT + 0x40, tss_low);
+        put_qword(bus, GDT + 0x48, TSS >> 32);
+        put_qword(bus, TSS + 4, KSTACK_TOP);
+        machine.state.gdtr = Some(od_isa::state::Gdtr {
+            base: GDT,
+            limit: 0x4F,
+        });
+        machine.state.tr = Some(od_isa::TaskRegisterCache {
+            selector: 0x40,
+            base: TSS,
+            limit: 0x67,
+            access: 0x8B,
+            flags: 0,
+        });
+        ring3(&mut machine.state);
+        machine.idt();
+        machine.user = true;
+        machine
     }
 
     /// S7-32: the set gets the FP member (with a CPUID profile that declares FPU and FXSR), XMM
@@ -557,9 +638,14 @@ impl Machine {
 /// The CPU profile of a set with the FP member (it declares FPU and FXSR, which the member needs).
 const FP_CPUID: od_isa::cpuid::CpuidProfile = od_isa::cpuid::CpuidProfile::X8664V1Stage4A;
 
-/// The CPL0 set of the tests: the members the board's unified loop has for these programs, and
-/// the FP member over `fp` when given.
-fn with_set<R>(fp: Option<&RefCell<GuestFpState>>, f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R) -> R {
+/// The CPL0 set of the tests: the members the board's unified loop has for these programs, the FP
+/// member over `fp` when given, and with `user` the user-mode member (the CPL3 entry, ADR-0023
+/// slice C5a).
+fn with_set<R>(
+    fp: Option<&RefCell<GuestFpState>>,
+    user: bool,
+    f: impl FnOnce(&Cpl0ProfileSet<'_>) -> R,
+) -> R {
     let (cli, sti, halt) = (
         CliProfile::NonPviLong64V1,
         StiProfile::NonPviLong64V1,
@@ -576,6 +662,7 @@ fn with_set<R>(fp: Option<&RefCell<GuestFpState>>, f: impl FnOnce(&Cpl0ProfileSe
         Some(cell) => set.with_cpuid(&FP_CPUID).with_fp_state(cell),
         None => set,
     };
+    let set = if user { set.with_user_mode() } else { set };
     f(&set)
 }
 
@@ -602,7 +689,7 @@ fn irq_hook<'a>(
 fn run_reference(machine: &mut Machine, budget: u64) -> PagedCpl0SetReport {
     let mut tsc = machine.rdtsc;
     let fp = machine.fp.take().map(RefCell::new);
-    let report = with_set(fp.as_ref(), |set| {
+    let report = with_set(fp.as_ref(), machine.user, |set| {
         let mut source = || {
             tsc += 1000;
             tsc
@@ -634,7 +721,7 @@ fn run_reference(machine: &mut Machine, budget: u64) -> PagedCpl0SetReport {
 fn run_turbo(machine: &mut Machine, engine: &mut TurboEngine, budget: u64) -> PagedCpl0SetReport {
     let mut tsc = machine.rdtsc;
     let fp = machine.fp.take().map(RefCell::new);
-    let report = with_set(fp.as_ref(), |set| {
+    let report = with_set(fp.as_ref(), machine.user, |set| {
         let mut source = || {
             tsc += 1000;
             tsc
@@ -721,6 +808,8 @@ struct ReportView {
     cr3: u64,
     efer: u64,
     delivered: (u64, u64, u64),
+    /// ADR-0023 slice C5a: the retirements at CPL3.
+    cpl3_retired: u64,
     pit_written: bool,
     port_accessed: bool,
     mmio_written: bool,
@@ -742,6 +831,7 @@ fn view(report: &PagedCpl0SetReport) -> ReportView {
             report.delivered_page_faults,
             report.delivered_general_protection_faults,
         ),
+        cpl3_retired: report.cpl3_retired,
         pit_written: report.pit_written,
         port_accessed: report.port_accessed,
         mmio_written: report.mmio_written,
@@ -918,6 +1008,8 @@ struct Case<'a> {
     between: Option<&'a dyn Fn(&mut Machine, usize)>,
     /// A new engine instead of a reset one from the pool.
     fresh: bool,
+    /// ADR-0023 slice C5a: the machines are [`Machine::user`] ones.
+    user: bool,
 }
 
 impl<'a> Case<'a> {
@@ -931,12 +1023,28 @@ impl<'a> Case<'a> {
             calls: 8,
             between: None,
             fresh: false,
+            user: false,
         }
     }
 
     fn fresh(mut self) -> Self {
         self.fresh = true;
         self
+    }
+
+    /// The case runs on [`Machine::user`] machines.
+    fn user(mut self) -> Self {
+        self.user = true;
+        self
+    }
+
+    /// A machine of the case before `prepare`.
+    fn machine(&self) -> Machine {
+        if self.user {
+            Machine::user(self.seed)
+        } else {
+            Machine::new(self.seed)
+        }
     }
 
     fn program(mut self, program: &[u8]) -> Self {
@@ -974,7 +1082,7 @@ impl<'a> Case<'a> {
     /// The smallest budget with a difference, and the instruction it ended at.
     fn locate(&self) -> String {
         // The program as prepared (before anything ran): its bytes at the instruction found.
-        let mut initial = Machine::new(self.seed);
+        let mut initial = self.machine();
         (self.prepare)(&mut initial);
         let mut before = initial.state.rip;
         for budget in 1..=self.budget.min(5_000) {
@@ -987,6 +1095,7 @@ impl<'a> Case<'a> {
                 calls: self.calls,
                 between: None,
                 fresh: self.fresh,
+                user: self.user,
             };
             match case.run_once() {
                 Ok(outcome) => {
@@ -1034,8 +1143,8 @@ impl<'a> Case<'a> {
     }
 
     fn run_once(&self) -> Result<Outcome, String> {
-        let mut reference = Machine::new(self.seed);
-        let mut turbo = Machine::new(self.seed);
+        let mut reference = self.machine();
+        let mut turbo = self.machine();
         (self.prepare)(&mut reference);
         (self.prepare)(&mut turbo);
         let initial = reference.state.clone();
@@ -3184,6 +3293,29 @@ fn run_program(
         .run()
 }
 
+/// ADR-0023 slice C5a: [`run_program`] on the CPL3 machine ([`Machine::user`]). "Ran in generated
+/// code" at CPL3 (slice C5b): `Run(Halted)` after the `#GP(0)` of the final `HLT` and
+/// `general_steps <= 2` (the user `HLT` gives `#GP(0)`, the `HLT` of the handler runs at CPL0).
+fn run_program_user(
+    name: &str,
+    seed: u64,
+    rip: u64,
+    program: &[u8],
+    budget: u64,
+) -> Result<Outcome, String> {
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE + (rip & 0x7FFF), program);
+        machine.state.rip = rip;
+        randomize(machine, &mut Rng::new(seed ^ 0x5EED));
+        machine.sse(seed);
+    };
+    Case::new(name, seed, &prepare)
+        .user()
+        .program(program)
+        .budget(budget)
+        .run()
+}
+
 // ---- template tests ------------------------------------------------------------------------------
 
 /// Every instruction of a `jit` template variant is one `jit::plan` admits, and a variant declared
@@ -3211,7 +3343,9 @@ fn every_template_variant_is_admitted_as_declared() {
                 };
                 let refused: Vec<String> = instructions
                     .iter()
-                    .filter(|instruction| !super::jit::admitted(instruction))
+                    .filter(|instruction| {
+                        !super::jit::admitted(instruction, super::CodeMode::Supervisor)
+                    })
                     .map(|instruction| format!("{:?}", instruction.operation))
                     .collect();
                 let expected = (template.jit)(variant);
@@ -5501,11 +5635,739 @@ fn s7_32_slice_r_the_tlb_view_of_the_general_step_compares_the_whole_snapshot() 
     let wp1 = crate::Long64ProbeConfig::new(CR0, PML4_A, CR4, EFER).unwrap();
     let view = engine.get().tlbs();
     assert!(
-        super::view_host(view, &wp0, true, true, READ_ONLY + 0x18, 8).is_some(),
+        super::view_host(view, &wp0, PrivilegeLevel::Ring0, true, READ_ONLY + 0x18, 8).is_some(),
         "the WP = 0 context holds the write entry"
     );
     assert!(
-        super::view_host(view, &wp1, true, true, READ_ONLY + 0x18, 8).is_none(),
+        super::view_host(view, &wp1, PrivilegeLevel::Ring0, true, READ_ONLY + 0x18, 8).is_none(),
         "an adapter with WP = 1 is not served it"
     );
+}
+
+// ---- ADR-0023 slice C5a: the engine at CPL3 -----------------------------------------------------
+
+/// The CPL3 selectors and caches of [`Machine::user`] (CS `0x33`, SS/DS/ES `0x2b`).
+fn ring3(state: &mut LongModeState) {
+    state.cs_selector = Some(0x33);
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xFB,
+        flags: 2,
+    });
+    state.ss_selector = Some(0x2b);
+    state.ss_cache = Some(StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0xF3,
+        flags: 0,
+    });
+    state.ds_selector = 0x2b;
+    state.es_selector = 0x2b;
+}
+
+/// The CPL0 selectors and caches of [`Machine::new`] (a CPL0 phase on a CPL3 machine).
+fn ring0(state: &mut LongModeState) {
+    state.cs_selector = Some(0x08);
+    state.cs_cache = Some(CodeSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x9B,
+        flags: 2,
+    });
+    state.ss_selector = Some(0x10);
+    state.ss_cache = Some(StackSegmentDescriptorCache {
+        base: 0,
+        limit: u32::MAX,
+        access: 0x93,
+        flags: 0,
+    });
+    state.ds_selector = 0x10;
+    state.es_selector = 0x10;
+}
+
+/// Back to CPL3 at `rip` after a call that ended in the handler: the user stack, running.
+fn resume_user(machine: &mut Machine, rip: u64) {
+    ring3(&mut machine.state);
+    machine.state.rip = rip;
+    machine.state.gpr[Register::Rsp as usize] = STACK_TOP;
+    machine.state.rflags = 2 | IF;
+    machine.state.activity = Some(CpuActivity::Running);
+}
+
+#[test]
+fn user_machine_runs_a_user_program_through_the_general_step() {
+    // mov eax, [rbx]; add [rbx+8], eax; hlt (#GP(0) at CPL3, delivered through TSS.RSP0).
+    let mut machine = Machine::user(5);
+    machine.code(CODE, &[0x8B, 0x03, 0x01, 0x43, 0x08, 0xF4]);
+    let user_rsp = machine.state.gpr[Register::Rsp as usize];
+    let report = run_reference(&mut machine, 1_000);
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+    assert_eq!(report.cpl3_retired, 2);
+    assert_eq!(report.delivered_general_protection_faults, 1);
+    assert_eq!(report.delivered_page_faults, 0);
+    assert_eq!(
+        machine.state.cs_selector,
+        Some(0x08),
+        "the handler runs at CPL0"
+    );
+    let rsp = machine.state.gpr[Register::Rsp as usize];
+    assert_eq!(rsp, KSTACK_TOP - 48, "the frame is on the RSP0 stack");
+    let frame: Vec<u64> = (0..6)
+        .map(|index| get_qword(&machine.bus, rsp + 8 * index))
+        .collect();
+    assert_eq!(frame[0], 0, "#GP(0)");
+    assert_eq!(frame[1], CODE + 5, "the RIP of the HLT");
+    assert_eq!(frame[2], 0x33);
+    assert_eq!(frame[4], user_rsp);
+    assert_eq!(frame[5], 0x2b);
+    // mov eax, [SUPERVISOR]: #PF with U = 1, P = 1 (W = 0), CR2 the address.
+    let mut machine = Machine::user(5);
+    let mut asm = Asm::new(CODE);
+    asm.op(&[], 4, &[0x8B], RAX, Rm::Abs(SUPERVISOR as i32), &[]);
+    asm.hlt();
+    machine.code(CODE, &asm.bytes);
+    let report = run_reference(&mut machine, 1_000);
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+    assert_eq!(report.cpl3_retired, 0);
+    assert_eq!(report.delivered_page_faults, 1);
+    let rsp = machine.state.gpr[Register::Rsp as usize];
+    assert_eq!(get_qword(&machine.bus, rsp), P | US);
+    assert_eq!(get_qword(&machine.bus, rsp + 8), CODE);
+    assert_eq!(machine.state.cr2, Some(SUPERVISOR));
+}
+
+/// The fast walk of the engine agrees with the general walker (`translate_long64_2m_ram_read_only`)
+/// on every combination of U/S and R/W on every level (4 KiB and 2 MiB leaves), the NX bit of the
+/// leaf, EFER.NXE, CR0.WP, CPL0 and CPL3, and read, write and fetch; and on P = 0 at each level.
+#[test]
+fn fast_translate_agrees_with_the_general_walker_for_every_permission() {
+    use super::WalkKind;
+    use od_isa::memory::AccessKind;
+    // PML4_A[1] -> T_PDPT[0] -> T_PD[0] -> T_PT[0] -> FRAME; T_PD[1]: a 2 MiB leaf over frame 0.
+    const T_PDPT: u64 = 0xA0000;
+    const T_PD: u64 = 0xA1000;
+    const T_PT: u64 = 0xA2000;
+    const FRAME: u64 = 0xA3000;
+    const LINEAR_4K: u64 = (1 << 39) | 0x123;
+    const LINEAR_2M: u64 = (1 << 39) | (1 << 21) | FRAME | 0x123;
+    fn agree(
+        machine: &Machine,
+        entries: &[(u64, u64)],
+        linear: u64,
+        wrong: &mut Vec<String>,
+    ) -> u64 {
+        for &(address, value) in entries {
+            put_qword(&machine.bus, address, value);
+        }
+        let ram = machine.bus.physical_memory();
+        let mut count = 0;
+        for nxe in [false, true] {
+            for wp in [false, true] {
+                let cr0 = if wp { CR0 } else { CR0 & !CR0_WP };
+                let efer = if nxe { EFER } else { EFER & !(1 << 11) };
+                let paging = crate::Long64ProbeConfig::new(cr0, PML4_A, CR4, efer).unwrap();
+                for user in [false, true] {
+                    for (fast, kind) in [
+                        (WalkKind::Read, AccessKind::Read),
+                        (WalkKind::Write, AccessKind::Write),
+                        (WalkKind::Fetch, AccessKind::Fetch),
+                    ] {
+                        let context = AccessContext {
+                            privilege: if user {
+                                PrivilegeLevel::Ring3
+                            } else {
+                                PrivilegeLevel::Ring0
+                            },
+                            ..context()
+                        };
+                        let expected = crate::page_walk::translate_long64_2m_ram_read_only(
+                            ram,
+                            &paging,
+                            linear,
+                            crate::GuestLinearAddress::new(linear),
+                            context,
+                            kind,
+                        )
+                        .ok()
+                        .map(|physical| physical.get());
+                        let actual = super::fast_translate(ram, &paging, linear, fast, user)
+                            .map(|walk| walk.physical);
+                        if expected != actual {
+                            wrong.push(format!(
+                                "{linear:#x} entries {entries:x?} nxe {nxe} wp {wp} user {user} \
+                                 {kind:?}: walker {expected:x?} fast {actual:x?}"
+                            ));
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    }
+    let machine = Machine::new(3);
+    let mut wrong = Vec::new();
+    let mut checked = 0;
+    let bits = |mask: u32, level: u32| {
+        (if mask >> (2 * level) & 1 != 0 { US } else { 0 })
+            | (if mask >> (2 * level + 1) & 1 != 0 {
+                RW
+            } else {
+                0
+            })
+    };
+    for nx in [0, NX] {
+        for mask in 0..256u32 {
+            let entries = [
+                (PML4_A + 8, T_PDPT | P | bits(mask, 0)),
+                (T_PDPT, T_PD | P | bits(mask, 1)),
+                (T_PD, T_PT | P | bits(mask, 2)),
+                (T_PT, FRAME | P | bits(mask, 3) | nx),
+            ];
+            checked += agree(&machine, &entries, LINEAR_4K, &mut wrong);
+        }
+        for mask in 0..64u32 {
+            let entries = [
+                (PML4_A + 8, T_PDPT | P | bits(mask, 0)),
+                (T_PDPT, T_PD | P | bits(mask, 1)),
+                (T_PD + 8, P | PS | bits(mask, 2) | nx),
+            ];
+            checked += agree(&machine, &entries, LINEAR_2M, &mut wrong);
+        }
+    }
+    // P = 0 at each level (the other rights all granted).
+    let full_4k = [
+        (PML4_A + 8, T_PDPT | P | US | RW),
+        (T_PDPT, T_PD | P | US | RW),
+        (T_PD, T_PT | P | US | RW),
+        (T_PT, FRAME | P | US | RW),
+    ];
+    for level in 0..4 {
+        let mut entries = full_4k;
+        entries[level].1 &= !P;
+        checked += agree(&machine, &entries, LINEAR_4K, &mut wrong);
+    }
+    let full_2m = [
+        (PML4_A + 8, T_PDPT | P | US | RW),
+        (T_PDPT, T_PD | P | US | RW),
+        (T_PD + 8, P | PS | US | RW),
+    ];
+    for level in 0..3 {
+        let mut entries = full_2m;
+        entries[level].1 &= !P;
+        checked += agree(&machine, &entries, LINEAR_2M, &mut wrong);
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {checked} differ:\n{}",
+        wrong.len(),
+        wrong[..wrong.len().min(20)].join("\n")
+    );
+    println!("fast_translate: {checked} cases agree with the general walker");
+    // 4 KiB: 2 NX × 256 × 24; 2 MiB: 2 NX × 64 × 24; P = 0: (4 + 3) × 24.
+    assert_eq!(checked, 12_288 + 3_072 + 168);
+}
+
+#[test]
+fn the_tlb_view_answers_only_the_privilege_of_its_slot() {
+    let paging = crate::Long64ProbeConfig::new(CR0, PML4_A, CR4, EFER).unwrap();
+    // CPL0: generated code reads `DATA_PTR` and fills the read TLB of the CPL0 context.
+    let mut machine = Machine::new(77);
+    machine.code(CODE, &[0x48, 0x8B, 0x03, 0xF4]); // mov rax, [rbx]; hlt
+    let mut engine = Engine::take(&machine);
+    let report = run_turbo(&mut machine, engine.get(), 1_000);
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+    let view = engine.get().tlbs();
+    // SAFETY: the view of the live engine.
+    assert_eq!(unsafe { (*view).privilege }, PrivilegeLevel::Ring0);
+    assert!(super::view_host(view, &paging, PrivilegeLevel::Ring0, false, DATA_PTR, 8).is_some());
+    assert!(super::view_host(view, &paging, PrivilegeLevel::Ring3, false, DATA_PTR, 8).is_none());
+    // CPL3 (C5a-5 (i)): a call that ends at CPL3 leaves the context of CPL3 active; it answers no
+    // supervisor access.
+    let mut machine = Machine::user(77);
+    machine.code(CODE, &[0x48, 0x8B, 0x03, 0x90, 0x90, 0xF4]); // mov rax, [rbx]; nop; nop; hlt
+    let mut engine = Engine::take(&machine);
+    let report = run_turbo(&mut machine, engine.get(), 2);
+    assert_eq!(
+        format!("{:?}", report.exit),
+        "Run(InstructionBudgetExhausted)"
+    );
+    assert_eq!(machine.state.cs_selector, Some(0x33));
+    let view = engine.get().tlbs();
+    // SAFETY: as above.
+    assert_eq!(unsafe { (*view).privilege }, PrivilegeLevel::Ring3);
+    assert!(super::view_host(view, &paging, PrivilegeLevel::Ring0, false, DATA_PTR, 8).is_none());
+}
+
+/// C5a-5 (a): a loop of 4 instructions × 1 000 at CPL3 under turbo takes the engine's decode: the
+/// general step's fetch walks no byte of it (the general step alone walks every byte).
+#[test]
+fn a_cpl3_loop_under_turbo_fetches_each_instruction_once() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm32(RCX, 1_000);
+    let top = asm.pc();
+    asm.raw(&[0x48, 0x83, 0xC0, 0x01]); // add rax, 1
+    asm.raw(&[0x48, 0x31, 0xC2]); // xor rdx, rax
+    asm.raw(&[0xFF, 0xC9]); // dec ecx
+    let rel = top.wrapping_sub(asm.pc() + 2) as u8;
+    asm.raw(&[0x75, rel]); // jnz top
+    asm.hlt();
+    let mut reference = Machine::user(11);
+    let mut turbo = Machine::user(11);
+    reference.code(CODE, &asm.bytes);
+    turbo.code(CODE, &asm.bytes);
+    let mut engine = Engine::take(&turbo);
+    let left = run_reference(&mut reference, 100_000);
+    let right = run_turbo(&mut turbo, engine.get(), 100_000);
+    if let Some(difference) = difference(&reference, &turbo, &view(&left), &view(&right)) {
+        panic!("turbo mismatch: {difference}");
+    }
+    assert_eq!(left.cpl3_retired, 1 + 4 * 1_000);
+    println!(
+        "fetch walks: general step {}, turbo {}",
+        left.walk_counts.fetch, right.walk_counts.fetch
+    );
+    assert!(left.walk_counts.fetch >= 4_000, "{:?}", left.walk_counts);
+    // Measured: 0 (every CPL3 instruction runs with the engine's decode; 11 007 without turbo).
+    assert_eq!(right.walk_counts.fetch, 0, "{:?}", right.walk_counts);
+}
+
+/// C5a-5 (b): a CPL3 store into its own (user, writable) code page changes the immediate of the
+/// next instruction, which then runs with the new byte; the second pass changes the instruction
+/// the engine decoded in the first.
+#[test]
+fn a_cpl3_store_into_its_own_code_is_seen() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm32(RCX, 2);
+    let top = asm.pc();
+    // mov [rip + 2], cl: the low byte of the immediate of the `add` after it.
+    asm.enc(&[], false, false, &[0x88], RCX, Rm::Rip(top + 8), &[]);
+    asm.raw(&[0x81, 0xC2]); // add edx, 0x100
+    asm.raw(&0x100u32.to_le_bytes());
+    asm.raw(&[0xFF, 0xC9]); // dec ecx
+    let rel = top.wrapping_sub(asm.pc() + 2) as u8;
+    asm.raw(&[0x75, rel]); // jnz top
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        machine.state.gpr[Register::Rdx as usize] = 0;
+    };
+    let outcome = Case::new("cpl3 self-modifying code", 17, &prepare)
+        .user()
+        .program(&program)
+        .check();
+    // 0x102 in the first pass, 0x101 in the second.
+    assert_eq!(outcome.state.gpr[Register::Rdx as usize], 0x203);
+    assert_eq!(outcome.report.cpl3_retired, 1 + 2 * 4);
+}
+
+/// C5a-5 (c): the same user code page `cli; mov rax, [SUPERVISOR]; hlt` at the same RIP, first at
+/// CPL0 (the engine compiles the block and runs it), then at CPL3 with IOPL 0 without a reset of
+/// the engine: `#GP(0)` at the `cli`, IF unchanged in the frame, as the general step.
+#[test]
+fn the_same_code_at_cpl0_and_cpl3_runs_by_the_rules_of_each() {
+    let mut asm = Asm::new(CODE);
+    asm.raw(&[0xFA]); // cli
+    asm.op(&[], 8, &[0x8B], RAX, Rm::Abs(SUPERVISOR as i32), &[]);
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &program);
+        ring0(&mut machine.state);
+        machine.state.rflags = 2 | IF;
+    };
+    let between = |machine: &mut Machine, _call: usize| resume_user(machine, CODE);
+    let outcome = Case::new("cpl0 then cpl3", 19, &prepare)
+        .user()
+        .program(&program)
+        .between(&between)
+        .calls(2)
+        .check();
+    assert!(
+        outcome.stats.compiled_blocks >= 1 && outcome.stats.retired >= 2,
+        "the CPL0 call ran the block: {:?}",
+        outcome.stats
+    );
+    assert_eq!(outcome.report.delivered.2, 1, "#GP at CPL3");
+    let rsp = outcome.state.gpr[Register::Rsp as usize];
+    let bus = &outcome.turbo.bus;
+    assert_eq!(get_qword(bus, rsp), 0, "#GP(0)");
+    assert_eq!(get_qword(bus, rsp + 8), CODE, "at the cli");
+    assert_ne!(get_qword(bus, rsp + 24) & IF, 0, "IF unchanged");
+}
+
+/// C5a-5 (d): after a CPL0 run read `SUPERVISOR` (an entry of the read TLB of the CPL0 context),
+/// the view gives that entry to no user access.
+#[test]
+fn a_cpl3_access_never_uses_a_cpl0_translation() {
+    let mut machine = Machine::user(23);
+    ring0(&mut machine.state);
+    let mut asm = Asm::new(CODE);
+    asm.op(&[], 8, &[0x8B], RAX, Rm::Abs(SUPERVISOR as i32), &[]);
+    // Review F2: a write too (an entry of the write TLB of the CPL0 context).
+    asm.op(&[], 8, &[0x89], RAX, Rm::Abs(SUPERVISOR as i32 + 8), &[]);
+    asm.hlt();
+    machine.code(CODE, &asm.bytes);
+    let mut engine = Engine::take(&machine);
+    let report = run_turbo(&mut machine, engine.get(), 1_000);
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)");
+    assert!(engine.get().stats.retired >= 1, "{:?}", engine.get().stats);
+    let paging = crate::Long64ProbeConfig::new(CR0, PML4_A, CR4, EFER).unwrap();
+    let view = engine.get().tlbs();
+    assert!(super::view_host(view, &paging, PrivilegeLevel::Ring0, false, SUPERVISOR, 8).is_some());
+    assert!(super::view_host(view, &paging, PrivilegeLevel::Ring3, false, SUPERVISOR, 8).is_none());
+    assert!(
+        super::view_host(
+            view,
+            &paging,
+            PrivilegeLevel::Ring0,
+            true,
+            SUPERVISOR + 8,
+            8
+        )
+        .is_some()
+    );
+    assert!(
+        super::view_host(
+            view,
+            &paging,
+            PrivilegeLevel::Ring3,
+            true,
+            SUPERVISOR + 8,
+            8
+        )
+        .is_none()
+    );
+}
+
+/// C5a-5 (e): between two CPL3 calls the PTE of the user code page is rewritten to another frame
+/// (a write the engine sees in its journal, as a device's); the second call runs the code of the
+/// new frame.
+#[test]
+fn a_remapped_user_code_page_is_fetched_from_the_new_frame() {
+    let page = CODE + 0x3000;
+    let frame = ALT + 0x6000;
+    let prepare = |machine: &mut Machine| {
+        machine.code(page, &[0xB8, 1, 0, 0, 0, 0xF4]); // mov eax, 1; hlt
+        machine.code(frame, &[0xB8, 2, 0, 0, 0, 0xF4]); // mov eax, 2; hlt
+        machine.state.rip = page;
+    };
+    let between = |machine: &mut Machine, _call: usize| {
+        put_qword(&machine.bus, PT_A + (page >> 12) * 8, frame | P | RW | US);
+        resume_user(machine, page);
+    };
+    let outcome = Case::new("remapped user code", 29, &prepare)
+        .user()
+        .between(&between)
+        .calls(2)
+        .check();
+    let frame_rip = get_qword(
+        &outcome.turbo.bus,
+        outcome.state.gpr[Register::Rsp as usize] + 8,
+    );
+    assert_eq!(frame_rip, page + 5, "the HLT of the new frame");
+    assert_eq!(outcome.state.gpr[Register::Rax as usize] as u32, 2);
+}
+
+/// C5a-5 (f): template forms at CPL3 (`add`, `mov m, r`, `dec`, `jnz`, `cli` at IOPL 0): the engine
+/// runs no generated instruction and compiles no block; `cli` is `#GP(0)`; turbo equals the
+/// general step. Slice C5b-3 turns "no retirement" into retirements at CPL3.
+#[test]
+fn cpl3_runs_no_generated_code_in_c5a() {
+    let mut asm = Asm::new(CODE);
+    asm.mov_imm32(RCX, 5);
+    let top = asm.pc();
+    asm.raw(&[0x01, 0xD8]); // add eax, ebx
+    asm.raw(&[0x48, 0x89, 0x43, 0x10]); // mov [rbx+16], rax
+    asm.raw(&[0xFF, 0xC9]); // dec ecx
+    let rel = top.wrapping_sub(asm.pc() + 2) as u8;
+    asm.raw(&[0x75, rel]); // jnz top
+    let cli = asm.pc();
+    asm.raw(&[0xFA]); // cli
+    asm.hlt();
+    let outcome = run_program_user("cpl3 templates", 31, CODE, &asm.bytes, 100_000)
+        .unwrap_or_else(|message| panic!("turbo mismatch: {message}"));
+    assert_eq!(outcome.report.exit, "Run(Halted)");
+    assert_eq!(outcome.report.cpl3_retired, 1 + 5 * 4);
+    assert_eq!(outcome.stats.retired, 0, "{:?}", outcome.stats);
+    assert_eq!(outcome.stats.compiled_blocks, 0, "{:?}", outcome.stats);
+    assert!(outcome.stats.runs > 1 + 5 * 4, "{:?}", outcome.stats);
+    assert_eq!(outcome.report.delivered.2, 1);
+    let (error, rip, _) = delivered_page_fault(&outcome);
+    assert_eq!((error, rip), (0, cli), "#GP(0) at the cli");
+}
+
+/// C5a-5 (h): the fetch rights of CPL3. After slice C5a the general step with the engine's decode
+/// fetches nothing, so U and NX of a CPL3 fetch are decided by `code_for` and the lookup table of
+/// the slot. CPL3 jumps from its page to a target page of a path of its own whose entries have
+/// U = 0 at one level (PML4E, PDPTE, PDE, PTE; and the 2 MiB PDE leaf with its upper levels), or
+/// NX = 1 at the leaf (with EFER.NXE = 1; with NXE = 0 the bit is reserved); A = 0 at every level
+/// before the jump. And the same target RIP with U = 0,
+/// first run at CPL0 (a block and a lookup entry of the CPL0 slot), then reached from CPL3. Every
+/// case: the `#PF` of the fetch with U = 1 (I/D = 1 with NXE = 1), CR2 the target, the accessed
+/// bits of the general step.
+#[test]
+fn cpl3_fetch_rights_match_the_general_step() {
+    const T_PDPT: u64 = 0xA0000;
+    const T_PD: u64 = 0xA1000;
+    const T_PT: u64 = 0xA2000;
+    const FRAME: u64 = 0xA3000;
+    const TARGET_4K: u64 = 1 << 39;
+    const TARGET_2M: u64 = (1 << 39) | (1 << 21) | FRAME;
+    const ID: u64 = 1 << 4;
+    const RSVD: u64 = 1 << 3;
+    struct Fetch {
+        name: &'static str,
+        target: u64,
+        /// The entry changed and the bits cleared and set in it.
+        entry: u64,
+        clear: u64,
+        set: u64,
+        nxe: bool,
+        cpl0_first: bool,
+        error: u64,
+    }
+    let user_fault = P | US | ID;
+    let u0 = |name, target, entry| Fetch {
+        name,
+        target,
+        entry,
+        clear: US,
+        set: 0,
+        nxe: true,
+        cpl0_first: false,
+        error: user_fault,
+    };
+    let cases = [
+        u0("u0 pml4e 4k", TARGET_4K, PML4_A + 8),
+        u0("u0 pdpte 4k", TARGET_4K, T_PDPT),
+        u0("u0 pde 4k", TARGET_4K, T_PD),
+        u0("u0 pte 4k", TARGET_4K, T_PT),
+        u0("u0 pml4e 2m", TARGET_2M, PML4_A + 8),
+        u0("u0 pdpte 2m", TARGET_2M, T_PDPT),
+        u0("u0 pde leaf 2m", TARGET_2M, T_PD + 8),
+        Fetch {
+            name: "nx leaf nxe 1",
+            clear: 0,
+            set: NX,
+            ..u0("", TARGET_4K, T_PT)
+        },
+        // EFER.NXE = 0: bit 63 is reserved, a reserved-bit #PF; I/D = 0 (SDM Vol. 3A §4.7: I/D
+        // is set for a fetch only with EFER.NXE = 1 or CR4.SMEP = 1).
+        Fetch {
+            name: "nx leaf nxe 0",
+            clear: 0,
+            set: NX,
+            nxe: false,
+            error: P | US | RSVD,
+            ..u0("", TARGET_4K, T_PT)
+        },
+        Fetch {
+            name: "u0 pte after cpl0",
+            cpl0_first: true,
+            ..u0("", TARGET_4K, T_PT)
+        },
+    ];
+    for case in &cases {
+        let prepare = |machine: &mut Machine| {
+            for (address, value) in [
+                (PML4_A + 8, T_PDPT | P | RW | US),
+                (T_PDPT, T_PD | P | RW | US),
+                (T_PD, T_PT | P | RW | US),
+                (T_PD + 8, P | RW | US | PS),
+                (T_PT, FRAME | P | RW | US),
+            ] {
+                let value = if address == case.entry {
+                    (value & !case.clear) | case.set
+                } else {
+                    value
+                };
+                put_qword(&machine.bus, address, value);
+            }
+            if !case.nxe {
+                // No NX bit may remain where the delivery walks (bit 63 is reserved then).
+                machine.efer &= !(1 << 11);
+                for linear in [TSS, KSTACK] {
+                    put_qword(
+                        &machine.bus,
+                        PT_A + (linear >> 12) * 8,
+                        linear | P | RW | US,
+                    );
+                }
+            }
+            machine.code(FRAME, &[0xB8, 7, 0, 0, 0, 0xF4]); // mov eax, 7; hlt
+            let mut asm = Asm::new(CODE);
+            asm.mov_imm(RAX, case.target);
+            asm.raw(&[0xFF, 0xE0]); // jmp rax
+            machine.code(CODE, &asm.bytes);
+            if case.cpl0_first {
+                ring0(&mut machine.state);
+                machine.state.rip = case.target;
+            }
+        };
+        let between = |machine: &mut Machine, _call: usize| resume_user(machine, CODE);
+        let mut run = Case::new(case.name, 37, &prepare).user();
+        if case.cpl0_first {
+            run = run.between(&between).calls(2);
+        }
+        let outcome = run.check();
+        assert_eq!(outcome.report.exit, "Run(Halted)", "{}", case.name);
+        assert_eq!(outcome.report.delivered.1, 1, "{}: one #PF", case.name);
+        assert_eq!(
+            delivered_page_fault(&outcome),
+            (case.error, case.target, Some(case.target)),
+            "{}",
+            case.name
+        );
+    }
+}
+
+/// C5a-5 (k): the slow-exit profile classifies a CPL3 form by whether a template exists for it at
+/// CPL0: `add eax, ebx` (a template) exits as `no-code` (the stub of `UserNoCode`), `cpuid` (none)
+/// as `no-template`.
+#[test]
+fn the_slow_exit_profile_classifies_cpl3_forms_by_their_template() {
+    let mut machine = Machine::user(13);
+    machine.sse(13);
+    machine.code(CODE, &[0x01, 0xD8, 0x0F, 0xA2, 0xF4]); // add eax, ebx; cpuid; hlt
+    let mut engine = Engine::take(&machine);
+    engine.get().enable_profile();
+    let report = run_turbo(&mut machine, engine.get(), 1_000);
+    let text = engine.get().report();
+    engine.get().profile = None;
+    assert_eq!(format!("{:?}", report.exit), "Run(Halted)", "{text}");
+    let line = |rip: u64| {
+        let rip = format!("{rip:#018x}");
+        text.lines()
+            .find(|line| line.contains(&rip))
+            .unwrap_or_else(|| panic!("no profile line of {rip}:\n{text}"))
+            .to_owned()
+    };
+    assert!(line(CODE).contains(" no-code cpl3 "), "{text}");
+    assert!(line(CODE + 2).contains(" no-template cpl3 "), "{text}");
+}
+
+/// Review F2: a CPL3 write with RF = 1 (the engine does not run: the active context stays the CPL0
+/// one of the same CR3, whose write TLB holds `SUPERVISOR` from the CPL0 call before) is a `#PF` as
+/// at the general step: the adapter's write path takes no CPL0 entry for a user write.
+#[test]
+fn a_cpl3_write_with_rf_set_never_uses_a_cpl0_write_translation() {
+    const RF: u64 = 1 << 16;
+    let user_rip = CODE + 0x100;
+    let mut asm = Asm::new(CODE);
+    asm.op(&[], 8, &[0x89], RAX, Rm::Abs(SUPERVISOR as i32 + 8), &[]);
+    asm.hlt();
+    let kernel = asm.bytes;
+    let mut asm = Asm::new(user_rip);
+    asm.op(&[], 8, &[0x89], RAX, Rm::Abs(SUPERVISOR as i32 + 8), &[]);
+    asm.hlt();
+    let user = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(CODE, &kernel);
+        machine.code(user_rip, &user);
+        ring0(&mut machine.state);
+    };
+    let between = |machine: &mut Machine, _call: usize| {
+        resume_user(machine, user_rip);
+        machine.state.rflags |= RF;
+    };
+    let outcome = Case::new("cpl3 write with RF", 41, &prepare)
+        .user()
+        .between(&between)
+        .calls(2)
+        .check();
+    assert!(
+        outcome.stats.retired >= 1,
+        "the CPL0 call wrote in generated code"
+    );
+    assert_eq!(outcome.report.delivered.1, 1, "#PF at CPL3");
+    assert_eq!(
+        delivered_page_fault(&outcome),
+        (P | RW | US, user_rip, Some(SUPERVISOR + 8))
+    );
+}
+
+/// Review F3: one instruction across a page boundary (`mov rax, imm64` from 4 bytes before the end
+/// of a code page) at the same RIP, first at CPL0 (a crossing block of the engine runs it), then at
+/// CPL3 without a reset of the engine: the CPL3 call runs it through the general step (no
+/// generated code at CPL3), as the reference.
+#[test]
+fn a_page_crossing_instruction_at_cpl0_and_cpl3_runs_by_the_rules_of_each() {
+    let rip = CODE + 0x1000 - 4;
+    let mut asm = Asm::new(rip);
+    asm.mov_imm(RAX, 0x1122_3344_5566_7788);
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(rip, &program);
+        ring0(&mut machine.state);
+        machine.state.rip = rip;
+    };
+    let between = |machine: &mut Machine, _call: usize| {
+        resume_user(machine, rip);
+        machine.state.gpr[Register::Rax as usize] = 0;
+    };
+    let outcome = Case::new("crossing cpl0 then cpl3", 43, &prepare)
+        .user()
+        .program(&program)
+        .between(&between)
+        .calls(2)
+        .check();
+    assert!(
+        outcome.stats.compiled_blocks >= 1 && outcome.stats.retired >= 1,
+        "the CPL0 call ran the crossing block: {:?}",
+        outcome.stats
+    );
+    assert_eq!(outcome.report.cpl3_retired, 1);
+    assert_eq!(
+        outcome.state.gpr[Register::Rax as usize],
+        0x1122_3344_5566_7788
+    );
+}
+
+/// Review F3: a CPL3 instruction across a page boundary whose second page is a supervisor page
+/// (U = 0 at its PTE, A = 0 everywhere): the `#PF` of the fetch at the start of the second page
+/// (U = 1, I/D = 1), with the accessed bits of the general step.
+#[test]
+fn a_page_crossing_cpl3_fetch_into_a_supervisor_page_faults_like_the_general_step() {
+    let rip = CODE + 0x1000 - 4;
+    let second = CODE + 0x1000;
+    let mut asm = Asm::new(rip);
+    asm.mov_imm(RAX, 0x1122_3344_5566_7788);
+    asm.hlt();
+    let program = asm.bytes;
+    let prepare = |machine: &mut Machine| {
+        machine.code(rip, &program);
+        machine.state.rip = rip;
+        put_qword(&machine.bus, PT_A + (second >> 12) * 8, second | P | RW);
+    };
+    let outcome = Case::new("crossing into a supervisor page", 47, &prepare)
+        .user()
+        .program(&program)
+        .check();
+    assert_eq!(outcome.report.delivered.1, 1, "one #PF");
+    assert_eq!(
+        delivered_page_fault(&outcome),
+        (P | US | (1 << 4), rip, Some(second))
+    );
+}
+
+/// Review F1: a CPL3 state the CPL3 entry refuses (CS.L = 0, compatibility mode; DPL of CS not 3)
+/// is refused before anything happens, with turbo as without: the engine does not run on it (no
+/// fetch walk with its accessed bits, no watch, no decode).
+#[test]
+fn a_cpl3_state_the_entry_refuses_leaves_the_engine_out() {
+    for (name, flags, access) in [("cs.l 0", 4u8, 0xFBu8), ("cs dpl 0", 2, 0x9B)] {
+        let prepare = |machine: &mut Machine| {
+            machine.code(CODE, &[0x90, 0x90, 0xF4]);
+            let cache = machine.state.cs_cache.as_mut().unwrap();
+            cache.flags = flags;
+            cache.access = access;
+        };
+        let outcome = Case::new(name, 53, &prepare).user().check();
+        assert_eq!(outcome.report.exit, "Rejected(WrongPrivilege)", "{name}");
+        assert_eq!(outcome.stats.runs, 0, "{name}: {:?}", outcome.stats);
+    }
 }
